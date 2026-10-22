@@ -1,6 +1,6 @@
 # Connected App author guide
 
-> **Apps developer preview:** use the supported Host/Email/Kit combination in the [Email compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.17/compatibility.json). Deft `0.3.0-preview.123` requires schema 120 and the Apps-enabled browser build profile. Historical preview.15 and its alpha.2 artifacts are unchanged.
+> **Apps developer preview:** use the supported Host/Email/Kit combination in the [Email compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.28/compatibility.json). Deft `0.3.0-preview.136` requires schema 131 and the Apps-enabled browser build profile. Historical preview.15 and its alpha.2 artifacts are unchanged. Owners and operators should start with [Connect once](app-connect-once.md).
 
 For a standalone tracker, use the [Module tutorial](tutorials/first-module.md). A `deft.module.json` installs through Settings â†’ Modules; this guide packages resources in a separate `deft.app.json` and uses Settings â†’ Apps. [Compare the two paths](modules-and-apps.md).
 
@@ -9,23 +9,23 @@ and submit it for workspace review. Current connected applications use the
 programmatic Protocol 7 packaging APIs and public sideload review. The workspace
 operator reviews access, chooses provider bindings and activates the App.
 
-The current App authoring artifact is `@deft/app-kit@0.1.0-alpha.38`. Use a packed
+The current App authoring artifact is `@deft/app-kit@0.1.0-alpha.42`. Use a packed
 tarball of that exact version; do not substitute a monorepo workspace link or
 import private Deft packages.
 
 The independent [Email repository](https://github.com/Maneek21/deft-email) contains
-App `1.9.0-preview.14` built with Kit alpha.38 and Runtime `0.4.0-preview.17`
-built with Kit alpha.35. These deliberately different pins are compatible with
-the supported Host; preserve both sealed tarballs and locks. Follow its current
+App `1.9.1-preview.9` and Runtime `0.4.0-preview.26` in Email release
+`v1.9.0-preview.28`, both built with Kit alpha.42. Preserve the exact sealed
+tarballs and locks. Follow its current
 [setup instructions](https://github.com/Maneek21/deft-email/blob/main/docs/setup.md)
 and the release acceptance evidence. Kit parsing alone does not establish
 database compatibility or live provider acceptance.
 Run the App build outside Deft, supply the independently deployed Runtime and
 review the resulting package through Settings → Apps. No Deft checkout is a
 Runtime dependency. Previous preview.1/preview.2 and E5.9/E5.11 artifacts remain
-historical evidence; they do not certify this candidate.
+historical evidence; they do not certify the current release.
 
-In the external Email checkout, run `npm --prefix app ci --no-audit --no-fund`, `pnpm --dir runtime install --frozen-lockfile --ignore-scripts`, `npm run verify:provenance` and `npm run build`. The locks resolve the included sealed alpha.38 App and alpha.35 Runtime tarballs, not workspace links. The generated `app/app.deft.json` is the public Protocol 7 upload; do not use the historical `deft app install-local` recipe below for it. The operator separately provides the Apps-enabled Host image, HTTPS routes, allowlisted OAuth client/callback and a single POSIX Runtime with private durable custody. No Host checkout is an Email build input.
+In the external Email checkout, run `npm --prefix app ci --no-audit --no-fund`, `pnpm --dir runtime install --frozen-lockfile --ignore-scripts`, `npm run verify:provenance` and `npm run build`. The locks resolve the included sealed alpha.42 tarballs, not workspace links. The generated `app/app.deft.json` is the public Protocol 7 upload; do not use the historical `deft app install-local` recipe below for it. The operator separately provides the Apps-enabled Host image, HTTPS routes, allowlisted OAuth client/callback and a single POSIX Runtime with private durable custody. No Host checkout is an Email build input.
 
 Email owns mailbox/provider behavior, content normalization, its data model and
 UI declarations. Kit supplies bounded public contracts. Deft supplies generic
@@ -45,12 +45,19 @@ same frozen Host; local compilation alone does not prove either.
 
 ### Email source-to-Task readiness
 
-Foreground mailbox reads, Refresh and private draft consent do **not** publish
-the signed Host resource projections required by **Create task**. A newly
-enrolled account can read mail while source review remains denied. Old-version
-or old-grant projections are not substitutes for the current binding. Enable
-this separate publication lane explicitly before claiming the Task/backlink
-journey works:
+New account setup uses one lifetime choice for reads, declared private records
+and background metadata, defaulting to **Until revoked** when supported. It
+installs background access after the connection is acknowledged. An existing
+account is not silently enrolled by opening settings. With compatible upgrade
+trust enabled for the installation, exact existing approvals carry forward;
+normal updates and outages do not require repeating the steps below.
+
+Foreground mailbox reads, Refresh and private draft consent alone do **not**
+publish the signed Host resource projections required by **Create task**.
+Source/destination review and Knowledge capture permission remain distinct.
+Use settings to check background refresh and current publication. The following
+public contracts are for operator diagnosis or explicit enrollment; old-version
+projections cannot replace a current binding:
 
 1. Read `GET /api/app-resource-observations/installations/{installation_id}/context`
    as the current owner. Derive the connection session, resource binding,
@@ -65,8 +72,10 @@ journey works:
    already `until_revoked`, the same review request may instead carry
    `{"expires_at":null,"consent_lifetime":"until_revoked"}`. Activate the exact
    returned review before `review_expires_at`; this review deadline does not end
-   an already active observation. A null expiry alone grants nothing. Initial
-   account enrollment remains finite. Observation v1 admits
+   an already active observation. A null expiry alone grants nothing. New setup
+   selects until revoked when the admitted policy supports it; finite choices
+   retain their original deadlines and do not automatically renew background
+   access. Observation v1 admits
    scalar metadata only (`attachment_mode: "unsupported"`); it grants neither
    attachment transfer, Knowledge capture, OAuth scopes nor provider actions.
 2. Once the operator's Runtime is ready, issue its v3 sync session through
@@ -81,7 +90,10 @@ journey works:
    `requested_until` for response field `renewable_until`. Each renewed lease
    remains at most 15 minutes. Renewal rechecks the current named human/role,
    App/grant and connection pins, and required consent; an expired or revoked
-   session cannot be revived. Technical renewal alone never grants or extends
+   session cannot be revived. A supported Runtime can acquire a fresh scoped
+   session after expiry using its service identity and the configured operator's
+   own still-current until-revoked account grant; see
+   [outage recovery](app-runtime-session-renewal.md). Technical renewal alone never grants or extends
    the separate observation/publication consent, and action credentials cannot
    substitute for sync credentials.
 3. Configure the external Email Runtime's `resource_sync_channel_files` with a
@@ -99,8 +111,10 @@ journey works:
    attachment broker and owner-connection gates. Let the scheduler admit the
    first **observed** Run; an ordinary `/sync` request with `{}` does not replace
    its observation pin. Inspect `GET /api/apps/blob/sync/bindings/{binding_id}`
-   for a successful committed checkpoint and current signed projections. If
-   the desired message is not yet published, use supported `/sync` with
+   for a successful committed checkpoint and current signed projections.
+   A successful page with more data now commits a durable continuation due
+   after one second, with fresh authority checks. The idle polling interval
+   resumes after catch-up. For explicit operator continuation, use `/sync` with
    `{"continue":true}` only after a succeeded, committed predecessor, within
    the original authority window. Stop on failed or uncertain outcomes; retain
    truthful partial coverage. Never copy old projections or reset a cursor to
@@ -114,7 +128,7 @@ journey works:
    `/api/app-resource-observations/consent/revoke` and
    `/api/apps/blob/sync/sessions/{session_id}/revoke`; do not revoke the underlying
    mailbox binding as cleanup. Sustained publication needs its separately
-   reviewed finite or explicitly supported `until_revoked` consent and current
+   reviewed `until_revoked` consent for automatically renewable background access and current
    finite operator leases, not permission inferred from technical renewal.
 
 ## Historical Protocol 1/2 sandbox walkthrough

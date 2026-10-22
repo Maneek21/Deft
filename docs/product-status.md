@@ -9,7 +9,7 @@ notes before upgrading, and keep a tested backup of your workspace.
 
 ## Choose a version
 
-The general workspace baseline in the table below is **v0.3.0-preview.15**, a **core** release. The connected-App developer-preview set is **v0.3.0-preview.120**/schema120 with independent Email App13/Runtime15 and public Kit38/Kit35. Use the [compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.13/compatibility.json) for exact public artifacts and [App release boundaries](app-release-boundaries.md) for current scope. Its explicitly Apps-enabled profile differs from the general default-off configuration.
+The general workspace baseline in the table below is **v0.3.0-preview.15**, a **core** release. The connected-App developer-preview set is **v0.3.0-preview.136**/schema131 with Email release 28: App `1.9.1-preview.9` and Runtime `0.4.0-preview.26`, both using public Kit alpha.42. Use the [compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.28/compatibility.json) for exact public artifacts and [App release boundaries](app-release-boundaries.md) for current scope. Its explicitly Apps-enabled profile differs from the general default-off configuration.
 Development on `master` may include changes absent from the published image.
 
 | Capability | Availability | How to start |

@@ -1,9 +1,10 @@
 # Bounded resource sync catch-up
 
 Background refresh intervals govern polling after a resource stream is caught
-up. A successful page with `has_more: true` becomes eligible for another bounded
-Run five seconds after settlement. The existing durable scanner admits that Run
-on its next pass (normally within one minute, longer under scan backlog).
+up. When a successful metadata or observation page has `has_more: true`, the Host
+commits a durable continuation job with the page and checkpoint. That job becomes
+eligible after one second and admits the next bounded Run without waiting for
+the installation scanner. Queue load and provider work can still add delay.
 Each page retains the reviewed item, byte and storage limits.
 
 Admission holds the existing checkpoint lock and rechecks live binding and
@@ -11,21 +12,18 @@ observation consent. It requires the latest intent to be the exact successful
 predecessor of the current checkpoint generation and sequence, and verifies the
 retained output against the applied page digest and opaque cursor. The cursor
 alone cannot indicate more work. Missing or expired evidence preserves normal
-cadence. No schema migration or app wire-contract change is required; retained
-pages from earlier Host versions can immediately use this path.
+cadence. Each continuation rechecks current authority and must still match the
+checkpoint generation, sequence and preceding Run. A stale job cannot start work
+for a replaced checkpoint. The ordinary scanner remains a recovery safety net.
 
 The ordinary attempt queue, lease and idempotency fences remain in force. A
 concurrent scan returns the existing Run. Provider errors, uncertain results and
 capacity failures do not advance the checkpoint and cannot create a new intent
 for that cursor through the catch-up path; existing recovery rules apply.
-No retry loop or new provider call path is introduced. A complete page (`has_more: false`) returns to
-the reviewed refresh interval even when its delta cursor is non-null.
-
-The alternative of enqueuing a second per-binding continuation job would duplicate
-the existing durable scan and recovery controls. Reusing the scanner provides a
-bounded restart-safe continuation with fair scanning and no additional queue or
-schema. Moving a page loop into each app would duplicate Host policy and hide
-inter-page failure and lease boundaries.
+An unknown outcome is retained for inspection rather than replayed. Each
+continuation admits at most one page, then yields to other accounts. A complete
+page (`has_more: false`) returns to the reviewed refresh interval even when its
+delta cursor is non-null; fast catch-up does not shorten idle polling.
 
 Successful page receipts include signed `has_more` and `coverage` facts alongside
 the applied checkpoint sequence and page digest. Here `coverage` describes
