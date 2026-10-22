@@ -31,11 +31,22 @@ const safeSnapshot=await createAttachmentSyncDiscoverySnapshot({org_id:org,regis
 const provider={id:providerId,org_id:org,provider_kind:'app_runtime',provider_instance_id:registrationId,adapter_contract_version:registration.contract_version,
  safe_snapshot:safeSnapshot,snapshot_digest:safeSnapshot.snapshot_digest,captured_at:checkedAt};
 let freshBinding=structuredClone(binding),freshRegistration=structuredClone(registration),memberActive=true,human=true,finalActive=true;
-let beforeLockedRead:(table:string)=>void=()=>{},finalChecks=0;
+let beforeLockedRead:(table:string)=>void=()=>{},afterProviderRead=()=>{},finalChecks=0,pendingReads=0;
+let ownerRead=false,batchRequested=false,corruptFactScope=false;
+const admissionReference={admission_id:randomUUID(),admission_digest:'sha256:'+'b'.repeat(64)};
 const calls:{table:string;keys:string[];lock:string|undefined;ordered:boolean}[]=[];
 mock.module(new URL('../src/lib/app-attachment-sync-reviewed.ts',import.meta.url).href,{namedExports:{loadReviewedAttachmentSyncDescriptor:async()=>reviewed}});
-mock.module(new URL('../src/lib/app-owner-connection-authority.ts',import.meta.url).href,{namedExports:{assertOwnerConnectionRegistration:async()=>{throw Error('unexpected owner admission');}}});
-mock.module(new URL('../src/lib/app-attachment-authority.ts',import.meta.url).href,{namedExports:{attachmentFinalAuthorityIsCurrent:async()=>{finalChecks++;return finalActive;}}});
+mock.module(new URL('../src/lib/app-owner-connection-authority.ts',import.meta.url).href,{namedExports:{assertOwnerConnectionRegistration:async(_tx:any,_registration:any,input:any)=>{
+ if(!ownerRead)throw Error('unexpected owner admission');batchRequested=!!input.currentBindingRead;
+ input.currentBindingRead?.onFacts({org_id:corruptFactScope?randomUUID():org,owner_user_id:owner,operator_user_id:operator,resource_binding_id:bindingId,
+  runtime_registration_id:registrationId,provider_snapshot:provider});
+ return {reference:admissionReference,policy:{},snapshot:{}};}}});
+mock.module(new URL('../src/lib/env.ts',import.meta.url).href,{namedExports:{isAppAttachmentBrokerEnabled:()=>true,isAppV5RuntimeActionsEnabled:()=>true}});
+mock.module(new URL('../src/lib/app-runtime-review.ts',import.meta.url).href,{namedExports:{runtimeActionDescriptors:()=>[]}});
+const {attachmentFinalAuthorityIsCurrent:finalAuthority}=await import('../src/lib/app-attachment-authority.js');
+mock.module(new URL('../src/lib/app-attachment-authority.ts',import.meta.url).href,{namedExports:{attachmentFinalAuthorityIsCurrent:async(...args:Parameters<typeof finalAuthority>)=>{
+ finalChecks++;return finalActive&&await finalAuthority(...args);
+}}});
 const {loadLiveAttachmentSyncBindingAuthority}=await import('../src/lib/app-attachment-sync-authority.js');
 function query(projection?:Record<string,unknown>){
  let table='',lock:string|undefined,ordered=false;
@@ -47,15 +58,15 @@ function query(projection?:Record<string,unknown>){
    if(table==='org_members')return keys.length===1?[{id:randomUUID()}]:[owner,operator].map(user_id=>({user_id,is_active:memberActive,role:'owner',kind:human?'human':'agent',is_agent:!human}));
    if(table==='app_runtime_registrations')return [structuredClone(freshRegistration)];
    if(table==='app_resource_bindings')return [structuredClone(freshBinding)];
-   if(table==='capability_provider_snapshots')return [provider];
+   if(table==='capability_provider_snapshots'){afterProviderRead();return [provider];}
    if(table==='users')return [owner,operator].map(id=>({id,kind:human?'human':'agent',is_agent:!human}));
    throw Error('Unexpected table '+table);
   }).then(resolve,reject)};return value;
 }
-const tx={select:query,execute:async()=>({rows:[]})};
+const tx={select:query,execute:async()=>{pendingReads++;return {rows:[]};}};
 const read=(prelocked_participant_ids?:string[])=>loadLiveAttachmentSyncBindingAuthority(tx as never,{org_id:org,resource_binding_id:bindingId,
  clock:()=>new Date(),...(prelocked_participant_ids?{prelocked_participant_ids}:{})});
-function reset(){provider.safe_snapshot=structuredClone(safeSnapshot);provider.snapshot_digest=safeSnapshot.snapshot_digest;freshBinding=structuredClone(binding);freshRegistration=structuredClone(registration);memberActive=true;human=true;finalActive=true;finalChecks=0;beforeLockedRead=()=>{};calls.length=0;reviewed.installation.grant_epoch=3;}
+function reset(){provider.safe_snapshot=structuredClone(safeSnapshot);provider.snapshot_digest=safeSnapshot.snapshot_digest;freshBinding=structuredClone(binding);freshRegistration=structuredClone(registration);memberActive=true;human=true;finalActive=true;finalChecks=0;pendingReads=0;ownerRead=false;batchRequested=false;corruptFactScope=false;beforeLockedRead=()=>{};afterProviderRead=()=>{};calls.length=0;reviewed.installation.grant_epoch=3;}
 
 test('the public binding reader batches scoped locators and members while retaining sorted lock order and fresh final guard',async()=>{
  reset();assert.ok(await read());
@@ -63,6 +74,7 @@ test('the public binding reader batches scoped locators and members while retain
  const locks=calls.filter(call=>call.lock);
  assert.deepEqual(locks.map(call=>[call.table,call.lock]),[['org_members','share'],['app_runtime_registrations','share'],['app_resource_bindings','share']]);
  assert.equal(locks[0]!.ordered,true);assert.equal(finalChecks,1);
+ assert.equal(calls.filter(call=>call.table==='users').length,1,'the retained final helper performs the one fresh post-provider participant read');
  assert.equal(calls.filter(call=>call.table==='app_runtime_registrations').length,1);
  assert.equal(calls.filter(call=>call.table==='app_resource_bindings').length,2);
 });
@@ -101,4 +113,22 @@ test('fresh current discovery bytes and epoch pins cannot reuse a previously suc
  reset();assert.ok(await read());freshRegistration.state='revoked';assert.equal(await read(),null);
  reset();assert.ok(await read());memberActive=false;assert.equal(await read(),null);
  reset();assert.ok(await read());reviewed.installation.grant_epoch++;assert.equal(await read(),null);
+});
+
+test('the retained real final helper denies human-kind changes occurring during provider proof work',async()=>{
+ reset();afterProviderRead=()=>{human=false;};assert.equal(await read(),null);
+ assert.equal(finalChecks,1);assert.equal(calls.filter(call=>call.table==='users').length,1);
+});
+
+function enableOwnerAdmission(){ownerRead=true;freshRegistration.owner_connection_admission_id=admissionReference.admission_id as never;
+ freshBinding.attachment_consent_digest=digestAppGrantValue(attachmentSyncConsentReview({org_id:org,owner_user_id:owner,operator_user_id:operator,
+  reviewed:reviewed as never,consent_expires_at:expiry,limits:binding,attachment_policy:binding.attachment_policy,owner_connection_admission:admissionReference}));}
+
+test('only opted-in owner operational reads consume transaction-local fact batches and omit duplicate pending/provider reads',async()=>{
+ reset();enableOwnerAdmission();assert.ok(await read());assert.equal(batchRequested,false);assert.equal(pendingReads,1);
+ assert.equal(calls.filter(call=>call.table==='capability_provider_snapshots').length,1);
+ reset();enableOwnerAdmission();assert.ok(await loadLiveAttachmentSyncBindingAuthority(tx as never,{org_id:org,resource_binding_id:bindingId,clock:()=>new Date(),batch_owner_connection_facts:true}));
+ assert.equal(batchRequested,true);assert.equal(pendingReads,0);assert.equal(calls.filter(call=>call.table==='capability_provider_snapshots').length,0);
+ assert.equal(finalChecks,1);assert.equal(calls.filter(call=>call.table==='users').length,1,'the final fresh human guard still runs');
+ reset();enableOwnerAdmission();corruptFactScope=true;assert.equal(await loadLiveAttachmentSyncBindingAuthority(tx as never,{org_id:org,resource_binding_id:bindingId,clock:()=>new Date(),batch_owner_connection_facts:true}),null);
 });

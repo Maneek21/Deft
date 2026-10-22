@@ -18,14 +18,16 @@ const current={installation:{id:installationId,lifecycle_epoch:2,grant_epoch:3},
  registration:{id:randomUUID(),owner_connection_admission_id:randomUUID(),operator_user_id:owner,runtime_epoch:4},descriptor:{runtime_requirement_key:'sync_provider'},
  owner_connection_admission:{policy,snapshot:{connection_profile_digest:profileDigest(profile),connection_transport_digest:digest('c'),connection_profile:profile}}};
 let active=true,transport=true,reads=0,guards=0;
+const batchOptions: unknown[]=[];
 const registry={profile:()=>profile,transportDigest:()=>digest(transport?'c':'d'),reviewedProtocol:()=> 'v2',protocol:()=> 'v2',assertReady:()=>{}};
-const tx={};
+const tx={select:()=>({from:()=>({where:()=>({limit:async()=>[]})})})};
+mock.module(new URL('../src/lib/app-run-runtime.ts',import.meta.url).href,{namedExports:{getAppRunRuntime:async()=>({})}});
 mock.module(new URL('../src/lib/app-connection-session-store.ts',import.meta.url).href,{namedExports:{PostgresAppConnectionSessionStore:class {}}});
 mock.module(new URL('../src/lib/app-connection-upgrade-fence.ts',import.meta.url).href,{namedExports:{appConnectionUpgradeSourceIsAvailable:async()=>true}});
 mock.module(new URL('../src/lib/db.ts',import.meta.url).href,{namedExports:{db:{transaction:async(work:any)=>work(tx)}}});
 mock.module(new URL('../src/lib/app-connection-current-locators.ts',import.meta.url).href,{namedExports:{currentConnectionBindingLocators:()=>({limit:async()=>[{id:bindingId}]})}});
 mock.module(new URL('../src/lib/app-connection-session-registry.ts',import.meta.url).href,{namedExports:{connectionProfileDigest:profileDigest,getAppConnectionSessionRegistry:async()=>registry}});
-const live=async(actualTx:any,input:any)=>{reads++;assert.strictEqual(actualTx,tx);input.onConnectionRegistry?.(registry);return structuredClone(current);};
+const live=async(actualTx:any,input:any)=>{reads++;batchOptions.push(input.batch_owner_connection_facts);assert.strictEqual(actualTx,tx);input.onConnectionRegistry?.(registry);return structuredClone(current);};
 mock.module(new URL('../src/lib/app-attachment-sync-authority.ts',import.meta.url).href,{namedExports:{loadLiveAttachmentSyncBindingAuthority:live,loadConsentContinuationBindingIdentity:live}});
 mock.module(new URL('../src/lib/app-attachment-authority.ts',import.meta.url).href,{namedExports:{attachmentFinalAuthorityIsCurrent:async(actualTx:any,_participants:any,options:any)=>{
  await options.guard(actualTx);return active;
@@ -34,7 +36,7 @@ const {currentAppConnectionReadAuthority}=await import('../src/lib/app-connectio
 const caller={org_id:org,user_id:owner,access_expires_at:deadline.getTime()};
 const guard=Object.assign(async(actualTx:any)=>{assert.strictEqual(actualTx,tx);guards++;},{current_web_session_expires_at:()=>deadline});
 const nomination={installation_id:installationId,target_key:'primary'};
-function reset(){active=true;transport=true;reads=0;guards=0;current.installation.grant_epoch=3;}
+function reset(){active=true;transport=true;reads=0;guards=0;batchOptions.length=0;current.installation.grant_epoch=3;}
 
 test('a composite reader receives the already checked live binding only after its supplied transaction final guard',async()=>{
  reset();let handed:any;
@@ -58,4 +60,12 @@ test('failed fresh admission or final revocation cannot publish the private live
 test('private mutable-row handoff is unavailable without an enclosing transaction',async()=>{
  reset();await assert.rejects(currentAppConnectionReadAuthority(caller,nomination,guard,'none',undefined,undefined,()=>{}));
  assert.equal(reads,0);assert.equal(guards,0);
+});
+
+
+test('only explicit read-only data callbacks opt in to current owner point-fact batching',async()=>{
+ reset();await currentAppConnectionReadAuthority(caller,nomination,guard,'none',tx as never);
+ assert.deepEqual(batchOptions,[true]);
+ reset();await currentAppConnectionReadAuthority(caller,nomination,guard,undefined,tx as never);
+ assert.deepEqual(batchOptions,[undefined],'default capturing and setup paths keep their established checks');
 });

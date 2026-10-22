@@ -4,10 +4,8 @@ import {
   appResourceBindings, appRuntimeRegistrations, appRuntimeSessions,
   capabilityProviderSnapshots, orgMembers, users,
 } from '@deft/db/schema';
-import { SyncDescriptorV2Schema, digestResourceSyncDescriptorV2 } from '@deft/app-kit/core';
-import { parseAttachmentConsentPolicy } from './app-attachment-policy.js';
 import { attachmentFinalAuthorityIsCurrent } from './app-attachment-authority.js';
-import { assertOwnerConnectionRegistration } from './app-owner-connection-authority.js';
+import { assertOwnerConnectionRegistration,type CurrentOwnerConnectionBindingFacts } from './app-owner-connection-authority.js';
 import type { AppConnectionSessionRegistry } from './app-connection-session-registry.js';
 import { CapabilityProviderDiscoverySnapshotSchema } from '@deft/shared';
 import type { AppRunTransaction } from './app-run-repository.js';
@@ -15,7 +13,7 @@ import { APP_RESOURCE_SYNC_HOST_POLICY } from './app-resource-sync-policy.js';
 import { loadReviewedAttachmentSyncDescriptor } from './app-attachment-sync-reviewed.js';
 import { createAttachmentSyncDiscoverySnapshot, createLegacyPrePdfAttachmentSyncDiscoverySnapshot } from './app-attachment-sync-discovery.js';
 import { digestAppGrantValue } from './app-grant-service.js';
-import { attachmentSyncConsentReview } from './app-attachment-sync-consent.js';
+import { validAttachmentSyncBindingContent } from './app-attachment-sync-content.js';
 import { createAsyncAppAuthorityContentCache } from './app-authority-content-cache.js';
 
 type Registration = typeof appRuntimeRegistrations.$inferSelect;
@@ -36,6 +34,8 @@ export type LiveAttachmentSyncAuthority = Readonly<LiveAttachmentSyncBindingAuth
 
 type BindingLocator = Readonly<{ org_id: string; resource_binding_id: string; clock: () => Date;
   binding_lock?: 'update';
+  /** Private read-only point-fact batching; issuance/setup defaults stay unchanged. */
+  batch_owner_connection_facts?:true;
   onConnectionRegistry?: (registry: AppConnectionSessionRegistry) => void;
   prelocked_participant_ids?: readonly string[] }>;
 type SessionLocator = Readonly<{ org_id: string; session_id: string;
@@ -167,11 +167,13 @@ async function loadAttachmentSyncBindingAuthority(tx: AppRunTransaction,
   const [binding] = await tx.select().from(appResourceBindings).where(and(
     eq(appResourceBindings.org_id, input.org_id), eq(appResourceBindings.id, input.resource_binding_id)))
     .limit(1).for(input.binding_lock === 'update' ? 'update' : 'share');
-  if(!continuationIdentityOnly){const pending=await tx.execute(sql`SELECT session_id FROM app_connection_consent_continuations WHERE org_id=${input.org_id} AND resource_binding_id=${input.resource_binding_id} AND record->'activation_started'='true'::jsonb AND record->>'state'<>'connected' LIMIT 1`);if(pending.rows.length)return null;}
-  let ownerAdmission;
+  const batchOwnerFacts=input.batch_owner_connection_facts===true&&!continuationIdentityOnly&&!!registration?.owner_connection_admission_id&&!!binding;
+  if(!continuationIdentityOnly&&!batchOwnerFacts){const pending=await tx.execute(sql`SELECT session_id FROM app_connection_consent_continuations WHERE org_id=${input.org_id} AND resource_binding_id=${input.resource_binding_id} AND record->'activation_started'='true'::jsonb AND record->>'state'<>'connected' LIMIT 1`);if(pending.rows.length)return null;}
+  let ownerAdmission,currentFacts:CurrentOwnerConnectionBindingFacts|undefined;
   if (registration?.owner_connection_admission_id) {
     try { ownerAdmission = await assertOwnerConnectionRegistration(tx, registration, { owner_user_id: locator.owner_user_id,
-      resource_key: locator.resource_key, lockedReviewed: reviewed, onConnectionRegistry: input.onConnectionRegistry }); }
+      resource_key: locator.resource_key, lockedReviewed: reviewed, onConnectionRegistry: input.onConnectionRegistry,
+      ...(batchOwnerFacts?{currentBindingRead:{binding:binding!,onFacts:(facts:CurrentOwnerConnectionBindingFacts)=>{currentFacts=facts;}}}:{}) }); }
     catch { return null; }
   } else if (owner.role === 'member') return null;
   if (!registration || !binding || registration.state !== 'active' || registration.runtime_epoch < 1
@@ -204,24 +206,22 @@ async function loadAttachmentSyncBindingAuthority(tx: AppRunTransaction,
     || !binding.reviewed_at||!appConsentExpiryValid(binding.consent_expires_at,binding.consent_lifetime??undefined)
     || appConsentDeadline(binding.consent_expires_at,binding.consent_lifetime??undefined)<=binding.reviewed_at.getTime()
     || binding.consent_lifetime==='until_revoked'&&ownerAdmission?.policy.allow_until_revoked!==true) return null;
-  try {
-    const parsed = SyncDescriptorV2Schema.parse(binding.reviewed_descriptor);
-    if (await digestResourceSyncDescriptorV2(parsed) !== reviewed.descriptor_digest) return null;
-  } catch { return null; }
-  try { parseAttachmentConsentPolicy(reviewed.descriptor.attachments, binding.attachment_policy); } catch { return null; }
-  if (binding.attachment_consent_digest !== digestAppGrantValue({ ...attachmentSyncConsentReview({
-    org_id: input.org_id, owner_user_id: binding.owner_user_id, operator_user_id: registration.operator_user_id,
-    reviewed, consent_expires_at: binding.consent_expires_at, ...(binding.consent_lifetime?{consent_lifetime:binding.consent_lifetime}:{}), limits: binding, attachment_policy: binding.attachment_policy,
-    ...(ownerAdmission ? { owner_connection_admission: ownerAdmission.reference } : {}) }),
-    ...(binding.target_key === 'primary' ? {} : { target_key: binding.target_key }) })) return null;
-  const [providerSnapshot] = await tx.select().from(capabilityProviderSnapshots).where(and(
-    eq(capabilityProviderSnapshots.org_id, input.org_id),
-    eq(capabilityProviderSnapshots.id, binding.provider_snapshot_id))).limit(1);
+  if(!await validAttachmentSyncBindingContent({org_id:input.org_id,operator_user_id:registration.operator_user_id,
+    binding,reviewed,...(ownerAdmission?{owner_connection_admission:ownerAdmission.reference}:{})}))return null;
+  let providerSnapshot:ProviderSnapshot|undefined;
+  if(batchOwnerFacts){
+    if(!currentFacts||currentFacts.org_id!==input.org_id||currentFacts.owner_user_id!==binding.owner_user_id
+      ||currentFacts.operator_user_id!==registration.operator_user_id||currentFacts.resource_binding_id!==binding.id
+      ||currentFacts.runtime_registration_id!==registration.id)return null;
+    providerSnapshot=currentFacts.provider_snapshot;
+  }else [providerSnapshot] = await tx.select().from(capabilityProviderSnapshots).where(and(
+    eq(capabilityProviderSnapshots.org_id, input.org_id),eq(capabilityProviderSnapshots.id, binding.provider_snapshot_id))).limit(1);
   if (!providerSnapshot) return null;
   try { if (!await validProviderSnapshot(providerSnapshot, registration, binding,
     reviewed.descriptor, closureLegacyPrePdf, reviewed)) return null; }
   catch { return null; }
-  if (!await attachmentSyncParticipantsAreHuman(tx, binding.owner_user_id, registration.operator_user_id)) return null;
+  // The final helper below performs this same participant-kind read after the
+  // provider proof. No wait or effect separates these adjacent final predicates.
   const checkedAt = currentTime(input.clock);
   if (!checkedAt || !continuationIdentityOnly && appConsentDeadline(binding.consent_expires_at,binding.consent_lifetime??undefined)<=checkedAt.getTime()
     || !await attachmentFinalAuthorityIsCurrent(tx, [binding.owner_user_id, registration.operator_user_id], { clock: input.clock, expires_at: continuationIdentityOnly||binding.consent_lifetime==='until_revoked' ? [] : [binding.consent_expires_at!] })) return null;
@@ -244,7 +244,7 @@ export async function loadLiveAttachmentSyncAuthority(tx: AppRunTransaction,
   if (!locator || locator.audience !== 'app_resource_sync'
     || locator.runtime_binding_id !== null || !locator.resource_binding_id) return null;
   const bindingAuthority = await loadLiveAttachmentSyncBindingAuthority(tx, {
-    org_id: input.org_id, resource_binding_id: locator.resource_binding_id, clock: input.clock,
+    org_id: input.org_id, resource_binding_id: locator.resource_binding_id, clock: input.clock,batch_owner_connection_facts:true,
   });
   if (!bindingAuthority || bindingAuthority.registration.id !== locator.runtime_registration_id
     || bindingAuthority.registration.operator_user_id !== locator.operator_user_id) return null;
