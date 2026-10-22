@@ -1,8 +1,9 @@
+import {parseAppAuthorityManifest} from './app-authority-manifest.js';
 import {appConsentDeadline,appConsentExpiryValid,type AppConsentLifetime} from '@deft/app-kit/core';
 import {selectAdmittedConnectionPolicy} from './app-connection-admitted-policy.js';
 import { and, eq } from 'drizzle-orm';
 import { isDeepStrictEqual } from 'node:util';
-import { parseAttachmentAppManifest, AppConnectionRuntimeAuthorityRequestSchema, AppConnectionRuntimeAuthorityResultSchema,
+import { AppConnectionRuntimeAuthorityRequestSchema, AppConnectionRuntimeAuthorityResultSchema,
   type AppConnectionSessionScope, type AppConnectionActionConsent } from '@deft/app-kit/core';
 import { appRuntimeBindings, webSessions } from '@deft/db/schema';
 import {currentConnectionBindingLocators} from './app-connection-current-locators.js';
@@ -45,7 +46,7 @@ async function loadCurrentConnectionAuthority(caller: AppConnectionAuthorityOwne
       resource_binding_id: locators[0]!.id, clock: () => new Date(), onConnectionRegistry: registry => { admissionRegistry = registry; } });
     if (!current || current.binding.owner_user_id !== caller.user_id || current.binding.target_key !== nomination.target_key
       || !current.registration.owner_connection_admission_id || !appConsentExpiryValid(current.binding.consent_expires_at,current.binding.consent_lifetime??undefined)) throw denied();
-    const manifest = parseAttachmentAppManifest(current.version.manifest);
+    const manifest = parseAppAuthorityManifest(current.version.manifest);
     // The binding reader validated and share-locked this admission and its
     // participants in this same transaction, including current deployment proofs.
     const admission=current.owner_connection_admission;

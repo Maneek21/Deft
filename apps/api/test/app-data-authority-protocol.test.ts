@@ -16,10 +16,12 @@ const manifest = JSON.parse(readFileSync(new URL('./fixtures/runtime-security-ma
 manifest.owner_connections = [{ key: 'personal', resource_key: 'inbox', action_keys: ['send_message'], max_consent_seconds: 86400,
   provider_profile_key: profile.key, runtime_requirement_key: profile.runtime_requirement_key }];
 manifest.record_stores = [declaration];
-let registryReads = 0, authorityReads = 0, reads = 0, formChecks = 0, carrierChecks = 0;
+let registryReads = 0, authorityReads = 0, reads = 0, formChecks = 0, carrierChecks = 0, declarationReads = 0;
 let protocol: 'v1' | 'credential_form.v1' | undefined = 'v1', available = true, formValid = true, connectionChanged = false, declarationChanged = false, sessionProfileChanged = false;
-function query() { let table: unknown; const chain: any = { from: (value: unknown) => { table = value; return chain; },
-  where: () => chain, then: (resolve: any) => Promise.resolve(table === appVersions ? [{ manifest }]
+function query() { let table: unknown, joined = false; declarationReads++; const chain: any = { from: (value: unknown) => { table = value; return chain; },
+  innerJoin: () => { joined = true; return chain; },
+  where: () => chain, then: (resolve: any) => Promise.resolve(joined ? [{ version: { manifest }, grant: { canonical_snapshot: { record_stores: declarationChanged ? [] : [declaration] } } }]
+    : table === appVersions ? [{ manifest }]
     : table === appGrantSnapshots ? [{ canonical_snapshot: { record_stores: declarationChanged ? [] : [declaration] } }] : []).then(resolve) }; return chain; }
 mock.module(new URL('../src/lib/db.ts', import.meta.url).href, { namedExports: { db: { select: query, transaction: async (work: any) => work({}) } } });
 mock.module(new URL('../src/lib/env.ts', import.meta.url).href, { namedExports: { isAppOwnerConnectionsEnabled: () => true } });
@@ -48,10 +50,11 @@ process.env.DEFT_APPS_ENABLED = 'true';
 const { currentAppDataAuthority } = await import('../src/lib/app-data-authority.js');
 const guard = Object.assign(async () => {}, { current_web_session_expires_at: () => new Date(expires_at) });
 const read = () => currentAppDataAuthority({ org_id, user_id, access_expires_at: expires_at }, session.session_id, 'drafts', guard, false, undefined, 'none');
-function reset() { registryReads = authorityReads = reads = formChecks = carrierChecks = 0; protocol = 'v1'; available = formValid = true; connectionChanged = declarationChanged = sessionProfileChanged = false; }
+function reset() { registryReads = authorityReads = reads = formChecks = carrierChecks = declarationReads = 0; protocol = 'v1'; available = formValid = true; connectionChanged = declarationChanged = sessionProfileChanged = false; }
 
 test('data admission uses the protocol proved by its fresh current reader without rebuilding its registry', async () => {
   reset(); await read(); assert.equal(registryReads, 0); assert.equal(authorityReads, 1); assert.equal(formChecks, 0);
+  assert.equal(declarationReads, 1, 'independent current version and grant predicates should share one scoped read');
   await read(); assert.equal(authorityReads, 2, 'later phases still acquire current authority');
   protocol = 'credential_form.v1'; await read(); assert.equal(formChecks, 1, 'a newly current form protocol still validates current custody');
   formValid = false; await assert.rejects(read(), /CURRENT_CARRIER_DENIED/); assert.equal(carrierChecks, 1);

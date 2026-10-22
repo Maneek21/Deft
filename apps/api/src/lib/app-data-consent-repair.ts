@@ -10,6 +10,12 @@ const denied=()=>new AppError('App data access ended','APP_ACCESS_DENIED',403);
  * consent snapshot/digest stays immutable; every caller still proves current
  * binding, owner, policy and consent state independently. */
 export async function appDataConsentConnections(current:AppConnectionSessionRecord){
+ // Without a repair there are no lineage rows to lock/read. Retain the same
+ // connected-account checks and avoid a transaction with no statements.
+ if(!current.credential_repair){
+  if(current.state!=='connected'||!current.account||!current.runtime_session_ref)throw denied();
+  return [current];
+ }
  return db.transaction(async tx=>{
   const connections:AppConnectionSessionRecord[]=[];let record=current;
   for(;;){

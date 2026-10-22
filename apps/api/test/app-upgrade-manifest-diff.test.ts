@@ -136,3 +136,23 @@ test('raw release fixture bytes retain the recorded source evidence hashes',()=>
   assert.equal(createHash('sha256').update(raw).digest('hex'),entry[kind+'_fixture_sha256']);
  }
 });
+
+test('compiled exact code paths reject lookalike fields, suffixes and containers',()=>{
+ for(const root of ['experiences','runtime_requirements']){
+  for(const leaf of ['artifact_digest','worker_digest','package_digest']){
+   for(const suffix of ['\n','\r','\r\n','/extra','~extra','%2Fextra']){
+    const before:any=manifest(),after:any=manifest(),key=leaf+suffix;
+    before[root]=[{[key]:'sha256:'+'a'.repeat(64)}];after[root]=[{[key]:'sha256:'+'b'.repeat(64)}];
+    assert.equal(diffUpgradeAuthority(before,after).requires_review,true,root+'/'+key);
+   }
+  }
+ }
+ for(const key of ['version\n','version\r','name/extra','description~extra']){
+  const before:any=manifest(),after:any=manifest();before[key]='old';after[key]='new';
+  assert.equal(diffUpgradeAuthority(before,after).requires_review,true,key);
+ }
+ for(const index of ['01','-1','+0','0\n','']){
+  const before:any=manifest(),after:any=manifest();before.experiences={[index]:{artifact_digest:'sha256:'+'a'.repeat(64)}};after.experiences={[index]:{artifact_digest:'sha256:'+'b'.repeat(64)}};
+  assert.equal(diffUpgradeAuthority(before,after).requires_review,true,index);
+ }
+});

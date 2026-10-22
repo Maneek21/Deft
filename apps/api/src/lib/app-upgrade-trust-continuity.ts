@@ -20,6 +20,7 @@ import { currentAppConnectionReadAuthority } from './app-connection-session-auth
 import { appConnectionUpgradeSourceIsAvailable } from './app-connection-upgrade-fence.js';
 import type { WebAuthorityGuard } from './app-resource-sync-web-authority.js';
 import { REATTACH_PHASE_MS } from './app-connection-reattachment-deadline.js';
+import { assertCurrentUpgradeRowPins } from './app-upgrade-row-pins.js';
 
 export type UpgradeTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 const denied = () => new AppError('Automatic upgrade continuity requires review', 'APP_REVIEW_REQUIRED', 409);
@@ -151,11 +152,12 @@ export async function assertContinuityProof(tx: UpgradeTx, proof: UpgradeContinu
   if (!source || source.state !== 'connected' || source.revision !== proof.source_revision || !isDeepStrictEqual(source.scope, proof.source_scope)
     || !isDeepStrictEqual(source.profile, proof.source_profile) || appConsentDeadline(source.scope.consent_expires_at, source.scope.consent_lifetime) <= Date.now()) throw denied();
   const check = async (table: any, field: any, pins: readonly { id: string; digest: string }[]) => {
-    for (const pin of pins) {
-      const query = tx.select().from(table).where(and(eq(table.org_id, proof.org_id), eq(field, pin.id))).limit(1);
-      const [row] = await (issuance ? query.for('share') : query);
-      if (!row || row.state !== 'active' || rowDigest(row) !== pin.digest
-        || ('expires_at' in row && appConsentDeadline(row.expires_at, row.snapshot?.consent_lifetime) <= Date.now())) throw denied(); }
+    await assertCurrentUpgradeRowPins<any>({ pins, issuance, id: row => row[field.name], digest: rowDigest, denied,
+      read: async (ids, share) => {
+        const query = tx.select().from(table).where(and(eq(table.org_id, proof.org_id),
+          ids.length === 1 ? eq(field, ids[0]!) : inArray(field, [...ids]))).limit(ids.length);
+        return share ? query.for('share') : query;
+      } });
   };
   await check(appResourceBindings, appResourceBindings.id, [proof.source_binding]);
   await check(appRuntimeRegistrations, appRuntimeRegistrations.id, [proof.source_registration]);

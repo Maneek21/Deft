@@ -1,3 +1,4 @@
+import {parseAppAuthorityManifest} from './app-authority-manifest.js';
 import {collectAppDataContext} from './app-data-context-collection.js';
 import {withAppDataDiagnostic,measureAppDataPhase} from './app-data-diagnostics.js';
 import {appConsentDeadline,type AppConsentLifetime} from '@deft/app-kit/core';
@@ -10,7 +11,7 @@ import {and,eq,sql,desc} from 'drizzle-orm';
 import {isDeepStrictEqual} from 'node:util';
 import {createHash} from 'node:crypto';
 import {AppDataConnectionSchema,AppDataConsentSnapshotSchema,AppDataRuntimeAuthorityRequestSchema,AppDataRuntimeAuthorityResultSchema,
-  canonicalAppDataJson,parseAttachmentAppManifest,AppResourceActionReleasedInputSchema,
+  canonicalAppDataJson,AppResourceActionReleasedInputSchema,
   type AppDataResult} from '@deft/app-kit/core';
 import {appVersions,appGrantSnapshots,webSessions,users,orgMembers,appDataInvocations} from '@deft/db/schema';
 import {db} from './db.js';
@@ -49,9 +50,12 @@ async function currentAppDataBase(caller:Pick<ExperienceCaller,'org_id'|'user_id
  const declared=current.connection_protocol;
  if(declared!=='v1'&&declared!=='v2'&&declared!=='credential_form.v1')throw appDataDenied();
  if(declared==='credential_form.v1')await db.transaction(async tx=>{if(!await validateStoredFormConnection(tx,locator,session))await validateContinuationCarrier(tx,session,true);});
- const [version]=await db.select().from(appVersions).where(and(eq(appVersions.org_id,caller.org_id),eq(appVersions.id,current.scope.app_version_id)));
- const [grant]=await db.select().from(appGrantSnapshots).where(and(eq(appGrantSnapshots.org_id,caller.org_id),eq(appGrantSnapshots.id,current.scope.grant_snapshot_id)));
- if(!version||!grant)throw appDataDenied();const manifest=parseAttachmentAppManifest(version.manifest);
+ // Both independently scoped immutable declarations belong to this same proof.
+ const [declarationsRow]=await db.select({version:appVersions,grant:appGrantSnapshots}).from(appVersions)
+  .innerJoin(appGrantSnapshots,and(eq(appGrantSnapshots.org_id,caller.org_id),eq(appGrantSnapshots.id,current.scope.grant_snapshot_id)))
+  .where(and(eq(appVersions.org_id,caller.org_id),eq(appVersions.id,current.scope.app_version_id)));
+ const {version,grant}=declarationsRow??{};
+ if(!version||!grant)throw appDataDenied();const manifest=parseAppAuthorityManifest(version.manifest);
  const declarations=manifest.record_stores??[];if(!isDeepStrictEqual(declarations,(grant.canonical_snapshot as Record<string,unknown>).record_stores??[]))throw appDataDenied();
  const policy=manifest.owner_connections?.find(item=>item.resource_key===current.scope.resource_key&&item.provider_profile_key===current.profile.key
   &&item.runtime_requirement_key===current.profile.runtime_requirement_key);if(!policy)throw appDataDenied();
@@ -135,7 +139,7 @@ async function appDataRuntimeAuthorityOwned(raw:unknown,authorization:string|und
  // Store selectors are retained in the declaration linked by the exact policy
  // digest; no author value or nomination travels through introspection.
  const [version]=await db.select().from(appVersions).where(and(eq(appVersions.org_id,owner.org_id),eq(appVersions.id,input.scope.app_version_id)));
- const declaration=parseAttachmentAppManifest(version?.manifest).record_stores?.find(item=>appDataDigest(item)===input.authority.data_policy_digest);
+ const declaration=parseAppAuthorityManifest(version?.manifest).record_stores?.find(item=>appDataDigest(item)===input.authority.data_policy_digest);
  if(!declaration)throw appDataDenied();
  const current=await currentAppDataAuthority(caller,input.connection.session_id,declaration.key,appDataRetainedGuard(caller),input.operation==='connection_metadata'?input.authority.consent_id!==null:appDataRequiresConsent(input.operation),input.authority.consent_id??undefined,appDataRuntimeConnectionActionSelection(input.operation));
  if(['prepared_action_commit','prepared_action_restore'].includes(input.operation)){

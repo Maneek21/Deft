@@ -19,18 +19,21 @@ export const UPGRADE_NON_AUTHORITY_DIGEST_PATHS = [
   '/experiences/*/artifact_digest', '/experiences/*/worker_digest',
   '/runtime_requirements/*/package_digest', '/runtime_requirements/*/worker_digest',
 ] as const;
-const matches = (pattern: string, path: string) => {
-  const parts = path.split('/'), expected = pattern.split('/');
-  return parts.length === expected.length && expected.every((part, index) =>
-    part === '*' ? /^(0|[1-9][0-9]*)$/.test(parts[index]!) : part === parts[index]);
-};
+const nonAuthorityStringPaths = new Set<string>(UPGRADE_NON_AUTHORITY_STRING_PATHS);
+// Compile only these module-owned declarations. Match the absolute end rather
+// than '$', which also accepts a final newline in a lookalike field name.
+const nonAuthorityDigestPaths = UPGRADE_NON_AUTHORITY_DIGEST_PATHS.map(pattern => new RegExp('^' + pattern.split('/')
+  .map(part => part === '*' ? '(?:0|[1-9][0-9]*)' : part.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')).join('/') + '(?![\\s\\S])', 'u'));
 function nonAuthorityChange(before: unknown, after: unknown, path: string): boolean {
+  // Container changes are never exempt; avoid allocating path segments for
+  // every object in a large unchanged declaration/schema tree.
+  const string = (value: unknown) => value === undefined || typeof value === 'string';
+  if (!string(before) || !string(after)) return false;
   if (!path.startsWith('/manifest/')) return false;
   const at = path.slice('/manifest'.length);
-  const string = (value: unknown) => value === undefined || typeof value === 'string';
   const digest = (value: unknown) => value === undefined || typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value);
-  return UPGRADE_NON_AUTHORITY_STRING_PATHS.some(pattern => matches(pattern, at)) && string(before) && string(after)
-    || UPGRADE_NON_AUTHORITY_DIGEST_PATHS.some(pattern => matches(pattern, at)) && digest(before) && digest(after);
+  return nonAuthorityStringPaths.has(at)
+    || digest(before) && digest(after) && nonAuthorityDigestPaths.some(pattern => pattern.test(at));
 }
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object'
   && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value));

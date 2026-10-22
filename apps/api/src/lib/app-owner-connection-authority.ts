@@ -8,7 +8,8 @@ import { connectionProfileDigest, getAppConnectionSessionRegistry, type AppConne
 import { isAppOwnerConnectionsEnabled } from './env.js';
 import { AppError } from './app-errors.js';
 import { runtimeActionDescriptors } from './app-runtime-review.js';
-import { digestResourceSyncDescriptorV2, parseAttachmentAppManifest } from '@deft/app-kit/core';
+import { digestResourceSyncDescriptorV2 } from '@deft/app-kit/core';
+import { parseAppAuthorityManifest } from './app-authority-manifest.js';
 
 type LockedReviewedApp = Pick<Awaited<ReturnType<typeof loadReviewedAttachmentApp>>, 'installation' | 'version' | 'grant'>;
 
@@ -34,7 +35,7 @@ export async function loadOwnerConnectionAdmission(tx: AppRunTransaction, orgId:
   if (!locator) throw ownerConnectionDenied();
   // Only current authority readers may supply rows they already validated and
   // locked in this exact transaction. Admission/membership are always reread.
-  const reviewed = lockedReviewed ? { ...lockedReviewed, manifest: parseAttachmentAppManifest(lockedReviewed.version.manifest) }
+  const reviewed = lockedReviewed ? { ...lockedReviewed, manifest: parseAppAuthorityManifest(lockedReviewed.version.manifest) }
     : await loadReviewedAttachmentApp(tx, orgId, locator.app_installation_id);
   if (reviewed.installation.org_id !== orgId || reviewed.installation.id !== locator.app_installation_id
     || reviewed.installation.state !== 'active' || reviewed.version.state !== 'active'
