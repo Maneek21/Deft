@@ -43,8 +43,11 @@ async function currentAppDataBase(caller:Pick<ExperienceCaller,'org_id'|'user_id
  const session=await measureAppDataPhase('session_read',()=>sessions.read(locator,'data'));if(!session||session.state!=='connected'||!session.runtime_session_ref||!session.account)throw appDataDenied();
  if(!await db.transaction(tx=>appConnectionUpgradeSourceIsAvailable(tx,{org_id:caller.org_id,owner_user_id:caller.user_id,session_id:sessionId,purpose:'saved_read'})))throw appDataDenied();
  const current=await measureAppDataPhase('connection_authority',()=>currentAppConnectionReadAuthority(caller,{installation_id:session.scope.installation_id,target_key:session.scope.target_key},guard,requiredAction));
- if(!isDeepStrictEqual(current.scope,session.scope))throw appDataDenied();
- const declared=(await getAppConnectionSessionRegistry()).protocol(session.scope,session.profile);
+ if(!isDeepStrictEqual(current.scope,session.scope)||!isDeepStrictEqual(current.profile,session.profile))throw appDataDenied();
+ // The fresh current reader already checked the exact reviewed protocol and transport.
+ // Reuse that proof only inside this admission; every later phase calls it again.
+ const declared=current.connection_protocol;
+ if(declared!=='v1'&&declared!=='v2'&&declared!=='credential_form.v1')throw appDataDenied();
  if(declared==='credential_form.v1')await db.transaction(async tx=>{if(!await validateStoredFormConnection(tx,locator,session))await validateContinuationCarrier(tx,session,true);});
  const [version]=await db.select().from(appVersions).where(and(eq(appVersions.org_id,caller.org_id),eq(appVersions.id,current.scope.app_version_id)));
  const [grant]=await db.select().from(appGrantSnapshots).where(and(eq(appGrantSnapshots.org_id,caller.org_id),eq(appGrantSnapshots.id,current.scope.grant_snapshot_id)));

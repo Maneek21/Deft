@@ -147,7 +147,7 @@ export function currentAppConnectionMetadataAuthority(caller:ExperienceCaller,
  return loadCurrentConnectionAuthority(caller,nomination,guard,false,'declared');
 }
 export async function currentAppConnectionReadAuthority(caller:AppConnectionAuthorityOwner,
- nomination:{installation_id:string;target_key:string},guard:WebAuthorityGuard,requiredAction?:RequiredConnectionAction,suppliedTransaction?:AppRunTransaction):Promise<AppConnectionSessionAuthority>{
+ nomination:{installation_id:string;target_key:string},guard:WebAuthorityGuard,requiredAction?:RequiredConnectionAction,suppliedTransaction?:AppRunTransaction):Promise<AppConnectionSessionAuthority & {connection_protocol:'v1'|'v2'|'credential_form.v1'}>{
  const {runtime_ready,...authority}=await loadCurrentConnectionAuthority(caller,nomination,guard,true,'declared',requiredAction,suppliedTransaction);return authority;
 }
 
