@@ -44,3 +44,13 @@ test('public invoke carries the exact operation into its current authority check
  await assert.rejects(service.invoke(session,request),/READ_AUTHORITY_PROBE/);
  assert.deepEqual(seen,[[session,'preferences',true,'record_list']]);
 });
+
+test('entry transport preauthentication is explicit and leaves Send, lifecycle, status, inspection and unknown callbacks unchanged',async()=>{
+ const {appDataRuntimeUsesTransportPreauthentication}=await import('../src/lib/app-data-read-authority.js');
+ for(const operation of ['record_list','record_read','record_create','record_save','file_read','connection_metadata','resource_list','resource_read_metadata',
+  'resource_read_presentation','resource_list_files','resource_read_source','resource_read_file','resource_read_image'])
+  assert.equal(appDataRuntimeUsesTransportPreauthentication(operation),true,operation);
+ for(const operation of ['prepare_action','read_prepared','prepared_action_commit','prepared_action_restore','prepare_resource_action','read_prepared_resource_action',
+  'request_status','run_inspect','run_inspection_status','record_prepare_change','record_apply_change','file_upload','file_detach','file_copy','resource_refresh','unknown',''])
+  assert.equal(appDataRuntimeUsesTransportPreauthentication(operation),false,operation);
+});

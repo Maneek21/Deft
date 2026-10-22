@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import {boundedAppAuthorityJsonKey} from './app-authority-json-key.js';
+import { createAppAuthorityContentCache } from './app-authority-content-cache.js';
 import { appGrantSnapshots } from '@deft/db/schema';
 import {
   projectDeftAppRequestedAuthority,
@@ -49,8 +50,7 @@ export function canonicalizeAppGrantValue(value: unknown): AppGrantCanonicalJson
 const PURE_KEY_BYTES = 131072;
 const digestMemo = new Map<string, `sha256:${string}`>();
 let digestMemoBytes = 0;
-const projectionMemo = new Map<string, { value: RequestedAppGrantProjection; bytes: number }>();
-let projectionMemoBytes = 0;
+const requestedProjection = createAppAuthorityContentCache<RequestedAppGrantProjection>({ maxEntries: 8 });
 export function digestAppGrantValue(value: unknown): `sha256:${string}` {
   const key = boundedAppAuthorityJsonKey(value, PURE_KEY_BYTES), cached = key === undefined ? undefined : digestMemo.get(key);
   if (cached !== undefined) { digestMemo.delete(key!); digestMemo.set(key!, cached); return cached; }
@@ -73,50 +73,40 @@ export function buildRequestedAppGrantProjection(input: {
   manifest_digest: string;
   package_digest: string;
 }): RequestedAppGrantProjection {
-  const memoKey = boundedAppAuthorityJsonKey(input, PURE_KEY_BYTES), cached = memoKey === undefined ? undefined : projectionMemo.get(memoKey);
-  if (cached) { projectionMemo.delete(memoKey!); projectionMemo.set(memoKey!, cached); return structuredClone(cached.value); }
-  const protocol = input.manifest.compatibility.app_protocol;
-  const portable = projectDeftAppRequestedAuthority(input.manifest);
-  const requirements = portable.requirements;
-  const resourceRights = 'resource_rights' in portable ? portable.resource_rights : [];
-  const classification = portable.classification;
-  const canonicalSnapshot = canonicalizeAppGrantValue({
-    snapshot_version: APP_GRANT_SNAPSHOT_VERSION,
-    snapshot_kind: 'requested',
-    organization_id: input.organization_id,
-    app: {
-      installation_id: input.app_installation_id,
-      version_id: input.app_version_id,
-      id: input.manifest.id,
-      version: input.manifest.version,
-      protocol_version: protocol,
-      manifest_digest: input.manifest_digest,
-      package_digest: input.package_digest,
-    },
-    requirements,
-    resource_rights: resourceRights,
-    classification,
-  });
-  if (canonicalSnapshot === null || Array.isArray(canonicalSnapshot) || typeof canonicalSnapshot !== 'object') {
-    throw new TypeError('Canonical grant snapshot must be an object');
-  }
-  const projection: RequestedAppGrantProjection = {
-    resource_rights: resourceRights,
-    classification,
-    canonical_snapshot: canonicalSnapshot,
-    snapshot_digest: digestAppGrantValue(canonicalSnapshot),
-  };
-  if (memoKey !== undefined) {
-    const bytes = Buffer.byteLength(memoKey) + Buffer.byteLength(JSON.stringify(projection));
-    if (bytes <= 512 * 1024) {
-      projectionMemo.set(memoKey, { value: structuredClone(projection), bytes }); projectionMemoBytes += bytes;
-      while (projectionMemo.size > 8 || projectionMemoBytes > 4 * 1024 * 1024) {
-        const oldest = projectionMemo.keys().next().value!, entry = projectionMemo.get(oldest)!;
-        projectionMemo.delete(oldest); projectionMemoBytes -= entry.bytes;
-      }
+  return requestedProjection({ org_id: input.organization_id, app_version_id: input.app_version_id }, input, () => {
+    const protocol = input.manifest.compatibility.app_protocol;
+    const portable = projectDeftAppRequestedAuthority(input.manifest);
+    const requirements = portable.requirements;
+    const resourceRights = 'resource_rights' in portable ? portable.resource_rights : [];
+    const classification = portable.classification;
+    const canonicalSnapshot = canonicalizeAppGrantValue({
+      snapshot_version: APP_GRANT_SNAPSHOT_VERSION,
+      snapshot_kind: 'requested',
+      organization_id: input.organization_id,
+      app: {
+        installation_id: input.app_installation_id,
+        version_id: input.app_version_id,
+        id: input.manifest.id,
+        version: input.manifest.version,
+        protocol_version: protocol,
+        manifest_digest: input.manifest_digest,
+        package_digest: input.package_digest,
+      },
+      requirements,
+      resource_rights: resourceRights,
+      classification,
+    });
+    if (canonicalSnapshot === null || Array.isArray(canonicalSnapshot) || typeof canonicalSnapshot !== 'object') {
+      throw new TypeError('Canonical grant snapshot must be an object');
     }
-  }
-  return projection;
+    const projection: RequestedAppGrantProjection = {
+      resource_rights: resourceRights,
+      classification,
+      canonical_snapshot: canonicalSnapshot,
+      snapshot_digest: digestAppGrantValue(canonicalSnapshot),
+    };
+    return projection;
+  });
 }
 
 export async function insertRequestedAppGrantSnapshotWithExecutor(

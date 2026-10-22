@@ -371,7 +371,7 @@ async function runDataProcessFixture(t:TestContext,contextOnly=false) {
       const caller={org_id:auth.actor.org_id,user_id:auth.actor.actor_id,sid:auth.web_session.sid,access_expires_at:auth.web_session.expires_at};
       let observed:any;
       const collected=await withAppDataDiagnostic('context',()=>currentAppDataContext(caller,sessions[0]!.begun.session_id,auth.guard,{includeIdentities:false},async()=>{throw Error('No identity IO for scoped context');}),undefined,event=>{observed=event;});
-      assert.equal(collected.authorities.length,11);assert.equal(observed.timings.connection_authority.calls,2);assert.equal(observed.timings.consent_read.calls,1);
+      assert.equal(collected.authorities.length,11);assert.equal(observed.timings.connection_authority.calls,1);assert.equal(observed.timings.consent_read.calls,1);
       assert.ok(collected.authorities.every(item=>item.consent===null));
       const path=`/api/app-data/installations/${installed.id}/context?target_key=${sessions[0]!.owner.resource.target_key}`;
       assert.equal((await call(path,undefined,sessions[0]!.owner.token)).targets[0].stores.length,11);

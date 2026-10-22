@@ -166,3 +166,26 @@ test('connected review uses Capability Service discovery but cannot invoke or cr
   }
   assert.doesNotMatch(source, /\.invoke\s*\(/);
 });
+
+test('requested grant reconstruction isolates results and recomputes for changed content, organization or version', async () => {
+  const built = await buildPhase5ConnectedAppPackage();
+  const input = { organization_id: ORG_ID, app_installation_id: INSTALLATION_ID, app_version_id: VERSION_ID,
+    manifest: built.package.manifest, manifest_digest: built.package.manifest_digest, package_digest: built.digest };
+  const original = buildRequestedAppGrantProjection(input), baseline = structuredClone(original);
+  original.classification.caller_poison = true;
+  original.canonical_snapshot.organization_id = 'caller_poison';
+  assert.deepEqual(buildRequestedAppGrantProjection(structuredClone(input)), baseline);
+  for (const change of [
+    { organization_id: '44444444-4444-4444-8444-444444444444' },
+    { app_version_id: '55555555-5555-4555-8555-555555555555' },
+    { manifest_digest: `sha256:${'9'.repeat(64)}` },
+    { package_digest: `sha256:${'8'.repeat(64)}` },
+    { manifest: { ...input.manifest, version: '1.0.99' } },
+  ]) {
+    assert.notEqual(buildRequestedAppGrantProjection({ ...input, ...change }).snapshot_digest, baseline.snapshot_digest);
+  }
+  const mutated = structuredClone(input);
+  mutated.manifest.version = '1.0.98';
+  assert.notEqual(buildRequestedAppGrantProjection(mutated).snapshot_digest, baseline.snapshot_digest,
+    'same advertised digest cannot hide changed current manifest bytes');
+});

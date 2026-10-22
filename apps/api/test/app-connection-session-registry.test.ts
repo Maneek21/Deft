@@ -209,3 +209,18 @@ test('v2 reattachment transport denies v1 relabel before I/O and preserves indep
  await runtime.request(input,new AbortController().signal);assert.equal(calls,1);
  const {action_consents,...v1}=input;await assert.rejects(runtime.request({...v1,schema_version:'deft.app_connection_reattach_runtime.v1'},new AbortController().signal));assert.equal(calls,1);
 });
+
+test('credential entry preauthentication binds the static deployment scope but never authorizes an alias or epoch',()=>{
+ const f=fixture(),authorization='Bearer '+f.token,unreviewed={...f.scope,runtime_registration_id:randomUUID(),runtime_epoch:2};
+ assert.equal(f.registry.preauthenticateTransport(unreviewed,authorization),undefined);
+ assert.throws(()=>f.registry.authenticate(unreviewed,authorization),'the same credential cannot satisfy final exact scope authentication');
+ for(const change of [{org_id:randomUUID()},{installation_id:randomUUID()},{operator_user_id:randomUUID()},{profile_digest:'sha256:'+'9'.repeat(64)}])
+  assert.throws(()=>f.registry.preauthenticateTransport({...f.scope,...change},authorization));
+ for(const bearer of [undefined,'Bearer '+'b'.repeat(43),'Basic '+f.token,'Bearer owner-web-token'])
+  assert.throws(()=>f.registry.preauthenticateTransport(f.scope,bearer));
+ const successor={...f.config.entries[0]!,org_id:randomUUID(),installation_id:randomUUID(),runtime_registration_id:randomUUID()};
+ const registry=new AppConnectionSessionRegistry(f.config,fetch,[successor]);
+ const successorScope={...f.scope,org_id:successor.org_id,installation_id:successor.installation_id,runtime_registration_id:successor.runtime_registration_id};
+ registry.authenticate(successorScope,authorization);
+ assert.throws(()=>registry.preauthenticateTransport(successorScope,authorization),'trusted successors never become static credential roots');
+});

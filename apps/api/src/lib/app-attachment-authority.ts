@@ -1,4 +1,5 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, getTableColumns } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import { AppDigestSchema, type DeftAppManifestV7 } from '@deft/app-kit/core';
 import { parseAppAuthorityManifest } from './app-authority-manifest.js';
 import { appInstallations, appVersions, appGrantSnapshots, users } from '@deft/db/schema';
@@ -8,6 +9,12 @@ import { AppError } from './app-errors.js';
 import { isAppAttachmentBrokerEnabled, isAppV5RuntimeActionsEnabled } from './env.js';
 import { buildRequestedAppGrantProjection, digestAppGrantValue } from './app-grant-service.js';
 import { runtimeActionDescriptors } from './app-runtime-review.js';
+import { createAppAuthorityContentCache } from './app-authority-content-cache.js';
+
+const { package: _package, ...attachmentAuthorityVersionColumns } = getTableColumns(appVersions);
+const attachmentEffectiveGrant = alias(appGrantSnapshots, 'attachment_effective_grant');
+const attachmentRequestedGrant = alias(appGrantSnapshots, 'attachment_requested_grant');
+const reconstructAttachmentAuthority = createAppAuthorityContentCache<{ manifest: DeftAppManifestV7; composition: boolean }>();
 
 export const attachmentStale = () => new AppError('Attachment authority changed or is unavailable', 'APP_STALE', 409);
 export function assertAttachmentBrokerEnabled(): void {
@@ -70,35 +77,67 @@ export async function loadReviewedAttachmentApp(tx: Pick<AppRunTransaction, 'sel
     eq(appInstallations.id, installationId))).limit(1).for('share');
   if (!installation || installation.state !== 'active' || !installation.active_version_id
     || installation.active_grant_snapshot_kind !== 'effective' || !installation.active_grant_snapshot_id) throw attachmentStale();
-  const [version] = await tx.select().from(appVersions).where(and(eq(appVersions.org_id, orgId),
+  // Installation is locked first, as before; this second statement retains the
+  // version lock and reads both exact immutable grant rows with typed decoding.
+  const [rows] = await tx.select({ version: attachmentAuthorityVersionColumns,
+    grant: attachmentEffectiveGrant, requested: attachmentRequestedGrant }).from(appVersions)
+    .leftJoin(attachmentEffectiveGrant, and(eq(attachmentEffectiveGrant.org_id, orgId),
+      eq(attachmentEffectiveGrant.id, installation.active_grant_snapshot_id),
+      eq(attachmentEffectiveGrant.app_installation_id, installationId),
+      eq(attachmentEffectiveGrant.app_version_id, appVersions.id), eq(attachmentEffectiveGrant.snapshot_kind, 'effective')))
+    .leftJoin(attachmentRequestedGrant, and(eq(attachmentRequestedGrant.org_id, orgId),
+      eq(attachmentRequestedGrant.id, appVersions.requested_grant_snapshot_id),
+      eq(attachmentRequestedGrant.app_installation_id, installationId),
+      eq(attachmentRequestedGrant.app_version_id, appVersions.id), eq(attachmentRequestedGrant.snapshot_kind, 'requested')))
+    .where(and(eq(appVersions.org_id, orgId),
     eq(appVersions.id, installation.active_version_id), eq(appVersions.installation_id, installationId),
-    eq(appVersions.protocol_version, '7'), eq(appVersions.state, 'active'))).limit(1).for('share');
-  if (!version) throw attachmentStale();
-  const manifest = parseAppAuthorityManifest(version.manifest);
-  const [grant] = await tx.select().from(appGrantSnapshots).where(and(eq(appGrantSnapshots.org_id, orgId),
-    eq(appGrantSnapshots.id, installation.active_grant_snapshot_id), eq(appGrantSnapshots.app_installation_id, installationId),
-    eq(appGrantSnapshots.app_version_id, version.id), eq(appGrantSnapshots.snapshot_kind, 'effective'))).limit(1);
-  const [requested] = await tx.select().from(appGrantSnapshots).where(and(eq(appGrantSnapshots.org_id, orgId),
-    eq(appGrantSnapshots.id, version.requested_grant_snapshot_id ?? ''), eq(appGrantSnapshots.app_installation_id, installationId),
-    eq(appGrantSnapshots.app_version_id, version.id), eq(appGrantSnapshots.snapshot_kind, 'requested'))).limit(1);
-  if (!grant || !requested || grant.requested_snapshot_id !== requested.id || manifest.id !== installation.app_id
-    || manifest.version !== version.version || digestAppGrantValue(manifest) !== version.manifest_digest
-    || grant.manifest_digest !== version.manifest_digest || grant.package_digest !== version.package_digest
-    || grant.app_id !== installation.app_id || grant.app_version !== version.version) throw attachmentStale();
-  const composition = grant.canonical_snapshot.schema === 'deft.app_blob_grant.v2';
-  if (!composition && grant.canonical_snapshot.schema !== 'deft.app_blob_grant.v1') throw attachmentStale();
+    eq(appVersions.protocol_version, '7'), eq(appVersions.state, 'active'))).limit(1).for('share', { of: appVersions });
+  const { version, grant, requested } = rows ?? {};
+  if (!version || !grant || !requested) throw attachmentStale();
+  // Every row above is fresh. Cache only pure reconstruction of exactly these
+  // consumed JSON facts, with org/version and current epochs in the key. SQL
+  // timestamps are not reconstruction inputs; private JSON is never coerced.
+  const { manifest, composition } = reconstructAttachmentAuthority({ org_id: orgId, app_version_id: version.id }, {
+    installation: { id: installation.id, app_id: installation.app_id, lineage_key: installation.lineage_key,
+      active_version_id: installation.active_version_id, active_grant_snapshot_id: installation.active_grant_snapshot_id,
+      active_grant_snapshot_kind: installation.active_grant_snapshot_kind,
+      lifecycle_epoch: installation.lifecycle_epoch ?? null, grant_epoch: installation.grant_epoch ?? null },
+    version: { id: version.id, org_id: version.org_id, installation_id: version.installation_id,
+      version: version.version, state: version.state, protocol_version: version.protocol_version,
+      manifest: version.manifest, manifest_digest: version.manifest_digest, package_digest: version.package_digest,
+      requested_grant_snapshot_id: version.requested_grant_snapshot_id },
+    grant: { id: grant.id, org_id: grant.org_id, app_installation_id: grant.app_installation_id,
+      app_version_id: grant.app_version_id, snapshot_kind: grant.snapshot_kind, app_id: grant.app_id,
+      app_version: grant.app_version, manifest_digest: grant.manifest_digest, package_digest: grant.package_digest,
+      requested_snapshot_id: grant.requested_snapshot_id, snapshot_digest: grant.snapshot_digest,
+      canonical_snapshot: grant.canonical_snapshot, classification: grant.classification, resource_rights: grant.resource_rights },
+    requested: { id: requested.id, org_id: requested.org_id, app_installation_id: requested.app_installation_id,
+      app_version_id: requested.app_version_id, snapshot_kind: requested.snapshot_kind,
+      snapshot_digest: requested.snapshot_digest, canonical_snapshot: requested.canonical_snapshot },
+  }, () => {
+    const manifest = parseAppAuthorityManifest(version.manifest, { org_id: orgId, app_version_id: version.id });
+    if (grant.requested_snapshot_id !== requested.id || manifest.id !== installation.app_id
+      || manifest.version !== version.version || digestAppGrantValue(manifest) !== version.manifest_digest
+      || grant.manifest_digest !== version.manifest_digest || grant.package_digest !== version.package_digest
+      || grant.app_id !== installation.app_id || grant.app_version !== version.version) throw attachmentStale();
+    const composition = grant.canonical_snapshot.schema === 'deft.app_blob_grant.v2';
+    if (!composition && grant.canonical_snapshot.schema !== 'deft.app_blob_grant.v1') throw attachmentStale();
+    assertAttachmentManifestAdmission(manifest, composition);
+    const projection = buildRequestedAppGrantProjection({ organization_id: orgId, app_installation_id: installationId,
+      app_version_id: version.id, manifest, manifest_digest: version.manifest_digest, package_digest: version.package_digest });
+    const digest = AppDigestSchema.safeParse(grant.canonical_snapshot.review_digest);
+    if (!digest.success || requested.snapshot_digest !== projection.snapshot_digest
+      || digestAppGrantValue(requested.canonical_snapshot) !== projection.snapshot_digest
+      || grant.resource_rights.length || digestAppGrantValue(grant.classification) !== digestAppGrantValue(ATTACHMENT_APP_EFFECTIVE_CLASSIFICATION)) throw attachmentStale();
+    const authority = buildAttachmentAppReviewedAuthority(manifest, { lineage_key: installation.lineage_key,
+      package_digest: version.package_digest, manifest_digest: version.manifest_digest }, composition);
+    const canonical = { ...authority, organization_id: orgId, app_installation_id: installationId,
+      app_version_id: version.id, requested_snapshot_id: requested.id, requested_snapshot_digest: requested.snapshot_digest,
+      classification: ATTACHMENT_APP_EFFECTIVE_CLASSIFICATION, review_digest: digest.data };
+    if (digestAppGrantValue(canonical) !== grant.snapshot_digest || digestAppGrantValue(grant.canonical_snapshot) !== grant.snapshot_digest) throw attachmentStale();
+    return { manifest, composition };
+  });
+  // Feature/admission state is never cached with immutable reconstruction.
   assertAttachmentManifestAdmission(manifest, composition);
-  const projection = buildRequestedAppGrantProjection({ organization_id: orgId, app_installation_id: installationId,
-    app_version_id: version.id, manifest, manifest_digest: version.manifest_digest, package_digest: version.package_digest });
-  const digest = AppDigestSchema.safeParse(grant.canonical_snapshot.review_digest);
-  if (!digest.success || requested.snapshot_digest !== projection.snapshot_digest
-    || digestAppGrantValue(requested.canonical_snapshot) !== projection.snapshot_digest
-    || grant.resource_rights.length || digestAppGrantValue(grant.classification) !== digestAppGrantValue(ATTACHMENT_APP_EFFECTIVE_CLASSIFICATION)) throw attachmentStale();
-  const authority = buildAttachmentAppReviewedAuthority(manifest, { lineage_key: installation.lineage_key,
-    package_digest: version.package_digest, manifest_digest: version.manifest_digest }, composition);
-  const canonical = { ...authority, organization_id: orgId, app_installation_id: installationId,
-    app_version_id: version.id, requested_snapshot_id: requested.id, requested_snapshot_digest: requested.snapshot_digest,
-    classification: ATTACHMENT_APP_EFFECTIVE_CLASSIFICATION, review_digest: digest.data };
-  if (digestAppGrantValue(canonical) !== grant.snapshot_digest || digestAppGrantValue(grant.canonical_snapshot) !== grant.snapshot_digest) throw attachmentStale();
   return { installation, version, grant, requested, manifest, composition };
 }
