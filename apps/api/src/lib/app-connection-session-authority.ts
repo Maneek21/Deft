@@ -21,6 +21,9 @@ import { digestAppGrantValue } from './app-grant-service.js';
 import {appConnectionUpgradeSourceIsAvailable} from './app-connection-upgrade-fence.js';
 
 type RequiredConnectionAction = {action_key:string;action_binding_id:string}|'none';
+/** Private same-admission immutable bytes; never a serialized authority or later-phase cache. */
+export type CurrentAppConnectionReviewedDeclarations = Readonly<{scope:AppConnectionSessionScope;
+  manifest:ReturnType<typeof parseAppAuthorityManifest>;grant_record_stores:unknown}>;
 const denied = () => new AppError('Account connection access ended', 'APP_ACCESS_DENIED', 403);
 /** Retained SID is checked only after current member/App/registration/binding
  * locks. It carries no bearer and gives the runtime no human impersonation port. */
@@ -37,7 +40,7 @@ export function retainedWebGuard(caller: ExperienceCaller): WebAuthorityGuard {
 
 export type AppConnectionAuthorityOwner=Pick<ExperienceCaller,'org_id'|'user_id'|'access_expires_at'>;
 async function loadCurrentConnectionAuthority(caller: AppConnectionAuthorityOwner,
-  nomination: { installation_id: string; target_key: string }, guard: WebAuthorityGuard, requireTransport:boolean, requestedMode:'v1'|'v2'|'credential_form.v1'|'declared'='v1',requiredAction?:RequiredConnectionAction,suppliedTransaction?:AppRunTransaction,continuationExpiry?:Date|null,continuationLifetime?:AppConsentLifetime) {
+  nomination: { installation_id: string; target_key: string }, guard: WebAuthorityGuard, requireTransport:boolean, requestedMode:'v1'|'v2'|'credential_form.v1'|'declared'='v1',requiredAction?:RequiredConnectionAction,suppliedTransaction?:AppRunTransaction,continuationExpiry?:Date|null,continuationLifetime?:AppConsentLifetime,onReviewedDeclarations?:(reviewed:CurrentAppConnectionReviewedDeclarations)=>void) {
   const use=async(tx:AppRunTransaction) => {
     const locators = await currentConnectionBindingLocators(tx,caller,nomination).limit(2);
     if (locators.length !== 1) throw denied();
@@ -122,6 +125,7 @@ async function loadCurrentConnectionAuthority(caller: AppConnectionAuthorityOwne
     if (!await attachmentFinalAuthorityIsCurrent(tx, [caller.user_id, scope.operator_user_id], {
       guard, expires_at:(continuationExpiry!==undefined?continuationExpiry:current.binding.consent_expires_at)?[(continuationExpiry!==undefined?continuationExpiry:current.binding.consent_expires_at)!]:[] })) throw denied();
     if(action_consents.length>8)throw denied();
+    onReviewedDeclarations?.({scope,manifest,grant_record_stores:(current.grant.canonical_snapshot as Record<string,unknown>).record_stores??[]});
     return { scope, profile, runtime_ready,connection_protocol:mode, ...(mode!=='v1'?{action_consents}:action_consent ? { action_consent } : {}),
       expires_at: Math.min(guard.current_web_session_expires_at().getTime(), caller.access_expires_at ?? 0) };
   };
@@ -148,8 +152,8 @@ export function currentAppConnectionMetadataAuthority(caller:ExperienceCaller,
  return loadCurrentConnectionAuthority(caller,nomination,guard,false,'declared');
 }
 export async function currentAppConnectionReadAuthority(caller:AppConnectionAuthorityOwner,
- nomination:{installation_id:string;target_key:string},guard:WebAuthorityGuard,requiredAction?:RequiredConnectionAction,suppliedTransaction?:AppRunTransaction):Promise<AppConnectionSessionAuthority & {connection_protocol:'v1'|'v2'|'credential_form.v1'}>{
- const {runtime_ready,...authority}=await loadCurrentConnectionAuthority(caller,nomination,guard,true,'declared',requiredAction,suppliedTransaction);return authority;
+ nomination:{installation_id:string;target_key:string},guard:WebAuthorityGuard,requiredAction?:RequiredConnectionAction,suppliedTransaction?:AppRunTransaction,onReviewedDeclarations?:(reviewed:CurrentAppConnectionReviewedDeclarations)=>void):Promise<AppConnectionSessionAuthority & {connection_protocol:'v1'|'v2'|'credential_form.v1'}>{
+ const {runtime_ready,...authority}=await loadCurrentConnectionAuthority(caller,nomination,guard,true,'declared',requiredAction,suppliedTransaction,undefined,undefined,onReviewedDeclarations);return authority;
 }
 
 export async function currentAppConnectionSessionV2Authority(caller:ExperienceCaller,

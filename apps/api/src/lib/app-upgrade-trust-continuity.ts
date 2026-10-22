@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { and, eq, sql, inArray } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
 import { AppConnectionProfileSchema, AppConnectionSessionScopeSchema, appConsentDeadline,
   AppDataConsentSnapshotSchema } from '@deft/app-kit/core';
@@ -28,6 +29,8 @@ export const UPGRADE_PROOF_ACTION = 'app.upgrade_continuity.authorized';
 export const UPGRADE_ALIAS_ACTION = 'app.upgrade_continuity.registration';
 const id = z.string().uuid(), digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const pin = z.strictObject({ id, digest });
+const continuityPriorVersion = alias(appVersions, 'continuity_prior_version');
+const continuityTargetVersion = alias(appVersions, 'continuity_target_version');
 export const UpgradeContinuityProofSchema = z.strictObject({ schema_version: z.literal('deft.app_upgrade_continuity.v1'),
   request_id: id, org_id: id, installation_id: id, prior_version_id: id, version_id: id, grant_id: id,
   lifecycle_epoch: z.number().int().nonnegative(), grant_epoch: z.number().int().nonnegative(), trust_revision: z.number().int().nonnegative(),
@@ -137,31 +140,50 @@ export async function assertContinuityProof(tx: UpgradeTx, proof: UpgradeContinu
       await tx.execute(sql`SELECT id FROM org_members WHERE org_id=${proof.org_id} AND user_id=${userId} FOR SHARE`);
     await tx.execute(sql`SELECT id FROM app_installations WHERE org_id=${proof.org_id} AND id=${proof.installation_id} FOR SHARE`);
   }
-  const [installation] = await tx.select().from(appInstallations).where(and(eq(appInstallations.org_id, proof.org_id),
-    eq(appInstallations.id, proof.installation_id))).limit(1);
+  // Unlocked current reads share one statement, retaining each original scoped
+  // predicate and Drizzle's full row/Date decoding. Issuance keeps its reads and
+  // share-lock order; no result survives this individual authority invocation.
+  const [currentRows] = issuance ? [] : await tx.select({ installation: appInstallations,
+    prior: continuityPriorVersion, target: continuityTargetVersion, source: appConnectionSessions })
+    .from(appInstallations)
+    .leftJoin(continuityPriorVersion, and(eq(continuityPriorVersion.org_id, proof.org_id),
+      eq(continuityPriorVersion.installation_id, proof.installation_id), eq(continuityPriorVersion.id, proof.prior_version_id)))
+    .leftJoin(continuityTargetVersion, and(eq(continuityTargetVersion.org_id, proof.org_id),
+      eq(continuityTargetVersion.installation_id, proof.installation_id), eq(continuityTargetVersion.id, proof.version_id)))
+    .leftJoin(appConnectionSessions, and(eq(appConnectionSessions.org_id, proof.org_id),
+      eq(appConnectionSessions.owner_user_id, proof.owner_id), eq(appConnectionSessions.session_id, proof.source_session_id)))
+    .where(and(eq(appInstallations.org_id, proof.org_id), eq(appInstallations.id, proof.installation_id))).limit(1);
+  const installation = issuance ? (await tx.select().from(appInstallations).where(and(eq(appInstallations.org_id, proof.org_id),
+    eq(appInstallations.id, proof.installation_id))).limit(1))[0] : currentRows?.installation;
   if (!installation || installation.state !== 'active' || (current && (installation.active_version_id !== proof.version_id
     || installation.active_grant_snapshot_id !== proof.grant_id || installation.lifecycle_epoch !== proof.lifecycle_epoch || installation.grant_epoch !== proof.grant_epoch))) throw denied();
   const trust = await readInstallationUpgradeTrust(tx, proof.org_id, proof.installation_id);
-  const versions = await tx.select().from(appVersions).where(and(eq(appVersions.org_id, proof.org_id), eq(appVersions.installation_id, proof.installation_id),
-    inArray(appVersions.id, [proof.prior_version_id, proof.version_id])));
+  const versions = issuance ? await tx.select().from(appVersions).where(and(eq(appVersions.org_id, proof.org_id), eq(appVersions.installation_id, proof.installation_id),
+    inArray(appVersions.id, [proof.prior_version_id, proof.version_id]))) : [currentRows?.prior, currentRows?.target].filter(row => row != null);
   const prior = versions.find(v => v.id === proof.prior_version_id), target = versions.find(v => v.id === proof.version_id);
   if (!prior || !target || !trust.trusted || trust.revision !== proof.trust_revision || !upgradeContinuityDecision(true, prior.manifest, target.manifest).eligible) throw denied();
-  const [sourceRow] = await tx.select().from(appConnectionSessions).where(and(eq(appConnectionSessions.org_id, proof.org_id),
-    eq(appConnectionSessions.owner_user_id, proof.owner_id), eq(appConnectionSessions.session_id, proof.source_session_id))).limit(1);
+  const sourceRow = issuance ? (await tx.select().from(appConnectionSessions).where(and(eq(appConnectionSessions.org_id, proof.org_id),
+    eq(appConnectionSessions.owner_user_id, proof.owner_id), eq(appConnectionSessions.session_id, proof.source_session_id))).limit(1))[0] : currentRows?.source;
   const source = sourceRow && AppConnectionSessionRecordSchema.parse(sourceRow.record);
   if (!source || source.state !== 'connected' || source.revision !== proof.source_revision || !isDeepStrictEqual(source.scope, proof.source_scope)
     || !isDeepStrictEqual(source.profile, proof.source_profile) || appConsentDeadline(source.scope.consent_expires_at, source.scope.consent_lifetime) <= Date.now()) throw denied();
-  const check = async (table: any, field: any, pins: readonly { id: string; digest: string }[]) => {
+  const [currentPins] = issuance ? [] : await tx.select({ binding: appResourceBindings,
+    registration: appRuntimeRegistrations, admission: appOwnerConnectionAdmissions }).from(appResourceBindings)
+    .leftJoin(appRuntimeRegistrations, and(eq(appRuntimeRegistrations.org_id, proof.org_id), eq(appRuntimeRegistrations.id, proof.source_registration.id)))
+    .leftJoin(appOwnerConnectionAdmissions, and(eq(appOwnerConnectionAdmissions.org_id, proof.org_id), eq(appOwnerConnectionAdmissions.id, proof.source_admission.id)))
+    .where(and(eq(appResourceBindings.org_id, proof.org_id), eq(appResourceBindings.id, proof.source_binding.id))).limit(1);
+  const check = async (table: any, field: any, pins: readonly { id: string; digest: string }[], rows?: any[]) => {
     await assertCurrentUpgradeRowPins<any>({ pins, issuance, id: row => row[field.name], digest: rowDigest, denied,
       read: async (ids, share) => {
+        if (rows !== undefined) return rows;
         const query = tx.select().from(table).where(and(eq(table.org_id, proof.org_id),
           ids.length === 1 ? eq(field, ids[0]!) : inArray(field, [...ids]))).limit(ids.length);
         return share ? query.for('share') : query;
       } });
   };
-  await check(appResourceBindings, appResourceBindings.id, [proof.source_binding]);
-  await check(appRuntimeRegistrations, appRuntimeRegistrations.id, [proof.source_registration]);
-  await check(appOwnerConnectionAdmissions, appOwnerConnectionAdmissions.id, [proof.source_admission]);
+  await check(appResourceBindings, appResourceBindings.id, [proof.source_binding], issuance ? undefined : currentPins?.binding ? [currentPins.binding] : []);
+  await check(appRuntimeRegistrations, appRuntimeRegistrations.id, [proof.source_registration], issuance ? undefined : currentPins?.registration ? [currentPins.registration] : []);
+  await check(appOwnerConnectionAdmissions, appOwnerConnectionAdmissions.id, [proof.source_admission], issuance ? undefined : currentPins?.admission ? [currentPins.admission] : []);
   await check(appRuntimeBindings, appRuntimeBindings.id, proof.source_actions);
   if (issuance) {
     await check(appResourceObservationConsents, appResourceObservationConsents.consent_id, proof.source_observations);

@@ -17,6 +17,7 @@ manifest.owner_connections = [{ key: 'personal', resource_key: 'inbox', action_k
   provider_profile_key: profile.key, runtime_requirement_key: profile.runtime_requirement_key }];
 manifest.record_stores = [declaration];
 let registryReads = 0, authorityReads = 0, reads = 0, formChecks = 0, carrierChecks = 0, declarationReads = 0;
+let carryReviewed = false, foreignReviewed = false;
 let protocol: 'v1' | 'credential_form.v1' | undefined = 'v1', available = true, formValid = true, connectionChanged = false, declarationChanged = false, sessionProfileChanged = false;
 function query() { let table: unknown, joined = false; declarationReads++; const chain: any = { from: (value: unknown) => { table = value; return chain; },
   innerJoin: () => { joined = true; return chain; },
@@ -30,7 +31,7 @@ mock.module(new URL('../src/lib/app-connection-session-store.ts', import.meta.ur
     revision: connectionChanged && reads > 1 ? 2 : 1 }; } },
 } });
 mock.module(new URL('../src/lib/app-connection-session-authority.ts', import.meta.url).href, { namedExports: {
-  currentAppConnectionReadAuthority: async () => { authorityReads++; if (!available) throw Error('CURRENT_AUTHORITY_DENIED'); return { scope, profile, expires_at, connection_protocol: protocol }; },
+  currentAppConnectionReadAuthority: async (...args: any[]) => { authorityReads++;if(carryReviewed)args[5]?.({scope:foreignReviewed?{...scope,app_version_id:id()}:scope,manifest,grant_record_stores:declarationChanged?[]:[declaration]}); if (!available) throw Error('CURRENT_AUTHORITY_DENIED'); return { scope, profile, expires_at, connection_protocol: protocol }; },
 } });
 mock.module(new URL('../src/lib/app-connection-session-registry.ts', import.meta.url).href, { namedExports: {
   getAppConnectionSessionRegistry: async () => { registryReads++; return { protocol: () => protocol }; },
@@ -50,7 +51,7 @@ process.env.DEFT_APPS_ENABLED = 'true';
 const { currentAppDataAuthority } = await import('../src/lib/app-data-authority.js');
 const guard = Object.assign(async () => {}, { current_web_session_expires_at: () => new Date(expires_at) });
 const read = () => currentAppDataAuthority({ org_id, user_id, access_expires_at: expires_at }, session.session_id, 'drafts', guard, false, undefined, 'none');
-function reset() { registryReads = authorityReads = reads = formChecks = carrierChecks = declarationReads = 0; protocol = 'v1'; available = formValid = true; connectionChanged = declarationChanged = sessionProfileChanged = false; }
+function reset() { registryReads = authorityReads = reads = formChecks = carrierChecks = declarationReads = 0; carryReviewed = foreignReviewed = false; protocol = 'v1'; available = formValid = true; connectionChanged = declarationChanged = sessionProfileChanged = false; }
 
 test('data admission uses the protocol proved by its fresh current reader without rebuilding its registry', async () => {
   reset(); await read(); assert.equal(registryReads, 0); assert.equal(authorityReads, 1); assert.equal(formChecks, 0);
@@ -65,4 +66,10 @@ test('current revocation, changed session profile/revision, absent protocol and 
     () => { sessionProfileChanged = true; }, () => { protocol = undefined; }]) {
     reset(); change(); await assert.rejects(read());
   }
+});
+
+test('data admission consumes only same-phase reviewed declarations and captures them afresh later', async () => {
+ reset();carryReviewed=true;await read();assert.equal(declarationReads,0,'the reviewed reader already captured these exact immutable bytes');
+ await read();assert.equal(authorityReads,2,'later phases always acquire their own reviewed declaration carrier');
+ foreignReviewed=true;await assert.rejects(read());foreignReviewed=false;declarationChanged=true;await assert.rejects(read());
 });
