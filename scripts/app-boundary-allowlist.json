@@ -5140,9 +5140,9 @@
     "path": "apps/api/test/app-data-process-db.test.ts",
     "rule": "computed-import",
     "token": "import(pathToFileURL(join(runtimeRoot!,'test-support.mjs')).href)",
-    "digest": "be08235421949cf8583e41dc4c0afcd695dd036a65176e191cf49033f9e94385",
+    "digest": "b3254665c21807fd169f526535b66af1ae7c423d433d0056c3065e51eb9a0225",
     "occurrences": 1,
-    "reason": "Reviewed isolated generic tooling/test loader: local runtime/test-support module, cache-busted test middleware, or development dependency; no production mailbox authority. Exact enclosing context requires fresh review on change.",
+    "reason": "Reviewed isolated generic tooling/test loader: local runtime/test-support module, cache-busted test middleware, or development dependency; no production mailbox authority. Re-reviewed 2026-10-22: only the diagnostic connection_authority call-count assertion changed from 2 to 1; runtimeRoot validation and the loader path are unchanged. Exact enclosing context requires fresh review on change.",
     "owner": "@Maneek21",
     "issue": "https://github.com/Maneek21/Deft/issues/382",
     "milestone": "permanent reviewed tooling/test boundary; re-review on context change"
