@@ -1,6 +1,6 @@
 # Current limitations
 
-The general workspace baseline below is historical `v0.3.0-preview.15` (September 8, 2026). The separate connected-App developer-preview set is Host `0.3.0-preview.120`/schema120, Email App `1.9.0-preview.13` on Kit38 and Runtime `0.4.0-preview.15` on Kit35. Use its [authoritative compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.13/compatibility.json), [current author guide](connected-app-author-guide.md) and [Email limitations](https://github.com/Maneek21/deft-email/blob/main/docs/limitations.md). The explicitly Apps-enabled image compiles the required browser gates; general release defaults remain off. Exact artifact acceptance is recorded with the release, and historical receipts do not establish a different build.
+The general workspace baseline below is historical `v0.3.0-preview.15` (September 8, 2026). The separate connected-App set covered here is Host `0.3.0-preview.136`/schema131, Email release `v1.9.0-preview.28`, App `1.9.1-preview.9` and Runtime `0.4.0-preview.26`, both on Kit42. Use its [authoritative compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.28/compatibility.json), [connect-once guide](app-connect-once.md), [current author guide](connected-app-author-guide.md) and [Email limitations](https://github.com/Maneek21/deft-email/blob/main/docs/limitations.md). The explicitly Apps-enabled image compiles the required browser gates; general release defaults remain off. Exact artifact acceptance is recorded with the release, and historical receipts do not establish a different build.
 
 Installation and agent boundary notes updated September 11, 2026.
 
@@ -55,6 +55,23 @@ Deft is an alpha. It is suitable for technical evaluation, internal use, and con
 - Connected App execution and bounded automations add further flags and operator review. They are included in preview.15, experimental, and disabled by default.
 - App Protocol v0 provides declarative internal records and native views. The published preview.15 baseline does not provide arbitrary custom UI, public portals, general external runtimes or synchronization. The review candidate adds bounded generic trusted UI/Runtime/sync contracts, not arbitrary iframe UI or self-granted execution.
 - A package's requested permissions are review input. The host owns installation, grants, connector binding, activation, and execution authority.
+
+### Connected Apps: October 22 limits
+
+- Compatible update trust is an explicit per-installation setting, off by default.
+  Eligible trusted updates carry existing approvals forward; access changes still
+  need review. Supported until-revoked Runtime sessions recover after outages.
+- New setup defaults to until revoked when admitted. Dated background permissions
+  keep their end dates and do not auto-renew.
+- The Knowledge worker's mailbox-generation race recovered in 10–61 seconds in
+  the investigated background reads. This is not a guarantee of silent retry for
+  every foreground read; reconnecting is not the remedy for that race.
+- Email settings health lacks last-sync time and message count because those
+  fields are absent from the API. “Need attention” counts lack individual links.
+- Sequential authority checks can exhaust time budgets on very large mailboxes;
+  consolidation is planned. Fast catch-up does not remove this limit.
+- Contracts/Wiki neutral-owner work and the full Knowledge/Calendar migration
+  from the #378 plans are deferred.
 
 ## Scale and performance
 

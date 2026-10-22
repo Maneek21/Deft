@@ -1,15 +1,22 @@
-# Generic external connection sessions (candidate)
+# Generic external connection sessions
 
-Author Kit alpha.32 supplies the closed public connection v1/v2, independent
+Host `0.3.0-preview.136` (schema 131) and Email release 28 support connect-once
+account access, trusted compatible upgrades and Runtime service recovery. Start
+with the [owner/operator guide](app-connect-once.md) for defaults and controls.
+The contracts below explain the transport boundary; the v1 registry example
+is retained for legacy read-only integrations.
+
+Author Kit alpha.42 supplies the closed public connection v1/v2, independent
 action-consent, upgrade/reattachment, consent-continuation and credential-repair
-contracts. The matching Host PR implements the corresponding current-authority
+contracts. The Host implements the corresponding current-authority
 routes; the Kit cannot grant custody, consent, Send permission or execution.
 Connection v2 binds independently reviewed actions to the current owner/resource
 session. Foreground resource reads and reviewed App Runs use separate governed
 channels; a profile's ordered `action_keys` alone grants neither.
 
-For the external Email browser alpha.30/Runtime E5.9 alpha.32 enrollment, use the
-[exact reviewed setup](https://github.com/Maneek21/deft-email/blob/4c33dca127f799ff43a318625319808266799366/docs/setup.md).
+For current external Email enrollment, use its
+[setup guide](https://github.com/Maneek21/deft-email/blob/main/docs/setup.md)
+and [compatibility record](https://github.com/Maneek21/deft-email/blob/main/docs/compatibility.md).
 Its registry explicitly sets `connection_protocol: "v2"`, profile key
 `gmail_readwrite`, provider `gmail`, and ordered actions
 `mirror_drafts`, `organize_messages`, `send_message`. Runtime connection transport
@@ -114,19 +121,29 @@ Successful introspection returns the exact session/operation/scope envelope plus
 provider IO and before disclosing results. The authority token grants only this
 introspection operation for its configured registration/profile/epoch.
 
-The host bounds runtime IO to 30 seconds and earlier current web/owner expiry;
+Ordinary connection runtime IO is bounded to 30 seconds and earlier current web/owner expiry;
 callback lifetime is at most ten minutes. JSON input/output is at most 16 KiB,
 request reads at most ten seconds. Responses are strict Kit results, without
 provider tokens or URLs containing credential query fields. Redirects fail.
 
 ## Durable state and migration
 
-### Reviewed account continuity across app upgrades
+### Account continuity across app upgrades
+
+An owner/admin can enable **Compatible update trust** for this installation in
+Settings → Apps. It is off by default. With trust on and an exact compatibility
+proof, the Host carries forward existing reviewed consents and exact private
+Experience access, preserving all finite deadlines and revocations. It creates
+fresh current-version authority and Runtime sessions without a new provider login
+or manual background enrollment. Changed permissions, providers, destinations,
+actions, schemas, profiles or transport still require review. See
+[what carries forward and how to turn it off](app-connect-once.md#keep-approvals-through-compatible-updates).
 
 An upgrade changes the current package, grant and resource binding. A connected
 historical session can nominate the same runtime-owned account for a new reviewed
-session; it cannot supply current authorization. The host and runtime must both
-support `deft.app_connection_reattach_runtime.v1`. This is upgrade continuity for
+session; historical state alone cannot supply current authorization. The Host and
+Runtime must support matching v1/v2 reattachment contracts; current Email uses
+`deft.app_connection_reattach_runtime.v2`. This is upgrade continuity for
 app-owned custody, not adoption of retained native Email data.
 
 | POST route under `/api/app-connection-sessions` | Body | Purpose |
@@ -141,6 +158,8 @@ identity. The independent runtime retains the provider token; the host receives
 only opaque account/session references and generation/digest receipts. Current
 read consent and any separately granted action consent are independently checked.
 Old grants, old data authority and old Send channels are never copied forward.
+Trusted continuity preserves the owner's existing decisions through a checked
+successor relationship, rather than treating old tokens as new authority.
 
 The host writes the new operation before contacting the runtime. Activation uses
 the exact review digest and runtime compare-and-set generation, with a durable
@@ -156,11 +175,19 @@ activate cannot exceed the review deadline or current consent; read-only status
 is bounded by current consent. The original source and review remain immutable.
 No browser OAuth code, provider token or host cookie is part of this protocol.
 
-Preview97 adds validation to the retained connection-session record rather than
-rewriting historical sessions. Its initial slice rejects same-version
-reattachment. Background synchronization, delegated actors and historical native
-account adoption require their own current authority and acceptance evidence.
-These candidate interfaces are not a claim of public release or deployed parity.
+Retained-account prepare/activate/status processing has a two-minute ceiling,
+clipped to the relevant current authority deadlines. The settings transport
+allows 150 seconds for these exact POST routes; ordinary UI calls retain their
+35-second limit. Read-only status can reconcile a validated retained operation
+after its issuance window ends, subject to current trust and authority. It cannot
+issue permission or activate custody. Use status after a lost response rather
+than repeating activation.
+
+Preview97 originally added validation to the retained connection-session record
+rather than rewriting historical sessions. Current background synchronization
+and service reacquisition use their own scoped authority. Delegated actors and
+historical native account adoption still need their separate authority; a
+connected account does not imply either permission.
 
 `app_connection_sessions` persists before IO. All reads and atomic revision CAS
 scope by organization, owner and session. The database guard preserves authority,
@@ -170,10 +197,38 @@ effects remain indeterminate and cannot be replayed by status or service restart
 
 Append-only preview94 adds this dormant table and updates the latest preview60
 grant/admission validation functions to recognize closed external profiles.
-Historical migration SQL stays unchanged. The current review stack targets
-schema117; the image metadata preview16 is not the schema head. A matching fresh
-schema/production-seed rehearsal has passed. The fresh public Email
-sideload/OAuth/visible journey is still a separate acceptance gate, and package
-or schema validation does not authorize an existing account move. Native-history
+Historical migration SQL stays unchanged. The current set documented here uses
+schema131; Host product and schema numbers are separate. Fresh public Email
+sideload/OAuth/visible journeys remain release acceptance checks, and package
+or schema validation alone does not authorize an existing account move. Native-history
 inspection and App private-state adoption are separate explicit contracts; no
 old grant or native account authority is inferred from retained bytes.
+
+## Structured Runtime errors
+
+The Host preserves a bounded, allowlisted Runtime error code in `details.runtime_code`
+and a retry hint in `details.retryable` when supported. Arbitrary provider text
+is discarded. The UI presents plain language first and diagnostic codes under
+**Details**. These codes help distinguish a changed source from an outage:
+
+| Host code | HTTP | Meaning and next step |
+| --- | --- | --- |
+| `APP_RUNTIME_SOURCE_CHANGED` | 409 | The source changed during the read. Retry a fresh read; the response carries `retryable: true` in details. |
+| `APP_RUNTIME_ACCESS_DENIED` | 403 | Current account or permission checks failed. Check access before retrying. |
+| `APP_RUNTIME_CONFLICT` | 409 | A record or draft conflicts with current state. Reload and inspect it. |
+| `APP_RUNTIME_NOT_FOUND` | 404 | The requested record or draft is unavailable. Return to the current list. |
+| `APP_RUNTIME_INPUT_INVALID` | 400 | Correct the request or draft input. |
+| `APP_RUNTIME_LIMIT` | 413 | The draft exceeds the supported limit. Reduce it. |
+| `APP_RUNTIME_UNAVAILABLE` | 503 | A recognized temporary Runtime failure; details marks it retryable. |
+| `APP_CONNECTION_PROFILE_UNAVAILABLE` | 503 | The transport failed or its response was unknown, malformed or too large. Inspect Runtime/registration health. |
+
+For example, `EMAIL_DATA_SOURCE_CHANGED` maps to `APP_RUNTIME_SOURCE_CHANGED`.
+A retry hint permits bounded read recovery; it does not authorize replaying a
+write or Send. Current read-only list recovery retries once only after resolving
+identical current authority. It does not silently retry every foreground operation.
+
+`APP_EXPERIENCE_BUSY` is a separate temporary Host database-access failure
+(HTTP 503, `Retry-After: 1`, top-level `retryable: true`). Its details distinguish
+connection acquisition from an access-check deadline. `APP_EXPERIENCE_STARTUP_FAILED`
+identifies bootstrap, worker start, worker runtime or first-view startup failures.
+Retrying startup does not reconnect an account or change permissions.
