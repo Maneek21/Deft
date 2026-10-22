@@ -1,5 +1,5 @@
 'use client';
-import {createExperienceMenuHost} from './experience-menu';
+import {createExperienceMenuHost} from './experience-menu';import {AppRequestNotice} from './app-request-notice';
 import {appConsentDeadline} from '../../../../../packages/app-kit/src/consent-lifetime';
 
 import {createExperienceAccountRouting,ExperienceAccountVisibilityEndedError,resolveExperienceActionAccount,type AccountReference,type AccountChild} from '../../lib/app-experience-account-routing';
@@ -1209,13 +1209,13 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
   return <div className="relative flex h-full min-h-0 w-full flex-col overflow-hidden">
     <style>{EXPERIENCE_RENDERER_CSS}</style>
     <h1 className="sr-only">{session?.experience.label ?? 'Account setup'}</h1>
-    {renewalNotice && <p role="alert" className="shrink-0 px-5 py-3 text-sm">{renewalNotice}</p>}
+    {renewalNotice && <AppRequestNotice message={renewalNotice} action={<button type="button" className="deft-pill min-h-11" disabled={renewalBusy||connectionSetupBusy||!!composer} onClick={()=>{if(!document.hidden)setOpening(value=>value+1);}}>Check app status</button>}/>}
     {sourceOpening&&!error&&!nominatedSource&&<div role="status" className="shrink-0 px-6 py-3 text-sm">{sourceOpening==='pending'?'Opening the original source…':<>The original source could not open. <button type="button" className="underline" onClick={()=>retrySourceNomination.current?.()}>Retry source</button></>}</div>}
     {connectionUnavailable && !error && <p role="status" className="shrink-0 px-6 py-4 text-sm">Connection interrupted. Reconnecting... Your saved work is kept. {resumeUnavailable&&<button type="button" className="underline" onClick={()=>retryResume.current?.()}>Retry connection</button>}</p>}
     {suspended && !connectionUnavailable && !error && <p role="status" className="shrink-0 px-6 py-4 text-sm">{resumeUnavailable?<>The app could not resume. <button type="button" className="underline" onClick={()=>retryResume.current?.()}>Retry connection</button></>:'Resuming app…'}</p>}
-    {session&&(error||!exposure)&&!settingsOpen&&<div className="shrink-0 px-5 py-2"><button type="button" className="deft-pill min-h-11" disabled={connectionSetupBusy||!!composer}
+    {session&&!error&&!exposure&&!settingsOpen&&<div className="shrink-0 px-5 py-2"><button type="button" className="deft-pill min-h-11" disabled={connectionSetupBusy||!!composer}
       onClick={()=>void showSettings(true)}>Account settings</button></div>}
-    {error && !accountSetupOpen ? <p role="alert" data-experience-startup-phase={startupPhase ?? undefined} data-experience-startup-diagnostic={startupPhase ? startupDiagnostic ?? undefined : undefined} className="shrink-0 px-6 py-4 text-sm" style={{ background: 'var(--surface-container-low)' }}>{error}</p>
+    {error && !accountSetupOpen ? <div data-experience-startup-phase={startupPhase ?? undefined} data-experience-startup-diagnostic={startupPhase ? startupDiagnostic ?? undefined : undefined}><AppRequestNotice message={error} action={<button className="deft-pill min-h-11" disabled={renewalBusy} onClick={()=>{if(!document.hidden)setOpening(value=>value+1);}}>Retry app</button>}/></div>
       : !ready && !error && !accountSetupOpen ? <p role="status" className="shrink-0 px-6 py-4 text-sm" style={{ background: 'var(--surface-container-low)' }}>Opening app…</p>
       : null}
     {!session && !error && user && user.role !== 'guest' && org && sessionCacheScope && !accountSetupOpen && <section className="shrink-0 space-y-3 px-5 py-4 text-sm">
@@ -1232,8 +1232,6 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
             ensureAuthority={composerAuthority} disabled={renewalBusy || accountSetupPending} onBusy={connectionBusy} onConnectionNavigation={onConnectionNavigation} onSetupComplete={completeAccountSetup} /></>} />
     </div>}
     {!settingsOpen&&privateAccessReview}
-    {error && !accountSetupOpen && <section className="shrink-0 space-y-2 px-5 py-3 text-sm"><p>Your saved drafts remain private. Retry opening the app to check the connection again.</p>
-      <button className="deft-pill min-h-11" style={{ minHeight: 44 }} disabled={renewalBusy} onClick={() => { if(!document.hidden)setOpening(value=>value+1); }}>Retry app</button></section>}
     {session && exposure && recoveryDismissalScope && !error && !!session.bundle.state_keys?.length && !recoveryReady && <PrivateStateRecoveryGate suspended={connectionUnavailable}
       key={`${session.pin.session_id}/${exposure.exposure_id}/${exposure.exposure_epoch}`} sessionId={session.pin.session_id} exposure={exposure}
       states={recoveryStates} dismissalScope={recoveryDismissalScope} currentTarget={session.resource_target_key ?? resourceTarget} onContinue={continueRecovery} />}

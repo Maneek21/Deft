@@ -1,4 +1,5 @@
 'use client';
+import {AppRequestNotice} from './app-request-notice';
 import {useRef,useState} from 'react';
 import {api,isSameWebSession} from '@/lib/api';
 import {appApiError} from '@/lib/apps';
@@ -16,8 +17,8 @@ export function backgroundAccessSummary(result:Result){
  return `Re-established ${parts.join(' and ')||'nothing'}.`+(result.skipped.length?' Background refresh needs an account permission that lasts until revoked; renew the account permission to include it.':'');
 }
 
-// After an App upgrade the Runtime still holds sessions for the previous version.
-// This asks the Host to issue new ones and deliver them to the Runtime directly.
+// Manual recovery reissues only the current reviewed sessions.
+// Trusted compatible upgrades ordinarily carry those approvals forward.
 export function ExperienceBackgroundAccess({target,disabled,onBusy}:{target:AppConnectionTarget;disabled:boolean;onBusy:(busy:boolean)=>void}){
  const [busy,setBusy]=useState(false),[notice,setNotice]=useState(''),operation=useRef(false);
  if(target.session?.state!=='connected')return null;
@@ -34,8 +35,8 @@ export function ExperienceBackgroundAccess({target,disabled,onBusy}:{target:AppC
  }
  return <section aria-label="Background access" className="space-y-2 border-t pt-4 text-sm" style={{borderColor:'var(--ghost-border)'}}>
   <h4 className="font-medium">Background access</h4>
-  <p>Background actions and refresh run in the app&apos;s Runtime. After the app is updated, re-establish access for the permissions you reviewed. No codes are shown or copied.</p>
-  {notice&&<p role="status">{notice}</p>}
+  <p>Trusted compatible updates keep your existing approvals. If an approved background action or refresh stops working, restore its current access here. This does not add permissions or extend their expiry.</p>
+  {notice&&<AppRequestNotice message={notice} role="status"/>}
   <button type="button" className="deft-pill min-h-11" disabled={busy||disabled} onClick={()=>void reestablish()}>{busy?'Re-establishing…':'Re-establish background access'}</button>
  </section>;
 }

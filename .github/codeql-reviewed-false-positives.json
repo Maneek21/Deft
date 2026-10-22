@@ -14,7 +14,7 @@
     "examples/apps/email/providers/native-connection-retained.mjs": "cf64c2a178f6589b9760f3055f14d0d51e9bbee6e81524a5971182e09b50773a",
     "examples/apps/email/providers/oauth-contract.mjs": "c5b15eaf82a258f6ea13d78d03a0debb7bd21e66341bf3bd8e96db53b3e37192",
     "examples/apps/email/providers/oauth-provider.mjs": "8144e4db2cf56f9ff2ffa41efcb2a811497778db8d30354ae9c148cc092e85b7",
-    "apps/web/src/components/apps/installed-app-experience.tsx": "9a096d791fd9d1f305f4fc2412e19863a918e09b26a8917d5e45deb1c000c691",
+    "apps/web/src/components/apps/installed-app-experience.tsx": "1ab480e5edd639df89c160a142d10a4f2f9349d53e96a30d5439431a1b0f81b7",
     "apps/web/src/lib/app-experience-bridge.ts": "9fcb307f4b3054e1a5ebba5ec05a02aefc28e020a4b1224c67a023c3838561ef",
     "apps/web/src/lib/app-experience-lease.ts": "1fd793057125771dc4b5efc311e26287f38935e301af689a090bc922706ee7d0",
     "apps/web/src/lib/app-experience-connection.ts": "63d49bfcaefc2ec7bfc6c8a59c5a3f106dfb742f4377c69c03fb5842589b22d2",

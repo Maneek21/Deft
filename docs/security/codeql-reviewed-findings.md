@@ -38,3 +38,19 @@ Review of the fresh source-to-sink flows confirms that they still carry the exis
 Only `apps/web/src/components/apps/installed-app-experience.tsx` changed among all pinned source files. Its reviewed SHA-256 is now `9a096d791fd9d1f305f4fc2412e19863a918e09b26a8917d5e45deb1c000c691`; every supporting guard pin and every unrelated finding remains unchanged. No query, path, finding, or GitHub alert disposition is excluded or automatically dismissed. The exact disposition gate must continue rejecting any other changed or new finding.
 
 Validation: all 10 disposition unit tests passed, and the unchanged fresh raw SARIF passed the updated exact gate with 26 reviewed findings, zero unresolved findings and zero unused reviews. The raw SHA-256 remained unchanged after the gate.
+
+## Combined Host136 presentation review, 2026-10-22
+
+PR #409 is rebased on the merged FX-A implementation from #410. Its combined
+installed experience changes only the notice import, owner-readable notice JSX,
+and duplicate action presentation. The scoped-access calculation, current-screen
+store filtering, read-only recovery and seed-form behavior remain from FX-A.
+The three guarded opaque-frame finding lines and exact flows retain the FX-A
+locations and fingerprints above. Every supporting authority-source pin remains
+unchanged. The combined source SHA-256 is
+`1ab480e5edd639df89c160a142d10a4f2f9349d53e96a30d5439431a1b0f81b7`.
+
+The unchanged FX-A raw SARIF passes against canonical combined source with all
+26 findings reviewed, zero unresolved and zero unused entries; raw bytes retain
+SHA-256 `afebaad11408dc67df2be0d2b327c7bd381f119e08f63c5aabbfdb5cb3ed0f11`.
+Fresh combined-head CodeQL analysis remains a required CI gate.

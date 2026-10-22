@@ -40,10 +40,10 @@ test('inbox count hook exists', () => {
   assert.ok(existsSync(p));
 });
 
-test('sidebar uses Inbox not Approvals', () => {
+test('sidebar calls workspace attention Notifications and retains the inbox route', () => {
   const p = resolve(ROOT, 'apps/web/src/components/sidebar.tsx');
   const src = readFileSync(p, 'utf8');
-  assert.ok(src.includes("name: 'Inbox'"), "sidebar should declare Inbox nav entry");
+  assert.ok(src.includes("name: 'Notifications'"), "sidebar should distinguish notifications from app inboxes");
   assert.ok(src.includes("href: '/inbox'"), "sidebar should point to /inbox");
   assert.ok(!src.match(/name:\s*'Approvals'/), 'sidebar should NOT have Approvals nav entry');
   assert.ok(src.includes('useInboxCount'), 'sidebar should use useInboxCount badge hook');

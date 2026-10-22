@@ -14,7 +14,7 @@ test('actual current review renders account and explicit allow; expired review r
 });
 test('actual uncertain recovery renders no activation even when supplied a previous review',()=>{
  const rendered=renderToStaticMarkup(<ExperienceExistingAccountReview {...base} review={review} uncertain={true} now={now}/>);
- assert.match(rendered,/uncertain outcome/);assert.match(rendered,/Check status/);assert.doesNotMatch(rendered,/Allow and continue|Synthetic existing account/);
+ assert.match(rendered,/status is unconfirmed/);assert.match(rendered,/Check status/);assert.doesNotMatch(rendered,/Allow and continue|Synthetic existing account/);
 });
 
 test('v2 account reuse lists independent reviewed purposes and their expiries without OAuth navigation',()=>{

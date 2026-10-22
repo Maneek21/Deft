@@ -15,7 +15,7 @@ function parseSettings(raw:unknown):Settings{
 /** Independent human opt-in. The exact displayed source nominates the account;
  * the service reconstructs current source and destination authority per write. */
 export function KnowledgeCaptureSettings({source,spaces,current,signal}:{source:AppIntegrationSourceIdentity;spaces:readonly Choice[];current:()=>boolean;signal:AbortSignal}){
- const [settings,setSettings]=useState<Settings>(),[policy,setPolicy]=useState<AppIntegrationCapturePolicyInput>(),[notice,setNotice]=useState(''),[busy,setBusy]=useState(false),[uncertain,setUncertain]=useState(false),[providerReady,setProviderReady]=useState<boolean>();
+ const [settings,setSettings]=useState<Settings>(),[policy,setPolicy]=useState<AppIntegrationCapturePolicyInput>(),[notice,setNotice]=useState(''),[busy,setBusy]=useState(false),[uncertain,setUncertain]=useState(false),[providerReady,setProviderReady]=useState<boolean>(),[problemsOpen,setProblemsOpen]=useState(false);
  const request=async(name:'settings'|'write',value:unknown)=>{signal.throwIfAborted();if(!current())throw Error();const raw=await boundedConfirmationJson(await api.fetch('/api/app-integrations/knowledge/'+name,{method:'POST',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify(value)}));signal.throwIfAborted();if(!current())throw Error();return raw;};
  const load=async()=>{const [raw,config]=await Promise.all([request('settings',{source}),api.fetch('/api/org/ai-config',{signal}).then(boundedConfirmationJson)]);if(!current()||signal.aborted)return;const value=parseSettings(raw);setSettings(value);setPolicy(value.policy);setProviderReady(typeof config==='object'&&config!==null&&'has_provider'in config&&config.has_provider===true);setUncertain(false);};
  useEffect(()=>{let active=true;void load().catch(()=>{if(active&&current()&&!signal.aborted)setNotice('Knowledge settings are unavailable.');});return()=>{active=false;};},[source,current,signal]);
@@ -39,8 +39,12 @@ export function KnowledgeCaptureSettings({source,spaces,current,signal}:{source:
    <p className="text-xs leading-5 text-[var(--muted)]">Uses synchronized message text. Attachment contents are not included. Capture continues in the background after you save.</p>
    <button type="button" className="deft-pill min-h-11" disabled={disabled||policy.enabled&&providerReady!==true||!AppIntegrationCapturePolicyInputSchema.safeParse(policy).success} onClick={()=>void save()}>{busy?'Saving…':'Save Knowledge settings'}</button>
   </>}
-  {settings&&<p role="status" className="text-xs leading-5 text-[var(--muted)]">{settings.progress.processed?`${settings.progress.captured} captured · ${settings.progress.skipped} skipped${settings.progress.failed?` · ${settings.progress.failed} need attention`:''}`:providerReady===false?'Capture will wait until AI is configured.':settings.policy.enabled?'Waiting for eligible messages.':'Turn on capture and save to start.'}</p>}
-  <button type="button" className="deft-pill min-h-11" disabled={busy||!current()} onClick={()=>void refresh()}>Check settings</button>
+  {settings&&<p role="status" className="text-xs leading-5 text-[var(--muted)]">{settings.progress.processed?`${settings.progress.captured} captured · ${settings.progress.skipped} skipped${settings.progress.failed?` · ${settings.progress.failed} could not be saved`:''}`:providerReady===false?'Capture will wait until AI is configured.':settings.policy.enabled?'Waiting for eligible messages.':'Turn on capture and save to start.'}</p>}
+  {!!settings?.progress.failed&&<div className="space-y-2">
+   <button type="button" className="deft-pill min-h-11" aria-expanded={problemsOpen} onClick={()=>setProblemsOpen(value=>!value)}>Review capture problems ({settings.progress.failed})</button>
+   {problemsOpen&&<section className="space-y-2 rounded-xl bg-[var(--surface-container-low)] p-3" aria-label="Capture problems"><h4 className="font-medium">Items could not be saved to Knowledge</h4><p className="text-xs leading-5">Check account access and the selected Knowledge destination, then check capture status. You can also save an item to Knowledge manually from its source.</p><Link href="/settings/apps/private-resources" className="inline-flex min-h-11 items-center underline">Review account access</Link><p className="text-xs">Destination: {settings.policy.destination.scope==='user'?'Private Knowledge':spaces.find(row=>row.id===settings.policy.destination.space_id)?.name??'Selected space'}</p></section>}
+  </div>}
+  <button type="button" className="deft-pill min-h-11" disabled={busy||!current()} onClick={()=>void refresh()}>Check capture status</button>
   {notice&&<p role="status" className="text-xs text-[var(--muted)]">{notice}</p>}
  </section>;
 }

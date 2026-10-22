@@ -106,6 +106,13 @@ jobs:
           pnpm --filter @deft/web exec tsx --test
           src/lib/app-experience-*.test.ts
           src/lib/app-request-error.test.ts
+          src/lib/app-experience-error-presentation.test.tsx
+          src/lib/app-management-clarity.test.tsx
+          src/components/apps/experience-settings-clarity.test.mjs
+          src/components/apps/experience-settings-presentation.test.tsx
+          src/components/apps/integrations/source-task-presentation.test.mjs
+          src/components/apps/integrations/reviewed-destination.test.mjs
+          src/lib/app-experience-consent-presentation.test.mjs
           src/components/apps/integrations/source-nomination.test.ts
           src/lib/app-experience-bootstrap-browser.test.mjs
           src/lib/app-connection-reattachment.test.ts

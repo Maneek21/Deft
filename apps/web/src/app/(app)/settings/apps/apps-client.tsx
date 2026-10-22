@@ -12,6 +12,7 @@ import { ConnectedAppManagement } from '@/components/apps/connected-app-manageme
 import { ResourceAppReview } from '@/components/apps/resource-app-review';
 import { AttachmentAppReview } from '@/components/apps/attachment-app-review';
 import { RuntimeAppSetup } from '@/components/apps/runtime-app-setup';
+import { AppInstallationStatus } from '@/components/apps/app-management-summary';
 import { PublicCancellationOwnerPanel } from '@/components/apps/public-cancellation-owner-panel';
 import { useSetPageContext } from '@/components/app-header-context';
 import { api } from '@/lib/api';
@@ -204,26 +205,27 @@ function AppCard({ app, canManage, busy, onActivate, onEnable, onDisable, onChoo
     || app.manifest.compatibility.app_protocol === '4'
     || app.manifest.compatibility.app_protocol === '5' || app.manifest.compatibility.app_protocol === '7';
   const showConnectedManagement = connected || canStageConnectedUpgrade(app);
-  const tone = app.state === 'active' ? 'var(--status-green)' : app.state === 'disabled' ? 'var(--outline)' : 'var(--status-amber)';
   return <article className={`flex min-h-56 min-w-0 flex-col rounded-xl p-4 ${connected || runtime ? 'md:col-span-2' : ''}`} style={{ background: 'var(--surface-container-low)', border: '1px solid var(--ghost-border)' }}>
-    <div className="flex items-start gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-lg" style={{ background: 'var(--bg-active)', color: 'var(--primary)' }}><AppWindow size={20} /></span><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h2 className="truncate text-sm font-semibold">{app.name}</h2><span className="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase" style={{ color: tone, background: 'var(--surface-container-high)' }}>{app.state}</span></div><p className="mt-1 truncate font-mono text-[11px]" style={{ color: 'var(--outline)' }}>{app.app_id}@{app.version}</p></div></div>
-    <p className="mt-3 line-clamp-2 text-xs leading-5" style={{ color: 'var(--on-surface-variant)' }}>{app.manifest.description ?? (app.manifest.schema_version === '6' ? 'App with declared native Calendar actions.' : 'Declarative workspace App.')}</p>
-    <div className="mt-3 text-[11px]" style={{ color: 'var(--outline)' }}>{app.manifest.modules.length} Module{app.manifest.modules.length === 1 ? '' : 's'} · Protocol v{app.manifest.compatibility.app_protocol} · {app.manifest.license}</div>
+    <div className="flex items-start gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg" style={{ background: 'var(--bg-active)', color: 'var(--primary)' }}><AppWindow size={20} /></span><div className="min-w-0 flex-1"><h2 className="break-words text-base font-semibold">{app.name}</h2><AppInstallationStatus state={app.state} /><p className="mt-1 text-xs" style={{ color: 'var(--outline)' }}>Version {app.version}</p></div></div>
+    {app.manifest.description && <p className="mt-3 text-xs leading-5" style={{ color: 'var(--on-surface-variant)' }}>{app.manifest.description}</p>}
     {!connected && !runtime && <div className="mt-auto flex items-center justify-between gap-3 pt-4"><span className="flex items-center gap-1 text-[11px]" style={{ color: 'var(--status-green)' }}><ShieldCheck size={13} /> {app.manifest.schema_version === '6' ? `${app.manifest.native_actions.length} declared native Calendar actions; current owner bindings govern access` : 'No connected permissions'}</span>{canManage && app.state === 'staged' ? <button type="button" className="deft-pill min-h-11 text-white" style={{ background: 'var(--primary-container)' }} disabled={busy} onClick={onActivate}>{busy && <Loader2 size={13} className="animate-spin" />} Activate</button> : canManage && app.state === 'active' ? <button type="button" className="deft-pill min-h-11" disabled={busy} onClick={onDisable}>{busy ? <Loader2 size={13} className="animate-spin" /> : <Power size={13} />} Disable</button> : canManage && canEnableAppWithoutReview(app) ? <button type="button" className="deft-pill min-h-11" disabled={busy} onClick={onEnable}>{busy ? <Loader2 size={13} className="animate-spin" /> : <Power size={13} />} Re-enable version {app.version}</button> : null}</div>}
     {runtime && <div className="mt-auto flex flex-wrap items-center gap-2 pt-4">
-      <span className="mr-auto text-xs" style={{ color: 'var(--on-surface-variant)' }}>{app.state === 'active' ? 'Reviewed Runtime App' : 'Owner review required before use'}</span>
       {app.state === 'active' && (app.manifest.schema_version === '4' || app.manifest.schema_version === '5' || app.manifest.schema_version === '6' || app.manifest.schema_version === '7') && app.manifest.experiences.map((experience) =>
         <Link key={experience.key} className="deft-pill min-h-11" href={`/apps/${encodeURIComponent(app.id)}/${encodeURIComponent(experience.key)}`}>Open {experience.label}</Link>)}
-      {canManage && APP_RESOURCE_SYNC_ENABLED && app.state === 'active' && (app.manifest.schema_version === '5' || app.manifest.schema_version === '7') && app.manifest.sync_descriptors.length > 0 && <Link className="deft-pill min-h-11" style={{ minHeight: 44 }} href="/settings/apps/private-resources">Connect private resources</Link>}
-      {canManage && APP_ATTACHMENT_BROKER_ENABLED && app.manifest.schema_version==='7' && app.state==='active' && <button type="button" className="deft-pill min-h-11" disabled={busy} onClick={onChooseUpgrade}><FileUp size={13}/> Stage upgrade</button>}
-      {canManage && app.state === 'active' && <button type="button" className="deft-pill min-h-11" disabled={busy} onClick={onDisable}><Power size={13} /> Disable</button>}
+      {canManage && APP_RESOURCE_SYNC_ENABLED && app.state === 'active' && (app.manifest.schema_version === '5' || app.manifest.schema_version === '7') && app.manifest.sync_descriptors.length > 0 && <Link className="deft-pill min-h-11" style={{ minHeight: 44 }} href="/settings/apps/private-resources">Manage connections</Link>}
     </div>}
     {canManage && APP_RESOURCE_SYNC_ENABLED && ['staged', 'disabled'].includes(app.state) && app.manifest.schema_version === '5' && app.manifest.runtime_actions.length === 0 && app.manifest.sync_descriptors.length > 0 && <ResourceAppReview app={app} />}
     {canManage && APP_ATTACHMENT_BROKER_ENABLED && ['staged', 'disabled'].includes(app.state) && app.manifest.schema_version === '7' && <AttachmentAppReview app={app} />}
-    {canManage && APP_ATTACHMENT_BROKER_ENABLED && app.state === 'active' && app.manifest.schema_version === '7' && app.manifest.runtime_actions.length > 0 && <RuntimeAppSetup app={app} />}
-    {canManage && APP_ATTACHMENT_BROKER_ENABLED && app.state==='active' && app.manifest.schema_version==='7' && <AttachmentAppUpgrade app={app} seed={attachmentUpgrade}/>}
+    {runtime && canManage && app.state === 'active' && <details className="mt-4 border-t pt-2"><summary className="min-h-11 cursor-pointer py-3 text-sm font-medium">App administration</summary><div className="space-y-3 pt-2">
+      <p className="text-xs" style={{ color: 'var(--on-surface-variant)' }}>Connection and sync status are shown inside the app. Use these controls to manage actions and installed updates.</p>
+      <div className="flex flex-wrap gap-2">{APP_ATTACHMENT_BROKER_ENABLED && app.manifest.schema_version==='7' && <button type="button" className="deft-pill min-h-11" disabled={busy} onClick={onChooseUpgrade}><FileUp size={13}/> Stage upgrade</button>}
+      <button type="button" className="deft-pill min-h-11" disabled={busy} onClick={onDisable}><Power size={13} /> Disable</button></div>
+      {APP_ATTACHMENT_BROKER_ENABLED && app.manifest.schema_version === '7' && app.manifest.runtime_actions.length > 0 && <RuntimeAppSetup app={app} />}
+      {APP_ATTACHMENT_BROKER_ENABLED && app.manifest.schema_version==='7' && <AttachmentAppUpgrade app={app} seed={attachmentUpgrade}/>}
+    </div></details>}
     {showConnectedManagement && <ConnectedAppManagement app={app} canManage={canManage} busy={busy} onDisable={onDisable} onChooseUpgrade={onChooseUpgrade} />}
+    <details className="mt-3"><summary className="min-h-11 cursor-pointer py-3 text-xs">Package details</summary><dl className="grid gap-3 py-2 text-xs sm:grid-cols-2"><Fact label="App identity" value={`${app.app_id}@${app.version}`} /><Fact label="Protocol" value={`v${app.manifest.compatibility.app_protocol}`} /><Fact label="Included modules" value={String(app.manifest.modules.length)} /><Fact label="License" value={app.manifest.license} /></dl></details>
   </article>;
 }
 
-function Fact({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) { return <div className="min-w-0"><dt style={{ color: 'var(--outline)' }}>{label}</dt><dd className={`mt-0.5 truncate ${mono ? 'font-mono text-[10px]' : 'font-medium'}`}>{value}</dd></div>; }
+function Fact({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) { return <div className="min-w-0"><dt style={{ color: 'var(--outline)' }}>{label}</dt><dd className={`mt-0.5 break-words [overflow-wrap:anywhere] ${mono ? 'font-mono text-[10px]' : 'font-medium'}`}>{value}</dd></div>; }

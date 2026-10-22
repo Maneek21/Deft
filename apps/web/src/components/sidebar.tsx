@@ -115,7 +115,7 @@ const navItems: CoreNavigationItem[] = [
   { kind: 'core', name: 'Knowledge', href: '/knowledge', icon: BookOpen },
   { kind: 'core', name: 'Calendar', href: '/calendar', icon: CalendarDays },
   { kind: 'core', name: 'Notes', href: '/notes', icon: FileText },
-  { kind: 'core', name: 'Inbox', href: '/inbox', icon: Inbox },
+  { kind: 'core', name: 'Notifications', href: '/inbox', icon: Inbox },
 ];
 
 function PrimaryNavigationIcon({ item }: { item: PrimaryNavigationItem }) {

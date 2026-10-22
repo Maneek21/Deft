@@ -10,6 +10,19 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### 0.3.0-preview.136 candidate - publication pending
+
+- Scope compact private-record access prompts to write controls on the current
+  screen; retain feature-specific guidance and existing authority checks.
+- Hydrate seeded Runtime-owned forms without creating a record, bound opening
+  waits, and recover read-only failures without replaying writes.
+- Keep external mail images hidden until requested with a Show images control.
+- Lead app settings with verified connection health and make permission,
+  task-source, administration and recovery language easier to understand.
+
+Schema stays131. Author Kit alpha.42 remains immutable. Email28 requires this
+Host support and is released and deployed after Host136.
+
 ### 0.3.0-preview.135 candidate - publication pending
 
 - Prevent read-only account-target and background authority checks from

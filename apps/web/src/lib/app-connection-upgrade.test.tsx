@@ -123,7 +123,7 @@ test('connected upgrade surface offers background installer, while uncertain acc
  await completeConnectionUpgrade({...f.ports,search:'?state='+nonce+'&code=synthetic-once'});const target=(await f.flow.load()).targets[0]!;
  const props={target,client:f.flow,disabled:false,onBusy:()=>{},onContext:()=>{},onNavigate:()=>{},onConnect:()=>{},onStatus:()=>{},onDisconnect:()=>{},ownerId:identity.ownerId,orgId:identity.orgId,appOwnedRecords:true};
  const connected=renderToStaticMarkup(<ExperienceCapabilityUpgradeSettings {...props}/>);
- assert.match(connected,/Re-establish background access/);assert.match(connected,/Background actions and refresh/);
+ assert.match(connected,/Re-establish background access/);assert.match(connected,/Trusted compatible updates keep your existing approvals/);
  const uncertain={...target,session:{...target.session!,state:'indeterminate' as const,account:null}};
  assert.doesNotMatch(renderToStaticMarkup(<ExperienceCapabilityUpgradeSettings {...props} target={uncertain}/>),/Re-establish background access/);
 });
