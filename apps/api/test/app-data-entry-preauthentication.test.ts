@@ -10,8 +10,9 @@ manifest.owner_connections=[{key:'mailbox',resource_key:'inbox',action_keys:[],m
 manifest.record_stores=[{schema_version:'deft.app_record_store.v1',key:'messages',resource_key:'inbox',runtime_requirement_key:'sync_provider',
  max_record_bytes:4096,max_files:0,max_file_bytes:1,max_total_file_bytes:1}];
 const parsed=parseAttachmentAppManifest(manifest),calls:string[]=[];
+let manifestPreludeReads=0;
 let current:any,credential=true,live=true,final=true,revokeAfterCurrent=false,journalChanged=false;
-mock.module(new URL('../src/lib/db.ts',import.meta.url).href,{namedExports:{db:{select:()=>{
+mock.module(new URL('../src/lib/db.ts',import.meta.url).href,{namedExports:{db:{select:()=>{manifestPreludeReads++;
  const query:any={from:()=>query,where:()=>query,then:(resolve:any,reject:any)=>Promise.resolve([{manifest}]).then(resolve,reject)};return query;
 },transaction:async(work:any)=>work({})}}});
 mock.module(new URL('../src/lib/env.ts',import.meta.url).href,{namedExports:{isAppOwnerConnectionsEnabled:()=>true}});
@@ -48,12 +49,13 @@ function fixture(){
  const context={schema_version:'deft.app_data_authority.v1',request_id:randomUUID(),scope,connection:{session_id:session.session_id,session_revision:1,runtime_session_ref:'runtime',account_ref:'account'},
   authority:{consent_id:null,consent_digest:null,data_policy_digest:appDataDigest(parsed.record_stores![0])},operation:'resource_read_presentation',input_digest:digest,expires_at:new Date(deadline).toISOString()};
  current={scope,profile,session,context,deadline,row:{state:'inflight',context,web_session_id:randomUUID(),access_expires_at:new Date(deadline),expires_at:new Date(deadline)}};
- credential=live=final=true;revokeAfterCurrent=journalChanged=false;calls.length=0;return context;
+ credential=live=final=true;revokeAfterCurrent=journalChanged=false;calls.length=0;manifestPreludeReads=0;return context;
 }
 
 test('ordinary data callback keeps full fresh current authority and final authentication after credential entry admission',async()=>{
  const context=fixture();assert.equal((await appDataRuntimeAuthority(context,'Bearer service')).allowed,true);
  assert.deepEqual(calls,['entry','journal','current','journal','full']);
+ assert.equal(manifestPreludeReads,0,'policy digest resolves only from the fresh validated current declarations');
 });
 
 test('entry failure, fresh current revoke and final deployment revoke withhold ordinary data authority',async()=>{
@@ -68,4 +70,13 @@ test('Send/review/lifecycle/status/inspection callbacks retain full entry authen
   const context={...fixture(),operation};final=false;
   await assert.rejects(appDataRuntimeAuthority(context,'Bearer service'));assert.deepEqual(calls,['full'],operation);
  }
+});
+
+
+test('callback policy resolution cannot nominate a different current declaration or bypass current version fencing',async()=>{
+ let context=fixture();context.authority.data_policy_digest='sha256:'+'b'.repeat(64);
+ await assert.rejects(appDataRuntimeAuthority(context,'Bearer service'));assert.deepEqual(calls,['entry','journal','current']);
+ assert.equal(manifestPreludeReads,0);
+ context=fixture();current.scope={...current.scope,app_version_id:randomUUID()};
+ await assert.rejects(appDataRuntimeAuthority(context,'Bearer service'));assert.deepEqual(calls,['entry','journal','current']);
 });

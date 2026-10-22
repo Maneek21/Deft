@@ -96,10 +96,23 @@ async function finishAppDataBase(base:AppDataBase){
 }
 export async function currentAppDataAuthority(caller:Pick<ExperienceCaller,'org_id'|'user_id'|'access_expires_at'>,sessionId:string,storeKey:string,guard:WebAuthorityGuard,
  requireConsent:boolean|'optional',expectedConsentId?:string,requiredAction?:{action_key:string;action_binding_id:string}|'none'){
- const base=await currentAppDataBase(caller,sessionId,guard,requiredAction);
+ return finishCurrentAppDataAuthority(caller,await currentAppDataBase(caller,sessionId,guard,requiredAction),storeKey,requireConsent,expectedConsentId);
+}
+async function finishCurrentAppDataAuthority(caller:Pick<ExperienceCaller,'org_id'|'user_id'>,base:AppDataBase,storeKey:string,requireConsent:boolean|'optional',expectedConsentId?:string){
  const rows=requireConsent?await measureAppDataPhase('consent_read',()=>new PostgresAppDataStore(caller).activeConsent(base.consentConnections.map(item=>item.session_id),storeKey)):[];
  const result=resolveAppDataStore(base,storeKey,requireConsent,rows,expectedConsentId);
  await finishAppDataBase(base);if(result.expires_at<=Date.now())throw appDataDenied();return result;
+}
+/** Resolve the retained policy digest from this admission's already validated
+ * current declarations. No separate version blob read, author nomination or
+ * stored permission is needed; all exact scope/consent/journal/final transport
+ * comparisons in the callback remain mandatory. */
+async function currentAppDataPolicyAuthority(caller:ExperienceCaller,sessionId:string,policyDigest:string,guard:WebAuthorityGuard,
+ requireConsent:boolean,expectedConsentId:string|undefined,requiredAction:{action_key:string;action_binding_id:string}|'none'|undefined){
+ const base=await currentAppDataBase(caller,sessionId,guard,requiredAction);
+ const declaration=base.declarations.find(item=>appDataDigest(item)===policyDigest);
+ if(!declaration)throw appDataDenied();
+ return finishCurrentAppDataAuthority(caller,base,declaration.key,requireConsent,expectedConsentId);
 }
 
 /** Context-only batch. Connection authority is checked twice per account;
@@ -149,10 +162,7 @@ async function appDataRuntimeAuthorityOwned(raw:unknown,authorization:string|und
  // unrelated action here adds serialized work without changing this response.
  // Store selectors are retained in the declaration linked by the exact policy
  // digest; no author value or nomination travels through introspection.
- const [version]=await db.select({manifest:appVersions.manifest}).from(appVersions).where(and(eq(appVersions.org_id,owner.org_id),eq(appVersions.id,input.scope.app_version_id)));
- const declaration=parseAppAuthorityManifest(version?.manifest,{org_id:owner.org_id,app_version_id:input.scope.app_version_id}).record_stores?.find(item=>appDataDigest(item)===input.authority.data_policy_digest);
- if(!declaration)throw appDataDenied();
- const current=await currentAppDataAuthority(caller,input.connection.session_id,declaration.key,appDataRetainedGuard(caller),input.operation==='connection_metadata'?input.authority.consent_id!==null:appDataRequiresConsent(input.operation),input.authority.consent_id??undefined,appDataRuntimeConnectionActionSelection(input.operation));
+ const current=await currentAppDataPolicyAuthority(caller,input.connection.session_id,input.authority.data_policy_digest,appDataRetainedGuard(caller),input.operation==='connection_metadata'?input.authority.consent_id!==null:appDataRequiresConsent(input.operation),input.authority.consent_id??undefined,appDataRuntimeConnectionActionSelection(input.operation));
  if(['prepared_action_commit','prepared_action_restore'].includes(input.operation)){
   const {assertFutureRecordActionLocalRequest,futureRecordActionLocalInput}=await import('./app-future-record-action-local.js');
   await db.transaction(async tx=>{
