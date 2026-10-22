@@ -91,13 +91,14 @@ export function createExperienceDataClient(options:{installationId:string;target
   if(record.status!=='draft'||JSON.stringify(recordCopySource(node,record))!==JSON.stringify(source))throw Error('Original source unavailable');
   return {...locator(node),expected_revision:record.revision,expected_content_digest:record.content_digest,file_id:fileId,source:{...source,file_ref:file.file_ref}};
  };
- const changeTarget=async(node:ExperienceRecordFormNode,control:{operation_key:string;source_store_key:string},signal:AbortSignal)=>{
-  const target=await select(node.store_key,signal),destination=target.stores.find(item=>item.declaration.key===node.store_key),source=target.stores.find(item=>item.declaration.key===control.source_store_key);
+ const checkedChangeTarget=(node:ExperienceRecordFormNode,control:{operation_key:string;source_store_key:string},target:Awaited<ReturnType<typeof select>>)=>{
+  const destination=target.stores.find(item=>item.declaration.key===node.store_key),source=target.stores.find(item=>item.declaration.key===control.source_store_key);
   if(!(node.record_changes?.some(item=>item.operation_key===control.operation_key&&item.source_store_key===control.source_store_key)||node.initial_change?.operation_key===control.operation_key&&node.initial_change.source_store_key===control.source_store_key)
    ||!destination?.declaration.record_changes?.some(item=>item.key===control.operation_key&&item.source_store_key===control.source_store_key)
    ||!source||source.declaration.resource_key!==destination.declaration.resource_key||source.declaration.runtime_requirement_key!==destination.declaration.runtime_requirement_key
    ||!destination.consent||!source.consent||Math.min(appConsentDeadline(destination.consent.expires_at,destination.consent.consent_lifetime),appConsentDeadline(source.consent.expires_at,source.consent.consent_lifetime))<=Date.now())throw Error('Saved-content access ended');return {target,destination,source};
  };
+ const changeTarget=async(node:ExperienceRecordFormNode,control:{operation_key:string;source_store_key:string},signal:AbortSignal)=>checkedChangeTarget(node,control,await select(node.store_key,signal));
  const changeInput=(node:ExperienceRecordFormNode,record:ExperienceRecordRow,control:{operation_key:string},source:{store_key:string;record_id:string;expected_revision:number;expected_content_digest:string},invocationMode?:'initial',parameters?:Record<string,string>)=>{
   if(record.status!=='draft'||record.record_id!==node.record_id)throw Error('Saved draft changed');return AppRecordPrepareChangeInputSchema.parse({...locator(node),expected_revision:record.revision,expected_content_digest:record.content_digest,operation_key:control.operation_key,...(invocationMode?{invocation_mode:invocationMode}:{}),...(parameters!==undefined?{parameters}:{}),source:{store_key:source.store_key,record_id:source.record_id,expected_revision:source.expected_revision,expected_content_digest:source.expected_content_digest}});};
  const changePorts:RecordChangePorts={
@@ -145,10 +146,10 @@ export function createExperienceDataClient(options:{installationId:string;target
  const ports:ExperienceRecordFormPorts={
   ...changePorts,
   ...(options.principal?{openSeed:async(node:ExperienceRecordFormNode,signal:AbortSignal)=>{
-   const value=recordSeedSnapshotValue(node);if(!value||!node.seed||node.initial_change)throw Error('Seed snapshot nomination changed');
+   const value=recordSeedSnapshotValue(node);if(!value||!node.seed)throw Error('Seed snapshot nomination changed');
    const started=Date.now(),target=await recordTarget(node,signal),pinnedStore=target.stores.find(item=>item.declaration.key===node.store_key);
    const scope={...options.principal!,installationId:options.installationId,accountId:target.account.account_ref,stateKey:node.store_key,resourceTargetKey:target.target_key,formId:node.id+':'+await sha(new TextEncoder().encode(canonicalAppDataJson(node.seed.value)))};
-   const expiry=Math.min(started+30000,appConsentDeadline(pinnedStore!.consent!.expires_at,pinnedStore!.consent!.consent_lifetime));
+   let expiry=Math.min(started+30000,appConsentDeadline(pinnedStore!.consent!.expires_at,pinnedStore!.consent!.consent_lifetime));
    const checkPins=()=>{check(signal);const expected=options.accountRef?.();if(expected!==undefined&&expected!==scope.accountId||expiry<=Date.now())throw Error('Seed visibility ended');};
    let snapshot:AppDataResult|undefined,openingProofActive=true;
    // The initial select is the current pre-storage account/store/consent proof.
@@ -159,11 +160,21 @@ export function createExperienceDataClient(options:{installationId:string;target
     if(current.account.account_ref!==scope.accountId||current.session_id!==target.session_id||current.target_key!==target.target_key||current.resource_key!==target.resource_key||!store?.consent||appConsentDeadline(store.consent.expires_at,store.consent.consent_lifetime)<=Date.now()||canonicalAppDataJson(store)!==canonicalAppDataJson(pinnedStore))throw Error('Seed visibility ended');return;
    }checkPins();if(recordId!==undefined){snapshot=await request(node.store_key,'connection_metadata',{store_key:node.store_key,seed:{operation_key:'record_seed_snapshot',destination_store_key:node.store_key,value:{schema_version:'deft.record_seed_snapshot_request.v1',record_id:recordId,expected:{account_ref:scope.accountId,target_key:target.target_key,data_policy_digest:await sha(new TextEncoder().encode(canonicalAppDataJson(pinnedStore!.declaration))),consent_id:pinnedStore!.consent!.consent_id,consent_digest:pinnedStore!.consent!.consent_digest},value}}},signal,undefined,undefined,false,target);checkPins();}}});
    const record_id=await seedLocator.reserve(node.record_id),resolved={...node,record_id};checkPins();if(!snapshot)throw Error('Seed snapshot unavailable');
-   const opened=recordSeedSnapshotResult(snapshot,resolved,scope.accountId);let record:ExperienceRecordRow;
+   const opened=recordSeedSnapshotResult(snapshot,resolved,scope.accountId);expiry=Math.min(expiry,opened.expiresAt);checkPins();let record:ExperienceRecordRow;
    if(opened.record){record=checkedRecord(resolved,{...snapshot,record:opened.record});await seedLocator.confirmed(record_id);seedRows.delete(record_id);}
-   else{const initial=opened.value!;validateRecordFormValue(initial,resolved.profile);if(recordFormFiles(initial,resolved.profile).length)throw Error('Seed files must be empty');
+   else{let initial=opened.value!,initialNotice='';
+    if(resolved.initial_change){
+     // The initial fresh target contains both declarations and consents. This
+     // immediate source read retains its own Host and Runtime authority checks;
+     // it never needs another account discovery or a recovery-only row read.
+     try{checkedChangeTarget(resolved,resolved.initial_change,target);checkPins();
+      const defaults=await request(resolved.initial_change.source_store_key,'connection_metadata',{store_key:resolved.initial_change.source_store_key,seed:{operation_key:resolved.initial_change.operation_key,destination_store_key:resolved.store_key,value:initial}},signal,undefined,undefined,false,target);
+      checkPins();checkedChangeTarget(resolved,resolved.initial_change,target);if(defaults.record_seed_value)initial=defaults.record_seed_value;
+     }catch{checkPins();initialNotice=recordFormLabels(resolved.profile).initial_change_unavailable;}
+    }
+    validateRecordFormValue(initial,resolved.profile);if(recordFormFiles(initial,resolved.profile).length)throw Error('Seed files must be empty');
     for(const field of recordFormFields(resolved.profile)){if(field.kind!=='verified_identity')continue;const identity=recordFormIdentity(initial,field);if(identity&&!snapshot.identities?.some(item=>item.address===identity))throw Error('Seed identity changed');}
-    record={record_id,revision:0,content_digest:await sha(new TextEncoder().encode(canonicalAppDataJson(initial))),status:'draft',value:initial,files:[],summary:{initial_value_notice:''}};
+    record={record_id,revision:0,content_digest:await sha(new TextEncoder().encode(canonicalAppDataJson(initial))),status:'draft',value:initial,files:[],summary:{initial_value_notice:initialNotice}};
     seedRows.set(record_id,{record:structuredClone(record),accountId:scope.accountId,resourceTargetKey:scope.resourceTargetKey});seedLocators.set(record_id,seedLocator);
    }
    checkPins();openingProofActive=false;const recoveryScope={...options.principal!,installationId:options.installationId,accountId:scope.accountId,stateKey:node.store_key,recordId:record_id,resourceTargetKey:scope.resourceTargetKey};
