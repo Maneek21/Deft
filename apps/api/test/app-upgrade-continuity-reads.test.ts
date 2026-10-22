@@ -200,3 +200,11 @@ test('warm validation still fences changed versions, grants, epochs and membersh
     const f = fixture(); await f.run(); await f.run(); change(f); await assert.rejects(f.run());
   }
 });
+
+
+test('supplied read-only facts cannot bypass issuance locks or current authority reads', async () => {
+  const f = fixture();
+  await assert.rejects(assertContinuityProof(f.tx as never, f.proof, true, true, { rows: {} as never, actions: [] }));
+  await assert.rejects(assertContinuityProof(f.tx as never, f.proof, false, false, { rows: {} as never, actions: [] }));
+  assert.equal(f.queries.length, 0); assert.equal(f.locks.length, 0);
+});

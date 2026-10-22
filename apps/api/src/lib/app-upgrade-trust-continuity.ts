@@ -48,6 +48,21 @@ export const UpgradeContinuityProofSchema = z.strictObject({ schema_version: z.l
   source_admission: pin, source_actions: z.array(pin).max(8), source_observations: z.array(pin).max(1), source_data: z.array(pin).max(32),
   web_session_id: id, issuance_expires_at: z.iso.datetime() });
 export type UpgradeContinuityProof = z.infer<typeof UpgradeContinuityProofSchema>;
+type ContinuityMember = { id: string | null; role: string | null; active: boolean | null; kind: string | null; agent: boolean | null };
+/** Private current-query handoff only. Every row is decoded by its original
+ * Drizzle table codec, including all Date fields used by complete rowDigest.
+ * This is never serialized or retained as authority across invocations. */
+export type ReadOnlyContinuityFacts = {
+  installation: typeof appInstallations.$inferSelect | null;
+  prior: Pick<typeof appVersions.$inferSelect, 'id' | 'manifest'> | null;
+  target: Pick<typeof appVersions.$inferSelect, 'id' | 'manifest'> | null;
+  source: typeof appConnectionSessions.$inferSelect | null;
+  binding: typeof appResourceBindings.$inferSelect | null;
+  registration: typeof appRuntimeRegistrations.$inferSelect | null;
+  admission: typeof appOwnerConnectionAdmissions.$inferSelect | null;
+  trust: { after_state: unknown } | null;
+  owner: ContinuityMember | null; operator: ContinuityMember | null;
+};
 export const rowDigest = (row: unknown) => digestAppGrantValue(JSON.parse(JSON.stringify(row)));
 export type CapturedUpgradeApproval = { source: AppConnectionSessionRecord; web_session_id: string; binding: typeof appResourceBindings.$inferSelect;
   registration: typeof appRuntimeRegistrations.$inferSelect; admission: typeof appOwnerConnectionAdmissions.$inferSelect;
@@ -141,7 +156,15 @@ export async function readContinuityProof(tx: UpgradeTx, orgId: string, requestI
 }
 /** Validate continuing source approvals, not a historical browser login. Every
  * row pin is reread, so revoke/expiry/role/config changes cannot be resurrected. */
-export async function assertContinuityProof(tx: UpgradeTx, proof: UpgradeContinuityProof, current = true, issuance = true) {
+export async function assertContinuityProof(tx: UpgradeTx, proof: UpgradeContinuityProof, current = true, issuance = true,
+  readOnlyFacts?: { rows: ReadOnlyContinuityFacts; actions: readonly (typeof appRuntimeBindings.$inferSelect)[] }) {
+  if (readOnlyFacts) {
+    if (issuance || !current) throw denied();
+    const { rows, actions } = readOnlyFacts;
+    if (rows.installation?.id !== proof.installation_id || rows.installation.org_id !== proof.org_id
+      || rows.source?.org_id !== proof.org_id || rows.source.owner_user_id !== proof.owner_id || rows.source.session_id !== proof.source_session_id
+      || [rows.binding, rows.registration, rows.admission, ...actions].some(row => !row || row.org_id !== proof.org_id)) throw denied();
+  }
   if (issuance && Date.parse(proof.issuance_expires_at) <= Date.now()) throw denied();
   if (issuance) {
     for (const userId of [...new Set([proof.owner_id, proof.operator_id])].sort())
@@ -154,7 +177,7 @@ export async function assertContinuityProof(tx: UpgradeTx, proof: UpgradeContinu
   // Issuance retains its existing reads/share-lock order. No read survives this
   // invocation; versions contribute only IDs/manifests, never unread packages.
   const currentTrust = currentInstallationUpgradeTrustRows(tx, proof.org_id, proof.installation_id).as('continuity_current_trust');
-  const [currentRows] = issuance ? [] : await tx.select({ installation: appInstallations,
+  const [queriedRows] = issuance || readOnlyFacts ? [] : await tx.select({ installation: appInstallations,
     prior: { id: continuityPriorVersion.id, manifest: continuityPriorVersion.manifest },
     target: { id: continuityTargetVersion.id, manifest: continuityTargetVersion.manifest }, source: appConnectionSessions,
     binding: appResourceBindings, registration: appRuntimeRegistrations, admission: appOwnerConnectionAdmissions,
@@ -179,6 +202,7 @@ export async function assertContinuityProof(tx: UpgradeTx, proof: UpgradeContinu
     .leftJoin(continuityOperatorMember, and(eq(continuityOperatorMember.org_id, proof.org_id), eq(continuityOperatorMember.user_id, proof.operator_id)))
     .leftJoin(continuityOperatorUser, eq(continuityOperatorUser.id, continuityOperatorMember.user_id))
     .where(and(eq(appInstallations.org_id, proof.org_id), eq(appInstallations.id, proof.installation_id))).limit(1);
+  const currentRows = readOnlyFacts?.rows ?? queriedRows;
   const installation = issuance ? (await tx.select().from(appInstallations).where(and(eq(appInstallations.org_id, proof.org_id),
     eq(appInstallations.id, proof.installation_id))).limit(1))[0] : currentRows?.installation;
   if (!installation || installation.state !== 'active' || (current && (installation.active_version_id !== proof.version_id
@@ -217,7 +241,7 @@ export async function assertContinuityProof(tx: UpgradeTx, proof: UpgradeContinu
   await check(appResourceBindings, appResourceBindings.id, [proof.source_binding], issuance ? undefined : currentRows?.binding ? [currentRows.binding] : []);
   await check(appRuntimeRegistrations, appRuntimeRegistrations.id, [proof.source_registration], issuance ? undefined : currentRows?.registration ? [currentRows.registration] : []);
   await check(appOwnerConnectionAdmissions, appOwnerConnectionAdmissions.id, [proof.source_admission], issuance ? undefined : currentRows?.admission ? [currentRows.admission] : []);
-  await check(appRuntimeBindings, appRuntimeBindings.id, proof.source_actions);
+  await check(appRuntimeBindings, appRuntimeBindings.id, proof.source_actions, readOnlyFacts ? [...readOnlyFacts.actions] : undefined);
   if (issuance) {
     await check(appResourceObservationConsents, appResourceObservationConsents.consent_id, proof.source_observations);
     await check(appDataConsents, appDataConsents.consent_id, proof.source_data);
