@@ -1,4 +1,5 @@
 'use client';
+import {recordSeedSnapshotValue} from '@/lib/app-experience-record-seed-snapshot';
 import {createRecordEventDelivery} from '@/lib/app-experience-record-event-delivery';
 import {createRecordBrowserRecovery,type RecordRecoveryState,type RecordSubmissionAttempt} from '@/lib/app-experience-record-browser-recovery';
 import type {RecordRecoveryScope} from '@/lib/app-experience-draft-recovery';
@@ -25,7 +26,9 @@ import {parseAddressList} from '../../../../../packages/app-kit/src/structured-a
 
 export type ExperienceRecordFormNode=RecordFormNode;
 export type ExperienceRecordFormReference=ExperienceRecordFormNode|DeftExperienceRecordFormV2Node;
+export type ExperienceRecordOpening={node:ExperienceRecordFormNode;record:ExperienceRecordRow;identities:readonly RecordFormIdentity[];primaryIdentity?:RecordFormIdentity|null;openingRecovery?:{scope:RecordRecoveryScope;row:ExperienceRecordRow;expiresAt:number}};
 export type ExperienceRecordFormPorts={
+ openSeed?:(node:ExperienceRecordFormNode,signal:AbortSignal)=>Promise<ExperienceRecordOpening>;
  resolveSeed?:(node:ExperienceRecordFormNode,signal:AbortSignal)=>Promise<ExperienceRecordFormNode>;
  load:(node:ExperienceRecordFormReference,signal:AbortSignal)=>Promise<{record:ExperienceRecordRow;identities:readonly RecordFormIdentity[];primaryIdentity?:RecordFormIdentity|null}>;
  save:(node:ExperienceRecordFormReference,revision:number,value:Record<string,unknown>,requestId:string,digest:string,signal:AbortSignal)=>Promise<ExperienceRecordRow>;
@@ -122,7 +125,12 @@ export function ExperienceRecordForm({node,ports,context,emit,registerWriter}:{n
  // Fresh account, seed and recovery checks remain mandatory, but an unavailable
  // port cannot leave this surface permanently pending. Retry repeats the reads.
  const openingTimer=setTimeout(()=>{if(!openingCurrent())return;opening.abort();writer.current?.dispose();recovery.current?.dispose();setState(null);setOpeningUnavailable(true);setNotice('This draft is taking too long to open. Retry to check its current status.');},30000);
- void (async()=>{if(node.seed&&ports.resolveSeed){
+ void (async():Promise<Omit<ExperienceRecordOpening,'node'>>=>{if(node.seed&&ports.openSeed&&recordSeedSnapshotValue(node)){
+  const previous=node.record_id,opened=await ports.openSeed(node,openingSignal);if(!openingCurrent())throw Error('Seed scope ended');
+  node=opened.node;resolvedSeed.current=node;
+  if(previous!==node.record_id&&await eventPort.current({kind:'input',node_id:node.id,record_id:node.record_id,record_revision:0,content_digest:'sha256:'+'0'.repeat(64),record_state:'saved',valid:true,dirty:false,record_seed:true,expected_seed_record_id:previous})!==true)throw Error('Seed delivery unavailable');
+  if(!openingCurrent())throw Error('Seed scope ended');return opened;
+ }if(node.seed&&ports.resolveSeed){
   // Locator checks and source hydration are independent read-only paths. Keep
   // both complete/current before disclosing fields; a reused UUID is read again.
   const previous=node.record_id,[resolution,preflight]=await Promise.allSettled([ports.resolveSeed(node,openingSignal),ports.load(node,openingSignal)]);
@@ -132,10 +140,10 @@ export function ExperienceRecordForm({node,ports,context,emit,registerWriter}:{n
   if(!openingCurrent())throw Error('Seed scope ended');
   if(previous!==resolved.record_id)return ports.load(node,openingSignal);
   if(preflight.status==='rejected')throw preflight.reason;return preflight.value;
- }return ports.load(node,openingSignal);})().then(async({record,identities,primaryIdentity})=>{
+ }return ports.load(node,openingSignal);})().then(async({record,identities,primaryIdentity,openingRecovery})=>{
   if(!openingCurrent())return;const mode=experienceRecordFormMode(node,record);recordCopySource(node,record);setIdentities(identities);setPrimaryIdentity(primaryIdentity??null);const initialNotice=typeof record.summary?.initial_value_notice==='string'?record.summary.initial_value_notice:'';
   if(mode==='readonly'){clearTimeout(openingTimer);setNotice(initialNotice);setState({row:record,value:record.value,dirty:false,state:'saved',notice:'Read-only'});registerWriter?.(()=>Promise.resolve(true));return;}
-  if(ports.recoveryScope){setNotice('Checking browser recovery…');const scope=await ports.recoveryScope(node,openingSignal);if(!openingCurrent())return;recoveryScope.current=scope;
+  if(ports.recoveryScope){setNotice('Checking browser recovery…');const scope=openingRecovery?.scope??await ports.recoveryScope(node,openingSignal);if(!openingCurrent())return;recoveryScope.current=scope;
    recovery.current=createRecordBrowserRecovery({scope,allowUnsavedSeed:!!node.seed,maxBytes:node.profile.max_record_bytes,validate:value=>validateRecordFormValue(value,node.profile),validateRestore:(value,row)=>{if(JSON.stringify(recordFormFiles(value,node.profile))!==JSON.stringify(recordFormFiles(row.value,node.profile)))throw Error('Recovery file custody changed');},current,
     prove:async signal=>{const proofSignal=AbortSignal.any([context.signal,signal]);if(ports.recoverySnapshot){const proof=await ports.recoverySnapshot(node,proofSignal);return {scope:proof.scope,row:proof.record};}return {scope:await ports.recoveryScope!(node,proofSignal),row:(await ports.load(node,proofSignal)).record};},change:setRecoveryState});
   }
@@ -145,7 +153,7 @@ export function ExperienceRecordForm({node,ports,context,emit,registerWriter}:{n
    beforeSave:async attempt=>{if(recovery.current)await recovery.current.beforeSave(attempt,writer.current!.snapshot);},
    change:next=>{if(!current())return;if(['saved','unsaved'].includes(next.state)&&!writer.current?.recoveryAttempt)recovery.current?.saved();recovery.current?.record(next);setState(next);let valid=true;try{validateRecordFormValue(next.value,node.profile);}catch{valid=false;}
     void eventPort.current({kind:'input',node_id:node.id,record_id:node.record_id,record_revision:next.row.revision,content_digest:next.row.revision===0?'sha256:'+'0'.repeat(64):next.row.content_digest,record_state:next.state,valid,dirty:next.dirty});}});
-  if(recovery.current){const candidate=await recovery.current.start(record);if(!openingCurrent())return;
+  if(recovery.current){const candidate=await recovery.current.start(record,openingRecovery);if(!openingCurrent())return;
    if(candidate?.submission?.purpose==='save')writer.current.restoreRecovery(candidate.value.content,candidate.submission.attempt);
    else if(candidate?.submission?.purpose==='send')writer.current.blockRecovery();
    renewal=setInterval(()=>void recovery.current?.renew(),30000);
