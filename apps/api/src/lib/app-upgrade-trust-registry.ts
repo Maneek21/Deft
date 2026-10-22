@@ -1,12 +1,13 @@
-import { and, eq, inArray, or, sql } from 'drizzle-orm';
-import { alias as tableAlias } from 'drizzle-orm/pg-core';
+import { and, eq, inArray, or, sql, type SQLWrapper } from 'drizzle-orm';
+import { alias as tableAlias, type PgSelect } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
 import { appResourceBindings, appRuntimeRegistrations, appInstallations, appVersions, appConnectionSessions,
   appOwnerConnectionAdmissions, appRuntimeBindings, orgMembers, users, auditLog } from '@deft/db/schema';
 import { db } from './db.js';
+import { createAppAuthorityContentCache } from './app-authority-content-cache.js';
 import { appConsentDeadline } from '@deft/app-kit/core';
 import { assertContinuityProof, UpgradeContinuityProofSchema, UPGRADE_ALIAS_ACTION, UPGRADE_PROOF_ACTION,
-  type UpgradeContinuityProof, type ReadOnlyContinuityFacts, type UpgradeTx } from './app-upgrade-trust-continuity.js';
+  type UpgradeContinuityProof, type ReadOnlyContinuityFacts, type AppContinuityDatabaseContentFingerprint, type UpgradeTx } from './app-upgrade-trust-continuity.js';
 import { AppConnectionSessionRegistryConfigSchema, connectionProfileDigest, connectionTransportEntryDigest } from './app-connection-session-registry.js';
 
 const id = z.string().uuid(), digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -53,7 +54,43 @@ const successorRegistration = tableAlias(appRuntimeRegistrations, 'registry_succ
 // so malformed metadata cannot nominate an unrelated owner's proof.
 const uuid = (value: ReturnType<typeof sql>) => sql<string>`CASE WHEN ${value} ~ '^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$' THEN ${value} ELSE NULL END`;
 
-async function readCurrentRegistryRows(tx: UpgradeTx, entries: readonly Entry[]) {
+
+const currentFactSelection = {
+    installation: { id: appInstallations.id, org_id: appInstallations.org_id, state: appInstallations.state,
+      active_version_id: appInstallations.active_version_id, active_grant_snapshot_id: appInstallations.active_grant_snapshot_id,
+      lifecycle_epoch: appInstallations.lifecycle_epoch, grant_epoch: appInstallations.grant_epoch }, prior: { id: priorVersion.id, manifest: priorVersion.manifest },
+    target: { id: targetVersion.id, manifest: targetVersion.manifest },
+    source: { org_id: appConnectionSessions.org_id, owner_user_id: appConnectionSessions.owner_user_id,
+      session_id: appConnectionSessions.session_id, record: appConnectionSessions.record },
+    binding: appResourceBindings, registration: appRuntimeRegistrations, admission: appOwnerConnectionAdmissions,
+    trust: { after_state: sql`"registry_trust"."after_state"` },
+    owner: { id: ownerMember.user_id, role: ownerMember.role, active: ownerMember.is_active, kind: ownerUser.kind, agent: ownerUser.is_agent },
+    operator: { id: operatorMember.user_id, role: operatorMember.role, active: operatorMember.is_active, kind: operatorUser.kind, agent: operatorUser.is_agent },
+    // Successors are checked field-by-field, unlike the complete digest-bound
+    // source rows above. Project only the exact current admission inputs.
+    successor_binding: { id: successorBinding.id, org_id: successorBinding.org_id, state: successorBinding.state,
+      app_installation_id: successorBinding.app_installation_id, app_version_id: successorBinding.app_version_id,
+      grant_snapshot_id: successorBinding.grant_snapshot_id, runtime_registration_id: successorBinding.runtime_registration_id,
+      owner_user_id: successorBinding.owner_user_id, consent_expires_at: successorBinding.consent_expires_at,
+      consent_lifetime: successorBinding.consent_lifetime },
+    successor_registration: { id: successorRegistration.id, org_id: successorRegistration.org_id, state: successorRegistration.state,
+      runtime_epoch: successorRegistration.runtime_epoch, app_version_id: successorRegistration.app_version_id,
+      grant_snapshot_id: successorRegistration.grant_snapshot_id, operator_user_id: successorRegistration.operator_user_id }
+};
+const jsonObject = (fields: Readonly<Record<string, SQLWrapper>>) => sql`jsonb_build_object(${sql.join(
+  Object.entries(fields).flatMap(([label, value]) => [sql`${label}::text`, sql`${value}`]), sql`, `)})`;
+// These are actual persisted bytes. Advertised package/grant digests never
+// substitute for content, and version packages are neither hashed nor selected.
+const currentFingerprint = sql<AppContinuityDatabaseContentFingerprint>`'sha256:' || encode(sha256(convert_to(${jsonObject({
+  installation: jsonObject(currentFactSelection.installation), prior: jsonObject(currentFactSelection.prior),
+  target: jsonObject(currentFactSelection.target), source: jsonObject(currentFactSelection.source),
+  binding: sql`to_jsonb(${appResourceBindings})`, registration: sql`to_jsonb(${appRuntimeRegistrations})`,
+  admission: sql`to_jsonb(${appOwnerConnectionAdmissions})`, trust: jsonObject(currentFactSelection.trust),
+  owner: jsonObject(currentFactSelection.owner), operator: jsonObject(currentFactSelection.operator),
+  successor_binding: jsonObject(currentFactSelection.successor_binding), successor_registration: jsonObject(currentFactSelection.successor_registration),
+})}::text, 'UTF8')), 'hex')`;
+
+function currentRegistryQuery(tx: UpgradeTx, entries: readonly Entry[]) {
   // Bound the original alias row set BEFORE any proof or point-fact joins.
   // Separate ordinals retain duplicate aliases independently of proof cardinality.
   const limited = tx.select({ org_id: auditLog.org_id, metadata: auditLog.metadata }).from(auditLog)
@@ -83,24 +120,14 @@ async function readCurrentRegistryRows(tx: UpgradeTx, entries: readonly Entry[])
     eq(trustAudit.org_id, aliases.org_id), eq(trustAudit.entity_type, 'app_installation'),
     eq(trustAudit.entity_id, proofId('installation_id')), eq(trustAudit.action, 'app.upgrade_continuity_trust_changed'),
     eq(trustAudit.actor_type, 'human'))).orderBy(sql`${revision} DESC NULLS FIRST`).limit(1).as('registry_trust');
-  return tx.select({ ordinal: aliases.ordinal, alias_total: aliases.total, alias_org_id: aliases.org_id, alias_metadata: aliases.metadata,
-    proof_audit_id: proof.audit_id, proof_metadata: proof.metadata,
-    installation: appInstallations, prior: { id: priorVersion.id, manifest: priorVersion.manifest },
-    target: { id: targetVersion.id, manifest: targetVersion.manifest }, source: appConnectionSessions,
-    binding: appResourceBindings, registration: appRuntimeRegistrations, admission: appOwnerConnectionAdmissions,
-    trust: { after_state: trust.after_state },
-    owner: { id: ownerMember.user_id, role: ownerMember.role, active: ownerMember.is_active, kind: ownerUser.kind, agent: ownerUser.is_agent },
-    operator: { id: operatorMember.user_id, role: operatorMember.role, active: operatorMember.is_active, kind: operatorUser.kind, agent: operatorUser.is_agent },
-    // Successors are checked field-by-field, unlike the complete digest-bound
-    // source rows above. Project only the exact current admission inputs.
-    successor_binding: { id: successorBinding.id, org_id: successorBinding.org_id, state: successorBinding.state,
-      app_installation_id: successorBinding.app_installation_id, app_version_id: successorBinding.app_version_id,
-      grant_snapshot_id: successorBinding.grant_snapshot_id, runtime_registration_id: successorBinding.runtime_registration_id,
-      owner_user_id: successorBinding.owner_user_id, consent_expires_at: successorBinding.consent_expires_at,
-      consent_lifetime: successorBinding.consent_lifetime },
-    successor_registration: { id: successorRegistration.id, org_id: successorRegistration.org_id, state: successorRegistration.state,
-      runtime_epoch: successorRegistration.runtime_epoch, app_version_id: successorRegistration.app_version_id,
-      grant_snapshot_id: successorRegistration.grant_snapshot_id, operator_user_id: successorRegistration.operator_user_id } }).from(aliases)
+  // Probe immutable metadata by actual DB bytes too. Do not decode/walk the
+  // entire retained proof merely to discover that the same content is cached.
+  const probeHeader = { ordinal: aliases.ordinal, alias_total: aliases.total, alias_org_id: aliases.org_id,
+    alias_registration_id: aliasId('registration_id'), target_version_id: proofId('version_id'),
+    metadata_fingerprint: sql<string>`'sha256:' || encode(sha256(convert_to(to_jsonb(ROW(${aliases.metadata}, ${proof.audit_id}, ${proof.metadata}))::text, 'UTF8')), 'hex')`,
+    content_fingerprint: currentFingerprint };
+  const header = { ...probeHeader, alias_metadata: aliases.metadata, proof_audit_id: proof.audit_id, proof_metadata: proof.metadata };
+  const join = <Query extends PgSelect>(query: Query) => query
     .leftJoinLateral(proof, sql`true`)
     .leftJoin(appInstallations, and(eq(appInstallations.org_id, aliases.org_id), eq(appInstallations.id, proofId('installation_id'))))
     .leftJoin(priorVersion, and(eq(priorVersion.org_id, aliases.org_id), eq(priorVersion.installation_id, proofId('installation_id')), eq(priorVersion.id, proofId('prior_version_id'))))
@@ -117,6 +144,36 @@ async function readCurrentRegistryRows(tx: UpgradeTx, entries: readonly Entry[])
     .leftJoin(successorBinding, and(eq(successorBinding.org_id, aliases.org_id), eq(successorBinding.id, aliasId('binding_id'))))
     .leftJoin(successorRegistration, and(eq(successorRegistration.org_id, aliases.org_id), eq(successorRegistration.id, aliasId('registration_id'))))
     .where(sql`${aliases.total} <= 256`);
+  // Prepare on this invocation's transaction session only. Never retain a
+  // transaction-bound handle. Shape depends on mode and unique org count.
+  const count = new Set(entries.map(entry => entry.org_id)).size;
+  return { probe: () => join(tx.select(probeHeader).from(aliases).$dynamic()).prepare('deft_registry_probe_v2_o' + count).execute(),
+    full: () => join(tx.select({ ...header, ...currentFactSelection }).from(aliases).$dynamic()).prepare('deft_registry_full_v2_o' + count).execute() };
+}
+type RegistryRows = Awaited<ReturnType<ReturnType<typeof currentRegistryQuery>['full']>>;
+type RegistryHeader = Pick<RegistryRows[number], 'ordinal' | 'alias_total' | 'alias_org_id' |
+  'alias_registration_id' | 'target_version_id' | 'metadata_fingerprint' | 'content_fingerprint'>;
+const currentContent = createAppAuthorityContentCache<RegistryRows>({ maxEntries: 8, maxBytes: 16 * 1024 * 1024 });
+const contentMiss = Symbol('registry-content-miss');
+function contentIdentity(entries: readonly Entry[], rows: readonly RegistryHeader[]) {
+  const orgs = new Set(entries.map(entry => entry.org_id));
+  if (orgs.size !== 1 || !rows.length || rows.length > 512) return;
+  const org = entries[0]!.org_id, versions = new Set<string>(), ordinals = new Set<number>(), aliases = new Set<string>();
+  for (const row of rows) {
+    if (row.alias_org_id !== org || row.alias_total !== rows.length || row.alias_total > 256 || ordinals.has(row.ordinal)
+      || ![row.content_fingerprint, row.metadata_fingerprint].every(value => typeof value === 'string' && /^sha256:[a-f0-9]{64}$/u.test(value))) return;
+    // Both scalar IDs and all metadata bytes come from this statement snapshot.
+    // Full B still strictly parses scope/identity/proof fields before seeding.
+    const registration = id.safeParse(row.alias_registration_id), version = id.safeParse(row.target_version_id);
+    if (!registration.success || !version.success || aliases.has(registration.data)) return;
+    ordinals.add(row.ordinal); aliases.add(registration.data); versions.add(version.data);
+  }
+  if (versions.size !== 1) return;
+  return { scope: { org_id: org, app_version_id: [...versions][0]! }, evidence: rows.map(row => ({
+    ordinal: row.ordinal, alias_total: row.alias_total, alias_org_id: row.alias_org_id,
+    alias_registration_id: row.alias_registration_id, target_version_id: row.target_version_id,
+    metadata_fingerprint: row.metadata_fingerprint, content_fingerprint: row.content_fingerprint,
+  })) };
 }
 /** Only installation-specific server-authored lineage may nominate a successor.
  * No endpoint, profile, credential, origin or epoch is inferred from app input.
@@ -124,7 +181,17 @@ async function readCurrentRegistryRows(tx: UpgradeTx, entries: readonly Entry[])
 export async function trustedUpgradeRegistryEntries(entries: readonly Entry[], transaction?: UpgradeTx): Promise<Entry[]> {
   if (!entries.length) return [];
   const read = async (tx: UpgradeTx) => {
-    const rows = await readCurrentRegistryRows(tx, entries);
+    const query = currentRegistryQuery(tx, entries);
+    let rows: RegistryRows | undefined, full = true;
+    if (new Set(entries.map(entry => entry.org_id)).size === 1) {
+      const probe = await query.probe(), identity = contentIdentity(entries, probe);
+      if (identity) try { rows = currentContent(identity.scope, identity.evidence, () => { throw contentMiss; }); full = false; }
+      catch (error) { if (error !== contentMiss) throw error; }
+    }
+    // A miss discards ALL probe facts. Metadata, cardinality, nominations,
+    // action pins, validation and cache evidence now come solely from full B.
+    rows ??= await query.full();
+    const identity = full ? contentIdentity(entries, rows) : undefined;
     const groups = new Map<number, typeof rows>();
     for (const row of rows) {
       if (row.alias_total > 256) return [];
@@ -151,7 +218,7 @@ export async function trustedUpgradeRegistryEntries(entries: readonly Entry[], t
     for (const { alias, proof, rows: current } of nominated) {
       try {
         const facts: ReadOnlyContinuityFacts = current;
-        await assertContinuityProof(tx, proof, true, false, { rows: facts,
+        await assertContinuityProof(tx, proof, true, false, { rows: facts, content_fingerprint: current.content_fingerprint,
           actions: actions.filter(row => row.org_id === proof.org_id && proof.source_actions.some(pin => pin.id === row.id)) });
         assertSuccessor(alias, proof, current.successor_binding, current.successor_registration);
         const roots = entries.filter(entry => entry.org_id === alias.org_id && entry.installation_id === alias.installation_id
@@ -165,6 +232,11 @@ export async function trustedUpgradeRegistryEntries(entries: readonly Entry[], t
         output.push({ ...root, runtime_registration_id: alias.registration_id, runtime_epoch: alias.runtime_epoch });
       } catch { /* A failed trust proof never changes an explicitly enrolled entry. */ }
     }
+    // Store decoded content only after the complete full snapshot validates.
+    // Root/config matching and allowed outcomes are never retained. A hit still
+    // runs every validator above, fresh action reads and all live boundaries.
+    if (identity && output.length > 0 && output.length === nominated.length && nominated.length === aliases.length)
+      currentContent(identity.scope, identity.evidence, () => rows!);
     return output;
   };
   return transaction ? read(transaction) : db.transaction(read);

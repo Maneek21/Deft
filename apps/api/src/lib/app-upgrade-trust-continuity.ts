@@ -52,11 +52,14 @@ type ContinuityMember = { id: string | null; role: string | null; active: boolea
 /** Private current-query handoff only. Every row is decoded by its original
  * Drizzle table codec, including all Date fields used by complete rowDigest.
  * This is never serialized or retained as authority across invocations. */
+declare const databaseContentFingerprint: unique symbol;
+/** Constructed only by the registry's actual PostgreSQL SHA-256 projection. */
+export type AppContinuityDatabaseContentFingerprint = string & { readonly [databaseContentFingerprint]: true };
 export type ReadOnlyContinuityFacts = {
-  installation: typeof appInstallations.$inferSelect | null;
+  installation: Pick<typeof appInstallations.$inferSelect, 'id' | 'org_id' | 'state' | 'active_version_id' | 'active_grant_snapshot_id' | 'lifecycle_epoch' | 'grant_epoch'> | null;
   prior: Pick<typeof appVersions.$inferSelect, 'id' | 'manifest'> | null;
   target: Pick<typeof appVersions.$inferSelect, 'id' | 'manifest'> | null;
-  source: typeof appConnectionSessions.$inferSelect | null;
+  source: Pick<typeof appConnectionSessions.$inferSelect, 'org_id' | 'owner_user_id' | 'session_id' | 'record'> | null;
   binding: typeof appResourceBindings.$inferSelect | null;
   registration: typeof appRuntimeRegistrations.$inferSelect | null;
   admission: typeof appOwnerConnectionAdmissions.$inferSelect | null;
@@ -157,7 +160,10 @@ export async function readContinuityProof(tx: UpgradeTx, orgId: string, requestI
 /** Validate continuing source approvals, not a historical browser login. Every
  * row pin is reread, so revoke/expiry/role/config changes cannot be resurrected. */
 export async function assertContinuityProof(tx: UpgradeTx, proof: UpgradeContinuityProof, current = true, issuance = true,
-  readOnlyFacts?: { rows: ReadOnlyContinuityFacts; actions: readonly (typeof appRuntimeBindings.$inferSelect)[] }) {
+  readOnlyFacts?: { rows: ReadOnlyContinuityFacts;
+    /** Internal registry handoff only: actual DB fingerprint of these exact
+     * decoded facts, compared afresh by the registry on every invocation. */
+    content_fingerprint?: AppContinuityDatabaseContentFingerprint; actions: readonly (typeof appRuntimeBindings.$inferSelect)[] }) {
   if (readOnlyFacts) {
     if (issuance || !current) throw denied();
     const { rows, actions } = readOnlyFacts;
@@ -174,8 +180,10 @@ export async function assertContinuityProof(tx: UpgradeTx, proof: UpgradeContinu
   // Unlocked current point reads share one statement, retaining every original
   // scoped predicate, current negative fact, and full row/Date decoding for
   // digest-bound evidence. The action pin set has its own bounded statement.
-  // Issuance retains its existing reads/share-lock order. No read survives this
-  // invocation; versions contribute only IDs/manifests, never unread packages.
+  // Issuance retains its existing reads/share-lock order. The registry may
+  // supply decoded content only behind a fresh actual DB fingerprint; no
+  // allowed result or transaction survives the invocation. Versions contribute
+  // only IDs/manifests, never unread packages.
   const currentTrust = currentInstallationUpgradeTrustRows(tx, proof.org_id, proof.installation_id).as('continuity_current_trust');
   const [queriedRows] = issuance || readOnlyFacts ? [] : await tx.select({ installation: appInstallations,
     prior: { id: continuityPriorVersion.id, manifest: continuityPriorVersion.manifest },
@@ -218,14 +226,17 @@ export async function assertContinuityProof(tx: UpgradeTx, proof: UpgradeContinu
   // reread below/above; the retained proof never becomes current authority.
   const manifestDiff = continuingManifestDiff({ org_id: proof.org_id, app_version_id: proof.version_id }, {
     prior_version_id: proof.prior_version_id, grant_id: proof.grant_id, lifecycle_epoch: installation.lifecycle_epoch,
-    grant_epoch: installation.grant_epoch, trust_revision: trust.revision, prior: prior.manifest, target: target.manifest,
+    grant_epoch: installation.grant_epoch, trust_revision: trust.revision,
+    ...(readOnlyFacts?.content_fingerprint ? { database_content_fingerprint: readOnlyFacts.content_fingerprint }
+      : { prior: prior.manifest, target: target.manifest }),
   }, () => diffUpgradeAuthority(prior.manifest, target.manifest));
   if (manifestDiff.requires_review) throw denied();
   const sourceRow = issuance ? (await tx.select().from(appConnectionSessions).where(and(eq(appConnectionSessions.org_id, proof.org_id),
     eq(appConnectionSessions.owner_user_id, proof.owner_id), eq(appConnectionSessions.session_id, proof.source_session_id))).limit(1))[0] : currentRows?.source;
   const source = sourceRow && validatedContinuitySource({ org_id: proof.org_id, app_version_id: proof.version_id }, {
     prior_version_id: proof.prior_version_id, grant_id: proof.grant_id, lifecycle_epoch: installation.lifecycle_epoch,
-    grant_epoch: installation.grant_epoch, trust_revision: trust.revision, source: sourceRow.record,
+    grant_epoch: installation.grant_epoch, trust_revision: trust.revision,
+    ...(readOnlyFacts?.content_fingerprint ? { database_content_fingerprint: readOnlyFacts.content_fingerprint } : { source: sourceRow.record }),
   }, () => AppConnectionSessionRecordSchema.parse(sourceRow.record));
   if (!source || source.state !== 'connected' || source.revision !== proof.source_revision || !isDeepStrictEqual(source.scope, proof.source_scope)
     || !isDeepStrictEqual(source.profile, proof.source_profile) || appConsentDeadline(source.scope.consent_expires_at, source.scope.consent_lifetime) <= Date.now()) throw denied();
