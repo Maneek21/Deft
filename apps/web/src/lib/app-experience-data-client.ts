@@ -16,6 +16,7 @@ import type {ExperienceRecordRow} from './app-experience-record-writer';
 import {recordCopySource,verifyFileCopy,type FileCopyNode} from './app-experience-file-copy';
 import type {RecordFormFile} from './app-experience-record-form';
 
+class OptionalDefaultDenied extends Error {}
 const sha=async(bytes:Uint8Array)=>'sha256:'+Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new Uint8Array(bytes))),byte=>byte.toString(16).padStart(2,'0')).join('');
 export async function appDataInputDigest(operation:string,input:Record<string,unknown>){return sha(new TextEncoder().encode(canonicalAppDataJson({operation,input})));}
 async function boundedBytes(response:Response,max:number,signal:AbortSignal){
@@ -39,7 +40,7 @@ export function createExperienceDataClient(options:{installationId:string;target
  const select=async(storeKey:string,signal:AbortSignal)=>{const value=await context(signal,storeKey),candidates=value.targets.filter(target=>target.stores.some(store=>store.declaration.key===storeKey));
   const exact=options.targetKey?candidates.filter(target=>target.target_key===options.targetKey):candidates;
   const targets=options.targetKey?exact:candidates;if(targets.length!==1)throw Error('Choose a connected account');const expected=options.accountRef?.();if(expected!==undefined&&targets[0].account.account_ref!==expected)throw Error('Source account changed');return targets[0];};
- const request=async(storeKey:string,operation:AppDataRequest['operation'],input:Record<string,unknown>,signal:AbortSignal,requestId:string=crypto.randomUUID(),upload?:File,allowSettled=false,selected?:Awaited<ReturnType<typeof select>>):Promise<AppDataResult>=>{
+ const request=async(storeKey:string,operation:AppDataRequest['operation'],input:Record<string,unknown>,signal:AbortSignal,requestId:string=crypto.randomUUID(),upload?:File,allowSettled=false,selected?:Awaited<ReturnType<typeof select>>,rejectDenied=false):Promise<AppDataResult>=>{
   check(signal);let target=selected??await select(storeKey,signal),data=AppDataRequestSchema.parse({schema_version:'deft.app_data_request.v1',request_id:requestId,operation,input});
   // A target may be reused only by its immediate trusted operation. Recheck
   // local account pins at dispatch and disclosure; Runtime still independently
@@ -64,6 +65,7 @@ export function createExperienceDataClient(options:{installationId:string;target
      void response.body?.cancel().catch(()=>{});requestId=crypto.randomUUID();data={...data,request_id:requestId};response=await dispatch();
     }
    }
+   if(rejectDenied&&[401,403,409,410].includes(response.status)){void response.body?.cancel().catch(()=>{});throw new OptionalDefaultDenied('App data access ended');}
    if(response.headers.get('content-type')?.split(';')[0]!=='application/json')throw Error('App data result unavailable');
    const resultBytes=await traceExperienceRead(signal,'data.body',()=>boundedBytes(response,APP_DATA_LIMITS.result_json_bytes,signal));try{const result=AppDataResultSchema.parse(JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(resultBytes)));check(signal);targetCurrent();
     if(result.request_id!==requestId||result.operation!==operation||result.input_digest!==await appDataInputDigest(operation,input)||result.outcome!=='completed'&&!(allowSettled&&['conflict','not_found'].includes(result.outcome))||result.record&&input.store_key!==undefined&&result.record.store_key!==input.store_key)throw Error('App data result not confirmed');return result;
@@ -163,14 +165,19 @@ export function createExperienceDataClient(options:{installationId:string;target
    const opened=recordSeedSnapshotResult(snapshot,resolved,scope.accountId);expiry=Math.min(expiry,opened.expiresAt);checkPins();let record:ExperienceRecordRow;
    if(opened.record){record=checkedRecord(resolved,{...snapshot,record:opened.record});await seedLocator.confirmed(record_id);seedRows.delete(record_id);}
    else{let initial=opened.value!,initialNotice='';
-    if(resolved.initial_change){
+    if(resolved.initial_change){let appliedDefault=false;
      // The initial fresh target contains both declarations and consents. This
      // immediate source read retains its own Host and Runtime authority checks;
-     // it never needs another account discovery or a recovery-only row read.
+     // the destination is checked again before any opened bytes are disclosed.
      try{checkedChangeTarget(resolved,resolved.initial_change,target);checkPins();
-      const defaults=await request(resolved.initial_change.source_store_key,'connection_metadata',{store_key:resolved.initial_change.source_store_key,seed:{operation_key:resolved.initial_change.operation_key,destination_store_key:resolved.store_key,value:initial}},signal,undefined,undefined,false,target);
-      checkPins();checkedChangeTarget(resolved,resolved.initial_change,target);if(defaults.record_seed_value)initial=defaults.record_seed_value;
-     }catch{checkPins();initialNotice=recordFormLabels(resolved.profile).initial_change_unavailable;}
+      const defaults=await request(resolved.initial_change.source_store_key,'connection_metadata',{store_key:resolved.initial_change.source_store_key,seed:{operation_key:resolved.initial_change.operation_key,destination_store_key:resolved.store_key,value:initial}},signal,undefined,undefined,false,target,true);
+      checkPins();checkedChangeTarget(resolved,resolved.initial_change,target);if(defaults.record_seed_value){initial=defaults.record_seed_value;appliedDefault=true;}
+     }catch(error){checkPins();if(error instanceof OptionalDefaultDenied)throw error;initialNotice=recordFormLabels(resolved.profile).initial_change_unavailable;}
+     // A source metadata request proves its own store only. Recheck the exact
+     // destination after waiting, even when an optional default was unavailable.
+     const current=await recordTarget(resolved,signal),store=current.stores.find(item=>item.declaration.key===resolved.store_key);checkPins();
+     if(current.account.account_ref!==scope.accountId||current.session_id!==target.session_id||current.target_key!==target.target_key||current.resource_key!==target.resource_key||canonicalAppDataJson(store)!==canonicalAppDataJson(pinnedStore))throw Error('Seed visibility ended');
+     if(appliedDefault&&canonicalAppDataJson(checkedChangeTarget(resolved,resolved.initial_change,current).source)!==canonicalAppDataJson(checkedChangeTarget(resolved,resolved.initial_change,target).source))throw Error('Seed source changed');
     }
     validateRecordFormValue(initial,resolved.profile);if(recordFormFiles(initial,resolved.profile).length)throw Error('Seed files must be empty');
     for(const field of recordFormFields(resolved.profile)){if(field.kind!=='verified_identity')continue;const identity=recordFormIdentity(initial,field);if(identity&&!snapshot.identities?.some(item=>item.address===identity))throw Error('Seed identity changed');}
