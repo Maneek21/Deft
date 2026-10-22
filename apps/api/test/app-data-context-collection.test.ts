@@ -27,3 +27,15 @@ test('final consent state and terminal session check govern disclosure; no retri
  assert.deepEqual((await collectAppDataContext(ports)).stores,[]);assert.equal(captures,2);
  await assert.rejects(collectAppDataContext({...ports,finish:async()=>{throw Error('REVOKED');}}),/REVOKED/);
 });
+
+
+test('metadata-free resolution performs one final fresh capture immediately before stores and terminal saved checks',async()=>{
+ const calls:string[]=[];
+ const ports={capture:async()=>{calls.push('capture');return {revision:3};},identity:(base:unknown)=>base,
+  stores:async()=>{calls.push('stores');return ['current'];},finish:async()=>{calls.push('finish');},denied:()=>Error('DENIED')};
+ const result=await collectAppDataContext(ports);assert.deepEqual(calls,['capture','stores','finish']);assert.deepEqual(result.identities,[]);
+ calls.length=0;await collectAppDataContext(ports);assert.deepEqual(calls,['capture','stores','finish'],'later requests capture again');
+ for(const phase of ['capture','stores','finish'] as const){calls.length=0;
+  await assert.rejects(collectAppDataContext({...ports,[phase]:async()=>{throw Error('CURRENT_FENCE_DENIED');}}),/CURRENT_FENCE_DENIED/);
+ }
+});

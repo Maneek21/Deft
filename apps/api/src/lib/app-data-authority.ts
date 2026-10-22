@@ -115,9 +115,9 @@ async function currentAppDataPolicyAuthority(caller:ExperienceCaller,sessionId:s
  return finishCurrentAppDataAuthority(caller,base,declaration.key,requireConsent,expectedConsentId);
 }
 
-/** Context-only batch. Connection authority is checked twice per account;
- * every store still gets its own current consent/policy validation. This does
- * not authorize later requests, cache a grant, or supply action authority. */
+/** Context-only batch. Identity I/O is bracketed by fresh connection authority.
+ * Without identity I/O one fresh capture directly precedes current store
+ * consent/policy reads and the terminal saved-session/form/expiry fence. */
 export async function currentAppDataContext(caller:Pick<ExperienceCaller,'org_id'|'user_id'|'access_expires_at'>,sessionId:string,guard:WebAuthorityGuard,
  options:{storeKey?:string;includeIdentities?:boolean},metadata:(store:string)=>Promise<NonNullable<AppDataResult['identities']>>){
  const selected=(base:AppDataBase)=>{
@@ -128,9 +128,9 @@ export async function currentAppDataContext(caller:Pick<ExperienceCaller,'org_id
  const result=await collectAppDataContext({
   capture:()=>currentAppDataBase(caller,sessionId,guard,'none'),
   identity:base=>({scope:base.current.scope,profile:base.current.profile,connection:base.connection,declarations:base.declarations,policy:base.policy,consentConnections:base.consentConnections}),
-  metadata:async base=>{if(options.includeIdentities===false)return [];for(const declaration of selected(base)){
+  ...(options.includeIdentities===false?{}:{metadata:async(base:AppDataBase)=>{for(const declaration of selected(base)){
    try{const identities=await metadata(declaration.key);if(identities.length)return identities;}catch(error){if(!(error instanceof AppError))throw error;}
-  }return [];},
+  }return [];}}),
   stores:async base=>{
    const declarations=selected(base),keys=declarations.map(item=>item.key);
    if(!keys.length)return [];
