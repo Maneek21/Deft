@@ -67,7 +67,7 @@ jobs:
         if: always() && steps.analyze.outcome == 'success'
         with:
           sarif_file: .ci-codeql-diagnostics/javascript.sarif
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: canonical-codeql-${{ github.run_id }}
