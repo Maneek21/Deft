@@ -1,6 +1,10 @@
 scripts/docker-entrypoint.sh text eol=lf
 docs/examples/operations/*.sh text eol=lf
 **/deft.app.lock.json text eol=lf
+# Fresh bootstrap and reviewed LF artifacts are checked against sealed SHA-256s.
+packages/db/scripts/*.sql text eol=lf
+packages/db/upgrades/lineages/*.json text eol=lf
+packages/db/upgrades/lineages/public61/raw-git/manifest.ts text eol=lf
 # Keep lineage migration checksums independent of checkout line endings.
 packages/db/upgrades/**/*.sql -text whitespace=cr-at-eol,-blank-at-eof,-trailing-space
 # Migration checksums cover physical bytes; pin new files without rewriting history.

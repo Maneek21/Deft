@@ -37,7 +37,7 @@ import { randomUUID } from 'node:crypto';
 const { Pool } = pg;
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'maneek@deft.test';
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@deft.test';
 
 const NOW = Date.now();
 const MINUTE = 60_000;
@@ -1154,15 +1154,15 @@ async function main(): Promise<void> {
         }
         // Activity log entry for every task — makes the Activity tab populated
         await client.query(
-          `insert into task_activity (id, task_id, user_id, action, old_value, new_value, created_at, updated_at)
-           values ($1, $2, $3, 'created', null, $4, $5, $5)`,
-          [randomUUID(), id, adminId, t.title, ts],
+          `insert into task_activity (id, org_id, task_id, user_id, action, old_value, new_value, created_at, updated_at)
+           values ($1, $2, $3, $4, 'created', null, $5, $6, $6)`,
+          [randomUUID(), orgId, id, adminId, t.title, ts],
         );
         if (t.status !== 'backlog') {
           await client.query(
-            `insert into task_activity (id, task_id, user_id, action, field, old_value, new_value, created_at, updated_at)
-             values ($1, $2, $3, 'status_changed', 'status', 'backlog', $4, $5, $5)`,
-            [randomUUID(), id, assignee || adminId, t.status, new Date(ts.getTime() + 2 * HOUR)],
+            `insert into task_activity (id, org_id, task_id, user_id, action, field, old_value, new_value, created_at, updated_at)
+             values ($1, $2, $3, $4, 'status_changed', 'status', 'backlog', $5, $6, $6)`,
+            [randomUUID(), orgId, id, assignee || adminId, t.status, new Date(ts.getTime() + 2 * HOUR)],
           );
         }
         n += 1;
@@ -1256,10 +1256,14 @@ async function main(): Promise<void> {
     // ─── 10. Bookmark a few messages for the admin ───
     const bookmarkCandidates = await client.query(
       `select m.id, m.space_id from messages m
-       where m.org_id=$1 and m.is_deleted=false
-       and m.content like '%pin%' or m.content like '%🎉%' or m.content like '%gap-fixes%'
+       join spaces s on s.id=m.space_id and s.org_id=m.org_id
+       where m.org_id=$1 and m.is_deleted=false and s.is_archived=false
+       and (s.type='public' or exists (
+         select 1 from space_members sm where sm.space_id=s.id and sm.user_id=$2
+       ))
+       and (m.content like '%pin%' or m.content like '%🎉%' or m.content like '%gap-fixes%')
        limit 5`,
-      [orgId],
+      [orgId, adminId],
     );
     for (const row of bookmarkCandidates.rows) {
       await client.query(
