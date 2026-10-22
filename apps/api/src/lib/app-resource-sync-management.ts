@@ -1,3 +1,4 @@
+import type { CoreDatabaseTransaction } from './database-transaction.js';
 import {appConsentDeadline} from '@deft/app-kit/core';
 import { digestResourceSyncDescriptorV2 } from '@deft/app-kit/core';
 import { assertAttachmentBrokerEnabled, attachmentFinalAuthorityIsCurrent } from './app-attachment-authority.js';
@@ -37,7 +38,7 @@ import { APP_RESOURCE_SYNC_HOST_POLICY, APP_RESOURCE_SYNC_SESSION_MS, APP_RESOUR
   assertResourceSyncConsentWindow, hashAppResourceSyncToken,
   type AppResourceSyncConsentRequest } from './app-resource-sync-policy.js';
 
-type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type Tx = CoreDatabaseTransaction;
 export type ResourceSyncManagementGuard = (tx: Tx) => Promise<void>;
 
 async function managementTransaction<T>(guard: ResourceSyncManagementGuard | undefined,

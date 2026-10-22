@@ -1,8 +1,9 @@
+import type { CoreDatabaseTransaction } from './database-transaction.js';
 import { and, eq } from 'drizzle-orm';
 import { events } from '@deft/db/schema';
 import { db } from './db.js';
 
-type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type Transaction = CoreDatabaseTransaction;
 type CalendarInput = {
   title: string; start: string; end: string; description?: string; location?: string;
   attendees?: { email: string; displayName?: string; name?: string }[];

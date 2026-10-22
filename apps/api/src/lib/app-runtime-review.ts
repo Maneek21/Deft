@@ -1,3 +1,4 @@
+import type { CoreDatabaseTransaction } from './database-transaction.js';
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
@@ -23,7 +24,7 @@ export const RuntimeAppReviewRequestSchema = z.strictObject({
 export const RuntimeAppActivateRequestSchema = RuntimeAppReviewRequestSchema.extend({
   expected_review_digest: AppDigestSchema, accept_host_policy: z.literal(true),
 });
-type ReviewTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type ReviewTransaction = CoreDatabaseTransaction;
 export type RuntimeAppReviewOptions = Readonly<{
   guard?: (tx: ReviewTransaction) => Promise<void>;
   assertAdmission?: (manifest: RuntimeAppManifest | DeftAppManifestV5) => void;

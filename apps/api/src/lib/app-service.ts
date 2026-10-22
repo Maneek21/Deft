@@ -1,3 +1,4 @@
+import type { CoreDatabaseTransaction } from './database-transaction.js';
 import { randomUUID } from 'node:crypto';
 import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import {
@@ -216,7 +217,7 @@ export async function inspectAppPackageJson(value: string): Promise<InspectedApp
 export async function stageAppPackage(
   actor: ModuleActor,
   packageJson: string,
-  options: { guard?: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => Promise<void>;
+  options: { guard?: (tx: CoreDatabaseTransaction) => Promise<void>;
     attachmentStage?: boolean; attachmentComposition?: boolean } = {},
 ): Promise<AppInstallationView> {
   assertHumanManager(actor);

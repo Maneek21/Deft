@@ -1,3 +1,4 @@
+import type { CoreDatabaseTransaction } from './database-transaction.js';
 import { and, asc, desc, eq, gt, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { appResourceBindings, appRuntimeRegistrations, appSyncCheckpoints,
@@ -9,7 +10,7 @@ import { assertResourceSyncManager } from './app-resource-sync-web-authority.js'
 import type { ResourceSyncManagementGuard } from './app-resource-sync-management.js';
 import { finishAttachmentSyncMetadata, type AttachmentSyncReadMode } from './app-resource-sync-read-mode.js';
 
-type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type Tx = CoreDatabaseTransaction;
 const Id = z.string().uuid();
 export const ResourceSyncListQuery = z.strictObject({
   after: Id.optional(), limit: z.coerce.number().int().min(1).max(50).default(20),

@@ -1,3 +1,4 @@
+import type { CoreDatabaseTransaction } from './database-transaction.js';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
 import * as schema from '@deft/db/schema';
@@ -15,8 +16,7 @@ export const APP_EXPERIENCE_EXPOSURE_DB_LIMITS = Object.freeze({
   confirmation_operation_ms: 15_000,
 });
 
-type ExposureDatabase = ReturnType<typeof drizzle<typeof schema>>;
-export type ExperienceExposureTransaction = Parameters<Parameters<ExposureDatabase['transaction']>[0]>[0];
+export type ExperienceExposureTransaction = CoreDatabaseTransaction;
 
 /** Separate capacity and server-enforced SQL limits for Experience exposure.
  * Cancellation waits for the bounded active statement and ROLLBACK; no rejected

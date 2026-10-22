@@ -1,10 +1,10 @@
+import type { CoreDatabaseTransaction } from './database-transaction.js';
 import { sql, eq, and } from 'drizzle-orm';
 import { PublicBudgetPolicySchema } from '@deft/app-kit/core';
 import { APP_RUN_TERMINAL_STATES } from '@deft/shared';
 import { appCanonicalClaims, appPublicEndpoints } from '@deft/db/schema';
-import type { db } from './db.js';
 
-type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type Transaction = CoreDatabaseTransaction;
 type Endpoint = typeof appPublicEndpoints.$inferSelect;
 export const PUBLIC_APP_BUDGET_CEILINGS = Object.freeze({ max_pending: 25, max_confirmed_per_utc_day: 100 });
 export class PublicBudgetExceededError extends Error {}

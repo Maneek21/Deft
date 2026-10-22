@@ -15,8 +15,9 @@ import type {
   AppRunSubmission,
 } from '@deft/shared';
 import { db } from './db.js';
+import type { CoreDatabaseTransaction } from './database-transaction.js';
 
-export type AppRunTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+export type AppRunTransaction = CoreDatabaseTransaction;
 
 export const safeRunSelection = {
   id: appRuns.id,

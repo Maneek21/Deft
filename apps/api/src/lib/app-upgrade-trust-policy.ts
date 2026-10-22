@@ -1,3 +1,4 @@
+import type { CoreDatabaseTransaction } from './database-transaction.js';
 import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { appInstallations, auditLog } from '@deft/db/schema';
@@ -8,7 +9,7 @@ import { assertCurrentModuleManagerWithExecutor } from './module-service.js';
 import type { WebAuthorityGuard } from './app-resource-sync-web-authority.js';
 import { diffUpgradeAuthority, type UpgradeAuthorityDiff } from './app-upgrade-manifest-diff.js';
 
-type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type Tx = CoreDatabaseTransaction;
 const TRUST_ACTION = 'app.upgrade_continuity_trust_changed';
 const TrustSchema = z.strictObject({ trusted: z.boolean(), revision: z.number().int().nonnegative().max(2147483647) });
 export const UpgradeTrustUpdateSchema = TrustSchema.safeExtend({ expected_revision: z.number().int().nonnegative().max(2147483646) }).omit({ revision: true });

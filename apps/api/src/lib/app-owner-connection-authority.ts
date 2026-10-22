@@ -9,7 +9,7 @@ import { connectionProfileDigest, getAppConnectionSessionRegistry, type AppConne
 import { isAppOwnerConnectionsEnabled } from './env.js';
 import { AppError } from './app-errors.js';
 import { runtimeActionDescriptors } from './app-runtime-review.js';
-import { digestResourceSyncDescriptorV2 } from '@deft/app-kit/core';
+import { digestAppAuthorityDescriptor } from './app-authority-descriptor.js';
 import { parseAppAuthorityManifest } from './app-authority-manifest.js';
 
 type LockedReviewedApp = Pick<Awaited<ReturnType<typeof loadReviewedAttachmentApp>>, 'installation' | 'version' | 'grant'>
@@ -118,7 +118,7 @@ export async function loadOwnerConnectionAdmission(tx: AppRunTransaction, orgId:
   const actions = runtimeActionDescriptors(reviewed.manifest).filter(item => policy.action_keys.includes(item.action_key))
     .map(item => ({ action_key: item.action_key, contract_digest: item.contract_digest }))
     .sort((a,b) => a.action_key < b.action_key ? -1 : a.action_key > b.action_key ? 1 : 0);
-  if (!descriptor || snapshot.resource_descriptor_digest !== await digestResourceSyncDescriptorV2(descriptor)
+  if (!descriptor || snapshot.resource_descriptor_digest !== await digestAppAuthorityDescriptor(descriptor, { org_id: orgId, app_version_id: reviewed.version.id })
     || digestAppGrantValue(snapshot.actions) !== digestAppGrantValue(actions)) throw ownerConnectionDenied();
   // The registry stays transaction-local and never enters a serializable
   // admission/snapshot result. Publish it only after every current check passed.
