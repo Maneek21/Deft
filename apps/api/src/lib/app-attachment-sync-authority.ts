@@ -8,6 +8,7 @@ import { SyncDescriptorV2Schema, digestResourceSyncDescriptorV2 } from '@deft/ap
 import { parseAttachmentConsentPolicy } from './app-attachment-policy.js';
 import { attachmentFinalAuthorityIsCurrent } from './app-attachment-authority.js';
 import { assertOwnerConnectionRegistration } from './app-owner-connection-authority.js';
+import type { AppConnectionSessionRegistry } from './app-connection-session-registry.js';
 import { CapabilityProviderDiscoverySnapshotSchema } from '@deft/shared';
 import type { AppRunTransaction } from './app-run-repository.js';
 import { APP_RESOURCE_SYNC_HOST_POLICY } from './app-resource-sync-policy.js';
@@ -34,6 +35,7 @@ export type LiveAttachmentSyncAuthority = Readonly<LiveAttachmentSyncBindingAuth
 
 type BindingLocator = Readonly<{ org_id: string; resource_binding_id: string; clock: () => Date;
   binding_lock?: 'update';
+  onConnectionRegistry?: (registry: AppConnectionSessionRegistry) => void;
   prelocked_participant_ids?: readonly string[] }>;
 type SessionLocator = Readonly<{ org_id: string; session_id: string;
   token_hash: string; clock: () => Date }>;
@@ -149,7 +151,7 @@ async function loadAttachmentSyncBindingAuthority(tx: AppRunTransaction,
   let ownerAdmission;
   if (registration?.owner_connection_admission_id) {
     try { ownerAdmission = await assertOwnerConnectionRegistration(tx, registration, { owner_user_id: locator.owner_user_id,
-      resource_key: locator.resource_key, lockedReviewed: reviewed }); }
+      resource_key: locator.resource_key, lockedReviewed: reviewed, onConnectionRegistry: input.onConnectionRegistry }); }
     catch { return null; }
   } else if (owner.role === 'member') return null;
   if (!registration || !binding || registration.state !== 'active' || registration.runtime_epoch < 1

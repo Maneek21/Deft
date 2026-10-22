@@ -1,3 +1,4 @@
+import {appDataSeedSnapshotRequest,assertAppDataSeedSnapshotResult,assertAppDataSeedSnapshotPins,sealAppDataSeedSnapshotExpiry} from './app-data-seed-snapshot.js';
 import {withAppDataDiagnostic,measureAppDataPhase} from './app-data-diagnostics.js';
 import {appConsentDeadline} from '@deft/app-kit/core';
 import {assertFutureRecordActionLocalRequest,acknowledgeFutureRecordActionLocal} from './app-future-record-action-local.js';
@@ -60,7 +61,8 @@ export class AppDataService {
     finish:(id,state,metadata)=>journal.finish(id,state,metadata),
     dispatch:async(authority,request,signal)=>(await getAppConnectionSessionRegistry()).dataRuntime(authority.scope,authority.profile).request(request,signal)});
   }
-  const authority=await this.current(sessionId,storeKey,input.operation==='connection_metadata'?'optional':appDataRequiresConsent(input.operation),input.operation);
+  const authority=await this.current(sessionId,storeKey,appDataSeedSnapshotRequest(operation)?true:input.operation==='connection_metadata'?'optional':appDataRequiresConsent(input.operation),input.operation);
+  assertAppDataSeedSnapshotPins(operation,authority);
   if((input.operation.startsWith('resource_')||['prepare_resource_action','read_prepared_resource_action'].includes(input.operation))
    &&(!authority.store.resource_content||!('resource_key' in operation.input)||operation.input.resource_key!==authority.scope.resource_key))throw appDataDenied();
   if('value' in operation.input&&Buffer.byteLength(JSON.stringify(operation.input.value))>authority.store.max_record_bytes)throw invalid();
@@ -93,6 +95,7 @@ export class AppDataService {
     if(!reply.bytes||reply.bytes.byteLength!==meta.size_bytes||meta.size_bytes>cap||`sha256:${createHash('sha256').update(reply.bytes).digest('hex')}`!==meta.sha256
       ||!('record_id' in operation.input)||meta.record_id!==operation.input.record_id||operation.operation==='file_read'&&(meta.file_id!==operation.input.file_id||meta.upload_revision!==operation.input.upload_revision||meta.sha256!==operation.input.sha256))throw invalid();
    }
+   assertAppDataSeedSnapshotResult(operation,reply.result,authority.scope.resource_key,authority.store,authority.connection.account_ref);
    if(reply.result?.record&&!appDataRecordSourcesWithinStore(reply.result.record,authority.scope.resource_key,authority.store))throw appDataDenied();
    if(reply.result?.items?.some(row=>'store_key' in row&&!appDataRecordSourcesWithinStore(row,authority.scope.resource_key,authority.store)))throw appDataDenied();
    if(reply.result?.record){const row=reply.result.record;if(row.store_key!==storeKey||'record_id' in operation.input&&row.record_id!==operation.input.record_id
@@ -124,7 +127,8 @@ export class AppDataService {
       resource_key:resourcePrepared.resource_key,operation_key:resourcePrepared.operation_key,source_manifest_digest:resourcePrepared.source_manifest_digest,
       item_count:resourcePrepared.item_count,input:resourcePrepared.input,expires_at:resourcePrepared.expires_at}}:{})};
    if(!await store.finish(input.request_id,reply.result?.outcome==='indeterminate'?'indeterminate':'completed',metadata))throw conflict();
-   await this.assertCurrent(authority,sessionId,storeKey,input.operation);
+   const disclosed=await this.assertCurrent(authority,sessionId,storeKey,input.operation);
+   sealAppDataSeedSnapshotExpiry(operation,reply.result,disclosed.expires_at,deadline);
    const localReceipt=reply.result?.prepared_action_receipt??reply.result?.request_status?.prepared_action_receipt;
    if(localReceipt)await db.transaction(async tx=>{await this.guard(tx);await acknowledgeFutureRecordActionLocal(tx,this.caller.org_id,this.caller.user_id,localReceipt);});
    if(reply.result){delete reply.result.human_save;
@@ -135,7 +139,7 @@ export class AppDataService {
  }
  private async assertCurrent(previous:CurrentAppDataAuthority,session:string,store:string,operation:string){const current=await this.current(session,store,operation==='connection_metadata'?previous.consent!==null:appDataRequiresConsent(operation),operation,previous.consent?.consent_id);
   if(!isDeepStrictEqual(current.scope,previous.scope)||!isDeepStrictEqual(current.connection,previous.connection)||current.data_policy_digest!==previous.data_policy_digest
-    ||current.consent?.consent_id!==previous.consent?.consent_id||current.consent?.consent_digest!==previous.consent?.consent_digest)throw appDataDenied();}
+    ||current.consent?.consent_id!==previous.consent?.consent_id||current.consent?.consent_digest!==previous.consent?.consent_digest)throw appDataDenied();return current;}
  async prepare(sessionId:string,input:Record<string,unknown>){const authority=await this.current(sessionId,String(input.store_key));const reply=await this.invoke(sessionId,{schema_version:'deft.app_data_request.v1',request_id:randomUUID(),operation:'prepare_action',input:{...input,prepare_expires_at:new Date(input.execution_window?futureRecordActionWindowDeadline(authority,String(input.action_key),input.execution_window).deadline:Math.min(authority.expires_at,Date.now()+300000)).toISOString()}});
   if(!reply.result?.prepared||reply.result.outcome!=='completed'||Date.parse(reply.result.prepared.expires_at)<=Date.now())throw invalid();return {prepared:reply.result.prepared,authority:reply.authority};}
  async readPrepared(sessionId:string,input:Record<string,unknown>){const reply=await this.invoke(sessionId,{schema_version:'deft.app_data_request.v1',request_id:randomUUID(),operation:'read_prepared',input});

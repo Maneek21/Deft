@@ -1,3 +1,4 @@
+import {recordSeedSnapshotValue,recordSeedSnapshotResult} from './app-experience-record-seed-snapshot';
 import {traceExperienceRead} from './app-experience-read-trace';
 import {readAppRequestError} from './app-request-error';
 import {experienceAuthorityResponse,ExperienceAuthorityUnavailable} from './app-experience-connection';
@@ -143,7 +144,31 @@ export function createExperienceDataClient(options:{installationId:string;target
  const seedRows=new Map<string,{record:ExperienceRecordRow;accountId:string;resourceTargetKey:string}>(),seedLocators=new Map<string,ReturnType<typeof createRecordSeedLocator>>();
  const ports:ExperienceRecordFormPorts={
   ...changePorts,
-  ...(options.principal?{resolveSeed:async(node:ExperienceRecordFormNode,signal:AbortSignal)=>{if(!node.seed)return node;const target=await select(node.store_key,signal),scope={...options.principal!,installationId:options.installationId,accountId:target.account.account_ref,stateKey:node.store_key,resourceTargetKey:target.target_key,formId:node.id+(Object.hasOwn(node.seed.value,'record_seed')?':'+await sha(new TextEncoder().encode(canonicalAppDataJson(node.seed.value))):'')};const pinnedStore=target.stores.find(item=>item.declaration.key===node.store_key);const locator=createRecordSeedLocator({scope,authorize:async()=>{
+  ...(options.principal?{openSeed:async(node:ExperienceRecordFormNode,signal:AbortSignal)=>{
+   const value=recordSeedSnapshotValue(node);if(!value||!node.seed||node.initial_change)throw Error('Seed snapshot nomination changed');
+   const started=Date.now(),target=await recordTarget(node,signal),pinnedStore=target.stores.find(item=>item.declaration.key===node.store_key);
+   const scope={...options.principal!,installationId:options.installationId,accountId:target.account.account_ref,stateKey:node.store_key,resourceTargetKey:target.target_key,formId:node.id+':'+await sha(new TextEncoder().encode(canonicalAppDataJson(node.seed.value)))};
+   const expiry=Math.min(started+30000,appConsentDeadline(pinnedStore!.consent!.expires_at,pinnedStore!.consent!.consent_lifetime));
+   const checkPins=()=>{check(signal);const expected=options.accountRef?.();if(expected!==undefined&&expected!==scope.accountId||expiry<=Date.now())throw Error('Seed visibility ended');};
+   let snapshot:AppDataResult|undefined,openingProofActive=true;
+   // The initial select is the current pre-storage account/store/consent proof.
+   // The compound read after reservation repeats full current Host + Runtime
+   // authority and proves existence/source without separate discarded probes.
+   const seedLocator=createRecordSeedLocator({scope,authorize:async(recordId,phase)=>{if(phase==='confirm'){if(openingProofActive&&snapshot){checkPins();return;}
+    const current=await select(node.store_key,signal),store=current.stores.find(item=>item.declaration.key===node.store_key);check(signal);
+    if(current.account.account_ref!==scope.accountId||current.session_id!==target.session_id||current.target_key!==target.target_key||current.resource_key!==target.resource_key||!store?.consent||appConsentDeadline(store.consent.expires_at,store.consent.consent_lifetime)<=Date.now()||canonicalAppDataJson(store)!==canonicalAppDataJson(pinnedStore))throw Error('Seed visibility ended');return;
+   }checkPins();if(recordId!==undefined){snapshot=await request(node.store_key,'connection_metadata',{store_key:node.store_key,seed:{operation_key:'record_seed_snapshot',destination_store_key:node.store_key,value:{schema_version:'deft.record_seed_snapshot_request.v1',record_id:recordId,expected:{account_ref:scope.accountId,target_key:target.target_key,data_policy_digest:await sha(new TextEncoder().encode(canonicalAppDataJson(pinnedStore!.declaration))),consent_id:pinnedStore!.consent!.consent_id,consent_digest:pinnedStore!.consent!.consent_digest},value}}},signal,undefined,undefined,false,target);checkPins();}}});
+   const record_id=await seedLocator.reserve(node.record_id),resolved={...node,record_id};checkPins();if(!snapshot)throw Error('Seed snapshot unavailable');
+   const opened=recordSeedSnapshotResult(snapshot,resolved,scope.accountId);let record:ExperienceRecordRow;
+   if(opened.record){record=checkedRecord(resolved,{...snapshot,record:opened.record});await seedLocator.confirmed(record_id);seedRows.delete(record_id);}
+   else{const initial=opened.value!;validateRecordFormValue(initial,resolved.profile);if(recordFormFiles(initial,resolved.profile).length)throw Error('Seed files must be empty');
+    for(const field of recordFormFields(resolved.profile)){if(field.kind!=='verified_identity')continue;const identity=recordFormIdentity(initial,field);if(identity&&!snapshot.identities?.some(item=>item.address===identity))throw Error('Seed identity changed');}
+    record={record_id,revision:0,content_digest:await sha(new TextEncoder().encode(canonicalAppDataJson(initial))),status:'draft',value:initial,files:[],summary:{initial_value_notice:''}};
+    seedRows.set(record_id,{record:structuredClone(record),accountId:scope.accountId,resourceTargetKey:scope.resourceTargetKey});seedLocators.set(record_id,seedLocator);
+   }
+   checkPins();openingProofActive=false;const recoveryScope={...options.principal!,installationId:options.installationId,accountId:scope.accountId,stateKey:node.store_key,recordId:record_id,resourceTargetKey:scope.resourceTargetKey};
+   return {node:resolved,record,identities:snapshot.identities??[],primaryIdentity:snapshot.primary_identity??null,openingRecovery:{scope:recoveryScope,row:structuredClone(record),expiresAt:Math.min(expiry,opened.expiresAt)}};
+  },resolveSeed:async(node:ExperienceRecordFormNode,signal:AbortSignal)=>{if(!node.seed)return node;const target=await select(node.store_key,signal),scope={...options.principal!,installationId:options.installationId,accountId:target.account.account_ref,stateKey:node.store_key,resourceTargetKey:target.target_key,formId:node.id+(Object.hasOwn(node.seed.value,'record_seed')?':'+await sha(new TextEncoder().encode(canonicalAppDataJson(node.seed.value))):'')};const pinnedStore=target.stores.find(item=>item.declaration.key===node.store_key);const locator=createRecordSeedLocator({scope,authorize:async()=>{
    if(!pinnedStore?.consent||appConsentDeadline(pinnedStore.consent.expires_at,pinnedStore.consent.consent_lifetime)<=Date.now())throw Error('Seed visibility ended');
    // Both reads independently authorize the pinned account. The fresh target
    // must still match every original pin before browser storage can be used.

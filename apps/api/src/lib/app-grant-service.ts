@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import {boundedAppAuthorityJsonKey} from './app-authority-json-key.js';
 import { appGrantSnapshots } from '@deft/db/schema';
 import {
   projectDeftAppRequestedAuthority,
@@ -43,9 +44,25 @@ export function canonicalizeAppGrantValue(value: unknown): AppGrantCanonicalJson
   throw new TypeError(`Grant snapshot cannot contain ${typeof value}`);
 }
 
+// Pure content only: no version ID or advertised digest can stand in for bytes.
+// Each live reader still rereads and compares every current authority row.
+const PURE_KEY_BYTES = 131072;
+const digestMemo = new Map<string, `sha256:${string}`>();
+let digestMemoBytes = 0;
+const projectionMemo = new Map<string, { value: RequestedAppGrantProjection; bytes: number }>();
+let projectionMemoBytes = 0;
 export function digestAppGrantValue(value: unknown): `sha256:${string}` {
+  const key = boundedAppAuthorityJsonKey(value, PURE_KEY_BYTES), cached = key === undefined ? undefined : digestMemo.get(key);
+  if (cached !== undefined) { digestMemo.delete(key!); digestMemo.set(key!, cached); return cached; }
   const json = JSON.stringify(canonicalizeAppGrantValue(value));
-  return `sha256:${createHash('sha256').update(json, 'utf8').digest('hex')}`;
+  const result = `sha256:${createHash('sha256').update(json, 'utf8').digest('hex')}` as const;
+  if (key !== undefined) {
+    digestMemo.set(key, result); digestMemoBytes += Buffer.byteLength(key);
+    while (digestMemo.size > 64 || digestMemoBytes > 2 * 1024 * 1024) {
+      const oldest = digestMemo.keys().next().value!; digestMemo.delete(oldest); digestMemoBytes -= Buffer.byteLength(oldest);
+    }
+  }
+  return result;
 }
 
 export function buildRequestedAppGrantProjection(input: {
@@ -56,6 +73,8 @@ export function buildRequestedAppGrantProjection(input: {
   manifest_digest: string;
   package_digest: string;
 }): RequestedAppGrantProjection {
+  const memoKey = boundedAppAuthorityJsonKey(input, PURE_KEY_BYTES), cached = memoKey === undefined ? undefined : projectionMemo.get(memoKey);
+  if (cached) { projectionMemo.delete(memoKey!); projectionMemo.set(memoKey!, cached); return structuredClone(cached.value); }
   const protocol = input.manifest.compatibility.app_protocol;
   const portable = projectDeftAppRequestedAuthority(input.manifest);
   const requirements = portable.requirements;
@@ -81,12 +100,23 @@ export function buildRequestedAppGrantProjection(input: {
   if (canonicalSnapshot === null || Array.isArray(canonicalSnapshot) || typeof canonicalSnapshot !== 'object') {
     throw new TypeError('Canonical grant snapshot must be an object');
   }
-  return {
+  const projection: RequestedAppGrantProjection = {
     resource_rights: resourceRights,
     classification,
     canonical_snapshot: canonicalSnapshot,
     snapshot_digest: digestAppGrantValue(canonicalSnapshot),
   };
+  if (memoKey !== undefined) {
+    const bytes = Buffer.byteLength(memoKey) + Buffer.byteLength(JSON.stringify(projection));
+    if (bytes <= 512 * 1024) {
+      projectionMemo.set(memoKey, { value: structuredClone(projection), bytes }); projectionMemoBytes += bytes;
+      while (projectionMemo.size > 8 || projectionMemoBytes > 4 * 1024 * 1024) {
+        const oldest = projectionMemo.keys().next().value!, entry = projectionMemo.get(oldest)!;
+        projectionMemo.delete(oldest); projectionMemoBytes -= entry.bytes;
+      }
+    }
+  }
+  return projection;
 }
 
 export async function insertRequestedAppGrantSnapshotWithExecutor(

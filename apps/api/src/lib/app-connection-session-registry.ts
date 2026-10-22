@@ -1,3 +1,4 @@
+import {boundedAppAuthorityJsonKey} from './app-authority-json-key.js';
 import {AppConnectionConsentContinuationRuntimeRequestSchema,AppConnectionConsentContinuationRuntimeResultSchema,type AppConnectionConsentContinuationRuntimeRequest} from '@deft/app-kit/core';
 import {AppConnectionCredentialRepairRuntimeRequestSchema,AppConnectionCredentialRepairRuntimeResultSchema,type AppConnectionCredentialRepairRuntimeRequest} from '@deft/app-kit/core';
 import {AppConnectionReattachAnyRuntimeRequestSchema,AppConnectionReattachAnyRuntimeResultSchema,type AppConnectionReattachAnyRuntimeRequest} from '@deft/app-kit/core';
@@ -36,8 +37,18 @@ export const AppConnectionSessionRegistryConfigSchema = z.strictObject({
   })).max(32),
 });
 type Entry = z.infer<typeof AppConnectionSessionRegistryConfigSchema>['entries'][number];
+// Exact pure profile bytes only; every registry/proof and mutable authority
+// read still occurs independently at each admission/invoke/disclosure phase.
+const profileDigestMemo = new Map<string, string>();
 export function connectionProfileDigest(profile: AppConnectionProfile) {
-  return `sha256:${createHash('sha256').update(canonicalAppConnectionProfileJson(profile)).digest('hex')}`;
+  const key = boundedAppAuthorityJsonKey(profile, 4096), cached = key === undefined ? undefined : profileDigestMemo.get(key);
+  if (cached !== undefined) { profileDigestMemo.delete(key!); profileDigestMemo.set(key!, cached); return cached; }
+  const digest = `sha256:${createHash('sha256').update(canonicalAppConnectionProfileJson(profile)).digest('hex')}`;
+  if (key !== undefined) {
+    profileDigestMemo.set(key, digest);
+    if (profileDigestMemo.size > 64) profileDigestMemo.delete(profileDigestMemo.keys().next().value!);
+  }
+  return digest;
 }
 export function connectionTransportEntryDigest(entry: Entry) {
   return `sha256:${createHash('sha256').update(JSON.stringify({ endpoint: entry.endpoint,

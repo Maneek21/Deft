@@ -1,5 +1,6 @@
 import { and, eq, inArray } from 'drizzle-orm';
-import { AppDigestSchema, parseAttachmentAppManifest, type DeftAppManifestV7 } from '@deft/app-kit/core';
+import { AppDigestSchema, type DeftAppManifestV7 } from '@deft/app-kit/core';
+import { parseAppAuthorityManifest } from './app-authority-manifest.js';
 import { appInstallations, appVersions, appGrantSnapshots, users } from '@deft/db/schema';
 import type { AppRunTransaction } from './app-run-repository.js';
 import type { WebAuthorityGuard } from './app-resource-sync-web-authority.js';
@@ -73,7 +74,7 @@ export async function loadReviewedAttachmentApp(tx: Pick<AppRunTransaction, 'sel
     eq(appVersions.id, installation.active_version_id), eq(appVersions.installation_id, installationId),
     eq(appVersions.protocol_version, '7'), eq(appVersions.state, 'active'))).limit(1).for('share');
   if (!version) throw attachmentStale();
-  const manifest = parseAttachmentAppManifest(version.manifest);
+  const manifest = parseAppAuthorityManifest(version.manifest);
   const [grant] = await tx.select().from(appGrantSnapshots).where(and(eq(appGrantSnapshots.org_id, orgId),
     eq(appGrantSnapshots.id, installation.active_grant_snapshot_id), eq(appGrantSnapshots.app_installation_id, installationId),
     eq(appGrantSnapshots.app_version_id, version.id), eq(appGrantSnapshots.snapshot_kind, 'effective'))).limit(1);

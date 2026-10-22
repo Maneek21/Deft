@@ -1,8 +1,9 @@
+import {parseAppAuthorityManifest} from './app-authority-manifest.js';
 import {appConsentDeadline,appConsentExpiryValid,type AppConsentLifetime} from '@deft/app-kit/core';
 import {selectAdmittedConnectionPolicy} from './app-connection-admitted-policy.js';
 import { and, eq } from 'drizzle-orm';
 import { isDeepStrictEqual } from 'node:util';
-import { parseAttachmentAppManifest, AppConnectionRuntimeAuthorityRequestSchema, AppConnectionRuntimeAuthorityResultSchema,
+import { AppConnectionRuntimeAuthorityRequestSchema, AppConnectionRuntimeAuthorityResultSchema,
   type AppConnectionSessionScope, type AppConnectionActionConsent } from '@deft/app-kit/core';
 import { appRuntimeBindings, webSessions } from '@deft/db/schema';
 import {currentConnectionBindingLocators} from './app-connection-current-locators.js';
@@ -10,7 +11,7 @@ import { db } from './db.js';
 import { AppError } from './app-errors.js';
 import { loadLiveAttachmentSyncBindingAuthority,loadConsentContinuationBindingIdentity } from './app-attachment-sync-authority.js';
 import { attachmentFinalAuthorityIsCurrent } from './app-attachment-authority.js';
-import { connectionProfileDigest, getAppConnectionSessionRegistry } from './app-connection-session-registry.js';
+import { connectionProfileDigest, getAppConnectionSessionRegistry, type AppConnectionSessionRegistry } from './app-connection-session-registry.js';
 import { AppConnectionSessionRecordSchema, type AppConnectionSessionPorts, type AppConnectionSessionAuthority } from './app-connection-session-service.js';
 import { PostgresAppConnectionSessionStore } from './app-connection-session-store.js';
 import type { ExperienceCaller } from './app-experience-service.js';
@@ -20,6 +21,9 @@ import { digestAppGrantValue } from './app-grant-service.js';
 import {appConnectionUpgradeSourceIsAvailable} from './app-connection-upgrade-fence.js';
 
 type RequiredConnectionAction = {action_key:string;action_binding_id:string}|'none';
+/** Private same-admission immutable bytes; never a serialized authority or later-phase cache. */
+export type CurrentAppConnectionReviewedDeclarations = Readonly<{scope:AppConnectionSessionScope;
+  manifest:ReturnType<typeof parseAppAuthorityManifest>;grant_record_stores:unknown}>;
 const denied = () => new AppError('Account connection access ended', 'APP_ACCESS_DENIED', 403);
 /** Retained SID is checked only after current member/App/registration/binding
  * locks. It carries no bearer and gives the runtime no human impersonation port. */
@@ -36,24 +40,25 @@ export function retainedWebGuard(caller: ExperienceCaller): WebAuthorityGuard {
 
 export type AppConnectionAuthorityOwner=Pick<ExperienceCaller,'org_id'|'user_id'|'access_expires_at'>;
 async function loadCurrentConnectionAuthority(caller: AppConnectionAuthorityOwner,
-  nomination: { installation_id: string; target_key: string }, guard: WebAuthorityGuard, requireTransport:boolean, requestedMode:'v1'|'v2'|'credential_form.v1'|'declared'='v1',requiredAction?:RequiredConnectionAction,suppliedTransaction?:AppRunTransaction,continuationExpiry?:Date|null,continuationLifetime?:AppConsentLifetime) {
+  nomination: { installation_id: string; target_key: string }, guard: WebAuthorityGuard, requireTransport:boolean, requestedMode:'v1'|'v2'|'credential_form.v1'|'declared'='v1',requiredAction?:RequiredConnectionAction,suppliedTransaction?:AppRunTransaction,continuationExpiry?:Date|null,continuationLifetime?:AppConsentLifetime,onReviewedDeclarations?:(reviewed:CurrentAppConnectionReviewedDeclarations)=>void) {
   const use=async(tx:AppRunTransaction) => {
     const locators = await currentConnectionBindingLocators(tx,caller,nomination).limit(2);
     if (locators.length !== 1) throw denied();
+    let admissionRegistry: AppConnectionSessionRegistry | undefined;
     const current = await (continuationExpiry!==undefined?loadConsentContinuationBindingIdentity:loadLiveAttachmentSyncBindingAuthority)(tx, { org_id: caller.org_id,
-      resource_binding_id: locators[0]!.id, clock: () => new Date() });
+      resource_binding_id: locators[0]!.id, clock: () => new Date(), onConnectionRegistry: registry => { admissionRegistry = registry; } });
     if (!current || current.binding.owner_user_id !== caller.user_id || current.binding.target_key !== nomination.target_key
       || !current.registration.owner_connection_admission_id || !appConsentExpiryValid(current.binding.consent_expires_at,current.binding.consent_lifetime??undefined)) throw denied();
-    const manifest = parseAttachmentAppManifest(current.version.manifest);
+    const manifest = parseAppAuthorityManifest(current.version.manifest);
     // The binding reader validated and share-locked this admission and its
-    // participants in this same transaction. Deployment configuration remains fresh.
+    // participants in this same transaction, including current deployment proofs.
     const admission=current.owner_connection_admission;
     if(!admission)throw denied();
     const policy=selectAdmittedConnectionPolicy(manifest.owner_connections??[],admission.policy,{resource_key:current.binding.resource_key,runtime_requirement_key:current.descriptor.runtime_requirement_key});
     if(!policy)throw denied();
-    // The live reader validates the admin admission snapshot including the
-    // profile digest. Deployment configuration is an additional current pin.
-    const registry = await getAppConnectionSessionRegistry(tx);
+    // Reuse only this live reader's validated deployment acquisition. This
+    // function performs a fresh read again at every later authority boundary.
+    const registry = admissionRegistry ?? await getAppConnectionSessionRegistry(tx);
     const profile = registry.profile(caller.org_id, nomination.installation_id, policy, current.registration.operator_user_id);
     if(admission.snapshot.connection_profile_digest!==connectionProfileDigest(profile)
       ||admission.snapshot.connection_transport_digest!==registry.transportDigest(caller.org_id,nomination.installation_id,profile)
@@ -120,6 +125,7 @@ async function loadCurrentConnectionAuthority(caller: AppConnectionAuthorityOwne
     if (!await attachmentFinalAuthorityIsCurrent(tx, [caller.user_id, scope.operator_user_id], {
       guard, expires_at:(continuationExpiry!==undefined?continuationExpiry:current.binding.consent_expires_at)?[(continuationExpiry!==undefined?continuationExpiry:current.binding.consent_expires_at)!]:[] })) throw denied();
     if(action_consents.length>8)throw denied();
+    onReviewedDeclarations?.({scope,manifest,grant_record_stores:(current.grant.canonical_snapshot as Record<string,unknown>).record_stores??[]});
     return { scope, profile, runtime_ready,connection_protocol:mode, ...(mode!=='v1'?{action_consents}:action_consent ? { action_consent } : {}),
       expires_at: Math.min(guard.current_web_session_expires_at().getTime(), caller.access_expires_at ?? 0) };
   };
@@ -146,8 +152,8 @@ export function currentAppConnectionMetadataAuthority(caller:ExperienceCaller,
  return loadCurrentConnectionAuthority(caller,nomination,guard,false,'declared');
 }
 export async function currentAppConnectionReadAuthority(caller:AppConnectionAuthorityOwner,
- nomination:{installation_id:string;target_key:string},guard:WebAuthorityGuard,requiredAction?:RequiredConnectionAction,suppliedTransaction?:AppRunTransaction):Promise<AppConnectionSessionAuthority>{
- const {runtime_ready,...authority}=await loadCurrentConnectionAuthority(caller,nomination,guard,true,'declared',requiredAction,suppliedTransaction);return authority;
+ nomination:{installation_id:string;target_key:string},guard:WebAuthorityGuard,requiredAction?:RequiredConnectionAction,suppliedTransaction?:AppRunTransaction,onReviewedDeclarations?:(reviewed:CurrentAppConnectionReviewedDeclarations)=>void):Promise<AppConnectionSessionAuthority & {connection_protocol:'v1'|'v2'|'credential_form.v1'}>{
+ const {runtime_ready,...authority}=await loadCurrentConnectionAuthority(caller,nomination,guard,true,'declared',requiredAction,suppliedTransaction,undefined,undefined,onReviewedDeclarations);return authority;
 }
 
 export async function currentAppConnectionSessionV2Authority(caller:ExperienceCaller,

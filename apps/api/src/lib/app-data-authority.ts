@@ -1,3 +1,4 @@
+import {parseAppAuthorityManifest} from './app-authority-manifest.js';
 import {collectAppDataContext} from './app-data-context-collection.js';
 import {withAppDataDiagnostic,measureAppDataPhase} from './app-data-diagnostics.js';
 import {appConsentDeadline,type AppConsentLifetime} from '@deft/app-kit/core';
@@ -10,12 +11,12 @@ import {and,eq,sql,desc} from 'drizzle-orm';
 import {isDeepStrictEqual} from 'node:util';
 import {createHash} from 'node:crypto';
 import {AppDataConnectionSchema,AppDataConsentSnapshotSchema,AppDataRuntimeAuthorityRequestSchema,AppDataRuntimeAuthorityResultSchema,
-  canonicalAppDataJson,parseAttachmentAppManifest,AppResourceActionReleasedInputSchema,
+  canonicalAppDataJson,AppResourceActionReleasedInputSchema,
   type AppDataResult} from '@deft/app-kit/core';
 import {appVersions,appGrantSnapshots,webSessions,users,orgMembers,appDataInvocations} from '@deft/db/schema';
 import {db} from './db.js';
 import {AppError} from './app-errors.js';
-import {currentAppConnectionReadAuthority} from './app-connection-session-authority.js';
+import {currentAppConnectionReadAuthority,type CurrentAppConnectionReviewedDeclarations} from './app-connection-session-authority.js';
 import {appDataConnectionActionSelection,appDataRuntimeConnectionActionSelection} from './app-data-read-authority.js';
 import {PostgresAppConnectionSessionStore} from './app-connection-session-store.js';
 import {getAppConnectionSessionRegistry} from './app-connection-session-registry.js';
@@ -42,14 +43,28 @@ async function currentAppDataBase(caller:Pick<ExperienceCaller,'org_id'|'user_id
  const sessions=new PostgresAppConnectionSessionStore(db),locator={org_id:caller.org_id,owner_user_id:caller.user_id,session_id:sessionId};
  const session=await measureAppDataPhase('session_read',()=>sessions.read(locator,'data'));if(!session||session.state!=='connected'||!session.runtime_session_ref||!session.account)throw appDataDenied();
  if(!await db.transaction(tx=>appConnectionUpgradeSourceIsAvailable(tx,{org_id:caller.org_id,owner_user_id:caller.user_id,session_id:sessionId,purpose:'saved_read'})))throw appDataDenied();
- const current=await measureAppDataPhase('connection_authority',()=>currentAppConnectionReadAuthority(caller,{installation_id:session.scope.installation_id,target_key:session.scope.target_key},guard,requiredAction));
- if(!isDeepStrictEqual(current.scope,session.scope))throw appDataDenied();
- const declared=(await getAppConnectionSessionRegistry()).protocol(session.scope,session.profile);
+ let reviewedDeclarations:CurrentAppConnectionReviewedDeclarations|undefined;
+ const current=await measureAppDataPhase('connection_authority',()=>currentAppConnectionReadAuthority(caller,{installation_id:session.scope.installation_id,target_key:session.scope.target_key},guard,requiredAction,undefined,reviewed=>{reviewedDeclarations=reviewed;}));
+ if(!isDeepStrictEqual(current.scope,session.scope)||!isDeepStrictEqual(current.profile,session.profile))throw appDataDenied();
+ // The fresh current reader already checked the exact reviewed protocol and transport.
+ // Reuse that proof only inside this admission; every later phase calls it again.
+ const declared=current.connection_protocol;
+ if(declared!=='v1'&&declared!=='v2'&&declared!=='credential_form.v1')throw appDataDenied();
  if(declared==='credential_form.v1')await db.transaction(async tx=>{if(!await validateStoredFormConnection(tx,locator,session))await validateContinuationCarrier(tx,session,true);});
- const [version]=await db.select().from(appVersions).where(and(eq(appVersions.org_id,caller.org_id),eq(appVersions.id,current.scope.app_version_id)));
- const [grant]=await db.select().from(appGrantSnapshots).where(and(eq(appGrantSnapshots.org_id,caller.org_id),eq(appGrantSnapshots.id,current.scope.grant_snapshot_id)));
- if(!version||!grant)throw appDataDenied();const manifest=parseAttachmentAppManifest(version.manifest);
- const declarations=manifest.record_stores??[];if(!isDeepStrictEqual(declarations,(grant.canonical_snapshot as Record<string,unknown>).record_stores??[]))throw appDataDenied();
+ // The fresh reader can hand off immutable bytes only from this exact admission.
+ // Later authority phases always call it again; nothing is placed on the public result.
+ let manifest:ReturnType<typeof parseAppAuthorityManifest>,grantStores:unknown;
+ if(reviewedDeclarations){
+  if(!isDeepStrictEqual(reviewedDeclarations.scope,current.scope))throw appDataDenied();
+  manifest=reviewedDeclarations.manifest;grantStores=reviewedDeclarations.grant_record_stores;
+ }else{
+  const [declarationsRow]=await db.select({version:appVersions,grant:appGrantSnapshots}).from(appVersions)
+   .innerJoin(appGrantSnapshots,and(eq(appGrantSnapshots.org_id,caller.org_id),eq(appGrantSnapshots.id,current.scope.grant_snapshot_id)))
+   .where(and(eq(appVersions.org_id,caller.org_id),eq(appVersions.id,current.scope.app_version_id)));
+  const {version,grant}=declarationsRow??{};
+  if(!version||!grant)throw appDataDenied();manifest=parseAppAuthorityManifest(version.manifest);grantStores=(grant.canonical_snapshot as Record<string,unknown>).record_stores??[];
+ }
+ const declarations=manifest.record_stores??[];if(!isDeepStrictEqual(declarations,grantStores))throw appDataDenied();
  const policy=manifest.owner_connections?.find(item=>item.resource_key===current.scope.resource_key&&item.provider_profile_key===current.profile.key
   &&item.runtime_requirement_key===current.profile.runtime_requirement_key);if(!policy)throw appDataDenied();
  const connection=AppDataConnectionSchema.parse({session_id:sessionId,session_revision:session.revision,runtime_session_ref:session.runtime_session_ref,account_ref:session.account.account_ref});
@@ -132,7 +147,7 @@ async function appDataRuntimeAuthorityOwned(raw:unknown,authorization:string|und
  // Store selectors are retained in the declaration linked by the exact policy
  // digest; no author value or nomination travels through introspection.
  const [version]=await db.select().from(appVersions).where(and(eq(appVersions.org_id,owner.org_id),eq(appVersions.id,input.scope.app_version_id)));
- const declaration=parseAttachmentAppManifest(version?.manifest).record_stores?.find(item=>appDataDigest(item)===input.authority.data_policy_digest);
+ const declaration=parseAppAuthorityManifest(version?.manifest).record_stores?.find(item=>appDataDigest(item)===input.authority.data_policy_digest);
  if(!declaration)throw appDataDenied();
  const current=await currentAppDataAuthority(caller,input.connection.session_id,declaration.key,appDataRetainedGuard(caller),input.operation==='connection_metadata'?input.authority.consent_id!==null:appDataRequiresConsent(input.operation),input.authority.consent_id??undefined,appDataRuntimeConnectionActionSelection(input.operation));
  if(['prepared_action_commit','prepared_action_restore'].includes(input.operation)){

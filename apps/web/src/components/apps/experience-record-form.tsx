@@ -1,4 +1,5 @@
 'use client';
+import {recordSeedSnapshotValue} from '@/lib/app-experience-record-seed-snapshot';
 import {createRecordEventDelivery} from '@/lib/app-experience-record-event-delivery';
 import {createRecordBrowserRecovery,type RecordRecoveryState,type RecordSubmissionAttempt} from '@/lib/app-experience-record-browser-recovery';
 import type {RecordRecoveryScope} from '@/lib/app-experience-draft-recovery';
@@ -25,7 +26,9 @@ import {parseAddressList} from '../../../../../packages/app-kit/src/structured-a
 
 export type ExperienceRecordFormNode=RecordFormNode;
 export type ExperienceRecordFormReference=ExperienceRecordFormNode|DeftExperienceRecordFormV2Node;
+export type ExperienceRecordOpening={node:ExperienceRecordFormNode;record:ExperienceRecordRow;identities:readonly RecordFormIdentity[];primaryIdentity?:RecordFormIdentity|null;openingRecovery?:{scope:RecordRecoveryScope;row:ExperienceRecordRow;expiresAt:number}};
 export type ExperienceRecordFormPorts={
+ openSeed?:(node:ExperienceRecordFormNode,signal:AbortSignal)=>Promise<ExperienceRecordOpening>;
  resolveSeed?:(node:ExperienceRecordFormNode,signal:AbortSignal)=>Promise<ExperienceRecordFormNode>;
  load:(node:ExperienceRecordFormReference,signal:AbortSignal)=>Promise<{record:ExperienceRecordRow;identities:readonly RecordFormIdentity[];primaryIdentity?:RecordFormIdentity|null}>;
  save:(node:ExperienceRecordFormReference,revision:number,value:Record<string,unknown>,requestId:string,digest:string,signal:AbortSignal)=>Promise<ExperienceRecordRow>;
@@ -122,10 +125,25 @@ export function ExperienceRecordForm({node,ports,context,emit,registerWriter}:{n
  // Fresh account, seed and recovery checks remain mandatory, but an unavailable
  // port cannot leave this surface permanently pending. Retry repeats the reads.
  const openingTimer=setTimeout(()=>{if(!openingCurrent())return;opening.abort();writer.current?.dispose();recovery.current?.dispose();setState(null);setOpeningUnavailable(true);setNotice('This draft is taking too long to open. Retry to check its current status.');},30000);
- void (async()=>{if(node.seed&&ports.resolveSeed){const previous=node.record_id,resolved=await ports.resolveSeed(node,openingSignal);if(!openingCurrent())throw Error('Seed scope ended');resolvedSeed.current=resolved;node=resolved;if(previous!==resolved.record_id&&await eventPort.current({kind:'input',node_id:node.id,record_id:resolved.record_id,record_revision:0,content_digest:'sha256:'+'0'.repeat(64),record_state:'saved',valid:true,dirty:false,record_seed:true,expected_seed_record_id:previous})!==true)throw Error('Seed delivery unavailable');if(!openingCurrent())throw Error('Seed scope ended');}return ports.load(node,openingSignal);})().then(async({record,identities,primaryIdentity})=>{
+ void (async():Promise<Omit<ExperienceRecordOpening,'node'>>=>{if(node.seed&&ports.openSeed&&recordSeedSnapshotValue(node)){
+  const previous=node.record_id,opened=await ports.openSeed(node,openingSignal);if(!openingCurrent())throw Error('Seed scope ended');
+  node=opened.node;resolvedSeed.current=node;
+  if(previous!==node.record_id&&await eventPort.current({kind:'input',node_id:node.id,record_id:node.record_id,record_revision:0,content_digest:'sha256:'+'0'.repeat(64),record_state:'saved',valid:true,dirty:false,record_seed:true,expected_seed_record_id:previous})!==true)throw Error('Seed delivery unavailable');
+  if(!openingCurrent())throw Error('Seed scope ended');return opened;
+ }if(node.seed&&ports.resolveSeed){
+  // Locator checks and source hydration are independent read-only paths. Keep
+  // both complete/current before disclosing fields; a reused UUID is read again.
+  const previous=node.record_id,[resolution,preflight]=await Promise.allSettled([ports.resolveSeed(node,openingSignal),ports.load(node,openingSignal)]);
+  if(!openingCurrent())throw Error('Seed scope ended');if(resolution.status==='rejected')throw resolution.reason;
+  const resolved=resolution.value;resolvedSeed.current=resolved;node=resolved;
+  if(previous!==resolved.record_id&&await eventPort.current({kind:'input',node_id:node.id,record_id:resolved.record_id,record_revision:0,content_digest:'sha256:'+'0'.repeat(64),record_state:'saved',valid:true,dirty:false,record_seed:true,expected_seed_record_id:previous})!==true)throw Error('Seed delivery unavailable');
+  if(!openingCurrent())throw Error('Seed scope ended');
+  if(previous!==resolved.record_id)return ports.load(node,openingSignal);
+  if(preflight.status==='rejected')throw preflight.reason;return preflight.value;
+ }return ports.load(node,openingSignal);})().then(async({record,identities,primaryIdentity,openingRecovery})=>{
   if(!openingCurrent())return;const mode=experienceRecordFormMode(node,record);recordCopySource(node,record);setIdentities(identities);setPrimaryIdentity(primaryIdentity??null);const initialNotice=typeof record.summary?.initial_value_notice==='string'?record.summary.initial_value_notice:'';
   if(mode==='readonly'){clearTimeout(openingTimer);setNotice(initialNotice);setState({row:record,value:record.value,dirty:false,state:'saved',notice:'Read-only'});registerWriter?.(()=>Promise.resolve(true));return;}
-  if(ports.recoveryScope){setNotice('Checking browser recovery…');const scope=await ports.recoveryScope(node,openingSignal);if(!openingCurrent())return;recoveryScope.current=scope;
+  if(ports.recoveryScope){setNotice('Checking browser recovery…');const scope=openingRecovery?.scope??await ports.recoveryScope(node,openingSignal);if(!openingCurrent())return;recoveryScope.current=scope;
    recovery.current=createRecordBrowserRecovery({scope,allowUnsavedSeed:!!node.seed,maxBytes:node.profile.max_record_bytes,validate:value=>validateRecordFormValue(value,node.profile),validateRestore:(value,row)=>{if(JSON.stringify(recordFormFiles(value,node.profile))!==JSON.stringify(recordFormFiles(row.value,node.profile)))throw Error('Recovery file custody changed');},current,
     prove:async signal=>{const proofSignal=AbortSignal.any([context.signal,signal]);if(ports.recoverySnapshot){const proof=await ports.recoverySnapshot(node,proofSignal);return {scope:proof.scope,row:proof.record};}return {scope:await ports.recoveryScope!(node,proofSignal),row:(await ports.load(node,proofSignal)).record};},change:setRecoveryState});
   }
@@ -135,7 +153,7 @@ export function ExperienceRecordForm({node,ports,context,emit,registerWriter}:{n
    beforeSave:async attempt=>{if(recovery.current)await recovery.current.beforeSave(attempt,writer.current!.snapshot);},
    change:next=>{if(!current())return;if(['saved','unsaved'].includes(next.state)&&!writer.current?.recoveryAttempt)recovery.current?.saved();recovery.current?.record(next);setState(next);let valid=true;try{validateRecordFormValue(next.value,node.profile);}catch{valid=false;}
     void eventPort.current({kind:'input',node_id:node.id,record_id:node.record_id,record_revision:next.row.revision,content_digest:next.row.revision===0?'sha256:'+'0'.repeat(64):next.row.content_digest,record_state:next.state,valid,dirty:next.dirty});}});
-  if(recovery.current){const candidate=await recovery.current.start(record);if(!openingCurrent())return;
+  if(recovery.current){const candidate=await recovery.current.start(record,openingRecovery);if(!openingCurrent())return;
    if(candidate?.submission?.purpose==='save')writer.current.restoreRecovery(candidate.value.content,candidate.submission.attempt);
    else if(candidate?.submission?.purpose==='send')writer.current.blockRecovery();
    renewal=setInterval(()=>void recovery.current?.renew(),30000);
@@ -224,16 +242,23 @@ export function ExperienceRecordForm({node,ports,context,emit,registerWriter}:{n
 /** Ordinary small reference acknowledgements retain the editor and its writer.
  * A changed record/profile gets a fresh lifetime, including fresh object URLs. */
 export function createExperienceRecordFormHost(ports:ExperienceRecordFormPorts){
- const retained=new Map<string,{element:HTMLDivElement;root:ReturnType<typeof createRoot>;context:Context;abort:AbortController;generation:number;identity:string;reference:string;acknowledged?:string;emit?:(event:Event)=>unknown;delivery?:ReturnType<typeof createRecordEventDelivery<Event>>;save?:(()=>Promise<boolean>)|null}>();
+ const retained=new Map<string,{element:HTMLDivElement;root:ReturnType<typeof createRoot>;context:Context;abort:AbortController;generation:number;identity:string;recordId:string;reference:string;acknowledged?:string;seedAcknowledgedIdentity?:string;seedAcknowledgedValue?:string;emit?:(event:Event)=>unknown;delivery?:ReturnType<typeof createRecordEventDelivery<Event>>;save?:(()=>Promise<boolean>)|null}>();
  return {async flushRecordForms(){const results=await Promise.all([...retained.values()].map(entry=>entry.save?.()??Promise.resolve(false)));return results.every(Boolean);},
   mountRecordForm(node:ExperienceRecordFormReference,wrapper:HTMLElement,emit:(event:Event)=>unknown,context:Context){
-  const identity=JSON.stringify([node.store_key,node.record_id,node.profile,'source_refs' in node?node.source_refs??[]:[],'record_changes' in node?node.record_changes??[]:[]]);let entry=retained.get(node.id);
-  const reference=JSON.stringify([node.expected_revision,node.content_digest]);
-  if(entry&&(entry.identity!==identity||reference!==entry.reference&&reference!==entry.acknowledged)){entry.delivery?.dispose();entry.abort.abort();entry.root.unmount();retained.delete(node.id);entry=undefined;}
-  if(!entry){const element=document.createElement('div');entry={element,root:createRoot(element),context,abort:new AbortController(),generation:0,identity,reference};retained.set(node.id,entry);}
-  const owned=entry,generation=++owned.generation;owned.context=context;owned.reference=reference;owned.emit=emit;
+  const identityFor=(recordId:string)=>JSON.stringify([node.store_key,recordId,node.profile,'source_refs' in node?node.source_refs??[]:[],'record_changes' in node?node.record_changes??[]:[]]),identity=identityFor(node.record_id);let entry=retained.get(node.id);
+  const reference=JSON.stringify([node.expected_revision,node.content_digest]),seedValue=JSON.stringify({...node,record_id:undefined,disabled:undefined,presentation:undefined}),seedAcknowledgement=entry?.seedAcknowledgedIdentity===identity&&entry.seedAcknowledgedValue===seedValue;
+  if(entry&&(entry.identity!==identity&&!seedAcknowledgement||reference!==entry.reference&&reference!==entry.acknowledged)){entry.delivery?.dispose();entry.abort.abort();entry.root.unmount();retained.delete(node.id);entry=undefined;}
+  if(!entry){const element=document.createElement('div');entry={element,root:createRoot(element),context,abort:new AbortController(),generation:0,identity,recordId:node.record_id,reference};retained.set(node.id,entry);}
+  if(seedAcknowledgement){entry.identity=identity;entry.seedAcknowledgedIdentity=undefined;entry.seedAcknowledgedValue=undefined;}
+  const owned=entry,generation=++owned.generation;owned.context=context;owned.recordId=node.record_id;owned.reference=reference;owned.emit=emit;
   const active={signal:owned.abort.signal,current:()=>owned.context.current()&&!owned.context.signal.aborted&&!owned.abort.signal.aborted};
-  owned.delivery??=createRecordEventDelivery<Event>({current:active.current,send:event=>owned.emit?.(event),accepted:event=>{if(event.record_id===node.record_id&&Number.isSafeInteger(event.record_revision)&&/^sha256:[a-f0-9]{64}$/u.test(event.content_digest))owned.acknowledged=JSON.stringify([event.record_revision,event.content_digest]);}});
+  owned.delivery??=createRecordEventDelivery<Event>({current:active.current,send:event=>owned.emit?.(event),accepted:event=>{
+   // Only the trusted locator's exact old-to-new UUID acknowledgement may keep
+   // this lifetime. Worker-nominated record/profile/source changes still remount.
+   if('seed' in node&&node.seed&&node.expected_revision===0&&event.record_seed===true&&event.expected_seed_record_id===owned.recordId&&event.node_id===node.id&&event.record_revision===0&&event.content_digest==='sha256:'+'0'.repeat(64)&&event.record_state==='saved'&&event.dirty===false&&/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/iu.test(event.record_id)){
+    owned.seedAcknowledgedIdentity=identityFor(event.record_id);owned.seedAcknowledgedValue=seedValue;owned.acknowledged=JSON.stringify([0,event.content_digest]);
+   }else if(event.record_id===owned.recordId&&Number.isSafeInteger(event.record_revision)&&/^sha256:[a-f0-9]{64}$/u.test(event.content_digest))owned.acknowledged=JSON.stringify([event.record_revision,event.content_digest]);
+  }});
   const emitAcknowledged=owned.delivery.send;
   wrapper.hidden='presentation' in node&&node.presentation==='minimized';
   wrapper.append(owned.element);owned.root.render(node.profile.schema_version==='deft.record_form_profile.v2'?<ExperienceRecordFields node={node as DeftExperienceRecordFormV2Node} ports={ports} emit={emitAcknowledged} context={active} registerWriter={save=>{owned.save=save;}}/>:<ExperienceRecordForm node={node as ExperienceRecordFormNode} ports={ports} emit={emitAcknowledged} context={active} registerWriter={save=>{owned.save=save;}}/>);
