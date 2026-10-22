@@ -13,7 +13,7 @@ import {AppError} from './app-errors.js';
 import {currentAppDataAuthority,appDataDenied,appDataDigest} from './app-data-authority.js';
 import type {AppIntegrationToolOperation} from '../../../../packages/app-kit/src/app-integration-tools.js';
 import {getAppConnectionSessionRegistry} from './app-connection-session-registry.js';
-import {loadLiveAttachmentSyncBindingAuthority} from './app-attachment-sync-authority.js';
+import type {LiveAttachmentSyncBindingAuthority} from './app-attachment-sync-authority.js';
 import {currentAppIntegrationToolPrincipal,type AppIntegrationToolCaller} from './app-integration-tool-authority.js';
 import {createAppIntegrationDataGateway,type AppIntegrationInvocation,type AppIntegrationAccountScope} from './app-integration-data-gateway.js';
 import type {AppIntegrationSourceCaller} from './app-integration-source.js';
@@ -66,10 +66,12 @@ export function createPostgresAppIntegrationDataGateway(options:{policyAuthority
   }
   if(verified.length!==1)throw appDataDenied();const {stored,reviewed}=verified[0]!;
   if(tx){
-   const locked=await currentAppConnectionReadAuthority({...owner,access_expires_at:access},{installation_id:reviewed.scope.installation_id,target_key:reviewed.scope.target_key},guard,tool?.action??'none',tx);
+   let live:LiveAttachmentSyncBindingAuthority|undefined;
+   const locked=await currentAppConnectionReadAuthority({...owner,access_expires_at:access},{installation_id:reviewed.scope.installation_id,target_key:reviewed.scope.target_key},guard,tool?.action??'none',tx,undefined,value=>{live=value;});
    if(!isDeepStrictEqual(locked.scope,reviewed.scope)||!isDeepStrictEqual(locked.action_consents??[],reviewed.action_consents??[])
     ||!await appConnectionUpgradeSourceIsAvailable(tx,{org_id:owner.org_id,owner_user_id:owner.user_id,session_id:stored.session_id,purpose:'saved_read'}))throw appDataDenied();
-   const live=await loadLiveAttachmentSyncBindingAuthority(tx,{org_id:owner.org_id,resource_binding_id:reviewed.scope.resource_binding_id,clock:()=>new Date()});
+   // This private handoff is the exact current reader result under this same
+   // transaction's original locks. Every later boundary resolves independently.
    const [session]=await tx.select().from(appConnectionSessions).where(and(eq(appConnectionSessions.org_id,owner.org_id),eq(appConnectionSessions.owner_user_id,owner.user_id),eq(appConnectionSessions.session_id,stored.session_id))).for('share');
    if(!live||live.binding.owner_user_id!==owner.user_id||live.version.id!==reviewed.scope.app_version_id||live.grant.id!==reviewed.scope.grant_snapshot_id
     ||live.installation.lifecycle_epoch!==reviewed.scope.lifecycle_epoch||live.installation.grant_epoch!==reviewed.scope.grant_epoch

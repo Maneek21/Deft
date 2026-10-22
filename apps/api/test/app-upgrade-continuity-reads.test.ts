@@ -58,11 +58,11 @@ function fixture() {
   };
   const tx = { execute: async (statement: any) => { locks.push(dialect.sqlToQuery(statement).sql); return { rows: [] }; }, select: (selection?: Row) => {
     let table: any, condition: any, limit = Infinity, share = false; const joins: { table: any; on: any; left: boolean }[] = [];
-    const rows = () => {
+    const rows = (record = true) => {
       const contexts = (data[original(table)] ?? []).map(row => ({ [name(table)]: row }));
       let joined: Record<string, Row | null>[] = contexts;
       for (const join of joins) joined = joined.flatMap(context => {
-        const candidates = (data[original(join.table)] ?? []).map(row => ({ ...context, [name(join.table)]: row })).filter(next => matches(join.on, next));
+        const candidates = (join.table.__rows ? join.table.__rows() : data[original(join.table)] ?? []).map((row: Row) => ({ ...context, [name(join.table)]: row })).filter(next => matches(join.on, next));
         return candidates.length ? candidates : join.left ? [{ ...context, [name(join.table)]: null }] : [];
       });
       const sql = condition ? dialect.sqlToQuery(condition) : { sql: '', params: [] };
@@ -73,25 +73,29 @@ function fixture() {
         return Object.values(value).every(item => item === null) ? null : value;
       };
       const result = joined.filter(context => matches(condition, context)).slice(0, limit).map(context => selection ? project(selection, context) : context[name(table)]);
-      queries.push({ sql: sql.sql, params: sql.params, share, transferBytes: Buffer.byteLength(JSON.stringify(result)) });
+      if (record) queries.push({ sql: sql.sql, params: sql.params, share, transferBytes: Buffer.byteLength(JSON.stringify(result)) });
       return result;
     };
     const chain: any = { from: (value: any) => { table = value; return chain; }, where: (value: any) => { condition = value; return chain; },
       leftJoin: (value: any, on: any) => { joins.push({ table: value, on, left: true }); return chain; },
       innerJoin: (value: any, on: any) => { joins.push({ table: value, on, left: false }); return chain; },
       limit: (value: number) => { limit = value; return chain; }, orderBy: () => chain, for: () => { share = true; return chain; },
-      then: (resolve: any, reject: any) => Promise.resolve().then(rows).then(resolve, reject) }; return chain;
+      as: (alias: string) => {
+        const aliased: any = { [Table.Symbol.Name]: alias, [Table.Symbol.OriginalName]: alias, __rows: () => rows(false) };
+        aliased.after_state = { table: aliased, name: 'after_state' }; return aliased;
+      },
+      then: (resolve: any, reject: any) => Promise.resolve().then(() => rows()).then(resolve, reject) }; return chain;
   } };
   return { proof, data, queries, locks, tx, run: (issuance = false) => assertContinuityProof(tx as never, proof, true, issuance) };
 }
 
-test('unlocked continuity reads every current pin in five statements with original Date values and no locks', async () => {
+test('unlocked continuity reads every current pin in two statements with original Date values and no locks', async () => {
   const f = fixture(), result = await f.run();
-  assert.equal(f.queries.length, 5, 'only current independent reads are batched; no authority decision is cached');
+  assert.equal(f.queries.length, 2, 'only current independent reads are batched; no authority decision is cached');
   assert.equal(f.locks.length, 0); assert.ok(f.queries.every(query => !query.share));
   assert.equal(result.source.session_id, f.proof.source_session_id);
   assert.ok(f.data.app_resource_bindings![0]!.created_at instanceof Date);
-  await f.run(); assert.equal(f.queries.length, 10, 'a later phase performs all fresh reads again');
+  await f.run(); assert.equal(f.queries.length, 4, 'a later phase performs all fresh reads again');
 });
 
 test('unlocked continuity still denies missing, mixed-org, wrong-owner and independently drifted evidence', async () => {
@@ -175,5 +179,24 @@ test('narrow version reads still reject manifest changes and every complete dige
     ...['app_resource_bindings', 'app_runtime_registrations', 'app_owner_connection_admissions', 'app_runtime_bindings'].map(table =>
       (f: ReturnType<typeof fixture>) => { f.data[table]![0]!.extra_current_field = 'changed'; })]) {
     const f = fixture(); await f.run(); change(f); await assert.rejects(f.run());
+  }
+});
+
+
+test('warm validation still fences changed versions, grants, epochs and membership without reusing prior authority', async () => {
+  const mutations = [
+    (f: ReturnType<typeof fixture>) => { f.data.app_installations![0]!.active_version_id = randomUUID(); },
+    (f: ReturnType<typeof fixture>) => { f.data.app_installations![0]!.active_grant_snapshot_id = randomUUID(); },
+    (f: ReturnType<typeof fixture>) => { f.data.app_installations![0]!.lifecycle_epoch++; },
+    (f: ReturnType<typeof fixture>) => { f.data.app_installations![0]!.grant_epoch++; },
+    (f: ReturnType<typeof fixture>) => { f.data.org_members![0]!.org_id = randomUUID(); },
+    (f: ReturnType<typeof fixture>) => { f.data.org_members![1]!.is_active = false; },
+    (f: ReturnType<typeof fixture>) => { f.data.users![0]!.kind = 'agent'; },
+    (f: ReturnType<typeof fixture>) => { f.data.app_runtime_bindings![0]!.unprojected_field = 'changed'; },
+    (f: ReturnType<typeof fixture>) => { f.data.audit_log![0]!.after_state.revision++; },
+    (f: ReturnType<typeof fixture>) => { f.data.app_versions![1]!.manifest.future_authority = true; },
+  ];
+  for (const change of mutations) {
+    const f = fixture(); await f.run(); await f.run(); change(f); await assert.rejects(f.run());
   }
 });

@@ -23,10 +23,18 @@ export function upgradeContinuityDecision(trusted: boolean, before: unknown, aft
  * revisions serialize settings changes and fence an off/on ABA transition.
  * No migration or historical schema-catalog mutation is needed. */
 export async function readInstallationUpgradeTrust(tx: Tx, orgId: string, installationId: string) {
-  const [latest] = await tx.select({ after_state: auditLog.after_state }).from(auditLog).where(and(
+  const [latest] = await currentInstallationUpgradeTrustRows(tx, orgId, installationId);
+  return decodeInstallationUpgradeTrust(latest);
+}
+/** The exact current policy point read can join other unlocked scoped facts.
+ * This remains live SQL; no policy or revision is retained between checks. */
+export function currentInstallationUpgradeTrustRows(tx: Tx, orgId: string, installationId: string) {
+  return tx.select({ after_state: auditLog.after_state }).from(auditLog).where(and(
     eq(auditLog.org_id, orgId), eq(auditLog.entity_type, 'app_installation'), eq(auditLog.entity_id, installationId),
     eq(auditLog.action, TRUST_ACTION), eq(auditLog.actor_type, 'human')))
     .orderBy(sql`(${auditLog.after_state}->>'revision')::integer DESC`).limit(1);
+}
+export function decodeInstallationUpgradeTrust(latest: { after_state: unknown } | null | undefined) {
   return latest ? TrustSchema.parse(latest.after_state) : { trusted: false, revision: 0 };
 }
 export async function installationUpgradeTrust(actor: ModuleActor, installationId: string, guard: WebAuthorityGuard,

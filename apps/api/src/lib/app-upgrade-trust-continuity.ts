@@ -13,7 +13,9 @@ import { ResourceObservationSnapshotSchema } from '../../../../packages/app-kit/
 import { db } from './db.js';
 import { AppError } from './app-errors.js';
 import { digestAppGrantValue } from './app-grant-service.js';
-import { readInstallationUpgradeTrust, upgradeContinuityDecision } from './app-upgrade-trust-policy.js';
+import { readInstallationUpgradeTrust, currentInstallationUpgradeTrustRows, decodeInstallationUpgradeTrust } from './app-upgrade-trust-policy.js';
+import { diffUpgradeAuthority, type UpgradeAuthorityDiff } from './app-upgrade-manifest-diff.js';
+import { createAppAuthorityContentCache } from './app-authority-content-cache.js';
 import { AppConnectionSessionRecordSchema, type AppConnectionSessionRecord } from './app-connection-session-service.js';
 import { getAppConnectionSessionRegistry } from './app-connection-session-registry.js';
 import { currentConsentContinuationSourceLocators } from './app-connection-current-locators.js';
@@ -31,6 +33,12 @@ const id = z.string().uuid(), digest = z.string().regex(/^sha256:[a-f0-9]{64}$/)
 const pin = z.strictObject({ id, digest });
 const continuityPriorVersion = alias(appVersions, 'continuity_prior_version');
 const continuityTargetVersion = alias(appVersions, 'continuity_target_version');
+const continuityOwnerMember = alias(orgMembers, 'continuity_owner_member');
+const continuityOperatorMember = alias(orgMembers, 'continuity_operator_member');
+const continuityOwnerUser = alias(users, 'continuity_owner_user');
+const continuityOperatorUser = alias(users, 'continuity_operator_user');
+const continuingManifestDiff = createAppAuthorityContentCache<UpgradeAuthorityDiff>();
+const validatedContinuitySource = createAppAuthorityContentCache<AppConnectionSessionRecord>();
 export const UpgradeContinuityProofSchema = z.strictObject({ schema_version: z.literal('deft.app_upgrade_continuity.v1'),
   request_id: id, org_id: id, installation_id: id, prior_version_id: id, version_id: id, grant_id: id,
   lifecycle_epoch: z.number().int().nonnegative(), grant_epoch: z.number().int().nonnegative(), trust_revision: z.number().int().nonnegative(),
@@ -140,13 +148,21 @@ export async function assertContinuityProof(tx: UpgradeTx, proof: UpgradeContinu
       await tx.execute(sql`SELECT id FROM org_members WHERE org_id=${proof.org_id} AND user_id=${userId} FOR SHARE`);
     await tx.execute(sql`SELECT id FROM app_installations WHERE org_id=${proof.org_id} AND id=${proof.installation_id} FOR SHARE`);
   }
-  // Unlocked current reads share one statement, retaining each original scoped
-  // predicate and Drizzle's full row/Date decoding for digest-bound evidence.
-  // Versions contribute only their current IDs/manifests, not unread packages.
-  // Issuance keeps its reads/share-lock order; no result survives this invocation.
+  // Unlocked current point reads share one statement, retaining every original
+  // scoped predicate, current negative fact, and full row/Date decoding for
+  // digest-bound evidence. The action pin set has its own bounded statement.
+  // Issuance retains its existing reads/share-lock order. No read survives this
+  // invocation; versions contribute only IDs/manifests, never unread packages.
+  const currentTrust = currentInstallationUpgradeTrustRows(tx, proof.org_id, proof.installation_id).as('continuity_current_trust');
   const [currentRows] = issuance ? [] : await tx.select({ installation: appInstallations,
     prior: { id: continuityPriorVersion.id, manifest: continuityPriorVersion.manifest },
-    target: { id: continuityTargetVersion.id, manifest: continuityTargetVersion.manifest }, source: appConnectionSessions })
+    target: { id: continuityTargetVersion.id, manifest: continuityTargetVersion.manifest }, source: appConnectionSessions,
+    binding: appResourceBindings, registration: appRuntimeRegistrations, admission: appOwnerConnectionAdmissions,
+    trust: { after_state: currentTrust.after_state },
+    owner: { id: continuityOwnerMember.user_id, role: continuityOwnerMember.role, active: continuityOwnerMember.is_active,
+      kind: continuityOwnerUser.kind, agent: continuityOwnerUser.is_agent },
+    operator: { id: continuityOperatorMember.user_id, role: continuityOperatorMember.role, active: continuityOperatorMember.is_active,
+      kind: continuityOperatorUser.kind, agent: continuityOperatorUser.is_agent } })
     .from(appInstallations)
     .leftJoin(continuityPriorVersion, and(eq(continuityPriorVersion.org_id, proof.org_id),
       eq(continuityPriorVersion.installation_id, proof.installation_id), eq(continuityPriorVersion.id, proof.prior_version_id)))
@@ -154,26 +170,41 @@ export async function assertContinuityProof(tx: UpgradeTx, proof: UpgradeContinu
       eq(continuityTargetVersion.installation_id, proof.installation_id), eq(continuityTargetVersion.id, proof.version_id)))
     .leftJoin(appConnectionSessions, and(eq(appConnectionSessions.org_id, proof.org_id),
       eq(appConnectionSessions.owner_user_id, proof.owner_id), eq(appConnectionSessions.session_id, proof.source_session_id)))
+    .leftJoin(appResourceBindings, and(eq(appResourceBindings.org_id, proof.org_id), eq(appResourceBindings.id, proof.source_binding.id)))
+    .leftJoin(appRuntimeRegistrations, and(eq(appRuntimeRegistrations.org_id, proof.org_id), eq(appRuntimeRegistrations.id, proof.source_registration.id)))
+    .leftJoin(appOwnerConnectionAdmissions, and(eq(appOwnerConnectionAdmissions.org_id, proof.org_id), eq(appOwnerConnectionAdmissions.id, proof.source_admission.id)))
+    .leftJoin(currentTrust, sql`true`)
+    .leftJoin(continuityOwnerMember, and(eq(continuityOwnerMember.org_id, proof.org_id), eq(continuityOwnerMember.user_id, proof.owner_id)))
+    .leftJoin(continuityOwnerUser, eq(continuityOwnerUser.id, continuityOwnerMember.user_id))
+    .leftJoin(continuityOperatorMember, and(eq(continuityOperatorMember.org_id, proof.org_id), eq(continuityOperatorMember.user_id, proof.operator_id)))
+    .leftJoin(continuityOperatorUser, eq(continuityOperatorUser.id, continuityOperatorMember.user_id))
     .where(and(eq(appInstallations.org_id, proof.org_id), eq(appInstallations.id, proof.installation_id))).limit(1);
   const installation = issuance ? (await tx.select().from(appInstallations).where(and(eq(appInstallations.org_id, proof.org_id),
     eq(appInstallations.id, proof.installation_id))).limit(1))[0] : currentRows?.installation;
   if (!installation || installation.state !== 'active' || (current && (installation.active_version_id !== proof.version_id
     || installation.active_grant_snapshot_id !== proof.grant_id || installation.lifecycle_epoch !== proof.lifecycle_epoch || installation.grant_epoch !== proof.grant_epoch))) throw denied();
-  const trust = await readInstallationUpgradeTrust(tx, proof.org_id, proof.installation_id);
+  const trust = issuance ? await readInstallationUpgradeTrust(tx, proof.org_id, proof.installation_id)
+    : decodeInstallationUpgradeTrust(currentRows?.trust);
   const versions = issuance ? await tx.select().from(appVersions).where(and(eq(appVersions.org_id, proof.org_id), eq(appVersions.installation_id, proof.installation_id),
     inArray(appVersions.id, [proof.prior_version_id, proof.version_id]))) : [currentRows?.prior, currentRows?.target].filter(row => row != null);
   const prior = versions.find(v => v.id === proof.prior_version_id), target = versions.find(v => v.id === proof.version_id);
-  if (!prior || !target || !trust.trusted || trust.revision !== proof.trust_revision || !upgradeContinuityDecision(true, prior.manifest, target.manifest).eligible) throw denied();
+  if (!prior || !target || !trust.trusted || trust.revision !== proof.trust_revision) throw denied();
+  // Only the pure exact-manifest comparison is reusable. Trust, current version,
+  // grant/epochs, source approvals, complete row pins and membership are always
+  // reread below/above; the retained proof never becomes current authority.
+  const manifestDiff = continuingManifestDiff({ org_id: proof.org_id, app_version_id: proof.version_id }, {
+    prior_version_id: proof.prior_version_id, grant_id: proof.grant_id, lifecycle_epoch: installation.lifecycle_epoch,
+    grant_epoch: installation.grant_epoch, trust_revision: trust.revision, prior: prior.manifest, target: target.manifest,
+  }, () => diffUpgradeAuthority(prior.manifest, target.manifest));
+  if (manifestDiff.requires_review) throw denied();
   const sourceRow = issuance ? (await tx.select().from(appConnectionSessions).where(and(eq(appConnectionSessions.org_id, proof.org_id),
     eq(appConnectionSessions.owner_user_id, proof.owner_id), eq(appConnectionSessions.session_id, proof.source_session_id))).limit(1))[0] : currentRows?.source;
-  const source = sourceRow && AppConnectionSessionRecordSchema.parse(sourceRow.record);
+  const source = sourceRow && validatedContinuitySource({ org_id: proof.org_id, app_version_id: proof.version_id }, {
+    prior_version_id: proof.prior_version_id, grant_id: proof.grant_id, lifecycle_epoch: installation.lifecycle_epoch,
+    grant_epoch: installation.grant_epoch, trust_revision: trust.revision, source: sourceRow.record,
+  }, () => AppConnectionSessionRecordSchema.parse(sourceRow.record));
   if (!source || source.state !== 'connected' || source.revision !== proof.source_revision || !isDeepStrictEqual(source.scope, proof.source_scope)
     || !isDeepStrictEqual(source.profile, proof.source_profile) || appConsentDeadline(source.scope.consent_expires_at, source.scope.consent_lifetime) <= Date.now()) throw denied();
-  const [currentPins] = issuance ? [] : await tx.select({ binding: appResourceBindings,
-    registration: appRuntimeRegistrations, admission: appOwnerConnectionAdmissions }).from(appResourceBindings)
-    .leftJoin(appRuntimeRegistrations, and(eq(appRuntimeRegistrations.org_id, proof.org_id), eq(appRuntimeRegistrations.id, proof.source_registration.id)))
-    .leftJoin(appOwnerConnectionAdmissions, and(eq(appOwnerConnectionAdmissions.org_id, proof.org_id), eq(appOwnerConnectionAdmissions.id, proof.source_admission.id)))
-    .where(and(eq(appResourceBindings.org_id, proof.org_id), eq(appResourceBindings.id, proof.source_binding.id))).limit(1);
   const check = async (table: any, field: any, pins: readonly { id: string; digest: string }[], rows?: any[]) => {
     await assertCurrentUpgradeRowPins<any>({ pins, issuance, id: row => row[field.name], digest: rowDigest, denied,
       read: async (ids, share) => {
@@ -183,16 +214,17 @@ export async function assertContinuityProof(tx: UpgradeTx, proof: UpgradeContinu
         return share ? query.for('share') : query;
       } });
   };
-  await check(appResourceBindings, appResourceBindings.id, [proof.source_binding], issuance ? undefined : currentPins?.binding ? [currentPins.binding] : []);
-  await check(appRuntimeRegistrations, appRuntimeRegistrations.id, [proof.source_registration], issuance ? undefined : currentPins?.registration ? [currentPins.registration] : []);
-  await check(appOwnerConnectionAdmissions, appOwnerConnectionAdmissions.id, [proof.source_admission], issuance ? undefined : currentPins?.admission ? [currentPins.admission] : []);
+  await check(appResourceBindings, appResourceBindings.id, [proof.source_binding], issuance ? undefined : currentRows?.binding ? [currentRows.binding] : []);
+  await check(appRuntimeRegistrations, appRuntimeRegistrations.id, [proof.source_registration], issuance ? undefined : currentRows?.registration ? [currentRows.registration] : []);
+  await check(appOwnerConnectionAdmissions, appOwnerConnectionAdmissions.id, [proof.source_admission], issuance ? undefined : currentRows?.admission ? [currentRows.admission] : []);
   await check(appRuntimeBindings, appRuntimeBindings.id, proof.source_actions);
   if (issuance) {
     await check(appResourceObservationConsents, appResourceObservationConsents.consent_id, proof.source_observations);
     await check(appDataConsents, appDataConsents.consent_id, proof.source_data);
   }
-  const members = await tx.select({ id: orgMembers.user_id, role: orgMembers.role, active: orgMembers.is_active, kind: users.kind, agent: users.is_agent })
-    .from(orgMembers).innerJoin(users, eq(users.id, orgMembers.user_id)).where(and(eq(orgMembers.org_id, proof.org_id), inArray(orgMembers.user_id, [proof.owner_id, proof.operator_id])));
+  const members = issuance ? await tx.select({ id: orgMembers.user_id, role: orgMembers.role, active: orgMembers.is_active, kind: users.kind, agent: users.is_agent })
+    .from(orgMembers).innerJoin(users, eq(users.id, orgMembers.user_id)).where(and(eq(orgMembers.org_id, proof.org_id), inArray(orgMembers.user_id, [proof.owner_id, proof.operator_id])))
+    : [currentRows?.owner, currentRows?.operator].filter(member => member != null);
   if (![[proof.owner_id, proof.owner_role], [proof.operator_id, proof.operator_role]].every(([id, role]) => members.some(m => m.id === id
     && m.role === role && m.active && m.kind === 'human' && !m.agent))) throw denied();
   return { installation, source, prior, target };

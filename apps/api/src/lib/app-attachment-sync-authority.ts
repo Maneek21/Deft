@@ -1,5 +1,5 @@
 import {appConsentDeadline,appConsentExpiryValid} from '@deft/app-kit/core';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql, asc } from 'drizzle-orm';
 import {
   appResourceBindings, appRuntimeRegistrations, appRuntimeSessions,
   capabilityProviderSnapshots, orgMembers, users,
@@ -16,6 +16,7 @@ import { loadReviewedAttachmentSyncDescriptor } from './app-attachment-sync-revi
 import { createAttachmentSyncDiscoverySnapshot, createLegacyPrePdfAttachmentSyncDiscoverySnapshot } from './app-attachment-sync-discovery.js';
 import { digestAppGrantValue } from './app-grant-service.js';
 import { attachmentSyncConsentReview } from './app-attachment-sync-consent.js';
+import { createAsyncAppAuthorityContentCache } from './app-authority-content-cache.js';
 
 type Registration = typeof appRuntimeRegistrations.$inferSelect;
 type Binding = typeof appResourceBindings.$inferSelect;
@@ -54,7 +55,28 @@ function currentTime(clock: () => Date): Date | null {
   return checked instanceof Date && Number.isFinite(checked.getTime()) ? checked : null;
 }
 
+const validatedProviderSnapshots=createAsyncAppAuthorityContentCache<true>();
+const invalidProviderProof=Symbol('invalid-provider-discovery-proof');
 async function validProviderSnapshot(row: ProviderSnapshot, registration: Registration,
+  binding: Binding, descriptor: Reviewed['descriptor'], closureLegacyPrePdf: boolean, reviewed:Reviewed): Promise<boolean> {
+  const evidence={snapshot:{id:row.id,org_id:row.org_id,provider_kind:row.provider_kind,
+    provider_instance_id:row.provider_instance_id,adapter_contract_version:row.adapter_contract_version,
+    safe_snapshot:row.safe_snapshot,snapshot_digest:row.snapshot_digest,captured_at:row.captured_at.toISOString()},
+    registration:{id:registration.id,owner_connection_admission_id:registration.owner_connection_admission_id,runtime_epoch:registration.runtime_epoch},
+    binding:{org_id:binding.org_id,provider_snapshot_id:binding.provider_snapshot_id},descriptor,closureLegacyPrePdf,
+    pins:{installation_id:reviewed.installation.id,app_version_id:reviewed.version.id,grant_snapshot_id:reviewed.grant.id,
+      grant_snapshot_digest:reviewed.grant.snapshot_digest,lifecycle_epoch:reviewed.installation.lifecycle_epoch,grant_epoch:reviewed.installation.grant_epoch}};
+  try{
+    return await validatedProviderSnapshots({org_id:binding.org_id,app_version_id:reviewed.version.id},evidence,async()=>{
+      if(!await reconstructProviderSnapshot(row,registration,binding,descriptor,closureLegacyPrePdf))throw invalidProviderProof;
+      return true;
+    });
+  }catch(error){if(error===invalidProviderProof)return false;throw error;}
+}
+
+/** Immutable discovery-schema proof only. Every live row, current admission,
+ * membership, epoch and deadline check remains outside this content cache. */
+async function reconstructProviderSnapshot(row: ProviderSnapshot, registration: Registration,
   binding: Binding, descriptor: Reviewed['descriptor'], closureLegacyPrePdf: boolean): Promise<boolean> {
   if (row.org_id !== binding.org_id || row.id !== binding.provider_snapshot_id
     || row.provider_kind !== 'app_runtime' || row.provider_instance_id !== registration.id
@@ -104,49 +126,47 @@ async function loadAttachmentSyncBindingAuthority(tx: AppRunTransaction,
     registration_id: appResourceBindings.runtime_registration_id,
     installation_id: appResourceBindings.app_installation_id,
     resource_key: appResourceBindings.resource_key,
-  }).from(appResourceBindings).where(and(eq(appResourceBindings.org_id, input.org_id),
-    eq(appResourceBindings.id, input.resource_binding_id))).limit(1);
-  if (!locator) return null;
-  const [registrationLocator] = await tx.select({ operator_user_id: appRuntimeRegistrations.operator_user_id,
-    app_installation_id: appRuntimeRegistrations.app_installation_id })
-    .from(appRuntimeRegistrations).where(and(eq(appRuntimeRegistrations.org_id, input.org_id),
-      eq(appRuntimeRegistrations.id, locator.registration_id))).limit(1);
-  if (!registrationLocator || registrationLocator.app_installation_id !== locator.installation_id) return null;
-  const participantIds = [...new Set([locator.owner_user_id, registrationLocator.operator_user_id])].sort();
+    operator_user_id: appRuntimeRegistrations.operator_user_id,
+    registration_installation_id: appRuntimeRegistrations.app_installation_id,
+  }).from(appResourceBindings).innerJoin(appRuntimeRegistrations, and(
+    eq(appRuntimeRegistrations.org_id, appResourceBindings.org_id),
+    eq(appRuntimeRegistrations.id, appResourceBindings.runtime_registration_id)))
+    .where(and(eq(appResourceBindings.org_id, input.org_id),
+      eq(appResourceBindings.id, input.resource_binding_id))).limit(1);
+  if (!locator || locator.registration_installation_id !== locator.installation_id) return null;
+  const participantIds = [...new Set([locator.owner_user_id, locator.operator_user_id])].sort();
   if (input.prelocked_participant_ids) {
     // Composite readers already hold their full participant set before App.
     // A changed locator must fail rather than introduce a later member lock.
     if (participantIds.some(id => !input.prelocked_participant_ids!.includes(id))) return null;
   } else {
-    for (const userId of participantIds) {
-      await tx.execute(sql`SELECT id FROM org_members WHERE org_id = ${input.org_id}
-        AND user_id = ${userId} FOR SHARE`);
-    }
+    // The same sorted member -> App lock order, acquired as one scoped set.
+    // Human-kind reads remain a separate post-wait statement; users are never locked.
+    await tx.select({ id: orgMembers.id }).from(orgMembers).where(and(
+      eq(orgMembers.org_id, input.org_id), inArray(orgMembers.user_id, participantIds)))
+      .orderBy(asc(orgMembers.user_id)).for('share');
   }
-  const [owner] = await tx.select({ is_active: orgMembers.is_active, role: orgMembers.role, kind: users.kind, is_agent: users.is_agent })
-    .from(orgMembers).innerJoin(users, eq(users.id, orgMembers.user_id)).where(and(eq(orgMembers.org_id, input.org_id),
-      eq(orgMembers.user_id, locator.owner_user_id))).limit(1);
-  const [operator] = await tx.select({ is_active: orgMembers.is_active, role: orgMembers.role, kind: users.kind, is_agent: users.is_agent })
-    .from(orgMembers).innerJoin(users, eq(users.id, orgMembers.user_id)).where(and(eq(orgMembers.org_id, input.org_id),
-      eq(orgMembers.user_id, registrationLocator.operator_user_id))).limit(1);
+  const members = await tx.select({ user_id: orgMembers.user_id, is_active: orgMembers.is_active,
+    role: orgMembers.role, kind: users.kind, is_agent: users.is_agent })
+    .from(orgMembers).innerJoin(users, eq(users.id, orgMembers.user_id)).where(and(
+      eq(orgMembers.org_id, input.org_id), inArray(orgMembers.user_id, participantIds)));
+  const owner = members.find(member => member.user_id === locator.owner_user_id);
+  const operator = members.find(member => member.user_id === locator.operator_user_id);
   if (!owner?.is_active || (owner.kind !== 'human' || owner.is_agent !== false) || !['owner', 'admin', 'member'].includes(owner.role)
     || !operator?.is_active || (operator.kind !== 'human' || operator.is_agent !== false) || operator.role === 'guest') return null;
   let reviewed: Reviewed;
   try { reviewed = await loadReviewedAttachmentSyncDescriptor(tx, input.org_id,
     locator.installation_id, locator.resource_key); }
   catch { return null; }
-  await tx.execute(sql`SELECT id FROM app_runtime_registrations WHERE org_id = ${input.org_id}
-    AND id = ${locator.registration_id} FOR SHARE`);
-  if (input.binding_lock === 'update') await tx.execute(sql`SELECT id FROM app_resource_bindings WHERE org_id = ${input.org_id}
-    AND id = ${input.resource_binding_id} FOR UPDATE`);
-  else await tx.execute(sql`SELECT id FROM app_resource_bindings WHERE org_id = ${input.org_id}
-    AND id = ${input.resource_binding_id} FOR SHARE`);
+  // Fetch the rows in the same registration -> binding lock order. PostgreSQL
+  // returns the current row after each lock wait; later identity comparisons
+  // still reject any changed locator, version, grant, owner or epoch.
   const [registration] = await tx.select().from(appRuntimeRegistrations).where(and(
     eq(appRuntimeRegistrations.org_id, input.org_id), eq(appRuntimeRegistrations.id, locator.registration_id)))
-    .limit(1);
+    .limit(1).for('share');
   const [binding] = await tx.select().from(appResourceBindings).where(and(
     eq(appResourceBindings.org_id, input.org_id), eq(appResourceBindings.id, input.resource_binding_id)))
-    .limit(1);
+    .limit(1).for(input.binding_lock === 'update' ? 'update' : 'share');
   if(!continuationIdentityOnly){const pending=await tx.execute(sql`SELECT session_id FROM app_connection_consent_continuations WHERE org_id=${input.org_id} AND resource_binding_id=${input.resource_binding_id} AND record->'activation_started'='true'::jsonb AND record->>'state'<>'connected' LIMIT 1`);if(pending.rows.length)return null;}
   let ownerAdmission;
   if (registration?.owner_connection_admission_id) {
@@ -156,7 +176,7 @@ async function loadAttachmentSyncBindingAuthority(tx: AppRunTransaction,
   } else if (owner.role === 'member') return null;
   if (!registration || !binding || registration.state !== 'active' || registration.runtime_epoch < 1
     || registration.contract_version !== 'deft.app_runtime_channel.v3'
-    || registration.operator_user_id !== registrationLocator.operator_user_id
+    || registration.operator_user_id !== locator.operator_user_id
     || registration.reviewed_by_user_id !== locator.owner_user_id
     || registration.app_installation_id !== reviewed.installation.id
     || registration.app_version_id !== reviewed.version.id
@@ -199,7 +219,7 @@ async function loadAttachmentSyncBindingAuthority(tx: AppRunTransaction,
     eq(capabilityProviderSnapshots.id, binding.provider_snapshot_id))).limit(1);
   if (!providerSnapshot) return null;
   try { if (!await validProviderSnapshot(providerSnapshot, registration, binding,
-    reviewed.descriptor, closureLegacyPrePdf)) return null; }
+    reviewed.descriptor, closureLegacyPrePdf, reviewed)) return null; }
   catch { return null; }
   if (!await attachmentSyncParticipantsAreHuman(tx, binding.owner_user_id, registration.operator_user_id)) return null;
   const checkedAt = currentTime(input.clock);

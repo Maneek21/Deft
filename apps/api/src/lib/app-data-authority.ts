@@ -18,7 +18,7 @@ import {db} from './db.js';
 import {AppError} from './app-errors.js';
 import {currentAppConnectionReadAuthority,type CurrentAppConnectionReviewedDeclarations} from './app-connection-session-authority.js';
 import {appDataConnectionActionSelection,appDataRuntimeConnectionActionSelection} from './app-data-read-authority.js';
-import {PostgresAppConnectionSessionStore} from './app-connection-session-store.js';
+import {readSavedAppDataConnection} from './app-data-connection-read.js';
 import {getAppConnectionSessionRegistry} from './app-connection-session-registry.js';
 import {appDataConsentConnections} from './app-data-consent-repair.js';
 import {PostgresAppDataStore} from './app-data-store.js';
@@ -30,9 +30,9 @@ export const appDataDenied=()=>new AppError('App data access ended','APP_ACCESS_
 export const appDataDigest=(value:unknown)=>`sha256:${createHash('sha256').update(canonicalAppDataJson(value)).digest('hex')}`;
 export function appDataRetainedGuard(caller:ExperienceCaller):WebAuthorityGuard {
  let expiry=caller.access_expires_at??0;return Object.assign(async(tx:Parameters<WebAuthorityGuard>[0])=>{
-  const [member]=await tx.select().from(orgMembers).where(and(eq(orgMembers.org_id,caller.org_id),eq(orgMembers.user_id,caller.user_id))).for('share');
+  const [member]=await tx.select({is_active:orgMembers.is_active,role:orgMembers.role}).from(orgMembers).where(and(eq(orgMembers.org_id,caller.org_id),eq(orgMembers.user_id,caller.user_id))).for('share');
   const [human]=await tx.select({kind:users.kind}).from(users).where(eq(users.id,caller.user_id));
-  const [session]=await tx.select().from(webSessions).where(and(eq(webSessions.id,caller.sid),eq(webSessions.org_id,caller.org_id),eq(webSessions.user_id,caller.user_id))).for('share');
+  const [session]=await tx.select({revoked_at:webSessions.revoked_at,expires_at:webSessions.expires_at}).from(webSessions).where(and(eq(webSessions.id,caller.sid),eq(webSessions.org_id,caller.org_id),eq(webSessions.user_id,caller.user_id))).for('share');
   if(!member?.is_active||member.role==='guest'||human?.kind!=='human'||!session||session.revoked_at)throw appDataDenied();
   expiry=Math.min(expiry,session.expires_at.getTime());if(expiry<=Date.now())throw appDataDenied();
  },{current_web_session_expires_at:()=>new Date(expiry)});
@@ -40,8 +40,8 @@ export function appDataRetainedGuard(caller:ExperienceCaller):WebAuthorityGuard 
 async function currentAppDataBase(caller:Pick<ExperienceCaller,'org_id'|'user_id'|'access_expires_at'>,sessionId:string,guard:WebAuthorityGuard,
  requiredAction?:{action_key:string;action_binding_id:string}|'none'){
  if(process.env.DEFT_APPS_ENABLED!=='true'||!isAppOwnerConnectionsEnabled())throw appDataDenied();
- const sessions=new PostgresAppConnectionSessionStore(db),locator={org_id:caller.org_id,owner_user_id:caller.user_id,session_id:sessionId};
- const session=await measureAppDataPhase('session_read',()=>sessions.read(locator,'data'));if(!session||session.state!=='connected'||!session.runtime_session_ref||!session.account)throw appDataDenied();
+ const locator={org_id:caller.org_id,owner_user_id:caller.user_id,session_id:sessionId};
+ const session=await measureAppDataPhase('session_read',()=>readSavedAppDataConnection(locator));if(!session||session.state!=='connected'||!session.runtime_session_ref||!session.account)throw appDataDenied();
  if(!await db.transaction(tx=>appConnectionUpgradeSourceIsAvailable(tx,{org_id:caller.org_id,owner_user_id:caller.user_id,session_id:sessionId,purpose:'saved_read'})))throw appDataDenied();
  let reviewedDeclarations:CurrentAppConnectionReviewedDeclarations|undefined;
  const current=await measureAppDataPhase('connection_authority',()=>currentAppConnectionReadAuthority(caller,{installation_id:session.scope.installation_id,target_key:session.scope.target_key},guard,requiredAction,undefined,reviewed=>{reviewedDeclarations=reviewed;}));
@@ -58,18 +58,19 @@ async function currentAppDataBase(caller:Pick<ExperienceCaller,'org_id'|'user_id
   if(!isDeepStrictEqual(reviewedDeclarations.scope,current.scope))throw appDataDenied();
   manifest=reviewedDeclarations.manifest;grantStores=reviewedDeclarations.grant_record_stores;
  }else{
-  const [declarationsRow]=await db.select({version:appVersions,grant:appGrantSnapshots}).from(appVersions)
+  const [declarationsRow]=await db.select({manifest:appVersions.manifest,canonical_snapshot:appGrantSnapshots.canonical_snapshot}).from(appVersions)
    .innerJoin(appGrantSnapshots,and(eq(appGrantSnapshots.org_id,caller.org_id),eq(appGrantSnapshots.id,current.scope.grant_snapshot_id)))
    .where(and(eq(appVersions.org_id,caller.org_id),eq(appVersions.id,current.scope.app_version_id)));
-  const {version,grant}=declarationsRow??{};
-  if(!version||!grant)throw appDataDenied();manifest=parseAppAuthorityManifest(version.manifest);grantStores=(grant.canonical_snapshot as Record<string,unknown>).record_stores??[];
+  if(!declarationsRow)throw appDataDenied();
+  manifest=parseAppAuthorityManifest(declarationsRow.manifest,{org_id:caller.org_id,app_version_id:current.scope.app_version_id});
+  grantStores=(declarationsRow.canonical_snapshot as Record<string,unknown>).record_stores??[];
  }
  const declarations=manifest.record_stores??[];if(!isDeepStrictEqual(declarations,grantStores))throw appDataDenied();
  const policy=manifest.owner_connections?.find(item=>item.resource_key===current.scope.resource_key&&item.provider_profile_key===current.profile.key
   &&item.runtime_requirement_key===current.profile.runtime_requirement_key);if(!policy)throw appDataDenied();
  const connection=AppDataConnectionSchema.parse({session_id:sessionId,session_revision:session.revision,runtime_session_ref:session.runtime_session_ref,account_ref:session.account.account_ref});
  const consentConnections=await measureAppDataPhase('consent_connections',()=>appDataConsentConnections(session));
- return {sessions,locator,session,current,declarations,policy,connection,consentConnections};
+ return {locator,session,current,declarations,policy,connection,consentConnections};
 }
 type AppDataBase=Awaited<ReturnType<typeof currentAppDataBase>>;
 function resolveAppDataStore(base:AppDataBase,storeKey:string,requireConsent:boolean|'optional',
@@ -90,7 +91,7 @@ function resolveAppDataStore(base:AppDataBase,storeKey:string,requireConsent:boo
   consent_max_seconds:policy.max_consent_seconds,allow_until_revoked:policy.allow_until_revoked};
 }
 async function finishAppDataBase(base:AppDataBase){
- const after=await base.sessions.read(base.locator,'data');
+ const after=await readSavedAppDataConnection(base.locator);
  if(!after||after.state!=='connected'||after.revision!==base.session.revision||base.current.expires_at<=Date.now())throw appDataDenied();
 }
 export async function currentAppDataAuthority(caller:Pick<ExperienceCaller,'org_id'|'user_id'|'access_expires_at'>,sessionId:string,storeKey:string,guard:WebAuthorityGuard,
@@ -146,8 +147,8 @@ async function appDataRuntimeAuthorityOwned(raw:unknown,authorization:string|und
  // unrelated action here adds serialized work without changing this response.
  // Store selectors are retained in the declaration linked by the exact policy
  // digest; no author value or nomination travels through introspection.
- const [version]=await db.select().from(appVersions).where(and(eq(appVersions.org_id,owner.org_id),eq(appVersions.id,input.scope.app_version_id)));
- const declaration=parseAppAuthorityManifest(version?.manifest).record_stores?.find(item=>appDataDigest(item)===input.authority.data_policy_digest);
+ const [version]=await db.select({manifest:appVersions.manifest}).from(appVersions).where(and(eq(appVersions.org_id,owner.org_id),eq(appVersions.id,input.scope.app_version_id)));
+ const declaration=parseAppAuthorityManifest(version?.manifest,{org_id:owner.org_id,app_version_id:input.scope.app_version_id}).record_stores?.find(item=>appDataDigest(item)===input.authority.data_policy_digest);
  if(!declaration)throw appDataDenied();
  const current=await currentAppDataAuthority(caller,input.connection.session_id,declaration.key,appDataRetainedGuard(caller),input.operation==='connection_metadata'?input.authority.consent_id!==null:appDataRequiresConsent(input.operation),input.authority.consent_id??undefined,appDataRuntimeConnectionActionSelection(input.operation));
  if(['prepared_action_commit','prepared_action_restore'].includes(input.operation)){

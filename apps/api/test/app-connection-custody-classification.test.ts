@@ -19,10 +19,11 @@ test('shared custody fence preserves generic reviews, managed custody and all re
  }});
  mock.module(new URL('../src/lib/app-connection-form-fence.ts',import.meta.url).href,{namedExports:{
   appConnectionFormSourceIsAvailable:async()=>form,
+  appConnectionFormCurrentSourceCondition:unavailable,appConnectionFormPendingSourceCondition:unavailable,appConnectionFormCarrierJoin:unavailable,
   validateStoredFormConnection:unavailable,appConnectionFormPredecessorIsAvailable:unavailable,
  }});
  mock.module(new URL('../src/lib/app-connection-consent-continuation-fence.ts',import.meta.url).href,{namedExports:{
-  continuationSourceIsAvailable:async()=>continuation,validateContinuationCarrier:unavailable,
+  continuationSourceIsAvailable:async()=>continuation,validateContinuationCarrier:unavailable,continuationSourceCondition:unavailable,
  }});
  const {appConnectionUpgradeSourceIsAvailable}=await import('../src/lib/app-connection-upgrade-fence.js');
  const dialect=new PgDialect();

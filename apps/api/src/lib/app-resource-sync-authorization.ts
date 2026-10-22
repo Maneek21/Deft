@@ -4,9 +4,10 @@ import type { LiveResourceSyncBindingAuthority } from './app-resource-sync-autho
 
 /** One host projection shared by admission and every v2 execution boundary.
  * checked_at is deliberately excluded: it is a deadline check, not authority. */
-export type ResourceSyncAuthorizationFacts = Pick<LiveResourceSyncBindingAuthority, 'binding' | 'version' | 'grant'
+export type ResourceSyncAuthorizationFacts = Pick<LiveResourceSyncBindingAuthority, 'binding' | 'grant'
   | 'registration' | 'descriptor_digest' | 'provider_snapshot'> & {
   installation: Pick<LiveResourceSyncBindingAuthority['installation'], 'id' | 'lifecycle_epoch' | 'grant_epoch'>;
+  version: Pick<LiveResourceSyncBindingAuthority['version'], 'id' | 'package_digest'>;
 };
 /** Serialization only: these facts do not establish live execution authority. */
 export function buildResourceSyncAuthorizationSnapshot(authority: ResourceSyncAuthorizationFacts) {

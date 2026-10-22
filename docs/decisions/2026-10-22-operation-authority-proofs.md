@@ -1,0 +1,40 @@
+# Cheap current authority; conditional local operation proofs
+
+Status: accepted by orchestrator on 22 October 2026. This record supersedes the Phase 2 callback-count review blocker. Generic platform behavior belongs in Deft; Email boundary adoption and provider behavior belong in deft-email.
+
+## Decision and invariants
+
+Implement Part A first: make every authority admission cheap while preserving every current live provider/disclosure guard. The old <=2 callback target was a proxy and is removed. The actual demo targets are per-authority-call p95 <150 ms, cached-message Reply/Forward/New editor ready <2 s, and a sync page <10 s. Aim well below 20 SQL statements per authority call; report measured statement counts rather than hiding calls or accepting stale permission decisions.
+
+Keep fresh checks before each provider HTTP/OAuth request, each external-image disclosure and every protected commit/disclosure. Preserve org/owner/account isolation, current membership and consent, revocation, version/grant/lifecycle/runtime epoch and connection/custody revision fences, scoped uniqueness and absence predicates, deployment transport identity and Send's exact-message review/release/unknown-outcome protections. No permission expansion is part of this change.
+
+## Evidence and alternatives
+
+Host137 6d510af04b7959d034de3ee0a7b08b8d0fd2b857 / Runtime27 4c54119e49044c4b5ece93cafd72c5c6859f3ab9: one real delegated authority POST took 2,094.93 ms; Runtime response-pin verification took 1.57 ms. Two separate read-only exact-handler diagnostics took 1.92-2.66 s, executing 81 statements and returning 66 rows / 1.29 MB normalized JSON. Four package-bearing statements returned 89.1 percent of the bytes. CPU samples implicated semantic schema/manifest validation, continuity/grant reconstruction and ORM work. JSON byte conversion and SHA hashing alone were tens of milliseconds. These cold diagnostic processes are explanatory, not an additive production timing partition or a compose benchmark.
+
+Projection-only (#413) is small and safe but leaves repeated validation and point reads. Part A combines those projections with pure reconstruction reuse and batching. A five-second permission/provider lease would reduce callbacks but weaken revocation; reject it. Part B can remove redundant local preparation work, but adds protocol/state complexity and is conditional on Part A measurements. A remote precheck cannot make physical Runtime writes atomic with Host revocation; a stronger guarantee needs a coordinated protocol and is outside this change.
+
+## Part A: cheap fresh admissions
+
+1. Select only needed columns, including no package blobs on authority paths. Fold the #413 prior/target ID+manifest projection into the Host PR, plus ordinary active-version projections. Genuine Worker/package verification keeps its separate full payload reads and integrity checks.
+2. Reuse successful schema/manifest/semantic validation by exact immutable content fingerprint, org and version. Cache values are bounded, privately owned and clone-isolated. Never key validation only by a caller-advertised digest, timestamp or version ID beside mutable bytes; altered content must miss/revalidate. Unsupported/non-JSON/oversized evidence takes the uncached validation path, never bypasses validation.
+3. Reuse pure continuity/grant reconstruction only under exact version/grant identity, lifecycle/grant/runtime epochs and relevant revisions/current content evidence. Fresh state, membership, revocation, expiry and scoped sets/absence facts are still read and compared at every authority admission. No cached allowed/revoked decision is returned. Preserve complete-row digests where existing proofs bind complete rows; new fields or changed bound rows cannot disappear from the proof.
+4. Batch current scoped point reads, keeping owner/org predicates, typed timestamp/row decoding and established lock order. Read-only introspection optimizations must not weaken issuance/mutation locks. Preserve final participant/caller/deadline checks. Any new index requires representative EXPLAIN evidence and migration review.
+
+The closure includes current owner/operator human membership; browser or service principal; active installation/version/grants; admission/binding/registration; exact connection/account/revision; data/resource consent; deployment/profile/protocol file content and trusted successors; invocation/run/attempt/input and legal lifecycle state; upgrade, repair and pending activation fences. Checking captured IDs alone misses newly inserted conflicting rows: query complete relevant scoped sets and absence conditions. Existing epochs do not cover every writer. A shared monotonic fence is not assumed.
+
+## Part B: conditional, local preparation only
+
+Add the operation proof only if Part A misses latency targets, or if evidence demonstrates a clearly low-risk benefit. Record that decision and measurements before release. Part B is deferred while Part A is measured.
+
+If used, resolve once to a Host-owned, bounded opaque snapshot and retain the initial authenticated Runtime resolve callback; transport bearer alone is not authority. Pin exact org/owner/account, invocation/attempt, operation/input digest, version/grant/package/policy/consent, epochs/revisions and complete closure. Maximum proof age is five non-renewing seconds, capped by original caller/consent/lease deadlines and monotonic time from dispatch. No cross-request/page/owner/input reuse. Missing, expired or invalid proof fails closed, without fallback to different pins.
+
+Only local private reads/preparation reuse it. Every provider/OAuth/external-image, commit and disclosure boundary remains fresh. Acquire local locks and finish preparation before fresh admission; consume once within one second of monotonic dispatch, with exact boundary kind/digest and sequence and immediate local generation/CAS guards. No intervening unrelated work. Revocation before Host admission denies; a concurrent revoke ordered after admission affects later boundaries. This is admission ordering, not a claim of physical-write atomicity. Distinguish legal exact invocation completion/result receipt from permission drift.
+
+## Acceptance and rollout
+
+Tests must cover revoke between preparation and each boundary with zero new effects/bytes; lifecycle/grant/runtime/version/connection/custody changes; cross-owner/org/account/request/input mix-ups and replay; new conflicting consent/reservation/successor rows; registry replacement/removal; complete digest-bound row drift; and cache invalidation on version/grant/epoch/membership change. Include successful unchanged-content reuse and cache poisoning/clone isolation negatives. Keep Send's review and uncertain-outcome suites intact.
+
+Measure cold and warm whole-operation callback counts and latency, plus staging-copy before/after per-call p95, statements, rows and bytes. Live acceptance after deployment: per-call p95 <150 ms; visible cached Reply/Forward/New readiness <2 s over plain, HTML and attachment messages; sync pages <10 s; advancing checkpoints observed over 30 minutes; one further trusted no-diff upgrade with zero owner steps. No Send. Report observed values and sample sizes; do not substitute a fixture for live acceptance.
+
+Require exact green PRs before merge, exact merged-main release gates, normal Host+Email immutable release/provenance checks and guarded deployment with matched backup and single Runtime writer. Reapprove only the same existing permissions if required, reporting any such step as a failure of zero-step acceptance. Retain rollback artifacts, CRLF, commit co-author trailer and requested PR footer. Unsupported legacy protocol paths retain existing behavior; Part A introduces no new permission or checkpoint migration.

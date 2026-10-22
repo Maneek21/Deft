@@ -21,14 +21,14 @@ let carryReviewed = false, foreignReviewed = false;
 let protocol: 'v1' | 'credential_form.v1' | undefined = 'v1', available = true, formValid = true, connectionChanged = false, declarationChanged = false, sessionProfileChanged = false;
 function query() { let table: unknown, joined = false; declarationReads++; const chain: any = { from: (value: unknown) => { table = value; return chain; },
   innerJoin: () => { joined = true; return chain; },
-  where: () => chain, then: (resolve: any) => Promise.resolve(joined ? [{ version: { manifest }, grant: { canonical_snapshot: { record_stores: declarationChanged ? [] : [declaration] } } }]
+  where: () => chain, then: (resolve: any) => Promise.resolve(joined ? [{ manifest, canonical_snapshot: { record_stores: declarationChanged ? [] : [declaration] } }]
     : table === appVersions ? [{ manifest }]
     : table === appGrantSnapshots ? [{ canonical_snapshot: { record_stores: declarationChanged ? [] : [declaration] } }] : []).then(resolve) }; return chain; }
 mock.module(new URL('../src/lib/db.ts', import.meta.url).href, { namedExports: { db: { select: query, transaction: async (work: any) => work({}) } } });
 mock.module(new URL('../src/lib/env.ts', import.meta.url).href, { namedExports: { isAppOwnerConnectionsEnabled: () => true } });
-mock.module(new URL('../src/lib/app-connection-session-store.ts', import.meta.url).href, { namedExports: {
-  PostgresAppConnectionSessionStore: class { async read() { reads++; return { ...session, profile: sessionProfileChanged ? { ...profile, key: 'foreign' } : profile,
-    revision: connectionChanged && reads > 1 ? 2 : 1 }; } },
+mock.module(new URL('../src/lib/app-data-connection-read.ts', import.meta.url).href, { namedExports: {
+  readSavedAppDataConnection: async () => { reads++; return { ...session, profile: sessionProfileChanged ? { ...profile, key: 'foreign' } : profile,
+    revision: connectionChanged && reads > 1 ? 2 : 1 }; },
 } });
 mock.module(new URL('../src/lib/app-connection-session-authority.ts', import.meta.url).href, { namedExports: {
   currentAppConnectionReadAuthority: async (...args: any[]) => { authorityReads++;if(carryReviewed)args[5]?.({scope:foreignReviewed?{...scope,app_version_id:id()}:scope,manifest,grant_record_stores:declarationChanged?[]:[declaration]}); if (!available) throw Error('CURRENT_AUTHORITY_DENIED'); return { scope, profile, expires_at, connection_protocol: protocol }; },

@@ -7,11 +7,14 @@ import {continuationRequest,continuationDigest} from './app-connection-consent-c
 import {appConnectionConsentContinuationReceiptValue} from '@deft/app-kit/core';
 import type {AppRunTransaction} from './app-run-repository.js';
 import type {AppConnectionSessionRecord} from './app-connection-session-service.js';
-export async function continuationSourceIsAvailable(tx:AppRunTransaction,q:{org_id:string;owner_user_id?:string;session_id?:string;resource_binding_id?:string;continuation_session_id?:string}){
- const [row]=await tx.select({id:journals.session_id}).from(journals).where(and(eq(journals.org_id,q.org_id),
-  q.owner_user_id?eq(journals.owner_user_id,q.owner_user_id):undefined,
-  sql`${journals.record}->'activation_started'='true'::jsonb`,q.continuation_session_id?sql`${journals.session_id}<>${q.continuation_session_id}`:undefined,
-  q.session_id?eq(journals.source_session_id,q.session_id):and(eq(journals.resource_binding_id,q.resource_binding_id!),sql`${journals.record}->>'state'<>'connected'`))).limit(1);
+type ContinuationSourceLocator={org_id:string;owner_user_id?:string;session_id?:string;resource_binding_id?:string;continuation_session_id?:string};
+/** Same fresh activation/source/exclusion predicate in standalone and batched readers. */
+export const continuationSourceCondition=(q:ContinuationSourceLocator)=>and(eq(journals.org_id,q.org_id),
+ q.owner_user_id?eq(journals.owner_user_id,q.owner_user_id):undefined,
+ sql`${journals.record}->'activation_started'='true'::jsonb`,q.continuation_session_id?sql`${journals.session_id}<>${q.continuation_session_id}`:undefined,
+ q.session_id?eq(journals.source_session_id,q.session_id):and(eq(journals.resource_binding_id,q.resource_binding_id!),sql`${journals.record}->>'state'<>'connected'`));
+export async function continuationSourceIsAvailable(tx:AppRunTransaction,q:ContinuationSourceLocator){
+ const [row]=await tx.select({id:journals.session_id}).from(journals).where(continuationSourceCondition(q)).limit(1);
  return !row;
 }
 /** Form protocol successors carry their own distinct consent-only receipt;

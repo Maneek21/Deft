@@ -9,7 +9,7 @@ import { appRuntimeBindings, webSessions } from '@deft/db/schema';
 import {currentConnectionBindingLocators} from './app-connection-current-locators.js';
 import { db } from './db.js';
 import { AppError } from './app-errors.js';
-import { loadLiveAttachmentSyncBindingAuthority,loadConsentContinuationBindingIdentity } from './app-attachment-sync-authority.js';
+import { loadLiveAttachmentSyncBindingAuthority,loadConsentContinuationBindingIdentity,type LiveAttachmentSyncBindingAuthority } from './app-attachment-sync-authority.js';
 import { attachmentFinalAuthorityIsCurrent } from './app-attachment-authority.js';
 import { connectionProfileDigest, getAppConnectionSessionRegistry, type AppConnectionSessionRegistry } from './app-connection-session-registry.js';
 import { AppConnectionSessionRecordSchema, type AppConnectionSessionPorts, type AppConnectionSessionAuthority } from './app-connection-session-service.js';
@@ -30,7 +30,7 @@ const denied = () => new AppError('Account connection access ended', 'APP_ACCESS
 export function retainedWebGuard(caller: ExperienceCaller): WebAuthorityGuard {
   let expiry = caller.access_expires_at ?? 0;
   return Object.assign(async (tx: AppRunTransaction) => {
-    const [session] = await tx.select().from(webSessions).where(and(eq(webSessions.id, caller.sid),
+    const [session] = await tx.select({ revoked_at: webSessions.revoked_at, expires_at: webSessions.expires_at }).from(webSessions).where(and(eq(webSessions.id, caller.sid),
       eq(webSessions.org_id, caller.org_id), eq(webSessions.user_id, caller.user_id))).for('share');
     if (!session || session.revoked_at) throw denied();
     expiry = Math.min(expiry, session.expires_at.getTime());
@@ -40,7 +40,7 @@ export function retainedWebGuard(caller: ExperienceCaller): WebAuthorityGuard {
 
 export type AppConnectionAuthorityOwner=Pick<ExperienceCaller,'org_id'|'user_id'|'access_expires_at'>;
 async function loadCurrentConnectionAuthority(caller: AppConnectionAuthorityOwner,
-  nomination: { installation_id: string; target_key: string }, guard: WebAuthorityGuard, requireTransport:boolean, requestedMode:'v1'|'v2'|'credential_form.v1'|'declared'='v1',requiredAction?:RequiredConnectionAction,suppliedTransaction?:AppRunTransaction,continuationExpiry?:Date|null,continuationLifetime?:AppConsentLifetime,onReviewedDeclarations?:(reviewed:CurrentAppConnectionReviewedDeclarations)=>void) {
+  nomination: { installation_id: string; target_key: string }, guard: WebAuthorityGuard, requireTransport:boolean, requestedMode:'v1'|'v2'|'credential_form.v1'|'declared'='v1',requiredAction?:RequiredConnectionAction,suppliedTransaction?:AppRunTransaction,continuationExpiry?:Date|null,continuationLifetime?:AppConsentLifetime,onReviewedDeclarations?:(reviewed:CurrentAppConnectionReviewedDeclarations)=>void,onLiveBinding?:(authority:LiveAttachmentSyncBindingAuthority)=>void) {
   const use=async(tx:AppRunTransaction) => {
     const locators = await currentConnectionBindingLocators(tx,caller,nomination).limit(2);
     if (locators.length !== 1) throw denied();
@@ -49,7 +49,7 @@ async function loadCurrentConnectionAuthority(caller: AppConnectionAuthorityOwne
       resource_binding_id: locators[0]!.id, clock: () => new Date(), onConnectionRegistry: registry => { admissionRegistry = registry; } });
     if (!current || current.binding.owner_user_id !== caller.user_id || current.binding.target_key !== nomination.target_key
       || !current.registration.owner_connection_admission_id || !appConsentExpiryValid(current.binding.consent_expires_at,current.binding.consent_lifetime??undefined)) throw denied();
-    const manifest = parseAppAuthorityManifest(current.version.manifest);
+    const manifest = parseAppAuthorityManifest(current.version.manifest, {org_id: caller.org_id, app_version_id: current.version.id});
     // The binding reader validated and share-locked this admission and its
     // participants in this same transaction, including current deployment proofs.
     const admission=current.owner_connection_admission;
@@ -85,7 +85,7 @@ async function loadCurrentConnectionAuthority(caller: AppConnectionAuthorityOwne
     // Data-only readers still require the enrolled transport and every live
     // connection fence, but do not disclose or authorize action capabilities.
     if(requireTransport&&requiredAction!=='none'){
-    const bindings = await tx.select().from(appRuntimeBindings).where(and(
+    const bindings = await tx.select({id:appRuntimeBindings.id,action_key:appRuntimeBindings.action_key}).from(appRuntimeBindings).where(and(
       eq(appRuntimeBindings.org_id, caller.org_id), eq(appRuntimeBindings.app_installation_id, scope.installation_id),
       eq(appRuntimeBindings.app_version_id, scope.app_version_id), eq(appRuntimeBindings.grant_snapshot_id, scope.grant_snapshot_id),
       eq(appRuntimeBindings.owner_resource_binding_id, scope.resource_binding_id), eq(appRuntimeBindings.reviewed_by_user_id, caller.user_id),
@@ -126,6 +126,9 @@ async function loadCurrentConnectionAuthority(caller: AppConnectionAuthorityOwne
       guard, expires_at:(continuationExpiry!==undefined?continuationExpiry:current.binding.consent_expires_at)?[(continuationExpiry!==undefined?continuationExpiry:current.binding.consent_expires_at)!]:[] })) throw denied();
     if(action_consents.length>8)throw denied();
     onReviewedDeclarations?.({scope,manifest,grant_record_stores:(current.grant.canonical_snapshot as Record<string,unknown>).record_stores??[]});
+    // Private composite-reader handoff while its supplied transaction still owns
+    // these exact locks. This is never a later-phase or serialized authority.
+    if(suppliedTransaction)onLiveBinding?.(current);
     return { scope, profile, runtime_ready,connection_protocol:mode, ...(mode!=='v1'?{action_consents}:action_consent ? { action_consent } : {}),
       expires_at: Math.min(guard.current_web_session_expires_at().getTime(), caller.access_expires_at ?? 0) };
   };
@@ -152,8 +155,9 @@ export function currentAppConnectionMetadataAuthority(caller:ExperienceCaller,
  return loadCurrentConnectionAuthority(caller,nomination,guard,false,'declared');
 }
 export async function currentAppConnectionReadAuthority(caller:AppConnectionAuthorityOwner,
- nomination:{installation_id:string;target_key:string},guard:WebAuthorityGuard,requiredAction?:RequiredConnectionAction,suppliedTransaction?:AppRunTransaction,onReviewedDeclarations?:(reviewed:CurrentAppConnectionReviewedDeclarations)=>void):Promise<AppConnectionSessionAuthority & {connection_protocol:'v1'|'v2'|'credential_form.v1'}>{
- const {runtime_ready,...authority}=await loadCurrentConnectionAuthority(caller,nomination,guard,true,'declared',requiredAction,suppliedTransaction,undefined,undefined,onReviewedDeclarations);return authority;
+ nomination:{installation_id:string;target_key:string},guard:WebAuthorityGuard,requiredAction?:RequiredConnectionAction,suppliedTransaction?:AppRunTransaction,onReviewedDeclarations?:(reviewed:CurrentAppConnectionReviewedDeclarations)=>void,onLiveBinding?:(authority:LiveAttachmentSyncBindingAuthority)=>void):Promise<AppConnectionSessionAuthority & {connection_protocol:'v1'|'v2'|'credential_form.v1'}>{
+ if(onLiveBinding&&!suppliedTransaction)throw denied();
+ const {runtime_ready,...authority}=await loadCurrentConnectionAuthority(caller,nomination,guard,true,'declared',requiredAction,suppliedTransaction,undefined,undefined,onReviewedDeclarations,onLiveBinding);return authority;
 }
 
 export async function currentAppConnectionSessionV2Authority(caller:ExperienceCaller,

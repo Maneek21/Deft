@@ -31,11 +31,12 @@ export async function loadOwnerConnectionAdmission(tx: AppRunTransaction, orgId:
   const condition = and(eq(appOwnerConnectionAdmissions.org_id, orgId), eq(appOwnerConnectionAdmissions.id, reference.admission_id),
     eq(appOwnerConnectionAdmissions.review_digest, reference.admission_digest));
   const locator = lockedReviewed ? { app_installation_id: lockedReviewed.installation.id }
-    : (await tx.select().from(appOwnerConnectionAdmissions).where(condition).limit(1))[0];
+    : (await tx.select({ app_installation_id: appOwnerConnectionAdmissions.app_installation_id })
+      .from(appOwnerConnectionAdmissions).where(condition).limit(1))[0];
   if (!locator) throw ownerConnectionDenied();
   // Only current authority readers may supply rows they already validated and
   // locked in this exact transaction. Admission/membership are always reread.
-  const reviewed = lockedReviewed ? { ...lockedReviewed, manifest: parseAppAuthorityManifest(lockedReviewed.version.manifest) }
+  const reviewed = lockedReviewed ? { ...lockedReviewed, manifest: parseAppAuthorityManifest(lockedReviewed.version.manifest, {org_id: orgId, app_version_id: lockedReviewed.version.id}) }
     : await loadReviewedAttachmentApp(tx, orgId, locator.app_installation_id);
   if (reviewed.installation.org_id !== orgId || reviewed.installation.id !== locator.app_installation_id
     || reviewed.installation.state !== 'active' || reviewed.version.state !== 'active'

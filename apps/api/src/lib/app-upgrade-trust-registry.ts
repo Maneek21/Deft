@@ -16,8 +16,11 @@ const key = (org: string, registration: string, epoch: number) => `${org}:${regi
 async function checked(tx: UpgradeTx, alias: Alias, current: boolean) {
   const proof = await readContinuityProof(tx, alias.org_id, alias.proof_id);
   await assertContinuityProof(tx, proof, current, false);
-  const [binding] = await tx.select().from(appResourceBindings).where(and(eq(appResourceBindings.org_id, alias.org_id), eq(appResourceBindings.id, alias.binding_id))).limit(1);
-  const [registration] = await tx.select().from(appRuntimeRegistrations).where(and(eq(appRuntimeRegistrations.org_id, alias.org_id), eq(appRuntimeRegistrations.id, alias.registration_id))).limit(1);
+  const [rows] = await tx.select({ binding: appResourceBindings, registration: appRuntimeRegistrations }).from(appResourceBindings)
+    .leftJoin(appRuntimeRegistrations, and(eq(appRuntimeRegistrations.org_id, alias.org_id),
+      eq(appRuntimeRegistrations.id, alias.registration_id)))
+    .where(and(eq(appResourceBindings.org_id, alias.org_id), eq(appResourceBindings.id, alias.binding_id))).limit(1);
+  const { binding, registration } = rows ?? {};
   if (!binding || !registration || binding.state !== 'active' || registration.state !== 'active'
     || proof.org_id !== alias.org_id || proof.installation_id !== alias.installation_id
     || binding.app_installation_id !== proof.installation_id || binding.app_version_id !== proof.version_id || binding.grant_snapshot_id !== proof.grant_id
