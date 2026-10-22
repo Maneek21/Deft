@@ -257,13 +257,14 @@ async function findWikiPageForExplicitUpdate(params: {
   content: string;
   wikiType: DeftyKnowledgeWikiType;
   scope: 'org' | 'space';
-}): Promise<{ id: string; title: string; slug: string } | null> {
+}): Promise<{ id: string; title: string; slug: string; content: string; version: number } | null> {
   const rows = await db
     .select({
       id: wikiPages.id,
       title: wikiPages.title,
       slug: wikiPages.slug,
       content: wikiPages.content,
+      version: wikiPages.version,
       summary: wikiPages.summary,
     })
     .from(wikiPages)
@@ -309,7 +310,7 @@ async function findWikiPageForExplicitUpdate(params: {
 
   if (matches.length !== 1) return null;
   const match = matches[0]!;
-  return { id: match.id, title: match.title, slug: match.slug };
+  return { id: match.id, title: match.title, slug: match.slug, content: match.content, version: match.version };
 }
 
 function inferTaskStatusUpdate(content: string): TaskStatus | null {
@@ -598,13 +599,14 @@ async function findRelatedWikiPage(params: {
   content: string;
   wikiType: DeftyKnowledgeWikiType;
   scope: 'org' | 'space';
-}): Promise<{ id: string; title: string; slug: string } | null> {
+}): Promise<{ id: string; title: string; slug: string; content: string; version: number } | null> {
   const rows = await db
     .select({
       id: wikiPages.id,
       title: wikiPages.title,
       slug: wikiPages.slug,
       content: wikiPages.content,
+      version: wikiPages.version,
       summary: wikiPages.summary,
     })
     .from(wikiPages)
@@ -617,7 +619,7 @@ async function findRelatedWikiPage(params: {
     ))
     .limit(250);
 
-  let best: { id: string; title: string; slug: string; score: number } | null = null;
+  let best: { id: string; title: string; slug: string; content: string; version: number; score: number } | null = null;
   for (const row of rows) {
     const existingComparable = `${row.title}\n${row.summary ?? ''}\n${row.content ?? ''}`;
     if (hasMissingDistinctiveReference(`${params.title}\n${params.content}`, existingComparable)) {
@@ -637,10 +639,10 @@ async function findRelatedWikiPage(params: {
       (titleOverlap >= 0.72 && bodyOverlap >= 0.16);
     if (!related) continue;
     if (!best || score > best.score) {
-      best = { id: row.id, title: row.title, slug: row.slug, score };
+      best = { id: row.id, title: row.title, slug: row.slug, content: row.content, version: row.version, score };
     }
   }
-  return best ? { id: best.id, title: best.title, slug: best.slug } : null;
+  return best ? { id: best.id, title: best.title, slug: best.slug, content: best.content, version: best.version } : null;
 }
 
 function buildKnowledgeTitle(content: string, type: DeftyKnowledgeWikiType): string {
@@ -666,7 +668,7 @@ async function queueDeftyKnowledgeUpdateCapture(params: {
   spaceId: string;
   messageId: string;
   content: string;
-  targetPage: { id: string; title: string; slug: string };
+  targetPage: { id: string; title: string; slug: string; content: string; version: number };
   captureKind: 'decision_candidate' | 'resource_candidate' | 'note_candidate';
   captureReason?: string | null;
   extraction: 'llm' | 'deterministic' | 'classifier';
@@ -687,22 +689,33 @@ async function queueDeftyKnowledgeUpdateCapture(params: {
     extraction,
     metadata = {},
     autoApprove = false,
+    preferUpdate = false,
     dedupeKeyOverride,
   } = params;
   const defty = await ensureDeftyEmployee(orgId);
-  const updatedBody = stripKnowledgeUpdatePrefix(content);
-  if (!updatedBody) return { queued: false, skippedReason: 'empty_update' };
+  const updateText = stripKnowledgeUpdatePrefix(content);
+  if (!updateText) return { queued: false, skippedReason: 'empty_update' };
+  if (preferUpdate && targetPage.content === undefined) {
+    return { queued: false, skippedReason: 'knowledge_update_content_missing' };
+  }
+  if (preferUpdate && (!Number.isSafeInteger(targetPage.version) || targetPage.version < 1)) {
+    return { queued: false, skippedReason: 'knowledge_update_version_missing' };
+  }
+  const updatedBody = preferUpdate
+    ? `${targetPage.content}\n\n## Update ${new Date().toISOString().slice(0, 10)}\n\n${updateText}`
+    : updateText;
 
   const dedupeKey = dedupeKeyOverride
     ?? `defty_capture:${captureKind}:wiki_update:${messageId}:${targetPage.slug}`;
   const title = `Update knowledge: ${targetPage.title}`;
-  const summary = truncatePlainText(updatedBody, 240);
+  const summary = truncatePlainText(updateText, 240);
 
   const queued = await db.transaction(async (tx) => {
     const proposedParams = {
       caller_employee_slug: defty.slug,
       page_id: targetPage.id,
       slug: targetPage.slug,
+      ...(preferUpdate ? { expected_version: targetPage.version } : {}),
       patch: {
         content: updatedBody,
         summary,
@@ -906,6 +919,7 @@ export async function queueDeftyKnowledgeCapture(params: {
         messageId,
         content: rawPlainContent,
         targetPage,
+        preferUpdate,
         captureKind,
         captureReason,
         extraction,
@@ -953,6 +967,7 @@ export async function queueDeftyKnowledgeCapture(params: {
         messageId,
         content: plainContent,
         targetPage: relatedPage,
+        preferUpdate: true,
         captureKind,
         captureReason: captureReason || 'A settled discussion refined existing durable knowledge.',
         extraction,
