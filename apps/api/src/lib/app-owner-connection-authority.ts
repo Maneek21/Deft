@@ -3,8 +3,8 @@ import { appOwnerConnectionAdmissions, orgMembers, users, type appRuntimeRegistr
 import type { AppRunTransaction } from './app-run-repository.js';
 import { loadReviewedAttachmentApp } from './app-attachment-authority.js';
 import { digestAppGrantValue } from './app-grant-service.js';
-import { OwnerConnectionAdmissionSnapshotSchema, resolveOwnerConnectionProfile, ownerConnectionTransportDigest, type OwnerConnectionAdmissionReference } from './app-owner-connection-contract.js';
-import { connectionProfileDigest } from './app-connection-session-registry.js';
+import { OwnerConnectionAdmissionSnapshotSchema, type OwnerConnectionAdmissionReference } from './app-owner-connection-contract.js';
+import { connectionProfileDigest, getAppConnectionSessionRegistry, type AppConnectionSessionRegistry } from './app-connection-session-registry.js';
 import { isAppOwnerConnectionsEnabled } from './env.js';
 import { AppError } from './app-errors.js';
 import { runtimeActionDescriptors } from './app-runtime-review.js';
@@ -25,7 +25,7 @@ export async function assertOwnerConnectionMember(tx: AppRunTransaction, orgId: 
   return (await assertMembers(tx, orgId, [ownerId]))[0]!;
 }
 export async function loadOwnerConnectionAdmission(tx: AppRunTransaction, orgId: string, reference: OwnerConnectionAdmissionReference,
-  lockedReviewed?: LockedReviewedApp, ownerUserId?: string) {
+  lockedReviewed?: LockedReviewedApp, ownerUserId?: string, onConnectionRegistry?: (registry: AppConnectionSessionRegistry) => void) {
   if (!isAppOwnerConnectionsEnabled()) throw ownerConnectionDenied();
   const condition = and(eq(appOwnerConnectionAdmissions.org_id, orgId), eq(appOwnerConnectionAdmissions.id, reference.admission_id),
     eq(appOwnerConnectionAdmissions.review_digest, reference.admission_digest));
@@ -47,9 +47,13 @@ export async function loadOwnerConnectionAdmission(tx: AppRunTransaction, orgId:
   if (!row || row.state !== 'active' || row.revoked_at || row.app_installation_id !== reviewed.installation.id) throw ownerConnectionDenied();
   const snapshot = OwnerConnectionAdmissionSnapshotSchema.parse(row.snapshot);
   const policy = reviewed.manifest.owner_connections?.find(item => item.key === row.policy_key);
-  const profile = policy ? await resolveOwnerConnectionProfile(orgId, reviewed.installation.id, policy, row.operator_user_id, tx) : undefined;
+  // One current deployment/proof read belongs to this locked admission check.
+  // Later invoke/disclosure phases acquire their own registry and mutable rows.
+  const registry = policy && (policy.provider_profile_key !== undefined || policy.runtime_requirement_key !== undefined)
+    ? await getAppConnectionSessionRegistry(tx) : undefined;
+  const profile = registry && policy ? registry.profile(orgId, reviewed.installation.id, policy, row.operator_user_id) : undefined;
   if (profile ? snapshot.connection_profile_digest !== connectionProfileDigest(profile)
-    || snapshot.connection_transport_digest !== await ownerConnectionTransportDigest(orgId, reviewed.installation.id, profile, tx)
+    || snapshot.connection_transport_digest !== registry!.transportDigest(orgId, reviewed.installation.id, profile)
     || digestAppGrantValue(snapshot.connection_profile) !== digestAppGrantValue(profile)
     : snapshot.connection_profile !== undefined || snapshot.connection_profile_digest !== undefined) throw ownerConnectionDenied();
   if (!policy || digestAppGrantValue(snapshot) !== row.review_digest || snapshot.org_id !== orgId
@@ -66,13 +70,16 @@ export async function loadOwnerConnectionAdmission(tx: AppRunTransaction, orgId:
     .sort((a,b) => a.action_key < b.action_key ? -1 : a.action_key > b.action_key ? 1 : 0);
   if (!descriptor || snapshot.resource_descriptor_digest !== await digestResourceSyncDescriptorV2(descriptor)
     || digestAppGrantValue(snapshot.actions) !== digestAppGrantValue(actions)) throw ownerConnectionDenied();
+  // The registry stays transaction-local and never enters a serializable
+  // admission/snapshot result. Publish it only after every current check passed.
+  if (registry) onConnectionRegistry?.(registry);
   return { row, snapshot, policy, reviewed, reference };
 }
 export async function assertOwnerConnectionRegistration(tx: AppRunTransaction, registration: typeof appRuntimeRegistrations.$inferSelect,
-  input: { owner_user_id: string; resource_key?: string; action_key?: string; lockedReviewed?: LockedReviewedApp }) {
+  input: { owner_user_id: string; resource_key?: string; action_key?: string; lockedReviewed?: LockedReviewedApp; onConnectionRegistry?: (registry: AppConnectionSessionRegistry) => void }) {
   if (!registration.owner_connection_admission_id || !registration.owner_connection_admission_digest) throw ownerConnectionDenied();
   const admission = await loadOwnerConnectionAdmission(tx, registration.org_id, { admission_id: registration.owner_connection_admission_id,
-    admission_digest: registration.owner_connection_admission_digest }, input.lockedReviewed, input.owner_user_id);
+    admission_digest: registration.owner_connection_admission_digest }, input.lockedReviewed, input.owner_user_id, input.onConnectionRegistry);
   if (registration.reviewed_by_user_id !== input.owner_user_id || registration.operator_user_id !== admission.row.operator_user_id
     || registration.app_installation_id !== admission.row.app_installation_id || registration.app_version_id !== admission.row.app_version_id
     || registration.grant_snapshot_id !== admission.row.grant_snapshot_id || input.resource_key && input.resource_key !== admission.policy.resource_key

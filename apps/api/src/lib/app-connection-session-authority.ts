@@ -10,7 +10,7 @@ import { db } from './db.js';
 import { AppError } from './app-errors.js';
 import { loadLiveAttachmentSyncBindingAuthority,loadConsentContinuationBindingIdentity } from './app-attachment-sync-authority.js';
 import { attachmentFinalAuthorityIsCurrent } from './app-attachment-authority.js';
-import { connectionProfileDigest, getAppConnectionSessionRegistry } from './app-connection-session-registry.js';
+import { connectionProfileDigest, getAppConnectionSessionRegistry, type AppConnectionSessionRegistry } from './app-connection-session-registry.js';
 import { AppConnectionSessionRecordSchema, type AppConnectionSessionPorts, type AppConnectionSessionAuthority } from './app-connection-session-service.js';
 import { PostgresAppConnectionSessionStore } from './app-connection-session-store.js';
 import type { ExperienceCaller } from './app-experience-service.js';
@@ -40,20 +40,21 @@ async function loadCurrentConnectionAuthority(caller: AppConnectionAuthorityOwne
   const use=async(tx:AppRunTransaction) => {
     const locators = await currentConnectionBindingLocators(tx,caller,nomination).limit(2);
     if (locators.length !== 1) throw denied();
+    let admissionRegistry: AppConnectionSessionRegistry | undefined;
     const current = await (continuationExpiry!==undefined?loadConsentContinuationBindingIdentity:loadLiveAttachmentSyncBindingAuthority)(tx, { org_id: caller.org_id,
-      resource_binding_id: locators[0]!.id, clock: () => new Date() });
+      resource_binding_id: locators[0]!.id, clock: () => new Date(), onConnectionRegistry: registry => { admissionRegistry = registry; } });
     if (!current || current.binding.owner_user_id !== caller.user_id || current.binding.target_key !== nomination.target_key
       || !current.registration.owner_connection_admission_id || !appConsentExpiryValid(current.binding.consent_expires_at,current.binding.consent_lifetime??undefined)) throw denied();
     const manifest = parseAttachmentAppManifest(current.version.manifest);
     // The binding reader validated and share-locked this admission and its
-    // participants in this same transaction. Deployment configuration remains fresh.
+    // participants in this same transaction, including current deployment proofs.
     const admission=current.owner_connection_admission;
     if(!admission)throw denied();
     const policy=selectAdmittedConnectionPolicy(manifest.owner_connections??[],admission.policy,{resource_key:current.binding.resource_key,runtime_requirement_key:current.descriptor.runtime_requirement_key});
     if(!policy)throw denied();
-    // The live reader validates the admin admission snapshot including the
-    // profile digest. Deployment configuration is an additional current pin.
-    const registry = await getAppConnectionSessionRegistry(tx);
+    // Reuse only this live reader's validated deployment acquisition. This
+    // function performs a fresh read again at every later authority boundary.
+    const registry = admissionRegistry ?? await getAppConnectionSessionRegistry(tx);
     const profile = registry.profile(caller.org_id, nomination.installation_id, policy, current.registration.operator_user_id);
     if(admission.snapshot.connection_profile_digest!==connectionProfileDigest(profile)
       ||admission.snapshot.connection_transport_digest!==registry.transportDigest(caller.org_id,nomination.installation_id,profile)
