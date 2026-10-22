@@ -1,10 +1,11 @@
+import type { CoreDatabaseTransaction } from './database-transaction.js';
 import { createHash } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { nativeCreateRequests } from '@deft/db/schema';
 import { db } from './db.js';
 
-type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type Transaction = CoreDatabaseTransaction;
 const keySchema = z.string().min(1).max(128).regex(/^[A-Za-z0-9._:-]+$/);
 
 export class NativeCreateError extends Error {

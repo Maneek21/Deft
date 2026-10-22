@@ -1,3 +1,4 @@
+import type { CoreDatabaseTransaction } from './database-transaction.js';
 import { DEFTY_SYSTEM_EMPLOYEE_SLUG, DEFTY_SYSTEM_RUNTIME_KIND } from './defty-identity.js';
 import { createHash } from 'node:crypto';
 import { and, desc, eq, sql } from 'drizzle-orm';
@@ -101,7 +102,7 @@ export async function loadNativeSource(
   return visible.length && await employeeBoundary(ctx, row, executor) ? row : null;
 }
 
-async function reconcileWithin(executor: Parameters<Parameters<typeof db.transaction>[0]>[0], orgId: string, source: NativeMentionSource) {
+async function reconcileWithin(executor: CoreDatabaseTransaction, orgId: string, source: NativeMentionSource) {
   const current = await loadNativeSource({ orgId }, source, executor, true);
   if (!current) {
     await executor.update(nativeReferenceStates).set({ current_refs: [], is_deleted: true, updated_at: new Date() })
@@ -194,7 +195,7 @@ export async function handleNativeMentionReconciliation(data: { orgId: string; s
 
 /** Called only at authenticated human Send/Post boundaries, in the content transaction. */
 export async function enqueueNativeMentionPublication(
-  executor: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  executor: CoreDatabaseTransaction,
   ctx: NativeMentionContext, source: NativeMentionSource, content: string,
 ) {
   if (!nativeMentionsEnabled()) return;

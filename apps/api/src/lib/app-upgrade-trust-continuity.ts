@@ -1,3 +1,4 @@
+import type { CoreDatabaseTransaction } from './database-transaction.js';
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { and, eq, sql, inArray } from 'drizzle-orm';
@@ -25,7 +26,7 @@ import type { WebAuthorityGuard } from './app-resource-sync-web-authority.js';
 import { REATTACH_PHASE_MS } from './app-connection-reattachment-deadline.js';
 import { assertCurrentUpgradeRowPins } from './app-upgrade-row-pins.js';
 
-export type UpgradeTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+export type UpgradeTx = CoreDatabaseTransaction;
 const denied = () => new AppError('Automatic upgrade continuity requires review', 'APP_REVIEW_REQUIRED', 409);
 export const UPGRADE_PROOF_ACTION = 'app.upgrade_continuity.authorized';
 export const UPGRADE_ALIAS_ACTION = 'app.upgrade_continuity.registration';

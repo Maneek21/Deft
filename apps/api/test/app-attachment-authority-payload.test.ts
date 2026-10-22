@@ -78,7 +78,7 @@ function fixture() {
         return returned;
       }).then(resolve, reject) }; return chain;
   } };
-  return { org, installationId, rows, version, requested, grant, calls,
+  return { org, installationId, rows, version, requested, grant, calls, tx,
     run: () => loadReviewedAttachmentApp(tx as never, org, installationId) };
 }
 
@@ -147,4 +147,21 @@ test('resource snapshot serialization uses only the current version ID and packa
   version.package_digest = 'sha256:' + 'b'.repeat(64);
   const changed = buildResourceSyncAuthorizationSnapshot({ ...facts, version: guarded } as never);
   assert.notDeepEqual(changed, full, 'the reviewed package digest remains part of the authority pin');
+});
+
+test('warm descriptor digest reuse still reloads current locked App/grant bytes and rejects drift', async () => {
+  const { loadReviewedAttachmentSyncDescriptor } = await import('../src/lib/app-attachment-sync-reviewed.js');
+  const f = fixture(), read = () => loadReviewedAttachmentSyncDescriptor(f.tx as never, f.org, f.installationId);
+  const first = await read(), before = f.calls.length, digest = first.descriptor_digest;
+  first.descriptor.attachments.max_attachment_bytes--;
+  const next = await read();
+  assert.equal(next.descriptor_digest, digest, 'caller mutation cannot alter a retained digest or current descriptor');
+  assert.equal(f.calls.length - before, 2, 'warm digest reuse still reads locked installation and exact version/grants');
+  assert.deepEqual(f.calls.slice(-2).map(call => [call.table, call.share]), [['app_installations', true], ['app_versions', true]]);
+  f.version.manifest.sync_descriptors[0].attachments.max_attachment_bytes--;
+  await assert.rejects(read(), 'actual descriptor drift under unchanged advertised manifest/grant digests fails current reconstruction');
+  const disabled = fixture();
+  await loadReviewedAttachmentSyncDescriptor(disabled.tx as never, disabled.org, disabled.installationId);
+  disabled.rows.app_installations![0]!.state = 'disabled';
+  await assert.rejects(loadReviewedAttachmentSyncDescriptor(disabled.tx as never, disabled.org, disabled.installationId));
 });

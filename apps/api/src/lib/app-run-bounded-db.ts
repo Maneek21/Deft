@@ -1,6 +1,5 @@
 import { drizzle } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
-import * as schema from '@deft/db/schema';
 import type { AppRunTransaction } from './app-run-repository.js';
 
 export const APP_RUN_TRANSACTION_LIMITS = Object.freeze({ budget_ms: 10_000,
@@ -59,7 +58,10 @@ export function createBoundedAppRunDatabase(connectionString: string, options: {
             return result;
           };
         } });
-        return await drizzle(guarded, { schema }).transaction(work);
+        // Core table queries carry their own columns and codecs. Building the
+        // unused relational schema here would re-extract every table and index
+        // for each fresh bounded transaction, including each heartbeat guard.
+        return await drizzle(guarded).transaction(work);
       } finally {
         clearTimeout(timer); signal.removeEventListener('abort', discard);
         if (!settled && !released) { try { await client.query('ROLLBACK'); } catch { broken = true; } }
