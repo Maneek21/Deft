@@ -4,19 +4,19 @@ import {createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
 const require=createRequire(fileURLToPath(new URL('../../package.json',import.meta.url))),{chromium}=require('playwright'),{build}=require('esbuild');
 
-async function fixture(recoveryProofOnly=false,lostSubmission=false,stalledOpening=false){
+async function fixture(recoveryProofOnly=false,lostSubmission=false,stalledOpening=false,slowSeed=false,replaceSeed=false){
  const component=fileURLToPath(new URL('../components/apps/experience-record-form.tsx',import.meta.url));
  const renderer=fileURLToPath(new URL('./app-experience-renderer.ts',import.meta.url));
  const bundled=await build({stdin:{contents:`import React from 'react';import {createExperienceRecordFormHost} from ${JSON.stringify(component)};import {renderExperienceView,clearExperienceView} from ${JSON.stringify(renderer)};
  const id='11111111-1111-4111-8111-111111111111',hash='sha256:'+'a'.repeat(64),calls=[];let releaseScope=null,holdScope=true,current=true;
  const profile={schema_version:'deft.record_form_profile.v1',max_record_bytes:491520,addresses:[{field:'to',label:'To',optional:false}],subject:{field:'subject',label:'Subject',max_characters:998},richtext:{html_field:'html',plain_field:'plain',label:'Message',max_characters:262144,links:'host_validated',inline_images:'host_files'},files:{field:'files',max_files:32,max_file_bytes:26214400,max_total_bytes:26214400}};
- const value={to:'',subject:'',plain:'',html:'',files:[]};
+ const value={to:'',subject:'',plain:${slowSeed}?'> Original quoted message':'',html:'',files:[]};
  let row={record_id:id,revision:0,content_digest:hash,status:'draft',value,files:[],summary:{initial_value_notice:''}};
  const scope={orgId:id,userId:id,installationId:id,accountId:id,stateKey:'drafts',recordId:id,resourceTargetKey:'sender'};
- const node={kind:'record_form',id:'draft_form',label:'New message',store_key:'drafts',record_id:id,expected_revision:0,content_digest:'sha256:'+'0'.repeat(64),profile,seed:{schema_version:'deft.record_form_seed.v1',value},...(${lostSubmission}?{action_key:'send_message'}:{})};
- const ports={load:async()=>{calls.push('load');if(${stalledOpening}&&calls.filter(v=>v==='load').length===1)await new Promise(()=>{});if(${recoveryProofOnly}&&calls.filter(v=>v==='load').length>1)await new Promise(()=>{});return {record:structuredClone(row),identities:[]};},recoveryScope:async()=>{calls.push('recoveryScope');if(holdScope)await new Promise(resolve=>releaseScope=resolve);return scope;},...(${recoveryProofOnly}?{recoverySnapshot:async()=>{calls.push('recoverySnapshot');return {scope,record:structuredClone(row)};}}:{}),save:async(_node,_revision,value)=>{calls.push('save');if(!${lostSubmission})throw Error('unexpected save');row={...row,revision:1,value};return structuredClone(row);},upload:async()=>{throw Error('unexpected upload');},detach:async()=>{throw Error('unexpected detach');},readFile:async()=>new Uint8Array(),...(${lostSubmission}?{review:async(_node,currentRow,_signal,recovery)=>{calls.push('review');await recovery.beforeSubmit({key:id,purpose:'send',state:'pending',submissionId:'22222222-2222-4222-8222-222222222222',sessionId:id,actionKey:'send_message',revision:currentRow.revision,digest:currentRow.content_digest});throw Error('Controlled lost acknowledgement');},submissionStatus:async()=>{calls.push('submissionStatus');return false;}}:{})};
+ let node={kind:'record_form',id:'draft_form',label:'New message',store_key:'drafts',record_id:id,expected_revision:0,content_digest:'sha256:'+'0'.repeat(64),profile,seed:{schema_version:'deft.record_form_seed.v1',value},...(${lostSubmission}?{action_key:'send_message'}:{})};
+ const ports={...(${slowSeed}||${replaceSeed}?{resolveSeed:async node=>{calls.push('resolveSeed');if(${slowSeed})await new Promise(resolve=>setTimeout(resolve,600));calls.push('seedResolved');return ${replaceSeed}?{...node,record_id:'22222222-2222-4222-8222-222222222222'}:node;}}:{}),load:async requestedNode=>{calls.push('load');if(${slowSeed})await new Promise(resolve=>setTimeout(resolve,600));if(${stalledOpening}&&calls.filter(v=>v==='load').length===1)await new Promise(()=>{});if(${recoveryProofOnly}&&calls.filter(v=>v==='load').length>1)await new Promise(()=>{});return {record:{...structuredClone(row),record_id:requestedNode.record_id},identities:[]};},recoveryScope:async()=>{calls.push('recoveryScope');if(holdScope)await new Promise(resolve=>releaseScope=resolve);return {...scope,recordId:node.record_id};},...(${recoveryProofOnly}?{recoverySnapshot:async()=>{calls.push('recoverySnapshot');return {scope,record:structuredClone(row)};}}:{}),save:async(_node,_revision,value)=>{calls.push('save');if(!${lostSubmission})throw Error('unexpected save');row={...row,revision:1,value};return structuredClone(row);},upload:async()=>{throw Error('unexpected upload');},detach:async()=>{throw Error('unexpected detach');},readFile:async()=>new Uint8Array(),...(${lostSubmission}?{review:async(_node,currentRow,_signal,recovery)=>{calls.push('review');await recovery.beforeSubmit({key:id,purpose:'send',state:'pending',submissionId:'22222222-2222-4222-8222-222222222222',sessionId:id,actionKey:'send_message',revision:currentRow.revision,digest:currentRow.content_digest});throw Error('Controlled lost acknowledgement');},submissionStatus:async()=>{calls.push('submissionStatus');return false;}}:{})};
  const host=createExperienceRecordFormHost(ports),root=document.getElementById('root');
- const mount=()=>renderExperienceView(root,{schema_version:'deft.experience_view.v2',capabilities:['record_form.v1','record_form_seed.v1'],root:node},()=>{}, {capabilities:['record_form.v1','record_form_seed.v1'],storeKeys:['drafts'],actionKeys:['send_message'],mountRecordForm:host.mountRecordForm});
+ const mount=()=>renderExperienceView(root,{schema_version:'deft.experience_view.v2',capabilities:['record_form.v1','record_form_seed.v1'],root:node},event=>{if(${replaceSeed}&&event.record_seed){calls.push('seedAck');node={...node,record_id:event.record_id};setTimeout(mount,0);}return true;}, {capabilities:['record_form.v1','record_form_seed.v1'],storeKeys:['drafts'],actionKeys:['send_message'],mountRecordForm:host.mountRecordForm});
  window.Probe={mount,release:()=>{holdScope=false;releaseScope?.();},read:()=>({calls,text:root.textContent,controls:root.querySelectorAll('input,textarea').length}),close:()=>clearExperienceView(root)};`,resolveDir:fileURLToPath(new URL('../..',import.meta.url)),loader:'tsx'},bundle:true,write:false,platform:'browser',format:'iife',define:{'process.env.NODE_ENV':'"test"'}});
  const browser=await chromium.launch({headless:true,...(process.env.DEFT_TEST_BROWSER_EXECUTABLE?{executablePath:process.env.DEFT_TEST_BROWSER_EXECUTABLE}:{})}),page=await browser.newPage();page.setDefaultTimeout(8000);
  try{await page.route('**/*',(route:any)=>route.request().url().startsWith('http://127.0.0.1/')?route.fulfill({contentType:'text/html',body:'<div id="root"></div>'}):route.abort());await page.goto('http://127.0.0.1/');await page.addScriptTag({content:bundled.outputFiles[0].text});await page.addScriptTag({content:'window.__name=value=>value;'});return {browser,page};}catch(error){await browser.close();throw error;}
@@ -72,5 +72,37 @@ test('stalled form opening ends with an enabled Retry and a fresh retry renders 
   const retry=page.getByRole('button',{name:'Retry opening draft',exact:true});await retry.waitFor();assert.equal(await retry.isEnabled(),true);assert.doesNotMatch((await page.evaluate(()=>(window as any).Probe.read())).text,/Opening draft/);
   await page.evaluate(()=>{const current=window.setTimeout.bind(window);window.setTimeout=((callback:TimerHandler,delay?:number,...args:unknown[])=>current(callback,delay===30000?10000:delay,...args)) as typeof window.setTimeout;});
   await retry.click();await page.getByRole('textbox',{name:'Subject',exact:true}).waitFor();const opened=await page.evaluate(()=>(window as any).Probe.read());assert.equal(opened.calls.filter((call:string)=>call==='load').length,3,'one stalled load, one retry and the mandatory recovery proof');assert.equal(opened.calls.includes('save'),false);
+ }finally{await browser.close();}
+});
+
+
+test('slow seed locator and quote hydration overlap; both finish before the untouched editor opens',async()=>{
+ const {browser,page}=await fixture(false,false,false,true);try{
+  await page.evaluate(()=>(window as any).Probe.release());
+  await page.evaluate(()=>(window as any).Probe.mount());
+  await page.waitForFunction(()=>(window as any).Probe.read().calls.includes('resolveSeed'));
+  await page.waitForTimeout(100);const pending=await page.evaluate(()=>(window as any).Probe.read());
+  assert.ok(pending.calls.includes('load'),'source hydration must start while the independent locator checks are pending');
+  assert.equal(pending.calls.includes('seedResolved'),false);assert.equal(pending.controls,0,'no field disclosure before locator authority settles');
+  await page.getByRole('textbox',{name:'Subject',exact:true}).waitFor();
+  const opened=await page.evaluate(()=>(window as any).Probe.read());
+  assert.equal(opened.calls.filter((call:string)=>call==='resolveSeed').length,1);
+  assert.equal(opened.calls.filter((call:string)=>call==='load').length,2,'the opening read and mandatory recovery proof both remain');
+  assert.equal(opened.calls.includes('save'),false);
+  assert.match(await page.getByRole('textbox',{name:'Message',exact:true}).inputValue(),/Original quoted message/);
+ }finally{await browser.close();}
+});
+
+
+test('reserved seed UUID acknowledgement retains one mounted opening instead of repeating slow locator checks',async()=>{
+ const {browser,page}=await fixture(false,false,false,true,true);try{
+  await page.evaluate(()=>(window as any).Probe.release());
+  await page.evaluate(()=>(window as any).Probe.mount());
+  await page.getByRole('textbox',{name:'Subject',exact:true}).waitFor();
+  const opened=await page.evaluate(()=>(window as any).Probe.read());
+  assert.equal(opened.calls.filter((call:string)=>call==='seedAck').length,1);
+  assert.equal(opened.calls.filter((call:string)=>call==='resolveSeed').length,1,'the trusted UUID acknowledgement must preserve the opening lifetime');
+  assert.equal(opened.calls.includes('save'),false);
+  assert.match(await page.getByRole('textbox',{name:'Message',exact:true}).inputValue(),/Original quoted message/);
  }finally{await browser.close();}
 });
