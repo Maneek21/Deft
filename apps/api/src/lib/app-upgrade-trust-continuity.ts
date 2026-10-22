@@ -141,10 +141,12 @@ export async function assertContinuityProof(tx: UpgradeTx, proof: UpgradeContinu
     await tx.execute(sql`SELECT id FROM app_installations WHERE org_id=${proof.org_id} AND id=${proof.installation_id} FOR SHARE`);
   }
   // Unlocked current reads share one statement, retaining each original scoped
-  // predicate and Drizzle's full row/Date decoding. Issuance keeps its reads and
-  // share-lock order; no result survives this individual authority invocation.
+  // predicate and Drizzle's full row/Date decoding for digest-bound evidence.
+  // Versions contribute only their current IDs/manifests, not unread packages.
+  // Issuance keeps its reads/share-lock order; no result survives this invocation.
   const [currentRows] = issuance ? [] : await tx.select({ installation: appInstallations,
-    prior: continuityPriorVersion, target: continuityTargetVersion, source: appConnectionSessions })
+    prior: { id: continuityPriorVersion.id, manifest: continuityPriorVersion.manifest },
+    target: { id: continuityTargetVersion.id, manifest: continuityTargetVersion.manifest }, source: appConnectionSessions })
     .from(appInstallations)
     .leftJoin(continuityPriorVersion, and(eq(continuityPriorVersion.org_id, proof.org_id),
       eq(continuityPriorVersion.installation_id, proof.installation_id), eq(continuityPriorVersion.id, proof.prior_version_id)))

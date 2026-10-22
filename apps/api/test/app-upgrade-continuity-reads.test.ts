@@ -44,7 +44,7 @@ function fixture() {
     org_members: [{ org_id: org, user_id: owner, role: 'owner', is_active: true }, { org_id: org, user_id: operator, role: 'member', is_active: true }],
     users: [{ id: owner, kind: 'human', is_agent: false }, { id: operator, kind: 'human', is_agent: false }],
   };
-  const queries: { sql: string; params: unknown[]; share: boolean }[] = [], locks: string[] = [];
+  const queries: { sql: string; params: unknown[]; share: boolean; transferBytes: number }[] = [], locks: string[] = [];
   const name = (table: any) => getTableName(table), original = (table: any) => table[Table.Symbol.OriginalName];
   // Execute the generated equality/IN predicates against independent table rows.
   // This prevents a foreign-org fixture from being accepted merely by nomination.
@@ -66,9 +66,15 @@ function fixture() {
         return candidates.length ? candidates : join.left ? [{ ...context, [name(join.table)]: null }] : [];
       });
       const sql = condition ? dialect.sqlToQuery(condition) : { sql: '', params: [] };
-      queries.push({ sql: sql.sql, params: sql.params, share });
-      return joined.filter(context => matches(condition, context)).slice(0, limit).map(context => selection ? Object.fromEntries(Object.entries(selection).map(([key, field]) =>
-        [key, field?.table ? context[name(field.table)]?.[field.name] : context[name(field)] ?? null])) : context[name(table)]);
+      const project = (field: any, context: Record<string, Row | null>): any => {
+        if (field?.table) return context[name(field.table)]?.[field.name] ?? null;
+        if (field?.[Table.Symbol.Name]) return context[name(field)] ?? null;
+        const value = Object.fromEntries(Object.entries(field).map(([key, nested]) => [key, project(nested, context)]));
+        return Object.values(value).every(item => item === null) ? null : value;
+      };
+      const result = joined.filter(context => matches(condition, context)).slice(0, limit).map(context => selection ? project(selection, context) : context[name(table)]);
+      queries.push({ sql: sql.sql, params: sql.params, share, transferBytes: Buffer.byteLength(JSON.stringify(result)) });
+      return result;
     };
     const chain: any = { from: (value: any) => { table = value; return chain; }, where: (value: any) => { condition = value; return chain; },
       leftJoin: (value: any, on: any) => { joins.push({ table: value, on, left: true }); return chain; },
@@ -130,4 +136,44 @@ test('typed nested row selection retains native timestamp decoding and exact ful
   assert.equal(result!.binding.created_at.toISOString(), row.created_at.toISOString());
   const returned = Object.fromEntries(Object.keys(row).map(key => [key, (result!.binding as Row)[key]]));
   assert.equal(rowDigest(returned), rowDigest(row));
+});
+
+test('current continuity omits two representative 140KB app packages from transferred version rows', async () => {
+  const f = fixture();
+  for (const version of f.data.app_versions!) version.package = { worker: 'x'.repeat(140_000) };
+  const result = await f.run();
+  assert.equal(Object.hasOwn(result.prior!, 'package'), false, 'unread package bytes must not be selected');
+  assert.equal(Object.hasOwn(result.target!, 'package'), false);
+  assert.deepEqual(Object.keys(result.prior!).sort(), ['id', 'manifest']);
+  assert.deepEqual(Object.keys(result.target!).sort(), ['id', 'manifest']);
+  assert.ok(f.queries[0]!.transferBytes < 10_000, 'first typed read transfers no package payload');
+  assert.equal(result.source.session_id, f.proof.source_session_id);
+});
+
+test('actual Drizzle current projection omits package columns and retains every join scope predicate', async () => {
+  const f = fixture(), calls: { text: string; values: unknown[] }[] = [];
+  const database = drizzle({ query: async (query: any, values: unknown[]) => {
+    calls.push({ text: typeof query === 'string' ? query : query.text, values });
+    return { rows: [] };
+  } } as never);
+  await assert.rejects(assertContinuityProof(database as never, f.proof, true, false));
+  assert.equal(calls.length, 1);
+  const select = calls[0]!.text.split(' from ')[0]!;
+  for (const alias of ['continuity_prior_version', 'continuity_target_version']) {
+    assert.match(select, new RegExp('"' + alias + '"\\."id"', 'u'));
+    assert.match(select, new RegExp('"' + alias + '"\\."manifest"', 'u'));
+    assert.doesNotMatch(select, new RegExp('"' + alias + '"\\."package(?:_digest)?"', 'u'));
+    for (const field of ['org_id', 'installation_id', 'id'])
+      assert.match(calls[0]!.text.slice(select.length), new RegExp('"' + alias + '"\\."' + field + '" = \\$\\d+', 'u'));
+  }
+  assert.match(calls[0]!.text, /"app_connection_sessions"\."owner_user_id" = \$\d+/u);
+  assert.ok(calls[0]!.values.includes(f.proof.owner_id));
+});
+
+test('narrow version reads still reject manifest changes and every complete digest-bound source row drift', async () => {
+  for (const change of [(f: ReturnType<typeof fixture>) => { f.data.app_versions![1]!.manifest.id = 'community.example.changed'; },
+    ...['app_resource_bindings', 'app_runtime_registrations', 'app_owner_connection_admissions', 'app_runtime_bindings'].map(table =>
+      (f: ReturnType<typeof fixture>) => { f.data[table]![0]!.extra_current_field = 'changed'; })]) {
+    const f = fixture(); await f.run(); change(f); await assert.rejects(f.run());
+  }
 });
