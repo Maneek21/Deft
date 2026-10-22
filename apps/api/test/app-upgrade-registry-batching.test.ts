@@ -23,6 +23,10 @@ const complete = (table: any, values: Row): Row => Object.fromEntries(Object.val
   [column.name, values[column.name] ?? (column.name === 'expires_at' ? new Date(expires) : null)]));
 const driver = (value: unknown) => value instanceof Date ? value.toISOString().replace('T', ' ').replace(/Z$/u, '') : value;
 const fields = (table: any, value: Row | null) => Object.values(getTableColumns(table)).map(column => driver(value?.[column.name] ?? null));
+const successorBindingFields = ['id', 'org_id', 'state', 'app_installation_id', 'app_version_id', 'grant_snapshot_id',
+  'runtime_registration_id', 'owner_user_id', 'consent_expires_at', 'consent_lifetime'];
+const successorRegistrationFields = ['id', 'org_id', 'state', 'runtime_epoch', 'app_version_id', 'grant_snapshot_id', 'operator_user_id'];
+const projected = (value: Row, fields: string[]) => fields.map(field => driver(value[field] ?? null));
 
 function fixture() {
   const org = randomUUID(), installation = randomUUID(), owner = randomUUID(), operator = randomUUID();
@@ -70,7 +74,7 @@ function fixture() {
     current.target?.id ?? null, current.target?.manifest ?? null, ...fields(appConnectionSessions, current.source),
     ...fields(appResourceBindings, current.binding), ...fields(appRuntimeRegistrations, current.registration), ...fields(appOwnerConnectionAdmissions, current.admission),
     current.trust?.after_state ?? null, ...['owner', 'operator'].flatMap(name => ['id', 'role', 'active', 'kind', 'agent'].map(key => current[name]?.[key] ?? null)),
-    ...fields(appResourceBindings, current.successor_binding), ...fields(appRuntimeRegistrations, current.successor_registration)];
+    ...projected(current.successor_binding, successorBindingFields), ...projected(current.successor_registration, successorRegistrationFields)];
   const tx = drizzle({ query: async (query: any, values: unknown[]) => {
     const text = typeof query === 'string' ? query : query.text; calls.push({ text, values });
     if (text.includes('registry_alias_limit')) return { rows: Array.from({ length: state.aliasRows }, (_, index) =>
@@ -91,7 +95,13 @@ test('one current typed point snapshot plus one complete action-pin query replac
   for (const table of ['app_installations', 'registry_prior_version', 'registry_target_version', 'app_connection_sessions',
     'app_resource_bindings', 'app_runtime_registrations', 'app_owner_connection_admissions', 'registry_successor_binding', 'registry_successor_registration'])
     assert.match(query, new RegExp('"' + table + '"\\."org_id" = "registry_aliases"\\."org_id"', 'u'));
-  assert.ok(!query.split(' from ')[0]!.includes('"package"')); assert.match(f.calls[1]!.text, /"app_runtime_bindings"\."org_id" = \$/u);
+  const select = query.split(' from ')[0]!;
+  assert.ok(!select.includes('"package"'));
+  for (const [table, fields] of [['registry_successor_binding', successorBindingFields], ['registry_successor_registration', successorRegistrationFields]] as const) {
+    const selected = [...select.matchAll(new RegExp('"' + table + '"\\."([^"]+)"', 'gu'))].map(match => match[1]);
+    assert.deepEqual(selected, fields, 'successor selection matches only the validator inputs');
+  }
+  assert.match(f.calls[1]!.text, /"app_runtime_bindings"\."org_id" = \$/u);
   await f.run(); assert.equal(f.calls.length, 4, 'no current alias, membership or row-set authority is cached');
 });
 
@@ -150,4 +160,17 @@ test('alias/proof set insertion, proof cardinality, owner/org replay and missing
 test('full native Date decoding preserves proof bytes and additional current row fields cannot disappear through a subset', async () => {
   const f = fixture(); assert.ok(f.current.binding.created_at instanceof Date); assert.equal((await f.run()).length, 1);
   f.current.binding.updated_at = new Date('2026-01-01T00:00:00.999Z'); assert.deepEqual(await f.run(), []);
+});
+
+
+test('narrow successor Date selection preserves exact finite consent and still rejects expiry drift', async () => {
+  const f = fixture();
+  for (const scope of [f.proof.source_scope, f.current.source.record.scope]) {
+    scope.consent_expires_at = expires; delete scope.consent_lifetime;
+  }
+  f.current.successor_binding.consent_expires_at = new Date(expires);
+  f.current.successor_binding.consent_lifetime = null;
+  assert.equal((await f.run()).length, 1);
+  f.current.successor_binding.consent_expires_at = new Date(Date.parse(expires) + 1);
+  assert.deepEqual(await f.run(), []);
 });

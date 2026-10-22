@@ -15,9 +15,14 @@ export const UpgradeRegistrationAliasSchema = z.strictObject({ schema_version: z
   source_registration_id: id, source_runtime_epoch: z.number().int().positive(), profile_digest: digest, transport_digest: digest });
 type Entry = z.infer<typeof AppConnectionSessionRegistryConfigSchema>['entries'][number];
 type Alias = z.infer<typeof UpgradeRegistrationAliasSchema>;
+type SuccessorBinding = Pick<typeof appResourceBindings.$inferSelect,
+  'id' | 'org_id' | 'state' | 'app_installation_id' | 'app_version_id' | 'grant_snapshot_id' |
+  'runtime_registration_id' | 'owner_user_id' | 'consent_expires_at' | 'consent_lifetime'>;
+type SuccessorRegistration = Pick<typeof appRuntimeRegistrations.$inferSelect,
+  'id' | 'org_id' | 'state' | 'runtime_epoch' | 'app_version_id' | 'grant_snapshot_id' | 'operator_user_id'>;
 const key = (org: string, registration: string, epoch: number) => `${org}:${registration}:${epoch}`;
 function assertSuccessor(alias: Alias, proof: UpgradeContinuityProof,
-  binding: typeof appResourceBindings.$inferSelect | null, registration: typeof appRuntimeRegistrations.$inferSelect | null) {
+  binding: SuccessorBinding | null, registration: SuccessorRegistration | null) {
   if (!binding || !registration || binding.org_id !== alias.org_id || registration.org_id !== alias.org_id
     || binding.id !== alias.binding_id || registration.id !== alias.registration_id
     || binding.state !== 'active' || registration.state !== 'active'
@@ -86,7 +91,16 @@ async function readCurrentRegistryRows(tx: UpgradeTx, entries: readonly Entry[])
     trust: { after_state: trust.after_state },
     owner: { id: ownerMember.user_id, role: ownerMember.role, active: ownerMember.is_active, kind: ownerUser.kind, agent: ownerUser.is_agent },
     operator: { id: operatorMember.user_id, role: operatorMember.role, active: operatorMember.is_active, kind: operatorUser.kind, agent: operatorUser.is_agent },
-    successor_binding: successorBinding, successor_registration: successorRegistration }).from(aliases)
+    // Successors are checked field-by-field, unlike the complete digest-bound
+    // source rows above. Project only the exact current admission inputs.
+    successor_binding: { id: successorBinding.id, org_id: successorBinding.org_id, state: successorBinding.state,
+      app_installation_id: successorBinding.app_installation_id, app_version_id: successorBinding.app_version_id,
+      grant_snapshot_id: successorBinding.grant_snapshot_id, runtime_registration_id: successorBinding.runtime_registration_id,
+      owner_user_id: successorBinding.owner_user_id, consent_expires_at: successorBinding.consent_expires_at,
+      consent_lifetime: successorBinding.consent_lifetime },
+    successor_registration: { id: successorRegistration.id, org_id: successorRegistration.org_id, state: successorRegistration.state,
+      runtime_epoch: successorRegistration.runtime_epoch, app_version_id: successorRegistration.app_version_id,
+      grant_snapshot_id: successorRegistration.grant_snapshot_id, operator_user_id: successorRegistration.operator_user_id } }).from(aliases)
     .leftJoinLateral(proof, sql`true`)
     .leftJoin(appInstallations, and(eq(appInstallations.org_id, aliases.org_id), eq(appInstallations.id, proofId('installation_id'))))
     .leftJoin(priorVersion, and(eq(priorVersion.org_id, aliases.org_id), eq(priorVersion.installation_id, proofId('installation_id')), eq(priorVersion.id, proofId('prior_version_id'))))
