@@ -64,6 +64,7 @@ import {
 import { buildNativeAppActionActor } from './agent-app-action-actor.js';
 import { resolveNativeWikiReader, readNativeWiki, searchNativeWiki } from './native-wiki-owner.js';
 import { liveHumanCalendarEventCondition, liveEmployeeCalendarEventCondition } from './calendar-event-visibility.js';
+import { deftyMessageCitation } from './defty-message-source.js';
 
 type Citation = { type: string; id: string; title: string; url?: string };
 
@@ -380,14 +381,13 @@ export async function executeToolCall(
       const formatted = results.map((r) => ({
         ...r,
         space_name: spaceMap.get(r.space_id) || 'unknown',
+        source_url: `/chat?space=${encodeURIComponent(r.space_id)}&message=${encodeURIComponent(r.id)}`,
+        source_label: `${r.user_name}, ${r.created_at.toISOString()}`,
       }));
 
       formatted.forEach((m) => {
-        citations.push({
-          type: 'message',
-          id: m.id,
-          title: `#${m.space_name} - ${m.user_name}`,
-        });
+        citations.push(deftyMessageCitation({ id: m.id, spaceId: m.space_id,
+          author: m.user_name, createdAt: m.created_at }));
       });
 
       return { result: formatted, citations };
@@ -488,11 +488,12 @@ export async function executeToolCall(
         citations.push({
           type: 'task',
           id: t.id,
-          title: `${t.project_prefix}-${t.number}: ${t.title}`,
+          title: `${t.project_prefix}-${t.number} "${t.title}"`,
+          url: `/tasks?task=${encodeURIComponent(`${t.project_prefix}-${t.number}`)}`,
         });
       });
 
-      return { result: results, citations };
+      return { result: results.map((t) => ({ ...t, identifier: `${t.project_prefix}-${t.number}`, display_name: `${t.project_prefix}-${t.number} "${t.title}"` })), citations };
     }
 
     case 'list_my_tasks': {
@@ -540,11 +541,12 @@ export async function executeToolCall(
         citations.push({
           type: 'task',
           id: t.id,
-          title: `${t.project_prefix}-${t.number}: ${t.title}`,
+          title: `${t.project_prefix}-${t.number} "${t.title}"`,
+          url: `/tasks?task=${encodeURIComponent(`${t.project_prefix}-${t.number}`)}`,
         });
       });
 
-      return { result: myResults, citations };
+      return { result: myResults.map((t) => ({ ...t, identifier: `${t.project_prefix}-${t.number}`, display_name: `${t.project_prefix}-${t.number} "${t.title}"` })), citations };
     }
 
     case 'get_task_detail': {
@@ -1550,10 +1552,14 @@ export async function executeToolCall(
         })
         .from(messages)
         .innerJoin(users, eq(messages.user_id, users.id))
+        .innerJoin(spaces, and(eq(spaces.id, messages.space_id), eq(spaces.org_id, orgId)))
+        .leftJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, _userId)))
         .where(
           and(
             eq(messages.org_id, orgId),
             eq(messages.is_deleted, false),
+            eq(spaces.is_archived, false),
+            or(eq(spaces.type, 'public'), sql`${spaceMembers.id} IS NOT NULL`),
             gte(messages.created_at, since),
             or(...searchConditions),
           ),
@@ -1577,15 +1583,13 @@ export async function executeToolCall(
         content: r.content,
         author: r.user_name,
         space: spaceMap.get(r.space_id) || 'unknown',
+        space_id: r.space_id,
         timestamp: r.created_at,
       }));
 
-      formatted.forEach((m) => {
-        citations.push({
-          type: 'message',
-          id: m.id,
-          title: `#${m.space} - ${m.author}`,
-        });
+      results.forEach((m) => {
+        citations.push(deftyMessageCitation({ id: m.id, spaceId: m.space_id,
+          author: m.user_name, createdAt: m.created_at }));
       });
 
       return { result: formatted, citations };

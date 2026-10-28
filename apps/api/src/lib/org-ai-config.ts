@@ -95,7 +95,7 @@ export function decodeOrgAIConfig(stored: OrgAIConfigStored): OrgAIConfigRuntime
   const api_keys: Partial<Record<LLMProvider, string>> = {};
   for (const p of PROVIDERS) {
     const decrypted = safeDecrypt(stored.api_keys?.[p]);
-    if (decrypted) api_keys[p] = decrypted;
+    if (decrypted?.trim()) api_keys[p] = decrypted.trim();
   }
   return {
     api_keys,
@@ -118,9 +118,9 @@ export function decodeOrgAIConfig(stored: OrgAIConfigStored): OrgAIConfigRuntime
 export async function resolveAnthropicApiKey(orgId: string | null | undefined): Promise<string> {
   if (orgId) {
     const cfg = await getOrgAIConfig(orgId).catch(() => null);
-    if (cfg?.api_keys?.anthropic) return cfg.api_keys.anthropic;
+    if (cfg?.api_keys?.anthropic?.trim()) return cfg.api_keys.anthropic.trim();
   }
-  return env.ANTHROPIC_API_KEY || '';
+  return env.ANTHROPIC_API_KEY?.trim() || '';
 }
 
 /**
@@ -202,7 +202,7 @@ export function selectReasonProvider(input: ReasonProviderSelectionInput): Reaso
       };
     }
 
-    const hasKey = Boolean(orgApiKeys[route.provider] || envApiKeys[route.provider]);
+    const hasKey = Boolean(orgApiKeys[route.provider]?.trim() || envApiKeys[route.provider]?.trim());
     return {
       ready: hasKey,
       provider: route.provider,
@@ -213,7 +213,7 @@ export function selectReasonProvider(input: ReasonProviderSelectionInput): Reaso
   }
 
   for (const provider of ['openai', 'anthropic', 'openrouter'] as const) {
-    if (orgApiKeys[provider]) {
+    if (orgApiKeys[provider]?.trim()) {
       return {
         ready: true,
         provider,
@@ -224,7 +224,7 @@ export function selectReasonProvider(input: ReasonProviderSelectionInput): Reaso
   }
 
   for (const provider of ['openai', 'anthropic', 'openrouter'] as const) {
-    if (envApiKeys[provider]) {
+    if (envApiKeys[provider]?.trim()) {
       return {
         ready: true,
         provider,
@@ -239,7 +239,7 @@ export function selectReasonProvider(input: ReasonProviderSelectionInput): Reaso
       ready: true,
       provider: 'ollama',
       model: FALLBACK_REASON_MODELS.ollama,
-      source: input.orgOllamaUrl ? 'org_ollama_fallback' : 'env_fallback',
+      source: input.orgOllamaUrl?.trim() ? 'org_ollama_fallback' : 'env_fallback',
     };
   }
 
@@ -284,17 +284,17 @@ export function resolveReasonProviderFromConfig(cfg: OrgAIConfigRuntime | null):
   const provider = selected.provider;
   const model = selected.model;
 
-  let apiKey = apiKeys[provider] ?? '';
+  let apiKey = apiKeys[provider]?.trim() ?? '';
   if (!apiKey) {
     switch (provider) {
       case 'anthropic':
-        apiKey = env.ANTHROPIC_API_KEY || '';
+        apiKey = env.ANTHROPIC_API_KEY?.trim() || '';
         break;
       case 'openai':
-        apiKey = env.OPENAI_API_KEY || '';
+        apiKey = env.OPENAI_API_KEY?.trim() || '';
         break;
       case 'openrouter':
-        apiKey = env.OPENROUTER_API_KEY || '';
+        apiKey = env.OPENROUTER_API_KEY?.trim() || '';
         break;
       case 'ollama':
         apiKey = ''; // local — no key needed
@@ -369,8 +369,8 @@ export async function getOrgAIConfigMasked(orgId: string): Promise<OrgAIConfigMa
     if (!enc) continue;
     const plain = safeDecrypt(enc);
     api_keys[p] = {
-      configured: Boolean(plain),
-      mask: plain ? `…${plain.slice(-4)}` : null,
+      configured: Boolean(plain?.trim()),
+      mask: plain?.trim() ? `…${plain.slice(-4)}` : null,
     };
   }
   return {
@@ -378,10 +378,10 @@ export async function getOrgAIConfigMasked(orgId: string): Promise<OrgAIConfigMa
     ai_models: stored.ai_models ?? {},
     ollama_url: stored.ollama_url ?? null,
     env_fallback: {
-      anthropic: Boolean(env.ANTHROPIC_API_KEY),
-      openai: Boolean(env.OPENAI_API_KEY),
-      openrouter: Boolean(env.OPENROUTER_API_KEY),
-      ollama: Boolean(stored.ollama_url || process.env.OLLAMA_URL),
+      anthropic: Boolean(env.ANTHROPIC_API_KEY?.trim()),
+      openai: Boolean(env.OPENAI_API_KEY?.trim()),
+      openrouter: Boolean(env.OPENROUTER_API_KEY?.trim()),
+      ollama: Boolean(stored.ollama_url?.trim() || process.env.OLLAMA_URL?.trim()),
     },
   };
 }
@@ -435,8 +435,8 @@ export async function setOrgOllamaUrl(orgId: string, url: string | null): Promis
 export async function hasAnyAIProvider(orgId: string | null | undefined): Promise<boolean> {
   if (orgId) {
     const cfg = await getOrgAIConfig(orgId).catch(() => null);
-    if (cfg?.api_keys && Object.values(cfg.api_keys).some(Boolean)) return true;
-    if (cfg?.ollama_url) return true;
+    if (cfg?.api_keys && Object.values(cfg.api_keys).some((key) => Boolean(key?.trim()))) return true;
+    if (cfg?.ollama_url?.trim()) return true;
   }
-  return Boolean(env.ANTHROPIC_API_KEY || env.OPENAI_API_KEY || env.OPENROUTER_API_KEY || process.env.OLLAMA_URL);
+  return Boolean(env.ANTHROPIC_API_KEY?.trim() || env.OPENAI_API_KEY?.trim() || env.OPENROUTER_API_KEY?.trim() || process.env.OLLAMA_URL?.trim());
 }

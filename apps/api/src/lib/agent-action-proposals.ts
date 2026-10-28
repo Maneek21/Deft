@@ -1,9 +1,12 @@
 import {collectCompilerReadFacts,validateCompilerGrounding} from './agent-compiler-read-facts.js';
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
-import { agentActions, messages, orgs, projects } from '@deft/db/schema';
+import { agentActions, messages, orgs, projects, tasks } from '@deft/db/schema';
 import { getApprovalTier } from './agent-approval.js';
 import { db } from './db.js';
 import { getOrgAIConfig } from './org-ai-config.js';
+import { resolveProjectTarget } from './resolve-project-target.js';
+import { buildUntrustedWorkspaceContext } from './agent-untrusted-context.js';
+import { visibleTaskCondition } from './task-visibility.js';
 import { llm } from './llm.js';
 import { truncatePlainText } from './plain-text.js';
 import { ACTION_TOOLS, AGENT_TOOLS } from './agent-tools.js';
@@ -63,6 +66,7 @@ type PersistReplyWithActionsParams = {
   agentUserId: string;
   content: string;
   parentId?: string | null;
+  resolvePendingMessageId?: string;
   metadata: Record<string, any>;
   pendingActions: ProposedAgentAction[];
 };
@@ -88,9 +92,27 @@ function safeActionParamsForMessage(action: string, actionParams: unknown): unkn
   return actionParams;
 }
 
+function safePendingDraftForMessage(pending: unknown): unknown {
+  if (!isRecord(pending)) return pending;
+  const safeActions = (actions: unknown[]) => actions.map((action: unknown) => {
+    if (!isRecord(action) || typeof action.action !== 'string') return action;
+    return { ...action, params: safeActionParamsForMessage(action.action, action.params) };
+  });
+  if (Array.isArray(pending.draft)) return { ...pending, draft: safeActions(pending.draft) };
+  if (!isRecord(pending.draft)) return pending;
+  const draft = { ...pending.draft };
+  for (const key of ['actions', 'pendingActions']) {
+    if (Array.isArray(draft[key])) draft[key] = safeActions(draft[key]);
+  }
+  return { ...pending, draft };
+}
+
 export function sanitizeAgentReplyActionMetadata(metadata: Record<string, any>): Record<string, any> {
   const { pending_actions: _pendingActions, action_graph: graph, ...safe } = metadata;
   const safeMetadata = sanitizeAgentMetadataForStorage(safe);
+  if (Object.hasOwn(safeMetadata, 'defty_pending')) {
+    safeMetadata.defty_pending = safePendingDraftForMessage(safeMetadata.defty_pending);
+  }
   if (!isRecord(graph) || !Array.isArray(graph.actions)) {
     return { ...safeMetadata, ...(graph === undefined ? {} : { action_graph: graph }) };
   }
@@ -202,6 +224,38 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
   }
 
   const persisted = await db.transaction(async (tx) => {
+    const resolvePendingClarifications = async (currentMessageId: string) => {
+      if (!params.resolvePendingMessageId) return;
+      const pendingScope = and(
+        eq(messages.id, params.resolvePendingMessageId),
+        eq(messages.org_id, params.orgId),
+        eq(messages.space_id, params.spaceId),
+        eq(messages.user_id, params.agentUserId),
+      );
+      const [pending] = await tx.select({ metadata: messages.metadata }).from(messages)
+        .where(pendingScope).limit(1);
+      if (!pending || !isRecord(pending.metadata) || pending.metadata.defty_pending?.kind !== 'action_draft'
+        || typeof pending.metadata.defty_pending.request_message_id !== 'string') return;
+      const requestScope = and(
+        eq(messages.org_id, params.orgId),
+        eq(messages.space_id, params.spaceId),
+        eq(messages.user_id, params.agentUserId),
+        sql`${messages.id} <> ${currentMessageId}`,
+        sql`${messages.metadata}->'defty_pending'->>'kind' = 'action_draft'`,
+        sql`${messages.metadata}->'defty_pending'->>'request_message_id' = ${pending.metadata.defty_pending.request_message_id}`,
+        sql`${messages.metadata}->>'defty_pending_resolved_at' IS NULL`,
+      );
+      // A request may have accumulated several clarification questions. Every
+      // answer consumes all of them, whether it produced a proposal, a new
+      // question or no action at all. Lock them in a stable order and retire
+      // them atomically with the reply so an older draft cannot be revived.
+      const clarifications = await tx.select({ id: messages.id }).from(messages)
+        .where(requestScope).orderBy(messages.id).for('update');
+      if (!clarifications.length) return;
+      await tx.update(messages).set({
+        metadata: sql`${messages.metadata} || ${JSON.stringify({ defty_pending_resolved_at: new Date().toISOString() })}::jsonb`,
+      }).where(and(requestScope, inArray(messages.id, clarifications.map(row => row.id))));
+    };
     const moduleClaimKeys = preparedPendingActions
       .flatMap((proposal) => {
         const digest = moduleIdempotencyDigests.get(proposal);
@@ -386,6 +440,7 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
       const finalContent = duplicateOnly ? messageContent : reconcilePersistedProposalContent(messageContent, linkedActions.map(action => action.action), [...rejectedModuleActions, ...rejectedOtherActions], messageMetadata, duplicateActions.map(action => action.action));
       const coherentMetadata = reconcileProposalTextBlocks(finalMetadata, finalContent, params.content);
       await tx.update(messages).set({ content: finalContent, metadata: coherentMetadata as never }).where(eq(messages.id, agentMessage.id));
+      await resolvePendingClarifications(agentMessage.id);
       return {
         message: { ...agentMessage, content: finalContent, metadata: coherentMetadata as never },
         actions: linkedActions,
@@ -429,6 +484,7 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
     const coherentMetadata = reconcileProposalTextBlocks(finalMetadata, finalContent, params.content);
     await tx.update(messages).set({ content: finalContent, metadata: coherentMetadata as never }).where(eq(messages.id, agentMessage.id));
 
+    await resolvePendingClarifications(agentMessage.id);
     return {
       message: { ...agentMessage, content: finalContent, metadata: coherentMetadata as never },
       actions: persistedActions,
@@ -456,6 +512,7 @@ export type CompiledActionDraft = {
   graph: ActionGraph;
   warnings?: string[];
   clarification?: string;
+  pendingActions?: ProposedAgentAction[];
   summary?: string;
   metrics: {
     duration_ms: number;
@@ -465,10 +522,25 @@ export type CompiledActionDraft = {
   };
 };
 
-type CompileDeftyActionDraftParams = {
+export type PendingDeftyActionDraft = {
+  request_message_id: string;
+  request_text: string;
+  draft: unknown;
+  question?: string;
+  answer: string;
+};
+
+export type DeftyTaskReference = { id?: string; identifier: string; title: string };
+
+export type CompileDeftyActionDraftParams = {
   successfulReadActions?: Parameters<typeof collectCompilerReadFacts>[0];
   orgId: string;
+  requesterId?: string;
+  sourceSpaceId?: string;
   promptContent: string;
+  pendingDraft?: PendingDeftyActionDraft;
+  projectCandidates?: string[];
+  priorTaskCandidates?: DeftyTaskReference[];
   agentReplyText?: string;
   sourceMessageId: string;
   projectNameHint?: string | null;
@@ -486,6 +558,11 @@ const CLARIFICATION_TOOL = {
     properties: {
       question: { type: 'string', description: 'The single clarification question to ask.' },
       summary: { type: 'string', description: 'What is already understood about the requested action.' },
+      draft_actions: {
+        type: 'array',
+        description: 'Already understood action drafts, including known owner, date and source. Missing required fields are allowed here; these are not approval actions.',
+        items: { type: 'object', properties: { action: { type: 'string' }, params: { type: 'object' } }, required: ['action', 'params'] },
+      },
     },
     required: ['question'],
   },
@@ -527,7 +604,7 @@ function hasExplicitOutcomeLabelForEveryTask(plain: string, taskCount: number): 
 export function validateCompiledIntentAlignment(
   promptContent: string,
   actions: ProposedAgentAction[],
-  params: Pick<CompileDeftyActionDraftParams, 'projectNameHint'>,
+  params: Pick<CompileDeftyActionDraftParams, 'projectNameHint' | 'projectCandidates'>,
 ): { blocked: boolean; clarification?: string } {
   const plain = promptContent.replace(/\s+/g, ' ').trim();
   const explicitNoWrite = /\b(?:do\s+not|don't|dont|never)\s+(?:create|queue|post|send|write|save|record|update|edit|change|mark|move|close|assign)(?:\s+or\s+(?:create|queue|post|send|write|update))?\s+(?:any\s+)?(?:tasks?|actions?|changes?|messages?|posts?|pages?|notes?|documents?|files?|reports?|spreadsheets?|reminders?)\b/i.test(plain);
@@ -573,7 +650,9 @@ export function validateCompiledIntentAlignment(
     if (!hasProjectHint && !suppliedProject) {
       return {
         blocked: true,
-        clarification: 'Which project should this task belong to?',
+        clarification: params.projectCandidates?.length
+          ? `Which project should this task belong to: ${params.projectCandidates.slice(0, 5).join(', ')}?`
+          : 'Which project should this task belong to?',
       };
     }
   }
@@ -584,7 +663,7 @@ export function validateCompiledIntentAlignment(
 export function resolveCompiledIntentOutcome(
   prompt: string,
   actions: ProposedAgentAction[],
-  params: Pick<CompileDeftyActionDraftParams, 'projectNameHint'>,
+  params: Pick<CompileDeftyActionDraftParams, 'projectNameHint' | 'projectCandidates'>,
   targetedQuestion?: string,
 ): { actions: ProposedAgentAction[]; clarification?: string; substitutionRejected: boolean; blocked: boolean } {
   // Quoted source content and references to existing tasks are not task requests.
@@ -606,16 +685,31 @@ export function resolveCompiledIntentOutcome(
 
 export async function compileDeftyActionDraft(params: CompileDeftyActionDraftParams): Promise<CompiledActionDraft> {
   const startedAt = Date.now();
+  if (params.pendingDraft) {
+    params = { ...params, sourceMessageId: params.pendingDraft.request_message_id,
+      promptContent: `${params.pendingDraft.request_text}\n\nClarification answer: ${params.pendingDraft.answer}` };
+  }
   const orgConfig = await getOrgAIConfig(params.orgId).catch(() => undefined);
   const knownProjects = await db
     .select({
+      id: projects.id,
       name: projects.name,
       prefix: projects.prefix,
+      is_archived: projects.is_archived,
+      is_deleted: projects.is_deleted,
     })
     .from(projects)
     .where(and(eq(projects.org_id, params.orgId), eq(projects.is_archived, false), eq(projects.is_deleted, false)))
     .limit(50)
     .catch(() => []);
+  const defaultProject = !params.projectNameHint
+    ? await resolveProjectTarget(params.orgId, { sourceSpaceId: params.sourceSpaceId, requesterId: params.requesterId }).catch(() => null)
+    : null;
+  params = {
+    ...params,
+    projectNameHint: params.projectNameHint || (defaultProject?.status === 'resolved' ? defaultProject.project.name : null),
+    projectCandidates: knownProjects.map((project) => project.name).slice(0, 5),
+  };
   const [orgClock] = await db
     .select({ timezone: orgs.timezone })
     .from(orgs)
@@ -639,11 +733,13 @@ export async function compileDeftyActionDraft(params: CompileDeftyActionDraftPar
       'Do not execute anything. These actions will become approval cards.',
       'grounded_read_facts contains successful same-turn authorized reads. For module updates use its exact record ID, revision, manifest digest and explicit requested patch; never invent these fields.',
       'For an existing wiki use the exact read slug and current full body. An append must include the real current body followed by the requested literal addition, never preservation instructions or placeholders. If facts are unavailable ask for a grounded lookup instead of inventing a target.',
-      'Use request_action_clarification only when a required target cannot be inferred safely.',
+      'Use request_action_clarification only when a required target cannot be inferred safely. Include draft_actions containing everything already understood, especially the original assignee, due date and source message.',
+      'When asking which task, name every candidate as KEY "exact title" using prior_task_candidates. Never paraphrase a task title.',
+      'If a pending clarification is supplied, complete its original draft using the clarification answer. Preserve its owner, due date and original source unless the user explicitly corrects them.',
       'Required for create_task: title and project_name. Use an exact project name from known_projects whenever possible.',
       'The task title or concrete outcome must come from the user request. Never invent the work itself.',
       'If a project hint is supplied, use it. If the user gives an informal project phrase, choose the closest exact known project name.',
-      'known_projects is a resolution vocabulary, not permission to choose an arbitrary project when the user supplied no project or hint.',
+      'When no project is named, use the project hint. With exactly one known active project use it. With several and no hint, ask which project and name up to five candidates; never choose arbitrarily.',
       'Optional for create_task: assignee_name, priority, due_date, description, subtasks.',
       'Missing priority should default to p2. Missing due date is allowed and means no due date.',
       'For create_task descriptions, write concise markdown: short summary plus bullets when useful. Do not create an unformatted text wall.',
@@ -657,9 +753,11 @@ export async function compileDeftyActionDraft(params: CompileDeftyActionDraftPar
     tools: getActionCompilerToolsForPrompt(params.promptContent, params.allowedActionNames),
     messages: [{
       role: 'user',
-      content: JSON.stringify({
+      content: buildUntrustedWorkspaceContext([JSON.stringify({
         grounded_read_facts: groundedReadFacts,
         user_request: params.promptContent,
+        pending_clarification: params.pendingDraft ?? null,
+        prior_task_candidates: params.priorTaskCandidates ?? [],
         prior_defty_reply: params.agentReplyText ?? '',
         project_name_hint: params.projectNameHint ?? null,
         source_message_id: params.sourceMessageId,
@@ -669,31 +767,58 @@ export async function compileDeftyActionDraft(params: CompileDeftyActionDraftPar
         caller_name: params.callerName ?? null,
         current_time_iso: new Date().toISOString(),
         org_timezone: orgClock?.timezone ?? 'UTC',
-      }),
+      })])!,
     }],
   });
 
-  const rawNormalized = normalizeCompiledToolCalls(result.toolCalls ?? [], params);
-  const grounded=validateCompilerGrounding(rawNormalized.actions,groundedReadFacts,params.promptContent);
-  const initiallyNormalized={...rawNormalized,actions:grounded.actions,warnings:[...(rawNormalized.warnings??[]),...groundedReadFacts.limitations,...grounded.warnings]};
   const parsedText = parseFirstJsonObject(result.text);
   const clarificationCall = result.toolCalls?.find((call) => call.name === CLARIFICATION_TOOL.name)?.input;
   const clarificationInput = isRecord(clarificationCall) ? clarificationCall : isRecord(parsedText) ? parsedText : null;
   const targetedQuestion = clarificationInput && typeof clarificationInput.question === 'string'
     ? truncatePlainText(clarificationInput.question.trim(), 400) : undefined;
-  const intentOutcome = resolveCompiledIntentOutcome(params.promptContent, initiallyNormalized.actions, params, targetedQuestion);
+  const clarificationDrafts = Array.isArray(clarificationInput?.draft_actions)
+    ? normalizeCompiledToolCalls(clarificationInput.draft_actions.filter(isRecord).map((action: Record<string, any>) => ({ name: action.action, input: action.params })), params)
+    : null;
+  let rawNormalized = normalizeCompiledToolCalls(result.toolCalls ?? [], params);
+  // Required project fields can be supplied by the safe singleton resolution,
+  // even when the model unnecessarily returned a project question.
+  const answeredProjectQuestion = Boolean(params.projectNameHint && targetedQuestion && /\b(?:which|what)\b.*\bproject\b|\bproject\b.*\b(?:which|what)\b/i.test(targetedQuestion));
+  if (rawNormalized.actions.length === 0 && answeredProjectQuestion && clarificationDrafts?.actions.length) {
+    rawNormalized = clarificationDrafts;
+  }
+  const grounded = validateCompilerGrounding(rawNormalized.actions, groundedReadFacts, params.promptContent);
+  const initiallyNormalized = { ...rawNormalized, actions: grounded.actions, warnings: [...(rawNormalized.warnings ?? []), ...groundedReadFacts.limitations, ...grounded.warnings] };
+  const intentOutcome = resolveCompiledIntentOutcome(params.promptContent, initiallyNormalized.actions, params, answeredProjectQuestion ? undefined : targetedQuestion);
   const normalized = { ...initiallyNormalized, actions: intentOutcome.actions, summary: intentOutcome.blocked || (intentOutcome.substitutionRejected && intentOutcome.actions.length === 0) ? undefined : initiallyNormalized.summary };
   if (intentOutcome.substitutionRejected) normalized.warnings = [...normalized.warnings, 'Task substitution was not prepared: this request targets a CRM record or wiki page, not a new task.'];
-  const clarification = intentOutcome.clarification;
+  let clarification = intentOutcome.clarification;
+  const clarificationKeys = [...new Set([...((clarification ?? '').matchAll(/\b[A-Z][A-Z0-9]{1,11}-\d+\b/gi))]
+    .map((match) => match[0].toUpperCase()))].slice(0, 5);
+  if (params.requesterId && clarificationKeys.length > 0 && !params.priorTaskCandidates?.length) {
+    const candidates = await db.select({ id: tasks.id,
+      identifier: sql<string>`${projects.prefix} || '-' || ${tasks.number}`, title: tasks.title })
+      .from(tasks).innerJoin(projects, and(eq(projects.id, tasks.project_id), eq(projects.org_id, params.orgId)))
+      .where(and(eq(tasks.org_id, params.orgId), eq(tasks.is_deleted, false),
+        eq(projects.is_deleted, false), eq(projects.is_archived, false), visibleTaskCondition(params.requesterId),
+        inArray(sql`${projects.prefix} || '-' || ${tasks.number}`, clarificationKeys))).limit(5).catch(() => []);
+    params = { ...params, priorTaskCandidates: candidates };
+  }
+  if (clarification && !/\bproject\b/i.test(clarification) && (/which.*(?:task|review)|(?:task|review).*which/i.test(clarification) || clarificationKeys.length > 1) && params.priorTaskCandidates?.length) {
+    clarification = `Which task do you mean: ${formatDeftyTaskCandidates(params.priorTaskCandidates)}?`;
+  }
+  const pendingActions = rawNormalized.pendingActions?.length ? rawNormalized.pendingActions
+    : rawNormalized.actions.length ? rawNormalized.actions
+    : clarificationDrafts?.pendingActions?.length ? clarificationDrafts.pendingActions : clarificationDrafts?.actions;
   console.info('[agent-action-compiler] outcome', {
     reason: intentOutcome.substitutionRejected ? 'unrequested_task_substitution' : clarification ? 'clarification' : 'actions',
     raw_action_count: rawNormalized.actions.length, accepted_action_count: normalized.actions.length,
     tool_names: [...new Set((result.toolCalls ?? []).map((call) => call.name).filter((name) => typeof name === 'string' && (ACTION_TOOLS.has(name) || name === CLARIFICATION_TOOL.name)))].slice(0, 12),
     grounded_read_counts: { module_record_query: groundedReadFacts.facts.filter((fact) => fact.tool === 'module_record_query').length, module_record_get: groundedReadFacts.facts.filter((fact) => fact.tool === 'module_record_get').length, wiki_read: groundedReadFacts.facts.filter((fact) => fact.tool === 'wiki_read').length },
   });
-  const summary = clarificationInput && typeof clarificationInput.summary === 'string'
+  const concreteSummary = formatDeftyApprovalReply(normalized.actions, params.priorTaskCandidates);
+  const summary = concreteSummary ?? (clarificationInput && typeof clarificationInput.summary === 'string'
     ? truncatePlainText(clarificationInput.summary.trim(), 300)
-    : normalized.summary;
+    : normalized.summary);
 
   const graph = buildActionGraph(normalized.actions, params.sourceMessageId, summary ?? '');
   const actions = normalized.actions.map((action, index) => {
@@ -722,28 +847,169 @@ export async function compileDeftyActionDraft(params: CompileDeftyActionDraftPar
     },
   };
   if (normalized.warnings?.length) draft.warnings = normalized.warnings;
-  if (clarification) draft.clarification = clarification;
+  if (clarification) {
+    draft.clarification = clarification;
+    if (pendingActions?.length) draft.pendingActions = pendingActions;
+  }
   if (summary) draft.summary = summary;
   return draft;
+}
+
+/** Exact database titles are data, never a paraphrasing opportunity. */
+export function formatDeftyTaskCandidates(tasks: DeftyTaskReference[]): string {
+  return tasks.slice(0, 5).map((task) => `${task.identifier} "${task.title}"`).join(' or ');
+}
+
+/** Format only changes for which concrete task identities are available. */
+export function formatDeftyApprovalReply(actions: ProposedAgentAction[], tasks: DeftyTaskReference[] = []): string | null {
+  if (!actions.length) return null;
+  const changes = new Map<string, { target: string; details: string[] }>();
+  const statuses: Record<string, string> = { backlog: 'Backlog', todo: 'To do', in_progress: 'In progress', in_review: 'In review', done: 'Done', cancelled: 'Cancelled' };
+  for (const action of actions) {
+    const p = action.params;
+    if (action.action === 'create_task') {
+      if (typeof p.title !== 'string') return null;
+      const details = [typeof p.project_name === 'string' ? `in ${p.project_name}` : '', typeof p.assignee_name === 'string' ? `assigned to ${p.assignee_name}` : '', typeof p.due_date === 'string' ? `due ${p.due_date}` : ''].filter(Boolean);
+      changes.set(`create:${changes.size}`, { target: `create "${p.title}"`, details });
+      continue;
+    }
+    if (action.action !== 'update_task_status' && action.action !== 'assign_task') return null;
+    const requestedIdentifier = stringValue(p.task_identifier) || stringValue(p.resolved_task_identifier);
+    const task = tasks.find((candidate) => candidate.identifier.toUpperCase() === requestedIdentifier.toUpperCase()
+      || Boolean(candidate.id && (candidate.id === requestedIdentifier || candidate.id === p.resolved_task_id)));
+    const identifier = task?.identifier ?? requestedIdentifier;
+    const title = task?.title ?? (typeof p.resolved_task_title === 'string' ? p.resolved_task_title : typeof p.task_title === 'string' ? p.task_title : null);
+    if (!identifier || title === null) return null;
+    const change = changes.get(identifier.toUpperCase()) ?? { target: `${identifier} "${title}"`, details: [] };
+    if (action.action === 'update_task_status') {
+      const status = statuses[stringValue(p.new_status)];
+      if (!status) return null;
+      change.details.push(`→ ${status}`);
+    } else {
+      const assignee = stringValue(p.assignee_name) || stringValue(p.resolved_assignee_name);
+      if (!assignee) return null;
+      change.details.push(`assigned to ${assignee}`);
+    }
+    changes.set(identifier.toUpperCase(), change);
+  }
+  const summaries = [...changes.values()].map(({ target, details }) => `${target}${details.length ? ` ${details.join(', ')}` : ''}`);
+  return `Drafted for approval: ${summaries.join('; ')}.`;
+}
+
+function pendingDraftActions(params: CompileDeftyActionDraftParams): ProposedAgentAction[] {
+  const draft = params.pendingDraft?.draft;
+  const actions = Array.isArray(draft) ? draft : isRecord(draft) && Array.isArray(draft.actions) ? draft.actions : [];
+  return actions.filter((action): action is ProposedAgentAction => isRecord(action) && typeof action.action === 'string' && isRecord(action.params));
+}
+
+const DATE_EXPRESSION = /\b(?:due|by|today|tomorrow|tonight|next\s+week|next\s+month|end\s+of\s+(?:the\s+)?(?:week|month)|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|june|july|august|september|october|november|december)\b|\bmay\s+\d{1,2}(?:st|nd|rd|th)?\b|\b\d{1,2}(?:st|nd|rd|th)\b|\d{4}-\d{2}-\d{2}/i;
+
+function draftValueWords(value: string): string[] {
+  return value.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+}
+
+function mentionsValue(text: string, value: string): boolean {
+  const words = new Set(draftValueWords(text));
+  return draftValueWords(value).some(word => word.length > 1 && words.has(word));
+}
+
+/** The new value must add a word the old value did not have. */
+function mentionsDistinctValue(text: string, value: string, previous: string): boolean {
+  const words = new Set(draftValueWords(text));
+  const previousWords = new Set(draftValueWords(previous));
+  return draftValueWords(value).some(word => word.length > 1 && !previousWords.has(word) && words.has(word));
+}
+
+function draftReplacementPairs(answer: string): Array<{ previous: string; next: string }> {
+  const pairs: Array<{ previous: string; next: string }> = [];
+  const patterns: Array<[RegExp, number, number]> = [
+    [/([^,;\n]+?)\s+(?:instead of|rather than|in place of)\s+([^,;\n]+)/gi, 2, 1],
+    [/\bnot\s+([^,;\n]+?)\s*(?:[,;]\s*|\s+but\s+)([^,;\n]+)/gi, 1, 2],
+    [/\bchange(?:d|s|ing)?\s+(?:from\s+)?([^,;\n]+?)\s+to\s+([^,;\n]+)/gi, 1, 2],
+    [/\breplace(?:d|s|ing)?\s+([^,;\n]+?)\s+(?:with|by)\s+([^,;\n]+)/gi, 1, 2],
+    [/([^,;\n]+?)\s*(?:->|→)\s*([^,;\n]+)/gi, 1, 2],
+  ];
+  for (const [pattern, previousIndex, nextIndex] of patterns) {
+    for (const match of answer.matchAll(pattern)) {
+      const previous = match[previousIndex]?.trim();
+      const next = match[nextIndex]?.trim();
+      if (previous && next) pairs.push({ previous, next });
+    }
+  }
+  return pairs;
+}
+
+function draftReplacementValues(answer: string): string[] {
+  const values: string[] = [];
+  const patterns = [
+    /\b(?:make|set|use|switch|move)\s+(?:it|that|this|the\s+\w+)\s*(?:to|as|for)?\s*([^,;\n]+)/gi,
+    /\bchange(?:d|s|ing)?\s+[^,;\n]*?\bto\s+([^,;\n]+)/gi,
+  ];
+  for (const pattern of patterns) {
+    for (const match of answer.matchAll(pattern)) {
+      const value = match[1]?.trim();
+      if (value) values.push(value);
+    }
+  }
+  return values;
+}
+
+/** A replacement can name people, dates or projects without repeating the field name. */
+function explicitlyReplacesDraftValue(answer: string, previous: unknown, next: unknown): boolean {
+  if (typeof previous !== 'string' || typeof next !== 'string' || previous === next) return false;
+  const nextValue = next.trim();
+  if (!nextValue) return false;
+  if (draftReplacementPairs(answer).some(pair =>
+    mentionsValue(pair.previous, previous) && mentionsDistinctValue(pair.next, nextValue, previous))) return true;
+  return draftReplacementValues(answer).some(value => mentionsDistinctValue(value, nextValue, previous));
+}
+
+function continueDraftCall(call: { name?: string; input?: unknown }, params: CompileDeftyActionDraftParams) {
+  if (!isRecord(call.input)) return call;
+  const callInput = call.input;
+  const candidates = pendingDraftActions(params).filter((action) => action.action === call.name);
+  const previous = candidates.find((action) => action.params.title === callInput.title) ?? (candidates.length === 1 ? candidates[0] : undefined);
+  if (!previous) return call;
+  const input: Record<string, any> = { ...previous.params, ...call.input };
+  const answer = params.pendingDraft?.answer ?? '';
+  const question = params.pendingDraft?.question ?? '';
+  for (const key of ['assignee_name', 'due_date', 'project_name', 'title', 'source_message_id']) {
+    if (previous.params[key] === undefined) continue;
+    const nextValue = callInput[key];
+    const hasNextValue = typeof nextValue === 'string' ? nextValue.trim().length > 0 : nextValue !== undefined && nextValue !== null;
+    const replacement = hasNextValue && explicitlyReplacesDraftValue(answer, previous.params[key], nextValue);
+    const explicitlyRevised = hasNextValue && (
+      key === 'assignee_name' ? replacement || /\b(?:assign|owner|give)\b/i.test(answer) || /\b(?:who|assignee|owner)\b/i.test(question)
+        : key === 'due_date' ? replacement || DATE_EXPRESSION.test(answer) || /\b(?:when|due|date|deadline)\b/i.test(question)
+        : key === 'project_name' ? replacement || (typeof nextValue === 'string' && typeof previous.params[key] === 'string'
+          && mentionsDistinctValue(answer, nextValue, previous.params[key])) || /\b(?:which|what)\b.*\bproject\b/i.test(question)
+        : key === 'title' ? replacement || /\b(?:title|called|name|rename)\b/i.test(answer) || /\b(?:title|accomplish)\b/i.test(question) : false);
+    if (!explicitlyRevised) input[key] = previous.params[key];
+  }
+  return { ...call, input };
 }
 
 export function normalizeCompiledToolCalls(
   calls: Array<{ name?: string; input?: unknown }>,
   params: CompileDeftyActionDraftParams,
-): { actions: ProposedAgentAction[]; summary?: string; warnings?: string[] } {
-  const warnings = calls.flatMap(call => {
+): { actions: ProposedAgentAction[]; pendingActions?: ProposedAgentAction[]; summary?: string; warnings?: string[] } {
+  const continuedCalls = calls.map((call) => continueDraftCall(call, params));
+  const warnings = continuedCalls.flatMap(call => {
     if (call.name !== 'add_dependency' && call.name !== 'remove_dependency') return [];
     const result = validateRegisteredProposalAction({ action: call.name, params: call.input });
     return result.ok ? [] : [`The task dependency proposal was not prepared. ${result.message}`];
   });
-  const actions = calls.flatMap((call) => normalizeRegisteredToolCall(call, params));
-  if (actions.length === 0) return { actions, ...(warnings.length ? { warnings } : {}) };
+  const normalized = continuedCalls.flatMap((call) => normalizeRegisteredToolCall(call, params));
+  const actions = normalized.filter((action) => action.action !== 'create_task' || stringValue(action.params.project_name));
+  const pendingActions = normalized.length > actions.length ? normalized : undefined;
+  if (actions.length === 0) return { actions, ...(pendingActions ? { pendingActions } : {}), ...(warnings.length ? { warnings } : {}) };
   return {
     actions,
+    ...(pendingActions ? { pendingActions } : {}),
     ...(warnings.length ? { warnings } : {}),
-    summary: actions.length === 1
+    summary: formatDeftyApprovalReply(actions) ?? (actions.length === 1
       ? `I drafted a ${humanizeAction(actions[0]!.action)} for approval.`
-      : `I drafted ${actions.length} related changes for approval.`,
+      : `I drafted ${actions.length} related changes for approval.`),
   };
 }
 
@@ -911,7 +1177,7 @@ function normalizeCompiledAction(raw: unknown, params: CompileDeftyActionDraftPa
   if (raw.action === 'create_task') {
     const title = stringValue(raw.title);
     const projectName = stringValue(raw.project_name) || params.projectNameHint || '';
-    if (!title || !projectName) return [];
+    if (!title) return [];
     const subtasks = normalizeCompiledSubtasks(raw.subtasks, params);
     return [{
       action: 'create_task',
@@ -923,7 +1189,7 @@ function normalizeCompiledAction(raw: unknown, params: CompileDeftyActionDraftPa
         due_date: normalizeDueDate(raw.due_date),
         description: normalizeCompiledTaskDescription(raw.description, params.promptContent, title, subtasks),
         subtasks,
-        source_message_id: params.sourceMessageId,
+        source_message_id: stringValue(raw.source_message_id) || params.pendingDraft?.request_message_id || params.sourceMessageId,
       }),
       approval_tier: getApprovalTier('create_task'),
       tool_use_id: null,
