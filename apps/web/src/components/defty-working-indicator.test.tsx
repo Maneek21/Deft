@@ -63,7 +63,7 @@ test('channel includes top-level work and inline thread roots; panel matches exa
 
 test('indicator uses typing styling with accessible status and animated dot', () => {
   const html = renderToStaticMarkup(<DeftyWorkingIndicator />);
-  assert.match(html.replace(/<[^>]+>/g, ''), /Defty is reading the conversation…/);
+  assert.match(html, />Defty<\/span> is reading the conversation…</);
   assert.match(html, /role="status"/);
   assert.match(html, /animate-pulse/);
   assert.match(html, /text-\[12px\]/);
