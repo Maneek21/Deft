@@ -18,12 +18,15 @@ test('valid two proposals bind actual revision/digest/slug; literal requested te
  const artifact=validateCompilerGrounding([{...actions[1],params:{...actions[1].params,content:literal+' Reviewed.'}}],collectCompilerReadFacts(reads),'Append Reviewed.');assert.equal(artifact.actions.length,0);assert.match(artifact.warnings[0],/current full page body/);
 });
 
+// The compiler input is untrusted workspace data wrapped in <workspace_context>.
+function compilerContext(content:string){const match=/^<workspace_context>\n([\s\S]*)\n<\/workspace_context>$/.exec(content);assert.ok(match,'compiler input must be wrapped as untrusted workspace context');return JSON.parse(match[1]!);}
+
 test('fallback compiler receives same-turn structured facts in its actual model input',async()=>{
  let captured:any;
  mock.module('../src/lib/llm.js',{namedExports:{llm:async(value:any)=>{captured=value;return {text:'',toolCalls:[{name:'module_record_update',input:{idempotency_key:'ordinary-compiler-record-update',record_id:id,expected_revision:2,expected_manifest_digest:digest,patch:{role:'Reviewed lead'}}},{name:'wiki_write',input:{slug:'LIVE261019-reviewed-publication-note',content:'Original body.\n\nReviewed.'}}],model:'deterministic-test',usage:{input:1,output:1}};}}});
  const {compileDeftyActionDraft}=await import('../src/lib/agent-action-proposals.js');
  const draft=await compileDeftyActionDraft({orgId:'00000000-0000-4000-8000-000000000003',promptContent:'Update Elena role to Reviewed lead and append Reviewed. to the wiki.',sourceMessageId:id,successfulReadActions:reads});
- const context=JSON.parse(captured.messages[0].content);assert.equal(context.grounded_read_facts.facts.length,2);assert.equal(context.grounded_read_facts.facts[0].record.revision,2);assert.equal(context.grounded_read_facts.facts[1].page.content,'Original body.');assert.equal(draft.actions.length,2,JSON.stringify({warnings:draft.warnings,actions:draft.actions.map(a=>a.action)}));
+ const context=compilerContext(captured.messages[0].content);assert.equal(context.grounded_read_facts.facts.length,2);assert.equal(context.grounded_read_facts.facts[0].record.revision,2);assert.equal(context.grounded_read_facts.facts[1].page.content,'Original body.');assert.equal(draft.actions.length,2,JSON.stringify({warnings:draft.warnings,actions:draft.actions.map(a=>a.action)}));
 });
 
 test('latest same-record read wins and new-page creation does not require an existing-page fact',()=>{

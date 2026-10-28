@@ -78,12 +78,12 @@
       "rule": "js/insufficient-password-hash",
       "path": "apps/api/src/lib/app-installed-tool-discovery.ts",
       "line": 30,
-      "fingerprint": "4bdd316ebe881081b34f9ecb73e28cb5b3d5b778767911381615dc5ea45cbe88",
+      "fingerprint": "f2ac9e50c2d610112d3c731b8a122b5435cc657c05a6703aa8a0458ac8f67316",
       "sources": [
         "apps/api/src/lib/app-installed-tool-discovery.ts",
         "apps/api/src/lib/app-integration-tool-runtime.ts"
       ],
-      "justification": "This SHA-256 creates a deterministic write request UUID from actor identity, declared tool key and canonical input, not a password verifier. Duplicate recovery separately checks org/user/principal, complete input/declaration digests and immutable target; reads use randomUUID. The full target fence is pinned below."
+      "justification": "This SHA-256 creates a deterministic write request UUID from actor identity, declared tool key and canonical input, not a password verifier. Duplicate recovery separately checks org/user/principal, complete input/declaration digests and immutable target; reads use randomUUID. The full target fence is pinned below. Re-reviewed 2026-10-28: only the CodeQL flow fingerprint changed because Defty agent-context.ts (an unrelated workspace search caller) now appears in the authenticator-object taint path; the hashed inputs and sink are unchanged."
     },
     {
       "id": "FP-005",

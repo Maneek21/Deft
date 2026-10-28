@@ -1,16 +1,17 @@
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq, isNull, lt, or } from 'drizzle-orm';
 import {
   orgMembers,
   messageClassifications,
   messageObservations,
   messages,
   spaceMembers,
+  spaces,
   users,
 } from '@deft/db/schema';
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
-import { classifyMessage } from '../../lib/classifier.js';
-import type { ClassificationResult } from '../../lib/classifier.js';
+import { classifyMessage, isSelfContainedDecision } from '../../lib/classifier.js';
+import type { ClassificationContextMessage, ClassificationResult } from '../../lib/classifier.js';
 import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
 import {
   CHAT_OBSERVATION_VERSION,
@@ -101,9 +102,15 @@ export function extractExplicitDecision(content: string): string | null {
     .replace(/\s+/g, ' ')
     .trim();
   const explicit = plain.match(/\bdecision\s*:\s*(.+?)(?:\s+(?:save|keep|capture|remember)\b|$)/i);
-  if (explicit?.[1]?.trim()) return explicit[1].trim().replace(/[.!?]+$/g, '');
+  if (explicit?.[1]?.trim()) {
+    const decision = explicit[1].trim().replace(/[.!?]+$/g, '');
+    return isSelfContainedDecision(decision) ? decision : null;
+  }
   const decided = plain.match(/\b(?:we decided|we agreed|going forward)\b\s*:?\s*(.+?)(?:\s+(?:save|keep|capture|remember)\b|$)/i);
-  if (decided?.[1]?.trim()) return decided[1].trim().replace(/[.!?]+$/g, '');
+  if (decided?.[1]?.trim()) {
+    const decision = decided[1].trim().replace(/[.!?]+$/g, '');
+    return isSelfContainedDecision(decision) ? decision : null;
+  }
   return null;
 }
 
@@ -321,6 +328,46 @@ async function markObservation(params: {
     ));
 }
 
+/** Classification reads only earlier messages in the author's readable conversation. */
+export async function loadClassificationContext(input: {
+  orgId: string;
+  spaceId: string;
+  requesterId: string;
+  parentId: string | null;
+  createdAt: Date;
+}): Promise<ClassificationContextMessage[]> {
+  const rows = await db
+    .select({ author: users.name, content: messages.content })
+    .from(messages)
+    .innerJoin(users, eq(users.id, messages.user_id))
+    .innerJoin(spaces, and(eq(spaces.id, messages.space_id), eq(spaces.org_id, input.orgId)))
+    .leftJoin(spaceMembers, and(
+      eq(spaceMembers.space_id, messages.space_id),
+      eq(spaceMembers.user_id, input.requesterId),
+    ))
+    .innerJoin(orgMembers, and(
+      eq(orgMembers.org_id, input.orgId),
+      eq(orgMembers.user_id, input.requesterId),
+      eq(orgMembers.is_active, true),
+    ))
+    .where(and(
+      eq(messages.org_id, input.orgId),
+      eq(messages.space_id, input.spaceId),
+      eq(messages.is_deleted, false),
+      or(eq(spaces.type, 'public'), eq(spaceMembers.user_id, input.requesterId)),
+      lt(messages.created_at, input.createdAt),
+      input.parentId
+        ? or(eq(messages.parent_id, input.parentId), eq(messages.id, input.parentId))
+        : isNull(messages.parent_id),
+    ))
+    .orderBy(desc(messages.created_at), desc(messages.id))
+    .limit(6);
+  return rows.reverse().map((row) => ({
+    author: toPlainText(row.author).replace(/\s+/g, ' ').slice(0, 100),
+    content: toPlainText(row.content).replace(/\s+/g, ' ').slice(0, 300),
+  }));
+}
+
 export async function handleObserveChatMessage(job: JobData): Promise<void> {
   const {
     messageId,
@@ -359,6 +406,8 @@ export async function handleObserveChatMessage(job: JobData): Promise<void> {
       space_id: messages.space_id,
       user_id: messages.user_id,
       is_deleted: messages.is_deleted,
+      parent_id: messages.parent_id,
+      created_at: messages.created_at,
     })
     .from(messages)
     .where(and(
@@ -440,7 +489,14 @@ export async function handleObserveChatMessage(job: JobData): Promise<void> {
     return;
   }
 
-  const classification = await classifyMessage(message.content, orgId);
+  const context = await loadClassificationContext({
+    orgId,
+    spaceId: message.space_id,
+    requesterId: message.user_id,
+    parentId: message.parent_id,
+    createdAt: message.created_at,
+  });
+  const classification = await classifyMessage(message.content, orgId, context);
   await db.insert(messageClassifications).values({
     org_id: orgId,
     message_id: messageId,

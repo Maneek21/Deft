@@ -23,6 +23,7 @@ import {
   queueDeftyCreateTaskCapture,
   queueDeftyKnowledgeCapture,
 } from '../src/lib/defty-capture.js';
+import { approveAction } from '../src/lib/agent-approval-resolver.js';
 
 const RUN_ID = crypto.randomUUID().slice(0, 8);
 const ORG_ID = `defty-capture-org-${RUN_ID}`;
@@ -41,6 +42,53 @@ async function seedMessage(content: string): Promise<string> {
     content,
   });
   return id;
+}
+
+for (const interveningChange of ['human edit', 'another capture'] as const) {
+  test(`background append approval preserves an intervening ${interveningChange}`, async () => {
+    const pageId = `capture-preservation-${crypto.randomUUID()}`;
+    const title = `Demo approval schedule ${crypto.randomUUID()}`;
+    const original = '# Demo schedule\n\nOriginal schedule and notes.';
+    await db.insert(wikiPages).values({
+      id: pageId, org_id: ORG_ID, user_id: USER_ID,
+      title, slug: pageId, content: original, summary: 'Demo schedule.',
+      type: 'decision', scope: 'org',
+    });
+    async function queue(content: string) {
+      const messageId = await seedMessage(content);
+      const result = await queueDeftyKnowledgeCapture({
+        orgId: ORG_ID, sourceUserId: USER_ID, spaceId: SPACE_ID, messageId,
+        title, content, wikiType: 'decision', captureKind: 'decision_candidate',
+        preferUpdate: true, autoApprove: false,
+      });
+      assert.equal(result.queued, true);
+      assert.ok(result.actionId);
+      return result.actionId;
+    }
+    const firstUpdate = 'The demo moves to Friday at 3pm.';
+    const firstActionId = await queue(firstUpdate);
+    const pendingActionId = interveningChange === 'another capture'
+      ? await queue('The rehearsal moves to Thursday at 2pm.')
+      : firstActionId;
+    let preservedContent: string;
+    if (interveningChange === 'human edit') {
+      preservedContent = `${original}\n\nHuman edit made while approval was pending.`;
+      await db.update(wikiPages).set({ content: preservedContent, version: 2 })
+        .where(and(eq(wikiPages.id, pageId), eq(wikiPages.org_id, ORG_ID)));
+    } else {
+      const firstResult = await approveAction(firstActionId, USER_ID);
+      assert.equal(firstResult.status, 'approved');
+      const [firstPage] = await db.select().from(wikiPages).where(eq(wikiPages.id, pageId));
+      assert.ok(firstPage.content.includes(firstUpdate));
+      preservedContent = firstPage.content;
+    }
+    const result = await approveAction(pendingActionId, USER_ID);
+    const [page] = await db.select().from(wikiPages).where(eq(wikiPages.id, pageId));
+    assert.equal(page.content, preservedContent, 'a stale approval must preserve the newer page body');
+    assert.equal(page.version, 2, 'a rejected stale approval must not advance the page version');
+    assert.equal(result.status, 'error');
+    assert.equal(result.code, 'EXECUTE_FAILED');
+  });
 }
 
 before(async () => {

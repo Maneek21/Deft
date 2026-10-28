@@ -4,6 +4,7 @@ import { useEffect,useRef,useState } from 'react';
 import { useRouter,useSearchParams } from 'next/navigation';
 import { SpaceChat } from '@/components/space-chat';
 import { ThreadPanel } from '@/components/thread-panel';
+import { threadParamId } from '@/components/message-link-navigation';
 import { api, isSameWebSession } from '@/lib/api';
 import { messageDeepLinkDestination } from '@/lib/message-deep-link';
 import { useChatContext } from '@/lib/chat-context';
@@ -16,7 +17,10 @@ export default function ChatPage() {
 
   const urlSpaceId = searchParams.get('space');
   const urlMessageId = searchParams.get('message');
-  const urlThreadId = searchParams.get('thread');
+  // An empty or whitespace `thread` is the same as no thread at all.
+  const urlThreadId = threadParamId(searchParams.get('thread'));
+  const previousUrlThreadId = useRef(urlThreadId);
+  const resolvedThreadId = useRef<string | null>(null);
   const [messageLinkUnavailable, setMessageLinkUnavailable] = useState(false);
 
   // Bound both unavailable space discovery and a stalled message lookup.
@@ -54,13 +58,36 @@ export default function ChatPage() {
     }
   }, [urlSpaceId, activeSpaceId, spaces, syncActiveSpaceIdFromUrl]);
 
+  // The URL owns a deep-linked thread. A missing, empty or whitespace `thread`
+  // closes the panel, so back/forward and channel-message links can never leave
+  // a full-screen mobile panel covering the destination message.
   useEffect(() => {
-    if (!urlThreadId || threadMessage?.id === urlThreadId) return;
+    const previous = previousUrlThreadId.current;
+    previousUrlThreadId.current = urlThreadId;
+    if (urlThreadId) return;
+    resolvedThreadId.current = null;
+    if (previous) setThreadMessage(null);
+  }, [urlThreadId, setThreadMessage]);
+
+  useEffect(() => {
+    if (!urlThreadId) return;
+    if (threadMessage?.id === urlThreadId) {
+      resolvedThreadId.current = urlThreadId;
+      return;
+    }
+    // Closing the panel clears its state while the URL can still name the
+    // thread for one navigation tick. Never resurrect a resolved thread; a new
+    // deep link resets the marker in the effect above.
+    if (resolvedThreadId.current === urlThreadId) return;
 
     let cancelled = false;
+    resolvedThreadId.current = urlThreadId;
     async function loadThreadParent() {
       const res = await api.get(`/api/messages/${urlThreadId}/thread`);
-      if (!res.ok) return;
+      if (!res.ok) {
+        resolvedThreadId.current = null;
+        return;
+      }
       const data = await res.json();
       const parent = data.parent;
       if (!parent || cancelled) return;

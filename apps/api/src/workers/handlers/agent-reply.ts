@@ -2,7 +2,7 @@ import { projectAgentReadDiagnostics } from '../../lib/agent-read-diagnostics.js
 // Handler: process @agent/@deft mentions in chat and generate AI replies in-thread
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
-import { messages, users, spaces, spaceMembers, projects, tasks, wikiPages, notes } from '@deft/db/schema';
+import { messages, users, spaces, spaceMembers, orgMembers, projects, tasks, wikiPages, notes } from '@deft/db/schema';
 import { getApprovalTier } from '../../lib/agent-approval.js';
 import { eq, and, desc, sql, ne, lt, inArray } from 'drizzle-orm';
 import { getIO } from '../../socket.js';
@@ -21,6 +21,7 @@ import { resolveAssigneeWithMatches } from '../../lib/resolve-assignee.js';
 import { resolveProjectTarget } from '../../lib/resolve-project-target.js';
 import {
   compileDeftyActionDraft,
+  formatDeftyApprovalReply,
   hasUnrequestedWikiPlaceholder,
   persistAgentReplyWithActions,
   sanitizeAgentReplyActionMetadata,
@@ -29,6 +30,36 @@ import {
 import { getMessageAttachmentContext } from '../../lib/agent-message-attachments.js';
 import { compileMessageModuleCsvImport } from '../../lib/module-csv-import.js';
 import { compileMessageWorkspacePlanImport } from '../../lib/workspace-plan-import.js';
+import { buildRoomContextPackWithSources } from '../../lib/defty-room-context.js';
+import { loadPendingDeftyDraft, pendingDeftyDraftContext, projectPendingDeftyMetadataForOutbound, type PendingDeftyDraft } from '../../lib/defty-pending-action.js';
+import { visibleTaskCondition } from '../../lib/task-visibility.js';
+
+export async function withAgentWorkingSignal<T>(input: {
+  spaceId: string; threadId: string | null; agentUserId: string;
+  io?: { to(room: string): { emit(event: string, payload: unknown): unknown } } | null;
+}, process: () => Promise<T>): Promise<T> {
+  const io = input.io === undefined ? getIO() : input.io;
+  const emit = (state: 'started' | 'finished') => io?.to(`space:${input.spaceId}`).emit('agent:working', {
+    space_id: input.spaceId, thread_id: input.threadId, agent_user_id: input.agentUserId,
+    agent_name: 'Defty', state, label: state === 'started' ? 'Reading the conversation…' : '',
+  });
+  emit('started');
+  try { return await process(); } finally { emit('finished'); }
+}
+
+export function deftyReplyForProviderError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return /(?:API key not configured|no usable reasoning provider|no.*provider.*configured)/i.test(message)
+    ? 'AI is not configured for this workspace. Ask a workspace admin to configure a provider in Settings → AI.'
+    : 'I could not complete this lookup. Please retry. This failure does not mean the requested records are missing.';
+}
+
+type AgentReplyDependencies = {
+  runQuery?: typeof runAgentQuery;
+  compileDraft?: typeof compileDeftyActionDraft;
+  io?: Parameters<typeof withAgentWorkingSignal>[0]['io'];
+};
+
 
 function stripMentionSyntax(content: string): string {
   return toPlainText(content)
@@ -274,7 +305,8 @@ export async function resolvePendingActionTargets(
 
       const projectResolution = await resolveProjectTarget(orgId, {
         projectName,
-        sourceSpaceId: typeof params.source_space_id === 'string' ? params.source_space_id : sourceSpaceId,
+        sourceSpaceId: sourceSpaceId,
+        requesterId: userId,
       });
       if (projectResolution.status !== 'resolved') {
         warnings.push(projectResolution.message);
@@ -1069,11 +1101,13 @@ async function resolveProjectNameForMentionFallback(
   orgId: string,
   spaceId: string,
   content: string,
+  requesterId?: string,
 ): Promise<string | null> {
   const explicitProjectName = extractExplicitProjectName(content);
   const resolution = await resolveProjectTarget(orgId, {
     projectName: explicitProjectName,
     sourceSpaceId: spaceId,
+    requesterId,
   });
   return resolution.status === 'resolved' ? resolution.project.name : null;
 }
@@ -1295,6 +1329,8 @@ function enrichDiscussionTaskActions(
 function withMentionProvenance(params: {
   action: any;
   commandMessageId: string;
+  sourceMessageId?: string;
+  sourceSpaceId?: string;
   spaceId: string;
   discussionSourceMessages: DiscussionSourceMessage[];
 }) {
@@ -1318,8 +1354,8 @@ function withMentionProvenance(params: {
     ...action,
     params: {
       ...actionParams,
-      source_message_id: commandMessageId,
-      source_space_id: spaceId,
+      source_message_id: params.sourceMessageId ?? commandMessageId,
+      source_space_id: params.sourceSpaceId ?? spaceId,
       origin_message_id: commandMessageId,
       origin_space_id: spaceId,
       metadata: {
@@ -1332,7 +1368,16 @@ function withMentionProvenance(params: {
   };
 }
 
-export async function handleAgentReply(job: JobData): Promise<void> {
+export async function handleAgentReply(job: JobData, dependencies: AgentReplyDependencies = {}): Promise<void> {
+  const { orgId, spaceId, parentId } = job.data as { orgId: string; spaceId: string; parentId?: string };
+  const agentUserId = await ensureDeftyMembership(orgId);
+  return withAgentWorkingSignal({ spaceId, threadId: parentId ?? null, agentUserId, io: dependencies.io },
+    () => processAgentReply(job, agentUserId, dependencies));
+}
+
+async function processAgentReply(job: JobData, agentUserId: string, dependencies: AgentReplyDependencies): Promise<void> {
+  const runQuery = dependencies.runQuery ?? runAgentQuery;
+  const compileDraft = dependencies.compileDraft ?? compileDeftyActionDraft;
   const {
     orgId,
     spaceId,
@@ -1341,6 +1386,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
     userId,
     orgName,
     content,
+    followed = false,
   } = job.data as {
     orgId: string;
     spaceId: string;
@@ -1349,6 +1395,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
     userId: string;
     orgName: string;
     content: string;
+    followed?: boolean;
   };
 
   console.log(`[agent-reply] Processing agent reply for message ${messageId} in space ${spaceId}`);
@@ -1359,8 +1406,16 @@ export async function handleAgentReply(job: JobData): Promise<void> {
     const [space] = await db
       .select({ type: spaces.type, name: spaces.name })
       .from(spaces)
-      .where(eq(spaces.id, spaceId))
+      .innerJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, userId)))
+      .innerJoin(orgMembers, and(eq(orgMembers.org_id, spaces.org_id), eq(orgMembers.user_id, userId), eq(orgMembers.is_active, true)))
+      .where(and(eq(spaces.id, spaceId), eq(spaces.org_id, orgId), eq(spaces.is_archived, false)))
       .limit(1);
+    if (!space) return;
+    const [trigger] = await db.select({ created_at: messages.created_at }).from(messages).where(and(
+      eq(messages.id, messageId), eq(messages.org_id, orgId), eq(messages.space_id, spaceId),
+      eq(messages.user_id, userId), eq(messages.is_deleted, false),
+    )).limit(1);
+    if (!trigger) return;
 
     const isDmLike = space?.type === 'dm' || space?.type === 'group_dm' || space?.type === 'agent_conversation';
 
@@ -1378,13 +1433,13 @@ export async function handleAgentReply(job: JobData): Promise<void> {
     // - DM (no explicit thread): last 10 top-level messages in the space.
     // - Channel or explicit thread: last 10 messages in the thread + the
     //   thread root for context.
-    const agentUserId = await ensureDeftyMembership(orgId);
     const [callerUser] = await db
       .select({ name: users.name })
       .from(users)
       .where(eq(users.id, userId))
       .limit(1);
     const conversationHistory: { role: string; content: string }[] = [];
+    const authorizedResultHistory = new Set<string>();
     const threadContextMessages: DiscussionSourceMessage[] = [];
     let moduleHistoryActor: Awaited<ReturnType<typeof buildModuleReadActor>> | null = null;
     const approvedResultHistory = async (metadata: unknown): Promise<string | null | undefined> => {
@@ -1398,7 +1453,9 @@ export async function handleAgentReply(job: JobData): Promise<void> {
           conversationId: spaceId,
           metadata,
         })) return null;
-        return durableAgentResultWorkerHistory(metadata);
+        const history = durableAgentResultWorkerHistory(metadata);
+        if (history) authorizedResultHistory.add(history);
+        return history;
       } catch {
         return null;
       }
@@ -1420,6 +1477,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
           eq(messages.is_deleted, false),
           sql`${messages.parent_id} IS NULL`,
           ne(messages.id, messageId),
+          lt(messages.created_at, trigger.created_at),
         ))
         .orderBy(desc(messages.created_at))
         .limit(10);
@@ -1444,6 +1502,8 @@ export async function handleAgentReply(job: JobData): Promise<void> {
         .innerJoin(users, eq(messages.user_id, users.id))
         .where(and(
           eq(messages.parent_id, historyParentId),
+          eq(messages.space_id, spaceId),
+          lt(messages.created_at, trigger.created_at),
           eq(messages.org_id, orgId),
           eq(messages.is_deleted, false),
         ))
@@ -1459,7 +1519,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
       })
         .from(messages)
         .innerJoin(users, eq(messages.user_id, users.id))
-        .where(eq(messages.id, historyParentId))
+        .where(and(eq(messages.id, historyParentId), eq(messages.org_id, orgId), eq(messages.space_id, spaceId), eq(messages.is_deleted, false)))
         .limit(1);
 
       if (parentMsg && parentMsg.id !== messageId) {
@@ -1515,6 +1575,23 @@ export async function handleAgentReply(job: JobData): Promise<void> {
 
     // Strip the @agent/@deft mention from the content for a cleaner prompt
     const cleanContent = content.replace(/<@[^|]*\|Defty?>/gi, '').replace(/@(agent|defty|deft)\b/gi, '').trim();
+    const roomContext = space.type === 'public' || space.type === 'private' || space.type === 'group_dm'
+      ? await buildRoomContextPackWithSources({ orgId, spaceId, threadParentId: parentId ?? null, triggerMessageId: messageId, requesterId: userId })
+      : null;
+    const roomContextPack = roomContext?.content ?? null;
+    const pendingClarification = await loadPendingDeftyDraft({
+      orgId, spaceId, threadParentId: isDmLike ? (parentId ?? null) : (parentId || messageId),
+      triggerMessageId: messageId, requesterId: userId, agentUserId, triggerCreatedAt: trigger.created_at,
+    });
+    const originalRoomContext = pendingClarification ? await buildRoomContextPackWithSources({ orgId, spaceId, requesterId: userId,
+      triggerMessageId: pendingClarification.pending.request_message_id, threadParentId: pendingClarification.requestParentId }) : null;
+    const pendingDraft: (PendingDeftyDraft & { answer: string }) | undefined = pendingClarification ? { ...pendingClarification.pending,
+      draft: { ...(isRecord(pendingClarification.pending.draft) ? pendingClarification.pending.draft : {}),
+        room_context: originalRoomContext?.content ?? null },
+      answer: cleanContent } : undefined;
+    const requestMessageId = pendingDraft?.request_message_id ?? messageId;
+
+
     const wantsDiscussionTask = isDiscussionTaskCommand(cleanContent) ||
       Boolean(parentId && isThreadTaskContinuationCommand(cleanContent, threadContextMessages));
     const discussionSourceMessages: DiscussionSourceMessage[] = [];
@@ -1592,8 +1669,8 @@ export async function handleAgentReply(job: JobData): Promise<void> {
     const promptContent = wantsDiscussionTask
       ? discussionTaskPrompt(cleanContent || 'Create tasks from this discussion.')
       : cleanContent || 'Hey, what can you help me with?';
-    const readOnlyRequest = isReadOnlyAgentRequest(promptContent);
-    const hasWriteIntent = !readOnlyRequest && !wantsDiscussionTask && hasExplicitRegisteredWriteIntent(promptContent);
+    const readOnlyRequest = isReadOnlyAgentRequest(pendingDraft?.request_text ?? promptContent);
+    const hasWriteIntent = !readOnlyRequest && !wantsDiscussionTask && (Boolean(pendingDraft) || hasExplicitRegisteredWriteIntent(promptContent));
 
     // Explicit writes go through the typed action compiler first. The general
     // reasoning loop remains the fallback for reads, discussion synthesis, and
@@ -1603,7 +1680,17 @@ export async function handleAgentReply(job: JobData): Promise<void> {
     let fallbackProjectName: string | null = null;
     let compiledActionDraft: Awaited<ReturnType<typeof compileDeftyActionDraft>> | null = null;
     let actionCompilerRecoveryAttempted = false;
-    if (attachmentContextSections.length > 0) {
+    if (pendingDraft && !followed) {
+      actionCompilerRecoveryAttempted = true;
+      try {
+        compiledActionDraft = await compileDraft({ orgId, requesterId: userId, sourceSpaceId: spaceId,
+          promptContent, sourceMessageId: requestMessageId, pendingDraft,
+          callerName: callerUser?.name ?? null, spaceName: space.name });
+      } catch (error) {
+        console.warn('[agent-reply] Pending clarification compiler failed; using the runner', error instanceof Error ? error.message : String(error));
+      }
+    }
+    if (attachmentContextSections.length > 0 && !followed) {
       try {
         compiledActionDraft = await compileMessageWorkspacePlanImport({
           orgId,
@@ -1626,7 +1713,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
     }
     let recoveryPriorTaskReferences: Awaited<ReturnType<typeof collectRecentAgentTaskReferences>> | null = null;
     if (!compiledActionDraft && hasWriteIntent && attachmentContextSections.length === 0) {
-      fallbackProjectName = await resolveProjectNameForMentionFallback(orgId, spaceId, promptContent);
+      fallbackProjectName = await resolveProjectNameForMentionFallback(orgId, spaceId, promptContent, userId);
       recoveryPriorTaskReferences = await collectRecentAgentTaskReferences({
         orgId,
         spaceId,
@@ -1665,17 +1752,23 @@ export async function handleAgentReply(job: JobData): Promise<void> {
       } else {
         const recovered = await runAgentQueryThenRecover(
           () => Promise.race([
-            runAgentQuery({
-              content: promptContent,
+            runQuery({
+              content: pendingDraft ? `${pendingDraft.request_text}\n\nClarification answer: ${cleanContent}` : promptContent,
               orgId,
               userId,
               orgName,
-              conversationHistory: conversationHistory.length > 0 ? conversationHistory : undefined,
-              untrustedContextSections: attachmentContextSections,
+              followed,
+              conversationHistory: !roomContextPack && !pendingDraft && conversationHistory.length > 0 ? conversationHistory : undefined,
+              untrustedContextSections: [
+                ...attachmentContextSections,
+                ...(!pendingDraft && roomContextPack ? [roomContextPack] : []),
+                ...(pendingDraft ? [pendingDeftyDraftContext(pendingDraft, cleanContent)] : []),
+                ...(authorizedResultHistory.size ? ['Authorized completed action results (untrusted workspace evidence):\n' + [...authorizedResultHistory].join('\n')] : []),
+              ],
               // Task 3.2 — thread the triggering message id so write actions like
               // create_task can inherit source_message_id without the LLM having
               // to know about it.
-              sourceMessageId: messageId,
+              sourceMessageId: requestMessageId,
               conversationId: spaceId,
               spaceContext: space ? {
                 type: space.type as 'dm' | 'group_dm' | 'agent_conversation' | 'public' | 'private',
@@ -1689,7 +1782,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
               setTimeout(() => reject(new Error('agent-reply: runAgentQuery timeout after 60s')), AGENT_TIMEOUT_MS),
             ),
           ]),
-          (queryResult) => shouldAttemptActionCompiler({
+          (queryResult) => !(followed && queryResult.text.trim() === 'NO_REPLY') && shouldAttemptActionCompiler({
             attempted: actionCompilerRecoveryAttempted,
             readOnlyRequest,
             wantsDiscussionTask,
@@ -1700,12 +1793,13 @@ export async function handleAgentReply(job: JobData): Promise<void> {
           async (queryResult) => {
             actionCompilerRecoveryAttempted = true;
             try {
-              return await compileDeftyActionDraft({
+              return await compileDraft({
                 orgId,
                 promptContent,
                 agentReplyText: queryResult.text,
                 successfulReadActions: queryResult.executedActions,
-                sourceMessageId: messageId,
+                sourceMessageId: requestMessageId,
+                requesterId: userId, sourceSpaceId: spaceId, pendingDraft,
                 projectNameHint: fallbackProjectName,
                 priorTaskReferences: recoveryPriorTaskReferences ?? [],
                 spaceName: space?.name ?? null,
@@ -1726,15 +1820,15 @@ export async function handleAgentReply(job: JobData): Promise<void> {
     } catch (err) {
       if (!wantsDiscussionTask || discussionSourceMessages.length === 0) {
         result = {
-          text: 'I could not complete this lookup. Please retry. This failure does not mean the requested records are missing.',
-          pendingActions: [], executedActions: [], assistantBlocks: [], model: 'agent-error',
+          text: deftyReplyForProviderError(err),
+          pendingActions: [], executedActions: [], assistantBlocks: [], model: /Settings → AI/.test(deftyReplyForProviderError(err)) ? 'agent-unconfigured' : 'agent-error',
           tokensIn: 0, tokensOut: 0, citations: [],
           metrics: { total_ms: 0, retrieval_ms: 0, reasoning_ms: 0, iterations: 0 },
         };
       } else {
       const fallbackAction = buildDiscussionTaskFallbackAction({
-        command: cleanContent,
-        sourceMessageId: messageId,
+        command: pendingDraft?.request_text ?? cleanContent,
+        sourceMessageId: requestMessageId,
         sourceMessages: discussionSourceMessages,
       });
       console.warn('[agent-reply] Falling back to deterministic discussion task proposal', {
@@ -1757,13 +1851,17 @@ export async function handleAgentReply(job: JobData): Promise<void> {
       clearTimeout(timeout);
     }
 
+    // A followed message was not explicitly addressed to Defty. Honor the
+    // runner's abstention before deterministic fallbacks can draft any writes.
+    if (followed && result.text.trim() === 'NO_REPLY') return;
+
     if (!result.text) {
       if (!wantsDiscussionTask || discussionSourceMessages.length === 0) {
         result = { ...result, text: 'I could not finish this lookup with the available tool results. Please retry with a narrower question. This does not mean the records are missing.', assistantBlocks: [] };
       } else {
       const fallbackAction = buildDiscussionTaskFallbackAction({
-        command: cleanContent,
-        sourceMessageId: messageId,
+        command: pendingDraft?.request_text ?? cleanContent,
+        sourceMessageId: requestMessageId,
         sourceMessages: discussionSourceMessages,
       });
       result = {
@@ -1780,9 +1878,11 @@ export async function handleAgentReply(job: JobData): Promise<void> {
       }
     }
 
+    const roomCitations = (pendingDraft ? originalRoomContext : roomContext)?.citations ?? [];
+    result.citations = [...new Map([...result.citations, ...roomCitations].map(citation => [`${citation.type}:${citation.id}`, citation])).values()];
     const discussionFallbackContent = discussionSourceMessages.map((message) => message.content).join('\n');
     const discussionFallbackProjectName = result.pendingActions.length === 0 && wantsDiscussionTask && discussionFallbackContent
-      ? await resolveProjectNameForMentionFallback(orgId, spaceId, `${discussionFallbackContent}\n${cleanContent}`)
+      ? await resolveProjectNameForMentionFallback(orgId, spaceId, `${discussionFallbackContent}\n${cleanContent}`, userId)
       : null;
     const explicitDiscussionFallback = result.pendingActions.length === 0 && wantsDiscussionTask && discussionFallbackContent
       ? extractExplicitCreateTaskAction(discussionFallbackContent, messageId, {
@@ -1794,9 +1894,10 @@ export async function handleAgentReply(job: JobData): Promise<void> {
       ...result.pendingActions,
       ...result.executedActions,
     ]);
-    const allowDeterministicFallbacks = result.pendingActions.length === 0 && !runnerHasAppBindingInvoke;
+    const providerUnavailable = result.model === 'agent-unconfigured';
+    const allowDeterministicFallbacks = !providerUnavailable && result.pendingActions.length === 0 && !runnerHasAppBindingInvoke;
     if (fallbackProjectName === null && allowDeterministicFallbacks && !wantsDiscussionTask) {
-      fallbackProjectName = await resolveProjectNameForMentionFallback(orgId, spaceId, promptContent);
+      fallbackProjectName = await resolveProjectNameForMentionFallback(orgId, spaceId, promptContent, userId);
     }
     const referentialStatusRequest = allowDeterministicFallbacks && !wantsDiscussionTask
       ? extractReferentialStatusUpdateRequest(promptContent)
@@ -1811,7 +1912,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
     }) || (allowDeterministicFallbacks && !readOnlyRequest && !wantsDiscussionTask && (
       Boolean(referentialStatusRequest) || runtimeResolvedWikiUpdate || hasApprovalQueuedClaim(result.text)
     ));
-    if (shouldCompileActionDraft && !compiledActionDraft && !actionCompilerRecoveryAttempted) {
+    if (!providerUnavailable && shouldCompileActionDraft && !compiledActionDraft && !actionCompilerRecoveryAttempted) {
       try {
         const priorTaskReferences = await collectRecentAgentTaskReferences({
           orgId,
@@ -1821,12 +1922,13 @@ export async function handleAgentReply(job: JobData): Promise<void> {
           parentId: threadParentId,
           promptContent,
         });
-        compiledActionDraft = await compileDeftyActionDraft({
+        compiledActionDraft = await compileDraft({
           orgId,
           promptContent,
           agentReplyText: result.text,
           successfulReadActions: result.executedActions,
-          sourceMessageId: messageId,
+          sourceMessageId: requestMessageId,
+          requesterId: userId, sourceSpaceId: spaceId, pendingDraft,
           projectNameHint: fallbackProjectName,
           priorTaskReferences,
           spaceName: space?.name ?? null,
@@ -1867,8 +1969,8 @@ export async function handleAgentReply(job: JobData): Promise<void> {
         ? explicitDiscussionFallback ?? extractDiscussionTaskActionFromReply(result.text, messageId) ?? (
           discussionSourceMessages.length > 0
             ? buildDiscussionTaskFallbackAction({
-              command: cleanContent,
-              sourceMessageId: messageId,
+              command: pendingDraft?.request_text ?? cleanContent,
+              sourceMessageId: requestMessageId,
               sourceMessages: discussionSourceMessages,
             })
             : null
@@ -1892,23 +1994,46 @@ export async function handleAgentReply(job: JobData): Promise<void> {
     const enrichedPendingActions = wantsDiscussionTask
       ? enrichDiscussionTaskActions(rawPendingActions, discussionSourceMessages)
       : rawPendingActions;
-    const pendingActionsWithProvenance = enrichedPendingActions.map((action: any) =>
-      withMentionProvenance({
-        action,
-        commandMessageId: messageId,
-        spaceId,
-        discussionSourceMessages,
-      }),
-    );
+    // Validate source identities before retaining them, including on the first
+    // draft. Otherwise the command id replaces the evidence before it is saved.
+    const withReadableProvenance = async (actions: any[]) => {
+      const actionSourceIds = [...new Set(actions.flatMap((action: any) =>
+        typeof action.params?.source_message_id === 'string' ? [action.params.source_message_id] : []))] as string[];
+      const readableActionSources: Map<string, string> = new Map(actionSourceIds.length
+        ? (await db.select({ id: messages.id, spaceId: messages.space_id }).from(messages)
+          .innerJoin(spaces, and(eq(spaces.id, messages.space_id), eq(spaces.org_id, orgId), eq(spaces.is_archived, false)))
+          .innerJoin(spaceMembers, and(eq(spaceMembers.space_id, messages.space_id), eq(spaceMembers.user_id, userId)))
+          .where(and(eq(messages.org_id, orgId), eq(messages.is_deleted, false), inArray(messages.id, actionSourceIds))))
+          .map((row) => [row.id, row.spaceId] as [string, string])
+        : []);
+      return actions.map((action: any) =>
+        withMentionProvenance({
+          action,
+          commandMessageId: requestMessageId,
+          sourceMessageId: readableActionSources.has(action.params?.source_message_id) ? action.params.source_message_id : undefined,
+          sourceSpaceId: readableActionSources.get(action.params?.source_message_id),
+          spaceId,
+          discussionSourceMessages,
+        }),
+      );
+    };
+    const pendingActionsWithProvenance = await withReadableProvenance(enrichedPendingActions);
+    // Compiler-only clarifications save their unfinished draft for the next
+    // answer too. Those actions never became proposals, but their evidence ids
+    // must still be validated and rewritten the same way.
+    const compiledPendingActionsWithProvenance = compiledActionDraft?.pendingActions?.length
+      ? await withReadableProvenance(compiledActionDraft.pendingActions)
+      : [];
     const validatedPendingActions: any[] = [];
     const proposalValidationWarnings: string[] = [...(compiledActionDraft?.warnings ?? [])];
-    for (const action of pendingActionsWithProvenance) {
+    // Resolve an omitted project before schema validation requires its name.
+    const resolvedPendingActions = await resolvePendingActionTargets(orgId, userId, spaceId, pendingActionsWithProvenance, promptContent);
+    for (const action of resolvedPendingActions.actions) {
       const validation = validateRegisteredProposalAction(action);
       if (validation.ok) validatedPendingActions.push(action);
       else proposalValidationWarnings.push(validation.message);
     }
-    const resolvedPendingActions = await resolvePendingActionTargets(orgId, userId, spaceId, validatedPendingActions, promptContent);
-    let pendingActions = resolvedPendingActions.actions.map(normalizePendingApprovalTier);
+    let pendingActions = validatedPendingActions.map(normalizePendingApprovalTier);
     const pendingActionTargetWarnings = [...proposalValidationWarnings, ...resolvedPendingActions.warnings];
     if (pendingActions.length > MAX_INLINE_APPROVAL_ACTIONS) {
       pendingActionTargetWarnings.push(
@@ -1943,7 +2068,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
       });
     }
     const targetClarificationMessage = buildTargetClarificationMessage(pendingActionTargetWarnings);
-    const writeIntentClarificationMessage = !readOnlyRequest && pendingActions.length === 0 && !wantsDiscussionTask
+    const writeIntentClarificationMessage = !providerUnavailable && !readOnlyRequest && pendingActions.length === 0 && !wantsDiscussionTask
       ? (compiledActionDraft?.clarification || buildWriteIntentClarification(promptContent, result.text))
       : '';
     const referentialApprovalReplyText = fallbackReferentialStatusUpdates?.length
@@ -1955,7 +2080,15 @@ export async function handleAgentReply(job: JobData): Promise<void> {
     const literalPostApprovalReplyText = literalPostMessageOverride
       ? normalizeApprovalSurfaceCopy(`I drafted a message for #${literalPostMessageOverride.params.space_name}.`)
       : null;
-    const approvalReplyText = referentialApprovalReplyText ?? literalPostApprovalReplyText ?? (compiledActions && compiledActionDraft?.summary
+    const taskTargets = pendingActions.flatMap((action: any) =>
+      [action.params?.resolved_task_id, action.params?.task_identifier].filter((id): id is string => typeof id === 'string'));
+    const approvalTasks = taskTargets.length ? await db.select({ id: tasks.id, identifier: sql<string>`${projects.prefix} || '-' || ${tasks.number}`, title: tasks.title })
+      .from(tasks).innerJoin(projects, and(eq(projects.id, tasks.project_id), eq(projects.org_id, orgId)))
+      .where(and(eq(tasks.org_id, orgId), eq(tasks.is_deleted, false), eq(projects.is_deleted, false),
+        eq(projects.is_archived, false), visibleTaskCondition(userId),
+        sql`(${inArray(tasks.id, taskTargets)} OR ${inArray(sql`${projects.prefix} || '-' || ${tasks.number}`, taskTargets)})`)) : [];
+    const concreteApprovalReplyText = formatDeftyApprovalReply(pendingActions, approvalTasks);
+    const approvalReplyText = concreteApprovalReplyText ?? referentialApprovalReplyText ?? literalPostApprovalReplyText ?? (compiledActions && compiledActionDraft?.summary
       ? normalizeApprovalSurfaceCopy(compiledActionDraft.summary)
       : normalizeApprovalSurfaceCopy(result.text));
     const agentReplyContent = targetClarificationMessage && pendingActions.length === 0
@@ -1973,6 +2106,15 @@ export async function handleAgentReply(job: JobData): Promise<void> {
     // (parity with the agent-stream-loop path).
     const replyMetadata = {
       is_agent_reply: true,
+      defty_pending: !providerUnavailable && !readOnlyRequest && pendingActions.length === 0 && (hasWriteIntent || wantsDiscussionTask) && (compiledActionDraft?.clarification || targetClarificationMessage || writeIntentClarificationMessage)
+        ? {
+          kind: 'action_draft' as const, request_message_id: requestMessageId,
+          request_text: pendingDraft?.request_text ?? cleanContent,
+          draft: { actions: compiledPendingActionsWithProvenance.length ? compiledPendingActionsWithProvenance
+            : pendingActionsWithProvenance.length ? pendingActionsWithProvenance : (pendingDraft?.draft as any)?.actions ?? [],
+            room_context: (pendingDraft?.draft as any)?.room_context ?? roomContextPack },
+          question: agentReplyContent, created_at: new Date().toISOString(),
+        } : undefined,
       agent_blocks: result.assistantBlocks ?? undefined,
       model: result.model,
       tokens_in: result.tokensIn,
@@ -1997,6 +2139,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
         parentId: threadParentId,
         metadata: replyMetadata,
         pendingActions,
+        resolvePendingMessageId: pendingClarification?.messageId,
       });
       agentMessage = persisted.message;
     } catch (err) {
@@ -2036,6 +2179,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
 
     const messageWithUser = {
       ...agentMessage,
+      metadata: projectPendingDeftyMetadataForOutbound(agentMessage.metadata),
       user_name: agentUserData?.name ?? DEFTY_NAME,
       user_avatar: agentUserData?.avatar_url ?? null,
       reactions: [],
@@ -2044,7 +2188,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
     };
 
     // Broadcast via Socket.io
-    const io = getIO();
+    const io = dependencies.io === undefined ? getIO() : dependencies.io;
     if (io) {
       io.to(`space:${spaceId}`).emit('message:new', messageWithUser);
 

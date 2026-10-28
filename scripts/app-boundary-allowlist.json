@@ -14012,5 +14012,38 @@
     "owner": "@Maneek21",
     "issue": "https://github.com/Maneek21/Deft/issues/382",
     "milestone": "remove with historical connected sandbox fixture retirement"
+  },
+  {
+    "path": "apps/api/test/chat-knowledge-refinement.test.ts",
+    "rule": "computed-import",
+    "token": "require(name)",
+    "digest": "a3f8931a40f40cb9db6f675ab5ab34d015eaabc4f751c5cd533484f8da5cc3d6",
+    "occurrences": 1,
+    "reason": "Reviewed isolated Defty unit-test harness: transpiles one Host source file into a vm context and resolves only listed stub dependencies, falling back to the test process require for ordinary packages; no App, mailbox or production authority. Exact enclosing context requires fresh review on change.",
+    "owner": "@Maneek21",
+    "issue": "https://github.com/Maneek21/Deft/issues/382",
+    "milestone": "permanent reviewed tooling/test boundary; re-review on context change"
+  },
+  {
+    "path": "apps/api/test/defty-capture-append.test.ts",
+    "rule": "computed-import",
+    "token": "require(name)",
+    "digest": "a3f8931a40f40cb9db6f675ab5ab34d015eaabc4f751c5cd533484f8da5cc3d6",
+    "occurrences": 1,
+    "reason": "Reviewed isolated Defty unit-test harness: transpiles one Host source file into a vm context and resolves only listed stub dependencies, falling back to the test process require for ordinary packages; no App, mailbox or production authority. Exact enclosing context requires fresh review on change.",
+    "owner": "@Maneek21",
+    "issue": "https://github.com/Maneek21/Deft/issues/382",
+    "milestone": "permanent reviewed tooling/test boundary; re-review on context change"
+  },
+  {
+    "path": "apps/api/test/defty-infrastructure-line-endings.test.ts",
+    "rule": "computed-import",
+    "token": "import(serviceUrl.href)",
+    "digest": "56dafc49849520fea6575d0a3e9f1e3199c1fc4d41796f0750407d7b530bae41",
+    "occurrences": 1,
+    "reason": "Reviewed generic dev-tooling test loader: imports the repository database lineage script packages/db/scripts/lineage-convergence.mjs from the checkout to verify sealed artifact checksums under autocrlf; no App or production authority. Exact enclosing context requires fresh review on change.",
+    "owner": "@Maneek21",
+    "issue": "https://github.com/Maneek21/Deft/issues/382",
+    "milestone": "permanent reviewed tooling/test boundary; re-review on context change"
   }
 ]

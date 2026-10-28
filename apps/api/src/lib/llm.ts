@@ -47,16 +47,20 @@ const PROVIDER_DEFAULT_ROUTES: Record<LLMProvider, Record<LLMTask, LLMConfig>> =
 
 const DEFAULT_ROUTES = PROVIDER_DEFAULT_ROUTES.anthropic;
 
+function configuredValue(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
 function hasOrgProviderConfigured(provider: LLMProvider, orgConfig?: Record<string, any>): boolean {
   if (provider === 'ollama') {
-    return Boolean(orgConfig?.ollama_url);
+    return Boolean(configuredValue(orgConfig?.ollama_url));
   }
-  return Boolean(orgConfig?.api_keys?.[provider]);
+  return Boolean(configuredValue(orgConfig?.api_keys?.[provider]));
 }
 
 function hasEnvProviderConfigured(provider: LLMProvider): boolean {
   if (provider === 'ollama') {
-    return Boolean(env.OLLAMA_URL);
+    return Boolean(configuredValue(env.OLLAMA_URL));
   }
   return Boolean(resolveApiKey(provider));
 }
@@ -64,7 +68,7 @@ function hasEnvProviderConfigured(provider: LLMProvider): boolean {
 function routeWithProviderDefaults(provider: LLMProvider, task: LLMTask, orgConfig?: Record<string, any>): LLMConfig {
   const route = PROVIDER_DEFAULT_ROUTES[provider][task];
   if (provider === 'ollama' && !route.baseUrl) {
-    return { ...route, baseUrl: orgConfig?.ollama_url || env.OLLAMA_URL };
+    return { ...route, baseUrl: configuredValue(orgConfig?.ollama_url) || configuredValue(env.OLLAMA_URL) };
   }
   return route;
 }
@@ -77,8 +81,8 @@ export function getModelConfig(task: LLMTask, orgConfig?: Record<string, any>): 
     // For Ollama, ensure baseUrl falls through to org-level ollama_url if the
     // route itself doesn't pin one. Precedence (highest first):
     //   route.baseUrl → orgConfig.ollama_url → env.OLLAMA_URL (callOllama default)
-    if (route.provider === 'ollama' && !route.baseUrl && orgConfig?.ollama_url) {
-      return { ...route, baseUrl: orgConfig.ollama_url };
+    if (route.provider === 'ollama' && !configuredValue(route.baseUrl)) {
+      return { ...route, baseUrl: configuredValue(orgConfig?.ollama_url) || configuredValue(env.OLLAMA_URL) };
     }
     return route;
   }
@@ -116,18 +120,18 @@ function convertToolsToOpenAIFormat(tools: any[]): any[] {
 function resolveApiKey(provider: LLMProvider, orgConfig?: Record<string, any>): string {
   // Check org-level API keys first
   if (orgConfig?.api_keys) {
-    const orgKey = orgConfig.api_keys[provider];
+    const orgKey = configuredValue(orgConfig.api_keys[provider]);
     if (orgKey) return orgKey;
   }
 
   // Fall back to environment variables
   switch (provider) {
     case 'anthropic':
-      return env.ANTHROPIC_API_KEY;
+      return configuredValue(env.ANTHROPIC_API_KEY);
     case 'openai':
-      return env.OPENAI_API_KEY;
+      return configuredValue(env.OPENAI_API_KEY);
     case 'openrouter':
-      return env.OPENROUTER_API_KEY;
+      return configuredValue(env.OPENROUTER_API_KEY);
     case 'ollama':
       return ''; // Ollama doesn't need an API key
     default:
