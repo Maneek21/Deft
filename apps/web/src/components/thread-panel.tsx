@@ -1,5 +1,7 @@
 'use client';
 import { NativeMentionMarkdown } from './native-mention-markdown';
+import { isThreadlessChannelMessageDestination, navigateMessageLink } from './message-link-navigation';
+import { DeftyWorkingIndicator, useDeftyWorking, visibleDeftyWork } from './defty-working-indicator';
 import { splitChatMarkdownBlocks, escapeChatCode } from '@/lib/chat-markdown-blocks';
 import { NativeMentionContent } from '@/components/native-mention-content';
 
@@ -234,7 +236,8 @@ type Props = {
 
 export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
   const messageId = parentMessage.id;
-  const { user } = useAuth();
+  const { user, sessionCacheScope } = useAuth();
+  const deftyWork = useDeftyWorking(spaceId, sessionCacheScope);
   const router = useRouter();
   const [replies, setReplies] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
@@ -603,6 +606,12 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
 
   return (
     <div
+      onClick={(event) => navigateMessageLink(event, href => {
+        // A channel-message link owns the destination URL. Close the overlay
+        // first so a full-screen mobile thread cannot cover that message.
+        if (isThreadlessChannelMessageDestination(href, window.location.origin)) onClose();
+        router.push(href);
+      })}
       className={isMobile
         ? "fixed inset-0 z-50 flex flex-col"
         : "w-[400px] h-full flex flex-col flex-shrink-0"
@@ -681,6 +690,8 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
           </>
         )}
       </div>
+
+      {visibleDeftyWork(deftyWork, spaceId, messageId).length > 0 && <DeftyWorkingIndicator />}
 
       {/* Composer */}
       <div className="flex-shrink-0">
