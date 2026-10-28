@@ -1,5 +1,7 @@
 'use client';
 import { NativeMentionMarkdown } from './native-mention-markdown';
+import { isThreadlessChannelMessageDestination, navigateMessageLink } from './message-link-navigation';
+import { DeftyWorkingIndicator, useDeftyWorking, visibleDeftyWork } from './defty-working-indicator';
 import { splitChatMarkdownBlocks, escapeChatCode } from '@/lib/chat-markdown-blocks';
 import { NativeMentionContent } from '@/components/native-mention-content';
 import { AnchoredOverlay } from '@/components/overlay-primitives';
@@ -560,6 +562,7 @@ export function SpaceChat({
 }) {
   const { user, sessionCacheScope } = useAuth();
   const router = useRouter();
+  const deftyWork = useDeftyWorking(spaceId, sessionCacheScope);
   const { setThreadMessage, markSpaceRead, presence, spaces, orgMembers, startHuddle, joinHuddleBySpace, huddleSpaceId, huddleBusy, activeHuddles, openDmWith } = useChatContext();
   const [messages, setMessages] = useState<Message[]>([]);
   const messageEventScopeRef = useRef(new ChatMessageEventScope());
@@ -1244,7 +1247,12 @@ export function SpaceChat({
 
   return (
     <FileDropZone onUploadComplete={handleFileUploadComplete}>
-      <div className="flex h-full">
+      <div className="flex h-full" onClick={(event) => navigateMessageLink(event, href => {
+        // Channel-message links own the URL; drop any open thread first so the
+        // destination is not left behind the mobile thread overlay.
+        if (isThreadlessChannelMessageDestination(href, window.location.origin)) setThreadMessage(null);
+        router.push(href);
+      })}>
       <div className="flex flex-col h-full flex-1 min-w-0">
         {/* Header */}
         <div
@@ -2143,6 +2151,8 @@ export function SpaceChat({
             </button>
           )}
         </div>
+
+        {visibleDeftyWork(deftyWork, spaceId, null, messages.filter(message => !message.is_deleted).map(message => message.id)).length > 0 && <DeftyWorkingIndicator />}
 
         {/* Typing indicator */}
         {typingText.length > 0 && (
