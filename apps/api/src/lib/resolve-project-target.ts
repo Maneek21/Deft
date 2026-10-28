@@ -1,5 +1,5 @@
 import { and, eq } from 'drizzle-orm';
-import { projectSpaces, projects } from '@deft/db/schema';
+import { projectSpaces, projects, spaceMembers, spaces } from '@deft/db/schema';
 import { db } from './db.js';
 
 export type ProjectTargetRow = {
@@ -99,7 +99,7 @@ function asRanked<T extends ProjectTargetRow>(project: T, linkedProjectIds: Read
   return {
     ...project,
     confidence: 1,
-    match_reason: 'single project linked to source space',
+    match_reason: linkedProjectIds.has(project.id) ? 'single project linked to source space' : 'single accessible active project',
     linked_to_source: linkedProjectIds.has(project.id),
   };
 }
@@ -132,18 +132,23 @@ export function resolveProjectTargetFromRows<T extends ProjectTargetRow>(
       const project = asRanked(linked[0]!, linkedProjectIds);
       return { status: 'resolved', project, candidates: [project] };
     }
-    if (linked.length > 1) {
-      const matches = linked.map((project) => asRanked(project, linkedProjectIds));
+    if (activeRows.length === 1) {
+      const project = asRanked(activeRows[0]!, linkedProjectIds);
+      return { status: 'resolved', project, candidates: [project] };
+    }
+    const matches = (linked.length > 1 ? linked : activeRows)
+      .slice(0, 5).map((project) => asRanked(project, linkedProjectIds));
+    if (matches.length > 0) {
       return {
         status: 'ambiguous',
-        message: `This conversation is linked to several projects: ${matches.map((project) => project.name).join(', ')}. Which one should I use?`,
+        message: `Which project should this task belong to: ${matches.map((project) => project.name).join(', ')}?`,
         matches,
         candidates: matches,
       };
     }
     return {
       status: 'missing',
-      message: 'I need the target project before I can create the task approval card.',
+      message: 'There are no active projects available for this task.',
       candidates: [],
     };
   }
@@ -188,7 +193,7 @@ export function resolveProjectTargetFromRows<T extends ProjectTargetRow>(
 
 export async function resolveProjectTarget(
   orgId: string,
-  args: { projectId?: unknown; projectName?: unknown; sourceSpaceId?: unknown },
+  args: { projectId?: unknown; projectName?: unknown; sourceSpaceId?: unknown; requesterId?: string },
 ): Promise<ProjectTargetResolution> {
   const rows = await db
     .select({
@@ -203,7 +208,16 @@ export async function resolveProjectTarget(
 
   const sourceSpaceId = typeof args.sourceSpaceId === 'string' ? args.sourceSpaceId.trim() : '';
   const linkedProjectIds = new Set<string>();
-  if (sourceSpaceId) {
+  // A source-space hint may only affect resolution when the requester can
+  // read that conversation. Active projects themselves are org-readable.
+  const sourceMembership = sourceSpaceId && args.requesterId
+    ? await db.select({ spaceId: spaceMembers.space_id }).from(spaceMembers)
+      .innerJoin(spaces, and(eq(spaces.id, spaceMembers.space_id), eq(spaces.org_id, orgId), eq(spaces.is_archived, false))).where(and(
+      eq(spaceMembers.space_id, sourceSpaceId),
+      eq(spaceMembers.user_id, args.requesterId),
+    )).limit(1)
+    : [];
+  if (sourceSpaceId && sourceMembership.length > 0) {
     const links = await db
       .select({ projectId: projectSpaces.project_id })
       .from(projectSpaces)

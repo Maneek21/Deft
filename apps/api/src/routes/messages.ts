@@ -19,6 +19,8 @@ import { enqueueChatObservation } from '../lib/chat-observation.js';
 import { createNotificationIfAllowed, createNotificationsIfAllowed } from '../lib/notification-policy.js';
 import { normalizePlainAgentMentions } from '../lib/agent-mention-normalization.js';
 import { dispatchAgentEmployeeMessage } from '../lib/dispatch-agent-message.js';
+import { shouldFollowThread } from '../lib/defty-thread-follow.js';
+import { projectPendingDeftyMetadataForOutbound } from '../lib/defty-pending-action.js';
 import { toPlainText } from '../lib/plain-text.js';
 import {
   getMessageAttachments,
@@ -105,7 +107,7 @@ async function getVisibleMessage(messageId: string, orgId: string, userId: strin
     ))
     .limit(1);
 
-  return msg ?? null;
+  return msg ? { ...msg, metadata: projectPendingDeftyMetadataForOutbound(msg.metadata) } : null;
 }
 
 async function resolveGroupMentionUserIds(content: string, orgId: string): Promise<string[]> {
@@ -275,6 +277,7 @@ messageRoutes.get('/:spaceId', async (c) => {
       ]);
       const result = unique.map(msg => ({
         ...msg,
+        metadata: projectPendingDeftyMetadataForOutbound(msg.metadata),
         reactions: reactionsMap.get(msg.id) ?? [],
         reply_count: replyStatsMap.get(msg.id)?.reply_count ?? 0,
         latest_reply_at: replyStatsMap.get(msg.id)?.latest_reply_at ?? null,
@@ -356,6 +359,7 @@ messageRoutes.get('/:spaceId', async (c) => {
       }
       return {
         ...msg,
+        metadata: projectPendingDeftyMetadataForOutbound(msg.metadata),
         reactions: reactionsMap.get(msg.id) ?? [],
         reply_count: replyCount,
         latest_reply_at: latestReplyAt,
@@ -702,6 +706,7 @@ messageRoutes.post('/:spaceId', async (c) => {
     // BYOA agent mentions are handled separately (agent-employee-message); we
     // must NOT fire agent-reply for them.
     let agentMentioned = false;
+    let followed = false;
     if (mentionedUserIds.length > 0) {
       const deftyMatch = await db
         .select({ id: users.id })
@@ -718,10 +723,23 @@ messageRoutes.post('/:spaceId', async (c) => {
     if (!agentMentioned && legacyAgentMentionRegex.test(normalizedContent)) {
       agentMentioned = true;
     }
-    // Auto-trigger Defty in DM-with-Defty / agent_conversation spaces — no mention required.
+    // Follow an engaged Defty thread, or auto-trigger DM-with-Defty / agent_conversation spaces — no mention required.
     if (!agentMentioned) {
       const [spaceRow] = await db.select({ type: spaces.type })
-        .from(spaces).where(eq(spaces.id, spaceId)).limit(1);
+        .from(spaces).where(and(eq(spaces.id, spaceId), eq(spaces.org_id, user.org_id))).limit(1);
+      if (spaceRow && parsed.data.parent_id
+        && (spaceRow.type === 'public' || spaceRow.type === 'private' || spaceRow.type === 'group_dm')) {
+        const humanMentions = mentionedUserIds.length > 0
+          ? await db.select({ id: users.id }).from(users)
+            .where(and(inArray(users.id, mentionedUserIds), eq(users.kind, 'human'))).limit(1)
+          : [];
+        followed = await shouldFollowThread({
+          orgId: user.org_id, spaceId, triggerMessageId: message!.id,
+          spaceType: spaceRow.type, parentId: parsed.data.parent_id,
+          authorId: user.id, content: normalizedContent, mentionsHuman: humanMentions.length > 0,
+        });
+        agentMentioned = followed;
+      }
       if (spaceRow && (spaceRow.type === 'dm' || spaceRow.type === 'agent_conversation')) {
         const deftyUserId = await ensureDeftyMembership(user.org_id);
         if (deftyUserId !== user.id) {
@@ -760,6 +778,7 @@ messageRoutes.post('/:spaceId', async (c) => {
           userId: user.id,
           orgName: org?.name ?? 'Unknown',
           content: normalizedContent,
+          ...(followed ? { followed: true } : {}),
         });
       } catch (err) {
         // Don't block message sending if the background queue enqueue fails.
@@ -1080,6 +1099,7 @@ messageRoutes.get('/:id/thread', async (c) => {
 
     const repliesWithReactions = replies.map((reply) => ({
       ...reply,
+      metadata: projectPendingDeftyMetadataForOutbound(reply.metadata),
       reactions: reactionsMap.get(reply.id) ?? [],
       file_ids: (attachmentsMap.get(reply.id) ?? []).map((file) => file.id),
       files: attachmentsMap.get(reply.id) ?? [],
