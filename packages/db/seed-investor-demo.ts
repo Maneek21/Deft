@@ -2903,10 +2903,10 @@ Start with the page, not the search. The wiki is small on purpose: twelve pages 
       console.log(`[contacts] seeded ${contactDefs.length} people`);
 
       const dealDefs: Array<{ name: string; company: string; contact: string; value: number; stage: string; closeDay: number; notes: string }> = [
-        { name: 'Lakeview Physio - Annual Solo', company: 'Lakeview Physio', contact: 'Dana Whitfield', value: 49, stage: 'won', closeDay: -1, notes: 'Annual Solo plan at $49 per clinic per month. One location renewed after the incident fix.' },
-        { name: 'Brightside Dental - Clinic expansion', company: 'Brightside Dental', contact: 'Marcus Bell', value: 149, stage: 'negotiation', closeDay: 5, notes: 'Clinic plan at $149 per clinic per month. Two locations, annual start after launch.' },
+        { name: 'Lakeview Physio - Annual Solo', company: 'Lakeview Physio', contact: 'Dana Whitfield', value: 149, stage: 'won', closeDay: -1, notes: 'Annual Solo plan at $49 per clinic per month. One location renewed after the incident fix.' },
+        { name: 'Brightside Dental - Clinic expansion', company: 'Brightside Dental', contact: 'Marcus Bell', value: 399, stage: 'negotiation', closeDay: 5, notes: 'Clinic plan at $149 per clinic per month. Two locations, annual start after launch.' },
         { name: 'Willow Dental Group - Multi-site custom', company: 'Willow Dental Group', contact: 'Sofia Marchetti', value: 1200, stage: 'proposal', closeDay: 14, notes: 'Custom multi-site tier for 12 locations. Security review before commercial terms.' },
-        { name: 'Northside Pediatrics - January pilot', company: 'Northside Pediatrics', contact: 'Dr. Anita Menon', value: 49, stage: 'qualified', closeDay: 20, notes: 'Solo tier at $49. January pilot, February onboarding capacity.' },
+        { name: 'Northside Pediatrics - January pilot', company: 'Northside Pediatrics', contact: 'Dr. Anita Menon', value: 149, stage: 'qualified', closeDay: 20, notes: 'Solo tier at $49. January pilot, February onboarding capacity.' },
       ];
       const dealIds = new Map<string, string>();
       for (const deal of dealDefs) {
