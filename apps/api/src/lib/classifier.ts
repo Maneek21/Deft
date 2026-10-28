@@ -92,7 +92,7 @@ function isEphemeralMemoryFact(value: string): boolean {
 function applyMemorySuppression(result: ClassificationResult, content: string): ClassificationResult {
   const declaredFacts = new Set(Array.from(
     plainText(content).matchAll(/\b(?:fact|policy|preference)\s*:\s*([^.!?\n]+)/ig),
-    (match) => trimMemoryText(match[1]).toLowerCase(),
+    (match) => trimMemoryText(match[1] ?? '').toLowerCase(),
   ));
   return {
     ...result,
