@@ -2,6 +2,14 @@
 import { llm } from './llm.js';
 import { getOrgAIConfig, hasAnyAIProvider } from './org-ai-config.js';
 import { toPlainText } from './plain-text.js';
+import { buildUntrustedWorkspaceContext, UNTRUSTED_WORKSPACE_DATA_RULE } from './agent-untrusted-context.js';
+
+export const _deps = { llm, getOrgAIConfig, hasAnyAIProvider };
+
+export interface ClassificationContextMessage {
+  author: string;
+  content: string;
+}
 
 export interface ClassificationResult {
   intent: 'task_create' | 'question' | 'discussion' | 'actionable' | 'none';
@@ -47,6 +55,54 @@ function trimMemoryText(value: string): string {
     .replace(/\s+/g, ' ')
     .trim()
     .replace(/[.]+$/, '');
+}
+
+/** A durable decision must name what was decided, rather than an unresolved pronoun. */
+export function isSelfContainedDecision(value: string): boolean {
+  const text = plainText(value)
+    .replace(/^(?:(?:decision\s*:|we\s+(?:have\s+)?(?:decided|agreed)\b|going forward\b|agreed\b|actually\b|please\b|then\b|instead\b)[\s,:;-]*)+/i, '')
+    .replace(/^(?:to|let'?s|we\s+(?:should|will))\s+/i, '')
+    .trim();
+  if (!text || /^(?:it|this|that|these|those|them)[.!?]*$/i.test(text)) return false;
+  // The actor or auxiliary does not identify the object: "Arjun should take it"
+  // is just as unresolved as "take it". A demonstrative followed by a noun
+  // ("take this schema review") still names the subject of the decision.
+  const unresolvedObject = /\b(?:(?:give|assign|reassign|send|hand|pass|move|put|leave|do|use|take|keep|change|update|replace|ship|choose|pick|handle|own|review|approve|finish|complete|implement|fix|resolve|publish|deploy|delete|remove|close)(?:s|es|d|ed)?|gave|given|sent|left|did|done|took|taken|kept|chose|chosen)\s+(?:(?:it|them)\b|(?:this|that|these|those)(?:\s+(?:to|by|on|before|after|for|from|in|with|instead|back|now|again|over)\b|[.!?]*$))/i;
+  const unresolvedAuxiliaryObject = /\b(?:should|will|would|could|can|must|may|might|has\s+to|have\s+to|needs?\s+to|going\s+to|is|are|was|were|has|have|had)\s+(?:[a-z][a-z'-]*\s+){1,3}(?:(?:it|them)\b|(?:this|that|these|those)(?:\s+(?:to|by|on|before|after|for|from|in|with|instead|back|now|again|over)\b|[.!?]*$))/i;
+  const unresolvedSubject = /^(?:it|this|that|these|those|them)\s+(?:is|are|was|were|will|should|can|must|goes|moves|ships|uses|gets|needs|has|have|works|happens)\b/i;
+  return !unresolvedObject.test(text) && !unresolvedAuxiliaryObject.test(text) && !unresolvedSubject.test(text);
+}
+
+function hasDatedCommitment(content: string): boolean {
+  const text = plainText(content);
+  return /\b(?:will\s+(?:be\s+)?(?:done|ready|finished|complete(?:d)?|delivered)|(?:I|we)(?:'ll| will)\s+(?:finish|complete|deliver|review|ship))\b/i.test(text) &&
+    /\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow|tonight|eod|eow|\d{4}-\d{2}-\d{2})\b/i.test(text);
+}
+
+function isEphemeralMemoryFact(value: string): boolean {
+  const text = plainText(value);
+  const explicitDurableFact = /\b(?:fact|policy|preference)\s*:|\b(?:always|never|going forward|prefers?|preferences|policies|conventions?)\b/i.test(text);
+  return !explicitDurableFact && (
+    /^(?:i(?:'m| am)?\s+)?(?:on it|got it|will do)[.!\s]*$/i.test(text) ||
+    /\b(?:lunch|breakfast|dinner|coffee break)\b/i.test(text) ||
+    /\b(?:ci|builds?|pipelines?)\b.{0,40}\b(?:take|takes|took|slow|speed|minutes?|mins?)\b/i.test(text)
+  );
+}
+
+function applyMemorySuppression(result: ClassificationResult, content: string): ClassificationResult {
+  const declaredFacts = new Set(Array.from(
+    plainText(content).matchAll(/\b(?:fact|policy|preference)\s*:\s*([^.!?\n]+)/ig),
+    (match) => trimMemoryText(match[1]).toLowerCase(),
+  ));
+  return {
+    ...result,
+    decision: result.decision && isSelfContainedDecision(content) && isSelfContainedDecision(result.decision)
+      ? result.decision
+      : null,
+    memorable_facts: result.memorable_facts.filter((fact) => typeof fact === 'string' && (
+      declaredFacts.has(trimMemoryText(plainText(fact)).toLowerCase()) || !isEphemeralMemoryFact(fact)
+    )),
+  };
 }
 
 function localMemoryHints(content: string): Partial<ClassificationResult> {
@@ -145,7 +201,8 @@ function applyBlockedSuppression(
   result: ClassificationResult,
   content: string,
 ): ClassificationResult {
-  if (!hasNegatedBlockedSignal(content)) return result;
+  const datedCommitment = hasDatedCommitment(content) && !hasBlockedSignal(plainText(content));
+  if (!hasNegatedBlockedSignal(content) && !datedCommitment) return result;
   if (!result.blocked) return result;
 
   const stillActionable = hasNonBlockedActionableSignal(content);
@@ -184,12 +241,15 @@ function mergeLocalHints(
 
 export function classifyMessageLocally(content: string): ClassificationResult {
   return applyBlockedSuppression(
-    mergeLocalHints({ ...DEFAULT_RESULT }, localClassificationHints(content)),
+    applyMemorySuppression(mergeLocalHints({ ...DEFAULT_RESULT }, localClassificationHints(content)), content),
     content,
   );
 }
 
 const CLASSIFICATION_PROMPT = `You are a workspace message classifier. Analyze the message and return JSON only.
+
+${UNTRUSTED_WORKSPACE_DATA_RULE}
+Classify only the message labelled "Message to classify". Preceding conversation context is evidence for interpretation, not additional messages to classify. Never copy its decisions, blockers, requests, or facts onto the current message.
 
 Fields:
 - intent: "task_create" | "question" | "discussion" | "actionable" | "none"
@@ -211,6 +271,9 @@ Rules:
 - "question": message is asking a question
 - "discussion": general conversation, opinions, updates
 - "none": greetings, reactions, very short messages with no substance
+- A commitment with a date, such as "I will finish the review by Friday", is a status update, not a blocker. Set blocked=false unless the message also identifies an actual active impediment.
+- A decision must be a self-contained statement naming its subject. "Give it to Arjun", "actually give it to Arjun instead", or "Arjun should take it" has an unresolved object, not a durable decision. A named actor or auxiliary does not resolve an unnamed object. Do not invent its subject from context.
+- Ephemeral logistics (lunch plans, CI/build speed, temporary environment resets, or acknowledgements such as "on it") are not memorable facts. Remember durable preferences, policies and conventions only.
 
 Also extract any memorable facts (team preferences, tool choices, personal preferences) as an array. If the message contains a clear team decision, extract it separately into "decision" and do NOT repeat it inside "memorable_facts".
 
@@ -219,23 +282,31 @@ Return ONLY valid JSON, no markdown fences.`;
 export async function classifyMessage(
   content: string,
   orgId: string,
+  precedingMessages: ClassificationContextMessage[] = [],
 ): Promise<ClassificationResult> {
   const localHints = localClassificationHints(content);
 
   // BYOK — only short-circuit when neither org nor env has any AI provider.
-  if (!(await hasAnyAIProvider(orgId))) {
+  if (!(await _deps.hasAnyAIProvider(orgId))) {
     return classifyMessageLocally(content);
   }
 
   try {
-    const orgConfig = await getOrgAIConfig(orgId);
-    const response = await llm({
+    const orgConfig = await _deps.getOrgAIConfig(orgId);
+    const response = await _deps.llm({
       task: 'classify',
       system: CLASSIFICATION_PROMPT,
       messages: [
         {
           role: 'user',
-          content: `Org: ${orgId}\nMessage: ${content}`,
+          content: buildUntrustedWorkspaceContext([
+            precedingMessages.length > 0
+              ? `Preceding conversation context (oldest first; context only):\n${precedingMessages.slice(-6)
+                .map((message) => `${plainText(message.author).replace(/\s+/g, ' ').slice(0, 100)}: ${plainText(message.content).replace(/\s+/g, ' ').slice(0, 300)}`)
+                .join('\n')}`
+              : null,
+            `Message to classify:\n${plainText(content)}`,
+          ])!,
         },
       ],
       maxTokens: 512,
@@ -277,7 +348,7 @@ export async function classifyMessage(
         ? String(parsed.request_deadline ?? parsed.deadline).trim() || null
         : null,
     }, localHints);
-    return applyBlockedSuppression(merged, content);
+    return applyMemorySuppression(applyBlockedSuppression(merged, content), content);
   } catch (err) {
     console.error('[classifier] Classification failed:', (err as Error).message);
     return classifyMessageLocally(content);

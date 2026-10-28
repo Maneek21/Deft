@@ -450,6 +450,8 @@ export type WikiUpdateArgs = {
   source_space_id?: string | null;
   source_user_id?: string | null;
   capture_reason?: string | null;
+  /** When set, the update applies only if the page is still at this version. */
+  expected_version?: number | null;
 };
 
 export async function executeWikiUpdate(
@@ -486,6 +488,10 @@ export async function executeWikiUpdate(
       ))
       .limit(1);
     if (!existingPage) return errorResult('wiki_update: page not found');
+    const expectedVersion = typeof args.expected_version === 'number' ? args.expected_version : null;
+    if (expectedVersion !== null && (existingPage.version ?? 1) !== expectedVersion) {
+      return errorResult('wiki_update: page changed since this update was drafted; capture it again against the current page');
+    }
 
     if (existingPage.scope === 'user') {
       const ownedByEmployee = existingPage.agent_employee_id === ctx.employee_id;
@@ -661,7 +667,11 @@ export async function executeWikiUpdate(
           version: nextVersion,
           updated_at: new Date(),
         })
-        .where(and(eq(wikiPages.id, existingPage.id), eq(wikiPages.org_id, ctx.org_id)))
+        .where(and(
+          eq(wikiPages.id, existingPage.id),
+          eq(wikiPages.org_id, ctx.org_id),
+          ...(expectedVersion !== null ? [eq(wikiPages.version, expectedVersion)] : []),
+        ))
         .returning();
       if (!updatedPage) throw new Error('wiki_update: update returned no row');
 
