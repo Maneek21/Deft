@@ -261,7 +261,9 @@ async function maybePostApprovalConfirmation(params: {
     // append the outcome: the separate confirmation message below is the
     // canonical "Done" summary, and repeating it here rendered the summary
     // twice in the thread after the last card was approved.
-    const reconciledContent = reconcileApprovalReplyText(approvalMessage.content, '');
+    // A proposal made only of approval prose would be left empty; keep the
+    // outcome there rather than an empty message.
+    const reconciledContent = reconcileApprovalReplyText(approvalMessage.content, '') || content;
     const oldBlocks = Array.isArray(originalMetadata.agent_blocks) ? originalMetadata.agent_blocks : [];
     const [reconciledMessage] = await tx.update(messages).set({
       content: reconciledContent,
