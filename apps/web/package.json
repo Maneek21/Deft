@@ -73,7 +73,6 @@
     "@types/node": "^26.6.3",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "@types/react-grid-layout": "^2.1.0",
     "@types/simple-peer": "^9.11.9",
     "eslint": "^10.11.0",
     "eslint-config-next": "16.4.3",
