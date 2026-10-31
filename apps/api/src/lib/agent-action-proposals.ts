@@ -860,6 +860,69 @@ export function formatDeftyTaskCandidates(tasks: DeftyTaskReference[]): string {
   return tasks.slice(0, 5).map((task) => `${task.identifier} "${task.title}"`).join(' or ');
 }
 
+function truncateChangeValue(value: string, max = 40): string {
+  const cleaned = value.replace(/[.!?;:]+$/, '').trim();
+  if (cleaned.length <= max) return cleaned;
+  return `${cleaned.slice(0, max - 1)}…`;
+}
+
+function formatModuleActionChange(action: ProposedAgentAction): { target: string; details: string[] } | null {
+  const p = action.params;
+  if (!isRecord(p)) return null;
+  const collection = stringValue(p.collection_key) || 'record';
+
+  if (action.action === 'module_record_create' || action.action === 'module_record_bulk_create') {
+    const target = action.action === 'module_record_bulk_create'
+      ? `create ${collection} records`
+      : `create ${collection} record`;
+    const details: string[] = [];
+    const data = isRecord(p.data) ? p.data : {};
+    const dataKeys = Object.keys(data);
+    if (dataKeys.length > 0) {
+      const summary = dataKeys.slice(0, 3).map((key) => {
+        const value = data[key];
+        const display = typeof value === 'string' ? value : JSON.stringify(value);
+        return `${key} ${truncateChangeValue(display)}`;
+      }).join(', ');
+      details.push(summary);
+    }
+    return { target, details };
+  }
+
+  if (action.action === 'module_record_update') {
+    const target = `update ${collection} record`;
+    const details: string[] = [];
+    const patch = isRecord(p.patch) ? p.patch : {};
+    const patchKeys = Object.keys(patch);
+    for (const key of patchKeys.slice(0, 3)) {
+      const value = patch[key];
+      const display = typeof value === 'string' ? value : JSON.stringify(value);
+      details.push(`${key} → ${truncateChangeValue(display)}`);
+    }
+    const unsetFields = Array.isArray(p.unset_fields) ? p.unset_fields.filter((value: unknown): value is string => typeof value === 'string') : [];
+    if (unsetFields.length > 0) details.push(`unset ${unsetFields.slice(0, 3).join(', ')}`);
+    const relations = isRecord(p.relations) ? p.relations : {};
+    const relationKeys = Object.keys(relations);
+    if (relationKeys.length > 0) details.push(`update ${relationKeys.slice(0, 3).join(', ')} relations`);
+    return { target, details };
+  }
+
+  if (action.action === 'module_record_archive') {
+    return { target: `archive ${collection} record`, details: [] };
+  }
+
+  if (isModuleTaskLinkWriteAction(action.action)) {
+    const resourceId = stringValue(p.resource_id);
+    const taskIdentifier = stringValue(p.task_identifier);
+    const target = action.action === 'module_record_task_link'
+      ? `link record ${resourceId || ''} to task ${taskIdentifier || ''}`
+      : `unlink record ${resourceId || ''} from task ${taskIdentifier || ''}`;
+    return { target: target.trim(), details: [] };
+  }
+
+  return null;
+}
+
 /** Format only changes for which concrete task identities are available. */
 export function formatDeftyApprovalReply(actions: ProposedAgentAction[], tasks: DeftyTaskReference[] = []): string | null {
   if (!actions.length) return null;
@@ -871,6 +934,12 @@ export function formatDeftyApprovalReply(actions: ProposedAgentAction[], tasks: 
       if (typeof p.title !== 'string') return null;
       const details = [typeof p.project_name === 'string' ? `in ${p.project_name}` : '', typeof p.assignee_name === 'string' ? `assigned to ${p.assignee_name}` : '', typeof p.due_date === 'string' ? `due ${p.due_date}` : ''].filter(Boolean);
       changes.set(`create:${changes.size}`, { target: `create "${p.title}"`, details });
+      continue;
+    }
+    if (isModuleWriteAction(action.action) || isModuleTaskLinkWriteAction(action.action)) {
+      const moduleChange = formatModuleActionChange(action);
+      if (!moduleChange) return null;
+      changes.set(`${action.action}:${changes.size}`, moduleChange);
       continue;
     }
     if (action.action !== 'update_task_status' && action.action !== 'assign_task') return null;
