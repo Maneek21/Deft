@@ -251,33 +251,17 @@ test('parallel seed preflight denies late revocation before any hydrated value o
 });
 
 
-test('seed locator shares the opening target read and denies expired consent before browser storage',async()=>{
- const signal=new AbortController().signal,seed={...node,expected_revision:0,content_digest:'sha256:'+'0'.repeat(64),seed:{schema_version:'deft.record_form_seed.v1' as const,value:{to:'',subject:'',body:'',body_html:'',attachments:[]}}},calls:string[]=[];let release:()=>void=()=>{};
- const client=createExperienceDataClient({installationId:installation,targetKey:'primary',principal:{orgId:id,userId:connection},current:()=>true,fetch:async path=>{
-  if(!path.endsWith('/resolve')){calls.push('metadata');throw Error('metadata must not be dispatched during the opening');}
-  calls.push('resolve');const fresh=context('primary');fresh.targets[0].stores[0].consent.expires_at=new Date(Date.now()-1000).toISOString();
-  await new Promise<void>(resolve=>release=resolve);return json(fresh);
- }});
- const opening=client.ports.resolveSeed!(seed,signal);for(let tick=0;tick<20&&!calls.includes('resolve');tick++)await new Promise(setImmediate);
- assert.deepEqual(calls,['resolve'],'the locator shares the opening target read');release();
- await assert.rejects(opening,/Opening visibility ended/);
- assert.deepEqual(calls,['resolve'],'no metadata invocation is bought before browser storage');
+test('seed locator begins fresh target and pinned metadata checks together before a stalled target read resolves',async()=>{
+ const signal=new AbortController().signal,seed={...node,expected_revision:0,content_digest:'sha256:'+'0'.repeat(64),seed:{schema_version:'deft.record_form_seed.v1' as const,value:{to:'',subject:'',body:'',body_html:'',attachments:[]}}},calls:string[]=[];let resolveReads=0,release:()=>void=()=>{};
+ const client=createExperienceDataClient({installationId:installation,targetKey:'primary',principal:{orgId:id,userId:connection},current:()=>true,fetch:async(path,options)=>{if(path.endsWith('/resolve')){calls.push('resolve');if(++resolveReads===2)await new Promise<void>(resolve=>release=resolve);const fresh=context('primary');if(resolveReads===2)fresh.targets[0].session_id=fileId;return json(fresh);}calls.push('metadata');const request=JSON.parse(String(options.body)) as AppDataRequest;assert.equal(path,`/api/app-data/connections/${connection}/requests`);assert.equal(request.operation,'connection_metadata');return json({schema_version:'deft.app_data_result.v1',request_id:request.request_id,operation:request.operation,input_digest:await appDataInputDigest(request.operation,request.input),outcome:'completed',identities:[]});}});
+ const opening=client.ports.resolveSeed!(seed,signal);for(let tick=0;tick<20&&!calls.includes('metadata');tick++)await new Promise(setImmediate);
+ assert.deepEqual(calls,['resolve','resolve','metadata']);release();await assert.rejects(opening,/Seed visibility ended/);
 });
 
-test('seed locator denies local account, target, store and consent pin changes before browser storage',async()=>{
+test('seed locator denies a fresh session, account, target, resource, store declaration or consent pin change before browser storage',async()=>{
  const seed={...node,expected_revision:0,content_digest:'sha256:'+'0'.repeat(64),seed:{schema_version:'deft.record_form_seed.v1' as const,value:{to:'',subject:'',body:'',body_html:'',attachments:[]}}};
- for(const changed of ['account','target','store','consent','expired'] as const){let resolves=0,metadata=0,expected=id;
-  const client=createExperienceDataClient({installationId:installation,targetKey:'primary',accountRef:()=>expected,principal:{orgId:id,userId:connection},current:()=>true,fetch:async path=>{
-   if(!path.endsWith('/resolve')){metadata++;throw Error('must not dispatch before browser storage');}
-   resolves++;const fresh=context('primary');
-   if(changed==='account')expected=connection;
-   if(changed==='target')fresh.targets[0].target_key='changed';
-   if(changed==='store')fresh.targets[0].stores=[];
-   if(changed==='consent')delete (fresh.targets[0].stores[0] as any).consent;
-   if(changed==='expired')fresh.targets[0].stores[0].consent.expires_at=new Date(Date.now()-1000).toISOString();
-   return json(fresh);
-  }});
-  await assert.rejects(client.ports.resolveSeed!(seed,new AbortController().signal),/account|target|store|Choose|scope changed|Opening visibility|Seed visibility/i,changed);
-  assert.equal(metadata,0,changed);assert.equal(resolves,1,changed);
+ for(const changed of ['session','account','target','resource','store','consent','expired','missing'] as const){let resolves=0,metadata=0;
+  const client=createExperienceDataClient({installationId:installation,targetKey:'primary',principal:{orgId:id,userId:connection},current:()=>true,fetch:async(path,options)=>{if(path.endsWith('/resolve')){const fresh=context('primary');if(++resolves>1){const target=fresh.targets[0];if(changed==='session')target.session_id=fileId;if(changed==='account')target.account.account_ref=fileId;if(changed==='target')target.target_key='changed';if(changed==='resource')target.resource_key='other';if(changed==='store')target.stores[0].declaration={...store,max_record_bytes:491519};if(changed==='consent')target.stores[0].consent.consent_digest='sha256:'+'b'.repeat(64);if(changed==='expired')target.stores[0].consent.expires_at=new Date(Date.now()-1000).toISOString();if(changed==='missing')delete (target.stores[0] as any).consent;}return json(fresh);}metadata++;const request=JSON.parse(String(options.body)) as AppDataRequest;return json({schema_version:'deft.app_data_result.v1',request_id:request.request_id,operation:request.operation,input_digest:await appDataInputDigest(request.operation,request.input),outcome:'completed',identities:[]});}});
+  await assert.rejects(client.ports.resolveSeed!(seed,new AbortController().signal),/Seed visibility ended|scope changed|Invalid input/,changed);assert.equal(metadata,1,changed);
  }
 });
