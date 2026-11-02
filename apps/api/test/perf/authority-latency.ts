@@ -10,8 +10,8 @@
 //
 // Usage:
 //   DEFT_APP_DATA_TIMING=authority pnpm exec tsx test/perf/authority-latency.ts --n 256 --concurrency 1 --route both
-import { appDataRuntimeAuthority } from '../src/lib/app-data-authority.js';
-import { integrationToolAuthority } from '../src/lib/app-integration-tool-runtime.js';
+import { appDataRuntimeAuthority } from '../../src/lib/app-data-authority.js';
+import { integrationToolAuthority } from '../../src/lib/app-integration-tool-runtime.js';
 
 type TimingEvent = { event: 'app_data_timing'; operation: string; outcome: 'completed' | 'failed'; failure_kind?: string; elapsed_ms: number; timings: Record<string, { calls: number; elapsed_ms: number }> };
 type Sample = { route: string; elapsed_ms: number; ok: boolean; code: string; timings: TimingEvent['timings']; failure_kind?: string };

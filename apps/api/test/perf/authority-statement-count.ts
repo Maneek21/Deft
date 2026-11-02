@@ -11,9 +11,9 @@
 //
 // Usage:
 //   DEFT_APP_DATA_TIMING=authority pnpm exec tsx test/perf/authority-statement-count.ts --route data --n 20
-import { db } from '../src/lib/db.js';
-import { appDataRuntimeAuthority } from '../src/lib/app-data-authority.js';
-import { integrationToolAuthority } from '../src/lib/app-integration-tool-runtime.js';
+import { db } from '../../src/lib/db.js';
+import { appDataRuntimeAuthority } from '../../src/lib/app-data-authority.js';
+import { integrationToolAuthority } from '../../src/lib/app-integration-tool-runtime.js';
 
 type Pool = import('pg').Pool & { on(event: 'query', cb: (q: unknown) => void): unknown; on(event: 'acquire' | 'release', cb: () => void): unknown };
 const pool = (db as unknown as { $client: Pool }).$client;
