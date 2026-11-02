@@ -1,6 +1,7 @@
 import type { Context } from 'hono';
 import { z } from 'zod';
 import { isAppError } from '../lib/app-errors.js';
+import { appHttpFailureDetails } from '../lib/app-http-errors.js';
 import { AppRunError } from '../lib/app-run-errors.js';
 import { ResourceSyncWebAuthenticationError } from '../lib/app-resource-sync-web-authority.js';
 import { ExperienceExposureError } from '../lib/app-experience-exposure-contract.js';
@@ -43,10 +44,11 @@ export function appHttpFailure(
     return c.json({ error: error.message, code: error.code }, error.status);
   }
   if (isAppError(error)) {
+    const details = appHttpFailureDetails(error.code, error.details);
     return c.json({
       error: error.message,
       code: error.code,
-      ...(error.details ? { details: error.details } : {}),
+      ...(details ? { details } : {}),
     }, error.status);
   }
   if (error instanceof AppRunError) {
