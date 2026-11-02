@@ -4,6 +4,7 @@ import { PRIVATE_FILE_LIMITS, PrivateFileUploadSchema } from './app-private-file
 const active = new Map<string, number>();
 let totalActive = 0;
 const invalid = () => new AppError('Invalid private file upload', 'APP_ACTION_INVALID', 400);
+const tooLarge = () => new AppError('Private file upload exceeds the size limit', 'APP_ACTION_INVALID', 413);
 
 export function parsePrivateFileUpload(request: Request) {
   const query = [...new URL(request.url).searchParams];
@@ -12,7 +13,8 @@ export function parsePrivateFileUpload(request: Request) {
   const raw = Object.fromEntries(query);
   if (!/^[1-9][0-9]{0,9}$/.test(raw.expected_revision ?? '')) throw invalid();
   const declared = request.headers.get('content-length');
-  if (declared !== null && (!/^[1-9][0-9]*$/.test(declared) || Number(declared) > PRIVATE_FILE_LIMITS.file_bytes)) throw invalid();
+  if (declared !== null && !/^[1-9][0-9]*$/.test(declared)) throw invalid();
+  if (declared !== null && Number(declared) > PRIVATE_FILE_LIMITS.file_bytes) throw tooLarge();
   return PrivateFileUploadSchema.parse({ ...raw, expected_revision: Number(raw.expected_revision),
     media_type: request.headers.get('content-type')?.trim().toLowerCase() });
 }
@@ -20,7 +22,7 @@ export function parsePrivateFileUpload(request: Request) {
 /** Capacity covers the read and its mutation, including cancelled DB settlement. */
 export async function withPrivateFileUpload<T>(ownerScope: string, request: Request,
   use: (bytes: Uint8Array) => Promise<T>): Promise<T> {
-  if (totalActive >= 8 || (active.get(ownerScope) ?? 0) >= 2) {
+  if (totalActive >= 16 || (active.get(ownerScope) ?? 0) >= 4) {
     throw new AppError('Private file upload is busy', 'APP_ACTION_UNAVAILABLE', 503);
   }
   totalActive++; active.set(ownerScope, (active.get(ownerScope) ?? 0) + 1);
