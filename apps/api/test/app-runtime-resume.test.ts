@@ -25,6 +25,13 @@ test('runtimeResumeDeadline extends one rolling window and never resurrects live
   assert.equal(runtimeResumeDeadline({now:new Date(NaN),current_expires_at:expired,expected_expires_at:expired}),null);
 });
 
+test('runtimeResumeDeadline never resumes past the owner target deadline',()=>{
+  const now=at(1_000_000),expired=at(900_000);
+  assert.equal(runtimeResumeDeadline({now,current_expires_at:expired,expected_expires_at:expired,target_expires_at:now}),null,'ended target');
+  assert.equal(runtimeResumeDeadline({now,current_expires_at:expired,expected_expires_at:expired,target_expires_at:at(now.getTime()+60_000)})?.getTime(),now.getTime()+60_000,'capped at target');
+  assert.equal(runtimeResumeDeadline({now,current_expires_at:expired,expected_expires_at:expired,target_expires_at:new Date(NaN)}),null);
+});
+
 test('deriveBackgroundHealth reports healthy, paused and ended and never crosses a tenant',()=>{
   const now=at(2_000_000);
   const live={expires_at:at(now.getTime()+60_000),revoked_at:null,updated_at:at(1_000_000)};

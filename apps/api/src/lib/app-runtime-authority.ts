@@ -298,6 +298,8 @@ export async function loadLiveRuntimeAuthority(
     if(persistent&&!await runtimeRenewalPersistentPrincipal(tx,{org_id:orgId,operator_user_id:session.operator_user_id,role:session.renewal_operator_role}))return null;
     const principal_expires_at=persistent?null:await runtimeRenewalPrincipal(tx,{org_id:orgId,operator_user_id:session.operator_user_id,sid:session.renewal_web_session_id,role:session.renewal_operator_role},now());
     if(!persistent&&!principal_expires_at)return null;
+    // A resume still honours the owner target deadline: an ended consent is never resumed.
+    if(resuming&&target_expires_at&&target_expires_at.getTime()<=now().getTime())return null;
     if(!resuming&&!runtimeRenewalDeadline({now:now(),current_expires_at:session.expires_at,expected_expires_at:session.expires_at,renewable_until:session.renewable_until,principal_expires_at,target_expires_at,...(persistent?{renewal_lifetime:'until_revoked' as const}:{})}))return null;
     renewal={renewable_until:session.renewable_until,principal_expires_at,target_expires_at,expires_at:session.expires_at,...(persistent?{renewal_lifetime:'until_revoked' as const}:{})};
     } catch { return null; }
@@ -441,7 +443,7 @@ export async function renewAppRuntimeSession(input:{session_id:string;session_to
   const serverClock=await tx.execute(sql`SELECT clock_timestamp() AS renewed_at`);
   const renewedAt=new Date(serverClock.rows[0]!.renewed_at as string|Date);
   const resumed=live.renewal.expires_at.getTime()<renewedAt.getTime();
-  const next=resumed?runtimeResumeDeadline({now:renewedAt,current_expires_at:live.renewal.expires_at,expected_expires_at:new Date(input.expected_expires_at)}):runtimeRenewalDeadline({now:renewedAt,current_expires_at:live.renewal.expires_at,expected_expires_at:new Date(input.expected_expires_at),...live.renewal});if(!next)return null;
+  const next=resumed?runtimeResumeDeadline({now:renewedAt,current_expires_at:live.renewal.expires_at,expected_expires_at:new Date(input.expected_expires_at),...(live.renewal.target_expires_at?{target_expires_at:live.renewal.target_expires_at}:{})}):runtimeRenewalDeadline({now:renewedAt,current_expires_at:live.renewal.expires_at,expected_expires_at:new Date(input.expected_expires_at),...live.renewal});if(!next)return null;
   await tx.update(appRuntimeSessions).set({expires_at:next,updated_at:clock()}).where(and(eq(appRuntimeSessions.org_id,locator.org_id),eq(appRuntimeSessions.id,input.session_id),eq(appRuntimeSessions.token_hash,tokenHash)));
   if(resumed)await tx.insert(auditLog).values({org_id:locator.org_id,actor_type:'system',actor_id:live.operator_user_id,action:'runtime_session_resumed',entity_type:'app_runtime_session',entity_id:input.session_id,before_state:{expires_at:live.renewal.expires_at.toISOString()},after_state:{expires_at:next.toISOString()},metadata:{gap_ms:renewedAt.getTime()-live.renewal.expires_at.getTime()}});
   if(!await loadLiveRuntimeAuthority(tx,locator.org_id,input.session_id,tokenHash,clock))throw Error('APP_RUNTIME_AUTHORITY_STALE');
