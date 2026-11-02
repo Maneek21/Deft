@@ -13,12 +13,16 @@
  * to this file.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Responsive, type Layout } from 'react-grid-layout';
+import { Responsive, verticalCompactor, type Layout, type LayoutItem, type ResponsiveLayouts } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import { getWidget } from '../lib/registry';
 import { WidgetShell } from './widget-shell';
-import { buildStackedLayout, type StackedLayoutSource } from './responsive-layout';
+import {
+  buildStackedLayout,
+  dashboardGridInteractionConfig,
+  type StackedLayoutSource,
+} from './responsive-layout';
 import type { BreakpointLayoutEntry, DashboardLayout, WidgetContext } from '../lib/widget-types';
 
 type ViewLinkResolver = (widgetId: string) => string | undefined;
@@ -81,7 +85,7 @@ export function DashboardGrid({
 
   const layouts = useMemo(() => {
     const placementById = new Map(placements.map(p => [p.instanceId, p]));
-    const lg: Layout[] = placements.map(p => {
+    const lg: LayoutItem[] = placements.map(p => {
       const def = getWidget(p.widgetId)!;
       return {
         i: p.instanceId,
@@ -90,10 +94,10 @@ export function DashboardGrid({
         maxW: def.maxSize?.w, maxH: def.maxSize?.h,
       };
     });
-    const fromOverride = (entries?: BreakpointLayoutEntry[]): Layout[] | undefined => {
+    const fromOverride = (entries?: BreakpointLayoutEntry[]): LayoutItem[] | undefined => {
       if (!entries) return undefined;
       const seen = new Set<string>();
-      const out: Layout[] = [];
+      const out: LayoutItem[] = [];
       for (const e of entries) {
         const p = placementById.get(e.i);
         if (!p) continue; // widget removed since this breakpoint layout was saved
@@ -142,7 +146,7 @@ export function DashboardGrid({
     };
   }, [placements, layout.responsiveLayouts]);
 
-  const handleChange = (_current: Layout[], all: { [breakpoint: string]: Layout[] }) => {
+  const handleChange = (_current: Layout, all: ResponsiveLayouts) => {
     if (!onLayoutChange) return;
     const lgEntries = all.lg ?? [];
     const byId = new Map(lgEntries.map(n => [n.i, n]));
@@ -151,7 +155,7 @@ export function DashboardGrid({
       if (!n) return p;
       return { ...p, x: n.x, y: n.y, w: n.w, h: n.h };
     });
-    const stripMeta = (entries?: Layout[]): BreakpointLayoutEntry[] | undefined =>
+    const stripMeta = (entries?: Layout): BreakpointLayoutEntry[] | undefined =>
       entries?.map(e => ({ i: e.i, x: e.x, y: e.y, w: e.w, h: e.h }));
     const responsiveLayouts = {
       md: stripMeta(all.md),
@@ -166,6 +170,8 @@ export function DashboardGrid({
     });
   };
 
+  const { dragConfig, resizeConfig } = dashboardGridInteractionConfig(editMode);
+
   return (
     <div ref={containerRef} className="dashboard4-grid" data-edit={editMode || undefined}>
       {containerWidth > 0 && (
@@ -178,12 +184,9 @@ export function DashboardGrid({
           rowHeight={60}
           margin={[16, 16]}
           containerPadding={[0, 0]}
-          compactType="vertical"
-          preventCollision={false}
-          isDraggable={editMode}
-          isResizable={editMode}
-          resizeHandles={['se', 'e', 's']}
-          draggableHandle=".widget-drag-handle"
+          compactor={verticalCompactor}
+          dragConfig={dragConfig}
+          resizeConfig={resizeConfig}
           onLayoutChange={handleChange}
         >
           {placements.map(p => {
