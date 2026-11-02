@@ -30,7 +30,7 @@ import type { AppRunTransaction } from './app-run-repository.js';
  * happened when the row was queued, and re-gating here would bounce
  * every conservative-trust employee's approved writes.
  */
-import { eq, and, or, sql, desc, isNull } from 'drizzle-orm';
+import { eq, and, or, sql, isNull } from 'drizzle-orm';
 import { db, withDbAdvisoryLock } from './db.js';
 import {
   agentActions,
@@ -841,7 +841,7 @@ async function dispatchAction(
 export async function approveAction(
   actionId: string,
   approverUserId: string,
-  options: { internal?: boolean; appRunFinalGuard?: (tx: AppRunTransaction) => Promise<void> } = {},
+  options: { internal?: boolean; appRunFinalGuard?: (tx: AppRunTransaction) => Promise<void>; humanWebSessionId?: string } = {},
 ): Promise<ApprovalResolverResult> {
   const result = await withDbAdvisoryLock(
     `agent-approval:${actionId}`,
@@ -857,7 +857,7 @@ export async function approveAction(
 async function approveActionLocked(
   actionId: string,
   approverUserId: string,
-  options: { internal?: boolean; appRunFinalGuard?: (tx: AppRunTransaction) => Promise<void> },
+  options: { internal?: boolean; appRunFinalGuard?: (tx: AppRunTransaction) => Promise<void>; humanWebSessionId?: string },
 ): Promise<ApprovalResolverResult> {
   // Pre-checks read immutable fields so they are safe to run before the
   // atomic claim. If any pre-check fails we return without ever flipping
@@ -964,7 +964,7 @@ async function approveActionLocked(
   // review()/confirm() authority — never from the agent's grant — so a receipt
   // is only ever issued after a fresh consent/account/policy re-check.
   if (row.action === 'app_record_mirror_nominate') {
-    return resolveRecordMirrorNominationAction(row, approverUserId);
+    return resolveRecordMirrorNominationAction(row, approverUserId, options);
   }
 
   // Retained native proposals remain audit records, never replacement sends.
@@ -1364,7 +1364,28 @@ async function approveActionLocked(
 async function resolveRecordMirrorNominationAction(
   row: typeof agentActions.$inferSelect,
   approverUserId: string,
+  options: { internal?: boolean; humanWebSessionId?: string },
 ): Promise<ApprovalResolverResult> {
+  // Only a person approving in the Deft web app can approve: MCP tokens, agents
+  // and internal callers never carry a web session, so they are refused before
+  // the card is claimed.
+  if (options.internal || !options.humanWebSessionId) {
+    return { status: 'error', code: 'FORBIDDEN', message: 'Approve this request in Deft' };
+  }
+  const [session] = await db
+    .select({ id: webSessions.id, expires_at: webSessions.expires_at })
+    .from(webSessions)
+    .where(and(
+      eq(webSessions.id, options.humanWebSessionId),
+      eq(webSessions.user_id, approverUserId),
+      eq(webSessions.org_id, row.org_id),
+      isNull(webSessions.revoked_at),
+    ))
+    .limit(1);
+  if (!session || session.expires_at.getTime() <= Date.now()) {
+    return { status: 'error', code: 'FORBIDDEN', message: 'No active web session for the approving owner' };
+  }
+
   const claimed = await db.execute(
     sql`UPDATE agent_actions
            SET approval_status = 'approved', approved_at = NOW(), approved_by_user_id = ${approverUserId}
@@ -1379,25 +1400,6 @@ async function resolveRecordMirrorNominationAction(
     }
     if (winner?.approval_status === 'rejected') return { status: 'rejected', message: 'already rejected' };
     return { status: 'error', code: 'INVALID_STATE', message: `action ${row.id} is no longer pending` };
-  }
-
-  const [session] = await db
-    .select({ id: webSessions.id, expires_at: webSessions.expires_at })
-    .from(webSessions)
-    .where(and(
-      eq(webSessions.user_id, approverUserId),
-      eq(webSessions.org_id, row.org_id),
-      isNull(webSessions.revoked_at),
-    ))
-    .orderBy(desc(webSessions.created_at))
-    .limit(1);
-  if (!session || session.expires_at.getTime() <= Date.now()) {
-    await db.update(agentActions).set({
-      executed_at: new Date(),
-      result: null,
-      error: 'No active web session for the approving owner',
-    }).where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id)));
-    return { status: 'error', code: 'FORBIDDEN', message: 'No active web session for the approving owner' };
   }
 
   const approver = { org_id: row.org_id, user_id: approverUserId, sid: session.id, access_expires_at: session.expires_at.getTime() };

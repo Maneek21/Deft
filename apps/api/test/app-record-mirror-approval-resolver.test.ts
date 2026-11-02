@@ -52,7 +52,8 @@ test('record-mirror nominations resolve owner-only, idempotently, and reject wit
     await client.query(`INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)`, [orgId, 'Mirror Resolver Org', 'mirror-resolver-' + orgId]);
     await client.query(`INSERT INTO users (id, email, name, is_agent) VALUES ($1, $2, $3, false), ($4, $5, $6, false)`, [ownerId, 'owner-' + ownerId + '@test.local', 'Owner', memberId, 'member-' + memberId + '@test.local', 'Member']);
     await client.query(`INSERT INTO org_members (id, org_id, user_id, role, is_active) VALUES ($1, $2, $3, 'owner', true), ($4, $5, $6, 'member', true)`, [uuid(), orgId, ownerId, uuid(), orgId, memberId]);
-    await client.query(`INSERT INTO web_sessions (id, user_id, org_id, refresh_token_hash, expires_at) VALUES ($1, $2, $3, $4, now() + interval '1 day')`, [uuid(), ownerId, orgId, 'a'.repeat(64)]);
+    const ownerSid = uuid();
+    await client.query(`INSERT INTO web_sessions (id, user_id, org_id, refresh_token_hash, expires_at) VALUES ($1, $2, $3, $4, now() + interval '1 day')`, [ownerSid, ownerId, orgId, 'a'.repeat(64)]);
     await client.query(`INSERT INTO agent_actions (id, org_id, user_id, source, action, params, approval_tier, approval_status) VALUES ($1, $2, $3, 'app_record_mirror', 'app_record_mirror_nominate', $4::jsonb, 'full', 'pending')`, [actionId, orgId, ownerId, JSON.stringify(params)]);
 
     const { approveAction, rejectAction } = await import('../src/lib/agent-approval-resolver.js');
@@ -61,7 +62,17 @@ test('record-mirror nominations resolve owner-only, idempotently, and reject wit
     assert.equal(denied.status, 'error');
     assert.equal((denied as { code: string }).code, 'FORBIDDEN');
 
-    const approved = await approveAction(actionId, ownerId);
+    // MCP/agent and internal approvals carry no web session and are refused.
+    const viaMcp = await approveAction(actionId, ownerId);
+    assert.equal((viaMcp as { code: string }).code, 'FORBIDDEN');
+    const viaInternal = await approveAction(actionId, ownerId, { internal: true, humanWebSessionId: ownerSid });
+    assert.equal((viaInternal as { code: string }).code, 'FORBIDDEN');
+    // Another person's web session does not stand in for the owner's.
+    const borrowed = await approveAction(actionId, ownerId, { humanWebSessionId: uuid() });
+    assert.equal(borrowed.status, 'error');
+    assert.equal(approvals, 0, 'no receipt from a refused approval');
+
+    const approved = await approveAction(actionId, ownerId, { humanWebSessionId: ownerSid });
     assert.equal(approved.status, 'approved', JSON.stringify(approved));
     assert.equal(approvals, 1, 'approveRecordMirrorNomination ran exactly once');
     const row = await client.query('SELECT approval_status, executed_at, result, error FROM agent_actions WHERE id = $1', [actionId]);
@@ -69,7 +80,7 @@ test('record-mirror nominations resolve owner-only, idempotently, and reject wit
     assert.equal(row.rows[0].error, null);
     assert.deepEqual(row.rows[0].result, receipt);
 
-    const again = await approveAction(actionId, ownerId);
+    const again = await approveAction(actionId, ownerId, { humanWebSessionId: ownerSid });
     assert.equal(again.status, 'approved');
     assert.equal(approvals, 1, 'a second approve does not re-issue a receipt');
 
