@@ -31,13 +31,13 @@ export function ExperienceCredentialRepair({target,client,disabled,onBusy,onCont
   }catch(error){if(current())setNotice(error instanceof Error?error.message:'Reconnection was not confirmed. Check status.');}
   finally{busy.current=false;if(alive.current){setWorking(false);onBusy(false);}}
  }
- if(!target.credential_repair||target.session?.state==='connected'&&!target.credential_repair.pending)return null;
+ if(!target.credential_repair||target.session?.state==='connected'&&!target.credential_repair.pending&&!target.credential_repair.candidate)return null;
  const unavailable=disabled||working||!target.runtime_ready;
  return <section aria-label="Reconnect existing account" className="space-y-3 rounded-xl border border-[var(--ghost-border)] p-4 text-sm">
-  <h4 className="font-semibold">{target.session?.state==='connected'?'Reconnection status':'Reconnect account'}</h4>
+  <h4 className="font-semibold">{target.session?.state==='connected'||pending?'Reconnection status':'Reconnect account'}</h4>
   <p>Restore the connection to this same account. Your saved records and existing permission expiry stay unchanged.</p>
   {notice&&<AppRequestNotice message={notice} role="status"/>}
-  {target.session?.state!=='connected'&&!pending&&target.credential_repair.candidate&&<><p className="break-words">{target.credential_repair.candidate.account.label}</p><button type="button" className="deft-pill min-h-11" disabled={unavailable} onClick={()=>void act('review')}>Reconnect account</button></>}
+  {!pending&&!target.credential_repair.pending&&target.credential_repair.candidate&&<><p className="break-words">{target.credential_repair.candidate.account.label}</p><button type="button" className="deft-pill min-h-11" disabled={unavailable} onClick={()=>void act('review')}>Reconnect account</button></>}
   {review&&<><p className="break-words font-medium">{review.account.label}</p><p>Existing access {review.scope.consent_lifetime==='until_revoked'?'continues until revoked':`ends ${new Date(review.scope.consent_expires_at!).toLocaleString()}`}.</p>
    {review.action_consents.map(consent=><p key={consent.action_key}>{consent.action_key.replaceAll('_',' ')} — {consent.consent_lifetime==='until_revoked'?'until revoked':`until ${new Date(consent.expires_at!).toLocaleString()}`}</p>)}
    {Date.parse(review.expires_at)<=Date.now()

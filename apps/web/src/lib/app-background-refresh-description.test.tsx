@@ -24,6 +24,16 @@ test('background refresh renders the supplied experience description as text', (
   assert.ok(!html.includes('Keep this app&#x27;s data current'));
 });
 
+test('background refresh keeps its controls visible and maintenance in one diagnostics disclosure', () => {
+  const html = renderToStaticMarkup(<ExperienceBackgroundRefresh {...props}
+    diagnostics={<button>Check account connection</button>}/>);
+  assert.match(html, /Manage connection &amp; diagnostics/);
+  assert.match(html, /Check account connection/);
+  assert.match(html, /Refresh interval/);
+  assert.doesNotMatch(html, />Troubleshooting</);
+  assert.doesNotMatch(html, /<details[^>]*>[^]*?<details/);
+});
+
 test('session loading preserves optional background refresh copy and rejects invalid values', () => {
   const id = '11111111-1111-4111-8111-111111111111';
   const session = {
