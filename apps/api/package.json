@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "@deft/app-kit": "workspace:*",
-    "@anthropic-ai/sdk": "^0.128.0",
+    "@anthropic-ai/sdk": "^1.3.0",
     "@deft/db": "workspace:*",
     "@deft/mcp": "workspace:*",
     "@deft/shared": "workspace:*",
