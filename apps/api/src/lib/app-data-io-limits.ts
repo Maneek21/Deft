@@ -17,7 +17,7 @@ const busy=()=>new AppError('App file transfer is busy; retry shortly','APP_PROV
 function admitted(selected:Group,key:string){return selected.active<selected.global&&(selected.owners.get(key)??0)<selected.perOwner;}
 function take(selected:Group,key:string){selected.active++;selected.owners.set(key,(selected.owners.get(key)??0)+1);}
 function release(selected:Group,key:string){selected.active--;const remaining=(selected.owners.get(key)??1)-1;if(remaining)selected.owners.set(key,remaining);else selected.owners.delete(key);}
-function drain(selected:Group){while(selected.waiting.length&&admitted(selected,selected.waiting[0].key)){const waiter=selected.waiting.shift()!;clearTimeout(waiter.timer);waiter.grant();}}
+function drain(selected:Group){while(selected.waiting.length&&admitted(selected,selected.waiting[0]!.key)){const waiter=selected.waiting.shift()!;clearTimeout(waiter.timer);waiter.grant();}}
 function acquire(selected:Group,key:string):Promise<void>{
  if(admitted(selected,key)){take(selected,key);return Promise.resolve();}
  return new Promise<void>((resolve,reject)=>{const waiter:Waiter={key,grant:()=>{take(selected,key);resolve();},
