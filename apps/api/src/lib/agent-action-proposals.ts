@@ -1153,14 +1153,21 @@ function stableActionParamsValue(value: unknown): unknown {
 }
 
 /**
- * Give every module write a stable retry identity. The typed action compiler
- * already derives a deterministic `idempotency_key` via `buildActionGraph`, so
- * a module mutation that reaches the runner path must not be dropped just
- * because the model omitted (or duplicated) the key while juggling several
- * actions. This mirrors the compiler's `stableActionKey` contract without
- * weakening any permission, consent, or tenant-isolation check: the key is a
- * pure function of the source message, action name and canonical params, so it
- * is stable for a genuine retry and distinct for distinct mutations.
+ * Give every module write a stable retry identity before proposal validation.
+ *
+ * The runner (agent-runner chat_mention path) queues the model's raw module
+ * tool input verbatim into `pendingActions`; the module tool contract marks
+ * `idempotency_key` required, so a model that omits the key (common when it
+ * emits two CRM mutations in one turn) gets its action rejected by
+ * `validateRegisteredProposalAction` and silently dropped. The typed action
+ * compiler already derives a deterministic `idempotency_key` via
+ * `buildActionGraph`; mirror that `stableActionKey` contract for the runner
+ * path so a module mutation is not lost for a missing key.
+ *
+ * The key is a pure function of the source message, action name and canonical
+ * params (plus the positional index, which keeps two same-turn mutations
+ * distinct), so it is stable for a genuine retry and distinct for distinct
+ * mutations. No permission, consent, or tenant-isolation check is weakened.
  */
 export function ensureModuleWriteIdempotencyKeys(
   actions: ProposedAgentAction[],
