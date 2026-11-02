@@ -29,7 +29,12 @@ async function boundedBytes(response:Response,max:number,signal:AbortSignal){
  * account itself. The Worker cannot nominate a URL, token or connection handle. */
 export function createExperienceDataClient(options:{installationId:string;targetKey?:string;accountRef?:()=>string|undefined;principal?:{orgId:string;userId:string};current:()=>boolean;
  fetch:(path:string,options:RequestInit)=>Promise<Response>;review?:ExperienceRecordFormPorts['review']}){
- const check=(signal:AbortSignal)=>{signal.throwIfAborted();if(!options.current())throw Error('App data scope ended');};
+ // Opening-scoped target nomination shared by the concurrent opening reads.
+ // This is never an authority decision: every dispatch still goes to the Host
+ // route (which re-runs the full admission) and the Runtime still checks current
+ // authority. The window is <=5 s, never persisted, and cleared by any mutation.
+ let opening:{expiresAt:number;targets:Map<string,Promise<unknown>>}|null=null;
+ const check=(signal:AbortSignal)=>{try{signal.throwIfAborted();if(!options.current())throw Error('App data scope ended');}catch(error){opening=null;throw error;}};
  const context=async(signal:AbortSignal,storeKey?:string)=>{check(signal);
   const resolve=options.targetKey!==undefined&&storeKey!==undefined;
   const input=resolve?AppDataResolveInputSchema.parse({schema_version:'deft.app_data_resolve.v1',target_key:options.targetKey,store_key:storeKey}):null;
@@ -40,12 +45,30 @@ export function createExperienceDataClient(options:{installationId:string;target
  const select=async(storeKey:string,signal:AbortSignal)=>{const value=await context(signal,storeKey),candidates=value.targets.filter(target=>target.stores.some(store=>store.declaration.key===storeKey));
   const exact=options.targetKey?candidates.filter(target=>target.target_key===options.targetKey):candidates;
   const targets=options.targetKey?exact:candidates;if(targets.length!==1)throw Error('Choose a connected account');const expected=options.accountRef?.();if(expected!==undefined&&targets[0].account.account_ref!==expected)throw Error('Source account changed');return targets[0];};
+ type SelectedTarget=Awaited<ReturnType<typeof select>>;
+ // One local pin implementation shared by fresh request targets and the opening
+ // window, so a reused nomination is checked exactly like a fresh selection.
+ const targetPinned=(target:SelectedTarget,storeKey:string)=>{const expected=options.accountRef?.();if(options.targetKey!==undefined&&target.target_key!==options.targetKey||expected!==undefined&&target.account.account_ref!==expected||!target.stores.some(store=>store.declaration.key===storeKey))throw Error('App data account or target changed');};
+ // The pending promise (not the value) is stored so the concurrent locator and
+ // hydration reads share one resolve. A rejected or unpinned entry is evicted so
+ // a later retry resolves again.
+ const openWindow=()=>opening&&opening.expiresAt>Date.now()?opening:(opening={expiresAt:Date.now()+5000,targets:new Map()});
+ const openingSelect=async(storeKey:string,signal:AbortSignal):Promise<SelectedTarget>=>{
+  check(signal);const window=openWindow();let pending=window.targets.get(storeKey);
+  if(!pending){pending=select(storeKey,signal).catch(error=>{window.targets.delete(storeKey);throw error;});window.targets.set(storeKey,pending);}
+  const target=await pending as SelectedTarget;check(signal);
+  try{targetPinned(target,storeKey);}catch(error){window.targets.delete(storeKey);throw error;}
+  const store=target.stores.find(item=>item.declaration.key===storeKey);
+  if(!store?.consent||appConsentDeadline(store.consent.expires_at,store.consent.consent_lifetime)<=Date.now()){window.targets.delete(storeKey);throw Error('Opening visibility ended');}
+  return target;
+ };
+ const clearOpening=()=>{opening=null;};
  const request=async(storeKey:string,operation:AppDataRequest['operation'],input:Record<string,unknown>,signal:AbortSignal,requestId:string=crypto.randomUUID(),upload?:File,allowSettled=false,selected?:Awaited<ReturnType<typeof select>>,rejectDenied=false):Promise<AppDataResult>=>{
   check(signal);let target=selected??await select(storeKey,signal),data=AppDataRequestSchema.parse({schema_version:'deft.app_data_request.v1',request_id:requestId,operation,input});
   // A target may be reused only by its immediate trusted operation. Recheck
   // local account pins at dispatch and disclosure; Runtime still independently
   // verifies current authority for this exact request.
-  const targetCurrent=()=>{const expected=options.accountRef?.();if(options.targetKey!==undefined&&target.target_key!==options.targetKey||expected!==undefined&&target.account.account_ref!==expected||!target.stores.some(store=>store.declaration.key===storeKey))throw Error('App data account or target changed');};targetCurrent();
+  const targetCurrent=()=>targetPinned(target,storeKey);targetCurrent();
   let frame:Uint8Array|undefined,bytes:Uint8Array|undefined;
   try{if(upload){bytes=new Uint8Array(await upload.arrayBuffer());frame=frameAppData(data,bytes);}
    const dispatch=()=>traceExperienceRead(signal,'data.request',()=>options.fetch(`/api/app-data/connections/${encodeURIComponent(target.session_id)}/${upload?'binary':'requests'}`,{
@@ -108,7 +131,7 @@ export function createExperienceDataClient(options:{installationId:string;target
    const rows=(result.items??[]).map(item=>AppDataRecordMetaSchema.parse(item));if(rows.some(item=>item.store_key!==control.source_store_key)||new Set(rows.map(item=>item.record_id)).size!==rows.length)throw Error('Saved content changed');
    return {choices:rows.filter(row=>row.status==='draft').map(row=>({store_key:row.store_key,record_id:row.record_id,expected_revision:row.revision,expected_content_digest:row.content_digest,
     label:typeof row.summary?.title==='string'?row.summary.title:typeof row.summary?.address==='string'?row.summary.address:'Saved content'})),next_cursor:result.next_cursor??null};},
-  prepareChange:async(node,record,control,source,requestId,signal,invocationMode,parameters)=>{const {target,destination,source:sourceStore}=await changeTarget(node,control,signal);
+  prepareChange:async(node,record,control,source,requestId,signal,invocationMode,parameters)=>{clearOpening();const {target,destination,source:sourceStore}=await changeTarget(node,control,signal);
    if(invocationMode==='initial'&&(!node.initial_change||node.initial_change.operation_key!==control.operation_key||node.initial_change.source_store_key!==control.source_store_key||record.revision!==1||record.content_revision!==1))throw Error('Initial change nomination changed');
    if((control.parameters==='runtime_prompt')!==(parameters!==undefined))throw Error('Parameter prompt nomination changed');
    const input=changeInput(node,record,control,source,invocationMode,parameters),reply=await request(node.store_key,'record_prepare_change',input,signal,requestId),prepared=AppPreparedRecordChangeSchema.parse(reply.prepared_change);
@@ -118,14 +141,14 @@ export function createExperienceDataClient(options:{installationId:string;target
     ||Date.parse(prepared.expires_at)<=Date.now()||Date.parse(prepared.expires_at)>Math.min(Date.now()+300000,appConsentDeadline(destination.consent!.expires_at,destination.consent!.consent_lifetime),appConsentDeadline(sourceStore.consent!.expires_at,sourceStore.consent!.consent_lifetime))
     ||new TextEncoder().encode(canonicalAppDataJson(prepared.value)).length>node.profile.max_record_bytes)throw Error('Saved-content preview changed');
    validateRecordFormValue(prepared.value,node.profile);check(signal);return prepared;},
-  applyChange:async(node,record,prepared,requestId,signal)=>{const control={operation_key:prepared.operation_key,source_store_key:prepared.source.store_key},{target}=await changeTarget(node,control,signal);
+  applyChange:async(node,record,prepared,requestId,signal)=>{clearOpening();const control={operation_key:prepared.operation_key,source_store_key:prepared.source.store_key},{target}=await changeTarget(node,control,signal);
    if(prepared.schema_version==='deft.app_prepared_record_change.v2'&&!node.record_changes?.some(item=>item.operation_key===prepared.operation_key&&item.source_store_key===prepared.source.store_key&&item.parameters==='runtime_prompt'))throw Error('Parameter control unavailable');
    if(target.account.account_ref!==prepared.account_ref||Date.parse(prepared.expires_at)<=Date.now()||prepared.invocation_mode==='initial'&&(!node.initial_change||node.initial_change.operation_key!==prepared.operation_key||node.initial_change.source_store_key!==prepared.source.store_key||record.revision!==1||record.content_revision!==1))throw Error('Preview access ended');
    const input=AppRecordApplyChangeInputSchema.parse({...changeInput(node,record,control,prepared.source,prepared.invocation_mode,prepared.schema_version==='deft.app_prepared_record_change.v2'?prepared.parameters:undefined),prepared_id:prepared.prepared_id,prepared_digest:prepared.prepared_digest});
    const result=await request(node.store_key,'record_apply_change',input,signal,requestId,undefined,true);
    if(result.outcome!=='completed'){if(Object.keys(result).some(key=>!['schema_version','request_id','operation','input_digest','outcome'].includes(key)))throw Error('Saved change result changed');throw new RecordChangeNotApplied();}
    return verifyRecordChangeReceipt(record,row(result,node.record_id),prepared);},
-  changeStatus:async(node,record,prepared,requestId,signal)=>{const control={operation_key:prepared.operation_key,source_store_key:prepared.source.store_key},target=await select(node.store_key,signal),store=target.stores.find(item=>item.declaration.key===node.store_key);
+  changeStatus:async(node,record,prepared,requestId,signal)=>{clearOpening();const control={operation_key:prepared.operation_key,source_store_key:prepared.source.store_key},target=await select(node.store_key,signal),store=target.stores.find(item=>item.declaration.key===node.store_key);
    if(!store?.consent||appConsentDeadline(store.consent.expires_at,store.consent.consent_lifetime)<=Date.now())throw Error('Saved-draft access ended');
    if(target.account.account_ref!==prepared.account_ref)throw Error('Saved-content account changed');
    const input=AppRecordApplyChangeInputSchema.parse({...changeInput(node,record,control,prepared.source,prepared.invocation_mode,prepared.schema_version==='deft.app_prepared_record_change.v2'?prepared.parameters:undefined),prepared_id:prepared.prepared_id,prepared_digest:prepared.prepared_digest});
@@ -134,8 +157,8 @@ export function createExperienceDataClient(options:{installationId:string;target
     ||status.record_id!==node.record_id||status.revision!==record.revision+1)throw Error('Saved change status changed');
    const next=row(await request(node.store_key,'record_read',locator(node),signal),node.record_id);if(next.revision!==status.revision||next.content_digest!==status.content_digest)throw Error('Saved change record changed');return verifyRecordChangeReceipt(record,next,prepared);},
  };
- const recordTarget=async(node:ExperienceRecordFormReference,signal:AbortSignal)=>{
-  const target=await select(node.store_key,signal),store=target.stores.find(store=>store.declaration.key===node.store_key);
+ const recordTarget=async(node:ExperienceRecordFormReference,signal:AbortSignal,fresh=false)=>{
+  const target=await (fresh?select(node.store_key,signal):openingSelect(node.store_key,signal)),store=target.stores.find(store=>store.declaration.key===node.store_key);
   if(!store?.consent||appConsentDeadline(store.consent.expires_at,store.consent.consent_lifetime)<=Date.now()||node.profile.max_record_bytes>store.declaration.max_record_bytes
    ||(node.profile.schema_version!=='deft.record_form_profile.v2'&&node.profile.files&&(node.profile.files.max_files>store.declaration.max_files||node.profile.files!.max_file_bytes>store.declaration.max_file_bytes
    ||node.profile.files.max_total_bytes>store.declaration.max_total_file_bytes))||node.profile.schema_version==='deft.record_form_profile.v2'&&store.declaration.max_files!==0||node.profile.schema_version==='deft.record_form_profile.v3'&&!node.profile.files&&store.declaration.max_files!==0)throw Error('Draft profile is not admitted');
@@ -186,15 +209,22 @@ export function createExperienceDataClient(options:{installationId:string;target
    }
    checkPins();openingProofActive=false;const recoveryScope={...options.principal!,installationId:options.installationId,accountId:scope.accountId,stateKey:node.store_key,recordId:record_id,resourceTargetKey:scope.resourceTargetKey};
    return {node:resolved,record,identities:snapshot.identities??[],primaryIdentity:snapshot.primary_identity??null,openingRecovery:{scope:recoveryScope,row:structuredClone(record),expiresAt:Math.min(expiry,opened.expiresAt)}};
-  },resolveSeed:async(node:ExperienceRecordFormNode,signal:AbortSignal)=>{if(!node.seed)return node;const target=await select(node.store_key,signal),scope={...options.principal!,installationId:options.installationId,accountId:target.account.account_ref,stateKey:node.store_key,resourceTargetKey:target.target_key,formId:node.id+(Object.hasOwn(node.seed.value,'record_seed')?':'+await sha(new TextEncoder().encode(canonicalAppDataJson(node.seed.value))):'')};const pinnedStore=target.stores.find(item=>item.declaration.key===node.store_key);const locator=createRecordSeedLocator({scope,authorize:async()=>{
-   if(!pinnedStore?.consent||appConsentDeadline(pinnedStore.consent.expires_at,pinnedStore.consent.consent_lifetime)<=Date.now())throw Error('Seed visibility ended');
+  },resolveSeed:async(node:ExperienceRecordFormNode,signal:AbortSignal)=>{if(!node.seed)return node;const target=await openingSelect(node.store_key,signal),scope={...options.principal!,installationId:options.installationId,accountId:target.account.account_ref,stateKey:node.store_key,resourceTargetKey:target.target_key,formId:node.id+(Object.hasOwn(node.seed.value,'record_seed')?':'+await sha(new TextEncoder().encode(canonicalAppDataJson(node.seed.value))):'')};const pinnedStore=target.stores.find(item=>item.declaration.key===node.store_key);const locator=createRecordSeedLocator({scope,authorize:async(_recordId,phase)=>{
+   if(phase!=='confirm'){
+    // before_reserve / after_reserve only touch the local IndexedDB locator: no
+    // data is disclosed and nothing is dispatched. Re-validate the pins of the
+    // target captured by openingSelect (<=5 s old) instead of buying two more
+    // Host admissions. The confirm phase still proves current authority.
+    check(signal);try{targetPinned(target,node.store_key);}catch{throw Error('Seed visibility ended');}
+    if(!pinnedStore?.consent||appConsentDeadline(pinnedStore.consent.expires_at,pinnedStore.consent.consent_lifetime)<=Date.now())throw Error('Seed visibility ended');return;
+   }
    // Both reads independently authorize the pinned account. The fresh target
    // must still match every original pin before browser storage can be used.
    const [current]=await Promise.all([select(node.store_key,signal),request(node.store_key,'connection_metadata',{store_key:node.store_key},signal,undefined,undefined,false,target)]);check(signal);
    const store=current.stores.find(item=>item.declaration.key===node.store_key);
    if(current.account.account_ref!==scope.accountId||current.session_id!==target.session_id||current.target_key!==target.target_key||current.resource_key!==target.resource_key||!store?.consent||appConsentDeadline(store.consent.expires_at,store.consent.consent_lifetime)<=Date.now()||canonicalAppDataJson(store)!==canonicalAppDataJson(pinnedStore))throw Error('Seed visibility ended');
   }});const record_id=await locator.reserve(node.record_id);seedLocators.set(record_id,locator);return {...node,record_id};},recoveryScope:async(node:ExperienceRecordFormNode,signal:AbortSignal)=>{const target=await select(node.store_key,signal),store=target.stores.find(v=>v.declaration.key===node.store_key);if(!store?.consent||appConsentDeadline(store.consent.expires_at,store.consent.consent_lifetime)<=Date.now())throw Error('Recovery visibility ended');if(!node.seed||!seedRows.has(node.record_id))await request(node.store_key,'record_read',locator(node),signal);check(signal);return {...options.principal!,installationId:options.installationId,accountId:target.account.account_ref,stateKey:node.store_key,recordId:node.record_id,resourceTargetKey:target.target_key};},
-   recoverySnapshot:async(node:ExperienceRecordFormNode,signal:AbortSignal)=>{const target=await recordTarget(node,signal),accountId=target.account.account_ref,resourceTargetKey=target.target_key;
+   recoverySnapshot:async(node:ExperienceRecordFormNode,signal:AbortSignal)=>{const target=await recordTarget(node,signal,true),accountId=target.account.account_ref,resourceTargetKey=target.target_key;
     // One fresh authority path and exact record read; seed defaults and identities are not recovery evidence.
     const result=await request(node.store_key,'record_read',locator(node),signal,crypto.randomUUID(),undefined,!!node.seed,target);check(signal);
     const expected=options.accountRef?.(),consent=target.stores.find(store=>store.declaration.key===node.store_key)?.consent;if(expected!==undefined&&expected!==accountId||!consent||appConsentDeadline(consent.expires_at,consent.consent_lifetime)<=Date.now())throw Error('Recovery account changed');
@@ -223,14 +253,14 @@ export function createExperienceDataClient(options:{installationId:string;target
     // checks and nothing is disclosed until all current checks have settled.
     const hydrate=Object.hasOwn(seedNode.seed!.value,'record_seed');
     const defaultValue=async()=>{if(!seedNode.initial_change)return {value:undefined,notice:''};try{
-     const pin=(current:Awaited<ReturnType<typeof select>>)=>{if(current.session_id!==target.session_id||current.target_key!==target.target_key||current.account.account_ref!==target.account.account_ref)throw Error('Seed default account changed');};
-     pin((await changeTarget(seedNode,seedNode.initial_change,signal)).target);
-     const source=await request(seedNode.initial_change.source_store_key,'connection_metadata',{store_key:seedNode.initial_change.source_store_key,seed:{operation_key:seedNode.initial_change.operation_key,destination_store_key:seedNode.store_key,value:seedNode.seed!.value}},signal);
-     pin((await changeTarget(seedNode,seedNode.initial_change,signal)).target);return {value:source.record_seed_value,notice:''};
+     const pin=(current:SelectedTarget)=>{if(current.session_id!==target.session_id||current.target_key!==target.target_key||current.account.account_ref!==target.account.account_ref)throw Error('Seed default account changed');};
+     pin(checkedChangeTarget(seedNode,seedNode.initial_change,await openingSelect(seedNode.store_key,signal)).target);
+     const source=await request(seedNode.initial_change.source_store_key,'connection_metadata',{store_key:seedNode.initial_change.source_store_key,seed:{operation_key:seedNode.initial_change.operation_key,destination_store_key:seedNode.store_key,value:seedNode.seed!.value}},signal,undefined,undefined,false,target);
+     pin(checkedChangeTarget(seedNode,seedNode.initial_change,await openingSelect(seedNode.store_key,signal)).target);return {value:source.record_seed_value,notice:''};
     }catch{return {value:undefined,notice:recordFormLabels(seedNode.profile).initial_change_unavailable};}};
     const [existing,identity,defaults]=await Promise.allSettled([
      request(seedNode.store_key,'record_read',locator(node),signal,crypto.randomUUID(),undefined,true,target),
-     request(seedNode.store_key,'connection_metadata',{store_key:seedNode.store_key,...(hydrate?{seed:{operation_key:'record_seed',destination_store_key:seedNode.store_key,value:seedNode.seed!.value}}:{})},signal),
+     request(seedNode.store_key,'connection_metadata',{store_key:seedNode.store_key,...(hydrate?{seed:{operation_key:'record_seed',destination_store_key:seedNode.store_key,value:seedNode.seed!.value}}:{})},signal,undefined,undefined,false,target),
      defaultValue(),
     ]);check(signal);if(existing.status==='rejected')throw existing.reason;const read=existing.value;
     if(read.outcome==='completed'){const record=row(read,seedNode.record_id);await seedLocators.get(seedNode.record_id)?.confirmed(seedNode.record_id);seedLocators.delete(seedNode.record_id);seedRows.delete(seedNode.record_id);return {record,identities:read.identities??[],primaryIdentity:read.primary_identity??null};}
@@ -238,17 +268,20 @@ export function createExperienceDataClient(options:{installationId:string;target
     if(hydrate&&!metadata.record_seed_value)throw Error('Source seed unavailable');if(defaults.status==='rejected')throw defaults.reason;
     const initial=defaults.value.value??metadata.record_seed_value??seedNode.seed!.value,initialNotice=defaults.value.notice;
     validateRecordFormValue(initial,seedNode.profile);if(recordFormFiles(initial,seedNode.profile).length)throw Error('Seed files must be empty');for(const field of recordFormFields(seedNode.profile)){if(field.kind!=='verified_identity')continue;const identity=recordFormIdentity(initial,field);if(identity&&!metadata.identities?.some(item=>item.address===identity))throw Error('Seed identity changed');}
-    const record:ExperienceRecordRow={record_id:seedNode.record_id,revision:0,content_digest:await sha(new TextEncoder().encode(canonicalAppDataJson(initial))),status:'draft',value:initial,files:[],summary:{initial_value_notice:initialNotice}};seedRows.set(seedNode.record_id,{record:structuredClone(record),accountId:target.account.account_ref,resourceTargetKey:target.target_key});return {record,identities:metadata.identities??[],primaryIdentity:metadata.primary_identity??null};
+     const record:ExperienceRecordRow={record_id:seedNode.record_id,revision:0,content_digest:await sha(new TextEncoder().encode(canonicalAppDataJson(initial))),status:'draft',value:initial,files:[],summary:{initial_value_notice:initialNotice}};seedRows.set(seedNode.record_id,{record:structuredClone(record),accountId:target.account.account_ref,resourceTargetKey:target.target_key});
+     const consent=target.stores.find(item=>item.declaration.key===seedNode.store_key)?.consent;
+     const expiresAt=Math.min(Date.now()+30000,consent?appConsentDeadline(consent.expires_at,consent.consent_lifetime):0);
+     return {record,identities:metadata.identities??[],primaryIdentity:metadata.primary_identity??null,...(options.principal?{openingRecovery:{scope:{...options.principal,installationId:options.installationId,accountId:target.account.account_ref,stateKey:seedNode.store_key,recordId:seedNode.record_id,resourceTargetKey:target.target_key},row:structuredClone(record),expiresAt}}:{})};
    }
    const result=await request(node.store_key,'record_read',locator(node),signal,undefined,undefined,false,target),record=checkedRecord(node,result);
    return {record,identities:result.identities??[],primaryIdentity:result.primary_identity??null};},
-  save:async(node,revision,value,requestId,digest,signal)=>{const creating='seed' in node&&!!node.seed&&revision===0;if(revision===0&&!creating)throw Error('Unsaved seed required');const next=row(await request(node.store_key,creating?'record_create':'record_save',creating?{...locator(node),value}:{...locator(node),expected_revision:revision,expected_content_digest:digest,value},signal,requestId),node.record_id);if(creating){if(next.revision!==1)throw Error('Created record changed');await seedLocators.get(node.record_id)?.confirmed(node.record_id);}seedRows.delete(node.record_id);return next;},
-  saveStatus:async(node,revision,value,requestId,digest,signal)=>{const creating='seed' in node&&!!node.seed&&revision===0,operation=creating?'record_create':'record_save',input=creating?{...locator(node),value}:{...locator(node),expected_revision:revision,expected_content_digest:digest,value},reply=await request(node.store_key,'request_status',{store_key:node.store_key,request_id:requestId},signal),status=reply.request_status;
+  save:async(node,revision,value,requestId,digest,signal)=>{clearOpening();const creating='seed' in node&&!!node.seed&&revision===0;if(revision===0&&!creating)throw Error('Unsaved seed required');const next=row(await request(node.store_key,creating?'record_create':'record_save',creating?{...locator(node),value}:{...locator(node),expected_revision:revision,expected_content_digest:digest,value},signal,requestId),node.record_id);if(creating){if(next.revision!==1)throw Error('Created record changed');await seedLocators.get(node.record_id)?.confirmed(node.record_id);}seedRows.delete(node.record_id);return next;},
+  saveStatus:async(node,revision,value,requestId,digest,signal)=>{clearOpening();const creating='seed' in node&&!!node.seed&&revision===0,operation=creating?'record_create':'record_save',input=creating?{...locator(node),value}:{...locator(node),expected_revision:revision,expected_content_digest:digest,value},reply=await request(node.store_key,'request_status',{store_key:node.store_key,request_id:requestId},signal),status=reply.request_status;
    if(!status||status.state!=='completed')return null;if(status.request_id!==requestId||status.operation!==operation||status.input_digest!==await appDataInputDigest(operation,input)||status.record_id!==node.record_id||status.revision!==revision+1)throw Error('Saved status changed');
    const next=row(await request(node.store_key,'record_read',locator(node),signal),node.record_id);if(next.revision!==status.revision||next.content_digest!==status.content_digest)throw Error('Saved record changed');if(creating)await seedLocators.get(node.record_id)?.confirmed(node.record_id);return next;},
-  upload:async(node,record,file,bytes,signal)=>row(await request(node.store_key,'file_upload',{...locator(node),expected_revision:record.revision,expected_content_digest:record.content_digest,
-   ...file,sha256:'sha256:'+file.sha256},signal,crypto.randomUUID(),bytes),node.record_id),
-  detach:async(node,record,file,signal)=>row(await request(node.store_key,'file_detach',{...fileLocator(node,record,file),expected_revision:record.revision,expected_content_digest:record.content_digest},signal),node.record_id),
+  upload:async(node,record,file,bytes,signal)=>{clearOpening();return row(await request(node.store_key,'file_upload',{...locator(node),expected_revision:record.revision,expected_content_digest:record.content_digest,
+   ...file,sha256:'sha256:'+file.sha256},signal,crypto.randomUUID(),bytes),node.record_id);},
+  detach:async(node,record,file,signal)=>{clearOpening();return row(await request(node.store_key,'file_detach',{...fileLocator(node,record,file),expected_revision:record.revision,expected_content_digest:record.content_digest},signal),node.record_id);},
   readFile:async(node,record,file,signal)=>{const result=await binary(node.store_key,'file_read',fileLocator(node,record,file),signal);
    if(result.media_type!==file.media_type||result.bytes.length!==file.size_bytes){result.bytes.fill(0);throw Error('File metadata changed');}return result.bytes;},
   listOriginals:async(node,record,signal)=>{const source=recordCopySource(node,record);if(!source||record.status!=='draft')throw Error('Original source unavailable');
@@ -257,10 +290,10 @@ export function createExperienceDataClient(options:{installationId:string;target
    const reply=await request(node.store_key,'resource_list_files',{store_key:node.store_key,...source},signal),files=(reply.files??[]).map(file=>AppDataSourceFileSchema.parse(file));
    if(files.length>32||new Set(files.map(file=>file.file_ref)).size!==files.length||files.some(file=>file.size_bytes>store.resource_content!.max_source_bytes))throw Error('Original file catalog changed');return files;},
   copyOriginal:async(node,record,source,file,fileId,requestId,signal)=>{
-   if(file.disposition!=='attachment'||file.size_bytes>node.profile.files!.max_file_bytes)throw Error('Original file cannot be copied');
+   clearOpening();if(file.disposition!=='attachment'||file.size_bytes>node.profile.files!.max_file_bytes)throw Error('Original file cannot be copied');
    const input=copyInput(node,record,source,file,fileId),next=row(await request(node.store_key,'file_copy',input,signal,requestId),node.record_id);
    return verifyFileCopy(node,record,next,source,file,fileId);},
-  copyStatus:async(node,record,source,file,fileId,requestId,signal)=>{const input=copyInput(node,record,source,file,fileId),reply=await request(node.store_key,'request_status',{store_key:node.store_key,request_id:requestId},signal),status=reply.request_status;
+  copyStatus:async(node,record,source,file,fileId,requestId,signal)=>{clearOpening();const input=copyInput(node,record,source,file,fileId),reply=await request(node.store_key,'request_status',{store_key:node.store_key,request_id:requestId},signal),status=reply.request_status;
    if(!status||status.state!=='completed')return null;
    if(status.request_id!==requestId||status.operation!=='file_copy'||status.input_digest!==await appDataInputDigest('file_copy',input)||status.record_id!==node.record_id||status.revision!==record.revision+1)throw Error('Copy status changed');
    const next=row(await request(node.store_key,'record_read',locator(node),signal),node.record_id);if(next.revision!==status.revision||next.content_digest!==status.content_digest)throw Error('Copied draft changed');return verifyFileCopy(node,record,next,source,file,fileId);},
