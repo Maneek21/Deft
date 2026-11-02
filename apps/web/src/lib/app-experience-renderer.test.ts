@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { renderExperienceView, clearExperienceView, flushExperienceInputs, suspendExperienceView, type ExperienceUiEvent, type ExperienceDocumentContext } from './app-experience-renderer';
+import { renderExperienceView, clearExperienceView, flushExperienceInputs, suspendExperienceView, EXPERIENCE_RENDERER_CSS, type ExperienceUiEvent, type ExperienceDocumentContext } from './app-experience-renderer';
 import type { ExperienceView, ExperienceNode } from './app-experience-bridge';
 
 // Minimal DOM seam exercises native event delivery and replacement, rather than CSS.
@@ -10,7 +10,7 @@ class Element {
   style: Record<string,string> = {};
   selectionStart: number | null = 0; selectionEnd: number | null = 0;
   classList = { add() {}, toggle() {} };
-  listeners = new Map<string, (() => void)[]>();
+  listeners = new Map<string, ((event?: unknown) => void)[]>();
   constructor(readonly tag: string) {}
   get tagName() { return this.tag.toUpperCase(); }
   get firstElementChild() { return this.children[0]; }
@@ -22,8 +22,8 @@ class Element {
   setAttribute(name:string,value:string) { this.attributes.set(name,value); }
   removeAttribute(name:string) { this.attributes.delete(name); }
   getAttribute(name:string) { return this.attributes.get(name) ?? null; }
-  addEventListener(name: string, callback: () => void) { this.listeners.set(name, [...this.listeners.get(name) ?? [], callback]); }
-  fire(name: string) { this.listeners.get(name)?.forEach(callback => callback()); }
+  addEventListener(name: string, callback: (event?: unknown) => void) { this.listeners.set(name, [...this.listeners.get(name) ?? [], callback]); }
+  fire(name: string, event?: unknown) { this.listeners.get(name)?.forEach(callback => callback(event)); }
   focus() { dom.activeElement = this; }
   setSelectionRange(start: number, end: number) { this.selectionStart = start; this.selectionEnd = end; }
   contains(element: Element): boolean { return this.children.some(child => child === element || child.contains(element)); }
@@ -284,6 +284,56 @@ test('trusted unchanged reader retains its delayed read across unrelated renders
  try{renderExperienceView(container,view,()=>{},options);await Promise.resolve();await Promise.resolve();const wrapper=(container as unknown as Element).children[0];renderExperienceView(container,view,()=>{},options);await Promise.resolve();assert.equal(reads,1);assert.equal(contexts[0].current(),true);assert.equal(contexts[0].signal.aborted,false);assert.equal((container as unknown as Element).children[0],wrapper);release({kind:'document',id:'body',format:'plain',content:'Exact current source'});await new Promise<void>(done=>setImmediate(done));assert.equal(mounts,1);clearExperienceView(container);assert.equal(disposed,1);assert.equal(contexts[0].current(),false);}
  finally{clearExperienceView(container);for(const [key,descriptor]of saved)if(descriptor)Object.defineProperty(globalThis,key,descriptor);else Reflect.deleteProperty(globalThis,key);}
 });
+test('status and progress text nodes are announced politely and icon buttons expose their label',()=>{
+ const original=globalThis.document;Object.assign(globalThis,{document:{...dom,createElementNS:(_namespace:string,tag:string)=>new Element(tag)},HTMLElement:Element,HTMLInputElement:Input,HTMLTextAreaElement:Textarea});
+ const container=new Element('div') as unknown as HTMLElement;
+ try{
+  renderExperienceView(container,{root:{kind:'stack',id:'root',children:[
+    {kind:'text',id:'status',text:'Workspace updated.'},
+    {kind:'text',id:'sync_progress',text:'Refreshing…'},
+    {kind:'text',id:'save_notice',text:'Draft saved.'},
+    {kind:'text',id:'body',text:'Ordinary text.'},
+    {kind:'button',id:'refresh',label:'Refresh',icon:'refresh'},
+  ]}},()=>undefined);
+  const nodes=(container as unknown as Element).querySelectorAll('*');
+  const byText=(text:string)=>nodes.find(node=>node.textContent===text)!;
+  for(const text of ['Workspace updated.','Refreshing…','Draft saved.']){
+   const node=byText(text);assert.equal(node.getAttribute('role'),'status',text);assert.equal(node.getAttribute('aria-live'),'polite',text);
+  }
+  assert.equal(byText('Ordinary text.').getAttribute('role'),null,'ordinary prose is not a live region');
+  assert.equal(nodes.find(node=>node.tag==='button')!.getAttribute('aria-label'),'Refresh');
+ }finally{clearExperienceView(container);Object.assign(globalThis,{document:original});}
+});
+
+test('Enter in a search input flushes the typed value and activates the adjacent search control',()=>{
+ const saved=new Map(['document','HTMLElement','HTMLInputElement','HTMLTextAreaElement'].map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));
+ Object.assign(globalThis,{document:{...dom,createElementNS:(_namespace:string,tag:string)=>new Element(tag)},HTMLElement:Element,HTMLInputElement:Input,HTMLTextAreaElement:Textarea});
+ const container=new Element('div') as unknown as HTMLElement,events:ExperienceUiEvent[]=[];
+ try{
+  renderExperienceView(container,{root:{kind:'stack',id:'root',layout:'toolbar',children:[
+    {kind:'input',id:'query',label:'Search',value:'',appearance:'search'},
+    {kind:'button',id:'search',label:'Search',icon:'search'},
+  ]}},event=>{events.push(event);});
+  const input=(container as unknown as Element).querySelectorAll('input[data-focus-key]')[0]!;
+  input.value='quarterly plan';input.fire('input');input.fire('keydown',{key:'Enter'});
+  assert.deepEqual(events,[{kind:'input',node_id:'query',value:'quarterly plan'},{kind:'click',node_id:'search'}],
+   'Enter flushes the pending search text before activating the search control');
+ }finally{clearExperienceView(container);for(const[key,descriptor]of saved)if(descriptor)Object.defineProperty(globalThis,key,descriptor);else Reflect.deleteProperty(globalThis,key);}
+});
+
+test('shared renderer styles use Obsidian tokens, wrap reader headings and expose skeleton and attachment surfaces',()=>{
+ for(const legacy of ['#1e293b','#f8fafc','#64748b','#2563eb','#eff6ff','#cbd5e1'])assert.equal(EXPERIENCE_RENDERER_CSS.includes(legacy),false,legacy);
+ for(const token of ['var(--on-surface','var(--on-surface-variant','var(--surface)','var(--surface-container-low)','var(--surface-container)','var(--primary)','var(--primary-container)','var(--on-primary-container)','var(--border-default)','var(--accent-subtle)'])assert.ok(EXPERIENCE_RENDERER_CSS.includes(token),token);
+ assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-stack-document\s*>\s*\.ex-stack-toolbar\s*>\s*\.ex-text-heading\{[^}]*white-space:normal/);
+ assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-stack-document\s*>\s*\.ex-stack-toolbar\s*>\s*\.ex-text-heading\{[^}]*-webkit-line-clamp:2/);
+ assert.match(EXPERIENCE_RENDERER_CSS,/@media\(max-width:480px\)/);
+ assert.match(EXPERIENCE_RENDERER_CSS,/@container\(max-width:480px\)/);
+ assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-document-view\[aria-busy="true"\]\{[^}]*linear-gradient/);
+ assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-document-view\[aria-busy="true"\]\{[^}]*animation:shimmer 1\.5s ease infinite/);
+ assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-attachment-chip\{[^}]*background:var\(--surface-container-low\)/);
+ assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-attachment-name\{[^}]*overflow-wrap:anywhere/);
+});
+
 test('retention never survives changed record digest policy trusted scope suspension or clear',async()=>{
  const saved=new Map(['document','HTMLElement','HTMLInputElement','HTMLTextAreaElement'].map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));Object.assign(globalThis,{document:dom,HTMLElement:Element,HTMLInputElement:Input,HTMLTextAreaElement:Textarea});
  try{for(const change of ['record','digest','policy','scope','revoked','suspend','clear']){
