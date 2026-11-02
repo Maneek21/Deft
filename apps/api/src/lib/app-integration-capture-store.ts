@@ -1,6 +1,6 @@
 import {randomUUID} from 'node:crypto';
-import {and,eq,sql} from 'drizzle-orm';
-import {orgs,orgMembers,users,spaces,spaceMembers,wikiPages,wikiPageVersions,wikiCitations} from '@deft/db/schema';
+import {and,eq,sql,desc} from 'drizzle-orm';
+import {orgs,orgMembers,users,spaces,spaceMembers,wikiPages,wikiPageVersions,wikiCitations,appRuntimeSessions,appRuntimeBindings,appResourceBindings} from '@deft/db/schema';
 import {appIntegrationCapturePolicies as policies,appIntegrationCaptureClaims as claims,appIntegrationCaptureThreads as threads,appIntegrationCaptureSources as sources} from '../../../../packages/db/src/app-integration-capture-schema.js';
 import {AppIntegrationCapturePolicyInputSchema,type AppIntegrationSourceTarget} from '../../../../packages/app-kit/src/app-integration-source.js';
 import type {AppRunTransaction as Tx} from './app-run-repository.js';
@@ -8,8 +8,45 @@ import type {AppIntegrationSourceCaller} from './app-integration-source.js';
 import type {AppIntegrationCapturePolicy,AppIntegrationCapturePorts} from './app-integration-capture.js';
 import {createNativeKnowledge} from './native-context-create.js';
 import {reserveKnowledgeCaptureBudget} from './native-knowledge-budget.js';
+import {APP_RUNTIME_SESSION_RESUME_GRACE_MS} from './app-runtime-contract.js';
 
 const scope=(caller:AppIntegrationSourceCaller,target:Pick<AppIntegrationSourceTarget,'installation_id'|'account_ref'|'store_key'>)=>({org_id:caller.org_id,owner_user_id:caller.user_id,installation_id:target.installation_id,account_ref:target.account_ref,store_key:target.store_key});
+
+/** App-neutral background lease health, derived from `until_revoked` runtime
+ * sessions. `paused` means a lapsed lease still inside the grace window;
+ * `ended` means outside it or revoked. `null` means no background lease. */
+export type BackgroundHealthState='healthy'|'paused'|'ended';
+export type BackgroundHealth=Readonly<{state:BackgroundHealthState;since:string;reason:string}>;
+type BackgroundSessionRow=Readonly<{expires_at:Date;revoked_at:Date|null;updated_at:Date}>;
+const BACKGROUND_STATE_RANK:Record<BackgroundHealthState,number>={healthy:0,paused:1,ended:2};
+function sessionBackgroundState(session:BackgroundSessionRow,now:Date,graceMs:number):Readonly<{state:BackgroundHealthState;since:Date;reason:string}>{
+ if(session.revoked_at)return{state:'ended',since:session.revoked_at,reason:'revoked'};
+ if(session.expires_at>now)return{state:'healthy',since:session.updated_at,reason:'live'};
+ const gap=now.getTime()-session.expires_at.getTime();
+ if(gap<=graceMs)return{state:'paused',since:session.expires_at,reason:'lapsed'};
+ return{state:'ended',since:new Date(session.expires_at.getTime()+graceMs),reason:'expired'};
+}
+/** Worst-state-wins aggregate; `since`/`reason` follow the most severe lease. */
+export function deriveBackgroundHealth(sessions:readonly BackgroundSessionRow[],now:Date,graceMs=APP_RUNTIME_SESSION_RESUME_GRACE_MS):BackgroundHealth|null{
+ let result:Readonly<{state:BackgroundHealthState;since:Date;reason:string}>|null=null;
+ for(const session of sessions){const current=sessionBackgroundState(session,now,graceMs);
+  if(!result||BACKGROUND_STATE_RANK[current.state]>BACKGROUND_STATE_RANK[result.state]
+   ||(BACKGROUND_STATE_RANK[current.state]===BACKGROUND_STATE_RANK[result.state]&&current.since<result.since))result=current;}
+ return result?{state:result.state,since:result.since.toISOString(),reason:result.reason}:null;
+}
+/** Minimal-baseline tolerant: absent runtime tables yield null background. */
+export async function readBackgroundHealth(tx:Tx,caller:AppIntegrationSourceCaller,installationId:string,nowMs:number):Promise<BackgroundHealth|null>{
+ const probe=await tx.execute(sql`SELECT to_regclass('app_runtime_sessions') IS NOT NULL AS present`);
+ if(!probe.rows[0]?.present)return null;
+ const sessions=await tx.select({expires_at:appRuntimeSessions.expires_at,revoked_at:appRuntimeSessions.revoked_at,updated_at:appRuntimeSessions.updated_at})
+  .from(appRuntimeSessions)
+  .leftJoin(appRuntimeBindings,and(eq(appRuntimeBindings.org_id,appRuntimeSessions.org_id),eq(appRuntimeBindings.id,appRuntimeSessions.runtime_binding_id)))
+  .leftJoin(appResourceBindings,and(eq(appResourceBindings.org_id,appRuntimeSessions.org_id),eq(appResourceBindings.id,appRuntimeSessions.resource_binding_id)))
+  .where(and(eq(appRuntimeSessions.org_id,caller.org_id),eq(appRuntimeSessions.operator_user_id,caller.user_id),eq(appRuntimeSessions.renewal_lifetime,'until_revoked'),
+   sql`(${appRuntimeBindings.app_installation_id}=${installationId} OR ${appResourceBindings.app_installation_id}=${installationId})`))
+  .orderBy(desc(appRuntimeSessions.created_at));
+ return deriveBackgroundHealth(sessions,new Date(nowMs));
+}
 const where=(table:typeof policies|typeof claims|typeof threads|typeof sources,caller:AppIntegrationSourceCaller,target:Pick<AppIntegrationSourceTarget,'installation_id'|'account_ref'|'store_key'>)=>{
  const s=scope(caller,target);return and(eq(table.org_id,s.org_id),eq(table.owner_user_id,s.owner_user_id),eq(table.installation_id,s.installation_id),eq(table.account_ref,s.account_ref),eq(table.store_key,s.store_key));
 };
@@ -102,7 +139,8 @@ export function createAppIntegrationCaptureStore(input:{
   const [counts]=await tx.select({failed:sql<number>`count(*) FILTER(WHERE state='failed')::int`,last_success_at:sql<string|null>`max(updated_at) FILTER(WHERE state IN ('captured','updated'))`}).from(claims).where(where(claims,caller,target));
   const enabled=row?.enabled??false,retired_reason=row?.retired_reason??null;
   const state:('healthy'|'grant_ended'|'never_enabled'|'retrying')=!enabled?retired_reason==='grant_ended'?'grant_ended':'never_enabled':retired_reason==='grant_ended'||!grantActive?'grant_ended':(counts?.failed??0)>0?'retrying':'healthy';
-  return {account_grant_active:grantActive,state,last_error:row?.last_error??null,last_success_at:counts?.last_success_at?new Date(counts.last_success_at).toISOString():null,retired_reason,retired_at:row?.retired_at?new Date(row.retired_at).toISOString():null};
+  const background=await readBackgroundHealth(tx,caller,target.installation_id,now());
+  return {account_grant_active:grantActive,state,last_error:row?.last_error??null,last_success_at:counts?.last_success_at?new Date(counts.last_success_at).toISOString():null,retired_reason,retired_at:row?.retired_at?new Date(row.retired_at).toISOString():null,background};
  };
  return {...ports,
   async settings(tx:Tx,caller:AppIntegrationSourceCaller,target:AppIntegrationSourceTarget,grantActive=true){

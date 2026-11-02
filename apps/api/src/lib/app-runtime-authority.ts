@@ -8,18 +8,18 @@ import { and, eq, sql } from 'drizzle-orm';
 import {
   appGrantSnapshots, appInstallations, appRuntimeBindings,
   appRuntimeRegistrations, appRuntimeSessions, appRuns, appVersions,
-  capabilityProviderSnapshots, orgMembers,
+  auditLog, capabilityProviderSnapshots, orgMembers,
 } from '@deft/db/schema';
 import { AppRunAuthorizationSnapshotSchema, AppRuntimeSessionAuthoritySchema,
   canonicalCapabilityJson, type AppRuntimeSessionAuthority } from '@deft/shared';
 import { db } from './db.js';
 import type { AppRunTransaction } from './app-run-repository.js';
-import { APP_RUNTIME_CHANNEL_VERSION, APP_RUNTIME_SESSION_MS } from './app-runtime-contract.js';
+import { APP_RUNTIME_CHANNEL_VERSION, APP_RUNTIME_SESSION_MS, APP_RUNTIME_SESSION_RESUME_GRACE_MS } from './app-runtime-contract.js';
 import { PostgresAppRunLiveAuthorization } from './app-run-live-authorization.js';
 import type { ReviewedRuntimeAction } from './app-runtime-review.js';
 import type { WebAuthorityGuard } from './app-resource-sync-web-authority.js';
 import { isAppV5RuntimeActionsEnabled } from './env.js';
-import {runtimeRenewalOptedIn,runtimeRenewalPrincipal,runtimeRenewalPersistentPrincipal,runtimeRenewalTargetOwner,runtimeRenewalTargetDeadline,runtimeRenewalDeadline} from './app-runtime-renewal.js';
+import {runtimeRenewalOptedIn,runtimeRenewalPrincipal,runtimeRenewalPersistentPrincipal,runtimeRenewalTargetOwner,runtimeRenewalTargetDeadline,runtimeRenewalDeadline,runtimeSessionResumable,runtimeResumeDeadline} from './app-runtime-renewal.js';
 
 const runtimeLiveAuthorizer = new PostgresAppRunLiveAuthorization();
 type CurrentRuntimeAction = ReviewedRuntimeAction & Readonly<{ protocol_version: string; owner_target_consent_expires_at?: Date;owner_target_consent_lifetime?:'until_revoked' }>;
@@ -149,6 +149,7 @@ export async function loadLiveRuntimeAuthority(
   tokenHash: string,
   now: () => Date,
   runId?: string,
+  resume?: Readonly<{ graceMs: number }>,
 ): Promise<LiveRuntimeAuthority | null> {
   // Locate without trusting the row, then lock in the same order as App
   // lifecycle transitions: installation -> registration -> binding -> session.
@@ -215,9 +216,17 @@ export async function loadLiveRuntimeAuthority(
     eq(appRuntimeSessions.token_hash, tokenHash),
   )).limit(1);
   const checkedAt = now();
+  const expired = session ? session.expires_at <= checkedAt : false;
+  // A lapsed `until_revoked` lease is resumable only inside the fixed grace
+  // window. Every other authority predicate below still runs unchanged, so a
+  // resume never bypasses revocation, epochs, membership, version, grant or
+  // binding checks. Outside the window the hard 403 path is untouched.
+  const resuming = resume?.graceMs !== undefined && !!session
+    && session.renewal_lifetime === 'until_revoked' && expired
+    && runtimeSessionResumable(session.expires_at, checkedAt, resume.graceMs);
   if (!session || session.audience !== 'app_runtime' || session.revoked_at
     || !session.runtime_binding_id || session.resource_binding_id !== null
-    || session.expires_at <= checkedAt || session.runtime_registration_id !== locator.runtime_registration_id
+    || (expired && !resuming) || session.runtime_registration_id !== locator.runtime_registration_id
     || session.runtime_binding_id !== locator.runtime_binding_id
     || session.operator_user_id !== locator.operator_user_id) return null;
   const [registration] = await tx.select().from(appRuntimeRegistrations).where(and(
@@ -288,11 +297,12 @@ export async function loadLiveRuntimeAuthority(
     const persistent=session.renewal_lifetime==='until_revoked';
     if(persistent&&!await runtimeRenewalPersistentPrincipal(tx,{org_id:orgId,operator_user_id:session.operator_user_id,role:session.renewal_operator_role}))return null;
     const principal_expires_at=persistent?null:await runtimeRenewalPrincipal(tx,{org_id:orgId,operator_user_id:session.operator_user_id,sid:session.renewal_web_session_id,role:session.renewal_operator_role},now());
-    if(!persistent&&!principal_expires_at||!runtimeRenewalDeadline({now:now(),current_expires_at:session.expires_at,expected_expires_at:session.expires_at,renewable_until:session.renewable_until,principal_expires_at,target_expires_at,...(persistent?{renewal_lifetime:'until_revoked' as const}:{})}))return null;
+    if(!persistent&&!principal_expires_at)return null;
+    if(!resuming&&!runtimeRenewalDeadline({now:now(),current_expires_at:session.expires_at,expected_expires_at:session.expires_at,renewable_until:session.renewable_until,principal_expires_at,target_expires_at,...(persistent?{renewal_lifetime:'until_revoked' as const}:{})}))return null;
     renewal={renewable_until:session.renewable_until,principal_expires_at,target_expires_at,expires_at:session.expires_at,...(persistent?{renewal_lifetime:'until_revoked' as const}:{})};
     } catch { return null; }
   }
-  if (session.expires_at <= now()) return null;
+  if (session.expires_at <= now() && !resuming) return null;
   return Object.freeze({
     pin: AppRuntimeSessionAuthoritySchema.parse({
       org_id: orgId, app_installation_id: registration.app_installation_id,
@@ -417,18 +427,23 @@ export async function issueAppRuntimeSession(input: Readonly<{
     expires_at: expiresAt,...(input.technical_renewal?{renewable_until:renewableUntil,...(input.technical_renewal.renewal_lifetime?{renewal_lifetime:input.technical_renewal.renewal_lifetime}:{})}:{}) }) : null;
 }
 
-/** Only extends an explicitly enrolled, still-live session; attempt identity is immutable. */
+/** Extends an explicitly enrolled session. A still-live session renews exactly
+ * as before; a lapsed `until_revoked` lease resumes only inside the grace
+ * window, with every live authority predicate re-checked and an audit row
+ * recording the gap. Attempt identity is immutable. */
 export async function renewAppRuntimeSession(input:{session_id:string;session_token:string;expected_expires_at:string},clock:()=>Date=()=>new Date()){
  const tokenHash=hashAppRuntimeToken(input.session_token);
  try { return await db.transaction(async tx=>{
-  const [locator]=await tx.select({org_id:appRuntimeSessions.org_id}).from(appRuntimeSessions).where(and(eq(appRuntimeSessions.id,input.session_id),eq(appRuntimeSessions.token_hash,tokenHash))).limit(1);if(!locator)return null;
-  const live=await loadLiveRuntimeAuthority(tx,locator.org_id,input.session_id,tokenHash,clock);if(!live?.renewal)return null;
+  const [locator]=await tx.select({org_id:appRuntimeSessions.org_id,renewal_lifetime:appRuntimeSessions.renewal_lifetime}).from(appRuntimeSessions).where(and(eq(appRuntimeSessions.id,input.session_id),eq(appRuntimeSessions.token_hash,tokenHash))).limit(1);if(!locator)return null;
+  const live=await loadLiveRuntimeAuthority(tx,locator.org_id,input.session_id,tokenHash,clock,undefined,locator.renewal_lifetime==='until_revoked'?{graceMs:APP_RUNTIME_SESSION_RESUME_GRACE_MS}:undefined);if(!live?.renewal)return null;
   // The database enforces the fifteen-minute extension bound. Derive the new
   // expiry from that same clock, without allowing API/DB skew to raise the cap.
   const serverClock=await tx.execute(sql`SELECT clock_timestamp() AS renewed_at`);
   const renewedAt=new Date(serverClock.rows[0]!.renewed_at as string|Date);
-  const next=runtimeRenewalDeadline({now:renewedAt,current_expires_at:live.renewal.expires_at,expected_expires_at:new Date(input.expected_expires_at),...live.renewal});if(!next)return null;
+  const resumed=live.renewal.expires_at.getTime()<renewedAt.getTime();
+  const next=resumed?runtimeResumeDeadline({now:renewedAt,current_expires_at:live.renewal.expires_at,expected_expires_at:new Date(input.expected_expires_at)}):runtimeRenewalDeadline({now:renewedAt,current_expires_at:live.renewal.expires_at,expected_expires_at:new Date(input.expected_expires_at),...live.renewal});if(!next)return null;
   await tx.update(appRuntimeSessions).set({expires_at:next,updated_at:clock()}).where(and(eq(appRuntimeSessions.org_id,locator.org_id),eq(appRuntimeSessions.id,input.session_id),eq(appRuntimeSessions.token_hash,tokenHash)));
+  if(resumed)await tx.insert(auditLog).values({org_id:locator.org_id,actor_type:'system',actor_id:live.operator_user_id,action:'runtime_session_resumed',entity_type:'app_runtime_session',entity_id:input.session_id,before_state:{expires_at:live.renewal.expires_at.toISOString()},after_state:{expires_at:next.toISOString()},metadata:{gap_ms:renewedAt.getTime()-live.renewal.expires_at.getTime()}});
   if(!await loadLiveRuntimeAuthority(tx,locator.org_id,input.session_id,tokenHash,clock))throw Error('APP_RUNTIME_AUTHORITY_STALE');
   return {session_id:input.session_id,expires_at:next.toISOString(),renewable_until:live.renewal.renewable_until?.toISOString()??null,...(live.renewal.renewal_lifetime?{renewal_lifetime:live.renewal.renewal_lifetime}:{})};
  }); } catch(error) {
