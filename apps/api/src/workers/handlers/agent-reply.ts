@@ -21,6 +21,7 @@ import { resolveAssigneeWithMatches } from '../../lib/resolve-assignee.js';
 import { resolveProjectTarget } from '../../lib/resolve-project-target.js';
 import {
   compileDeftyActionDraft,
+  ensureModuleWriteIdempotencyKeys,
   formatDeftyApprovalReply,
   hasUnrequestedWikiPlaceholder,
   persistAgentReplyWithActions,
@@ -1072,7 +1073,7 @@ function buildWriteIntentClarification(content: string, replyText: string): stri
     ].join('\n');
   }
   if (claimedQueued) {
-    return 'I could not create a valid approval card for that draft. Please restate the action with the exact target and I will try again.';
+    return 'I could not prepare the approval card for that request. Please try again, or ask for each change separately so I can draft them one at a time.';
   }
   return '';
 }
@@ -1991,9 +1992,14 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
         ?? (compiledActionDraft ? compiledActionDraft.actions : null)
         ?? (fallbackWriteAction ? [fallbackWriteAction] : []),
     });
+    // A module write that reaches the runner without a model-supplied
+    // idempotency key would otherwise fail proposal validation and be dropped.
+    // Give it the same stable retry identity the compiler derives, so two CRM
+    // mutations in one message survive to the approval queue.
+    const pendingActionsWithStableKeys = ensureModuleWriteIdempotencyKeys(rawPendingActions, requestMessageId);
     const enrichedPendingActions = wantsDiscussionTask
-      ? enrichDiscussionTaskActions(rawPendingActions, discussionSourceMessages)
-      : rawPendingActions;
+      ? enrichDiscussionTaskActions(pendingActionsWithStableKeys, discussionSourceMessages)
+      : pendingActionsWithStableKeys;
     // Validate source identities before retaining them, including on the first
     // draft. Otherwise the command id replaces the evidence before it is saved.
     const withReadableProvenance = async (actions: any[]) => {

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {collectCompilerReadFacts,validateCompilerGrounding} from './agent-compiler-read-facts.js';
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { agentActions, messages, orgs, projects, tasks } from '@deft/db/schema';
@@ -1136,6 +1137,46 @@ function inferRequestedWikiWriteMode(promptContent: string): 'create' | 'update'
     return 'create';
   }
   return undefined;
+}
+
+function stableActionParamsValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableActionParamsValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, item]) => item !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, stableActionParamsValue(item)]),
+    );
+  }
+  return value;
+}
+
+/**
+ * Give every module write a stable retry identity. The typed action compiler
+ * already derives a deterministic `idempotency_key` via `buildActionGraph`, so
+ * a module mutation that reaches the runner path must not be dropped just
+ * because the model omitted (or duplicated) the key while juggling several
+ * actions. This mirrors the compiler's `stableActionKey` contract without
+ * weakening any permission, consent, or tenant-isolation check: the key is a
+ * pure function of the source message, action name and canonical params, so it
+ * is stable for a genuine retry and distinct for distinct mutations.
+ */
+export function ensureModuleWriteIdempotencyKeys(
+  actions: ProposedAgentAction[],
+  sourceMessageId: string,
+): ProposedAgentAction[] {
+  return actions.map((action, index) => {
+    if (!isModuleWriteAction(action.action) && !isModuleTaskLinkWriteAction(action.action)) return action;
+    const params = isRecord(action.params) ? action.params : {};
+    if (typeof params.idempotency_key === 'string' && params.idempotency_key.trim()) return action;
+    const { idempotency_key: _ignored, ...canonical } = params;
+    const key = `defty_${createHash('sha256')
+      .update(JSON.stringify(stableActionParamsValue({ sourceMessageId, index, action: action.action, params: canonical })))
+      .digest('hex')
+      .slice(0, 32)}`;
+    return { ...action, params: { ...params, idempotency_key: key } };
+  });
 }
 
 export function validateRegisteredProposalAction(action: {
