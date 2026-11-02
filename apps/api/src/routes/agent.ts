@@ -257,7 +257,13 @@ async function maybePostApprovalConfirmation(params: {
     const canReconcileSource = proposingEmployee?.user_id === approvalMessage.user_id
       || Boolean(canonicalDeftyAuthor);
     if (!canReconcileSource) return { confirmation, approvalMessage, actor, reconciledMessage: undefined };
-    const reconciledContent = reconcileApprovalReplyText(approvalMessage.content, content);
+    // Strip the now-stale approval-prompt prose from the proposal, but do not
+    // append the outcome: the separate confirmation message below is the
+    // canonical "Done" summary, and repeating it here rendered the summary
+    // twice in the thread after the last card was approved.
+    // A proposal made only of approval prose would be left empty; keep the
+    // outcome there rather than an empty message.
+    const reconciledContent = reconcileApprovalReplyText(approvalMessage.content, '') || content;
     const oldBlocks = Array.isArray(originalMetadata.agent_blocks) ? originalMetadata.agent_blocks : [];
     const [reconciledMessage] = await tx.update(messages).set({
       content: reconciledContent,
