@@ -21,6 +21,7 @@ import { resolveAssigneeWithMatches } from '../../lib/resolve-assignee.js';
 import { resolveProjectTarget } from '../../lib/resolve-project-target.js';
 import {
   compileDeftyActionDraft,
+  ensureModuleWriteIdempotencyKeys,
   formatDeftyApprovalReply,
   hasUnrequestedWikiPlaceholder,
   persistAgentReplyWithActions,
@@ -1996,9 +1997,17 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
         ?? (compiledActionDraft ? compiledActionDraft.actions : null)
         ?? (fallbackWriteAction ? [fallbackWriteAction] : []),
     });
+    // The runner queues the model's raw module-write tool input verbatim. The
+    // module tool contract marks `idempotency_key` required, so when the model
+    // omits it (common while juggling two CRM mutations in one turn) proposal
+    // validation drops the action and the reply degrades to the misleading
+    // "could not create a valid approval card" clarification. Derive the same
+    // stable key the action compiler would, so every module write survives to
+    // the approval queue. No permission, consent, or tenant check is touched.
+    const pendingActionsWithStableKeys = ensureModuleWriteIdempotencyKeys(rawPendingActions, requestMessageId);
     const enrichedPendingActions = wantsDiscussionTask
-      ? enrichDiscussionTaskActions(rawPendingActions, discussionSourceMessages)
-      : rawPendingActions;
+      ? enrichDiscussionTaskActions(pendingActionsWithStableKeys, discussionSourceMessages)
+      : pendingActionsWithStableKeys;
     // Validate source identities before retaining them, including on the first
     // draft. Otherwise the command id replaces the evidence before it is saved.
     const withReadableProvenance = async (actions: any[]) => {
