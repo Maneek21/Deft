@@ -160,6 +160,7 @@ test('public Knowledge route and real PostgreSQL policy guard preserve default-o
  const snapshot=await f.source.read(human,target,'read'),identity={installation_id:target.installation_id,account_ref:target.account_ref,store_key:target.store_key,ref};
  let queues=0;const route=createAppIntegrationCaptureRoutes({authenticate:async request=>{if(request.headers.get('authorization')!=='Bearer isolated-human')throw Error('denied');return human;},
   settings:(c)=>transaction(tx=>store.settings(tx,c,target)),
+  health:(c)=>transaction(tx=>store.health(tx,c,target,true)),
   write:(c,_identity,p)=>store.writePolicy(c,target,p,tx=>f.source.guard(tx,c,snapshot,'read'),async(_tx,p)=>{if(p.enabled)queues++;}),
   related:async()=>[],open:async()=>{throw Error('not part of fixture');}});
  const send=(path:string,input:unknown,token='Bearer isolated-human')=>route.request('http://isolated/'+path,{method:'POST',headers:{'content-type':'application/json',authorization:token},body:JSON.stringify(input)});

@@ -33,7 +33,8 @@ export const restoreAccessSameAccountRequired = (installationId: string, targetK
 function grantPin(grant: RestoreGrant): string {
   const identity = grant.kind === 'record_consent' ? `store:${grant.store_key}`
     : grant.kind === 'observation_consent' ? `binding:${grant.resource_binding_id}:interval:${grant.interval_seconds}`
-      : `action:${grant.action_key}`;
+      : grant.kind === 'capture_policy' ? `capture:${grant.store_key}`
+        : `action:${grant.action_key}`;
   const lifetime = grant.lifetime.kind === 'until_revoked' ? 'until_revoked' : `duration:${grant.lifetime.seconds}`;
   return `${grant.kind}|${identity}|${lifetime}`;
 }

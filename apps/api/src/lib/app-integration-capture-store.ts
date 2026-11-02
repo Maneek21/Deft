@@ -9,8 +9,8 @@ import type {AppIntegrationCapturePolicy,AppIntegrationCapturePorts} from './app
 import {createNativeKnowledge} from './native-context-create.js';
 import {reserveKnowledgeCaptureBudget} from './native-knowledge-budget.js';
 
-const scope=(caller:AppIntegrationSourceCaller,target:AppIntegrationSourceTarget)=>({org_id:caller.org_id,owner_user_id:caller.user_id,installation_id:target.installation_id,account_ref:target.account_ref,store_key:target.store_key});
-const where=(table:typeof policies|typeof claims|typeof threads|typeof sources,caller:AppIntegrationSourceCaller,target:AppIntegrationSourceTarget)=>{
+const scope=(caller:AppIntegrationSourceCaller,target:Pick<AppIntegrationSourceTarget,'installation_id'|'account_ref'|'store_key'>)=>({org_id:caller.org_id,owner_user_id:caller.user_id,installation_id:target.installation_id,account_ref:target.account_ref,store_key:target.store_key});
+const where=(table:typeof policies|typeof claims|typeof threads|typeof sources,caller:AppIntegrationSourceCaller,target:Pick<AppIntegrationSourceTarget,'installation_id'|'account_ref'|'store_key'>)=>{
  const s=scope(caller,target);return and(eq(table.org_id,s.org_id),eq(table.owner_user_id,s.owner_user_id),eq(table.installation_id,s.installation_id),eq(table.account_ref,s.account_ref),eq(table.store_key,s.store_key));
 };
 const key=(policy:AppIntegrationCapturePolicy)=>policy.destination.scope==='user'?'user':`space:${policy.destination.space_id}`;
@@ -97,13 +97,21 @@ export function createAppIntegrationCaptureStore(input:{
   async failed(claim_id:string,caller:AppIntegrationSourceCaller,error:string){await input.transaction(async tx=>{await tx.update(claims).set({state:'failed',error_code:error,updated_at:new Date(now())})
    .where(and(eq(claims.org_id,caller.org_id),eq(claims.owner_user_id,caller.user_id),eq(claims.id,claim_id),eq(claims.state,'processing')));});},
  } satisfies Pick<AppIntegrationCapturePorts<Tx>,'transaction'|'policy'|'destination'|'thread'|'claim'|'skipped'|'reserveBudget'|'commit'|'failed'>;
+ const readHealth=async(tx:Tx,caller:AppIntegrationSourceCaller,target:Pick<AppIntegrationSourceTarget,'installation_id'|'account_ref'|'store_key'>,grantActive:boolean)=>{
+  const [row]=await tx.select({enabled:policies.enabled,retired_reason:policies.retired_reason,retired_at:policies.retired_at,last_error:policies.last_error}).from(policies).where(where(policies,caller,target)).limit(1).for('share');
+  const [counts]=await tx.select({failed:sql<number>`count(*) FILTER(WHERE state='failed')::int`,last_success_at:sql<string|null>`max(updated_at) FILTER(WHERE state IN ('captured','updated'))`}).from(claims).where(where(claims,caller,target));
+  const enabled=row?.enabled??false,retired_reason=row?.retired_reason??null;
+  const state:('healthy'|'grant_ended'|'never_enabled'|'retrying')=!enabled?retired_reason==='grant_ended'?'grant_ended':'never_enabled':retired_reason==='grant_ended'||!grantActive?'grant_ended':(counts?.failed??0)>0?'retrying':'healthy';
+  return {account_grant_active:grantActive,state,last_error:row?.last_error??null,last_success_at:counts?.last_success_at?new Date(counts.last_success_at).toISOString():null,retired_reason,retired_at:row?.retired_at?new Date(row.retired_at).toISOString():null};
+ };
  return {...ports,
-  async settings(tx:Tx,caller:AppIntegrationSourceCaller,target:AppIntegrationSourceTarget){
+  async settings(tx:Tx,caller:AppIntegrationSourceCaller,target:AppIntegrationSourceTarget,grantActive=true){
    const [row]=await tx.select({id:policies.id}).from(policies).where(where(policies,caller,target)).limit(1).for('share');
    const values=row?await policy(tx,caller,target):{enabled:false,destination:{scope:'user' as const,space_id:null},history_days:30,include_bulk:false,excluded_senders:[],excluded_folders:[],expected_revision:0,id:null,revision:0,history_since:null};
    const [counts]=await tx.select({processed:sql<number>`count(*)::int`,captured:sql<number>`count(*) FILTER(WHERE state IN ('captured','updated'))::int`,skipped:sql<number>`count(*) FILTER(WHERE state IN ('skipped','protected'))::int`,failed:sql<number>`count(*) FILTER(WHERE state='failed')::int`}).from(claims).where(where(claims,caller,target));
-   return {...values,progress:counts??{processed:0,captured:0,skipped:0,failed:0}};
+   return {...values,progress:counts??{processed:0,captured:0,skipped:0,failed:0},health:await readHealth(tx,caller,target,grantActive)};
   },
+  async health(tx:Tx,caller:AppIntegrationSourceCaller,target:Pick<AppIntegrationSourceTarget,'installation_id'|'account_ref'|'store_key'>,grantActive:boolean){return readHealth(tx,caller,target,grantActive);},
   async writePolicy(caller:AppIntegrationSourceCaller,target:AppIntegrationSourceTarget,raw:unknown,authorize:(tx:Tx)=>Promise<void>,afterWrite?:(tx:Tx,policy:AppIntegrationCapturePolicy)=>Promise<void>){
    if(caller.kind!=='human')throw denied();const parsed=AppIntegrationCapturePolicyInputSchema.parse(raw);
    return input.transaction(async tx=>{

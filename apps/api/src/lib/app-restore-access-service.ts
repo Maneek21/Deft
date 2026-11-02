@@ -1,12 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
-import { appConnectionSessions, appDataConsents, appResourceObservationConsents, auditLog } from '@deft/db/schema';
+import { appConnectionSessions, appDataConsents, appResourceObservationConsents, appIntegrationCapturePolicies, auditLog } from '@deft/db/schema';
 import { AppConnectionActionConsentSchema, AppDataConsentSnapshotSchema, ResourceObservationSnapshotSchema,
   type AppConnectionActionConsent } from '@deft/app-kit/core';
 import { AppConnectionSessionRecordSchema, type AppConnectionSessionRecord } from './app-connection-session-service.js';
 import { appDataDigest } from './app-data-authority.js';
 import { digestAppGrantValue } from './app-grant-service.js';
+import { appIntegrationSourceDigest } from './app-integration-source.js';
+import { enqueueOrRearmFailed, QUEUE_NAMES } from './queues.js';
+import { APP_INTEGRATION_CAPTURE_JOB } from './app-integration-capture-authority.js';
 import { enumerateRestoreAccess, restoreAccountMatches,
   type RestoreAccessDatabase, type RestoreAccessTransaction, type RestoreGrant,
   type RestoreGrantKind, type RestoreLifetime } from './app-restore-access-context.js';
@@ -173,6 +176,30 @@ export const RESTORE_GRANT_HANDLERS: ReadonlyMap<RestoreGrantKind, RestoreGrantH
       ...(expiry.consent_lifetime ? { consent_lifetime: 'until_revoked' as const } : {}),
     });
     return { new_grant_id: consentId, action_consent: consent };
+  }],
+  ['capture_policy', async ({ transaction, actor, grant, now }) => {
+    if (!grant.store_key) throw restoreAccessDenied();
+    const [original] = await transaction.select().from(appIntegrationCapturePolicies).where(and(
+      eq(appIntegrationCapturePolicies.org_id, actor.org_id),
+      eq(appIntegrationCapturePolicies.owner_user_id, actor.user_id),
+      eq(appIntegrationCapturePolicies.id, grant.grant_id))).limit(1);
+    if (!original) throw restoreAccessDenied();
+    // §5.1 guarantees the reconnected account keeps its reference, so the
+    // carried-over policy is re-enabled in place: clear the grant-ended
+    // retirement, keep the input/history, and bump the revision so the next
+    // delivery is a fresh, opted-in capture policy. The old row is never left
+    // enabled under a stale reference — retirement (§3.2) already handled that.
+    const revision = original.revision + 1;
+    await transaction.update(appIntegrationCapturePolicies).set({
+      enabled: true, revision, retired_at: null, retired_reason: null, last_error: null, updated_at: new Date(now),
+    }).where(and(
+      eq(appIntegrationCapturePolicies.org_id, actor.org_id),
+      eq(appIntegrationCapturePolicies.owner_user_id, actor.user_id),
+      eq(appIntegrationCapturePolicies.id, grant.grant_id)));
+    await enqueueOrRearmFailed(QUEUE_NAMES.SCHEDULED_JOBS, APP_INTEGRATION_CAPTURE_JOB, { policy_id: original.id, policy_revision: revision }, {
+      orgId: actor.org_id, dedupeKey: appIntegrationSourceDigest([APP_INTEGRATION_CAPTURE_JOB, original.id, revision]), maxAttempts: 5, executor: transaction,
+    });
+    return { new_grant_id: original.id };
   }],
 ]);
 

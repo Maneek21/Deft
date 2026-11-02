@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
-import { appConnectionSessions, appDataConsents, appResourceObservationConsents } from '@deft/db/schema';
+import { appConnectionSessions, appDataConsents, appResourceObservationConsents, appIntegrationCapturePolicies } from '@deft/db/schema';
 import { AppDataConsentSnapshotSchema, ResourceObservationSnapshotSchema } from '@deft/app-kit/core';
 import { AppConnectionSessionRecordSchema, type AppConnectionSessionRecord } from './app-connection-session-service.js';
 import type { ExperienceCaller } from './app-experience-service.js';
@@ -11,7 +11,7 @@ import { db } from './db.js';
 export type RestoreAccessDatabase = typeof db;
 export type RestoreAccessTransaction = Parameters<Parameters<RestoreAccessDatabase['transaction']>[0]>[0];
 
-export const RESTORE_GRANT_KINDS = ['record_consent', 'observation_consent', 'action_consent'] as const;
+export const RESTORE_GRANT_KINDS = ['record_consent', 'observation_consent', 'action_consent', 'capture_policy'] as const;
 export type RestoreGrantKind = (typeof RESTORE_GRANT_KINDS)[number];
 
 export const RestoreLifetimeSchema = z.discriminatedUnion('kind', [
@@ -104,6 +104,7 @@ function grantIdentity(value: RestoreGrant): string {
     case 'record_consent': return `record:${value.store_key}`;
     case 'observation_consent': return `observation:${value.resource_binding_id}`;
     case 'action_consent': return `action:${value.action_key}`;
+    case 'capture_policy': return `capture:${value.store_key}`;
   }
 }
 
@@ -184,6 +185,28 @@ export async function enumerateRestoreAccess(
         grant_id: consent.consent_id, kind: 'action_consent', action_key: consent.action_key,
         state: grantState(consent.expires_at, 'active', timestamp),
         lifetime: deriveRestoreLifetime(consent.expires_at, session.created_at, consent.consent_lifetime ?? null),
+      }));
+    }
+  }
+
+  // Capture policies are bound to the connected account's opaque reference, not
+  // to a consent row. A policy retired because its grant ended (§3.2) is still
+  // restorable and pre-selected; a policy the owner disabled on purpose is
+  // listed as non-restorable.
+  const restoreAccountRefs = [...new Set([current.account_ref, priorAccount?.account_ref].filter((value): value is string => Boolean(value)))];
+  if (restoreAccountRefs.length) {
+    const captureRows = await database.select().from(appIntegrationCapturePolicies).where(and(
+      eq(appIntegrationCapturePolicies.org_id, actor.org_id),
+      eq(appIntegrationCapturePolicies.owner_user_id, actor.user_id),
+      eq(appIntegrationCapturePolicies.installation_id, nomination.installation_id),
+      inArray(appIntegrationCapturePolicies.account_ref, restoreAccountRefs),
+    )).orderBy(desc(appIntegrationCapturePolicies.created_at));
+    for (const row of captureRows) {
+      const restorable = row.enabled || row.retired_reason === 'grant_ended';
+      remember(grant({
+        grant_id: row.id, kind: 'capture_policy', store_key: row.store_key,
+        state: restorable ? 'active' : 'revoked',
+        lifetime: { kind: 'until_revoked' },
       }));
     }
   }
