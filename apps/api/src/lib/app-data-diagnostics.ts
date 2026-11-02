@@ -1,7 +1,8 @@
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {randomUUID} from 'node:crypto';
 
-type Phase = 'context'|'resolve'|'invoke'|'authority'|'current'|'session_read'|'upgrade'|'connection_authority'|'registry'|'manifest'|'consent_connections'|'consent_read'|'runtime_request';
+type Phase = 'context'|'resolve'|'invoke'|'authority'|'current'|'session_read'|'upgrade'|'connection_authority'|'registry'|'manifest'|'consent_connections'|'consent_read'|'runtime_request'
+ |'journal_read'|'registry_load'|'upgrade_trust'|'binding_authority'|'admission'|'final_fence';
 type Trace = {request_id:string; timings:Partial<Record<Phase,{calls:number;elapsed_ms:number}>>};
 type FailureKind = 'database_connection_timeout'|'database_pool_acquisition_timeout'|'database_lock_timeout'|'database_statement_timeout'
  |'database_constraint'|'database_connection_failure'|'authority_denied'|'invalid_request'|'request_aborted'|'unclassified';
@@ -44,6 +45,10 @@ export async function withAppDataDiagnostic<T>(operation:Phase, work:()=>Promise
  }finally{
   const elapsed_ms=Math.round((clock()-began)*100)/100;
   const event:Event={event:'app_data_timing',request_id,...(parent?{parent_request_id:parent.request_id}:{}),operation,outcome:failure_kind?'failed':'completed',...(failure_kind?{failure_kind}:{}),elapsed_ms,timings:trace.timings};
-  try{if(sink)sink(event);else if(failure_kind||elapsed_ms>=250)console.info(JSON.stringify(event));}catch{}
+  // Opt-in per-phase authority trace: DEFT_APP_DATA_TIMING=authority emits every
+  // authority operation (not only failures/≥250ms); =all emits every operation.
+  // Events stay content-free (no tokens, URLs, org ids, bodies or provider content).
+  const emitEveryAuthority = process.env.DEFT_APP_DATA_TIMING === 'authority' || process.env.DEFT_APP_DATA_TIMING === 'all';
+  try{if(sink)sink(event);else if(failure_kind||elapsed_ms>=250||(emitEveryAuthority&&operation==='authority'))console.info(JSON.stringify(event));}catch{}
  }
 }

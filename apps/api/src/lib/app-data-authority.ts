@@ -20,6 +20,7 @@ import {currentAppConnectionReadAuthority,type CurrentAppConnectionReviewedDecla
 import {appDataConnectionActionSelection,appDataRuntimeConnectionActionSelection,appDataRuntimeUsesTransportPreauthentication} from './app-data-read-authority.js';
 import {readSavedAppDataConnection} from './app-data-connection-read.js';
 import {getAppConnectionSessionRegistry} from './app-connection-session-registry.js';
+import {withAuthorityRegistryScope} from './app-authority-registry-scope.js';
 import {appDataConsentConnections} from './app-data-consent-repair.js';
 import {PostgresAppDataStore} from './app-data-store.js';
 import type {ExperienceCaller} from './app-experience-service.js';
@@ -146,7 +147,7 @@ export async function currentAppDataContext(caller:Pick<ExperienceCaller,'org_id
 }
 export type CurrentAppDataAuthority=Awaited<ReturnType<typeof currentAppDataAuthority>>;
 export function appDataRequiresConsent(operation:string){return !operation.startsWith('resource_')&&operation!=='connection_metadata'&&!['run_inspect','run_inspection_status'].includes(operation);}
-export async function appDataRuntimeAuthority(raw:unknown,authorization:string|undefined){const id=raw&&typeof raw==='object'&&(raw as Record<string,unknown>).request_id;return withAppDataDiagnostic('authority',()=>appDataRuntimeAuthorityOwned(raw,authorization),typeof id==='string'?id:undefined);}
+export async function appDataRuntimeAuthority(raw:unknown,authorization:string|undefined){const id=raw&&typeof raw==='object'&&(raw as Record<string,unknown>).request_id;return withAppDataDiagnostic('authority',()=>withAuthorityRegistryScope(()=>appDataRuntimeAuthorityOwned(raw,authorization)),typeof id==='string'?id:undefined);}
 async function appDataRuntimeAuthorityOwned(raw:unknown,authorization:string|undefined){
  if(raw&&typeof raw==='object'&&(raw as Record<string,unknown>).schema_version==='deft.app_data_authority.v2')return appRecordChangeRuntimeAuthority(raw,authorization);
  const delegated=await (await import('./app-integration-runtime-gateway.js')).maybeAppIntegrationDataRuntimeAuthority(raw,authorization);if(delegated)return delegated;

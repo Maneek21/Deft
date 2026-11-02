@@ -7,6 +7,7 @@ import {AppIntegrationToolsDeclarationSchema,AppIntegrationToolRequestSchema,App
 import {parseAppIntegrationToolInput} from './app-integration-tools.js';
 import {getAppIntegrationDataGateway} from './app-integration-runtime-gateway.js';
 import {getAppConnectionSessionRegistry} from './app-connection-session-registry.js';
+import {withAuthorityRegistryScope} from './app-authority-registry-scope.js';
 import {IntegrationCallerSchema,toolMetadata,assertToolCallback,integrationDigest,preparedLocator,type IntegrationToolJournalRow} from './app-integration-tool-journal.js';
 import {beginIntegrationTool,readIntegrationTool,finishIntegrationTool} from './app-integration-tool-store.js';
 import type {AppIntegrationToolCaller} from './app-integration-tool-authority.js';
@@ -38,11 +39,11 @@ export async function currentOriginalTool(row:IntegrationToolJournalRow,tx?:AppR
  return {account,declaration,action};
 }
 export async function integrationToolAuthority(raw:unknown,authorization:string|undefined){
- const input=AppIntegrationToolRuntimeAuthorityRequestSchema.parse(raw),registry=await getAppConnectionSessionRegistry();registry.authenticate(input.scope,authorization);
+ return withAuthorityRegistryScope(async()=>{const input=AppIntegrationToolRuntimeAuthorityRequestSchema.parse(raw),registry=await getAppConnectionSessionRegistry();registry.authenticate(input.scope,authorization);
  const row=await readIntegrationTool(input.request_id);if(!row||row.state!=='inflight'||Date.parse(row.metadata.envelope.expires_at)<=Date.now())throw denied();
  const {declaration}=await currentOriginalTool(row);assertToolCallback(row.metadata,declaration,input);
  const after=await readIntegrationTool(input.request_id);if(!after||after.state!=='inflight'||!isDeepStrictEqual(after.metadata,row.metadata))throw denied();
- registry.authenticate(input.scope,authorization);return {...input,allowed:true as const};
+ registry.authenticate(input.scope,authorization);return {...input,allowed:true as const};});
 }
 export async function executeIntegrationTool(caller:AppIntegrationToolCaller,raw:unknown,signal?:AbortSignal){
  const actor=IntegrationCallerSchema.parse(caller),request=AppIntegrationToolRequestSchema.parse(raw);signal?.throwIfAborted();
