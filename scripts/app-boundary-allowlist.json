@@ -6427,7 +6427,7 @@
     "path": "apps/web/src/components/apps/experience-source-files.tsx",
     "rule": "mailbox",
     "token": "mailbox",
-    "digest": "f273217d52d19dfa540ba6bd42e55578d65fcff7c5ccb6c8ef9ac3def9c51cd1",
+    "digest": "a200d7b00136812c3d3d09136142326895ed33d1d168dc49deed71a8388706d7",
     "occurrences": 2,
     "reason": "Existing Host presentation/compose compatibility depends on mail-shaped Kit helpers; to be removed by plan C/D after generic validation is separated and app-owned presentation replaces it.",
     "owner": "@Maneek21",
