@@ -5,7 +5,7 @@ const scope=()=>({org_id:text('org_id').notNull(),owner_user_id:text('owner_user
 const times=()=>({created_at:timestamp('created_at',{withTimezone:true}).defaultNow().notNull(),updated_at:timestamp('updated_at',{withTimezone:true}).defaultNow().notNull()});
 export const appIntegrationCapturePolicies=pgTable('app_integration_capture_policies',{
  id:text('id').primaryKey(),...scope(),revision:integer('revision').notNull(),enabled:boolean('enabled').default(false).notNull(),
- input:jsonb('input').$type<Record<string,unknown>>().notNull(),history_since:timestamp('history_since',{withTimezone:true}).notNull(),scan_checkpoint_id:text('scan_checkpoint_id'),scan_after_projection_id:text('scan_after_projection_id'),...times(),
+ input:jsonb('input').$type<Record<string,unknown>>().notNull(),history_since:timestamp('history_since',{withTimezone:true}).notNull(),scan_checkpoint_id:text('scan_checkpoint_id'),scan_after_projection_id:text('scan_after_projection_id'),retired_at:timestamp('retired_at',{withTimezone:true}),retired_reason:text('retired_reason'),last_error:text('last_error'),...times(),
 },t=>[unique('app_integration_capture_policy_scope').on(t.org_id,t.owner_user_id,t.installation_id,t.account_ref,t.store_key),
  unique('app_integration_capture_policy_org_id').on(t.org_id,t.id),foreignKey({columns:[t.org_id],foreignColumns:[orgs.id]}),
  foreignKey({columns:[t.owner_user_id],foreignColumns:[users.id]}),foreignKey({columns:[t.org_id,t.installation_id],foreignColumns:[appInstallations.org_id,appInstallations.id]}),

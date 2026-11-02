@@ -63,6 +63,19 @@ export async function executeIntegrationTool(caller:AppIntegrationToolCaller,raw
  const action=await actionBinding(actor,target,declaration),account=await getAppIntegrationDataGateway().toolAccount(actor,target,declaration.operation,undefined,action);
  await currentToolDeclaration(account.scope,declaration.key);
  if(!account.delegated_grant)throw denied();
+ if(declaration.data_operations.includes('prepare_record_mirror')){
+  // Host-side effect: the agent nominates an exact saved record for a declared
+  // record-mirror policy. No runtime provider IO, no web session and no caller
+  // scope; the owner's current data authority is re-derived under the agent's
+  // already-validated integration grant principal and the nomination only lands
+  // a pending approval card (the receipt is issued later by the human review).
+  if(!action)throw denied();
+  const current=await agentMirrorCurrent(actor,declaration,action,account.connection.session_id);
+  const nomination=buildRecordMirrorNomination(declaration,input,current,request.request_id);
+  const {nominateRecordMirror}=await import('./app-record-mirror-service.js');
+  const nominated=await nominateRecordMirror(actor,current,nomination);
+  return {request_id:request.request_id,state:'completed',review_required:true,action_id:nominated.action_id,approval_status:nominated.approval_status};
+ }
  if(declaration.mode==='status'){
   if(!declaration.status_tool_key||!declaration.status_input_pins||!Object.keys(declaration.status_input_pins).length)throw denied();
   const filters=Object.entries(declaration.status_input_pins).map(([outer,original])=>{if(input[outer]===undefined)throw denied();return sql`j.context->'field_digests'->>${original}=${integrationDigest(input[outer])}`;});
@@ -109,4 +122,34 @@ export async function executeIntegrationTool(caller:AppIntegrationToolCaller,raw
   return prepared?{request_id:outer.request_id,state:'completed',review_required:true}:result;
  }catch(error){const row=await readIntegrationTool(outer.request_id);if(row?.state==='inflight')await finishIntegrationTool(outer.request_id,'indeterminate');throw error;}
  finally{clearTimeout(timer);signal?.removeEventListener('abort',abort);}
+}
+/** Resolves the owner's current data authority WITH consent, under the agent's
+ * already-validated integration grant principal. This never uses a web session
+ * and never accepts a caller-supplied scope: the principal guard is the exact
+ * one the gateway applies, so a revoked/foreign grant or an inactive principal
+ * yields no mirror nomination. */
+async function agentMirrorCurrent(actor:AppIntegrationToolCaller,declaration:AppIntegrationToolDeclaration,action:{action_key:string;action_binding_id:string},sessionId:string){
+ if(!declaration.action_key)throw denied();
+ const {currentAppIntegrationToolPrincipal}=await import('./app-integration-tool-authority.js');
+ const {currentAppDataAuthority,appDataDenied}=await import('./app-data-authority.js');
+ const owner={org_id:actor.org_id,user_id:actor.user_id,access_expires_at:actor.access_expires_at};
+ let principalExpiry=actor.access_expires_at;
+ const guard=Object.assign(async(tx:AppRunTransaction)=>{
+  const principal=await currentAppIntegrationToolPrincipal(tx,actor);
+  if(!principal.identity||!Number.isFinite(principal.expires_at)||principal.expires_at<=Date.now())throw appDataDenied();
+  principalExpiry=Math.min(principalExpiry,principal.expires_at);
+ },{current_web_session_expires_at:()=>new Date(principalExpiry)});
+ return currentAppDataAuthority(owner,sessionId,declaration.store_key,guard,true,undefined,{action_key:declaration.action_key,action_binding_id:action.action_binding_id});
+}
+/** Pure nomination assembly: the exact record plus the owner's resolved
+ * store/mirror pins. The agent never names a mirror, account or lifetime; those
+ * come from the signed declaration and the owner's current consent. */
+export function buildRecordMirrorNomination(declaration:AppIntegrationToolDeclaration,input:Record<string,unknown>,current:{store:{record_mirrors?:readonly {key:string;action_key:string;max_authority_seconds:number;max_attempts_per_day:number}[]};connection:{session_id:string};expires_at:number},requestId:string,now=Date.now()){
+ const policy=current.store.record_mirrors?.find(row=>row.action_key===declaration.action_key);
+ if(!policy)throw denied();
+ const pin=declaration.input_pins.find(row=>row.operation==='prepare_record_mirror'&&row.inner_field==='record_id');
+ if(!pin)throw denied();
+ const recordId=input[pin.outer_key];
+ if(typeof recordId!=='string')throw denied();
+ return {connection_session_id:current.connection.session_id,store_key:declaration.store_key,mirror_key:policy.key,record_id:recordId,request_id:requestId,expected_revision:0,expires_at:new Date(Math.min(current.expires_at,now+policy.max_authority_seconds*1000)).toISOString(),max_attempts_per_day:policy.max_attempts_per_day};
 }

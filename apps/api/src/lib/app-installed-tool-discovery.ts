@@ -8,7 +8,7 @@ export type InstalledToolCaller={kind:'personal_mcp'|'defty';org_id:string;user_
 export type InstalledToolSchema={name:string;description:string;inputSchema:Record<string,unknown>;annotations:{readOnlyHint:boolean}};
 type Candidate={installation_id:string;account_ref:string;declaration:AppIntegrationToolDeclaration};
 const unavailable=()=>Error('APP_INSTALLED_TOOL_UNAVAILABLE');
-const writeOperations=new Set(['record_create','record_save','prepare_action','prepare_resource_action']);
+const writeOperations=new Set(['record_create','record_save','prepare_action','prepare_resource_action','prepare_record_mirror']);
 export function installedToolIsWrite(declaration:AppIntegrationToolDeclaration){return declaration.data_operations.some(operation=>writeOperations.has(operation));}
 
 /** The name is usable only for one current installation and one signed schema.

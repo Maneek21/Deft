@@ -1743,7 +1743,7 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
     }
     let result: Awaited<ReturnType<typeof resolveApproveAction>>;
     try {
-      result = await resolveApproveAction(actionId, user.id, { appRunFinalGuard: nativeGuard });
+      result = await resolveApproveAction(actionId, user.id, { appRunFinalGuard: nativeGuard, ...(user.sid ? { humanWebSessionId: user.sid } : {}) });
     }
     catch (error) { return appHttpFailure(c, error, 'App Run', 'app-runs'); }
     if (result.status === 'error') {

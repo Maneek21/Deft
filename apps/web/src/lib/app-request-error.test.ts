@@ -1,6 +1,27 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { AppRequestError, readAppRequestError, appRequestFailureMessage, experienceStartupFailureMessage, reportAppRequestFailure } from './app-request-error';
+import { AppRequestError, readAppRequestError, appRequestFailureMessage, experienceStartupFailureMessage, reportAppRequestFailure, parseAppNextStep } from './app-request-error';
+
+const UUID='11111111-1111-4111-8111-111111111111';
+test('details.next_step is parsed when its fixed kind and UUID ids are valid',async()=>{
+  const error=await readAppRequestError(Response.json({error:'Account access requires review.',code:'APP_REVIEW_REQUIRED',
+    details:{next_step:{kind:'restore_access',installation_id:UUID,target_key:'primary'}}},{status:403}),'Unavailable.');
+  assert.ok(error instanceof AppRequestError);assert.equal(error.code,'APP_REVIEW_REQUIRED');
+  assert.deepEqual(error.nextStep,{kind:'restore_access',installation_id:UUID,target_key:'primary'});
+  assert.equal((await readAppRequestError(Response.json({error:'Reconnect needed.',code:'APP_ACCESS_DENIED',
+    details:{next_step:{kind:'reconnect',installation_id:UUID}}},{status:403}),'Unavailable.')).nextStep?.kind,'reconnect');
+  assert.equal(parseAppNextStep({kind:'review_consent',consent_id:UUID})?.kind,'review_consent');
+});
+test('details.next_step is dropped when its kind, ids or shape are malformed or off-whitelist',async()=>{
+  const cases:unknown[]=[undefined,null,'restore_access',42,{kind:'unknown'},{kind:'restore_access',installation_id:'not-a-uuid'},
+    {kind:'restore_access',target_key:'UPPER'},{kind:'restore_access',consent_id:'not-a-uuid'},
+    {kind:'reconnect',extra:'leak'},{kind:'restore_access',installation_id:UUID,unexpected_key:'leak'}];
+  for(const next_step of cases){
+    const error=await readAppRequestError(Response.json({error:'Denied.',code:'APP_ACCESS_DENIED',details:{next_step}},{status:403}),'Unavailable.');
+    assert.equal(error.nextStep,undefined,`next_step should be dropped for ${JSON.stringify(next_step)}`);
+    assert.doesNotMatch(appRequestFailureMessage(error,'Unavailable.'),/leak|restore_access|reconnect/i);
+  }
+});
 
 test('account targets and app-open retain a bounded public Host reason and structured code',async()=>{
  const error=await readAppRequestError(Response.json({error:'App access is busy. Please try again.',code:'APP_EXPERIENCE_BUSY',retryable:true},{status:503}),'Account targets unavailable.');

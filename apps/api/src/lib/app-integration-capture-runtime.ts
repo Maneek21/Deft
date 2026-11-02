@@ -15,6 +15,7 @@ import {loadAppIntegrationCitationSources,decorateAppIntegrationKnowledgeCitatio
 
 import {enqueue,enqueueOrRearmFailed,QUEUE_NAMES,RetryLaterJobError} from './queues.js';
 import {hasAnyAIProvider} from './org-ai-config.js';
+import {isAppError} from './app-errors.js';
 import type {JobData} from '../workers/types.js';
 import {assertAppIntegrationCaptureDelivery,APP_INTEGRATION_CAPTURE_JOB} from './app-integration-capture-authority.js';
 
@@ -26,6 +27,24 @@ export interface AppIntegrationDataGateway {
  currentAccount(caller:AppIntegrationSourceCaller,account:AppIntegrationSourceAccount,purpose:AppIntegrationSourcePurpose,tx?:Tx):Promise<AppIntegrationSourceAuthority&{resource_binding_id:string;resource_key:string}>;
  mint(caller:AppIntegrationSourceCaller,target:AppIntegrationSourceTarget,purpose:AppIntegrationSourcePurpose,operation:'resource_read_presentation'|'resource_read_metadata',input:Record<string,string>,max_ms:30000):Promise<AppDataRuntimeRequest>;
  dispatch(request:AppDataRuntimeRequest,signal:AbortSignal):Promise<{result?:unknown}>;
+}
+/** Best-effort owner-visible notice that capture stopped because the connected
+ * account's grant ended. App-neutral copy only; the connected app supplies any
+ * domain label. Fires once per retirement: the delivery loop selects only
+ * enabled=true policies, so the retired row is never re-notified. */
+export async function notifyCapturePolicyRetired(policy:{org_id:string;user_id:string;installation_id:string;account_ref:string;store_key:string;id:string},reason:string):Promise<void>{
+ try{
+  const {createNotificationIfAllowed}=await import('./notification-policy.js');
+  await createNotificationIfAllowed({
+   org_id:policy.org_id,user_id:policy.user_id,type:'system',
+   title:'Knowledge capture paused',
+   body:'Automatic knowledge capture was paused because access to this connected app ended. Reconnect the app to resume capture.',
+   link:'/settings/apps',
+   metadata:{kind:'app_integration_capture_retired',installation_id:policy.installation_id,account_ref:policy.account_ref,store_key:policy.store_key,capture_policy_id:policy.id,retired_reason:reason},
+  },{bypassUserPreferences:true});
+ }catch(error){
+  console.warn('[app-integration-capture] Retirement notice failed',{policy_id:policy.id,error:error instanceof Error?error.message:String(error)});
+ }
 }
 export function createAppIntegrationCaptureRuntime(input:{transaction<T>(fn:(tx:Tx)=>Promise<T>):Promise<T>;keys:AppRunKeyProvider;
  gateway:AppIntegrationDataGateway;clock?:()=>number}){
@@ -91,6 +110,9 @@ export function createAppIntegrationCaptureRuntime(input:{transaction<T>(fn:(tx:
    return snapshot;
   },
   async settings(caller:AppIntegrationSourceCaller,identity:AppIntegrationSourceIdentity){const snapshot=await metadata.source.read(caller,await metadata.resolve(caller,identity),'read');return input.transaction(async tx=>{await metadata.source.guard(tx,caller,snapshot,'read');const result=await store.settings(tx,caller,snapshot.publication.target);await metadata.source.guard(tx,caller,snapshot,'read');return result;});},
+  async health(caller:AppIntegrationSourceCaller,identity:AppIntegrationSourceIdentity){const account:AppIntegrationSourceAccount={installation_id:identity.installation_id,account_ref:identity.account_ref,store_key:identity.store_key};
+   let grantActive=true;try{await input.gateway.currentAccount(caller,account,'read');}catch(error){if(isAppError(error)&&error.code==='APP_ACCESS_DENIED')grantActive=false;else throw error;}
+   return input.transaction(tx=>store.health(tx,caller,account,grantActive));},
   async write(caller:AppIntegrationSourceCaller,identity:AppIntegrationSourceIdentity,policy:unknown){const snapshot=await metadata.source.read(caller,await metadata.resolve(caller,identity),'read');return store.writePolicy(caller,snapshot.publication.target,policy,tx=>metadata.source.guard(tx,caller,snapshot,'read'),async(tx,value)=>{if(value.enabled)await schedule({org_id:caller.org_id,id:value.id,revision:value.revision},tx);});},
   async related(caller:AppIntegrationSourceCaller,identity:AppIntegrationSourceIdentity){const snapshot=await readIdentity(caller,identity);return input.transaction(tx=>readAppIntegrationRelatedKnowledge(tx,caller,snapshot,()=>human.source.guard(tx,caller,snapshot,'read')));},
   async citations<T extends {source_type:string;source_id:string}>(caller:AppIntegrationSourceCaller,citations:T[]){const records=await input.transaction(tx=>loadAppIntegrationCitationSources(tx,caller,citations.filter(row=>row.source_type==='app_integration').slice(0,32).map(row=>row.source_id)));return decorateAppIntegrationKnowledgeCitations({caller,citations,records,read:readIdentity});},
@@ -103,11 +125,26 @@ export function createAppIntegrationCaptureRuntime(input:{transaction<T>(fn:(tx:
   async run(job:JobData){if(!job.lockToken||job.name!==APP_INTEGRATION_CAPTURE_JOB||typeof job.data.policy_id!=='string'||!Number.isSafeInteger(job.data.policy_revision))throw denied();
    const [row]=await input.transaction(tx=>tx.select().from(policies).where(and(eq(policies.id,job.data.policy_id),eq(policies.revision,job.data.policy_revision),eq(policies.enabled,true))).limit(1));if(!row)return;
    const caller:AppIntegrationSourceCaller={org_id:row.org_id,user_id:row.owner_user_id,kind:'capture_policy',principal_id:row.id,capture_delivery:{job_id:job.id,lock_token:job.lockToken,policy_revision:row.revision}};await input.transaction(tx=>policyGuard(tx,caller,row,job));
+   // A grant that has ended is terminal, never a transient failure: retire the
+   // policy (so repair() stops re-arming it) and tell the owner, instead of
+   // rethrowing into the exponential-backoff attempt loop. The grant is probed
+   // before the recoverable AI-provider setup pause so an ended grant retires
+   // even when the workspace has no AI provider configured.
+   let current:Awaited<ReturnType<AppIntegrationDataGateway['currentAccount']>>;
+   try{current=await input.gateway.currentAccount(caller,row,'knowledge_capture');}
+   catch(error){
+    if(isAppError(error)&&error.code==='APP_ACCESS_DENIED'){
+     const [retired]=await input.transaction(tx=>tx.update(policies).set({enabled:false,retired_at:new Date(now()),retired_reason:'grant_ended',last_error:error.message,updated_at:new Date(now())}).where(and(eq(policies.org_id,row.org_id),eq(policies.id,row.id),eq(policies.revision,row.revision),eq(policies.enabled,true))).returning({id:policies.id}));
+     if(retired)await notifyCapturePolicyRetired({org_id:row.org_id,user_id:row.owner_user_id,installation_id:row.installation_id,account_ref:row.account_ref,store_key:row.store_key,id:row.id},error.message);
+     return;
+    }
+    throw error;
+   }
    // Missing workspace AI is recoverable setup, not a failed message claim.
    // Wait before reserving budget or consuming an observation so configuring a
    // provider can resume the same source without losing its capture attempt.
    if(!await hasAnyAIProvider(row.org_id))throw new RetryLaterJobError('App Knowledge needs an AI provider',60000);
-   const current=await input.gateway.currentAccount(caller,row,'knowledge_capture'),batch=await publication.candidates(caller,{...row,resource_key:current.resource_key},current.resource_binding_id,{checkpoint_id:row.scan_checkpoint_id,after:row.scan_after_projection_id});
+   const batch=await publication.candidates(caller,{...row,resource_key:current.resource_key},current.resource_binding_id,{checkpoint_id:row.scan_checkpoint_id,after:row.scan_after_projection_id});
    const capture=components(job),service=createAppIntegrationCapture({...store,source:capture.source,evidence:appIntegrationCaptureEvidence,extract:extractAppIntegrationKnowledge});
    const result=batch.target?await service.process(caller,batch.target,row.revision,job.signal):{state:'idle'};
    await input.transaction(async tx=>{await policyGuard(tx,caller,row,job);await tx.update(policies).set({scan_checkpoint_id:batch.checkpoint_id,scan_after_projection_id:batch.target?.projection_id??null}).where(and(eq(policies.org_id,row.org_id),eq(policies.id,row.id),eq(policies.revision,row.revision),eq(policies.enabled,true)));});
