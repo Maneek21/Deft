@@ -59,6 +59,14 @@ test('actual trusted selector renders per-file availability and status-only unce
  assert.match(render('unconfirmed',true),/<button type="button">Check status<\/button>/);assert.match(render('unconfirmed',true,false),/<button type="button" disabled="">Check status<\/button>/);
  assert.match(render('available',true),/disabled=""[^>]*>Include</);
 });
+test('original attachment rows render bordered Deft pills without changing the exact button markup',async()=>{
+ const React=await import('react'),{renderToStaticMarkup}=await import('react-dom/server'),{ExperienceRecordOriginalFilesView}=await import('../components/apps/experience-record-original-files');
+ const markup=renderToStaticMarkup(React.createElement(ExperienceRecordOriginalFilesView,{files:[{file,state:'available',notice:''}],busy:false,notice:'',disabled:false,current:true,include:()=>{},omit:()=>{},check:()=>{}}));
+ for(const className of ['rounded-xl border border-[var(--border-default)]','[&amp;_button]:min-h-9','[&amp;_button]:rounded-full','[&amp;_button]:bg-[var(--surface-container-high)]','[&amp;_button]:px-3','[&amp;_button]:py-1','[&amp;_button]:font-medium','[&amp;_button:disabled]:opacity-50'])assert.ok(markup.includes(className),className);
+ assert.match(markup,/<button type="button">Include<\/button>/);
+ assert.match(markup,/<button type="button">Omit<\/button>/);
+ assert.match(renderToStaticMarkup(React.createElement(ExperienceRecordOriginalFilesView,{files:[{file,state:'unconfirmed',notice:''}],busy:false,notice:'',disabled:false,current:true,include:()=>{},omit:()=>{},check:()=>{}})),/<button type="button">Check status<\/button>/);
+});
 
 test('late source/copy results after disposal or revocation publish no saved draft state',async()=>{
  let release!:(value:any)=>void;const f=fixture();await f.controller.load();f.ports.copyOriginal=async(_node,before,_source,_file,fileId)=>new Promise(resolve=>release=()=>resolve(copied(before,fileId)));

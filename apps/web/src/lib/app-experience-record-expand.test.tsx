@@ -45,3 +45,10 @@ test('trusted seed UUID acknowledgement retains only the exact unchanged source 
   if(mode==='same'){await renders.at(-1).props.emit({kind:'input',node_id:'form',record_id:next,record_revision:1,content_digest:'sha256:'+'a'.repeat(64),record_state:'saved',dirty:false,valid:true});host.mountRecordForm({...updated,expected_revision:1,content_digest:'sha256:'+'a'.repeat(64)},wrapper,()=>true,context);assert.equal(roots,1,'first create acknowledgement retains the same writer');}
  }
 });
+
+test('actual surface reserves the width toggle and its gutter only from the small-screen breakpoint up',()=>{
+  const html=renderToStaticMarkup(<RecordSurface label="Draft"><textarea aria-label="Message" defaultValue="kept"/></RecordSurface>);
+  assert.match(html,/class="absolute right-1 top-2 z-10 hidden sm:flex min-h-10 min-w-10/);
+  assert.ok(html.includes('class="min-w-0 space-y-2 sm:[&amp;&gt;:first-child]:pr-11"'),'the mobile body must not reserve the desktop gutter');
+  assert.ok(!html.includes('class="min-w-0 space-y-2 [&amp;&gt;:first-child]:pr-11"'));
+});
