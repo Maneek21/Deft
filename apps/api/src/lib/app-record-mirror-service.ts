@@ -14,7 +14,14 @@ import type {AppRunTransaction} from './app-run-repository.js';
 import {ReviewedRecordMirrorAuthoritySchema,currentRecordMirrorAuthority,currentRecordMirrorReadAuthority,currentOwnerRecordMirrorReadAuthority} from './app-record-mirror-authority.js';
 import {PostgresRecordMirrorStore,type RecordMirrorAuthorityRow} from './app-record-mirror-store.js';
 import {RecordMirrorReviewTicketSchema,sealRecordMirrorReview,openRecordMirrorReview} from './app-record-mirror-review.js';
+import {currentAppIntegrationToolPrincipal,type AppIntegrationToolCaller} from './app-integration-tool-authority.js';
 const confirmation=z.strictObject({ticket:z.string().min(1).max(100000),expected_authority_digest:z.string().regex(/^sha256:[a-f0-9]{64}$/u)});
+/** Agent-nominated mirror review: the exact record plus the owner's resolved
+ * connection/store pins. The nomination carries no purpose identity and issues
+ * no receipt; it only lands a pending approval card for the owner. */
+const NominationSchema=z.strictObject({connection_session_id:z.string().uuid(),store_key:z.string(),mirror_key:z.string(),
+ record_id:z.string().uuid(),request_id:z.string().uuid(),expected_revision:z.number().int().min(0).max(2147483646),
+ expires_at:z.iso.datetime(),max_attempts_per_day:z.number().int().min(1).max(1000)});
 /** Trusted generic persistent write review. Neither Worker settings nor an
  * ordinary data grant can enable this purpose, renew it or nominate effects. */
 export class AppRecordMirrorService{
@@ -44,6 +51,27 @@ export class AppRecordMirrorService{
    const previous=await this.latest(tx,current,ticket.request.mirror_key,true);if((previous?.receipt_id??null)!==ticket.previous_receipt_id||(previous?.revision??0)!==ticket.request.expected_revision)throw appDataDenied();if(previous?.state==='enabled')await this.store.pause(tx,previous,previous.revision,this.now());await final(tx);
    const pins=ticket.authority,now=this.now();const result=await tx.execute(sql`INSERT INTO app_record_mirror_authorities(org_id,owner_user_id,receipt_id,request_id,review_web_session_id,store_key,mirror_key,account_ref,installation_id,app_version_id,grant_snapshot_id,runtime_registration_id,resource_binding_id,reviewed_authority,authority_digest,policy_digest,expires_at,max_attempts_per_day,created_at,updated_at) VALUES(${caller.org_id},${caller.user_id},${ticket.receipt_id},${ticket.request.request_id},${caller.sid},${pins.store_key},${pins.policy.key},${pins.connection.account_ref},${pins.scope.installation_id},${pins.scope.app_version_id},${pins.scope.grant_snapshot_id},${pins.scope.runtime_registration_id},${pins.scope.resource_binding_id},${JSON.stringify(pins)}::jsonb,${ticket.authority_digest},${pins.policy_digest},${new Date(pins.authority_expires_at)},${ticket.request.max_attempts_per_day},${now},${now}) RETURNING receipt_id`);if(!result.rows[0])throw appDataDenied();return this.status(tx,(await this.store.read(tx,caller.org_id,caller.user_id,ticket.receipt_id))!);
   },signal,undefined,undefined,'human_action_confirmation');
+ }
+ /** Agent-initiable record-mirror nomination. A Defty/personal-MCP caller may
+  * nominate a saved record for a declared record-mirror policy. The nomination
+  * only lands a pending approval card in the shared queue; no receipt is issued
+  * and no purpose identity is fabricated. The human's later approval re-runs the
+  * ordinary review()/confirm() authority, so owner_user_id and the app-data
+  * retention guard stay unchanged. The caller supplies `current` resolved through
+  * its own already-validated integration grant, never a fabricated scope. */
+ async nominate(caller:AppIntegrationToolCaller,current:CurrentAppDataAuthority,raw:unknown){
+  const nomination=NominationSchema.parse(raw);
+  const policy=current.store.record_mirrors?.find(row=>row.key===nomination.mirror_key);
+  if(!policy||!current.consent||current.scope.org_id!==caller.org_id||current.scope.owner_user_id!==caller.user_id)throw appDataDenied();
+  const now=this.now(),expiry=Date.parse(nomination.expires_at);
+  if(!Number.isFinite(expiry)||expiry<=now.getTime()||expiry>now.getTime()+policy.max_authority_seconds*1000||nomination.max_attempts_per_day>policy.max_attempts_per_day)throw appDataDenied();
+  return db.transaction(async tx=>{
+   await currentAppIntegrationToolPrincipal(tx,caller);
+   const action_id=randomUUID();
+   const result=await tx.execute(sql`INSERT INTO agent_actions(id,org_id,user_id,source,action,params,approval_tier,approval_status) VALUES(${action_id},${caller.org_id},${caller.user_id},'app_record_mirror','app_record_mirror_nominate',${JSON.stringify({...nomination,account_ref:current.connection.account_ref,installation_id:current.scope.installation_id,policy_digest:appDataDigest(policy)})}::jsonb,'full','pending') RETURNING id`);
+   if(!result.rows[0])throw appDataDenied();
+   return {schema_version:'deft.app_record_mirror_nomination.v1',action_id,approval_status:'pending' as const,account_ref:current.connection.account_ref,store_key:current.store.key,mirror_key:policy.key,expires_at:nomination.expires_at};
+  });
  }
  private async ordinarySession(tx:AppRunTransaction,current:CurrentAppDataAuthority,experience:string,target:string){await this.data.guard(tx);const rows=await tx.execute(sql<{current:boolean;expires_at:Date}>`SELECT expires_at,expires_at>clock_timestamp() AND revoked_at IS NULL AS current FROM app_experience_sessions WHERE org_id=${this.data.caller.org_id} AND user_id=${this.data.caller.user_id} AND web_session_id=${this.data.caller.sid} AND id=${experience} AND resource_target_key=${target} AND app_installation_id=${current.scope.installation_id} AND app_version_id=${current.scope.app_version_id} AND grant_snapshot_id=${current.scope.grant_snapshot_id} FOR SHARE`);if(rows.rows[0]?.current!==true||current.scope.target_key!==target)throw appDataDenied();return z.coerce.date().parse(rows.rows[0].expires_at).getTime();}
  async read(experience:string,target:string,raw:unknown){
