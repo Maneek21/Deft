@@ -1579,6 +1579,11 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
       ? await buildRoomContextPackWithSources({ orgId, spaceId, threadParentId: parentId ?? null, triggerMessageId: messageId, requesterId: userId })
       : null;
     const roomContextPack = roomContext?.content ?? null;
+    // The room pack replaces conversationHistory for channels, so carry its
+    // durable action results through the same server-side authority check.
+    for (const source of roomContext?.resultSources ?? []) {
+      await approvedResultHistory(source.metadata);
+    }
     const pendingClarification = await loadPendingDeftyDraft({
       orgId, spaceId, threadParentId: isDmLike ? (parentId ?? null) : (parentId || messageId),
       triggerMessageId: messageId, requesterId: userId, agentUserId, triggerCreatedAt: trigger.created_at,
