@@ -1,12 +1,23 @@
 import { appConsentDeadline} from './consent-lifetime.js';
 import {z} from 'zod';
-import {canonicalAppDataJson,AppDataConnectionSchema,AppDataAuthorityPinsSchema,AppDataResultSchema,AppDataSourceReferenceSchema} from './app-data.js';
+import {canonicalAppDataJson,AppDataConnectionSchema,AppDataAuthorityPinsSchema,AppDataResultSchema,AppDataSourceReferenceSchema,AppDataOperationInputSchema} from './app-data.js';
 import {AppConnectionSessionScopeSchema} from './connection-session.js';
 const key=z.string().regex(/^[a-z][a-z0-9_]{0,63}$/u).refine(v=>!['constructor','prototype','__proto__'].includes(v));
 const boundedObject=z.record(z.string(),z.unknown()).refine(v=>{try{return new TextEncoder().encode(canonicalAppDataJson(v)).byteLength<=512*1024;}catch{return false;}});
 export const APP_INTEGRATION_TOOL_OPERATIONS=['read','draft','triage','send'] as const;
 export type AppIntegrationToolOperation=typeof APP_INTEGRATION_TOOL_OPERATIONS[number];
-export const APP_INTEGRATION_TOOL_DATA_OPERATIONS=['resource_list','resource_read_presentation','record_read','record_create','record_save','prepare_action','prepare_resource_action'] as const;
+export const APP_INTEGRATION_TOOL_DATA_OPERATIONS=['resource_list','resource_read_presentation','record_read','record_create','record_save','prepare_action','prepare_resource_action','prepare_record_mirror'] as const;
+/** Inner input for `prepare_record_mirror`: the exact record being nominated for
+ * a record-mirror review. The mirror policy is resolved from the signed
+ * declaration's `action_key`; callers never name a mirror, account or lifetime. */
+export const AppIntegrationPrepareRecordMirrorInnerInputSchema=z.strictObject({store_key:key,record_id:z.string().uuid()});
+/** Validates the inner operation/input pair admitted by an integration tool,
+ * covering both the public data operation set and the mirror-nomination effect. */
+export function isValidAppIntegrationToolInnerInput(operation:string,input:unknown){
+ return operation==='prepare_record_mirror'
+  ? AppIntegrationPrepareRecordMirrorInnerInputSchema.safeParse(input).success
+  : AppDataOperationInputSchema.safeParse({operation,input}).success;
+}
 export const AppIntegrationToolInputPinSchema=z.strictObject({operation:z.enum(APP_INTEGRATION_TOOL_DATA_OPERATIONS),outer_key:key,
  inner_field:z.enum(['record_id','expected_revision','value','query','operation_key']),required:z.boolean()});
 /** App-owned names/schema. Declaration advertises capability, never permission. */
@@ -15,10 +26,11 @@ export const AppIntegrationToolDeclarationSchema=z.strictObject({key,description
  store_key:key,resource_key:key,runtime_requirement_key:key,input_schema:boundedObject,account_input_key:key.optional(),source_input_key:key.optional(),
  status_tool_key:key.optional(),status_input_pins:z.record(key,key).optional(),
  data_operations:z.array(z.enum(APP_INTEGRATION_TOOL_DATA_OPERATIONS)).max(4),input_pins:z.array(AppIntegrationToolInputPinSchema).max(12),action_key:key.optional(),visibility:z.enum(['delegated_tools','human_only'])}).superRefine((row,ctx)=>{
- const effects=row.data_operations.some(op=>op==='prepare_action'||op==='prepare_resource_action');
- const fields:Record<string,readonly string[]>={record_id:['record_read','record_create','record_save','prepare_action'],expected_revision:['record_save','prepare_action'],value:['record_create','record_save'],query:['resource_list'],operation_key:['prepare_resource_action']};
+ const effects=row.data_operations.some(op=>op==='prepare_action'||op==='prepare_resource_action'||op==='prepare_record_mirror');
+ const fields:Record<string,readonly string[]>={record_id:['record_read','record_create','record_save','prepare_action','prepare_record_mirror'],expected_revision:['record_save','prepare_action'],value:['record_create','record_save'],query:['resource_list'],operation_key:['prepare_resource_action']};
  const properties=row.input_schema.properties;
  const hasProperty=(name:string|undefined)=>!!name&&!!properties&&typeof properties==='object'&&Object.hasOwn(properties,name);
+ if(row.data_operations.includes('prepare_record_mirror')&&!row.input_pins.some(pin=>pin.operation==='prepare_record_mirror'&&pin.inner_field==='record_id'&&pin.required))ctx.addIssue({code:'custom',message:'prepare_record_mirror requires a required record_id pin'});
  if(row.input_schema.type!=='object'||row.input_schema.additionalProperties!==false||row.mode!=='catalog'&&!hasProperty(row.account_input_key)
   ||row.source_input_key&&!hasProperty(row.source_input_key)||row.mode==='catalog'&&(row.account_input_key||row.source_input_key||row.data_operations.length||row.operation!=='read')
   ||row.mode==='status'&&(!row.status_tool_key||!row.status_input_pins||!Object.keys(row.status_input_pins).length||Object.keys(row.status_input_pins).some(k=>!hasProperty(k))||row.data_operations.length>0))ctx.addIssue({code:'custom',message:'Invalid signed tool selector'});

@@ -1,8 +1,8 @@
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {z} from 'zod';
-import {canonicalAppDataJson,AppDataOperationInputSchema,AppDataPreparedRecordActionSchema,AppDataPreparedResourceActionSchema} from '@deft/app-kit/core';
-import {AppIntegrationToolDeclarationSchema,AppIntegrationToolRuntimeRequestSchema,AppIntegrationToolRuntimeAuthorityRequestSchema} from '../../../../packages/app-kit/src/app-integration-tools.js';
+import {canonicalAppDataJson,AppDataPreparedRecordActionSchema,AppDataPreparedResourceActionSchema} from '@deft/app-kit/core';
+import {AppIntegrationToolDeclarationSchema,AppIntegrationToolRuntimeRequestSchema,AppIntegrationToolRuntimeAuthorityRequestSchema,isValidAppIntegrationToolInnerInput} from '../../../../packages/app-kit/src/app-integration-tools.js';
 export const integrationDigest=(value:unknown)=>'sha256:'+createHash('sha256').update(canonicalAppDataJson(value)).digest('hex');
 const digest=z.string().regex(/^sha256:[a-f0-9]{64}$/u),id=z.uuid(),key=z.string().regex(/^[a-z][a-z0-9_]{0,63}$/u);
 export const IntegrationCallerSchema=z.strictObject({org_id:id,user_id:id,kind:z.enum(['defty','personal_mcp']),principal_id:id,
@@ -36,7 +36,7 @@ export function assertToolCallback(metadata:IntegrationToolMetadata,declaration:
   ||declared.key!==pins.tool_key||declared.operation!==pins.tool_operation||declared.store_key!==pins.store_key||!inner
   ||!declared.data_operations.includes(inner.operation)||inner.store_key!==pins.store_key)deny();
  if(!inner)return check;
- if(!AppDataOperationInputSchema.safeParse({operation:inner.operation,input:inner.input}).success||inner.input.store_key!==pins.store_key
+ if(!isValidAppIntegrationToolInnerInput(inner.operation,inner.input)||inner.input.store_key!==pins.store_key
   ||inner.input_digest!==integrationDigest({operation:inner.operation,input:inner.input}))deny();
  const mapped=declared.input_pins.filter(pin=>pin.operation===inner.operation);
  for(const pin of mapped){const expected=metadata.field_digests[pin.outer_key];
@@ -44,7 +44,9 @@ export function assertToolCallback(metadata:IntegrationToolMetadata,declaration:
   else if(inner.input[pin.inner_field]===undefined||integrationDigest(inner.input[pin.inner_field])!==expected)deny();}
  for(const field of ['record_id','expected_revision','value','operation_key'] as const)
   if(Object.hasOwn(inner.input,field)&&!(inner.operation==='resource_read_presentation'&&field==='record_id')&&!mapped.some(pin=>pin.inner_field===field))deny();
- if(['prepare_action','prepare_resource_action'].includes(inner.operation)?inner.action_key!==declared.action_key||inner.input.action_key!==declared.action_key:inner.action_key!==undefined)deny();
+ if(['prepare_action','prepare_resource_action'].includes(inner.operation)?inner.action_key!==declared.action_key||inner.input.action_key!==declared.action_key
+  :inner.operation==='prepare_record_mirror'?inner.action_key!==declared.action_key
+  :inner.action_key!==undefined)deny();
  if(Object.hasOwn(inner.input,'resource_key')&&inner.input.resource_key!==pins.scope.resource_key)deny();
  if(inner.operation==='resource_read_presentation'&&!pins.source_refs.some(ref=>ref.record_id===inner.input.record_id&&ref.content_digest===inner.input.content_digest&&ref.resource_key===inner.input.resource_key))deny();
  if(inner.operation==='resource_list'&&Object.hasOwn(inner.input,'anchor_record_id')&&(pins.source_refs.length!==1||inner.input.anchor_record_id!==pins.source_refs[0]?.record_id))deny();
