@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
-import { appConnectionSessions, appDataConsents, appResourceObservationConsents, appIntegrationCapturePolicies } from '@deft/db/schema';
-import { AppDataConsentSnapshotSchema, ResourceObservationSnapshotSchema } from '@deft/app-kit/core';
+import { appConnectionSessions, appDataConsents, appResourceObservationConsents, appIntegrationCapturePolicies, appVersions } from '@deft/db/schema';
+import { AppDataConsentSnapshotSchema, ResourceObservationSnapshotSchema, AppIntegrationToolsDeclarationSchema } from '@deft/app-kit/core';
+import { createHash } from 'node:crypto';
 import { AppConnectionSessionRecordSchema, type AppConnectionSessionRecord } from './app-connection-session-service.js';
 import type { ExperienceCaller } from './app-experience-service.js';
 import { db } from './db.js';
@@ -11,7 +12,7 @@ import { db } from './db.js';
 export type RestoreAccessDatabase = typeof db;
 export type RestoreAccessTransaction = Parameters<Parameters<RestoreAccessDatabase['transaction']>[0]>[0];
 
-export const RESTORE_GRANT_KINDS = ['record_consent', 'observation_consent', 'action_consent', 'capture_policy'] as const;
+export const RESTORE_GRANT_KINDS = ['record_consent', 'observation_consent', 'action_consent', 'capture_policy', 'agent_policy_default', 'defty_read_grant'] as const;
 export type RestoreGrantKind = (typeof RESTORE_GRANT_KINDS)[number];
 
 export const RestoreLifetimeSchema = z.discriminatedUnion('kind', [
@@ -105,7 +106,77 @@ function grantIdentity(value: RestoreGrant): string {
     case 'observation_consent': return `observation:${value.resource_binding_id}`;
     case 'action_consent': return `action:${value.action_key}`;
     case 'capture_policy': return `capture:${value.store_key}`;
+    case 'agent_policy_default': return `agent_policy:${value.action_key}`;
+    case 'defty_read_grant': return `defty_read:${value.store_key}`;
   }
+}
+
+/** Deterministic, version-4-shaped UUID for a synthetic grant identity. The two
+ * review-time default kinds have no prior row to borrow an id from, so their
+ * grant_id is derived from the identity so it stays stable between review and
+ * activate (the digest never carries a raw id). */
+function deterministicUuid(seed: string): string {
+  const hex = createHash('sha256').update(seed).digest('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+/** A default's lifetime mirrors the reconnected session consent, never a wider
+ * one. Deterministic from stored consent/created values so review and activate
+ * agree on the digest. An indefinite session consent narrows to a conservative
+ * finite default (the read delegation table requires a finite expiry). */
+function sessionConsentLifetime(scope: AppConnectionSessionRecord['scope'], createdAt: string): RestoreLifetime {
+  if (scope.consent_expires_at) {
+    return { kind: 'duration', seconds: Math.max(0, Math.round((Date.parse(scope.consent_expires_at) - Date.parse(createdAt)) / 1000)) };
+  }
+  return { kind: 'duration', seconds: 90 * 86400 };
+}
+
+/** Whether a read-only Defty delegation already existed for a store on this
+ * account (so the default is pre-selected, never silently widened). Absent or
+ * unknown prior state defaults to unselected. */
+async function priorDeftyReadStores(
+  database: RestoreAccessDatabase,
+  actor: ExperienceCaller,
+  installationId: string,
+  storeKeys: readonly string[],
+  accountRefs: readonly string[],
+): Promise<Set<string>> {
+  if (!storeKeys.length || !accountRefs.length) return new Set();
+  const present = await database.execute(sql`SELECT to_regclass('app_integration_principal_grants') IS NOT NULL AS present`);
+  if (present.rows[0]?.present !== true) return new Set();
+  const rows = await database.execute(sql`SELECT DISTINCT store_key FROM app_integration_principal_grants
+    WHERE org_id=${actor.org_id} AND owner_user_id=${actor.user_id} AND installation_id=${installationId}
+      AND principal_kind='defty' AND principal_id=${actor.user_id} AND revoked_at IS NULL
+      AND store_key = ANY(${sql.param(storeKeys)}::text[]) AND account_ref = ANY(${sql.param(accountRefs)}::text[])`);
+  return new Set(rows.rows.map((row) => String((row as { store_key: unknown }).store_key)));
+}
+
+/** Whether an agent runtime-action policy already existed for a nominated action
+ * key (so the require_approval default is pre-selected). Absent/unknown defaults
+ * to unselected. */
+async function priorAgentPolicyKeys(
+  database: RestoreAccessDatabase,
+  actor: ExperienceCaller,
+  installationId: string,
+  actionKeys: readonly string[],
+): Promise<Set<string>> {
+  if (!actionKeys.length) return new Set();
+  const present = await database.execute(sql`SELECT to_regclass('app_runtime_agent_policies') IS NOT NULL
+    AND to_regclass('app_runtime_bindings') IS NOT NULL AS present`);
+  if (present.rows[0]?.present !== true) return new Set();
+  const rows = await database.execute(sql`SELECT DISTINCT b.action_key FROM app_runtime_agent_policies p
+    JOIN app_runtime_bindings b ON b.org_id=p.org_id AND b.id=p.runtime_binding_id
+    WHERE p.org_id=${actor.org_id} AND p.owner_user_id=${actor.user_id} AND b.app_installation_id=${installationId}
+      AND b.action_key = ANY(${sql.param(actionKeys)}::text[])`);
+  return new Set(rows.rows.map((row) => String((row as { action_key: unknown }).action_key)));
+}
+
+/** Builds a synthetic review-time default grant with a stable id and explicit
+ * preselected flag. Always restorable (a default is offered, never resurrected). */
+function defaultGrant(identity: string, input: Omit<RestoreGrant, 'grant_id' | 'state' | 'restorable' | 'preselected'>, preselected: boolean): RestoreGrant {
+  return RestoreGrantSchema.parse({
+    ...input, grant_id: deterministicUuid(identity), state: 'active', restorable: true, preselected,
+  });
 }
 
 /** Read-only enumeration of every prior grant under one reconnected account.
@@ -208,6 +279,30 @@ export async function enumerateRestoreAccess(
         state: restorable ? 'active' : 'revoked',
         lifetime: { kind: 'until_revoked' },
       }));
+    }
+  }
+
+  // Review-time defaults (§P1-wire): the installed manifest's agent-nominable
+  // action keys and their stores are offered as opt-in defaults, never widened
+  // beyond a read-only delegation and require_approval policies.
+  const [version] = await database.select({ manifest: appVersions.manifest }).from(appVersions).where(and(
+    eq(appVersions.org_id, actor.org_id), eq(appVersions.id, current.record.scope.app_version_id))).limit(1);
+  const tools = version ? AppIntegrationToolsDeclarationSchema.safeParse((version.manifest as Record<string, unknown> | undefined)?.integration_tools) : null;
+  if (tools?.success) {
+    const delegated = tools.data.filter((tool) => tool.visibility === 'delegated_tools');
+    const storeKeys = [...new Set(delegated.map((tool) => tool.store_key))].sort();
+    const actionKeys = [...new Set(delegated.map((tool) => tool.action_key).filter((key): key is string => Boolean(key)))].sort();
+    const lifetime = sessionConsentLifetime(current.record.scope, current.created_at);
+    const accountRef = current.account_ref ?? priorAccount?.account_ref ?? '';
+    const deftyPrior = await priorDeftyReadStores(database, actor, nomination.installation_id, storeKeys, restoreAccountRefs);
+    const policyPrior = await priorAgentPolicyKeys(database, actor, nomination.installation_id, actionKeys);
+    for (const storeKey of storeKeys) {
+      remember(defaultGrant(`defty_read:${nomination.installation_id}:${accountRef}:${storeKey}`,
+        { kind: 'defty_read_grant', store_key: storeKey, lifetime }, deftyPrior.has(storeKey)));
+    }
+    for (const actionKey of actionKeys) {
+      remember(defaultGrant(`agent_policy:${nomination.installation_id}:${accountRef}:${actionKey}`,
+        { kind: 'agent_policy_default', action_key: actionKey, lifetime }, policyPrior.has(actionKey)));
     }
   }
 

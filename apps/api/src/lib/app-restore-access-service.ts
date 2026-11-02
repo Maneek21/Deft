@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { appConnectionSessions, appDataConsents, appResourceObservationConsents, appIntegrationCapturePolicies, auditLog } from '@deft/db/schema';
 import { AppConnectionActionConsentSchema, AppDataConsentSnapshotSchema, ResourceObservationSnapshotSchema,
   type AppConnectionActionConsent } from '@deft/app-kit/core';
@@ -200,6 +200,35 @@ export const RESTORE_GRANT_HANDLERS: ReadonlyMap<RestoreGrantKind, RestoreGrantH
       orgId: actor.org_id, dedupeKey: appIntegrationSourceDigest([APP_INTEGRATION_CAPTURE_JOB, original.id, revision]), maxAttempts: 5, executor: transaction,
     });
     return { new_grant_id: original.id };
+  }],
+  ['agent_policy_default', async ({ transaction, actor, record, grant }) => {
+    // Review-time default: seed require_approval (never auto-allow) for one
+    // agent-nominable action key. Deny stays the implicit default; a prior human
+    // choice is never overwritten, and no row is written for actions the
+    // reconnected provider no longer exposes.
+    if (!grant.action_key) throw restoreAccessDenied();
+    const binding = await transaction.execute(sql`SELECT id FROM app_runtime_bindings
+      WHERE org_id=${actor.org_id} AND app_installation_id=${record.scope.installation_id}
+        AND owner_resource_binding_id=${record.scope.resource_binding_id} AND action_key=${grant.action_key} AND state='active'
+      LIMIT 1`);
+    const bindingId = binding.rows[0]?.id;
+    if (!bindingId) throw restoreAccessDenied();
+    await transaction.execute(sql`INSERT INTO app_runtime_agent_policies(org_id,owner_user_id,runtime_binding_id,mode,revision)
+      VALUES(${actor.org_id},${actor.user_id},${bindingId},'require_approval',1)
+      ON CONFLICT (org_id,owner_user_id,runtime_binding_id) DO NOTHING`);
+    return { new_grant_id: randomUUID() };
+  }],
+  ['defty_read_grant', async ({ transaction, actor, record, grant, now }) => {
+    // Review-time default: a read-only Defty delegation (never draft/send),
+    // lifetime capped by the session consent like every other re-issued grant.
+    if (!grant.store_key || !record.account) throw restoreAccessDenied();
+    const expiry = reissuedExpiry(grant.lifetime, record.scope, now);
+    if (!expiry.expires_at) throw restoreAccessDenied(); // the delegation is always finite
+    const newId = randomUUID();
+    await transaction.execute(sql`INSERT INTO app_integration_principal_grants(id,org_id,owner_user_id,installation_id,resource_binding_id,account_ref,store_key,principal_kind,principal_id,operations,revision,expires_at)
+      VALUES(${newId},${actor.org_id},${actor.user_id},${record.scope.installation_id},${record.scope.resource_binding_id},${record.account.account_ref},${grant.store_key},'defty',${actor.user_id},ARRAY['read']::text[],1,${expiry.expires_at})
+      ON CONFLICT (org_id,owner_user_id,installation_id,account_ref,resource_binding_id,store_key,principal_kind,principal_id) WHERE revoked_at IS NULL DO NOTHING`);
+    return { new_grant_id: newId };
   }],
 ]);
 
