@@ -14,7 +14,7 @@ import { enumerateRestoreAccess, restoreAccountMatches,
   type RestoreAccessDatabase, type RestoreAccessTransaction, type RestoreGrant,
   type RestoreGrantKind, type RestoreLifetime } from './app-restore-access-context.js';
 import { restoreAccessReviewDigest, restoreAccessDenied, restoreAccessSameAccountRequired,
-  restoreAccessReviewWindow, RESTORE_ACCESS_REVIEW_SCHEMA_VERSION, RESTORE_ACCESS_ACTIVATE_SCHEMA_VERSION,
+  restoreAccessReviewWindow, REVIEW_WINDOW_MS, RESTORE_ACCESS_REVIEW_SCHEMA_VERSION, RESTORE_ACCESS_ACTIVATE_SCHEMA_VERSION,
   type AppRestoreAccessPorts } from './app-restore-access-authority.js';
 import type { ExperienceCaller } from './app-experience-service.js';
 
@@ -240,7 +240,9 @@ export class AppRestoreAccessService {
 
   async activate(actor: ExperienceCaller, raw: unknown) {
     const input = ActivateRequestSchema.parse(raw);
-    if (Date.parse(input.review_expires_at) <= this.ports.now()) throw restoreAccessDenied();
+    const reviewExpiry = Date.parse(input.review_expires_at), activateNow = this.ports.now();
+    // A review window longer than the one review() issues was never issued by it.
+    if (reviewExpiry <= activateNow || reviewExpiry > activateNow + REVIEW_WINDOW_MS) throw restoreAccessDenied();
     const enumeration = await this.enumerate(actor, { installation_id: input.installation_id, target_key: input.target_key });
     this.assertAuthority(enumeration);
     if (restoreAccessReviewDigest(enumeration, actor, input.review_expires_at) !== input.review_digest) {

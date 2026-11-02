@@ -13,7 +13,7 @@ export const RESTORE_ACCESS_REVIEW_SCHEMA_VERSION = 'deft.app_restore_access_rev
 export const RESTORE_ACCESS_CONTEXT_SCHEMA_VERSION = 'deft.app_restore_access_context.v1';
 export const RESTORE_ACCESS_ACTIVATE_SCHEMA_VERSION = 'deft.app_restore_access_activate.v1';
 
-const REVIEW_WINDOW_MS = 10 * 60_000;
+export const REVIEW_WINDOW_MS = 10 * 60_000;
 
 export type AppRestoreAccessPorts = Readonly<{
   database: RestoreAccessDatabase;

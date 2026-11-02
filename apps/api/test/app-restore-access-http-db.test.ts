@@ -270,6 +270,11 @@ test('restore access review re-issues prior grants at the same lifetime, never w
     assert.equal(widened.status, 400);
     assert.equal(widened.body.code, 'VALIDATION_ERROR');
 
+    // A self-extended review window (never issued by review) is refused.
+    const extended = await call('/api/app-connection-sessions/restore/activate', sessionA.accessToken,
+      { ...envelope, grant_ids: chosen, review_expires_at: new Date(Date.now() + 86400_000).toISOString() });
+    assert.equal(extended.status, 403);
+
     // §5.2 narrowing only: an unrelated/fabricated grant id is refused.
     const added = await call('/api/app-connection-sessions/restore/activate', sessionA.accessToken,
       { ...envelope, grant_ids: [...chosen, randomUUID()] });
