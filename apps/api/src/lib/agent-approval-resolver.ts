@@ -30,7 +30,7 @@ import type { AppRunTransaction } from './app-run-repository.js';
  * happened when the row was queued, and re-gating here would bounce
  * every conservative-trust employee's approved writes.
  */
-import { eq, and, or, sql } from 'drizzle-orm';
+import { eq, and, or, sql, desc, isNull } from 'drizzle-orm';
 import { db, withDbAdvisoryLock } from './db.js';
 import {
   agentActions,
@@ -38,6 +38,7 @@ import {
   agentEmployees,
   messages,
   orgMembers,
+  webSessions,
 } from '@deft/db/schema';
 import type { ToolContext, ToolResult } from './mcp-tools/types.js';
 import type { TrustLevel } from './agent-approval.js';
@@ -129,7 +130,7 @@ export { sanitizeModuleActionParamsForReceipt };
  * record through this resolver. App Runs remain outside MCP action catalogs
  * and budgets; this predicate only owns the human approval handoff. */
 export function isApprovalResolverAction(action: string): boolean {
-  return action === 'email_send' || action === APP_RUN_APPROVAL_ACTION || MCP_ACTION_KINDS.has(action);
+  return action === 'email_send' || action === 'app_record_mirror_nominate' || action === APP_RUN_APPROVAL_ACTION || MCP_ACTION_KINDS.has(action);
 }
 
 const MODULE_MUTATION_ACTIONS: ReadonlySet<string> = new Set(
@@ -882,6 +883,16 @@ async function approveActionLocked(
   // terminal retry may create missing receipts/attention artifacts, so it is
   // not a side-effect-free read and must not be reachable cross-org.
   const membership = await loadReviewMembership(approverUserId, row.org_id);
+  // Record-mirror nominations are owner-only: an org admin or another member
+  // must never approve a write against the owner's private mirror consent, and
+  // the internal system path never stands in for the owning human.
+  if (row.action === 'app_record_mirror_nominate' && approverUserId !== row.user_id) {
+    return {
+      status: 'error',
+      code: 'FORBIDDEN',
+      message: 'only the owning user may approve a record-mirror nomination',
+    };
+  }
   const humanCanReview = membership !== null && (
     actionRequesterId(row) === approverUserId
     || membership.role === 'owner'
@@ -947,6 +958,13 @@ async function approveActionLocked(
       code: 'INVALID_STATE',
       message: `action ${actionId} is not pending`,
     };
+  }
+
+  // Record-mirror nominations resolve by re-running the owner's ordinary human
+  // review()/confirm() authority — never from the agent's grant — so a receipt
+  // is only ever issued after a fresh consent/account/policy re-check.
+  if (row.action === 'app_record_mirror_nominate') {
+    return resolveRecordMirrorNominationAction(row, approverUserId);
   }
 
   // Retained native proposals remain audit records, never replacement sends.
@@ -1335,6 +1353,69 @@ async function approveActionLocked(
     status: 'approved',
     result: parsedResult,
   };
+}
+
+/** Owner-only approval of an agent-nominated record mirror. The nomination is
+ * resolved by re-running the owner's ordinary human review()/confirm() authority
+ * under the owner's current web session, so a receipt is never issued from the
+ * agent's grant. Any consent/account/policy drift fails closed with a clear
+ * app-neutral reason and no receipt. Idempotent: a second approve returns the
+ * stored receipt. */
+async function resolveRecordMirrorNominationAction(
+  row: typeof agentActions.$inferSelect,
+  approverUserId: string,
+): Promise<ApprovalResolverResult> {
+  const claimed = await db.execute(
+    sql`UPDATE agent_actions
+           SET approval_status = 'approved', approved_at = NOW(), approved_by_user_id = ${approverUserId}
+         WHERE id = ${row.id} AND approval_status = 'pending'
+         RETURNING id`,
+  );
+  const claimedRows = (claimed as { rows?: unknown[] }).rows ?? [];
+  if (claimedRows.length === 0) {
+    const [winner] = await db.select().from(agentActions).where(eq(agentActions.id, row.id)).limit(1);
+    if (winner?.approval_status === 'approved') {
+      return { status: 'approved', message: 'already approved', result: winner.result ?? undefined };
+    }
+    if (winner?.approval_status === 'rejected') return { status: 'rejected', message: 'already rejected' };
+    return { status: 'error', code: 'INVALID_STATE', message: `action ${row.id} is no longer pending` };
+  }
+
+  const [session] = await db
+    .select({ id: webSessions.id, expires_at: webSessions.expires_at })
+    .from(webSessions)
+    .where(and(
+      eq(webSessions.user_id, approverUserId),
+      eq(webSessions.org_id, row.org_id),
+      isNull(webSessions.revoked_at),
+    ))
+    .orderBy(desc(webSessions.created_at))
+    .limit(1);
+  if (!session || session.expires_at.getTime() <= Date.now()) {
+    await db.update(agentActions).set({
+      executed_at: new Date(),
+      result: null,
+      error: 'No active web session for the approving owner',
+    }).where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id)));
+    return { status: 'error', code: 'FORBIDDEN', message: 'No active web session for the approving owner' };
+  }
+
+  const approver = { org_id: row.org_id, user_id: approverUserId, sid: session.id, access_expires_at: session.expires_at.getTime() };
+  try {
+    const { approveRecordMirrorNomination } = await import('./app-record-mirror-service.js');
+    const receipt = await approveRecordMirrorNomination(approver, row.params);
+    await db.update(agentActions).set({ executed_at: new Date(), result: receipt as never, error: null })
+      .where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id)));
+    return { status: 'approved', result: receipt };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    await db.update(agentActions).set({
+      executed_at: new Date(),
+      result: null,
+      error: reason.slice(0, 2000),
+    }).where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id)));
+    return { status: 'error', code: 'EXECUTE_FAILED', message: reason };
+  }
 }
 
 /**
