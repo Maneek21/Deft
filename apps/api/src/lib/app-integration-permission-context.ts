@@ -3,6 +3,19 @@ import {mcpTokens} from '@deft/db/schema';import {db} from './db.js';
 import {appDataRetainedGuard} from './app-data-authority.js';import {getAppIntegrationDataGateway} from './app-integration-runtime-gateway.js';
 import type {ExperienceCaller} from './app-experience-service.js';
 const Account=z.strictObject({installation_id:z.uuid(),account_ref:z.string().min(1).max(512),store_key:z.string().regex(/^[a-z][a-z0-9_]{0,47}$/u)});
+/** Default delegation for a freshly reviewed Defty principal: read-only.
+ * draft/send/triage are explicit opt-ins and are never seeded automatically. */
+export const DEFAULT_DEFTY_GRANT_OPERATIONS=['read'] as const;
+/** Seeds the default read-only Defty delegation during the restore-access
+ * review, with the review's lifetime. Reuses the owner-only grant write so
+ * expected_revision conflicts and re-grant-after-revoke stay enforced; it never
+ * widens beyond the read default. */
+export async function seedDefaultDeftyIntegrationGrant(caller:ExperienceCaller,account:z.infer<typeof Account>,lifetime:{expires_at:string;expected_revision:number}){
+ const {writeIntegrationToolGrant}=await import('./app-integration-tool-grants.js');
+ const human={kind:'human' as const,org_id:caller.org_id,user_id:caller.user_id,principal_id:caller.sid,access_expires_at:caller.access_expires_at};
+ const current=await getAppIntegrationDataGateway().currentAccount(human,account,'read');
+ return writeIntegrationToolGrant(caller,{...account,resource_binding_id:current.resource_binding_id,principal_kind:'defty',principal_id:caller.user_id,operations:[...DEFAULT_DEFTY_GRANT_OPERATIONS],expires_at:lifetime.expires_at,expected_revision:lifetime.expected_revision});
+}
 /** Owner settings reveal token labels and grant scope, never token material.
  * Reading this context does not create delegated or notification authority. */
 export async function appIntegrationPermissionContext(caller:ExperienceCaller,raw:unknown){

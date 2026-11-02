@@ -31,3 +31,23 @@ export function experienceAgentPolicy(authority: HumanActionAuthorityPort, calle
     await final(tx); return result;
   }, signal);
 }
+
+/** Seeds the review-time default agent policy for the runtime actions an agent
+ * may nominate. Those actions default to `require_approval` (every request still
+ * needs the owner's approval); every other action keeps the implicit `deny`
+ * default, so no row is written for it. A prior human choice is never overwritten:
+ * only actions with no stored policy (revision 0) are seeded. App-neutral — the
+ * caller supplies the action keys derived from the installed manifest. */
+export async function seedExperienceAgentPolicyDefaults(authority: HumanActionAuthorityPort, caller: ExperienceCaller,
+  sessionId: string, approvalActionKeys: readonly string[], signal?: AbortSignal) {
+  const seeded: { action_key: string; mode: 'deny' | 'require_approval'; revision: number }[] = [];
+  for (const actionKey of new Set(approvalActionKeys)) {
+    const current = await experienceAgentPolicy(authority, caller, sessionId, actionKey, undefined, signal);
+    if (current.revision === 0) {
+      const created = await experienceAgentPolicy(authority, caller, sessionId, actionKey,
+        { mode: 'require_approval', expected_revision: 0 }, signal);
+      seeded.push({ action_key: actionKey, mode: created.mode, revision: created.revision });
+    }
+  }
+  return seeded;
+}
