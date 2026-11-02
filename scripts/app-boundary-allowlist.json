@@ -7054,7 +7054,7 @@
     "path": "apps/web/src/lib/app-experience-recipient-presentation.test.mjs",
     "rule": "computed-import",
     "token": "require(process.env.DEFT_UI_TEST_TYPESCRIPT)",
-    "digest": "ab4fe553603449b111b34e23c9c04b0f077ae70eb57be2eae3abc828066757b3",
+    "digest": "63ca97f5f781dcc456403154402f339803e18efd41df9f8aecabe88b5df5861b",
     "occurrences": 1,
     "reason": "Reviewed isolated generic tooling/test loader: local runtime/test-support module, cache-busted test middleware, or development dependency; no production mailbox authority. Exact enclosing context requires fresh review on change.",
     "owner": "@Maneek21",
