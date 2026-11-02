@@ -104,8 +104,15 @@ test('Experience bundle rejects unknown fields, traversal, unsorted keys and ove
     ...bundle, action_keys: ['z_action', 'a_action'],
   }));
   await assert.rejects(() => prepareDeftExperienceArtifact(path, {
-    ...bundle, worker_source: 'x'.repeat(96 * 1024 + 1),
+    ...bundle, worker_source: 'x'.repeat(112 * 1024 + 1),
   }));
+});
+
+test('Experience bundle admits a Worker source up to exactly 112 KiB', async () => {
+  for (const size of [96 * 1024 + 1, 112 * 1024]) {
+    const artifact = await prepareDeftExperienceArtifact(path, { ...bundle, worker_source: 'x'.repeat(size) });
+    assert.equal(JSON.parse(artifact.content).worker_source.length, size);
+  }
 });
 
 

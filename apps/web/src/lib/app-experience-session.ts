@@ -173,7 +173,7 @@ export function normalizeInstalledExperienceSession(value: unknown): InstalledEx
     || !['deft.experience_bundle.v1', 'deft.experience_bundle.v2', 'deft.experience_bundle.v3','deft.experience_bundle.v4'].includes(String(bundle.schema_version))
     || typeof bundle.worker_source !== 'string'
     || new TextEncoder().encode(bundle.worker_source).byteLength < 1
-    || new TextEncoder().encode(bundle.worker_source).byteLength > 96 * 1024) {
+    || new TextEncoder().encode(bundle.worker_source).byteLength > 112 * 1024) {
     throw new Error('Unsupported Experience bundle.');
   }
   const backgroundRefreshDescription = DeftExperienceBackgroundRefreshDescriptionSchema.optional().parse(bundle.background_refresh_description);
