@@ -116,6 +116,10 @@ function createDocumentElement(value: ExperienceDocumentContent, images: readonl
   if (images.length || value.format === 'html') {
     wrapper.style.color = '#202124'; wrapper.style.backgroundColor = '#fff';
     wrapper.style.padding = '16px'; wrapper.style.borderRadius = '12px';
+    // Keep sender-authored HTML on a readable light canvas, framed by a soft
+    // token border and shadow so it sits cleanly in the dark host theme. The
+    // ring is a shadow rather than a border so authored widths do not shift.
+    wrapper.style.boxShadow = '0 0 0 1px var(--border-default, rgba(128,128,128,0.16)), var(--shadow-sm, 0 1px 2px rgba(15,15,20,0.08))';
   }
   for (const table of wrapper.querySelectorAll<HTMLElement>('table')) {
     table.style.minWidth = '0'; constrainMessageWidth(table);
