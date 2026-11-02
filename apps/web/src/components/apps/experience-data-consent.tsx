@@ -7,6 +7,11 @@ import {AppDialog} from '@/components/overlay-primitives';
 import {AppDataContextSchema,AppDataConsentSnapshotSchema,AppDataConsentReferenceSchema} from '../../../../../packages/app-kit/src/app-data';
 type Target=ReturnType<typeof AppDataContextSchema.parse>['targets'][number];
 type Review={review_digest:string;snapshot:ReturnType<typeof AppDataConsentSnapshotSchema.parse>;target:Target};
+/** Display-only summary of the reviewed record stores; it never grants access. */
+export function recordAccessSummary(rows:readonly {active:boolean}[]){
+ const active=rows.filter(row=>row.active).length;
+ return active===rows.length?'All private record stores active':`${active} of ${rows.length} record stores active`;
+}
 /** Human record-write consent is separate from showing app data or Read OAuth. */
 export function ExperienceDataConsent({installationId,targetKey,storeKeys,scopeKey,onChanged,showEnabled=false,onOpenSettings}:{installationId:string;targetKey:string;storeKeys:readonly string[];scopeKey:string;onChanged?:()=>void;showEnabled?:boolean;onOpenSettings?:()=>void}){
  const [targets,setTargets]=useState<Target[]>([]),[review,setReview]=useState<Review|null>(null),[busy,setBusy]=useState(false),[notice,setNotice]=useState(''),[blocked,setBlocked]=useState(false);
@@ -45,6 +50,9 @@ export function ExperienceDataConsent({installationId,targetKey,storeKeys,scopeK
    await load(request);if(current(request)){setNotice('Private record access revoked. Saved records were not deleted.');onChanged?.();}
   }catch{if(current(request)){setNotice('Revocation was not confirmed. Check access status before trying again.');await load(request).catch(()=>undefined);}}finally{if(current(request))setBusy(false);}}
  const visibleTargets=targets.flatMap(target=>target.stores.filter(store=>storeKeys.includes(store.declaration.key)).map(store=>({target,store,active:!!store.consent&&appConsentDeadline(store.consent.expires_at,store.consent.consent_lifetime)>Date.now()})));
+ const activeTargets=visibleTargets.filter(row=>row.active),inactiveTargets=visibleTargets.filter(row=>!row.active);
+ const groupedConsent=showEnabled&&visibleTargets.length>1;
+ const statusRow=(row:(typeof visibleTargets)[number])=><RecordAccessStatusRow key={`${row.target.session_id}/${row.store.declaration.key}`} label={row.target.account.label} storeKey={row.store.declaration.key} active={row.active} busy={busy} onReview={()=>void begin(row.target,row.store.declaration.key)} onRevoke={showEnabled&&row.store.consent?()=>void revoke(row.target,row.store.declaration.key,row.store.consent!.consent_id):undefined}/>;
  const visibleNotice=showEnabled||notice!=='Private record access enabled.'?notice:'';
  if(!showEnabled&&!storeKeys.length)return null;
  if(!review&&!visibleNotice&&!visibleTargets.some(row=>showEnabled||!row.active))return null;
@@ -54,7 +62,11 @@ export function ExperienceDataConsent({installationId,targetKey,storeKeys,scopeK
  </section>;
  return <section aria-label="Private record access" className="mb-3 rounded-xl bg-[var(--surface-container-low)] px-3 py-2 text-xs">
   {!review&&visibleTargets.some(row=>!row.active)&&<div className="flex flex-wrap items-end gap-3 py-2"><label className="block">Permission lifetime<select className="mt-1 min-h-11 rounded-xl bg-[var(--surface-container-high)] px-3" value={permissionLifetime} disabled={busy} onChange={event=>setPermissionLifetime(event.target.value==='until_revoked'&&visibleTargets.some(row=>row.target.allow_until_revoked===true)?'until_revoked':'date')}><option value="date">Until date</option>{visibleTargets.some(row=>row.target.allow_until_revoked===true)&&<option value="until_revoked">Until revoked</option>}</select></label>{permissionLifetime==='date'&&<label className="block">Allow private records until<input type="datetime-local" className="mt-1 min-h-11 rounded-xl border bg-transparent px-3" value={until} disabled={busy} onChange={event=>setUntil(event.target.value)}/></label>}</div>}
-  {visibleTargets.filter(row=>showEnabled||!row.active).map(({target,store,active})=><RecordAccessStatusRow key={`${target.session_id}/${store.declaration.key}`} label={target.account.label} storeKey={store.declaration.key} active={active} busy={busy} onReview={()=>void begin(target,store.declaration.key)} onRevoke={showEnabled&&store.consent?()=>void revoke(target,store.declaration.key,store.consent!.consent_id):undefined}/>)}
+  {groupedConsent&&<p role="status" className="py-1 text-[var(--foreground-secondary)]">{activeTargets.length===visibleTargets.length?'All private record stores active':`${activeTargets.length} of ${visibleTargets.length} record stores active`}</p>}
+  {groupedConsent?<div className="space-y-1">
+   {!!activeTargets.length&&<details className="min-w-0"><summary className="flex min-h-11 cursor-pointer items-center">Active record stores ({activeTargets.length})</summary><div className="space-y-1 pt-1">{activeTargets.map(statusRow)}</div></details>}
+   <div className="space-y-1">{inactiveTargets.map(statusRow)}</div>
+  </div>:visibleTargets.filter(row=>showEnabled||!row.active).map(statusRow)}
   {visibleNotice&&<p role="status">{visibleNotice}</p>}
   {review&&<AppDialog open title="Allow private record storage" description="Review how this app can save your records for this connected account." onClose={()=>{if(!busy){setReview(null);setBlocked(false);}}}>
    <div className="space-y-4 text-sm"><p>{review.target.account.label}</p><p>This app may create, read, edit and archive its private {review.snapshot.store.key.replaceAll('_',' ')} records, and add or remove their files. Access {review.snapshot.consent_lifetime==='until_revoked'?'continues until revoked':`ends ${new Date(review.snapshot.expires_at!).toLocaleString()}`}.</p>

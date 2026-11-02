@@ -1,6 +1,7 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {renderToStaticMarkup} from 'react-dom/server';
 import {verifiedExperienceAccountLabels,experienceSettingsAccounts,observationIntervalChoices,observationIntervalLabel} from './app-experience-settings-display';
 import {ExperienceRefreshInterval} from '../components/apps/experience-background-refresh';import {ExperienceBackgroundRefreshReview} from '../components/apps/experience-background-refresh-review';import {ExperienceSettings} from '../components/apps/experience-settings';
+import {ExperienceAgentPolicy,agentActionLabel,saveAgentPolicy} from '../components/apps/experience-agent-policy';import {recordAccessSummary} from '../components/apps/experience-data-consent';
 import {readFileSync} from 'node:fs';
 
 test('fresh verified labels decorate only the existing authorized catalog and never nominate or add a target',()=>{
@@ -21,8 +22,34 @@ test('the immutable background review uses readable units while retaining expiry
  const html=renderToStaticMarkup(<ExperienceBackgroundRefreshReview review={review} now={0} busy={false} onAllow={()=>{}} onCheck={()=>{}} onClose={()=>{}}/>);assert.match(html,/every 15 minutes/);assert.match(html,/does not permit draft changes, sending/);assert.match(html,/not downloaded/);assert.match(html,/Allow background refresh/);
 });
 
-test('required private review belongs to the Access section in settings and remains reachable from the normal app',()=>{
+test('required private review stays inside the unified account card and remains reachable from the normal app',()=>{
  const html=renderToStaticMarkup(<ExperienceSettings experienceLabel="Email" onBack={()=>{}} accounts={[]} selectedAccountKey="sender" access={{state:'review_required'}} accessReview={<section aria-label="Experience private access"><button>Review private access</button></section>}/>);
- const section=html.indexOf('aria-label="Experience private access"'),access=html.lastIndexOf('<section hidden=""',section);assert.ok(access>=0);assert.match(html.slice(access,section),/access/);assert.doesNotMatch(html.slice(0,html.indexOf('Private access</h2>')),/aria-label="Experience private access"/);
+ const section=html.indexOf('aria-label="Experience private access"');assert.ok(section>=0);assert.match(html.slice(0,section),/Private access/);assert.doesNotMatch(html.slice(0,section),/<section hidden=""/);
  const source=readFileSync(new URL('../components/apps/installed-app-experience.tsx',import.meta.url),'utf8');assert.match(source,/\{!settingsOpen&&privateAccessReview\}/);assert.match(source,/accessReview=\{<div[^>]*>\s*\{privateAccessReview\}/);assert.match(source,/accountLabels\?\.scope===accountLabelScope/);
+});
+
+test('agent requests render every declared action as an inline list with immediate-save options',()=>{
+ const html=renderToStaticMarkup(<ExperienceAgentPolicy sessionId="session/one" actions={['read_messages','mirror_drafts','organize_messages','send_message']} ensureAuthority={async()=>true}/>);
+ for(const label of ['Read messages','Mirror drafts','Organize messages','Send message'])assert.match(html,new RegExp(label));
+ for(const label of ['Read messages','Mirror drafts','Organize messages','Send message'])assert.match(html,new RegExp(`aria-label="${label} permission"`));
+ assert.match(html,/Do not allow/);assert.match(html,/Require my approval/);
+ assert.doesNotMatch(html,/Save agent permission|Action<|>Permission</);
+ assert.equal(agentActionLabel('organize_messages'),'Organize messages');
+});
+
+test('an agent permission change saves immediately with the loaded revision without an explicit save button',async()=>{
+ const calls:{path:string;body:unknown}[]=[];
+ const saved=await saveAgentPolicy({sessionId:'session/one',action:'send_message',mode:'require_approval',revision:4,
+  ensureAuthority:async()=>true,request:async(path,init)=>{calls.push({path,body:JSON.parse(String(init?.body))});return Response.json({mode:'require_approval',revision:5});}});
+ assert.deepEqual(saved,{mode:'require_approval',revision:5});
+ assert.equal(calls.length,1);assert.equal(calls[0].path,'/api/app-experiences/sessions/session%2Fone/agent-policies/send_message');
+ assert.deepEqual(calls[0].body,{mode:'require_approval',expected_revision:4});
+ await assert.rejects(saveAgentPolicy({sessionId:'session/one',action:'send_message',mode:'deny',revision:5,
+  ensureAuthority:async()=>false,request:async()=>{throw Error('must not dispatch');}}));
+});
+
+test('record store consent summary states progress without claiming every store is active',()=>{
+ assert.equal(recordAccessSummary([{active:true},{active:true}]),'All private record stores active');
+ assert.equal(recordAccessSummary([{active:true},{active:false},{active:false}]),'1 of 3 record stores active');
+ assert.equal(recordAccessSummary([{active:false}]),'0 of 1 record stores active');
 });

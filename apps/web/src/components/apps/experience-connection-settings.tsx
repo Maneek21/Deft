@@ -14,6 +14,7 @@ import {verifiedExperienceAccountLabels} from '@/lib/app-experience-settings-dis
 import {ExperienceCapabilityUpgradeSettings} from './experience-capability-upgrade';
 import {ExperienceBackgroundRefresh} from './experience-background-refresh';
 import {ExperienceBackgroundAccess} from './experience-background-access';
+import {ExperienceCredentialRepair} from './experience-credential-repair';
 import {ExperienceInitialConnectConsent,ExperienceInitialConnectCompletion} from './experience-initial-connect-consent';
 import {ExperienceConnectionForms} from './experience-connection-forms';
 import {ExperienceConsentContinuation} from './experience-consent-continuation';
@@ -109,9 +110,13 @@ function GenericConnectionSettings(props:SettingsProps&{ownerId:string;orgId:str
     }}
     finally{if(current()){operation.current=false;setWorking(false);setReuseWorking(null);props.onBusy(false);}}
   }
+  const diagnostics=<div className="space-y-3">
+    <button type="button" className="deft-pill min-h-11" disabled={working||props.disabled} onClick={()=>setReload(n=>n+1)}>Reload account connections</button>
+    {target?.session&&!reusePending&&<button type="button" className="deft-pill min-h-11" disabled={working||props.disabled||!target.runtime_ready} onClick={()=>void act('status')}>Check connection status</button>}
+    {!reusePending&&(state==='connected'||state==='not_connected')&&<button type="button" className="deft-pill min-h-11 text-[var(--error)]" disabled={working||props.disabled} onClick={()=>void act('disconnect')}>Disconnect account</button>}
+  </div>;
   const controls=<div className="space-y-3">
     {notice&&<AppRequestNotice message={notice} role="status" className="text-sm text-[var(--on-surface-variant)]"/>}
-    <button type="button" className="deft-pill min-h-11" disabled={working||props.disabled} onClick={()=>setReload(n=>n+1)}>Reload account connections</button>
     {!!context?.targets.length&&<section aria-label="Account connection" className="space-y-3">
       <h4 className="text-sm font-medium">Account connection</h4>
       {context.targets.length>1&&<label className="block text-sm">Account connection<select className="mt-1 min-h-11 w-full rounded-xl bg-[var(--surface-container-high)] px-3" value={selected} disabled={working||props.disabled} onChange={event=>{setSelected(event.target.value);setNotice('');}}>
@@ -120,13 +125,13 @@ function GenericConnectionSettings(props:SettingsProps&{ownerId:string;orgId:str
       {props.appOwnedRecords&&target&&state==='connected'&&<ExperienceInitialConnectCompletion installationId={props.installationId} ownerId={props.ownerId} orgId={props.orgId} sessionScope={props.sessionScope} target={target} disabled={working||props.disabled}/>}
       {target?.upgrade&&!target.reattachment?.candidate&&!target.reattachment?.pending&&!reusePending&&flow.current?<ExperienceCapabilityUpgradeSettings key={JSON.stringify([selected,target.scope])} target={target} client={flow.current} disabled={working||props.disabled} ownerId={props.ownerId} orgId={props.orgId} appOwnedRecords={props.appOwnedRecords&&state!=='connected'} backgroundRefreshDescription={props.backgroundRefreshDescription}
         onBusy={busy=>{operation.current=busy;setWorking(busy);props.onBusy(busy);}} onContext={setContext} onNavigate={url=>{props.onConnectionNavigation(null);window.location.assign(url);}}
-        onUse={props.onSetupComplete?()=>props.onSetupComplete?.(selected):undefined} onConnect={()=>void act('begin')} onStatus={()=>void act('status')} onDisconnect={()=>void act('disconnect')}/>:target&&<><ExperienceConnectionStatus label={target.session?.account?.label??target.reattachment?.candidate?.account.label??visibleReview?.account.label??target.profile.label} state={state} reviewAvailable={reviewAvailable} reusePending={reusePending} working={reuseWorking}/>
+        onUse={props.onSetupComplete?()=>props.onSetupComplete?.(selected):undefined} onConnect={()=>void act('begin')} onStatus={()=>void act('status')} onDisconnect={()=>void act('disconnect')}/>:target&&<>{flow.current&&<ExperienceCredentialRepair target={target} client={flow.current} disabled={working||props.disabled} onBusy={busy=>{operation.current=busy;setWorking(busy);props.onBusy(busy);}} onContext={setContext} onNavigate={url=>{props.onConnectionNavigation(null);window.location.assign(url);}}/>}
+        <ExperienceConnectionStatus label={target.session?.account?.label??target.reattachment?.candidate?.account.label??visibleReview?.account.label??target.profile.label} state={state} reviewAvailable={reviewAvailable} reusePending={reusePending} working={reuseWorking}/>
         {notice==='Review the current action operator setup before reusing this account. No account activation was requested.'&&<a className="deft-pill min-h-11" href="/settings/apps">Review action operator setup</a>}
         {!target.runtime_ready&&<p className="text-sm">Your workspace needs to finish configuring the approved account operator before connecting.</p>}
 
         <div className="flex flex-wrap gap-2">
           {(!state||state==='disconnected'||state==='not_connected')&&!reusePending&&<button type="button" className="deft-pill min-h-11" disabled={working||props.disabled||!target.runtime_ready} onClick={()=>void act('begin')}>{working?'Opening setup…':'Connect account'}</button>}
-          {target.session&&!reusePending&&<button type="button" className="deft-pill min-h-11" disabled={working||props.disabled||!target.runtime_ready} onClick={()=>void act('status')}>Check connection status</button>}
           {!reusePending&&state==='connected'&&props.onSetupComplete&&<button type="button" className="deft-pill min-h-11" disabled={working||props.disabled} onClick={()=>props.onSetupComplete?.(selected)}>Use account</button>}
         </div>
         {target.reattachment?.candidate&&!reusePending&&<div className="space-y-2 text-sm">
@@ -140,13 +145,18 @@ function GenericConnectionSettings(props:SettingsProps&{ownerId:string;orgId:str
           <button type="button" className="deft-pill min-h-11" disabled={working||props.disabled} onClick={()=>{try{setReuseReview(flow.current?.existingReview(selected)??null);}catch{setNotice('Account reuse changed. Check status before continuing.');}}}>Resume review</button>
           <button type="button" className="deft-pill min-h-11" disabled={working||props.disabled||!target.runtime_ready} onClick={()=>void reuse('status')}>Check status</button>
         </div>}
-        {!reusePending&&(state==='connected'||state==='not_connected')&&<details className="text-sm"><summary className="min-h-11 cursor-pointer py-3">Manage connection</summary><button type="button" className="deft-pill min-h-11 text-[var(--error)]" disabled={working||props.disabled} onClick={()=>void act('disconnect')}>Disconnect account</button></details>}
       </>}
     </section>}
     <LegacyConnectionSettingsGate appOwnedRecords={props.appOwnedRecords}>{context&&<RetainedConnectionSettings {...props} excludedTargets={context.targets.map(t=>t.target_key)}/>}</LegacyConnectionSettingsGate>
   </div>;
-  return props.appOwnedRecords&&target&&state==='connected'?<ExperienceBackgroundRefresh description={props.backgroundRefreshDescription} target={target} ownerId={props.ownerId} orgId={props.orgId} disabled={working||props.disabled} onBusy={busy=>{setWorking(busy);props.onBusy(busy);}}
-    troubleshooting={<>{controls}<ExperienceBackgroundAccess target={target} disabled={working||props.disabled} onBusy={busy=>{setWorking(busy);props.onBusy(busy);}}/></>}/>:controls;
+  const background=props.appOwnedRecords&&target&&state==='connected';
+  return <div className="space-y-4">
+    {controls}
+    {background?<>
+      <ExperienceBackgroundRefresh description={props.backgroundRefreshDescription} target={target} ownerId={props.ownerId} orgId={props.orgId} disabled={working||props.disabled} onBusy={busy=>{setWorking(busy);props.onBusy(busy);}} diagnostics={diagnostics}/>
+      <ExperienceBackgroundAccess target={target} disabled={working||props.disabled} onBusy={busy=>{setWorking(busy);props.onBusy(busy);}}/>
+    </>:<details className="min-w-0"><summary className="min-h-11 cursor-pointer py-3 text-sm">Manage connection &amp; diagnostics</summary><div className="pb-3">{diagnostics}</div></details>}
+  </div>;
 }
 
 function RetainedConnectionSettings(props:SettingsProps&{excludedTargets?:string[]}){
