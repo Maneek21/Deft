@@ -86,9 +86,11 @@ export const EXPERIENCE_RENDERER_CSS = `
 .deft-experience .ex-text { margin:0; white-space:pre-wrap; overflow-wrap:anywhere }
 .deft-experience .ex-text-muted { color:var(--on-surface-variant) }
 .deft-experience .ex-text-heading { font-family:var(--font-heading,inherit); font-size:20px; font-weight:600; letter-spacing:-.025em; line-height:1.4 }
-.deft-experience .ex-text-caption { color:var(--on-surface-variant); font-size:12px }
-.deft-experience .ex-field { display:grid; gap:6px; min-width:0 }
+.deft-experience .ex-text-caption { color:var(--on-surface-variant); font-size:12px; min-height:1.5em }
+.deft-experience .ex-field { display:grid; gap:6px; min-width:0; grid-template-columns:minmax(0,1fr) }
+.deft-experience .ex-field>* { min-width:0 }
 .deft-experience .ex-field label { display:grid; gap:6px; color:var(--on-surface-variant); font-size:12px; font-weight:550 }
+.deft-experience [data-record-surface] .ex-field label, .deft-experience .ex-field [data-record-surface] label { display:flex; align-items:center; gap:10px }
 .deft-experience label:has(> input[type="checkbox"]),.deft-experience label:has(> input[type="radio"]) { display:flex; align-items:center; gap:10px; min-height:44px }
 .deft-experience label:has(> input[type="checkbox"]) input,.deft-experience label:has(> input[type="radio"]) input { width:16px; height:16px; flex-shrink:0 }
 .deft-experience .ex-field input,.deft-experience .ex-field textarea { min-height:44px; border-color:var(--border-default); border-color:transparent; background:var(--surface-container-low); font-weight:400; font-size:14px }
