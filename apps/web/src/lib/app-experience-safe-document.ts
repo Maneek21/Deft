@@ -55,6 +55,14 @@ function sanitizeDocument(value: ExperienceDocumentContent, images: readonly Exp
     // No source-authored marker can nominate an image. The source service alone
     // rewrites image nodes to a manifest-bound marker; all other nodes lose it.
     element.removeAttribute('data-deft-image');
+    if (element.tagName === 'TABLE') {
+      const rawWidth = element.style.width || element.getAttribute('width') || '';
+      const numeric = /^(\d+(?:\.\d+)?)\s*(?:px)?$/u.exec(rawWidth.trim())?.[1];
+      const intended = numeric === undefined ? NaN : Number(numeric);
+      if (Number.isFinite(intended) && intended > 960) {
+        element.style.minWidth = `${Math.max(0, Math.min(960, intended))}px`;
+      }
+    }
     const presentation = experienceDocumentPresentation(element);
     element.removeAttribute('style');
     if (presentation) element.setAttribute('style', presentation);
@@ -137,6 +145,17 @@ function createDocumentElement(value: ExperienceDocumentContent, images: readonl
     // their overflow-x:auto wrapper instead of shrinking into word fragments.
     if (nested) {
       table.style.minWidth = '0'; constrainMessageWidth(table);
+    }
+    if (!nested) {
+      const hasMinWidth = Boolean(table.style.minWidth && table.style.minWidth !== '0' && table.style.minWidth !== '0px');
+      const hasWidth = Boolean(table.style.width && table.style.width !== 'auto' && table.style.width !== '');
+      if (!hasMinWidth && !hasWidth) {
+        const firstRow = table.querySelector('tr');
+        const columns = firstRow ? firstRow.querySelectorAll('th, td').length : 0;
+        if (columns >= 4) {
+          table.style.minWidth = `max(100%, ${Math.min(960, columns * 120)}px)`;
+        }
+      }
     }
     // Generic host tables use a workspace surface. Message tables instead
     // inherit their own sanitized presentation, including nested white layouts.
