@@ -5,7 +5,7 @@ import {fileURLToPath} from 'node:url';
 import {readCatalog,readLedger} from './lineage-catalog.mjs';
 
 const directory=resolve(dirname(fileURLToPath(import.meta.url)),'../upgrades');
-const PLAN_SHA256='03640575b2869418c18fd4df1a48ba8a7e93f6cbe9a8233b8fa2402cde5e85ab';
+const PLAN_SHA256='caa7201f4b6d1751dea4cf865656da2d22ec2c347bc620e3eb88410e11432f24';
 const LOCK_ID=7314029421;
 const FORWARD128_SHA256='07152a1224e776cbfaa310f820908303113ef63559ec4ba484e7cca532bf4a47';
 const hex=v=>typeof v==='string'&&/^[0-9a-f]{64}$/.test(v);

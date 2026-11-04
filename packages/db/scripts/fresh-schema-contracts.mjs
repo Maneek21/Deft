@@ -14,8 +14,8 @@ const AFTER120='5894adc2af92b36cd62db66c2233873067c79921cb460d911c5f6ba4b59a980e
 // Explicit132 capture-retirement columns plus the server-stored restore-review
 // table change the reviewed empty bootstrap identity again. The same immutable
 // contracts execute;132/133/134 authority still requires forward SQL.
-const BEFORE132='2260d16773e62de434b8d1e7c4445678c308e1b1a3476e0ca412ea398ece62ec';
-const AFTER132='617a2307613c7268dac716e675bbaf090ad92e28fc52b657158d63e3aa5c31e8';
+const BEFORE132='90ba534e3e125fc19f2f000be62eb1a6ca278d71a88c982f67664f56cb9c4933';
+const AFTER132='966778170fd4b0f686443c9f150a7ce14711b197c75ebc01bf0c51f463a6ff28';
 const SQL_SHA256='ed4f1ef2c1850d0dcd8b33a759a115e89130baa045b5c9f7fe4d25f97ddb535d';
 
 // Internal fresh initializer only, inside its initial ledger transaction and lock.

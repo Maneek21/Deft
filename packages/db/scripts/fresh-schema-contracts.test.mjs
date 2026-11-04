@@ -5,8 +5,8 @@ const moduleUrl=new URL('./fresh-schema-contracts.mjs',import.meta.url),source=r
 const before='2fcf0818208ea66e02e9b52e5ea29da1fa6b06c127dd86e6c17866b3466ac542',after='5d5a042edb86ab8ee628b7f10e82b0b7fe3f2d79c1bb96284c9f33f0490b902d';
 function fixture({ledger=false,rows=false,drift=false,finalDrift=false,persistentModel=false,retirementModel=false}={}){
  let catalogReads=0,sqlWrites=0;
- const beforeDigest=retirementModel?'2260d16773e62de434b8d1e7c4445678c308e1b1a3476e0ca412ea398ece62ec':persistentModel?'4946198320d9bf5012f22c5c5c62d8a598bc61cd2c303d8b793c8307777ace80':before;
- const afterDigest=retirementModel?'617a2307613c7268dac716e675bbaf090ad92e28fc52b657158d63e3aa5c31e8':persistentModel?'5894adc2af92b36cd62db66c2233873067c79921cb460d911c5f6ba4b59a980e':after;
+ const beforeDigest=retirementModel?'90ba534e3e125fc19f2f000be62eb1a6ca278d71a88c982f67664f56cb9c4933':persistentModel?'4946198320d9bf5012f22c5c5c62d8a598bc61cd2c303d8b793c8307777ace80':before;
+ const afterDigest=retirementModel?'966778170fd4b0f686443c9f150a7ce14711b197c75ebc01bf0c51f463a6ff28':persistentModel?'5894adc2af92b36cd62db66c2233873067c79921cb460d911c5f6ba4b59a980e':after;
  const service=runInNewContext(source.replace(/^import .*;$/gmu,'').replace(/import\.meta\.url/gu,'moduleUrl').replace('export async function','async function')+'\nreconcileFreshSchemaContracts',{
   createHash,readFileSync,fileURLToPath,URL,moduleUrl:moduleUrl.href,
   readLedger:async()=>ledger?[{version:'existing'}]:[],
