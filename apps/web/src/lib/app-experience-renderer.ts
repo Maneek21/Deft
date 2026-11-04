@@ -223,7 +223,10 @@ export const EXPERIENCE_RENDERER_CSS = `
 .deft-experience .ex-menu{display:inline-flex;flex-shrink:0}
 .deft-experience .ex-menu button{white-space:nowrap}
 .deft-experience .ex-stack-document>.ex-stack-toolbar>.ex-text-heading{min-width:0;white-space:normal;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-@media(max-width:720px){.deft-experience .ex-stack-document{padding:0 16px 20px}.deft-experience .ex-stack-document>.ex-stack-toolbar{margin:0 -16px;padding:10px 16px}}
+@media(max-width:720px){.deft-experience .ex-stack-document{padding:0 16px 20px}.deft-experience .ex-stack-document>.ex-stack-toolbar{margin:0 -16px;padding:10px 16px}
+ .deft-experience .ex-stack-document>.ex-stack-toolbar:not(:has(.ex-menu)){flex-direction:column;align-items:stretch;gap:8px}
+ .deft-experience .ex-stack-document>.ex-stack-toolbar:not(:has(.ex-menu))>.ex-text-heading{flex:0 0 auto;width:100%;min-width:0}
+ .deft-experience .ex-stack-document>.ex-stack-toolbar:not(:has(.ex-menu))>.ex-stack-horizontal{width:100%;min-width:0;flex-wrap:wrap}}
 /* Reader toolbars wrap instead of forcing the subject onto one truncated line. */
 @media(max-width:480px){.deft-experience .ex-stack-sidebar>.ex-stack-toolbar{flex-wrap:wrap;row-gap:6px}}
 @container(max-width:480px){.deft-experience .ex-stack-sidebar>.ex-stack-toolbar{flex-wrap:wrap;row-gap:6px}}

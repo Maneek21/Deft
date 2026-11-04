@@ -334,6 +334,12 @@ test('shared renderer styles use Obsidian tokens, wrap reader headings and expos
  assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-attachment-name\{[^}]*overflow-wrap:anywhere/);
 });
 
+test('phone document toolbars without a menu put the heading on its own row before wrapping actions',()=>{
+ assert.match(EXPERIENCE_RENDERER_CSS,/@media\(max-width:720px\)\{[^@]*\.ex-stack-document>\.ex-stack-toolbar:not\(:has\(\.ex-menu\)\)\{[^}]*flex-direction:column/);
+ assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-stack-document>\.ex-stack-toolbar:not\(:has\(\.ex-menu\)\)>\.ex-text-heading\{[^}]*flex:0 0 auto;[^}]*width:100%/);
+ assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-stack-document>\.ex-stack-toolbar:not\(:has\(\.ex-menu\)\)>\.ex-stack-horizontal\{[^}]*flex-wrap:wrap/);
+});
+
 test('retention never survives changed record digest policy trusted scope suspension or clear',async()=>{
  const saved=new Map(['document','HTMLElement','HTMLInputElement','HTMLTextAreaElement'].map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));Object.assign(globalThis,{document:dom,HTMLElement:Element,HTMLInputElement:Input,HTMLTextAreaElement:Textarea});
  try{for(const change of ['record','digest','policy','scope','revoked','suspend','clear']){
