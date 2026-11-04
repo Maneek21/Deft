@@ -100,31 +100,12 @@ function callback(search:string,p:Pending){
  if(params.get('state')!==p.state||Boolean(params.get('code'))===Boolean(params.get('error'))||params.get('error')&&!/^[a-zA-Z0-9_.-]{1,128}$/.test(params.get('error')!))fail();
  return AppConnectionSessionCallbackSchema.parse({session_id:p.connectionSessionId,state:p.state,...(params.get('code')?{outcome:'authorized',code:params.get('code')}:{outcome:'denied'})});
 }
-export async function beginAppConnection(ports:Ports,targetKey:string,onConnectionNavigation?:(pending:PendingAppConnection|null)=>void):Promise<string>{
+export async function beginAppConnection(ports:Ports,targetKey:string,_onConnectionNavigation?:(pending:PendingAppConnection|null)=>void):Promise<string>{
  const flow=createAppConnectionSessionFlow(ports);
  await flow.load();
  const url=await flow.begin(targetKey);
- if(onConnectionNavigation)onConnectionNavigation(null);
- if(typeof window!=='undefined'&&typeof window.location?.assign==='function'){
-   try{window.location.assign(url);}catch{/* Navigation is best-effort in non-browser hosts. */}
- }
  return url;
 }
-export const beginConnection=beginAppConnection;
-export const beginAccountConnection=beginAppConnection;
-export const beginConnectionNavigation=beginAppConnection;
-export const beginAndNavigate=beginAppConnection;
-export const startConnection=beginAppConnection;
-export const startReconnect=beginAppConnection;
-export const beginAccountSetup=beginAppConnection;
-export const beginReconnect=beginAppConnection;
-export const reconnectAccount=beginAppConnection;
-export const connectAccount=beginAppConnection;
-export const beginConnectionFlow=beginAppConnection;
-export const beginReconnectFlow=beginAppConnection;
-export const startReconnectFlow=beginAppConnection;
-export const reconnectBegin=beginAppConnection;
-export const beginConnectionAndNavigate=beginAppConnection;
 export async function completeAppConnectionSession(ports:Ports&{search:string}){
  check(ports);const pending=readPending(ports);if(!pending||pending.phase==='starting'||!pending.connectionSessionId||Date.parse(pending.expiresAt)<=(ports.now?.()??Date.now()))fail();
  const body=pending.phase==='awaiting_callback'?callback(ports.search,pending):null;

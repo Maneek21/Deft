@@ -730,8 +730,9 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
         connectionBusy(true);
         try{
           const sessionTag=await appConnectionSessionTag(sessionCacheScope??'');
-          const ports={identity:{installationId,experienceKey,orgId:session!.pin.org_id,ownerId:session!.pin.user_id,sessionTag},storage:sessionStorage,current:()=>locallyCurrent(),fetch:(path:string,init:RequestInit)=>api.fetch(path,init)};
+          const ports={identity:{installationId,experienceKey,orgId:session!.pin.org_id,ownerId:session!.pin.user_id,sessionTag},storage:sessionStorage,current:()=>locallyCurrent(),fetch:(path:string,init:RequestInit)=>api.fetch(path,init),includeUpgrades:!!session?.bundle?.record_store_keys?.length};
           const url=await beginAppConnection(ports,targetKey);
+          if(!locallyCurrent())return;
           onConnectionNavigation(null);
           if(typeof window!=='undefined'&&typeof window.location?.assign==='function')window.location.assign(url);
         }catch(error){
