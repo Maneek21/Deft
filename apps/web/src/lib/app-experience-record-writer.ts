@@ -21,6 +21,10 @@ export function createExperienceRecordWriter(options:{initial:ExperienceRecordRo
   const current=()=>active&&!options.signal.aborted&&options.current();
   const canonical=(input:unknown):unknown=>Array.isArray(input)?input.map(canonical):input&&typeof input==='object'?Object.fromEntries(Object.entries(input).sort(([a],[b])=>a.localeCompare(b)).map(([key,part])=>[key,canonical(part)])):input;
   const equal=(a:unknown,b:unknown)=>JSON.stringify(canonical(a))===JSON.stringify(canonical(b));
+  const RECORD_SEED_CONTROL_FIELD='record_seed';
+  const hasRecordSeedControl=(value:unknown):value is Record<string,unknown>=>Boolean(value)&&typeof value==='object'&&!Array.isArray(value)&&Object.prototype.hasOwnProperty.call(value,RECORD_SEED_CONTROL_FIELD);
+  const withoutRecordSeedControl=(value:unknown):unknown=>hasRecordSeedControl(value)?Object.fromEntries(Object.entries(value).filter(([key])=>key!==RECORD_SEED_CONTROL_FIELD)):value;
+  const comparableCaptured=(previous:ExperienceRecordRow,captured:ExperienceRecordValue)=>previous.revision===0&&hasRecordSeedControl(captured)?withoutRecordSeedControl(captured) as ExperienceRecordValue:captured;
   const dirty=()=>!equal(value,row.value);
   const emit=()=>{if(current())options.change({row:structuredClone(row),value:structuredClone(value),dirty:dirty(),state,notice});};
   const verify=(next:ExperienceRecordRow,revision:number)=>{
@@ -35,7 +39,7 @@ export function createExperienceRecordWriter(options:{initial:ExperienceRecordRo
       try{options.validate(captured);}catch{state='unsaved';notice='This draft needs correction before saving. Your edits are kept.';emit();return false;}
       state='saving';notice='Saving…';emit();
       try{const requestId=crypto.randomUUID();unconfirmed={previous:structuredClone(previous),captured,requestId};if(options.beforeSave)await options.beforeSave(structuredClone(unconfirmed));dispatched=true;const next=verify(await options.save(previous.revision,captured,requestId,previous.content_digest),previous.revision+1);
-        if(!equal(next.value,captured))throw Error('Saved content changed');row=next;unconfirmed=null;state=dirty()?'unsaved':'saved';notice=dirty()?'Unsaved changes':'Saved privately';emit();
+        if(!equal(next.value,comparableCaptured(previous,captured)))throw Error('Saved content changed');if(previous.revision===0&&hasRecordSeedControl(captured)&&hasRecordSeedControl(value)){const rest=withoutRecordSeedControl(value);value=structuredClone((rest===value?value:rest) as ExperienceRecordValue);}row=next;unconfirmed=null;state=dirty()?'unsaved':'saved';notice=dirty()?'Unsaved changes':'Saved privately';emit();
       }catch{if(current()){if(dispatched){state='blocked';notice='Saving could not be confirmed. Your edits are kept. Reopen the saved version before trying again.';}else{unconfirmed=null;state='unsaved';notice='Save was not started because browser recovery could not be confirmed. Your edits are kept. Try Save again.';}emit();}return false;}
     }return current();})();
     const task=pending;void task.finally(()=>{if(pending===task)pending=null;});return task;
@@ -53,7 +57,7 @@ export function createExperienceRecordWriter(options:{initial:ExperienceRecordRo
     async reconcileSave(){if(!current()||pending||mutating||!unconfirmed||!options.recoverSave)return false;mutating=true;
       const attempt=unconfirmed;state='saving';notice='Checking saved status…';emit();
       try{const result=await options.recoverSave(attempt.previous.revision,attempt.captured,attempt.requestId,attempt.previous.content_digest);
-        if(!result)throw Error('Save remains uncertain');const next=verify(result,attempt.previous.revision+1);if(!equal(next.value,attempt.captured))throw Error('Saved contents changed');
+        if(!result)throw Error('Save remains uncertain');const next=verify(result,attempt.previous.revision+1);if(!equal(next.value,comparableCaptured(attempt.previous,attempt.captured)))throw Error('Saved contents changed');
         row=next;unconfirmed=null;state=dirty()?'unsaved':'saved';notice=dirty()?'Unsaved changes':'Saved status confirmed';emit();return true;
       }catch{if(current()){state='blocked';notice='Saved status is not confirmed. Your edits are kept. Check the original status or reopen its saved version.';emit();}return false;}
       finally{mutating=false;}
