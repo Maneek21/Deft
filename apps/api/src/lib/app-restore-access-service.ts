@@ -152,10 +152,15 @@ export const RESTORE_GRANT_HANDLERS: ReadonlyMap<RestoreGrantKind, RestoreGrantH
     });
     await transaction.insert(appResourceObservationConsents).values({
       org_id: actor.org_id, owner_user_id: actor.user_id, consent_id: newId,
-      resource_binding_id: original.resource_binding_id, connection_session_id: record.session_id, state: 'active',
+      resource_binding_id: original.resource_binding_id, connection_session_id: record.session_id, state: 'proposed',
       consent_digest: digestAppGrantValue(snapshot), snapshot, expires_at: expiry.expires_at,
       created_at: new Date(now), updated_at: new Date(now),
     });
+    // Review then activate through the same proposed -> active lifecycle the
+    // normal consent flow uses; the database guard rejects a direct active insert.
+    await transaction.update(appResourceObservationConsents).set({ state: 'active', updated_at: new Date(now) }).where(and(
+      eq(appResourceObservationConsents.org_id, actor.org_id), eq(appResourceObservationConsents.owner_user_id, actor.user_id),
+      eq(appResourceObservationConsents.consent_id, newId), eq(appResourceObservationConsents.state, 'proposed')));
     return { new_grant_id: newId };
   }],
   ['action_consent', async ({ record, grant, now, reservedActionKeys }) => {
