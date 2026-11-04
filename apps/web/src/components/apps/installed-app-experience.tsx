@@ -54,7 +54,7 @@ import {parseExperienceResourceAction} from '@/lib/app-experience-resource-actio
 import {parseExperienceResourceActionBatch} from '@/lib/app-experience-resource-action-batch';
 import {ExperienceResourceActionBatch,type ResourceActionBatchRequest} from './experience-resource-action-batch';
 import {AppDataRecordMetaSchema,AppDataRequestSchema,AppDataSourceFileSchema,type AppDataResult} from '../../../../../packages/app-kit/src/app-data';
-import type { ExperienceConnectionAction } from '../../../../../packages/app-kit/src/experience-account';
+import type { ExperienceConnectionAction, ExperienceAccountTarget } from '../../../../../packages/app-kit/src/experience-account';
 import { PrivateStateRecoveryGate } from '@/components/apps/private-state-recovery-gate';
 import { ExperienceRunReview } from '@/components/apps/experience-run-review';
 import { experienceRunReviewTarget, type ExperienceRunReviewTarget } from '@/lib/app-experience-run-review';
@@ -112,11 +112,12 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
   const targetNomination=useRef<{scope:string;target:string}|null>(null);
   const targetPreference=useMemo(()=>createExperienceTargetPreference({getItem:key=>localStorage.getItem(key),setItem:(key,value)=>localStorage.setItem(key,value)}),[]);
   const targetPreferenceScope=useMemo(()=>user&&org?{orgId:org.id,userId:user.id,installationId}:null,[user?.id,org?.id,installationId]);
-  const [resourceTargets, setResourceTargets] = useState<{ key: string; label: string }[]>([]);
+  const [resourceTargets, setResourceTargets] = useState<ExperienceAccountTarget[]>([]);
   const accountLabelScope=JSON.stringify([sessionCacheScope,org?.id,user?.id,installationId,session?.pin.app_version_id,session?.pin.grant_snapshot_id,session?.pin.lifecycle_epoch,session?.pin.grant_epoch]);
   const [accountLabels,setAccountLabels]=useState<{scope:string;labels:{key:string;label:string}[]}|null>(null);
   const receiveAccountLabels=useCallback((labels:{key:string;label:string}[])=>setAccountLabels({scope:accountLabelScope,labels}),[accountLabelScope]);
   const settingsAccounts=experienceSettingsAccounts(resourceTargets,accountLabels?.scope===accountLabelScope?accountLabels.labels:[]);
+  const settingsAccountHealth=resourceTargets.map(target=>target.health?{key:target.key,connection:target.health.connection,...(target.health.background?{background:target.health.background}:{})}:{key:target.key});
 
   const [visibleEpoch, setVisibleEpoch] = useState(0);
   const [suspended, setSuspended] = useState(false);
@@ -1247,7 +1248,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     </section>}
     {!session && accountSetupOpen && user && user.role !== 'guest' && <div className="min-h-0 flex-1 overflow-hidden">
       <ExperienceSettings experienceLabel={appName} title={appName === 'App' ? 'Account setup' : `${appName} settings`} onBack={() => { if (!connectionBusyRef.current) setAccountSetupOpen(false); }}
-        accounts={settingsAccounts} selectedAccountKey={resourceTarget} accountsBusy={connectionSetupBusy}
+        accounts={settingsAccounts} selectedAccountKey={resourceTarget} accountsBusy={connectionSetupBusy} accountHealth={settingsAccountHealth}
         access={{ state: 'unavailable', summary: 'Review your own account access before opening the app.' }}
         connectAccount={<>{accountSetupPending && <p role="status" className="mb-3 text-sm">Opening your account…</p>}
           <ExperienceConnectionSettings onAccountLabels={receiveAccountLabels} installationId={installationId} experienceKey={experienceKey}
@@ -1271,7 +1272,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     <div ref={viewHost} className="min-h-0 flex-1 overflow-auto" style={nominatedSource || source || settingsOpen || accountSetupOpen ? { display: 'none' } : undefined} aria-label="App Experience" />
     {settingsOpen && session && <div className="min-h-0 flex-1 overflow-hidden">
       <ExperienceSettings key={settingsSection} initialSection={settingsSection} preferences={preferencesNode&&exposure&&!error&&!connectionUnavailable&&!suspended?<ExperiencePreferences node={preferencesNode} onEvent={event=>preferencesEvent.current?.(event)}/>:undefined} experienceLabel={appName} onBack={() => void showSettings(false)}
-        accounts={settingsAccounts} selectedAccountKey={session.resource_target_key ?? resourceTarget}
+        accounts={settingsAccounts} selectedAccountKey={session.resource_target_key ?? resourceTarget} accountHealth={settingsAccountHealth}
         onSelectAccount={target => void switchResourceTarget(target)}
         accountsBusy={connectionSetupBusy || renewalBusy || exposureBusy || !!composer || !ready || connectionUnavailable || suspended}
         connectAccount={<>
