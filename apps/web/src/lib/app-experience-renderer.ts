@@ -116,7 +116,7 @@ export const EXPERIENCE_RENDERER_CSS = `
 .deft-experience .ex-button-list .ex-button-meta { grid-column:2; grid-row:1; align-self:center }
 .deft-experience .ex-button-list .ex-button-description { font-size:13px; line-height:1.6; -webkit-line-clamp:2 }
 .deft-experience button:not(.ex-button-list):not([data-record-width-toggle]) { display:inline-flex; align-items:center; justify-content:center; gap:6px; font-family:var(--font-heading,inherit); font-size:12px; border-radius:999px }
-.deft-experience .ex-icon { width:16px; height:16px; flex-shrink:0; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round }
+.deft-experience .ex-icon { width:16px; height:16px; flex-shrink:0; fill:none; stroke:currentColor; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round }
 .deft-experience .ex-field-search label { position:relative; display:block }
 .deft-experience .ex-field-search .ex-field-label,.deft-experience .ex-field-body .ex-field-label { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%) }
 .deft-experience .ex-field-search .ex-icon { position:absolute; left:12px; top:14px; color:var(--on-surface-variant) }
@@ -157,7 +157,9 @@ export const EXPERIENCE_RENDERER_CSS = `
 .deft-experience .ex-stack-sidebar > .ex-stack-toolbar > .ex-stack { gap:2px; min-width:0 }
 .deft-experience .ex-stack-sidebar > .ex-stack-toolbar > .ex-stack-horizontal { gap:4px; flex-wrap:nowrap }
 .deft-experience .ex-stack-sidebar > .ex-stack-toolbar .ex-text:not(.ex-text-caption) { font-size:16px; font-weight:600; letter-spacing:-.02em }
-.deft-experience .ex-stack-toolbar button:is([data-icon=refresh],[data-icon=search],[data-icon=back],[data-icon=close],[data-icon=select],[data-icon=more],[data-icon=archive],[data-icon=trash],[data-icon=mail],[data-icon=read],[data-icon=unread],[data-icon=check],[data-icon=chevron_down],[data-icon=star],[data-icon=folder],[data-icon=label],[data-icon=print]) { width:36px; padding:8px; flex-shrink:0 }
+.deft-experience .ex-stack-toolbar button:is([data-icon=refresh],[data-icon=search],[data-icon=back],[data-icon=close],[data-icon=select],[data-icon=more],[data-icon=archive],[data-icon=trash],[data-icon=mail],[data-icon=read],[data-icon=unread],[data-icon=check],[data-icon=chevron_down],[data-icon=star],[data-icon=folder],[data-icon=label],[data-icon=print]) { width:36px; padding:8px; flex-shrink:0; color:var(--on-surface-variant) }
+.deft-experience .ex-stack-toolbar button:is([data-icon=refresh],[data-icon=search],[data-icon=back],[data-icon=close],[data-icon=select],[data-icon=more],[data-icon=archive],[data-icon=trash],[data-icon=mail],[data-icon=read],[data-icon=unread],[data-icon=check],[data-icon=chevron_down],[data-icon=star],[data-icon=folder],[data-icon=label],[data-icon=print]):hover,.deft-experience .ex-stack-toolbar button:is([data-icon=refresh],[data-icon=search],[data-icon=back],[data-icon=close],[data-icon=select],[data-icon=more],[data-icon=archive],[data-icon=trash],[data-icon=mail],[data-icon=read],[data-icon=unread],[data-icon=check],[data-icon=chevron_down],[data-icon=star],[data-icon=folder],[data-icon=label],[data-icon=print]):focus-visible,.deft-experience .ex-stack-toolbar button:is([data-icon=refresh],[data-icon=search],[data-icon=back],[data-icon=close],[data-icon=select],[data-icon=more],[data-icon=archive],[data-icon=trash],[data-icon=mail],[data-icon=read],[data-icon=unread],[data-icon=check],[data-icon=chevron_down],[data-icon=star],[data-icon=folder],[data-icon=label],[data-icon=print])[aria-pressed=true] { color:var(--on-surface) }
+.deft-experience .ex-stack-toolbar button:is([data-icon=refresh],[data-icon=search],[data-icon=back],[data-icon=close],[data-icon=select],[data-icon=more],[data-icon=archive],[data-icon=trash],[data-icon=mail],[data-icon=read],[data-icon=unread],[data-icon=check],[data-icon=chevron_down],[data-icon=star],[data-icon=folder],[data-icon=label],[data-icon=print]) .ex-icon { width:18px; height:18px }
 .deft-experience .ex-stack-toolbar button:is([data-icon=refresh],[data-icon=search],[data-icon=back],[data-icon=close],[data-icon=select],[data-icon=more],[data-icon=archive],[data-icon=trash],[data-icon=mail],[data-icon=read],[data-icon=unread],[data-icon=check],[data-icon=chevron_down],[data-icon=star],[data-icon=folder],[data-icon=label],[data-icon=print]) .ex-button-label { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%) }
 .deft-experience .ex-stack-document { padding:0 28px 28px; gap:18px; grid-auto-rows:max-content }
 .deft-experience .ex-stack-document > .ex-stack-toolbar { margin:0 -28px; padding:16px 28px; min-height:76px; align-items:center }
@@ -262,28 +264,28 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string): 
   return element;
 }
 
+// Paths derived from Lucide (ISC), https://lucide.dev
 export const EXPERIENCE_ICON_PATHS = {
-  compose: 'M12 20H4V4h8 M16 3l5 5-9 9H7v-5z M14 5l5 5',
-  refresh: 'M20 7v5h-5 M4 17v-5h5 M6 7a7 7 0 0 1 12-2l2 2 M4 17l2 2a7 7 0 0 0 12-2',
-  search: 'M21 21l-5-5 M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0',
-  reply: 'M9 4l-6 6 6 6 M3 10h10a8 8 0 0 1 8 8v2',
-  archive: 'M3 3h18v4H3z M5 7v14h14V7 M10 11h4',
+  compose: 'M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7 M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z',
+  refresh: 'M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8 M21 3v5h-5 M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16 M8 16H3v5',
+  search: 'M21 21l-4.34-4.34 M3 11a8 8 0 1 0 16 0a8 8 0 1 0 -16 0',
+  reply: 'M20 18v-2a4 4 0 0 0-4-4H4 M9 17l-5-5 5-5',
+  archive: 'M3 3h18a1 1 0 0 1 1 1v3a1 1 0 0 1 -1 1h-18a1 1 0 0 1 -1 -1v-3a1 1 0 0 1 1 -1z M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8 M10 12h4',
   back: 'M15 18l-6-6 6-6',
-  close: 'M6 6l12 12 M6 18L18 6',
-  send: 'M22 2L9 15 M22 2l-7 20-6-7-7-6z',
-  select: 'M4 4h16v16H4z',
-  check: 'M4 4h16v16H4z M7 12l3 3 7-7',
-  more: 'M5 11h2v2H5z M11 11h2v2h-2z M17 11h2v2h-2z',
-  trash:'M3 6h18 M9 6V3h6v3 M5 6l1 15h12l1-15 M10 10v7 M14 10v7',
-  mail:'M3 5h18v14H3z M3 5l9 7 9-7',
-  star:'M12 3l3 6 7 1-5 5 1 7-6-3-6 3 1-7-5-5 7-1z',
-  folder:'M3 5h7l2 2h9v13H3z',
-  label:'M3 3h8l10 10-8 8L3 11z M7 7h.01',
-  chevron_down:'M6 9l6 6 6-6',
-  read:'M3 8l9-6 9 6v13H3z M3 8l9 6 9-6',
-  unread:'M3 5h18v14H3z M3 5l9 7 9-7',
-  print:'M6 8V3h12v5 M6 17H3V8h18v9h-3 M6 14h12v7H6z',
-
+  close: 'M18 6 6 18 M6 6l12 12',
+  send: 'M3.714 3.048a.498.498 0 0 0-.683.627l2.843 7.627a2 2 0 0 1 0 1.396l-2.842 7.627a.498.498 0 0 0 .682.627l18-8.5a.5.5 0 0 0 0-.904z M6 12h16',
+  select: 'M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2z',
+  check: 'M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2z M16 9l-5.5 5.5L8 12',
+  more: 'M11 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0 M18 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0 M4 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0',
+  trash: 'M10 11v6 M14 11v6 M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6 M3 6h18 M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2',
+  mail: 'M22 7l-8.991 5.727a2 2 0 0 1-2.009 0L2 7 M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-16a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2z',
+  star: 'M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z',
+  folder: 'M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z',
+  label: 'M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z M7 7.5a0.5 0.5 0 1 0 1 0a0.5 0.5 0 1 0 -1 0',
+  chevron_down: 'M6 9l6 6 6-6',
+  read: 'M21.2 8.4c.5.38.8.97.8 1.6v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V10a2 2 0 0 1 .8-1.6l8-6a2 2 0 0 1 2.4 0l8 6Z M22 10l-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 10',
+  unread: 'M12.674 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-4.675 M2 7l9 5.701a2 2 0 0 0 2 0l1.084-.686 M16 7a3 3 0 1 0 6 0a3 3 0 1 0 -6 0',
+  print: 'M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2 M6 9V3a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v6 M7 14h10a1 1 0 0 1 1 1v6a1 1 0 0 1 -1 1h-10a1 1 0 0 1 -1 -1v-6a1 1 0 0 1 1 -1z',
 } as const;
 
 /** Only host-owned paths enter SVG; authors choose a bounded symbolic name. */
