@@ -100,7 +100,7 @@ export const EXPERIENCE_RENDERER_CSS = `
 .deft-experience .ex-stack-workspace { display:flex; flex-direction:column; gap:0; height:100%; min-height:0; overflow:hidden }
 .deft-experience .ex-stack-workspace > .ex-stack-split { flex:1; min-height:0; grid-template-columns:clamp(340px,32%,380px) minmax(0,1fr); grid-template-rows:minmax(0,1fr); gap:0; overflow:hidden }
 .deft-experience .ex-stack-sidebar { border-right:1px solid var(--border-default); padding:0; overflow:auto; min-height:0; gap:0; background:var(--surface) }
-.deft-experience .ex-stack-document { padding:28px 32px; overflow:auto; min-height:0; min-width:0; gap:20px; background:var(--surface) }
+.deft-experience .ex-stack-document { padding:28px 32px; overflow:auto; min-height:0; min-width:0; gap:20px; background:var(--surface); grid-auto-rows:max-content }
 .deft-experience .ex-stack-toolbar { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; padding:12px 20px; position:sticky; top:0; z-index:1; flex-shrink:0; min-width:0; background:var(--surface) }
 .deft-experience .ex-stack-toolbar > .ex-field-search { flex:1; min-width:180px; max-width:420px }
 .deft-experience .ex-stack-sidebar > .ex-text { padding:12px 20px }
@@ -159,7 +159,7 @@ export const EXPERIENCE_RENDERER_CSS = `
 .deft-experience .ex-stack-sidebar > .ex-stack-toolbar .ex-text:not(.ex-text-caption) { font-size:16px; font-weight:600; letter-spacing:-.02em }
 .deft-experience .ex-stack-toolbar button:is([data-icon=refresh],[data-icon=search],[data-icon=back],[data-icon=close],[data-icon=select],[data-icon=more],[data-icon=archive],[data-icon=trash],[data-icon=mail],[data-icon=read],[data-icon=unread],[data-icon=check],[data-icon=chevron_down],[data-icon=star],[data-icon=folder],[data-icon=label],[data-icon=print]) { width:36px; padding:8px; flex-shrink:0 }
 .deft-experience .ex-stack-toolbar button:is([data-icon=refresh],[data-icon=search],[data-icon=back],[data-icon=close],[data-icon=select],[data-icon=more],[data-icon=archive],[data-icon=trash],[data-icon=mail],[data-icon=read],[data-icon=unread],[data-icon=check],[data-icon=chevron_down],[data-icon=star],[data-icon=folder],[data-icon=label],[data-icon=print]) .ex-button-label { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%) }
-.deft-experience .ex-stack-document { padding:0 28px 28px; gap:18px }
+.deft-experience .ex-stack-document { padding:0 28px 28px; gap:18px; grid-auto-rows:max-content }
 .deft-experience .ex-stack-document > .ex-stack-toolbar { margin:0 -28px; padding:16px 28px; min-height:76px; align-items:center }
 .deft-experience .ex-stack-document > .ex-stack-toolbar .ex-text-heading { font-size:18px; line-height:1.4; flex:1; min-width:0 }
 .deft-experience .ex-stack-document > .ex-stack-toolbar > .ex-stack-horizontal { gap:4px }
@@ -220,7 +220,7 @@ export const EXPERIENCE_RENDERER_CSS = `
 @container(max-width:700px) { .deft-experience .ex-stack-document { padding:0 20px 24px } .deft-experience .ex-stack-document > .ex-stack-toolbar { margin:0 -20px; padding:12px 20px } }
 
 /* Shared compact surfaces; app declarations still own navigation and hierarchy. */
-.deft-experience .ex-stack-document{padding:0 24px 24px;gap:14px}
+.deft-experience .ex-stack-document{padding:0 24px 24px;gap:14px;grid-auto-rows:max-content}
 .deft-experience .ex-stack-document>.ex-stack-toolbar{margin:0 -24px;padding:10px 24px;min-height:60px;gap:8px}
 .deft-experience .ex-stack-sidebar>.ex-stack-toolbar{min-height:60px;padding:10px 14px;gap:8px}
 .deft-experience .ex-stack-sidebar>.ex-button-list{padding:12px 16px}
@@ -252,6 +252,7 @@ export const EXPERIENCE_RENDERER_CSS = `
 /* Listed attachments read as chips rather than compressed text rows. */
 .deft-experience .ex-attachment-chip{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 12px;border:1px solid var(--border-default);border-radius:12px;background:var(--surface-container-low)}
 .deft-experience .ex-attachment-name{font-size:13px;font-weight:500;min-width:0;flex:1 1 180px;overflow-wrap:anywhere}
+.deft-experience .ex-stack-document{grid-auto-rows:max-content}
 
 `;
 
