@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test, mock } from 'node:test';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { withAuthorityRegistryScope, getScopedAppConnectionSessionRegistry } from '../src/lib/app-authority-registry-scope.js';
@@ -38,7 +38,11 @@ function scopeFor(entry: ReturnType<typeof makeEntry>) {
 async function withConfigFile(entries: unknown[], work: (path: string, write: (entries: unknown[]) => Promise<void>) => Promise<void>) {
   const dir = await mkdtemp(join(tmpdir(), 'deft-registry-cache-'));
   const path = join(dir, 'reviewed-http.json');
-  const write = async (list: unknown[]) => writeFile(path, JSON.stringify({ schema_version: 'deft.app_connection_http_registrations.v1', entries: list }));
+  // The registry refuses group/other-readable files on POSIX, so keep it 0600.
+  const write = async (list: unknown[]) => {
+    await writeFile(path, JSON.stringify({ schema_version: 'deft.app_connection_http_registrations.v1', entries: list }), { mode: 0o600 });
+    await chmod(path, 0o600);
+  };
   await write(entries);
   const previous = process.env.DEFT_APP_CONNECTION_HTTP_CONFIG;
   process.env.DEFT_APP_CONNECTION_HTTP_CONFIG = path;
