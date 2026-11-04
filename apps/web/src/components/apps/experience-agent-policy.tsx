@@ -108,7 +108,7 @@ export function ExperienceAgentPolicy({ sessionId, actions, ensureAuthority }: {
           <div className="min-w-0 flex-1">
             <label htmlFor={controlId} className="block text-sm font-medium">{label}</label>
             <p role="status" className="mt-0.5 text-xs" style={{ color: notice === "Couldn't load" || notice === 'Could not save' ? 'var(--error)' : 'var(--text-secondary)' }}>
-              {notice}{row?.state === 'error' && (failed ? <button type="button" className="ml-2 underline underline-offset-4" onClick={() => setReload(value => value + 1)}>Retry</button> : <button type="button" className="ml-2 underline underline-offset-4" onClick={() => void change(key, row.mode)}>Retry</button>)}
+              {notice}{row?.state === 'error' && (failed ? <button type="button" className="ml-2 inline-flex min-h-11 items-center underline underline-offset-4" onClick={() => setReload(value => value + 1)}>Retry</button> : <button type="button" className="ml-2 inline-flex min-h-11 items-center underline underline-offset-4" onClick={() => void change(key, row.mode)}>Retry</button>)}
             </p>
           </div>
           <select id={controlId} aria-label={`${label} permission`} className="min-h-11 w-full rounded-xl border border-transparent bg-[var(--surface-container-high)] px-3 text-sm focus-visible:ring-2 focus-visible:ring-[var(--primary)] sm:w-auto"
