@@ -95,6 +95,34 @@ function RecordBody({value,files,profile,disabled,presentationOnly=false,onChang
   <button type="button" disabled={disabled} className={pill} onClick={()=>{try{onChange(plainToRich(value.plainText));setNotice('');}catch{setNotice('Formatting would exceed the draft limits. Your text is kept.');}}}>Add formatting</button>
  </div>;
 }
+function nonEmptySourceReference(value: unknown): boolean {
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (value && typeof value === 'object') return Object.keys(value as object).length > 0;
+  return !!value;
+}
+function recordSeedHasSourceReference(node: ExperienceRecordFormNode): boolean {
+  const seed = node.seed as {
+    source_refs?: unknown; source_ref?: unknown; source_record?: unknown;
+    source_record_id?: unknown; source_reference?: unknown; source?: unknown;
+    value?: unknown;
+  } | undefined;
+  const candidates: unknown[] = [
+    seed?.source_refs, seed?.source_ref, seed?.source_record, seed?.source_record_id,
+    seed?.source_reference, seed?.source,
+  ];
+  const inner = seed?.value;
+  if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
+    const row = inner as Record<string, unknown>;
+    candidates.push(row.source_refs, row.source_ref, row.source_record, row.source_record_id, row.source_reference, row.source, row.record_seed);
+    const nested = row.value;
+    if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+      const nestedRow = nested as Record<string, unknown>;
+      candidates.push(nestedRow.source_refs, nestedRow.source_ref, nestedRow.source_record, nestedRow.source_record_id, nestedRow.source_reference, nestedRow.source);
+    }
+  }
+  return candidates.some(nonEmptySourceReference);
+}
 export function ExperienceRecordPreview({value,node,row,ports,signal,current}:{value:Record<string,unknown>;node:ExperienceRecordFormNode;
  row:ExperienceRecordRow;ports:ExperienceRecordFormPorts;signal:AbortSignal;current:()=>boolean}){
  const preview=useMemo(()=>createInlinePreviews({current:()=>current()&&!signal.aborted,read:(file,readSignal)=>ports.readFile(node,row,file,AbortSignal.any([signal,readSignal])),denied:()=>{}}),[]);
@@ -229,7 +257,7 @@ export function ExperienceRecordForm({node,ports,context,emit,registerWriter}:{n
   {body&&rich&&<RecordBody value={body} files={files} profile={profile} disabled={disabled} onChange={changeBody} preview={preview} register={register} validate={next=>validateRecordFormValue({...writer.current!.snapshot.value,[rich.html_field]:next.html,[rich.plain_field]:next.plainText},profile)}/>}
   {!!node.record_changes?.length&&ports.listChanges&&ports.prepareChange&&ports.applyChange&&ports.changeStatus&&<ExperienceRecordChanges node={node} writer={()=>writer.current} ports={ports as ExperienceRecordFormPorts&RecordChangePorts} signal={context.signal} current={current} disabled={immutable||!!node.disabled||fileBusy||copyUnconfirmed||reviewBusy||state.state==='blocked'} onBusy={setChangeBusy}/> }
   {profile.files&&!!node.source_refs?.length&&ports.listOriginals&&ports.copyOriginal&&ports.copyStatus&&<ExperienceRecordOriginalFiles node={node} writer={()=>writer.current} ports={ports as FileCopyPorts} signal={context.signal} current={current} disabled={disabled||immutable} onBusy={setFileBusy} onUnconfirmed={setCopyUnconfirmed}/>}
-  {profile.files&&!node.source_refs?.length&&node.seed&&<p className="text-xs text-[var(--on-surface-variant)]">Save the draft to choose files from the original.</p>}
+  {profile.files&&!node.source_refs?.length&&node.seed&&recordSeedHasSourceReference(node)&&<p className="text-xs text-[var(--on-surface-variant)]">Save the draft to choose files from the original.</p>}
 {profile.files&&<ExperienceRecordFiles node={node} row={state.row} ports={ports} signal={context.signal} current={current} disabled={disabled||immutable} onSelectFiles={selected=>void upload(selected)} onRemove={fileId=>void detach(fileId)} onInsertImage={profile.richtext?.inline_images==='host_files'?insertImage:undefined}
    extraActions={profile.richtext?.inline_images==='host_files'&&profile.files.max_files>0?<ExperienceFilePicker label="Insert image" className={`${pill} inline-flex items-center gap-2`} disabled={disabled||immutable} accept="image/png,image/jpeg,image/gif,image/webp" onSelect={selected=>void upload(selected,true)}><ImagePlus size={16} aria-hidden="true"/>Insert image</ExperienceFilePicker>:undefined}/>}
   <div className="flex min-w-0 flex-wrap items-center justify-between gap-2"><p role="status" className="text-xs text-[var(--on-surface-variant)]">{notice||state.notice||(state.row.revision===0?'Not saved on server':'Saved privately')}</p><div className="flex min-w-0 flex-wrap gap-2">
