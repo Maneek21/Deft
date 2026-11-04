@@ -164,6 +164,9 @@ function createDocumentElement(value: ExperienceDocumentContent, images: readonl
     if (!nested) {
       const scroll = document.createElement('div');
       scroll.style.cssText = 'max-width:100%;width:100%;overflow-x:auto';
+      scroll.setAttribute('tabindex', '0');
+      scroll.setAttribute('role', 'region');
+      scroll.setAttribute('aria-label', 'Table, scrolls horizontally');
       table.replaceWith(scroll); scroll.append(table);
     }
   }
