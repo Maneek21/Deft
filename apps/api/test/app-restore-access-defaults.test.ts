@@ -3,6 +3,17 @@ import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import pg from 'pg';
 
+/** Fixture bypass: synthetic rows are inserted already in a later state, which
+ * the admission trigger only allows through real transitions. Only these
+ * inserts skip triggers; every application call runs with them on. */
+async function fixtureInsert(db: any, schema: any, table: any, rows: unknown) {
+  const { sql } = await import('drizzle-orm');
+  await db.transaction(async (tx: any) => {
+    await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+    await tx.insert(table).values(rows);
+  });
+}
+
 const uuid = () => randomUUID();
 const sha = (value: string) => 'sha256:' + value.repeat(64).slice(0, 64);
 const at = (offsetMs: number) => new Date(Date.now() + offsetMs).toISOString();
@@ -82,7 +93,7 @@ test('restore defaults: unselected enumeration, selective activation seeds read 
     const targetKey = 'primary';
     const accountRef = 'acct_' + randomUUID().replaceAll('-', '');
     t.after(async () => {
-      for (const table of ['app_runtime_agent_policies', 'app_runtime_bindings', 'app_integration_principal_grants', 'app_connection_sessions', 'app_versions', 'app_installations']) {
+      for (const table of ['app_runtime_agent_policies', 'app_runtime_bindings', 'app_integration_principal_grants', 'app_connection_sessions', 'app_versions', 'app_installations', 'app_resource_bindings']) {
         await client.query(`DELETE FROM ${table} WHERE org_id = $1`, [orgId]).catch(() => {});
       }
       await client.query('DELETE FROM org_members WHERE org_id = $1', [orgId]).catch(() => {});
@@ -105,6 +116,16 @@ test('restore defaults: unselected enumeration, selective activation seeds read 
       manifest: { integration_tools: [mirrorTool] }, manifest_digest: sha('a'), package_digest: sha('b'), package: {},
       created_by_actor_type: 'user', created_by_actor_id: ownerId,
     });
+    const runtimeRegistrationId = uuid();
+    await fixtureInsert(db, schema, schema.appResourceBindings, {
+      id: binding, org_id: orgId, app_installation_id: installationId, app_version_id: versionId,
+      grant_snapshot_id: uuid(), grant_snapshot_kind: 'effective', runtime_registration_id: runtimeRegistrationId,
+      registration_contract_version: 'deft.app_runtime_channel.v2', provider_kind: 'app_runtime', provider_instance_id: runtimeRegistrationId, provider_snapshot_id: runtimeRegistrationId,
+      resource_key: 'inbox', resource_family: 'message', operation_name: 'sync_inbox', interface_identity: 'deft.resource_sync.v2:' + orgId.toLowerCase() + ':' + installationId.toLowerCase() + ':inbox', reviewed_descriptor: { schema_version: 'deft.app_sync_descriptor.v1' }, descriptor_digest: sha('d'),
+      owner_user_id: ownerId, owner_scope: 'private_user', risk_class: 'internal_write', review_requirement: 'policy', review_scope: 'reviewed_resource_sync',
+      retry_class: 'unsafe_or_unknown', retention_class: 'standard', max_records_per_page: 100, max_page_bytes: 1024,
+      max_retained_records: 10, max_retained_bytes: 1024, min_interval_seconds: 60, state: 'disabled',
+    });
 
     const profile = {
       schema_version: 'deft.app_connection_profile.v1', key: 'primary', provider_id: 'synthetic_provider',
@@ -126,7 +147,7 @@ test('restore defaults: unselected enumeration, selective activation seeds read 
       runtime_session_ref: 'runtime_' + sessionId.replaceAll('-', ''), account: { account_ref: accountRef, label: 'Synthetic account' },
       created_at: at(-60_000), updated_at: at(-60_000),
     };
-    await db.insert(schema.appConnectionSessions).values({
+    await fixtureInsert(db, schema, schema.appConnectionSessions, {
       org_id: orgId, owner_user_id: ownerId, session_id: sessionId, web_session_id: uuid(),
       access_expires_at: new Date(Date.now() + 3600_000), revision: 1, record, created_at: new Date(record.created_at), updated_at: new Date(record.updated_at),
     });
@@ -163,7 +184,9 @@ test('restore defaults: unselected enumeration, selective activation seeds read 
 
     // require_approval needs a current runtime binding for the action key.
     const bindingId = uuid();
-    await client.query(`INSERT INTO app_runtime_bindings (id, org_id, app_installation_id, owner_resource_binding_id, action_key, state) VALUES ($1, $2, $3, $4, 'mirror_drafts', 'active')`, [bindingId, orgId, installationId, binding]);
+    await client.query(`SET session_replication_role = replica`);
+    await client.query(`INSERT INTO app_runtime_bindings (id, org_id, app_installation_id, app_version_id, grant_snapshot_id, runtime_registration_id, registration_contract_version, action_key, owner_resource_binding_id, interface_identity, provider_kind, provider_instance_id, provider_snapshot_id, operation_name, risk_class, review_requirement, retry_class, retention_class, state, reviewed_by_user_id, reviewed_at) VALUES ($1,$2,$3,$4,$5,$6,'deft.app_runtime_channel.v1','mirror_drafts',$7,'deft.runtime.v1:' || lower($2) || ':' || lower($3) || ':mirror_drafts','app_runtime',$6,$8,'mirror_drafts','low','none','safe','standard','active',$9,now())`, [bindingId, orgId, installationId, versionId, uuid(), uuid(), binding, uuid(), ownerId]);
+    await client.query(`SET session_replication_role = origin`);
     await db.transaction(async (tx) => {
       await RESTORE_GRANT_HANDLERS.get('agent_policy_default')!({ transaction: tx as never, actor: actor as never, record: grantRecord, grant: policyGrant as never, now: Date.now(), reservedActionKeys: new Set() });
     });

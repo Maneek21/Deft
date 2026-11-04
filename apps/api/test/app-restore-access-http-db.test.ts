@@ -15,6 +15,17 @@ import { createHash, randomUUID } from 'node:crypto';
 import test from 'node:test';
 import pg from 'pg';
 
+/** Fixture bypass: synthetic rows are inserted already in a later state, which
+ * the admission trigger only allows through real transitions. Only these
+ * inserts skip triggers; every application call runs with them on. */
+async function fixtureInsert(db: any, schema: any, table: any, rows: unknown) {
+  const { sql } = await import('drizzle-orm');
+  await db.transaction(async (tx: any) => {
+    await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+    await tx.insert(table).values(rows);
+  });
+}
+
 // Deterministic disposable keys: env.ts validates a keyring at first import.
 const key = (purpose: string) => createHash('sha256').update('restore-access:' + purpose).digest('base64');
 process.env.DEFT_APP_RUN_KEYRINGS = JSON.stringify({
@@ -115,6 +126,8 @@ test('restore access review re-issues prior grants at the same lifetime, never w
     ]);
     const sessionA = await web.createWebSession({ id: ownerA, org_id: orgA, email: 'restore-a-' + ownerA + '@example.test' });
     const sessionB = await web.createWebSession({ id: ownerB, org_id: orgB, email: 'restore-b-' + ownerB + '@example.test' });
+    const sidA = JSON.parse(Buffer.from(sessionA.accessToken.split('.')[1], 'base64url')).sid;
+    const sidB = JSON.parse(Buffer.from(sessionB.accessToken.split('.')[1], 'base64url')).sid;
 
     const app = new hono.Hono();
     app.route('/api/app-connection-sessions', connections.appConnectionSessionRoutes);
@@ -151,8 +164,8 @@ test('restore access review re-issues prior grants at the same lifetime, never w
         created_at: createdAt, updated_at: createdAt, ...extras,
       };
     };
-    const sessionRow = (sessionId: string, record: Record<string, unknown>, createdAt: string, org = orgA, owner = ownerA) => ({
-      org_id: org, owner_user_id: owner, session_id: sessionId, web_session_id: sessionA.accessToken ? randomUUID() : randomUUID(),
+    const sessionRow = (sessionId: string, record: Record<string, unknown>, createdAt: string, org = orgA, owner = ownerA, webSessionId?: string) => ({
+      org_id: org, owner_user_id: owner, session_id: sessionId, web_session_id: webSessionId ?? (org === orgB ? sidB : sidA),
       access_expires_at: new Date(Date.now() + 3600_000), revision: 1, record,
       created_at: new Date(createdAt), updated_at: new Date(createdAt),
     });
@@ -161,7 +174,7 @@ test('restore access review re-issues prior grants at the same lifetime, never w
     const currentSession = randomUUID();
     const priorCreated = at(-30 * 86400_000);
     const actionConsentId = randomUUID();
-    await db.insert(schema.appConnectionSessions).values([
+    await fixtureInsert(db, schema, schema.appConnectionSessions, [
       sessionRow(priorSession, recordFor(priorSession, 'disconnected', priorCreated, {
         action_consents: [{
           action_binding_id: actionConsentId, action_key: 'send_item', authority_epoch: 1,
@@ -176,11 +189,13 @@ test('restore access review re-issues prior grants at the same lifetime, never w
       runtime_requirement_key: 'sync_provider', max_record_bytes: 4096, max_files: 0,
       max_file_bytes: 1, max_total_file_bytes: 1,
     });
-    const consentRow = (input: { storeKey: string; state: string; createdAt: string; expiresAt: string | null; sessionId?: string; orgId?: string; owner?: string }) => {
+    const consentRow = (input: { storeKey: string; state: string; createdAt: string; expiresAt: string | null; sessionId?: string; orgId?: string; owner?: string; installationId?: string }) => {
       const consentId = randomUUID(), sessionId = input.sessionId ?? priorSession;
+      const baseScope = scope(sessionId);
+      const scopedScope = input.installationId ? { ...baseScope, installation_id: input.installationId } : baseScope;
       const snapshot = {
         schema_version: 'deft.app_data_consent.v1', consent_id: consentId,
-        scope: scope(sessionId),
+        scope: scopedScope,
         connection: { session_id: sessionId, session_revision: 1,
           runtime_session_ref: 'runtime_' + sessionId.replaceAll('-', ''), account_ref: accountRef },
         store: store(input.storeKey), data_policy_digest: sha('e'), purpose: 'human_record_write',
@@ -198,8 +213,9 @@ test('restore access review re-issues prior grants at the same lifetime, never w
     const lapsed = consentRow({ storeKey: 'lapsed', state: 'active', createdAt: at(-7200_000), expiresAt: at(-3600_000) });
     const revoked = consentRow({ storeKey: 'revoked_store', state: 'revoked', createdAt: at(-30 * 86400_000), expiresAt: at(60 * 86400_000) });
     // A store the caller could try to add: it exists, but belongs to a different installation.
+    const foreignSessionId = randomUUID();
     const foreign = consentRow({ storeKey: 'foreign_store', state: 'active', createdAt: at(-30 * 86400_000), expiresAt: at(60 * 86400_000),
-      sessionId: randomUUID(), orgId: orgA, owner: ownerA });
+      sessionId: foreignSessionId, orgId: orgA, owner: ownerA, installationId: foreignInstallation });
     const observationConsentId = randomUUID();
     const observationRow = {
       org_id: orgA, owner_user_id: ownerA, consent_id: observationConsentId, resource_binding_id: binding,
@@ -213,8 +229,27 @@ test('restore access review re-issues prior grants at the same lifetime, never w
       },
       created_at: new Date(at(-30 * 86400_000)), updated_at: new Date(at(-30 * 86400_000)),
     };
-    await db.insert(schema.appDataConsents).values([alpha.row, lapsed.row, revoked.row, foreign.row]);
-    await db.insert(schema.appResourceObservationConsents).values(observationRow);
+    const foreignRecord = { ...recordFor(foreignSessionId, 'connected', at(-30 * 86400_000)),
+      scope: { ...scope(foreignSessionId), installation_id: foreignInstallation } };
+    await fixtureInsert(db, schema, schema.appConnectionSessions, [
+      sessionRow(foreignSessionId, foreignRecord, at(-30 * 86400_000)),
+    ]);
+    await fixtureInsert(db, schema, schema.appDataConsents, [alpha.row, lapsed.row, revoked.row, foreign.row]);
+    await fixtureInsert(db, schema, schema.appResourceObservationConsents, observationRow);
+    const bindingRuntimeRegistration = randomUUID();
+    await fixtureInsert(db, schema, schema.appResourceBindings, {
+      id: binding, org_id: orgA, app_installation_id: installation, app_version_id: randomUUID(),
+      grant_snapshot_id: randomUUID(), grant_snapshot_kind: 'effective', runtime_registration_id: bindingRuntimeRegistration,
+      registration_contract_version: 'deft.app_runtime_channel.v2', provider_kind: 'app_runtime',
+      provider_instance_id: bindingRuntimeRegistration, provider_snapshot_id: bindingRuntimeRegistration,
+      resource_key: 'inbox', target_key: targetKey, resource_family: 'message', operation_name: 'sync_inbox',
+      interface_identity: 'deft.resource_sync.v2:' + orgA.toLowerCase() + ':' + installation.toLowerCase() + ':inbox',
+      reviewed_descriptor: { schema_version: 'deft.app_sync_descriptor.v1' }, descriptor_digest: sha('d'),
+      owner_user_id: ownerA, owner_scope: 'private_user', risk_class: 'internal_write', review_requirement: 'policy',
+      review_scope: 'reviewed_resource_sync', retry_class: 'unsafe_or_unknown', retention_class: 'standard',
+      max_records_per_page: 100, max_page_bytes: 1024, max_retained_records: 10, max_retained_bytes: 1024,
+      min_interval_seconds: 60, state: 'disabled',
+    });
 
     // §2.2 read-only context, scoped to the owner.
     const context = await call(`/api/app-connection-sessions/installations/${installation}/restore-context`, sessionA.accessToken);
@@ -311,7 +346,7 @@ test('restore access review re-issues prior grants at the same lifetime, never w
     const alphaNew = alphaRows.find((row) => row.consent_id !== alpha.consentId)!;
     assert.equal(alphaOld.state, 'revoked');
     assert.equal(alphaNew.state, 'active');
-    assert.equal(alphaNew.connection_session_id, currentSession);
+    assert.equal(alphaNew.connection_session_id, activated.body.session_id);
     const alphaLifetime = (seconds(alphaNew.expires_at)!) - Date.now();
     assert.ok(Math.abs(alphaLifetime - 90 * 86400_000) < 120_000, 'same original lifetime is replayed');
 
@@ -332,7 +367,7 @@ test('restore access review re-issues prior grants at the same lifetime, never w
     assert.equal(observations.find((row) => row.consent_id === observationConsentId)!.state, 'revoked');
 
     const [currentRow] = await db.select().from(schema.appConnectionSessions).where(and(
-      eq(schema.appConnectionSessions.org_id, orgA), eq(schema.appConnectionSessions.session_id, currentSession)));
+      eq(schema.appConnectionSessions.org_id, orgA), eq(schema.appConnectionSessions.session_id, activated.body.session_id)));
     const restoredAction = ((currentRow!.record as any).action_consents as any[])
       .find((consent) => consent.action_key === 'send_item');
     assert.ok(restoredAction, 'the action consent is re-issued on the reconnected session record');
@@ -356,7 +391,7 @@ test('restore access review re-issues prior grants at the same lifetime, never w
     const mismatchInstallation = randomUUID();
     const priorId = randomUUID(), currentId = randomUUID();
     const priorCreatedAt = at(-3600_000);
-    await db.insert(schema.appConnectionSessions).values([
+    await fixtureInsert(db, schema, schema.appConnectionSessions, [
       sessionRow(priorId, {
         ...recordFor(priorId, 'disconnected', priorCreatedAt), scope: { ...scope(priorId),
           installation_id: mismatchInstallation, resource_binding_id: randomUUID() },
