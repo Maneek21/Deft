@@ -18,7 +18,7 @@ import {ExperienceCredentialRepair} from './experience-credential-repair';
 import {ExperienceInitialConnectConsent,ExperienceInitialConnectCompletion} from './experience-initial-connect-consent';
 import {ExperienceConnectionForms} from './experience-connection-forms';
 import {ExperienceConsentContinuation} from './experience-consent-continuation';
-import { appConnectionSessionTag, createAppConnectionSessionFlow, type AppConnectionContext } from '@/lib/app-connection-session-flow';
+import { appConnectionSessionTag, createAppConnectionSessionFlow, beginAppConnection, type AppConnectionContext } from '@/lib/app-connection-session-flow';
 import { appApiError } from '@/lib/apps';
 import { ownerConnectionContext, ownerResourceRequest, ownerActionRequest, ownerConnectionReview,
   type OwnerPolicy, type OwnerResourceRequest } from '@/lib/app-owner-connection';
@@ -43,7 +43,7 @@ function GenericConnectionSettings(props:SettingsProps&{ownerId:string;orgId:str
   const [context,setContext]=useState<AppConnectionContext|null>(null),[selected,setSelected]=useState(props.targetKey??''),[notice,setNotice]=useState('Checking account connections…');
   const [working,setWorking]=useState(false),[reload,setReload]=useState(0),[reuseWorking,setReuseWorking]=useState<'review'|'activate'|'status'|'close'|null>(null);
   const [reuseReview,setReuseReview]=useState<ExistingAccountReview|null>(null),[reusePending,setReusePending]=useState(false),[canCloseUnstarted,setCanCloseUnstarted]=useState(false),[reviewAvailable,setReviewAvailable]=useState(false),[clock,setClock]=useState(Date.now());
-  const flow=useRef<ReturnType<typeof createAppConnectionSessionFlow>|null>(null),alive=useRef(false),operation=useRef(false),generation=useRef(0);
+  const flow=useRef<ReturnType<typeof createAppConnectionSessionFlow>|null>(null),portsRef=useRef<Parameters<typeof createAppConnectionSessionFlow>[0]|null>(null),alive=useRef(false),operation=useRef(false),generation=useRef(0);
   useEffect(()=>{
     alive.current=true;const ticket=++generation.current,anchor=api.getAccessToken();let active=true;
     const current=()=>active&&alive.current&&ticket===generation.current&&!document.hidden&&isSameWebSession(anchor,api.getAccessToken());
@@ -52,7 +52,9 @@ function GenericConnectionSettings(props:SettingsProps&{ownerId:string;orgId:str
     void (async()=>{
       if(!anchor||!current())return;setContext(null);setReuseReview(null);setReusePending(false);setNotice('Checking account connections…');
       const sessionTag=await appConnectionSessionTag(props.sessionScope);if(!current())return;
-      const client=createAppConnectionSessionFlow({identity:{installationId:props.installationId,experienceKey:props.experienceKey,ownerId:props.ownerId,orgId:props.orgId,sessionTag},storage:sessionStorage,current,includeUpgrades:props.appOwnedRecords===true,fetch:(path,init)=>api.fetch(path,init)});
+      const ports={identity:{installationId:props.installationId,experienceKey:props.experienceKey,ownerId:props.ownerId,orgId:props.orgId,sessionTag},storage:sessionStorage,current,includeUpgrades:props.appOwnedRecords===true,fetch:(path:string,init:RequestInit)=>api.fetch(path,init)};
+      portsRef.current=ports;
+      const client=createAppConnectionSessionFlow(ports);
       flow.current=client;const value=await client.load();if(!current())return;
       setContext(value);setSelected(previous=>value.targets.some(t=>t.target_key===(props.targetKey??previous))?props.targetKey??previous:value.targets[0]?.target_key??'');setNotice('');
     })().catch(error=>{if(current()){setContext(null);setNotice(error instanceof Error?error.message:'Account connections are unavailable.');}});
@@ -97,7 +99,8 @@ function GenericConnectionSettings(props:SettingsProps&{ownerId:string;orgId:str
       if(kind==='begin'){
         // Generic OAuth custody is independent of the Experience/Worker lease.
         // Its own pending pointer is never passed as an Experience UUID.
-        const url=await client.begin(selected);if(!current())return;props.onConnectionNavigation(null);window.location.assign(url);return;
+        const ports=portsRef.current;if(!ports){throw Error('Account setup is unavailable.');}
+        const url=await beginAppConnection(ports,selected,props.onConnectionNavigation);if(!current())return;props.onConnectionNavigation(null);return;
       }
       const result=kind==='status'?await client.check(selected):await client.disconnect(selected);if(!current())return;
       setContext(previous=>previous?{...previous,targets:previous.targets.map(t=>t.target_key===selected?{...t,session:result}:t)}:previous);

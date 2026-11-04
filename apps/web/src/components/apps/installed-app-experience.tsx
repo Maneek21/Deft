@@ -67,6 +67,7 @@ import {experienceSettingsAccounts} from '@/lib/app-experience-settings-display'
 import { ExperienceSettings } from './experience-settings';
 import type {ExperienceSettingsSection} from '@/lib/app-experience-settings';
 import { connectionSessionRetirementRequired, type PendingAppConnection } from '@/lib/app-connection-flow';
+import { appConnectionSessionTag, beginAppConnection } from '@/lib/app-connection-session-flow';
 import { ExperienceConnectionSettings } from './experience-connection-settings';
 import { RestoreAccessReview } from './restore-access-review';
 import type { ExperienceComposeRequest } from '@/lib/app-experience-action-composer';
@@ -721,7 +722,25 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       if(!locallyCurrent()||composerOpen.current||connectionBusyRef.current)return;
       const targetKey=action.target_key??session.resource_target_key??resourceTarget;
       if(action.kind==='restore_access'){setRestoreAccess({installationId,targetKey});}
-      else if(action.kind==='reconnect'){setRestoreAccess(null);if(targetKey){setResourceTarget(targetKey);completeAccountSetup(targetKey);}else await showSettings(true);}
+      else if(action.kind==='reconnect'){
+        setRestoreAccess(null);
+        if(!targetKey){await showSettings(true);return;}
+        const currentTarget=session?.resource_target_key??resourceTarget;
+        if(targetKey!==currentTarget)setResourceTarget(targetKey);
+        connectionBusy(true);
+        try{
+          const sessionTag=await appConnectionSessionTag(sessionCacheScope??'');
+          const ports={identity:{installationId,experienceKey,orgId:session!.pin.org_id,ownerId:session!.pin.user_id,sessionTag},storage:sessionStorage,current:()=>locallyCurrent(),fetch:(path:string,init:RequestInit)=>api.fetch(path,init)};
+          const url=await beginAppConnection(ports,targetKey);
+          onConnectionNavigation(null);
+          if(typeof window!=='undefined'&&typeof window.location?.assign==='function')window.location.assign(url);
+        }catch(error){
+          setRenewalNotice(error instanceof Error?error.message:'Account setup is unavailable.');
+          await showSettings(true);
+        }finally{
+          connectionBusy(false);
+        }
+      }
       else{setRestoreAccess(null);await showSettings(true,'access');}
     };
     const sendViewEvent=(event:unknown)=>{
