@@ -25,6 +25,7 @@ test('restore access carries a retired capture policy over to the reconnected ac
   await client.connect();
   const { db, closeDb } = await import('../src/lib/db.js');
   const schema = await import('@deft/db/schema');
+  const { and, eq } = await import('drizzle-orm');
   const { AppRestoreAccessService } = await import('../src/lib/app-restore-access-service.js');
   const { enumerateRestoreAccess } = await import('../src/lib/app-restore-access-context.js');
 
@@ -35,9 +36,12 @@ test('restore access carries a retired capture policy over to the reconnected ac
   const policyId = randomUUID();
 
   t.after(async () => {
+    await client.query('DELETE FROM app_restore_access_reviews WHERE org_id = $1', [org]).catch(() => {});
     await client.query('DELETE FROM app_integration_capture_policies WHERE org_id = $1', [org]).catch(() => {});
     await client.query('DELETE FROM job_queue WHERE name = $1 AND data->>\'policy_id\' = $2', ['app-integration-knowledge', policyId]).catch(() => {});
     await client.query('DELETE FROM app_connection_sessions WHERE org_id = $1', [org]).catch(() => {});
+    await client.query('DELETE FROM web_sessions WHERE org_id = $1', [org]).catch(() => {});
+    await client.query('DELETE FROM app_installations WHERE org_id = $1', [org]).catch(() => {});
     await client.query('DELETE FROM users WHERE id = $1', [owner]).catch(() => {});
     await client.query('DELETE FROM orgs WHERE id = $1', [org]).catch(() => {});
     await client.end();
@@ -55,6 +59,12 @@ test('restore access carries a retired capture policy over to the reconnected ac
 
   await db.insert(schema.orgs).values([{ id: org, name: 'Carry Org', slug: 'carry-' + org }]);
   await db.insert(schema.users).values([{ id: owner, name: 'Carry Owner', email: 'carry-' + owner + '@example.test', kind: 'human' }]);
+  await db.insert(schema.orgMembers).values([{ org_id: org, user_id: owner, role: 'owner' }]);
+  await db.insert(schema.appInstallations).values({
+    id: installation, org_id: org, app_id: 'app_' + randomUUID().replaceAll('-', ''),
+    lineage_key: 'lineage-' + installation, lineage_authority_type: 'local_user',
+    lineage_authority_id: owner, installed_by_user_id: owner, installed_by_actor_type: 'user',
+    installed_by_actor_id: owner, updated_by_actor_type: 'user', updated_by_actor_id: owner });
 
   const profile = {
     schema_version: 'deft.app_connection_profile.v1', key: 'primary', provider_id: 'synthetic_provider',
@@ -81,14 +91,27 @@ test('restore access carries a retired capture policy over to the reconnected ac
   const priorSession = randomUUID();
   const currentSession = randomUUID();
   const priorCreated = at(-30 * 86400_000);
-  await db.insert(schema.appConnectionSessions).values([
-    { org_id: org, owner_user_id: owner, session_id: priorSession, web_session_id: randomUUID(),
-      access_expires_at: new Date(Date.now() + 3600_000), revision: 1, record: recordFor(priorSession, 'disconnected', priorCreated),
-      created_at: new Date(priorCreated), updated_at: new Date(priorCreated) },
-    { org_id: org, owner_user_id: owner, session_id: currentSession, web_session_id: randomUUID(),
-      access_expires_at: new Date(Date.now() + 3600_000), revision: 1, record: recordFor(currentSession, 'connected', at(-60_000)),
-      created_at: new Date(at(-60_000)), updated_at: new Date(at(-60_000)) },
-  ]);
+  // The .128 guard admits only `starting` revision 0 inserts; advance each
+  // fixture session through the supported starting -> terminal transition.
+  const insertSession = async (sessionId: string, state: string, createdAt: string) => {
+    const record = recordFor(sessionId, state, createdAt);
+    const webSessionId = randomUUID();
+    // The guard requires the retained web identity to resolve to a live browser
+    // session for the same org and owner, so provision one per fixture session.
+    await db.insert(schema.webSessions).values({
+      id: webSessionId, user_id: owner, org_id: org,
+      refresh_token_hash: 'a'.repeat(64), expires_at: new Date(Date.now() + 3600_000) });
+    await db.insert(schema.appConnectionSessions).values({
+      org_id: org, owner_user_id: owner, session_id: sessionId, web_session_id: webSessionId,
+      access_expires_at: new Date(Date.now() + 3600_000), revision: 0,
+      record: { ...record, revision: 0, state: 'starting', callback_consumed: false },
+      created_at: new Date(createdAt), updated_at: new Date(createdAt) });
+    await db.update(schema.appConnectionSessions).set({ revision: 1, record })
+      .where(and(eq(schema.appConnectionSessions.org_id, org),
+        eq(schema.appConnectionSessions.session_id, sessionId)));
+  };
+  await insertSession(priorSession, 'disconnected', priorCreated);
+  await insertSession(currentSession, 'connected', at(-60_000));
 
   await client.query(`INSERT INTO app_integration_capture_policies
     (id, org_id, owner_user_id, installation_id, account_ref, store_key, revision, enabled, input, history_since, retired_at, retired_reason)
@@ -109,7 +132,8 @@ test('restore access carries a retired capture policy over to the reconnected ac
 
   const review = await service.review(actor, { installation_id: installation, target_key: targetKey });
 
-  // A denied review (no grants selected) leaves the retired row unchanged.
+  // An empty activation re-issues nothing and consumes that review, so the
+  // approved carry-over is a fresh, single-use review.
   await service.activate(actor, { review_id: review.review_id, review_digest: review.review_digest, review_expires_at: review.review_expires_at, installation_id: installation, target_key: targetKey, grant_ids: [] });
   let [row] = (await client.query('SELECT enabled, retired_reason, revision FROM app_integration_capture_policies WHERE id = $1', [policyId])).rows;
   assert.equal(row.enabled, false);
@@ -117,7 +141,8 @@ test('restore access carries a retired capture policy over to the reconnected ac
   assert.equal(row.revision, 1);
 
   // An approved review carries it over: re-enabled, fresh revision, scheduled.
-  const activated = await service.activate(actor, { review_id: review.review_id, review_digest: review.review_digest, review_expires_at: review.review_expires_at, installation_id: installation, target_key: targetKey, grant_ids: [captureGrant.grant_id] });
+  const approved = await service.review(actor, { installation_id: installation, target_key: targetKey });
+  const activated = await service.activate(actor, { review_id: approved.review_id, review_digest: approved.review_digest, review_expires_at: approved.review_expires_at, installation_id: installation, target_key: targetKey, grant_ids: [captureGrant.grant_id] });
   assert.equal(activated.grants.length, 1);
   assert.equal(activated.grants[0].kind, 'capture_policy');
 

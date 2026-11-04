@@ -170,7 +170,7 @@ function assertCompatibleBaseline(inspection: Awaited<ReturnType<typeof inspectB
   }
 }
 
-function migrationDirectory(): string {
+export function migrationDirectory(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), '..', 'upgrades');
 }
 
@@ -246,6 +246,41 @@ async function applyMigration(
   }
 }
 
+/** The last migration applied by the reviewed-release convergence path. Every
+ * manifest migration after it is a "tail" migration applied by this runner with
+ * checksum validation, idempotently, for both fresh installs and upgrades. */
+export const CONVERGE_HEAD_VERSION = '0.3.0-preview.131';
+
+export function tailMigrations(): UpgradeMigration[] {
+  const index = upgradeManifest.migrations.findIndex((migration) => migration.version === CONVERGE_HEAD_VERSION);
+  if (index < 0) throw new Error('Reviewed converge head migration is missing from the manifest.');
+  return upgradeManifest.migrations.slice(index + 1);
+}
+
+export async function applyManifestTailMigrations(
+  client: InstanceType<typeof Client>,
+  options: Pick<UpgradeOptions, 'dryRun'> = { dryRun: false },
+): Promise<number> {
+  const applied = await readApplied(client);
+  const migrationChecksums = loadMigrationChecksums();
+  const pending = tailMigrations().filter(
+    (migration) => !applied.some((row) => row.version === migration.version),
+  );
+  if (options.dryRun) {
+    for (const migration of pending) console.log(`  - ${migration.version}: ${migration.description}`);
+    return pending.length;
+  }
+  for (const migration of pending) {
+    const checksum = migrationChecksums.get(migration.version);
+    if (!checksum) throw new Error(`Missing checksum for migration ${migration.version}.`);
+    await applyMigration(client, migration, checksum);
+    console.log(`[OK] Applied ${migration.version}: ${migration.description}`);
+  }
+  const appliedAfter = await readApplied(client);
+  validateAppliedMigrations(appliedAfter, upgradeManifest.migrations, migrationChecksums);
+  return pending.length;
+}
+
 async function printStatus(client: InstanceType<typeof Client>, applied: AppliedMigration[]) {
   const tableCount = await countPublicTables(client);
   const inspection = tableCount > 0 ? await inspectBaseline(client) : null;
@@ -275,7 +310,17 @@ export async function main(argv = process.argv.slice(2)) {
   try {
     const appliedBefore = await readApplied(client);
     if (appliedBefore.length > 0) {
-      await convergeReviewedRelease(client, options);
+      // Ledgered releases converge through the reviewed head. A database that
+      // already carries a tail migration row extends past that head, so its
+      // ledger can no longer match a reviewed variant; skip convergence and
+      // reconcile only the remaining tail migrations (an idempotent no-op once
+      // current).
+      const tailVersions = new Set(tailMigrations().map((migration) => migration.version));
+      const pastHead = appliedBefore.some((row) => tailVersions.has(row.version));
+      if (!pastHead) {
+        await convergeReviewedRelease(client, options);
+      }
+      await applyManifestTailMigrations(client, options);
       return;
     }
     const migrationChecksums = loadMigrationChecksums();

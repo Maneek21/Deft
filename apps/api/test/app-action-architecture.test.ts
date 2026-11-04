@@ -223,7 +223,7 @@ test('App Run approve and reject routes stay on the governed approval resolver',
   const resolver = await readFile(join(sourceRoot, 'lib/agent-approval-resolver.ts'), 'utf8');
   assert.match(
     resolver,
-    /return action === 'email_send' \|\| action === APP_RUN_APPROVAL_ACTION \|\| MCP_ACTION_KINDS\.has\(action\)/,
+    /return action === 'email_send' \|\| action === 'app_record_mirror_nominate' \|\| action === APP_RUN_APPROVAL_ACTION \|\| MCP_ACTION_KINDS\.has\(action\)/,
   );
   // Historical native proposals remain routable to a denial, never a new Send.
   assert.match(resolver, /if\(row\.source==='native_email'\|\|row\.action==='email_send'\)return \{status:'error',code:'UNSUPPORTED_ACTION',message:'The built-in mailbox action is retired'\}/);
