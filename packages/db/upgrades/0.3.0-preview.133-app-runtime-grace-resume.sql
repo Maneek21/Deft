@@ -8,7 +8,10 @@ CREATE OR REPLACE FUNCTION public.app_runtime_session_resume_allowed(previous ap
  LANGUAGE plpgsql
 AS $function$
 BEGIN
-  RETURN previous.renewal_lifetime = 'until_revoked'
+  -- COALESCE: a NULL renewal_lifetime (every finite session) must yield false.
+  -- A NULL here would make the guard's NOT ...() NULL and silently allow an
+  -- expired finite session's expiry to be extended.
+  RETURN COALESCE(previous.renewal_lifetime = 'until_revoked'
     AND previous.renewable_until IS NULL
     AND previous.revoked_at IS NULL
     AND resumed.revoked_at IS NULL
@@ -16,7 +19,7 @@ BEGIN
     AND (previous.expires_at AT TIME ZONE 'UTC') > clock_timestamp() - interval '24 hours'
     AND resumed.expires_at > previous.expires_at
     AND (resumed.expires_at AT TIME ZONE 'UTC') > clock_timestamp()
-    AND (resumed.expires_at AT TIME ZONE 'UTC') <= clock_timestamp() + interval '15 minutes';
+    AND (resumed.expires_at AT TIME ZONE 'UTC') <= clock_timestamp() + interval '15 minutes', false);
 END; $function$;
 
 CREATE OR REPLACE FUNCTION public.enforce_app_runtime_session()
