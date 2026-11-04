@@ -1,5 +1,5 @@
 import {randomUUID} from 'node:crypto';
-import {and,eq,sql,desc} from 'drizzle-orm';
+import {and,eq,or,sql,desc} from 'drizzle-orm';
 import {orgs,orgMembers,users,spaces,spaceMembers,wikiPages,wikiPageVersions,wikiCitations,appRuntimeSessions,appRuntimeBindings,appResourceBindings} from '@deft/db/schema';
 import {appIntegrationCapturePolicies as policies,appIntegrationCaptureClaims as claims,appIntegrationCaptureThreads as threads,appIntegrationCaptureSources as sources} from '../../../../packages/db/src/app-integration-capture-schema.js';
 import {AppIntegrationCapturePolicyInputSchema,type AppIntegrationSourceTarget} from '../../../../packages/app-kit/src/app-integration-source.js';
@@ -34,16 +34,22 @@ export function deriveBackgroundHealth(sessions:readonly BackgroundSessionRow[],
    ||(BACKGROUND_STATE_RANK[current.state]===BACKGROUND_STATE_RANK[result.state]&&current.since<result.since))result=current;}
  return result?{state:result.state,since:result.since.toISOString(),reason:result.reason}:null;
 }
-/** Minimal-baseline tolerant: absent runtime tables yield null background. */
-export async function readBackgroundHealth(tx:Tx,caller:AppIntegrationSourceCaller,installationId:string,nowMs:number):Promise<BackgroundHealth|null>{
+/** Minimal-baseline tolerant: absent runtime tables yield null background.
+ *  Health follows the connection owner whose grant/consent the `until_revoked`
+ *  lease runs on — never the runtime operator. The owner is the resource
+ *  binding's `owner_user_id`, reached directly for resource-sync sessions and
+ *  through the runtime binding's `owner_resource_binding_id` for action sessions. */
+export async function readBackgroundHealth(tx:Tx,caller:{org_id:string;user_id:string},installationId:string,nowMs:number,targetKey?:string):Promise<BackgroundHealth|null>{
  const probe=await tx.execute(sql`SELECT to_regclass('app_runtime_sessions') IS NOT NULL AS present`);
  if(!probe.rows[0]?.present)return null;
  const sessions=await tx.select({expires_at:appRuntimeSessions.expires_at,revoked_at:appRuntimeSessions.revoked_at,updated_at:appRuntimeSessions.updated_at})
   .from(appRuntimeSessions)
   .leftJoin(appRuntimeBindings,and(eq(appRuntimeBindings.org_id,appRuntimeSessions.org_id),eq(appRuntimeBindings.id,appRuntimeSessions.runtime_binding_id)))
-  .leftJoin(appResourceBindings,and(eq(appResourceBindings.org_id,appRuntimeSessions.org_id),eq(appResourceBindings.id,appRuntimeSessions.resource_binding_id)))
-  .where(and(eq(appRuntimeSessions.org_id,caller.org_id),eq(appRuntimeSessions.operator_user_id,caller.user_id),eq(appRuntimeSessions.renewal_lifetime,'until_revoked'),
-   sql`(${appRuntimeBindings.app_installation_id}=${installationId} OR ${appResourceBindings.app_installation_id}=${installationId})`))
+  .leftJoin(appResourceBindings,and(eq(appResourceBindings.org_id,appRuntimeSessions.org_id),
+   or(eq(appResourceBindings.id,appRuntimeSessions.resource_binding_id),eq(appResourceBindings.id,appRuntimeBindings.owner_resource_binding_id))))
+  .where(and(eq(appRuntimeSessions.org_id,caller.org_id),eq(appResourceBindings.owner_user_id,caller.user_id),eq(appRuntimeSessions.renewal_lifetime,'until_revoked'),
+   sql`(${appRuntimeBindings.app_installation_id}=${installationId} OR ${appResourceBindings.app_installation_id}=${installationId})`,
+   targetKey===undefined?undefined:eq(appResourceBindings.target_key,targetKey)))
   .orderBy(desc(appRuntimeSessions.created_at));
  return deriveBackgroundHealth(sessions,new Date(nowMs));
 }
