@@ -337,6 +337,27 @@ test('shared renderer styles use Obsidian tokens, wrap reader headings and expos
  assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-attachment-name\{[^}]*overflow-wrap:anywhere/);
 });
 
+test('primary action tokens keep small button text at 4.5:1 in both themes',()=>{
+ const contrast=(foreground:string,background:string)=>{
+  const luminance=(value:string)=>{const channels=(value.replace('#','').match(/../gu)??[]).map(channel=>Number.parseInt(channel,16)/255)
+   .map(channel=>channel<=0.03928?channel/12.92:Math.pow((channel+0.055)/1.055,2.4));
+   return 0.2126*channels[0]+0.7152*channels[1]+0.0722*channels[2];};
+  const first=luminance(foreground),second=luminance(background);
+  return (Math.max(first,second)+0.05)/(Math.min(first,second)+0.05);
+ };
+ const declarations=(name:string)=>[...EXPERIENCE_RENDERER_CSS.matchAll(new RegExp(`--${name}:(#[0-9a-fA-F]{6})`,'gu'))].map(match=>match[1]);
+ for(const name of ['ex-primary-fill','ex-primary-text','ex-primary-hover']){
+  assert.equal(declarations(name).length,2,`${name} declares a dark and a light value`);
+ }
+ assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-button-primary:hover:not\(:disabled\),\.deft-experience button\[data-record-primary\]:hover:not\(:disabled\)\s*\{[^}]*background-color:var\(--ex-primary-hover\)/);
+ assert.match(EXPERIENCE_RENDERER_CSS,/\.deft-experience button\s*\{[^}]*background:var\(--ex-primary-fill\)[^}]*color:var\(--ex-primary-text\)/);
+ for(let index=0;index<2;index++){
+  const fill=declarations('ex-primary-fill')[index],text=declarations('ex-primary-text')[index],hover=declarations('ex-primary-hover')[index];
+  assert.ok(contrast(text,fill)>=4.5,`${text} on ${fill}`);
+  assert.ok(contrast(text,hover)>=4.5,`${text} on hover ${hover}`);
+ }
+});
+
 test('phone document toolbars without a menu put the heading on its own row before wrapping actions',()=>{
  assert.match(EXPERIENCE_RENDERER_CSS,/@media\(max-width:720px\)\{[^@]*\.ex-stack-document>\.ex-stack-toolbar:not\(:has\(\.ex-menu\)\)\{[^}]*flex-direction:column/);
  assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-stack-document>\.ex-stack-toolbar:not\(:has\(\.ex-menu\)\)>\.ex-text-heading\{[^}]*flex:0 0 auto;[^}]*width:100%/);

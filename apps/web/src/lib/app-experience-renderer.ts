@@ -49,7 +49,8 @@ type RendererContext = ExperienceRendererOptions & Readonly<{
 type ExperienceEventDelivery = (event: ExperienceUiEvent) => unknown;
 
 export const EXPERIENCE_RENDERER_CSS = `
-.deft-experience { font:inherit; line-height:1.5; container-type:inline-size; color:var(--on-surface); background:var(--surface); min-height:100%; padding:24px; box-sizing:border-box }
+.deft-experience { font:inherit; line-height:1.5; container-type:inline-size; color:var(--on-surface); background:var(--surface); min-height:100%; padding:24px; box-sizing:border-box; --ex-primary-fill:#9A8CFB; --ex-primary-text:#2D0E94; --ex-primary-hover:#A99EFC }
+.light .deft-experience { --ex-primary-fill:#6A59E0; --ex-primary-text:#FFFFFF; --ex-primary-hover:#5B4ACF }
 .deft-experience * { box-sizing:border-box }
 .deft-experience .ex-mirror-fields > button { justify-self:start }
 .deft-experience .ex-mirror-fields > label { display:grid; gap:6px; max-width:360px; width:100% }
@@ -66,8 +67,9 @@ export const EXPERIENCE_RENDERER_CSS = `
 .deft-experience .ex-grid-scroll tr[aria-selected=true] { background:var(--accent-subtle) }
 .deft-experience input,.deft-experience textarea { width:100%; min-width:80px; padding:10px 12px; border:1px solid transparent; border-radius:7px; color:var(--on-surface); background:transparent; font:inherit }
 .deft-experience input:focus,.deft-experience textarea:focus { outline:2px solid var(--primary); border-color:var(--primary); background:var(--surface) }
-.deft-experience button { min-height:44px; border:1px solid transparent; background:var(--primary-container); color:var(--on-primary-container); border-radius:999px; padding:10px 16px; cursor:pointer; font:inherit; font-weight:600; transition:background-color 150ms,opacity 150ms }
+.deft-experience button { min-height:44px; border:1px solid transparent; background:var(--ex-primary-fill); color:var(--ex-primary-text); border-radius:999px; padding:10px 16px; cursor:pointer; font:inherit; font-weight:600; transition:background-color 150ms,opacity 150ms }
 .deft-experience button:hover { filter:brightness(.97) }
+.deft-experience .ex-button-primary:hover:not(:disabled),.deft-experience button[data-record-primary]:hover:not(:disabled) { background-color:var(--ex-primary-hover); filter:none }
 .deft-experience button:focus-visible { outline:2px solid var(--primary); outline-offset:2px }
 .deft-experience button:disabled { cursor:default; opacity:.5 }
 .deft-experience .ex-button-secondary { background:var(--surface-container-low); border-color:transparent; color:var(--on-surface-variant) }

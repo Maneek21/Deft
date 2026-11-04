@@ -55,7 +55,7 @@ export function ExperienceRecordFields({node,ports,context,emit,registerWriter}:
    {!readonly&&<div className="flex flex-wrap gap-2">{state.state==='blocked'?<>
     {ports.saveStatus&&<button type="button" className={pill} disabled={!writable()} onClick={()=>void writer.current?.reconcileSave()}>Check saved status</button>}
     <button type="button" className={pill} disabled={!writable()} onClick={()=>void writer.current?.reopen()}>Reopen saved version</button>
-   </>:<button type="button" data-record-primary="true" className={`${pill} bg-[var(--primary)] text-[var(--on-primary)]`} disabled={disabled||!state.dirty} onClick={()=>void writer.current?.save()}>Save settings</button>}</div>}
+   </>:<button type="button" data-record-primary="true" className={`${pill} bg-[var(--ex-primary-fill)] text-[var(--ex-primary-text)]`} disabled={disabled||!state.dirty} onClick={()=>void writer.current?.save()}>Save settings</button>}</div>}
   </div>
  </section>;
 }
