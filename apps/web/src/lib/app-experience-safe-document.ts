@@ -71,11 +71,17 @@ function sanitizeDocument(value: ExperienceDocumentContent, images: readonly Exp
   }
   const purifier = createDOMPurify(window);
   const clean = purifier.sanitize(template.content, {
-    ALLOWED_TAGS: [...tags], ALLOWED_ATTR: ['href', 'title', 'colspan', 'rowspan', 'style', 'data-deft-image'],
+    ALLOWED_TAGS: [...tags], ALLOWED_ATTR: ['href', 'title', 'colspan', 'rowspan', 'style', 'data-deft-image', 'dir', 'lang'],
     ALLOW_DATA_ATTR: false, ALLOW_ARIA_ATTR: false, RETURN_DOM_FRAGMENT: true,
     FORBID_TAGS: ['style', 'script', 'img', 'iframe', 'svg', 'math', 'form', 'input', 'video', 'audio', 'source', 'link', 'meta', 'base'],
     FORBID_ATTR: ['class', 'src', 'srcset', 'background', 'poster', 'id', 'name'],
   });
+  for (const element of clean.querySelectorAll('*')) {
+    const dir = element.getAttribute('dir');
+    if (dir !== null && !['ltr', 'rtl', 'auto'].includes(dir)) element.removeAttribute('dir');
+    const lang = element.getAttribute('lang');
+    if (lang !== null && !/^[A-Za-z]{1,8}(-[A-Za-z0-9]{1,8})*$/u.test(lang)) element.removeAttribute('lang');
+  }
   for (const anchor of clean.querySelectorAll('a')) {
     const href = experienceDocumentLink(anchor.getAttribute('href') ?? '');
     if (href === null) anchor.removeAttribute('href');
