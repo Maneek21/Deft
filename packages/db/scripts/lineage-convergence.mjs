@@ -5,7 +5,7 @@ import {fileURLToPath} from 'node:url';
 import {readCatalog,readLedger} from './lineage-catalog.mjs';
 
 const directory=resolve(dirname(fileURLToPath(import.meta.url)),'../upgrades');
-const PLAN_SHA256='e4db186f28413df556cad8e4abed24111c4c05429d7e80eeeb7973301788cc53';
+const PLAN_SHA256='03640575b2869418c18fd4df1a48ba8a7e93f6cbe9a8233b8fa2402cde5e85ab';
 const LOCK_ID=7314029421;
 const FORWARD128_SHA256='07152a1224e776cbfaa310f820908303113ef63559ec4ba484e7cca532bf4a47';
 const hex=v=>typeof v==='string'&&/^[0-9a-f]{64}$/.test(v);
@@ -114,7 +114,7 @@ export async function assertReviewedCurrent(client){
 // catalog/ledger may be committed before the normal forward118 convergence.
 export async function assertReviewedFreshBootstrap(client){
  const plan=loadReviewedPlan();const selected=selectReviewedHistory(await snapshot(client),plan);
- if(!['fresh-current-contracts-complete-schema116-schema117','fresh-current-persistent-columns-schema117'].includes(selected.name)
+ if(!['fresh-current-contracts-complete-schema116-schema117','fresh-current-persistent-columns-schema117','fresh-current-capture-retirement-columns-schema117'].includes(selected.name)
   ||selected.stage!=='current'||selected.append.length!==5
   ||selected.append[0].version!=='0.3.0-preview.118'
   ||selected.append[0].file!=='0.3.0-preview.118-app-supplemental-effects.sql'

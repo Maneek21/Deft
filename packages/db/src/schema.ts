@@ -6031,5 +6031,6 @@ export * from './app-integration-destination-schema.js';
 export * from './app-integration-notification-schema.js';
 
 export * from './app-connection-consent-continuation-schema.js';
+export * from './app-restore-access-review-schema.js';
 
 export * from './native-email-adoption-schema.js';

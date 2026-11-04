@@ -11,6 +11,11 @@ const AFTER='5d5a042edb86ab8ee628b7f10e82b0b7fe3f2d79c1bb96284c9f33f0490b902d';
 // The same immutable contracts execute;120 authority still requires forward SQL.
 const BEFORE120='4946198320d9bf5012f22c5c5c62d8a598bc61cd2c303d8b793c8307777ace80';
 const AFTER120='5894adc2af92b36cd62db66c2233873067c79921cb460d911c5f6ba4b59a980e';
+// Explicit132 capture-retirement columns plus the server-stored restore-review
+// table change the reviewed empty bootstrap identity again. The same immutable
+// contracts execute;132/133/134 authority still requires forward SQL.
+const BEFORE132='2260d16773e62de434b8d1e7c4445678c308e1b1a3476e0ca412ea398ece62ec';
+const AFTER132='617a2307613c7268dac716e675bbaf090ad92e28fc52b657158d63e3aa5c31e8';
 const SQL_SHA256='ed4f1ef2c1850d0dcd8b33a759a115e89130baa045b5c9f7fe4d25f97ddb535d';
 
 // Internal fresh initializer only, inside its initial ledger transaction and lock.
@@ -18,7 +23,7 @@ const SQL_SHA256='ed4f1ef2c1850d0dcd8b33a759a115e89130baa045b5c9f7fe4d25f97ddb53
 export async function reconcileFreshSchemaContracts(client){
  if((await readLedger(client)).length)throw new Error('E5_FRESH_LEDGER_NOT_EMPTY');
  const before=await readCatalog(client);
- const expectedAfter=before.digest===BEFORE?AFTER:before.digest===BEFORE120?AFTER120:null;
+ const expectedAfter=before.digest===BEFORE?AFTER:before.digest===BEFORE120?AFTER120:before.digest===BEFORE132?AFTER132:null;
  if(expectedAfter===null)throw new Error('E5_FRESH_PRESTAMP_CATALOG_UNRECOGNIZED');
  for(const relation of before.catalog.relations){
   if(!['r','p'].includes(relation.relkind))continue;
