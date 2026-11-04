@@ -88,9 +88,6 @@ test('capture health reports healthy, grant_ended and never_enabled with tenant 
   const database = drizzle(pool, { schema });
   const transaction = <T>(fn: (tx: Parameters<Parameters<typeof database.transaction>[0]>[0]) => Promise<T>) => database.transaction(fn as any);
 
-  await pool.query('DELETE FROM app_integration_capture_policies');
-  await pool.query('DELETE FROM app_integration_capture_claims');
-
   const live = await seedPolicy(pool);
   const retired = await seedPolicy(pool, { enabled: false, retired_reason: 'grant_ended' });
 

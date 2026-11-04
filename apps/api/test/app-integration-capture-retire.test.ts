@@ -61,10 +61,13 @@ async function seedPolicy(client: pg.Pool) {
 }
 
 async function seedJob(client: pg.Pool, org: string, policyId: string, revision: number, lockToken: string) {
+  // A unique job per test: other test files share this database concurrently.
+  const jobId = randomUUID();
   await client.query(`INSERT INTO job_queue (id, org_id, queue, name, data, status, lock_token, lock_expires_at)
     VALUES ($1, $2, 'scheduled-jobs', 'app-integration-knowledge', $3::jsonb, 'running', $4, now() + interval '10 minutes')
-    ON CONFLICT (id) DO UPDATE SET org_id = EXCLUDED.org_id, data = EXCLUDED.data, lock_token = EXCLUDED.lock_token, lock_expires_at = EXCLUDED.lock_expires_at, status = 'running'`,
-    [id(40), org, JSON.stringify({ policy_id: policyId, policy_revision: revision }), lockToken]);
+`,
+    [jobId, org, JSON.stringify({ policy_id: policyId, policy_revision: revision }), lockToken]);
+  return jobId;
 }
 
 test('an ended account grant retires the policy and emits exactly one owner notice', { skip: !safe, timeout: 120000 }, async () => {
@@ -76,14 +79,9 @@ test('an ended account grant retires the policy and emits exactly one owner noti
   const database = drizzle(pool, { schema });
   const transaction = <T>(fn: (tx: Parameters<Parameters<typeof database.transaction>[0]>[0]) => Promise<T>) => database.transaction(fn as any);
 
-  await pool.query('DELETE FROM app_integration_capture_policies');
-  await pool.query('DELETE FROM notifications');
-  await pool.query('DELETE FROM attention_items');
-  await pool.query("DELETE FROM job_queue WHERE name = 'app-integration-knowledge'");
-
   const seeded = await seedPolicy(pool);
   const lockToken = 'owned-lock';
-  await seedJob(pool, seeded.org, seeded.policyId, 1, lockToken);
+  const jobId = await seedJob(pool, seeded.org, seeded.policyId, 1, lockToken);
 
   const gateway = {
     currentAccount: async () => { throw new AppError('App data access ended', 'APP_ACCESS_DENIED', 403); },
@@ -92,7 +90,7 @@ test('an ended account grant retires the policy and emits exactly one owner noti
   };
   const runtime = createAppIntegrationCaptureRuntime({ transaction, keys, gateway });
 
-  const job = { id: id(40), name: 'app-integration-knowledge', attempts: 1, lockToken, data: { policy_id: seeded.policyId, policy_revision: 1 }, signal: new AbortController().signal };
+  const job = { id: jobId, name: 'app-integration-knowledge', attempts: 1, lockToken, data: { policy_id: seeded.policyId, policy_revision: 1 }, signal: new AbortController().signal };
   // A terminal grant failure must resolve (not throw RetryLaterJobError).
   await runtime.run(job as any);
 
@@ -103,7 +101,7 @@ test('an ended account grant retires the policy and emits exactly one owner noti
   assert.equal(row.last_error, 'App data access ended');
 
   // The delivery loop must not re-arm a retired policy: no pending re-enqueue.
-  const pending = (await pool.query("SELECT count(*)::int AS n FROM job_queue WHERE name = 'app-integration-knowledge' AND status = 'pending'")).rows[0].n;
+  const pending = (await pool.query("SELECT count(*)::int AS n FROM job_queue WHERE name = 'app-integration-knowledge' AND status = 'pending' AND org_id = $1", [seeded.org])).rows[0].n;
   assert.equal(pending, 0);
 
   const notices = (await pool.query('SELECT type, title, metadata FROM notifications WHERE org_id = $1', [seeded.org])).rows;
@@ -122,10 +120,9 @@ test('a live account grant is never retired', { skip: !safe, timeout: 120000 }, 
   const database = drizzle(pool, { schema });
   const transaction = <T>(fn: (tx: Parameters<Parameters<typeof database.transaction>[0]>[0]) => Promise<T>) => database.transaction(fn as any);
 
-  await pool.query('DELETE FROM app_integration_capture_policies');
   const seeded = await seedPolicy(pool);
   const lockToken = 'live-lock';
-  await seedJob(pool, seeded.org, seeded.policyId, 1, lockToken);
+  const jobId = await seedJob(pool, seeded.org, seeded.policyId, 1, lockToken);
 
   const gateway = {
     currentAccount: async () => ({ identity: 'live', expires_at: Date.now() + 60_000, resource_binding_id: id(6), resource_key: 'mail' }),
@@ -133,7 +130,7 @@ test('a live account grant is never retired', { skip: !safe, timeout: 120000 }, 
     dispatch: async () => { throw new Error('not used'); },
   };
   const runtime = createAppIntegrationCaptureRuntime({ transaction, keys, gateway });
-  const job = { id: id(40), name: 'app-integration-knowledge', attempts: 1, lockToken, data: { policy_id: seeded.policyId, policy_revision: 1 }, signal: new AbortController().signal };
+  const job = { id: jobId, name: 'app-integration-knowledge', attempts: 1, lockToken, data: { policy_id: seeded.policyId, policy_revision: 1 }, signal: new AbortController().signal };
 
   // No AI provider configured: the healthy steady-state pauses via RetryLaterJobError.
   await assert.rejects(runtime.run(job as any), (error: unknown) => error instanceof RetryLaterJobError);
