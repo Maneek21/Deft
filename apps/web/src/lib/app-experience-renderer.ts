@@ -110,7 +110,7 @@ export const EXPERIENCE_RENDERER_CSS = `
 .deft-experience .ex-button-eyebrow { grid-column:1; grid-row:1; font-size:12px; font-weight:650; color:var(--on-surface); overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
 .deft-experience .ex-button-list .ex-button-meta { grid-column:2; grid-row:1; align-self:center }
 .deft-experience .ex-button-list .ex-button-description { font-size:13px; line-height:1.6; -webkit-line-clamp:2 }
-.deft-experience button:not(.ex-button-list) { display:inline-flex; align-items:center; justify-content:center; gap:6px; font-family:var(--font-heading,inherit); font-size:12px; border-radius:999px }
+.deft-experience button:not(.ex-button-list):not([data-record-width-toggle]) { display:inline-flex; align-items:center; justify-content:center; gap:6px; font-family:var(--font-heading,inherit); font-size:12px; border-radius:999px }
 .deft-experience .ex-icon { width:16px; height:16px; flex-shrink:0; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round }
 .deft-experience .ex-field-search label { position:relative; display:block }
 .deft-experience .ex-field-search .ex-field-label,.deft-experience .ex-field-body .ex-field-label { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%) }

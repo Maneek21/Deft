@@ -51,13 +51,14 @@ export const recordSurfaceStyles=`
 .deft-experience [data-record-surface] button[aria-pressed="true"]{background:var(--surface-container-high);color:var(--primary)}
 .deft-experience [data-record-surface] input:not([type="checkbox"]):not([type="file"]),.deft-experience [data-record-surface] textarea{background:transparent;border-color:transparent}
 .deft-experience [data-record-surface] [role="document"] .deft-editor{min-height:0!important;padding:0}
+@media(max-width:639.98px){.deft-experience [data-record-width-toggle]{display:none!important}}
 `;
 /** Layout is local to this surface; its writing subtree and CAS owner never change. */
 export function RecordSurface({label,children}:{label:string;children:import('react').ReactNode}){
  const [expanded,setExpanded]=useState(false),bodyId=useId();
  return <section aria-label={label} data-record-surface="true" className={`relative mx-auto w-full min-w-0 ${expanded?'max-w-none':'max-w-4xl'} rounded-xl bg-[var(--surface)] px-1 py-2 sm:px-3`}>
   <style>{recordSurfaceStyles}</style>
-  <button type="button" aria-label={expanded?'Restore record width':'Expand record'} title={expanded?'Restore record width':'Expand record'} aria-expanded={expanded} aria-controls={bodyId}
+  <button type="button" data-record-width-toggle="true" aria-label={expanded?'Restore record width':'Expand record'} title={expanded?'Restore record width':'Expand record'} aria-expanded={expanded} aria-controls={bodyId}
    className="absolute right-1 top-2 z-10 hidden sm:flex min-h-10 min-w-10 items-center justify-center rounded-full px-2 text-xs focus-visible:ring-2 focus-visible:ring-[var(--primary)]"
    onPointerDown={event=>event.preventDefault()} onClick={()=>setExpanded(value=>!value)}>
    {expanded?<Minimize2 size={16} aria-hidden="true"/>:<Maximize2 size={16} aria-hidden="true"/>}
