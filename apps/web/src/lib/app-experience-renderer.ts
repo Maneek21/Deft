@@ -199,6 +199,7 @@ export const EXPERIENCE_RENDERER_CSS = `
 .deft-experience .ex-stack-workspace > .ex-stack-horizontal > button { max-width:240px; min-width:0; flex-shrink:0 }
 .deft-experience .ex-stack-workspace > .ex-stack-horizontal > button .ex-button-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
 .deft-experience .ex-stack-workspace > .ex-text-caption { margin:0; padding:8px 16px; font-size:12px; color:var(--on-surface-variant); flex-shrink:0 }
+.deft-experience .ex-stack-workspace > .ex-text-caption:empty { display:block; min-height:1.5em }
 .deft-experience .ex-stack-toolbar button[aria-pressed=true] { background:var(--accent-subtle); color:var(--primary) }
 .deft-experience-preferences.deft-experience { padding:0; min-height:0 }
 .deft-experience-preferences.deft-experience .ex-stack-panel { padding:0; background:transparent }
