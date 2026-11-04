@@ -76,7 +76,10 @@ export function ExperienceAgentPolicy({ sessionId, actions, ensureAuthority }: {
           setFailed(false);
         }
       } catch {
-        if (active) setFailed(true);
+        if (active) {
+          setFailed(true);
+          setRows(previous => Object.fromEntries(keys.map(key => [key, { ...(previous[key] ?? { mode: 'deny', revision: 0 }), state: 'error' }])));
+        }
       }
     })();
     return () => { active = false; };
@@ -97,17 +100,15 @@ export function ExperienceAgentPolicy({ sessionId, actions, ensureAuthority }: {
   if (!actions.length) return null;
   const needsReload = failed || Object.values(rows).some(row => row.state === 'error');
   return <section aria-label="Agent action permissions" className="space-y-3">
-    <p className="text-sm font-medium">Agent requests</p>
-    <p className="text-sm leading-6" style={{ color: 'var(--text-secondary)' }}>Choose whether agents can request each action. Every permitted request still needs your approval.</p>
     <ul className="space-y-2">
       {actions.map(key => {
         const label = agentActionLabel(key), row = rows[key];
-        const notice = noticeFor(row), controlId = `${id}-${key}`;
+        const notice = failed && row?.state === "error" ? "Couldn't load" : noticeFor(row), controlId = `${id}-${key}`;
         return <li key={key} className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-[var(--surface-container-low)] px-4 py-3">
           <div className="min-w-0 flex-1">
             <label htmlFor={controlId} className="block text-sm font-medium">{label}</label>
-            <p role="status" className="mt-0.5 text-xs" style={{ color: notice === 'Could not save' ? 'var(--error)' : 'var(--text-secondary)' }}>
-              {notice}{row?.state === 'error' && <button type="button" className="ml-2 underline underline-offset-4" onClick={() => void change(key, row.mode)}>Retry</button>}
+            <p role="status" className="mt-0.5 text-xs" style={{ color: notice === "Couldn't load" || notice === 'Could not save' ? 'var(--error)' : 'var(--text-secondary)' }}>
+              {notice}{row?.state === 'error' && (failed ? <button type="button" className="ml-2 underline underline-offset-4" onClick={() => setReload(value => value + 1)}>Retry</button> : <button type="button" className="ml-2 underline underline-offset-4" onClick={() => void change(key, row.mode)}>Retry</button>)}
             </p>
           </div>
           <select id={controlId} aria-label={`${label} permission`} className="min-h-11 w-full rounded-xl border border-transparent bg-[var(--surface-container-high)] px-3 text-sm focus-visible:ring-2 focus-visible:ring-[var(--primary)] sm:w-auto"

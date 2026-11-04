@@ -119,11 +119,11 @@ export function ExperienceSettings({
               </details>}
             </div>
             <span className="shrink-0 rounded-full px-2.5 py-1 text-xs font-medium" style={{
-              background: statusNeedsAttention ? 'color-mix(in srgb, var(--error) 12%, var(--surface))' : 'color-mix(in srgb, var(--accent) 12%, var(--surface))',
-              color: statusNeedsAttention ? 'var(--error)' : 'var(--accent)',
+              background: statusNeedsAttention ? 'color-mix(in srgb, var(--error) 12%, var(--surface))' : 'color-mix(in srgb, var(--primary) 8%, var(--surface))',
+              color: statusNeedsAttention ? 'var(--error)' : 'var(--primary)',
             }}>{status}</span>
           </div>
-          <p role="status" className="text-sm leading-6" style={{ color: healthy ? 'var(--accent)' : 'var(--text-secondary)' }}>
+          <p role="status" className="text-sm leading-6" style={{ color: healthy ? 'var(--primary)' : 'var(--text-secondary)' }}>
             {statusSummary}
           </p>
           {!healthy && <div className="flex flex-wrap gap-2">
@@ -146,7 +146,7 @@ export function ExperienceSettings({
                     <p className="min-w-0 break-all text-sm font-medium sm:truncate" title={account.label}>{account.label}</p>
                     <p className="mt-1 text-xs leading-5" style={{ color: 'var(--text-secondary)' }}>{account.statusLabel ?? 'Reviewed source'}</p>
                   </div>
-                  {selected ? <span className="inline-flex min-h-11 items-center gap-1.5 text-xs font-medium" style={{ color: 'var(--accent)' }}>
+                  {selected ? <span className="inline-flex min-h-11 items-center gap-1.5 text-xs font-medium" style={{ color: 'var(--primary)' }}>
                     <Check size={14} aria-hidden="true" /> Current account
                   </span> : onSelectAccount && <button type="button" className="deft-pill" style={{ minHeight: 44 }} disabled={accountsBusy}
                     aria-label={`Use account ${account.label}`} onClick={() => onSelectAccount(account.key)}>Use account</button>}
