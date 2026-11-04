@@ -1,4 +1,5 @@
 import {parseDeftExperienceMenuNode,isDeftExperienceIcon,type DeftExperienceIcon,type DeftExperienceMenuNode} from '../../../../packages/app-kit/src/experience-menu';
+import {ExperienceConnectionActionSchema,type ExperienceConnectionAction} from '../../../../packages/app-kit/src/experience-account';
 import {DeftExperienceRecordMirrorControlNodeSchema,type DeftExperienceRecordMirrorControlNode} from '../../../../packages/app-kit/src/record-mirror-controls';
 import {DeftExperienceLocalJobScheduleNodeSchema,DeftExperienceLocalJobListNodeSchema,type DeftExperienceLocalJobScheduleNode,type DeftExperienceLocalJobListNode} from '../../../../packages/app-kit/src/local-job-controls';
 import {DeftExperienceKeyboardSchema,type DeftExperienceKeyboard} from '../../../../packages/app-kit/src/experience-keyboard';
@@ -27,7 +28,7 @@ export type ExperienceNode =
   | DeftExperienceRecordFormV3Node | DeftExperienceRecordFormNode | DeftExperienceRecordFormV2Node | DeftExperienceRecordDocumentNode
   | Readonly<{ kind: 'document'; id: string; format: 'plain' | 'html'; content: string; truncated?: boolean; printable?: boolean; print_control_id?: string; title?: string; metadata?: readonly Readonly<{ label: string; value: string }>[] }>
   | Readonly<{ kind: 'text'; id: string; text: string; tone?: 'default' | 'muted' | 'heading' | 'caption' | 'body' }>
-  | Readonly<{ kind: 'button'; id: string; label: string; variant?: 'primary' | 'secondary' | 'ghost' | 'list'; description?: string; meta?: string; selected?: boolean; disabled?: boolean; eyebrow?: string; icon?: DeftExperienceIcon }>
+  | Readonly<{ kind: 'button'; id: string; label: string; variant?: 'primary' | 'secondary' | 'ghost' | 'list'; description?: string; meta?: string; selected?: boolean; disabled?: boolean; eyebrow?: string; icon?: DeftExperienceIcon; connection_action?: ExperienceConnectionAction }>
   | Readonly<{ kind: 'input'; id: string; label: string; value: string; multiline?: boolean; placeholder?: string; appearance?: 'search' | 'inline' | 'body' }>
   | Readonly<{ kind: 'stack'; id: string; title?: string; layout?: 'vertical' | 'horizontal' | 'split' | 'list' | 'workspace' | 'toolbar'; surface?: 'plain' | 'panel' | 'sidebar' | 'document'; mobile?: 'hidden' | 'only'; children: readonly ExperienceNode[] }>
   | Readonly<{ kind: 'grid'; id: string; columns: readonly string[];
@@ -174,7 +175,7 @@ function parseNode(input: unknown, depth: number, budget: { nodes: number; point
       if(menu&&(budget.nodes+=menu.items.length)<=MAX_NODES)return menu;return null;
     }
     case 'button':
-      return exact(input, ['kind', 'id', 'label', 'variant', 'description', 'meta', 'selected', 'disabled', 'eyebrow', 'icon'])
+      return exact(input, ['kind', 'id', 'label', 'variant', 'description', 'meta', 'selected', 'disabled', 'eyebrow', 'icon', 'connection_action'])
         && text(input.label, 128)
         && (input.variant === undefined || (typeof input.variant === 'string' && ['primary', 'secondary', 'ghost', 'list'].includes(input.variant)))
         && (input.description === undefined || text(input.description, 512))
@@ -183,6 +184,7 @@ function parseNode(input: unknown, depth: number, budget: { nodes: number; point
         && (input.disabled === undefined || typeof input.disabled === 'boolean')
         && (input.eyebrow === undefined || text(input.eyebrow, 128))
         && (input.icon === undefined || isDeftExperienceIcon(input.icon))
+        && (input.connection_action === undefined || ExperienceConnectionActionSchema.safeParse(input.connection_action).success)
         ? { kind: 'button', id: input.id, label: input.label,
           ...(input.variant !== undefined ? { variant: input.variant as 'primary' | 'secondary' | 'ghost' | 'list' } : {}),
           ...(input.description !== undefined ? { description: input.description as string } : {}),
@@ -190,7 +192,8 @@ function parseNode(input: unknown, depth: number, budget: { nodes: number; point
           ...(input.selected !== undefined ? { selected: input.selected as boolean } : {}),
           ...(input.disabled !== undefined ? { disabled: input.disabled as boolean } : {}),
           ...(input.eyebrow !== undefined ? { eyebrow: input.eyebrow as string } : {}),
-          ...(input.icon !== undefined ? { icon: input.icon as DeftExperienceIcon } : {}) } : null;
+          ...(input.icon !== undefined ? { icon: input.icon as DeftExperienceIcon } : {}),
+          ...(input.connection_action !== undefined ? { connection_action: input.connection_action as ExperienceConnectionAction } : {}) } : null;
     case 'input':
       return exact(input, ['kind', 'id', 'label', 'value', 'multiline', 'placeholder', 'appearance'])
         && text(input.label, 128) && text(input.value)

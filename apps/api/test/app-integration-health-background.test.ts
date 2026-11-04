@@ -34,9 +34,11 @@ test('background health derives state from runtime sessions and stays owner/tena
         expires_at timestamp NOT NULL, revoked_at timestamp,
         created_at timestamp NOT NULL, updated_at timestamp NOT NULL)`);
       await pool.query(`CREATE TABLE ${q('app_runtime_bindings')} (
-        id text PRIMARY KEY, org_id text NOT NULL, app_installation_id text NOT NULL)`);
+        id text PRIMARY KEY, org_id text NOT NULL, app_installation_id text NOT NULL,
+        owner_resource_binding_id text)`);
       await pool.query(`CREATE TABLE ${q('app_resource_bindings')} (
-        id text PRIMARY KEY, org_id text NOT NULL, app_installation_id text NOT NULL)`);
+        id text PRIMARY KEY, org_id text NOT NULL, app_installation_id text NOT NULL,
+        owner_user_id text NOT NULL, target_key text NOT NULL)`);
 
       const { drizzle } = await import('drizzle-orm/node-postgres');
       const { default: schemaObj } = await import('@deft/db/schema');
@@ -46,9 +48,11 @@ test('background health derives state from runtime sessions and stays owner/tena
 
       const orgA = randomUUID(), ownerA = randomUUID(), instA = randomUUID();
       const ownerB = randomUUID();
-      const bindingA = randomUUID();
-      await pool.query(`INSERT INTO ${q('app_runtime_bindings')} (id, org_id, app_installation_id) VALUES ($1,$2,$3)`,
-        [bindingA, orgA, instA]);
+      const resourceBindingA = randomUUID(), bindingA = randomUUID();
+      await pool.query(`INSERT INTO ${q('app_resource_bindings')} (id, org_id, app_installation_id, owner_user_id, target_key) VALUES ($1,$2,$3,$4,$5)`,
+        [resourceBindingA, orgA, instA, ownerA, 'primary']);
+      await pool.query(`INSERT INTO ${q('app_runtime_bindings')} (id, org_id, app_installation_id, owner_resource_binding_id) VALUES ($1,$2,$3,$4)`,
+        [bindingA, orgA, instA, resourceBindingA]);
 
       const now = Date.now();
       const seed = (expires: Date, revoked: Date | null) => pool.query(

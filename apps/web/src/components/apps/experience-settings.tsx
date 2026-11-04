@@ -9,6 +9,12 @@ import type {
   ExperienceSettingsSection,
 } from '@/lib/app-experience-settings';
 
+export type ExperienceSettingsAccountHealth = Readonly<{
+  key: string;
+  connection?: 'connected' | 'disconnected';
+  background?: Readonly<{ state: 'healthy' | 'paused' | 'ended'; since: string; reason: string }>;
+}>;
+
 export type ExperienceSettingsProps = {
   experienceLabel: string;
   title?: string;
@@ -27,6 +33,7 @@ export type ExperienceSettingsProps = {
   approvalQueueHref?: string;
   preferences?: ReactNode;
   initialSection?: ExperienceSettingsSection;
+  accountHealth?: readonly ExperienceSettingsAccountHealth[];
 };
 
 /** The host retains ownership of session, source, consent and revoke fences. */
@@ -48,13 +55,26 @@ export function ExperienceSettings({
   approvalQueueHref = '/inbox',
   preferences,
   initialSection = 'accounts',
+  accountHealth,
 }: ExperienceSettingsProps) {
   const id = useId();
   const selectedAccount = accounts.find(account => account.key === selectedAccountKey);
   const hasPreferences = Boolean(preferences);
   const suppliedStatus = selectedAccount?.statusLabel?.trim();
   const healthyAccount = Boolean(selectedAccount) && (!suppliedStatus || /^(?:connected|active|healthy)\b/iu.test(suppliedStatus));
-  const healthy = access.state === 'active' && accounts.length > 0 && healthyAccount;
+  // Background health is honest: healthy only when private access is active, the
+  // account is connected, and the background lease is healthy. A missing or off
+  // background lease is never reported as healthy.
+  const selectedHealth = accountHealth?.find(health => health.key === selectedAccountKey);
+  const connectionConnected = selectedHealth?.connection === 'connected';
+  const backgroundState = selectedHealth?.background?.state;
+  const healthy = access.state === 'active' && accounts.length > 0 && healthyAccount && connectionConnected && backgroundState === 'healthy';
+  const statusSummary = healthy ? 'Everything is healthy · Private access and background sync are active.'
+    : access.state === 'active' && accounts.length > 0 && healthyAccount && connectionConnected
+      ? backgroundState === 'paused' ? 'Private access is active · Background sync is paused.'
+        : backgroundState === 'ended' ? 'Private access is active · Background sync has ended.'
+          : 'Private access is active · Background sync is off.'
+      : 'Attention needed · Review connection or permissions below.';
   const status = suppliedStatus ?? (accounts.length === 0 ? 'Disconnected' : access.state === 'active' ? 'Connected' : access.state === 'review_required' ? 'Review needed' : 'Disconnected');
   const statusNeedsAttention = /(?:reconnect|review|attention|disconnected|error|expired)/iu.test(status);
   const accessCopy = access.state === 'active' ? 'Access granted · until revoked'
@@ -99,12 +119,12 @@ export function ExperienceSettings({
               </details>}
             </div>
             <span className="shrink-0 rounded-full px-2.5 py-1 text-xs font-medium" style={{
-              background: statusNeedsAttention ? 'color-mix(in srgb, var(--error) 12%, var(--surface))' : 'color-mix(in srgb, var(--accent) 12%, var(--surface))',
-              color: statusNeedsAttention ? 'var(--error)' : 'var(--accent)',
+              background: statusNeedsAttention ? 'color-mix(in srgb, var(--error) 12%, var(--surface))' : 'color-mix(in srgb, var(--primary) 8%, var(--surface))',
+              color: statusNeedsAttention ? 'var(--error)' : 'var(--primary)',
             }}>{status}</span>
           </div>
-          <p role="status" className="text-sm leading-6" style={{ color: healthy ? 'var(--accent)' : 'var(--text-secondary)' }}>
-            {healthy ? 'Everything is healthy · Private access and background sync are active.' : 'Attention needed · Review connection or permissions below.'}
+          <p role="status" className="text-sm leading-6" style={{ color: healthy ? 'var(--primary)' : 'var(--text-secondary)' }}>
+            {statusSummary}
           </p>
           {!healthy && <div className="flex flex-wrap gap-2">
             {access.state === 'review_required' && onReviewAccess
@@ -126,7 +146,7 @@ export function ExperienceSettings({
                     <p className="min-w-0 break-all text-sm font-medium sm:truncate" title={account.label}>{account.label}</p>
                     <p className="mt-1 text-xs leading-5" style={{ color: 'var(--text-secondary)' }}>{account.statusLabel ?? 'Reviewed source'}</p>
                   </div>
-                  {selected ? <span className="inline-flex min-h-11 items-center gap-1.5 text-xs font-medium" style={{ color: 'var(--accent)' }}>
+                  {selected ? <span className="inline-flex min-h-11 items-center gap-1.5 text-xs font-medium" style={{ color: 'var(--primary)' }}>
                     <Check size={14} aria-hidden="true" /> Current account
                   </span> : onSelectAccount && <button type="button" className="deft-pill" style={{ minHeight: 44 }} disabled={accountsBusy}
                     aria-label={`Use account ${account.label}`} onClick={() => onSelectAccount(account.key)}>Use account</button>}

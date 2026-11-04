@@ -55,6 +55,14 @@ function sanitizeDocument(value: ExperienceDocumentContent, images: readonly Exp
     // No source-authored marker can nominate an image. The source service alone
     // rewrites image nodes to a manifest-bound marker; all other nodes lose it.
     element.removeAttribute('data-deft-image');
+    if (element.tagName === 'TABLE') {
+      const rawWidth = element.style.width || element.getAttribute('width') || '';
+      const numeric = /^(\d+(?:\.\d+)?)\s*(?:px)?$/u.exec(rawWidth.trim())?.[1];
+      const intended = numeric === undefined ? NaN : Number(numeric);
+      if (Number.isFinite(intended) && intended > 960) {
+        element.style.minWidth = `${Math.max(0, Math.min(960, intended))}px`;
+      }
+    }
     const presentation = experienceDocumentPresentation(element);
     element.removeAttribute('style');
     if (presentation) element.setAttribute('style', presentation);
@@ -71,11 +79,21 @@ function sanitizeDocument(value: ExperienceDocumentContent, images: readonly Exp
   }
   const purifier = createDOMPurify(window);
   const clean = purifier.sanitize(template.content, {
-    ALLOWED_TAGS: [...tags], ALLOWED_ATTR: ['href', 'title', 'colspan', 'rowspan', 'style', 'data-deft-image'],
+    ALLOWED_TAGS: [...tags], ALLOWED_ATTR: ['href', 'title', 'colspan', 'rowspan', 'style', 'data-deft-image', 'dir', 'lang'],
     ALLOW_DATA_ATTR: false, ALLOW_ARIA_ATTR: false, RETURN_DOM_FRAGMENT: true,
     FORBID_TAGS: ['style', 'script', 'img', 'iframe', 'svg', 'math', 'form', 'input', 'video', 'audio', 'source', 'link', 'meta', 'base'],
     FORBID_ATTR: ['class', 'src', 'srcset', 'background', 'poster', 'id', 'name'],
   });
+  for (const element of clean.querySelectorAll('*')) {
+    const dir = element.getAttribute('dir');
+    if (dir !== null) {
+      const normalized = dir.trim().toLowerCase();
+      if (!['ltr', 'rtl', 'auto'].includes(normalized)) element.removeAttribute('dir');
+      else element.setAttribute('dir', normalized);
+    }
+    const lang = element.getAttribute('lang');
+    if (lang !== null && !/^[A-Za-z]{1,8}(-[A-Za-z0-9]{1,8})*$/u.test(lang)) element.removeAttribute('lang');
+  }
   for (const anchor of clean.querySelectorAll('a')) {
     const href = experienceDocumentLink(anchor.getAttribute('href') ?? '');
     if (href === null) anchor.removeAttribute('href');
@@ -122,14 +140,33 @@ function createDocumentElement(value: ExperienceDocumentContent, images: readonl
     wrapper.style.boxShadow = '0 0 0 1px var(--border-default, rgba(128,128,128,0.16)), var(--shadow-sm, 0 1px 2px rgba(15,15,20,0.08))';
   }
   for (const table of wrapper.querySelectorAll<HTMLElement>('table')) {
-    table.style.minWidth = '0'; constrainMessageWidth(table);
+    const nested = Boolean(table.parentElement?.closest('table'));
+    // Top-level message tables keep their natural width and scroll inside
+    // their overflow-x:auto wrapper instead of shrinking into word fragments.
+    if (nested) {
+      table.style.minWidth = '0'; constrainMessageWidth(table);
+    }
+    if (!nested) {
+      const hasMinWidth = Boolean(table.style.minWidth && table.style.minWidth !== '0' && table.style.minWidth !== '0px');
+      const hasWidth = Boolean(table.style.width && table.style.width !== 'auto' && table.style.width !== '');
+      if (!hasMinWidth && !hasWidth) {
+        const firstRow = table.querySelector('tr');
+        const columns = firstRow ? firstRow.querySelectorAll('th, td').length : 0;
+        if (columns >= 4) {
+          table.style.minWidth = `max(100%, ${Math.min(960, columns * 120)}px)`;
+        }
+      }
+    }
     // Generic host tables use a workspace surface. Message tables instead
     // inherit their own sanitized presentation, including nested white layouts.
     if (!table.style.background && !table.style.backgroundColor) table.style.backgroundColor = 'transparent';
     if (!table.style.borderCollapse) table.style.borderCollapse = 'collapse';
-    if (!table.parentElement?.closest('table')) {
+    if (!nested) {
       const scroll = document.createElement('div');
-      scroll.style.cssText = 'min-width:0;max-width:100%;width:100%;overflow-x:auto';
+      scroll.style.cssText = 'max-width:100%;width:100%;overflow-x:auto';
+      scroll.setAttribute('tabindex', '0');
+      scroll.setAttribute('role', 'region');
+      scroll.setAttribute('aria-label', 'Table, scrolls horizontally');
       table.replaceWith(scroll); scroll.append(table);
     }
   }

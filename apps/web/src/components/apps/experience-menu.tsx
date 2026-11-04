@@ -5,7 +5,7 @@ import {AppMenu} from '../overlay-primitives';
 import {EXPERIENCE_ICON_PATHS,type ExperienceDocumentContext,type ExperienceRendererOptions} from '@/lib/app-experience-renderer';
 import type {DeftExperienceMenuNode,DeftExperienceIcon} from '../../../../../packages/app-kit/src/experience-menu';
 function Icon({name}:{name:DeftExperienceIcon}){
- return <svg viewBox="0 0 24 24" className="ex-icon" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><path d={EXPERIENCE_ICON_PATHS[name]}/></svg>;
+ return <svg viewBox="0 0 24 24" className="ex-icon" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><path d={EXPERIENCE_ICON_PATHS[name]}/></svg>;
 }
 export function ExperienceMenu({node,select,context}:{node:DeftExperienceMenuNode;select:(id:string)=>unknown;context:ExperienceDocumentContext}){
  const [open,setOpen]=useState(false),[busy,setBusy]=useState(false),pending=useRef(false),anchor=useRef<HTMLButtonElement>(null);

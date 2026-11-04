@@ -6,6 +6,22 @@ import { z } from 'zod';
 export const APP_NEXT_STEP_KINDS = ['restore_access', 'reconnect', 'review_consent'] as const;
 export type AppNextStepKind = (typeof APP_NEXT_STEP_KINDS)[number];
 
+/** Public, stable 403 `details.next_step` contract. A Host denial attaches one
+ * validated step; the App performs the navigation and wording.
+ *
+ * - `kind` - always present, one of `reconnect` | `restore_access` | `review_consent`.
+ * - `installation_id` - optional UUID; supplied for `reconnect` and
+ *   `restore_access` (the Host resolves the exact installation), absent for a
+ *   bare `review_consent` default.
+ * - `target_key` - optional `^[a-z][a-z0-9_]{0,47}$`; supplied for `reconnect`
+ *   and `restore_access`, absent for a bare `review_consent`.
+ * - `consent_id` - optional UUID; may accompany `review_consent` when the Host
+ *   can point at one exact consent, otherwise absent.
+ *
+ * Every id is optional so a bare `{ kind: 'review_consent' }` default is valid,
+ * but a `reconnect`/`restore_access` step always carries `installation_id` and
+ * `target_key` so the App can act without guessing. Unknown kinds, extra keys
+ * and malformed ids are dropped by `appHttpNextStep`, never echoed. */
 export const AppNextStepSchema = z.strictObject({
   kind: z.enum(APP_NEXT_STEP_KINDS),
   installation_id: z.string().uuid().optional(),

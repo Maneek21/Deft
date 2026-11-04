@@ -325,13 +325,43 @@ test('shared renderer styles use Obsidian tokens, wrap reader headings and expos
  for(const legacy of ['#1e293b','#f8fafc','#64748b','#2563eb','#eff6ff','#cbd5e1'])assert.equal(EXPERIENCE_RENDERER_CSS.includes(legacy),false,legacy);
  for(const token of ['var(--on-surface','var(--on-surface-variant','var(--surface)','var(--surface-container-low)','var(--surface-container)','var(--primary)','var(--primary-container)','var(--on-primary-container)','var(--border-default)','var(--accent-subtle)'])assert.ok(EXPERIENCE_RENDERER_CSS.includes(token),token);
  assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-stack-document\s*>\s*\.ex-stack-toolbar\s*>\s*\.ex-text-heading\{[^}]*white-space:normal/);
- assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-stack-document\s*>\s*\.ex-stack-toolbar\s*>\s*\.ex-text-heading\{[^}]*-webkit-line-clamp:2/);
+ const headingRule=/\.ex-stack-document\s*>\s*\.ex-stack-toolbar\s*>\s*\.ex-text-heading\{([^}]*)\}/u.exec(EXPERIENCE_RENDERER_CSS)?.[1]??'';
+ assert.ok(headingRule,'the document toolbar heading rule is present');
+ assert.doesNotMatch(headingRule,/-webkit-line-clamp|display:-webkit-box/u,'the full subject must be able to wrap');
+ assert.match(headingRule,/white-space:normal/u);assert.match(headingRule,/overflow-wrap:anywhere/u);
  assert.match(EXPERIENCE_RENDERER_CSS,/@media\(max-width:480px\)/);
  assert.match(EXPERIENCE_RENDERER_CSS,/@container\(max-width:480px\)/);
  assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-document-view\[aria-busy="true"\]\{[^}]*linear-gradient/);
  assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-document-view\[aria-busy="true"\]\{[^}]*animation:shimmer 1\.5s ease infinite/);
  assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-attachment-chip\{[^}]*background:var\(--surface-container-low\)/);
  assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-attachment-name\{[^}]*overflow-wrap:anywhere/);
+});
+
+test('primary action tokens keep small button text at 4.5:1 in both themes',()=>{
+ const contrast=(foreground:string,background:string)=>{
+  const luminance=(value:string)=>{const channels=(value.replace('#','').match(/../gu)??[]).map(channel=>Number.parseInt(channel,16)/255)
+   .map(channel=>channel<=0.03928?channel/12.92:Math.pow((channel+0.055)/1.055,2.4));
+   return 0.2126*channels[0]+0.7152*channels[1]+0.0722*channels[2];};
+  const first=luminance(foreground),second=luminance(background);
+  return (Math.max(first,second)+0.05)/(Math.min(first,second)+0.05);
+ };
+ const declarations=(name:string)=>[...EXPERIENCE_RENDERER_CSS.matchAll(new RegExp(`--${name}:(#[0-9a-fA-F]{6})`,'gu'))].map(match=>match[1]);
+ for(const name of ['ex-primary-fill','ex-primary-text','ex-primary-hover']){
+  assert.equal(declarations(name).length,2,`${name} declares a dark and a light value`);
+ }
+ assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-button-primary:hover:not\(:disabled\),\.deft-experience button\[data-record-primary\]:hover:not\(:disabled\)\s*\{[^}]*background-color:var\(--ex-primary-hover\)/);
+ assert.match(EXPERIENCE_RENDERER_CSS,/\.deft-experience button\s*\{[^}]*background:var\(--ex-primary-fill\)[^}]*color:var\(--ex-primary-text\)/);
+ for(let index=0;index<2;index++){
+  const fill=declarations('ex-primary-fill')[index],text=declarations('ex-primary-text')[index],hover=declarations('ex-primary-hover')[index];
+  assert.ok(contrast(text,fill)>=4.5,`${text} on ${fill}`);
+  assert.ok(contrast(text,hover)>=4.5,`${text} on hover ${hover}`);
+ }
+});
+
+test('phone document toolbars without a menu put the heading on its own row before wrapping actions',()=>{
+ assert.match(EXPERIENCE_RENDERER_CSS,/@media\(max-width:720px\)\{[^@]*\.ex-stack-document>\.ex-stack-toolbar:not\(:has\(\.ex-menu\)\)\{[^}]*flex-direction:column/);
+ assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-stack-document>\.ex-stack-toolbar:not\(:has\(\.ex-menu\)\)>\.ex-text-heading\{[^}]*flex:0 0 auto;[^}]*width:100%/);
+ assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-stack-document>\.ex-stack-toolbar:not\(:has\(\.ex-menu\)\)>\.ex-stack-horizontal\{[^}]*flex-wrap:wrap/);
 });
 
 test('retention never survives changed record digest policy trusted scope suspension or clear',async()=>{
@@ -346,4 +376,14 @@ test('retention never survives changed record digest policy trusted scope suspen
   if(change==='suspend')suspendExperienceView(container);else if(change==='clear')clearExperienceView(container);else renderExperienceView(container,view(),()=>{},options);
   assert.equal(contexts[0].signal.aborted,true,change);assert.equal(contexts[0].current(),false,change);releases[0]({kind:'document',id:'body',format:'plain',content:'MUST NOT REVEAL LATE SOURCE'});await new Promise<void>(done=>setImmediate(done));assert.equal((container as unknown as Element).children.some(child=>child.textContent==='MUST NOT REVEAL LATE SOURCE'),false,change);assert.equal(mounts,0,'late previous source must never mount: '+change);assert.ok(reads<=2);clearExperienceView(container);releases.slice(1).forEach(done=>done({kind:'document',id:'body',format:'plain',content:'late'}));
  }}finally{for(const [key,descriptor]of saved)if(descriptor)Object.defineProperty(globalThis,key,descriptor);else Reflect.deleteProperty(globalThis,key);}
+});
+
+test('phone document toolbar becomes a grid so the subject wraps at its real width (N-04)', () => {
+  assert.ok(EXPERIENCE_RENDERER_CSS.includes('@media(max-width:720px){.deft-experience .ex-stack-document>.ex-stack-toolbar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center}'));
+  assert.ok(EXPERIENCE_RENDERER_CSS.includes('.deft-experience .ex-stack-document>.ex-stack-toolbar>.ex-text-heading{grid-column:1/-1;grid-row:2;'));
+  assert.ok(EXPERIENCE_RENDERER_CSS.includes('.deft-experience .ex-stack-document>.ex-stack-toolbar:has(.ex-menu)') && EXPERIENCE_RENDERER_CSS.includes('flex-wrap:wrap'));
+});
+test('renderer excludes checkboxes/radios from full-width input rule and keeps checkbox rows 44px (UI-15)', () => {
+  assert.match(EXPERIENCE_RENDERER_CSS, /\.deft-experience input:not\(\[type="checkbox"\]\):not\(\[type="radio"\]\),\.deft-experience textarea \{[^}]*width:100%/);
+  assert.match(EXPERIENCE_RENDERER_CSS, /\.deft-experience label:has\(> input\[type="checkbox"\]\),\.deft-experience label:has\(> input\[type="radio"\]\) \{[^}]*min-height:44px/);
 });

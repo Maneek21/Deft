@@ -49,13 +49,14 @@ type RendererContext = ExperienceRendererOptions & Readonly<{
 type ExperienceEventDelivery = (event: ExperienceUiEvent) => unknown;
 
 export const EXPERIENCE_RENDERER_CSS = `
-.deft-experience { font:inherit; line-height:1.5; container-type:inline-size; color:var(--on-surface); background:var(--surface); min-height:100%; padding:24px; box-sizing:border-box }
+.deft-experience { font:inherit; line-height:1.5; container-type:inline-size; color:var(--on-surface); background:var(--surface); min-height:100%; padding:24px; box-sizing:border-box; --ex-primary-fill:#9A8CFB; --ex-primary-text:#2D0E94; --ex-primary-hover:#A99EFC }
+.light .deft-experience { --ex-primary-fill:#6A59E0; --ex-primary-text:#FFFFFF; --ex-primary-hover:#5B4ACF }
 .deft-experience * { box-sizing:border-box }
 .deft-experience .ex-mirror-fields > button { justify-self:start }
 .deft-experience .ex-mirror-fields > label { display:grid; gap:6px; max-width:360px; width:100% }
 .deft-experience .ex-stack { display:grid; gap:16px; min-width:0; align-content:start }
 .deft-experience .ex-stack-list { gap:0 }
-.deft-experience .ex-stack-horizontal { display:flex; flex-wrap:wrap; align-items:center; gap:10px }
+.deft-experience .ex-stack-horizontal { display:flex; flex-wrap:wrap; align-items:center; gap:10px; min-width:0 }
 .deft-experience .ex-stack-split { grid-template-columns:minmax(240px,32%) minmax(0,1fr); gap:24px }
 .deft-experience .ex-stack-panel { padding:20px; border:0; border-radius:14px; background:var(--surface-container-low) }
 .deft-experience .ex-stack-title { margin:0; font-size:18px; font-weight:650; letter-spacing:-.02em; grid-column:1/-1 }
@@ -64,10 +65,12 @@ export const EXPERIENCE_RENDERER_CSS = `
 .deft-experience .ex-grid-scroll th,.deft-experience .ex-grid-scroll td { border-bottom:1px solid var(--border-default); padding:7px 8px; text-align:left }
 .deft-experience .ex-grid-scroll th { background:var(--surface-container-low); color:var(--on-surface-variant); font-size:12px; white-space:nowrap }
 .deft-experience .ex-grid-scroll tr[aria-selected=true] { background:var(--accent-subtle) }
-.deft-experience input,.deft-experience textarea { width:100%; min-width:80px; padding:10px 12px; border:1px solid transparent; border-radius:7px; color:var(--on-surface); background:transparent; font:inherit }
+.deft-experience input:not([type="checkbox"]):not([type="radio"]),.deft-experience textarea { width:100%; min-width:80px; padding:10px 12px; border:1px solid transparent; border-radius:7px; color:var(--on-surface); background:transparent; font:inherit }
+.deft-experience input[type="checkbox"],.deft-experience input[type="radio"] { width:auto; min-width:0; margin:0 }
 .deft-experience input:focus,.deft-experience textarea:focus { outline:2px solid var(--primary); border-color:var(--primary); background:var(--surface) }
-.deft-experience button { min-height:44px; border:1px solid transparent; background:var(--primary-container); color:var(--on-primary-container); border-radius:999px; padding:10px 16px; cursor:pointer; font:inherit; font-weight:600; transition:background-color 150ms,opacity 150ms }
+.deft-experience button { min-height:44px; border:1px solid transparent; background:var(--ex-primary-fill); color:var(--ex-primary-text); border-radius:999px; padding:10px 16px; cursor:pointer; font:inherit; font-weight:600; transition:background-color 150ms,opacity 150ms }
 .deft-experience button:hover { filter:brightness(.97) }
+.deft-experience .ex-button-primary:hover:not(:disabled),.deft-experience button[data-record-primary]:hover:not(:disabled) { background-color:var(--ex-primary-hover); filter:none }
 .deft-experience button:focus-visible { outline:2px solid var(--primary); outline-offset:2px }
 .deft-experience button:disabled { cursor:default; opacity:.5 }
 .deft-experience .ex-button-secondary { background:var(--surface-container-low); border-color:transparent; color:var(--on-surface-variant) }
@@ -83,9 +86,13 @@ export const EXPERIENCE_RENDERER_CSS = `
 .deft-experience .ex-text { margin:0; white-space:pre-wrap; overflow-wrap:anywhere }
 .deft-experience .ex-text-muted { color:var(--on-surface-variant) }
 .deft-experience .ex-text-heading { font-family:var(--font-heading,inherit); font-size:20px; font-weight:600; letter-spacing:-.025em; line-height:1.4 }
-.deft-experience .ex-text-caption { color:var(--on-surface-variant); font-size:12px }
-.deft-experience .ex-field { display:grid; gap:6px; min-width:0 }
+.deft-experience .ex-text-caption { color:var(--on-surface-variant); font-size:12px; min-height:1.5em }
+.deft-experience .ex-field { display:grid; gap:6px; min-width:0; grid-template-columns:minmax(0,1fr) }
+.deft-experience .ex-field>* { min-width:0 }
 .deft-experience .ex-field label { display:grid; gap:6px; color:var(--on-surface-variant); font-size:12px; font-weight:550 }
+.deft-experience [data-record-surface] .ex-field label, .deft-experience .ex-field [data-record-surface] label { display:flex; align-items:center; gap:10px }
+.deft-experience label:has(> input[type="checkbox"]),.deft-experience label:has(> input[type="radio"]) { display:flex; align-items:center; gap:10px; min-height:44px }
+.deft-experience label:has(> input[type="checkbox"]) input,.deft-experience label:has(> input[type="radio"]) input { width:16px; height:16px; flex-shrink:0 }
 .deft-experience .ex-field input,.deft-experience .ex-field textarea { min-height:44px; border-color:var(--border-default); border-color:transparent; background:var(--surface-container-low); font-weight:400; font-size:14px }
 .deft-experience .ex-field textarea { min-height:220px; resize:vertical; line-height:1.6 }
 .deft-experience canvas { display:block; width:100%; height:200px; border:1px solid var(--border-default); border-radius:9px; background:var(--surface-container-low); touch-action:none }
@@ -93,8 +100,8 @@ export const EXPERIENCE_RENDERER_CSS = `
 .deft-experience .ex-stack-workspace { display:flex; flex-direction:column; gap:0; height:100%; min-height:0; overflow:hidden }
 .deft-experience .ex-stack-workspace > .ex-stack-split { flex:1; min-height:0; grid-template-columns:clamp(340px,32%,380px) minmax(0,1fr); grid-template-rows:minmax(0,1fr); gap:0; overflow:hidden }
 .deft-experience .ex-stack-sidebar { border-right:1px solid var(--border-default); padding:0; overflow:auto; min-height:0; gap:0; background:var(--surface) }
-.deft-experience .ex-stack-document { padding:28px 32px; overflow:auto; min-height:0; gap:20px; background:var(--surface) }
-.deft-experience .ex-stack-toolbar { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; padding:12px 20px; position:sticky; top:0; z-index:1; flex-shrink:0; background:var(--surface) }
+.deft-experience .ex-stack-document { padding:28px 32px; overflow:auto; min-height:0; min-width:0; gap:20px; background:var(--surface); grid-auto-rows:max-content }
+.deft-experience .ex-stack-toolbar { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; padding:12px 20px; position:sticky; top:0; z-index:1; flex-shrink:0; min-width:0; background:var(--surface) }
 .deft-experience .ex-stack-toolbar > .ex-field-search { flex:1; min-width:180px; max-width:420px }
 .deft-experience .ex-stack-sidebar > .ex-text { padding:12px 20px }
 .deft-experience .ex-stack-sidebar > .ex-stack-list > .ex-text { padding:24px 20px 12px; font-size:14px }
@@ -108,8 +115,8 @@ export const EXPERIENCE_RENDERER_CSS = `
 .deft-experience .ex-button-eyebrow { grid-column:1; grid-row:1; font-size:12px; font-weight:650; color:var(--on-surface); overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
 .deft-experience .ex-button-list .ex-button-meta { grid-column:2; grid-row:1; align-self:center }
 .deft-experience .ex-button-list .ex-button-description { font-size:13px; line-height:1.6; -webkit-line-clamp:2 }
-.deft-experience button:not(.ex-button-list) { display:inline-flex; align-items:center; justify-content:center; gap:6px; font-family:var(--font-heading,inherit); font-size:12px; border-radius:999px }
-.deft-experience .ex-icon { width:16px; height:16px; flex-shrink:0; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round }
+.deft-experience button:not(.ex-button-list):not([data-record-width-toggle]) { display:inline-flex; align-items:center; justify-content:center; gap:6px; font-family:var(--font-heading,inherit); font-size:12px; border-radius:999px }
+.deft-experience .ex-icon { width:16px; height:16px; flex-shrink:0; fill:none; stroke:currentColor; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round }
 .deft-experience .ex-field-search label { position:relative; display:block }
 .deft-experience .ex-field-search .ex-field-label,.deft-experience .ex-field-body .ex-field-label { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%) }
 .deft-experience .ex-field-search .ex-icon { position:absolute; left:12px; top:14px; color:var(--on-surface-variant) }
@@ -150,11 +157,13 @@ export const EXPERIENCE_RENDERER_CSS = `
 .deft-experience .ex-stack-sidebar > .ex-stack-toolbar > .ex-stack { gap:2px; min-width:0 }
 .deft-experience .ex-stack-sidebar > .ex-stack-toolbar > .ex-stack-horizontal { gap:4px; flex-wrap:nowrap }
 .deft-experience .ex-stack-sidebar > .ex-stack-toolbar .ex-text:not(.ex-text-caption) { font-size:16px; font-weight:600; letter-spacing:-.02em }
-.deft-experience .ex-stack-toolbar button:is([data-icon=refresh],[data-icon=search],[data-icon=back],[data-icon=close],[data-icon=select],[data-icon=more],[data-icon=archive],[data-icon=trash],[data-icon=mail],[data-icon=read],[data-icon=unread],[data-icon=check],[data-icon=chevron_down],[data-icon=star],[data-icon=folder],[data-icon=label],[data-icon=print]) { width:36px; padding:8px; flex-shrink:0 }
+.deft-experience .ex-stack-toolbar button:is([data-icon=refresh],[data-icon=search],[data-icon=back],[data-icon=close],[data-icon=select],[data-icon=more],[data-icon=archive],[data-icon=trash],[data-icon=mail],[data-icon=read],[data-icon=unread],[data-icon=check],[data-icon=chevron_down],[data-icon=star],[data-icon=folder],[data-icon=label],[data-icon=print]) { width:36px; padding:8px; flex-shrink:0; color:var(--on-surface-variant) }
+.deft-experience .ex-stack-toolbar button:is([data-icon=refresh],[data-icon=search],[data-icon=back],[data-icon=close],[data-icon=select],[data-icon=more],[data-icon=archive],[data-icon=trash],[data-icon=mail],[data-icon=read],[data-icon=unread],[data-icon=check],[data-icon=chevron_down],[data-icon=star],[data-icon=folder],[data-icon=label],[data-icon=print]):hover,.deft-experience .ex-stack-toolbar button:is([data-icon=refresh],[data-icon=search],[data-icon=back],[data-icon=close],[data-icon=select],[data-icon=more],[data-icon=archive],[data-icon=trash],[data-icon=mail],[data-icon=read],[data-icon=unread],[data-icon=check],[data-icon=chevron_down],[data-icon=star],[data-icon=folder],[data-icon=label],[data-icon=print]):focus-visible,.deft-experience .ex-stack-toolbar button:is([data-icon=refresh],[data-icon=search],[data-icon=back],[data-icon=close],[data-icon=select],[data-icon=more],[data-icon=archive],[data-icon=trash],[data-icon=mail],[data-icon=read],[data-icon=unread],[data-icon=check],[data-icon=chevron_down],[data-icon=star],[data-icon=folder],[data-icon=label],[data-icon=print])[aria-pressed=true] { color:var(--on-surface) }
+.deft-experience .ex-stack-toolbar button:is([data-icon=refresh],[data-icon=search],[data-icon=back],[data-icon=close],[data-icon=select],[data-icon=more],[data-icon=archive],[data-icon=trash],[data-icon=mail],[data-icon=read],[data-icon=unread],[data-icon=check],[data-icon=chevron_down],[data-icon=star],[data-icon=folder],[data-icon=label],[data-icon=print]) .ex-icon { width:18px; height:18px }
 .deft-experience .ex-stack-toolbar button:is([data-icon=refresh],[data-icon=search],[data-icon=back],[data-icon=close],[data-icon=select],[data-icon=more],[data-icon=archive],[data-icon=trash],[data-icon=mail],[data-icon=read],[data-icon=unread],[data-icon=check],[data-icon=chevron_down],[data-icon=star],[data-icon=folder],[data-icon=label],[data-icon=print]) .ex-button-label { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%) }
-.deft-experience .ex-stack-document { padding:0 28px 28px; gap:18px }
+.deft-experience .ex-stack-document { padding:0 28px 28px; gap:18px; grid-auto-rows:max-content }
 .deft-experience .ex-stack-document > .ex-stack-toolbar { margin:0 -28px; padding:16px 28px; min-height:76px; align-items:center }
-.deft-experience .ex-stack-document > .ex-stack-toolbar .ex-text-heading { font-size:18px; line-height:1.4; flex:1; min-width:160px }
+.deft-experience .ex-stack-document > .ex-stack-toolbar .ex-text-heading { font-size:18px; line-height:1.4; flex:1; min-width:0 }
 .deft-experience .ex-stack-document > .ex-stack-toolbar > .ex-stack-horizontal { gap:4px }
 .deft-experience .ex-stack-document > .ex-text:first-child { margin-top:32px }
 .deft-experience .ex-document-view { min-width:0; max-width:100%; width:100%; font-size:14px; line-height:1.85; color:var(--on-surface); padding:8px 0 20px }
@@ -192,6 +201,7 @@ export const EXPERIENCE_RENDERER_CSS = `
 .deft-experience .ex-stack-workspace > .ex-stack-horizontal > button { max-width:240px; min-width:0; flex-shrink:0 }
 .deft-experience .ex-stack-workspace > .ex-stack-horizontal > button .ex-button-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
 .deft-experience .ex-stack-workspace > .ex-text-caption { margin:0; padding:8px 16px; font-size:12px; color:var(--on-surface-variant); flex-shrink:0 }
+.deft-experience .ex-stack-workspace > .ex-text-caption:empty { display:block; min-height:1.5em }
 .deft-experience .ex-stack-toolbar button[aria-pressed=true] { background:var(--accent-subtle); color:var(--primary) }
 .deft-experience-preferences.deft-experience { padding:0; min-height:0 }
 .deft-experience-preferences.deft-experience .ex-stack-panel { padding:0; background:transparent }
@@ -212,7 +222,7 @@ export const EXPERIENCE_RENDERER_CSS = `
 @container(max-width:700px) { .deft-experience .ex-stack-document { padding:0 20px 24px } .deft-experience .ex-stack-document > .ex-stack-toolbar { margin:0 -20px; padding:12px 20px } }
 
 /* Shared compact surfaces; app declarations still own navigation and hierarchy. */
-.deft-experience .ex-stack-document{padding:0 24px 24px;gap:14px}
+.deft-experience .ex-stack-document{padding:0 24px 24px;gap:14px;grid-auto-rows:max-content}
 .deft-experience .ex-stack-document>.ex-stack-toolbar{margin:0 -24px;padding:10px 24px;min-height:60px;gap:8px}
 .deft-experience .ex-stack-sidebar>.ex-stack-toolbar{min-height:60px;padding:10px 14px;gap:8px}
 .deft-experience .ex-stack-sidebar>.ex-button-list{padding:12px 16px}
@@ -222,8 +232,16 @@ export const EXPERIENCE_RENDERER_CSS = `
 .deft-experience .ex-stack-toolbar:has(.ex-menu),.deft-experience .ex-stack-toolbar:has(.ex-menu) .ex-stack-horizontal{flex-wrap:nowrap}
 .deft-experience .ex-menu{display:inline-flex;flex-shrink:0}
 .deft-experience .ex-menu button{white-space:nowrap}
-.deft-experience .ex-stack-document>.ex-stack-toolbar>.ex-text-heading{min-width:0;white-space:normal;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-@media(max-width:720px){.deft-experience .ex-stack-document{padding:0 16px 20px}.deft-experience .ex-stack-document>.ex-stack-toolbar{margin:0 -16px;padding:10px 16px}}
+.deft-experience .ex-stack-document>.ex-stack-toolbar>.ex-text-heading{min-width:0;white-space:normal;overflow-wrap:anywhere}
+@media(max-width:720px){.deft-experience .ex-stack-document{padding:0 16px 20px}.deft-experience .ex-stack-document>.ex-stack-toolbar{margin:0 -16px;padding:10px 16px}
+ .deft-experience .ex-stack-document>.ex-stack-toolbar:not(:has(.ex-menu)){flex-direction:column;align-items:stretch;gap:8px}
+ .deft-experience .ex-stack-document>.ex-stack-toolbar:not(:has(.ex-menu))>.ex-text-heading{flex:0 0 auto;width:100%;min-width:0}
+ .deft-experience .ex-stack-document>.ex-stack-toolbar:not(:has(.ex-menu))>.ex-stack-horizontal{width:100%;min-width:0;flex-wrap:wrap}}
+@media(max-width:720px){.deft-experience .ex-stack-document>.ex-stack-toolbar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center}
+ .deft-experience .ex-stack-document>.ex-stack-toolbar>.ex-text-heading{grid-column:1/-1;grid-row:2;width:100%;min-width:0}
+ .deft-experience .ex-stack-document>.ex-stack-toolbar>.ex-stack-horizontal{grid-column:3}
+ .deft-experience .ex-stack-document>.ex-stack-toolbar>.ex-stack-horizontal:first-child:not(:last-child){grid-column:1}
+ .deft-experience .ex-stack-document>.ex-stack-toolbar:has(.ex-menu){flex-wrap:wrap}}
 /* Reader toolbars wrap instead of forcing the subject onto one truncated line. */
 @media(max-width:480px){.deft-experience .ex-stack-sidebar>.ex-stack-toolbar{flex-wrap:wrap;row-gap:6px}}
 @container(max-width:480px){.deft-experience .ex-stack-sidebar>.ex-stack-toolbar{flex-wrap:wrap;row-gap:6px}}
@@ -236,6 +254,7 @@ export const EXPERIENCE_RENDERER_CSS = `
 /* Listed attachments read as chips rather than compressed text rows. */
 .deft-experience .ex-attachment-chip{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 12px;border:1px solid var(--border-default);border-radius:12px;background:var(--surface-container-low)}
 .deft-experience .ex-attachment-name{font-size:13px;font-weight:500;min-width:0;flex:1 1 180px;overflow-wrap:anywhere}
+.deft-experience .ex-stack-document{grid-auto-rows:max-content}
 
 `;
 
@@ -245,28 +264,28 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string): 
   return element;
 }
 
+// Paths derived from Lucide (ISC), https://lucide.dev
 export const EXPERIENCE_ICON_PATHS = {
-  compose: 'M12 20H4V4h8 M16 3l5 5-9 9H7v-5z M14 5l5 5',
-  refresh: 'M20 7v5h-5 M4 17v-5h5 M6 7a7 7 0 0 1 12-2l2 2 M4 17l2 2a7 7 0 0 0 12-2',
-  search: 'M21 21l-5-5 M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0',
-  reply: 'M9 4l-6 6 6 6 M3 10h10a8 8 0 0 1 8 8v2',
-  archive: 'M3 3h18v4H3z M5 7v14h14V7 M10 11h4',
+  compose: 'M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7 M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z',
+  refresh: 'M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8 M21 3v5h-5 M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16 M8 16H3v5',
+  search: 'M21 21l-4.34-4.34 M3 11a8 8 0 1 0 16 0a8 8 0 1 0 -16 0',
+  reply: 'M20 18v-2a4 4 0 0 0-4-4H4 M9 17l-5-5 5-5',
+  archive: 'M3 3h18a1 1 0 0 1 1 1v3a1 1 0 0 1 -1 1h-18a1 1 0 0 1 -1 -1v-3a1 1 0 0 1 1 -1z M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8 M10 12h4',
   back: 'M15 18l-6-6 6-6',
-  close: 'M6 6l12 12 M6 18L18 6',
-  send: 'M22 2L9 15 M22 2l-7 20-6-7-7-6z',
-  select: 'M4 4h16v16H4z',
-  check: 'M4 4h16v16H4z M7 12l3 3 7-7',
-  more: 'M5 11h2v2H5z M11 11h2v2h-2z M17 11h2v2h-2z',
-  trash:'M3 6h18 M9 6V3h6v3 M5 6l1 15h12l1-15 M10 10v7 M14 10v7',
-  mail:'M3 5h18v14H3z M3 5l9 7 9-7',
-  star:'M12 3l3 6 7 1-5 5 1 7-6-3-6 3 1-7-5-5 7-1z',
-  folder:'M3 5h7l2 2h9v13H3z',
-  label:'M3 3h8l10 10-8 8L3 11z M7 7h.01',
-  chevron_down:'M6 9l6 6 6-6',
-  read:'M3 8l9-6 9 6v13H3z M3 8l9 6 9-6',
-  unread:'M3 5h18v14H3z M3 5l9 7 9-7',
-  print:'M6 8V3h12v5 M6 17H3V8h18v9h-3 M6 14h12v7H6z',
-
+  close: 'M18 6 6 18 M6 6l12 12',
+  send: 'M3.714 3.048a.498.498 0 0 0-.683.627l2.843 7.627a2 2 0 0 1 0 1.396l-2.842 7.627a.498.498 0 0 0 .682.627l18-8.5a.5.5 0 0 0 0-.904z M6 12h16',
+  select: 'M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2z',
+  check: 'M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2z M16 9l-5.5 5.5L8 12',
+  more: 'M11 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0 M18 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0 M4 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0',
+  trash: 'M10 11v6 M14 11v6 M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6 M3 6h18 M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2',
+  mail: 'M22 7l-8.991 5.727a2 2 0 0 1-2.009 0L2 7 M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-16a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2z',
+  star: 'M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z',
+  folder: 'M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z',
+  label: 'M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z M7 7.5a0.5 0.5 0 1 0 1 0a0.5 0.5 0 1 0 -1 0',
+  chevron_down: 'M6 9l6 6 6-6',
+  read: 'M21.2 8.4c.5.38.8.97.8 1.6v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V10a2 2 0 0 1 .8-1.6l8-6a2 2 0 0 1 2.4 0l8 6Z M22 10l-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 10',
+  unread: 'M12.674 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-4.675 M2 7l9 5.701a2 2 0 0 0 2 0l1.084-.686 M16 7a3 3 0 1 0 6 0a3 3 0 1 0 -6 0',
+  print: 'M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2 M6 9V3a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v6 M7 14h10a1 1 0 0 1 1 1v6a1 1 0 0 1 -1 1h-10a1 1 0 0 1 -1 -1v-6a1 1 0 0 1 1 -1z',
 } as const;
 
 /** Only host-owned paths enter SVG; authors choose a bounded symbolic name. */

@@ -6,7 +6,7 @@ import {runInNewContext} from 'node:vm';
 import ts from 'typescript';
 import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
-import {RecordSurface} from '../components/apps/experience-record-form';
+import {RecordSurface,recordSurfaceStyles} from '../components/apps/experience-record-form';
 const source=ts.createSourceFile('record.tsx',readFileSync(new URL('../components/apps/experience-record-form.tsx',import.meta.url),'utf8'),ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
 function actual(name:string,env:Record<string,unknown>){let found:ts.FunctionDeclaration|undefined;const walk=(node:ts.Node)=>{if(ts.isFunctionDeclaration(node)&&node.name?.text===name)found=node;ts.forEachChild(node,walk);};walk(source);assert.ok(found);const text=found.getText(source).replace(/^export /u,'');return runInNewContext(ts.transpileModule('('+text+')',{compilerOptions:{target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}}).outputText,env);}
 test('actual trusted surface has an accessible neutral Expand control around an unchanged writing subtree',()=>{
@@ -51,4 +51,10 @@ test('actual surface reserves the width toggle and its gutter only from the smal
   assert.match(html,/class="absolute right-1 top-2 z-10 hidden sm:flex min-h-10 min-w-10/);
   assert.ok(html.includes('class="min-w-0 space-y-2 sm:[&amp;&gt;:first-child]:pr-11"'),'the mobile body must not reserve the desktop gutter');
   assert.ok(!html.includes('class="min-w-0 space-y-2 [&amp;&gt;:first-child]:pr-11"'));
+});
+
+test('the desktop width toggle is marked and removed below the small breakpoint',()=>{
+  const html=renderToStaticMarkup(<RecordSurface label="Draft"><textarea aria-label="Message" defaultValue="kept"/></RecordSurface>);
+  assert.match(html,/data-record-width-toggle="true"/);
+  assert.match(recordSurfaceStyles,/@media\(max-width:639\.98px\)\s*\{\s*\.deft-experience \[data-record-width-toggle\]\s*\{\s*display:none!important/);
 });

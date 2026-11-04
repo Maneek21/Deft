@@ -30,7 +30,12 @@ export function createOriginalFileCopies(options:{node:FileCopyNode;writer:()=>R
  const signal=()=>AbortSignal.any([options.signal,AbortSignal.timeout(30000)]);
  return {
  async load(){if(!current()||!options.node.profile.files)return;const writer=options.writer();if(!writer||writer.snapshot.row.status!=='draft')return;const source=recordCopySource(options.node,writer.snapshot.row);if(!source)return;busy=true;emit();try{const values=await options.ports.listOriginals(options.node,writer.snapshot.row,signal());if(!current())return;
-  files=values.filter(f=>f.disposition==='attachment').map(file=>({file,state:file.size_bytes>options.node.profile.files!.max_file_bytes||file.size_bytes>options.node.profile.files!.max_total_bytes?'source_only':'available',notice:file.size_bytes>options.node.profile.files!.max_file_bytes?'Download the original message to access this file. It cannot be included.':''}));
+  const attached=recordFormFiles(writer.snapshot.value,options.node.profile);
+files=values.filter(f=>f.disposition==='attachment').map(file=>{
+ const already=attached.some(existing=>existing.filename===file.filename&&existing.media_type===file.media_type&&existing.size_bytes===file.size_bytes);
+ const state=already?'saved':file.size_bytes>options.node.profile.files!.max_file_bytes||file.size_bytes>options.node.profile.files!.max_total_bytes?'source_only':'available';
+ return {file,state,notice:file.size_bytes>options.node.profile.files!.max_file_bytes&&!already?'Download the original message to access this file. It cannot be included.':''};
+});
  }catch{if(current())notice='Original files unavailable. Reopen the message to check access.';}finally{if(current()){busy=false;emit();}}},
  async include(ref:string){const writer=options.writer(),entry=files.find(f=>f.file.file_ref===ref);if(!current()||busy||pending||options.locked()||!writer||writer.snapshot.row.status!=='draft'||writer.snapshot.state==='blocked'||!entry||!['available','failed','omitted'].includes(entry.state))return false;
   const existing=recordFormFiles(writer.snapshot.value,options.node.profile);if(existing.length>=options.node.profile.files!.max_files||existing.reduce((n,f)=>n+f.size_bytes,0)+entry.file.size_bytes>options.node.profile.files!.max_total_bytes){notice='Selected originals exceed the draft file limits.';emit();return false;}

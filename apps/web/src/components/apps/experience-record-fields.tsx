@@ -42,7 +42,7 @@ export function ExperienceRecordFields({node,ports,context,emit,registerWriter}:
   <div className="space-y-4">{node.profile.fields.map(field=>{
    const saved=field.kind==='choice'?recordChoiceValue(value,field):value[field.field];
    if(readonly||field.kind==='verified_identity')return <dl key={field.field}><dt className="text-xs text-[var(--muted)]">{field.label}</dt><dd className="whitespace-pre-wrap break-words text-sm">{field.kind==='boolean'?(saved?'On':'Off'):field.kind==='choice'?field.options.find(option=>option.value===saved)!.label:String(saved)||'—'}</dd></dl>;
-   if(field.kind==='boolean')return <label key={field.field} className="flex items-center gap-3 text-sm"><input type="checkbox" aria-label={field.label} checked={saved as boolean} disabled={disabled} onChange={event=>edit(field.field,event.target.checked)}/>{field.label}</label>;
+   if(field.kind==='boolean')return <label key={field.field} className="flex min-h-11 items-center gap-3 text-sm"><input type="checkbox" className="h-4 w-4 shrink-0" aria-label={field.label} checked={saved as boolean} disabled={disabled} onChange={event=>edit(field.field,event.target.checked)}/>{field.label}</label>;
    if(field.kind==='choice')return <label key={field.field} className="block text-xs text-[var(--muted)]">{field.label}<select aria-label={field.label} value={saved as string} disabled={disabled} className="mt-1 block min-h-11 w-full rounded-lg bg-[var(--surface-container-low)] px-3 text-sm text-[var(--foreground)]" onChange={event=>{if(!disabled&&writable())writer.current?.edit(recordChoiceEdit(writer.current.snapshot.value,field,event.target.value));}}>{field.options.map(option=><option key={option.value} value={option.value}>{option.label}</option>)}</select></label>;
    return <label key={field.field} className="block text-xs text-[var(--muted)]">{field.label}<input aria-label={field.label} value={saved as string} maxLength={field.max_characters} required={field.required} disabled={disabled} className="mt-1 block min-h-11 w-full rounded-lg bg-[var(--surface-container-low)] px-3 text-sm text-[var(--foreground)]" onChange={event=>edit(field.field,event.target.value)}/></label>;
   })}</div>
@@ -55,7 +55,7 @@ export function ExperienceRecordFields({node,ports,context,emit,registerWriter}:
    {!readonly&&<div className="flex flex-wrap gap-2">{state.state==='blocked'?<>
     {ports.saveStatus&&<button type="button" className={pill} disabled={!writable()} onClick={()=>void writer.current?.reconcileSave()}>Check saved status</button>}
     <button type="button" className={pill} disabled={!writable()} onClick={()=>void writer.current?.reopen()}>Reopen saved version</button>
-   </>:<button type="button" data-record-primary="true" className={`${pill} bg-[var(--primary)] text-[var(--on-primary)]`} disabled={disabled||!state.dirty} onClick={()=>void writer.current?.save()}>Save settings</button>}</div>}
+   </>:<button type="button" data-record-primary="true" className={`${pill} bg-[var(--ex-primary-fill)] text-[var(--ex-primary-text)]`} disabled={disabled||!state.dirty} onClick={()=>void writer.current?.save()}>Save settings</button>}</div>}
   </div>
  </section>;
 }

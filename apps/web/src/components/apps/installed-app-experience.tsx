@@ -54,6 +54,7 @@ import {parseExperienceResourceAction} from '@/lib/app-experience-resource-actio
 import {parseExperienceResourceActionBatch} from '@/lib/app-experience-resource-action-batch';
 import {ExperienceResourceActionBatch,type ResourceActionBatchRequest} from './experience-resource-action-batch';
 import {AppDataRecordMetaSchema,AppDataRequestSchema,AppDataSourceFileSchema,type AppDataResult} from '../../../../../packages/app-kit/src/app-data';
+import type { ExperienceConnectionAction, ExperienceAccountTarget } from '../../../../../packages/app-kit/src/experience-account';
 import { PrivateStateRecoveryGate } from '@/components/apps/private-state-recovery-gate';
 import { ExperienceRunReview } from '@/components/apps/experience-run-review';
 import { experienceRunReviewTarget, type ExperienceRunReviewTarget } from '@/lib/app-experience-run-review';
@@ -66,7 +67,9 @@ import {experienceSettingsAccounts} from '@/lib/app-experience-settings-display'
 import { ExperienceSettings } from './experience-settings';
 import type {ExperienceSettingsSection} from '@/lib/app-experience-settings';
 import { connectionSessionRetirementRequired, type PendingAppConnection } from '@/lib/app-connection-flow';
+import { appConnectionSessionTag, beginAppConnection } from '@/lib/app-connection-session-flow';
 import { ExperienceConnectionSettings } from './experience-connection-settings';
+import { RestoreAccessReview } from './restore-access-review';
 import type { ExperienceComposeRequest } from '@/lib/app-experience-action-composer';
 import {createExperienceTargetPreference,experienceTargetPreferenceKey} from '@/lib/app-experience-target-preference';
 import {deliverExperienceRecordSubmission,reopenExperienceAfterSubmission} from '@/lib/app-experience-record-submission';
@@ -110,11 +113,12 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
   const targetNomination=useRef<{scope:string;target:string}|null>(null);
   const targetPreference=useMemo(()=>createExperienceTargetPreference({getItem:key=>localStorage.getItem(key),setItem:(key,value)=>localStorage.setItem(key,value)}),[]);
   const targetPreferenceScope=useMemo(()=>user&&org?{orgId:org.id,userId:user.id,installationId}:null,[user?.id,org?.id,installationId]);
-  const [resourceTargets, setResourceTargets] = useState<{ key: string; label: string }[]>([]);
+  const [resourceTargets, setResourceTargets] = useState<ExperienceAccountTarget[]>([]);
   const accountLabelScope=JSON.stringify([sessionCacheScope,org?.id,user?.id,installationId,session?.pin.app_version_id,session?.pin.grant_snapshot_id,session?.pin.lifecycle_epoch,session?.pin.grant_epoch]);
   const [accountLabels,setAccountLabels]=useState<{scope:string;labels:{key:string;label:string}[]}|null>(null);
   const receiveAccountLabels=useCallback((labels:{key:string;label:string}[])=>setAccountLabels({scope:accountLabelScope,labels}),[accountLabelScope]);
   const settingsAccounts=experienceSettingsAccounts(resourceTargets,accountLabels?.scope===accountLabelScope?accountLabels.labels:[]);
+  const settingsAccountHealth=resourceTargets.map(target=>target.health?{key:target.key,connection:target.health.connection,...(target.health.background?{background:target.health.background}:{})}:{key:target.key});
 
   const [visibleEpoch, setVisibleEpoch] = useState(0);
   const [suspended, setSuspended] = useState(false);
@@ -151,6 +155,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
   const [settingsSection, setSettingsSection] = useState<ExperienceSettingsSection>('accounts');
   const [accountSetupOpen, setAccountSetupOpen] = useState(false);
   const [accountSetupPending, setAccountSetupPending] = useState(false);
+  const [restoreAccess, setRestoreAccess] = useState<{ installationId: string; targetKey: string } | null>(null);
   const [connectionSetupBusy, setConnectionSetupBusy] = useState(false);
   const connectionNavigation = useRef<PendingAppConnection | null>(null);
   const onConnectionNavigation = useCallback((pending: PendingAppConnection | null) => { connectionNavigation.current = pending; }, []);
@@ -713,7 +718,45 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       const mountKey=`${known.key}/${known.recordId}/${node.id}`;usedPresentations.add(mountKey);const existing=presentationDisposals.get(mountKey);if(existing?.document===known){existing.mount.attach(wrap);return;}existing?.mount();
       const dispose=mountExperienceSourcePresentation({wrap,node,scope:exposure,sessionId:session.pin.session_id,resourceKey:known.key,recordId:known.recordId,current:()=>locallyCurrent()&&trustedDocument===known,load:(signal)=>sourcePresentation(known.key,known.recordId,signal),registerPrint:print=>{presentationPrinters.set(node.id,print);return()=>{if(presentationPrinters.get(node.id)===print)presentationPrinters.set(node.id,()=>true);};}});presentationDisposals.set(mountKey,{document:known,mount:dispose});
     }};
-    const sendViewEvent=(event:unknown)=>bridge.sendUiEvent(event);
+    const dispatchConnectionAction=async(action:ExperienceConnectionAction)=>{
+      if(!locallyCurrent()||composerOpen.current||connectionBusyRef.current)return;
+      const targetKey=action.target_key??session.resource_target_key??resourceTarget;
+      if(action.kind==='restore_access'){setRestoreAccess({installationId,targetKey});}
+      else if(action.kind==='reconnect'){
+        setRestoreAccess(null);
+        if(!targetKey){await showSettings(true);return;}
+        const currentTarget=session?.resource_target_key??resourceTarget;
+        if(targetKey!==currentTarget)setResourceTarget(targetKey);
+        connectionBusy(true);
+        try{
+          const sessionTag=await appConnectionSessionTag(sessionCacheScope??'');
+          const ports={identity:{installationId,experienceKey,orgId:session!.pin.org_id,ownerId:session!.pin.user_id,sessionTag},storage:sessionStorage,current:()=>locallyCurrent(),fetch:(path:string,init:RequestInit)=>api.fetch(path,init),includeUpgrades:!!session?.bundle?.record_store_keys?.length};
+          const url=await beginAppConnection(ports,targetKey);
+          if(!locallyCurrent())return;
+          onConnectionNavigation(null);
+          if(typeof window!=='undefined'&&typeof window.location?.assign==='function')window.location.assign(url);
+        }catch(error){
+          setRenewalNotice(error instanceof Error?error.message:'Account setup is unavailable.');
+          await showSettings(true);
+        }finally{
+          connectionBusy(false);
+        }
+      }
+      else{setRestoreAccess(null);await showSettings(true,'access');}
+    };
+    const sendViewEvent=(event:unknown)=>{
+      if(event&&typeof event==='object'&&(event as {kind?:unknown;node_id?:unknown}).kind==='click'){
+        const nodeId=String((event as {node_id?:unknown}).node_id??'');
+        const visit=(node:ExperienceNode):ExperienceConnectionAction|undefined=>{
+          if(node.kind==='button'&&node.id===nodeId&&node.connection_action)return node.connection_action;
+          if(node.kind==='stack'){for(const child of node.children){const found=visit(child);if(found)return found;}}
+          return undefined;
+        };
+        const action=latestView?visit(latestView.root)??latestView.navigation?.find(item=>item.id===nodeId&&item.connection_action)?.connection_action:undefined;
+        if(action){void dispatchConnectionAction(action);return;}
+      }
+      return bridge.sendUiEvent(event);
+    };
     const renderHostView=(view:ExperienceView)=>{usedPresentations=new Set();if(viewHost.current){renderExperienceView(viewHost.current,view,event=>sendViewEvent(event),rendererOptions);startup.view();}for(const [key,entry]of presentationDisposals)if(!usedPresentations.has(key)){entry.mount();presentationDisposals.delete(key);}if(!usedPresentations.size)sourcePresentations.clear();};
     let latestView: ExperienceView | null = null;
     readingPreferencesChanged.current=()=>{
@@ -1225,13 +1268,20 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     </section>}
     {!session && accountSetupOpen && user && user.role !== 'guest' && <div className="min-h-0 flex-1 overflow-hidden">
       <ExperienceSettings experienceLabel={appName} title={appName === 'App' ? 'Account setup' : `${appName} settings`} onBack={() => { if (!connectionBusyRef.current) setAccountSetupOpen(false); }}
-        accounts={settingsAccounts} selectedAccountKey={resourceTarget} accountsBusy={connectionSetupBusy}
+        accounts={settingsAccounts} selectedAccountKey={resourceTarget} accountsBusy={connectionSetupBusy} accountHealth={settingsAccountHealth}
         access={{ state: 'unavailable', summary: 'Review your own account access before opening the app.' }}
         connectAccount={<>{accountSetupPending && <p role="status" className="mb-3 text-sm">Opening your account…</p>}
           <ExperienceConnectionSettings onAccountLabels={receiveAccountLabels} installationId={installationId} experienceKey={experienceKey}
             ensureAuthority={composerAuthority} disabled={renewalBusy || accountSetupPending} onBusy={connectionBusy} onConnectionNavigation={onConnectionNavigation} onSetupComplete={completeAccountSetup} /></>} />
     </div>}
     {!settingsOpen&&privateAccessReview}
+    {restoreAccess && !settingsOpen && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="presentation"
+      onClick={event => { if (event.target === event.currentTarget) setRestoreAccess(null); }}>
+      <div className="max-h-full w-full max-w-xl overflow-y-auto rounded-2xl p-4" role="dialog" aria-modal="true" aria-label="Restore access"
+        style={{ background: 'var(--surface)', color: 'var(--foreground)' }}>
+        <RestoreAccessReview installationId={restoreAccess.installationId} targetKey={restoreAccess.targetKey} onClose={() => setRestoreAccess(null)} />
+      </div>
+    </div>}
     {session && exposure && recoveryDismissalScope && !error && !!session.bundle.state_keys?.length && !recoveryReady && <PrivateStateRecoveryGate suspended={connectionUnavailable}
       key={`${session.pin.session_id}/${exposure.exposure_id}/${exposure.exposure_epoch}`} sessionId={session.pin.session_id} exposure={exposure}
       states={recoveryStates} dismissalScope={recoveryDismissalScope} currentTarget={session.resource_target_key ?? resourceTarget} onContinue={continueRecovery} />}
@@ -1242,7 +1292,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     <div ref={viewHost} className="min-h-0 flex-1 overflow-auto" style={nominatedSource || source || settingsOpen || accountSetupOpen ? { display: 'none' } : undefined} aria-label="App Experience" />
     {settingsOpen && session && <div className="min-h-0 flex-1 overflow-hidden">
       <ExperienceSettings key={settingsSection} initialSection={settingsSection} preferences={preferencesNode&&exposure&&!error&&!connectionUnavailable&&!suspended?<ExperiencePreferences node={preferencesNode} onEvent={event=>preferencesEvent.current?.(event)}/>:undefined} experienceLabel={appName} onBack={() => void showSettings(false)}
-        accounts={settingsAccounts} selectedAccountKey={session.resource_target_key ?? resourceTarget}
+        accounts={settingsAccounts} selectedAccountKey={session.resource_target_key ?? resourceTarget} accountHealth={settingsAccountHealth}
         onSelectAccount={target => void switchResourceTarget(target)}
         accountsBusy={connectionSetupBusy || renewalBusy || exposureBusy || !!composer || !ready || connectionUnavailable || suspended}
         connectAccount={<>

@@ -52,7 +52,8 @@ function GenericConnectionSettings(props:SettingsProps&{ownerId:string;orgId:str
     void (async()=>{
       if(!anchor||!current())return;setContext(null);setReuseReview(null);setReusePending(false);setNotice('Checking account connections…');
       const sessionTag=await appConnectionSessionTag(props.sessionScope);if(!current())return;
-      const client=createAppConnectionSessionFlow({identity:{installationId:props.installationId,experienceKey:props.experienceKey,ownerId:props.ownerId,orgId:props.orgId,sessionTag},storage:sessionStorage,current,includeUpgrades:props.appOwnedRecords===true,fetch:(path,init)=>api.fetch(path,init)});
+      const ports={identity:{installationId:props.installationId,experienceKey:props.experienceKey,ownerId:props.ownerId,orgId:props.orgId,sessionTag},storage:sessionStorage,current,includeUpgrades:props.appOwnedRecords===true,fetch:(path:string,init:RequestInit)=>api.fetch(path,init)};
+      const client=createAppConnectionSessionFlow(ports);
       flow.current=client;const value=await client.load();if(!current())return;
       setContext(value);setSelected(previous=>value.targets.some(t=>t.target_key===(props.targetKey??previous))?props.targetKey??previous:value.targets[0]?.target_key??'');setNotice('');
     })().catch(error=>{if(current()){setContext(null);setNotice(error instanceof Error?error.message:'Account connections are unavailable.');}});
