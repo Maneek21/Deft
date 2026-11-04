@@ -69,3 +69,29 @@ test('responsive image and blocked slot retain a smaller authored max-width and 
 test('newsletter tables preserve authored width cap while retaining horizontal scroll safety',()=>{
  const table=new PresentationElement();table.parentElement={closest:()=>({})};table.setAttribute('style','width:100%;max-width:540px;height:120px');renderFixture(undefined,undefined,false,undefined,table);assert.equal(table.style.maxWidth,'min(100%, 540px)');assert.equal(table.style.height,'120px');assert.equal(table.style.minWidth,'0');
 });
+
+import { createRequire as _cr } from 'node:module'; import { fileURLToPath as _fp } from 'node:url';
+test('sanitizer keeps dir/lang (normalized), drops bad values, and drops onclick/class/id (UI-07)', async () => {
+  const web = _fp(new URL('../..', import.meta.url));
+  const require = _cr(web + '/package.json');
+  const { chromium } = require('playwright');
+  const { build } = require('esbuild');
+  const bundle = await build({ entryPoints: [_fp(new URL('./app-experience-safe-document.ts', import.meta.url))], bundle: true, write: false, platform: 'browser', format: 'iife', globalName: 'SafeDocument' });
+  const browser = await chromium.launch({ headless: true, ...(process.env.DEFT_TEST_BROWSER_EXECUTABLE ? { executablePath: process.env.DEFT_TEST_BROWSER_EXECUTABLE } : {}) });
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<div id="root"></div>');
+    await page.addScriptTag({ content: bundle.outputFiles[0].text });
+    await page.addScriptTag({ content: 'window.__name = value => value;' });
+    const html = '<p dir="RTL" lang="en-US" onclick="alert(1)" class="x" id="y">Hello</p><p dir="sideways">Bad</p>';
+    const out = await page.evaluate((h: string) => (window as any).SafeDocument.sanitizeExperienceDocument({ format: 'html', content: h }), html);
+    assert.match(out, /dir="rtl"/);
+    assert.match(out, /lang="en-US"/);
+    assert.ok(!/onclick/i.test(out));
+    assert.ok(!/\bclass=/i.test(out));
+    assert.ok(!/\bid=/i.test(out));
+    assert.ok(!/dir="sideways"/.test(out));
+  } finally {
+    await browser.close();
+  }
+});

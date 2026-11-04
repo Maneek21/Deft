@@ -78,7 +78,11 @@ function sanitizeDocument(value: ExperienceDocumentContent, images: readonly Exp
   });
   for (const element of clean.querySelectorAll('*')) {
     const dir = element.getAttribute('dir');
-    if (dir !== null && !['ltr', 'rtl', 'auto'].includes(dir)) element.removeAttribute('dir');
+    if (dir !== null) {
+      const normalized = dir.trim().toLowerCase();
+      if (!['ltr', 'rtl', 'auto'].includes(normalized)) element.removeAttribute('dir');
+      else element.setAttribute('dir', normalized);
+    }
     const lang = element.getAttribute('lang');
     if (lang !== null && !/^[A-Za-z]{1,8}(-[A-Za-z0-9]{1,8})*$/u.test(lang)) element.removeAttribute('lang');
   }
@@ -128,14 +132,19 @@ function createDocumentElement(value: ExperienceDocumentContent, images: readonl
     wrapper.style.boxShadow = '0 0 0 1px var(--border-default, rgba(128,128,128,0.16)), var(--shadow-sm, 0 1px 2px rgba(15,15,20,0.08))';
   }
   for (const table of wrapper.querySelectorAll<HTMLElement>('table')) {
-    table.style.minWidth = '0'; constrainMessageWidth(table);
+    const nested = Boolean(table.parentElement?.closest('table'));
+    // Top-level message tables keep their natural width and scroll inside
+    // their overflow-x:auto wrapper instead of shrinking into word fragments.
+    if (nested) {
+      table.style.minWidth = '0'; constrainMessageWidth(table);
+    }
     // Generic host tables use a workspace surface. Message tables instead
     // inherit their own sanitized presentation, including nested white layouts.
     if (!table.style.background && !table.style.backgroundColor) table.style.backgroundColor = 'transparent';
     if (!table.style.borderCollapse) table.style.borderCollapse = 'collapse';
-    if (!table.parentElement?.closest('table')) {
+    if (!nested) {
       const scroll = document.createElement('div');
-      scroll.style.cssText = 'min-width:0;max-width:100%;width:100%;overflow-x:auto';
+      scroll.style.cssText = 'max-width:100%;width:100%;overflow-x:auto';
       table.replaceWith(scroll); scroll.append(table);
     }
   }
