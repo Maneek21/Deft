@@ -22,6 +22,7 @@ import { ExperienceConsentScopeSchema, experienceConsentDigest } from './app-exp
 import { verifiedPublicPackageJson } from './app-public-package-validation-memo.js';
 import {currentConnectionSessionLocators} from './app-connection-current-locators.js';
 import {experienceTargetAccountLabels} from './app-experience-target-labels.js';
+import {readBackgroundHealth,type BackgroundHealth} from './app-integration-capture-store.js';
 
 const SESSION_MS = 15 * 60_000;
 const MAX_ACTIVE_PER_WEB_APP = 8;
@@ -248,9 +249,20 @@ export class AppExperienceService {
       }).sort().map(target => ({ key: target, label: target === 'primary' ? 'Primary source' : target.replaceAll('_', ' ') }));
       if(version.protocol_version==='7'&&'record_store_keys' in bundle&&bundle.record_store_keys?.length&&targets.length){
         const connected=await currentConnectionSessionLocators(tx,caller,installation.id).limit(33);
-        if(connected.length<=32)targets=experienceTargetAccountLabels(targets,connected.map(row=>row.session.record),rows,{
-          org_id:caller.org_id,owner_user_id:caller.user_id,installation_id:installation.id,app_version_id:version.id,
-          grant_snapshot_id:grant.id,lifecycle_epoch:installation.lifecycle_epoch,grant_epoch:installation.grant_epoch});
+        if(connected.length<=32){
+          const pins={org_id:caller.org_id,owner_user_id:caller.user_id,installation_id:installation.id,app_version_id:version.id,
+            grant_snapshot_id:grant.id,lifecycle_epoch:installation.lifecycle_epoch,grant_epoch:installation.grant_epoch};
+          targets=experienceTargetAccountLabels(targets,connected.map(row=>row.session.record),rows,pins);
+          // App-neutral health: owner-scoped background lease state (per target)
+          // plus the account-connection status. Missing background means "off";
+          // an App must never read a missing health as healthy.
+          const connectedTargets=new Set<string>();
+          for(const row of connected){const record=row.session.record as {scope?:{target_key?:unknown}}|null;const key=record?.scope?.target_key;if(typeof key==='string')connectedTargets.add(key);}
+          targets=await Promise.all(targets.map(async target=>{
+            const background:BackgroundHealth|null=await readBackgroundHealth(tx,caller,installation.id,Date.now(),target.key);
+            return {...target,health:{connection:connectedTargets.has(target.key)?'connected':'disconnected',...(background?{background}:{})}};
+          }));
+        }
       }
       await assertExperienceWeb(tx, caller);
       return { schema_version: 'deft.experience_targets.v1' as const, targets };

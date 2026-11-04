@@ -1,5 +1,7 @@
 import {parseDeftExperienceMenuNode,type DeftExperienceMenuNode} from './experience-menu.js';
 export * from './experience-menu.js';
+export * from './experience-account.js';
+import type { ExperienceAccountTarget } from './experience-account.js';
 export function createDeftMenuNode(input:Omit<DeftExperienceMenuNode,'kind'>,capabilities:readonly DeftExperienceCapability[]):DeftExperienceMenuNode {
  if(!capabilities.includes('menu.v1'))throw Error('EXPERIENCE_CAPABILITY_UNAVAILABLE');
  if(input&&Object.hasOwn(input,'kind'))throw Error('Invalid menu');
@@ -285,8 +287,8 @@ export function createDeftExperienceSdk(port: ExperienceSdkPort, sessionId: stri
       return request('app_data',storeKey,{operation:'record_archive',input:{store_key:storeKey,record_id:recordId,
         expected_revision:expectedRevision,expected_content_digest:expectedContentDigest}}) as Promise<AppDataResult>;
     },
-    listAccountTargets(storeKey:string):Promise<{targets:readonly {key:string;label:string}[];selected_target_key:string}> {
-      resourceKey(storeKey);return request('app_data',storeKey,{operation:'account_catalog',input:{store_key:storeKey}}) as Promise<{targets:readonly {key:string;label:string}[];selected_target_key:string}>;
+    listAccountTargets(storeKey:string):Promise<{targets:readonly ExperienceAccountTarget[];selected_target_key:string}> {
+      resourceKey(storeKey);return request('app_data',storeKey,{operation:'account_catalog',input:{store_key:storeKey}}) as Promise<{targets:readonly ExperienceAccountTarget[];selected_target_key:string}>;
     },
     listDataResources(storeKey:string,resource:string,cursor:string|null=null,query?:string,targetKey?:string):Promise<AppDataResult> {
       resourceKey(storeKey);resourceKey(resource);return request('app_data',storeKey,{operation:'resource_list',input:{store_key:storeKey,resource_key:resource,cursor,limit:10,...(query===undefined?{}:{query})},...(targetKey===undefined?{}:{target_key:(resourceKey(targetKey),targetKey)})}) as Promise<AppDataResult>;
