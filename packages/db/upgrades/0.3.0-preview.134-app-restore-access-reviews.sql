@@ -21,8 +21,7 @@ CREATE TABLE IF NOT EXISTS app_restore_access_reviews (
   CONSTRAINT app_restore_access_reviews_target_check CHECK (target_key ~ '^[a-z][a-z0-9_]{0,47}$'),
   CONSTRAINT app_restore_access_reviews_expiry_check CHECK (expires_at > issued_at AND expires_at <= issued_at + interval '15 minutes'),
   CONSTRAINT app_restore_access_reviews_org_id_fkey FOREIGN KEY (org_id) REFERENCES orgs(id),
-  CONSTRAINT app_restore_access_reviews_owner_fkey FOREIGN KEY (owner_user_id) REFERENCES users(id),
-  CONSTRAINT app_restore_access_reviews_installation_fkey FOREIGN KEY (org_id, installation_id) REFERENCES app_installations(org_id, id)
+  CONSTRAINT app_restore_access_reviews_owner_fkey FOREIGN KEY (owner_user_id) REFERENCES users(id)
 );
 
 CREATE INDEX IF NOT EXISTS app_restore_access_reviews_owner_idx

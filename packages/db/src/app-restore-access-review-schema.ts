@@ -1,6 +1,6 @@
 import {pgTable,text,timestamp,jsonb,index,foreignKey,check} from 'drizzle-orm/pg-core';
 import {sql} from 'drizzle-orm';
-import {orgs,users,appInstallations} from './schema.js';
+import {orgs,users} from './schema.js';
 
 /** Server-stored restore-access reviews (§5.3). Each issued review is an
  * opaque, single-use record binding the exact offered grant set, owner,
@@ -25,7 +25,6 @@ export const appRestoreAccessReviews=pgTable('app_restore_access_reviews',{
   index('app_restore_access_reviews_owner_idx').on(t.org_id,t.owner_user_id,t.installation_id,t.target_key),
   foreignKey({columns:[t.org_id],foreignColumns:[orgs.id]}),
   foreignKey({columns:[t.owner_user_id],foreignColumns:[users.id]}),
-  foreignKey({columns:[t.org_id,t.installation_id],foreignColumns:[appInstallations.org_id,appInstallations.id]}),
   check('app_restore_access_reviews_digest_check',sql`${t.review_digest} ~ '^sha256:[a-f0-9]{64}$'`),
   check('app_restore_access_reviews_target_check',sql`${t.target_key} ~ '^[a-z][a-z0-9_]{0,47}$'`),
   check('app_restore_access_reviews_expiry_check',sql`${t.expires_at}>${t.issued_at} AND ${t.expires_at}<=${t.issued_at}+interval '15 minutes'`),
