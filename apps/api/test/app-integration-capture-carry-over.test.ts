@@ -35,6 +35,7 @@ test('restore access carries a retired capture policy over to the reconnected ac
   const policyId = randomUUID();
 
   t.after(async () => {
+    await client.query('DELETE FROM app_restore_access_reviews WHERE org_id = $1', [org]).catch(() => {});
     await client.query('DELETE FROM app_integration_capture_policies WHERE org_id = $1', [org]).catch(() => {});
     await client.query('DELETE FROM job_queue WHERE name = $1 AND data->>\'policy_id\' = $2', ['app-integration-knowledge', policyId]).catch(() => {});
     await client.query('DELETE FROM app_connection_sessions WHERE org_id = $1', [org]).catch(() => {});
@@ -109,7 +110,8 @@ test('restore access carries a retired capture policy over to the reconnected ac
 
   const review = await service.review(actor, { installation_id: installation, target_key: targetKey });
 
-  // A denied review (no grants selected) leaves the retired row unchanged.
+  // An empty activation re-issues nothing and consumes that review, so the
+  // approved carry-over is a fresh, single-use review.
   await service.activate(actor, { review_id: review.review_id, review_digest: review.review_digest, review_expires_at: review.review_expires_at, installation_id: installation, target_key: targetKey, grant_ids: [] });
   let [row] = (await client.query('SELECT enabled, retired_reason, revision FROM app_integration_capture_policies WHERE id = $1', [policyId])).rows;
   assert.equal(row.enabled, false);
@@ -117,7 +119,8 @@ test('restore access carries a retired capture policy over to the reconnected ac
   assert.equal(row.revision, 1);
 
   // An approved review carries it over: re-enabled, fresh revision, scheduled.
-  const activated = await service.activate(actor, { review_id: review.review_id, review_digest: review.review_digest, review_expires_at: review.review_expires_at, installation_id: installation, target_key: targetKey, grant_ids: [captureGrant.grant_id] });
+  const approved = await service.review(actor, { installation_id: installation, target_key: targetKey });
+  const activated = await service.activate(actor, { review_id: approved.review_id, review_digest: approved.review_digest, review_expires_at: approved.review_expires_at, installation_id: installation, target_key: targetKey, grant_ids: [captureGrant.grant_id] });
   assert.equal(activated.grants.length, 1);
   assert.equal(activated.grants[0].kind, 'capture_policy');
 

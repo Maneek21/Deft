@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { and, eq, sql } from 'drizzle-orm';
-import { appConnectionSessions, appDataConsents, appResourceObservationConsents, appIntegrationCapturePolicies, auditLog } from '@deft/db/schema';
+import { and, eq, isNull, sql } from 'drizzle-orm';
+import { appConnectionSessions, appDataConsents, appResourceObservationConsents, appIntegrationCapturePolicies, auditLog, appRestoreAccessReviews } from '@deft/db/schema';
 import { AppConnectionActionConsentSchema, AppDataConsentSnapshotSchema, ResourceObservationSnapshotSchema,
   type AppConnectionActionConsent } from '@deft/app-kit/core';
 import { AppConnectionSessionRecordSchema, type AppConnectionSessionRecord } from './app-connection-session-service.js';
@@ -10,11 +10,11 @@ import { digestAppGrantValue } from './app-grant-service.js';
 import { appIntegrationSourceDigest } from './app-integration-source.js';
 import { enqueueOrRearmFailed, QUEUE_NAMES } from './queues.js';
 import { APP_INTEGRATION_CAPTURE_JOB } from './app-integration-capture-authority.js';
-import { enumerateRestoreAccess, restoreAccountMatches,
+import { enumerateRestoreAccess, restoreAccountMatches, RestoreGrantSchema,
   type RestoreAccessDatabase, type RestoreAccessTransaction, type RestoreGrant,
   type RestoreGrantKind, type RestoreLifetime } from './app-restore-access-context.js';
 import { restoreAccessReviewDigest, restoreAccessDenied, restoreAccessSameAccountRequired,
-  restoreAccessReviewWindow, REVIEW_WINDOW_MS, RESTORE_ACCESS_REVIEW_SCHEMA_VERSION, RESTORE_ACCESS_ACTIVATE_SCHEMA_VERSION,
+  restoreAccessReviewWindow, RESTORE_ACCESS_REVIEW_SCHEMA_VERSION, RESTORE_ACCESS_ACTIVATE_SCHEMA_VERSION,
   type AppRestoreAccessPorts } from './app-restore-access-authority.js';
 import type { ExperienceCaller } from './app-experience-service.js';
 
@@ -32,7 +32,7 @@ const ActivateRequestSchema = z.strictObject({
   installation_id: z.string().uuid(),
   target_key: z.string().regex(/^[a-z][a-z0-9_]{0,47}$/u),
   /** §5.2 narrowing only: a chosen subset of the digest-bound restorable set.
-   * Omission re-issues every restorable prior grant. */
+   * Omission re-issues only the review's preselected items. */
   grant_ids: z.array(z.string().uuid()).max(64).optional(),
 });
 
@@ -102,10 +102,15 @@ export const RESTORE_GRANT_HANDLERS: ReadonlyMap<RestoreGrantKind, RestoreGrantH
     });
     await transaction.insert(appDataConsents).values({
       org_id: actor.org_id, owner_user_id: actor.user_id, consent_id: newId,
-      connection_session_id: record.session_id, store_key: original.store_key, state: 'active',
+      connection_session_id: record.session_id, store_key: original.store_key, state: 'proposed',
       consent_digest: appDataDigest(snapshot), snapshot, expires_at: expiry.expires_at,
       created_at: new Date(now), updated_at: new Date(now),
     });
+    // Review then activate through the same proposed -> active lifecycle the
+    // normal consent flow uses; the database guard rejects a direct active insert.
+    await transaction.update(appDataConsents).set({ state: 'active', updated_at: new Date(now) }).where(and(
+      eq(appDataConsents.org_id, actor.org_id), eq(appDataConsents.owner_user_id, actor.user_id),
+      eq(appDataConsents.consent_id, newId), eq(appDataConsents.state, 'proposed')));
     // Soft-transition the prior row; history stays queryable for audit.
     await transaction.update(appDataConsents).set({ state: 'revoked', updated_at: new Date(now) }).where(and(
       eq(appDataConsents.org_id, actor.org_id), eq(appDataConsents.owner_user_id, actor.user_id),
@@ -253,11 +258,24 @@ export class AppRestoreAccessService {
     const input = ReviewRequestSchema.parse(raw);
     const enumeration = await this.enumerate(actor, input);
     this.assertAuthority(enumeration);
-    const review_expires_at = restoreAccessReviewWindow(this.ports.now()).review_expires_at;
+    const issuedAt = this.ports.now();
+    const review_id = randomUUID();
+    const { review_expires_at } = restoreAccessReviewWindow(issuedAt);
+    const review_digest = restoreAccessReviewDigest(enumeration, actor, review_expires_at);
+    // The server stores the exact offered set. Activation resolves the review
+    // by id and can never be revived by recomputing a caller-visible digest.
+    await this.ports.database.insert(appRestoreAccessReviews).values({
+      id: review_id, org_id: actor.org_id, owner_user_id: actor.user_id,
+      installation_id: enumeration.installation_id, target_key: enumeration.target_key,
+      session_id: enumeration.current_session_id!, account_ref: enumeration.current_account_ref!,
+      offered_grants: enumeration.grants, review_digest,
+      issued_at: new Date(issuedAt), expires_at: new Date(Date.parse(review_expires_at)),
+      created_at: new Date(issuedAt), updated_at: new Date(issuedAt),
+    });
     return {
       schema_version: RESTORE_ACCESS_REVIEW_SCHEMA_VERSION,
-      review_id: randomUUID(),
-      review_digest: restoreAccessReviewDigest(enumeration, actor, review_expires_at),
+      review_id,
+      review_digest,
       review_expires_at,
       installation_id: enumeration.installation_id,
       target_key: enumeration.target_key,
@@ -269,23 +287,58 @@ export class AppRestoreAccessService {
 
   async activate(actor: ExperienceCaller, raw: unknown) {
     const input = ActivateRequestSchema.parse(raw);
-    const reviewExpiry = Date.parse(input.review_expires_at), activateNow = this.ports.now();
-    // A review window longer than the one review() issues was never issued by it.
-    if (reviewExpiry <= activateNow || reviewExpiry > activateNow + REVIEW_WINDOW_MS) throw restoreAccessDenied();
+    const activateNow = this.ports.now();
+
+    // Resolve the stored review strictly within the authenticated tenant/owner.
+    // An unknown, consumed, expired, or otherwise mismatched review is refused
+    // before any grant is recomputed.
+    const [stored] = await this.ports.database.select().from(appRestoreAccessReviews).where(and(
+      eq(appRestoreAccessReviews.org_id, actor.org_id),
+      eq(appRestoreAccessReviews.owner_user_id, actor.user_id),
+      eq(appRestoreAccessReviews.id, input.review_id),
+    )).limit(1);
+    if (!stored || stored.consumed_at) throw restoreAccessDenied();
+    if (stored.installation_id !== input.installation_id || stored.target_key !== input.target_key) throw restoreAccessDenied();
+    if (stored.expires_at.getTime() !== Date.parse(input.review_expires_at)) throw restoreAccessDenied();
+    if (stored.expires_at.getTime() <= activateNow) throw restoreAccessDenied();
+    if (stored.review_digest !== input.review_digest) throw restoreAccessDenied();
+
     const enumeration = await this.enumerate(actor, { installation_id: input.installation_id, target_key: input.target_key });
     this.assertAuthority(enumeration);
-    if (restoreAccessReviewDigest(enumeration, actor, input.review_expires_at) !== input.review_digest) {
+    if (enumeration.current_session_id !== stored.session_id
+      || enumeration.current_account_ref !== stored.account_ref) throw restoreAccessDenied();
+    // Freshness: the current restorable set must still hash to the issued
+    // digest, so a grant revoked or added after review cannot ride along.
+    if (restoreAccessReviewDigest(enumeration, actor, stored.expires_at.toISOString()) !== stored.review_digest) {
       throw restoreAccessDenied();
     }
 
+    const offered = RestoreGrantSchema.array().parse(stored.offered_grants);
+    const offeredRestorable = new Map(offered.filter((grant) => grant.restorable).map((grant) => [grant.grant_id, grant]));
+    const currentById = new Map(enumeration.grants.map((grant) => [grant.grant_id, grant]));
     // §5.2 narrowing only: every requested id must be in the digest-bound
-    // restorable set. Nothing can be added; revoked grants are not restorable.
-    const restorable = new Set(enumeration.grants.filter((grant) => grant.restorable).map((grant) => grant.grant_id));
-    const requested = new Set(input.grant_ids ?? [...restorable]);
-    for (const id of requested) if (!restorable.has(id)) throw restoreAccessDenied();
-    const selected = enumeration.grants.filter((grant) => requested.has(grant.grant_id));
+    // restorable set. Omission means "the review's preselected items", never
+    // the whole restorable set.
+    const requested = new Set(input.grant_ids ?? offered
+      .filter((grant) => grant.restorable && grant.preselected).map((grant) => grant.grant_id));
+    for (const id of requested) {
+      if (!offeredRestorable.has(id) || !currentById.get(id)?.restorable) throw restoreAccessDenied();
+    }
+    const selected = [...requested].map((id) => currentById.get(id)!);
 
     const reissued = await this.ports.database.transaction(async (transaction) => {
+      // Single use: consume the stored review exactly once. The row lock makes
+      // two concurrent activations refuse rather than re-issue twice.
+      const consumed = await transaction.update(appRestoreAccessReviews).set({
+        consumed_at: new Date(activateNow), updated_at: new Date(activateNow),
+      }).where(and(
+        eq(appRestoreAccessReviews.org_id, actor.org_id),
+        eq(appRestoreAccessReviews.owner_user_id, actor.user_id),
+        eq(appRestoreAccessReviews.id, stored.id),
+        isNull(appRestoreAccessReviews.consumed_at),
+      )).returning({ id: appRestoreAccessReviews.id });
+      if (consumed.length !== 1) throw restoreAccessDenied();
+
       // One activation per session at a time; identity is re-read under lock.
       const [currentRow] = await transaction.select().from(appConnectionSessions).where(and(
         eq(appConnectionSessions.org_id, actor.org_id),
@@ -295,35 +348,42 @@ export class AppRestoreAccessService {
       if (!currentRow) throw restoreAccessDenied();
       const record = AppConnectionSessionRecordSchema.parse(currentRow.record);
       if (record.state !== 'connected' || !record.account || !record.runtime_session_ref) throw restoreAccessDenied();
+      if (record.scope.installation_id !== stored.installation_id
+        || record.scope.target_key !== stored.target_key
+        || record.account.account_ref !== stored.account_ref) throw restoreAccessDenied();
 
       const now = this.ports.now();
       const reservedActionKeys = new Set((record.action_consents ?? []).map((consent) => consent.action_key));
-      const result: ReissuedGrant[] = [];
-      const actionConsents: AppConnectionActionConsent[] = [];
+      const issuedById = new Map<string, ReissuedGrant>();
+      let workingRecord = record;
 
-      for (const grant of selected) {
+      // Independent action consents are immutable on their original session, so
+      // they are published on a fresh successor session (admitted starting ->
+      // connected) and everything else is re-issued against that successor.
+      const actionGrants = selected.filter((grant) => grant.kind === 'action_consent');
+      const actionConsents: AppConnectionActionConsent[] = [];
+      for (const grant of actionGrants) {
         const handler = RESTORE_GRANT_HANDLERS.get(grant.kind);
         if (!handler) throw restoreAccessDenied();
         const issued = await handler({ transaction, actor, record, grant, now, reservedActionKeys });
-        if (issued.action_consent) actionConsents.push(issued.action_consent);
-        result.push({ kind: grant.kind, original_grant_id: grant.grant_id, new_grant_id: issued.new_grant_id });
+        if (!issued.action_consent) throw restoreAccessDenied();
+        actionConsents.push(issued.action_consent);
+        issuedById.set(grant.grant_id, { kind: grant.kind, original_grant_id: grant.grant_id, new_grant_id: issued.new_grant_id });
+      }
+      if (actionConsents.length) {
+        workingRecord = await publishSuccessorSession(transaction, currentRow, record, actionConsents, now);
       }
 
-      if (actionConsents.length) {
-        const nextRecord = AppConnectionSessionRecordSchema.parse({
-          ...record,
-          action_consents: [...(record.action_consents ?? []), ...actionConsents],
-          revision: record.revision + 1,
-          updated_at: new Date(now).toISOString(),
-        });
-        await transaction.update(appConnectionSessions).set({
-          revision: nextRecord.revision, record: nextRecord, updated_at: new Date(now),
-        }).where(and(eq(appConnectionSessions.org_id, actor.org_id),
-          eq(appConnectionSessions.owner_user_id, actor.user_id),
-          eq(appConnectionSessions.session_id, record.session_id)));
+      for (const grant of selected) {
+        if (grant.kind === 'action_consent') continue;
+        const handler = RESTORE_GRANT_HANDLERS.get(grant.kind);
+        if (!handler) throw restoreAccessDenied();
+        const issued = await handler({ transaction, actor, record: workingRecord, grant, now, reservedActionKeys });
+        issuedById.set(grant.grant_id, { kind: grant.kind, original_grant_id: grant.grant_id, new_grant_id: issued.new_grant_id });
       }
 
       // §5.4 audit every re-issue with its restore lineage and review id.
+      const result = selected.map((grant) => issuedById.get(grant.grant_id)!);
       for (const item of result) {
         await transaction.insert(auditLog).values({
           id: randomUUID(), org_id: actor.org_id, actor_type: 'user', actor_id: actor.user_id,
@@ -332,7 +392,7 @@ export class AppRestoreAccessService {
           created_at: new Date(now),
         });
       }
-      return result;
+      return { result, session_id: workingRecord.session_id };
     });
 
     return {
@@ -340,8 +400,45 @@ export class AppRestoreAccessService {
       review_id: input.review_id,
       installation_id: enumeration.installation_id,
       target_key: enumeration.target_key,
-      session_id: enumeration.current_session_id,
-      grants: reissued.map((item) => ({ kind: item.kind, original_grant_id: item.original_grant_id, grant_id: item.new_grant_id })),
+      session_id: reissued.session_id,
+      grants: reissued.result.map((item) => ({ kind: item.kind, original_grant_id: item.original_grant_id, grant_id: item.new_grant_id })),
     };
   }
+}
+
+/** Publish the successor session that carries restored action consents. The
+ * original session's authority record is immutable, so the new authority is
+ * admitted through the same `starting` -> `connected` lifecycle, with the
+ * actions already present at admission and never rewritten afterwards. */
+async function publishSuccessorSession(
+  transaction: RestoreAccessTransaction,
+  currentRow: typeof appConnectionSessions.$inferSelect,
+  record: AppConnectionSessionRecord,
+  actionConsents: readonly AppConnectionActionConsent[],
+  now: number,
+): Promise<AppConnectionSessionRecord> {
+  const sessionId = randomUUID();
+  const timestamp = new Date(now).toISOString();
+  const combined = [...(record.action_consents ?? []), ...actionConsents]
+    .sort((left, right) => left.action_key < right.action_key ? -1 : left.action_key > right.action_key ? 1 : 0);
+  const starting = AppConnectionSessionRecordSchema.parse({
+    ...record, session_id: sessionId, revision: 0, state: 'starting', callback_consumed: false,
+    action_consents: combined, created_at: timestamp, updated_at: timestamp,
+  });
+  await transaction.insert(appConnectionSessions).values({
+    org_id: currentRow.org_id, owner_user_id: currentRow.owner_user_id, session_id: sessionId,
+    web_session_id: currentRow.web_session_id, access_expires_at: currentRow.access_expires_at,
+    revision: 0, record: starting, created_at: new Date(now), updated_at: new Date(now),
+  });
+  const connected = AppConnectionSessionRecordSchema.parse({
+    ...starting, revision: 1, state: 'connected', callback_consumed: true, updated_at: timestamp,
+  });
+  await transaction.update(appConnectionSessions).set({
+    revision: 1, record: connected, updated_at: new Date(now),
+  }).where(and(
+    eq(appConnectionSessions.org_id, currentRow.org_id),
+    eq(appConnectionSessions.owner_user_id, currentRow.owner_user_id),
+    eq(appConnectionSessions.session_id, sessionId),
+  ));
+  return connected;
 }
