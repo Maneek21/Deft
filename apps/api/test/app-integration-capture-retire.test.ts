@@ -3,6 +3,11 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 
+// The live-grant case relies on "no AI provider configured" pausing the job.
+// CI sets a dummy ANTHROPIC_API_KEY, so clear every provider before the app
+// modules (imported dynamically below) read env.
+for (const key of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'OLLAMA_URL']) delete process.env[key];
+
 /** §3.2 — retire a capture policy whose account grant has ended, instead of
  * retrying forever, and surface a visible owner notice. Real PostgreSQL proof
  * against the disposable deft_test database (the brief's 127.0.0.1:55520, or
