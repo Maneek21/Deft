@@ -11,9 +11,9 @@ test('restore review renders its heading and a pending notice before any route r
 
 test('grant labels stay app-neutral and never echo raw enum casing', () => {
   const lifetime = { kind: 'until_revoked' } as const;
-  assert.equal(grantLabel({ grant_id: 'a', kind: 'record_consent', store_key: 'drafts', lifetime, restorable: true, preselected: true }), 'Saved drafts access');
-  assert.equal(grantLabel({ grant_id: 'b', kind: 'action_consent', action_key: 'send_message', lifetime, restorable: true, preselected: false }), 'send message action access');
-  assert.equal(grantLabel({ grant_id: 'c', kind: 'capture_policy', store_key: 'mail', lifetime, restorable: true, preselected: true }), 'Knowledge capture for mail');
-  assert.equal(grantLabel({ grant_id: 'd', kind: 'agent_policy_default', action_key: 'mirror_drafts', lifetime, restorable: true, preselected: false }), 'Agent permission (mirror drafts)');
-  assert.equal(grantLabel({ grant_id: 'e', kind: 'defty_read_grant', store_key: 'mail', lifetime, restorable: true, preselected: false }), 'Workspace read access to mail');
+  assert.equal(grantLabel({ grant_id: 'a', kind: 'record_consent', store_key: 'notes', lifetime, restorable: true, preselected: true }), 'Saved notes access');
+  assert.equal(grantLabel({ grant_id: 'b', kind: 'action_consent', action_key: 'share_item', lifetime, restorable: true, preselected: false }), 'share item action access');
+  assert.equal(grantLabel({ grant_id: 'c', kind: 'capture_policy', store_key: 'records', lifetime, restorable: true, preselected: true }), 'Knowledge capture for records');
+  assert.equal(grantLabel({ grant_id: 'd', kind: 'agent_policy_default', action_key: 'mirror_notes', lifetime, restorable: true, preselected: false }), 'Agent permission (mirror notes)');
+  assert.equal(grantLabel({ grant_id: 'e', kind: 'defty_read_grant', store_key: 'records', lifetime, restorable: true, preselected: false }), 'Workspace read access to records');
 });

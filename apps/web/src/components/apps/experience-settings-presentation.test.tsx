@@ -8,6 +8,7 @@ test('settings renders one account card with health, permissions, agent requests
   const html = renderToStaticMarkup(<ExperienceSettings experienceLabel="Email" onBack={() => {}}
     accounts={[{ key: 'work', label: 'Work', statusLabel: 'Connected', detail: 'Reviewed work mailbox' }, { key: 'personal', label: 'Personal' }]}
     selectedAccountKey="work" onSelectAccount={() => {}} access={{ state: 'active' }}
+    accountHealth={[{ key: 'work', connection: 'connected', background: { state: 'healthy', since: '2026-11-04T00:00:00.000Z', reason: 'live' } }]}
     connectAccount={<p>Connection controls</p>} accessReview={<p>Exact private records</p>}
     agentPolicy={<p>Read messages policy</p>} />);
   assert.match(html, /Everything is healthy · Private access and background sync are active\./);

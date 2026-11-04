@@ -70,13 +70,13 @@ test('account catalog carries owner-scoped background health and connection stat
   await db.insert(s.orgMembers).values([{ org_id: org, user_id: person, role: 'owner', is_active: true }, { org_id: org, user_id: admin, role: 'admin', is_active: true }]);
   const ownerWeb = await web.createWebSession({ id: person, org_id: org, email: person + '@example.test' });
   const pack = JSON.parse((await runtimeSecurityPackage()).json); pack.manifest.id = 'community.example.health.a' + org.replaceAll('-', '');
-  pack.manifest.record_stores = [{ schema_version: 'deft.app_record_store.v1', key: 'mail', resource_key: 'inbox', runtime_requirement_key: 'sync_provider',
+  pack.manifest.record_stores = [{ schema_version: 'deft.app_record_store.v1', key: 'records', resource_key: 'inbox', runtime_requirement_key: 'sync_provider',
     max_record_bytes: 1024, max_files: 0, max_file_bytes: 1024, max_total_file_bytes: 1024 }];
   pack.manifest.owner_connections = [{ key: 'account', resource_key: 'inbox', action_keys: ['send_message'], max_consent_seconds: 86400 * 90,
     allow_until_revoked: true, provider_profile_key: 'test_provider', runtime_requirement_key: 'sync_provider' }];
   const artifact = await kit.prepareDeftExperienceArtifact('experiences/main.json', { schema_version: 'deft.experience_bundle.v3',
     worker_source: 'self.onmessage=()=>{};', entry_view: 'main', resource_keys: ['inbox'],
-    action_keys: ['archive_message', 'reply_message', 'send_message'], state_keys: ['drafts', 'requests'], record_store_keys: ['mail'] });
+    action_keys: ['archive_message', 'reply_message', 'send_message'], state_keys: ['drafts', 'requests'], record_store_keys: ['records'] });
   pack.manifest.experiences = [{ key: 'main', label: 'Synthetic workspace', artifact_path: artifact.path, artifact_digest: artifact.digest,
     bridge_version: 'deft.experience_bridge.v1', renderer_version: 'deft.trusted_renderer.v1' }];
   const packageJson = (await kit.buildDeftAppPackage({ manifest: pack.manifest, artifacts: [artifact] })).json;
