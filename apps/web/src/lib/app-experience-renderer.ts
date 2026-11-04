@@ -56,7 +56,7 @@ export const EXPERIENCE_RENDERER_CSS = `
 .deft-experience .ex-mirror-fields > label { display:grid; gap:6px; max-width:360px; width:100% }
 .deft-experience .ex-stack { display:grid; gap:16px; min-width:0; align-content:start }
 .deft-experience .ex-stack-list { gap:0 }
-.deft-experience .ex-stack-horizontal { display:flex; flex-wrap:wrap; align-items:center; gap:10px }
+.deft-experience .ex-stack-horizontal { display:flex; flex-wrap:wrap; align-items:center; gap:10px; min-width:0 }
 .deft-experience .ex-stack-split { grid-template-columns:minmax(240px,32%) minmax(0,1fr); gap:24px }
 .deft-experience .ex-stack-panel { padding:20px; border:0; border-radius:14px; background:var(--surface-container-low) }
 .deft-experience .ex-stack-title { margin:0; font-size:18px; font-weight:650; letter-spacing:-.02em; grid-column:1/-1 }
@@ -95,8 +95,8 @@ export const EXPERIENCE_RENDERER_CSS = `
 .deft-experience .ex-stack-workspace { display:flex; flex-direction:column; gap:0; height:100%; min-height:0; overflow:hidden }
 .deft-experience .ex-stack-workspace > .ex-stack-split { flex:1; min-height:0; grid-template-columns:clamp(340px,32%,380px) minmax(0,1fr); grid-template-rows:minmax(0,1fr); gap:0; overflow:hidden }
 .deft-experience .ex-stack-sidebar { border-right:1px solid var(--border-default); padding:0; overflow:auto; min-height:0; gap:0; background:var(--surface) }
-.deft-experience .ex-stack-document { padding:28px 32px; overflow:auto; min-height:0; gap:20px; background:var(--surface) }
-.deft-experience .ex-stack-toolbar { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; padding:12px 20px; position:sticky; top:0; z-index:1; flex-shrink:0; background:var(--surface) }
+.deft-experience .ex-stack-document { padding:28px 32px; overflow:auto; min-height:0; min-width:0; gap:20px; background:var(--surface) }
+.deft-experience .ex-stack-toolbar { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; padding:12px 20px; position:sticky; top:0; z-index:1; flex-shrink:0; min-width:0; background:var(--surface) }
 .deft-experience .ex-stack-toolbar > .ex-field-search { flex:1; min-width:180px; max-width:420px }
 .deft-experience .ex-stack-sidebar > .ex-text { padding:12px 20px }
 .deft-experience .ex-stack-sidebar > .ex-stack-list > .ex-text { padding:24px 20px 12px; font-size:14px }
@@ -156,7 +156,7 @@ export const EXPERIENCE_RENDERER_CSS = `
 .deft-experience .ex-stack-toolbar button:is([data-icon=refresh],[data-icon=search],[data-icon=back],[data-icon=close],[data-icon=select],[data-icon=more],[data-icon=archive],[data-icon=trash],[data-icon=mail],[data-icon=read],[data-icon=unread],[data-icon=check],[data-icon=chevron_down],[data-icon=star],[data-icon=folder],[data-icon=label],[data-icon=print]) .ex-button-label { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%) }
 .deft-experience .ex-stack-document { padding:0 28px 28px; gap:18px }
 .deft-experience .ex-stack-document > .ex-stack-toolbar { margin:0 -28px; padding:16px 28px; min-height:76px; align-items:center }
-.deft-experience .ex-stack-document > .ex-stack-toolbar .ex-text-heading { font-size:18px; line-height:1.4; flex:1; min-width:160px }
+.deft-experience .ex-stack-document > .ex-stack-toolbar .ex-text-heading { font-size:18px; line-height:1.4; flex:1; min-width:0 }
 .deft-experience .ex-stack-document > .ex-stack-toolbar > .ex-stack-horizontal { gap:4px }
 .deft-experience .ex-stack-document > .ex-text:first-child { margin-top:32px }
 .deft-experience .ex-document-view { min-width:0; max-width:100%; width:100%; font-size:14px; line-height:1.85; color:var(--on-surface); padding:8px 0 20px }
