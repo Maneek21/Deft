@@ -378,6 +378,11 @@ test('retention never survives changed record digest policy trusted scope suspen
  }}finally{for(const [key,descriptor]of saved)if(descriptor)Object.defineProperty(globalThis,key,descriptor);else Reflect.deleteProperty(globalThis,key);}
 });
 
+test('phone document toolbar becomes a grid so the subject wraps at its real width (N-04)', () => {
+  assert.ok(EXPERIENCE_RENDERER_CSS.includes('@media(max-width:720px){.deft-experience .ex-stack-document>.ex-stack-toolbar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center}'));
+  assert.ok(EXPERIENCE_RENDERER_CSS.includes('.deft-experience .ex-stack-document>.ex-stack-toolbar>.ex-text-heading{grid-column:1/-1;grid-row:2;'));
+  assert.ok(EXPERIENCE_RENDERER_CSS.includes('.deft-experience .ex-stack-document>.ex-stack-toolbar:has(.ex-menu)') && EXPERIENCE_RENDERER_CSS.includes('flex-wrap:wrap'));
+});
 test('renderer excludes checkboxes/radios from full-width input rule and keeps checkbox rows 44px (UI-15)', () => {
   assert.match(EXPERIENCE_RENDERER_CSS, /\.deft-experience input:not\(\[type="checkbox"\]\):not\(\[type="radio"\]\),\.deft-experience textarea \{[^}]*width:100%/);
   assert.match(EXPERIENCE_RENDERER_CSS, /\.deft-experience label:has\(> input\[type="checkbox"\]\),\.deft-experience label:has\(> input\[type="radio"\]\) \{[^}]*min-height:44px/);
