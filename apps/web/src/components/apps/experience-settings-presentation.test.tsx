@@ -18,7 +18,7 @@ test('settings renders one account card with health, permissions, agent requests
   assert.match(html, /Reviewed work mailbox/);
   assert.match(html, /Connection controls/);
   assert.match(html, /Exact private records/);
-  assert.match(html, /Agent requests/);
+  assert.equal((html.match(/Agent requests/g) ?? []).length, 1);
   assert.match(html, /Read messages policy/);
   assert.match(html, /Open approvals/);
   assert.match(html, /Every permitted request still needs your approval/);

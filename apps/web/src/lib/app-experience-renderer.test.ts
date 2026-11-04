@@ -377,3 +377,8 @@ test('retention never survives changed record digest policy trusted scope suspen
   assert.equal(contexts[0].signal.aborted,true,change);assert.equal(contexts[0].current(),false,change);releases[0]({kind:'document',id:'body',format:'plain',content:'MUST NOT REVEAL LATE SOURCE'});await new Promise<void>(done=>setImmediate(done));assert.equal((container as unknown as Element).children.some(child=>child.textContent==='MUST NOT REVEAL LATE SOURCE'),false,change);assert.equal(mounts,0,'late previous source must never mount: '+change);assert.ok(reads<=2);clearExperienceView(container);releases.slice(1).forEach(done=>done({kind:'document',id:'body',format:'plain',content:'late'}));
  }}finally{for(const [key,descriptor]of saved)if(descriptor)Object.defineProperty(globalThis,key,descriptor);else Reflect.deleteProperty(globalThis,key);}
 });
+
+test('renderer excludes checkboxes/radios from full-width input rule and keeps checkbox rows 44px (UI-15)', () => {
+  assert.match(EXPERIENCE_RENDERER_CSS, /\.deft-experience input:not\(\[type="checkbox"\]\):not\(\[type="radio"\]\),\.deft-experience textarea \{[^}]*width:100%/);
+  assert.match(EXPERIENCE_RENDERER_CSS, /\.deft-experience label:has\(> input\[type="checkbox"\]\),\.deft-experience label:has\(> input\[type="radio"\]\) \{[^}]*min-height:44px/);
+});
