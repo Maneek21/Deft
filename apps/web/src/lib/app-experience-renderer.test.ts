@@ -325,7 +325,10 @@ test('shared renderer styles use Obsidian tokens, wrap reader headings and expos
  for(const legacy of ['#1e293b','#f8fafc','#64748b','#2563eb','#eff6ff','#cbd5e1'])assert.equal(EXPERIENCE_RENDERER_CSS.includes(legacy),false,legacy);
  for(const token of ['var(--on-surface','var(--on-surface-variant','var(--surface)','var(--surface-container-low)','var(--surface-container)','var(--primary)','var(--primary-container)','var(--on-primary-container)','var(--border-default)','var(--accent-subtle)'])assert.ok(EXPERIENCE_RENDERER_CSS.includes(token),token);
  assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-stack-document\s*>\s*\.ex-stack-toolbar\s*>\s*\.ex-text-heading\{[^}]*white-space:normal/);
- assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-stack-document\s*>\s*\.ex-stack-toolbar\s*>\s*\.ex-text-heading\{[^}]*-webkit-line-clamp:2/);
+ const headingRule=/\.ex-stack-document\s*>\s*\.ex-stack-toolbar\s*>\s*\.ex-text-heading\{([^}]*)\}/u.exec(EXPERIENCE_RENDERER_CSS)?.[1]??'';
+ assert.ok(headingRule,'the document toolbar heading rule is present');
+ assert.doesNotMatch(headingRule,/-webkit-line-clamp|display:-webkit-box/u,'the full subject must be able to wrap');
+ assert.match(headingRule,/white-space:normal/u);assert.match(headingRule,/overflow-wrap:anywhere/u);
  assert.match(EXPERIENCE_RENDERER_CSS,/@media\(max-width:480px\)/);
  assert.match(EXPERIENCE_RENDERER_CSS,/@container\(max-width:480px\)/);
  assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-document-view\[aria-busy="true"\]\{[^}]*linear-gradient/);

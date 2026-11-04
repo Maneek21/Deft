@@ -222,7 +222,7 @@ export const EXPERIENCE_RENDERER_CSS = `
 .deft-experience .ex-stack-toolbar:has(.ex-menu),.deft-experience .ex-stack-toolbar:has(.ex-menu) .ex-stack-horizontal{flex-wrap:nowrap}
 .deft-experience .ex-menu{display:inline-flex;flex-shrink:0}
 .deft-experience .ex-menu button{white-space:nowrap}
-.deft-experience .ex-stack-document>.ex-stack-toolbar>.ex-text-heading{min-width:0;white-space:normal;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.deft-experience .ex-stack-document>.ex-stack-toolbar>.ex-text-heading{min-width:0;white-space:normal;overflow-wrap:anywhere}
 @media(max-width:720px){.deft-experience .ex-stack-document{padding:0 16px 20px}.deft-experience .ex-stack-document>.ex-stack-toolbar{margin:0 -16px;padding:10px 16px}
  .deft-experience .ex-stack-document>.ex-stack-toolbar:not(:has(.ex-menu)){flex-direction:column;align-items:stretch;gap:8px}
  .deft-experience .ex-stack-document>.ex-stack-toolbar:not(:has(.ex-menu))>.ex-text-heading{flex:0 0 auto;width:100%;min-width:0}
