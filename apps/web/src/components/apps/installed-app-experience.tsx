@@ -721,7 +721,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       if(!locallyCurrent()||composerOpen.current||connectionBusyRef.current)return;
       const targetKey=action.target_key??session.resource_target_key??resourceTarget;
       if(action.kind==='restore_access'){setRestoreAccess({installationId,targetKey});}
-      else if(action.kind==='reconnect'){setRestoreAccess(null);if(targetKey)setResourceTarget(targetKey);await showSettings(true);}
+      else if(action.kind==='reconnect'){setRestoreAccess(null);if(targetKey){setResourceTarget(targetKey);completeAccountSetup(targetKey);}else await showSettings(true);}
       else{setRestoreAccess(null);await showSettings(true,'access');}
     };
     const sendViewEvent=(event:unknown)=>{
