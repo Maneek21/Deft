@@ -50,6 +50,16 @@ function makeRuntime(throwDenied: boolean) {
   return gateway;
 }
 
+/** The full schema enforces org, owner and (org, installation) foreign keys. */
+async function seedTenant(client: pg.Pool, org: string, owner: string, installation: string) {
+  await client.query('INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING', [org, 'Org ' + org, 'org-' + org]);
+  await client.query('INSERT INTO users (id, name, kind) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING', [owner, 'Owner ' + owner, 'human']);
+  await client.query(`INSERT INTO app_installations (id, org_id, app_id, lineage_key, lineage_authority_type, lineage_authority_id,
+    source, state, installed_by_actor_type, installed_by_actor_id, updated_by_actor_type, updated_by_actor_id)
+    VALUES ($1, $2, $3, $4, 'local_user', $5, 'local', 'staged', 'human', $5, 'human', $5) ON CONFLICT DO NOTHING`,
+    [installation, org, 'community.deft.capture-' + installation, 'local:' + installation, owner]);
+}
+
 async function seedPolicy(client: pg.Pool, overrides: Record<string, unknown> = {}) {
   const org = randomUUID(), owner = randomUUID(), installation = randomUUID();
   const policyId = randomUUID();
@@ -60,6 +70,7 @@ async function seedPolicy(client: pg.Pool, overrides: Record<string, unknown> = 
     retired_reason: null as string | null, retired_at: null as string | null, last_error: null as string | null,
     ...overrides,
   };
+  await seedTenant(client, String(row.org_id), String(row.owner_user_id), String(row.installation_id));
   await client.query(`INSERT INTO app_integration_capture_policies
     (id, org_id, owner_user_id, installation_id, account_ref, store_key, revision, enabled, input, history_since, retired_at, retired_reason, last_error)
     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13) ON CONFLICT (id) DO NOTHING`,

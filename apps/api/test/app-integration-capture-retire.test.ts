@@ -36,12 +36,21 @@ after(async () => { await pool.end(); });
 
 const keys = { current: () => ({ key_id: 'test', key: Buffer.alloc(32, 7) }), read: () => ({ key_id: 'test', key: Buffer.alloc(32, 7) }), keyIds: () => ['test'] };
 
+/** The full schema enforces org, owner and (org, installation) foreign keys. */
+async function seedTenant(client: pg.Pool, org: string, owner: string, installation: string) {
+  await client.query('INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING', [org, 'Org ' + org, 'org-' + org]);
+  await client.query('INSERT INTO users (id, name, kind) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING', [owner, 'Owner ' + owner, 'human']);
+  await client.query(`INSERT INTO app_installations (id, org_id, app_id, lineage_key, lineage_authority_type, lineage_authority_id,
+    source, state, installed_by_actor_type, installed_by_actor_id, updated_by_actor_type, updated_by_actor_id)
+    VALUES ($1, $2, $3, $4, 'local_user', $5, 'local', 'staged', 'human', $5, 'human', $5) ON CONFLICT DO NOTHING`,
+    [installation, org, 'community.deft.capture-' + installation, 'local:' + installation, owner]);
+}
+
 async function seedPolicy(client: pg.Pool) {
   const org = randomUUID(), owner = randomUUID(), installation = randomUUID();
   const policyId = randomUUID();
   const account_ref = 'acct_' + randomUUID().replaceAll('-', '');
-  // users is required only so the owner notification satisfies its FK.
-  await client.query('INSERT INTO users (id, name, kind) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING', [owner, 'Owner ' + owner, 'human']);
+  await seedTenant(client, org, owner, installation);
   await client.query(`INSERT INTO app_integration_capture_policies
     (id, org_id, owner_user_id, installation_id, account_ref, store_key, revision, enabled, input, history_since)
     VALUES ($1,$2,$3,$4,$5,$6,1,true,$7::jsonb,$8) ON CONFLICT (id) DO NOTHING`,
