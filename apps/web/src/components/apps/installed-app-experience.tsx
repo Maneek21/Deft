@@ -54,6 +54,7 @@ import {parseExperienceResourceAction} from '@/lib/app-experience-resource-actio
 import {parseExperienceResourceActionBatch} from '@/lib/app-experience-resource-action-batch';
 import {ExperienceResourceActionBatch,type ResourceActionBatchRequest} from './experience-resource-action-batch';
 import {AppDataRecordMetaSchema,AppDataRequestSchema,AppDataSourceFileSchema,type AppDataResult} from '../../../../../packages/app-kit/src/app-data';
+import type { ExperienceConnectionAction } from '../../../../../packages/app-kit/src/experience-account';
 import { PrivateStateRecoveryGate } from '@/components/apps/private-state-recovery-gate';
 import { ExperienceRunReview } from '@/components/apps/experience-run-review';
 import { experienceRunReviewTarget, type ExperienceRunReviewTarget } from '@/lib/app-experience-run-review';
@@ -67,6 +68,7 @@ import { ExperienceSettings } from './experience-settings';
 import type {ExperienceSettingsSection} from '@/lib/app-experience-settings';
 import { connectionSessionRetirementRequired, type PendingAppConnection } from '@/lib/app-connection-flow';
 import { ExperienceConnectionSettings } from './experience-connection-settings';
+import { RestoreAccessReview } from './restore-access-review';
 import type { ExperienceComposeRequest } from '@/lib/app-experience-action-composer';
 import {createExperienceTargetPreference,experienceTargetPreferenceKey} from '@/lib/app-experience-target-preference';
 import {deliverExperienceRecordSubmission,reopenExperienceAfterSubmission} from '@/lib/app-experience-record-submission';
@@ -151,6 +153,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
   const [settingsSection, setSettingsSection] = useState<ExperienceSettingsSection>('accounts');
   const [accountSetupOpen, setAccountSetupOpen] = useState(false);
   const [accountSetupPending, setAccountSetupPending] = useState(false);
+  const [restoreAccess, setRestoreAccess] = useState<{ installationId: string; targetKey: string } | null>(null);
   const [connectionSetupBusy, setConnectionSetupBusy] = useState(false);
   const connectionNavigation = useRef<PendingAppConnection | null>(null);
   const onConnectionNavigation = useCallback((pending: PendingAppConnection | null) => { connectionNavigation.current = pending; }, []);
@@ -713,7 +716,26 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       const mountKey=`${known.key}/${known.recordId}/${node.id}`;usedPresentations.add(mountKey);const existing=presentationDisposals.get(mountKey);if(existing?.document===known){existing.mount.attach(wrap);return;}existing?.mount();
       const dispose=mountExperienceSourcePresentation({wrap,node,scope:exposure,sessionId:session.pin.session_id,resourceKey:known.key,recordId:known.recordId,current:()=>locallyCurrent()&&trustedDocument===known,load:(signal)=>sourcePresentation(known.key,known.recordId,signal),registerPrint:print=>{presentationPrinters.set(node.id,print);return()=>{if(presentationPrinters.get(node.id)===print)presentationPrinters.set(node.id,()=>true);};}});presentationDisposals.set(mountKey,{document:known,mount:dispose});
     }};
-    const sendViewEvent=(event:unknown)=>bridge.sendUiEvent(event);
+    const dispatchConnectionAction=async(action:ExperienceConnectionAction)=>{
+      if(!locallyCurrent()||composerOpen.current||connectionBusyRef.current)return;
+      const targetKey=action.target_key??session.resource_target_key??resourceTarget;
+      if(action.kind==='restore_access'){setRestoreAccess({installationId,targetKey});}
+      else if(action.kind==='reconnect'){setRestoreAccess(null);if(targetKey)setResourceTarget(targetKey);await showSettings(true);}
+      else{setRestoreAccess(null);await showSettings(true,'access');}
+    };
+    const sendViewEvent=(event:unknown)=>{
+      if(event&&typeof event==='object'&&(event as {kind?:unknown;node_id?:unknown}).kind==='click'){
+        const nodeId=String((event as {node_id?:unknown}).node_id??'');
+        const visit=(node:ExperienceNode):ExperienceConnectionAction|undefined=>{
+          if(node.kind==='button'&&node.id===nodeId&&node.connection_action)return node.connection_action;
+          if(node.kind==='stack'){for(const child of node.children){const found=visit(child);if(found)return found;}}
+          return undefined;
+        };
+        const action=latestView?visit(latestView.root)??latestView.navigation?.find(item=>item.id===nodeId&&item.connection_action)?.connection_action:undefined;
+        if(action){void dispatchConnectionAction(action);return;}
+      }
+      return bridge.sendUiEvent(event);
+    };
     const renderHostView=(view:ExperienceView)=>{usedPresentations=new Set();if(viewHost.current){renderExperienceView(viewHost.current,view,event=>sendViewEvent(event),rendererOptions);startup.view();}for(const [key,entry]of presentationDisposals)if(!usedPresentations.has(key)){entry.mount();presentationDisposals.delete(key);}if(!usedPresentations.size)sourcePresentations.clear();};
     let latestView: ExperienceView | null = null;
     readingPreferencesChanged.current=()=>{
@@ -1232,6 +1254,13 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
             ensureAuthority={composerAuthority} disabled={renewalBusy || accountSetupPending} onBusy={connectionBusy} onConnectionNavigation={onConnectionNavigation} onSetupComplete={completeAccountSetup} /></>} />
     </div>}
     {!settingsOpen&&privateAccessReview}
+    {restoreAccess && !settingsOpen && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="presentation"
+      onClick={event => { if (event.target === event.currentTarget) setRestoreAccess(null); }}>
+      <div className="max-h-full w-full max-w-xl overflow-y-auto rounded-2xl p-4" role="dialog" aria-modal="true" aria-label="Restore access"
+        style={{ background: 'var(--surface)', color: 'var(--foreground)' }}>
+        <RestoreAccessReview installationId={restoreAccess.installationId} targetKey={restoreAccess.targetKey} onClose={() => setRestoreAccess(null)} />
+      </div>
+    </div>}
     {session && exposure && recoveryDismissalScope && !error && !!session.bundle.state_keys?.length && !recoveryReady && <PrivateStateRecoveryGate suspended={connectionUnavailable}
       key={`${session.pin.session_id}/${exposure.exposure_id}/${exposure.exposure_epoch}`} sessionId={session.pin.session_id} exposure={exposure}
       states={recoveryStates} dismissalScope={recoveryDismissalScope} currentTarget={session.resource_target_key ?? resourceTarget} onContinue={continueRecovery} />}
