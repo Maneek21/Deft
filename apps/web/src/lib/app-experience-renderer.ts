@@ -65,7 +65,8 @@ export const EXPERIENCE_RENDERER_CSS = `
 .deft-experience .ex-grid-scroll th,.deft-experience .ex-grid-scroll td { border-bottom:1px solid var(--border-default); padding:7px 8px; text-align:left }
 .deft-experience .ex-grid-scroll th { background:var(--surface-container-low); color:var(--on-surface-variant); font-size:12px; white-space:nowrap }
 .deft-experience .ex-grid-scroll tr[aria-selected=true] { background:var(--accent-subtle) }
-.deft-experience input,.deft-experience textarea { width:100%; min-width:80px; padding:10px 12px; border:1px solid transparent; border-radius:7px; color:var(--on-surface); background:transparent; font:inherit }
+.deft-experience input:not([type="checkbox"]):not([type="radio"]),.deft-experience textarea { width:100%; min-width:80px; padding:10px 12px; border:1px solid transparent; border-radius:7px; color:var(--on-surface); background:transparent; font:inherit }
+.deft-experience input[type="checkbox"],.deft-experience input[type="radio"] { width:auto; min-width:0; margin:0 }
 .deft-experience input:focus,.deft-experience textarea:focus { outline:2px solid var(--primary); border-color:var(--primary); background:var(--surface) }
 .deft-experience button { min-height:44px; border:1px solid transparent; background:var(--ex-primary-fill); color:var(--ex-primary-text); border-radius:999px; padding:10px 16px; cursor:pointer; font:inherit; font-weight:600; transition:background-color 150ms,opacity 150ms }
 .deft-experience button:hover { filter:brightness(.97) }
@@ -88,6 +89,8 @@ export const EXPERIENCE_RENDERER_CSS = `
 .deft-experience .ex-text-caption { color:var(--on-surface-variant); font-size:12px }
 .deft-experience .ex-field { display:grid; gap:6px; min-width:0 }
 .deft-experience .ex-field label { display:grid; gap:6px; color:var(--on-surface-variant); font-size:12px; font-weight:550 }
+.deft-experience label:has(> input[type="checkbox"]),.deft-experience label:has(> input[type="radio"]) { display:flex; align-items:center; gap:10px; min-height:44px }
+.deft-experience label:has(> input[type="checkbox"]) input,.deft-experience label:has(> input[type="radio"]) input { width:16px; height:16px; flex-shrink:0 }
 .deft-experience .ex-field input,.deft-experience .ex-field textarea { min-height:44px; border-color:var(--border-default); border-color:transparent; background:var(--surface-container-low); font-weight:400; font-size:14px }
 .deft-experience .ex-field textarea { min-height:220px; resize:vertical; line-height:1.6 }
 .deft-experience canvas { display:block; width:100%; height:200px; border:1px solid var(--border-default); border-radius:9px; background:var(--surface-container-low); touch-action:none }
