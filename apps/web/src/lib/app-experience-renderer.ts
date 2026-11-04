@@ -234,6 +234,11 @@ export const EXPERIENCE_RENDERER_CSS = `
  .deft-experience .ex-stack-document>.ex-stack-toolbar:not(:has(.ex-menu)){flex-direction:column;align-items:stretch;gap:8px}
  .deft-experience .ex-stack-document>.ex-stack-toolbar:not(:has(.ex-menu))>.ex-text-heading{flex:0 0 auto;width:100%;min-width:0}
  .deft-experience .ex-stack-document>.ex-stack-toolbar:not(:has(.ex-menu))>.ex-stack-horizontal{width:100%;min-width:0;flex-wrap:wrap}}
+@media(max-width:720px){.deft-experience .ex-stack-document>.ex-stack-toolbar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center}
+ .deft-experience .ex-stack-document>.ex-stack-toolbar>.ex-text-heading{grid-column:1/-1;grid-row:2;width:100%;min-width:0}
+ .deft-experience .ex-stack-document>.ex-stack-toolbar>.ex-stack-horizontal{grid-column:3}
+ .deft-experience .ex-stack-document>.ex-stack-toolbar>.ex-stack-horizontal:first-child:not(:last-child){grid-column:1}
+ .deft-experience .ex-stack-document>.ex-stack-toolbar:has(.ex-menu){flex-wrap:wrap}}
 /* Reader toolbars wrap instead of forcing the subject onto one truncated line. */
 @media(max-width:480px){.deft-experience .ex-stack-sidebar>.ex-stack-toolbar{flex-wrap:wrap;row-gap:6px}}
 @container(max-width:480px){.deft-experience .ex-stack-sidebar>.ex-stack-toolbar{flex-wrap:wrap;row-gap:6px}}
