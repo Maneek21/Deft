@@ -67,9 +67,8 @@ export function RestoreAccessReview({ installationId, targetKey, onClose }: {
   const [notice, setNotice] = useState('Checking the previously connected account…');
   const [busy, setBusy] = useState(false);
   const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
-
   useEffect(() => {
+    mounted.current = true;
     const controller = new AbortController();
     const anchor = api.getAccessToken();
     if (!anchor || document.hidden) return;
@@ -99,7 +98,7 @@ export function RestoreAccessReview({ installationId, targetKey, onClose }: {
         if (current()) setNotice(error instanceof Error ? error.message : 'The previous account access is unavailable.');
       }
     })();
-    return () => controller.abort();
+    return () => { mounted.current = false; controller.abort(); };
   }, [installationId]);
 
   const toggle = useCallback((grantId: string) => {
