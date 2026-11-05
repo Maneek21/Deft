@@ -7,7 +7,7 @@ import { getIO } from '../socket.js';
 import { DEFTY_NAME } from '../lib/ensure-defty-membership.js';
 import { generateDailyStandup } from '../lib/standup-automation.js';
 import { visibleModuleActionSql } from '../lib/module-action-visibility.js';
-import {readEmailCalendarOccurrences} from '../lib/email-calendar-projection.js';
+import {readAppSourceCalendarOccurrences,ordinaryCalendarEventCondition} from '../lib/native-calendar-source.js';
 
 export const dashboardRoutes = new Hono();
 
@@ -350,12 +350,12 @@ dashboardRoutes.get('/', async (c) => {
           eq(events.event_type, 'calendar_event'),
           gte(events.timestamp, todayStart),
           lt(events.timestamp, todayEnd),
-          sql`${events.metadata}->'email_invitation'->>'schema_version' IS DISTINCT FROM 'deft.email_calendar_event.v1'`,
+          ordinaryCalendarEventCondition(),
         ))
         .orderBy(events.timestamp)
         .limit(10);
-      const invitationOccurrences=await readEmailCalendarOccurrences(db,{org_id:user.org_id,owner_user_id:user.id,from:todayStart,to:todayEnd});
-      calendarEvents=[...calendarEvents,...invitationOccurrences].sort((a,b)=>new Date(a.timestamp).getTime()-new Date(b.timestamp).getTime()).slice(0,10);
+      const sourceOccurrences=await readAppSourceCalendarOccurrences(db,{org_id:user.org_id,owner_user_id:user.id,from:todayStart,to:todayEnd});
+      calendarEvents=[...calendarEvents,...sourceOccurrences].sort((a,b)=>new Date(a.timestamp).getTime()-new Date(b.timestamp).getTime()).slice(0,10);
     } catch {}
 
     const pendingAgentActions = recentAgentActivity.filter((a) => a.approval_status === 'pending');
