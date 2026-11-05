@@ -34,6 +34,8 @@ The manifest declares two collections:
 
 Each collection has Table, Form, and Details views. `search.title_field` identifies the display name; `search.fields` lists the fields to search. The relation's `target_collection: "vendors"` points to the Vendors collection.
 
+> **`search.fields` must include the title and every subtitle.** If you add `search.subtitle_fields`, list each of those keys in `search.fields` as well. A missing title fails with `Search fields must include title_field`; a missing subtitle fails with `Search fields must include subtitle field: <key>`. Both errors point at `search.fields`, even when the missing key is a subtitle.
+
 The Module id is `community.example.vendor-pilot`, its slug is `vendor-pilot`, and its first version is `0.1.0`. Keep the id and slug unchanged when upgrading it.
 
 ## 3. Validate it
@@ -65,4 +67,4 @@ Change the manifest version to `0.1.1` and change its description. Format and ch
 
 ## Next
 
-Read the [Module reference](https://deft.ing/docs/modules/) for supported fields, views, and access limits. [Modules and Apps](../modules-and-apps.md) explains the separate package and review flow for supported connected actions.
+Read the [Module reference](../module-reference.md) for supported fields, views, filter operators, and validation rules. [Modules and Apps](../modules-and-apps.md) explains the separate package and review flow for supported connected actions.
