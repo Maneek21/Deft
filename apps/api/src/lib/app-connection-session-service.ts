@@ -33,6 +33,10 @@ export const AppConnectionSessionRecordSchema = z.strictObject({
   reattachment: AppConnectionReattachmentSchema.optional(),
   action_consents: AppConnectionActionConsentsSchema.optional(), upgrade: AppConnectionUpgradeSchema.optional(),
   credential_repair:AppConnectionCredentialRepairSchema.optional(),
+  restore: z.strictObject({
+    schema_version: z.literal('deft.app_connection_restore.v1'),
+    source: z.strictObject({ session_id: z.string().uuid() }),
+  }).optional(),
 }).superRefine((value,ctx)=>{
   if(value.credential_repair&&value.state==='connected'&&(!value.runtime_session_ref||!value.account||!value.credential_repair.receipt
     ||!isDeepStrictEqual(value.account,value.credential_repair.review?.account)))

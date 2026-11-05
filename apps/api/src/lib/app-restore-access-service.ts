@@ -43,9 +43,9 @@ export type RestoreGrantHandler = (context: {
   grant: RestoreGrant;
   now: number;
   reservedActionKeys: Set<string>;
-}) => Promise<{ new_grant_id: string; action_consent?: AppConnectionActionConsent }>;
+}) => Promise<{ new_grant_id: string; action_consent?: AppConnectionActionConsent; outcome?: 'issued' | 'already_present' }>;
 
-type ReissuedGrant = { kind: RestoreGrantKind; original_grant_id: string; new_grant_id: string };
+type ReissuedGrant = { kind: RestoreGrantKind; original_grant_id: string; new_grant_id: string; outcome?: 'issued' | 'already_present' };
 
 /** Replay the original lifetime, never widened. `until_revoked` is preserved
  * only while the reconnected connection itself is still indefinite; otherwise
@@ -53,7 +53,8 @@ type ReissuedGrant = { kind: RestoreGrantKind; original_grant_id: string; new_gr
 function reissuedExpiry(lifetime: RestoreLifetime, scope: AppConnectionSessionRecord['scope'], now: number):
   { expires_at: Date | null; consent_lifetime?: 'until_revoked' } {
   const indefinite = scope.consent_lifetime === 'until_revoked' && scope.consent_expires_at === null;
-  const ceiling = indefinite ? Infinity : Date.parse(scope.consent_expires_at!);
+  const ceiling = indefinite ? Infinity : (scope.consent_expires_at === null ? NaN : Date.parse(scope.consent_expires_at));
+  if (!indefinite && Number.isNaN(ceiling)) throw restoreAccessDenied();
   if (lifetime.kind === 'until_revoked') {
     if (indefinite) return { expires_at: null, consent_lifetime: 'until_revoked' };
     return { expires_at: new Date(ceiling) };
@@ -83,7 +84,7 @@ export const RESTORE_GRANT_HANDLERS: ReadonlyMap<RestoreGrantKind, RestoreGrantH
     if (!grant.store_key) throw restoreAccessDenied();
     const [original] = await transaction.select().from(appDataConsents).where(and(
       eq(appDataConsents.org_id, actor.org_id), eq(appDataConsents.owner_user_id, actor.user_id),
-      eq(appDataConsents.consent_id, grant.grant_id))).limit(1);
+      eq(appDataConsents.consent_id, grant.grant_id))).for('update').limit(1);
     if (!original) throw restoreAccessDenied();
     const originalSnapshot = AppDataConsentSnapshotSchema.parse(original.snapshot);
     // The reconnected account must still expose the same resource capability.
@@ -122,7 +123,7 @@ export const RESTORE_GRANT_HANDLERS: ReadonlyMap<RestoreGrantKind, RestoreGrantH
     const [original] = await transaction.select().from(appResourceObservationConsents).where(and(
       eq(appResourceObservationConsents.org_id, actor.org_id),
       eq(appResourceObservationConsents.owner_user_id, actor.user_id),
-      eq(appResourceObservationConsents.consent_id, grant.grant_id))).limit(1);
+      eq(appResourceObservationConsents.consent_id, grant.grant_id))).for('update').limit(1);
     if (!original) throw restoreAccessDenied();
     const originalSnapshot = ResourceObservationSnapshotSchema.parse(original.snapshot);
     if (original.resource_binding_id !== record.scope.resource_binding_id) throw restoreAccessDenied();
@@ -192,7 +193,7 @@ export const RESTORE_GRANT_HANDLERS: ReadonlyMap<RestoreGrantKind, RestoreGrantH
     const [original] = await transaction.select().from(appIntegrationCapturePolicies).where(and(
       eq(appIntegrationCapturePolicies.org_id, actor.org_id),
       eq(appIntegrationCapturePolicies.owner_user_id, actor.user_id),
-      eq(appIntegrationCapturePolicies.id, grant.grant_id))).limit(1);
+      eq(appIntegrationCapturePolicies.id, grant.grant_id))).for('update').limit(1);
     if (!original) throw restoreAccessDenied();
     // §5.1 guarantees the reconnected account keeps its reference, so the
     // carried-over policy is re-enabled in place: clear the grant-ended
@@ -220,13 +221,14 @@ export const RESTORE_GRANT_HANDLERS: ReadonlyMap<RestoreGrantKind, RestoreGrantH
     const binding = await transaction.execute(sql`SELECT id FROM app_runtime_bindings
       WHERE org_id=${actor.org_id} AND app_installation_id=${record.scope.installation_id}
         AND owner_resource_binding_id=${record.scope.resource_binding_id} AND action_key=${grant.action_key} AND state='active'
-      LIMIT 1`);
+      LIMIT 1 FOR UPDATE`);
     const bindingId = binding.rows[0]?.id;
     if (!bindingId) throw restoreAccessDenied();
-    await transaction.execute(sql`INSERT INTO app_runtime_agent_policies(org_id,owner_user_id,runtime_binding_id,mode,revision)
+    const inserted = await transaction.execute(sql`INSERT INTO app_runtime_agent_policies(org_id,owner_user_id,runtime_binding_id,mode,revision)
       VALUES(${actor.org_id},${actor.user_id},${bindingId},'require_approval',1)
-      ON CONFLICT (org_id,owner_user_id,runtime_binding_id) DO NOTHING`);
-    return { new_grant_id: randomUUID() };
+      ON CONFLICT (org_id,owner_user_id,runtime_binding_id) DO NOTHING RETURNING runtime_binding_id`);
+    const alreadyPresent = inserted.rows.length === 0;
+    return { new_grant_id: String(bindingId), outcome: alreadyPresent ? 'already_present' : 'issued' };
   }],
   ['defty_read_grant', async ({ transaction, actor, record, grant, now }) => {
     // Review-time default: a read-only Defty delegation (never draft/send),
@@ -235,10 +237,20 @@ export const RESTORE_GRANT_HANDLERS: ReadonlyMap<RestoreGrantKind, RestoreGrantH
     const expiry = reissuedExpiry(grant.lifetime, record.scope, now);
     if (!expiry.expires_at) throw restoreAccessDenied(); // the delegation is always finite
     const newId = randomUUID();
-    await transaction.execute(sql`INSERT INTO app_integration_principal_grants(id,org_id,owner_user_id,installation_id,resource_binding_id,account_ref,store_key,principal_kind,principal_id,operations,revision,expires_at)
+    const inserted = await transaction.execute(sql`INSERT INTO app_integration_principal_grants(id,org_id,owner_user_id,installation_id,resource_binding_id,account_ref,store_key,principal_kind,principal_id,operations,revision,expires_at)
       VALUES(${newId},${actor.org_id},${actor.user_id},${record.scope.installation_id},${record.scope.resource_binding_id},${record.account.account_ref},${grant.store_key},'defty',${actor.user_id},ARRAY['read']::text[],1,${expiry.expires_at})
-      ON CONFLICT (org_id,owner_user_id,installation_id,account_ref,resource_binding_id,store_key,principal_kind,principal_id) WHERE revoked_at IS NULL DO NOTHING`);
-    return { new_grant_id: newId };
+      ON CONFLICT (org_id,owner_user_id,installation_id,account_ref,resource_binding_id,store_key,principal_kind,principal_id) WHERE revoked_at IS NULL DO NOTHING RETURNING id`);
+    if (inserted.rows.length === 0) {
+      const existing = await transaction.execute(sql`SELECT id FROM app_integration_principal_grants
+        WHERE org_id=${actor.org_id} AND owner_user_id=${actor.user_id} AND installation_id=${record.scope.installation_id}
+          AND account_ref=${record.account.account_ref} AND resource_binding_id=${record.scope.resource_binding_id}
+          AND store_key=${grant.store_key} AND principal_kind='defty' AND principal_id=${actor.user_id} AND revoked_at IS NULL
+        LIMIT 1 FOR UPDATE`);
+      const existingId = existing.rows[0]?.id;
+      if (!existingId) throw restoreAccessDenied();
+      return { new_grant_id: String(existingId), outcome: 'already_present' };
+    }
+    return { new_grant_id: newId, outcome: 'issued' };
   }],
 ]);
 
@@ -332,19 +344,8 @@ export class AppRestoreAccessService {
     const selected = [...requested].map((id) => currentById.get(id)!);
 
     const reissued = await this.ports.database.transaction(async (transaction) => {
-      // Single use: consume the stored review exactly once. The row lock makes
-      // two concurrent activations refuse rather than re-issue twice.
-      const consumed = await transaction.update(appRestoreAccessReviews).set({
-        consumed_at: new Date(activateNow), updated_at: new Date(activateNow),
-      }).where(and(
-        eq(appRestoreAccessReviews.org_id, actor.org_id),
-        eq(appRestoreAccessReviews.owner_user_id, actor.user_id),
-        eq(appRestoreAccessReviews.id, stored.id),
-        isNull(appRestoreAccessReviews.consumed_at),
-      )).returning({ id: appRestoreAccessReviews.id });
-      if (consumed.length !== 1) throw restoreAccessDenied();
-
-      // One activation per session at a time; identity is re-read under lock.
+      // Re-run freshness inside the transaction, after the session row lock, so a
+      // grant revoked between review and activate cannot be re-issued.
       const [currentRow] = await transaction.select().from(appConnectionSessions).where(and(
         eq(appConnectionSessions.org_id, actor.org_id),
         eq(appConnectionSessions.owner_user_id, actor.user_id),
@@ -357,15 +358,51 @@ export class AppRestoreAccessService {
         || record.scope.target_key !== stored.target_key
         || record.account.account_ref !== stored.account_ref) throw restoreAccessDenied();
 
+      const freshEnumeration = await this.enumerate(actor, { installation_id: input.installation_id, target_key: input.target_key });
+      this.assertAuthority(freshEnumeration);
+      if (freshEnumeration.current_session_id !== stored.session_id
+        || freshEnumeration.current_account_ref !== stored.account_ref) throw restoreAccessDenied();
+      if (restoreAccessReviewDigest(freshEnumeration, actor, stored.expires_at.toISOString()) !== stored.review_digest) {
+        throw restoreAccessDenied();
+      }
+
+      const freshCurrentById = new Map(freshEnumeration.grants.map((grant) => [grant.grant_id, grant]));
+      const requestedNow = new Set(input.grant_ids ?? offered
+        .filter((grant) => grant.restorable && grant.preselected).map((grant) => grant.grant_id));
+      for (const id of requestedNow) {
+        if (!offeredRestorable.has(id) || !freshCurrentById.get(id)?.restorable) throw restoreAccessDenied();
+      }
+      const selectedNow = [...requestedNow].map((id) => freshCurrentById.get(id)!);
+
+      // Validate the scope before consuming the review.
+      for (const grant of selectedNow) {
+        if (grant.lifetime.kind === 'duration') {
+          const indefinite = record.scope.consent_lifetime === 'until_revoked' && record.scope.consent_expires_at === null;
+          if (!indefinite && (record.scope.consent_expires_at === null
+            || Number.isNaN(Date.parse(record.scope.consent_expires_at)))) {
+            throw restoreAccessDenied();
+          }
+        }
+      }
+
+      // Single use: consume the stored review exactly once. Done only after all
+      // validation passes, so a refused activation leaves the review unconsumed.
+      const consumed = await transaction.update(appRestoreAccessReviews).set({
+        consumed_at: new Date(activateNow), updated_at: new Date(activateNow),
+      }).where(and(
+        eq(appRestoreAccessReviews.org_id, actor.org_id),
+        eq(appRestoreAccessReviews.owner_user_id, actor.user_id),
+        eq(appRestoreAccessReviews.id, stored.id),
+        isNull(appRestoreAccessReviews.consumed_at),
+      )).returning({ id: appRestoreAccessReviews.id });
+      if (consumed.length !== 1) throw restoreAccessDenied();
+
       const now = this.ports.now();
       const reservedActionKeys = new Set((record.action_consents ?? []).map((consent) => consent.action_key));
       const issuedById = new Map<string, ReissuedGrant>();
       let workingRecord = record;
 
-      // Independent action consents are immutable on their original session, so
-      // they are published on a fresh successor session (admitted starting ->
-      // connected) and everything else is re-issued against that successor.
-      const actionGrants = selected.filter((grant) => grant.kind === 'action_consent');
+      const actionGrants = selectedNow.filter((grant) => grant.kind === 'action_consent');
       const actionConsents: AppConnectionActionConsent[] = [];
       for (const grant of actionGrants) {
         const handler = RESTORE_GRANT_HANDLERS.get(grant.kind);
@@ -373,32 +410,40 @@ export class AppRestoreAccessService {
         const issued = await handler({ transaction, actor, record, grant, now, reservedActionKeys });
         if (!issued.action_consent) throw restoreAccessDenied();
         actionConsents.push(issued.action_consent);
-        issuedById.set(grant.grant_id, { kind: grant.kind, original_grant_id: grant.grant_id, new_grant_id: issued.new_grant_id });
+        issuedById.set(grant.grant_id, { kind: grant.kind, original_grant_id: grant.grant_id, new_grant_id: issued.new_grant_id, outcome: issued.outcome });
       }
       if (actionConsents.length) {
         workingRecord = await publishSuccessorSession(transaction, currentRow, record, actionConsents, now);
       }
 
-      for (const grant of selected) {
+      for (const grant of selectedNow) {
         if (grant.kind === 'action_consent') continue;
         const handler = RESTORE_GRANT_HANDLERS.get(grant.kind);
         if (!handler) throw restoreAccessDenied();
         const issued = await handler({ transaction, actor, record: workingRecord, grant, now, reservedActionKeys });
-        issuedById.set(grant.grant_id, { kind: grant.kind, original_grant_id: grant.grant_id, new_grant_id: issued.new_grant_id });
+        issuedById.set(grant.grant_id, { kind: grant.kind, original_grant_id: grant.grant_id, new_grant_id: issued.new_grant_id, outcome: issued.outcome });
       }
 
-      // §5.4 audit every re-issue with its restore lineage and review id.
-      const result = selected.map((grant) => issuedById.get(grant.grant_id)!);
+      const result = selectedNow.map((grant) => issuedById.get(grant.grant_id)!);
       for (const item of result) {
         await transaction.insert(auditLog).values({
           id: randomUUID(), org_id: actor.org_id, actor_type: 'user', actor_id: actor.user_id,
           action: RESTORE_AUDIT_ACTION, entity_type: 'app_restore_access_grant', entity_id: item.new_grant_id,
-          metadata: { restored_from_grant_id: item.original_grant_id, review_id: input.review_id, kind: item.kind },
+          metadata: { restored_from_grant_id: item.original_grant_id, review_id: input.review_id, kind: item.kind, outcome: item.outcome ?? 'issued' },
           created_at: new Date(now),
         });
       }
       return { result, session_id: workingRecord.session_id };
     });
+
+    return {
+      schema_version: RESTORE_ACCESS_ACTIVATE_SCHEMA_VERSION,
+      review_id: input.review_id,
+      installation_id: enumeration.installation_id,
+      target_key: enumeration.target_key,
+      session_id: reissued.session_id,
+      grants: reissued.result.map((item) => ({ kind: item.kind, original_grant_id: item.original_grant_id, grant_id: item.new_grant_id, outcome: item.outcome ?? 'issued' })),
+    };
 
     return {
       schema_version: RESTORE_ACCESS_ACTIVATE_SCHEMA_VERSION,
@@ -426,9 +471,11 @@ async function publishSuccessorSession(
   const timestamp = new Date(now).toISOString();
   const combined = [...(record.action_consents ?? []), ...actionConsents]
     .sort((left, right) => left.action_key < right.action_key ? -1 : left.action_key > right.action_key ? 1 : 0);
+  const restore = { schema_version: 'deft.app_connection_restore.v1' as const, source: { session_id: record.session_id } };
   const starting = AppConnectionSessionRecordSchema.parse({
     ...record, session_id: sessionId, revision: 0, state: 'starting', callback_consumed: false,
     action_consents: combined, created_at: timestamp, updated_at: timestamp,
+    restore,
   });
   await transaction.insert(appConnectionSessions).values({
     org_id: currentRow.org_id, owner_user_id: currentRow.owner_user_id, session_id: sessionId,
@@ -437,6 +484,7 @@ async function publishSuccessorSession(
   });
   const connected = AppConnectionSessionRecordSchema.parse({
     ...starting, revision: 1, state: 'connected', callback_consumed: true, updated_at: timestamp,
+    restore,
   });
   await transaction.update(appConnectionSessions).set({
     revision: 1, record: connected, updated_at: new Date(now),

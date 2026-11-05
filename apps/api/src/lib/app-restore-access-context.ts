@@ -224,6 +224,9 @@ export async function enumerateRestoreAccess(
       inArray(appDataConsents.connection_session_id, priorSessionIds),
     )).orderBy(desc(appDataConsents.created_at));
     for (const row of consentRows) {
+      // A `proposed` row was never granted by the owner; it must never be
+      // offered for restore. Leave it out of the enumeration entirely.
+      if (row.state === 'proposed') continue;
       const snapshot = AppDataConsentSnapshotSchema.parse(row.snapshot);
       remember(grant({
         grant_id: row.consent_id, kind: 'record_consent', store_key: row.store_key,
@@ -239,6 +242,7 @@ export async function enumerateRestoreAccess(
       inArray(appResourceObservationConsents.connection_session_id, priorSessionIds),
     )).orderBy(desc(appResourceObservationConsents.created_at));
     for (const row of observationRows) {
+      if (row.state === 'proposed') continue;
       const snapshot = ResourceObservationSnapshotSchema.parse(row.snapshot);
       remember(grant({
         grant_id: row.consent_id, kind: 'observation_consent',
@@ -249,12 +253,15 @@ export async function enumerateRestoreAccess(
     }
   }
 
-  // action_consents live on each prior session record.
+  // action_consents live on each prior session record. Their state is derived from
+  // that session's own authority: a session that no longer held authority (revoked,
+  // disconnected, denied, ...) makes its action consent non-restorable.
   for (const session of prior) {
+    const heldAuthority = session.record.state === 'connected';
     for (const consent of session.record.action_consents ?? []) {
       remember(grant({
         grant_id: consent.consent_id, kind: 'action_consent', action_key: consent.action_key,
-        state: grantState(consent.expires_at, 'active', timestamp),
+        state: grantState(consent.expires_at, heldAuthority ? 'active' : 'revoked', timestamp),
         lifetime: deriveRestoreLifetime(consent.expires_at, session.created_at, consent.consent_lifetime ?? null),
       }));
     }
