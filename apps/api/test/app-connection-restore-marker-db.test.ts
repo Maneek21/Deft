@@ -90,3 +90,244 @@ test('app_connection_sessions rejects a restore marker pointing at itself', { sk
     await client.end();
   }
 });
+
+const RESTORE_SCHEMA_VERSION = 'deft.app_connection_restore.v1';
+
+async function withTempConstraintTable(run) {
+  const client = new pg.Client({ connectionString: target });
+  await client.connect();
+  try {
+    await client.query('BEGIN');
+    const definition = (await client.query(
+      "SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conname = 'app_connection_sessions_record_identity'"
+    )).rows[0].definition;
+    const body = definition.replace(/^CHECK\s*/i, '');
+    await client.query(
+      `CREATE TEMP TABLE t (
+        org_id text NOT NULL,
+        owner_user_id text NOT NULL,
+        session_id text NOT NULL,
+        revision integer NOT NULL,
+        record jsonb NOT NULL,
+        CONSTRAINT app_connection_sessions_record_identity CHECK ${body}
+      )`
+    );
+    await run(client);
+    await client.query('ROLLBACK');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    await client.end();
+  }
+}
+
+function makeContext() {
+  return {
+    org: 'org_' + randomUUID(),
+    owner: 'user_' + randomUUID(),
+    sessionId: randomUUID(),
+    priorSession: randomUUID(),
+    installationId: randomUUID(),
+    bindingId: randomUUID(),
+  };
+}
+
+function baseRecord(ctx) {
+  const now = new Date().toISOString();
+  return {
+    session_id: ctx.sessionId,
+    revision: 0,
+    scope: {
+      org_id: ctx.org,
+      owner_user_id: ctx.owner,
+      installation_id: ctx.installationId,
+      target_key: 'inbox',
+      resource_key: 'inbox',
+      resource_binding_id: ctx.bindingId,
+    },
+    profile: {
+      schema_version: 'deft.app_connection_profile.v1',
+      key: 'primary',
+      provider_id: 'p',
+      operator_user_id: ctx.owner,
+      runtime_requirement_key: 'r',
+      resource_key: 'inbox',
+      action_keys: [],
+      authorization_origin: 'https://example.test',
+      credential_custody: 'runtime',
+      executable: false,
+    },
+    state: 'starting',
+    callback_state_hash: 'a'.repeat(64),
+    callback_consumed: false,
+    callback_expires_at: new Date(Date.now() + 60_000).toISOString(),
+    runtime_session_ref: null,
+    account: null,
+    created_at: now,
+    updated_at: now,
+  };
+}
+
+function restoreMarker(sessionId) {
+  return {
+    schema_version: RESTORE_SCHEMA_VERSION,
+    source: { session_id: sessionId },
+  };
+}
+
+async function insertAccepted(client, ctx, record) {
+  await client.query(
+    'INSERT INTO t (org_id, owner_user_id, session_id, revision, record) VALUES ($1, $2, $3, $4, $5::jsonb)',
+    [ctx.org, ctx.owner, ctx.sessionId, 0, JSON.stringify(record)]
+  );
+}
+
+async function insertRejected(client, ctx, record) {
+  let thrown = null;
+  try {
+    await client.query(
+      'INSERT INTO t (org_id, owner_user_id, session_id, revision, record) VALUES ($1, $2, $3, $4, $5::jsonb)',
+      [ctx.org, ctx.owner, ctx.sessionId, 0, JSON.stringify(record)]
+    );
+  } catch (error) {
+    thrown = error;
+  }
+  assert.ok(thrown, 'record must be rejected by app_connection_sessions_record_identity');
+}
+
+const acceptedCases = [
+  {
+    name: 'valid record without a restore marker',
+    build: (ctx) => baseRecord(ctx),
+  },
+  {
+    name: 'valid record with a restore marker whose source.session_id is a different UUID',
+    build: (ctx) => {
+      const record = baseRecord(ctx);
+      record.restore = restoreMarker(ctx.priorSession);
+      return record;
+    },
+  },
+];
+
+const rejectedCases = [
+  {
+    name: 'callback_state_hash is null without a restore marker',
+    build: (ctx) => {
+      const record = baseRecord(ctx);
+      record.callback_state_hash = null;
+      return record;
+    },
+  },
+  {
+    name: 'callback_state_hash is null with a valid restore marker',
+    build: (ctx) => {
+      const record = baseRecord(ctx);
+      record.callback_state_hash = null;
+      record.restore = restoreMarker(ctx.priorSession);
+      return record;
+    },
+  },
+  {
+    name: 'restore has the wrong schema_version',
+    build: (ctx) => {
+      const record = baseRecord(ctx);
+      record.restore = {
+        schema_version: 'deft.app_connection_restore.wrong.v1',
+        source: { session_id: ctx.priorSession },
+      };
+      return record;
+    },
+  },
+  {
+    name: 'restore has an extra key',
+    build: (ctx) => {
+      const record = baseRecord(ctx);
+      record.restore = {
+        schema_version: RESTORE_SCHEMA_VERSION,
+        source: { session_id: ctx.priorSession },
+        extra: true,
+      };
+      return record;
+    },
+  },
+  {
+    name: 'restore.source has an extra key',
+    build: (ctx) => {
+      const record = baseRecord(ctx);
+      record.restore = {
+        schema_version: RESTORE_SCHEMA_VERSION,
+        source: { session_id: ctx.priorSession, extra: true },
+      };
+      return record;
+    },
+  },
+  {
+    name: 'restore is null',
+    build: (ctx) => {
+      const record = baseRecord(ctx);
+      record.restore = null;
+      return record;
+    },
+  },
+  {
+    name: 'restore.source.session_id is null',
+    build: (ctx) => {
+      const record = baseRecord(ctx);
+      record.restore = {
+        schema_version: RESTORE_SCHEMA_VERSION,
+        source: { session_id: null },
+      };
+      return record;
+    },
+  },
+  {
+    name: 'restore.source.session_id is not a UUID',
+    build: (ctx) => {
+      const record = baseRecord(ctx);
+      record.restore = {
+        schema_version: RESTORE_SCHEMA_VERSION,
+        source: { session_id: 'not-a-uuid' },
+      };
+      return record;
+    },
+  },
+  {
+    name: 'restore.source.session_id equals the row session_id',
+    build: (ctx) => {
+      const record = baseRecord(ctx);
+      record.restore = restoreMarker(ctx.sessionId);
+      return record;
+    },
+  },
+  {
+    name: 'null callback_state_hash on a record carrying credential_repair',
+    build: (ctx) => {
+      const record = baseRecord(ctx);
+      record.callback_state_hash = null;
+      record.credential_repair = {};
+      return record;
+    },
+  },
+];
+
+for (const testCase of acceptedCases) {
+  test(`app_connection_sessions_record_identity temp table: ${testCase.name}`, { skip: !safe }, async () => {
+    await withTempConstraintTable(async (client) => {
+      const ctx = makeContext();
+      const record = testCase.build(ctx);
+      await insertAccepted(client, ctx, record);
+    });
+  });
+}
+
+for (const testCase of rejectedCases) {
+  test(`app_connection_sessions_record_identity temp table: ${testCase.name}`, { skip: !safe }, async () => {
+    await withTempConstraintTable(async (client) => {
+      const ctx = makeContext();
+      const record = testCase.build(ctx);
+      await insertRejected(client, ctx, record);
+    });
+  });
+}
