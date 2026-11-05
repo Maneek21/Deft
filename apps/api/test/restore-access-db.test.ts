@@ -174,6 +174,7 @@ test('restore access: guarded action/record restores, stored reviews, explicit o
       const key = 'action'; const pair = await createPair(key, { action: true });
       const review = await service.review(actor, nomination(key));
       const grant = review.grants.find((item: any) => item.kind === 'action_consent')!;
+      assert.equal(grant.preselected, false, 'action consents from prior sessions are not preselected');
       const result = await service.activate(actor, { ...envelope(review, [grant.grant_id]), target_key: key });
       assert.equal(result.grants.length, 1);
       assert.notEqual(result.session_id, pair.currentId, 'restore publishes a successor session');
@@ -185,6 +186,24 @@ test('restore access: guarded action/record restores, stored reviews, explicit o
       const restored = (successor.record as any).action_consents.find((consent: any) => consent.action_key === 'mirror_inbox');
       assert.ok(restored, 'the action consent lives on the successor session');
       assert.equal((successor.record as any).revision, successor.revision);
+    });
+
+    await t.test('default selection does not re-issue an action consent, explicit selection does', async () => {
+      const key = 'action_default'; const pair = await createPair(key, { action: true });
+      clock = now;
+      const review = await service.review(actor, nomination(key));
+      const grant = review.grants.find((item: any) => item.kind === 'action_consent')!;
+      assert.equal(grant.preselected, false);
+      const defaulted = await service.activate(actor, { ...envelope(review), target_key: key });
+      assert.deepEqual(defaulted.grants.map((item: any) => item.kind), [],
+        'omitted selection does not re-issue the non-preselected action consent');
+      assert.equal(defaulted.session_id, pair.currentId, 'no successor session is published');
+      const explicit = await service.review(actor, nomination(key));
+      const explicitGrant = explicit.grants.find((item: any) => item.kind === 'action_consent')!;
+      const activated = await service.activate(actor, { ...envelope(explicit, [explicitGrant.grant_id]), target_key: key });
+      assert.equal(activated.grants.length, 1);
+      assert.equal(activated.grants[0]!.kind, 'action_consent');
+      void pair;
     });
 
     await t.test('an issued review expires after ten minutes even when the caller rewrites the window', async () => {

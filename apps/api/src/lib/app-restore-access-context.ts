@@ -90,11 +90,11 @@ function grantState(expiresAt: Date | string | null, state: string, now: number)
   return expiry > now ? 'active' : 'expired';
 }
 
-function grant(input: Omit<RestoreGrant, 'restorable' | 'preselected'>): RestoreGrant {
+function grant(input: Omit<RestoreGrant, 'restorable' | 'preselected'>, preselectedOverride?: boolean): RestoreGrant {
   return RestoreGrantSchema.parse({
     ...input,
     restorable: input.state !== 'revoked',
-    preselected: input.state === 'active',
+    preselected: preselectedOverride ?? (input.state === 'active'),
   });
 }
 
@@ -268,7 +268,7 @@ export async function enumerateRestoreAccess(
         grant_id: consent.consent_id, kind: 'action_consent', action_key: consent.action_key,
         state: grantState(consent.expires_at, 'active', timestamp),
         lifetime: deriveRestoreLifetime(consent.expires_at, session.created_at, consent.consent_lifetime ?? null),
-      }));
+      }, false));
     }
   }
 
