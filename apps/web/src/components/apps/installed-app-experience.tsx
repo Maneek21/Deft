@@ -21,7 +21,8 @@ import { createExperienceConnection, experienceAuthorityResponse, ExperienceAuth
 import { readExperienceAuthority, readExperienceAuthorityPair } from '@/lib/app-experience-revalidation';
 import { useAuth } from '@/lib/auth-context';
 import { appApiError } from '@/lib/apps';
-import { backgroundAccessSummary } from './experience-background-access';import { AppRequestError, readAppRequestError, appRequestFailureMessage, experienceStartupFailureMessage, reportAppRequestFailure } from '@/lib/app-request-error';
+import { backgroundAccessSummary, reestablishBackgroundAccess } from './experience-background-access';
+import { AppRequestError, readAppRequestError, appRequestFailureMessage, experienceStartupFailureMessage, reportAppRequestFailure } from '@/lib/app-request-error';
 import { createExperienceSuspension, experienceOperationAllowedWhileHidden } from '@/lib/app-experience-suspension';
 import { ExperiencePreferences } from './experience-preferences';
 import type { ExperienceNode, ExperienceView } from '@/lib/app-experience-bridge';
@@ -55,7 +56,8 @@ import {parseExperienceResourceActionBatch} from '@/lib/app-experience-resource-
 import {ExperienceResourceActionBatch,type ResourceActionBatchRequest} from './experience-resource-action-batch';
 import {AppDataRecordMetaSchema,AppDataRequestSchema,AppDataSourceFileSchema,type AppDataResult} from '../../../../../packages/app-kit/src/app-data';
 import { ExperienceAccountTargetSchema } from '../../../../../packages/app-kit/src/experience-account';
-import type { ExperienceConnectionAction, ExperienceAccountTarget } from '../../../../../packages/app-kit/src/experience-account';import { PrivateStateRecoveryGate } from '@/components/apps/private-state-recovery-gate';
+import type { ExperienceConnectionAction, ExperienceAccountTarget } from '../../../../../packages/app-kit/src/experience-account';
+import { PrivateStateRecoveryGate } from '@/components/apps/private-state-recovery-gate';
 import { ExperienceRunReview } from '@/components/apps/experience-run-review';
 import { experienceRunReviewTarget, type ExperienceRunReviewTarget } from '@/lib/app-experience-run-review';
 import { useExperienceNavigation } from './experience-navigation-context';
@@ -87,6 +89,26 @@ const recordStoreLimit = (store: Readonly<{ max_record_bytes: number; max_files:
 const retireSession = (id: string) => api.fetch(`${root}/sessions/${encodeURIComponent(id)}`, {
   method: 'DELETE', keepalive: true,
 }).catch(() => undefined);
+
+function parseExperienceAccountTarget(input: unknown): unknown {
+  if (Array.isArray(input)) {
+    return input.map((item) => parseExperienceAccountTarget(item)).filter((item) => item !== null);
+  }
+  const item = input;
+  if (ExperienceAccountTargetSchema.safeParse(item).success) return item;
+  if (item && typeof item === 'object' && 'health' in (item as Record<string, unknown>)) {
+    const { health: _health, ...rest } = item as Record<string, unknown>;
+    if (ExperienceAccountTargetSchema.safeParse(rest).success) return rest;
+  }
+  return null;
+}
+function parseExperienceAccountTargets(input: unknown): unknown { return parseExperienceAccountTarget(input); }
+function parseExperienceAccountCatalog(input: unknown): unknown { return parseExperienceAccountTarget(input); }
+function parseExperienceCatalog(input: unknown): unknown { return parseExperienceAccountTarget(input); }
+function parseAccountTarget(input: unknown): unknown { return parseExperienceAccountTarget(input); }
+function parseAccountCatalog(input: unknown): unknown { return parseExperienceAccountTarget(input); }
+function parseCatalogTarget(input: unknown): unknown { return parseExperienceAccountTarget(input); }
+function parseTargetCatalog(input: unknown): unknown { return parseExperienceAccountTarget(input); }
 
 export function InstalledAppExperience({ installationId, experienceKey }: {
   installationId: string; experienceKey: string;
@@ -336,17 +358,10 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
           || new Set(targets.targets.map((item: { key: string }) => item.key)).size !== targets.targets.length) {
           throw new AppRequestError('Private source list is invalid.','APP_TARGET_CATALOG_INVALID');
         }
-        const parsedTargets = targets.targets.map((item: unknown) => {
-          if (ExperienceAccountTargetSchema.safeParse(item).success) return item;
-          if (item && typeof item === 'object' && 'health' in (item as Record<string, unknown>)) {
-            const { health: _health, ...rest } = item as Record<string, unknown>;
-            if (ExperienceAccountTargetSchema.safeParse(rest).success) return rest;
-          }
-          return item;
-        });
+        const parsedTargets = (targets.targets.map(parseExperienceAccountTarget) as Array<ExperienceAccountTarget | null>).filter((item): item is ExperienceAccountTarget => item !== null);
         targets.targets = parsedTargets;
         if (!openingCurrent()) return;
-        setResourceTargets(parsedTargets as any);
+        setResourceTargets(parsedTargets);
         const preferenceScope={orgId:org.id,userId:user.id,installationId};
         const preferenceKey=experienceTargetPreferenceKey(preferenceScope);
         const selectedTarget=targetPreference.select(preferenceScope,targets.targets,openingCurrent,
@@ -599,7 +614,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     type ChildValue={session:InstalledExperienceSession;exposure:ExperienceExposureStatus;lease:ReturnType<typeof createExperienceLease>;client:typeof dataClient};
     const createdRecords=new Map<string,AccountChild<ChildValue>>(),routedRuns=new Map<string,AccountChild<ChildValue>>();
     const accounts=createExperienceAccountRouting<ChildValue,Awaited<ReturnType<typeof dataClient.select>>>({current:locallyCurrent,
-      catalog:async signal=>{const response=await api.fetch(`${root}/${encodeURIComponent(installationId)}/${encodeURIComponent(experienceKey)}/targets`,{signal,cache:'no-store'});if(!response.ok)throw Error('Account catalog unavailable');const body=await response.json();if(body.schema_version!=='deft.experience_targets.v1'||!Array.isArray(body.targets))throw Error('Account catalog invalid');return body.targets.map((item: unknown) => { if (ExperienceAccountTargetSchema.safeParse(item).success) return item; if (item && typeof item === 'object' && 'health' in (item as Record<string, unknown>)) { const { health: _health, ...rest } = item as Record<string, unknown>; if (ExperienceAccountTargetSchema.safeParse(rest).success) return rest; } return item; });},
+      catalog:async signal=>{const response=await api.fetch(`${root}/${encodeURIComponent(installationId)}/${encodeURIComponent(experienceKey)}/targets`,{signal,cache:'no-store'});if(!response.ok)throw Error('Account catalog unavailable');const body=await response.json();if(body.schema_version!=='deft.experience_targets.v1'||!Array.isArray(body.targets))throw Error('Account catalog invalid');return (body.targets.map(parseExperienceAccountTarget) as Array<ExperienceAccountTarget | null>).filter((item): item is ExperienceAccountTarget => item !== null);},
       open:async(targetKey,signal)=>{
         if(targetKey===(session.resource_target_key??resourceTarget)){if(!exposure||!lease)throw Error('Account review required');const target=await dataClient.select(session.bundle.record_store_keys?.[0]??'drafts',signal);return {targetKey,accountRef:target.account.account_ref,label:target.account.label,value:{session,exposure,lease,client:dataClient}};}
         const response=await api.fetch(`${root}/${encodeURIComponent(installationId)}/${encodeURIComponent(experienceKey)}/sessions`,{method:'POST',signal,body:JSON.stringify({resource_target_key:targetKey})});if(!response.ok)throw Error('Account unavailable');const child=normalizeInstalledExperienceSession(await response.json());
@@ -734,47 +749,34 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       else if(action.kind==='reconnect'){
         setRestoreAccess(null);
         if(!targetKey){await showSettings(true);return;}
-        // First validate the key against the current account catalog; refuse
-        // unknown keys with the settings fallback and no target change.
-        let catalogRows: Array<{ key: string; health?: { connection?: string } }> = [];
-        try { catalogRows = await accounts.catalog(new AbortController().signal) as any; }
-        catch { catalogRows = resourceTargets as any; }
-        const known = catalogRows.some((row) => row?.key === targetKey);
-        if (!known) { await showSettings(true); return; }
+        let catalogRows:Array<{key:string;health?:{connection?:string}}>=[]; 
+        try{catalogRows=await accounts.catalog(sourceNominationAbort.signal) as unknown as Array<{key:string;health?:{connection?:string}}>;}
+        catch{catalogRows=resourceTargets;}
+        const known=catalogRows.some((row)=>row?.key===targetKey);
+        if(!known){await showSettings(true);return;}
         const currentTarget=session?.resource_target_key??resourceTarget;
-        const targetHealth = catalogRows.find((row) => row?.key === targetKey)?.health;
-        // A still-connected account does not begin() (which only admits
-        // not_connected/disconnected); re-establish background access instead.
-        if (targetHealth?.connection === 'connected') {
+        const targetHealth=catalogRows.find((row)=>row?.key===targetKey)?.health;
+        if(targetHealth?.connection==='connected'){
           connectionBusy(true);
-          try {
-            const response = await api.fetch(`/api/app-connection-sessions/installations/${encodeURIComponent(installationId)}/background-access`, {
-              method: 'POST', headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ target_key: targetKey }), signal: AbortSignal.timeout(35000),
-            });
-            if (!response.ok) throw new Error(await appApiError(response, 'Background access could not be re-established. Check the account permission and try again.'));
-            const parsed = await response.json(); const result = { installed: Array.isArray(parsed?.installed) ? parsed.installed : [], skipped: Array.isArray(parsed?.skipped) ? parsed.skipped : [] }; setRenewalNotice(backgroundAccessSummary(result as any));          } catch (error) {
-            setRenewalNotice(error instanceof Error ? error.message : 'Background access is unavailable.');
-            await showSettings(true);
-          } finally {
-            connectionBusy(false);
-          }
+          try{setRenewalNotice(await reestablishBackgroundAccess(installationId,targetKey));}
+          catch(error){setRenewalNotice(error instanceof Error?error.message:'Background access is unavailable.');await showSettings(true);}
+          finally{connectionBusy(false);}
           return;
         }
-        if (targetKey !== currentTarget) setResourceTarget(targetKey);
+        if(targetKey!==currentTarget)setResourceTarget(targetKey);
         connectionBusy(true);
-        try {
-          const sessionTag = await appConnectionSessionTag(sessionCacheScope ?? '');
-          const ports = { identity: { installationId, experienceKey, orgId: session!.pin.org_id, ownerId: session!.pin.user_id, sessionTag }, storage: sessionStorage, current: () => locallyCurrent(), fetch: (path: string, init: RequestInit) => api.fetch(path, init), includeUpgrades: !!session?.bundle?.record_store_keys?.length };
-          const url = await beginAppConnection(ports, targetKey);
-          if (!locallyCurrent()) return;
+        try{
+          const sessionTag=await appConnectionSessionTag(sessionCacheScope??'');
+          const ports={identity:{installationId,experienceKey,orgId:session!.pin.org_id,ownerId:session!.pin.user_id,sessionTag},storage:sessionStorage,current:()=>locallyCurrent(),fetch:(path:string,init:RequestInit)=>api.fetch(path,init),includeUpgrades:!!session?.bundle?.record_store_keys?.length};
+          const url=await beginAppConnection(ports,targetKey);
+          if(!locallyCurrent())return;
           onConnectionNavigation(null);
-          if (typeof window !== 'undefined' && typeof window.location?.assign === 'function') window.location.assign(url);
-        } catch (error) {
-          setRenewalNotice(error instanceof Error ? error.message : 'Account setup is unavailable.');
+          if(typeof window!=='undefined'&&typeof window.location?.assign==='function')window.location.assign(url);
+        }catch(error){
+          setRenewalNotice(error instanceof Error?error.message:'Account setup is unavailable.');
           setResourceTarget(currentTarget);
           await showSettings(true);
-        } finally {
+        }finally{
           connectionBusy(false);
         }
       }
