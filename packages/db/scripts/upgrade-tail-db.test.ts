@@ -29,6 +29,15 @@ async function resetToHead(client: pg.Client) {
   await client.query(`ALTER TABLE app_integration_capture_policies
     DROP COLUMN IF EXISTS retired_at, DROP COLUMN IF EXISTS retired_reason, DROP COLUMN IF EXISTS last_error`);
   await client.query('DROP TABLE IF EXISTS app_restore_access_reviews CASCADE');
+  // Revert the .135 restore-marker constraint and credential-repair function change
+  // so the clone matches the reviewed .131 head variant.
+  const constraintStart = persistent.indexOf('ALTER TABLE app_connection_sessions DROP CONSTRAINT app_connection_sessions_record_identity;');
+  assert.ok(constraintStart >= 0, 'preview120 connection session constraint is located');
+  await client.query(persistent.slice(constraintStart));
+  const repairFnStart = persistent.indexOf('CREATE OR REPLACE FUNCTION public.deft_app_connection_credential_repair_record_valid(r jsonb)');
+  const repairFnEnd = persistent.indexOf('CREATE OR REPLACE FUNCTION public.deft_app_consent_continuation_guard()', repairFnStart);
+  assert.ok(repairFnStart >= 0 && repairFnEnd > repairFnStart, 'preview120 credential-repair function is located');
+  await client.query(persistent.slice(repairFnStart, repairFnEnd));
   await client.query(`DELETE FROM deft_schema_migrations WHERE version = ANY($1::text[])`,
     [tailMigrations().map((migration) => migration.version)]);
   const head = await client.query('SELECT 1 FROM deft_schema_migrations WHERE version = $1', [CONVERGE_HEAD_VERSION]);
