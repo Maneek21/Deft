@@ -248,3 +248,105 @@ test('M retry: approved-without-result returns error',
     assert.equal(res.status, 'error');
     assert.match((res as { message: string }).message, /earlier approval attempt failed/i);
   });
+
+test('M retry: unexpected error during review never leaks raw message',
+  { skip: !safe, timeout: 120000 }, async (t) => {
+    const pg = await import('pg');
+    const client = new pg.Client({ connectionString: target! });
+    await client.connect();
+
+    const orgId = uuid(), ownerId = uuid();
+    const actionId = uuid();
+    const params = { connection_session_id: uuid(), store_key: 'drafts', mirror_key: 'saved_drafts', record_id: uuid(), request_id: uuid(), expected_revision: 0, expires_at: new Date(Date.now() + 3600_000).toISOString(), max_attempts_per_day: 1, account_ref: 'account_1', installation_id: uuid(), policy_digest: digest(policy()) };
+
+    mock.module(new URL('../src/lib/app-record-mirror-service.ts', import.meta.url).href, {
+      namedExports: {
+        approveRecordMirrorNomination: async () => {
+          const e = new Error('SELECT … secret');
+          (e as { phase?: string }).phase = 'review';
+          throw e;
+        },
+      },
+    });
+
+    t.after(async () => {
+      await client.query('DELETE FROM agent_actions WHERE org_id = $1', [orgId]).catch(() => {});
+      await client.query('DELETE FROM web_sessions WHERE org_id = $1', [orgId]).catch(() => {});
+      await client.query('DELETE FROM org_members WHERE org_id = $1', [orgId]).catch(() => {});
+      await client.query('DELETE FROM users WHERE id = $1', [ownerId]).catch(() => {});
+      await client.query('DELETE FROM orgs WHERE id = $1', [orgId]).catch(() => {});
+      await client.end();
+      mock.restoreAll();
+    });
+
+    await client.query(`INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)`, [orgId, 'Mirror Leak Org', 'mirror-leak-' + orgId]);
+    await client.query(`INSERT INTO users (id, email, name, is_agent) VALUES ($1, $2, $3, false)`, [ownerId, 'owner-' + ownerId + '@test.local', 'Owner']);
+    await client.query(`INSERT INTO org_members (id, org_id, user_id, role, is_active) VALUES ($1, $2, $3, 'owner', true)`, [uuid(), orgId, ownerId]);
+    const ownerSid = uuid();
+    await client.query(`INSERT INTO web_sessions (id, user_id, org_id, refresh_token_hash, expires_at) VALUES ($1, $2, $3, $4, now() + interval '1 day')`, [ownerSid, ownerId, orgId, 'a'.repeat(64)]);
+    await client.query(`INSERT INTO agent_actions (id, org_id, user_id, source, action, params, approval_tier, approval_status) VALUES ($1, $2, $3, 'app_record_mirror', 'app_record_mirror_nominate', $4::jsonb, 'full', 'pending')`, [actionId, orgId, ownerId, JSON.stringify(params)]);
+
+    const { approveAction } = await import('../src/lib/agent-approval-resolver.js');
+
+    const fixed = 'The approval could not be completed. Try again.';
+    const res = await approveAction(actionId, ownerId, { humanWebSessionId: ownerSid });
+    assert.equal(res.status, 'error');
+    assert.equal((res as { message: string }).message, fixed);
+
+    const row = await client.query('SELECT error FROM agent_actions WHERE id = $1', [actionId]);
+    assert.equal(row.rows[0].error, fixed);
+    assert.ok(!String(row.rows[0].error).includes('SELECT'));
+  });
+
+test('M retry: confirm-phase failure is terminal and not retried',
+  { skip: !safe, timeout: 120000 }, async (t) => {
+    const pg = await import('pg');
+    const client = new pg.Client({ connectionString: target! });
+    await client.connect();
+
+    const orgId = uuid(), ownerId = uuid();
+    const actionId = uuid();
+    const params = { connection_session_id: uuid(), store_key: 'drafts', mirror_key: 'saved_drafts', record_id: uuid(), request_id: uuid(), expected_revision: 0, expires_at: new Date(Date.now() + 3600_000).toISOString(), max_attempts_per_day: 1, account_ref: 'account_1', installation_id: uuid(), policy_digest: digest(policy()) };
+
+    let calls = 0;
+    mock.module(new URL('../src/lib/app-record-mirror-service.ts', import.meta.url).href, {
+      namedExports: {
+        approveRecordMirrorNomination: async () => {
+          calls += 1;
+          const e = new Error('confirm boom');
+          (e as { phase?: string }).phase = 'confirm';
+          throw e;
+        },
+      },
+    });
+
+    t.after(async () => {
+      await client.query('DELETE FROM agent_actions WHERE org_id = $1', [orgId]).catch(() => {});
+      await client.query('DELETE FROM web_sessions WHERE org_id = $1', [orgId]).catch(() => {});
+      await client.query('DELETE FROM org_members WHERE org_id = $1', [orgId]).catch(() => {});
+      await client.query('DELETE FROM users WHERE id = $1', [ownerId]).catch(() => {});
+      await client.query('DELETE FROM orgs WHERE id = $1', [orgId]).catch(() => {});
+      await client.end();
+      mock.restoreAll();
+    });
+
+    await client.query(`INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)`, [orgId, 'Mirror Confirm Org', 'mirror-confirm-' + orgId]);
+    await client.query(`INSERT INTO users (id, email, name, is_agent) VALUES ($1, $2, $3, false)`, [ownerId, 'owner-' + ownerId + '@test.local', 'Owner']);
+    await client.query(`INSERT INTO org_members (id, org_id, user_id, role, is_active) VALUES ($1, $2, $3, 'owner', true)`, [uuid(), orgId, ownerId]);
+    const ownerSid = uuid();
+    await client.query(`INSERT INTO web_sessions (id, user_id, org_id, refresh_token_hash, expires_at) VALUES ($1, $2, $3, $4, now() + interval '1 day')`, [ownerSid, ownerId, orgId, 'a'.repeat(64)]);
+    await client.query(`INSERT INTO agent_actions (id, org_id, user_id, source, action, params, approval_tier, approval_status) VALUES ($1, $2, $3, 'app_record_mirror', 'app_record_mirror_nominate', $4::jsonb, 'full', 'pending')`, [actionId, orgId, ownerId, JSON.stringify(params)]);
+
+    const { approveAction } = await import('../src/lib/agent-approval-resolver.js');
+
+    const fixed = 'The approval could not be completed. Try again.';
+    const first = await approveAction(actionId, ownerId, { humanWebSessionId: ownerSid });
+    assert.equal(first.status, 'error');
+    const row1 = await client.query('SELECT approval_status, error FROM agent_actions WHERE id = $1', [actionId]);
+    assert.equal(row1.rows[0].approval_status, 'expired');
+    assert.equal(row1.rows[0].error, fixed);
+
+    const second = await approveAction(actionId, ownerId, { humanWebSessionId: ownerSid });
+    assert.equal(second.status, 'error');
+    assert.equal(calls, 1, 'confirm is not called again');
+  });
