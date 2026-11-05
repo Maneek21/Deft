@@ -43,7 +43,15 @@ test('deriveBackgroundHealth reports healthy, paused and ended and never crosses
   const revoked={expires_at:at(now.getTime()+60_000),revoked_at:at(now.getTime()-1),updated_at:at(1_000_000)};
   assert.deepEqual(deriveBackgroundHealth([revoked],now),{state:'ended',since:revoked.revoked_at!.toISOString(),reason:'revoked'});
   assert.equal(deriveBackgroundHealth([],now),null,'no background lease reports null');
-  // Worst state wins across several leases.
-  assert.equal(deriveBackgroundHealth([live,revoked],now)!.state,'ended');
-  assert.equal(deriveBackgroundHealth([live,lapsed],now)!.state,'paused');
+  // Health follows the current (live) lease: a live lease wins.
+  assert.equal(deriveBackgroundHealth([live,revoked],now)!.state,'healthy');
+  assert.equal(deriveBackgroundHealth([live,lapsed],now)!.state,'healthy');
+  // Reconnect sequence: old revoked + new live -> healthy.
+  assert.equal(deriveBackgroundHealth([revoked,live],now)!.state,'healthy');
+  // Old expired beyond grace + new live -> healthy.
+  assert.equal(deriveBackgroundHealth([ended,live],now)!.state,'healthy');
+  // Only revoked -> ended/revoked.
+  assert.deepEqual(deriveBackgroundHealth([revoked],now),{state:'ended',since:revoked.revoked_at!.toISOString(),reason:'revoked'});
+  // Only lapsed-in-grace -> paused.
+  assert.deepEqual(deriveBackgroundHealth([lapsed],now),{state:'paused',since:lapsed.expires_at.toISOString(),reason:'lapsed'});
 });
