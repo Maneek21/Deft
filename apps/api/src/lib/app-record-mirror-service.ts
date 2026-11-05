@@ -78,8 +78,17 @@ export class AppRecordMirrorService{
   const experience=await this.experienceSession(caller,current.scope.installation_id,target);
   const {record_id,account_ref,installation_id,policy_digest,...review}=nomination;
   void record_id;void account_ref;void installation_id;void policy_digest;
-  const opened=await this.review(experience,target,review);
-  return this.confirm(experience,target,{ticket:opened.ticket,expected_authority_digest:opened.authority_digest});
+  let opened;
+  try {
+    opened=await this.review(experience,target,review);
+  } catch (error) {
+    throw recordMirrorPhaseError('review',error);
+  }
+  try {
+    return await this.confirm(experience,target,{ticket:opened.ticket,expected_authority_digest:opened.authority_digest});
+  } catch (error) {
+    throw recordMirrorPhaseError('confirm',error);
+  }
  }
  private async experienceSession(caller:ExperienceCaller,installationId:string,target:string){
   const rows=await db.execute(sql<{id:string}>`SELECT id FROM app_experience_sessions WHERE org_id=${caller.org_id} AND user_id=${caller.user_id} AND web_session_id=${caller.sid} AND app_installation_id=${installationId} AND resource_target_key=${target} AND revoked_at IS NULL AND expires_at>clock_timestamp() ORDER BY created_at DESC LIMIT 2`);
@@ -132,4 +141,15 @@ export async function approveRecordMirrorNomination(approver:ExperienceCaller,ra
  const {keys}=await getAppRunRuntime();
  const service=new AppRecordMirrorService(new AppDataService(approver,appDataRetainedGuard(approver)),new AppExperienceExposureService(keys),keys);
  return service.approveNomination(raw);
+}
+
+/** Tag an error thrown while approving a record-mirror nomination with the
+ * phase (`review` or `confirm`) in which it occurred, so callers can tell a
+ * pre-confirm failure (safe to retry) from an uncertain post-confirm one. */
+export function recordMirrorPhaseError(phase:'review'|'confirm',cause:unknown):Error{
+ const base=cause instanceof Error?cause:new Error(String(cause));
+ (base as {phase?:'review'|'confirm'}).phase=phase;
+ if(cause instanceof Error && cause!==base)(base as {cause?:unknown}).cause=cause;
+ if(cause && typeof cause==='object' && 'code' in cause && (base as {code?:unknown}).code===undefined)(base as {code?:unknown}).code=(cause as {code?:unknown}).code;
+ return base;
 }

@@ -36,7 +36,7 @@ test('M retry: transient failure then retry succeeds with one receipt',
       namedExports: {
         approveRecordMirrorNomination: async () => {
           approvals += 1;
-          if (approvals === 1) throw new Error('transient boom');
+          if (approvals === 1) { const e = new Error('transient boom'); (e as { phase?: string }).phase = 'review'; throw e; }
           return receipt;
         },
       },

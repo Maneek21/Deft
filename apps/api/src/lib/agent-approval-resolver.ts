@@ -1431,15 +1431,24 @@ async function resolveRecordMirrorNominationAction(
       .where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id)));
     return { status: 'approved', result: receipt };
   } catch (error) {
+    const phase = (error as { phase?: unknown } | null)?.phase;
+    const isReviewPhase = phase === 'review';
     const isAccessDenied = error instanceof AppError
       ? error.code === 'APP_ACCESS_DENIED'
       : (error as { code?: unknown } | null)?.code === 'APP_ACCESS_DENIED';
     const rawReason = error instanceof Error ? error.message : String(error);
-    // Map known app-access (consent/account/policy) failures to a bounded,
-    // app-neutral message instead of leaking the raw error text.
-    const reason = isAccessDenied ? 'App data access ended' : rawReason;
-    const sanitized = reason.replace(/\s+/g, ' ').trim().slice(0, 500);
+    let reason: string;
     if (isAccessDenied) {
+      reason = 'App data access ended';
+    } else if (error instanceof AppError) {
+      reason = rawReason;
+    } else {
+      reason = 'The approval could not be completed. Try again.';
+      console.error('[agent-approval-resolver] approveRecordMirrorNomination failed:', error);
+    }
+    const sanitized = reason.replace(/\s+/g, ' ').trim().slice(0, 500);
+    const uncertain = !isReviewPhase || isAccessDenied;
+    if (uncertain) {
       await db.update(agentActions).set({
         approval_status: 'expired',
         approved_at: null,
