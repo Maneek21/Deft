@@ -37,13 +37,9 @@ export function ExperienceBackgroundAccess({target,disabled,onBusy}:{target:AppC
  const [busy,setBusy]=useState(false),[notice,setNotice]=useState(''),operation=useRef(false);
  if(target.session?.state!=='connected')return null;
  async function reestablish(){
-  if(operation.current||disabled)return;operation.current=true;setBusy(true);onBusy(true);setNotice('');const anchor=api.getAccessToken();
+  if(operation.current||disabled)return;operation.current=true;setBusy(true);onBusy(true);setNotice('');
   try{
-   const response=await api.fetch(`/api/app-connection-sessions/installations/${encodeURIComponent(target.scope.installation_id)}/background-access`,
-    {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({target_key:target.target_key}),signal:AbortSignal.timeout(35000)});
-   if(!isSameWebSession(anchor,api.getAccessToken()))throw Error('Your session changed. Reload and try again.');
-   if(!response.ok)throw Error(await appApiError(response,'Background access could not be re-established. Check the account permission and try again.'));
-   setNotice(backgroundAccessSummary(parse(await response.json())));
+   setNotice(await reestablishBackgroundAccess(target.scope.installation_id,target.target_key));
   }catch(error){setNotice(error instanceof Error?error.message:'Background access unavailable.');}
   finally{operation.current=false;setBusy(false);onBusy(false);}
  }
@@ -51,6 +47,6 @@ export function ExperienceBackgroundAccess({target,disabled,onBusy}:{target:AppC
   <h4 className="font-medium">Background access</h4>
   <p>Trusted compatible updates keep your existing approvals. If an approved background action or refresh stops working, restore its current access here. This does not add permissions or extend their expiry.</p>
   {notice&&<AppRequestNotice message={notice} role="status"/>}
-  <button type="button" className="deft-pill min-h-11" disabled={busy||disabled} onClick={()=>void reestablish()}>{busy?'Re-establishing…':'Re-establish background access'}</button>
+  <button type="button" className="deft-pill min-h-11" disabled={busy||disabled} onClick={()=>void reestablish()}>{busy?'Re-establishingâ€¦':'Re-establish background access'}</button>
  </section>;
 }

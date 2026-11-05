@@ -22,6 +22,7 @@ import { readExperienceAuthority, readExperienceAuthorityPair } from '@/lib/app-
 import { useAuth } from '@/lib/auth-context';
 import { appApiError } from '@/lib/apps';
 import { backgroundAccessSummary, reestablishBackgroundAccess } from './experience-background-access';
+import { dispatchConnectionAction as dispatchConnectionActionLib, parseExperienceAccountTarget } from '@/lib/app-experience-connection-action';
 import { AppRequestError, readAppRequestError, appRequestFailureMessage, experienceStartupFailureMessage, reportAppRequestFailure } from '@/lib/app-request-error';
 import { createExperienceSuspension, experienceOperationAllowedWhileHidden } from '@/lib/app-experience-suspension';
 import { ExperiencePreferences } from './experience-preferences';
@@ -55,7 +56,6 @@ import {parseExperienceResourceAction} from '@/lib/app-experience-resource-actio
 import {parseExperienceResourceActionBatch} from '@/lib/app-experience-resource-action-batch';
 import {ExperienceResourceActionBatch,type ResourceActionBatchRequest} from './experience-resource-action-batch';
 import {AppDataRecordMetaSchema,AppDataRequestSchema,AppDataSourceFileSchema,type AppDataResult} from '../../../../../packages/app-kit/src/app-data';
-import { ExperienceAccountTargetSchema } from '../../../../../packages/app-kit/src/experience-account';
 import type { ExperienceConnectionAction, ExperienceAccountTarget } from '../../../../../packages/app-kit/src/experience-account';
 import { PrivateStateRecoveryGate } from '@/components/apps/private-state-recovery-gate';
 import { ExperienceRunReview } from '@/components/apps/experience-run-review';
@@ -90,25 +90,7 @@ const retireSession = (id: string) => api.fetch(`${root}/sessions/${encodeURICom
   method: 'DELETE', keepalive: true,
 }).catch(() => undefined);
 
-function parseExperienceAccountTarget(input: unknown): unknown {
-  if (Array.isArray(input)) {
-    return input.map((item) => parseExperienceAccountTarget(item)).filter((item) => item !== null);
-  }
-  const item = input;
-  if (ExperienceAccountTargetSchema.safeParse(item).success) return item;
-  if (item && typeof item === 'object' && 'health' in (item as Record<string, unknown>)) {
-    const { health: _health, ...rest } = item as Record<string, unknown>;
-    if (ExperienceAccountTargetSchema.safeParse(rest).success) return rest;
-  }
-  return null;
-}
-function parseExperienceAccountTargets(input: unknown): unknown { return parseExperienceAccountTarget(input); }
-function parseExperienceAccountCatalog(input: unknown): unknown { return parseExperienceAccountTarget(input); }
-function parseExperienceCatalog(input: unknown): unknown { return parseExperienceAccountTarget(input); }
-function parseAccountTarget(input: unknown): unknown { return parseExperienceAccountTarget(input); }
-function parseAccountCatalog(input: unknown): unknown { return parseExperienceAccountTarget(input); }
-function parseCatalogTarget(input: unknown): unknown { return parseExperienceAccountTarget(input); }
-function parseTargetCatalog(input: unknown): unknown { return parseExperienceAccountTarget(input); }
+// parseExperienceAccountTarget is imported from @/lib/app-experience-connection-action.
 
 export function InstalledAppExperience({ installationId, experienceKey }: {
   installationId: string; experienceKey: string;
@@ -744,43 +726,37 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     }};
     const dispatchConnectionAction=async(action:ExperienceConnectionAction)=>{
       if(!locallyCurrent()||composerOpen.current||connectionBusyRef.current)return;
-      const targetKey=action.target_key??session.resource_target_key??resourceTarget;
-      if(action.kind==='restore_access'){setRestoreAccess({installationId,targetKey});}
-      else if(action.kind==='reconnect'){
-        setRestoreAccess(null);
-        if(!targetKey){await showSettings(true);return;}
-        let catalogRows:Array<{key:string;health?:{connection?:string}}>=[]; 
-        try{catalogRows=await accounts.catalog(sourceNominationAbort.signal) as unknown as Array<{key:string;health?:{connection?:string}}>;}
-        catch{catalogRows=resourceTargets;}
-        const known=catalogRows.some((row)=>row?.key===targetKey);
-        if(!known){await showSettings(true);return;}
-        const currentTarget=session?.resource_target_key??resourceTarget;
-        const targetHealth=catalogRows.find((row)=>row?.key===targetKey)?.health;
-        if(targetHealth?.connection==='connected'){
+      const currentTarget=session?.resource_target_key??resourceTarget;
+      let catalogRows:ExperienceAccountTarget[]=[];
+      try{catalogRows=await accounts.catalog(sourceNominationAbort.signal) as ExperienceAccountTarget[];}
+      catch{catalogRows=resourceTargets;}
+      await dispatchConnectionActionLib(action,currentTarget,catalogRows,{
+        showSettings:async(open=true,section?:string)=>{ if(section) await showSettings(open,section as ExperienceSettingsSection); else await showSettings(open); },
+        setResourceTarget,
+        beginConnection:async(targetKey:string)=>{
           connectionBusy(true);
-          try{setRenewalNotice(await reestablishBackgroundAccess(installationId,targetKey));}
-          catch(error){setRenewalNotice(error instanceof Error?error.message:'Background access is unavailable.');await showSettings(true);}
-          finally{connectionBusy(false);}
-          return;
-        }
-        if(targetKey!==currentTarget)setResourceTarget(targetKey);
-        connectionBusy(true);
-        try{
-          const sessionTag=await appConnectionSessionTag(sessionCacheScope??'');
-          const ports={identity:{installationId,experienceKey,orgId:session!.pin.org_id,ownerId:session!.pin.user_id,sessionTag},storage:sessionStorage,current:()=>locallyCurrent(),fetch:(path:string,init:RequestInit)=>api.fetch(path,init),includeUpgrades:!!session?.bundle?.record_store_keys?.length};
-          const url=await beginAppConnection(ports,targetKey);
-          if(!locallyCurrent())return;
-          onConnectionNavigation(null);
-          if(typeof window!=='undefined'&&typeof window.location?.assign==='function')window.location.assign(url);
-        }catch(error){
-          setRenewalNotice(error instanceof Error?error.message:'Account setup is unavailable.');
-          setResourceTarget(currentTarget);
-          await showSettings(true);
-        }finally{
-          connectionBusy(false);
-        }
-      }
-      else{setRestoreAccess(null);await showSettings(true,'access');}
+          try{
+            const sessionTag=await appConnectionSessionTag(sessionCacheScope??'');
+            const ports={identity:{installationId,experienceKey,orgId:session!.pin.org_id,ownerId:session!.pin.user_id,sessionTag},storage:sessionStorage,current:()=>locallyCurrent(),fetch:(path:string,init:RequestInit)=>api.fetch(path,init),includeUpgrades:!!session?.bundle?.record_store_keys?.length};
+            const url=await beginAppConnection(ports,targetKey);
+            if(!locallyCurrent())return;
+            onConnectionNavigation(null);
+            if(typeof window!=='undefined'&&typeof window.location?.assign==='function')window.location.assign(url);
+          }finally{
+            connectionBusy(false);
+          }
+        },
+        reestablishBackgroundAccess:async(targetKey:string)=>{
+          connectionBusy(true);
+          try{
+            return await reestablishBackgroundAccess(installationId,targetKey);
+          }finally{
+            connectionBusy(false);
+          }
+        },
+        openRestore:(targetKey:string|null)=>{ if(targetKey===null) setRestoreAccess(null); else setRestoreAccess({installationId,targetKey}); },
+        notice:(message:string)=>{ setRenewalNotice(message); },
+      });
     };
     const sendViewEvent=(event:unknown)=>{
       if(event&&typeof event==='object'&&(event as {kind?:unknown;node_id?:unknown}).kind==='click'){
