@@ -1,6 +1,6 @@
 # Modules and Apps: choose a starting point
 
-The Module and legacy App examples below describe Deft `v0.3.0-preview.15`. For the current independently deployed connected-App path, use the Apps-enabled Host `v0.3.0-preview.120`/schema120 and the [Email reference implementation](https://github.com/Maneek21/deft-email), with exact versions/downloads in its [compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.13/compatibility.json). The [current author guide](connected-app-author-guide.md) describes Protocol7 sideload and reviewed external Runtime setup.
+The Module and legacy App examples below describe Deft `v0.3.0-preview.15`. For the current independently deployed connected-App path, use the Apps-enabled Host `v0.3.0-preview.136`/schema131 and the [Email reference implementation](https://github.com/Maneek21/deft-email), with exact versions/downloads in its [Email release 28 compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.28/compatibility.json). The [current author guide](connected-app-author-guide.md) describes Protocol7 sideload and reviewed external Runtime setup.
 
 A **Module** defines records, relationships, and native views. An **App** packages Module resources for installation and may request supported connected actions. They use different manifests and installation flows.
 

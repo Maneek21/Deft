@@ -1,5 +1,12 @@
 # Explicit persistent App permission with bounded transport
 
+> Historical decision, October 15, 2026. The October 20–22 releases add
+> until-revoked initial setup, compatible trusted-upgrade continuity and scoped
+> service reacquisition after technical-session expiry. The finite initial
+> enrollment and human-only reissuance statements below describe the original
+> slice. Use [Connect once](../app-connect-once.md) and
+> [current renewal/recovery](../app-runtime-session-renewal.md) for operation today.
+
 An already connected named account can receive a separately reviewed `consent_lifetime: "until_revoked"` grant with an explicit null consent deadline. The signed owner policy must opt in with `allow_until_revoked: true`. Null or omission without that literal never grants access; existing finite grants and historical canonical payloads retain their original semantics and are not converted by migration. Initial account enrollment remains finite; existing custody is converted only through the authenticated, two-minute consent-continuation review.
 
 Data and background-observation grants use the same explicit lifetime, with a separate five-minute review deadline bound into the review digest. Permission lasts until explicit revocation, disconnect, membership/role change, installation/grant/registration epoch change or custody change. Each use still reconstructs current authority. New policy/version scope requires a new review.
