@@ -44,40 +44,21 @@ export function deriveBackgroundHealth(sessions:readonly BackgroundSessionRow[],
  *  binding's `owner_user_id`, reached directly for resource-sync sessions and
  *  through the runtime binding's `owner_resource_binding_id` for action sessions. */
 export async function readBackgroundHealth(tx:Tx,caller:{org_id:string;user_id:string},installationId:string,nowMs:number,targetKey?:string):Promise<BackgroundHealth|null>{
- const probe=await tx.execute(sql`SELECT to_regclass('app_runtime_sessions') IS NOT NULL AS present`);
- if(!probe.rows[0]?.present)return null;
- const graceMs=APP_RUNTIME_SESSION_RESUME_GRACE_MS;
- const graceCutoff=new Date(nowMs-graceMs);
- const newestEndedSubquery=sql`SELECT DISTINCT ON (COALESCE(res.target_key,'primary')) s.id
-  FROM app_runtime_sessions s
-  LEFT JOIN app_runtime_bindings rb ON (rb.org_id = s.org_id AND rb.id = s.runtime_binding_id)
-  LEFT JOIN app_resource_bindings res ON (res.org_id = s.org_id AND (res.id = s.resource_binding_id OR res.id = rb.owner_resource_binding_id))
-  WHERE s.org_id = ${caller.org_id}
-   AND res.owner_user_id = ${caller.user_id}
-   AND s.renewal_lifetime = 'until_revoked'
-   AND (rb.app_installation_id = ${installationId} OR res.app_installation_id = ${installationId})
-   ${targetKey===undefined?sql``:sql`AND res.target_key = ${targetKey}`}
-   AND (s.revoked_at IS NOT NULL OR s.expires_at < ${graceCutoff})
-  ORDER BY COALESCE(res.target_key,'primary'), COALESCE(s.revoked_at, s.expires_at + (${graceMs} * interval '1 millisecond')) DESC`;
- const sessions=await tx.select({expires_at:appRuntimeSessions.expires_at,revoked_at:appRuntimeSessions.revoked_at,updated_at:appRuntimeSessions.updated_at})
-  .from(appRuntimeSessions)
-  .leftJoin(appRuntimeBindings,and(eq(appRuntimeBindings.org_id,appRuntimeSessions.org_id),eq(appRuntimeBindings.id,appRuntimeSessions.runtime_binding_id)))
-  .leftJoin(appResourceBindings,and(eq(appResourceBindings.org_id,appRuntimeSessions.org_id),
-   or(eq(appResourceBindings.id,appRuntimeSessions.resource_binding_id),eq(appResourceBindings.id,appRuntimeBindings.owner_resource_binding_id))))
-  .where(and(eq(appRuntimeSessions.org_id,caller.org_id),eq(appResourceBindings.owner_user_id,caller.user_id),eq(appRuntimeSessions.renewal_lifetime,'until_revoked'),
-   sql`(${appRuntimeBindings.app_installation_id}=${installationId} OR ${appResourceBindings.app_installation_id}=${installationId})`,
-   targetKey===undefined?undefined:eq(appResourceBindings.target_key,targetKey),
-   or(
-     and(isNull(appRuntimeSessions.revoked_at),gte(appRuntimeSessions.expires_at,graceCutoff)),
-     sql`${appRuntimeSessions.id} IN (${newestEndedSubquery})`
-   )))
-  .orderBy(desc(appRuntimeSessions.created_at));
- return deriveBackgroundHealth(sessions,new Date(nowMs));
+ const map=await readBackgroundHealthMap(tx,caller,installationId,nowMs,targetKey);
+ if(targetKey!==undefined)return map.get(targetKey)??null;
+ const healths=[...map.values()];
+ const live=healths.filter((h):h is BackgroundHealth=>h!==null&&h.state==='healthy');
+ if(live.length){const chosen=live.reduce((a,b)=>new Date(a.since)>new Date(b.since)?a:b);return{state:'healthy',since:chosen.since,reason:'live'};}
+ const paused=healths.filter((h):h is BackgroundHealth=>h!==null&&h.state==='paused');
+ if(paused.length){const chosen=paused.reduce((a,b)=>new Date(a.since)>new Date(b.since)?a:b);return{state:'paused',since:chosen.since,reason:'lapsed'};}
+ const ended=healths.filter((h):h is BackgroundHealth=>h!==null&&h.state==='ended');
+ if(ended.length){const chosen=ended.reduce((a,b)=>new Date(a.since)>new Date(b.since)?a:b);return{state:'ended',since:chosen.since,reason:chosen.reason};}
+ return null;
 }
 
 /** One grouped read of background health for every target of an installation.
  *  Probes the runtime table at most once and runs a single bounded query. */
-export async function readBackgroundHealthMap(tx:Tx,caller:{org_id:string;user_id:string},installationId:string,nowMs:number):Promise<Map<string,BackgroundHealth|null>>{
+export async function readBackgroundHealthMap(tx:Tx,caller:{org_id:string;user_id:string},installationId:string,nowMs:number,targetKey?:string):Promise<Map<string,BackgroundHealth|null>>{
  const probe=await tx.execute(sql`SELECT to_regclass('app_runtime_sessions') IS NOT NULL AS present`);
  const result=new Map<string,BackgroundHealth|null>();
  if(!probe.rows[0]?.present)return result;
@@ -91,6 +72,7 @@ export async function readBackgroundHealthMap(tx:Tx,caller:{org_id:string;user_i
    AND res.owner_user_id = ${caller.user_id}
    AND s.renewal_lifetime = 'until_revoked'
    AND (rb.app_installation_id = ${installationId} OR res.app_installation_id = ${installationId})
+   ${targetKey===undefined?sql``:sql`AND res.target_key = ${targetKey}`}
    AND (s.revoked_at IS NOT NULL OR s.expires_at < ${graceCutoff})
   ORDER BY COALESCE(res.target_key,'primary'), COALESCE(s.revoked_at, s.expires_at + (${graceMs} * interval '1 millisecond')) DESC`;
  const rows=await tx.select({expires_at:appRuntimeSessions.expires_at,revoked_at:appRuntimeSessions.revoked_at,updated_at:appRuntimeSessions.updated_at,target_key:appResourceBindings.target_key})
@@ -100,13 +82,14 @@ export async function readBackgroundHealthMap(tx:Tx,caller:{org_id:string;user_i
    or(eq(appResourceBindings.id,appRuntimeSessions.resource_binding_id),eq(appResourceBindings.id,appRuntimeBindings.owner_resource_binding_id))))
   .where(and(eq(appRuntimeSessions.org_id,caller.org_id),eq(appResourceBindings.owner_user_id,caller.user_id),eq(appRuntimeSessions.renewal_lifetime,'until_revoked'),
    sql`(${appRuntimeBindings.app_installation_id}=${installationId} OR ${appResourceBindings.app_installation_id}=${installationId})`,
+   targetKey===undefined?undefined:eq(appResourceBindings.target_key,targetKey),
    or(
      and(isNull(appRuntimeSessions.revoked_at),gte(appRuntimeSessions.expires_at,graceCutoff)),
      sql`${appRuntimeSessions.id} IN (${newestEndedSubquery})`
    )));
- const grouped=new Map<string,typeof rows>();
- for(const row of rows){const key=row.target_key??'primary';if(!grouped.has(key))grouped.set(key,[]);grouped.get(key)!.push(row as any);}
- for(const [key,group] of grouped){result.set(key,deriveBackgroundHealth(group as any,new Date(nowMs)));}
+ const grouped=new Map<string,BackgroundSessionRow[]>();
+ for(const row of rows){const key=row.target_key??'primary';const session:BackgroundSessionRow={expires_at:row.expires_at,revoked_at:row.revoked_at,updated_at:row.updated_at};if(!grouped.has(key))grouped.set(key,[]);grouped.get(key)!.push(session);}
+ for(const [key,group] of grouped){result.set(key,deriveBackgroundHealth(group,new Date(nowMs)));}
  return result;
 }
 const where=(table:typeof policies|typeof claims|typeof threads|typeof sources,caller:AppIntegrationSourceCaller,target:Pick<AppIntegrationSourceTarget,'installation_id'|'account_ref'|'store_key'>)=>{

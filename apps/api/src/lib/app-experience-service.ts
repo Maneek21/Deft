@@ -264,7 +264,7 @@ export class AppExperienceService {
             const background=healthMap.get(target.key)??null;
             const candidate={connection:(connectedTargets.has(target.key)?'connected':'disconnected') as 'connected'|'disconnected',...(background?{background}:{})};
             const parsed=ExperienceAccountTargetHealthSchema.safeParse(candidate);
-            return {...target,health:parsed.success?parsed.data:undefined};
+            return {...target,...(parsed.success?{health:parsed.data}:{})};
           });
         }
       }
