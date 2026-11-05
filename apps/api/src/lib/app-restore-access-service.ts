@@ -358,7 +358,7 @@ export class AppRestoreAccessService {
         || record.scope.target_key !== stored.target_key
         || record.account.account_ref !== stored.account_ref) throw restoreAccessDenied();
 
-      const freshEnumeration = await this.enumerate(actor, { installation_id: input.installation_id, target_key: input.target_key });
+      const freshEnumeration = await enumerateRestoreAccess(transaction, actor, { installation_id: input.installation_id, target_key: input.target_key }, this.ports.now);
       this.assertAuthority(freshEnumeration);
       if (freshEnumeration.current_session_id !== stored.session_id
         || freshEnumeration.current_account_ref !== stored.account_ref) throw restoreAccessDenied();

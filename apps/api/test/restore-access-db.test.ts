@@ -253,20 +253,26 @@ test('restore access: guarded action/record restores, stored reviews, explicit o
       action_key: 'mirror_inbox', visibility: 'delegated_tools',
     };
     function databaseWithManifest() {
+      const wrapSelect = (target: any) => (...args: unknown[]) => {
+        const query = (target.select as (...values: unknown[]) => { from(table: unknown): unknown }).apply(target, args);
+        return { from(table: Parameters<typeof getTableName>[0]) {
+          if (getTableName(table) === 'app_versions') {
+            return { where() { return { limit: async () => [{ manifest: { integration_tools: [declaration] } }] }; } };
+          }
+          return query.from(table);
+        } };
+      };
+      const wrapTransaction = (fn: (tx: unknown) => Promise<unknown>) => db.transaction(async (tx: any) => {
+        const wrapped = Object.create(tx);
+        wrapped.select = wrapSelect(tx);
+        return fn(wrapped);
+      });
       return {
-        select(...args: unknown[]) {
-          const query = (db.select as (...values: unknown[]) => { from(table: unknown): unknown }).apply(db, args);
-          return { from(table: Parameters<typeof getTableName>[0]) {
-            if (getTableName(table) === 'app_versions') {
-              return { where() { return { limit: async () => [{ manifest: { integration_tools: [declaration] } }] }; } };
-            }
-            return query.from(table);
-          } };
-        },
+        select: wrapSelect(db),
         execute: (...args: unknown[]) => (db.execute as (...values: unknown[]) => unknown).apply(db, args),
         insert: (...args: unknown[]) => (db.insert as (...values: unknown[]) => unknown).apply(db, args),
         update: (...args: unknown[]) => (db.update as (...values: unknown[]) => unknown).apply(db, args),
-        transaction: (fn: (tx: unknown) => Promise<unknown>) => db.transaction(fn as never),
+        transaction: wrapTransaction,
       };
     }
     const manifestService = new AppRestoreAccessService({ database: databaseWithManifest() as never, guard: async () => {}, now: () => clock });

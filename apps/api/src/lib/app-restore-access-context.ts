@@ -135,7 +135,7 @@ function sessionConsentLifetime(scope: AppConnectionSessionRecord['scope'], crea
  * account (so the default is pre-selected, never silently widened). Absent or
  * unknown prior state defaults to unselected. */
 async function priorDeftyReadStores(
-  database: RestoreAccessDatabase,
+  database: RestoreAccessDatabase | RestoreAccessTransaction,
   actor: ExperienceCaller,
   installationId: string,
   storeKeys: readonly string[],
@@ -155,7 +155,7 @@ async function priorDeftyReadStores(
  * key (so the require_approval default is pre-selected). Absent/unknown defaults
  * to unselected. */
 async function priorAgentPolicyKeys(
-  database: RestoreAccessDatabase,
+  database: RestoreAccessDatabase | RestoreAccessTransaction,
   actor: ExperienceCaller,
   installationId: string,
   actionKeys: readonly string[],
@@ -183,7 +183,7 @@ function defaultGrant(identity: string, input: Omit<RestoreGrant, 'grant_id' | '
  * Scoped strictly to the authenticated actor's org + owner; no ids are taken
  * from any caller-supplied body. */
 export async function enumerateRestoreAccess(
-  database: RestoreAccessDatabase,
+  database: RestoreAccessDatabase | RestoreAccessTransaction,
   actor: ExperienceCaller,
   nomination: { installation_id: string; target_key: string },
   now: () => number = Date.now,
@@ -253,15 +253,20 @@ export async function enumerateRestoreAccess(
     }
   }
 
-  // action_consents live on each prior session record. Their state is derived from
-  // that session's own authority: a session that no longer held authority (revoked,
-  // disconnected, denied, ...) makes its action consent non-restorable.
+  // action_consents live on each prior session record. A prior session is almost
+  // never `connected` after a reconnect (it is normally `disconnected`,
+  // `not_connected` or expired) — that is exactly the case Restore access exists
+  // for, so session state alone must NOT make an action consent non-restorable.
+  // Only an owner-initiated disconnect does; no durable owner-disconnect signal
+  // is persisted by the connection lifecycle today, so every prior non-current
+  // session's action consent is treated as restorable here, with preselection
+  // following its own expiry (active => preselected, expired => offered but not
+  // preselected). See report for the fallback note.
   for (const session of prior) {
-    const heldAuthority = session.record.state === 'connected';
     for (const consent of session.record.action_consents ?? []) {
       remember(grant({
         grant_id: consent.consent_id, kind: 'action_consent', action_key: consent.action_key,
-        state: grantState(consent.expires_at, heldAuthority ? 'active' : 'revoked', timestamp),
+        state: grantState(consent.expires_at, 'active', timestamp),
         lifetime: deriveRestoreLifetime(consent.expires_at, session.created_at, consent.consent_lifetime ?? null),
       }));
     }
