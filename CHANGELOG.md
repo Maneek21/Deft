@@ -10,6 +10,14 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### 0.3.0-preview.141 candidate - publication pending
+
+- Schema head moves to `0.3.0-preview.135`; the upgrade runs on deploy.
+- Author Kit `0.1.0-alpha.43` (Experience Worker source cap raised from 96 KiB to 112 KiB; apps built against it need this Host or later).
+- Restore access fixes: successor marking, freshness checks in transaction, fallback restorable rules, and review/confirm phase separation in record-mirror approval.
+- Background health and connection status now follow the current lease and are scoped to the connection owner; reconnect flow starts directly for connection actions.
+- Record-mirror approval failures are retryable and terminal on permanent failure; nominations resolve through the owner's human authority.
+
 ### 0.3.0-preview.136 candidate - publication pending
 
 - Scope compact private-record access prompts to write controls on the current
