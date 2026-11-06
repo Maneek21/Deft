@@ -47,10 +47,10 @@ jobs:
       packages: read
     steps:
       - uses: actions/checkout@v7
-      - uses: github/codeql-action/init@v4.38.1
+      - uses: github/codeql-action/init@v4.39.0
         with:
           languages: javascript-typescript
-      - uses: github/codeql-action/analyze@v4.38.1
+      - uses: github/codeql-action/analyze@v4.39.0
         id: analyze
         with:
           output: .ci-codeql-diagnostics
@@ -63,7 +63,7 @@ jobs:
       # Keep GitHub's raw alerts visible, including every unresolved finding.
       # Accepted false positives require explicit GitHub alert dispositions;
       # external SARIF suppressions alone are not assumed to affect its check.
-      - uses: github/codeql-action/upload-sarif@v4.38.1
+      - uses: github/codeql-action/upload-sarif@v4.39.0
         if: always() && steps.analyze.outcome == 'success'
         with:
           sarif_file: .ci-codeql-diagnostics/javascript.sarif
