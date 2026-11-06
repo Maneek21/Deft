@@ -20,7 +20,9 @@ Two findings change the framing of the original brief:
 
 ### Unknown fields are rejected everywhere
 
-A Host at preview.140 rejects an unknown field at every location an App controls. It never ignores one.
+A Host at preview.140 rejected an unknown field at every structural location tested below. It did not ignore one.
+
+Free-form value slots do exist, such as the `seed` map in a record intake (`packages/app-kit/src/record-intake.ts:7`). They don't change the conclusion, because no Host code would read a floor from them. Module artifacts were not part of this test.
 
 The manifest, package, experience reference and bundle schemas are all `z.strictObject`: `packages/app-kit/src/core.ts:1031`, `:1033`, `:1055`, and `packages/app-kit/src/experience.ts:40`, `:58-71`. Every package admission goes through `verifyDeftAppPackageJson` (`core.ts:2068`), which parses against those schemas and then checks each Experience artifact (`core.ts:1941`).
 
@@ -60,7 +62,7 @@ Three cases reach open or later. The first is the one that matters.
 
 1. **Worker features the old Host does not know.** Views come from the Worker at run time, so they are not in the package and no install check can see them.
 
-   #424 adds `connection_action` to buttons. On preview.140 the button parser allows a fixed key list without it (`apps/web/src/lib/app-experience-bridge.ts:177`). An unknown key makes the parser return `null`, a null child fails the parent (`:211-212`), and a failed view revokes the bridge (`:414`). An App under 96 KiB built on alpha.43 that sends this button installs cleanly, then loses its session when that view arrives. This case comes from reading the code. I did not run it in a browser.
+   #424 adds `connection_action` to buttons. On preview.140 the button parser allows a fixed key list without it (`apps/web/src/lib/app-experience-bridge.ts:177`). An unknown key makes the parser return `null`, a null child fails the parent (`:211-212`), and a failed view revokes the bridge (`:414`). The Kit does not filter this: its `render` posts the view unchecked (`packages/app-kit/src/experience-core.ts:271`, **#424**). An App under 96 KiB that sends this button installs cleanly, then loses its session when that view arrives. This case comes from reading the code. I did not run it in a browser.
 
 2. **Host image rollback with the database kept.** A stored 98.6 KiB package fails in `verifiedExperienceBundle` (`apps/api/src/lib/app-experience-service.ts:88`). The `ZodError` is not wrapped, so the user sees `Invalid App action request` (`apps/api/src/routes/app-http-errors.ts:55-60`). This should be rare: the documented downgrade restores the pre-upgrade database as well (`docs/self-hosting.md:774-779`), which removes the package.
 
@@ -80,6 +82,8 @@ This confirms the earlier review. Three things look similar, and none of them is
 
 - The `Dockerfile` defaults it to `0.3.0-preview.16` (`Dockerfile:38`, `:48`, `:68`, `:84`) and `docker-compose.yml` does not pass it. A source-built compose Host therefore reports preview.16 whatever code it runs.
 - `scripts/stage-email-demo-candidate.mjs:114` hardcodes `0.3.0-preview.16+email-stage1.<suffix>`.
+
+The documented demo deploy also builds with compose and sets no version (`deploy/demo/README.md:32`). The live demo reports `0.3.0-preview.140` correctly on `/health`, so its actual deployment must set the value some other way. Rollout step 1 should confirm how.
 
 `compareAppSemver` (`app-service.ts:129`) orders preview numbers correctly: 140 is above 99, `0.3.0` is above any preview, and build metadata is ignored. It does not validate input, though. Tested directly, `compareAppSemver('dev', '0.3.0-preview.141')` returns `1`, meaning a garbled Host version would count as newer and the check would silently pass.
 
@@ -159,13 +163,18 @@ The Kit reads the field. The Host owns the comparison, because the Kit is a buil
 
 ### Enforcement at install
 
-Call the assert function first in `inspectAppPackageJson`, before `verifyDeftAppPackageJson` (`app-service.ts:177`), on the raw parsed `manifest`. Invalid JSON skips the check, and the existing parser reports it.
+Call the assert function first in `inspectAppPackageJson`, before `verifyDeftAppPackageJson` (`app-service.ts:177`), on the raw parsed `manifest`. Apply the existing package size limit (`core.ts:2071`) before this extra parse. Invalid JSON skips the check, and the existing parser reports it.
 
 This one call covers every admission route, and also the re-inspection of stored packages at `apps/api/src/lib/app-runtime-upgrade.ts:112` and `:118`. First-install activation does not re-inspect, so a Host downgraded between stage and activate is caught at open.
 
 ### Enforcement at open
 
-Call the assert function at the top of `verifiedExperienceBundle` (`app-experience-service.ts:77`) on `version.manifest`, before `parse*Manifest` runs. Session creation goes through this function (`:159`), and so do later in-session reads such as data actions (`apps/api/src/lib/app-data-action-service.ts:49`).
+Call the assert function in two places, both on the raw `version.manifest`:
+
+1. **At the top of `verifiedExperienceBundle`** (`app-experience-service.ts:77`), before `parse*Manifest` runs. Opening an App starts with the `targets` request (`apps/web/src/components/apps/installed-app-experience.tsx:322`), which reaches this function with no earlier manifest parse (`app-experience-service.ts:238`). Later in-session reads such as data actions go through it too (`apps/api/src/lib/app-data-action-service.ts:49`).
+2. **In `create`, straight after the version row is loaded and before the Protocol 7 branch** (`app-experience-service.ts:154`). That branch calls `loadReviewedAttachmentApp`, which parses the manifest strictly (`apps/api/src/lib/app-attachment-authority.ts:118`) before `verifiedExperienceBundle` runs at `:159`. Without this second call, a Protocol 7 App such as Email would get a Zod error instead of the floor message when `create` is reached directly.
+
+Some in-session paths parse the manifest before calling `verifiedExperienceBundle`, such as `apps/api/src/lib/app-private-state-adoption-service.ts:71`. A stored manifest the Host cannot parse still fails there with the old error, but only after a rollback and only after the App has failed to open.
 
 The refusal changes no state. The App stays installed and its data is untouched, so it works again once the Host is upgraded.
 
@@ -200,7 +209,7 @@ The code must be added to `publicCodes` in `apps/web/src/lib/app-request-error.t
 - **Host, pure table:** preview ordering, final over preview, build metadata, absent field, garbled Host version.
 - **Frozen future package:** a fixture with an unknown key, an unknown protocol and a high floor must produce `APP_HOST_VERSION_UNSUPPORTED` rather than Zod output. This is the test that protects the ordering.
 - **Routes:** each admission route refuses and creates no `app_installations` or `app_versions` row. An upgrade refusal leaves the active version active.
-- **Open:** a stored floor above the Host returns 409, creates no session, and shows the message through `publicCodes`.
+- **Open:** a stored floor above the Host returns 409 from both `targets` and `create`, creates no session, and shows the message through `publicCodes`. Include a Protocol 7 case whose stored manifest has a key this Host does not know.
 - **Web:** confirm the manifest normaliser in `apps/web/src/lib/apps.ts` tolerates the new field in `/inspect` responses.
 
 ## Rollout
@@ -248,4 +257,5 @@ No database migration or backfill is needed. Existing Apps have no floor and beh
 
 - **Tested:** the rejection table, the 100,966-byte package result and the `compareAppSemver` cases, using Kit source from both commits with Zod 4.6.7 in a throwaway harness outside the repository.
 - **Limits of the test:** the package was synthetic, not the real Email build, and no live Host or database was involved.
-- **Read, not run:** the Host route behaviour, the web error display, the `connection_action` session failure and the rollback error text.
+- **Read, not run:** the Host route behaviour, the web error display, the `connection_action` session failure, the open-path ordering and the rollback error text.
+- **Live check:** one `GET /health` on demo.deft.ing, which reported `0.3.0-preview.140`.
