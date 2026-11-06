@@ -30,14 +30,16 @@ import type { AppRunTransaction } from './app-run-repository.js';
  * happened when the row was queued, and re-gating here would bounce
  * every conservative-trust employee's approved writes.
  */
-import { eq, and, or, sql } from 'drizzle-orm';
+import { eq, and, or, sql, isNull } from 'drizzle-orm';
 import { db, withDbAdvisoryLock } from './db.js';
+import { AppError } from './app-errors.js';
 import {
   agentActions,
   agentChannelEvents,
   agentEmployees,
   messages,
   orgMembers,
+  webSessions,
 } from '@deft/db/schema';
 import type { ToolContext, ToolResult } from './mcp-tools/types.js';
 import type { TrustLevel } from './agent-approval.js';
@@ -129,7 +131,7 @@ export { sanitizeModuleActionParamsForReceipt };
  * record through this resolver. App Runs remain outside MCP action catalogs
  * and budgets; this predicate only owns the human approval handoff. */
 export function isApprovalResolverAction(action: string): boolean {
-  return action === 'email_send' || action === APP_RUN_APPROVAL_ACTION || MCP_ACTION_KINDS.has(action);
+  return action === 'email_send' || action === 'app_record_mirror_nominate' || action === APP_RUN_APPROVAL_ACTION || MCP_ACTION_KINDS.has(action);
 }
 
 const MODULE_MUTATION_ACTIONS: ReadonlySet<string> = new Set(
@@ -840,7 +842,7 @@ async function dispatchAction(
 export async function approveAction(
   actionId: string,
   approverUserId: string,
-  options: { internal?: boolean; appRunFinalGuard?: (tx: AppRunTransaction) => Promise<void> } = {},
+  options: { internal?: boolean; appRunFinalGuard?: (tx: AppRunTransaction) => Promise<void>; humanWebSessionId?: string } = {},
 ): Promise<ApprovalResolverResult> {
   const result = await withDbAdvisoryLock(
     `agent-approval:${actionId}`,
@@ -856,7 +858,7 @@ export async function approveAction(
 async function approveActionLocked(
   actionId: string,
   approverUserId: string,
-  options: { internal?: boolean; appRunFinalGuard?: (tx: AppRunTransaction) => Promise<void> },
+  options: { internal?: boolean; appRunFinalGuard?: (tx: AppRunTransaction) => Promise<void>; humanWebSessionId?: string },
 ): Promise<ApprovalResolverResult> {
   // Pre-checks read immutable fields so they are safe to run before the
   // atomic claim. If any pre-check fails we return without ever flipping
@@ -882,6 +884,16 @@ async function approveActionLocked(
   // terminal retry may create missing receipts/attention artifacts, so it is
   // not a side-effect-free read and must not be reachable cross-org.
   const membership = await loadReviewMembership(approverUserId, row.org_id);
+  // Record-mirror nominations are owner-only: an org admin or another member
+  // must never approve a write against the owner's private mirror consent, and
+  // the internal system path never stands in for the owning human.
+  if (row.action === 'app_record_mirror_nominate' && approverUserId !== row.user_id) {
+    return {
+      status: 'error',
+      code: 'FORBIDDEN',
+      message: 'only the owning user may approve a record-mirror nomination',
+    };
+  }
   const humanCanReview = membership !== null && (
     actionRequesterId(row) === approverUserId
     || membership.role === 'owner'
@@ -920,6 +932,13 @@ async function approveActionLocked(
   // receipt generation, which is itself idempotent.
   if (row.approval_status === 'approved' && !resumesApprovedModule) {
     if (isModuleMutation || isModuleTaskLink) await ensureApprovedModuleReceipt(row);
+    if (row.action === 'app_record_mirror_nominate' && row.result == null) {
+      return {
+        status: 'error',
+        code: 'EXECUTE_FAILED',
+        message: row.error ? row.error.slice(0, 2000) : 'earlier approval attempt failed',
+      };
+    }
     return {
       status: 'approved',
       message: 'already approved',
@@ -935,6 +954,13 @@ async function approveActionLocked(
   }
   if (row.approval_status === 'expired') {
     if (isModuleMutation) await repairExpiredModuleTerminalState(row);
+    if (row.action === 'app_record_mirror_nominate') {
+      return {
+        status: 'error',
+        code: 'EXECUTE_FAILED',
+        message: row.error ? row.error.slice(0, 2000) : 'nomination can no longer be approved',
+      };
+    }
     return {
       status: 'error',
       code: 'NOT_FOUND',
@@ -947,6 +973,13 @@ async function approveActionLocked(
       code: 'INVALID_STATE',
       message: `action ${actionId} is not pending`,
     };
+  }
+
+  // Record-mirror nominations resolve by re-running the owner's ordinary human
+  // review()/confirm() authority — never from the agent's grant — so a receipt
+  // is only ever issued after a fresh consent/account/policy re-check.
+  if (row.action === 'app_record_mirror_nominate') {
+    return resolveRecordMirrorNominationAction(row, approverUserId, options);
   }
 
   // Retained native proposals remain audit records, never replacement sends.
@@ -1335,6 +1368,107 @@ async function approveActionLocked(
     status: 'approved',
     result: parsedResult,
   };
+}
+
+/** Owner-only approval of an agent-nominated record mirror. The nomination is
+ * resolved by re-running the owner's ordinary human review()/confirm() authority
+ * under the owner's current web session, so a receipt is never issued from the
+ * agent's grant. Any consent/account/policy drift fails closed with a clear
+ * app-neutral reason and no receipt. Idempotent: a second approve returns the
+ * stored receipt. */
+async function resolveRecordMirrorNominationAction(
+  row: typeof agentActions.$inferSelect,
+  approverUserId: string,
+  options: { internal?: boolean; humanWebSessionId?: string },
+): Promise<ApprovalResolverResult> {
+  // Only a person approving in the Deft web app can approve: MCP tokens, agents
+  // and internal callers never carry a web session, so they are refused before
+  // the card is claimed.
+  if (options.internal || !options.humanWebSessionId) {
+    return { status: 'error', code: 'FORBIDDEN', message: 'Approve this request in Deft' };
+  }
+  const [session] = await db
+    .select({ id: webSessions.id, expires_at: webSessions.expires_at })
+    .from(webSessions)
+    .where(and(
+      eq(webSessions.id, options.humanWebSessionId),
+      eq(webSessions.user_id, approverUserId),
+      eq(webSessions.org_id, row.org_id),
+      isNull(webSessions.revoked_at),
+    ))
+    .limit(1);
+  if (!session || session.expires_at.getTime() <= Date.now()) {
+    return { status: 'error', code: 'FORBIDDEN', message: 'No active web session for the approving owner' };
+  }
+
+  const claimed = await db.execute(
+    sql`UPDATE agent_actions
+           SET approval_status = 'approved', approved_at = NOW(), approved_by_user_id = ${approverUserId}
+         WHERE id = ${row.id} AND org_id = ${row.org_id} AND approval_status = 'pending'
+         RETURNING id`,
+  );
+  const claimedRows = (claimed as { rows?: unknown[] }).rows ?? [];
+  if (claimedRows.length === 0) {
+    const [winner] = await db.select().from(agentActions).where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id))).limit(1);
+    if (winner?.approval_status === 'approved') {
+      if (winner.result != null) {
+        return { status: 'approved', message: 'already approved', result: winner.result ?? undefined };
+      }
+      return { status: 'error', code: 'EXECUTE_FAILED', message: winner.error ? winner.error.slice(0, 2000) : 'earlier approval attempt failed' };
+    }
+    if (winner?.approval_status === 'rejected') return { status: 'rejected', message: 'already rejected' };
+    if (winner?.approval_status === 'expired') {
+      return { status: 'error', code: 'EXECUTE_FAILED', message: winner.error ? winner.error.slice(0, 2000) : 'nomination can no longer be approved' };
+    }
+    return { status: 'error', code: 'INVALID_STATE', message: `action ${row.id} is no longer pending` };
+  }
+
+  const approver = { org_id: row.org_id, user_id: approverUserId, sid: session.id, access_expires_at: session.expires_at.getTime() };
+  try {
+    const { approveRecordMirrorNomination } = await import('./app-record-mirror-service.js');
+    const receipt = await approveRecordMirrorNomination(approver, row.params);
+    await db.update(agentActions).set({ executed_at: new Date(), result: receipt as never, error: null })
+      .where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id)));
+    return { status: 'approved', result: receipt };
+  } catch (error) {
+    const phase = (error as { phase?: unknown } | null)?.phase;
+    const isReviewPhase = phase === 'review';
+    const isAccessDenied = error instanceof AppError
+      ? error.code === 'APP_ACCESS_DENIED'
+      : (error as { code?: unknown } | null)?.code === 'APP_ACCESS_DENIED';
+    const rawReason = error instanceof Error ? error.message : String(error);
+    let reason: string;
+    if (isAccessDenied) {
+      reason = 'App data access ended';
+    } else if (error instanceof AppError) {
+      reason = rawReason;
+    } else {
+      reason = 'The approval could not be completed. Try again.';
+      console.error('[agent-approval-resolver] approveRecordMirrorNomination failed:', { actionId: row.id, name: error instanceof Error ? error.name : undefined, code: (error as { code?: unknown } | null)?.code });
+    }
+    const sanitized = reason.replace(/\s+/g, ' ').trim().slice(0, 500);
+    const uncertain = !isReviewPhase || isAccessDenied;
+    if (uncertain) {
+      await db.update(agentActions).set({
+        approval_status: 'expired',
+        approved_at: null,
+        approved_by_user_id: null,
+        executed_at: new Date(),
+        result: null,
+        error: sanitized.slice(0, 2000),
+      }).where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id)));
+    } else {
+      await db.update(agentActions).set({
+        approval_status: 'pending',
+        approved_at: null,
+        approved_by_user_id: null,
+        executed_at: null,
+        result: null,
+        error: sanitized.slice(0, 2000),
+      }).where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id)));
+    }
+    return { status: 'error', code: 'EXECUTE_FAILED', message: sanitized };
+  }
 }
 
 /**

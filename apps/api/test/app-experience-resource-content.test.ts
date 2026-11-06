@@ -138,7 +138,7 @@ test('timeout covers held registry, preauthorization, provider and postauthoriza
   const f=fixture(),held=deferred(),original=f.authority.connectionSetup,originalSource=f.authority.sourceRecord;let setup=0,sourceReads=0;
   f.authority.sourceRecord=async(...args)=>{sourceReads++;if(phase==='source-pre'&&sourceReads===1||phase==='source-post'&&sourceReads===2)await held.promise;return originalSource(...args)};
   if(phase==='provider')f.state.handle=async()=>{await held.promise;return structuredClone(document)};
-  f.authority.connectionSetup=async(...args)=>{setup++;if(phase==='pre'&&setup===1||phase==='post'&&setup===3)await held.promise;return original(...args)};
+  f.authority.connectionSetup=async(...args)=>{setup++;if(phase==='pre'&&setup===1||phase==='post'&&setup===2)await held.promise;return original(...args)};
   const registry=async()=>{if(phase==='registry')await held.promise;return f.registry};
   const service=new AppExperienceResourceContentService(f.authority,registry,()=>f.state.time,15);
   await assert.rejects(service.read(caller,sessionId,'inbox',{operation:'read_document',record_id:recordId}),closed);held.resolve();
@@ -164,4 +164,22 @@ test('parent nomination requires a host resolver and an exact saved draft before
   await assert.rejects(service.snapshot(caller,sessionId,'reply',{input:{parent_record_id:recordId},draft_ref:{draft_state_key:'drafts',draft_id:randomUUID(),expected_revision:1}}));
  }
  assert.equal(captured,0);assert.equal(resolved,0);assert.equal(draftReads,0);
+});
+
+test('a single read performs at most two setup reads and two source reads, then emits one content-free timing event', async()=>{
+ const f=fixture();const order:string[]=[],timings:unknown[]=[];let setup=0,source=0;
+ const originalSetup=f.authority.connectionSetup,originalSource=f.authority.sourceRecord;
+ f.authority.connectionSetup=async(...args)=>{setup++;order.push('setup'+setup);return originalSetup(...args)};
+ f.authority.sourceRecord=async(...args)=>{source++;order.push('source'+source);return originalSource(...args)};
+ const originalHandle=f.state.handle;f.state.handle=async(input,context)=>{order.push('adapter');return originalHandle(input,context)};
+ const service=new AppExperienceResourceContentService(f.authority,async()=>f.registry,()=>f.state.time,30000,async()=> 'ask',timing=>{timings.push(timing)});
+ const output=await service.read(caller,sessionId,'inbox',{operation:'read_document',record_id:recordId});
+ assert.equal(output.kind,'document');
+ assert.equal(setup,2);assert.equal(source,2);
+ assert.deepEqual(order,['source1','setup1','adapter','setup2','source2']);
+ assert.equal(timings.length,1);
+ const timing=timings[0] as {outcome:string;authority_calls:number;elapsed_ms:number;authority_ms:number;adapter_ms:number};
+ assert.deepEqual(Object.keys(timing).sort(),['adapter_ms','authority_calls','authority_ms','elapsed_ms','outcome']);
+ assert.equal(timing.outcome,'completed');assert.equal(timing.authority_calls,4);
+ assert.equal(JSON.stringify(timings[0]).includes('Private body'),false);
 });

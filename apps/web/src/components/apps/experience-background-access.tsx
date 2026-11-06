@@ -17,19 +17,29 @@ export function backgroundAccessSummary(result:Result){
  return `Re-established ${parts.join(' and ')||'nothing'}.`+(result.skipped.length?' Background refresh needs an account permission that lasts until revoked; renew the account permission to include it.':'');
 }
 
+// Re-establish background access for one installation/target. Centralises the
+// Host request so both the manual recovery surface and the reconnect path use
+// the same session check and response parsing.
+export async function reestablishBackgroundAccess(installationId: string, targetKey: string): Promise<string> {
+  const anchor = api.getAccessToken();
+  const response = await api.fetch(`/api/app-connection-sessions/installations/${encodeURIComponent(installationId)}/background-access`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ target_key: targetKey }), signal: AbortSignal.timeout(35000),
+  });
+  if (!isSameWebSession(anchor, api.getAccessToken())) throw new Error('Your session changed. Reload and try again.');
+  if (!response.ok) throw new Error(await appApiError(response, 'Background access could not be re-established. Check the account permission and try again.'));
+  return backgroundAccessSummary(parse(await response.json()));
+}
+
 // Manual recovery reissues only the current reviewed sessions.
 // Trusted compatible upgrades ordinarily carry those approvals forward.
 export function ExperienceBackgroundAccess({target,disabled,onBusy}:{target:AppConnectionTarget;disabled:boolean;onBusy:(busy:boolean)=>void}){
  const [busy,setBusy]=useState(false),[notice,setNotice]=useState(''),operation=useRef(false);
  if(target.session?.state!=='connected')return null;
  async function reestablish(){
-  if(operation.current||disabled)return;operation.current=true;setBusy(true);onBusy(true);setNotice('');const anchor=api.getAccessToken();
+  if(operation.current||disabled)return;operation.current=true;setBusy(true);onBusy(true);setNotice('');
   try{
-   const response=await api.fetch(`/api/app-connection-sessions/installations/${encodeURIComponent(target.scope.installation_id)}/background-access`,
-    {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({target_key:target.target_key}),signal:AbortSignal.timeout(35000)});
-   if(!isSameWebSession(anchor,api.getAccessToken()))throw Error('Your session changed. Reload and try again.');
-   if(!response.ok)throw Error(await appApiError(response,'Background access could not be re-established. Check the account permission and try again.'));
-   setNotice(backgroundAccessSummary(parse(await response.json())));
+   setNotice(await reestablishBackgroundAccess(target.scope.installation_id,target.target_key));
   }catch(error){setNotice(error instanceof Error?error.message:'Background access unavailable.');}
   finally{operation.current=false;setBusy(false);onBusy(false);}
  }

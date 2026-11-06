@@ -5,8 +5,8 @@ import test from 'node:test';
 import {authorKitReleaseMetadata} from './prepare-author-kit-release.mjs';
 
 test('released Kit metadata binds exact archive bytes, source commit and Host release',()=>{
-  const input={archive:Buffer.from('packed-kit-fixture'),filename:'deft-app-kit-0.1.0-alpha.42.tgz',
-    version:'0.1.0-alpha.42',host_release:'0.3.0-preview.133',source_commit:'a'.repeat(40)};
+  const input={archive:Buffer.from('packed-kit-fixture'),filename:'deft-app-kit-0.1.0-alpha.43.tgz',
+    version:'0.1.0-alpha.43',host_release:'0.3.0-preview.133',source_commit:'a'.repeat(40)};
   const result=authorKitReleaseMetadata(input);
   assert.equal(result.sha256,createHash('sha256').update(input.archive).digest('hex'));
   assert.equal(result.integrity,'sha512-'+createHash('sha512').update(input.archive).digest('base64'));

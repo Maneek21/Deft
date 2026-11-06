@@ -46,9 +46,9 @@ export function ExperienceComposeFilesControl({ label, files, onSelectFiles, onR
       {extraActions}
     </div>
     {files.length > 0 && <ul className="space-y-1.5" aria-label={label}>
-      {files.map(file => <li key={file.key} className="flex min-w-0 items-center gap-3 rounded-xl bg-[var(--surface-container-low)] py-1.5 pl-3 pr-1">
+      {files.map(file => <li key={file.key} className="flex min-w-0 flex-wrap items-center gap-2 rounded-xl border border-[var(--border-default)] bg-[var(--surface-container-low)] px-3 py-2 sm:flex-nowrap">
         <FileText size={18} aria-hidden="true" className="shrink-0 text-[var(--on-surface-variant)]" />
-        <div className="min-w-0 flex-1"><p className="truncate text-sm" title={file.filename}>{file.filename}</p>
+        <div className="min-w-[140px] flex-1"><p className="truncate text-sm" title={file.filename}>{file.filename}</p>
           <p className={file.status === 'failed' ? 'text-xs text-[var(--error)]' : secondary} role={file.status === 'ready' ? undefined : 'status'}>
             {composeByteLabel(file.byteCount)} · {file.status === 'ready' ? 'Ready' : file.status === 'uploading' ? 'Uploading…' : file.status === 'pending' ? 'Waiting for upload' : file.notice || 'Upload failed. Remove and select again.'}
           </p>

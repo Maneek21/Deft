@@ -14,24 +14,32 @@
 // timezone data is user-editable and a bad value should never crash a
 // background job.
 import { db } from './db.js';
-import { orgs } from '@deft/db/schema';
+import { orgs, users } from '@deft/db/schema';
 import { eq } from 'drizzle-orm';
 
 const DEFAULT_TZ = 'UTC';
+
+/**
+ * True when `tz` is a timezone Intl.DateTimeFormat accepts. Never throws on
+ * untrusted input.
+ */
+export function isValidTimezone(tz: string | null | undefined): tz is string {
+  if (!tz) return false;
+  try {
+    // Throws RangeError on invalid tz.
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Verify a tz string is acceptable to Intl.DateTimeFormat. Returns 'UTC' on
  * any failure so callers can pass through untrusted input.
  */
 function safeTz(tz: string | null | undefined): string {
-  if (!tz) return DEFAULT_TZ;
-  try {
-    // Throws RangeError on invalid tz.
-    new Intl.DateTimeFormat('en-US', { timeZone: tz });
-    return tz;
-  } catch {
-    return DEFAULT_TZ;
-  }
+  return isValidTimezone(tz) ? tz : DEFAULT_TZ;
 }
 
 /**
@@ -178,4 +186,43 @@ export async function getOrgTimezone(orgId: string): Promise<string> {
   } catch {
     return DEFAULT_TZ;
   }
+}
+
+/**
+ * Resolve which timezone a viewer's calendar-day buckets should be computed in.
+ *
+ * Order of precedence:
+ *   1. `requestedTz` — an explicit, client-supplied `?tz=` (validated, so
+ *      untrusted input can never break bucketing)
+ *   2. the user's saved profile timezone (`users.timezone`)
+ *   3. the org timezone
+ *   4. UTC
+ *
+ * Every lookup is best-effort: a missing/deleted user or org falls through
+ * instead of throwing.
+ */
+export async function resolveViewerTimezone(opts: {
+  requestedTz?: string | null;
+  userId?: string | null;
+  orgId?: string | null;
+}): Promise<string> {
+  const requested = opts.requestedTz;
+  if (isValidTimezone(requested)) return requested;
+
+  if (opts.userId) {
+    try {
+      const [row] = await db
+        .select({ tz: users.timezone })
+        .from(users)
+        .where(eq(users.id, opts.userId))
+        .limit(1);
+      const userTz = row?.tz;
+      if (isValidTimezone(userTz)) return userTz;
+    } catch {
+      // fall through to the org timezone
+    }
+  }
+
+  if (opts.orgId) return getOrgTimezone(opts.orgId);
+  return DEFAULT_TZ;
 }

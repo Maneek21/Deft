@@ -3,7 +3,7 @@ import {and,eq} from 'drizzle-orm';
 import {orgMembers,users,webSessions,appResourceBindings,type appRuntimeBindings,type appRuntimeRegistrations} from '@deft/db/schema';
 import {loadRuntimeOwnerTarget} from './app-runtime-owner-target.js';
 import type {AppRunTransaction} from './app-run-repository.js';
-import {APP_RUNTIME_SESSION_MS} from './app-runtime-contract.js';
+import {APP_RUNTIME_SESSION_MS,APP_RUNTIME_SESSION_RESUME_GRACE_MS} from './app-runtime-contract.js';
 
 export type RuntimeRenewalPins={renewable_until:Date|null;renewal_web_session_id:string|null;renewal_operator_role:string|null;renewal_lifetime?:AppConsentLifetime|null};
 export const runtimeRenewalOptedIn=(pins:RuntimeRenewalPins)=>[pins.renewable_until,pins.renewal_web_session_id,pins.renewal_operator_role,pins.renewal_lifetime].some(value=>value!=null);
@@ -35,6 +35,14 @@ export async function runtimeRenewalPersistentPrincipal(tx:AppRunTransaction,inp
  const [human]=await tx.select({kind:users.kind,is_agent:users.is_agent}).from(users).where(eq(users.id,input.operator_user_id));
  return !!member?.active&&member.role===input.role&&['owner','admin','member'].includes(input.role)&&human?.kind==='human'&&human.is_agent===false;
 }
+/** A lapsed `until_revoked` lease is resumable only inside the fixed grace
+ * window after its expiry. Live leases never enter this path; the caller
+ * already proved the exact token/operator/role/epoch/binding authority. */
+export function runtimeSessionResumable(expiresAt:Date,now:Date,graceMs=APP_RUNTIME_SESSION_RESUME_GRACE_MS){const gap=now.getTime()-expiresAt.getTime();return Number.isFinite(gap)&&gap>=0&&gap<=graceMs;}
+/** Resume extends a lapsed `until_revoked` lease by one rolling session window
+ * from the server clock, never wider. It rejects a live, future or mismatched
+ * expectation so a resume can never resurrect or widen any existing lease. */
+export function runtimeResumeDeadline(input:{now:Date;current_expires_at:Date;expected_expires_at:Date;target_expires_at?:Date}){const nowMs=input.now.getTime(),current=input.current_expires_at.getTime(),ceiling=input.target_expires_at?.getTime()??Infinity;if(!Number.isFinite(nowMs)||!Number.isFinite(current)||Number.isNaN(ceiling)||current>=nowMs||ceiling<=nowMs||input.expected_expires_at.getTime()!==current)return null;return new Date(Math.min(ceiling,nowMs+APP_RUNTIME_SESSION_MS));}
 export function runtimeRenewalDeadline(input:{now:Date;current_expires_at:Date;expected_expires_at:Date;renewable_until:Date|null;principal_expires_at:Date|null;target_expires_at?:Date;renewal_lifetime?:AppConsentLifetime}){
  const values=[input.now,input.current_expires_at,input.expected_expires_at,...(input.renewable_until?[input.renewable_until]:[]),...(input.principal_expires_at?[input.principal_expires_at]:[]),...(input.target_expires_at?[input.target_expires_at]:[])].map(value=>value.getTime());
  if(values.some(value=>!Number.isFinite(value))||(input.renewal_lifetime==='until_revoked'?(input.renewable_until!==null||input.principal_expires_at!==null):(!input.renewable_until||!input.principal_expires_at)))return null;

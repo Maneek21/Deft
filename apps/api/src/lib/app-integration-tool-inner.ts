@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
-import {canonicalAppDataJson,AppDataOperationInputSchema} from '@deft/app-kit/core';
-import {AppIntegrationToolDeclarationSchema,AppIntegrationToolRuntimeRequestSchema,AppIntegrationToolRuntimeAuthorityRequestSchema} from '../../../../packages/app-kit/src/app-integration-tools.js';
+import {canonicalAppDataJson} from '@deft/app-kit/core';
+import {AppIntegrationToolDeclarationSchema,AppIntegrationToolRuntimeRequestSchema,AppIntegrationToolRuntimeAuthorityRequestSchema,isValidAppIntegrationToolInnerInput} from '../../../../packages/app-kit/src/app-integration-tools.js';
 
 const digest=(value:unknown)=>'sha256:'+createHash('sha256').update(canonicalAppDataJson(value)).digest('hex');
 /** Runtime can nominate only the inner operation admitted by the original signed
@@ -14,10 +14,10 @@ export function assertAppIntegrationToolInner(declaration:unknown,original:unkno
  if(!isDeepStrictEqual(pins,checkPins)||input_digest!==digest(input)||declared.key!==request.tool_key||declared.operation!==request.tool_operation||declared.store_key!==request.store_key
   ||inner===null&&(declared.operation!=='read'||declared.data_operations.length!==0)
   ||inner!==null&&(!declared.data_operations.includes(inner.operation)||inner.store_key!==request.store_key
-    ||(['prepare_action','prepare_resource_action'].includes(inner.operation)?inner.action_key!==declared.action_key:inner.action_key!==undefined)))throw new Error('APP_INTEGRATION_TOOL_INNER_DENIED');
+    ||(['prepare_action','prepare_resource_action','prepare_record_mirror'].includes(inner.operation)?inner.action_key!==declared.action_key:inner.action_key!==undefined)))throw new Error('APP_INTEGRATION_TOOL_INNER_DENIED');
  if(inner){
   const deny=()=>{throw new Error('APP_INTEGRATION_TOOL_INNER_DENIED');};
-  if(!AppDataOperationInputSchema.safeParse({operation:inner.operation,input:inner.input}).success||inner.input.store_key!==request.store_key||inner.input_digest!==digest({operation:inner.operation,input:inner.input}))deny();
+  if(!isValidAppIntegrationToolInnerInput(inner.operation,inner.input)||inner.input.store_key!==request.store_key||inner.input_digest!==digest({operation:inner.operation,input:inner.input}))deny();
   const mapped=declared.input_pins.filter(pin=>pin.operation===inner.operation);
   for(const pin of mapped){
    if(!Object.hasOwn(input,pin.outer_key)){if(pin.required||inner.input[pin.inner_field]!==request.request_id)deny();}

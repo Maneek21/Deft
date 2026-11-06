@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildStackedLayout, type StackedLayoutSource } from '../src/app/(app)/dashboard/grid/responsive-layout.js';
+import {
+  buildStackedLayout,
+  dashboardGridInteractionConfig,
+  type StackedLayoutSource,
+} from '../src/app/(app)/dashboard/grid/responsive-layout.js';
 
 const sources: StackedLayoutSource[] = [
   { i: 'today', x: 0, y: 0, w: 8, h: 4, minH: 3 },
@@ -29,4 +33,18 @@ test('saved narrow layouts preserve vertical order and clamp height bounds', () 
     { i: 'calendar', y: 5, w: 4, h: 6 },
     { i: 'today', y: 11, w: 4, h: 3 },
   ]);
+});
+
+test('only edit mode enables grid drag and resize under the v2 interaction config', () => {
+  const readOnly = dashboardGridInteractionConfig(false);
+
+  assert.equal(readOnly.dragConfig.enabled, false);
+  assert.equal(readOnly.dragConfig.handle, '.widget-drag-handle');
+  assert.equal(readOnly.resizeConfig.enabled, false);
+  assert.deepEqual(readOnly.resizeConfig.handles, ['se', 'e', 's']);
+
+  const edit = dashboardGridInteractionConfig(true);
+
+  assert.equal(edit.dragConfig.enabled, true);
+  assert.equal(edit.resizeConfig.enabled, true);
 });

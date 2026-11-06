@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { experienceDocumentStyleValue as style, experienceDocumentPresentation } from './app-experience-document-presentation';
+import { createExperiencePresentationElement } from './app-experience-safe-document';
 
 test('newsletter and receipt presentation retains local type, spacing, table and colour values', () => {
   for (const [property, value] of [['width','600px'],['max-width','100%'],['padding','24px 16px'],['background-color','#ffffff'],['color','#202124'],['font-size','24px'],['font-family','Arial, sans-serif'],['text-align','center'],['border','1px solid #ddd'],['border-collapse','collapse']]) assert.ok(style(property,value), `${property}:${value}`);
@@ -30,4 +31,18 @@ test('source-backed centered tables, auto margins and bounded radii survive with
  for(const [property,value] of [['margin','0 auto'],['margin-left','auto'],['border-radius','20px 20px 0 0'],['border-top-left-radius','20px']])assert.ok(style(property,value));
  for(const [property,value] of [['padding','auto'],['margin','-1px auto'],['margin','auto auto auto auto auto'],['border-radius','1000px'],['border-radius','url(https://tracking.test)'],['border-radius','calc(100vw)']])assert.equal(style(property,value),null);
  const table={tagName:'TABLE',style:Object.assign([],{getPropertyValue:()=>''}),getAttribute:(key:string)=>key==='align'?'center':null,querySelectorAll:()=>[]};const rendered=experienceDocumentPresentation(table as unknown as HTMLElement);assert.ok(rendered.includes('margin-left:auto'));assert.ok(rendered.includes('margin-right:auto'));
+});
+
+test('source-backed HTML and image surfaces keep a readable light canvas with a token border and shadow',()=>{
+ const documentBefore=globalThis.document;
+ class StubElement { className='';textContent='';innerHTML='';style:Record<string,string>={};querySelectorAll(){return[];}setAttribute(){} }
+ (globalThis as {document:unknown}).document={createElement:()=>new StubElement()};
+ try{
+  const wrapper=createExperiencePresentationElement({format:'plain',content:'Rendered body'},
+   [{image_ref:'a'.repeat(64),kind:'cid' as const}]) as unknown as StubElement;
+  assert.equal(wrapper.style.color,'#202124','sender-authored HTML keeps an explicitly readable text colour');
+  assert.equal(wrapper.style.backgroundColor,'#fff','the message canvas stays light in both host themes');
+  assert.ok(wrapper.style.boxShadow.includes('0 0 0 1px var(--border-default'),'the light canvas is framed by the shared border token');
+  assert.ok(wrapper.style.boxShadow.includes('var(--shadow-sm'),'the light canvas lifts off the surrounding host surface');
+ }finally{(globalThis as {document:unknown}).document=documentBefore;}
 });

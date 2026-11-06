@@ -13,6 +13,7 @@
  * reach into @/lib/api on their own.
  */
 import { api } from '@/lib/api';
+import { getUserTimezone } from '@/lib/time';
 
 // ───── domain types (re-exported so widgets don't import from page.tsx) ─────
 
@@ -160,7 +161,9 @@ async function ok<T>(p: Promise<Response>): Promise<T | null> {
 
 /** Concrete facade built on the in-repo api client. Swap this impl later. */
 export const widgetApi: WidgetApiFacade = {
-  getDashboardCore: () => ok<DashboardCore>(api.get('/api/dashboard')),
+  getDashboardCore: () =>
+    // Bucket "due today"/"overdue" in the viewer's timezone, not the server's.
+    ok<DashboardCore>(api.get(`/api/dashboard?tz=${encodeURIComponent(getUserTimezone())}`)),
   getInsights: () => ok<Insights>(api.get('/api/dashboard/my-insights')),
   getAgentActivity: async () => (await ok<AgentActivity[]>(api.get('/api/dashboard/agent-activity'))) ?? [],
   getAgentEmployees: async () => {

@@ -16,7 +16,7 @@ class Element {
   find(predicate:(value:Element)=>boolean):Element|undefined{return predicate(this)?this:this.children.map(child=>child.find(predicate)).find(Boolean);}
 }
 
-async function fixture(current=()=>true){
+async function fixture(current=()=>true,listed=true){
   const documentBefore=globalThis.document,createBefore=URL.createObjectURL,revokeBefore=URL.revokeObjectURL;
   const created:Blob[]=[],revoked:string[]=[];const wrapper=new Element('div');
   globalThis.document={createElement:(tag:string)=>new Element(tag)} as unknown as Document;
@@ -24,7 +24,7 @@ async function fixture(current=()=>true){
   const file={file_ref:'sha256:'+'1'.repeat(64),filename:'synthetic-brief.pdf',media_type:'application/pdf',size_bytes:8,disposition:'attachment' as const,preview:'pdf' as const};
   const bytes=new TextEncoder().encode('%PDF-1.7');let reads=0;
   const dispose=mountExperienceDataSourceFiles({wrapper:wrapper as unknown as HTMLElement,signal:new AbortController().signal,current,
-    list:async()=>[file],read:async()=>{reads++;return{bytes:new Uint8Array(bytes),media_type:file.media_type,filename:file.filename};},source:async()=>({bytes:new Uint8Array(),media_type:'message/rfc822',filename:'message.eml'})});
+    list:async()=>listed?[file]:[],read:async()=>{reads++;return{bytes:new Uint8Array(bytes),media_type:file.media_type,filename:file.filename};},source:async()=>({bytes:new Uint8Array(),media_type:'message/rfc822',filename:'message.eml'})});
   await Promise.resolve();
   return {wrapper,created,revoked,reads:()=>reads,dispose,restore:()=>{dispose();globalThis.document=documentBefore;URL.createObjectURL=createBefore;URL.revokeObjectURL=revokeBefore;}};
 }
@@ -65,4 +65,22 @@ test('actual scoped public source and attachment ports download original/ZIP and
   await wrapper.find(n=>n.textContent==='Download listed attachments (.zip)')!.onclick!({preventDefault(){}});assert.equal(blobs[1].type,'application/zip');assert.deepEqual(operations,['resource_list_files','resource_read_source','resource_read_file']);assert.equal(revoked.length,2);
   live=false;await wrapper.find(n=>n.textContent==='Download original')!.onclick!({preventDefault(){}});assert.equal(operations.length,3);
  }finally{dispose();globalThis.document=before;URL.createObjectURL=create;URL.revokeObjectURL=revoke;}
+});
+
+test('listed attachments open immediately as chips while an original-only section stays collapsed',async()=>{
+ const listed=await fixture();
+ try{
+  const section=listed.wrapper.children[0]!;
+  assert.equal(section.tag,'details');
+  assert.ok(section.attrs.has('open'),'attachments are visible without opening the section');
+  const chip=listed.wrapper.find(value=>value.className==='ex-stack ex-stack-horizontal ex-attachment-chip');
+  assert.ok(chip,'each listed attachment renders as a chip');
+  assert.ok(chip.find(value=>value.className==='ex-attachment-name'),'the filename uses the wrapping chip label');
+ }finally{listed.restore();}
+ const originalOnly=await fixture(()=>true,false);
+ try{
+  const section=originalOnly.wrapper.children[0]!;
+  assert.equal(section.attrs.has('open'),false,'an original-only section stays tucked away');
+  assert.equal(originalOnly.wrapper.find(value=>value.className==='ex-stack ex-stack-horizontal ex-attachment-chip'),undefined);
+ }finally{originalOnly.restore();}
 });

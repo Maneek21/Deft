@@ -1,4 +1,7 @@
 import test from 'node:test';import assert from 'node:assert/strict';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { ExperienceRecordOriginalFilesView } from '../components/apps/experience-record-original-files';
 import {createOriginalFileCopies,recordCopySource,verifyFileCopy,type FileCopyNode,type OriginalFileState} from './app-experience-file-copy';
 import {createExperienceRecordWriter,type ExperienceRecordRow} from './app-experience-record-writer';
 import {createExperienceDataClient,appDataInputDigest} from './app-experience-data-client';
@@ -54,10 +57,18 @@ test('actual Worker bridge refuses file_copy before dispatch and never carries f
 
 test('actual trusted selector renders per-file availability and status-only uncertain recovery',async()=>{
  const React=await import('react'),{renderToStaticMarkup}=await import('react-dom/server'),{ExperienceRecordOriginalFilesView}=await import('../components/apps/experience-record-original-files');
- const render=(state:OriginalFileState['state'],disabled=false,current=true)=>renderToStaticMarkup(React.createElement(ExperienceRecordOriginalFilesView,{files:[{file,state,notice:''}],busy:false,notice:'',disabled,current,include:()=>{},omit:()=>{},check:()=>{}}));
+ const render=(state:OriginalFileState['state'],disabled=false,current=true)=>renderToStaticMarkup(React.createElement(ExperienceRecordOriginalFilesView,{files:[{file,state,notice:''}],busy:false,notice:'',disabled,current,saved:true,include:()=>{},omit:()=>{},check:()=>{}}));
  assert.match(render('available'),/>Include<.*>Omit</);assert.doesNotMatch(render('saved'),/>Include<|>Check status<\/button>/);assert.match(render('saved'),/>Included</);assert.doesNotMatch(render('source_only'),/>Include</);
  assert.match(render('unconfirmed',true),/<button type="button">Check status<\/button>/);assert.match(render('unconfirmed',true,false),/<button type="button" disabled="">Check status<\/button>/);
  assert.match(render('available',true),/disabled=""[^>]*>Include</);
+});
+test('original attachment rows render bordered Deft pills without changing the exact button markup',async()=>{
+ const React=await import('react'),{renderToStaticMarkup}=await import('react-dom/server'),{ExperienceRecordOriginalFilesView}=await import('../components/apps/experience-record-original-files');
+ const markup=renderToStaticMarkup(React.createElement(ExperienceRecordOriginalFilesView,{files:[{file,state:'available',notice:''}],busy:false,notice:'',disabled:false,current:true,saved:true,include:()=>{},omit:()=>{},check:()=>{}}));
+ for(const className of ['rounded-xl border border-[var(--border-default)]','[&amp;_button]:min-h-9','[&amp;_button]:rounded-full','[&amp;_button]:bg-[var(--surface-container-high)]','[&amp;_button]:px-3','[&amp;_button]:py-1','[&amp;_button]:font-medium','[&amp;_button:disabled]:opacity-50'])assert.ok(markup.includes(className),className);
+ assert.match(markup,/<button type="button">Include<\/button>/);
+ assert.match(markup,/<button type="button">Omit<\/button>/);
+ assert.match(renderToStaticMarkup(React.createElement(ExperienceRecordOriginalFilesView,{files:[{file,state:'unconfirmed',notice:''}],busy:false,notice:'',disabled:false,current:true,include:()=>{},omit:()=>{},check:()=>{}})),/<button type="button">Check status<\/button>/);
 });
 
 test('late source/copy results after disposal or revocation publish no saved draft state',async()=>{
@@ -71,4 +82,15 @@ test('status recovery cannot adopt a later raced revision instead of the exact c
  const writer=createExperienceRecordWriter({initial:stored,current:()=>true,signal,validate:()=>{},read:async()=>({...stored,revision:3,content_digest:'sha256:'+'e'.repeat(64)}),save:async()=>stored,change:()=>{}});
  const controller=createOriginalFileCopies({node,writer:()=>writer,current:()=>true,locked:()=>false,signal,change:()=>{},ports:{listOriginals:async()=>[file],copyOriginal:async(_n,before,_s,_f,fileId)=>{copyCalls++;stored=copied(before,fileId);throw Error('Lost reply');},copyStatus:async()=>{statusCalls++;return stored;}}});
  await controller.load();assert.equal(await controller.include(file.file_ref),false);assert.equal(await controller.check(),false);assert.equal(writer.snapshot.state,'blocked');assert.equal(writer.snapshot.row.revision,1);assert.equal(await controller.include(file.file_ref),false);assert.equal(copyCalls,1);assert.equal(statusCalls,1);controller.dispose();writer.dispose();
+});
+
+
+test("original attachments show save note and disabled Include before first save (UI-12)", () => {
+  const fileState: any = { file: { file_ref: "sha256:" + "b".repeat(64), filename: "synthetic.pdf", media_type: "application/pdf", size_bytes: 1840, disposition: "attachment", preview: "pdf" }, state: "available", notice: "" };
+  const before = renderToStaticMarkup(createElement(ExperienceRecordOriginalFilesView as any, { files: [fileState], busy: false, notice: "", disabled: false, saved: false, current: true, include: () => {}, omit: () => {}, check: () => {} }));
+  assert.ok(before.includes("Save the draft to include original files"));
+  assert.ok(/disabled=""/.test(before) && before.includes(">Include"));
+  const after = renderToStaticMarkup(createElement(ExperienceRecordOriginalFilesView as any, { files: [fileState], busy: false, notice: "", disabled: false, saved: true, current: true, include: () => {}, omit: () => {}, check: () => {} }));
+  assert.ok(!after.includes("Save the draft to include original files"));
+  assert.ok(!/disabled=""/.test(after));
 });

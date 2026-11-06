@@ -1,4 +1,5 @@
-import type { Layout } from 'react-grid-layout';
+import type { LayoutItem } from 'react-grid-layout';
+import type { DragConfig, ResizeConfig } from 'react-grid-layout/core';
 import type { BreakpointLayoutEntry } from '../lib/widget-types';
 
 export type StackedLayoutSource = {
@@ -20,7 +21,7 @@ export function buildStackedLayout(
   sources: StackedLayoutSource[],
   columns: number,
   overrides?: BreakpointLayoutEntry[],
-): Layout[] {
+): LayoutItem[] {
   const safeColumns = Math.max(1, Math.floor(columns));
   const overrideById = new Map(overrides?.map((entry) => [entry.i, entry]) ?? []);
 
@@ -41,7 +42,7 @@ export function buildStackedLayout(
     const minH = Math.max(1, source.minH);
     const requestedH = Math.max(minH, position.h);
     const h = source.maxH === undefined ? requestedH : Math.min(requestedH, source.maxH);
-    const entry: Layout = {
+    const entry: LayoutItem = {
       i: source.i,
       x: 0,
       y: nextY,
@@ -55,4 +56,19 @@ export function buildStackedLayout(
     nextY += h;
     return entry;
   });
+}
+
+/**
+ * Map dashboard edit state onto react-grid-layout v2's interaction configs.
+ * v2 has no flat isDraggable/isResizable props, and its drag/resize defaults are
+ * enabled — a read-only dashboard must explicitly turn both off.
+ */
+export function dashboardGridInteractionConfig(editMode: boolean): {
+  dragConfig: Partial<DragConfig>;
+  resizeConfig: Partial<ResizeConfig>;
+} {
+  return {
+    dragConfig: { enabled: editMode, handle: '.widget-drag-handle' },
+    resizeConfig: { enabled: editMode, handles: ['se', 'e', 's'] },
+  };
 }
