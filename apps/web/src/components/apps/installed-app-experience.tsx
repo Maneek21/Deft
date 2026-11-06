@@ -21,6 +21,8 @@ import { createExperienceConnection, experienceAuthorityResponse, ExperienceAuth
 import { readExperienceAuthority, readExperienceAuthorityPair } from '@/lib/app-experience-revalidation';
 import { useAuth } from '@/lib/auth-context';
 import { appApiError } from '@/lib/apps';
+import { backgroundAccessSummary, reestablishBackgroundAccess } from './experience-background-access';
+import { dispatchConnectionAction as dispatchConnectionActionLib, parseExperienceAccountTarget } from '@/lib/app-experience-connection-action';
 import { AppRequestError, readAppRequestError, appRequestFailureMessage, experienceStartupFailureMessage, reportAppRequestFailure } from '@/lib/app-request-error';
 import { createExperienceSuspension, experienceOperationAllowedWhileHidden } from '@/lib/app-experience-suspension';
 import { ExperiencePreferences } from './experience-preferences';
@@ -87,6 +89,8 @@ const recordStoreLimit = (store: Readonly<{ max_record_bytes: number; max_files:
 const retireSession = (id: string) => api.fetch(`${root}/sessions/${encodeURIComponent(id)}`, {
   method: 'DELETE', keepalive: true,
 }).catch(() => undefined);
+
+// parseExperienceAccountTarget is imported from @/lib/app-experience-connection-action.
 
 export function InstalledAppExperience({ installationId, experienceKey }: {
   installationId: string; experienceKey: string;
@@ -336,8 +340,10 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
           || new Set(targets.targets.map((item: { key: string }) => item.key)).size !== targets.targets.length) {
           throw new AppRequestError('Private source list is invalid.','APP_TARGET_CATALOG_INVALID');
         }
+        const parsedTargets = (targets.targets.map(parseExperienceAccountTarget) as Array<ExperienceAccountTarget | null>).filter((item): item is ExperienceAccountTarget => item !== null);
+        targets.targets = parsedTargets;
         if (!openingCurrent()) return;
-        setResourceTargets(targets.targets);
+        setResourceTargets(parsedTargets);
         const preferenceScope={orgId:org.id,userId:user.id,installationId};
         const preferenceKey=experienceTargetPreferenceKey(preferenceScope);
         const selectedTarget=targetPreference.select(preferenceScope,targets.targets,openingCurrent,
@@ -590,7 +596,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     type ChildValue={session:InstalledExperienceSession;exposure:ExperienceExposureStatus;lease:ReturnType<typeof createExperienceLease>;client:typeof dataClient};
     const createdRecords=new Map<string,AccountChild<ChildValue>>(),routedRuns=new Map<string,AccountChild<ChildValue>>();
     const accounts=createExperienceAccountRouting<ChildValue,Awaited<ReturnType<typeof dataClient.select>>>({current:locallyCurrent,
-      catalog:async signal=>{const response=await api.fetch(`${root}/${encodeURIComponent(installationId)}/${encodeURIComponent(experienceKey)}/targets`,{signal,cache:'no-store'});if(!response.ok)throw Error('Account catalog unavailable');const body=await response.json();if(body.schema_version!=='deft.experience_targets.v1'||!Array.isArray(body.targets))throw Error('Account catalog invalid');return body.targets;},
+      catalog:async signal=>{const response=await api.fetch(`${root}/${encodeURIComponent(installationId)}/${encodeURIComponent(experienceKey)}/targets`,{signal,cache:'no-store'});if(!response.ok)throw Error('Account catalog unavailable');const body=await response.json();if(body.schema_version!=='deft.experience_targets.v1'||!Array.isArray(body.targets))throw Error('Account catalog invalid');return (body.targets.map(parseExperienceAccountTarget) as Array<ExperienceAccountTarget | null>).filter((item): item is ExperienceAccountTarget => item !== null);},
       open:async(targetKey,signal)=>{
         if(targetKey===(session.resource_target_key??resourceTarget)){if(!exposure||!lease)throw Error('Account review required');const target=await dataClient.select(session.bundle.record_store_keys?.[0]??'drafts',signal);return {targetKey,accountRef:target.account.account_ref,label:target.account.label,value:{session,exposure,lease,client:dataClient}};}
         const response=await api.fetch(`${root}/${encodeURIComponent(installationId)}/${encodeURIComponent(experienceKey)}/sessions`,{method:'POST',signal,body:JSON.stringify({resource_target_key:targetKey})});if(!response.ok)throw Error('Account unavailable');const child=normalizeInstalledExperienceSession(await response.json());
@@ -720,29 +726,37 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     }};
     const dispatchConnectionAction=async(action:ExperienceConnectionAction)=>{
       if(!locallyCurrent()||composerOpen.current||connectionBusyRef.current)return;
-      const targetKey=action.target_key??session.resource_target_key??resourceTarget;
-      if(action.kind==='restore_access'){setRestoreAccess({installationId,targetKey});}
-      else if(action.kind==='reconnect'){
-        setRestoreAccess(null);
-        if(!targetKey){await showSettings(true);return;}
-        const currentTarget=session?.resource_target_key??resourceTarget;
-        if(targetKey!==currentTarget)setResourceTarget(targetKey);
-        connectionBusy(true);
-        try{
-          const sessionTag=await appConnectionSessionTag(sessionCacheScope??'');
-          const ports={identity:{installationId,experienceKey,orgId:session!.pin.org_id,ownerId:session!.pin.user_id,sessionTag},storage:sessionStorage,current:()=>locallyCurrent(),fetch:(path:string,init:RequestInit)=>api.fetch(path,init),includeUpgrades:!!session?.bundle?.record_store_keys?.length};
-          const url=await beginAppConnection(ports,targetKey);
-          if(!locallyCurrent())return;
-          onConnectionNavigation(null);
-          if(typeof window!=='undefined'&&typeof window.location?.assign==='function')window.location.assign(url);
-        }catch(error){
-          setRenewalNotice(error instanceof Error?error.message:'Account setup is unavailable.');
-          await showSettings(true);
-        }finally{
-          connectionBusy(false);
-        }
-      }
-      else{setRestoreAccess(null);await showSettings(true,'access');}
+      const currentTarget=session?.resource_target_key??resourceTarget;
+      let catalogRows:ExperienceAccountTarget[]=[];
+      try{catalogRows=await accounts.catalog(sourceNominationAbort.signal) as ExperienceAccountTarget[];}
+      catch{catalogRows=resourceTargets;}
+      await dispatchConnectionActionLib(action,currentTarget,catalogRows,{
+        showSettings:async(open=true,section?:string)=>{ if(section) await showSettings(open,section as ExperienceSettingsSection); else await showSettings(open); },
+        setResourceTarget,
+        beginConnection:async(targetKey:string)=>{
+          connectionBusy(true);
+          try{
+            const sessionTag=await appConnectionSessionTag(sessionCacheScope??'');
+            const ports={identity:{installationId,experienceKey,orgId:session!.pin.org_id,ownerId:session!.pin.user_id,sessionTag},storage:sessionStorage,current:()=>locallyCurrent(),fetch:(path:string,init:RequestInit)=>api.fetch(path,init),includeUpgrades:!!session?.bundle?.record_store_keys?.length};
+            const url=await beginAppConnection(ports,targetKey);
+            if(!locallyCurrent())return;
+            onConnectionNavigation(null);
+            if(typeof window!=='undefined'&&typeof window.location?.assign==='function')window.location.assign(url);
+          }finally{
+            connectionBusy(false);
+          }
+        },
+        reestablishBackgroundAccess:async(targetKey:string)=>{
+          connectionBusy(true);
+          try{
+            return await reestablishBackgroundAccess(installationId,targetKey);
+          }finally{
+            connectionBusy(false);
+          }
+        },
+        openRestore:(targetKey:string|null)=>{ if(targetKey===null) setRestoreAccess(null); else setRestoreAccess({installationId,targetKey}); },
+        notice:(message:string)=>{ setRenewalNotice(message); },
+      });
     };
     const sendViewEvent=(event:unknown)=>{
       if(event&&typeof event==='object'&&(event as {kind?:unknown;node_id?:unknown}).kind==='click'){

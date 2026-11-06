@@ -1,13 +1,16 @@
 import { z } from 'zod';
+import { ExperienceConnectionActionSchema as AppNextStepSchema, EXPERIENCE_CONNECTION_ACTION_KINDS as APP_NEXT_STEP_KINDS } from '@deft/app-kit/experience/core';
+export { AppNextStepSchema, APP_NEXT_STEP_KINDS };
 
 /** Fixed enum of recovery steps a Host denial may point at. App-neutral: the
  * owning app supplies the wording and the navigation; the Host only ever emits
- * a bounded, validated step, never free text or provider callbacks. */
-export const APP_NEXT_STEP_KINDS = ['restore_access', 'reconnect', 'review_consent'] as const;
+ * a bounded, validated step, never free text or provider callbacks. Re-exported
+ * from the Kit's `ExperienceConnectionActionSchema` so there is one schema. */
 export type AppNextStepKind = (typeof APP_NEXT_STEP_KINDS)[number];
 
 /** Public, stable 403 `details.next_step` contract. A Host denial attaches one
- * validated step; the App performs the navigation and wording.
+ * validated step; the App performs the navigation and wording. This is the Kit's
+ * `ExperienceConnectionActionSchema` re-exported, not a duplicate.
  *
  * - `kind` - always present, one of `reconnect` | `restore_access` | `review_consent`.
  * - `installation_id` - optional UUID; supplied for `reconnect` and
@@ -22,12 +25,6 @@ export type AppNextStepKind = (typeof APP_NEXT_STEP_KINDS)[number];
  * but a `reconnect`/`restore_access` step always carries `installation_id` and
  * `target_key` so the App can act without guessing. Unknown kinds, extra keys
  * and malformed ids are dropped by `appHttpNextStep`, never echoed. */
-export const AppNextStepSchema = z.strictObject({
-  kind: z.enum(APP_NEXT_STEP_KINDS),
-  installation_id: z.string().uuid().optional(),
-  target_key: z.string().regex(/^[a-z][a-z0-9_]{0,47}$/u).optional(),
-  consent_id: z.string().uuid().optional(),
-});
 export type AppNextStep = z.infer<typeof AppNextStepSchema>;
 
 /** Validate an untrusted next_step value. Returns undefined when it is

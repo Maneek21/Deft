@@ -4,8 +4,9 @@ import {
   ExperienceAccountTargetSchema,
   ExperienceConnectionActionSchema,
   ExperienceAccountTargetHealthSchema,
+  ExperienceBackgroundHealthSchema,
+  EXPERIENCE_BACKGROUND_HEALTH_REASONS,
 } from '../src/experience-account.js';
-
 test('account target admits owner health and treats a missing health as optional (unknown)', () => {
   assert.deepEqual(ExperienceAccountTargetSchema.parse({ key: 'primary', label: 'Primary source' }),
     { key: 'primary', label: 'Primary source' });
@@ -23,6 +24,14 @@ test('account target health requires a valid connection state and a well-formed 
   assert.equal(ExperienceAccountTargetHealthSchema.safeParse({ connection: 'connected', background: { state: 'healthy', since: 'not-a-date', reason: 'live' } }).success, false);
   assert.equal(ExperienceAccountTargetHealthSchema.safeParse({ connection: 'connected', background: { state: 'healthy', since: '2026-11-04T00:00:00.000Z', reason: 'live' } }).success, true);
   assert.equal(ExperienceAccountTargetHealthSchema.safeParse({ connection: 'connected', background: { state: 'healthy', since: '2026-11-04T00:00:00.000Z', reason: 'live', extra: true } }).success, false);
+});
+
+test('background health reason is a closed enum', () => {
+  for (const reason of EXPERIENCE_BACKGROUND_HEALTH_REASONS) {
+    assert.equal(ExperienceBackgroundHealthSchema.safeParse({ state: 'healthy', since: '2026-11-04T00:00:00.000Z', reason }).success, true);
+  }
+  assert.deepEqual([...EXPERIENCE_BACKGROUND_HEALTH_REASONS], ['live', 'lapsed', 'expired', 'revoked']);
+  assert.equal(ExperienceBackgroundHealthSchema.safeParse({ state: 'healthy', since: '2026-11-04T00:00:00.000Z', reason: 'paused' }).success, false);
 });
 
 test('connection action admits the closed kinds and bounded ids, never free text', () => {

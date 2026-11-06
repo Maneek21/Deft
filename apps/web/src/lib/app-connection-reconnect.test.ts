@@ -112,5 +112,6 @@ test('installed-app and settings port builders agree on includeUpgrades for the 
 test('dispatcher reconnect path checks current before navigating and falls back to settings on failure', () => {
   const installed = readFileSync(new URL('../components/apps/installed-app-experience.tsx', import.meta.url), 'utf8');
   assert.match(installed, /if\(!locallyCurrent\(\)\)return;/);
-  assert.match(installed, /await showSettings\(true\);/);
+  const action = readFileSync(new URL('./app-experience-connection-action.ts', import.meta.url), 'utf8');
+  assert.match(action, /await ports\.showSettings\(true\)/);
 });
