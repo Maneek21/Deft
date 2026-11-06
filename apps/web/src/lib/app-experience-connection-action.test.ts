@@ -45,6 +45,14 @@ test('connected target calls reestablish once and not beginConnection', async ()
   assert.deepEqual(calls.notice, ['re-established']);
 });
 
+test('connected target with ended background lease still reestablishes (not beginConnection)', async () => {
+  const { ports, calls } = makePorts();
+  const action: ExperienceConnectionAction = { kind: 'reconnect', target_key: 'target' };
+  await dispatchConnectionAction(action, 'current', [{ key: 'target', label: 'T', health: { connection: 'connected', background: { state: 'ended', since: '2026-01-01T00:00:00Z', reason: 'expired' } } } as any], ports);
+  assert.equal(calls.reestablish.length, 1);
+  assert.equal(calls.beginConnection.length, 0);
+});
+
 test('disconnected target calls beginConnection with that key', async () => {
   const { ports, calls } = makePorts();
   const action: ExperienceConnectionAction = { kind: 'reconnect', target_key: 'target' };
