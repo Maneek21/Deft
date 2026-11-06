@@ -32,6 +32,7 @@ import type { AppRunTransaction } from './app-run-repository.js';
  */
 import { eq, and, or, sql, isNull } from 'drizzle-orm';
 import { db, withDbAdvisoryLock } from './db.js';
+import { AppError } from './app-errors.js';
 import {
   agentActions,
   agentChannelEvents,
@@ -931,6 +932,13 @@ async function approveActionLocked(
   // receipt generation, which is itself idempotent.
   if (row.approval_status === 'approved' && !resumesApprovedModule) {
     if (isModuleMutation || isModuleTaskLink) await ensureApprovedModuleReceipt(row);
+    if (row.action === 'app_record_mirror_nominate' && row.result == null) {
+      return {
+        status: 'error',
+        code: 'EXECUTE_FAILED',
+        message: row.error ? row.error.slice(0, 2000) : 'earlier approval attempt failed',
+      };
+    }
     return {
       status: 'approved',
       message: 'already approved',
@@ -946,6 +954,13 @@ async function approveActionLocked(
   }
   if (row.approval_status === 'expired') {
     if (isModuleMutation) await repairExpiredModuleTerminalState(row);
+    if (row.action === 'app_record_mirror_nominate') {
+      return {
+        status: 'error',
+        code: 'EXECUTE_FAILED',
+        message: row.error ? row.error.slice(0, 2000) : 'nomination can no longer be approved',
+      };
+    }
     return {
       status: 'error',
       code: 'NOT_FOUND',
@@ -1389,16 +1404,22 @@ async function resolveRecordMirrorNominationAction(
   const claimed = await db.execute(
     sql`UPDATE agent_actions
            SET approval_status = 'approved', approved_at = NOW(), approved_by_user_id = ${approverUserId}
-         WHERE id = ${row.id} AND approval_status = 'pending'
+         WHERE id = ${row.id} AND org_id = ${row.org_id} AND approval_status = 'pending'
          RETURNING id`,
   );
   const claimedRows = (claimed as { rows?: unknown[] }).rows ?? [];
   if (claimedRows.length === 0) {
-    const [winner] = await db.select().from(agentActions).where(eq(agentActions.id, row.id)).limit(1);
+    const [winner] = await db.select().from(agentActions).where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id))).limit(1);
     if (winner?.approval_status === 'approved') {
-      return { status: 'approved', message: 'already approved', result: winner.result ?? undefined };
+      if (winner.result != null) {
+        return { status: 'approved', message: 'already approved', result: winner.result ?? undefined };
+      }
+      return { status: 'error', code: 'EXECUTE_FAILED', message: winner.error ? winner.error.slice(0, 2000) : 'earlier approval attempt failed' };
     }
     if (winner?.approval_status === 'rejected') return { status: 'rejected', message: 'already rejected' };
+    if (winner?.approval_status === 'expired') {
+      return { status: 'error', code: 'EXECUTE_FAILED', message: winner.error ? winner.error.slice(0, 2000) : 'nomination can no longer be approved' };
+    }
     return { status: 'error', code: 'INVALID_STATE', message: `action ${row.id} is no longer pending` };
   }
 
@@ -1410,13 +1431,43 @@ async function resolveRecordMirrorNominationAction(
       .where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id)));
     return { status: 'approved', result: receipt };
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    await db.update(agentActions).set({
-      executed_at: new Date(),
-      result: null,
-      error: reason.slice(0, 2000),
-    }).where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id)));
-    return { status: 'error', code: 'EXECUTE_FAILED', message: reason };
+    const phase = (error as { phase?: unknown } | null)?.phase;
+    const isReviewPhase = phase === 'review';
+    const isAccessDenied = error instanceof AppError
+      ? error.code === 'APP_ACCESS_DENIED'
+      : (error as { code?: unknown } | null)?.code === 'APP_ACCESS_DENIED';
+    const rawReason = error instanceof Error ? error.message : String(error);
+    let reason: string;
+    if (isAccessDenied) {
+      reason = 'App data access ended';
+    } else if (error instanceof AppError) {
+      reason = rawReason;
+    } else {
+      reason = 'The approval could not be completed. Try again.';
+      console.error('[agent-approval-resolver] approveRecordMirrorNomination failed:', { actionId: row.id, name: error instanceof Error ? error.name : undefined, code: (error as { code?: unknown } | null)?.code });
+    }
+    const sanitized = reason.replace(/\s+/g, ' ').trim().slice(0, 500);
+    const uncertain = !isReviewPhase || isAccessDenied;
+    if (uncertain) {
+      await db.update(agentActions).set({
+        approval_status: 'expired',
+        approved_at: null,
+        approved_by_user_id: null,
+        executed_at: new Date(),
+        result: null,
+        error: sanitized.slice(0, 2000),
+      }).where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id)));
+    } else {
+      await db.update(agentActions).set({
+        approval_status: 'pending',
+        approved_at: null,
+        approved_by_user_id: null,
+        executed_at: null,
+        result: null,
+        error: sanitized.slice(0, 2000),
+      }).where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id)));
+    }
+    return { status: 'error', code: 'EXECUTE_FAILED', message: sanitized };
   }
 }
 
