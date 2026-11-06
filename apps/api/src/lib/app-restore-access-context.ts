@@ -90,11 +90,11 @@ function grantState(expiresAt: Date | string | null, state: string, now: number)
   return expiry > now ? 'active' : 'expired';
 }
 
-function grant(input: Omit<RestoreGrant, 'restorable' | 'preselected'>): RestoreGrant {
+function grant(input: Omit<RestoreGrant, 'restorable' | 'preselected'>, preselectedOverride?: boolean): RestoreGrant {
   return RestoreGrantSchema.parse({
     ...input,
     restorable: input.state !== 'revoked',
-    preselected: input.state === 'active',
+    preselected: preselectedOverride ?? (input.state === 'active'),
   });
 }
 
@@ -135,7 +135,7 @@ function sessionConsentLifetime(scope: AppConnectionSessionRecord['scope'], crea
  * account (so the default is pre-selected, never silently widened). Absent or
  * unknown prior state defaults to unselected. */
 async function priorDeftyReadStores(
-  database: RestoreAccessDatabase,
+  database: RestoreAccessDatabase | RestoreAccessTransaction,
   actor: ExperienceCaller,
   installationId: string,
   storeKeys: readonly string[],
@@ -155,7 +155,7 @@ async function priorDeftyReadStores(
  * key (so the require_approval default is pre-selected). Absent/unknown defaults
  * to unselected. */
 async function priorAgentPolicyKeys(
-  database: RestoreAccessDatabase,
+  database: RestoreAccessDatabase | RestoreAccessTransaction,
   actor: ExperienceCaller,
   installationId: string,
   actionKeys: readonly string[],
@@ -183,7 +183,7 @@ function defaultGrant(identity: string, input: Omit<RestoreGrant, 'grant_id' | '
  * Scoped strictly to the authenticated actor's org + owner; no ids are taken
  * from any caller-supplied body. */
 export async function enumerateRestoreAccess(
-  database: RestoreAccessDatabase,
+  database: RestoreAccessDatabase | RestoreAccessTransaction,
   actor: ExperienceCaller,
   nomination: { installation_id: string; target_key: string },
   now: () => number = Date.now,
@@ -224,6 +224,9 @@ export async function enumerateRestoreAccess(
       inArray(appDataConsents.connection_session_id, priorSessionIds),
     )).orderBy(desc(appDataConsents.created_at));
     for (const row of consentRows) {
+      // A `proposed` row was never granted by the owner; it must never be
+      // offered for restore. Leave it out of the enumeration entirely.
+      if (row.state === 'proposed') continue;
       const snapshot = AppDataConsentSnapshotSchema.parse(row.snapshot);
       remember(grant({
         grant_id: row.consent_id, kind: 'record_consent', store_key: row.store_key,
@@ -239,6 +242,7 @@ export async function enumerateRestoreAccess(
       inArray(appResourceObservationConsents.connection_session_id, priorSessionIds),
     )).orderBy(desc(appResourceObservationConsents.created_at));
     for (const row of observationRows) {
+      if (row.state === 'proposed') continue;
       const snapshot = ResourceObservationSnapshotSchema.parse(row.snapshot);
       remember(grant({
         grant_id: row.consent_id, kind: 'observation_consent',
@@ -249,14 +253,22 @@ export async function enumerateRestoreAccess(
     }
   }
 
-  // action_consents live on each prior session record.
+  // action_consents live on each prior session record. A prior session is almost
+  // never `connected` after a reconnect (it is normally `disconnected`,
+  // `not_connected` or expired) — that is exactly the case Restore access exists
+  // for, so session state alone must NOT make an action consent non-restorable.
+  // Only an owner-initiated disconnect does; no durable owner-disconnect signal
+  // is persisted by the connection lifecycle today, so every prior non-current
+  // session's action consent is treated as restorable here, with preselection
+  // following its own expiry (active => preselected, expired => offered but not
+  // preselected). See report for the fallback note.
   for (const session of prior) {
     for (const consent of session.record.action_consents ?? []) {
       remember(grant({
         grant_id: consent.consent_id, kind: 'action_consent', action_key: consent.action_key,
         state: grantState(consent.expires_at, 'active', timestamp),
         lifetime: deriveRestoreLifetime(consent.expires_at, session.created_at, consent.consent_lifetime ?? null),
-      }));
+      }, false));
     }
   }
 
