@@ -444,15 +444,6 @@ export class AppRestoreAccessService {
       session_id: reissued.session_id,
       grants: reissued.result.map((item) => ({ kind: item.kind, original_grant_id: item.original_grant_id, grant_id: item.new_grant_id, outcome: item.outcome ?? 'issued' })),
     };
-
-    return {
-      schema_version: RESTORE_ACCESS_ACTIVATE_SCHEMA_VERSION,
-      review_id: input.review_id,
-      installation_id: enumeration.installation_id,
-      target_key: enumeration.target_key,
-      session_id: reissued.session_id,
-      grants: reissued.result.map((item) => ({ kind: item.kind, original_grant_id: item.original_grant_id, grant_id: item.new_grant_id })),
-    };
   }
 }
 
