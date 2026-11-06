@@ -12,11 +12,56 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ### 0.3.0-preview.141 candidate - publication pending
 
-- Schema head moves to `0.3.0-preview.135`; the upgrade runs on deploy.
-- Author Kit `0.1.0-alpha.43` (Experience Worker source cap raised from 96 KiB to 112 KiB; apps built against it need this Host or later).
-- Restore access fixes: successor marking, freshness checks in transaction, fallback restorable rules, and review/confirm phase separation in record-mirror approval.
-- Background health and connection status now follow the current lease and are scoped to the connection owner; reconnect flow starts directly for connection actions.
-- Record-mirror approval failures are retryable and terminal on permanent failure; nominations resolve through the owner's human authority.
+Operator notes:
+
+- Schema head moves to `0.3.0-preview.135`; the upgrade runs on deploy (migrations
+  `.132` integration capture retirement, `.133` runtime grace resume, `.134`
+  restore-access reviews, `.135` connection restore marker).
+- Author Kit `0.1.0-alpha.43`. The Experience Worker source cap is raised from
+  96 KiB to 112 KiB; apps built against it require this Host or later.
+- Anthropic SDK is upgraded to 1.x and the dashboard grid is migrated to
+  react-grid-layout v2; web bundles change accordingly.
+
+User-visible changes:
+
+- File transfer queue: private file uploads up to 8 MiB / 30 s, four concurrent
+  transfers per owner with a bounded wait, and 45 s attachment downloads with
+  busy/gone error reporting.
+- Connected app account settings are consolidated into one honest account card.
+  Background health and connection status follow the current lease and are scoped
+  to the connection owner; reconnect can start directly for connection actions.
+- Restore access reviews: single-use reviews, successor marking, freshness checks
+  in a transaction, fallback restorable rules, and separate review/confirm phases.
+  `agent_policy_default` and `defty_read_grant` are added; record-mirror
+  nominations resolve through the owner's human authority; failed approvals are
+  retryable and terminal on permanent failure.
+- Resumable background leases: lapsed until-revoked leases resume within a 24 h
+  grace window and never outlive the owner target deadline.
+- Agent-initiated record-mirror nomination and review-time defaults; restore
+  observation consents move proposed -> active.
+- Web UI polish: Lucide experience icons, phone toolbar grid, scrollable table
+  regions, accessible tap targets and muted text, record-form spacing and
+  attachment chips, reader chrome.
+
+Fixes:
+
+- System messages are preserved under Anthropic SDK 1.x.
+- Module-write idempotency is backfilled so two CRM actions survive; concrete
+  approval summaries are produced for multiple CRM module actions.
+- Background health uses a bounded grouped query with validation; restore
+  per-candidate authority verification is restored; restore activation is refused
+  when no review window was issued by `review()`.
+- Restore constraints are strengthened; grace resume cannot extend an expired
+  finite session; the non-unique restore-review foreign key is dropped; the
+  successor marker is allowed on app connection sessions.
+- Reconnect flow is cleaned up and starts directly for `connection_action`;
+  original attachments are reconciled against draft files on load.
+- Record-mirror nominations are approved only from the owner's own web session.
+- Dashboard due-today is bucketed in the viewer timezone and the duplicate Done
+  summary is removed.
+- Directory normalization is case-insensitive; wide tables scroll; recipient
+  pills no longer stretch the compose form; the compose From popover restores
+  focus.
 
 ### 0.3.0-preview.136 candidate - publication pending
 
