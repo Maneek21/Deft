@@ -31,6 +31,7 @@ interface Ctx {
   resourceInput: any;
   targetKey: string;
   beginSessionId: string;
+  capturedRuntimeCredentials: any[];
   cleanup: () => Promise<void>;
 }
 
@@ -66,9 +67,12 @@ async function bootstrap(t: any): Promise<Ctx> {
   const resourceSyncMgmt = await import('../src/routes/app-resource-sync-management.js');
   app.route('/api/app-runtime-management', runtimeMgmt.appRuntimeManagementRoutes);
   app.route('/api/app-resource-sync-management', resourceSyncMgmt.appResourceSyncManagementRoutes);
+  app.route('/api/app-runtime/channel', (await import('../src/routes/app-runtime-channel.js')).appRuntimeChannelRoutes);
+  app.route('/api/app-resource-sync-channel/v3', (await import('../src/routes/app-resource-sync-channel.js')).appResourceSyncChannelRoutes);
   t.after(async () => { globalThis.fetch = realFetch; process.env.DEFT_APP_CONNECTION_HTTP_CONFIG = previousConfig; await rm(directory, { recursive: true, force: true }); });
 
   const entries: any[] = [];
+  const capturedRuntimeCredentials: any[] = [];
   const writeConfig = () => writeFile(configPath, JSON.stringify({ schema_version: 'deft.app_connection_http_registrations.v1', entries }), { mode: 0o600 });
   globalThis.fetch = (async (input: any, init?: RequestInit) => {
     const url = new URL(typeof input === 'string' ? input : input.url);
@@ -99,6 +103,7 @@ async function bootstrap(t: any): Promise<Ctx> {
       return new Response(JSON.stringify({ state: 'connected', account }), { headers: { 'content-type': 'application/json' } });
     }
     if (body.schema_version === background.CHANNEL_INSTALL_SCHEMA) {
+      for (const item of body.channels) capturedRuntimeCredentials.push({ kind: item.kind, session_id: item.channel.credential.session_id, session_token: item.channel.credential.session_token, expires_at: item.channel.technical_renewal.expires_at, runtime_registration_id: item.channel.registration.runtime_registration_id });
       return new Response(JSON.stringify({ schema_version: 'deft.app_runtime_channel_install_result.v1', installed: body.channels.map((item: any) => ({ kind: item.kind, runtime_registration_id: item.channel.registration.runtime_registration_id, session_id: item.channel.credential.session_id, expires_at: item.channel.technical_renewal.expires_at })) }), { headers: { 'content-type': 'application/json' } });
     }
     throw Error('unexpected provider operation ' + body.schema_version + ' ' + body.operation);
@@ -177,6 +182,7 @@ async function bootstrap(t: any): Promise<Ctx> {
   return {
     app, db, s, d, sql, ownerWeb, org, person, installation: installation.id, binding: { binding_id: binding.binding_id }, resourceInput,
     targetKey: resourceInput.target_key, beginSessionId: begin.session_id,
+    capturedRuntimeCredentials,
     and, eq,
     cleanup: async () => { /* noop, handled by t.after in bootstrap for fetch/env */ },
   };
@@ -482,4 +488,195 @@ test('scenario 5: successor marker published when action missing on current sess
     return await r.json();
   })();
   console.log('S5 HEALTH after restore', JSON.stringify(healthOf(tAfter)));
+});
+
+test('scenario 6: lane Y question 1 - what a restored action actually does', { skip: !safe, timeout: 300000 }, async (t) => {
+  const ctx = await bootstrap(t);
+  const { app, db, s, d, ownerWeb, installation, targetKey, beginSessionId, org, person } = ctx;
+  const { and, eq, sql } = d;
+
+  // Reproduce scenario 5: background-access, revoke binding, disconnect, reconnect, restore.
+  const ba = await (async () => {
+    const r = await app.request(`/api/app-connection-sessions/installations/${installation}/background-access`, { method: 'POST', headers: { authorization: 'Bearer ' + ownerWeb.accessToken, 'content-type': 'application/json' }, body: JSON.stringify({ target_key: targetKey }) });
+    return { status: r.status, body: await r.json() };
+  })();
+  console.log('S6 BA', ba.status, JSON.stringify(ba.body));
+  assert.equal(ba.status, 200);
+
+  const bindings = await db.select().from(s.appRuntimeBindings).where(eq(s.appRuntimeBindings.org_id, org));
+  console.log('S6 bindings', bindings.length, bindings.map((b:any)=>b.id+':'+b.action_key).join(','));
+  let revokedBinding = false;
+  for (const b of bindings) {
+    const r = await app.request(`/api/app-runtime-management/bindings/${b.id}/revoke`, { method: 'POST', headers: { authorization: 'Bearer ' + ownerWeb.accessToken } });
+    console.log('S6 revoke binding', b.id, r.status, JSON.stringify(await r.json().catch(()=>({}))));
+    if (r.status < 400) revokedBinding = true;
+  }
+  assert.equal(revokedBinding, true);
+
+  const disc = await (async () => {
+    const r = await app.request('/api/app-connection-sessions/disconnect', { method: 'POST', headers: { authorization: 'Bearer ' + ownerWeb.accessToken, 'content-type': 'application/json' }, body: JSON.stringify({ session_id: beginSessionId }) });
+    return { status: r.status, body: await r.json() };
+  })();
+  console.log('S6 DISCONNECT', disc.status);
+
+  const begin2 = await (async () => {
+    const r = await app.request('/api/app-connection-sessions/v2/begin', { method: 'POST', headers: { authorization: 'Bearer ' + ownerWeb.accessToken, 'content-type': 'application/json' }, body: JSON.stringify({ installation_id: installation, target_key: targetKey }) });
+    return { status: r.status, body: await r.json() };
+  })();
+  assert.equal(begin2.status, 200);
+  const cb2 = await (async () => {
+    const r = await app.request('/api/app-connection-sessions/v2/callback', { method: 'POST', headers: { authorization: 'Bearer ' + ownerWeb.accessToken, 'content-type': 'application/json' }, body: JSON.stringify({ session_id: begin2.body.session_id, state: begin2.body.callback_state, outcome: 'authorized', code: 'synthetic-code' }) });
+    return { status: r.status, body: await r.json() };
+  })();
+  assert.equal(cb2.status, 200);
+
+  const rc = await (async () => {
+    const r = await app.request(`/api/app-connection-sessions/installations/${installation}/restore-context`, { headers: { authorization: 'Bearer ' + ownerWeb.accessToken } });
+    return { status: r.status, body: await r.json() };
+  })();
+  console.log('S6 RESTORE-CONTEXT', rc.status, 'grants=', rc.body?.grants?.length);
+  assert.equal(rc.status, 200);
+
+  const rv = await (async () => {
+    const r = await app.request('/api/app-connection-sessions/restore/review', { method: 'POST', headers: { authorization: 'Bearer ' + ownerWeb.accessToken, 'content-type': 'application/json' }, body: JSON.stringify({ installation_id: installation, target_key: targetKey }) });
+    return { status: r.status, body: await r.json() };
+  })();
+  console.log('S6 RESTORE-REVIEW', rv.status);
+  if (rv.status !== 200) { console.log('S6: review unavailable'); return; }
+  const chosen: string[] = [];
+  for (const g of (rv.body.grants as any[])) if (g.restorable) chosen.push(g.grant_id);
+  console.log('S6 chosen', chosen.length);
+  if (chosen.length === 0) { console.log('S6: nothing restorable'); return; }
+  const act = await (async () => {
+    const r = await app.request('/api/app-connection-sessions/restore/activate', { method: 'POST', headers: { authorization: 'Bearer ' + ownerWeb.accessToken, 'content-type': 'application/json' }, body: JSON.stringify({ review_id: rv.body.review_id, review_digest: rv.body.review_digest, review_expires_at: rv.body.review_expires_at, installation_id: installation, target_key: targetKey, grant_ids: chosen }) });
+    return { status: r.status, body: await r.json() };
+  })();
+  console.log('S6 RESTORE-ACTIVATE', act.status, JSON.stringify(act.body));
+  assert.equal(act.status, 200);
+
+  // 1. Inspect successor session action_consents vs app_runtime_bindings.
+  const successorId = act.body.session_id;
+  const [succRow] = await db.select().from(s.appConnectionSessions).where(and(eq(s.appConnectionSessions.org_id, org), eq(s.appConnectionSessions.session_id, successorId)));
+  const succRecord = succRow?.record as any;
+  const consents = succRecord?.action_consents ?? [];
+  console.log('S6 successor action_consents', JSON.stringify(consents));
+  const bindingRows = await db.select().from(s.appRuntimeBindings).where(eq(s.appRuntimeBindings.org_id, org));
+  const bindingIds = new Set(bindingRows.map((b:any) => b.id));
+  console.log('S6 binding ids', [...bindingIds].join(','));
+  for (const c of consents) {
+    console.log('S6 consent action_binding_id', c.action_binding_id, 'matches binding?', bindingIds.has(c.action_binding_id));
+  }
+  assert.equal(consents.length > 0, true, 'successor carries restored action consent');
+  const restoredBindingId = consents[0].action_binding_id;
+  assert.equal(bindingIds.has(restoredBindingId), false, 'restored action_binding_id matches no app_runtime_bindings row');
+
+  // 2. POST background-access: does it issue an action lease?
+  const ba2 = await (async () => {
+    const r = await app.request(`/api/app-connection-sessions/installations/${installation}/background-access`, { method: 'POST', headers: { authorization: 'Bearer ' + ownerWeb.accessToken, 'content-type': 'application/json' }, body: JSON.stringify({ target_key: targetKey }) });
+    return { status: r.status, body: await r.json() };
+  })();
+  console.log('S6 BA2', ba2.status, JSON.stringify(ba2.body));
+  const installedKinds = (ba2.body?.installed ?? []).map((i:any) => i.kind);
+  console.log('S6 installed kinds', installedKinds.join(','));
+  // action lease should be absent because binding revoked
+  assert.equal(installedKinds.includes('action'), false, 'no action lease issued for restored action');
+
+  // 3. Try to use the action through real authorization path (currentAppConnectionReadAuthority with requiredAction).
+  const { resourceSyncWebAuthority } = await import('../src/lib/app-resource-sync-web-authority.js');
+  const { currentAppConnectionReadAuthority } = await import('../src/lib/app-connection-session-authority.js');
+  const { actor, guard, web_session } = await resourceSyncWebAuthority('Bearer ' + ownerWeb.accessToken);
+  const caller = { org_id: org, user_id: person, sid: web_session.sid, access_expires_at: web_session.expires_at };
+  let refusal: any = null;
+  try {
+    await currentAppConnectionReadAuthority(caller, { installation_id: installation, target_key: targetKey }, guard, { action_key: 'send_message', action_binding_id: restoredBindingId });
+    console.log('S6 authority: ACCEPTED (unexpected)');
+  } catch (e: any) {
+    refusal = { message: e?.message, code: e?.code, status: e?.status };
+    console.log('S6 authority refused:', JSON.stringify(refusal));
+  }
+  assert.ok(refusal, 'restored action refused by current authority');
+});
+
+test('scenario 7: lane Y question 2 - leases after disconnect', { skip: !safe, timeout: 300000 }, async (t) => {
+  const ctx = await bootstrap(t);
+  const { app, db, s, d, ownerWeb, installation, targetKey, beginSessionId, org, capturedRuntimeCredentials } = ctx;
+  const { and, eq, sql } = d;
+
+  // 1. background-access; keep issued session_token values.
+  const credsBefore = capturedRuntimeCredentials.length;
+  const ba = await (async () => {
+    const r = await app.request(`/api/app-connection-sessions/installations/${installation}/background-access`, { method: 'POST', headers: { authorization: 'Bearer ' + ownerWeb.accessToken, 'content-type': 'application/json' }, body: JSON.stringify({ target_key: targetKey }) });
+    return { status: r.status, body: await r.json() };
+  })();
+  console.log('S7 BA', ba.status, JSON.stringify(ba.body));
+  assert.equal(ba.status, 200);
+  const newCreds = capturedRuntimeCredentials.slice(credsBefore);
+  console.log('S7 captured creds', newCreds.length, newCreds.map((c:any)=>c.kind+':'+c.session_id).join(','));
+  assert.ok(newCreds.length >= 1);
+
+  // 2. disconnect
+  const disc = await (async () => {
+    const r = await app.request('/api/app-connection-sessions/disconnect', { method: 'POST', headers: { authorization: 'Bearer ' + ownerWeb.accessToken, 'content-type': 'application/json' }, body: JSON.stringify({ session_id: beginSessionId }) });
+    return { status: r.status, body: await r.json() };
+  })();
+  console.log('S7 DISCONNECT', disc.status);
+
+  // read app_runtime_sessions rows
+  const sessionIds = newCreds.map((c:any) => c.session_id);
+  const rowsBefore = await db.select().from(s.appRuntimeSessions).where(and(eq(s.appRuntimeSessions.org_id, org)));
+  const relevant = rowsBefore.filter((r:any) => sessionIds.includes(r.id));
+  console.log('S7 runtime sessions revoked_at:', relevant.map((r:any) => r.id + '=' + (r.revoked_at ? 'REVOKED' : 'LIVE')).join(', '));
+  for (const r of relevant) {
+    console.log('S7 row', r.id, 'revoked_at=', r.revoked_at, 'expires_at=', r.expires_at);
+  }
+
+  // 3. use each token after disconnect against real endpoint
+  for (const cred of newCreds) {
+    if (cred.kind === 'action') {
+      const r = await app.request('/api/app-runtime/channel/renew', { method: 'POST', headers: { authorization: 'AppRuntime ' + cred.session_token, 'content-type': 'application/json' }, body: JSON.stringify({ schema_version: 'deft.app_runtime_channel.v1', session_id: cred.session_id, expected_expires_at: cred.expires_at }) });
+      const text = await r.text();
+      let body: any; try { body = JSON.parse(text); } catch { body = text; }
+      console.log('S7 action renew after disconnect:', r.status, JSON.stringify(body));
+    } else {
+      const { getAppRunRuntime } = await import('../src/lib/app-run-runtime.js');
+      const rt = await getAppRunRuntime();
+      let obsResult: any;
+      try {
+        const out = await rt.resourceSyncChannel.claim({ schema_version: 'deft.app_runtime_channel.v2', audience: 'app_resource_sync', session_id: cred.session_id, session_token: cred.session_token, max_claims: 1 });
+        obsResult = { direct: true, claim: out };
+      } catch (e: any) {
+        obsResult = { direct: true, error: e?.message };
+      }
+      console.log('S7 observation direct claim after disconnect:', JSON.stringify(obsResult));
+    }
+  }
+
+  // 4. reconnect
+  const begin2 = await (async () => {
+    const r = await app.request('/api/app-connection-sessions/v2/begin', { method: 'POST', headers: { authorization: 'Bearer ' + ownerWeb.accessToken, 'content-type': 'application/json' }, body: JSON.stringify({ installation_id: installation, target_key: targetKey }) });
+    return { status: r.status, body: await r.json() };
+  })();
+  console.log('S7 BEGIN2', begin2.status);
+  assert.equal(begin2.status, 200);
+  const cb2 = await (async () => {
+    const r = await app.request('/api/app-connection-sessions/v2/callback', { method: 'POST', headers: { authorization: 'Bearer ' + ownerWeb.accessToken, 'content-type': 'application/json' }, body: JSON.stringify({ session_id: begin2.body.session_id, state: begin2.body.callback_state, outcome: 'authorized', code: 'synthetic-code' }) });
+    return { status: r.status, body: await r.json() };
+  })();
+  console.log('S7 CALLBACK2', cb2.status);
+  assert.equal(cb2.status, 200);
+
+  // repeat step 3 with old tokens
+  for (const cred of newCreds) {
+    if (cred.kind === 'action') {
+      const r = await app.request('/api/app-runtime/channel/renew', { method: 'POST', headers: { authorization: 'AppRuntime ' + cred.session_token, 'content-type': 'application/json' }, body: JSON.stringify({ schema_version: 'deft.app_runtime_channel.v1', session_id: cred.session_id, expected_expires_at: cred.expires_at }) });
+      const text = await r.text();
+      let body: any; try { body = JSON.parse(text); } catch { body = text; }
+      console.log('S7 action renew after reconnect:', r.status, JSON.stringify(body));
+    } else {
+      const r = await app.request('/api/app-resource-sync-channel/v3/claim', { method: 'POST', headers: { authorization: 'AppRuntime ' + cred.session_token, 'content-type': 'application/json' }, body: JSON.stringify({ schema_version: 'deft.app_runtime_channel.v2', audience: 'app_resource_sync', session_id: cred.session_id, max_claims: 1 }) });
+      const text = await r.text();
+      let body: any; try { body = JSON.parse(text); } catch { body = text; }
+      console.log('S7 observation claim after reconnect:', r.status, JSON.stringify(body));
+    }
+  }
 });
