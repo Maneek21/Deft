@@ -262,8 +262,14 @@ export async function enumerateRestoreAccess(
   // session's action consent is treated as restorable here, with preselection
   // following its own expiry (active => preselected, expired => offered but not
   // preselected). See report for the fallback note.
+  // An action already rebuilt on the current connection (e.g. by background
+  // access after a reconnect) must not be offered again: re-issuing it would
+  // collide with the reserved action key and fail the whole restore. Skip any
+  // prior action consent whose key is already present on the current session.
+  const currentActionKeys = new Set((current.record.action_consents ?? []).map((consent) => consent.action_key));
   for (const session of prior) {
     for (const consent of session.record.action_consents ?? []) {
+      if (currentActionKeys.has(consent.action_key)) continue;
       remember(grant({
         grant_id: consent.consent_id, kind: 'action_consent', action_key: consent.action_key,
         state: grantState(consent.expires_at, 'active', timestamp),
