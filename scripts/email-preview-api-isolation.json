@@ -1,6 +1,7 @@
 {
   "schema_version": "deft.email_preview_api_isolation.v1",
   "keyring_writers": [
+    "app-424-crosslane-db.test.ts",
     "app-action-batch-http-db.test.ts",
     "app-attachment-composition-http-db.test.ts",
     "app-attachment-http-db.test.ts",
@@ -156,6 +157,7 @@
     "grace-renewal-db.test.ts"
   ],
   "isolated": [
+    "app-424-crosslane-db.test.ts",
     "app-action-batch-http-db.test.ts",
     "app-attachment-composition-http-db.test.ts",
     "app-attachment-http-db.test.ts",
