@@ -4,7 +4,7 @@
 
 **Status:** proposed, 2026-11-06. This is a plan only. No stage may remove code until the user approves that stage.
 
-**Goal:** Cut the Host and Kit boundary allowlist from 1,277 exceptions to 437 by 2027-01-12, leaving only permanent history and data or wire compatibility that needs its own decision.
+**Goal:** Cut the Host and Kit boundary allowlist from 1,277 exceptions to 438 by 2027-01-12, leaving only permanent history and data or wire compatibility that needs its own decision.
 
 **Architecture:** Each stage deletes one group of exceptions, grouped by what its removal depends on. Stages lower a checked-in ceiling, so the gate shrinks the coupling instead of only stopping growth. Retained data, keys and historical migrations are never touched by this plan.
 
@@ -28,7 +28,7 @@
 
 1. **Stale `dist` in a packed Kit.** `tsc` does not delete old output and `files` ships all of `dist`, so a dirty build could publish removed facades. The tarball must contain no `compatibility.js` (Stage 6).
 2. **Lost side effect of the Kit root import.** Today `@deft/app-kit` registers the sandbox profile as a side effect. After alpha.44 it must register nothing, and tests that relied on it must opt in explicitly (Stage 6).
-3. **A private copy reaching a shared answer** after the Knowledge caller switch, especially legacy rows with no v2 association. These must behave exactly as before or fail closed (Stage 7).
+3. **A private copy reaching a shared answer** after the Knowledge caller switch. If a caller omits `retainedOrigins`, legacy mail pages count as ordinary pages and access widens. The native result must never include a page the retained condition excluded (Stage 7).
 4. **Old citation links after adoption retires.** Stored `/apps/source/native-email/...` links must show an unavailable state, keep the excerpt, and leak no locator (Stage 9).
 5. **Rollback past the dual Calendar reader.** A Host older than the Stage 5 merge cannot be a rollback target for new recurring rows, so the minimum rollback build must be recorded (Stage 5).
 
@@ -71,7 +71,7 @@ That accounts for 24 of the 35 files. The other 11 have no runtime path from pro
 
 | Bucket | Records | Removal depends on | Stage |
 | --- | ---: | --- | --- |
-| N1 Neutral wording and fixtures | 99 | Nothing. Comments, Host copy and test strings. | S2 (6 Kit lines in S6) |
+| N1 Neutral wording and fixtures | 98 | Nothing. Comments, Host copy and test strings. | S2 (6 Kit lines in S6) |
 | D1 Unreachable transport | 91 | Nothing at runtime. Needs type cleanup only. | S3 |
 | E1 Example test imports | 3 | D1 removing the fourth importing test | S4 |
 | C1 Calendar callers | 23 | Rebased #397 (4 records), then the adoption retirement (19) | S5, S9 |
@@ -79,7 +79,7 @@ That accounts for 24 of the 35 files. The other 11 have no runtime path from pro
 | K2 Kit parity fixtures | 8 | Plan D removal: corpus already owned by `deft-email` | S6 |
 | C2 Knowledge callers | 13 | Plan C caller switch with parity proof | S7 |
 | R1 Adoption and recovery | 368 | S5, S7, the data inventory and a go decision | S9 |
-| W1 Wire spellings | 67 | Serialized contracts such as `mailbox_list`, used by installed Apps. Kit export removal cannot clear these. | S10 decision |
+| W1 Wire spellings | 68 | Serialized contracts such as `mailbox_list`, used by installed Apps. Kit export removal cannot clear these. | S10 decision |
 | R2 Custody and storage owner | 28 | Key and data retirement | S11 decision |
 | R3 Schema and tables | 144 | Separately authorized data retirement | S11 decision |
 | X1 Frozen protocol fixture | 1 | Protocol 1/2 retirement, not scheduled | Kept |
@@ -98,20 +98,20 @@ Dates are target merge dates. They assume Stage 0 finishes by 2026-11-10. If it 
 | --- | --- | --- | --- | ---: |
 | S0 | #424 merged, Host and Kit alpha.43 released, Email bumped, Gmail smoke passed | 2026-11-10 | None | 1,277 |
 | S1 | Burn-down baseline, ceiling, alpha.44 notice | 2026-11-11 | S0 | 1,277 |
-| S2 | Neutral wording and fixtures | 2026-11-13 | S1 | 1,184 |
-| S3 | Delete unreachable transport code | 2026-11-17 | S1 | 1,093 |
-| S4 | Remove `examples/apps/email` | 2026-11-19 | S3 | 1,090 |
-| S5 | Calendar caller switch (rebased #397) | 2026-11-20 | S1 | 1,086 |
-| S6 | Kit `0.1.0-alpha.44` | Merge 2026-11-24, release 2026-11-25 | S4, 14-day notice | 837 |
-| S7 | Knowledge caller switch | 2026-12-04 | S1 | 824 |
-| S8 | Retained-data inventory and adoption decision | 2026-12-11 | S5, S7 released | 824 |
-| S9 | Adoption and recovery retirement | 2027-01-12 | S8 go, 14-day hold, 30-day notice | 437 |
-| S10 | Wire spelling decision, no removal | 2027-02-02 | S9 | 437 |
-| S11 | Custody and schema retirement review, no removal | 2027-03-02 | S9 | 437 |
+| S2 | Neutral wording and fixtures | 2026-11-13 | S1 | 1,185 |
+| S3 | Delete unreachable transport code | 2026-11-17 | S1 | 1,094 |
+| S4 | Remove `examples/apps/email` | 2026-11-19 | S3 | 1,091 |
+| S5 | Calendar caller switch (rebased #397) | 2026-11-20 | S1 | 1,087 |
+| S6 | Kit `0.1.0-alpha.44` | Merge 2026-11-24, release 2026-11-25 | S4, 14-day notice | 838 |
+| S7 | Knowledge caller switch | 2026-12-04 | S1 | 825 |
+| S8 | Retained-data inventory and adoption decision | 2026-12-11 | S5, S7 released | 825 |
+| S9 | Adoption and recovery retirement | 2027-01-12 | S8 go, 14-day hold, 30-day notice | 438 |
+| S10 | Wire spelling decision, no removal | 2027-02-02 | S9 | 438 |
+| S11 | Custody and schema retirement review, no removal | 2027-03-02 | S9 | 438 |
 
 S2, S3, S5 and S7 do not depend on each other and can run in parallel. The running totals assume the order above. Each stage removes the same number of records whichever order they merge in. S6 nets 249 because it adds up to 2 reviewed fixture records.
 
-After S9, `apps/api/src` has one email-named file, the retained custody owner. The 437 left are 195 permanent, 172 custody and schema, 67 wire spellings, and 3 sandbox-related fixture records.
+After S9, `apps/api/src` has one email-named file, the retained custody owner. The 438 left are 195 permanent, 172 custody and schema, 68 wire spellings, and 3 sandbox-related fixture records.
 
 ## `examples/apps/email`: remove it
 
@@ -158,9 +158,10 @@ If an urgent Kit release must ship first, it takes alpha.44, this removal become
 | --- | --- | --- | --- |
 | 1 | Approve this plan and each removal stage | Approve S1 to S7 as a batch | 2026-11-10 |
 | 2 | Remove the 3 mail modules from the example subpath in alpha.44 | Yes. The deprecation text points legacy tooling there, so the notice must say this plainly. | 2026-11-11 |
-| 3 | Keep the sandbox subpath until Protocol 1/2 retires, and let test-only imports of it skip traversal | Yes. Without the checker change, 45 sandbox records stay and S6 ends at 882. | 2026-11-11 |
-| 4 | Retire adoption and recovery reads | Decide at S8 from the inventory | 2026-12-11 |
-| 5 | Keep or replace `mailbox_list` and other wire spellings | Decide at S10; leaning keep until a future App Protocol | 2027-02-02 |
+| 3 | Keep the sandbox subpath until Protocol 1/2 retires, and let test-only imports of it skip traversal | Yes. Without the checker change, 45 sandbox records stay and S6 ends at 883. | 2026-11-11 |
+| 4 | Accept the narrower Knowledge audience in Stage 7 | Yes. It only removes access, but people will see fewer captured pages in some answers. | 2026-11-27 |
+| 5 | Retire adoption and recovery reads | Decide at S8 from the inventory | 2026-12-11 |
+| 6 | Keep or replace `mailbox_list` and other wire spellings | Decide at S10; leaning keep until a future App Protocol | 2027-02-02 |
 
 ---
 
@@ -206,29 +207,29 @@ If an urgent Kit release must ship first, it takes alpha.44, this removal become
 - `apps/web/src/lib/fixtures/email-e2-2-app-navigation.json`: rename to `app-navigation-fixture.json` and update its importers
 
 - [ ] **Step 1: Replace mail wording** with neutral words in the listed comments, Host copy and test strings. Keep every serialized value, API field and `mailbox_list` spelling as it is; those are W1.
-- [ ] **Step 2: Delete exactly the N1 records** for those lines, and set the ceiling to 1,184.
+- [ ] **Step 2: Delete exactly the N1 records** for those lines, and set the ceiling to 1,185.
 - [ ] **Step 3: Run** `pnpm --filter @deft/app-kit build`, `node scripts/check-app-boundary.mjs`, `pnpm --filter @deft/api typecheck`, `cd apps/web && npx tsc --noEmit`, and the changed web and API tests. Expected: no failures, and no assertion loosened.
 - [ ] **Step 4: Commit.**
 
-**Completion evidence:** Checker reports 1184 with 0 errors. `--summary` shows N1 at 6, all of them Kit lines. The diff changes no runtime logic beyond the rename and the copy. Records after: 1,184.
+**Completion evidence:** Checker reports 1185 with 0 errors. `--summary` shows N1 at 6, all of them Kit lines. The diff changes no runtime logic beyond the rename and the copy. Records after: 1,185.
 
 ### Stage 3: Delete unreachable transport code
 
 **Files:**
 - Delete from `apps/api/src/lib/`: `email-draft-sync-contract.ts`, `email-folder-management-contract.ts`, `email-graph-send-contract.ts`, `email-imap-alias-contract.ts`, `email-imap-custody.ts`, `email-imap-host.ts`, `email-native-connection-contract.ts`, `email-native-connection-retained.ts`, `email-public-address.ts`, `email-smtp-host.ts`
 - Delete from `apps/api/test/`: `email-imap-custody.test.ts`, `email-imap-host.test.ts`, `email-imap-native-host.test.ts`, `email-smtp-host.test.ts`
-- Modify: `apps/api/src/lib/email-native-adapter-contract.ts`, `apps/api/src/lib/web-push.ts`, `apps/api/test/web-push-policy.test.ts`
+- Modify: `apps/api/src/lib/email-native-adapter-contract.ts`, `apps/api/src/lib/web-push.ts`, `apps/api/test/web-push-policy.test.ts`, `apps/api/test/app-run-architecture.test.ts` (line 32 asserts the contents of `email-imap-custody.ts`)
 
 - [ ] **Step 1: Re-prove reachability** with `pnpm exec node scripts/audit-email-reachability.mjs <full commit sha>`. If any listed file has a runtime importer outside the list, stop and report it.
 - [ ] **Step 2: Write the failing test** `retained email attention rows never push` in `web-push-policy.test.ts`: a `source_type: 'email'` item is skipped with no database read.
 - [ ] **Step 3: Run the test.** Expected: FAIL.
 - [ ] **Step 4: Confirm nothing creates `email` attention items.** A search of the audited tree found no producer, and the `native-email-notification-dispatch` job has no handler. If a producer exists, stop and report it. Otherwise replace `emailNotificationPushStillCurrent` with a fail-closed skip in `web-push.ts`.
-- [ ] **Step 5: Delete the listed files** and remove their type imports from `email-native-adapter-contract.ts`, keeping only the types still used by retained stores.
-- [ ] **Step 6: Delete the 91 D1 records** and set the ceiling to 1,093.
-- [ ] **Step 7: Run** API typecheck, `web-push-policy.test.ts`, `pnpm test:app-boundary` and the checker. Expected: all pass with 1093 and 0 errors.
+- [ ] **Step 5: Delete the listed files** and remove the inline `import('./email-*.js')` types from `email-native-adapter-contract.ts`, keeping only what retained stores still use. Delete the `email-imap-custody.ts` row in `app-run-architecture.test.ts`.
+- [ ] **Step 6: Delete the 91 D1 records** and set the ceiling to 1,094.
+- [ ] **Step 7: Run** API typecheck, `web-push-policy.test.ts`, `pnpm test:app-boundary` and the checker. Expected: all pass with 1094 and 0 errors.
 - [ ] **Step 8: Commit.**
 
-**Completion evidence:** Checker reports 1093 with 0 errors, the reachability audit lists no deleted file, the full API CI job is green, and `--summary` shows D1 at 0. Records after: 1,093.
+**Completion evidence:** Checker reports 1094 with 0 errors, the reachability audit lists no deleted file, the full API CI job is green, and `--summary` shows D1 at 0. Records after: 1,094.
 
 ### Stage 4: Remove `examples/apps/email`
 
@@ -247,11 +248,11 @@ If an urgent Kit release must ship first, it takes alpha.44, this removal become
 - [ ] **Step 2: Change `app-experience-targets-http-db.test.ts`** to use the fixture adapter. Keep these Host assertions: denied nominations never reach the adapter, projection pins match, `recheck()` runs, and credentials and cookies are stripped. Drop only the Gmail URL assertions.
 - [ ] **Step 3: Point the receipt and PDF tests** at the new fixtures. The PDF's SHA-256 must remain `7dcd3e988227137bbea91d996b903482a80f1f49ca3fdebd5ad6db9242b6669f`.
 - [ ] **Step 4: Run the three tests.** Expected: PASS while the example is still present.
-- [ ] **Step 5: Delete the example, the staging script and the two CI install lines.** Remove its CodeQL entries, delete the 3 E1 records, and set the ceiling to 1,090.
-- [ ] **Step 6: Run** `node scripts/codeql-reviewed-findings.test.mjs`, `git grep -n "examples/apps/email" -- apps packages scripts .github package.json` and the checker. Expected: tests pass, the grep is empty, and the checker reports 1090 with 0 errors.
+- [ ] **Step 5: Delete the example, the staging script and the two CI install lines.** Remove its CodeQL entries, delete the 3 E1 records, and set the ceiling to 1,091.
+- [ ] **Step 6: Run** `node scripts/codeql-reviewed-findings.test.mjs`, `git grep -n "examples/apps/email" -- apps packages scripts .github package.json` and the checker. Expected: tests pass, the grep is empty, and the checker reports 1091 with 0 errors.
 - [ ] **Step 7: Commit.**
 
-**Completion evidence:** Green full CI with no example install step, an empty grep, and the matching PDF hash. Records after: 1,090.
+**Completion evidence:** Green full CI with no example install step, an empty grep, and the matching PDF hash. Records after: 1,091.
 
 ### Stage 5: Calendar caller switch
 
@@ -260,10 +261,10 @@ If an urgent Kit release must ship first, it takes alpha.44, this removal become
 - [ ] **Step 1: Rebase #397 on master** and resolve the `dashboard.ts` conflict by keeping both sides' behavior.
 - [ ] **Step 2: Run** `native-calendar-source.test.ts` and `email-calendar-projection.test.ts` against disposable PostgreSQL. Expected: PASS for org and owner isolation, revoked membership, absent runtime, pre-window masters, DST, EXDATE, moved and cancelled exceptions, all-day ends, native edits, and unknown or mixed models.
 - [ ] **Step 3: Compare a `pg_dump`/`pg_restore` snapshot** of legacy rows, including event and occurrence IDs and ciphertext key references, as the #397 proof did.
-- [ ] **Step 4: Update the allowlist:** delete the 4 caller records in `calendar.ts` and `dashboard.ts`, re-review the changed `email-mailbox-key-references.ts` digest, and set the ceiling to 1,086.
+- [ ] **Step 4: Update the allowlist:** delete the 4 caller records in `calendar.ts` and `dashboard.ts`, re-review the changed `email-mailbox-key-references.ts` digest, and set the ceiling to 1,087.
 - [ ] **Step 5: Record the merge commit** as the minimum rollback build in `native-source-ownership.md`, then merge.
 
-**Completion evidence:** Checker reports 1086 with 0 errors, the snapshot comparison is clean, and `git grep -n "email-calendar-projection" -- apps/api/src/routes` is empty. The helper stays until Stage 9. Records after: 1,086 if merged in table order.
+**Completion evidence:** Checker reports 1087 with 0 errors, the snapshot comparison is clean, and `git grep -n "email-calendar-projection" -- apps/api/src/routes` is empty. The helper stays until Stage 9. Records after: 1,087 if merged in table order.
 
 ### Stage 6: Kit `0.1.0-alpha.44`
 
@@ -290,11 +291,11 @@ If an urgent Kit release must ship first, it takes alpha.44, this removal become
 - [ ] **Step 6: Set the version** to alpha.44 and update the README.
 - [ ] **Step 7: Delete `packages/app-kit/dist`, rebuild,** and run the Kit tests. Expected: PASS.
 - [ ] **Step 8: Certify the packed tarball in `deft-email`** by running its app and Runtime tests against the file. Do not bump Email's pin. Expected: PASS, as Email uses none of the removed names.
-- [ ] **Step 9: Update the allowlist:** delete 237 K1, 8 K2 and 6 N1 records, add at most 2 reviewed `email-import` records for the two fixtures, and set the ceiling to 837. The `compatibility-facade-import` rule and its fixtures stay as a regression guard.
+- [ ] **Step 9: Update the allowlist:** delete 237 K1, 8 K2 and 6 N1 records, add at most 2 reviewed `email-import` records for the two fixtures, and set the ceiling to 838. The `compatibility-facade-import` rule and its fixtures stay as a regression guard.
 - [ ] **Step 10: Merge, then release** through `release.yml` on or after 2026-11-25. Confirm the release carries the alpha.44 tarball with its source commit, digest and integrity record.
 - [ ] **Step 11: Add an addendum** to `2026-10-20-kit-domain-ownership.md` naming the release.
 
-**Completion evidence:** Checker reports 837 with 0 errors on a clean build; the tarball listing contains no facades; the Email certification run passes; `phase5-proof-package-determinism.test.ts` passes; published release assets are linked. **Rollback:** consumers pin alpha.43. No wire format or Host data changes. Records after: 837.
+**Completion evidence:** Checker reports 838 with 0 errors on a clean build; the tarball listing contains no facades; the Email certification run passes; `phase5-proof-package-determinism.test.ts` passes; published release assets are linked. **Rollback:** consumers pin alpha.43. No wire format or Host data changes. Records after: 838.
 
 ### Stage 7: Knowledge caller switch
 
@@ -304,17 +305,26 @@ If an urgent Kit release must ship first, it takes alpha.44, this removal become
 - Rename: `apps/api/test/email-knowledge-audience-db.test.ts` to `native-knowledge-audience-db.test.ts`
 
 **Interfaces:**
-- Consumes: `appSourceKnowledgeAudienceCondition` from `native-knowledge-source.ts`, and `hostRetainedSourceStorage.knowledge.{origins,decorateCitations,sourceUrl}`.
+- Consumes: `appSourceKnowledgeAudienceCondition(orgId, userId, conversationId, agentEmployeeId, retainedOrigins)` from `native-knowledge-source.ts`, and `hostRetainedSourceStorage.knowledge.{origins,decorateCitations,sourceUrl}`. Every call site must pass `hostRetainedSourceStorage.knowledge.origins` as `retainedOrigins`; the default is an empty list.
 
-- [ ] **Step 1: Write a parity test** in `native-knowledge-audience-db.test.ts`: `native audience returns the same pages as the retained condition` compares page ID sets on seeded rows across cross-org, cross-user, revoked membership, revoked employee, private copy in a personal agent DM, private copy in a shared answer, a space capture in another space, and a legacy row with no v2 association.
-- [ ] **Step 2: Run it** against disposable PostgreSQL. Expected: PASS. If the sets differ, stop. A wider native result is a bug, and a narrower one needs a reviewed reason.
-- [ ] **Step 3: Switch the four callers** and read origins from `hostRetainedSourceStorage.knowledge`. Use Host-provided citation labels on the Knowledge page. Enable no new producer.
-- [ ] **Step 4: Delete the two shims,** and trim the parity test to the native condition with frozen expected IDs.
-- [ ] **Step 5: Delete the 13 C2 records,** add a reviewed record only where a retained value must move into the storage owner, and set the ceiling to 824 plus any such additions.
+The native condition is **not** a drop-in replacement. It is deliberately narrower than `emailKnowledgeAudienceCondition`:
+
+| Case | Retained condition | Native condition |
+| --- | --- | --- |
+| Which pages are restricted | `email_knowledge_auto` only | Also `app_integration_capture`, `app_integration_transfer`, and any page with a capture-source row |
+| Personal DM with a BYOA agent present | Private copy allowed | Blocked; only the Defty system agent may be present |
+| Space-scoped copy in a personal DM | Allowed if visible | Blocked; the DM branch requires `scope = 'user'` |
+| Agent employee whose owner lost membership | Allowed | Blocked |
+
+- [ ] **Step 1: Write the comparison tests** in `native-knowledge-audience-db.test.ts`, on seeded rows covering cross-org, cross-user, revoked membership, revoked employee, private copy in a personal agent DM, private copy in a shared answer, a space capture in another space, and a legacy row with no v2 association. `native audience never adds a page` asserts the native page IDs are a subset of the retained ones. `every narrowing is an expected case` asserts the difference is exactly the four table rows above. `legacy origin stays restricted at each caller` asserts a private `email_knowledge_auto` page stays out of a shared answer through all three callers.
+- [ ] **Step 2: Run them** against disposable PostgreSQL. Expected: PASS. A page the native condition adds is a security bug. A narrowing outside the table needs review before going on.
+- [ ] **Step 3: Switch the callers,** passing `hostRetainedSourceStorage.knowledge.origins` at `agent-runner`, `native-wiki-owner` and `retrieve-context`, and using `decorateCitations` directly at `native-wiki-owner` and `routes/wiki`. Use Host-provided citation labels on the Knowledge page. Enable no new producer.
+- [ ] **Step 4: Delete the two shims,** and trim the comparison tests to the native condition with frozen expected IDs.
+- [ ] **Step 5: Delete the 13 C2 records,** add a reviewed record only where a retained value must move into the storage owner, and set the ceiling to 825 plus any such additions.
 - [ ] **Step 6: Run** API typecheck, the renamed test, `retrieve-context` and wiki tests, and the checker.
 - [ ] **Step 7: Commit, and include this stage in a Host release.** The 14-day hold counts from that release.
 
-**Completion evidence:** Parity output, checker at 824 with 0 errors, and `git grep -n "emailKnowledge" -- apps/api/src` matching only retained storage owner files. Records after: 824.
+**Completion evidence:** Comparison test output, the user's acceptance of the narrowings (decision 4), checker at 825 with 0 errors, and `git grep -n "emailKnowledge" -- apps/api/src` matching only retained storage owner files. Records after: 825.
 
 ### Stage 8: Retained-data inventory and adoption decision
 
@@ -328,9 +338,9 @@ If an urgent Kit release must ship first, it takes alpha.44, this removal become
 - [ ] **Step 2: Implement it** to cover all 40 retained tables, and run it on demo.deft.ing and every known deployment.
 - [ ] **Step 3: Measure `/api/email-adoption` use** from access logs over the previous 30 days.
 - [ ] **Step 4: Write the decision record** covering who still reads retained data, whether anyone needs an export, and the go or no-go criteria.
-- [ ] **Step 5: Get the user's decision.** If go, publish the operator notice in release notes and `docs/self-hosting.md`, which starts the 30-day window. If no-go, record what would change it and stop here at 824.
+- [ ] **Step 5: Get the user's decision.** If go, publish the operator notice in release notes and `docs/self-hosting.md`, which starts the 30-day window. If no-go, record what would change it and stop here at 825.
 
-**Completion evidence:** Merged inventory and decision record, the user's decision quoted in the record, and the notice link if go. Records after: 824.
+**Completion evidence:** Merged inventory and decision record, the user's decision quoted in the record, and the notice link if go. Records after: 825.
 
 ### Stage 9: Adoption and recovery retirement
 
@@ -340,7 +350,7 @@ If an urgent Kit release must ship first, it takes alpha.44, this removal become
 - Delete from `apps/api/src/lib/`: the 21 remaining `email-*` files in R1 and C1 (everything `email-*` except `email-mailbox-key-references.ts`), and `apps/api/src/routes/email-native-adoption-source.ts`
 - Delete: `apps/web/src/app/(app)/apps/recovery/native-email/`, `apps/source/native-email/`, `email/`
 - Delete tests: all remaining `apps/api/test/email-*.test.ts` except `email-mailbox-key-references.test.ts`, and `apps/api/test/fixtures/email-mailbox-database.ts`
-- Modify: `apps/api/src/index.ts`, `apps/api/src/lib/email-mailbox-key-references.ts`, `apps/web/src/components/apps/integrations/source-open.tsx`, `apps/api/src/lib/calendar-invitation-attendees.ts`, `native-calendar-invitation-create.ts`
+- Modify: `apps/api/src/index.ts`, `apps/api/test/app-connection-contract-boundary.test.ts` (line 25 asserts the `/api/email-adoption` mount), `apps/api/src/lib/email-mailbox-key-references.ts`, `apps/web/src/components/apps/integrations/source-open.tsx`, `apps/api/src/lib/calendar-invitation-attendees.ts`, `native-calendar-invitation-create.ts`
 - Modify CI: `.github/workflows/ci.yml` (predecessor container steps), `.github/workflows/email-preview-stack.yml`, `package.json`, `.gitattributes`
 - Rename: `scripts/email-preview-api-tests.mjs`, `email-preview-test-databases.mjs` and its test, and `email-preview-api-isolation.json` to `scripts/api-ci-*`; `test:email-preview-api` to `test:api-ci`
 - Delete: `tsconfig.email-stage34.json`
@@ -351,21 +361,21 @@ If an urgent Kit release must ship first, it takes alpha.44, this removal become
 - [ ] **Step 4: Remove the route mount** and make retained links resolve to unavailable through the storage owner.
 - [ ] **Step 5: Delete the listed code,** and reword `EMAIL_INVITATION_*` errors. Keep the stored `email_invitation` metadata reader in the storage owner.
 - [ ] **Step 6: Remove the predecessor database steps,** rename the CI scripts, and update the partition assertion in the runner.
-- [ ] **Step 7: Delete 368 R1 and 19 C1 records.** Add a reviewed record only for a stored value moved into the storage owner, and set the ceiling to 437 plus any such additions.
+- [ ] **Step 7: Delete 368 R1 and 19 C1 records.** Add a reviewed record only for a stored value moved into the storage owner, and set the ceiling to 438 plus any such additions.
 - [ ] **Step 8: Run** full CI, a restore test on a database with representative legacy rows, and the checker.
 - [ ] **Step 9: Commit.**
 
-**Completion evidence:** Checker at 437 with 0 errors. `git ls-files apps/api/src | grep -i email` lists only `email-mailbox-key-references.ts`. The restore test confirms all 40 tables, their rows and key references are unchanged. **Rollback:** revert the PR. Tables and keys are untouched, so the reader returns intact. Records after: 437.
+**Completion evidence:** Checker at 438 with 0 errors. `git ls-files apps/api/src | grep -i email` lists only `email-mailbox-key-references.ts`. The restore test confirms all 40 tables, their rows and key references are unchanged. **Rollback:** revert the PR. Tables and keys are untouched, so the reader returns intact. Records after: 438.
 
 ### Stage 10: Wire spelling decision (no removal)
 
 **Files:** Create `docs/decisions/2027-02-02-app-wire-spellings.md`; modify the W1 milestones in `scripts/app-boundary-allowlist.json`.
 
-- [ ] **Step 1: Inventory the 67 records** (`mailbox_list`, `MailboxControl`, the triage-options provider spellings, `destination.mailbox`, `record-intake` to/cc/bcc) and which installed Apps serialize them. Email's `app/record-ui.mjs` does today.
+- [ ] **Step 1: Inventory the 68 records** (`mailbox_list`, `MailboxControl`, the triage-options provider spellings, `destination.mailbox`, `record-intake` to/cc/bcc) and which installed Apps serialize them. Email's `app/record-ui.mjs` does today.
 - [ ] **Step 2: Decide** between keeping them until a future App Protocol, or adding neutral aliases in a later Kit. Installed packages keep the old spelling, so the Host must accept it either way, and an alias alone removes no records.
 - [ ] **Step 3: Relabel W1 milestones** with the outcome.
 
-**Completion evidence:** Decision record merged, and W1 relabeled. Records after: 437.
+**Completion evidence:** Decision record merged, and W1 relabeled. Records after: 438.
 
 ### Stage 11: Custody and schema retirement review (no removal)
 

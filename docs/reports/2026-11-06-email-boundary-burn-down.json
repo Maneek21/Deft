@@ -54,8 +54,8 @@
     },
     "N1-neutral-wording-and-fixtures": {
       "stage": "S2 (Kit lines in S6)",
-      "records": 99,
-      "occurrences": 117,
+      "records": 98,
+      "occurrences": 116,
       "files": 45
     },
     "P1-historical-migrations": {
@@ -96,9 +96,9 @@
     },
     "W1-wire-spellings": {
       "stage": "S10 decision",
-      "records": 67,
-      "occurrences": 354,
-      "files": 39
+      "records": 68,
+      "occurrences": 355,
+      "files": 40
     },
     "X1-frozen-protocol-fixture": {
       "stage": "kept with sandbox subpath",
@@ -716,7 +716,7 @@
     ["W1-wire-spellings","apps/web/src/lib/app-experience-action-composer.ts","mailbox","mailbox_list","293c68d0ed71d3021d8b5e43dc527faa5658c4f204f4d8ff51cd1b471f366c4c"],
     ["W1-wire-spellings","apps/web/src/lib/app-experience-action-composer.ts","mailbox","mailbox_list","99047f474895d492aaddb14d1f27596fb478459904b6e229f7e20d78867f626d"],
     ["N1-neutral-wording-and-fixtures","apps/web/src/lib/app-experience-action-confirmation.test.ts","mailbox","mailbox","99853243848c2267df4a7d9d7f007b978b569aa359e969a8311c3479c30d6c61"],
-    ["N1-neutral-wording-and-fixtures","apps/web/src/lib/app-experience-action-confirmation.test.ts","mail-provider","gmail","11a09740656d2071268a0f0b012ee9ff60ff870c0255ad5d65150066658b24ae"],
+    ["W1-wire-spellings","apps/web/src/lib/app-experience-action-confirmation.test.ts","mail-provider","gmail","11a09740656d2071268a0f0b012ee9ff60ff870c0255ad5d65150066658b24ae"],
     ["N1-neutral-wording-and-fixtures","apps/web/src/lib/app-experience-bridge.test.ts","mailbox","mailbox","d73e586cc1b8aaffa608ce1c46ecb7fbf70c103a321af692908005c1fa4bd6f6"],
     ["N1-neutral-wording-and-fixtures","apps/web/src/lib/app-experience-bridge.test.ts","mailbox","mailbox","682c65dddd1d0e59f3aad72ef3dbbdcc213531287c7ce4a75244793801906ee0"],
     ["N1-neutral-wording-and-fixtures","apps/web/src/lib/app-experience-bridge.test.ts","mailbox","mailbox","8927d978cf80084fb5cb51c0851811b0c94b29cd8cdacd7ef23038738a8d00f4"],
