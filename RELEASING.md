@@ -54,6 +54,34 @@ evidence of npm publication. Do not repack changed contracts under a released
 version or update consumer lockfiles to a different artifact with the same
 identity. No registry publishing workflow is introduced by this preparation.
 
+### Author Kit release artifact
+
+The Author Kit tarball is produced from the tagged Host commit by the
+`Package the released Author Kit` job in `.github/workflows/release.yml`:
+
+- `pnpm --dir packages/app-kit pack --pack-destination "$GITHUB_WORKSPACE/dist"`
+  packs the reviewed `packages/app-kit` source into `deft-app-kit-<version>.tgz`.
+- `node scripts/prepare-author-kit-release.mjs` validates that the working tree is
+  clean, `RELEASE_COMMIT` equals `HEAD`, `RELEASE_VERSION` equals the root
+  `package.json` version, the built `DEFT_APP_KIT_VERSION` matches
+  `packages/app-kit/package.json`, and then writes
+  `dist/author-kit-release.json` with the tarball sha256/sha512, source commit,
+  source repository (`Maneek21/Deft`), and Host release.
+
+The tarball and `author-kit-release.json` are published as release assets.
+The Email app pins the exact released bytes: its
+`scripts/verify-kit-release.mjs` downloads `author-kit-release.json` and the
+`deft-app-kit-<version>.tgz` asset for the Host release named in its
+`KIT42-CERTIFICATION.json`, checks that the metadata schema is
+`deft.author_kit_release.v1`, and compares sha256/sha512 of the app, runtime,
+and downloaded archives against the metadata. If any byte differs the
+verification fails (`KIT42_RELEASE_ARCHIVE_CHANGED` /
+`KIT42_RELEASE_INTEGRITY_CHANGED`).
+
+The Kit and Host are independently versioned; `packages/app-kit` keeps its own
+version (currently `0.1.0-alpha.43`). A Kit release is only produced from a
+Host tag, so consumers must wait for that Host release before using a new Kit.
+
 Keep operator account configuration, Runtime credentials, private fixtures,
 database dumps, generated mail journals, and proof reports outside source and
 release artifacts. Email builds pin the exact Kit artifact; operator setup

@@ -96,6 +96,8 @@ jobs:
           src/lib/native-create-intent.test.ts
           src/lib/time.test.ts
           src/lib/calendar-event-form.test.ts
+          src/lib/app-experience-connection-action.test.ts
+          src/lib/app-connection-reconnect.test.ts
           'src/app/(app)/notes/note-save-coordinator.test.ts'
           'src/app/(app)/notes/protected-note-image.test.ts'
           'src/app/(app)/notes/note-load-state.test.ts'
