@@ -22,7 +22,8 @@ import { ExperienceConsentScopeSchema, experienceConsentDigest } from './app-exp
 import { verifiedPublicPackageJson } from './app-public-package-validation-memo.js';
 import {currentConnectionSessionLocators} from './app-connection-current-locators.js';
 import {experienceTargetAccountLabels} from './app-experience-target-labels.js';
-import {readBackgroundHealth,type BackgroundHealth} from './app-integration-capture-store.js';
+import {readBackgroundHealthMap} from './app-integration-capture-store.js';
+import {ExperienceAccountTargetHealthSchema} from '@deft/app-kit/experience/core';
 
 const SESSION_MS = 15 * 60_000;
 const MAX_ACTIVE_PER_WEB_APP = 8;
@@ -258,10 +259,13 @@ export class AppExperienceService {
           // an App must never read a missing health as healthy.
           const connectedTargets=new Set<string>();
           for(const row of connected){const record=row.session.record as {scope?:{target_key?:unknown}}|null;const key=record?.scope?.target_key;if(typeof key==='string')connectedTargets.add(key);}
-          targets=await Promise.all(targets.map(async target=>{
-            const background:BackgroundHealth|null=await readBackgroundHealth(tx,caller,installation.id,Date.now(),target.key);
-            return {...target,health:{connection:connectedTargets.has(target.key)?'connected':'disconnected',...(background?{background}:{})}};
-          }));
+          const healthMap=await readBackgroundHealthMap(tx,caller,installation.id,Date.now());
+          targets=targets.map(target=>{
+            const background=healthMap.get(target.key)??null;
+            const candidate={connection:(connectedTargets.has(target.key)?'connected':'disconnected') as 'connected'|'disconnected',...(background?{background}:{})};
+            const parsed=ExperienceAccountTargetHealthSchema.safeParse(candidate);
+            return {...target,...(parsed.success?{health:parsed.data}:{})};
+          });
         }
       }
       await assertExperienceWeb(tx, caller);

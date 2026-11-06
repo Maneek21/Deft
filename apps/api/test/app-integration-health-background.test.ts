@@ -66,14 +66,28 @@ test('background health derives state from runtime sessions and stays owner/tena
           installationId, now);
       });
 
+      // Each state is exercised in isolation under the new current-lease rule.
       await seed(at(now + 60_000), null);
       assert.equal((await run(orgA, ownerA, instA))?.state, 'healthy');
+      await pool.query(`DELETE FROM ${q('app_runtime_sessions')}`);
       await seed(at(now - 20 * 60_000), null);
       assert.equal((await run(orgA, ownerA, instA))?.state, 'paused');
+      await pool.query(`DELETE FROM ${q('app_runtime_sessions')}`);
       await seed(at(now - 25 * 60 * 60_000), null);
       assert.equal((await run(orgA, ownerA, instA))?.state, 'ended');
+      await pool.query(`DELETE FROM ${q('app_runtime_sessions')}`);
       await seed(at(now + 60_000), at(now - 1));
       assert.equal((await run(orgA, ownerA, instA))?.state, 'ended');
+      // Reconnect sequence: old revoked + new live -> healthy.
+      await pool.query(`DELETE FROM ${q('app_runtime_sessions')}`);
+      await seed(at(now + 60_000), at(now - 1));
+      await seed(at(now + 60_000), null);
+      assert.equal((await run(orgA, ownerA, instA))?.state, 'healthy');
+      // Old expired beyond grace + new live -> healthy.
+      await pool.query(`DELETE FROM ${q('app_runtime_sessions')}`);
+      await seed(at(now - 25 * 60 * 60_000), null);
+      await seed(at(now + 60_000), null);
+      assert.equal((await run(orgA, ownerA, instA))?.state, 'healthy');
 
       // Owner/tenant/installation isolation: the lease never leaks across.
       assert.equal(await run(randomUUID(), ownerA, instA), null, 'foreign tenant');
