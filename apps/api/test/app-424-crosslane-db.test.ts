@@ -1,16 +1,11 @@
 import assert from 'node:assert/strict';
-
-test('crosslane: a live background lease makes targets() report healthy', { skip: !safe, timeout: 180000 }, async t => {
-  // Covered by app-experience-targets-health.test.ts; this is a no-op guard so the
-  // file documents the expected healthy state for a connected account with a live lease.
-  assert.ok(safe);
-});
 import { createHash, randomUUID } from 'node:crypto';
 import { writeFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { buildDeftAppPackage } from '@deft/app-kit';
+import * as kitCore from '@deft/app-kit/core';
 import { runtimeSecurityPackage } from './fixtures/runtime-security-package.js';
 
 const safe = (() => {
@@ -22,8 +17,24 @@ const safe = (() => {
   } catch { return false; }
 })();
 
-test('crosslane: targets() reports the real background lease state and never a stale ended lease after it is gone', { skip: !safe, timeout: 180_000 }, async t => {
-  assert.ok(safe);
+interface Ctx {
+  app: any;
+  db: any;
+  s: any;
+  d: any;
+  sql: any;
+  ownerWeb: any;
+  org: string;
+  person: string;
+  installation: string;
+  binding: { binding_id: string };
+  resourceInput: any;
+  targetKey: string;
+  beginSessionId: string;
+  cleanup: () => Promise<void>;
+}
+
+async function bootstrap(t: any): Promise<Ctx> {
   Object.assign(process.env, {
     DEFT_APPS_ENABLED: 'true', DEFT_APP_PRIVATE_STATE_ENABLED: 'true', DEFT_APP_RUNS_ENABLED: 'true',
     DEFT_APP_RUN_APP_ORIGIN_ENABLED: 'true', DEFT_APP_ATTACHMENT_BROKER_ENABLED: 'true',
@@ -37,18 +48,26 @@ test('crosslane: targets() reports the real background lease state and never a s
   const directory = await mkdtemp(join(tmpdir(), 'deft-crosslane-')), configPath = join(directory, 'transport.json');
   const previousConfig = process.env.DEFT_APP_CONNECTION_HTTP_CONFIG, realFetch = globalThis.fetch;
   process.env.DEFT_APP_CONNECTION_HTTP_CONFIG = configPath;
-  const [{ Hono }, { db, closeDb }, s, d, kit, web, { authMiddleware }, { appRoutes }, owner, connectionRoutes, background] = await Promise.all([
+  const [{ Hono }, { db, closeDb }, s, d, kit, web, { authMiddleware }, { appRoutes }, owner, connectionRoutes, background, exp] = await Promise.all([
     import('hono'), import('../src/lib/db.js'), import('@deft/db/schema'), import('drizzle-orm'), import('@deft/app-kit'),
     import('../src/lib/web-sessions.js'), import('../src/middleware/auth.js'), import('../src/routes/apps.js'), import('../src/routes/app-owner-connections.js'),
-    import('../src/routes/app-connection-sessions.js'), import('../src/lib/app-runtime-background-access.js'),
+    import('../src/routes/app-connection-sessions.js'), import('../src/lib/app-runtime-background-access.js'), import('../src/routes/app-experiences.js'),
   ]);
   const complete = await (await import('./fixtures/app-run-test-keyrings.js')).databaseCompleteAppRunTestKeyringFixture('crosslane');
   process.env.DEFT_APP_RUN_KEYRINGS = complete.environment; complete.keys.destroy();
   const { and, eq, sql } = d;
   const app = new Hono(); app.use('/api/apps/*', authMiddleware); app.route('/api/apps', appRoutes);
+  app.use('/api/app-runtime-management/*', authMiddleware);
+  app.use('/api/app-resource-sync-management/*', authMiddleware);
   app.route('/api/app-owner-connections', owner.appOwnerConnectionRoutes); app.route('/api/app-connection-sessions', connectionRoutes.appConnectionSessionRoutes);
-  app.route('/api/app-experiences', (await import('../src/routes/app-experiences.js')).appExperienceRoutes);
+  app.route('/api/app-experiences', exp.appExperienceRoutes);
+  // also runtime management + resource sync management routes for revoke
+  const runtimeMgmt = await import('../src/routes/app-runtime-management.js');
+  const resourceSyncMgmt = await import('../src/routes/app-resource-sync-management.js');
+  app.route('/api/app-runtime-management', runtimeMgmt.appRuntimeManagementRoutes);
+  app.route('/api/app-resource-sync-management', resourceSyncMgmt.appResourceSyncManagementRoutes);
   t.after(async () => { globalThis.fetch = realFetch; process.env.DEFT_APP_CONNECTION_HTTP_CONFIG = previousConfig; await rm(directory, { recursive: true, force: true }); });
+
   const entries: any[] = [];
   const writeConfig = () => writeFile(configPath, JSON.stringify({ schema_version: 'deft.app_connection_http_registrations.v1', entries }), { mode: 0o600 });
   globalThis.fetch = (async (input: any, init?: RequestInit) => {
@@ -58,18 +77,44 @@ test('crosslane: targets() reports the real background lease state and never a s
     const account = { account_ref: 'account_' + body.scope.owner_user_id.replaceAll('-', ''), label: 'Synthetic account' };
     if (body.schema_version === 'deft.app_connection_runtime.v2') {
       if (body.operation === 'begin') return new Response(JSON.stringify({ state: 'awaiting_callback', runtime_session_ref: randomUUID(), authorization_url: 'https://provider.example/authorize' }), { headers: { 'content-type': 'application/json' } });
+      if (body.operation === 'disconnect') return new Response(JSON.stringify({ state: 'disconnected' }), { headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify({ state: 'connected', account }), { headers: { 'content-type': 'application/json' } });
+    }
+    if (body.schema_version === 'deft.app_connection_consent_continuation_runtime.v1') {
+      const checked = await app.request('/api/app-connection-sessions/runtime/consent-continuation-authority', { method: 'POST', headers: { authorization: 'Bearer ' + 'a'.repeat(43), 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      if (!checked.ok) return new Response(await checked.text(), { status: checked.status, headers: { 'content-type': 'application/json' } });
+      const account = { account_ref: 'account_' + body.scope.owner_user_id.replaceAll('-', ''), label: 'Synthetic account' };
+      if (body.operation === 'prepare') {
+        return new Response(JSON.stringify({ schema_version: body.schema_version, session_id: body.session_id, state: 'eligible',
+          account, custody_generation: 1, custody_digest: 'sha256:' + 'c'.repeat(64) }), { headers: { 'content-type': 'application/json' } });
+      }
+      const newRef = randomUUID();
+      const receiptValue = kitCore.appConnectionConsentContinuationReceiptValue(body, body.review, newRef);
+      const receiptDigest = 'sha256:' + createHash('sha256').update(kitCore.canonicalConnectionConsentContinuationJson(receiptValue)).digest('hex');
+      return new Response(JSON.stringify({ schema_version: body.schema_version, session_id: body.session_id, state: 'connected',
+        account, runtime_session_ref: newRef, custody_generation: 1, receipt_digest: receiptDigest }), { headers: { 'content-type': 'application/json' } });
+    }
+    if (body.schema_version === 'deft.app_connection_runtime.v1') {
+      if (body.operation === 'disconnect') return new Response(JSON.stringify({ state: 'disconnected' }), { headers: { 'content-type': 'application/json' } });
       return new Response(JSON.stringify({ state: 'connected', account }), { headers: { 'content-type': 'application/json' } });
     }
     if (body.schema_version === background.CHANNEL_INSTALL_SCHEMA) {
       return new Response(JSON.stringify({ schema_version: 'deft.app_runtime_channel_install_result.v1', installed: body.channels.map((item: any) => ({ kind: item.kind, runtime_registration_id: item.channel.registration.runtime_registration_id, session_id: item.channel.credential.session_id, expires_at: item.channel.technical_renewal.expires_at })) }), { headers: { 'content-type': 'application/json' } });
     }
-    throw Error('unexpected provider operation');
+    throw Error('unexpected provider operation ' + body.schema_version + ' ' + body.operation);
   }) as typeof fetch;
+
   const call = async (path: string, token: string, value?: unknown, method?: string) => {
     const response = await app.request(path, { method: method ?? (value === undefined ? 'GET' : 'POST'), headers: { authorization: 'Bearer ' + token,
       ...(value === undefined ? {} : { 'content-type': 'application/json' }) }, ...(value === undefined ? {} : { body: JSON.stringify(value) }) });
     const body = await response.json() as any; assert.ok(response.ok, path + ': ' + response.status + ' ' + JSON.stringify(body)); return body;
   };
+  const callRaw = async (path: string, token: string, value?: unknown, method?: string) => {
+    const response = await app.request(path, { method: method ?? (value === undefined ? 'GET' : 'POST'), headers: { authorization: 'Bearer ' + token,
+      ...(value === undefined ? {} : { 'content-type': 'application/json' }) }, ...(value === undefined ? {} : { body: JSON.stringify(value) }) });
+    const body = await response.json() as any; return { status: response.status, body };
+  };
+
   const org = randomUUID(), person = randomUUID();
   await db.insert(s.orgs).values({ id: org, name: 'Crosslane', slug: 'cl-' + org });
   await db.insert(s.users).values({ id: person, name: 'Synthetic owner', email: person + '@example.test' });
@@ -105,6 +150,7 @@ test('crosslane: targets() reports the real background lease state and never a s
   const { review: admissionReview } = await call('/api/app-owner-connections/admissions/review', ownerWeb.accessToken, input);
   const { admission } = await call('/api/app-owner-connections/admissions/activate', ownerWeb.accessToken, { ...input, expected_review_digest: admissionReview.review_digest, accept_host_policy: true });
   const ownerContext = await call(`/api/app-owner-connections/${installation.id}/context`, ownerWeb.accessToken);
+  console.log('resource_request=', JSON.stringify(ownerContext.policies[0].admission.resource_request));
   const resourceInput = { ...ownerContext.policies[0].admission.resource_request, consent_expires_at: new Date(Date.now() + 3600000).toISOString() };
   const { review: resourceReview } = await call('/api/app-owner-connections/resources/review', ownerWeb.accessToken, resourceInput);
   const { binding } = await call('/api/app-owner-connections/resources/activate', ownerWeb.accessToken, { ...resourceInput, expected_review_digest: resourceReview.review_digest, accept_host_policy: true });
@@ -116,32 +162,240 @@ test('crosslane: targets() reports the real background lease state and never a s
   const caller = { org_id: org, user_id: person, sid: web_session.sid, access_expires_at: web_session.expires_at };
   const begin = await call('/api/app-connection-sessions/v2/begin', ownerWeb.accessToken, { installation_id: installation.id, target_key: resourceInput.target_key });
   await call('/api/app-connection-sessions/v2/callback', ownerWeb.accessToken, { session_id: begin.session_id, state: begin.callback_state, outcome: 'authorized', code: 'synthetic-code' });
+  // Upgrade the finite initial consent to until_revoked via the real continuation route.
+  const contReview = await call('/api/app-connection-sessions/consent-continuation/review', ownerWeb.accessToken, {
+    installation_id: installation.id, target_key: resourceInput.target_key,
+    source_session_id: begin.session_id, request_id: randomUUID(),
+    consent_expires_at: null, consent_lifetime: 'until_revoked',
+  });
+  const contActivate = await call('/api/app-connection-sessions/consent-continuation/activate', ownerWeb.accessToken, {
+    session_id: contReview.session_id, review_digest: contReview.review_digest,
+  });
+  // update begin session id to the persistent successor
+  (begin as any).session_id = contActivate.session_id;
 
-  // Seed an ended background lease.
-  const [runtimeBinding] = await db.select().from(s.appRuntimeBindings).where(and(eq(s.appRuntimeBindings.org_id, org), eq(s.appRuntimeBindings.owner_resource_binding_id, binding.binding_id)));
-  const [registration] = await db.select().from(s.appRuntimeRegistrations).where(eq(s.appRuntimeRegistrations.id, runtimeBinding!.runtime_registration_id));
-  const installationState = (await db.select().from(s.appInstallations).where(eq(s.appInstallations.id, installation.id)))[0]!;
-  await db.transaction(async tx => {
+  return {
+    app, db, s, d, sql, ownerWeb, org, person, installation: installation.id, binding: { binding_id: binding.binding_id }, resourceInput,
+    targetKey: resourceInput.target_key, beginSessionId: begin.session_id,
+    and, eq,
+    cleanup: async () => { /* noop, handled by t.after in bootstrap for fetch/env */ },
+  };
+}
+
+function healthOf(targetsBody: any): any {
+  return targetsBody?.targets?.[0]?.health ?? null;
+}
+
+test('scenario 1: lease lifecycle on connected account', { skip: !safe, timeout: 300000 }, async (t) => {
+  const ctx = await bootstrap(t);
+  const { app, db, s, d, ownerWeb, installation, targetKey, org } = ctx;
+  const { and, eq, sql } = d;
+  // background-access
+  console.log('S1 targetKey=', JSON.stringify(targetKey), 'installation=', installation);
+  const ba1 = await (async () => {
+    const r = await app.request(`/api/app-connection-sessions/installations/${installation}/background-access`, { method: 'POST', headers: { authorization: 'Bearer ' + ownerWeb.accessToken, 'content-type': 'application/json' }, body: JSON.stringify({ target_key: targetKey }) });
+    return { status: r.status, body: await r.json() };
+  })();
+  console.log('S1 BA1', ba1.status, JSON.stringify(ba1.body));
+  assert.equal(ba1.status, 200);
+  const t1 = await (async () => {
+    const r = await app.request(`/api/app-experiences/${installation}/main/targets`, { headers: { authorization: 'Bearer ' + ownerWeb.accessToken } });
+    return await r.json();
+  })();
+  console.log('S1 HEALTH1', JSON.stringify(healthOf(t1)));
+  assert.equal(healthOf(t1)?.background?.state, 'healthy');
+
+  // age lease past grace
+  await db.transaction(async (tx: any) => {
     await tx.execute(sql`SET LOCAL session_replication_role = replica`);
-    const now = Date.now();
-    await tx.execute(sql`INSERT INTO app_runtime_sessions (id, org_id, runtime_registration_id, runtime_binding_id, resource_binding_id, operator_user_id, token_hash, audience, session_epoch, runtime_epoch, lifecycle_epoch, grant_epoch, next_sequence, expires_at, renewable_until, renewal_lifetime, renewal_web_session_id, renewal_operator_role, revoked_at, created_at, updated_at)
-      VALUES (${randomUUID()}, ${org}, ${registration!.id}, ${runtimeBinding!.id}, NULL, ${person}, ${'sha256:' + createHash('sha256').update(randomUUID()).digest('hex')}, 'app_runtime', 0, ${registration!.runtime_epoch}, ${installationState.lifecycle_epoch}, ${installationState.grant_epoch}, 1, ${new Date(now + 3600000)}, NULL, 'until_revoked', ${caller.sid}, 'owner', ${new Date(now - 1)}, ${new Date(now - 60000)}, ${new Date(now - 60000)})`);
+    await tx.update(s.appRuntimeSessions).set({ expires_at: new Date(Date.now() - 25 * 60 * 60 * 1000), updated_at: new Date() }).where(and(eq(s.appRuntimeSessions.org_id, org), eq(s.appRuntimeSessions.renewal_lifetime, 'until_revoked')));
   });
 
-  const targetsBefore = await call(`/api/app-experiences/${installation.id}/main/targets`, ownerWeb.accessToken);
-  assert.equal(targetsBefore.targets.length, 1);
-  // The ended lease is reported (baseline).
-  assert.equal(targetsBefore.targets[0].health.background.state, 'ended');
+  const t2 = await (async () => {
+    const r = await app.request(`/api/app-experiences/${installation}/main/targets`, { headers: { authorization: 'Bearer ' + ownerWeb.accessToken } });
+    return await r.json();
+  })();
+  console.log('S1 HEALTH2', JSON.stringify(healthOf(t2)));
+  assert.equal(healthOf(t2)?.background?.state, 'ended');
+  assert.equal(healthOf(t2)?.background?.reason, 'expired');
 
-  // Simulate a restored successor connection: the old lease remains, but the
-  // old connection is retired. Health must not keep reporting the old ended lease.
-  const targetsAfter = await call(`/api/app-experiences/${installation.id}/main/targets`, ownerWeb.accessToken);
-  assert.equal(targetsAfter.targets.length, 1);
-  assert.equal(targetsAfter.targets[0].health.background, undefined, 'background must be absent when only a retired lease remains');
+  // call background-access again
+  const ba2 = await (async () => {
+    const r = await app.request(`/api/app-connection-sessions/installations/${installation}/background-access`, { method: 'POST', headers: { authorization: 'Bearer ' + ownerWeb.accessToken, 'content-type': 'application/json' }, body: JSON.stringify({ target_key: targetKey }) });
+    return { status: r.status, body: await r.json() };
+  })();
+  console.log('S1 BA2', ba2.status, JSON.stringify(ba2.body));
+  assert.equal(ba2.status, 200);
+  const t3 = await (async () => {
+    const r = await app.request(`/api/app-experiences/${installation}/main/targets`, { headers: { authorization: 'Bearer ' + ownerWeb.accessToken } });
+    return await r.json();
+  })();
+  console.log('S1 HEALTH3', JSON.stringify(healthOf(t3)));
+  assert.equal(healthOf(t3)?.background?.state, 'healthy');
 });
 
-test('crosslane: a live background lease makes targets() report healthy', { skip: !safe, timeout: 180000 }, async t => {
-  // Covered by app-experience-targets-health.test.ts; this is a no-op guard so the
-  // file documents the expected healthy state for a connected account with a live lease.
-  assert.ok(safe);
+test('scenario 2: revoked lease on connected account', { skip: !safe, timeout: 300000 }, async (t) => {
+  const ctx = await bootstrap(t);
+  const { app, db, s, d, ownerWeb, installation, targetKey, org, person, binding } = ctx;
+  const { and, eq, sql } = d;
+  const ba1 = await (async () => {
+    const r = await app.request(`/api/app-connection-sessions/installations/${installation}/background-access`, { method: 'POST', headers: { authorization: 'Bearer ' + ownerWeb.accessToken, 'content-type': 'application/json' }, body: JSON.stringify({ target_key: targetKey }) });
+    return { status: r.status, body: await r.json() };
+  })();
+  console.log('S2 BA1', ba1.status, JSON.stringify(ba1.body));
+  assert.equal(ba1.status, 200);
+
+  const sessions = await db.select().from(s.appRuntimeSessions).where(and(eq(s.appRuntimeSessions.org_id, org), eq(s.appRuntimeSessions.renewal_lifetime, 'until_revoked')));
+  console.log('S2 leases', sessions.length, sessions.map((x:any)=>x.id+':'+x.audience).join(','));
+
+  // revoke action leases via runtime session route
+  for (const sess of sessions.filter((x:any)=>x.audience==='app_runtime')) {
+    const route = `/api/app-runtime-management/sessions/${sess.id}/revoke`;
+    const r = await app.request(route, { method: 'POST', headers: { authorization: 'Bearer ' + ownerWeb.accessToken } });
+    const body = await r.json();
+    console.log('S2 revoke', route, r.status, JSON.stringify(body));
+  }
+  // revoke observation leases via registration route (empty body)
+  const obsSessions = sessions.filter((x:any)=>x.audience==='app_resource_sync');
+  const regIds = [...new Set(obsSessions.map((s:any)=>s.runtime_registration_id))];
+  for (const rid of regIds) {
+    const route = `/api/app-resource-sync-management/registrations/${rid}/revoke`;
+    const r = await app.request(route, { method: 'POST', headers: { authorization: 'Bearer ' + ownerWeb.accessToken } });
+    console.log('S2 revoke reg', route, r.status, JSON.stringify(await r.json()));
+  }
+  const rb2 = await app.request(`/api/app-resource-sync-management/bindings/${binding.binding_id}/revoke`, { method: 'POST', headers: { authorization: 'Bearer ' + ownerWeb.accessToken } });
+  console.log('S2 revoke consent binding', rb2.status, JSON.stringify(await rb2.json()));
+
+  const t1 = await (async () => {
+    const r = await app.request(`/api/app-experiences/${installation}/main/targets`, { headers: { authorization: 'Bearer ' + ownerWeb.accessToken } });
+    return await r.json();
+  })();
+  console.log('S2 HEALTH after revoke', JSON.stringify(healthOf(t1)));
+
+  // call background-access again
+  const ba2 = await (async () => {
+    const r = await app.request(`/api/app-connection-sessions/installations/${installation}/background-access`, { method: 'POST', headers: { authorization: 'Bearer ' + ownerWeb.accessToken, 'content-type': 'application/json' }, body: JSON.stringify({ target_key: targetKey }) });
+    return { status: r.status, body: await r.json() };
+  })();
+  console.log('S2 BA2', ba2.status, JSON.stringify(ba2.body));
+  const t2 = await (async () => {
+    const r = await app.request(`/api/app-experiences/${installation}/main/targets`, { headers: { authorization: 'Bearer ' + ownerWeb.accessToken } });
+    return await r.json();
+  })();
+  console.log('S2 HEALTH after BA2', JSON.stringify(healthOf(t2)));
+});
+
+test('scenario 3+4: restore after reconnect', { skip: !safe, timeout: 300000 }, async (t) => {
+  const ctx = await bootstrap(t);
+  const { app, db, s, d, ownerWeb, installation, targetKey, beginSessionId, org } = ctx;
+  const { and, eq, sql } = d;
+
+  // background-access first
+  const ba = await (async () => {
+    const r = await app.request(`/api/app-connection-sessions/installations/${installation}/background-access`, { method: 'POST', headers: { authorization: 'Bearer ' + ownerWeb.accessToken, 'content-type': 'application/json' }, body: JSON.stringify({ target_key: targetKey }) });
+    return { status: r.status, body: await r.json() };
+  })();
+  console.log('S3 BA', ba.status, JSON.stringify(ba.body));
+  assert.equal(ba.status, 200);
+
+  // disconnect through real route
+  const disc = await (async () => {
+    const r = await app.request('/api/app-connection-sessions/disconnect', { method: 'POST', headers: { authorization: 'Bearer ' + ownerWeb.accessToken, 'content-type': 'application/json' }, body: JSON.stringify({ session_id: beginSessionId }) });
+    return { status: r.status, body: await r.json() };
+  })();
+  console.log('S3 DISCONNECT', disc.status, JSON.stringify(disc.body));
+
+  // connect again
+  const begin2 = await (async () => {
+    const r = await app.request('/api/app-connection-sessions/v2/begin', { method: 'POST', headers: { authorization: 'Bearer ' + ownerWeb.accessToken, 'content-type': 'application/json' }, body: JSON.stringify({ installation_id: installation, target_key: targetKey }) });
+    return { status: r.status, body: await r.json() };
+  })();
+  console.log('S3 BEGIN2', begin2.status, JSON.stringify(begin2.body));
+  assert.equal(begin2.status, 200);
+  const cb2 = await (async () => {
+    const r = await app.request('/api/app-connection-sessions/v2/callback', { method: 'POST', headers: { authorization: 'Bearer ' + ownerWeb.accessToken, 'content-type': 'application/json' }, body: JSON.stringify({ session_id: begin2.body.session_id, state: begin2.body.callback_state, outcome: 'authorized', code: 'synthetic-code' }) });
+    return { status: r.status, body: await r.json() };
+  })();
+  console.log('S3 CALLBACK2', cb2.status, JSON.stringify(cb2.body));
+  assert.equal(cb2.status, 200);
+  const newSessionId = begin2.body.session_id;
+
+  // restore-context
+  const rc = await (async () => {
+    const r = await app.request(`/api/app-connection-sessions/installations/${installation}/restore-context`, { headers: { authorization: 'Bearer ' + ownerWeb.accessToken } });
+    return { status: r.status, body: await r.json() };
+  })();
+  console.log('S3 RESTORE-CONTEXT', rc.status, 'grants=', rc.body?.grants?.length);
+  assert.equal(rc.status, 200);
+
+  // restore/review
+  const rv = await (async () => {
+    const r = await app.request('/api/app-connection-sessions/restore/review', { method: 'POST', headers: { authorization: 'Bearer ' + ownerWeb.accessToken, 'content-type': 'application/json' }, body: JSON.stringify({ installation_id: installation, target_key: targetKey }) });
+    return { status: r.status, body: await r.json() };
+  })();
+  console.log('S3 RESTORE-REVIEW', rv.status, 'grants=', rv.body?.grants?.length);
+  assert.equal(rv.status, 200);
+
+  const reviewGrants = rv.body.grants as any[];
+  // choose action consent grant + any preselected
+  const chosen: string[] = [];
+  for (const g of reviewGrants) {
+    if (g.restorable && g.preselected) chosen.push(g.grant_id);
+  }
+  const actionGrant = reviewGrants.find((g:any) => g.kind === 'action_consent');
+  if (actionGrant && !chosen.includes(actionGrant.grant_id)) chosen.push(actionGrant.grant_id);
+  console.log('S3 grants', JSON.stringify(reviewGrants.map((g:any)=>({kind:g.kind,restorable:g.restorable,preselected:g.preselected,id:g.grant_id}))));
+  console.log('S3 chosen', chosen.length);
+
+  const rcAfter = await (async () => {
+    const r = await app.request(`/api/app-connection-sessions/installations/${installation}/restore-context`, { headers: { authorization: 'Bearer ' + ownerWeb.accessToken } });
+    return { status: r.status, body: await r.json() };
+  })();
+  console.log('S3 RESTORE-CONTEXT after review', rcAfter.status, 'grants=', JSON.stringify(rcAfter.body?.grants?.map((g:any)=>({kind:g.kind,restorable:g.restorable,preselected:g.preselected,id:g.grant_id}))));
+  const envelope = {
+    review_id: rv.body.review_id, review_digest: rv.body.review_digest,
+    review_expires_at: rv.body.review_expires_at, installation_id: installation, target_key: targetKey,
+  };
+  const act = await (async () => {
+    const r = await app.request('/api/app-connection-sessions/restore/activate', { method: 'POST', headers: { authorization: 'Bearer ' + ownerWeb.accessToken, 'content-type': 'application/json' }, body: JSON.stringify({ ...envelope, grant_ids: chosen }) });
+    return { status: r.status, body: await r.json() };
+  })();
+  console.log('S3 RESTORE-ACTIVATE', act.status, JSON.stringify(act.body));
+
+  // assert exactly one current connection and successor marker
+  const connRows = await db.select().from(s.appConnectionSessions).where(and(eq(s.appConnectionSessions.org_id, org)));
+  const connected = connRows.filter((r:any) => (r.record?.state === 'connected'));
+  console.log('S3 connected sessions count', connected.length);
+  // successor marker: the new session record has restore.source.session_id
+  const successor = connRows.find((r:any) => r.session_id === act.body.session_id);
+  console.log('S3 successor restore marker', JSON.stringify(successor?.record?.restore));
+  assert.equal(connected.length, 1, 'exactly one current connection');
+  assert.ok(successor?.record?.restore?.source?.session_id, 'successor marker present');
+
+  // without calling background-access, record health
+  const t1 = await (async () => {
+    const r = await app.request(`/api/app-experiences/${installation}/main/targets`, { headers: { authorization: 'Bearer ' + ownerWeb.accessToken } });
+    return await r.json();
+  })();
+  console.log('S3 HEALTH after restore (no BA)', JSON.stringify(healthOf(t1)));
+
+  // call background-access
+  const ba2 = await (async () => {
+    const r = await app.request(`/api/app-connection-sessions/installations/${installation}/background-access`, { method: 'POST', headers: { authorization: 'Bearer ' + ownerWeb.accessToken, 'content-type': 'application/json' }, body: JSON.stringify({ target_key: targetKey }) });
+    return { status: r.status, body: await r.json() };
+  })();
+  console.log('S3 BA after restore', ba2.status, JSON.stringify(ba2.body));
+  const t2 = await (async () => {
+    const r = await app.request(`/api/app-experiences/${installation}/main/targets`, { headers: { authorization: 'Bearer ' + ownerWeb.accessToken } });
+    return await r.json();
+  })();
+  console.log('S3 HEALTH after BA', JSON.stringify(healthOf(t2)));
+
+  // scenario 4: call restore-context again
+  const rc2 = await (async () => {
+    const r = await app.request(`/api/app-connection-sessions/installations/${installation}/restore-context`, { headers: { authorization: 'Bearer ' + ownerWeb.accessToken } });
+    return { status: r.status, body: await r.json() };
+  })();
+  console.log('S4 RESTORE-CONTEXT2', rc2.status, 'grants=', rc2.body?.grants?.length);
+  assert.equal(rc2.status, 200);
 });

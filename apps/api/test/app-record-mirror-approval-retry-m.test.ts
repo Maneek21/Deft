@@ -16,7 +16,7 @@ const safe = (() => {
     const url = new URL(target);
     return ['postgres:', 'postgresql:'].includes(url.protocol)
       && ['127.0.0.1', 'localhost'].includes(url.hostname)
-      && /^\/(deft_test|fix424_m_test)$/u.test(url.pathname) && !url.search && !url.hash;
+      && /^\/deft_test/u.test(url.pathname) && !url.search && !url.hash;
   } catch { return false; }
 })();
 
