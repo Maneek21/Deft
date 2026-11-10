@@ -311,7 +311,8 @@ test('audit-mixed-org-rows: database', { skip: !safe && 'needs DEFT_TEST_DATABAS
     assert.equal(exitCodeFor(base), exitCodeFor(clean));
     const info = base.checks.find((c) => c.id === infoId)!;
     assert.equal(info.severity, 'info');
-    assert.ok(info.count >= 1);
+    const infoBefore = clean.checks.find((c) => c.id === infoId)?.count ?? 0;
+    assert.equal(info.count - infoBefore, 1, 'the planted org is counted once');
     assert.match(info.description, /backfill-defty-membership/u);
 
     // a BYOA agent user that is not Defty and has no membership is still a mismatch
@@ -382,7 +383,7 @@ test('audit-mixed-org-rows: database', { skip: !safe && 'needs DEFT_TEST_DATABAS
     const report = await runAudit(client, { limit: 10000, target: 'test' });
     const hit = report.checks.filter((c) => c.severity === 'mismatch' && c.count - (baseline.get(c.id) ?? 0) > 0);
     assert.deepEqual(
-      hit.map((c) => `${c.id}=${c.count}`).sort(),
+      hit.map((c) => `${c.id}=${c.count - (baseline.get(c.id) ?? 0)}`).sort(),
       [
         'canvases.space_id->spaces=1',
         'messages.space_id->spaces=1',

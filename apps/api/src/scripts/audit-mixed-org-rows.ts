@@ -573,8 +573,8 @@ export function buildChecks(): CheckDef[] {
     columns: ['orgs.id', 'users.email', 'org_members.org_id', 'org_members.user_id'],
     severity: 'info',
     childTable: 'orgs',
-    from: `orgs c JOIN users u ON u.email = '${DEFTY_EMAIL}'`,
-    where: 'NOT EXISTS (SELECT 1 FROM org_members m WHERE m.org_id = c.id AND m.user_id = u.id)',
+    from: 'orgs c',
+    where: `NOT EXISTS (SELECT 1 FROM org_members m JOIN users u ON u.id = m.user_id WHERE m.org_id = c.id AND u.email = '${DEFTY_EMAIL}')`,
     orgA: 'c.id',
     orgB: null,
   }));
