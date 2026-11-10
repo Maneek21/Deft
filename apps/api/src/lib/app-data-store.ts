@@ -1,7 +1,8 @@
 import {AppDataConsentSnapshotSchema,appConsentDeadline} from '@deft/app-kit/core';
 import {humanRecordSaveReceipt} from './app-data-human-save.js';
 import {and,eq,inArray,sql} from 'drizzle-orm';
-import {appDataConsents,appDataInvocations} from '@deft/db/schema';
+import {appDataConsents,appDataInvocations,appConnectionSessions} from '@deft/db/schema';
+import {noPublishedConnectionSuccessor} from './app-connection-current-locators.js';
 import {db} from './db.js';
 import type {ExperienceCaller} from './app-experience-service.js';
 /** PR424-N2b: serializes every writer that can make an app_data_consents row
@@ -14,7 +15,8 @@ import type {ExperienceCaller} from './app-experience-service.js';
  * Lock order (cycle-freedom argument). Holders/waiters of this key are only:
  *  - PostgresAppDataStore.activate: takes it as the FIRST lock of its own
  *    transaction (after one plain, non-locking read that names the target), then
- *    only app_data_consents row locks.
+ *    only app_data_consents row locks plus one plain, non-locking
+ *    app_connection_sessions read (PR424-N2c successor check), which never waits.
  *  - AppRestoreAccessService.activate: takes it immediately after
  *    `deft.app_restore_access.activate.v1` (which no other path takes) and
  *    before every row lock (member/App/registration/binding/session/review/
@@ -47,6 +49,28 @@ export class PostgresAppDataStore {
     // for the store, so exactly one live consent (this one) remains.
     const [row]=await tx.select().from(appDataConsents).where(and(this.owner(appDataConsents),eq(appDataConsents.consent_id,id))).for('update');
     if(!row||row.state!=='proposed'||row.consent_digest!==digest||appConsentDeadline(row.expires_at,AppDataConsentSnapshotSchema.parse(row.snapshot).consent_lifetime)<=Date.now()||AppDataConsentSnapshotSchema.parse(row.snapshot).review_expires_at!==undefined&&Date.parse(AppDataConsentSnapshotSchema.parse(row.snapshot).review_expires_at!)<=Date.now())return false;
+    // PR424-N2c: the caller's lineage (`connectionIds`) was computed BEFORE this
+    // lock. A Restore that committed in between may have published a successor
+    // for the proposal's session and carried the live consent onto it, which a
+    // revoke over the stale lineage would not see. Under the lock, require the
+    // proposal's session to still be current for this exact target, using the
+    // same "no published successor" definition as the current-session locators
+    // (upgrade/credential-repair receipt, restore successor, connected
+    // continuation, connected form). A superseded session is refused (the caller
+    // surfaces its existing conflict) and the owner re-proposes on the current
+    // connection; nothing is reconciled across sessions.
+    // Deadlock-freedom: a plain SELECT (no FOR UPDATE/SHARE) under READ COMMITTED
+    // never waits on row locks, so it adds no edge to the order documented at
+    // lockAppDataConsentTarget; its fresh statement snapshot sees every
+    // successor committed by a Restore that released this lock before us.
+    const [currentSession]=await tx.select({id:appConnectionSessions.session_id}).from(appConnectionSessions).where(and(
+     eq(appConnectionSessions.org_id,this.caller.org_id),eq(appConnectionSessions.owner_user_id,this.caller.user_id),
+     eq(appConnectionSessions.session_id,row.connection_session_id),
+     sql`${appConnectionSessions.record}->'scope'->>'installation_id'=${scope.installation_id}`,
+     sql`${appConnectionSessions.record}->'scope'->>'target_key'=${scope.target_key}`,
+     sql`${appConnectionSessions.record}->>'state'='connected'`,
+     noPublishedConnectionSuccessor())).limit(1);
+    if(!currentSession)return false;
     await tx.update(appDataConsents).set({state:'revoked',updated_at:new Date()}).where(and(this.owner(appDataConsents),inArray(appDataConsents.connection_session_id,connectionIds??[row.connection_session_id]),eq(appDataConsents.store_key,row.store_key),eq(appDataConsents.state,'active')));
     await tx.update(appDataConsents).set({state:'active',updated_at:new Date()}).where(and(this.owner(appDataConsents),eq(appDataConsents.consent_id,id)));return true;
   });}
