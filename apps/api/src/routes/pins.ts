@@ -20,7 +20,7 @@ pinRoutes.post('/:spaceId/pins', async (c) => {
 
   const [msg] = await db.select({ id: messages.id, content: messages.content })
     .from(messages)
-    .where(and(eq(messages.id, message_id), eq(messages.space_id, spaceId)))
+    .where(and(eq(messages.id, message_id), eq(messages.space_id, spaceId), eq(messages.org_id, user.org_id)))
     .limit(1);
   if (!msg) return c.json({ error: 'Message not found', code: 'NOT_FOUND' }, 404);
 
@@ -34,7 +34,8 @@ pinRoutes.post('/:spaceId/pins', async (c) => {
     message_id, space_id: spaceId, pinned_by: user.id,
   }).returning();
 
-  await db.update(messages).set({ is_pinned: true }).where(eq(messages.id, message_id));
+  await db.update(messages).set({ is_pinned: true })
+    .where(and(eq(messages.id, message_id), eq(messages.space_id, spaceId), eq(messages.org_id, user.org_id)));
 
   // Broadcast pin — no system message, just a socket event
   const io = getIO();
@@ -57,7 +58,10 @@ pinRoutes.delete('/:spaceId/pins/:messageId', async (c) => {
   if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
   await db.delete(pinnedMessages).where(and(eq(pinnedMessages.message_id, messageId), eq(pinnedMessages.space_id, spaceId)));
-  await db.update(messages).set({ is_pinned: false }).where(eq(messages.id, messageId));
+  // Bound to the authorized space and active org: a message id from another
+  // space or org must not be touched through this space's URL.
+  await db.update(messages).set({ is_pinned: false })
+    .where(and(eq(messages.id, messageId), eq(messages.space_id, spaceId), eq(messages.org_id, user.org_id)));
 
   const io = getIO();
   if (io) {
@@ -88,7 +92,11 @@ pinRoutes.get('/:spaceId/pins', async (c) => {
     author_avatar: users.avatar_url,
   })
     .from(pinnedMessages)
-    .innerJoin(messages, eq(pinnedMessages.message_id, messages.id))
+    .innerJoin(messages, and(
+      eq(pinnedMessages.message_id, messages.id),
+      eq(messages.space_id, spaceId),
+      eq(messages.org_id, user.org_id),
+    ))
     .innerJoin(users, eq(messages.user_id, users.id))
     .where(eq(pinnedMessages.space_id, spaceId))
     .orderBy(desc(pinnedMessages.pinned_at));

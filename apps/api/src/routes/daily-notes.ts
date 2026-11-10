@@ -63,7 +63,7 @@ const updateNoteSchema = z.object({
 dailyNoteRoutes.get('/folders', async (c) => {
   const user = c.get('user');
   const rows = await db.select().from(noteFolders)
-    .where(and(eq(noteFolders.user_id, user.id), eq(noteFolders.is_deleted, false)))
+    .where(and(eq(noteFolders.org_id, user.org_id), eq(noteFolders.user_id, user.id), eq(noteFolders.is_deleted, false)))
     .orderBy(noteFolders.sort_order, noteFolders.name);
   return c.json({ folders: rows });
 });
@@ -100,7 +100,7 @@ dailyNoteRoutes.patch('/folders/:id', async (c) => {
 
   const [updated] = await db.update(noteFolders)
     .set(updates)
-    .where(and(eq(noteFolders.id, folderId), eq(noteFolders.user_id, user.id)))
+    .where(and(eq(noteFolders.id, folderId), eq(noteFolders.org_id, user.org_id), eq(noteFolders.user_id, user.id)))
     .returning();
 
   if (!updated) return c.json({ error: 'Folder not found', code: 'NOT_FOUND' }, 404);
@@ -114,12 +114,12 @@ dailyNoteRoutes.delete('/folders/:id', async (c) => {
 
   await db.update(noteFolders)
     .set({ is_deleted: true })
-    .where(and(eq(noteFolders.id, folderId), eq(noteFolders.user_id, user.id)));
+    .where(and(eq(noteFolders.id, folderId), eq(noteFolders.org_id, user.org_id), eq(noteFolders.user_id, user.id)));
 
   // Unset folder_id on notes in this folder
   await db.update(notes)
     .set({ folder_id: null })
-    .where(and(eq(notes.folder_id, folderId), eq(notes.user_id, user.id)));
+    .where(and(eq(notes.folder_id, folderId), eq(notes.org_id, user.org_id), eq(notes.user_id, user.id)));
 
   return c.json({ success: true });
 });
@@ -329,7 +329,7 @@ dailyNoteRoutes.delete('/:id', async (c) => {
   const noteId = c.req.param('id');
 
   const [existing] = await db.select({ id: notes.id }).from(notes)
-    .where(and(eq(notes.id, noteId), eq(notes.user_id, user.id)))
+    .where(and(eq(notes.id, noteId), eq(notes.org_id, user.org_id), eq(notes.user_id, user.id)))
     .limit(1);
 
   if (!existing) {
@@ -351,7 +351,7 @@ dailyNoteRoutes.get('/:id/history', async (c) => {
   const noteId = c.req.param('id');
 
   const [note] = await db.select({ id: notes.id }).from(notes)
-    .where(and(eq(notes.id, noteId), eq(notes.user_id, user.id)))
+    .where(and(eq(notes.id, noteId), eq(notes.org_id, user.org_id), eq(notes.user_id, user.id)))
     .limit(1);
   if (!note) return c.json({ error: 'Note not found', code: 'NOT_FOUND' }, 404);
 
@@ -373,7 +373,7 @@ dailyNoteRoutes.get('/:id/shares', async (c) => {
   const noteId = c.req.param('id');
 
   const [note] = await db.select({ id: notes.id }).from(notes)
-    .where(and(eq(notes.id, noteId), eq(notes.user_id, user.id)))
+    .where(and(eq(notes.id, noteId), eq(notes.org_id, user.org_id), eq(notes.user_id, user.id)))
     .limit(1);
   if (!note) return c.json({ error: 'Note not found', code: 'NOT_FOUND' }, 404);
 
@@ -401,7 +401,7 @@ dailyNoteRoutes.post('/:id/shares', async (c) => {
   if (!targetUserId) return c.json({ error: 'user_id required', code: 'VALIDATION_ERROR' }, 400);
 
   const [note] = await db.select({ id: notes.id }).from(notes)
-    .where(and(eq(notes.id, noteId), eq(notes.user_id, user.id)))
+    .where(and(eq(notes.id, noteId), eq(notes.org_id, user.org_id), eq(notes.user_id, user.id)))
     .limit(1);
   if (!note) return c.json({ error: 'Note not found', code: 'NOT_FOUND' }, 404);
 
@@ -421,7 +421,7 @@ dailyNoteRoutes.delete('/:id/shares/:userId', async (c) => {
   const targetUserId = c.req.param('userId');
 
   const [note] = await db.select({ id: notes.id }).from(notes)
-    .where(and(eq(notes.id, noteId), eq(notes.user_id, user.id)))
+    .where(and(eq(notes.id, noteId), eq(notes.org_id, user.org_id), eq(notes.user_id, user.id)))
     .limit(1);
   if (!note) return c.json({ error: 'Note not found', code: 'NOT_FOUND' }, 404);
 

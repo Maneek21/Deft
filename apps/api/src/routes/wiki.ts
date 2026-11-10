@@ -877,13 +877,9 @@ wikiRoutes.post('/', async (c) => {
       if (!space_id) {
         return c.json({ error: 'space_id is required when scope is space', code: 'VALIDATION_ERROR' }, 400);
       }
-      const [space] = await db.select({ id: spaces.id })
-        .from(spaces)
-        .where(and(eq(spaces.id, space_id), eq(spaces.org_id, user.org_id)))
-        .limit(1);
-      if (!space) {
-        return c.json({ error: 'Space not found in your organization', code: 'FORBIDDEN' }, 403);
-      }
+      // requireSpaceMembership binds the space to the active org, so a missing
+      // space, a space in another org and a same-org space the caller is not
+      // in all get one identical denial (W1-g).
       const isMember = await requireSpaceMembership(space_id, user.id, user.org_id);
       if (!isMember) {
         return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);

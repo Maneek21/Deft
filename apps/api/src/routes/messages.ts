@@ -303,7 +303,7 @@ messageRoutes.get('/:spaceId', async (c) => {
     // "around" mode: fetch messages around a specific message ID
     if (around) {
       const [targetMsg] = await db.select({ created_at: messages.created_at })
-        .from(messages).where(eq(messages.id, around)).limit(1);
+        .from(messages).where(and(eq(messages.id, around), eq(messages.space_id, spaceId), eq(messages.org_id, user.org_id))).limit(1);
       if (!targetMsg) {
         return c.json({ messages: [], next_cursor: null });
       }

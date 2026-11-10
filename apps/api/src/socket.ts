@@ -415,12 +415,17 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
     }
     socket.emit('presence:init', presenceList);
 
+    // Display name of the authenticated user, taken from the checked space join
+    // (users.name); typing events use it instead of a client-supplied name.
+    let authenticatedUserName: string | null = null;
+
     // Space rooms
     socket.on('space:join', async (spaceId: string) => {
       if (typeof spaceId !== 'string' || spaceId.length === 0 || spaceId.length > 128) return;
       const authorizationGeneration = captureRealtimeAccessGeneration();
       const access = await getSpaceAccess(spaceId, user).catch(() => undefined);
       if (!access || !isRealtimeAccessGenerationCurrent(authorizationGeneration)) return;
+      authenticatedUserName = access.user_name;
       try {
         await socket.join(`space:${spaceId}`);
       } catch {
@@ -448,19 +453,32 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
       socket.leave(`space:${spaceId}`);
     });
 
-    // Typing
-    socket.on('typing:start', (data: { space_id: string; user_name: string }) => {
-      socket.to(`space:${data.space_id}`).emit('typing:start', {
+    // Typing. Only relayed into a space room this socket already joined through
+    // the checked `space:join` above (membership + active org + not archived;
+    // revocation removes the socket from the room), so no per-keystroke query.
+    // The display name comes from that checked join, never from the payload.
+    const joinedSpaceId = (data: unknown): string | null => {
+      const spaceId = (data as { space_id?: unknown } | null)?.space_id;
+      if (typeof spaceId !== 'string' || spaceId.length === 0 || spaceId.length > 128) return null;
+      return socket.rooms.has(`space:${spaceId}`) ? spaceId : null;
+    };
+
+    socket.on('typing:start', (data: unknown) => {
+      const spaceId = joinedSpaceId(data);
+      if (!spaceId) return;
+      socket.to(`space:${spaceId}`).emit('typing:start', {
         user_id: user.id,
-        user_name: data.user_name,
-        space_id: data.space_id,
+        user_name: authenticatedUserName ?? '',
+        space_id: spaceId,
       });
     });
 
-    socket.on('typing:stop', (data: { space_id: string }) => {
-      socket.to(`space:${data.space_id}`).emit('typing:stop', {
+    socket.on('typing:stop', (data: unknown) => {
+      const spaceId = joinedSpaceId(data);
+      if (!spaceId) return;
+      socket.to(`space:${spaceId}`).emit('typing:stop', {
         user_id: user.id,
-        space_id: data.space_id,
+        space_id: spaceId,
       });
     });
 

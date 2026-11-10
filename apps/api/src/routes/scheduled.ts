@@ -105,7 +105,7 @@ scheduledRoutes.get('/', async (c) => {
   const user = c.get('user');
   const pending = await db.select()
     .from(scheduledMessages)
-    .where(and(eq(scheduledMessages.user_id, user.id), eq(scheduledMessages.status, 'pending')))
+    .where(and(eq(scheduledMessages.org_id, user.org_id), eq(scheduledMessages.user_id, user.id), eq(scheduledMessages.status, 'pending')))
     .orderBy(scheduledMessages.scheduled_for);
   return c.json(pending);
 });
@@ -119,6 +119,7 @@ scheduledRoutes.delete('/:id', async (c) => {
       .set({ status: 'cancelled' })
       .where(and(
         eq(scheduledMessages.id, id),
+        eq(scheduledMessages.org_id, user.org_id),
         eq(scheduledMessages.user_id, user.id),
         eq(scheduledMessages.status, 'pending'),
       ))

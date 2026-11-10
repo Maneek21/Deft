@@ -14,6 +14,11 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { Hono } from 'hono';
 import pg from 'pg';
+import { createServer } from 'node:http';
+import { createRequire } from 'node:module';
+import { setupSocket } from '../src/socket.js';
+
+const { io: connectSocket } = createRequire(new URL('../../web/package.json', import.meta.url))('socket.io-client');
 
 const DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 const ORG_A = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';
@@ -25,6 +30,11 @@ const SPACE_B = `w1g-space-b-${stamp}`;
 const SPACE_A = `w1g-space-a-${stamp}`;
 const MISSING_SPACE = `w1g-missing-space-${stamp}`;
 const MESSAGE_B = `w1g-message-b-${stamp}`;
+const MESSAGE_A = `w1g-message-a-${stamp}`;
+const SPACE_A_OTHER = `w1g-space-a-other-${stamp}`;
+const SCHEDULED_B = `w1g-scheduled-b-${stamp}`;
+const NOTE_B = `w1g-note-b-${stamp}`;
+const FOLDER_B = `w1g-folder-b-${stamp}`;
 const SECRET = `w1gsecret${stamp}`;
 
 async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
@@ -69,16 +79,43 @@ before(async () => {
       `INSERT INTO pinned_messages (id, message_id, space_id, pinned_by) VALUES (gen_random_uuid()::text, $1, $2, $3)`,
       [MESSAGE_B, SPACE_B, USER_ID],
     );
+    // Round 2 fixtures: an org-A message, an org-A space the caller is not in,
+    // and org-B rows owned by the caller (scheduled message, note, folder).
+    await c.query(
+      `INSERT INTO messages (id, org_id, space_id, user_id, content, is_pinned, is_deleted, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'w1g org A message', false, false, NOW() - interval '1 hour', NOW())`,
+      [MESSAGE_A, ORG_A, SPACE_A, USER_ID],
+    );
+    await c.query(
+      `INSERT INTO spaces (id, org_id, name, type, is_default, is_archived, agent_enabled, created_by, created_at, updated_at)
+       VALUES ($1, $2, 'w1g org A other', 'private', false, false, true, $3, NOW(), NOW())`,
+      [SPACE_A_OTHER, ORG_A, USER_ID],
+    );
+    await c.query(
+      `INSERT INTO scheduled_messages (id, org_id, user_id, space_id, content, scheduled_for, status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, NOW() + interval '1 day', 'pending', NOW(), NOW())`,
+      [SCHEDULED_B, ORG_B, USER_ID, SPACE_B, `${SECRET} scheduled B`],
+    );
+    await c.query(
+      `INSERT INTO note_folders (id, org_id, user_id, name, created_at, updated_at) VALUES ($1, $2, $3, $4, NOW(), NOW())`,
+      [FOLDER_B, ORG_B, USER_ID, `${SECRET} folder B`],
+    );
+    await c.query(
+      `INSERT INTO notes (id, org_id, user_id, title, folder_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
+      [NOTE_B, ORG_B, USER_ID, `${SECRET} note B`, FOLDER_B],
+    );
   });
 });
 
 after(async () => {
   await withClient(async (c) => {
-    const spacesList = [SPACE_A, SPACE_B];
+    const spacesList = [SPACE_A, SPACE_B, SPACE_A_OTHER];
     await c.query(`DELETE FROM job_queue WHERE payload::text LIKE $1`, [`%w1g-%${stamp}%`]).catch(() => undefined);
     await c.query(`DELETE FROM scheduled_messages WHERE user_id = $1`, [USER_ID]);
     await c.query(`DELETE FROM note_versions WHERE note_id IN (SELECT id FROM notes WHERE user_id = $1)`, [USER_ID]).catch(() => undefined);
+    await c.query(`DELETE FROM note_shares WHERE note_id IN (SELECT id FROM notes WHERE user_id = $1)`, [USER_ID]).catch(() => undefined);
     await c.query(`DELETE FROM notes WHERE user_id = $1`, [USER_ID]);
+    await c.query(`DELETE FROM note_folders WHERE user_id = $1`, [USER_ID]);
     await c.query(`DELETE FROM wiki_pages WHERE space_id = ANY($1) OR origin_space_id = ANY($1)`, [spacesList]);
     await c.query(`DELETE FROM canvases WHERE space_id = ANY($1)`, [spacesList]);
     await c.query(`DELETE FROM pinned_messages WHERE space_id = ANY($1)`, [spacesList]);
@@ -195,11 +232,11 @@ test('W1g: knowledge refuses a space outside the caller\'s active org', async ()
 test('W1g: scheduled messages refuses a space outside the caller\'s active org', async () => {
   const when = new Date(Date.now() + 60 * 60 * 1000).toISOString();
   await assertLooksLikeNonMember('scheduled', 'POST', () => '/api/scheduled-messages', (s) => ({ space_id: s, content: 'w1g scheduled', scheduled_for: when }));
-  assert.equal(await rowCount(`SELECT count(*)::int AS n FROM scheduled_messages WHERE space_id = $1`, [SPACE_B]), 0);
+  assert.equal(await rowCount(`SELECT count(*)::int AS n FROM scheduled_messages WHERE space_id = $1 AND id <> $2`, [SPACE_B, SCHEDULED_B]), 0);
 
   const ok = await call('scheduled', ORG_B, 'POST', '/api/scheduled-messages', { space_id: SPACE_B, content: 'w1g scheduled', scheduled_for: when });
   assert.equal(ok.status, 201, ok.text);
-  assert.equal(await rowCount(`SELECT count(*)::int AS n FROM scheduled_messages WHERE space_id = $1 AND org_id = $2`, [SPACE_B, ORG_B]), 1);
+  assert.equal(await rowCount(`SELECT count(*)::int AS n FROM scheduled_messages WHERE space_id = $1 AND org_id = $2 AND id <> $3`, [SPACE_B, ORG_B, SCHEDULED_B]), 1);
 });
 
 test('W1g: daily-notes refuses a space outside the caller\'s active org', async () => {
@@ -229,4 +266,205 @@ test('W1g: spaces refuses a space outside the caller\'s active org', async () =>
   assert.equal(level.status, 200, level.text);
   const detail = await call('spaces', ORG_B, 'GET', `/api/spaces/${SPACE_B}`);
   assert.equal(detail.status, 200, detail.text);
+});
+
+// ── Round 2 ──────────────────────────────────────────────────────────────
+
+test('W1g: pin, unpin and pin list are bound to the authorized space and active org', async () => {
+  // Unpin through an org-A space URL with an org-B message id must not touch the B message.
+  const unpin = await call('pins', ORG_A, 'DELETE', `/api/spaces/${SPACE_A}/pins/${MESSAGE_B}`);
+  const unpinMissing = await call('pins', ORG_A, 'DELETE', `/api/spaces/${SPACE_A}/pins/w1g-missing-message-${stamp}`);
+  assert.equal(unpin.status, unpinMissing.status, unpin.text);
+  assert.deepEqual(unpin.json, unpinMissing.json);
+  assert.equal(await rowCount(`SELECT count(*)::int AS n FROM messages WHERE id = $1 AND is_pinned = true`, [MESSAGE_B]), 1,
+    'unpin via an org-A space cleared is_pinned on an org-B message');
+
+  // Pinning a foreign message into an org-A space fails exactly like a missing message.
+  const pin = await call('pins', ORG_A, 'POST', `/api/spaces/${SPACE_A}/pins`, { message_id: MESSAGE_B });
+  const pinMissing = await call('pins', ORG_A, 'POST', `/api/spaces/${SPACE_A}/pins`, { message_id: `w1g-missing-message-${stamp}` });
+  assert.equal(pinMissing.status, 404, pinMissing.text);
+  assert.equal(pin.status, pinMissing.status, pin.text);
+  assert.deepEqual(pin.json, pinMissing.json);
+  assert.equal(await rowCount(`SELECT count(*)::int AS n FROM pinned_messages WHERE space_id = $1`, [SPACE_A]), 0);
+
+  // A pin row in an org-A space that points at a message outside that space
+  // (legacy / corrupt data) must not surface the foreign message's content.
+  await withClient((c) => c.query(
+    `INSERT INTO pinned_messages (id, message_id, space_id, pinned_by) VALUES (gen_random_uuid()::text, $1, $2, $3)`,
+    [MESSAGE_B, SPACE_A, USER_ID],
+  ));
+  try {
+    const list = await call('pins', ORG_A, 'GET', `/api/spaces/${SPACE_A}/pins`);
+    assert.equal(list.status, 200, list.text);
+    assert.ok(!list.text.includes(SECRET), `pin list leaked an org-B message: ${list.text}`);
+  } finally {
+    await withClient((c) => c.query(`DELETE FROM pinned_messages WHERE space_id = $1`, [SPACE_A]));
+  }
+
+  // Right org still works end to end.
+  const okUnpin = await call('pins', ORG_B, 'DELETE', `/api/spaces/${SPACE_B}/pins/${MESSAGE_B}`);
+  assert.equal(okUnpin.status, 200, okUnpin.text);
+  assert.equal(await rowCount(`SELECT count(*)::int AS n FROM messages WHERE id = $1 AND is_pinned = false`, [MESSAGE_B]), 1);
+  const okPin = await call('pins', ORG_B, 'POST', `/api/spaces/${SPACE_B}/pins`, { message_id: MESSAGE_B });
+  assert.equal(okPin.status, 201, okPin.text);
+  assert.equal(await rowCount(`SELECT count(*)::int AS n FROM messages WHERE id = $1 AND is_pinned = true`, [MESSAGE_B]), 1);
+});
+
+test('W1g: messages around= treats a foreign message id like a nonexistent one', async () => {
+  const foreign = await call('messages', ORG_A, 'GET', `/api/messages/${SPACE_A}?around=${MESSAGE_B}`);
+  const missing = await call('messages', ORG_A, 'GET', `/api/messages/${SPACE_A}?around=w1g-missing-message-${stamp}`);
+  assert.equal(missing.status, 200, missing.text);
+  assert.equal(foreign.status, missing.status, foreign.text);
+  assert.deepEqual(foreign.json, missing.json);
+
+  const own = await call('messages', ORG_A, 'GET', `/api/messages/${SPACE_A}?around=${MESSAGE_A}`);
+  assert.equal(own.status, 200, own.text);
+  assert.ok(own.text.includes(MESSAGE_A), own.text);
+});
+
+/** Org-B space, same-org non-member space and nonexistent space must all get one identical denial. */
+async function assertIdenticalDenial(route: RouteName, method: string, path: (space: string) => string, body?: (space: string) => unknown) {
+  const crossOrg = await call(route, ORG_A, method, path(SPACE_B), body?.(SPACE_B));
+  const nonMember = await call(route, ORG_A, method, path(SPACE_A_OTHER), body?.(SPACE_A_OTHER));
+  const missing = await call(route, ORG_A, method, path(MISSING_SPACE), body?.(MISSING_SPACE));
+  assert.equal(nonMember.status, 403, `${route} ${method} same-org non-member: ${nonMember.text}`);
+  assert.equal(crossOrg.status, nonMember.status, `${route} ${method} cross-org vs non-member (body: ${crossOrg.text})`);
+  assert.deepEqual(crossOrg.json, nonMember.json, `${route} ${method} cross-org body`);
+  assert.equal(missing.status, nonMember.status, `${route} ${method} missing vs non-member (body: ${missing.text})`);
+  assert.deepEqual(missing.json, nonMember.json, `${route} ${method} missing body`);
+  assert.ok(!crossOrg.text.includes(SECRET), `${route} leaked org B data`);
+}
+
+test('W1g: spaces detail/members and wiki create deny cross-org, non-member and missing spaces identically', async () => {
+  await assertIdenticalDenial('spaces', 'GET', (s) => `/api/spaces/${s}`);
+  await assertIdenticalDenial('spaces', 'GET', (s) => `/api/spaces/${s}/members`);
+  await assertIdenticalDenial('spaces', 'POST', (s) => `/api/spaces/${s}/members`, () => ({ user_id: USER_ID }));
+  await assertIdenticalDenial('wiki', 'POST', () => '/api/wiki', (s) => ({ title: `w1g wiki ${stamp}`, content: 'x', type: 'fact', scope: 'space', space_id: s }));
+  assert.equal(await rowCount(`SELECT count(*)::int AS n FROM space_members WHERE space_id = $1 AND user_id = $2`, [SPACE_A_OTHER, USER_ID]), 0);
+  assert.equal(await rowCount(`SELECT count(*)::int AS n FROM wiki_pages WHERE space_id = ANY($1)`, [[SPACE_B, SPACE_A_OTHER]]), 0);
+
+  const detail = await call('spaces', ORG_B, 'GET', `/api/spaces/${SPACE_B}`);
+  assert.equal(detail.status, 200, detail.text);
+  const members = await call('spaces', ORG_B, 'GET', `/api/spaces/${SPACE_B}/members`);
+  assert.equal(members.status, 200, members.text);
+});
+
+test('W1g: mute refuses a space outside the caller\'s active org', async () => {
+  await assertLooksLikeNonMember('spaces', 'PATCH', (s) => `/api/spaces/${s}/mute`, () => ({ muted: true }));
+  assert.equal(await rowCount(`SELECT count(*)::int AS n FROM space_members WHERE space_id = $1 AND user_id = $2 AND is_muted = true`, [SPACE_B, USER_ID]), 0);
+
+  const ok = await call('spaces', ORG_B, 'PATCH', `/api/spaces/${SPACE_B}/mute`, { muted: false });
+  assert.equal(ok.status, 200, ok.text);
+});
+
+test('W1g: scheduled list and cancel are bound to the active org', async () => {
+  const list = await call('scheduled', ORG_A, 'GET', '/api/scheduled-messages');
+  assert.equal(list.status, 200, list.text);
+  assert.ok(!list.text.includes(SCHEDULED_B), `org-A list exposed an org-B scheduled message: ${list.text}`);
+  assert.ok(!list.text.includes(SECRET));
+
+  const cancel = await call('scheduled', ORG_A, 'DELETE', `/api/scheduled-messages/${SCHEDULED_B}`);
+  const cancelMissing = await call('scheduled', ORG_A, 'DELETE', `/api/scheduled-messages/w1g-missing-scheduled-${stamp}`);
+  assert.equal(cancel.status, cancelMissing.status, cancel.text);
+  assert.deepEqual(cancel.json, cancelMissing.json);
+  assert.equal(await rowCount(`SELECT count(*)::int AS n FROM scheduled_messages WHERE id = $1 AND status = 'pending'`, [SCHEDULED_B]), 1,
+    'org-A session cancelled an org-B scheduled message');
+
+  const okList = await call('scheduled', ORG_B, 'GET', '/api/scheduled-messages');
+  assert.ok(okList.text.includes(SCHEDULED_B), okList.text);
+});
+
+test('W1g: daily-notes owner-only routes are bound to the active org', async () => {
+  const folders = await call('daily-notes', ORG_A, 'GET', '/api/daily-notes/folders');
+  assert.equal(folders.status, 200, folders.text);
+  assert.ok(!folders.text.includes(SECRET), `org-A folder list exposed an org-B folder: ${folders.text}`);
+
+  const attempts: Array<[string, string, unknown]> = [
+    ['GET', `/api/daily-notes/${NOTE_B}/history`, undefined],
+    ['GET', `/api/daily-notes/${NOTE_B}/shares`, undefined],
+    ['POST', `/api/daily-notes/${NOTE_B}/shares`, { user_id: USER_ID }],
+    ['DELETE', `/api/daily-notes/${NOTE_B}/shares/${USER_ID}`, undefined],
+    ['DELETE', `/api/daily-notes/${NOTE_B}`, undefined],
+    ['PATCH', `/api/daily-notes/folders/${FOLDER_B}`, { name: 'w1g renamed' }],
+  ];
+  for (const [method, path, body] of attempts) {
+    const res = await call('daily-notes', ORG_A, method, path, body);
+    assert.equal(res.status, 404, `${method} ${path} must treat an org-B note/folder as missing (body: ${res.text})`);
+  }
+  await call('daily-notes', ORG_A, 'DELETE', `/api/daily-notes/folders/${FOLDER_B}`);
+  assert.equal(await rowCount(`SELECT count(*)::int AS n FROM notes WHERE id = $1 AND is_deleted = false AND folder_id = $2`, [NOTE_B, FOLDER_B]), 1,
+    'org-A session deleted or detached an org-B note');
+  assert.equal(await rowCount(`SELECT count(*)::int AS n FROM note_folders WHERE id = $1 AND is_deleted = false AND name = $2`, [FOLDER_B, `${SECRET} folder B`]), 1,
+    'org-A session changed an org-B folder');
+  assert.equal(await rowCount(`SELECT count(*)::int AS n FROM note_shares WHERE note_id = $1`, [NOTE_B]), 0);
+
+  const okHistory = await call('daily-notes', ORG_B, 'GET', `/api/daily-notes/${NOTE_B}/history`);
+  assert.equal(okHistory.status, 200, okHistory.text);
+  const okFolders = await call('daily-notes', ORG_B, 'GET', '/api/daily-notes/folders');
+  assert.ok(okFolders.text.includes(FOLDER_B), okFolders.text);
+});
+
+test('W1g: typing events require a checked space join and use the authenticated name', async () => {
+  type Principal = { id: string; email: string; org_id: string; sid: string; exp: number };
+  const exp = Math.floor(Date.now() / 1000) + 300;
+  const principals: Record<string, Principal> = {
+    attacker: { id: 'w1g-sock-user', email: 'w1g-sock@deft.invalid', org_id: 'w1g-sock-org-a', sid: 'w1g-sock-a', exp },
+    victim: { id: 'w1g-sock-victim', email: 'w1g-victim@deft.invalid', org_id: 'w1g-sock-org-b', sid: 'w1g-sock-b', exp },
+    peer: { id: 'w1g-sock-peer', email: 'w1g-peer@deft.invalid', org_id: 'w1g-sock-org-a', sid: 'w1g-sock-c', exp },
+  };
+  const allowedRoom: Record<string, string> = { attacker: 'w1g-room-a', victim: 'w1g-room-b', peer: 'w1g-room-a' };
+  const realName: Record<string, string> = { attacker: 'Real Attacker Name', victim: 'Victim', peer: 'Peer' };
+  const keyOf = (u: { id: string; org_id: string }) =>
+    Object.keys(principals).find((k) => principals[k]!.id === u.id && principals[k]!.org_id === u.org_id)!;
+  const server = createServer();
+  const sockets = setupSocket(server, {
+    verifyAccess: async (token: string) => principals[token] as any,
+    requireMembership: async () => ({ role: 'member' }) as any,
+    getSpaceAccess: async (spaceId, u) => {
+      const key = keyOf(u);
+      return allowedRoom[key] === spaceId ? { space_id: spaceId, space_name: 'room', user_name: realName[key]! } : undefined;
+    },
+    recordLastSeen: () => {},
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+  const open = (token: string) => connectSocket(`http://127.0.0.1:${port}`, { auth: { token }, transports: ['websocket'], reconnection: false });
+  const attacker = open('attacker');
+  const victim = open('victim');
+  const peer = open('peer');
+  const roomSize = (room: string) => sockets.sockets.adapter.rooms.get(room)?.size ?? 0;
+  const waitFor = async (cond: () => boolean, label: string) => {
+    const deadline = Date.now() + 5_000;
+    while (!cond() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+    assert.ok(cond(), `socket condition timed out: ${label}`);
+  };
+  const victimEvents: unknown[] = [];
+  const peerEvents: unknown[] = [];
+  victim.on('typing:start', (d: unknown) => victimEvents.push(d));
+  victim.on('typing:stop', (d: unknown) => victimEvents.push(d));
+  peer.on('typing:start', (d: unknown) => peerEvents.push(d));
+  try {
+    victim.emit('space:join', 'w1g-room-b');
+    peer.emit('space:join', 'w1g-room-a');
+    await waitFor(() => roomSize('space:w1g-room-b') === 1 && roomSize('space:w1g-room-a') === 1, 'victim+peer joined');
+
+    // The attacker never passes the join check for the org-B room.
+    attacker.emit('space:join', 'w1g-room-b');
+    attacker.emit('typing:start', { space_id: 'w1g-room-b', user_name: 'Spoofed CEO' });
+    attacker.emit('typing:stop', { space_id: 'w1g-room-b' });
+    // A legitimate join + typing in its own room, as an ordering barrier.
+    attacker.emit('space:join', 'w1g-room-a');
+    await waitFor(() => roomSize('space:w1g-room-a') === 2, 'attacker joined own room');
+    attacker.emit('typing:start', { space_id: 'w1g-room-a', user_name: 'Spoofed CEO' });
+    await waitFor(() => peerEvents.length === 1, 'peer typing delivery');
+    await new Promise((r) => setTimeout(r, 50));
+
+    assert.deepEqual(victimEvents, [], 'typing events reached an unjoined org-B space room');
+    assert.deepEqual(peerEvents, [{ user_id: 'w1g-sock-user', user_name: 'Real Attacker Name', space_id: 'w1g-room-a' }]);
+  } finally {
+    attacker.close();
+    victim.close();
+    peer.close();
+    await new Promise<void>((resolve) => sockets.close(() => resolve()));
+  }
 });
