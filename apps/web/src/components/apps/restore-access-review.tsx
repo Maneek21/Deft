@@ -56,6 +56,31 @@ function grantLabel(grant: RestoreGrant): string {
 }
 export { grantLabel };
 
+export type RestoreFetch = (path: string, init?: RequestInit) => Promise<Response>;
+
+/** Context -> review for exactly the target the owner selected (PR424-F03).
+ * The selected target is sent to both routes and every response must echo it;
+ * the installation-wide newest connection never substitutes another account. */
+export async function loadRestoreReview(fetcher: RestoreFetch, installationId: string, targetKey: string, signal?: AbortSignal):
+  Promise<Readonly<{ context: RestoreContext; review: RestoreReview | null }>> {
+  const contextResponse = await fetcher(`/api/app-connection-sessions/installations/${encodeURIComponent(installationId)}/restore-context?target_key=${encodeURIComponent(targetKey)}`,
+    { signal, cache: 'no-store' });
+  if (!contextResponse.ok) throw Error('The previous account access could not be read.');
+  const context = await contextResponse.json() as RestoreContext;
+  if (context.installation_id !== installationId || context.target_key !== targetKey) throw Error('The previous account access could not be read.');
+  if (!context.same_account) return { context, review: null };
+  const reviewResponse = await fetcher('/api/app-connection-sessions/restore/review', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, signal,
+    body: JSON.stringify({ installation_id: installationId, target_key: targetKey }),
+  });
+  if (!reviewResponse.ok) throw Error('The previous account access could not be reviewed.');
+  const review = await reviewResponse.json() as RestoreReview;
+  if (review.installation_id !== installationId || review.target_key !== targetKey || review.session_id !== context.session_id) {
+    throw Error('The previous account access could not be reviewed.');
+  }
+  return { context, review };
+}
+
 export function RestoreAccessReview({ installationId, targetKey, onClose }: {
   installationId: string;
   targetKey: string;
@@ -75,22 +100,14 @@ export function RestoreAccessReview({ installationId, targetKey, onClose }: {
     const current = () => mounted.current && !controller.signal.aborted && !document.hidden && isSameWebSession(anchor, api.getAccessToken());
     void (async () => {
       try {
-        const contextResponse = await api.fetch(`/api/app-connection-sessions/installations/${encodeURIComponent(installationId)}/restore-context`, { signal: controller.signal, cache: 'no-store' });
-        if (!contextResponse.ok) throw Error('The previous account access could not be read.');
-        const contextValue = await contextResponse.json() as RestoreContext;
+        const loaded = await loadRestoreReview((path, init) => api.fetch(path, init), installationId, targetKey, controller.signal);
         if (!current()) return;
-        setContext(contextValue);
-        if (!contextValue.same_account || !contextValue.target_key) {
+        setContext(loaded.context);
+        if (!loaded.review) {
           setNotice('This account differs from the previously connected account. Reconnect the current account first.');
           return;
         }
-        const reviewResponse = await api.fetch('/api/app-connection-sessions/restore/review', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
-          body: JSON.stringify({ installation_id: installationId, target_key: contextValue.target_key }),
-        });
-        if (!reviewResponse.ok) throw Error('The previous account access could not be reviewed.');
-        const reviewValue = await reviewResponse.json() as RestoreReview;
-        if (!current()) return;
+        const reviewValue = loaded.review;
         setReview(reviewValue);
         setSelected(new Set(reviewValue.grants.filter(grant => grant.restorable && grant.preselected).map(grant => grant.grant_id)));
         setNotice('');
@@ -99,7 +116,7 @@ export function RestoreAccessReview({ installationId, targetKey, onClose }: {
       }
     })();
     return () => { mounted.current = false; controller.abort(); };
-  }, [installationId]);
+  }, [installationId, targetKey]);
 
   const toggle = useCallback((grantId: string) => {
     setSelected(previous => {
@@ -112,6 +129,7 @@ export function RestoreAccessReview({ installationId, targetKey, onClose }: {
 
   const activate = useCallback(async () => {
     if (!review || !selected || busy || document.hidden) return;
+    if (review.installation_id !== installationId || review.target_key !== targetKey) return;
     setBusy(true); setNotice('');
     const anchor = api.getAccessToken();
     try {
@@ -130,7 +148,7 @@ export function RestoreAccessReview({ installationId, targetKey, onClose }: {
     } finally {
       setBusy(false);
     }
-  }, [review, selected, busy, onClose]);
+  }, [review, selected, busy, onClose, installationId, targetKey]);
 
   const restorable = review?.grants.filter(grant => grant.restorable) ?? [];
   const allRestorable = review?.grants.filter(grant => grant.restorable) ?? [];

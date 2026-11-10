@@ -215,6 +215,11 @@ export async function enumerateRestoreAccess(
     const identity = grantIdentity(value);
     if (!grants.has(identity)) grants.set(identity, value);
   };
+  // PR424-F04: a normal disconnected/not_connected transition clears
+  // `record.account`, so prior identity is also recovered from the immutable,
+  // guard-verified consent snapshots bound to those prior sessions. Only a
+  // snapshot that pins the very session its row is bound to counts.
+  const snapshotAccountRefs = new Set<string>();
 
   if (priorSessionIds.length) {
     // app_data_consents — one record consent per store_key.
@@ -228,6 +233,9 @@ export async function enumerateRestoreAccess(
       // offered for restore. Leave it out of the enumeration entirely.
       if (row.state === 'proposed') continue;
       const snapshot = AppDataConsentSnapshotSchema.parse(row.snapshot);
+      if (snapshot.connection.session_id === row.connection_session_id && snapshot.consent_id === row.consent_id) {
+        snapshotAccountRefs.add(snapshot.connection.account_ref);
+      }
       remember(grant({
         grant_id: row.consent_id, kind: 'record_consent', store_key: row.store_key,
         state: grantState(row.expires_at, row.state, timestamp),
@@ -244,6 +252,9 @@ export async function enumerateRestoreAccess(
     for (const row of observationRows) {
       if (row.state === 'proposed') continue;
       const snapshot = ResourceObservationSnapshotSchema.parse(row.snapshot);
+      if (snapshot.connection.session_id === row.connection_session_id && snapshot.consent_id === row.consent_id) {
+        snapshotAccountRefs.add(snapshot.connection.account_ref);
+      }
       remember(grant({
         grant_id: row.consent_id, kind: 'observation_consent',
         resource_binding_id: row.resource_binding_id, interval_seconds: snapshot.interval_seconds,
@@ -266,6 +277,11 @@ export async function enumerateRestoreAccess(
   // access after a reconnect) must not be offered again: re-issuing it would
   // collide with the reserved action key and fail the whole restore. Skip any
   // prior action consent whose key is already present on the current session.
+  // A prior session that still carries its account is authoritative; otherwise
+  // the snapshots must agree on exactly one account or identity stays unknown
+  // (and restore refuses as a different account).
+  const priorAccountRef = priorAccount?.account_ref
+    ?? (snapshotAccountRefs.size === 1 ? [...snapshotAccountRefs][0]! : null);
   const currentActionKeys = new Set((current.record.action_consents ?? []).map((consent) => consent.action_key));
   for (const session of prior) {
     for (const consent of session.record.action_consents ?? []) {
@@ -282,7 +298,7 @@ export async function enumerateRestoreAccess(
   // to a consent row. A policy retired because its grant ended (§3.2) is still
   // restorable and pre-selected; a policy the owner disabled on purpose is
   // listed as non-restorable.
-  const restoreAccountRefs = [...new Set([current.account_ref, priorAccount?.account_ref].filter((value): value is string => Boolean(value)))];
+  const restoreAccountRefs = [...new Set([current.account_ref, priorAccountRef].filter((value): value is string => Boolean(value)))];
   if (restoreAccountRefs.length) {
     const captureRows = await database.select().from(appIntegrationCapturePolicies).where(and(
       eq(appIntegrationCapturePolicies.org_id, actor.org_id),
@@ -311,7 +327,7 @@ export async function enumerateRestoreAccess(
     const storeKeys = [...new Set(delegated.map((tool) => tool.store_key))].sort();
     const actionKeys = [...new Set(delegated.map((tool) => tool.action_key).filter((key): key is string => Boolean(key)))].sort();
     const lifetime = sessionConsentLifetime(current.record.scope, current.created_at);
-    const accountRef = current.account_ref ?? priorAccount?.account_ref ?? '';
+    const accountRef = current.account_ref ?? priorAccountRef ?? '';
     const deftyPrior = await priorDeftyReadStores(database, actor, nomination.installation_id, storeKeys, restoreAccountRefs);
     const policyPrior = await priorAgentPolicyKeys(database, actor, nomination.installation_id, actionKeys);
     for (const storeKey of storeKeys) {
@@ -327,6 +343,6 @@ export async function enumerateRestoreAccess(
   return {
     installation_id: nomination.installation_id, target_key: nomination.target_key,
     current_session_id: current.session_id, current_account_ref: current.account_ref,
-    prior_account_ref: priorAccount?.account_ref ?? null, grants: [...grants.values()],
+    prior_account_ref: priorAccountRef, grants: [...grants.values()],
   };
 }
