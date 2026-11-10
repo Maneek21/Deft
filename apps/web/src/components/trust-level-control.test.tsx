@@ -113,13 +113,14 @@ test('E05 a save error is rendered as an alert', () => {
   assert.ok(html.includes('It was not changed.'));
 });
 
-test('E08 trust copy says chat is approval-only and scopes trust to background runs', () => {
+test('E08 trust copy scopes trust to approved plans and keeps chat out', () => {
   const html = render();
   assert.ok(html.includes(escapeHtml(TRUST_SCOPE_NOTE)));
   assert.ok(html.includes(escapeHtml(TRUST_CHAT_NOTE)));
-  assert.match(TRUST_SCOPE_NOTE, /Defty's approved plans/);
-  assert.match(TRUST_CHAT_NOTE, /Chat never uses this level/);
-  assert.match(TRUST_CHAT_NOTE, /each one waits for your approval/);
+  assert.match(TRUST_SCOPE_NOTE, /plans Defty runs after you approve them/);
+  assert.match(TRUST_CHAT_NOTE, /Chat does not use this level/);
+  assert.match(TRUST_CHAT_NOTE, /Defty proposes tasks, messages and similar changes for your approval/);
+  assert.match(TRUST_CHAT_NOTE, /saving a memory, drafting a plan for your review, or cancelling its own unsent app work/);
   assert.ok(!html.includes('All actions auto-execute except external writes'));
 });
 
@@ -147,19 +148,20 @@ function viewState() {
 }
 
 test('E08-F1: chat copy keeps the trust level out of chat', () => {
-  assert.match(TRUST_CHAT_NOTE, /^Chat never uses this level\./);
+  assert.match(TRUST_CHAT_NOTE, /^Chat does not use this level\./);
   assert.doesNotMatch(TRUST_SCOPE_NOTE, /heartbeat|trigger/i);
 });
 
 test('E08-F2: descriptions say connected tools follow their configured tier', () => {
   const [conservative, standard, autonomous] = TRUST_LEVELS;
-  assert.match(conservative!.desc, /changing status, assignee, due date, priority or labels/);
-  assert.match(standard!.desc, /Posting messages, bulk task updates, and managing agent employees or connections wait for approval/);
+  assert.match(conservative!.desc, /low-risk task updates on its own, such as changing a task's status, assignee or due date/);
+  assert.match(standard!.desc, /creating tasks, adding comments and setting reminders/);
   assert.doesNotMatch(standard!.desc, /external writes/);
-  assert.match(autonomous!.desc, /including posting messages/);
-  assert.match(autonomous!.desc, /Deletions, archiving, unlinking records, bulk record creation/);
-  assert.match(TRUST_CONNECTED_NOTE, /Connected \(MCP\) tools use the approval tier set for each tool/);
-  assert.match(TRUST_CONNECTED_NOTE, /can run on its own at any level/);
+  assert.match(autonomous!.desc, /such as posting messages and bulk task updates/);
+  assert.match(autonomous!.desc, /does not run actions classed as destructive on its own/);
+  assert.match(TRUST_CONNECTED_NOTE, /Connected \(MCP\) tools use the approval setting on their own connection/);
+  assert.match(TRUST_CONNECTED_NOTE, /does not let Defty run a call classed as destructive on its own/);
+  assert.doesNotMatch(TRUST_CONNECTED_NOTE, /at any level/);
   assert.ok(render().includes(escapeHtml(TRUST_CONNECTED_NOTE)));
 });
 
@@ -171,15 +173,42 @@ test('E08-F3: the control is labelled as the Defty workspace policy and points t
   assert.ok(html.includes(escapeHtml(TRUST_EMPLOYEE_NOTE)));
 });
 
-test('E08-F4: the employee Autonomous confirmation states only enforced behaviour', () => {
+test('E08-F4: the employee Autonomous confirmation makes modest, enforced claims', () => {
   const text = AUTONOMOUS_EMPLOYEE_CONFIRM.join(' ');
-  assert.match(text, /including messages it posts and its replies to chat mentions/);
-  assert.match(text, /no separate approval step for chat requests/);
-  assert.match(text, /Deletions, archiving, unlinking records and bulk record creation still wait/);
-  assert.match(text, /sending documents or importing workspace plans always waits for review/);
-  assert.match(text, /Connected \(MCP\) tools/);
+  assert.match(text, /most of this employee's writes through Deft run without approval, including messages it posts in chat/);
+  assert.match(text, /actions classed as destructive \(such as deleting, archiving, unlinking, or creating records in bulk\)/);
+  assert.match(text, /sending documents, importing workspace plans, and apps that require their own review/);
+  assert.match(text, /Most of its writes are recorded in the Action Log/);
+  assert.match(text, /Only workspace owners and admins can make this change/);
+  assert.doesNotMatch(text, /wherever it acts|Its writes still appear/);
   assert.doesNotMatch(text, /Every action will still produce a signed receipt/);
   assert.doesNotMatch(text, /cannot be undone without another confirmation/);
+});
+
+// ── Round 3: modest, verifiable copy ────────────────────────────────────
+
+test('E08-R3: copy makes no universal approval promise', () => {
+  const html = render();
+  const all = [html, AUTONOMOUS_EMPLOYEE_CONFIRM.join(' ')].join(' ');
+  for (const phrase of [
+    /Everything else waits/i,
+    /each one waits/i,
+    /wherever it acts/i,
+    /whatever approval tier/i,
+    /always waits/i,
+    /never uses/i,
+    /still wait for approval/i,
+  ]) {
+    assert.doesNotMatch(all, phrase);
+  }
+});
+
+test('E08-R3: plan dependency direction', () => {
+  assert.match(TRUST_SCOPE_NOTE, /a change that later steps depend on can run on its own or needs its own approval/);
+  assert.match(TRUST_SCOPE_NOTE, /Steps of a plan you approved run under that approval/);
+  assert.match(TRUST_SCOPE_NOTE, /when it retries a failed step/);
+  assert.doesNotMatch(TRUST_SCOPE_NOTE, /uses an earlier step's result/);
+  assert.ok(render().includes(escapeHtml(TRUST_SCOPE_NOTE)));
 });
 
 test('E05-F5: a definite 4xx rejection says the level was not changed and keeps the selection', async () => {

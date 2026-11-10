@@ -1,17 +1,18 @@
 // Org-wide (workspace) trust level control for Settings > Agent governance.
 //
 // What this setting actually governs today (apps/api):
-//   - Defty's approved plans that are not owned by an agent employee: whether
-//     a step that depends on an earlier step runs straight away or waits for
-//     its own approval (lib/agent-plans.ts executePlan), and what Defty's
-//     background recovery run may auto-execute when a step fails
-//     (lib/agent-plans.ts -> lib/agent-runner.ts mode 'background').
-//   - It is NOT used for chat (lib/agent-runner.ts only auto-executes in
+//   - Defty's approved plans that are not owned by an agent employee
+//     (lib/agent-plans.ts executePlan). Approved steps run under the plan
+//     approval; the level decides whether a write that LATER steps depend on
+//     runs straight away or needs its own approval (agent-plans.ts:582-588),
+//     and what Defty's background recovery run may auto-execute when a step
+//     fails (agent-plans.ts:712-719 -> agent-runner.ts:392,766).
+//   - It is NOT used for chat (agent-runner.ts only auto-executes in
 //     'background' mode; chat replies run in 'chat_mention' mode), and NOT for
-//     agent employees, which carry their own trust level
-//     (agent_employees.trust_level, enforced in lib/agent-actions.ts and the
-//     MCP write tools). Heartbeats and triggers only queue work for the
-//     employee's own runtime.
+//     agent employees, which carry their own trust level.
+// Copy rule: describe what a level ALLOWS Defty to run on its own, never
+// promise that everything else is blocked; the approval system has several
+// independent paths and this page does not enumerate them.
 // Changing the level is an owner/admin action on the server
 // (PATCH /api/agent/settings), so the control is read-only for everyone else
 // and never shows a value the server has not confirmed.
@@ -20,50 +21,48 @@ import { useId } from 'react';
 
 export type TrustLevel = 'conservative' | 'standard' | 'autonomous';
 
-// Descriptions follow the native tool tiers in apps/api/src/lib/agent-approval.ts
-// (TOOL_APPROVAL_TIERS × shouldAutoExecute × isDestructiveAction).
+// Examples follow the native tool tiers in apps/api/src/lib/agent-approval.ts
+// (TOOL_APPROVAL_TIERS x shouldAutoExecute x isDestructiveAction).
 export const TRUST_LEVELS: ReadonlyArray<{ value: TrustLevel; label: string; desc: string }> = [
   {
     value: 'conservative',
     label: 'Conservative',
-    desc: 'Only low-risk task updates run on their own: changing status, assignee, due date, priority or labels, and closing or reopening tasks. Everything else waits for approval.',
+    desc: "Defty can run low-risk task updates on its own, such as changing a task's status, assignee or due date.",
   },
   {
     value: 'standard',
     label: 'Standard',
-    desc: 'Those updates plus routine changes run on their own, like creating tasks, comments, notes and reminders, editing wiki pages, and adding or removing task dependencies. Posting messages, bulk task updates, and managing agent employees or connections wait for approval.',
+    desc: 'Also routine changes, such as creating tasks, adding comments and setting reminders.',
   },
   {
     value: 'autonomous',
     label: 'Autonomous',
-    desc: 'Almost everything runs on its own, including posting messages. Deletions, archiving, unlinking records, bulk record creation, and managing agent employees, connections or members still wait for approval.',
+    desc: 'Also most other changes, such as posting messages and bulk task updates. Defty does not run actions classed as destructive on its own, such as archiving records or managing agent employees and connections.',
   },
 ];
 
 export const TRUST_LEGEND = 'Defty trust level';
 
 export const TRUST_SCOPE_NOTE =
-  "This workspace setting applies to Defty's approved plans. Once you approve a plan its steps run; this level decides whether a step that uses an earlier step's result runs straight away or waits for its own approval, and what Defty may do on its own if it retries a failed step.";
+  'This workspace setting applies to plans Defty runs after you approve them. Steps of a plan you approved run under that approval. This level decides whether a change that later steps depend on can run on its own or needs its own approval, and it limits what Defty may run on its own when it retries a failed step.';
 
 export const TRUST_CHAT_NOTE =
-  'Chat never uses this level. When you ask Defty in chat to create or update tasks, post messages, or take other agent actions, each one waits for your approval. Saving a memory or drafting a plan for your review does not need approval.';
+  'Chat does not use this level. In chat, Defty proposes tasks, messages and similar changes for your approval. A few housekeeping actions happen without a prompt, such as saving a memory, drafting a plan for your review, or cancelling its own unsent app work.';
 
 export const TRUST_EMPLOYEE_NOTE =
   'Agent employees are not affected. Each employee has its own trust level, chosen when it is connected and shown when you open it under Employees below.';
 
 export const TRUST_CONNECTED_NOTE =
-  'The examples above are built-in tools. Connected (MCP) tools use the approval tier set for each tool on its connection, so a connected tool set to auto-execute can run on its own at any level.';
+  'The examples above are built-in actions. Connected (MCP) tools use the approval setting on their own connection instead, and Autonomous does not let Defty run a call classed as destructive on its own.';
 
-// Confirmation body for upgrading ONE agent employee to Autonomous. BYOA
-// employees act through Deft's MCP tools, which gate on the employee's own
-// trust level with no chat exception (lib/mcp-tools/writes.ts, modules.ts);
-// sending documents and importing plans always queue (document-send.ts,
-// workspace-plan-import.ts).
+// Confirmation body for upgrading ONE agent employee to Autonomous. Kept to
+// category-level exceptions on purpose: employee writes pass through several
+// approval paths (employee trust in lib/mcp-tools/writes.ts and modules.ts,
+// always-queued document send / plan import, App-owned review).
 export const AUTONOMOUS_EMPLOYEE_CONFIRM: ReadonlyArray<string> = [
-  "Autonomous lets this employee's writes through Deft run without approval wherever it acts, including messages it posts and its replies to chat mentions. Agent employees get no separate approval step for chat requests.",
-  'Deletions, archiving, unlinking records and bulk record creation still wait for approval, and sending documents or importing workspace plans always waits for review.',
-  'Connected (MCP) tools that Deft calls on its behalf also run on their own, whatever approval tier they are set to, except calls to tools named delete_… or calls that pass a delete, pause or revoke mode.',
-  'Its writes still appear in the Action Log, with a signed receipt when one is recorded.',
+  "Autonomous lets most of this employee's writes through Deft run without approval, including messages it posts in chat.",
+  'Some requests still need approval, including actions classed as destructive (such as deleting, archiving, unlinking, or creating records in bulk), sending documents, importing workspace plans, and apps that require their own review.',
+  'Most of its writes are recorded in the Action Log, with a signed receipt attached when one is recorded.',
   'Only workspace owners and admins can make this change, and Settings has no control to lower the level again afterwards.',
 ];
 
