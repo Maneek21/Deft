@@ -8,6 +8,7 @@ import { AppConnectionActionConsentSchema, AppDataConsentSnapshotSchema, Resourc
   appConsentDeadline, type AppConnectionActionConsent } from '@deft/app-kit/core';
 import { AppConnectionSessionRecordSchema, type AppConnectionSessionRecord } from './app-connection-session-service.js';
 import { appDataDigest } from './app-data-authority.js';
+import { lockAppDataConsentTarget } from './app-data-store.js';
 import { digestAppGrantValue } from './app-grant-service.js';
 import { appIntegrationSourceDigest } from './app-integration-source.js';
 import { enqueueOrRearmFailed, QUEUE_NAMES } from './queues.js';
@@ -140,6 +141,10 @@ function recordConsentDeadline(row: typeof appDataConsents.$inferSelect): number
 export const RESTORE_GRANT_HANDLERS: ReadonlyMap<RestoreGrantKind, RestoreGrantHandler> = new Map([
   ['record_consent', async ({ transaction, actor, record, grant, now }) => {
     if (!grant.store_key) throw restoreAccessDenied();
+    // PR424-N2b: the live-row decision below must be serialized with ordinary
+    // activation. `activate` already holds this lock (re-entrant, no-op here);
+    // taking it again before any consent row lock keeps the handler safe on its own.
+    await lockAppDataConsentTarget(transaction, record.scope);
     const [original] = await transaction.select().from(appDataConsents).where(and(
       eq(appDataConsents.org_id, actor.org_id), eq(appDataConsents.owner_user_id, actor.user_id),
       eq(appDataConsents.consent_id, grant.grant_id))).for('update').limit(1);
@@ -462,6 +467,18 @@ export class AppRestoreAccessService {
       // (member -> App -> registration -> binding -> session) unchanged.
       await transaction.execute(sql`SELECT pg_advisory_xact_lock(hashtext('deft.app_restore_access.activate.v1'),hashtext(${
         [actor.org_id, actor.user_id, input.installation_id, input.target_key].join(':')}))`);
+      // PR424-N2b: the record_consent handler and carryRecordConsents decide on
+      // the ABSENCE of an active consent, which row locks cannot protect. Take the
+      // data-consent target lock shared with ordinary activation
+      // (PostgresAppDataStore.activate) here: after the restore key and before
+      // any row lock, so it cannot form a cycle (argument at
+      // lockAppDataConsentTarget). It is target-scoped, so it also covers a
+      // successor session published later in this transaction. Every active-row
+      // read below therefore observes all committed ordinary activations, and no
+      // ordinary activation can commit until this transaction ends.
+      await lockAppDataConsentTarget(transaction, {
+        org_id: actor.org_id, owner_user_id: actor.user_id,
+        installation_id: input.installation_id, target_key: input.target_key });
       const sessionWhere = and(
         eq(appConnectionSessions.org_id, actor.org_id),
         eq(appConnectionSessions.owner_user_id, actor.user_id),
@@ -612,6 +629,9 @@ export class AppRestoreAccessService {
  * connection, exactly as the normal consent lifecycle allows. */
 async function carryRecordConsents(transaction: RestoreAccessTransaction, actor: ExperienceCaller,
   predecessorSessionId: string, successor: AppConnectionSessionRecord, now: number) {
+  // PR424-N2b: same serialization as the record_consent handler (re-entrant;
+  // the successor shares the predecessor's installation/target).
+  await lockAppDataConsentTarget(transaction, successor.scope);
   const rows = await transaction.select().from(appDataConsents).where(and(
     eq(appDataConsents.org_id, actor.org_id), eq(appDataConsents.owner_user_id, actor.user_id),
     eq(appDataConsents.connection_session_id, predecessorSessionId), eq(appDataConsents.state, 'active'))).for('update');
