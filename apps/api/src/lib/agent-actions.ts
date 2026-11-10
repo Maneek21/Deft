@@ -49,7 +49,7 @@ import {
   getActiveAgentToolPolicy,
   isAgentToolDisabled,
 } from './agent-tool-policy.js';
-import { getApprovalTier, shouldAutoExecute } from './agent-approval.js';
+import { getApprovalTier, isDestructiveAction, shouldAutoExecute } from './agent-approval.js';
 import { validateNativeAgentMentionWrite } from './native-mention-agent-writes.js';
 import { nativeActionTargetAccessError, promotableNoteSql } from './agent-action-visibility.js';
 import {
@@ -3738,6 +3738,7 @@ async function executeActionDirectLocked(
     } else {
       const tierRank = { auto: 0, quick: 1, full: 2 } as const;
       effectiveMcpConnectionId = currentTool.connectionId;
+      if (isDestructiveAction(action, params, currentTool.annotations)) requiresFreshApproval = true;
       if (tierRank[currentTool.approvalTierMapped] > tierRank[approvalTier]) {
         effectiveApprovalTier = currentTool.approvalTierMapped;
         requiresFreshApproval = true;

@@ -32,6 +32,8 @@ const CONNECTION_ID = `s2-mcp-connection-${suffix}`;
 const CONNECTION_SLUG = `s2crm${suffix}`;
 const DELETE_TOOL = 'delete_contact';
 const PREFIXED_DELETE = `mcp__${CONNECTION_SLUG}__${DELETE_TOOL}`;
+const HINTED_TOOL = 'purge_contacts';
+const PREFIXED_HINTED = `mcp__${CONNECTION_SLUG}__${HINTED_TOOL}`;
 const planIds: string[] = [];
 
 let client: pg.Client;
@@ -57,7 +59,7 @@ before(async () => {
        default_trust_tier, enabled_tools, created_by)
      VALUES ($1, $2, 'S2 CRM', $3, 'https://api.example.com/mcp',
        'streamable-http', 'none', true, 'auto', $4::text[], $5)`,
-    [CONNECTION_ID, ORG_ID, CONNECTION_SLUG, [DELETE_TOOL], USER_ID],
+    [CONNECTION_ID, ORG_ID, CONNECTION_SLUG, [DELETE_TOOL, HINTED_TOOL], USER_ID],
   );
   await client.query(
     `INSERT INTO agent_employees
@@ -176,4 +178,88 @@ legacyTest('S2-b: an auto-tier connected delete_* plan step that a later step de
   );
   assert.equal(actions.rows.length, 1);
   assert.equal(actions.rows[0].approval_status, 'pending');
+});
+
+function stubHintedProvider(t: TestContext) {
+  const originalDiscovery = mcpClientManager.getCachedToolDiscovery;
+  const originalExecute = mcpClientManager.executeTool;
+  const rawTool = {
+    name: HINTED_TOOL,
+    description: 'Purge contacts',
+    inputSchema: { type: 'object', properties: {} },
+    annotations: { destructiveHint: true },
+  };
+  const discovered: MCPToolDiscovery = {
+    tools: [{
+      name: PREFIXED_HINTED,
+      originalName: HINTED_TOOL,
+      description: 'Purge contacts',
+      inputSchema: { type: 'object', properties: {} },
+      connectionId: CONNECTION_ID,
+      connectionSlug: CONNECTION_SLUG,
+      isWrite: true,
+      // The connection's tier would let it run; only the hint says destructive.
+      approvalTier: 'auto-execute',
+      annotations: { destructiveHint: true },
+      rawTool,
+    }],
+    providerTools: [rawTool],
+  };
+  const calls: string[] = [];
+  mcpClientManager.getCachedToolDiscovery = async () => discovered;
+  mcpClientManager.executeTool = async (_config, toolName) => {
+    calls.push(toolName);
+    return { success: true, content: [{ type: 'text', text: 'purged' }], rawResult: {}, durationMs: 1 };
+  };
+  t.after(() => {
+    mcpClientManager.getCachedToolDiscovery = originalDiscovery;
+    mcpClientManager.executeTool = originalExecute;
+  });
+  return calls;
+}
+
+legacyTest('W2a1-b: a direct call of a connected tool that declares destructiveHint waits for approval', async (t) => {
+  const calls = stubHintedProvider(t);
+  const outcome = await executeActionDirect(
+    PREFIXED_HINTED,
+    { segment: 'all' },
+    ORG_ID,
+    USER_ID,
+    null,
+    'auto',
+    { agentEmployeeId: EMPLOYEE_ID, source: 'runner' },
+  );
+  assert.equal(outcome.success, false);
+  assert.equal(outcome.requiresApproval, true);
+  assert.equal(calls.length, 0, 'the provider must not be called before approval');
+  const row = await client.query('SELECT approval_status, executed_at FROM agent_actions WHERE id = $1', [outcome.actionId]);
+  assert.equal(row.rows[0].approval_status, 'pending');
+  assert.equal(row.rows[0].executed_at, null);
+});
+
+legacyTest('W2a1-b: a leaf plan step calling a destructiveHint tool waits for its own approval', async (t) => {
+  const calls = stubHintedProvider(t);
+  const plan = await createPlanRow({
+    org_id: ORG_ID,
+    user_id: USER_ID,
+    agent_employee_id: EMPLOYEE_ID,
+    title: `W2a1 hinted plan ${suffix}`,
+    steps: [{ id: 'purge', description: 'Purge', tool: PREFIXED_HINTED, params: { segment: 'all' } }],
+    fail_fast: true,
+  });
+  planIds.push(plan.plan_id);
+  await client.query("UPDATE agent_plans SET status = 'approved' WHERE id = $1", [plan.plan_id]);
+  await handlePlanExecutor({
+    id: randomUUID(),
+    name: 'plan-executor',
+    data: { planId: plan.plan_id, orgId: ORG_ID, userId: USER_ID },
+    attempts: 1,
+  } as any);
+  const planRow = await client.query<{ status: string; steps: Array<{ status: string }> }>(
+    'SELECT status, steps FROM agent_plans WHERE id = $1',
+    [plan.plan_id],
+  );
+  assert.equal(planRow.rows[0]?.status, 'paused', JSON.stringify(planRow.rows[0]));
+  assert.equal(planRow.rows[0]?.steps[0]?.status, 'waiting_approval');
+  assert.equal(calls.length, 0, 'the provider must not be called before approval');
 });
