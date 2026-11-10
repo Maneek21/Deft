@@ -36,6 +36,11 @@ function route(path: string, method: string): Route {
   if (path === '/api/bookmarks' && method === 'GET') return { body: [] };
   if (path === `/api/spaces/${SPACE_ID}/members` && method === 'GET') return { body: [] };
   if (path === `/api/spaces/${SPACE_ID}/pins` && method === 'GET') return { body: [] };
+  if (path === '/api/members' && method === 'GET') {
+    return { body: [{ id: 'u-rahul', name: 'Rahul Mehta', avatar_url: null, kind: 'human' }] };
+  }
+  if (path === '/api/groups' && method === 'GET') return { body: [] };
+  if (path === '/api/tasks/search' && method === 'GET') return { body: [] };
   return { body: {} };
 }
 
@@ -43,7 +48,12 @@ const calls: Array<{ method: string; path: string }> = [];
 
 function call(method: string, path: string): Response {
   calls.push({ method, path });
-  const found = route(path.split('?')[0]!, method);
+  const bare = path.split('?')[0]!;
+  // Tests can replace one route at a time (a failed read, or new server data
+  // after a reconnect). A thrown override models a network failure.
+  const override = typeof window !== 'undefined' ? window.__deftApiOverride?.(method, bare) : undefined;
+  if (override === 'network-error') throw new TypeError('Failed to fetch');
+  const found = override ?? route(bare, method);
   return jsonResponse(found.body, found.status ?? 200);
 }
 
@@ -63,6 +73,7 @@ export const api = {
 declare global {
   interface Window {
     __deftApiCalls?: Array<{ method: string; path: string }>;
+    __deftApiOverride?: (method: string, path: string) => Route | 'network-error' | undefined;
   }
 }
 
