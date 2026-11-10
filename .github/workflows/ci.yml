@@ -129,7 +129,7 @@ jobs:
       - name: Type check API
         run: pnpm --filter @deft/api typecheck
       - name: Type check Web
-        run: cd apps/web && npx tsc --noEmit
+        run: pnpm --filter @deft/web typecheck
 
   test:
     name: Test API

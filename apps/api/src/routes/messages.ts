@@ -18,7 +18,7 @@ import { DEFTY_EMAIL, ensureDeftyMembership } from '../lib/ensure-defty-membersh
 import { enqueueChatObservation } from '../lib/chat-observation.js';
 import { createNotificationIfAllowed, createNotificationsIfAllowed } from '../lib/notification-policy.js';
 import { normalizePlainAgentMentions } from '../lib/agent-mention-normalization.js';
-import { dispatchAgentEmployeeMessage } from '../lib/dispatch-agent-message.js';
+import { enqueueAgentEmployeeMessageJobs, resolveAgentEmployeeMessageTargets } from '../lib/dispatch-agent-message.js';
 import { shouldFollowThread } from '../lib/defty-thread-follow.js';
 import { projectPendingDeftyMetadataForOutbound } from '../lib/defty-pending-action.js';
 import { toPlainText } from '../lib/plain-text.js';
@@ -559,6 +559,22 @@ messageRoutes.post('/:spaceId', async (c) => {
       deftyOrgName = org?.name ?? 'Unknown';
     }
 
+    // A07b: BYOA employee wakes (employee mention, or any post in a dm /
+    // agent_conversation an employee belongs to) are resolved before the
+    // insert — they depend only on the content, space and membership, not on
+    // the uncommitted row — and their agent-employee-message jobs commit in the
+    // message transaction. A failed job insert fails the whole request, so the
+    // client retries instead of getting 201 for a message no runtime discovers.
+    // BYOA delivery must not depend on Deft's own hosted LLM provider: the
+    // external runtime already owns its model and pulls work through MCP.
+    const employeeWakeTargets = await resolveAgentEmployeeMessageTargets({
+      spaceId,
+      orgId: user.org_id,
+      actorUserId: user.id,
+      content: normalizedContent,
+      mentionedUserIds,
+    });
+
     let messageAttachments: MessageAttachment[] = [];
     const { value: message, replayed } = await nativeCreate({
       orgId: user.org_id, userId: user.id, operation: `message:${spaceId}`,
@@ -586,6 +602,9 @@ messageRoutes.post('/:spaceId', async (c) => {
             content: normalizedContent,
           }, tx);
         }
+        await enqueueAgentEmployeeMessageJobs(employeeWakeTargets, {
+          messageId: insertedMessage.id, spaceId, orgId: user.org_id,
+        }, tx);
 
         if (attachmentIds.length === 0) {
         return insertedMessage;
@@ -892,18 +911,7 @@ messageRoutes.post('/:spaceId', async (c) => {
       }
     }
 
-    // Detect agent-employee mentions → enqueue agent-employee-message per employee.
-    // Also auto-trigger BYOA agents in DM/agent_conversation spaces — no mention
-    // required. BYOA delivery must not depend on Deft's own hosted LLM provider:
-    // the external runtime already owns its model and pulls work through MCP.
-    await dispatchAgentEmployeeMessage({
-      messageId: message!.id,
-      spaceId,
-      orgId: user.org_id,
-      actorUserId: user.id,
-      content: normalizedContent,
-      mentionedUserIds,
-    });
+    // BYOA agent-employee wakes already committed with the message (A07b).
 
     // Cross-reference detection — check for task identifier patterns like PROJ-42
     const TASK_ID_PATTERN = /([A-Z]+-\d+)/g;

@@ -80,14 +80,14 @@ jobs:
         continue-on-error: true
         run: |
           set -o pipefail
-          pnpm --filter @deft/api exec tsc -p tsconfig.typecheck.json --incremental false 2>&1 | tee .ci-diagnostics/api-typecheck.log
+          pnpm --filter @deft/api exec node ../../node_modules/ts7/bin/tsc -p tsconfig.typecheck.json --incremental false 2>&1 | tee .ci-diagnostics/api-typecheck.log
       - name: Full candidate Web typecheck
         id: web
         if: always() && steps.install.outcome == 'success'
         continue-on-error: true
         run: |
           set -o pipefail
-          pnpm --filter @deft/web exec tsc --noEmit --incremental false 2>&1 | tee .ci-diagnostics/web-typecheck.log
+          pnpm --filter @deft/web exec node ../../node_modules/ts7/bin/tsc --noEmit --incremental false 2>&1 | tee .ci-diagnostics/web-typecheck.log
       - name: Exposure error mapping and schema contract regressions
         id: focused
         if: always() && steps.install.outcome == 'success'
