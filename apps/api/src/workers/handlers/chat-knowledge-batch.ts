@@ -20,12 +20,6 @@ import { DEFTY_EMAIL } from '../../lib/defty-identity.js';
 const BATCH_INTERVAL_MS = 30 * 60 * 1000;
 const LOOKBACK_OVERLAP_MS = 10 * 60 * 1000;
 const DEFAULT_QUIET_MS = 8 * 60 * 1000;
-// Recurring runs are enqueued with empty job data, so they use this lookback.
-const SCHEDULED_LOOKBACK_MS = BATCH_INTERVAL_MS + DEFAULT_QUIET_MS + LOOKBACK_OVERLAP_MS;
-// The next occurrence is enqueued BATCH_INTERVAL_MS after this run finishes,
-// so it starts later than now + BATCH_INTERVAL_MS by the run time plus poll
-// latency. Deferral keeps this margin against that lateness.
-const DEFERRAL_SLACK_MS = LOOKBACK_OVERLAP_MS / 2;
 const MAX_MESSAGES_PER_RUN = 800;
 const MAX_CANDIDATES_PER_SPACE = 5;
 const EPISODE_GAP_MS = 7 * 60 * 1000;
@@ -280,51 +274,35 @@ function segmentRowsIntoEpisodes(rows: ClassifiedMessageRow[]): KnowledgeEpisode
   return episodes;
 }
 
-function keepDiscussions(
+type VetoContextRow = Pick<ClassifiedMessageRow, 'messageId' | 'content' | 'createdAt'>;
+
+/**
+ * Drops every discussion that contains a no-save directive. Only `rows` (all
+ * older than the quiet cutoff) can be returned. `recentRows` (newer than the
+ * cutoff) are veto context only: they extend a discussion exactly as the next
+ * run will group it, so a late directive vetoes that discussion now, but they
+ * are never returned as candidates or evidence.
+ */
+function excludeOptedOutDiscussions(
   rows: ClassifiedMessageRow[],
-  keep: (discussion: ClassifiedMessageRow[]) => boolean,
+  recentRows: VetoContextRow[] = [],
 ): ClassifiedMessageRow[] {
   const eligible: ClassifiedMessageRow[] = [];
-  let discussion: ClassifiedMessageRow[] = [];
+  let discussion: Array<ClassifiedMessageRow | VetoContextRow> = [];
+  const candidates = new Set<ClassifiedMessageRow | VetoContextRow>(rows);
   const flush = () => {
-    if (discussion.length > 0 && keep(discussion)) eligible.push(...discussion);
+    if (!discussion.some((row) => hasNoKnowledgeDirective(row.content))) {
+      eligible.push(...discussion.filter((row): row is ClassifiedMessageRow => candidates.has(row)));
+    }
     discussion = [];
   };
-  for (const row of rows) {
+  for (const row of [...rows, ...recentRows]) {
     const previous = discussion[discussion.length - 1];
     if (previous && row.createdAt.getTime() - previous.createdAt.getTime() >= EPISODE_GAP_MS) flush();
     discussion.push(row);
   }
   flush();
   return eligible;
-}
-
-function excludeOptedOutDiscussions(rows: ClassifiedMessageRow[]): ClassifiedMessageRow[] {
-  return keepDiscussions(rows, (discussion) => !discussion.some((row) => hasNoKnowledgeDirective(row.content)));
-}
-
-/**
- * A discussion with any message inside the quiet window is not settled yet: a
- * correction or "don't save that" may still follow. Defer the whole
- * discussion to a later run instead of capturing its earlier part now.
- *
- * There is no durable cursor, so a deferred discussion is only seen again if
- * the next scheduled run's lookback still reaches its first message. Defer
- * only while it does; otherwise process the discussion now with the evidence
- * fetched in this run (a "do not save" already present still vetoes it).
- * This bounds deferral to one run, so continuous activity cannot starve it.
- */
-function excludeUnsettledDiscussions(
-  rows: ClassifiedMessageRow[],
-  settledBefore: Date,
-  deferrableFrom: Date,
-): ClassifiedMessageRow[] {
-  const cutoff = settledBefore.getTime();
-  const deferrable = deferrableFrom.getTime();
-  return keepDiscussions(rows, (discussion) =>
-    discussion.every((row) => row.createdAt.getTime() < cutoff) ||
-    discussion[0]!.createdAt.getTime() < deferrable,
-  );
 }
 
 function chooseSourceRow(episode: KnowledgeEpisode): ClassifiedMessageRow {
@@ -537,16 +515,13 @@ Rules:
 
 async function buildCandidatesForSpace(
   rows: ClassifiedMessageRow[],
-  settledBefore: Date,
-  deferrableFrom: Date,
+  recentRows: VetoContextRow[] = [],
 ): Promise<KnowledgeCandidate[]> {
   const candidates: KnowledgeCandidate[] = [];
   // A no-save request applies to its settled discussion, including an addressed
-  // directive that topic segmentation would otherwise split into an agent episode.
-  // Rows are fetched up to now so a late directive or correction is visible;
-  // discussions still active inside the quiet window are deferred while the
-  // next scheduled run can still see their start.
-  const eligibleRows = excludeUnsettledDiscussions(excludeOptedOutDiscussions(rows), settledBefore, deferrableFrom)
+  // directive that topic segmentation would otherwise split into an agent episode,
+  // and a directive posted inside the quiet window after the discussion's rows.
+  const eligibleRows = excludeOptedOutDiscussions(rows, recentRows)
     .filter((row) => !hasNonAffirmativeAgreement(row.content));
   const episodes = segmentRowsIntoEpisodes(eligibleRows);
   for (let index = 0; index < episodes.length; index += 1) {
@@ -609,10 +584,28 @@ export async function handleChatKnowledgeBatch(job: JobData): Promise<void> {
   const now = new Date();
   const since = new Date(now.getTime() - lookbackMs);
   const before = new Date(now.getTime() - quietMs);
-  // Earliest first message the next scheduled run still re-reads, as long as
-  // it starts no more than DEFERRAL_SLACK_MS after now + BATCH_INTERVAL_MS.
-  const deferrableFrom = new Date(
-    now.getTime() + BATCH_INTERVAL_MS - SCHEDULED_LOOKBACK_MS + DEFERRAL_SLACK_MS,
+
+  // Passive capture reads public channels, and private channels only once
+  // Defty has been invited. DMs, group DMs and agent conversations are never
+  // scanned.
+  const captureScope = () => and(
+    data.orgId ? eq(messages.org_id, data.orgId) : undefined,
+    data.spaceId ? eq(messages.space_id, data.spaceId) : undefined,
+    eq(messages.is_deleted, false),
+    eq(users.is_agent, false),
+    eq(spaces.is_archived, false),
+    or(
+      eq(spaces.type, 'public'),
+      and(
+        eq(spaces.type, 'private'),
+        sql`exists (
+          select 1 from ${spaceMembers}
+          inner join ${users} as defty_user on defty_user.id = ${spaceMembers.user_id}
+          where ${spaceMembers.space_id} = ${spaces.id}
+            and defty_user.email = ${DEFTY_EMAIL}
+        )`,
+      ),
+    ),
   );
 
   const rawRows = await db
@@ -641,28 +634,9 @@ export async function handleChatKnowledgeBatch(job: JobData): Promise<void> {
     ))
     .innerJoin(users, eq(users.id, messages.user_id))
     .where(and(
-      data.orgId ? eq(messages.org_id, data.orgId) : undefined,
-      data.spaceId ? eq(messages.space_id, data.spaceId) : undefined,
-      eq(messages.is_deleted, false),
-      eq(users.is_agent, false),
-      eq(spaces.is_archived, false),
-      // Passive capture reads public channels, and private channels only once
-      // Defty has been invited. DMs, group DMs and agent conversations are
-      // never scanned.
-      or(
-        eq(spaces.type, 'public'),
-        and(
-          eq(spaces.type, 'private'),
-          sql`exists (
-            select 1 from ${spaceMembers}
-            inner join ${users} as defty_user on defty_user.id = ${spaceMembers.user_id}
-            where ${spaceMembers.space_id} = ${spaces.id}
-              and defty_user.email = ${DEFTY_EMAIL}
-          )`,
-        ),
-      ),
+      captureScope(),
       gte(messages.created_at, since),
-      lt(messages.created_at, now),
+      lt(messages.created_at, before),
     ))
     .orderBy(desc(messages.created_at))
     .limit(MAX_MESSAGES_PER_RUN);
@@ -684,10 +658,45 @@ export async function handleChatKnowledgeBatch(job: JobData): Promise<void> {
     grouped.set(row.spaceId, list);
   }
 
+  // Messages still inside the quiet window are read only as veto context: a
+  // late "do not save" blocks its discussion now, before it can be published.
+  // They are never candidates or evidence, so capture eligibility stays the
+  // quiet cutoff above.
+  const recentBySpace = new Map<string, VetoContextRow[]>();
+  if (grouped.size > 0) {
+    const candidateIds = new Set(rows.map((row) => row.messageId));
+    const recentRows = await db
+      .select({
+        messageId: messages.id,
+        spaceId: messages.space_id,
+        content: messages.content,
+        createdAt: messages.created_at,
+      })
+      .from(messages)
+      .innerJoin(spaces, and(
+        eq(spaces.id, messages.space_id),
+        eq(spaces.org_id, messages.org_id),
+      ))
+      .innerJoin(users, eq(users.id, messages.user_id))
+      .where(and(
+        captureScope(),
+        gte(messages.created_at, before),
+        lt(messages.created_at, now),
+      ))
+      .orderBy(desc(messages.created_at))
+      .limit(MAX_MESSAGES_PER_RUN);
+    for (const row of recentRows.reverse()) {
+      if (!grouped.has(row.spaceId) || candidateIds.has(row.messageId)) continue;
+      const list = recentBySpace.get(row.spaceId) ?? [];
+      list.push(row);
+      recentBySpace.set(row.spaceId, list);
+    }
+  }
+
   let queuedCount = 0;
   let skippedCount = 0;
-  for (const spaceRows of grouped.values()) {
-    const candidates = await buildCandidatesForSpace(spaceRows, before, deferrableFrom);
+  for (const [spaceId, spaceRows] of grouped) {
+    const candidates = await buildCandidatesForSpace(spaceRows, recentBySpace.get(spaceId));
     for (const candidate of candidates) {
       const result = await queueDeftyKnowledgeCapture({
         orgId: candidate.source.orgId,
