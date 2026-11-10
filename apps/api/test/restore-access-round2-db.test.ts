@@ -528,6 +528,121 @@ test('PR424 restore access round 2 (F02-F10)', { skip: !safe, timeout: 300000 },
     assert.equal(old.state, 'revoked');
   });
 
+  await t.test('PR424-N2b: restore and ordinary consent activation leave exactly one live consent', async () => {
+    const { PostgresAppDataStore } = await import('../src/lib/app-data-store.js');
+    /** An owner-reviewed, not yet activated consent on the current connection. */
+    async function proposeRecordConsent(session: Record<string, any>) {
+      const consentId = randomUUID();
+      const createdAt = new Date().toISOString();
+      const expiresAt = at(86400_000);
+      const snapshot = {
+        schema_version: 'deft.app_data_consent.v1', consent_id: consentId, scope: session.scope,
+        connection: { session_id: session.session_id, session_revision: session.revision,
+          runtime_session_ref: session.runtime_session_ref, account_ref: session.account.account_ref },
+        store: { schema_version: 'deft.app_record_store.v1', key: 'inbox', resource_key: 'inbox',
+          runtime_requirement_key: 'provider', max_record_bytes: 4096, max_files: 0,
+          max_file_bytes: 1, max_total_file_bytes: 1 },
+        data_policy_digest: sha('e'), purpose: 'human_record_write', expires_at: expiresAt,
+      };
+      const digest = sha('a');
+      await client.query(
+        "INSERT INTO app_data_consents(org_id,owner_user_id,consent_id,connection_session_id,store_key,state,consent_digest,snapshot,expires_at,created_at,updated_at) VALUES($1,$2,$3,$4,'inbox','proposed',$5,$6::jsonb,$7,$8,$8)",
+        [org, owner, consentId, session.session_id, digest, JSON.stringify(snapshot), new Date(expiresAt), new Date(createdAt)]);
+      return { consentId, digest };
+    }
+    const gate = () => {
+      let release!: () => void, arrive!: () => void;
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      const arrived = new Promise<void>((resolve) => { arrive = resolve; });
+      return { released, arrived, release, arrive };
+    };
+    /** Resolves once `work` settles or another backend waits on an advisory lock. */
+    async function settledOrBlocked(work: Promise<unknown>) {
+      let settled = false;
+      void work.then(() => { settled = true; }, () => { settled = true; });
+      for (let i = 0; i < 100 && !settled; i += 1) {
+        const waiting = await client.query(`SELECT count(*)::int AS count FROM pg_locks
+          WHERE locktype='advisory' AND NOT granted AND database=(SELECT oid FROM pg_database WHERE datname=current_database())`);
+        if (waiting.rows[0].count > 0) return 'blocked';
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      return settled ? 'settled' : 'timeout';
+    }
+    /** Ordinary activation that pauses after its revoke-active statement. */
+    const pausingDatabase = (pause: ReturnType<typeof gate>) => ({
+      transaction: (fn: (tx: unknown) => Promise<unknown>) => db.transaction(async (tx: any) => {
+        const wrapped = Object.create(tx);
+        let updates = 0;
+        wrapped.update = (table: any) => {
+          updates += 1;
+          if (updates !== 2) return tx.update(table);
+          return { set: (values: unknown) => ({ where: async (where: unknown) => {
+            pause.arrive();
+            await pause.released;
+            return tx.update(table).set(values).where(where);
+          } }) };
+        };
+        return fn(wrapped);
+      }),
+    });
+    const liveRows = async (sessionId: string) => (await activeStoreConsents(sessionId))
+      .filter((row) => new Date(row.expires_at).getTime() > Date.now());
+
+    // (a) Ordinary activation has revoked the (empty) active set and holds the
+    // proposed row; restore runs in between, then the ordinary activation commits.
+    {
+      const pair = await createPair('n2b_ordinary_first', { record: true });
+      const proposal = await proposeRecordConsent(pair.current);
+      const service = new AppRestoreAccessService({ database: db as never, guard: noGuard, now: () => clock });
+      const review = await service.review(actor, nomination('n2b_ordinary_first'));
+      const pause = gate();
+      const ordinary = new PostgresAppDataStore({ org_id: org, user_id: owner }, pausingDatabase(pause) as never)
+        .activate(proposal.consentId, proposal.digest, [pair.currentId]);
+      await pause.arrived;
+      const restore = service.activate(actor, envelope(review, 'n2b_ordinary_first', [pair.recordConsentId!]));
+      const observed = await settledOrBlocked(restore);
+      pause.release();
+      const outcomes = await Promise.allSettled([ordinary, restore]);
+      assert.deepEqual(outcomes.map((item) => item.status), ['fulfilled', 'fulfilled'],
+        JSON.stringify(outcomes.map((item) => item.status === 'rejected' ? String(item.reason?.message) : 'ok')));
+      const live = await liveRows(pair.currentId);
+      assert.equal(live.length, 1, 'exactly one live consent for the store (ordinary first): ' + JSON.stringify(live));
+      assert.equal(live[0].consent_id, proposal.consentId, 'the owner\'s newer activation is the live consent');
+      assert.equal(observed, 'blocked', 'restore waits on the shared data-consent target lock');
+    }
+
+    // (b) Restore has issued its consent and pauses before commit; the ordinary
+    // activation runs in between, then restore commits.
+    {
+      const pair = await createPair('n2b_restore_first', { record: true });
+      const proposal = await proposeRecordConsent(pair.current);
+      const reviewer = new AppRestoreAccessService({ database: db as never, guard: noGuard, now: () => clock });
+      const review = await reviewer.review(actor, nomination('n2b_restore_first'));
+      const pause = gate();
+      let guardCalls = 0;
+      const pausingGuard = Object.assign(async () => {
+        guardCalls += 1;
+        // Call 1 is the early refusal check; call 2 runs right before commit.
+        if (guardCalls === 2) { pause.arrive(); await pause.released; }
+      }, { current_web_session_expires_at: () => new Date(now + 3600_000) });
+      const service = new AppRestoreAccessService({ database: db as never, guard: pausingGuard, now: () => clock });
+      const restore = service.activate(actor, envelope(review, 'n2b_restore_first', [pair.recordConsentId!]));
+      await pause.arrived;
+      const ordinary = new PostgresAppDataStore({ org_id: org, user_id: owner })
+        .activate(proposal.consentId, proposal.digest, [pair.currentId]);
+      const observed = await settledOrBlocked(ordinary);
+      pause.release();
+      const outcomes = await Promise.allSettled([restore, ordinary]);
+      assert.deepEqual(outcomes.map((item) => item.status), ['fulfilled', 'fulfilled'],
+        JSON.stringify(outcomes.map((item) => item.status === 'rejected' ? String(item.reason?.message) : 'ok')));
+      assert.equal((outcomes[1] as PromiseFulfilledResult<boolean>).value, true);
+      const live = await liveRows(pair.currentId);
+      assert.equal(live.length, 1, 'exactly one live consent for the store (restore first): ' + JSON.stringify(live));
+      assert.equal(live[0].consent_id, proposal.consentId, 'the owner\'s later activation supersedes the restored consent');
+      assert.equal(observed, 'blocked', 'ordinary activation waits on the shared data-consent target lock');
+    }
+  });
+
   await t.test('PR424-N3: concurrent observation activations never deadlock on a share->update session lock upgrade', async () => {
     let arrived = 0;
     const waiting: Array<() => void> = [];

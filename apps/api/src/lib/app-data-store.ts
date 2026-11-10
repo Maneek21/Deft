@@ -4,6 +4,31 @@ import {and,eq,inArray,sql} from 'drizzle-orm';
 import {appDataConsents,appDataInvocations} from '@deft/db/schema';
 import {db} from './db.js';
 import type {ExperienceCaller} from './app-experience-service.js';
+/** PR424-N2b: serializes every writer that can make an app_data_consents row
+ * `active` for one owner connection target (all of its sessions: current,
+ * credential-repair lineage, restore successor; all stores). Row locks cannot
+ * protect the ABSENCE of an active row and the target index is not unique, so
+ * without this an ordinary activation and a Restore reissue/carry could each
+ * see "no active consent" and both commit one.
+ *
+ * Lock order (cycle-freedom argument). Holders/waiters of this key are only:
+ *  - PostgresAppDataStore.activate: takes it as the FIRST lock of its own
+ *    transaction (after one plain, non-locking read that names the target), then
+ *    only app_data_consents row locks.
+ *  - AppRestoreAccessService.activate: takes it immediately after
+ *    `deft.app_restore_access.activate.v1` (which no other path takes) and
+ *    before every row lock (member/App/registration/binding/session/review/
+ *    consent rows).
+ * A waiter therefore holds either nothing or only the restore key, and a holder
+ * never waits for a lock taken before this key by another holder, so the key
+ * cannot join a cycle. It is distinct from `deft.app_connection_session.target.v1`
+ * (session admission/forms/continuations), which neither path takes. The key is
+ * target-scoped, not session-scoped, so it is identical whether Restore writes to
+ * the current session or to a successor it published in the same transaction. */
+export async function lockAppDataConsentTarget(executor:{execute(query:ReturnType<typeof sql>):Promise<unknown>},
+ target:{org_id:string;owner_user_id:string;installation_id:string;target_key:string}){
+ await executor.execute(sql`SELECT pg_advisory_xact_lock(hashtext('deft.app_data_consent.target.v1'),hashtext(${[target.org_id,target.owner_user_id,target.installation_id,target.target_key].join(':')}))`);
+}
 export class PostgresAppDataStore {
   constructor(readonly caller:Pick<ExperienceCaller,'org_id'|'user_id'>,readonly database:typeof db=db){}
   private owner(table:typeof appDataConsents|typeof appDataInvocations){return and(eq(table.org_id,this.caller.org_id),eq(table.owner_user_id,this.caller.user_id));}
@@ -12,6 +37,14 @@ export class PostgresAppDataStore {
   async activeConsents(sessions:string[],stores:string[]){if(!sessions.length||!stores.length)return [];const rows=await this.database.select().from(appDataConsents).where(and(this.owner(appDataConsents),inArray(appDataConsents.connection_session_id,sessions),inArray(appDataConsents.store_key,stores),eq(appDataConsents.state,'active')));return rows.filter(row=>appConsentDeadline(row.expires_at,AppDataConsentSnapshotSchema.parse(row.snapshot).consent_lifetime)>Date.now());}
   async propose(values:typeof appDataConsents.$inferInsert){await this.database.insert(appDataConsents).values(values);}
   async activate(id:string,digest:string,connectionIds?:string[]){return this.database.transaction(async tx=>{
+    // The snapshot (and so its target) is immutable under the consent guard, so
+    // the unlocked read only names the lock; everything is re-read under it.
+    const [named]=await tx.select({snapshot:appDataConsents.snapshot}).from(appDataConsents).where(and(this.owner(appDataConsents),eq(appDataConsents.consent_id,id))).limit(1);
+    if(!named)return false;
+    const scope=AppDataConsentSnapshotSchema.parse(named.snapshot).scope;
+    await lockAppDataConsentTarget(tx,{org_id:this.caller.org_id,owner_user_id:this.caller.user_id,installation_id:scope.installation_id,target_key:scope.target_key});
+    // Under the target lock the revoke below re-reads every committed active row
+    // for the store, so exactly one live consent (this one) remains.
     const [row]=await tx.select().from(appDataConsents).where(and(this.owner(appDataConsents),eq(appDataConsents.consent_id,id))).for('update');
     if(!row||row.state!=='proposed'||row.consent_digest!==digest||appConsentDeadline(row.expires_at,AppDataConsentSnapshotSchema.parse(row.snapshot).consent_lifetime)<=Date.now()||AppDataConsentSnapshotSchema.parse(row.snapshot).review_expires_at!==undefined&&Date.parse(AppDataConsentSnapshotSchema.parse(row.snapshot).review_expires_at!)<=Date.now())return false;
     await tx.update(appDataConsents).set({state:'revoked',updated_at:new Date()}).where(and(this.owner(appDataConsents),inArray(appDataConsents.connection_session_id,connectionIds??[row.connection_session_id]),eq(appDataConsents.store_key,row.store_key),eq(appDataConsents.state,'active')));
