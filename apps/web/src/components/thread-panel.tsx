@@ -300,7 +300,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
   }, []);
 
   const [loadError, setLoadError] = useState(false);
-  const [loadAttempt, setLoadAttempt] = useState(0);
+  const [loadRetrying, setLoadRetrying] = useState(false);
   // Orders this thread's reads and remembers live socket changes, so a slow
   // or superseded read never undoes newer state. Disposed when the thread
   // changes or the panel closes.
@@ -358,7 +358,34 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     }
     void load();
     return () => { cancelled = true; reads.dispose(); };
-  }, [messageId, scrollToBottom, loadAttempt]);
+  }, [messageId, scrollToBottom]);
+
+  // Retry a failed replies read without resetting the thread: shown replies,
+  // the draft and pending attachments stay, and a successful read is merged in.
+  const retryLoad = useCallback(async () => {
+    const requestMessageId = messageId;
+    const reads = threadReadsRef.current;
+    const ticket = reads.begin();
+    setLoadRetrying(true);
+    try {
+      const res = await api.get(`/api/messages/${requestMessageId}/thread`);
+      if (activeMessageIdRef.current !== requestMessageId || !reads.isLatest(ticket)) return;
+      if (!res.ok) {
+        setLoadError(true);
+        return;
+      }
+      const data = await res.json();
+      if (activeMessageIdRef.current !== requestMessageId || !reads.isLatest(ticket)) return;
+      const loaded: Message[] = data.replies || data.messages || [];
+      setReplies((prev) => mergeMessagesById(prev, loaded, (id) => reads.changedSince(ticket, id)));
+      setLoadError(false);
+      void api.post(`/api/messages/${requestMessageId}/thread-read`).catch(() => {});
+    } catch {
+      if (activeMessageIdRef.current === requestMessageId && reads.isLatest(ticket)) setLoadError(true);
+    } finally {
+      setLoadRetrying(false);
+    }
+  }, [messageId]);
 
   // Socket listeners
   useEffect(() => {
@@ -748,7 +775,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
             )}
 
             {loadError && (
-              <ChatLoadError message="Could not load replies." onRetry={() => setLoadAttempt((attempt) => attempt + 1)} />
+              <ChatLoadError message="Could not load replies." onRetry={() => { void retryLoad(); }} retrying={loadRetrying} />
             )}
             {catchUpError && (
               <ChatLoadError message="Could not load new replies." onRetry={retryCatchUp} retrying={catchUpRetrying} />

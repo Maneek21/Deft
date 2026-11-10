@@ -929,7 +929,7 @@ export function SpaceChat({
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
 
   const [historyStatus, setHistoryStatus] = useState<'loading' | 'ready' | 'error'>('loading');
-  const [historyAttempt, setHistoryAttempt] = useState(0);
+  const [historyRetrying, setHistoryRetrying] = useState(false);
   // Orders this conversation's history reads and remembers live socket
   // changes, so a slow or superseded read never undoes newer state.
   const historyReadsRef = useRef(new ConversationReads());
@@ -967,7 +967,6 @@ export function SpaceChat({
       setLoadingEarlier(false);
     }
   }, [spaceId, sessionCacheScope]);
-  const retryHistory = useCallback(() => setHistoryAttempt((attempt) => attempt + 1), []);
 
   useEffect(() => {
     const visit = messageEventScopeRef.current.capture(spaceId, sessionCacheScope);
@@ -1020,7 +1019,34 @@ export function SpaceChat({
       if (!cancelled && visit.isCurrent()) setHistoryStatus('error');
     });
     return () => { cancelled = true; visit.dispose(); };
-  }, [spaceId, sessionCacheScope, scrollToBottom, highlightMessageId, historyAttempt]);
+  }, [spaceId, sessionCacheScope, scrollToBottom, highlightMessageId]);
+
+  // Retry a failed history read without resetting the conversation: shown
+  // messages (for example ones the socket delivered) and the draft stay, and
+  // a successful read is merged in.
+  const retryHistory = useCallback(async () => {
+    const visit = messageEventScopeRef.current.capture(spaceId, sessionCacheScope);
+    const reads = historyReadsRef.current;
+    const ticket = reads.begin();
+    setHistoryRetrying(true);
+    try {
+      const res = await api.get(`/api/messages/${spaceId}`);
+      if (!visit.isCurrent() || !reads.isLatest(ticket)) return;
+      if (!res.ok) {
+        setHistoryStatus('error');
+        return;
+      }
+      const data = await res.json();
+      if (!visit.isCurrent() || !reads.isLatest(ticket)) return;
+      const loaded: Message[] = data.messages || data || [];
+      setMessages((prev) => mergeMessagesById(prev, loaded, (id) => reads.changedSince(ticket, id)));
+      setHistoryStatus('ready');
+    } catch {
+      if (visit.isCurrent() && reads.isLatest(ticket)) setHistoryStatus('error');
+    } finally {
+      setHistoryRetrying(false);
+    }
+  }, [spaceId, sessionCacheScope]);
 
   useEffect(() => {
     if (!sessionCacheScope) return;
@@ -1587,7 +1613,7 @@ export function SpaceChat({
             </div>
           )}
           {historyStatus === 'error' && (
-            <ChatLoadError message="Could not load messages." onRetry={retryHistory} />
+            <ChatLoadError message="Could not load messages." onRetry={() => { void retryHistory(); }} retrying={historyRetrying} />
           )}
           {catchUpError && (
             <ChatLoadError message="Could not load new messages." onRetry={retryCatchUp} retrying={catchUpRetrying} />

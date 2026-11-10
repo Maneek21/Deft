@@ -504,3 +504,51 @@ test('R2-4: a failed catch-up read keeps the messages, says so, and Retry recove
   }
 });
 
+test('R2-5: Retry keeps what is shown and the draft, and merges the result (channel and thread)', async () => {
+  const page = await open(browser, {
+    harness: 'defty-chat-harness.tsx', url: '/chat?space=s1&thread=t1',
+    // Channel history fails from the start; the panel's own thread read (the second) fails.
+    override: `(() => { const handler = ${FAKE_SERVER}; window.__srv.fail.channel = true; window.__srv.failThreadFromRead = 2; return handler; })()`,
+  });
+  try {
+    const panel = page.locator('.w-\\[400px\\]');
+    await page.getByText('Could not load messages.').waitFor();
+    await panel.getByText('Could not load replies.').waitFor();
+    await page.evaluate(() => {
+      const base = { space_id: 's1', user_id: 'u-rahul', user_name: 'Rahul Mehta', user_avatar: null, is_deleted: false, edited_at: null, reactions: [], reply_count: 0, latest_reply_at: null, file_ids: [] };
+      window.__deftDeliver('message:new', { ...base, id: 'live-1', parent_id: null, content: 'Live message during the outage', created_at: '2026-10-22T10:30:00.000Z' });
+      window.__deftDeliver('message:new', { ...base, id: 'live-r', parent_id: 't1', content: 'Live reply during the outage', created_at: '2026-10-22T10:30:00.000Z' });
+    });
+    await page.getByText('Live message during the outage').waitFor();
+    await panel.getByText('Live reply during the outage').waitFor();
+    await panel.locator('.deft-editor').click();
+    await page.keyboard.type('draft kept');
+
+    // A retry that fails again must not clear anything.
+    await srv(page, () => { window.__srv.hold = true; });
+    const channelRetry = page.getByRole('alert').filter({ hasText: 'Could not load messages.' }).getByRole('button');
+    const threadRetry = panel.getByRole('alert').filter({ hasText: 'Could not load replies.' }).getByRole('button');
+    await channelRetry.click();
+    await threadRetry.click();
+    await waitHeld(page, 2);
+    assert.equal(await page.getByText('Live message during the outage').count(), 1, 'retry in flight keeps messages');
+    assert.equal(await panel.getByText('Live reply during the outage').count(), 1, 'retry in flight keeps replies');
+    await release(page, 0); await release(page, 1);
+    await channelRetry.filter({ hasText: /^Retry$/ }).waitFor();
+    await threadRetry.filter({ hasText: /^Retry$/ }).waitFor();
+    assert.equal(await page.getByText('Live message during the outage').count(), 1);
+    assert.equal(await panel.getByText('Live reply during the outage').count(), 1);
+
+    // A retry that succeeds merges.
+    await srv(page, () => { window.__srv.hold = false; window.__srv.fail.channel = false; window.__srv.failThreadFromRead = Infinity; });
+    await channelRetry.click();
+    await threadRetry.click();
+    await page.getByText('Destination message from Priya').waitFor();
+    await panel.getByText('for the detail.', { exact: false }).waitFor();
+    assert.equal(await page.getByText('Live message during the outage').count(), 1);
+    assert.equal(await panel.getByText('Live reply during the outage').count(), 1);
+    assert.match(await panel.locator('.deft-editor').innerText(), /draft kept/);
+  } finally {
+    await close(page);
+  }
+});
