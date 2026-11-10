@@ -110,9 +110,8 @@ export async function canUndoAgentAction(
 }
 
 /**
- * Note promotion (C13): the same predicate the Defty proposal applies — the
- * actor's own note, an org note, or a space note in a space the actor is a
- * member of.
+ * Note promotion (C13): the actor's own note, an org note, or a space note
+ * in a space of the note's own org that the actor is a member of.
  */
 export function promotableNoteSql(userId: string): SQL {
   return sql`(
@@ -120,7 +119,9 @@ export function promotableNoteSql(userId: string): SQL {
     OR ${notes.visibility} = 'org'
     OR (${notes.visibility} = 'space' AND EXISTS (
       SELECT 1 FROM space_members promotable_note_sm
+      INNER JOIN spaces promotable_note_s ON promotable_note_s.id = promotable_note_sm.space_id
       WHERE promotable_note_sm.space_id = ${notes.visibility_space_id}
+        AND promotable_note_s.org_id = ${notes.org_id}
         AND promotable_note_sm.user_id = ${userId}
     ))
   )`;

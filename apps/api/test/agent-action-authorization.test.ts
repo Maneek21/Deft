@@ -445,6 +445,35 @@ test('C13: note_to_wiki executes for a space-visible note when the actor is a sp
   assert.equal(hidden.error, 'Note not found or not visible to caller');
 });
 
+test('R2-7: note promotion ignores space membership in another org', { skip: !canRun }, async () => {
+  const otherOrg = randomUUID();
+  const foreignSpace = randomUUID();
+  const noteId = randomUUID();
+  await client.query("INSERT INTO orgs (id, name, slug) VALUES ($1, 'W2-a1 other', $2)", [otherOrg, `w2a1-other-${suffix}`]);
+  await client.query(
+    "INSERT INTO spaces (id, org_id, name, type, created_by) VALUES ($1, $2, $3, 'private', $4)",
+    [foreignSpace, otherOrg, `w2a1-foreign-${suffix}`, otherMemberId],
+  );
+  await client.query('INSERT INTO space_members (id, space_id, user_id) VALUES ($1, $2, $3)', [randomUUID(), foreignSpace, otherMemberId]);
+  try {
+    await client.query(
+      `INSERT INTO notes (id, org_id, user_id, title, content, visibility, visibility_space_id)
+       VALUES ($1, $2, $3, $4, 'cross-org body', 'space', $5)`,
+      [noteId, orgId, requesterId, `Cross-org note ${suffix}`, foreignSpace],
+    );
+    const params = { note_id: noteId, type: 'fact' };
+    const actionId = await insertAction({ userId: otherMemberId, action: 'note_to_wiki', params, status: 'pending', executed: false });
+    const result = await executeAction(actionId, 'note_to_wiki', params, orgId, otherMemberId);
+    assert.equal(result.success, false);
+    assert.equal(result.error, 'Note not found or not visible to caller');
+  } finally {
+    await client.query('DELETE FROM notes WHERE id = $1', [noteId]);
+    await client.query('DELETE FROM space_members WHERE space_id = $1', [foreignSpace]);
+    await client.query('DELETE FROM spaces WHERE id = $1', [foreignSpace]);
+    await client.query('DELETE FROM orgs WHERE id = $1', [otherOrg]);
+  }
+});
+
 // ─── Plan approval ───────────────────────────────────────────────────────────
 
 test('PLAN: plan payload marks destructive steps from the server classifier', { skip: !canRun }, async () => {
