@@ -70,6 +70,9 @@ type PersistReplyWithActionsParams = {
   resolvePendingMessageId?: string;
   metadata: Record<string, any>;
   pendingActions: ProposedAgentAction[];
+  /** Runs first inside the reply transaction. Returning a row means this
+   * reply already exists: nothing is inserted and that row is returned. */
+  replyGuard?: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => Promise<typeof messages.$inferSelect | null>;
 };
 
 function safeActionParamsForMessage(action: string, actionParams: unknown): unknown {
@@ -225,6 +228,8 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
   }
 
   const persisted = await db.transaction(async (tx) => {
+    const existingReply = params.replyGuard ? await params.replyGuard(tx) : null;
+    if (existingReply) return { message: existingReply, actions: [], duplicates: [], replayed: true };
     const resolvePendingClarifications = async (currentMessageId: string) => {
       if (!params.resolvePendingMessageId) return;
       const pendingScope = and(
@@ -446,6 +451,7 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
         message: { ...agentMessage, content: finalContent, metadata: coherentMetadata as never },
         actions: linkedActions,
         duplicates: duplicateActions,
+        replayed: false,
       };
     }
 
@@ -490,6 +496,7 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
       message: { ...agentMessage, content: finalContent, metadata: coherentMetadata as never },
       actions: persistedActions,
       duplicates: duplicateActions,
+      replayed: false,
     };
   });
   await Promise.all(persisted.actions.map((action) =>

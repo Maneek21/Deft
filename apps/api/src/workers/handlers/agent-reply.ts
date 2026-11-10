@@ -34,6 +34,7 @@ import { compileMessageWorkspacePlanImport } from '../../lib/workspace-plan-impo
 import { buildRoomContextPackWithSources } from '../../lib/defty-room-context.js';
 import { loadPendingDeftyDraft, pendingDeftyDraftContext, projectPendingDeftyMetadataForOutbound, type PendingDeftyDraft } from '../../lib/defty-pending-action.js';
 import { visibleTaskCondition } from '../../lib/task-visibility.js';
+import { claimDeftyReplySlot, findExistingDeftyReply } from '../../lib/defty-reply-guard.js';
 
 export async function withAgentWorkingSignal<T>(input: {
   spaceId: string; threadId: string | null; agentUserId: string;
@@ -1417,6 +1418,10 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
       eq(messages.user_id, userId), eq(messages.is_deleted, false),
     )).limit(1);
     if (!trigger) return;
+    // A05: one reply per trigger. A redelivered job whose reply already
+    // committed stops here; the insert re-checks under a lock (claimDeftyReplySlot).
+    const replyTrigger = { orgId, spaceId, agentUserId, triggerMessageId: messageId, triggerCreatedAt: trigger.created_at };
+    if (await findExistingDeftyReply(db, replyTrigger)) return;
 
     const isDmLike = space?.type === 'dm' || space?.type === 'group_dm' || space?.type === 'agent_conversation';
 
@@ -2120,6 +2125,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
     // (parity with the agent-stream-loop path).
     const replyMetadata = {
       is_agent_reply: true,
+      reply_to_message_id: messageId,
       defty_pending: !providerUnavailable && !readOnlyRequest && pendingActions.length === 0 && (hasWriteIntent || wantsDiscussionTask) && (compiledActionDraft?.clarification || targetClarificationMessage || writeIntentClarificationMessage)
         ? {
           kind: 'action_draft' as const, request_message_id: requestMessageId,
@@ -2143,6 +2149,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
     };
 
     let agentMessage: typeof messages.$inferSelect;
+    const replyGuard = (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => claimDeftyReplySlot(tx, replyTrigger);
     try {
       const persisted = await persistAgentReplyWithActions({
         orgId,
@@ -2154,7 +2161,12 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
         metadata: replyMetadata,
         pendingActions,
         resolvePendingMessageId: pendingClarification?.messageId,
+        replyGuard,
       });
+      if (persisted.replayed) {
+        console.log(`[agent-reply] Reply to ${messageId} already posted as ${persisted.message.id}; skipping`);
+        return;
+      }
       agentMessage = persisted.message;
     } catch (err) {
       if (pendingActions.length === 0) throw err;
@@ -2164,71 +2176,91 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
         'I drafted the action, but I could not create the approval card.',
         'Please try again or create it manually.',
       ].join(' ');
-      const [fallbackMessage] = await db.insert(messages).values({
-        org_id: orgId,
-        space_id: spaceId,
-        user_id: agentUserId,
-        content: failedApprovalContent,
-        parent_id: threadParentId,
-        metadata: {
-          ...sanitizeAgentReplyActionMetadata(replyMetadata),
-          pending_actions: undefined,
-          pending_actions_error: pendingActionPersistError,
-        } as never,
-      }).returning();
-      if (!fallbackMessage) throw err;
-      agentMessage = fallbackMessage;
+      const fallback = await db.transaction(async (tx) => {
+        const existing = await replyGuard(tx);
+        if (existing) return { message: existing, replayed: true };
+        const [inserted] = await tx.insert(messages).values({
+          org_id: orgId,
+          space_id: spaceId,
+          user_id: agentUserId,
+          content: failedApprovalContent,
+          parent_id: threadParentId,
+          metadata: {
+            ...sanitizeAgentReplyActionMetadata(replyMetadata),
+            pending_actions: undefined,
+            pending_actions_error: pendingActionPersistError,
+          } as never,
+        }).returning();
+        return { message: inserted, replayed: false };
+      });
+      if (!fallback.message) throw err;
+      if (fallback.replayed) return;
+      agentMessage = fallback.message;
     }
 
-    // Persist pending write actions as agent_actions rows so the inline
-    // <AgentActionCard/> on the reply and the /inbox?tab=approvals queue
-    // can render them. Without this, write-intent chat mentions were
-    // ghost-queued — stored in metadata.pending_actions but invisible to
-    // the approval UI (parity with agent-stream-loop.ts:208).
-    // Get the agent user info for the broadcast
-    const [agentUserData] = await db.select({
-      name: users.name,
-      avatar_url: users.avatar_url,
-    }).from(users).where(eq(users.id, agentUserId)).limit(1);
-
-    const messageWithUser = {
-      ...agentMessage,
-      metadata: projectPendingDeftyMetadataForOutbound(agentMessage.metadata),
-      user_name: agentUserData?.name ?? DEFTY_NAME,
-      user_avatar: agentUserData?.avatar_url ?? null,
-      reactions: [],
-      reply_count: 0,
-      latest_reply_at: null,
-    };
-
-    // Broadcast via Socket.io
-    const io = dependencies.io === undefined ? getIO() : dependencies.io;
-    if (io) {
-      io.to(`space:${spaceId}`).emit('message:new', messageWithUser);
-
-      // Only emit thread:updated when the reply is actually in a thread.
-      if (threadParentId) {
-        const [replyStats] = await db.select({
-          count: sql<number>`count(*)::int`,
-          latest: sql<string>`to_char(max(${messages.created_at}), 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`,
-        })
-          .from(messages)
-          .where(and(
-            eq(messages.parent_id, threadParentId),
-            eq(messages.is_deleted, false),
-          ));
-
-        io.to(`space:${spaceId}`).emit('thread:updated', {
-          parent_id: threadParentId,
-          reply_count: replyStats?.count ?? 1,
-          latest_reply_at: replyStats?.latest ?? agentMessage.created_at,
-        });
-      }
+    // A05: the reply is committed. Nothing below may fail the job, or the
+    // queue would redeliver it; the lookups and broadcasts are best-effort.
+    try {
+      await broadcastAgentReply({ dependencies, agentUserId, agentMessage, spaceId, threadParentId });
+    } catch (err) {
+      console.warn('[agent-reply] Reply committed but its broadcast failed', {
+        messageId: agentMessage.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
 
     console.log(`[agent-reply] Posted agent reply ${agentMessage.id} in space ${spaceId}${threadParentId ? ` thread ${threadParentId}` : ' (flat)'}`);
   } catch (err) {
     console.error('[agent-reply] Failed to generate agent reply:', err);
     throw err; // Re-throw so the PostgreSQL queue worker can retry.
+  }
+}
+
+async function broadcastAgentReply(params: {
+  dependencies: AgentReplyDependencies;
+  agentUserId: string;
+  agentMessage: typeof messages.$inferSelect;
+  spaceId: string;
+  threadParentId: string | null;
+}): Promise<void> {
+  const { dependencies, agentUserId, agentMessage, spaceId, threadParentId } = params;
+  // Get the agent user info for the broadcast
+  const [agentUserData] = await db.select({
+    name: users.name,
+    avatar_url: users.avatar_url,
+  }).from(users).where(eq(users.id, agentUserId)).limit(1);
+
+  const messageWithUser = {
+    ...agentMessage,
+    metadata: projectPendingDeftyMetadataForOutbound(agentMessage.metadata),
+    user_name: agentUserData?.name ?? DEFTY_NAME,
+    user_avatar: agentUserData?.avatar_url ?? null,
+    reactions: [],
+    reply_count: 0,
+    latest_reply_at: null,
+  };
+
+  // Broadcast via Socket.io
+  const io = dependencies.io === undefined ? getIO() : dependencies.io;
+  if (!io) return;
+  io.to(`space:${spaceId}`).emit('message:new', messageWithUser);
+
+  // Only emit thread:updated when the reply is actually in a thread.
+  if (threadParentId) {
+    const [replyStats] = await db.select({
+      count: sql<number>`count(*)::int`,
+      latest: sql<string>`to_char(max(${messages.created_at}), 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`,
+    })
+      .from(messages)
+      .where(and(
+        eq(messages.parent_id, threadParentId),
+        eq(messages.is_deleted, false),
+      ));
+
+    io.to(`space:${spaceId}`).emit('thread:updated', {
+      parent_id: threadParentId,
+      reply_count: replyStats?.count ?? 1,
+      latest_reply_at: replyStats?.latest ?? agentMessage.created_at,
+    });
   }
 }
