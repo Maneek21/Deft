@@ -96,12 +96,16 @@ test('module actions are visible only to requester, explicit reviewer, or admin'
       moduleActionId,
       ordinaryActionId,
     ]));
+    // Lane W2-a1 (C02): approving one action does not open another member's
+    // private Defty action.
     assert.deepEqual(new Set(await visibleIds('member', reviewerId)), new Set([
       moduleActionId,
-      ordinaryActionId,
     ]));
-    assert.deepEqual(await visibleIds('member', unrelatedId), [ordinaryActionId]);
-    assert.deepEqual(await visibleIds('guest', guestId), [ordinaryActionId]);
+    // Lane W2-a1 (C02): a Defty action is private to its requester, an
+    // assigned approver and owners/admins, so an unrelated member and a guest
+    // no longer receive the ordinary Defty action either.
+    assert.deepEqual(await visibleIds('member', unrelatedId), []);
+    assert.deepEqual(await visibleIds('guest', guestId), []);
   } finally {
     await client.query('DELETE FROM agent_action_approvers WHERE org_id = $1', [orgId]);
     await client.query('DELETE FROM agent_actions WHERE org_id = $1', [orgId]);
