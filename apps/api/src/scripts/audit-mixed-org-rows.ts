@@ -21,6 +21,15 @@
 import { writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import pg from 'pg';
+import { DEFTY_EMAIL } from '../lib/defty-identity.js';
+
+/**
+ * The built-in Defty user is users.kind = 'agent' (not 'system'), identified by
+ * the same email constant ensure-defty-membership.ts uses. Older versions wrote
+ * Defty rows into orgs without its org_members row, so it is excluded from
+ * membership mismatch checks and counted separately as informational.
+ */
+const NOT_DEFTY = `u.email IS DISTINCT FROM '${DEFTY_EMAIL}'`;
 
 export type Severity = 'mismatch' | 'info';
 
@@ -95,11 +104,14 @@ interface MemberOpts {
   via?: { parent: string; col: string; extra?: string; label?: string };
   /** true = user has a membership row only in an inactive state (informational). */
   inactive?: boolean;
+  /** Keep the built-in Defty user in scope (only app_private_defty_seals.defty_user_id). */
+  includeDefty?: boolean;
 }
 
 /**
  * Membership check. Default: the user has no org_members row at all in the
- * row's org (system users such as the Defty user are excluded). With
+ * row's org (kind = 'system' users and the built-in Defty agent user are
+ * excluded, except where `includeDefty` is set). With
  * `inactive`: the user has a row but no active one.
  */
 function member(o: MemberOpts): CheckDef {
@@ -121,7 +133,7 @@ function member(o: MemberOpts): CheckDef {
     severity: o.inactive ? 'info' : 'mismatch',
     childTable: o.table,
     from: `${q(o.table)} c${join} JOIN users u ON u.id = c.${q(o.userCol)}`,
-    where: `u.kind::text <> 'system'${o.via ? '' : ' AND c.org_id IS NOT NULL'}${o.via?.extra ? ` AND ${o.via.extra}` : ''} AND ${memberPred}`,
+    where: `u.kind::text <> 'system'${o.includeDefty ? '' : ` AND ${NOT_DEFTY}`}${o.via ? '' : ' AND c.org_id IS NOT NULL'}${o.via?.extra ? ` AND ${o.via.extra}` : ''} AND ${memberPred}`,
     orgA: orgExpr,
     orgB: null,
   };
@@ -522,7 +534,7 @@ export function buildChecks(): CheckDef[] {
     columns: ['user_group_members.group_id', 'user_group_members.user_id', 'user_groups.org_id', 'org_members.org_id'],
     childTable: 'user_group_members',
     from: 'user_group_members c JOIN user_groups g ON g.id = c.group_id JOIN users u ON u.id = c.user_id',
-    where: `u.kind::text <> 'system' AND NOT EXISTS (SELECT 1 FROM org_members m WHERE m.org_id = g.org_id AND m.user_id = c.user_id)`,
+    where: `u.kind::text <> 'system' AND ${NOT_DEFTY} AND NOT EXISTS (SELECT 1 FROM org_members m WHERE m.org_id = g.org_id AND m.user_id = c.user_id)`,
     orgA: 'g.org_id',
     orgB: null,
   }));
@@ -541,7 +553,9 @@ export function buildChecks(): CheckDef[] {
       via: { parent, col: 'entity_id', extra: `c.entity_type = '${type}'`, label: type },
     }));
   }
-  for (const [table, col] of MEMBER_COLUMNS) checks.push(member({ table, userCol: col }));
+  for (const [table, col] of MEMBER_COLUMNS) {
+    checks.push(member({ table, userCol: col, includeDefty: table === 'app_private_defty_seals' && col === 'defty_user_id' }));
+  }
 
   // Informational: the user still has a membership row, but it is inactive.
   checks.push(member({ table: 'space_members', userCol: 'user_id', via: { parent: 'spaces', col: 'space_id' }, inactive: true }));
@@ -550,6 +564,20 @@ export function buildChecks(): CheckDef[] {
   checks.push(member({ table: 'note_shares', userCol: 'shared_with_user_id', via: { parent: 'notes', col: 'note_id' }, inactive: true }));
   checks.push(member({ table: 'tasks', userCol: 'assignee_id', inactive: true }));
   checks.push(member({ table: 'team_members', userCol: 'user_id', inactive: true }));
+
+  // Informational: orgs where the built-in Defty user has no org_members row.
+  checks.push(custom({
+    id: 'orgs: no Defty org_members row [backfill-defty-membership]',
+    description: 'an org in which the built-in Defty user (users.kind = agent) has no org_members row; older versions wrote Defty rows without one. Run apps/api/src/scripts/backfill-defty-membership.ts to repair',
+    tables: ['orgs', 'users', 'org_members'],
+    columns: ['orgs.id', 'users.email', 'org_members.org_id', 'org_members.user_id'],
+    severity: 'info',
+    childTable: 'orgs',
+    from: `orgs c JOIN users u ON u.email = '${DEFTY_EMAIL}'`,
+    where: 'NOT EXISTS (SELECT 1 FROM org_members m WHERE m.org_id = c.id AND m.user_id = u.id)',
+    orgA: 'c.id',
+    orgB: null,
+  }));
 
   const seen = new Set<string>();
   for (const c of checks) {
@@ -562,7 +590,7 @@ export function buildChecks(): CheckDef[] {
 /** Things deliberately not checked, and why. Printed with every run. */
 export const SKIPS: Skip[] = [
   { what: 'rows with org_id IS NULL (skills, task_templates, agent_employee_templates, wiki_citations, job_queue, oauth_audit_events, revoked_tokens)', reason: 'NULL org_id marks bundled, marketplace or global rows by design; comparisons use <>, which ignores NULL' },
-  { what: 'users.kind = system (the Defty system user)', reason: 'holds an org_members row in every org by design; excluded from membership checks' },
+  { what: 'users.kind = system, and the built-in Defty user (users.kind = agent, email deft-agent@system.local) in membership checks other than app_private_defty_seals.defty_user_id', reason: 'Defty is meant to hold an org_members row in every org, but older versions wrote its rows without one; those orgs are counted by the informational Defty line instead of as mismatches' },
   { what: 'composite foreign keys that include org_id (all app_*, email_*, module_*, resource_relation_*, attachment tables)', reason: 'PostgreSQL enforces org equality through the constraint itself, so a mismatch cannot be stored' },
   { what: 'message_versions, note_versions, wiki_page_versions, onboarding_state, oauth_clients, oauth_refresh_tokens, tools, deft_schema_migrations', reason: 'no org_id and no reference that could cross orgs; they inherit the org of their single parent row' },
   { what: 'attention_*.source_id, audit_log.entity_id, cross-resource ids typed by free text (native_reference_states.source_id, team_resources.resource_id, resource_relation_*.*_resource_id, agent_channel_sessions.deft_scope_id)', reason: 'polymorphic on provider or free-text keys; no single parent table to compare with' },

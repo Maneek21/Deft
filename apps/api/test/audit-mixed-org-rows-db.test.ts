@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import pg from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import * as s from '@deft/db/schema';
+import { DEFTY_EMAIL } from '../src/lib/defty-identity.js';
 import {
   FK_PAIRS,
   SKIPS,
@@ -237,19 +238,19 @@ test('audit-mixed-org-rows: database', { skip: !safe && 'needs DEFT_TEST_DATABAS
   const before = await counts(client);
 
   const clean = await runAudit(client, { limit: 5, target: maskTarget(target!)! });
-  // The API test runner seeds src/scripts/seed-test-fixtures.ts before any test.
-  // That seed leads the org B fixture project with a user who is only a member
-  // of org A, and the audit rightly lists it. It is the one tolerated baseline
-  // row; on a plain db:push-full database the total is 0.
-  const FIXTURE_ROW = 'projects.lead_id not member (none)';
+  // The shared CI database holds rows left by other test files (and the seed),
+  // some of which the audit rightly lists. Nothing here may assume an absolute
+  // count: every later assertion compares against this baseline as a delta.
   const baseline = new Map(clean.checks.filter((c) => c.severity === 'mismatch' && c.count > 0).map((c) => [c.id, c.count] as const));
-  await t.test('(a) a fresh schema reports zero mismatches and no errored checks', () => {
+  await t.test('(a) the audit runs without errored checks and is stable when nothing changes', async () => {
     assert.equal(clean.transaction_read_only, 'on');
     assert.deepEqual(clean.checks.filter((c) => c.error).map((c) => `${c.id}: ${c.error}`), []);
-    assert.deepEqual([...baseline.keys()].filter((id) => id !== FIXTURE_ROW), []);
-    const fixture = clean.checks.find((c) => c.id === FIXTURE_ROW)!;
-    assert.ok(fixture.count <= 1 && fixture.samples.every((x) => x.id === 'fixture-project-org-b'));
-    assert.match(formatSummary(clean), /Not checked \(by design\)/u);
+    const again = await runAudit(client, { limit: 0, target: 'test' });
+    assert.deepEqual(
+      again.checks.map((c) => [c.id, c.count]),
+      clean.checks.map((c) => [c.id, c.count]),
+    );
+    assert.match(formatSummary(clean), /Not checked by design|Not checked/u);
   });
 
   await t.test('(c) the audit performs no writes and its transaction rejects writes', async () => {
@@ -267,6 +268,68 @@ test('audit-mixed-org-rows: database', { skip: !safe && 'needs DEFT_TEST_DATABAS
       (err: any) => err.code === '25006',
     );
     assert.deepEqual(await counts(client), before);
+  });
+
+  await t.test('S5-r4 Defty without a membership row is informational; other agents are still reported', async () => {
+    const tag = randomUUID().slice(0, 8);
+    const id = (x: string) => `${x}-${tag}`;
+    const ids = { org: id('orgD'), human: id('human'), byoa: id('byoa'), space: id('spaceD'), m1: id('m1'), m2: id('m2') };
+    const existing = await client.query<{ id: string }>('SELECT id FROM users WHERE email = $1', [DEFTY_EMAIL]);
+    const deftyId = existing.rows[0]?.id ?? id('defty');
+    const createdDefty = existing.rows.length === 0;
+    const cleanupR4 = async () => {
+      await client.query('BEGIN');
+      await client.query('SET LOCAL session_replication_role = replica');
+      await client.query('DELETE FROM messages WHERE id = ANY($1)', [[ids.m1, ids.m2]]);
+      await client.query('DELETE FROM spaces WHERE id = $1', [ids.space]);
+      await client.query('DELETE FROM org_members WHERE org_id = $1', [ids.org]);
+      await client.query('DELETE FROM users WHERE id = ANY($1)', [[ids.human, ids.byoa, ...(createdDefty ? [deftyId] : [])]]);
+      await client.query('DELETE FROM orgs WHERE id = $1', [ids.org]);
+      await client.query('COMMIT');
+    };
+    cleanups.push(cleanupR4);
+    const db = drizzle(client, { schema: s });
+    await client.query('BEGIN');
+    await client.query('SET LOCAL session_replication_role = replica');
+    await db.insert(s.orgs).values({ id: ids.org, name: 'D', slug: id('d') });
+    await db.insert(s.users).values([
+      { id: ids.human, name: 'h', email: `${ids.human}@example.test` },
+      { id: ids.byoa, name: 'byoa', email: `${ids.byoa}@example.test`, kind: 'agent', is_agent: true },
+      ...(createdDefty ? [{ id: deftyId, name: 'Defty', email: DEFTY_EMAIL, kind: 'agent' as const, is_agent: true }] : []),
+    ]);
+    await db.insert(s.orgMembers).values({ org_id: ids.org, user_id: ids.human });
+    await db.insert(s.spaces).values({ id: ids.space, org_id: ids.org, name: 'sd', created_by: ids.human });
+    // Defty authored a message in an org where it has no org_members row (older versions did this)
+    await db.insert(s.messages).values({ id: ids.m1, org_id: ids.org, space_id: ids.space, user_id: deftyId, content: 'd' });
+    await client.query('COMMIT');
+
+    const infoId = 'orgs: no Defty org_members row [backfill-defty-membership]';
+    const base = await runAudit(client, { limit: 0, target: 'test' });
+    const stage1 = base.mismatch_rows - clean.mismatch_rows;
+    assert.equal(stage1, 0, 'Defty must not produce a mismatch');
+    assert.deepEqual(base.checks.filter((c) => c.error), []);
+    assert.equal(exitCodeFor(base), exitCodeFor(clean));
+    const info = base.checks.find((c) => c.id === infoId)!;
+    assert.equal(info.severity, 'info');
+    assert.ok(info.count >= 1);
+    assert.match(info.description, /backfill-defty-membership/u);
+
+    // a BYOA agent user that is not Defty and has no membership is still a mismatch
+    await db.insert(s.messages).values({ id: ids.m2, org_id: ids.org, space_id: ids.space, user_id: ids.byoa, content: 'b' });
+    const after = await runAudit(client, { limit: 10000, target: 'test' });
+    const hit = after.checks.filter((c) => c.severity === 'mismatch' && c.count - (baseline.get(c.id) ?? 0) > 0);
+    assert.deepEqual(hit.map((c) => `${c.id}=${c.count - (baseline.get(c.id) ?? 0)}`), ['messages.user_id not member (none)=1']);
+    const sampled = after.checks.find((c) => c.id === 'messages.user_id not member (none)')!.samples.map((x) => x.id);
+    assert.ok(sampled.includes(ids.m2) && !sampled.includes(ids.m1));
+
+    // the seal check keeps Defty in scope, every other membership check excludes it
+    const checks = buildChecks();
+    const seal = checks.find((c) => c.id === 'app_private_defty_seals.defty_user_id not member (none)')!;
+    assert.ok(!seal.where.includes(DEFTY_EMAIL));
+    for (const c of checks.filter((x) => x.orgB === null && x.severity === 'mismatch' && x.id !== seal.id && x.from.includes('JOIN users u'))) {
+      assert.ok(c.where.includes(DEFTY_EMAIL), c.id);
+    }
+    await cleanupR4();
   });
 
   await t.test('(b) deliberate mismatches are reported exactly', async () => {
@@ -316,7 +379,7 @@ test('audit-mixed-org-rows: database', { skip: !safe && 'needs DEFT_TEST_DATABAS
     await db.insert(s.noteShares).values({ id: ids.share, note_id: ids.note, shared_with_user_id: ids.userX });
     await client.query('COMMIT');
 
-    const report = await runAudit(client, { limit: 10, target: 'test' });
+    const report = await runAudit(client, { limit: 10000, target: 'test' });
     const hit = report.checks.filter((c) => c.severity === 'mismatch' && c.count - (baseline.get(c.id) ?? 0) > 0);
     assert.deepEqual(
       hit.map((c) => `${c.id}=${c.count}`).sort(),
@@ -329,10 +392,11 @@ test('audit-mixed-org-rows: database', { skip: !safe && 'needs DEFT_TEST_DATABAS
     );
     assert.deepEqual(report.checks.filter((c) => c.error), []);
     const m = hit.find((c) => c.id === 'messages.space_id->spaces')!;
-    assert.deepEqual(m.samples.map((x) => [x.id, x.org_a, x.org_b]), [[ids.msg, ids.orgA, ids.orgB]]);
-    assert.ok(m.samples[0]!.created_at);
+const mine = m.samples.filter((x) => x.id === ids.msg);
+    assert.deepEqual(mine.map((x) => [x.id, x.org_a, x.org_b]), [[ids.msg, ids.orgA, ids.orgB]]);
+    assert.ok(mine[0]!.created_at);
     // samples carry only id, orgs and created_at
-    assert.deepEqual(Object.keys(m.samples[0]!).sort(), ['created_at', 'id', 'org_a', 'org_b']);
+    assert.deepEqual(Object.keys(mine[0]!).sort(), ['created_at', 'id', 'org_a', 'org_b']);
     assert.ok(!JSON.stringify(report).includes('"content"'));
     assert.equal(report.mismatch_rows - clean.mismatch_rows, 4);
 

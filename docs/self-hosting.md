@@ -821,7 +821,10 @@ pnpm --filter @deft/api exec tsx src/scripts/audit-mixed-org-rows.ts \
   timeout (`--timeout-ms` changes it), so the database rejects any write.
 - Stdout has one line per check with its tables and mismatch count, followed by
   the list of things deliberately not checked. Rows whose only fault is an
-  inactive membership are counted separately as informational.
+  inactive membership are counted separately as informational, as is each org
+  where the built-in Defty user has no membership row (older versions wrote
+  Defty messages without one; `apps/api/src/scripts/backfill-defty-membership.ts`
+  repairs it). Defty is not counted as a mismatch elsewhere.
 - `--json` writes up to `--limit` samples per check. Samples contain row ids,
   both org ids and `created_at`, never message text, note bodies, names or
   emails.
