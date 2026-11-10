@@ -163,7 +163,11 @@ export async function planDeftyWake(input: DeftyWakeInput): Promise<DeftyWakePla
     const [spaceRow] = await db.select({ type: spaces.type })
       .from(spaces).where(and(eq(spaces.id, input.spaceId), eq(spaces.org_id, input.orgId))).limit(1);
     const followable = spaceRow && (spaceRow.type === 'public' || spaceRow.type === 'private' || spaceRow.type === 'group_dm');
-    return { ...none, followSpaceType: followable ? spaceRow.type : null };
+    if (!followable) return none;
+    // Resolved now, outside the message transaction: step 2 must not take a
+    // second pooled connection while the transaction holds one (four
+    // concurrent follow-ups would otherwise exhaust the ordinary pool).
+    return { ...none, followSpaceType: spaceRow.type, ...(await resolveDeftyProvider(input.orgId)) };
   }
   return { explicit, followSpaceType: null, ...(await resolveDeftyProvider(input.orgId)) };
 }
@@ -178,7 +182,9 @@ export type DeftyWakeOutcome = {
 };
 
 /**
- * Step 2, inside the insert transaction.
+ * Step 2, inside the insert transaction. Every read here goes through `tx`
+ * (or its savepoint): no global `db` or other pool while the transaction is
+ * open; anything that needs one is resolved in step 1.
  *
  * An explicit wake's job joins the transaction: a failed job insert fails it,
  * so the caller never reports success for a message Defty was asked to answer
@@ -228,20 +234,19 @@ export async function enqueueDeftyWake(
         loadContext: (value) => loadThreadFollowContext(value, savepoint),
       });
       if (!followed) return none;
-      const provider = await resolveDeftyProvider(input.orgId);
-      if (provider.providerReady) {
+      if (plan.providerReady) {
         await enqueueAgentReply({
           spaceId: input.spaceId,
           messageId: input.messageId,
           parentId,
           orgId: input.orgId,
           userId: input.userId,
-          orgName: provider.orgName,
+          orgName: plan.orgName,
           content: input.content,
           followed: true,
         }, savepoint);
       }
-      return { woke: true, providerReason: provider.providerReason, providerReady: provider.providerReady };
+      return { woke: true, providerReason: plan.providerReason, providerReady: plan.providerReady };
     });
   } catch (err) {
     console.error('Failed to enqueue agent reply (thread follow):', err);
