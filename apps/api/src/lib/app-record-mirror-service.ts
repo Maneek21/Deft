@@ -3,6 +3,7 @@ import {discloseRecordMirrorRead} from './app-record-mirror-read-deadline.js';
 import {AppRunRetainedProviderResultSchema} from '@deft/shared';
 import {randomUUID} from 'node:crypto';
 import {db} from './db.js';
+import {AppError} from './app-errors.js';
 import {sql} from 'drizzle-orm';
 import {z} from 'zod';
 import {AppRecordMirrorReviewRequestSchema,AppRecordMirrorControlRequestSchema,AppRecordMirrorStatusSchema} from '@deft/app-kit/core';
@@ -78,7 +79,14 @@ export class AppRecordMirrorService{
   if(!policy||!current.consent)throw appDataDenied();
   if(current.connection.account_ref!==nomination.account_ref||current.scope.installation_id!==nomination.installation_id||appDataDigest(policy)!==nomination.policy_digest)throw appDataDenied();
   const target=current.scope.target_key;
-  const experience=await this.experienceSession(caller,current.scope.installation_id,target);
+  let experience:string;
+  try {
+    experience=await this.experienceSession(caller,current.scope.installation_id,target);
+  } catch (error) {
+    // The approver's browser state is a precondition, not a verdict on the
+    // nomination: tag it pre-confirm so the resolver keeps the card pending.
+    throw recordMirrorPhaseError('review',error);
+  }
   const {record_id,account_ref,installation_id,policy_digest,...review}=nomination;
   void account_ref;void installation_id;void policy_digest;
   let opened;
@@ -97,7 +105,9 @@ export class AppRecordMirrorService{
  }
  private async experienceSession(caller:ExperienceCaller,installationId:string,target:string){
   const rows=await db.execute(sql<{id:string}>`SELECT id FROM app_experience_sessions WHERE org_id=${caller.org_id} AND user_id=${caller.user_id} AND web_session_id=${caller.sid} AND app_installation_id=${installationId} AND resource_target_key=${target} AND revoked_at IS NULL AND expires_at>clock_timestamp() ORDER BY created_at DESC LIMIT 2`);
-  if(rows.rows.length!==1)throw appDataDenied();
+  // Zero or several live experiences is ambiguous, never an ended data grant:
+  // fail closed without APP_ACCESS_DENIED so the nomination is not destroyed.
+  if(rows.rows.length!==1)throw new AppError('Open this app once in Deft in this browser, then approve again','APP_REVIEW_REQUIRED',409);
   return z.string().uuid().parse(rows.rows[0]!.id);
  }
  private async ordinarySession(tx:AppRunTransaction,current:CurrentAppDataAuthority,experience:string,target:string){await this.data.guard(tx);const rows=await tx.execute(sql<{current:boolean;expires_at:Date}>`SELECT expires_at,expires_at>clock_timestamp() AND revoked_at IS NULL AS current FROM app_experience_sessions WHERE org_id=${this.data.caller.org_id} AND user_id=${this.data.caller.user_id} AND web_session_id=${this.data.caller.sid} AND id=${experience} AND resource_target_key=${target} AND app_installation_id=${current.scope.installation_id} AND app_version_id=${current.scope.app_version_id} AND grant_snapshot_id=${current.scope.grant_snapshot_id} FOR SHARE`);if(rows.rows[0]?.current!==true||current.scope.target_key!==target)throw appDataDenied();return z.coerce.date().parse(rows.rows[0].expires_at).getTime();}

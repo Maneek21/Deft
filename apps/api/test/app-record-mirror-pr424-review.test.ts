@@ -163,3 +163,25 @@ test('PR424-F01: an in-app (unbound) store review keeps its store-wide meaning',
   await harness.submit(uuid());
   assert.equal(harness.submitted.length, 2);
 });
+
+test('PR424-F09: approving without exactly one open app experience keeps the nomination retryable', async () => {
+  const { AppRecordMirrorService } = await import('../src/lib/app-record-mirror-service.js');
+  for (const rows of [[], [{ id: uuid() }, { id: uuid() }]]) {
+    experienceRows = rows;
+    const installationId = uuid();
+    const service = makeService(AppRecordMirrorService as never, currentFor(installationId));
+    let reviews = 0;
+    service.review = async () => { reviews += 1; return { ticket: 't', authority_digest: digest('authority') }; };
+    service.confirm = async () => ({ receipt_id: 'receipt-1' });
+    await assert.rejects(service.approveNomination(nominationRaw(installationId)), (error: unknown) => {
+      const e = error as { phase?: string; code?: string };
+      // The resolver only keeps a nomination pending for a review-phase,
+      // non-access-denied failure; anything else expires it for good.
+      assert.equal(e.phase, 'review', `experience rows=${rows.length}: must be tagged as a pre-confirm failure`);
+      assert.notEqual(e.code, 'APP_ACCESS_DENIED', `experience rows=${rows.length}: must not read as ended data access`);
+      assert.equal(e.code, 'APP_REVIEW_REQUIRED');
+      return true;
+    });
+    assert.equal(reviews, 0, 'no review/confirm may run without one unambiguous experience');
+  }
+});
