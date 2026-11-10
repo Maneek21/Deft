@@ -9,9 +9,9 @@
  * Tasks 1.3–1.5 will swap the existing call sites over to this gateway.
  */
 
-import { eq, and, or, sql, inArray } from 'drizzle-orm';
+import { eq, and, or, sql, inArray, ilike } from 'drizzle-orm';
 import { db } from './db.js';
-import { wikiPages, agentMemory, notes, tasks, spaceMembers, projects, agentEmployees, orgMembers } from '@deft/db/schema';
+import { wikiPages, agentMemory, notes, tasks, spaceMembers, spaces, projects, agentEmployees, orgMembers } from '@deft/db/schema';
 import { embedQuiet, EMBED_DIMS } from './embed.js';
 import { unrestrictedTaskCondition, visibleTaskCondition } from './task-visibility.js';
 import { visibleWikiPageCondition, wikiPageRelevantToSpaceCondition } from './wiki-visibility.js';
@@ -780,12 +780,16 @@ async function fetchMemory(
       );
     }
 
-    if (conversation_id) {
+    // B07: conversation memories belong to the user who stored them (the
+    // `remember` tool writes them with the asker's user_id), so another member
+    // of a shared conversation never receives them.
+    if (conversation_id && user_id) {
       scopeClauses.push(
         and(
           eq(agentMemory.scope, 'conversation'),
           // conversation_id can be null on rows; sql coalesce guard.
           sql`${agentMemory.conversation_id} = ${conversation_id}`,
+          eq(agentMemory.user_id, user_id),
           eq(agentMemory.org_id, org_id),
         ),
       );
@@ -1076,6 +1080,69 @@ async function fetchModuleContext(
 
 // ─── Main gateway ─────────────────────────────────────────────────────────────
 
+/** Current-audience predicate every retrieved wiki/decision answer passes
+ * (captured-mail audience, asker visibility, agent authority). Exported so
+ * non-ranked listing paths (search_decisions without a query) apply the
+ * exact predicate the ranked path does, from one place. */
+export function retrievedWikiAudienceCondition(orgId: string, userId?: string,
+  conversationId?: string, agentEmployeeId?: string) {
+  return emailKnowledgeAudienceCondition(orgId, userId, conversationId, agentEmployeeId);
+}
+
+export type ReadableRoomResolution =
+  | { room: { id: string; name: string }; error?: never; code?: never }
+  | { room?: never; error: string; code: 'SPACE_NOT_FOUND' | 'SPACE_AMBIGUOUS' };
+
+/** Resolve a room name the model supplied to exactly one room the asker can
+ * read. The name is matched literally and case-insensitively (LIKE wildcards
+ * are escaped), archived rooms are excluded, and more than one match is an
+ * ambiguity error rather than an arbitrary pick. `includePublic` admits public
+ * rooms the asker has not joined; otherwise membership is required. Every
+ * agent read that targets a room by name uses this one resolver. */
+export async function resolveReadableRoom(input: {
+  orgId: string;
+  userId: string;
+  name: unknown;
+  includePublic: boolean;
+}): Promise<ReadableRoomResolution> {
+  // The complete name is matched. Truncating it would resolve a different,
+  // shorter-named room, so an over-long name is refused instead.
+  const raw = typeof input.name === 'string' ? input.name : '';
+  if (!raw.trim() || raw.length > 1000) return { error: 'Readable room not found.', code: 'SPACE_NOT_FOUND' };
+  // Room names may themselves carry surrounding whitespace or a leading '#'.
+  // The name exactly as requested wins; the trimmed form and the form without
+  // a leading '#' (how people usually write a channel) are only fallbacks, so
+  // a convenience normalization never selects a different room than the one
+  // that was named.
+  const trimmed = raw.trim();
+  const variants = [...new Set([raw, trimmed, trimmed.replace(/^#/, '')])].filter((value) => value.length > 0);
+  // Each variant is resolved by its own query, in priority order, with the
+  // database deciding the case-insensitive match (never re-derived in
+  // JavaScript, whose casing rules differ from the database locale). Two rows
+  // are enough to tell "exactly one" from "ambiguous", and no cap is shared
+  // between variants, so a fallback can never crowd out or hide an exact match.
+  for (const variant of variants) {
+    const rooms = await db
+      .select({ id: spaces.id, name: spaces.name })
+      .from(spaces)
+      .leftJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, input.userId)))
+      .where(and(
+        eq(spaces.org_id, input.orgId),
+        eq(spaces.is_archived, false),
+        input.includePublic
+          ? or(eq(spaces.type, 'public'), sql`${spaceMembers.id} IS NOT NULL`)
+          : sql`${spaceMembers.id} IS NOT NULL`,
+        ilike(spaces.name, variant.replace(/[\\%_]/g, '\\$&')),
+      ))
+      .limit(2);
+    if (rooms.length === 1) return { room: rooms[0]! };
+    if (rooms.length > 1) {
+      return { error: 'Room name is ambiguous; choose a room from list_spaces.', code: 'SPACE_AMBIGUOUS' };
+    }
+  }
+  return { error: 'Readable room not found.', code: 'SPACE_NOT_FOUND' };
+}
+
 export async function retrieveContextWithDiagnostics(
   params: RetrieveContextParams,
 ): Promise<RetrieveContextDetailedResult> {
@@ -1153,7 +1220,7 @@ export async function retrieveContextWithDiagnostics(
   const permitted = candidates.length ? await db.select({ id: wikiPages.id }).from(wikiPages)
     .where(and(eq(wikiPages.org_id, org_id), eq(wikiPages.is_deleted, false),
       inArray(wikiPages.id, candidates.map(row => row.source_id)),
-      emailKnowledgeAudienceCondition(org_id, user_id, space_id ?? conversation_id, agent_employee_id))) : [];
+      retrievedWikiAudienceCondition(org_id, user_id, space_id ?? conversation_id, agent_employee_id))) : [];
   const allowedIds = new Set(permitted.map(row => row.id));
   const results = [...candidates.filter(row => allowedIds.has(row.source_id)), ...memRows, ...noteRows, ...taskRows, ...moduleOutcome.results];
   results.sort((a, b) => b.score - a.score);

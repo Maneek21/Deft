@@ -6,6 +6,7 @@ import {
   projects,
   messages,
   spaces,
+  spaceMembers,
   agentActions,
   taskActivity,
   taskComments,
@@ -85,6 +86,7 @@ import {
 import { requireActiveOrgMembership } from './org-membership.js';
 import { generateReceipt } from './receipts.js';
 import { visibleTaskCondition } from './task-visibility.js';
+import { resolveReadableRoom } from './retrieve-context.js';
 import {
   employeeProjectAccessAllows,
   loadEmployeeProjectAccess,
@@ -3136,20 +3138,28 @@ export async function executeAction(
 
       case 'read_canvas': {
         // Block 2.3 — read a space's shared canvas by space_name.
-        const spaceName = typeof params.space_name === 'string' ? params.space_name.trim() : '';
-        if (!spaceName) return { success: false, result: null, error: 'space_name is required' };
+        const spaceName = typeof params.space_name === 'string' ? params.space_name : '';
+        if (!spaceName.trim()) return { success: false, result: null, error: 'space_name is required' };
 
-        const [space] = await db
-          .select({ id: spaces.id, name: spaces.name })
-          .from(spaces)
-          .where(and(eq(spaces.org_id, orgId), ilike(spaces.name, spaceName)))
-          .limit(1);
-        if (!space) return { success: false, result: null, error: `Space "${spaceName}" not found` };
+        // B06: a canvas is readable only by members of its room (same rule as
+        // GET /api/spaces/:id/canvas). The live dispatcher is executeToolCall;
+        // both resolve the room through the one literal, unambiguous resolver.
+        const resolvedRoom = await resolveReadableRoom({ orgId, userId, name: spaceName, includePublic: false });
+        if (!resolvedRoom.room) {
+          return {
+            success: false,
+            result: null,
+            error: resolvedRoom.code === 'SPACE_AMBIGUOUS'
+              ? `Space "${spaceName}" is ambiguous; choose a room from list_spaces.`
+              : `Space "${spaceName}" not found`,
+          };
+        }
+        const space = resolvedRoom.room;
 
         const [canvas] = await db
           .select({ id: canvases.id, title: canvases.title, content: canvases.content, updated_at: canvases.updated_at })
           .from(canvases)
-          .where(eq(canvases.space_id, space.id))
+          .where(and(eq(canvases.space_id, space.id), eq(canvases.org_id, orgId)))
           .limit(1);
 
         if (!canvas) {

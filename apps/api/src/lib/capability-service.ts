@@ -11,6 +11,7 @@ import {
   type McpCapabilityDiscoveryRequest,
   type McpCapabilityDiscoveryResult,
   type McpCapabilityInvocationAdapterResult,
+  type McpCapabilityInvocationPreflight,
   type McpCapabilityInvocationRequest,
   type McpPinnedDispatchPin,
   type McpPinnedExecutionResult,
@@ -20,6 +21,7 @@ import { APP_RUN_LEGACY_MCP_CUTOVER_ENABLED } from './env.js';
 
 export type CapabilityDiscoveryRequest = McpCapabilityDiscoveryRequest;
 export type CapabilityDiscoveryResult = McpCapabilityDiscoveryResult;
+export type CapabilityInvocationPreflight = McpCapabilityInvocationPreflight;
 
 export type CapabilitySafeOutcomeProjection =
   | { status: 'available'; outcome: CapabilityInvocationOutcome }
@@ -36,6 +38,7 @@ export interface CapabilityInvocationResult extends McpCapabilityInvocationAdapt
 interface McpCapabilityProviderPort {
   discover(request: McpCapabilityDiscoveryRequest): Promise<McpCapabilityDiscoveryResult>;
   invoke(request: McpCapabilityInvocationRequest): Promise<McpCapabilityInvocationAdapterResult>;
+  preflight?(request: McpCapabilityInvocationRequest): Promise<McpCapabilityInvocationPreflight>;
   executePinned?(request: CapabilityPinnedInvocationRequest): Promise<McpPinnedExecutionResult>;
 }
 
@@ -128,6 +131,26 @@ export class CapabilityService {
       ...(request.dispatch_pin ? { dispatch_pin: Object.freeze({ ...request.dispatch_pin }) } : {}),
       ...(request.signal ? { signal: request.signal } : {}),
     }));
+  }
+
+  /** Resolve and validate an invocation target without any provider call, so
+   * a consumer can classify the exact resolved provider instance before it
+   * decides to `invoke`. Connection resolution and target validation stay
+   * inside the provider adapter; the consumer receives only the resolved
+   * provider identity or the exact legacy denial. This is independent of the
+   * legacy cutover flag: it runs the same resolution in both modes and never
+   * dispatches. A provider that cannot preflight fails closed. */
+  async preflight(value: unknown): Promise<CapabilityInvocationPreflight> {
+    const request = CapabilityInvocationRequestSchema.parse(value);
+    switch (request.provider.provider_kind) {
+      case 'mcp':
+        if (!this.mcpProvider.preflight) {
+          throw new Error('Capability provider cannot preflight invocations');
+        }
+        return this.mcpProvider.preflight(request);
+      default:
+        throw new Error('Unsupported capability provider kind');
+    }
   }
 
   async invoke(
