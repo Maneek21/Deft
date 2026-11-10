@@ -716,10 +716,11 @@ async function queueDeftyKnowledgeUpdateCapture(params: {
       page_id: targetPage.id,
       slug: targetPage.slug,
       ...(preferUpdate ? { expected_version: targetPage.version } : {}),
-      patch: {
-        content: updatedBody,
-        summary,
-      },
+      // An append keeps the page's existing summary: replacing it with the
+      // episode's update text would drop prior facts from autoloaded context.
+      patch: preferUpdate
+        ? { content: updatedBody }
+        : { content: updatedBody, summary },
       source_message_id: messageId,
       source_space_id: spaceId,
       source_user_id: sourceUserId,
