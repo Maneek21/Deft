@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { scanBoundary, validateAllowlist } from './check-app-boundary.mjs';
+import { scanBoundary, summarizeMilestones, validateAllowlist, validateAllowlistCeiling } from './check-app-boundary.mjs';
 
 function fixture(t, files) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deft-boundary-'));
@@ -232,4 +232,24 @@ test('preapproved compatibility exports cannot authorize a Host import of a depr
   clean.write('apps/api/src/neutral.ts', 'export * from "../../../optional/neutral.js";');
   clean.write('optional/neutral.ts', 'export * from "@deft/app-kit";');
   reject(clean.scan(), 'compatibility-facade-import');
+});
+
+test('fails when exceptions exceed the ceiling', () => {
+  const entries = [1, 2, 3].map((n) => ({ milestone: `N1: S2 of plan`, path: `a${n}.ts` }));
+  assert.equal(validateAllowlistCeiling(entries, { max_exceptions: 2 }).length, 1);
+  assert.deepEqual(validateAllowlistCeiling(entries, { max_exceptions: 3 }), []);
+  assert.deepEqual(validateAllowlistCeiling(entries, { max_exceptions: 4 }), []);
+  for (const bad of [undefined, {}, { max_exceptions: -1 }, { max_exceptions: 1.5 }, { max_exceptions: '3' }]) {
+    assert.equal(validateAllowlistCeiling(entries, bad).length, 1, JSON.stringify(bad));
+  }
+});
+
+test('summary groups exceptions by milestone', () => {
+  const entries = [{ milestone: 'N1: S2 of plan' }, { milestone: 'D1: S3 of plan' }, { milestone: 'N1: S2 of plan' }];
+  assert.deepEqual(summarizeMilestones(entries), ['1	D1: S3 of plan', '2	N1: S2 of plan']);
+});
+
+test('checked-in ceiling matches the checked-in allowlist', () => {
+  const read = (name) => JSON.parse(fs.readFileSync(new URL(name, import.meta.url), 'utf8'));
+  assert.deepEqual(validateAllowlistCeiling(read('./app-boundary-allowlist.json'), read('./app-boundary-ceiling.json')), []);
 });
