@@ -272,6 +272,26 @@ test('C02/E01: private Defty action payloads reach only requester, assigned appr
   assert.equal(approverHistory.includes(executed), false, 'approval on one action does not open another');
 });
 
+test('R2-6: a guest assigned as approver still sees only actions the guest requested', { skip: !canRun }, async () => {
+  const marker = `r2-6-guest-${suffix}`;
+  const other = await insertAction({
+    userId: requesterId, action: 'post_message',
+    params: { space_id: sharedSpaceId, content: marker }, status: 'pending', executed: false,
+  });
+  await client.query(
+    'INSERT INTO agent_action_approvers (id, org_id, action_id, user_id) VALUES ($1, $2, $3, $4)',
+    [randomUUID(), orgId, other, guestId],
+  );
+  const own = await insertAction({
+    userId: guestId, action: 'create_note', params: { title: `${marker}-own` }, tier: 'quick',
+  });
+  for (const path of ['/api/agent/actions', '/api/agent/actions/recent?limit=50', '/api/dashboard/agent-activity']) {
+    const text = await (await as(guestId, path)).text();
+    assert.equal(text.includes(other), false, `${path}: approver assignment does not open another requester's action to a guest`);
+    assert.ok(text.includes(own), `${path}: the guest keeps its own action`);
+  }
+});
+
 // ─── C03 ─────────────────────────────────────────────────────────────────────
 
 test('C03: wiki_write cannot update a space wiki page the acting user cannot see', { skip: !canRun }, async () => {
