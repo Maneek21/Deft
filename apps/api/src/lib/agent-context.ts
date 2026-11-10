@@ -34,7 +34,6 @@ import {
   notes,
 } from '@deft/db/schema';
 import { getMCPToolsForAgent, parseMCPToolName } from './mcp-tools.js';
-import { getExecutableMcpConnection, toConnectionConfig } from './mcp-runtime.js';
 import { isDestructiveAction } from './agent-approval.js';
 import { visibleWikiPageCondition } from './wiki-visibility.js';
 import { visibleNoteCondition } from './note-visibility.js';
@@ -235,18 +234,33 @@ export async function executeToolCall(
     // (for these params) operation. Writes go through executeActionDirect.
     //
     // 1. Execution-time resolution (connection active, assigned to the
-    //    employee, tool enabled, not disabled by employee or override) is
-    //    DB-only and returns the same denial the capability service would.
-    const resolved = await getExecutableMcpConnection(orgId, connectionSlug, actualToolName, agentEmployeeId);
-    if (!resolved.connection) {
-      return { result: { error: resolved.error }, citations: [] };
+    //    employee, tool enabled, not disabled by employee or override) and
+    //    target validation happen inside the Capability Service's provider
+    //    adapter with no provider call. A denial carries the exact legacy
+    //    payload; an invalid target keeps its historical throw.
+    const invocationRequest = {
+      org_id: orgId,
+      actor: {
+        user_id: _userId,
+        ...(agentEmployeeId ? { agent_employee_id: agentEmployeeId } : {}),
+      },
+      provider: {
+        provider_kind: 'mcp' as const,
+        connection_slug: connectionSlug,
+        operation_name: actualToolName,
+      },
+      input: params,
+    };
+    const preflight = await capabilityService.preflight(invocationRequest);
+    if (preflight.status !== 'resolved') {
+      return { result: preflight.legacy_output, citations: [] };
     }
-    // Target validation keeps its historical throw before any provider call.
-    toConnectionConfig(resolved.connection);
-    // 2. Live classification. Discovery failure or absence is not a read.
+    // 2. Live classification of this exact tool on the resolved provider
+    //    instance. Discovery failure or absence is not a read.
+    const resolvedProviderId = preflight.resolved_provider.provider_instance_id;
     const liveTools = await getMCPToolsForAgent(orgId, agentEmployeeId).catch(() => null);
     const liveTool = liveTools?.find((candidate) => (
-      candidate.name === toolName && candidate.connectionId === resolved.connection.id
+      candidate.name === toolName && candidate.connectionId === resolvedProviderId
     ));
     if (!liveTool) {
       return {
@@ -266,19 +280,7 @@ export async function executeToolCall(
         citations: [],
       };
     }
-    const invocation = await capabilityService.invoke({
-      org_id: orgId,
-      actor: {
-        user_id: _userId,
-        ...(agentEmployeeId ? { agent_employee_id: agentEmployeeId } : {}),
-      },
-      provider: {
-        provider_kind: 'mcp',
-        connection_slug: connectionSlug,
-        operation_name: actualToolName,
-      },
-      input: params,
-    });
+    const invocation = await capabilityService.invoke(invocationRequest);
     const resolvedProvider = invocation.provider.resolved_provider;
     const mcpCitations = resolvedProvider && invocation.provider_display_name !== undefined
       ? [{
