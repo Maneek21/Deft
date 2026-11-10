@@ -179,7 +179,8 @@ test('W1g: messages read + post refuses a space outside the caller\'s active org
 
   // Forward: an org-B source message must not be copied into an org-A space.
   const forward = await call('messages', ORG_A, 'POST', '/api/messages/forward', { message_id: MESSAGE_B, target_space_id: SPACE_A });
-  assert.equal(forward.status, 403, forward.text);
+  // S3-c: an unreadable source answers like a missing one (404 NOT_FOUND).
+  assert.equal(forward.status, 404, forward.text);
   assert.equal(await rowCount(`SELECT count(*)::int AS n FROM messages WHERE space_id = $1 AND content LIKE $2`, [SPACE_A, `%${SECRET}%`]), 0);
 
   const ok = await call('messages', ORG_B, 'GET', `/api/messages/${SPACE_B}`);

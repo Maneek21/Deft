@@ -620,7 +620,7 @@ RULES:
         });
 
         // Emit via socket
-        emitToUser(managerId, 'notification:new', {
+        emitToUser(orgId, managerId, 'notification:new', {
           type: 'system',
           title: `Signs of strain detected for ${member.name}`,
           body: alertMessage,
