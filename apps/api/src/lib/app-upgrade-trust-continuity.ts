@@ -186,9 +186,14 @@ export async function assertContinuityProof(tx: UpgradeTx, proof: UpgradeContinu
   // allowed result or transaction survives the invocation. Versions contribute
   // only IDs/manifests, never unread packages.
   const currentTrust = currentInstallationUpgradeTrustRows(tx, proof.org_id, proof.installation_id).as('continuity_current_trust');
-  const [queriedRows] = issuance || readOnlyFacts ? [] : await tx.select({ installation: appInstallations,
+  const [queriedRows] = issuance || readOnlyFacts ? [] : await tx.select({
+    installation: { id: appInstallations.id, org_id: appInstallations.org_id, state: appInstallations.state,
+      active_version_id: appInstallations.active_version_id, active_grant_snapshot_id: appInstallations.active_grant_snapshot_id,
+      lifecycle_epoch: appInstallations.lifecycle_epoch, grant_epoch: appInstallations.grant_epoch },
     prior: { id: continuityPriorVersion.id, manifest: continuityPriorVersion.manifest },
-    target: { id: continuityTargetVersion.id, manifest: continuityTargetVersion.manifest }, source: appConnectionSessions,
+    target: { id: continuityTargetVersion.id, manifest: continuityTargetVersion.manifest },
+    source: { org_id: appConnectionSessions.org_id, owner_user_id: appConnectionSessions.owner_user_id,
+      session_id: appConnectionSessions.session_id, record: appConnectionSessions.record },
     binding: appResourceBindings, registration: appRuntimeRegistrations, admission: appOwnerConnectionAdmissions,
     trust: { after_state: currentTrust.after_state },
     owner: { id: continuityOwnerMember.user_id, role: continuityOwnerMember.role, active: continuityOwnerMember.is_active,

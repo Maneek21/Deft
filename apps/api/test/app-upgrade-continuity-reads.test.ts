@@ -163,6 +163,11 @@ test('actual Drizzle current projection omits package columns and retains every 
   await assert.rejects(assertContinuityProof(database as never, f.proof, true, false));
   assert.equal(calls.length, 1);
   const select = calls[0]!.text.split(' from ')[0]!;
+  const selected = [...select.matchAll(/"([^"]+)"\."([^"]+)"/gu)];
+  assert.equal(selected.length, 96, 'standalone current read omits only unconsumed installation/session columns');
+  const fields = (table: string) => selected.filter(match => match[1] === table).map(match => match[2]).sort();
+  assert.deepEqual(fields('app_installations'), ['active_grant_snapshot_id', 'active_version_id', 'grant_epoch', 'id', 'lifecycle_epoch', 'org_id', 'state']);
+  assert.deepEqual(fields('app_connection_sessions'), ['org_id', 'owner_user_id', 'record', 'session_id']);
   for (const alias of ['continuity_prior_version', 'continuity_target_version']) {
     assert.match(select, new RegExp('"' + alias + '"\\."id"', 'u'));
     assert.match(select, new RegExp('"' + alias + '"\\."manifest"', 'u'));
