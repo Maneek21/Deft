@@ -305,11 +305,23 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
   // or superseded read never undoes newer state. Disposed when the thread
   // changes or the panel closes.
   const threadReadsRef = useRef(new ConversationReads());
+  // A catch-up read after a reconnect failed: shown replies stay, and the
+  // catch-up stays pending until a read succeeds.
+  const [catchUpError, setCatchUpError] = useState(false);
+  const [catchUpRetrying, setCatchUpRetrying] = useState(false);
+  const catchUpRetryRef = useRef<(() => Promise<CatchUpResult>) | null>(null);
+  const retryCatchUp = useCallback(() => {
+    const retry = catchUpRetryRef.current;
+    if (!retry) return;
+    setCatchUpRetrying(true);
+    void retry().finally(() => setCatchUpRetrying(false));
+  }, []);
 
   // Load thread replies only (parent message is passed as a prop)
   useEffect(() => {
     setLoading(true);
     setLoadError(false);
+    setCatchUpError(false);
     setReplies([]);
     setPendingFiles([]);
     let cancelled = false;
@@ -421,24 +433,31 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
       try {
         const res = await api.get(`/api/messages/${messageId}/thread`);
         if (activeMessageIdRef.current !== messageId || !reads.isLatest(ticket)) return 'superseded';
-        if (!res.ok) return 'failed';
+        if (!res.ok) {
+          setCatchUpError(true);
+          return 'failed';
+        }
         const data = await res.json();
         if (activeMessageIdRef.current !== messageId || !reads.isLatest(ticket)) return 'superseded';
         const fetched: Message[] = data.replies || data.messages || [];
         setReplies((prev) => mergeMessagesById(prev, fetched, (id) => reads.changedSince(ticket, id)));
         setLoadError(false);
+        setCatchUpError(false);
         return 'ok';
       } catch {
         if (activeMessageIdRef.current !== messageId || !reads.isLatest(ticket)) return 'superseded';
+        setCatchUpError(true);
         return 'failed';
       }
     };
     // Starts from the socket's real connection state, so a thread opened
     // while offline also catches up on the next connect.
     const catchUpWatch = watchCatchUp(socket, `thread:${messageId}`, catchUp);
+    catchUpRetryRef.current = catchUpWatch.retry;
 
     return () => {
       catchUpWatch.dispose();
+      if (catchUpRetryRef.current === catchUpWatch.retry) catchUpRetryRef.current = null;
       socket.off('message:new', onNewMessage);
       socket.off('reaction:added', onReactionAdded);
       socket.off('reaction:removed', onReactionRemoved);
@@ -730,6 +749,9 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
 
             {loadError && (
               <ChatLoadError message="Could not load replies." onRetry={() => setLoadAttempt((attempt) => attempt + 1)} />
+            )}
+            {catchUpError && (
+              <ChatLoadError message="Could not load new replies." onRetry={retryCatchUp} retrying={catchUpRetrying} />
             )}
             {pendingActionsError && (
               <ChatLoadError

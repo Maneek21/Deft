@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { watchCatchUp } from './space-socket';
+import { watchCatchUp, type CatchUpResult } from './space-socket';
 
 function socketHarness(connected: boolean) {
   const listeners = new Map<string, Set<() => void>>();
@@ -52,3 +52,20 @@ test('R2-3: the need to catch up survives the watcher being recreated', async ()
   b.dispose();
 });
 
+test('R2-4: a failed catch-up keeps the flag until one succeeds', async () => {
+  const { socket, fire } = socketHarness(true);
+  const results: CatchUpResult[] = ['failed', 'ok'];
+  let runs = 0;
+  const watch = watchCatchUp(socket, 'space:failing', async () => { runs++; return results.shift()!; });
+  fire('disconnect');
+  fire('connect');
+  await flush();
+  assert.equal(runs, 1);
+  fire('connect'); // still pending after the failure
+  await flush();
+  assert.equal(runs, 2);
+  fire('connect'); // succeeded: nothing pending
+  await flush();
+  assert.equal(runs, 2);
+  watch.dispose();
+});

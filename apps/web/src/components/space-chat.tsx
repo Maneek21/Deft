@@ -938,6 +938,17 @@ export function SpaceChat({
   // Set when a catch-up stopped at its page bound and replaced the view:
   // older history exists but is not shown.
   const [hasEarlierHistory, setHasEarlierHistory] = useState(false);
+  // A catch-up read after a reconnect failed: shown messages stay, and the
+  // catch-up stays pending until a read succeeds.
+  const [catchUpError, setCatchUpError] = useState(false);
+  const [catchUpRetrying, setCatchUpRetrying] = useState(false);
+  const catchUpRetryRef = useRef<(() => Promise<CatchUpResult>) | null>(null);
+  const retryCatchUp = useCallback(() => {
+    const retry = catchUpRetryRef.current;
+    if (!retry) return;
+    setCatchUpRetrying(true);
+    void retry().finally(() => setCatchUpRetrying(false));
+  }, []);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const loadEarlierHistory = useCallback(async () => {
     const visit = messageEventScopeRef.current.capture(spaceId, sessionCacheScope);
@@ -963,6 +974,7 @@ export function SpaceChat({
     setMessages([]);
     setHistoryStatus('loading');
     setHasEarlierHistory(false);
+    setCatchUpError(false);
     historyReadsRef.current.dispose();
     const reads = new ConversationReads();
     historyReadsRef.current = reads;
@@ -1157,9 +1169,11 @@ export function SpaceChat({
           : prev);
         if (!read.coversShown) setHasEarlierHistory(true);
         setHistoryStatus('ready');
+        setCatchUpError(false);
         return 'ok';
       } catch {
         if (!visit.isCurrent() || !reads.isLatest(ticket)) return 'superseded';
+        setCatchUpError(true);
         return 'failed';
       }
     };
@@ -1167,9 +1181,11 @@ export function SpaceChat({
     // starts from its real connection state and remembers drops across
     // effect re-runs.
     const catchUpWatch = watchCatchUp(socket, `space:${spaceId}`, catchUp);
+    catchUpRetryRef.current = catchUpWatch.retry;
 
     return () => {
       catchUpWatch.dispose();
+      if (catchUpRetryRef.current === catchUpWatch.retry) catchUpRetryRef.current = null;
       visit.dispose();
       unsubscribeFromSpace();
       socket.off('message:new', onNewAndNote);
@@ -1572,6 +1588,9 @@ export function SpaceChat({
           )}
           {historyStatus === 'error' && (
             <ChatLoadError message="Could not load messages." onRetry={retryHistory} />
+          )}
+          {catchUpError && (
+            <ChatLoadError message="Could not load new messages." onRetry={retryCatchUp} retrying={catchUpRetrying} />
           )}
           {hasEarlierHistory && (
             <div className="flex justify-center py-2">

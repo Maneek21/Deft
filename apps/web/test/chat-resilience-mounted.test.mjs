@@ -479,3 +479,28 @@ test('R2-3: a thread opened while offline catches up on the next connect', async
   }
 });
 
+test('R2-4: a failed catch-up read keeps the messages, says so, and Retry recovers (channel and thread)', async () => {
+  const page = await open(browser, { harness: 'defty-chat-harness.tsx', url: '/chat?space=s1&thread=t1', override: FAKE_SERVER });
+  try {
+    const panel = page.locator('.w-\\[400px\\]');
+    await panel.getByText('for the detail.', { exact: false }).waitFor();
+    await drop(page);
+    await srv(page, ([channel, thread]) => { Object.assign(window.__srv, { channel, thread }); window.__srv.fail = { channel: true, thread: true }; },
+      [[ROOT, DEST, MISSED_CHANNEL], [REPLY, MISSED_REPLY]]);
+    await reconnect(page);
+    await page.getByText('Could not load new messages.').waitFor();
+    await panel.getByText('Could not load new replies.').waitFor();
+    assert.equal(await page.getByText('Destination message from Priya').count(), 1, 'shown messages stay');
+    assert.equal(await panel.getByText('for the detail.', { exact: false }).count(), 1, 'shown replies stay');
+    await srv(page, () => { window.__srv.fail = { channel: false, thread: false }; });
+    await page.getByRole('alert').filter({ hasText: 'Could not load new messages.' }).getByRole('button', { name: 'Retry' }).click();
+    await page.getByText('Summary that finished while you were offline.').waitFor();
+    await panel.getByRole('alert').filter({ hasText: 'Could not load new replies.' }).getByRole('button', { name: 'Retry' }).click();
+    await panel.getByText('Thread answer from while you were offline.').waitFor();
+    assert.equal(await page.getByText('Could not load new messages.').count(), 0);
+    assert.equal(await panel.getByText('Could not load new replies.').count(), 0);
+  } finally {
+    await close(page);
+  }
+});
+
