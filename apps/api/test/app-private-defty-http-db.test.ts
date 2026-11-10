@@ -233,8 +233,8 @@ test('Unrelated native callers cannot classify a sealed conversation from ordina
     await next();
   });
   native.route('/agent', agentRoutes); native.route('/messages', messageRoutes);
-  for (const [path, expected] of [[`/agent/conversations/${h.spaceId}/messages`, 404],
-    [`/agent/conversations/${h.spaceId}/continue`, 404], [`/messages/${h.spaceId}`, 403]] as const) {
+  for (const [path, expected] of [[`/agent/conversations/${h.spaceId}/messages`, 410],
+    [`/agent/conversations/${h.spaceId}/continue`, 410], [`/messages/${h.spaceId}`, 403]] as const) {
     const denied = await native.request('http://local.test' + path, { method: 'POST',
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: 'Foreign write' }) });
     assert.equal(denied.status, expected, path);
@@ -245,7 +245,8 @@ test('Unrelated native callers cannot classify a sealed conversation from ordina
     const denied = await native.request(`http://local.test/agent/conversations/${h.spaceId}/${suffix}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: 'Foreign org write' }),
     });
-    assert.equal(denied.status, 404);
+    // Retired legacy routes answer 410 before any lookup (W1-a).
+    assert.equal(denied.status, 410);
     assert.equal(JSON.stringify(await denied.json()).includes('PRIVATE_CONTEXT_REQUIRED'), false);
   }
   const rows = await h.db.execute(h.sql`SELECT id FROM messages WHERE org_id=${h.owned.org_id} AND space_id=${h.spaceId}`);
