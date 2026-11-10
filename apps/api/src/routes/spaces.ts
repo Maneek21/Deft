@@ -280,12 +280,10 @@ spaceRoutes.get('/:id', async (c) => {
       .where(and(eq(spaces.id, spaceId), eq(spaces.org_id, user.org_id)))
       .limit(1);
 
-    if (!space) {
-      return c.json({ error: 'Space not found', code: 'NOT_FOUND' }, 404);
-    }
-
-    const isMember = await requireSpaceMembership(spaceId, user.id);
-    if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+    // A missing space, a space in another org and a same-org space the caller
+    // is not in all get one identical denial (W1-g).
+    const isMember = space ? await requireSpaceMembership(spaceId, user.id, user.org_id) : false;
+    if (!space || !isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
     return c.json(space);
   } catch (err) {
@@ -347,17 +345,10 @@ spaceRoutes.get('/:id/members', async (c) => {
     const user = c.get('user');
     const spaceId = c.req.param('id');
 
-    // Verify space belongs to user's org
-    const [space] = await db.select({ id: spaces.id })
-      .from(spaces)
-      .where(and(eq(spaces.id, spaceId), eq(spaces.org_id, user.org_id)))
-      .limit(1);
-
-    if (!space) {
-      return c.json({ error: 'Space not found', code: 'NOT_FOUND' }, 404);
-    }
-
-    const isMember = await requireSpaceMembership(spaceId, user.id);
+    // requireSpaceMembership binds the space to the active org, so a missing
+    // space, a space in another org and a same-org space the caller is not in
+    // all get one identical denial (W1-g).
+    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
     if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
     const members = await db.select({
@@ -398,17 +389,10 @@ spaceRoutes.post('/:id/members', async (c) => {
       return c.json({ error: 'user_id required', code: 'VALIDATION_ERROR' }, 400);
     }
 
-    // Verify space belongs to user's org
-    const [space] = await db.select({ id: spaces.id })
-      .from(spaces)
-      .where(and(eq(spaces.id, spaceId), eq(spaces.org_id, user.org_id)))
-      .limit(1);
-
-    if (!space) {
-      return c.json({ error: 'Space not found', code: 'NOT_FOUND' }, 404);
-    }
-
-    const isMember = await requireSpaceMembership(spaceId, user.id);
+    // requireSpaceMembership binds the space to the active org, so a missing
+    // space, a space in another org and a same-org space the caller is not in
+    // all get one identical denial (W1-g).
+    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
     if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
     const [targetMember] = await db.select({ id: users.id })
@@ -459,6 +443,9 @@ spaceRoutes.patch('/:id/mute', async (c) => {
     const spaceId = c.req.param('id');
     const { muted } = await c.req.json();
 
+    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
+    if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+
     const updated = await db.update(spaceMembers)
       .set({ is_muted: !!muted })
       .where(and(eq(spaceMembers.space_id, spaceId), eq(spaceMembers.user_id, user.id)))
@@ -481,7 +468,7 @@ spaceRoutes.post('/:id/read', async (c) => {
     const user = c.get('user');
     const spaceId = c.req.param('id');
 
-    const isMember = await requireSpaceMembership(spaceId, user.id);
+    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
     if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
     // Get the latest message in this space
@@ -706,7 +693,7 @@ spaceRoutes.patch('/:id/notification-level', async (c) => {
       return c.json({ error: 'level must be all, mentions, or nothing', code: 'VALIDATION_ERROR' }, 400);
     }
 
-    const isMember = await requireSpaceMembership(spaceId, user.id);
+    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
     if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
     await db.update(spaceMembers)
