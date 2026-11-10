@@ -5,11 +5,17 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getTableConfig } from 'drizzle-orm/pg-core';
 import {
+  applyManifestTailMigrations,
   baselineChecksum,
+  CONVERGE_HEAD_VERSION,
   describeMissingRequirements,
+  migrationDirectory,
   parseUpgradeArgs,
+  sha256,
+  tailMigrations,
   validateAppliedMigrations,
 } from './upgrade.ts';
+import { loadReviewedPlan } from './lineage-convergence.mjs';
 import { upgradeManifest } from '../upgrades/manifest.ts';
 import {
   attachmentDerivatives,
@@ -1226,4 +1232,148 @@ test('Chat transfer90 preserves prior receipts while extending fresh and upgrade
   const sql = readFileSync(resolve(directory, '..', 'upgrades', migration.file), 'utf8');
   assert.match(sql, /CHECK \(destination_kind IN \('note','knowledge','chat'\)\)/);
   assert.doesNotMatch(sql, /DROP TABLE|DELETE FROM|TRUNCATE/i);
+});
+
+// ---------------------------------------------------------------------------
+// PR #424 review: tail-runner read-only, lineage-aware validation, and locking.
+// A fake ledger client records every statement so the tests can prove what the
+// tail runner did (and did not) execute, without a database.
+
+type FakeLedgerRow = { version: string; description: string; checksum: string; kind: 'baseline' | 'migration' };
+
+const fileChecksums = new Map<string, string>();
+function fileChecksum(file: string) {
+  if (!fileChecksums.has(file)) fileChecksums.set(file, sha256(readFileSync(resolve(migrationDirectory(), file), 'utf8')));
+  return fileChecksums.get(file)!;
+}
+
+function tailRow(version: string): FakeLedgerRow {
+  const migration = upgradeManifest.migrations.find((item) => item.version === version)!;
+  return { version, description: migration.description, checksum: fileChecksum(migration.file), kind: 'migration' };
+}
+
+/** The canonical head ledger: baseline plus every manifest migration through
+ * the reviewed converge head with this checkout's checksums. */
+function canonicalHeadLedger(): FakeLedgerRow[] {
+  const head = upgradeManifest.migrations.findIndex((item) => item.version === CONVERGE_HEAD_VERSION);
+  return [
+    { version: upgradeManifest.baseline.version,
+      description: `Supported schema baseline ${upgradeManifest.baseline.releaseTag}`,
+      checksum: baselineChecksum(), kind: 'baseline' },
+    ...upgradeManifest.migrations.slice(0, head + 1).map((item) => tailRow(item.version)),
+  ];
+}
+
+/** The ledger a reviewed publicLF61 release has after convergence: its reviewed
+ * ledger, then the .128 and .131 forward upgrades. */
+function publicLF61HeadLedger(): FakeLedgerRow[] {
+  const variant = loadReviewedPlan().variants.find((item) =>
+    (item as { name?: string }).name === 'publicLF61-current-schema116-schema117-schema118-schema119-schema120');
+  assert.ok(variant, 'reviewed publicLF61 head variant exists');
+  assert.equal(variant.append.length, 0);
+  return [...variant.ledger.map((row) => ({ ...row })), tailRow('0.3.0-preview.128'), tailRow(CONVERGE_HEAD_VERSION)];
+}
+
+function fakeLedgerClient(initial: FakeLedgerRow[], hooks: { onLock?: (ledger: FakeLedgerRow[]) => void } = {}) {
+  const ledger = initial.map((row) => ({ ...row }));
+  const log: string[] = [];
+  let lockDepth = 0;
+  const client = {
+    async query(text: string, params: unknown[] = []) {
+      const sql = text.trim();
+      if (sql.includes("to_regclass('public.deft_schema_migrations')")) return { rows: [{ exists: true }] };
+      if (/^SELECT version,( description,)? checksum, kind FROM deft_schema_migrations$/u.test(sql)) {
+        log.push(`read${lockDepth > 0 ? ':locked' : ''}`);
+        return { rows: ledger.map((row) => ({ ...row })) };
+      }
+      if (sql.startsWith('SELECT pg_advisory_lock(')) {
+        lockDepth += 1; log.push('lock'); hooks.onLock?.(ledger); return { rows: [] };
+      }
+      if (sql.startsWith('SELECT pg_advisory_unlock(')) { lockDepth -= 1; log.push('unlock'); return { rows: [] }; }
+      if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') { log.push(sql); return { rows: [] }; }
+      if (sql.startsWith('INSERT INTO deft_schema_migrations')) {
+        const version = String(params[0]);
+        if (ledger.some((row) => row.version === version)) {
+          throw new Error(`duplicate key value violates unique constraint "deft_schema_migrations_pkey" (${version})`);
+        }
+        ledger.push({ version, description: String(params[1]), checksum: String(params[2]), kind: 'migration' });
+        log.push(`insert ${version}${lockDepth > 0 ? ':locked' : ''}`);
+        return { rows: [] };
+      }
+      log.push(`ddl${lockDepth > 0 ? ':locked' : ''}`);
+      return { rows: [] };
+    },
+  };
+  return { client: client as never, ledger, log };
+}
+
+const writes = (log: string[]) => log.filter((entry) => /^(BEGIN|COMMIT|ddl|insert)/u.test(entry));
+
+test('PR424-F11: --status and --dry-run do not apply tail migrations', async () => {
+  for (const options of [{ status: true, dryRun: false }, { status: false, dryRun: true }]) {
+    for (const initial of [canonicalHeadLedger(), [...canonicalHeadLedger(), tailRow('0.3.0-preview.132')]]) {
+      const fake = fakeLedgerClient(initial);
+      const pending = await applyManifestTailMigrations(fake.client, options as never);
+      assert.deepEqual(writes(fake.log), [], `${JSON.stringify(options)} must not write`);
+      assert.equal(fake.ledger.length, initial.length, `${JSON.stringify(options)} leaves the ledger unchanged`);
+      assert.equal(pending, tailMigrations().length - (initial.length - canonicalHeadLedger().length));
+    }
+  }
+});
+
+test('PR424-F12: a reviewed publicLF61 history upgrades through the tail', async () => {
+  const historical = publicLF61HeadLedger();
+  const two = historical.find((row) => row.version === '0.2.0-preview.2')!;
+  assert.match(two.checksum, /^ed5ae4/u, 'fixture preserves the publicLF61 .2 checksum');
+  assert.notEqual(two.checksum, tailRow('0.2.0-preview.2').checksum, 'differs from this checkout');
+  const fake = fakeLedgerClient([...historical, tailRow('0.3.0-preview.132')]);
+  const applied = await applyManifestTailMigrations(fake.client);
+  assert.equal(applied, tailMigrations().length - 1);
+  for (const migration of tailMigrations()) {
+    assert.ok(fake.ledger.some((row) => row.version === migration.version), `${migration.version} recorded`);
+  }
+  // A second run is a clean no-op on the same lineage.
+  const again = fakeLedgerClient(fake.ledger);
+  assert.equal(await applyManifestTailMigrations(again.client), 0);
+  assert.deepEqual(writes(again.log), []);
+});
+
+test('PR424-F12: unreviewed historical checksum drift is rejected before any tail migration', async () => {
+  // Canonical history with only .2 taken from the publicLF61 lineage is not any
+  // reviewed history. It must fail closed before anything is committed.
+  const lf2 = publicLF61HeadLedger().find((item) => item.version === '0.2.0-preview.2')!.checksum;
+  const mixed = canonicalHeadLedger().map((row) => row.version === '0.2.0-preview.2' ? { ...row, checksum: lf2 } : row);
+  for (const initial of [mixed, [...mixed, tailRow('0.3.0-preview.132')]]) {
+    const fake = fakeLedgerClient(initial);
+    await assert.rejects(applyManifestTailMigrations(fake.client),
+      /Checksum mismatch for applied schema version 0\.2\.0-preview\.2/u);
+    assert.deepEqual(writes(fake.log), [], 'nothing applied before validation fails');
+    assert.equal(fake.ledger.length, initial.length);
+  }
+  // A changed tail checksum is still rejected even on a reviewed lineage.
+  const badTail = [...publicLF61HeadLedger(), { ...tailRow('0.3.0-preview.132'), checksum: 'f'.repeat(64) }];
+  const fake = fakeLedgerClient(badTail);
+  await assert.rejects(applyManifestTailMigrations(fake.client),
+    /Checksum mismatch for applied schema version 0\.3\.0-preview\.132/u);
+  assert.deepEqual(writes(fake.log), []);
+});
+
+test('PR424-F13: tail discovery and application happen under the migration lock', async () => {
+  // Another upgrader commits .132 while this one waits for the lock. The ledger
+  // must be re-read after the lock is held so .132 is not applied twice.
+  const fake = fakeLedgerClient(canonicalHeadLedger(), {
+    onLock: (ledger) => {
+      if (!ledger.some((row) => row.version === '0.3.0-preview.132')) ledger.push(tailRow('0.3.0-preview.132'));
+    },
+  });
+  const applied = await applyManifestTailMigrations(fake.client);
+  assert.equal(applied, tailMigrations().length - 1, '.132 committed by the other upgrader is not reapplied');
+  assert.ok(fake.log.includes('lock'), 'LOCK_ID is acquired');
+  assert.equal(fake.log.at(-1), 'unlock', 'LOCK_ID is released last');
+  for (const entry of writes(fake.log).filter((item) => item !== 'BEGIN' && item !== 'COMMIT')) {
+    assert.match(entry, /:locked$/u, `${entry} runs while LOCK_ID is held`);
+  }
+  const firstLockedRead = fake.log.indexOf('read:locked');
+  assert.ok(firstLockedRead >= 0 && firstLockedRead < fake.log.findIndex((entry) => entry.startsWith('ddl')),
+    'pending tail is discovered after the lock is acquired');
 });

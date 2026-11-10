@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
-import { convergeReviewedRelease } from './lineage-convergence.mjs';
+import { convergeReviewedRelease, loadReviewedPlan, sameLedger } from './lineage-convergence.mjs';
 import { loadRootEnv, maskDatabaseUrl, resolveDatabaseUrl } from './db-url.ts';
 import { upgradeManifest, type SchemaRequirement, type UpgradeMigration } from '../upgrades/manifest.ts';
 
@@ -15,6 +15,7 @@ const UNTRACKED_ADVANCED_ERROR =
 
 type AppliedMigration = {
   version: string;
+  description?: string;
   checksum: string;
   kind: 'baseline' | 'migration';
 };
@@ -55,10 +56,9 @@ export function baselineChecksum(): string {
   return sha256(JSON.stringify(upgradeManifest.baseline));
 }
 
-export function validateAppliedMigrations(
+function assertKnownVersions(
   applied: AppliedMigration[],
   migrations: ReadonlyArray<UpgradeMigration>,
-  migrationChecksums: Map<string, string>,
 ) {
   const knownVersions = new Set([
     upgradeManifest.baseline.version,
@@ -70,15 +70,32 @@ export function validateAppliedMigrations(
       `This database is newer than this Deft build. Unknown applied version(s): ${unknown.map((row) => row.version).join(', ')}.`,
     );
   }
+}
 
-  for (const row of applied) {
+function firstChecksumMismatch(
+  applied: AppliedMigration[],
+  migrationChecksums: Map<string, string>,
+): AppliedMigration | undefined {
+  return applied.find((row) => {
     const expected = row.kind === 'baseline'
       ? baselineChecksum()
       : migrationChecksums.get(row.version);
-    if (expected && row.checksum !== expected) {
-      throw new Error(`Checksum mismatch for applied schema version ${row.version}. Refusing to continue.`);
-    }
-  }
+    return Boolean(expected) && row.checksum !== expected;
+  });
+}
+
+function checksumMismatchError(row: AppliedMigration): Error {
+  return new Error(`Checksum mismatch for applied schema version ${row.version}. Refusing to continue.`);
+}
+
+export function validateAppliedMigrations(
+  applied: AppliedMigration[],
+  migrations: ReadonlyArray<UpgradeMigration>,
+  migrationChecksums: Map<string, string>,
+) {
+  assertKnownVersions(applied, migrations);
+  const mismatch = firstChecksumMismatch(applied, migrationChecksums);
+  if (mismatch) throw checksumMismatchError(mismatch);
 }
 
 export function describeMissingRequirements(
@@ -186,7 +203,7 @@ function loadMigrationChecksums(): Map<string, string> {
 async function readApplied(client: InstanceType<typeof Client>): Promise<AppliedMigration[]> {
   if (!(await ledgerExists(client))) return [];
   const result = await client.query<AppliedMigration>(
-    `SELECT version, checksum, kind FROM ${LEDGER_TABLE}`,
+    `SELECT version, description, checksum, kind FROM ${LEDGER_TABLE}`,
   );
   // A fresh initializer records the whole manifest in one transaction, so
   // applied_at can tie. Display and validation must follow manifest order,
@@ -257,28 +274,134 @@ export function tailMigrations(): UpgradeMigration[] {
   return upgradeManifest.migrations.slice(index + 1);
 }
 
-export async function applyManifestTailMigrations(
-  client: InstanceType<typeof Client>,
-  options: Pick<UpgradeOptions, 'dryRun'> = { dryRun: false },
-): Promise<number> {
-  const applied = await readApplied(client);
-  const migrationChecksums = loadMigrationChecksums();
-  const pending = tailMigrations().filter(
+/** Every complete ledger the reviewed-release convergence can leave at its
+ * head: a reviewed variant's original ledger, its reviewed appends, and the two
+ * forward function upgrades (.128, .131). Some supported public releases
+ * recorded different checksums for historical files (for example the
+ * publicLF61 line-ending lineage keeps `.2` as `ed5ae4…`), so a converged
+ * history is valid when it is exactly one of these reviewed ledgers. */
+export function reviewedHeadLedgers(
+  migrationChecksums: Map<string, string> = loadMigrationChecksums(),
+): AppliedMigration[][] {
+  const forward = ['0.3.0-preview.128', CONVERGE_HEAD_VERSION].map((version) => {
+    const migration = upgradeManifest.migrations.find((item) => item.version === version);
+    const checksum = migrationChecksums.get(version);
+    if (!migration || !checksum) throw new Error(`Reviewed forward migration ${version} is missing from the manifest.`);
+    return { version, description: migration.description, checksum, kind: 'migration' as const };
+  });
+  return loadReviewedPlan().variants.map((variant) => {
+    const rows: AppliedMigration[] = [...variant.ledger, ...variant.append].map((row) => ({
+      version: row.version,
+      description: row.description,
+      checksum: row.checksum,
+      kind: row.kind,
+    }));
+    for (const row of forward) {
+      if (!rows.some((item) => item.version === row.version)) rows.push(row);
+    }
+    return rows;
+  });
+}
+
+/** Lineage-aware validation for a ledger at or past the reviewed head. Tail
+ * rows (after CONVERGE_HEAD_VERSION) must carry this checkout's exact
+ * checksums. Historical rows must either all carry this checkout's checksums
+ * (unchanged behaviour) or be, as a whole, exactly one reviewed head ledger.
+ * Mixing rows from different lineages, or any other drift, still fails closed. */
+export function validateLedgeredHistory(
+  applied: AppliedMigration[],
+  migrationChecksums: Map<string, string>,
+) {
+  assertKnownVersions(applied, upgradeManifest.migrations);
+  const tailVersions = new Set(tailMigrations().map((migration) => migration.version));
+  const tailMismatch = firstChecksumMismatch(
+    applied.filter((row) => tailVersions.has(row.version)), migrationChecksums);
+  if (tailMismatch) throw checksumMismatchError(tailMismatch);
+  const historical = applied.filter((row) => !tailVersions.has(row.version));
+  const historicalMismatch = firstChecksumMismatch(historical, migrationChecksums);
+  if (historicalMismatch
+    && !reviewedHeadLedgers(migrationChecksums).some((ledger) => sameLedger(historical, ledger))) {
+    throw checksumMismatchError(historicalMismatch);
+  }
+}
+
+function pendingTail(applied: AppliedMigration[]): UpgradeMigration[] {
+  return tailMigrations().filter(
     (migration) => !applied.some((row) => row.version === migration.version),
   );
-  if (options.dryRun) {
+}
+
+export async function applyManifestTailMigrations(
+  client: InstanceType<typeof Client>,
+  options: Partial<UpgradeOptions> = {},
+): Promise<number> {
+  const migrationChecksums = loadMigrationChecksums();
+  if (options.status || options.dryRun) {
+    // Strictly read-only: no lock, no DDL, no ledger writes.
+    const applied = await readApplied(client);
+    const tailVersions = new Set(tailMigrations().map((migration) => migration.version));
+    // Before the head, convergence has already matched the ledger exactly to a
+    // reviewed variant; past it, convergence is skipped, so validate here.
+    if (applied.some((row) => tailVersions.has(row.version))) {
+      validateLedgeredHistory(applied, migrationChecksums);
+    }
+    const pending = pendingTail(applied);
+    console.log(`  tail migrations: ${pending.length} pending`);
     for (const migration of pending) console.log(`  - ${migration.version}: ${migration.description}`);
     return pending.length;
   }
-  for (const migration of pending) {
-    const checksum = migrationChecksums.get(migration.version);
-    if (!checksum) throw new Error(`Missing checksum for migration ${migration.version}.`);
-    await applyMigration(client, migration, checksum);
-    console.log(`[OK] Applied ${migration.version}: ${migration.description}`);
+  // Session advisory locks are re-entrant, so callers that already hold
+  // LOCK_ID (push-full, runLedgeredUpgrade) keep one critical section. The
+  // ledger is read only after the lock is held, so two upgraders can never
+  // both apply the same pending tail migration.
+  await client.query('SELECT pg_advisory_lock($1)', [LOCK_ID]);
+  try {
+    const applied = await readApplied(client);
+    // Validate the whole history before committing anything new.
+    validateLedgeredHistory(applied, migrationChecksums);
+    const pending = pendingTail(applied);
+    for (const migration of pending) {
+      const checksum = migrationChecksums.get(migration.version);
+      if (!checksum) throw new Error(`Missing checksum for migration ${migration.version}.`);
+      await applyMigration(client, migration, checksum);
+      console.log(`[OK] Applied ${migration.version}: ${migration.description}`);
+    }
+    validateLedgeredHistory(await readApplied(client), migrationChecksums);
+    return pending.length;
+  } finally {
+    await client.query('SELECT pg_advisory_unlock($1)', [LOCK_ID]);
   }
-  const appliedAfter = await readApplied(client);
-  validateAppliedMigrations(appliedAfter, upgradeManifest.migrations, migrationChecksums);
-  return pending.length;
+}
+
+/** Ledgered releases converge through the reviewed head, then reconcile the
+ * tail. A database that already carries a tail row extends past that head, so
+ * its ledger can no longer match a reviewed variant; skip convergence and
+ * reconcile only the remaining tail (an idempotent no-op once current).
+ * `--status` and `--dry-run` are strictly read-only. A real upgrade holds
+ * LOCK_ID across the head decision, convergence and the tail, so concurrent
+ * upgraders serialize on one consistent ledger. */
+export async function runLedgeredUpgrade(
+  client: InstanceType<typeof Client>,
+  options: UpgradeOptions,
+) {
+  const tailVersions = new Set(tailMigrations().map((migration) => migration.version));
+  const isPastHead = (applied: AppliedMigration[]) => applied.some((row) => tailVersions.has(row.version));
+  if (options.status || options.dryRun) {
+    if (!isPastHead(await readApplied(client))) {
+      await convergeReviewedRelease(client, { status: options.status, dryRun: options.dryRun });
+    }
+    await applyManifestTailMigrations(client, { status: options.status, dryRun: options.dryRun });
+    return;
+  }
+  await client.query('SELECT pg_advisory_lock($1)', [LOCK_ID]);
+  try {
+    if (!isPastHead(await readApplied(client))) {
+      await convergeReviewedRelease(client);
+    }
+    await applyManifestTailMigrations(client);
+  } finally {
+    await client.query('SELECT pg_advisory_unlock($1)', [LOCK_ID]);
+  }
 }
 
 async function printStatus(client: InstanceType<typeof Client>, applied: AppliedMigration[]) {
@@ -310,17 +433,7 @@ export async function main(argv = process.argv.slice(2)) {
   try {
     const appliedBefore = await readApplied(client);
     if (appliedBefore.length > 0) {
-      // Ledgered releases converge through the reviewed head. A database that
-      // already carries a tail migration row extends past that head, so its
-      // ledger can no longer match a reviewed variant; skip convergence and
-      // reconcile only the remaining tail migrations (an idempotent no-op once
-      // current).
-      const tailVersions = new Set(tailMigrations().map((migration) => migration.version));
-      const pastHead = appliedBefore.some((row) => tailVersions.has(row.version));
-      if (!pastHead) {
-        await convergeReviewedRelease(client, options);
-      }
-      await applyManifestTailMigrations(client, options);
+      await runLedgeredUpgrade(client, options);
       return;
     }
     const migrationChecksums = loadMigrationChecksums();
