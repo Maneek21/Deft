@@ -800,6 +800,46 @@ to your storage policy before high-risk changes.
 
 See [current limitations](current-limitations.md) before upgrading production.
 
+## Checking For Rows Stamped With The Wrong Org
+
+Every table carries an `org_id`. Before the fixes in PR #439, some routes could
+store a row whose `org_id` differed from the org of the space, task, note or
+other row it belonged to. The audit script lists such rows, and users who hold a
+grant or authorship column (space member, task assignee or watcher, note share,
+token, OAuth grant, agent employee and workflow rule owners and similar) without
+a membership in the row's org. It only reports; it never changes data and has no repair mode.
+
+```bash
+pnpm --filter @deft/api exec tsx src/scripts/audit-mixed-org-rows.ts \
+  --database-url postgresql://user@host:5432/deft \
+  --json mixed-org-report.json --limit 50
+```
+
+- The target (host and database name, no credentials) is printed before any
+  query runs. `DATABASE_URL` is used when `--database-url` is omitted.
+- All queries run in one `READ ONLY` transaction with a 30 second statement
+  timeout (`--timeout-ms` changes it), so the database rejects any write.
+- Stdout has one line per check with its tables and mismatch count, followed by
+  the list of things deliberately not checked. Rows whose only fault is an
+  inactive membership are counted separately as informational, as is each org
+  where the built-in Defty user has no membership row (older versions wrote
+  Defty messages without one; `apps/api/src/scripts/backfill-defty-membership.ts`
+  repairs it). Defty is not counted as a mismatch elsewhere.
+- `--json` writes up to `--limit` samples per check. Samples contain row ids,
+  both org ids and `created_at`, never message text, note bodies, names or
+  emails.
+- Error output is deliberately terse: an unrecognised argument is reported by
+  position only, and a failure prints a fixed description with the SQLSTATE or
+  network code, never the connection string, user name or driver message. A
+  check that hits its statement timeout is listed as an error and the exit code
+  is `1`.
+- Exit code `0` means no mismatches, `2` means mismatches were found, `1` means
+  an error or an unfinished check. Running through `pnpm exec` can report `1`
+  for any non-zero exit; call `tsx` directly if a script needs to tell them apart.
+
+Review the list before deciding anything. Take a backup first and ask for
+review before correcting rows by hand.
+
 ## What's Not In Self-Hosted v1
 
 - Managed hosting or one-click cloud deployments

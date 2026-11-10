@@ -2783,8 +2783,20 @@ test('POST /reply posts as the agent and is idempotent', async () => {
   }).returning({ id: agentActions.id });
   const event = await publishMessageEvent('agent-channel-reply', fallbackAction!.id);
   const claimed = await claimChannelEvent(event.id, 'reply-worker');
+  // Earlier tests in this file already posted more than five agent replies
+  // under sourceMessageId within the storm window; Agent Channel thread
+  // replies are now storm-limited like every employee thread reply, so this
+  // test replies under its own fresh thread root in the same space.
+  const [replyRoot] = await db.insert(messages).values({
+    id: crypto.randomUUID(),
+    org_id: orgId,
+    space_id: spaceId,
+    user_id: humanUserId,
+    content: 'fresh thread root for the idempotent reply',
+  }).returning({ id: messages.id });
   const request = {
     event_id: event.id,
+    thread_id: replyRoot!.id,
     content: 'I am replying through the channel.',
     idempotency_key: 'reply-once',
     claim_token: claimed.claim_token,
