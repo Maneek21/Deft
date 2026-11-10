@@ -6,6 +6,14 @@ import { api } from '@/lib/api';
 import { ReceiptViewer } from '@/components/receipt-viewer';
 import { ConfirmDangerous } from '@/components/confirm-dangerous';
 import { SessionTurnCard, type SessionTurn } from '@/components/session-turn-card';
+import {
+  TrustLevelControl,
+  canEditTrustLevel,
+  isTrustLevel,
+  saveTrustLevel,
+  type TrustLevel,
+} from '@/components/trust-level-control';
+import { useAuth } from '@/lib/auth-context';
 
 // Phase 10 — mirrors apps/api/src/lib/model-pricing.ts. Kept in sync by hand
 // because the cost column is advisory only.
@@ -59,12 +67,6 @@ type Turn = SessionTurn;
 
 type Toast = { id: string; kind: 'success' | 'error' | 'info'; text: string };
 
-const TRUST_LEVELS = [
-  { value: 'conservative', label: 'Conservative', desc: 'Every action requires your approval.' },
-  { value: 'standard', label: 'Standard', desc: 'Routine actions auto-execute. Complex ones need approval.' },
-  { value: 'autonomous', label: 'Autonomous', desc: 'All actions auto-execute except external writes.' },
-];
-
 // Visual treatment for proposer badges. Defty (built-in) vs BYOA employees.
 const PROPOSER_STYLE = {
   defty: { label: 'Defty', bg: 'rgba(168, 85, 247, 0.15)', fg: '#a855f7' },
@@ -87,7 +89,12 @@ function formatRelative(iso: string | null | undefined): string {
 
 export default function AgentSettingsPage() {
   const [actions, setActions] = useState<Action[]>([]);
-  const [trustLevel, setTrustLevel] = useState('conservative');
+  const { user } = useAuth();
+  const canEditTrust = canEditTrustLevel(user?.role);
+  // null = not yet confirmed by the server (loading or failed load).
+  const [trustLevel, setTrustLevel] = useState<TrustLevel | null>(null);
+  const [trustLoadError, setTrustLoadError] = useState<string | null>(null);
+  const [trustSaveError, setTrustSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -182,13 +189,34 @@ export default function AgentSettingsPage() {
     void fetchActions();
     void fetchEmployees();
     void (async () => {
-      const res = await api.get('/api/agent/settings');
-      if (res.ok) {
+      try {
+        const res = await api.get('/api/agent/settings');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        setTrustLevel(data.trust_level || 'conservative');
+        if (!isTrustLevel(data?.trust_level)) throw new Error('unexpected response');
+        setTrustLevel(data.trust_level);
+      } catch {
+        setTrustLoadError('Could not load the current trust level. Reload the page to try again.');
       }
     })();
   }, [fetchActions, fetchEmployees]);
+
+  const changeTrustLevel = useCallback(
+    async (next: TrustLevel) => {
+      if (!canEditTrust || saving) return;
+      setSaving(true);
+      setTrustSaveError(null);
+      const result = await saveTrustLevel((path, body) => api.patch(path, body), next);
+      if (result.ok) {
+        setTrustLevel(result.value);
+        flash('success', 'Trust level saved');
+      } else {
+        setTrustSaveError(result.error);
+      }
+      setSaving(false);
+    },
+    [canEditTrust, saving, flash],
+  );
 
   const fetchTurns = useCallback(
     async (empId: string, limit: number, trigger: string, result: string) => {
@@ -324,49 +352,22 @@ export default function AgentSettingsPage() {
         <Link href="/inbox?tab=approvals" className="underline" style={{ color: 'var(--accent)' }}>Inbox &gt; Approvals</Link>.
       </div>
 
-      {/* Trust level — unchanged */}
+      {/* Trust level — owner/admin only; value shown only once the server confirms it */}
       <div className="mb-8">
         <h3
-          className="text-[14px] font-semibold mb-3"
+          className="text-[14px] font-semibold mb-1"
           style={{ color: 'var(--on-surface)', fontFamily: 'var(--font-heading)' }}
         >
           Trust Level
         </h3>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          {TRUST_LEVELS.map((t) => (
-            <button
-              key={t.value}
-              onClick={async () => {
-                setTrustLevel(t.value);
-                setSaving(true);
-                try {
-                  await api.patch('/api/agent/settings', { trust_level: t.value });
-                } catch {}
-                setSaving(false);
-              }}
-              className="p-4 rounded-lg text-left"
-              style={{
-                background: trustLevel === t.value ? 'var(--bg-active)' : 'var(--surface-container)',
-                border:
-                  trustLevel === t.value
-                    ? '1px solid var(--primary-container)'
-                    : '1px solid transparent',
-              }}
-            >
-              <p className="text-[13px] font-medium" style={{ color: 'var(--on-surface)' }}>
-                {t.label}
-              </p>
-              <p className="text-[11px] mt-1" style={{ color: 'var(--outline)' }}>
-                {t.desc}
-              </p>
-            </button>
-          ))}
-        </div>
-        {saving && (
-          <p className="text-[11px] mt-2" style={{ color: 'var(--outline)' }}>
-            Saving...
-          </p>
-        )}
+        <TrustLevelControl
+          value={trustLevel}
+          loadError={trustLoadError}
+          canEdit={canEditTrust}
+          saving={saving}
+          error={trustSaveError}
+          onSelect={(next) => void changeTrustLevel(next)}
+        />
       </div>
 
       {/* Employees — Phase 6.5 */}
@@ -673,9 +674,10 @@ export default function AgentSettingsPage() {
           body={
             <>
               <p className="mb-2">
-                Autonomous trust auto-executes all write actions except posting to
-                chat. Every action will still produce a signed receipt in the action
-                log.
+                Autonomous trust lets this employee&apos;s writes run without approval,
+                including posting messages. Deletions and other destructive actions
+                still wait for approval. Every action will still produce a signed
+                receipt in the action log.
               </p>
               <p>This cannot be undone without another confirmation.</p>
             </>

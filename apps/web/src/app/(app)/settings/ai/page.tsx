@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { ModelRouteSchema, type ModelRoute } from '@deft/shared';
 import { api } from '@/lib/api';
+import { loadAiConfig } from '@/lib/ai-config-load';
 import { useAuth } from '@/lib/auth-context';
 import { SettingsSectionNav } from '@/components/settings-section-nav';
 import { Database, Eye, EyeOff, KeyRound, Loader2, Mic, RotateCcw, Save, Server, Sparkles, Trash2 } from 'lucide-react';
@@ -59,14 +60,20 @@ export default function AISettingsPage() {
   const isAdmin = user?.role === 'owner' || user?.role === 'admin';
 
   const refresh = async () => {
-    const r = await api.get('/api/org/ai-config');
-    if (!r.ok) {
-      setError('Failed to load AI configuration.');
-      setLoading(false);
-      return;
+    const result = await loadAiConfig<AIConfig>((path) => api.get(path));
+    if (result.ok) {
+      setCfg(result.cfg);
+      setError('');
+    } else {
+      setError(result.error);
     }
-    setCfg(await r.json());
     setLoading(false);
+  };
+
+  const retry = () => {
+    setLoading(true);
+    setError('');
+    void refresh();
   };
 
   useEffect(() => {
@@ -109,7 +116,16 @@ export default function AISettingsPage() {
   if (!cfg) {
     return (
       <div className="h-full overflow-y-auto p-6">
-        <div className="text-sm" style={{ color: 'var(--error)' }}>{error || 'Failed to load.'}</div>
+        <div className="text-sm" role="alert" style={{ color: 'var(--error)' }}>{error || 'Failed to load.'}</div>
+        <button
+          type="button"
+          onClick={retry}
+          className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-md"
+          style={{ background: 'var(--surface)', color: 'var(--foreground)', border: '1px solid var(--border)' }}
+        >
+          <RotateCcw size={12} />
+          Retry
+        </button>
       </div>
     );
   }
@@ -138,6 +154,21 @@ export default function AISettingsPage() {
             </div>
           )}
         </div>
+
+        {error && (
+          <div className="mb-4 flex flex-wrap items-center gap-3 text-sm" role="alert" style={{ color: 'var(--error)' }}>
+            <span>{error} The values shown may be out of date.</span>
+            <button
+              type="button"
+              onClick={retry}
+              className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-md"
+              style={{ background: 'var(--surface)', color: 'var(--foreground)', border: '1px solid var(--border)' }}
+            >
+              <RotateCcw size={12} />
+              Retry
+            </button>
+          </div>
+        )}
 
         <SettingsSectionNav
           label="AI configuration sections"
