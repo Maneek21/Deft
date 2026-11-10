@@ -112,3 +112,62 @@ test('A09: a delivery that still owns its lease publishes normally', { skip: !ur
     { io: null, runQuery: (async () => result('Hello!')) as any } as any);
   assert.deepEqual((await deftyReplies(spaceId)).map((row) => row.content), ['Hello!']);
 });
+
+/** Holds FOR UPDATE on the space row, so the reply insert's foreign-key check blocks. */
+async function blockReplyInsert(spaceId: string) {
+  const blocker = new pg.Client({ connectionString: url! });
+  await blocker.connect();
+  await blocker.query('BEGIN');
+  await blocker.query('SELECT id FROM spaces WHERE id=$1 FOR UPDATE', [spaceId]);
+  return { release: async () => { await blocker.query('COMMIT'); await blocker.end(); } };
+}
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const capture = () => {
+  const events: string[] = [];
+  return { events, io: { to() { return { emit(event: string) { events.push(event); } }; } } };
+};
+
+test('A09 round 2: an abort while the reply insert is blocked rolls the reply back', { skip: !url }, async (t) => {
+  if (!ready) { t.skip(unavailable); return; }
+  const spaceId = await space();
+  const content = '@Defty blocked insert';
+  const triggerId = await message(spaceId, content);
+  const controller = new AbortController();
+  const sink = capture();
+  const block = await blockReplyInsert(spaceId);
+  const run = handleAgentReply(job(spaceId, triggerId, content, { signal: controller.signal }),
+    { io: sink.io, runQuery: (async () => result('Answer after the abort')) as any } as any).catch(() => undefined);
+  await pause(800);
+  controller.abort(new Error('lost its job lease'));
+  await pause(200);
+  await block.release();
+  await run;
+  assert.equal((await deftyReplies(spaceId)).length, 0, 'an aborted delivery must not commit its reply');
+  assert.equal(sink.events.includes('message:new'), false, 'nothing is broadcast');
+});
+
+test('A09 round 2: a lease that expires while the reply insert is blocked rolls the reply back', { skip: !url }, async (t) => {
+  if (!ready) { t.skip(unavailable); return; }
+  const spaceId = await space();
+  const content = '@Defty blocked insert with lease';
+  const triggerId = await message(spaceId, content);
+  const jobId = randomUUID();
+  await client!.query(
+    `INSERT INTO job_queue(id,org_id,queue,name,data,status,attempts,lock_token,lock_expires_at)
+     VALUES($1,$2,'agent-jobs','agent-reply','{}'::jsonb,'running',1,$3,now() + interval '1 minute')`,
+    [jobId, orgId, 'owner-token'],
+  );
+  const sink = capture();
+  const block = await blockReplyInsert(spaceId);
+  const run = handleAgentReply({ ...job(spaceId, triggerId, content), id: jobId, lockToken: 'owner-token', signal: new AbortController().signal } as any,
+    { io: sink.io, runQuery: (async () => result('Answer after the lease expired')) as any } as any).catch(() => undefined);
+  await pause(800);
+  // Another connection expires the lease (the sweeper's view). Not awaited
+  // first: a lock held on the queue row by the reply transaction would block it.
+  const expire = client!.query(`UPDATE job_queue SET lock_expires_at = now() - interval '1 second' WHERE id=$1`, [jobId]);
+  await pause(300);
+  await block.release();
+  await Promise.all([run, expire]);
+  assert.equal((await deftyReplies(spaceId)).length, 0, 'a delivery whose lease expired before commit must not publish');
+  assert.equal(sink.events.includes('message:new'), false);
+});

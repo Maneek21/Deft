@@ -34,7 +34,7 @@ import { compileMessageWorkspacePlanImport } from '../../lib/workspace-plan-impo
 import { buildRoomContextPackWithSources } from '../../lib/defty-room-context.js';
 import { loadPendingDeftyDraft, pendingDeftyDraftContext, projectPendingDeftyMetadataForOutbound, type PendingDeftyDraft } from '../../lib/defty-pending-action.js';
 import { visibleTaskCondition } from '../../lib/task-visibility.js';
-import { claimDeftyReplySlot, DeftyDeliveryLostError, findExistingDeftyReply, throwIfDeliveryLost, type DeftyReplyDelivery } from '../../lib/defty-reply-guard.js';
+import { assertDeliveryOwnedBeforeCommit, claimDeftyReplySlot, DeftyDeliveryLostError, findExistingDeftyReply, throwIfDeliveryLost, type DeftyReplyDelivery } from '../../lib/defty-reply-guard.js';
 
 export async function withAgentWorkingSignal<T>(input: {
   spaceId: string; threadId: string | null; agentUserId: string;
@@ -2178,6 +2178,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
         pendingActions,
         resolvePendingMessageId: pendingClarification?.messageId,
         replyGuard,
+        beforeCommit: (tx) => assertDeliveryOwnedBeforeCommit(tx, delivery),
       });
       if (persisted.replayed) {
         console.log(`[agent-reply] Reply to ${messageId} already posted as ${persisted.message.id}; skipping`);
@@ -2207,6 +2208,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
             pending_actions_error: pendingActionPersistError,
           } as never,
         }).returning();
+        await assertDeliveryOwnedBeforeCommit(tx, delivery);
         return { message: inserted, replayed: false };
       });
       if (!fallback.message) throw err;

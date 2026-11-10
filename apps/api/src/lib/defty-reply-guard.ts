@@ -44,6 +44,29 @@ export function throwIfDeliveryLost(delivery: { signal?: AbortSignal } | undefin
 }
 
 /**
+ * Remaining lease in ms by the database clock, or null when this delivery no
+ * longer owns its queue row (reclaimed, settled or expired). Takes no row lock:
+ * a lock on the queue row would block the worker's own lease renewal, and
+ * under READ COMMITTED each statement sees the latest committed renewal.
+ */
+async function remainingLeaseMs(tx: Executor, lease: NonNullable<DeftyReplyDelivery['lease']>): Promise<number | null> {
+  const [row] = await tx.select({
+    remaining: sql<number>`floor(extract(epoch from (${jobQueue.lock_expires_at} - clock_timestamp())) * 1000)::int`,
+  }).from(jobQueue).where(and(
+    eq(jobQueue.id, lease.jobId),
+    eq(jobQueue.status, 'running'),
+    eq(jobQueue.lock_token, lease.lockToken),
+    sql`${jobQueue.lock_expires_at} > clock_timestamp()`,
+  )).limit(1);
+  return row ? Number(row.remaining) : null;
+}
+
+/** Below this much remaining lease a delivery does not start persisting. */
+const MIN_LEASE_TO_PERSIST_MS = 2_000;
+/** Margin kept between the database wait bound and the lease expiry. */
+const LEASE_SAFETY_MARGIN_MS = 1_000;
+
+/**
  * Run inside the reply-insert transaction, before the insert.
  *
  * 1. Serialises every writer for this trigger on a transaction-scoped
@@ -51,10 +74,12 @@ export function throwIfDeliveryLost(delivery: { signal?: AbortSignal } | undefin
  *    until the first commits, then sees its reply and returns it, so two
  *    concurrent deliveries cannot both insert (READ COMMITTED takes a fresh
  *    snapshot per statement, so the post-lock SELECT sees the committed row).
- * 2. When the reply comes from a queue delivery, requires that delivery to
- *    still own its lease and holds a share lock on the queue row until commit,
- *    so the stale-lease sweeper cannot hand the job to another worker between
- *    this check and the reply commit.
+ * 2. For a queue delivery, requires a live lease by the database clock and
+ *    bounds every later wait in this transaction (SET LOCAL lock_timeout and
+ *    statement_timeout) below the lease remaining now, so a blocked statement
+ *    errors and rolls the reply back instead of committing long after the
+ *    lease. assertDeliveryOwnedBeforeCommit re-checks immediately before
+ *    COMMIT.
  *
  * Returns the existing reply when one is already present; the caller must then
  * not insert or broadcast.
@@ -67,14 +92,25 @@ export async function claimDeftyReplySlot(
   throwIfDeliveryLost(delivery);
   await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`defty-reply:${trigger.orgId}:${trigger.triggerMessageId}`}, 0))`);
   if (delivery?.lease) {
-    const owned = await tx.select({ id: jobQueue.id }).from(jobQueue).where(and(
-      eq(jobQueue.id, delivery.lease.jobId),
-      eq(jobQueue.status, 'running'),
-      eq(jobQueue.lock_token, delivery.lease.lockToken),
-      sql`${jobQueue.lock_expires_at} > clock_timestamp()`,
-    )).for('share');
-    if (owned.length !== 1) throw new DeftyDeliveryLostError();
-    throwIfDeliveryLost(delivery);
+    const remaining = await remainingLeaseMs(tx, delivery.lease);
+    if (remaining === null || remaining < MIN_LEASE_TO_PERSIST_MS) throw new DeftyDeliveryLostError();
+    const boundMs = Math.max(1, Math.floor(remaining - LEASE_SAFETY_MARGIN_MS));
+    // SET takes no bind parameters; boundMs is a computed positive integer.
+    await tx.execute(sql.raw(`SET LOCAL lock_timeout = ${boundMs}`));
+    await tx.execute(sql.raw(`SET LOCAL statement_timeout = ${boundMs}`));
   }
+  throwIfDeliveryLost(delivery);
   return findExistingDeftyReply(tx, trigger);
+}
+
+/**
+ * Run as the last statement of the reply transaction, immediately before
+ * COMMIT; throwing rolls the reply back. A delivery whose signal aborted
+ * (worker timeout or lease loss) or whose lease is no longer current by the
+ * database clock must not publish, however long the transaction waited.
+ */
+export async function assertDeliveryOwnedBeforeCommit(tx: Executor, delivery?: DeftyReplyDelivery): Promise<void> {
+  throwIfDeliveryLost(delivery);
+  if (delivery?.lease && await remainingLeaseMs(tx, delivery.lease) === null) throw new DeftyDeliveryLostError();
+  throwIfDeliveryLost(delivery);
 }

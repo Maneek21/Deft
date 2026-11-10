@@ -73,6 +73,8 @@ type PersistReplyWithActionsParams = {
   /** Runs first inside the reply transaction. Returning a row means this
    * reply already exists: nothing is inserted and that row is returned. */
   replyGuard?: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => Promise<typeof messages.$inferSelect | null>;
+  /** Runs last inside the reply transaction, immediately before COMMIT; throwing rolls the reply back. */
+  beforeCommit?: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => Promise<void>;
 };
 
 function safeActionParamsForMessage(action: string, actionParams: unknown): unknown {
@@ -447,6 +449,7 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
       const coherentMetadata = reconcileProposalTextBlocks(finalMetadata, finalContent, params.content);
       await tx.update(messages).set({ content: finalContent, metadata: coherentMetadata as never }).where(eq(messages.id, agentMessage.id));
       await resolvePendingClarifications(agentMessage.id);
+      await params.beforeCommit?.(tx);
       return {
         message: { ...agentMessage, content: finalContent, metadata: coherentMetadata as never },
         actions: linkedActions,
@@ -492,6 +495,7 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
     await tx.update(messages).set({ content: finalContent, metadata: coherentMetadata as never }).where(eq(messages.id, agentMessage.id));
 
     await resolvePendingClarifications(agentMessage.id);
+    await params.beforeCommit?.(tx);
     return {
       message: { ...agentMessage, content: finalContent, metadata: coherentMetadata as never },
       actions: persistedActions,
