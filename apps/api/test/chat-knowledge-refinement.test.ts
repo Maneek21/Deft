@@ -283,6 +283,71 @@ test('D05: a discussion still active inside the quiet window is deferred, then c
   assert.match(harness.captures[0].content, /demo moves to Friday 3pm/);
 });
 
+const RUN_INTERVAL_MINUTES = 30;
+
+test('D05b: a discussion deferred across runs is captured before its decision leaves the lookback', async () => {
+  // Runs at 12:00, 12:30 and 13:00. Decision at 11:50, acknowledgements every
+  // five minutes until 12:25, so the discussion is still active at the first two runs.
+  const rows = [at('Decision: demo moves to Friday 3pm', 0, 10)];
+  for (let minute = 5, index = 1; minute <= 35; minute += 5, index += 1) {
+    rows.push(at('Thanks, noting that for the team.', index, 10 - minute));
+  }
+  const harness = batchHarness(rows, undefined, { honourWindow: true });
+  await harness.run();
+  assert.equal(harness.captures.length, 0, '12:00: still deferred while the next window still holds the decision');
+  for (let run = 1; run <= 2; run += 1) {
+    harness.clock.now += RUN_INTERVAL_MINUTES * 60_000;
+    await harness.run();
+  }
+  assert.equal(harness.captures.length, 1, 'the decision is captured exactly once before it leaves the lookback');
+  assert.match(harness.captures[0].content, /demo moves to Friday 3pm/);
+  assert.ok(harness.captures[0].metadata.batch_message_ids.includes('message-0'));
+});
+
+test('D05b: a forced capture still honours a "do not save" fetched in the same run', async () => {
+  const rows = [at('Decision: demo moves to Friday 3pm', 0, 10)];
+  for (let minute = 5, index = 1; minute <= 30; minute += 5, index += 1) {
+    rows.push(at('Thanks, noting that for the team.', index, 10 - minute));
+  }
+  rows.push(at('Do not save this discussion.', 7, -24));
+  const harness = batchHarness(rows, undefined, { honourWindow: true });
+  for (let run = 0; run <= 2; run += 1) {
+    await harness.run();
+    harness.clock.now += RUN_INTERVAL_MINUTES * 60_000;
+  }
+  assert.equal(harness.captures.length, 0, 'the directive at 12:24 vetoes the capture forced at 12:30');
+});
+
+test('D05b: continuous activity cannot starve capture of a decision', async () => {
+  // Decisions start at every 5-minute offset across one run interval and are
+  // followed by acknowledgements every five minutes for three hours.
+  for (let offset = 0; offset < RUN_INTERVAL_MINUTES; offset += 5) {
+    const decisionMinutesAgo = -offset;
+    const rows = [at('Decision: demo moves to Friday 3pm', 0, decisionMinutesAgo)];
+    for (let minute = 5, index = 1; minute <= 180; minute += 5, index += 1) {
+      rows.push(at('Thanks, noting that for the team.', index, decisionMinutesAgo - minute));
+    }
+    const harness = batchHarness(rows, undefined, { honourWindow: true });
+    const capturedAt: number[] = [];
+    for (let run = 0; run <= 180 / RUN_INTERVAL_MINUTES; run += 1) {
+      const before = harness.captures.length;
+      await harness.run();
+      if (harness.captures.length > before) capturedAt.push(run);
+      harness.clock.now += RUN_INTERVAL_MINUTES * 60_000;
+    }
+    assert.ok(capturedAt.length >= 1, `decision at +${offset}m is captured`);
+    assert.ok(capturedAt[0]! <= 2, `${capturedAt} decision at +${offset}m is captured within two runs, not starved`);
+    assert.match(harness.captures[0].content, /demo moves to Friday 3pm/);
+    // A discussion forced within the deferral slack of the next window's start
+    // is offered once more while that start is still visible; never again.
+    assert.ok(harness.captures.length <= 2, `decision at +${offset}m is offered at most twice (runs ${capturedAt})`);
+    assert.ok(capturedAt.length < 2 || capturedAt[1] === capturedAt[0]! + 1);
+    for (const capture of harness.captures) {
+      assert.ok(capture.metadata.batch_message_ids.includes('message-0'), 'every offer carries the decision as evidence');
+    }
+  }
+});
+
 test('D08: an explicit decision that mentions a social timing word is captured', async () => {
   const harness = batchHarness([message('Decision: weekend on-call uses PagerDuty for paging.')]);
   await harness.run();

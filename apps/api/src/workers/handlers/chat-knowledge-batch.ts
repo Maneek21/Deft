@@ -20,6 +20,12 @@ import { DEFTY_EMAIL } from '../../lib/defty-identity.js';
 const BATCH_INTERVAL_MS = 30 * 60 * 1000;
 const LOOKBACK_OVERLAP_MS = 10 * 60 * 1000;
 const DEFAULT_QUIET_MS = 8 * 60 * 1000;
+// Recurring runs are enqueued with empty job data, so they use this lookback.
+const SCHEDULED_LOOKBACK_MS = BATCH_INTERVAL_MS + DEFAULT_QUIET_MS + LOOKBACK_OVERLAP_MS;
+// The next occurrence is enqueued BATCH_INTERVAL_MS after this run finishes,
+// so it starts later than now + BATCH_INTERVAL_MS by the run time plus poll
+// latency. Deferral keeps this margin against that lateness.
+const DEFERRAL_SLACK_MS = LOOKBACK_OVERLAP_MS / 2;
 const MAX_MESSAGES_PER_RUN = 800;
 const MAX_CANDIDATES_PER_SPACE = 5;
 const EPISODE_GAP_MS = 7 * 60 * 1000;
@@ -301,10 +307,24 @@ function excludeOptedOutDiscussions(rows: ClassifiedMessageRow[]): ClassifiedMes
  * A discussion with any message inside the quiet window is not settled yet: a
  * correction or "don't save that" may still follow. Defer the whole
  * discussion to a later run instead of capturing its earlier part now.
+ *
+ * There is no durable cursor, so a deferred discussion is only seen again if
+ * the next scheduled run's lookback still reaches its first message. Defer
+ * only while it does; otherwise process the discussion now with the evidence
+ * fetched in this run (a "do not save" already present still vetoes it).
+ * This bounds deferral to one run, so continuous activity cannot starve it.
  */
-function excludeUnsettledDiscussions(rows: ClassifiedMessageRow[], settledBefore: Date): ClassifiedMessageRow[] {
+function excludeUnsettledDiscussions(
+  rows: ClassifiedMessageRow[],
+  settledBefore: Date,
+  deferrableFrom: Date,
+): ClassifiedMessageRow[] {
   const cutoff = settledBefore.getTime();
-  return keepDiscussions(rows, (discussion) => discussion.every((row) => row.createdAt.getTime() < cutoff));
+  const deferrable = deferrableFrom.getTime();
+  return keepDiscussions(rows, (discussion) =>
+    discussion.every((row) => row.createdAt.getTime() < cutoff) ||
+    discussion[0]!.createdAt.getTime() < deferrable,
+  );
 }
 
 function chooseSourceRow(episode: KnowledgeEpisode): ClassifiedMessageRow {
@@ -515,13 +535,18 @@ Rules:
   }
 }
 
-async function buildCandidatesForSpace(rows: ClassifiedMessageRow[], settledBefore: Date): Promise<KnowledgeCandidate[]> {
+async function buildCandidatesForSpace(
+  rows: ClassifiedMessageRow[],
+  settledBefore: Date,
+  deferrableFrom: Date,
+): Promise<KnowledgeCandidate[]> {
   const candidates: KnowledgeCandidate[] = [];
   // A no-save request applies to its settled discussion, including an addressed
   // directive that topic segmentation would otherwise split into an agent episode.
   // Rows are fetched up to now so a late directive or correction is visible;
-  // discussions still active inside the quiet window are deferred.
-  const eligibleRows = excludeUnsettledDiscussions(excludeOptedOutDiscussions(rows), settledBefore)
+  // discussions still active inside the quiet window are deferred while the
+  // next scheduled run can still see their start.
+  const eligibleRows = excludeUnsettledDiscussions(excludeOptedOutDiscussions(rows), settledBefore, deferrableFrom)
     .filter((row) => !hasNonAffirmativeAgreement(row.content));
   const episodes = segmentRowsIntoEpisodes(eligibleRows);
   for (let index = 0; index < episodes.length; index += 1) {
@@ -584,6 +609,11 @@ export async function handleChatKnowledgeBatch(job: JobData): Promise<void> {
   const now = new Date();
   const since = new Date(now.getTime() - lookbackMs);
   const before = new Date(now.getTime() - quietMs);
+  // Earliest first message the next scheduled run still re-reads, as long as
+  // it starts no more than DEFERRAL_SLACK_MS after now + BATCH_INTERVAL_MS.
+  const deferrableFrom = new Date(
+    now.getTime() + BATCH_INTERVAL_MS - SCHEDULED_LOOKBACK_MS + DEFERRAL_SLACK_MS,
+  );
 
   const rawRows = await db
     .select({
@@ -657,7 +687,7 @@ export async function handleChatKnowledgeBatch(job: JobData): Promise<void> {
   let queuedCount = 0;
   let skippedCount = 0;
   for (const spaceRows of grouped.values()) {
-    const candidates = await buildCandidatesForSpace(spaceRows, before);
+    const candidates = await buildCandidatesForSpace(spaceRows, before, deferrableFrom);
     for (const candidate of candidates) {
       const result = await queueDeftyKnowledgeCapture({
         orgId: candidate.source.orgId,
