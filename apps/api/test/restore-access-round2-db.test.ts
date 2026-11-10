@@ -643,6 +643,93 @@ test('PR424 restore access round 2 (F02-F10)', { skip: !safe, timeout: 300000 },
     }
   });
 
+  await t.test('PR424-N2c: ordinary activation on a session superseded by a restore successor is refused and leaves one live consent', async () => {
+    const { PostgresAppDataStore } = await import('../src/lib/app-data-store.js');
+    // Action restore publishes a successor T for the current session S and
+    // carries S's live record consent C onto T.
+    const consent = liveConsentFor();
+    const service = new AppRestoreAccessService({ database: db as never, guard: noGuard, now: () => clock,
+      liveActionConsents: async () => [consent] });
+    const pair = await createPair('n2c', { action: true, currentRecord: true });
+    const proposeOn = async (session: Record<string, any>) => {
+      const consentId = randomUUID();
+      const expiresAt = at(86400_000);
+      const snapshot = {
+        schema_version: 'deft.app_data_consent.v1', consent_id: consentId, scope: session.scope,
+        connection: { session_id: session.session_id, session_revision: session.revision,
+          runtime_session_ref: session.runtime_session_ref, account_ref: session.account.account_ref },
+        store: { schema_version: 'deft.app_record_store.v1', key: 'inbox', resource_key: 'inbox',
+          runtime_requirement_key: 'provider', max_record_bytes: 4096, max_files: 0,
+          max_file_bytes: 1, max_total_file_bytes: 1 },
+        data_policy_digest: sha('e'), purpose: 'human_record_write', expires_at: expiresAt,
+      };
+      await client.query(
+        "INSERT INTO app_data_consents(org_id,owner_user_id,consent_id,connection_session_id,store_key,state,consent_digest,snapshot,expires_at,created_at,updated_at) VALUES($1,$2,$3,$4,'inbox','proposed',$5,$6::jsonb,$7,now(),now())",
+        [org, owner, consentId, session.session_id, sha('a'), JSON.stringify(snapshot), new Date(expiresAt)]);
+      return { consentId, digest: sha('a') };
+    };
+    // (1) The owner's proposal P was validated on S (lineage [S]) and the
+    // ordinary activation pauses right before acquiring the target lock.
+    const proposal = await proposeOn(pair.current);
+    let release!: () => void, arrive!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    const arrived = new Promise<void>((resolve) => { arrive = resolve; });
+    const pausing = {
+      transaction: (fn: (tx: unknown) => Promise<unknown>) => db.transaction(async (tx: any) => {
+        const wrapped = Object.create(tx);
+        let executes = 0;
+        wrapped.execute = async (query: unknown) => {
+          executes += 1;
+          if (executes === 1) { arrive(); await released; } // the target-lock statement
+          return tx.execute(query);
+        };
+        return fn(wrapped);
+      }),
+    };
+    const ordinary = new PostgresAppDataStore({ org_id: org, user_id: owner }, pausing as never)
+      .activate(proposal.consentId, proposal.digest, [pair.currentId]);
+    await arrived;
+    // (2)+(3) Restore takes the lock, publishes T, carries C onto T and commits.
+    const review = await service.review(actor, nomination('n2c'));
+    const actionGrant = review.grants.find((item: any) => item.kind === 'action_consent')!;
+    const restored = await service.activate(actor, envelope(review, 'n2c', [actionGrant.grant_id]));
+    assert.notEqual(restored.session_id, pair.currentId, 'precondition: a successor session was published');
+    // (4) Ordinary activation now acquires the lock on a superseded session.
+    release();
+    assert.equal(await ordinary, false, 'activation on a superseded session is refused');
+    const live = async (sessionId: string) => (await activeStoreConsents(sessionId))
+      .filter((row) => new Date(row.expires_at).getTime() > Date.now());
+    assert.deepEqual(await live(pair.currentId), [], 'nothing is live on the superseded session');
+    const onSuccessor = await live(restored.session_id);
+    assert.equal(onSuccessor.length, 1, 'exactly one live consent for the target/store, on the successor');
+    const proposed = (await client.query('SELECT state FROM app_data_consents WHERE consent_id=$1', [proposal.consentId])).rows[0];
+    assert.equal(proposed.state, 'proposed', 'the obsolete proposal never becomes authority');
+    const reader = new PostgresAppDataStore({ org_id: org, user_id: owner });
+    assert.deepEqual(await reader.activeConsent([pair.currentId], 'inbox'), [], 'no active authority is read through the superseded session');
+    // Happy path: the owner re-proposes on the current (successor) connection;
+    // that activation supersedes the carried consent and leaves one live row.
+    const successorRow = (await sessionsOf(owner, 'n2c')).find((row) => row.session_id === restored.session_id)!;
+    const again = await proposeOn(successorRow.record as Record<string, any>);
+    assert.equal(await reader.activate(again.consentId, again.digest, [restored.session_id]), true);
+    const after = await live(restored.session_id);
+    assert.deepEqual(after.map((row) => row.consent_id), [again.consentId], 'the re-proposed consent is the one live consent');
+    // A stale proposal on S still cannot be activated afterwards.
+    const stale = await proposeOn(pair.current);
+    assert.equal(await reader.activate(stale.consentId, stale.digest, [pair.currentId]), false);
+    assert.equal((await live(restored.session_id)).length, 1);
+
+    // Happy path, multi-session lineage: a proposal on the current head still
+    // supersedes a live consent held on another session the caller's lineage
+    // names (the credential-repair shape: only the head must be current).
+    const lineagePair = await createPair('n2c_lineage', { record: true });
+    assert.equal((await live(lineagePair.priorId)).length, 1, 'precondition: a live consent on the older lineage session');
+    const onHead = await proposeOn(lineagePair.current);
+    assert.equal(await reader.activate(onHead.consentId, onHead.digest, [lineagePair.currentId, lineagePair.priorId]), true,
+      'activation on the current head of a lineage succeeds');
+    assert.deepEqual(await live(lineagePair.priorId), [], 'the older lineage consent is superseded');
+    assert.deepEqual((await live(lineagePair.currentId)).map((row) => row.consent_id), [onHead.consentId]);
+  });
+
   await t.test('PR424-N3: concurrent observation activations never deadlock on a share->update session lock upgrade', async () => {
     let arrived = 0;
     const waiting: Array<() => void> = [];

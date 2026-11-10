@@ -4,8 +4,9 @@ import type {AppRunTransaction} from './app-run-repository.js';
 
 /** Successful custody transitions retain their source rows. Only a published
  * success receipt removes that source from metadata nomination; pending and
- * uncertain work still reaches the existing locked availability fences. */
-function noPublishedConnectionSuccessor(){
+ * uncertain work still reaches the existing locked availability fences.
+ * Also the "still current" test for PostgresAppDataStore.activate (PR424-N2c). */
+export function noPublishedConnectionSuccessor(){
  return and(
   sql`NOT EXISTS (SELECT 1 FROM app_connection_sessions published_successor
    WHERE published_successor.org_id=${appConnectionSessions.org_id}
