@@ -20,6 +20,7 @@ import { enqueue, QUEUE_NAMES, type QueueExecutor } from './queues.js';
 import { loadThreadFollowContext, shouldFollowThread } from './defty-thread-follow.js';
 import { isPrivateDeftySpace } from './app-private-defty-message-guard.js';
 import { getIO } from '../socket.js';
+import type { CoreDatabaseTransaction } from './database-transaction.js';
 
 export type AgentReplyJobData = {
   spaceId: string;
@@ -167,7 +168,7 @@ export async function planDeftyWake(input: DeftyWakeInput): Promise<DeftyWakePla
   return { explicit, followSpaceType: null, ...(await resolveDeftyProvider(input.orgId)) };
 }
 
-type WakeTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type WakeTransaction = CoreDatabaseTransaction;
 
 /** What step 2 decided; step 3 needs it for the no-provider reply. */
 export type DeftyWakeOutcome = {

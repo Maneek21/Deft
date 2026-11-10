@@ -1,6 +1,7 @@
 import { and, desc, eq, lte, ne, or, sql } from 'drizzle-orm';
 import { messages, spaceMembers, spaces, users } from '@deft/db/schema';
 import { db } from './db.js';
+import type { CoreDatabaseTransaction } from './database-transaction.js';
 import { DEFTY_EMAIL } from './defty-identity.js';
 import { parseMentions } from './mentions.js';
 import { toPlainText } from './plain-text.js';
@@ -59,7 +60,7 @@ export async function shouldFollowThread(
  * trigger message (it sees its own uncommitted row). */
 export async function loadThreadFollowContext(
   input: ThreadFollowInput,
-  executor: Pick<typeof db, 'select' | 'selectDistinct'> = db,
+  executor: Pick<CoreDatabaseTransaction, 'select' | 'selectDistinct'> = db,
 ): Promise<ThreadFollowContext | null> {
   if (!input.parentId) return null;
   // The just-inserted trigger is also the cutoff. Reading a whole thread after
