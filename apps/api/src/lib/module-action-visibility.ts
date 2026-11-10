@@ -75,19 +75,34 @@ export function visibleModuleActionSql(
     agentEmployeeId?: string;
   },
 ): SQL {
-  return sql`${visibleAgentActionSourceSql(options)} and (${moduleRoleVisibilitySql(role, options)})`;
+  return sql`${visibleAgentActionSourceSql(options)} and (${moduleRoleVisibilitySql(role, options)})
+    and (${privateDeftyActionAudienceSql(role, options)})`;
 }
 
-function moduleRoleVisibilitySql(
+/**
+ * A Defty action (no employee, or the canonical Defty envelope) is private to
+ * the member who asked for it. Its params/result/before/after state can carry
+ * content from private spaces, notes and wiki pages, so for every reader of
+ * this predicate (action history, recent, pending, dashboard feeds, inbox,
+ * MCP approval reads) the row is visible only to its requester, an assigned
+ * approver, and org owners/admins. Every other member, and every guest, does
+ * not receive the row. BYOA employee actions keep their source-audience rule.
+ */
+function privateDeftyActionAudienceSql(
   role?: string,
   options?: { userId?: string; orgId?: string; agentEmployeeId?: string },
 ): SQL {
-  if (role === 'guest') {
-    return notInArray(agentActions.action, [...MODULE_GOVERNED_WRITE_ACTION_NAMES]);
-  }
   if (role === 'owner' || role === 'admin') return sql`true`;
+  return sql`(
+    NOT (${agentActions.agent_employee_id} IS NULL OR ${canonicalDeftyActionSql()})
+    OR ${requesterOrReviewerSql(options)}
+  )`;
+}
 
-  const requesterOrReviewer = options?.userId
+function requesterOrReviewerSql(
+  options?: { userId?: string; orgId?: string; agentEmployeeId?: string },
+): SQL {
+  return options?.userId
     ? sql`(
         ${agentActions.user_id} = ${options.userId}
         OR COALESCE(
@@ -107,7 +122,18 @@ function moduleRoleVisibilitySql(
     : options?.agentEmployeeId
       ? sql`${agentActions.agent_employee_id} = ${options.agentEmployeeId}`
       : sql`false`;
+}
 
+function moduleRoleVisibilitySql(
+  role?: string,
+  options?: { userId?: string; orgId?: string; agentEmployeeId?: string },
+): SQL {
+  if (role === 'guest') {
+    return notInArray(agentActions.action, [...MODULE_GOVERNED_WRITE_ACTION_NAMES]);
+  }
+  if (role === 'owner' || role === 'admin') return sql`true`;
+
+  const requesterOrReviewer = requesterOrReviewerSql(options);
   return sql`(
     ${notInArray(agentActions.action, [...MODULE_GOVERNED_WRITE_ACTION_NAMES])}
     OR ${requesterOrReviewer}
