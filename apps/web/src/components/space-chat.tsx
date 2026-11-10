@@ -72,7 +72,7 @@ import { UserProfileCard } from './user-profile-card';
 import { parseReminderTime } from './slash-command-autocomplete';
 import ConfirmDialog from './confirm-dialog';
 import { inlineApprovalDisplayContent } from '@/lib/agent-approval-copy';
-import { mergeMessagesById } from '@/lib/chat-history-merge';
+import { ConversationReads, mergeMessagesById } from '@/lib/chat-history-merge';
 import { ChatLoadError } from './chat-load-error';
 import {
   approvalContinuationGate,
@@ -922,26 +922,35 @@ export function SpaceChat({
 
   const [historyStatus, setHistoryStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [historyAttempt, setHistoryAttempt] = useState(0);
+  // Orders this conversation's history reads and remembers live socket
+  // changes, so a slow or superseded read never undoes newer state.
+  const historyReadsRef = useRef(new ConversationReads());
   const retryHistory = useCallback(() => setHistoryAttempt((attempt) => attempt + 1), []);
 
   useEffect(() => {
     const visit = messageEventScopeRef.current.capture(spaceId, sessionCacheScope);
     setMessages([]);
     setHistoryStatus('loading');
+    historyReadsRef.current.dispose();
+    const reads = new ConversationReads();
+    historyReadsRef.current = reads;
     if (!visit.isCurrent()) return () => visit.dispose();
     let cancelled = false;
     async function load() {
+      const ticket = reads.begin();
       const res = await api.get(`/api/messages/${spaceId}`);
-      if (cancelled || !visit.isCurrent()) return;
+      if (cancelled || !visit.isCurrent() || !reads.isLatest(ticket)) return;
       if (!res.ok) {
         setHistoryStatus('error');
         return;
       }
       const data = await res.json();
-      if (cancelled || !visit.isCurrent()) return;
+      if (cancelled || !visit.isCurrent() || !reads.isLatest(ticket)) return;
       const loaded: Message[] = data.messages || data || [];
       // Keep anything the socket delivered while this read was in flight.
-      setMessages(previous => visit.isCurrent() ? mergeMessagesById(loaded, previous) : previous);
+      setMessages(previous => visit.isCurrent()
+        ? mergeMessagesById(previous, loaded, (id) => reads.changedSince(ticket, id))
+        : previous);
       setHistoryStatus('ready');
       if (highlightMessageId) {
         // Scroll to the highlighted message after render
@@ -998,7 +1007,13 @@ export function SpaceChat({
       scroll: scrollToBottom,
       schedule: (callback, delay) => setTimeout(callback, delay),
     });
+    const noteChange = (id: string | undefined) => { if (id) historyReadsRef.current.noteChange(id); };
+    const onNewAndNote = (msg: Message & { parent_id?: string | null }) => {
+      if (!msg.parent_id) noteChange(msg.id);
+      onNew(msg);
+    };
     const onThreadUpdated = (data: { parent_id: string; reply_count: number; latest_reply_at: string }) => {
+      noteChange(data.parent_id);
       setMessages((prev) =>
         prev.map((m) =>
           m.id === data.parent_id
@@ -1008,9 +1023,11 @@ export function SpaceChat({
       );
     };
     const onEdited = (msg: any) => {
+      noteChange(msg?.id);
       setMessages((prev) => prev.map((m) => m.id === msg.id ? { ...m, content: msg.content, edited_at: msg.edited_at, metadata: msg.metadata ?? (m as any).metadata } : m));
     };
     const onDeleted = (data: { id: string }) => {
+      noteChange(data?.id);
       setMessages((prev) => prev.map((m) => m.id === data.id ? { ...m, is_deleted: true } : m));
     };
     const onTypingStart = (data: { user_id: string; user_name: string; space_id: string }) => {
@@ -1022,6 +1039,7 @@ export function SpaceChat({
     // presence is handled globally in the app layout
 
     const onReactionAdded = (data: { message_id: string; emoji: string; user_id: string }) => {
+      noteChange(data?.message_id);
       setMessages((prev) =>
         prev.map((m) => {
           if (m.id !== data.message_id) return m;
@@ -1041,6 +1059,7 @@ export function SpaceChat({
     };
 
     const onReactionRemoved = (data: { message_id: string; emoji: string; user_id: string }) => {
+      noteChange(data?.message_id);
       setMessages((prev) =>
         prev.map((m) => {
           if (m.id !== data.message_id) return m;
@@ -1058,7 +1077,7 @@ export function SpaceChat({
       );
     };
 
-    socket.on('message:new', onNew);
+    socket.on('message:new', onNewAndNote);
     socket.on('message:edited', onEdited);
     socket.on('message:deleted', onDeleted);
     socket.on('typing:start', onTypingStart);
@@ -1078,9 +1097,11 @@ export function SpaceChat({
     socket.on('message:link_previews', onLinkPreviews);
 
     const onMessagePinned = (data: { message_id: string }) => {
+      noteChange(data?.message_id);
       setMessages(prev => prev.map(m => m.id === data.message_id ? { ...m, is_pinned: true } : m));
     };
     const onMessageUnpinned = (data: { message_id: string }) => {
+      noteChange(data?.message_id);
       setMessages(prev => prev.map(m => m.id === data.message_id ? { ...m, is_pinned: false } : m));
     };
     socket.on('message:pinned', onMessagePinned);
@@ -1094,12 +1115,16 @@ export function SpaceChat({
     const onReconnect = () => {
       if (!missedEvents) return;
       missedEvents = false;
+      const reads = historyReadsRef.current;
+      const ticket = reads.begin();
       void api.get(`/api/messages/${spaceId}`).then(async (res) => {
-        if (!res.ok || !visit.isCurrent()) return;
+        if (!res.ok || !visit.isCurrent() || !reads.isLatest(ticket)) return;
         const data = await res.json();
-        if (!visit.isCurrent()) return;
+        if (!visit.isCurrent() || !reads.isLatest(ticket)) return;
         const fetched: Message[] = data.messages || data || [];
-        setMessages((prev) => visit.isCurrent() ? mergeMessagesById(prev, fetched) : prev);
+        setMessages((prev) => visit.isCurrent()
+          ? mergeMessagesById(prev, fetched, (id) => reads.changedSince(ticket, id))
+          : prev);
         setHistoryStatus('ready');
       }).catch(() => {});
       void swrMutate(`/api/agent/actions/pending-by-space?space_id=${spaceId}`).catch(() => undefined);
@@ -1112,7 +1137,7 @@ export function SpaceChat({
       socket.off('connect', onReconnect);
       visit.dispose();
       unsubscribeFromSpace();
-      socket.off('message:new', onNew);
+      socket.off('message:new', onNewAndNote);
       socket.off('message:edited', onEdited);
       socket.off('message:deleted', onDeleted);
       socket.off('typing:start', onTypingStart);

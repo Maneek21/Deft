@@ -89,6 +89,9 @@ async function openComposer() {
   return { page, editor };
 }
 const sent = page => page.evaluate(() => window.__deftSent.slice());
+// The @ popup has read the member and group lists (so "no matches" is real).
+const membersRead = page => page.waitForFunction(() => ['/api/members', '/api/groups']
+  .every((p) => window.__deftApiCalls.some((c) => c.path === p)), null, { timeout: 2000 });
 
 test('E11: after Escape closes the @ popup, Enter sends the message', async () => {
   const { page } = await openComposer();
@@ -109,7 +112,7 @@ test('E11: an @ query with no matches does not trap Enter', async () => {
   const { page } = await openComposer();
   try {
     await page.keyboard.type('Ping @zzq');
-    await page.waitForTimeout(200);
+    await membersRead(page);
     await page.keyboard.press('Enter');
     await page.waitForFunction(() => window.__deftSent.length === 1, null, { timeout: 2000 });
   } finally {
@@ -121,7 +124,7 @@ test('E11: an @ query with no matches does not trap Tab', async () => {
   const { page } = await openComposer();
   try {
     await page.keyboard.type('Ping @zzq');
-    await page.waitForTimeout(200);
+    await membersRead(page);
     // A window listener runs after the popup's document listener, so it sees
     // whether anything cancelled the key.
     await page.evaluate(() => {
@@ -141,7 +144,7 @@ test('E11: a # query with no task results does not trap Enter', async () => {
   const { page } = await openComposer();
   try {
     await page.keyboard.type('See #nothing');
-    await page.waitForTimeout(300);
+    await page.waitForFunction(() => window.__deftApiCalls.some((c) => c.path.startsWith('/api/tasks/search')), null, { timeout: 2000 });
     await page.keyboard.press('Enter');
     await page.waitForFunction(() => window.__deftSent.length === 1, null, { timeout: 2000 });
   } finally {
@@ -261,6 +264,7 @@ test('E15: after a reconnect the channel and the open thread fetch what they mis
     url: '/chat?space=s1&thread=t1',
     override: `(() => { let after = false; window.__deftServerMoved = () => { after = true; };
       const data = ${JSON.stringify(serverAfter)};
+      window.__deftServerMovedAgain = (channel, reply) => { data.channel.messages.push(channel); data.thread.replies.push(reply); };
       return (method, path) => {
         if (!after || method !== 'GET') return undefined;
         if (path === '/api/messages/s1') return { body: data.channel };
@@ -292,13 +296,124 @@ test('E15: after a reconnect the channel and the open thread fetch what they mis
     assert.equal(await panel.getByText('Thread answer from while you were offline.').count(), 1);
     assert.match(await panel.locator('.deft-editor').innerText(), /draft in progress/);
 
-    // A second reconnect with the same server state adds nothing.
+    // A second reconnect re-reads the same messages plus one marker each; once
+    // the markers show, the reads are done, and nothing was doubled.
     await page.evaluate(() => window.__deftDeliver('disconnect', 'transport close'));
+    await page.evaluate(([channel, reply]) => window.__deftServerMovedAgain(channel, reply), [
+      { ...MISSED_CHANNEL, id: 'm-second', content: 'Second catch-up marker', created_at: '2026-10-22T10:30:00.000Z' },
+      { ...MISSED_REPLY, id: 'r-second', content: 'Second thread marker', created_at: '2026-10-22T10:30:00.000Z' },
+    ]);
     await page.evaluate(() => window.__deftDeliver('connect'));
-    await page.waitForTimeout(300);
+    await page.getByText('Second catch-up marker').waitFor();
+    await panel.getByText('Second thread marker').waitFor();
     assert.equal(await page.getByText('Summary that finished while you were offline.').count(), 1);
     assert.equal(await panel.getByText('Thread answer from while you were offline.').count(), 1);
   } finally {
     await close(page);
   }
 });
+
+// ── Round 2: reconnect and retry hardening ─────────────────────────────────
+//
+// A small fake server runs in the page. `window.__srv.channel` / `.thread`
+// replace the channel history / thread replies when set; `.fail.*` makes those
+// reads fail; with `.hold` set, each read's response is computed when the
+// request arrives (so it can be stale) and released later by the test.
+// Channel reads honour `limit` and `cursor` like the API.
+
+const FAKE_SERVER = `(() => {
+  const S = window.__srv = { channel: null, thread: null, fail: { channel: false, thread: false }, hold: false, held: [], threadReads: 0, failThreadFromRead: Infinity };
+  const page = (all, full) => {
+    const q = new URL(full, 'http://x').searchParams;
+    const limit = Math.min(Number(q.get('limit') || 50), 100);
+    const cursor = q.get('cursor');
+    const list = cursor ? all.filter((m) => m.created_at < cursor) : all;
+    return list.slice(-limit);
+  };
+  const failure = { status: 500, body: { error: 'boom', code: 'X' } };
+  return (method, path, full) => {
+    if (method !== 'GET') return undefined;
+    let res;
+    if (path === '/api/messages/s1') {
+      if (S.fail.channel) res = failure;
+      else if (S.channel) res = { body: { messages: page(S.channel, full), next_cursor: null } };
+    } else if (path === '/api/messages/t1/thread') {
+      S.threadReads += 1;
+      if (S.fail.thread || S.threadReads >= S.failThreadFromRead) res = failure;
+      else if (S.thread) res = { body: { replies: S.thread } };
+    }
+    if (!res) return undefined;
+    if (!S.hold) return res;
+    const snapshot = JSON.parse(JSON.stringify(res));
+    return new Promise((resolve) => S.held.push({ path, release: () => resolve(snapshot) }));
+  };
+})()`;
+
+const srv = (page, fn, arg) => page.evaluate(fn, arg);
+async function waitHeld(page, n) {
+  await page.waitForFunction((count) => window.__srv.held.length >= count, n, { timeout: 4000 });
+}
+const release = (page, index) => page.evaluate((i) => window.__srv.held[i].release(), index);
+const drop = (page) => page.evaluate(() => window.__deftDeliver('disconnect', 'transport close'));
+const reconnect = (page) => page.evaluate(() => window.__deftDeliver('connect'));
+const marker = (id, minute, text, extra = {}) => ({ ...BASE, id, parent_id: null, user_id: 'u-rahul', user_name: 'Rahul Mehta', content: text, created_at: `2026-10-22T10:${String(minute).padStart(2, '0')}:00.000Z`, ...extra });
+
+test('R2-1: a reconnect read that started before a live edit and delete does not undo them', async () => {
+  const page = await open(browser, { harness: 'defty-chat-harness.tsx', url: '/chat?space=s1', override: FAKE_SERVER });
+  try {
+    await page.getByText('Destination message from Priya').waitFor();
+    await drop(page);
+    await srv(page, (data) => { window.__srv.channel = data; window.__srv.hold = true; }, [ROOT, DEST, marker('mk-1', 30, 'Catch-up marker one')]);
+    await reconnect(page);
+    await waitHeld(page, 1);
+    // Live changes arrive while the (now stale) read is in flight.
+    await page.evaluate(() => {
+      window.__deftDeliver('message:deleted', { id: 'm2' });
+      window.__deftDeliver('message:edited', { id: 't1', content: 'Launch moved to Monday.', edited_at: '2026-10-22T10:31:00.000Z' });
+    });
+    await page.getByText('Launch moved to Monday.').waitFor();
+    await release(page, 0);
+    await page.getByText('Catch-up marker one').waitFor();
+    assert.equal(await page.getByText('Destination message from Priya').count(), 0, 'deleted message must not come back');
+    assert.equal(await page.locator('[data-message-id="m2"]').getByText('This message was deleted').count(), 1);
+    assert.equal(await page.getByText('Launch moved to Monday.').count(), 1, 'live edit must survive');
+  } finally {
+    await close(page);
+  }
+});
+
+test('R2-1: an older reconnect read that resolves last is ignored, in the channel and the thread', async () => {
+  const page = await open(browser, { harness: 'defty-chat-harness.tsx', url: '/chat?space=s1&thread=t1', override: FAKE_SERVER });
+  try {
+    const panel = page.locator('.w-\\[400px\\]');
+    await panel.getByText('for the detail.', { exact: false }).waitFor();
+    await drop(page);
+    await srv(page, ([channel, thread]) => { window.__srv.channel = channel; window.__srv.thread = thread; window.__srv.hold = true; },
+      [[ROOT, DEST, marker('a-chan', 30, 'Stale read A channel')], [REPLY, { ...marker('a-rep', 30, 'Stale read A reply'), parent_id: 't1' }]]);
+    await reconnect(page);
+    await waitHeld(page, 2); // read A: channel + thread
+    await drop(page);
+    await srv(page, ([channel, thread]) => { window.__srv.channel = channel; window.__srv.thread = thread; },
+      [[ROOT, DEST, marker('b-chan', 31, 'Fresh read B channel')], [REPLY, { ...marker('b-rep', 31, 'Fresh read B reply'), parent_id: 't1' }]]);
+    await reconnect(page);
+    await waitHeld(page, 4); // read B
+    await release(page, 2); await release(page, 3);
+    await page.getByText('Fresh read B channel').waitFor();
+    await panel.getByText('Fresh read B reply').waitFor();
+    await release(page, 0); await release(page, 1);
+    // A later read proves read A has been processed before we look.
+    await srv(page, () => { window.__srv.hold = false; });
+    await drop(page);
+    await srv(page, ([channel, thread]) => { window.__srv.channel = channel; window.__srv.thread = thread; },
+      [[ROOT, DEST, marker('b-chan', 31, 'Fresh read B channel'), marker('c-chan', 32, 'Read C channel')],
+        [REPLY, { ...marker('b-rep', 31, 'Fresh read B reply'), parent_id: 't1' }, { ...marker('c-rep', 32, 'Read C reply'), parent_id: 't1' }]]);
+    await reconnect(page);
+    await page.getByText('Read C channel').waitFor();
+    await panel.getByText('Read C reply').waitFor();
+    assert.equal(await page.getByText('Stale read A channel').count(), 0);
+    assert.equal(await panel.getByText('Stale read A reply').count(), 0);
+  } finally {
+    await close(page);
+  }
+});
+

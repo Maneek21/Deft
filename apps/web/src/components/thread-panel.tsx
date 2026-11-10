@@ -25,7 +25,7 @@ import { AgentMessageBlocks, type AgentMessageBlocksProps } from './agent-messag
 import { resolveAgentCitationLink } from '@/lib/agent-citations';
 import useSWR, { mutate as swrMutate } from 'swr';
 import { inlineApprovalDisplayContent } from '@/lib/agent-approval-copy';
-import { mergeMessagesById } from '@/lib/chat-history-merge';
+import { ConversationReads, mergeMessagesById } from '@/lib/chat-history-merge';
 import { ChatLoadError } from './chat-load-error';
 
 type Reaction = {
@@ -300,6 +300,10 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
 
   const [loadError, setLoadError] = useState(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
+  // Orders this thread's reads and remembers live socket changes, so a slow
+  // or superseded read never undoes newer state. Disposed when the thread
+  // changes or the panel closes.
+  const threadReadsRef = useRef(new ConversationReads());
 
   // Load thread replies only (parent message is passed as a prop)
   useEffect(() => {
@@ -308,20 +312,24 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     setReplies([]);
     setPendingFiles([]);
     let cancelled = false;
+    threadReadsRef.current.dispose();
+    const reads = new ConversationReads();
+    threadReadsRef.current = reads;
 
     async function load() {
+      const ticket = reads.begin();
       try {
         const threadRes = await api.get(`/api/messages/${messageId}/thread`);
-        if (cancelled || activeMessageIdRef.current !== messageId) return;
+        if (cancelled || activeMessageIdRef.current !== messageId || !reads.isLatest(ticket)) return;
         if (!threadRes.ok) {
           setLoadError(true);
           return;
         }
         const data = await threadRes.json();
-        if (cancelled || activeMessageIdRef.current !== messageId) return;
+        if (cancelled || activeMessageIdRef.current !== messageId || !reads.isLatest(ticket)) return;
         const loaded: Message[] = data.replies || data.messages || [];
         // Keep replies the socket delivered while this read was in flight.
-        setReplies((previous) => mergeMessagesById(loaded, previous));
+        setReplies((previous) => mergeMessagesById(previous, loaded, (id) => reads.changedSince(ticket, id)));
         // Mark thread as read
         void api.post(`/api/messages/${messageId}/thread-read`).catch(() => {});
       } catch {
@@ -336,7 +344,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
       }
     }
     void load();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; reads.dispose(); };
   }, [messageId, scrollToBottom, loadAttempt]);
 
   // Socket listeners
@@ -345,8 +353,10 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     if (!token) return;
     const socket = getSocket(token);
 
+    const noteChange = (id: string | undefined) => { if (id) threadReadsRef.current.noteChange(id); };
     const onNewMessage = (msg: Message & { parent_id?: string }) => {
       if (msg.parent_id === messageId) {
+        noteChange(msg.id);
         setReplies((prev) => (
           prev.some((reply) => reply.id === msg.id) ? prev : [...prev, msg]
         ));
@@ -356,6 +366,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     };
 
     const onReactionAdded = (data: { message_id: string; emoji: string; user_id: string }) => {
+      noteChange(data?.message_id);
       const updateReactions = (msgs: Message[]) =>
         msgs.map((m) => {
           if (m.id !== data.message_id) return m;
@@ -376,6 +387,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     };
 
     const onReactionRemoved = (data: { message_id: string; emoji: string; user_id: string }) => {
+      noteChange(data?.message_id);
       const updateReactions = (msgs: Message[]) =>
         msgs.map((m) => {
           if (m.id !== data.message_id) return m;
@@ -406,12 +418,14 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     const onReconnect = () => {
       if (!missedEvents) return;
       missedEvents = false;
+      const reads = threadReadsRef.current;
+      const ticket = reads.begin();
       void api.get(`/api/messages/${messageId}/thread`).then(async (res) => {
-        if (!res.ok || activeMessageIdRef.current !== messageId) return;
+        if (!res.ok || activeMessageIdRef.current !== messageId || !reads.isLatest(ticket)) return;
         const data = await res.json();
-        if (activeMessageIdRef.current !== messageId) return;
+        if (activeMessageIdRef.current !== messageId || !reads.isLatest(ticket)) return;
         const fetched: Message[] = data.replies || data.messages || [];
-        setReplies((prev) => mergeMessagesById(prev, fetched));
+        setReplies((prev) => mergeMessagesById(prev, fetched, (id) => reads.changedSince(ticket, id)));
         setLoadError(false);
       }).catch(() => {});
       if (pendingBySpaceKey) void swrMutate(pendingBySpaceKey).catch(() => undefined);
