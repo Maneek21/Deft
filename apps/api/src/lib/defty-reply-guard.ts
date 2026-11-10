@@ -114,3 +114,17 @@ export async function assertDeliveryOwnedBeforeCommit(tx: Executor, delivery?: D
   if (delivery?.lease && await remainingLeaseMs(tx, delivery.lease) === null) throw new DeftyDeliveryLostError();
   throwIfDeliveryLost(delivery);
 }
+
+/**
+ * True when an error (or anything in its cause chain) is a PostgreSQL lock or
+ * statement timeout. The reply transaction bounds its waits to the remaining
+ * lease, so these mean "try the delivery again", never "publish a fallback".
+ */
+export function isDatabaseWaitTimeout(err: unknown): boolean {
+  for (let cur: unknown = err, depth = 0; cur && depth < 8; depth += 1) {
+    const code = (cur as { code?: unknown }).code;
+    if (code === '55P03' || code === '57014') return true;
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return false;
+}

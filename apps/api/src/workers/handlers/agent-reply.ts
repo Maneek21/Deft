@@ -34,7 +34,7 @@ import { compileMessageWorkspacePlanImport } from '../../lib/workspace-plan-impo
 import { buildRoomContextPackWithSources } from '../../lib/defty-room-context.js';
 import { loadPendingDeftyDraft, pendingDeftyDraftContext, projectPendingDeftyMetadataForOutbound, type PendingDeftyDraft } from '../../lib/defty-pending-action.js';
 import { visibleTaskCondition } from '../../lib/task-visibility.js';
-import { assertDeliveryOwnedBeforeCommit, claimDeftyReplySlot, DeftyDeliveryLostError, findExistingDeftyReply, throwIfDeliveryLost, type DeftyReplyDelivery } from '../../lib/defty-reply-guard.js';
+import { assertDeliveryOwnedBeforeCommit, claimDeftyReplySlot, DeftyDeliveryLostError, findExistingDeftyReply, isDatabaseWaitTimeout, throwIfDeliveryLost, type DeftyReplyDelivery } from '../../lib/defty-reply-guard.js';
 
 export async function withAgentWorkingSignal<T>(input: {
   spaceId: string; threadId: string | null; agentUserId: string;
@@ -2186,7 +2186,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
       }
       agentMessage = persisted.message;
     } catch (err) {
-      if (pendingActions.length === 0 || err instanceof DeftyDeliveryLostError) throw err;
+      if (pendingActions.length === 0 || err instanceof DeftyDeliveryLostError || isDatabaseWaitTimeout(err)) throw err;
       const pendingActionPersistError = err instanceof Error ? err.message : String(err);
       console.error('[agent-reply] Failed to persist agent reply with pending actions:', err);
       const failedApprovalContent = [
