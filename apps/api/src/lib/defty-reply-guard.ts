@@ -13,7 +13,7 @@ export type DeftyReplyTrigger = {
 };
 
 /** The queue delivery that is generating a reply; absent for direct calls. */
-export type DeftyReplyDelivery = { jobId: string; lockToken: string; signal?: AbortSignal };
+export type DeftyReplyDelivery = { signal?: AbortSignal; lease?: { jobId: string; lockToken: string } };
 
 /** The delivery was cancelled or no longer owns its queue lease. */
 export class DeftyDeliveryLostError extends Error {
@@ -66,11 +66,11 @@ export async function claimDeftyReplySlot(
 ) {
   throwIfDeliveryLost(delivery);
   await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`defty-reply:${trigger.orgId}:${trigger.triggerMessageId}`}, 0))`);
-  if (delivery) {
+  if (delivery?.lease) {
     const owned = await tx.select({ id: jobQueue.id }).from(jobQueue).where(and(
-      eq(jobQueue.id, delivery.jobId),
+      eq(jobQueue.id, delivery.lease.jobId),
       eq(jobQueue.status, 'running'),
-      eq(jobQueue.lock_token, delivery.lockToken),
+      eq(jobQueue.lock_token, delivery.lease.lockToken),
       sql`${jobQueue.lock_expires_at} > clock_timestamp()`,
     )).for('share');
     if (owned.length !== 1) throw new DeftyDeliveryLostError();

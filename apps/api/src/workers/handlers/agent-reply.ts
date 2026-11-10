@@ -34,7 +34,7 @@ import { compileMessageWorkspacePlanImport } from '../../lib/workspace-plan-impo
 import { buildRoomContextPackWithSources } from '../../lib/defty-room-context.js';
 import { loadPendingDeftyDraft, pendingDeftyDraftContext, projectPendingDeftyMetadataForOutbound, type PendingDeftyDraft } from '../../lib/defty-pending-action.js';
 import { visibleTaskCondition } from '../../lib/task-visibility.js';
-import { claimDeftyReplySlot, findExistingDeftyReply } from '../../lib/defty-reply-guard.js';
+import { claimDeftyReplySlot, DeftyDeliveryLostError, findExistingDeftyReply, throwIfDeliveryLost, type DeftyReplyDelivery } from '../../lib/defty-reply-guard.js';
 
 export async function withAgentWorkingSignal<T>(input: {
   spaceId: string; threadId: string | null; agentUserId: string;
@@ -1422,6 +1422,11 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
     // committed stops here; the insert re-checks under a lock (claimDeftyReplySlot).
     const replyTrigger = { orgId, spaceId, agentUserId, triggerMessageId: messageId, triggerCreatedAt: trigger.created_at };
     if (await findExistingDeftyReply(db, replyTrigger)) return;
+    // A09: a cancelled delivery, or one that lost its queue lease, must not publish.
+    const delivery: DeftyReplyDelivery = {
+      signal: job.signal,
+      lease: job.lockToken ? { jobId: job.id, lockToken: job.lockToken } : undefined,
+    };
 
     const isDmLike = space?.type === 'dm' || space?.type === 'group_dm' || space?.type === 'agent_conversation';
 
@@ -1738,7 +1743,11 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
     // MCP tool / Anthropic call can never wedge the worker.
     const AGENT_TIMEOUT_MS = 60_000;
     const abort = new AbortController();
-    const timeout = setTimeout(() => abort.abort(), AGENT_TIMEOUT_MS);
+    const timeout = setTimeout(() => abort.abort(new Error('agent-reply: runAgentQuery timeout after 60s')), AGENT_TIMEOUT_MS);
+    // A09: the worker aborts job.signal on lease loss or job timeout.
+    const forwardJobAbort = () => abort.abort(job.signal?.reason);
+    if (job.signal?.aborted) forwardJobAbort();
+    else job.signal?.addEventListener('abort', forwardJobAbort, { once: true });
     let result: Awaited<ReturnType<typeof runAgentQuery>>;
     try {
       if (compiledActionDraft && (compiledActionDraft.actions.length > 0 || compiledActionDraft.clarification)) {
@@ -1789,9 +1798,12 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
               abortSignal: abort.signal,
               maxIterations: undefined,
             }),
-            new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error('agent-reply: runAgentQuery timeout after 60s')), AGENT_TIMEOUT_MS),
-            ),
+            new Promise<never>((_, reject) => {
+              const rejectAborted = () => reject(abort.signal.reason instanceof Error
+                ? abort.signal.reason : new Error('agent-reply: reasoning aborted'));
+              if (abort.signal.aborted) rejectAborted();
+              else abort.signal.addEventListener('abort', rejectAborted, { once: true });
+            }),
           ]),
           (queryResult) => !(followed && queryResult.text.trim() === 'NO_REPLY') && shouldAttemptActionCompiler({
             attempted: actionCompilerRecoveryAttempted,
@@ -1860,7 +1872,11 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
       }
     } finally {
       clearTimeout(timeout);
+      job.signal?.removeEventListener('abort', forwardJobAbort);
     }
+    // The catch above turns an aborted call into a visible provider-error
+    // reply; a cancelled delivery must publish nothing instead.
+    throwIfDeliveryLost(delivery);
 
     // A followed message was not explicitly addressed to Defty. Honor the
     // runner's abstention before deterministic fallbacks can draft any writes.
@@ -2149,7 +2165,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
     };
 
     let agentMessage: typeof messages.$inferSelect;
-    const replyGuard = (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => claimDeftyReplySlot(tx, replyTrigger);
+    const replyGuard = (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => claimDeftyReplySlot(tx, replyTrigger, delivery);
     try {
       const persisted = await persistAgentReplyWithActions({
         orgId,
@@ -2169,7 +2185,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
       }
       agentMessage = persisted.message;
     } catch (err) {
-      if (pendingActions.length === 0) throw err;
+      if (pendingActions.length === 0 || err instanceof DeftyDeliveryLostError) throw err;
       const pendingActionPersistError = err instanceof Error ? err.message : String(err);
       console.error('[agent-reply] Failed to persist agent reply with pending actions:', err);
       const failedApprovalContent = [
