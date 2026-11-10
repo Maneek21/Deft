@@ -81,7 +81,7 @@ Agent engine lives in `apps/api/src/lib/` (agent-context, agent-plans, agent-too
 - Quick-approve: create task, schedule meeting (one-click card)
 - Full-review: multi-step plans and external writes (preview + edit)
 
-**Trust levels (per org):** Conservative → Standard → Autonomous
+**Trust levels:** Conservative → Standard → Autonomous. The workspace (org) trust level applies only to Defty's approved plans: whether a step that later steps depend on needs its own approval, and what Defty may run on its own when it retries a failed step (`agent-plans.ts` executePlan, `agent-runner.ts` background mode). Each agent employee has its own trust level, which governs its non-chat writes. An employee's own chat messages (MCP `send_message` / `message_post`) post without approval at every level while it is healthy. Defty in chat proposes its writes for approval (a few housekeeping actions such as saving a memory or drafting a plan excepted).
 
 **Native actions (direct SQL):** Create/update/assign tasks, post messages, set reminders
 **Connected actions:** Read/write native calendar events, ingest ICS calendar subscriptions, and call BYOA/MCP tools that the agent runtime brings with it.
@@ -89,7 +89,7 @@ Agent engine lives in `apps/api/src/lib/` (agent-context, agent-plans, agent-too
 **Event-driven triggers (PostgreSQL scheduled jobs):**
 - Task overdue → DM assignee + alert lead
 - Task stalled 48h → ask for update
-- BYOA/runtime trigger → a connected employee can react to external tool events it owns and use Deft-native task/message/wiki tools under org trust and approval rules.
+- BYOA/runtime trigger → a connected employee can react to external tool events it owns and use Deft-native task/message/wiki tools under its own employee trust level and approval rules (its own chat messages post without approval).
 - Meeting in 15min → generate prep briefing
 - 9am daily → auto-generate standup from activity
 

@@ -33,12 +33,12 @@ const TRUST_LEVELS = [
   {
     value: 'conservative',
     label: 'Conservative',
-    desc: 'All actions require approval before execution.',
+    desc: 'Its chat messages post without approval. Most other actions require approval first.',
   },
   {
     value: 'standard',
     label: 'Standard',
-    desc: 'Low-risk actions auto-execute, high-risk actions require approval.',
+    desc: 'Its chat messages and low-risk actions run without approval; higher-risk actions require approval.',
   },
   {
     value: 'autonomous',

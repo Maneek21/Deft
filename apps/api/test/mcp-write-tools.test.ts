@@ -6,7 +6,7 @@
  * Covers:
  *   1. task_create with standard-trust employee auto-executes
  *   2. task_create with conservative-trust employee queues for approval
- *   3. message_post with standard trust returns pseudo-result (full-review tier)
+ *   3. message_post with standard trust posts without approval (W1h)
  *   4. message_post with autonomous trust auto-executes (full-tier unlocked)
  *   5. memory_update rejects cross-employee updates
  *   6. memory_update scope promotion returns pseudo-result for conservative
@@ -381,24 +381,33 @@ test('2. task_create with conservative trust queues for approval', async () => {
   });
 });
 
-test('3. message_post with standard trust returns pseudo-result (full tier)', async () => {
+test('3. message_post with standard trust posts without approval (employee own chat message)', async () => {
+  // W1h (owner decision 2026-11-10): an employee's own chat messages post
+  // without approval at every trust level. The action-log row keeps the
+  // truthful 'full' tier and is recorded as already approved/executed.
+  const content = `phase4 message standard ${Date.now()}`;
   const { status, body } = await mcpCall('message_post', {
     caller_employee_slug: EMP_STANDARD_SLUG,
     space_id: TEST_SPACE_ID,
-    content: 'phase4 message standard',
+    content,
   });
   assert.equal(status, 200);
-  assert.ok(!body.isError);
+  assert.ok(!body.isError, `message_post should not error: ${JSON.stringify(body)}`);
   const parsed = parseContent(body);
-  assert.equal(parsed.status, 'queued_for_approval');
-  assert.ok(parsed.approval_id);
+  assert.notEqual(parsed.status, 'queued_for_approval');
+  assert.ok(parsed.id, `posted message_post should return message id: ${JSON.stringify(parsed)}`);
 
   await withClient(async (c) => {
+    const m = await c.query(`SELECT content FROM messages WHERE id = $1`, [parsed.id]);
+    assert.equal(m.rows[0]?.content, content);
     const r = await c.query(
-      `SELECT approval_tier FROM agent_actions WHERE id = $1`,
-      [parsed.approval_id]
+      `SELECT approval_tier, approval_status FROM agent_actions
+       WHERE agent_employee_id = $1 AND action = 'message_post' AND params->>'content' = $2`,
+      [EMP_STANDARD_ID, content]
     );
+    assert.equal(r.rows.length, 1);
     assert.equal(r.rows[0].approval_tier, 'full');
+    assert.equal(r.rows[0].approval_status, 'approved');
   });
 });
 
@@ -406,7 +415,8 @@ test('4. message_post with autonomous trust auto-executes (full-tier unlocked)',
   // Trust unlock (2026-04-18): Autonomous trust now auto-executes full-tier
   // actions. message_post is full-tier but NOT in the destructive guard set,
   // so it runs immediately instead of queuing.
-  // Standard trust still queues full-tier — that is covered by test 3.
+  // Since W1h, Standard also posts an employee's own message (test 3);
+  // other full-tier writes still queue below Autonomous.
   const content = `phase4 message auto ${Date.now()}`;
   const { status, body } = await mcpCall('message_post', {
     caller_employee_slug: EMP_AUTONOMOUS_SLUG,

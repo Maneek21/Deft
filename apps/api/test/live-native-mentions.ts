@@ -201,17 +201,17 @@ try {
     assert.equal((await db.select().from(agentChannelEvents).where(eq(agentChannelEvents.org_id, f.orgId))).length, 0);
     return result;
   });
-  await scenario('Live conservative employee reports an approval queue without retrying or claiming delivery', async () => {
+  await scenario('Live conservative employee reports an approval queue without retrying or claiming creation', async () => {
     await db.update(agentEmployees).set({ trust_level: 'conservative' }).where(eq(agentEmployees.id, f.employeeId));
-    const before = (await db.select().from(messages).where(eq(messages.org_id, f.orgId))).length;
-    const result = await mcpModel(raw, 'Explicit request: send a short message to Launch room linking DEFT-42 Review release. Discover and copy the exact native task token. Launch room space_id is ' + f.publicSpaceId + '. If the governed tool queues approval, do not retry or claim delivery; explain that it is pending approval.', ['native_mentions_search', 'native_mentions_resolve', 'send_message']);
-    const writes = result.calls.filter(call => call.name === 'send_message');
+    // W1h: an employee's own chat messages post at every trust level, so the
+    // still-gated conservative write exercised here is a wiki page.
+    const result = await mcpModel(raw, 'Explicit request: create an org procedure wiki page titled Release review note linking DEFT-42 Review release. Discover and copy the exact native task token. If the governed tool queues approval, do not retry or claim delivery; explain that it is pending approval.', ['native_mentions_search', 'native_mentions_resolve', 'wiki_create']);
+    const writes = result.calls.filter(call => call.name === 'wiki_create');
     assert.equal(writes.length, 1);
     assert.match(JSON.stringify(writes[0].result), /queued_for_approval/);
     assert.match(result.text, /approval|pending|queued/i);
-    assert.equal((await db.select().from(messages).where(eq(messages.org_id, f.orgId))).length, before);
     const pending = await db.select().from(agentActions).where(and(eq(agentActions.org_id, f.orgId), eq(agentActions.approval_status, 'pending')));
-    assert(pending.some(action => action.action === 'send_message' || action.action === 'post_message'));
+    assert(pending.some(action => action.action === 'wiki_create'));
     return result;
   });
   await scenario('Live employee resolves renamed records with stable existing reference identity', async () => {

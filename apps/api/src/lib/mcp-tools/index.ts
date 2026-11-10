@@ -698,9 +698,10 @@ export const toolSchemas: ToolSchema[] = [
   {
     name: 'message_post',
     description:
-      'Post a message to a space as your shadow user. This is a full-review ' +
-      'action — it will typically return `queued_for_approval` and post once ' +
-      'a human approves.',
+      'Post a message to a space as your shadow user (deprecated; prefer ' +
+      'send_message). Your own chat messages post without approval at every ' +
+      'trust level; if the result is `queued_for_approval`, it posts once a ' +
+      'human approves.',
     inputSchema: {
       type: 'object',
       properties: {

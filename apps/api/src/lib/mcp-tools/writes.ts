@@ -33,6 +33,7 @@ import {
   taskActivity,
   workflowRules,
   users,
+  orgMembers,
 } from '@deft/db/schema';
 import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
@@ -40,7 +41,9 @@ import {
   shouldAutoExecute,
   getApprovalTier,
   asPseudoResult,
+  isDestructiveAction,
 } from '../agent-approval.js';
+import { isCanonicalDeftyEmployee, DEFTY_SYSTEM_RUNTIME_KIND } from '../defty-identity.js';
 import { invalidatePlatformContextCacheFor } from './context.js';
 import { generateReceipt } from '../receipts.js';
 import { checkReplyStorm, STORM_THRESHOLD } from '../storm-detector.js';
@@ -119,6 +122,79 @@ async function patchActionResult(
 
 const QUEUE_MESSAGE =
   'Action requires human approval. Tell the user the action is pending review and will execute asynchronously if approved.';
+
+// ─── employee-own chat messages (W1h, owner decision 2026-11-10) ──────────
+//
+// A BYOA agent employee's OWN chat messages post without approval at every
+// trust level: approving each message would make talking to an employee
+// unusable. This is a named exemption at the MCP handler level only. The
+// tier table in agent-approval.ts stays truthful ('full') for every other
+// caller: Defty chat and plans (`post_message`, `post_thread_reply`),
+// executeActionDirect, the approval resolver and the legacy /mcp/call route
+// are all unchanged.
+//
+// The exemption is deliberately narrow. It never applies to:
+//   - any tool other than send_message / message_post;
+//   - an argument shape beyond plain posting (any unexpected key, or a
+//     destructive `mode`), which keeps the existing trust gate;
+//   - the canonical Defty system employee or any defty_system runtime row
+//     (Defty in chat stays approval-only);
+//   - an employee that is inactive, deleted, or marked unhealthy by the
+//     circuit breaker (those fall back to the existing trust gate).
+// Every other guard rail runs exactly as for an Autonomous post: space
+// visibility (employeeCanAccessSpace + the insert-time authority SQL), the
+// reply-storm detector, the daily action cap (charged in mcp-server-v1
+// dispatchTool before the handler runs), and the auto-executed action-log
+// row + receipt written by the execute* functions.
+const EMPLOYEE_OWN_CHAT_MESSAGE_ARG_KEYS: Readonly<Record<'send_message' | 'message_post', ReadonlySet<string>>> = {
+  send_message: new Set(['caller_employee_slug', 'target', 'space_id', 'thread_id', 'user_id', 'content']),
+  message_post: new Set(['caller_employee_slug', 'space_id', 'content', 'parent_id']),
+};
+
+async function employeeOwnChatMessageAutoExecutes(
+  toolName: 'send_message' | 'message_post',
+  args: Record<string, unknown>,
+  ctx: ToolContext,
+): Promise<boolean> {
+  // Unchanged trust gate first: Autonomous behaves exactly as before.
+  if (shouldAutoExecute(toolName, ctx.trust_level)) return true;
+  const allowedKeys = EMPLOYEE_OWN_CHAT_MESSAGE_ARG_KEYS[toolName];
+  if (Object.keys(args).some((key) => !allowedKeys.has(key))) return false;
+  if (isDestructiveAction(toolName, args)) return false;
+  const [employee] = await db
+    .select({
+      slug: agentEmployees.slug,
+      runtime_kind: agentEmployees.runtime_kind,
+      is_byoa: agentEmployees.is_byoa,
+      unhealthy: agentEmployees.unhealthy,
+    })
+    .from(agentEmployees)
+    .where(and(
+      eq(agentEmployees.id, ctx.employee_id),
+      eq(agentEmployees.org_id, ctx.org_id),
+      eq(agentEmployees.is_active, true),
+      eq(agentEmployees.is_deleted, false),
+    ))
+    .limit(1);
+  if (!employee || employee.unhealthy) return false;
+  if (isCanonicalDeftyEmployee(employee) || employee.runtime_kind === DEFTY_SYSTEM_RUNTIME_KIND) return false;
+  return true;
+}
+
+/** Same DM rule as the human DM route (routes/spaces.ts): the other person
+ * must be an active member of this workspace. */
+async function isActiveOrgMember(orgId: string, userId: string): Promise<boolean> {
+  const [member] = await db
+    .select({ id: orgMembers.id })
+    .from(orgMembers)
+    .where(and(
+      eq(orgMembers.org_id, orgId),
+      eq(orgMembers.user_id, userId),
+      eq(orgMembers.is_active, true),
+    ))
+    .limit(1);
+  return Boolean(member);
+}
 
 // ─── shared helper: insert a pending agent_actions row for a queued write ──
 
@@ -979,7 +1055,21 @@ export async function messagePost(
   if (!args.space_id) return errorResult('message_post requires space_id');
   if (!args.content?.trim()) return errorResult('message_post requires content');
 
-  if (!shouldAutoExecute('message_post', ctx.trust_level)) {
+  // Reply-storm guard for thread replies, matching send_message's thread
+  // branch. Runs before the trust decision at every level.
+  if (args.parent_id) {
+    const callerShadowId = await getShadowUserId(ctx.employee_id);
+    if (callerShadowId) {
+      const storm = await checkReplyStorm(callerShadowId, args.parent_id);
+      if (storm.tripped) {
+        return errorResult(
+          `STORM_DETECTED: agent exceeded ${STORM_THRESHOLD} replies in this thread within the rate-limit window; backing off`,
+        );
+      }
+    }
+  }
+
+  if (!(await employeeOwnChatMessageAutoExecutes('message_post', args as Record<string, unknown>, ctx))) {
     return queueAction('message_post', args as Record<string, unknown>, ctx);
   }
 
@@ -1009,7 +1099,9 @@ export type SendMessageArgs = {
  *   - { thread_id }  — reply in a thread (parent message id)
  *   - { user_id }    — DM target user; creates DM space if missing
  *
- * Tier 'full': queued for approval unless caller's trust is autonomous.
+ * Tier 'full', but the employee's own plain post runs without approval at
+ * every trust level (employeeOwnChatMessageAutoExecutes); unhealthy
+ * employees, Defty and unexpected arguments keep the trust gate.
  */
 export async function sendMessage(
   args: SendMessageArgs,
@@ -1059,6 +1151,9 @@ export async function sendMessage(
     if (!shadowUserId) {
       return errorResult(`send_message: no shadow user for employee ${ctx.employee_id}`);
     }
+    if (!(await isActiveOrgMember(ctx.org_id, target.user_id))) {
+      return errorResult('send_message: user_id is not an active member of this workspace');
+    }
     spaceId = await findOrCreateDmSpace(ctx.org_id, shadowUserId, target.user_id);
   } else {
     return errorResult('send_message: target must include space_id, thread_id, or user_id');
@@ -1069,7 +1164,7 @@ export async function sendMessage(
     return errorResult(`send_message: space ${spaceId} is not accessible to this employee`);
   }
 
-  if (!shouldAutoExecute('send_message', ctx.trust_level)) {
+  if (!(await employeeOwnChatMessageAutoExecutes('send_message', args as Record<string, unknown>, ctx))) {
     return queueAction(
       'send_message',
       { ...args, resolved_space_id: spaceId, parent_id: parentId } as Record<string, unknown>,

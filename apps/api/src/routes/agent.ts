@@ -2051,9 +2051,12 @@ const trustSettingsSchema = z.object({
   trust_level: z.enum(['conservative', 'standard', 'autonomous']),
 }).strict();
 
-// The org trust level governs background and automation runs (heartbeat,
-// triggers, BYOA employee writes). Interactive chat turns are always
-// approval-only regardless of it. Changing it is an org-admin decision.
+// The org trust level governs only Defty's approved plans that no agent
+// employee owns (lib/agent-plans.ts executePlan: whether a step later steps
+// depend on runs without its own approval) and the background recovery run
+// for a failed plan step (agent-runner.ts background mode). Agent employees
+// use their own trust level, and Defty's interactive chat turns propose
+// writes for approval regardless of it. Changing it is an org-admin decision.
 agentRoutes.patch('/settings', async (c) => {
   const user = c.get('user');
 
