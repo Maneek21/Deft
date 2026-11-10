@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "test": "tsx --test test/modules.test.ts test/capabilities.test.ts test/app-runs.test.ts test/resources.test.ts test/resources-v2.test.ts test/app-platform-authority.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "node ../../node_modules/ts7/bin/tsc --noEmit"
   },
   "exports": {
     ".": "./src/index.ts",
