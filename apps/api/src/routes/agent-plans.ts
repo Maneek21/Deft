@@ -4,8 +4,26 @@ import { db } from '../lib/db.js';
 import { agentPlans } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { createPlanRow } from '../lib/agent-plans.js';
+import { isDestructiveAction } from '../lib/agent-approval.js';
 
 export const agentPlanRoutes = new Hono();
+
+/**
+ * Every plan payload a reviewer sees marks each step `destructive`, computed
+ * here from the server classifier (tool name + params). Any stored or
+ * client-sent value is replaced. A destructive step also waits for its own
+ * approval when the plan runs (lib/agent-plans.ts executePlan).
+ */
+function withDestructiveMarks<T extends { steps: unknown } | undefined>(plan: T): T {
+  if (!plan || !Array.isArray(plan.steps)) return plan;
+  return {
+    ...plan,
+    steps: plan.steps.map((step: any) => ({
+      ...step,
+      destructive: isDestructiveAction(String(step?.tool ?? ''), step?.params),
+    })),
+  };
+}
 
 // GET / — list plans (filter by status, employee)
 agentPlanRoutes.get('/', async (c) => {
@@ -29,7 +47,7 @@ agentPlanRoutes.get('/', async (c) => {
       .orderBy(desc(agentPlans.created_at))
       .limit(50);
 
-    return c.json(plans);
+    return c.json(plans.map((plan) => withDestructiveMarks(plan)));
   } catch (err) {
     console.error('Failed to list plans:', err);
     return c.json({ error: 'Failed to list plans', code: 'INTERNAL_ERROR' }, 500);
@@ -52,7 +70,7 @@ agentPlanRoutes.get('/:id', async (c) => {
       return c.json({ error: 'Plan not found', code: 'NOT_FOUND' }, 404);
     }
 
-    return c.json(plan);
+    return c.json(withDestructiveMarks(plan));
   } catch (err) {
     console.error('Failed to get plan:', err);
     return c.json({ error: 'Failed to get plan', code: 'INTERNAL_ERROR' }, 500);
@@ -91,7 +109,7 @@ agentPlanRoutes.post('/', async (c) => {
       .where(eq(agentPlans.id, plan_id))
       .limit(1);
 
-    return c.json(plan, 201);
+    return c.json(withDestructiveMarks(plan), 201);
   } catch (err) {
     console.error('Failed to create plan:', err);
     return c.json({ error: 'Failed to create plan', code: 'INTERNAL_ERROR' }, 500);
@@ -138,7 +156,7 @@ agentPlanRoutes.put('/:id', async (c) => {
       .where(eq(agentPlans.id, planId))
       .returning();
 
-    return c.json(updated);
+    return c.json(withDestructiveMarks(updated));
   } catch (err) {
     console.error('Failed to update plan:', err);
     return c.json({ error: 'Failed to update plan', code: 'INTERNAL_ERROR' }, 500);
@@ -174,7 +192,7 @@ agentPlanRoutes.post('/:id/approve', async (c) => {
       .where(eq(agentPlans.id, planId))
       .returning();
 
-    return c.json(updated);
+    return c.json(withDestructiveMarks(updated));
   } catch (err) {
     console.error('Failed to approve plan:', err);
     return c.json({ error: 'Failed to approve plan', code: 'INTERNAL_ERROR' }, 500);
@@ -246,7 +264,7 @@ agentPlanRoutes.post('/:id/pause', async (c) => {
       .where(eq(agentPlans.id, planId))
       .returning();
 
-    return c.json(updated);
+    return c.json(withDestructiveMarks(updated));
   } catch (err) {
     console.error('Failed to pause plan:', err);
     return c.json({ error: 'Failed to pause plan', code: 'INTERNAL_ERROR' }, 500);
@@ -331,7 +349,7 @@ agentPlanRoutes.post('/:id/abort', async (c) => {
       .where(eq(agentPlans.id, planId))
       .returning();
 
-    return c.json(updated);
+    return c.json(withDestructiveMarks(updated));
   } catch (err) {
     console.error('Failed to abort plan:', err);
     return c.json({ error: 'Failed to abort plan', code: 'INTERNAL_ERROR' }, 500);
