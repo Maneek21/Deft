@@ -45,7 +45,9 @@ import {
   type AgentChannelAdapterMode,
 } from '../lib/agent-channel.js';
 import { getIO } from '../socket.js';
-import { executeSendMessage, executeTaskUpdate } from '../lib/mcp-tools/writes.js';
+import { executeSendMessage, executeTaskUpdate, verifyParentMessageMatches } from '../lib/mcp-tools/writes.js';
+import { employeeCanAccessSpace } from '../lib/mcp-tools/employee-space-access.js';
+import { chargeEmployeeChatPostOncePerAttempt, checkEmployeeChatPost } from '../lib/employee-chat-post-guard.js';
 import { currentAgentChannelEventAuthoritySql } from '../lib/agent-channel-authority.js';
 import { buildAgentChannelLifecyclePatch } from '../lib/agent-channel-lifecycle.js';
 import { reconcileAgentChannelRuntimeAttempt } from '../lib/agent-channel-reconciliation.js';
@@ -1196,34 +1198,31 @@ agentChannelRoutes.post('/reply', async (c) => {
       .returning({ id: agentChannelDeliveryAttempts.id });
     return reconciled ? durable : { lostRace: true as const };
   };
+  // One clock reading per request: guard eligibility, the effective target
+  // and the reclaim itself must agree on whether a started lease expired.
+  const leaseExpiredBefore = new Date(Date.now() - AGENT_CHANNEL_DEFAULT_LEASE_MS);
   const attemptCanReconcile = (attempt: typeof agentChannelDeliveryAttempts.$inferSelect) => (
     attempt.status === 'failed'
-    || (
-      attempt.status === 'started'
-      && attempt.updated_at.getTime() <= Date.now() - AGENT_CHANNEL_DEFAULT_LEASE_MS
-    )
+    || (attempt.status === 'started' && attempt.updated_at.getTime() <= leaseExpiredBefore.getTime())
   );
   const reclaimAutonomousAttempt = async (
     attempt: typeof agentChannelDeliveryAttempts.$inferSelect,
   ) => {
     if (!autonomousReply || !attemptCanReconcile(attempt)) return undefined;
-    const storedRequest = attempt.request_json && typeof attempt.request_json === 'object'
-      ? attempt.request_json as Record<string, unknown>
-      : {};
     const reclaimableState = attempt.status === 'failed'
       ? eq(agentChannelDeliveryAttempts.status, 'failed')
       : and(
         eq(agentChannelDeliveryAttempts.status, 'started'),
-        sql`${agentChannelDeliveryAttempts.updated_at} <= ${new Date(Date.now() - AGENT_CHANNEL_DEFAULT_LEASE_MS)}`,
+        sql`${agentChannelDeliveryAttempts.updated_at} <= ${leaseExpiredBefore}`,
       );
+    // Merge in SQL (not from the snapshot) so a marker the previous
+    // generation wrote after this request read the row (the daily action
+    // charge) is carried over.
     const [reclaimed] = await db
       .update(agentChannelDeliveryAttempts)
       .set({
         status: 'started',
-        request_json: {
-          ...storedRequest,
-          attempt_generation: randomUUID(),
-        },
+        request_json: sql`(case when jsonb_typeof(${agentChannelDeliveryAttempts.request_json}) = 'object' then ${agentChannelDeliveryAttempts.request_json} else '{}'::jsonb end) || jsonb_build_object('attempt_generation', ${randomUUID()}::text)`,
         response_json: null,
         error: null,
         updated_at: new Date(),
@@ -1351,7 +1350,55 @@ agentChannelRoutes.post('/reply', async (c) => {
   if (!autonomousReply && (!parsed.data.claim_token || !hasActiveAgentChannelClaim(event, parsed.data.claim_token))) {
     return errorResponse(c, 409, 'STALE_CLAIM', 'The Agent Channel claim is missing, expired, or owned by another worker');
   }
+  // A chat reply posts a message as the employee: the same guard rails as
+  // every other employee chat post. Replays were answered above without any
+  // charge. For a request that will post, decide ONE effective target (a
+  // reclaimed autonomous attempt executes its STORED thread; otherwise the
+  // requested one), validate it and run the non-charging rails (active,
+  // circuit breaker, reply storm) against it before anything is claimed, so
+  // a refusal writes nothing. The daily action slot is charged only after
+  // the idempotency claim is won (below), and the claim is released if the
+  // charge is refused. The channel has no approval queue, so an unhealthy
+  // employee is refused. These are 4xx: the bundled bridge retries only 429
+  // and 5xx (it settles the event failed).
+  const chatReply = !autonomousTaskReply && !autonomousNotificationReply;
+  const replyWillExecute = !existingAttempt
+    || (existingAttempt.status === 'failed' && (autonomousReply || event.source_kind === 'certification'))
+    || (existingAttempt.status !== 'failed' && autonomousReply && attemptCanReconcile(existingAttempt));
+  const attemptRequestOf = (attempt: typeof agentChannelDeliveryAttempts.$inferSelect) => (
+    attempt.request_json && typeof attempt.request_json === 'object'
+      ? attempt.request_json as Record<string, unknown>
+      : {}
+  );
+  // Must match how `executionThreadId` is derived from the claimed request.
+  const executionThreadOf = (request: Record<string, unknown>): string | null => (
+    autonomousReply && (request.thread_id === null || typeof request.thread_id === 'string')
+      ? request.thread_id
+      : parentId
+  );
+  const effectiveThreadId = existingAttempt && autonomousReply && attemptCanReconcile(existingAttempt)
+    ? executionThreadOf(attemptRequestOf(existingAttempt))
+    : parentId;
+  if (chatReply && replyWillExecute) {
+    if (!(await employeeCanAccessSpace(principal.employee_id, principal.org_id, event.space_id!))) {
+      return errorResponse(c, 403, 'FORBIDDEN', 'This agent employee cannot post in the channel event space');
+    }
+    if (effectiveThreadId && !(await verifyParentMessageMatches(effectiveThreadId, event.space_id!, principal.org_id))) {
+      return errorResponse(c, 404, 'NOT_FOUND', 'Reply thread not found in the channel event space');
+    }
+    const guard = await checkEmployeeChatPost({
+      orgId: principal.org_id,
+      employeeId: principal.employee_id,
+      parentId: effectiveThreadId,
+      onUnhealthy: 'refuse',
+    });
+    if (!guard.ok) return errorResponse(c, guard.status, guard.code, guard.message);
+  }
+  // The row this request's claim replaced (null for a fresh insert), so a
+  // claim whose charge is refused can be released exactly.
+  let claimedFrom: typeof agentChannelDeliveryAttempts.$inferSelect | null = null;
   if (existingAttempt?.status === 'failed') {
+    claimedFrom = existingAttempt;
     if (autonomousReply) {
       claim = await reclaimAutonomousAttempt(existingAttempt);
     } else if (event.source_kind !== 'certification') {
@@ -1382,6 +1429,7 @@ agentChannelRoutes.post('/reply', async (c) => {
       return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'The failed reply is already being retried');
     }
   } else if (existingAttempt && autonomousReply && attemptCanReconcile(existingAttempt)) {
+    claimedFrom = existingAttempt;
     claim = await reclaimAutonomousAttempt(existingAttempt);
     if (!claim) {
       return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'The expired reply attempt was already reclaimed');
@@ -1390,6 +1438,7 @@ agentChannelRoutes.post('/reply', async (c) => {
     return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'A reply with this idempotency key is already in progress');
   }
   if (!claim) {
+    claimedFrom = null;
     const [insertedClaim] = await db
       .insert(agentChannelDeliveryAttempts)
       .values({
@@ -1517,6 +1566,7 @@ agentChannelRoutes.post('/reply', async (c) => {
       return c.json({ ok: true, idempotent: true, result: latestAttempt.response_json });
     }
     if (latestAttempt?.status === 'failed') {
+      claimedFrom = latestAttempt;
       if (autonomousReply) {
         claim = await reclaimAutonomousAttempt(latestAttempt);
       } else if (event.source_kind !== 'certification') {
@@ -1547,12 +1597,66 @@ agentChannelRoutes.post('/reply', async (c) => {
         return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'The failed reply is already being retried');
       }
     } else if (latestAttempt && autonomousReply && attemptCanReconcile(latestAttempt)) {
+      claimedFrom = latestAttempt;
       claim = await reclaimAutonomousAttempt(latestAttempt);
       if (!claim) {
         return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'The expired reply attempt was already reclaimed');
       }
     } else {
       return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'A reply with this idempotency key is already in progress');
+    }
+  }
+
+  if (chatReply) {
+    // Only the winning claimant reaches this point; charge its daily action
+    // slot now. A refused charge, or a claim that turned out to carry a
+    // different target than the one validated above (a concurrent request
+    // changed the attempt), releases the claim exactly and posts nothing.
+    const wonClaim = claim;
+    const priorAttempt = claimedFrom;
+    const releaseClaim = async () => {
+      const ownClaim = and(
+        eq(agentChannelDeliveryAttempts.id, wonClaim.id),
+        eq(agentChannelDeliveryAttempts.org_id, principal.org_id),
+        eq(agentChannelDeliveryAttempts.agent_employee_id, principal.employee_id),
+        eq(agentChannelDeliveryAttempts.event_id, event.id),
+        eq(agentChannelDeliveryAttempts.status, 'started'),
+        attemptGenerationMatches(wonClaim),
+      );
+      if (!priorAttempt) {
+        await db.delete(agentChannelDeliveryAttempts).where(ownClaim);
+        return;
+      }
+      await db.update(agentChannelDeliveryAttempts)
+        .set({
+          status: priorAttempt.status,
+          request_json: priorAttempt.request_json,
+          response_json: priorAttempt.response_json,
+          error: priorAttempt.error,
+          updated_at: priorAttempt.updated_at,
+        })
+        .where(ownClaim);
+    };
+    if (executionThreadOf(claim.request_json && typeof claim.request_json === 'object'
+      ? claim.request_json as Record<string, unknown>
+      : requestJson) !== effectiveThreadId) {
+      await releaseClaim();
+      return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'The reply attempt changed while its target was being checked; retry the reply');
+    }
+    // At most one slot per attempt: a generation that reclaims an attempt an
+    // earlier generation already charged is not charged again.
+    const charge = await chargeEmployeeChatPostOncePerAttempt({
+      orgId: principal.org_id,
+      employeeId: principal.employee_id,
+      attemptId: claim.id,
+      attemptGeneration: attemptGenerationOf(claim),
+    });
+    if (!charge.ok && charge.code === 'CLAIM_LOST') {
+      return errorResponse(c, 409, 'REPLY_ATTEMPT_RECLAIMED', 'The reply attempt was reclaimed before this handler could charge it');
+    }
+    if (!charge.ok) {
+      await releaseClaim();
+      return errorResponse(c, charge.status, charge.code, charge.message);
     }
   }
 
