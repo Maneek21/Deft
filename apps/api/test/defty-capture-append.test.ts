@@ -74,6 +74,6 @@ test(`${explicitUpdate ? 'update-prefixed capture' : 'capture matching an existi
   assert.ok(patch.content.startsWith(existingContent), 'existing page must survive exactly, including long content');
   assert.match(patch.content.slice(existingContent.length), /^\n\n## Update \d{4}-\d{2}-\d{2}\n\n/);
   assert.ok(patch.content.endsWith(update));
-  assert.equal(patch.summary, update);
+  assert.ok(!('summary' in patch), 'an append keeps the existing page summary (B05)');
 });
 }

@@ -15,7 +15,11 @@ function message(content: string, index = 0) {
     confidence: null, agentMentioned: null, memorableFacts: null, decision: null,
   };
 }
-function batchHarness(rows: ReturnType<typeof message>[], modelResult?: Record<string, unknown>) {
+function batchHarness(
+  rows: ReturnType<typeof message>[],
+  modelResult?: Record<string, unknown>,
+  options: { honourWindow?: boolean } = {},
+) {
   const captures: any[] = [];
   const prompts: any[] = [];
   const windows: Date[][] = [];
@@ -34,7 +38,13 @@ function batchHarness(rows: ReturnType<typeof message>[], modelResult?: Record<s
         (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value))).map((value) => new Date(value as string)));
       return this;
     },
-    orderBy() { return this; }, async limit() { return [...rows].reverse(); },
+    orderBy() { return this; },
+    async limit() {
+      // Optionally apply the fetched time window like Postgres would.
+      const [since, before] = options.honourWindow ? windows[windows.length - 1] ?? [] : [];
+      return rows.filter((row) => (!since || row.createdAt >= since) && (!before || row.createdAt < before))
+        .reverse();
+    },
   };
   const url = new URL('../src/workers/handlers/chat-knowledge-batch.ts', import.meta.url);
   const require = createRequire(url);
@@ -239,4 +249,127 @@ test('unresolved agreement is not recaptured as knowledge', async () => {
     await harness.run();
     assert.equal(harness.captures.length, 0, content);
   }
+});
+
+function at(content: string, index: number, minutesAgo: number) {
+  const row = message(content, index);
+  row.createdAt = new Date(NOW - minutesAgo * 60_000);
+  return row;
+}
+
+test('D05: a late "do not save" inside the quiet window vetoes the earlier decision', async () => {
+  const harness = batchHarness([
+    at('Decision: demo moves to Friday 3pm', 0, 9),
+    at('Do not save this discussion.', 1, 4),
+  ], undefined, { honourWindow: true });
+  await harness.run();
+  assert.equal(harness.captures.length, 0, 'an unsettled discussion must not be captured before its directive is visible');
+  harness.clock.now += 30 * 60_000;
+  await harness.run();
+  assert.equal(harness.captures.length, 0, 'once settled, the directive vetoes the discussion');
+});
+
+test('D05: recent non-opt-out replies do not delay or block capture of an eligible decision', async () => {
+  const harness = batchHarness([
+    at('Decision: demo moves to Friday 3pm', 0, 12),
+    at('Thanks, noting that for the team.', 1, 6),
+  ], undefined, { honourWindow: true });
+  await harness.run();
+  assert.equal(harness.captures.length, 1, 'captured at 12:00 exactly as master would');
+  assert.match(harness.captures[0].content, /demo moves to Friday 3pm/);
+  assert.deepEqual([...harness.captures[0].metadata.batch_message_ids], ['message-0'],
+    'a reply inside the quiet window is never evidence');
+});
+
+test('D05: a decision inside the quiet window is not captured in this run and is captured by the next', async () => {
+  // Reviewer case: acknowledgements 11:40-11:55, decision at 11:59, run at 12:00.
+  const rows = [20, 15, 10, 5].map((minutesAgo, index) => at('Thanks, noting that for the team.', index + 1, minutesAgo));
+  rows.push(at('Decision: demo moves to Friday 3pm', 0, 1));
+  const harness = batchHarness(rows, undefined, { honourWindow: true });
+  await harness.run();
+  assert.equal(harness.captures.length, 0, 'a one-minute-old decision is not published early');
+  harness.clock.now += 30 * 60_000;
+  await harness.run();
+  assert.equal(harness.captures.length, 1, 'captured at 12:30 once settled');
+  assert.match(harness.captures[0].content, /demo moves to Friday 3pm/);
+  assert.ok(harness.captures[0].metadata.batch_message_ids.includes('message-0'));
+});
+
+test('D05: an opt-out inside the quiet window vetoes only its own discussion', async () => {
+  const harness = batchHarness([
+    at('Decision: invoices are sent on the first business day of each month', 0, 40),
+    at('Decision: demo moves to Friday 3pm', 1, 12),
+    at('Do not save this discussion.', 2, 6),
+  ], undefined, { honourWindow: true });
+  await harness.run();
+  assert.equal(harness.captures.length, 1, 'the separate earlier discussion is still captured');
+  assert.match(harness.captures[0].content, /invoices are sent/);
+  assert.deepEqual([...harness.captures[0].metadata.batch_message_ids], ['message-0']);
+});
+
+test('D05: a decision settled at run time is captured even while acknowledgements continue', async () => {
+  // Reviewer case: decision 11:47, acknowledgements 11:52 and 11:57, run at 12:00.
+  const harness = batchHarness([
+    at('Decision: demo moves to Friday 3pm', 0, 13),
+    at('Thanks, noting that for the team.', 1, 8),
+    at('Thanks, noting that for the team.', 2, 3),
+  ], undefined, { honourWindow: true });
+  await harness.run();
+  assert.equal(harness.captures.length, 1, 'captured at 12:00, not deferred out of the next lookback');
+  assert.match(harness.captures[0].content, /demo moves to Friday 3pm/);
+});
+
+test('D05: a quiet-window opt-out never un-suppresses a neighbouring discussion', async () => {
+  // Reviewer case at a 12:00 run (cutoff 11:52): master suppresses the 11:41
+  // decision because the next episode is an agent task command; the 11:55
+  // opt-out must not remove that command and so make the decision capturable.
+  const harness = batchHarness([
+    at('Decision: release deadline is Friday at 3pm.', 0, 19),
+    at('@Defty create a task for the release.', 1, 9),
+    at('Do not save this discussion.', 2, 5),
+  ], undefined, { honourWindow: true });
+  await harness.run();
+  assert.equal(harness.captures.length, 0);
+});
+
+test('D05: a vetoed candidate does not free a cap slot for another candidate', async () => {
+  // Six separate discussions; master keeps the last five (cap). The newest
+  // one is vetoed by a quiet-window opt-out, so exactly the other four remain.
+  const decisions = [
+    'Decision: invoices are sent on the first business day of each month',
+    'Decision: the support rotation changes every Monday morning',
+    'Decision: staging deploys freeze on Thursday afternoons',
+    'Decision: vendor contracts need legal signoff before renewal',
+    'Decision: the quarterly roadmap review happens in the large room',
+    'Decision: release notes are owned by the product manager',
+  ];
+  const rows = decisions.map((content, index) => at(content, index, 47 - index * 7));
+  const control = batchHarness(rows, undefined, { honourWindow: true });
+  await control.run();
+  assert.deepEqual(
+    control.captures.map((capture) => capture.metadata.batch_message_ids.join(',')),
+    ['message-1', 'message-2', 'message-3', 'message-4', 'message-5'],
+    'without the opt-out the cap keeps the newest five',
+  );
+  rows.push(at('Do not save this discussion.', 6, 6));
+  const harness = batchHarness(rows, undefined, { honourWindow: true });
+  await harness.run();
+  assert.deepEqual(
+    harness.captures.map((capture) => capture.metadata.batch_message_ids.join(',')),
+    ['message-1', 'message-2', 'message-3', 'message-4'],
+    'master selection (messages 1-5) minus the vetoed message 5; message 0 is not backfilled',
+  );
+});
+
+test('D08: an explicit decision that mentions a social timing word is captured', async () => {
+  const harness = batchHarness([message('Decision: weekend on-call uses PagerDuty for paging.')]);
+  await harness.run();
+  assert.equal(harness.captures.length, 1);
+  assert.equal(harness.captures[0].wikiType, 'decision');
+});
+
+test('D08: social subjects stay rejected even with decision language', async () => {
+  const harness = batchHarness([message('Decision: pineapple is banned from the pizza policy forever.')]);
+  await harness.run();
+  assert.equal(harness.captures.length, 0);
 });
