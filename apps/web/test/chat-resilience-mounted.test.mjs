@@ -417,3 +417,49 @@ test('R2-1: an older reconnect read that resolves last is ignored, in the channe
   }
 });
 
+const many = (count, prefix = 'x') => Array.from({ length: count }, (_, i) => ({
+  ...BASE, id: `${prefix}-${String(i + 1).padStart(3, '0')}`, parent_id: null, user_id: 'u-rahul', user_name: 'Rahul Mehta',
+  content: `Missed ${prefix} ${String(i + 1).padStart(3, '0')}`,
+  created_at: new Date(Date.parse('2026-10-22T11:00:00.000Z') + i * 1000).toISOString(),
+}));
+
+test('R2-2: a reconnect follows pages back to what was shown, so 150 missed messages leave no gap and older ones refresh', async () => {
+  const page = await open(browser, { harness: 'defty-chat-harness.tsx', url: '/chat?space=s1', override: FAKE_SERVER });
+  try {
+    await page.getByText('Destination message from Priya').waitFor();
+    await drop(page);
+    await srv(page, (data) => { window.__srv.channel = data; },
+      [ROOT, { ...DEST, content: 'Destination edited while offline', edited_at: '2026-10-22T10:40:00.000Z' }, ...many(150)]);
+    await reconnect(page);
+    await page.getByText('Missed x 150', { exact: true }).waitFor();
+    await page.getByText('Missed x 001', { exact: true }).waitFor();
+    const ids = await page.evaluate(() => [...new Set([...document.querySelectorAll('[data-message-id]')].map((el) => el.getAttribute('data-message-id')))]);
+    assert.equal(ids.filter((id) => id.startsWith('x-')).length, 150);
+    assert.deepEqual(ids.slice(0, 3), ['t1', 'm2', 'x-001']);
+    assert.equal(await page.getByText('Destination edited while offline').count(), 1, 'a message outside the latest page is refreshed');
+    assert.equal(await page.getByRole('button', { name: 'Load earlier messages' }).count(), 0);
+  } finally {
+    await close(page);
+  }
+});
+
+test('R2-2: past the page bound the view is replaced by the latest pages with a Load earlier control, never a silent hole', async () => {
+  const page = await open(browser, { harness: 'defty-chat-harness.tsx', url: '/chat?space=s1', override: FAKE_SERVER });
+  try {
+    await page.getByText('Destination message from Priya').waitFor();
+    await drop(page);
+    await srv(page, (data) => { window.__srv.channel = data; }, [ROOT, DEST, ...many(600)]);
+    await reconnect(page);
+    await page.getByText('Missed x 600', { exact: true }).waitFor();
+    const earlier = page.getByRole('button', { name: 'Load earlier messages' });
+    await earlier.waitFor();
+    await page.getByText('Missed x 101', { exact: true }).waitFor();
+    assert.equal(await page.getByText('Missed x 100', { exact: true }).count(), 0, 'nothing older than the fetched window is shown');
+    assert.equal(await page.getByText('Destination message from Priya').count(), 0, 'no gap: older messages are not kept beside it');
+    await earlier.click();
+    await page.getByText('Missed x 001', { exact: true }).waitFor();
+  } finally {
+    await close(page);
+  }
+});
+

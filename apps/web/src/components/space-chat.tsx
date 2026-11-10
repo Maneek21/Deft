@@ -72,7 +72,15 @@ import { UserProfileCard } from './user-profile-card';
 import { parseReminderTime } from './slash-command-autocomplete';
 import ConfirmDialog from './confirm-dialog';
 import { inlineApprovalDisplayContent } from '@/lib/agent-approval-copy';
-import { ConversationReads, mergeMessagesById } from '@/lib/chat-history-merge';
+import {
+  ConversationReads,
+  HISTORY_PAGE_SIZE,
+  applyHistoryRead,
+  mergeMessagesById,
+  oldestCreatedAt,
+  readHistoryBackTo,
+  readHistoryPage,
+} from '@/lib/chat-history-merge';
 import { ChatLoadError } from './chat-load-error';
 import {
   approvalContinuationGate,
@@ -925,12 +933,36 @@ export function SpaceChat({
   // Orders this conversation's history reads and remembers live socket
   // changes, so a slow or superseded read never undoes newer state.
   const historyReadsRef = useRef(new ConversationReads());
+  const messagesRef = useRef<Message[]>([]);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+  // Set when a catch-up stopped at its page bound and replaced the view:
+  // older history exists but is not shown.
+  const [hasEarlierHistory, setHasEarlierHistory] = useState(false);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const loadEarlierHistory = useCallback(async () => {
+    const visit = messageEventScopeRef.current.capture(spaceId, sessionCacheScope);
+    const reads = historyReadsRef.current;
+    const ticket = reads.peek();
+    setLoadingEarlier(true);
+    try {
+      const before = oldestCreatedAt(messagesRef.current) ?? undefined;
+      const page = await readHistoryPage<Message>((path: string) => api.get(path), `/api/messages/${spaceId}`, before);
+      if (!visit.isCurrent() || reads !== historyReadsRef.current) return;
+      setMessages((prev) => mergeMessagesById(prev, page, (id) => reads.changedSince(ticket, id)));
+      setHasEarlierHistory(page.length === HISTORY_PAGE_SIZE);
+    } catch {
+      if (visit.isCurrent()) setCmdToast('Could not load earlier messages. Try again.');
+    } finally {
+      setLoadingEarlier(false);
+    }
+  }, [spaceId, sessionCacheScope]);
   const retryHistory = useCallback(() => setHistoryAttempt((attempt) => attempt + 1), []);
 
   useEffect(() => {
     const visit = messageEventScopeRef.current.capture(spaceId, sessionCacheScope);
     setMessages([]);
     setHistoryStatus('loading');
+    setHasEarlierHistory(false);
     historyReadsRef.current.dispose();
     const reads = new ConversationReads();
     historyReadsRef.current = reads;
@@ -1117,14 +1149,15 @@ export function SpaceChat({
       missedEvents = false;
       const reads = historyReadsRef.current;
       const ticket = reads.begin();
-      void api.get(`/api/messages/${spaceId}`).then(async (res) => {
-        if (!res.ok || !visit.isCurrent() || !reads.isLatest(ticket)) return;
-        const data = await res.json();
+      // Page back until the read reaches the oldest shown message (bounded by
+      // CATCH_UP_MAX_PAGES), so a long outage leaves no hole and older shown
+      // messages get their current content, deletion and thread counts.
+      void readHistoryBackTo<Message>((path: string) => api.get(path), `/api/messages/${spaceId}`, oldestCreatedAt(messagesRef.current)).then((read) => {
         if (!visit.isCurrent() || !reads.isLatest(ticket)) return;
-        const fetched: Message[] = data.messages || data || [];
         setMessages((prev) => visit.isCurrent()
-          ? mergeMessagesById(prev, fetched, (id) => reads.changedSince(ticket, id))
+          ? applyHistoryRead(prev, read, (id) => reads.changedSince(ticket, id))
           : prev);
+        if (!read.coversShown) setHasEarlierHistory(true);
         setHistoryStatus('ready');
       }).catch(() => {});
       void swrMutate(`/api/agent/actions/pending-by-space?space_id=${spaceId}`).catch(() => undefined);
@@ -1537,6 +1570,19 @@ export function SpaceChat({
           )}
           {historyStatus === 'error' && (
             <ChatLoadError message="Could not load messages." onRetry={retryHistory} />
+          )}
+          {hasEarlierHistory && (
+            <div className="flex justify-center py-2">
+              <button
+                type="button"
+                onClick={() => { void loadEarlierHistory(); }}
+                disabled={loadingEarlier}
+                className="rounded-md px-3 py-1 text-[12px] font-semibold disabled:opacity-60"
+                style={{ border: '1px solid var(--border)', color: 'var(--on-surface)' }}
+              >
+                {loadingEarlier ? 'Loading earlier messages…' : 'Load earlier messages'}
+              </button>
+            </div>
           )}
           {pendingActionsError && (
             <ChatLoadError
