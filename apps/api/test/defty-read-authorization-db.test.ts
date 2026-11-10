@@ -468,6 +468,26 @@ describe('W1-b Defty read authorization', { skip: !canRun }, () => {
     }
   });
 
+  test('R6: a long room name is matched in full, never truncated to a shorter room', async () => {
+    const shortLong = `w1b-long-${run}-`.padEnd(200, 'p');
+    const longer = `${shortLong}x`;
+    const shortId = randomUUID();
+    await db.insert(spaces).values({ id: shortId, org_id: orgA, name: shortLong, type: 'public', created_by: alice })
+      .onConflictDoNothing();
+    await db.insert(spaceMembers).values({ space_id: shortId, user_id: alice }).onConflictDoNothing();
+    try {
+      // The longer name does not exist: it must not resolve the 200-character room.
+      const missing = await executeToolCall('search_decisions', { space_name: longer }, orgA, alice);
+      assert.equal((missing.result as any).code, 'SPACE_NOT_FOUND');
+      const exact = await executeToolCall('search_decisions', { space_name: shortLong }, orgA, alice);
+      assert.notEqual((exact.result as any)?.code, 'SPACE_NOT_FOUND');
+      assert.notEqual((exact.result as any)?.code, 'SPACE_AMBIGUOUS');
+    } finally {
+      await db.delete(spaceMembers).where(eq(spaceMembers.space_id, shortId));
+      await db.delete(spaces).where(eq(spaces.id, shortId));
+    }
+  });
+
   test('R5: the read_canvas action handler uses the same literal, unambiguous room resolution', async () => {
     await db.insert(canvases).values({ org_id: orgA, space_id: wildSpace, title: 'Wild canvas',
       content: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: wildCanary }] }] } })

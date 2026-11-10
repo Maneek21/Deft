@@ -1105,8 +1105,10 @@ export async function resolveReadableRoom(input: {
   name: unknown;
   includePublic: boolean;
 }): Promise<ReadableRoomResolution> {
-  const name = typeof input.name === 'string' ? input.name.trim().replace(/^#/, '').slice(0, 200) : '';
-  if (!name) return { error: 'Readable room not found.', code: 'SPACE_NOT_FOUND' };
+  // The complete name is matched. Truncating it would resolve a different,
+  // shorter-named room, so an over-long name is refused instead.
+  const name = typeof input.name === 'string' ? input.name.trim().replace(/^#/, '') : '';
+  if (!name || name.length > 1000) return { error: 'Readable room not found.', code: 'SPACE_NOT_FOUND' };
   const literal = name.replace(/[\\%_]/g, '\\$&');
   const rooms = await db
     .select({ id: spaces.id, name: spaces.name })
