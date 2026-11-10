@@ -1080,6 +1080,15 @@ async function fetchModuleContext(
 
 // ─── Main gateway ─────────────────────────────────────────────────────────────
 
+/** Current-audience predicate every retrieved wiki/decision answer passes
+ * (captured-mail audience, asker visibility, agent authority). Exported so
+ * non-ranked listing paths (search_decisions without a query) apply the
+ * exact predicate the ranked path does, from one place. */
+export function retrievedWikiAudienceCondition(orgId: string, userId?: string,
+  conversationId?: string, agentEmployeeId?: string) {
+  return emailKnowledgeAudienceCondition(orgId, userId, conversationId, agentEmployeeId);
+}
+
 export async function retrieveContextWithDiagnostics(
   params: RetrieveContextParams,
 ): Promise<RetrieveContextDetailedResult> {
@@ -1157,7 +1166,7 @@ export async function retrieveContextWithDiagnostics(
   const permitted = candidates.length ? await db.select({ id: wikiPages.id }).from(wikiPages)
     .where(and(eq(wikiPages.org_id, org_id), eq(wikiPages.is_deleted, false),
       inArray(wikiPages.id, candidates.map(row => row.source_id)),
-      emailKnowledgeAudienceCondition(org_id, user_id, space_id ?? conversation_id, agent_employee_id))) : [];
+      retrievedWikiAudienceCondition(org_id, user_id, space_id ?? conversation_id, agent_employee_id))) : [];
   const allowedIds = new Set(permitted.map(row => row.id));
   const results = [...candidates.filter(row => allowedIds.has(row.source_id)), ...memRows, ...noteRows, ...taskRows, ...moduleOutcome.results];
   results.sort((a, b) => b.score - a.score);

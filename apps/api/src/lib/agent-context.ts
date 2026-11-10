@@ -36,11 +36,10 @@ import {
 import { getMCPToolsForAgent, parseMCPToolName } from './mcp-tools.js';
 import { isDestructiveAction } from './agent-approval.js';
 import { visibleWikiPageCondition } from './wiki-visibility.js';
-import { emailKnowledgeAudienceCondition } from './email-knowledge-visibility.js';
 import { visibleNoteCondition } from './note-visibility.js';
 import { capabilityService } from './capability-service.js';
 import { eq, and, ilike, desc, sql, lt, gte, inArray, or } from 'drizzle-orm';
-import { retrieveContext } from './retrieve-context.js';
+import { retrieveContext, retrievedWikiAudienceCondition } from './retrieve-context.js';
 import { isManager } from '../middleware/privacy-guard.js';
 import { velocityCalculator, workloadAnalyzer, skillsGapAnalyzer } from '../services/team-analytics.js';
 import { generateOneOnePrep } from '../services/oneone-prep.js';
@@ -1137,7 +1136,7 @@ export async function executeToolCall(
           eq(wikiPages.type, 'decision'),
           eq(wikiPages.is_deleted, false),
           visibleWikiPageCondition(_userId, orgId),
-          emailKnowledgeAudienceCondition(orgId, _userId, conversationId, agentEmployeeId),
+          retrievedWikiAudienceCondition(orgId, _userId, conversationId, agentEmployeeId),
         ];
 
         // space_name filter for empty-query path. Resolve only rooms the
