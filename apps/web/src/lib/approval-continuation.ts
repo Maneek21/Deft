@@ -71,40 +71,36 @@ export function approvalContinuationGate(
   return { show: true, disabled: false, sourceMessageId, reason: 'ready' };
 }
 
-export async function consumeAgentContinuationStream(response: Response): Promise<void> {
-  const reader = response.body?.getReader();
-  if (!reader) throw new Error('The continuation response had no stream.');
+/**
+ * "Continue with Defty" posts this as an ordinary chat message in the agent
+ * conversation (POST /api/messages/:spaceId). The messages route wakes the
+ * conversation's agent and the queued agent-reply worker answers it in chat
+ * mode, where every write is proposed for approval. The retired
+ * /api/agent/conversations/:id/continue stream is no longer used.
+ */
+export const APPROVAL_CONTINUATION_MESSAGE = 'Continue.';
 
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let streamedError: string | null = null;
-  let completed = false;
+export function approvalContinuationMessageBody(): { content: string; file_ids: string[] } {
+  return { content: APPROVAL_CONTINUATION_MESSAGE, file_ids: [] };
+}
 
-  const consumeLine = (line: string) => {
-    if (!line.startsWith('data:')) return;
-    const payload = line.slice(5).trim();
-    if (!payload) return;
-    try {
-      const event = JSON.parse(payload) as { type?: unknown; error?: unknown };
-      if (event.type === 'error' && typeof event.error === 'string' && event.error.trim()) {
-        streamedError ??= event.error;
-      }
-      if (event.type === 'done') completed = true;
-    } catch {
-      // Unknown SSE events are ignored; the persisted conversation is authoritative.
-    }
-  };
+const CONTINUATION_KEY_PREFIX = 'approval-continue:';
 
-  while (true) {
-    const { done, value } = await reader.read();
-    buffer += decoder.decode(value, { stream: !done });
-    const lines = buffer.split(/\r?\n/);
-    buffer = lines.pop() ?? '';
-    for (const line of lines) consumeLine(line);
-    if (done) break;
-  }
-  if (buffer) consumeLine(buffer);
-
-  if (streamedError) throw new Error(streamedError);
-  if (!completed) throw new Error('The continuation stream ended before completion.');
+/**
+ * Idempotency-Key for the continuation post. Derived only from the space and
+ * the approval-confirmation message, so every retry of the same confirmation
+ * (including after a lost response with no working sessionStorage) replays
+ * the same key and the server returns the already-committed message instead
+ * of starting another agent turn. A later confirmation message gets a
+ * different key. Hashed so the result always fits the API's key contract
+ * (1-128 chars of [A-Za-z0-9._:-]) whatever characters the IDs contain.
+ */
+export async function approvalContinuationIdempotencyKey(
+  spaceId: string,
+  confirmationId: string,
+): Promise<string> {
+  const material = new TextEncoder().encode(JSON.stringify([spaceId, confirmationId]));
+  const hash = await globalThis.crypto.subtle.digest('SHA-256', material);
+  const hex = Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `${CONTINUATION_KEY_PREFIX}${hex}`;
 }

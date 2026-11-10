@@ -4,7 +4,7 @@
   "review_original_sarif_sha256": "74fca9d731caa803a9b62d44951053656b5eb7a9202823acbd908dea9a09f6ea",
   "sources": {
     "examples/apps/email/fixtures/launch-stage0/verify.test.mjs": "134b1e413cdfade7efbc67e9c246f916c28a0e525ae8a199fba263ed0f8c7322",
-    "apps/api/src/lib/agent-actions.ts": "4a7f5aa4d57ce4914d7791f5e770c32bd2d8d804833f99c34b44b3059b7f5354",
+    "apps/api/src/lib/agent-actions.ts": "e1aff24d5721b668f9f34d114d454d07fe4845ae3332c672514a21c21c7adc64",
     "apps/api/src/lib/app-installed-tool-discovery.ts": "47e783f1423f04df862aaea444198cb512f5bccf8ba5e17ea2d99745ed906639",
     "apps/api/src/lib/app-integration-tool-runtime.ts": "7e36690c6527e1c190d2c9410986293422a55f9f750f0e89a4bf5a09ec03af80",
     "apps/api/src/lib/document-send.ts": "eed5824a4f4b82e08da04ef787e13454e462a6a00af02e0683a16798d8727668",
@@ -65,12 +65,12 @@
       "disposition": "false_positive",
       "rule": "js/insufficient-password-hash",
       "path": "apps/api/src/lib/agent-actions.ts",
-      "line": 340,
-      "fingerprint": "c5be54375030068877dff722b1999b92334d3fbabcb1e45b7ea40d95ab713538",
+      "line": 342,
+      "fingerprint": "b22d8eee447e8f7e208507db2957818c613b55d043232864a488f72b1edb8de6",
       "sources": [
         "apps/api/src/lib/agent-actions.ts"
       ],
-      "justification": "This SHA-256 is the retry-domain digest of org, actor/client identifiers and an idempotency key. Authenticator return-object taint is propagated into public identity fields; no password verifier is derived or stored. Existing persisted idempotency identities must remain unchanged."
+      "justification": "This SHA-256 is the retry-domain digest of org, actor/client identifiers and an idempotency key. Authenticator return-object taint is propagated into public identity fields; no password verifier is derived or stored. Existing persisted idempotency identities must remain unchanged. Re-reviewed for PR #428 (Defty W1-b read authorization) against raw CodeQL run 42791251995 on commit 555f7c5b. The sink is textually identical and moves one line because agent-actions.ts imports spaceMembers; read_canvas now also requires room membership and an org-scoped canvas lookup. Mapping every location and flow step back through the branch diff reproduces the prior exact fingerprint, no flow step touches a changed line, and the hashed inputs remain org, actor/client identifiers and the idempotency key. Re-reviewed again for PR #428 against raw CodeQL run 42798401766 on commit 92e5af1f (after 1ff20dcf and 92e5af1f). The sink is textually identical and moves from line 341 to 342 because of the new resolveReadableRoom import. Mapping every location and flow step back through git diff 555f7c5b..92e5af1f reproduces the previously reviewed fingerprint; no flow step touches a changed line. agent-actions.ts gains one import (resolveReadableRoom), shifting flow steps one line, and the read_canvas block grows five lines, shifting later flow steps six lines; the canvas room resolver is not on the flow. The hashed inputs remain org, actor/client identifiers and the idempotency key."
     },
     {
       "id": "FP-004",
@@ -78,12 +78,12 @@
       "rule": "js/insufficient-password-hash",
       "path": "apps/api/src/lib/app-installed-tool-discovery.ts",
       "line": 30,
-      "fingerprint": "f2ac9e50c2d610112d3c731b8a122b5435cc657c05a6703aa8a0458ac8f67316",
+      "fingerprint": "246566a32c88144b180df295fd0596f404a52c4ae3bbaf7e3555f0c7f9db0ca0",
       "sources": [
         "apps/api/src/lib/app-installed-tool-discovery.ts",
         "apps/api/src/lib/app-integration-tool-runtime.ts"
       ],
-      "justification": "This SHA-256 creates a deterministic write request UUID from actor identity, declared tool key and canonical input, not a password verifier. Duplicate recovery separately checks org/user/principal, complete input/declaration digests and immutable target; reads use randomUUID. The full target fence is pinned below. Re-reviewed 2026-10-28: only the CodeQL flow fingerprint changed because Defty agent-context.ts (an unrelated workspace search caller) now appears in the authenticator-object taint path; the hashed inputs and sink are unchanged. Re-reviewed for PR #424 against raw CodeQL run 41879227567: the fingerprint and location are unchanged. app-installed-tool-discovery.ts adds prepare_record_mirror to the write-operation set, and app-integration-tool-runtime.ts wraps authority checks in a registry scope and adds Host-side record-mirror nomination under the already-validated integration grant principal. The hashed inputs (actor identity, tool key, canonical input) and the request-UUID sink are unchanged; this is still not a password verifier."
+      "justification": "This SHA-256 creates a deterministic write request UUID from actor identity, declared tool key and canonical input, not a password verifier. Duplicate recovery separately checks org/user/principal, complete input/declaration digests and immutable target; reads use randomUUID. The full target fence is pinned below. Re-reviewed 2026-10-28: only the CodeQL flow fingerprint changed because Defty agent-context.ts (an unrelated workspace search caller) now appears in the authenticator-object taint path; the hashed inputs and sink are unchanged. Re-reviewed for PR #424 against raw CodeQL run 41879227567: the fingerprint and location are unchanged. app-installed-tool-discovery.ts adds prepare_record_mirror to the write-operation set, and app-integration-tool-runtime.ts wraps authority checks in a registry scope and adds Host-side record-mirror nomination under the already-validated integration grant principal. The hashed inputs (actor identity, tool key, canonical input) and the request-UUID sink are unchanged; this is still not a password verifier. Re-reviewed for PR #428 (Defty W1-b read authorization) against raw CodeQL run 42791251995 on commit 555f7c5b. The sink location is unchanged; only the fingerprint changed because the agent-context.ts workspace search caller in the authenticator-object taint path moves five lines (new imports). Mapping every flow step back through the branch diff reproduces the prior exact fingerprint and no flow step touches a changed line; the hashed inputs and request-UUID sink are unchanged. Re-reviewed again for PR #428 against raw CodeQL run 42798401766 on commit 92e5af1f (after 1ff20dcf and 92e5af1f). The sink location is unchanged; only the fingerprint changed because the agent-context.ts flow steps (workspace search caller) move one line for a new import. Mapping every location and flow step back through git diff 555f7c5b..92e5af1f reproduces the previously reviewed fingerprint and no flow step touches a changed line; the hashed inputs and request-UUID sink are unchanged. Re-reviewed again for PR #428 against raw CodeQL run 42817152371 on commit e803ca1f (after 8f42400e, which moved the MCP read preflight into capability-service.ts and capability-providers/mcp.ts). The sink location is unchanged; only the fingerprint changed because the agent-context.ts flow steps (the installed-app tool caller in executeToolCall, lines 111-125) move up one line: 8f42400e removed the mcp-runtime.js import. Mapping every location and flow step back through git diff 8c971188..e803ca1f reproduces the fingerprint matched by passing run 42808400085; no flow step touches a changed line, the rewritten MCP read path (agent-context.ts lines 237-283) is not on the flow, and capability-service.ts and capability-providers/mcp.ts appear in no finding. The new fingerprint equals the one reviewed before 92e5af1f because that commit added one agent-context.ts import and 8f42400e removed one. The hashed inputs and request-UUID sink are unchanged."
     },
     {
       "id": "FP-005",
@@ -91,11 +91,11 @@
       "rule": "js/insufficient-password-hash",
       "path": "apps/api/src/lib/document-send.ts",
       "line": 74,
-      "fingerprint": "7c80157d148e2520c5d0d77e4632421e0375ef524035401c35e8e8d3b76ba126",
+      "fingerprint": "7989cea200f40cfcb60049dac3b1c35223f8f6bc75f95e8d62811abbadc16c22",
       "sources": [
         "apps/api/src/lib/document-send.ts"
       ],
-      "justification": "This hash derives document-action identity/preview idempotency from actor identifiers and exact document preview data. It does not store or authenticate a user password; broad authenticator-object taint reaches actor IDs. Changing it would change persisted retry identities rather than improve password storage."
+      "justification": "This hash derives document-action identity/preview idempotency from actor identifiers and exact document preview data. It does not store or authenticate a user password; broad authenticator-object taint reaches actor IDs. Changing it would change persisted retry identities rather than improve password storage. Re-reviewed for PR #428 (Defty W1-b read authorization) against raw CodeQL run 42791251995 on commit 555f7c5b. document-send.ts is unchanged; only the fingerprint changed because agent-actions.ts flow steps move three lines (spaceMembers import and the read_canvas room-membership join). Mapping every flow step back through the branch diff reproduces the prior exact fingerprint and no flow step touches a changed line. Re-reviewed again for PR #428 against raw CodeQL run 42798401766 on commit 92e5af1f (after 1ff20dcf and 92e5af1f). document-send.ts is unchanged; only the fingerprint changed. Mapping every location and flow step back through git diff 555f7c5b..92e5af1f reproduces the previously reviewed fingerprint; no flow step touches a changed line. agent-actions.ts gains one import (resolveReadableRoom), shifting flow steps one line, and the read_canvas block grows five lines, shifting later flow steps six lines; the canvas room resolver is not on the flow."
     },
     {
       "id": "FP-006",
@@ -103,11 +103,11 @@
       "rule": "js/insufficient-password-hash",
       "path": "apps/api/src/lib/document-send.ts",
       "line": 308,
-      "fingerprint": "26af4905968dc5f69034fb7132bd6a0afc7a5051645da4e7df846af030bb88ca",
+      "fingerprint": "b4aa54d38f6c7bf6f530f5323bef024dd72c1f1fc8d0eec27bb3798af298afb3",
       "sources": [
         "apps/api/src/lib/document-send.ts"
       ],
-      "justification": "This hash derives document-action identity/preview idempotency from actor identifiers and exact document preview data. It does not store or authenticate a user password; broad authenticator-object taint reaches actor IDs. Changing it would change persisted retry identities rather than improve password storage."
+      "justification": "This hash derives document-action identity/preview idempotency from actor identifiers and exact document preview data. It does not store or authenticate a user password; broad authenticator-object taint reaches actor IDs. Changing it would change persisted retry identities rather than improve password storage. Re-reviewed for PR #428 (Defty W1-b read authorization) against raw CodeQL run 42791251995 on commit 555f7c5b. document-send.ts is unchanged; only the fingerprint changed because agent-actions.ts flow steps move three lines (spaceMembers import and the read_canvas room-membership join). Mapping every flow step back through the branch diff reproduces the prior exact fingerprint and no flow step touches a changed line. Re-reviewed again for PR #428 against raw CodeQL run 42798401766 on commit 92e5af1f (after 1ff20dcf and 92e5af1f). document-send.ts is unchanged; only the fingerprint changed. Mapping every location and flow step back through git diff 555f7c5b..92e5af1f reproduces the previously reviewed fingerprint; no flow step touches a changed line. agent-actions.ts gains one import (resolveReadableRoom), shifting flow steps one line, and the read_canvas block grows five lines, shifting later flow steps six lines; the canvas room resolver is not on the flow."
     },
     {
       "id": "FP-007",
@@ -127,11 +127,11 @@
       "rule": "js/insufficient-password-hash",
       "path": "apps/api/src/lib/receipts.ts",
       "line": 165,
-      "fingerprint": "b9457483ec128cfc9eaef6ad208aa45ba7d55a668f101e5e9813e11eec05bc48",
+      "fingerprint": "cd913a8bdea8d7cb93ad17e746814cc8f26b037fb0c6428787c3c10d258c7218",
       "sources": [
         "apps/api/src/lib/receipts.ts"
       ],
-      "justification": "This is HMAC-SHA256 with the receipt signing key over a canonical audit payload, not password storage. Actor metadata from authentication is receipt data. Slow/salted password hashing would destroy deterministic receipt verification; the signing domain and keyed construction remain unchanged."
+      "justification": "This is HMAC-SHA256 with the receipt signing key over a canonical audit payload, not password storage. Actor metadata from authentication is receipt data. Slow/salted password hashing would destroy deterministic receipt verification; the signing domain and keyed construction remain unchanged. Re-reviewed for PR #428 (Defty W1-b read authorization) against raw CodeQL run 42791251995 on commit 555f7c5b. receipts.ts is unchanged; only the fingerprint changed because agent-actions.ts flow steps move three lines (spaceMembers import and the read_canvas room-membership join). Mapping every flow step back through the branch diff reproduces the prior exact fingerprint and no flow step touches a changed line; the keyed HMAC receipt construction is unchanged. Re-reviewed again for PR #428 against raw CodeQL run 42798401766 on commit 92e5af1f (after 1ff20dcf and 92e5af1f). receipts.ts is unchanged; only the fingerprint changed. Mapping every location and flow step back through git diff 555f7c5b..92e5af1f reproduces the previously reviewed fingerprint; no flow step touches a changed line. agent-actions.ts gains one import (resolveReadableRoom), shifting flow steps one line, and the read_canvas block grows five lines, shifting later flow steps six lines; the canvas room resolver is not on the flow. The keyed HMAC receipt construction is unchanged."
     },
     {
       "id": "FP-009",
@@ -139,11 +139,11 @@
       "rule": "js/insufficient-password-hash",
       "path": "apps/api/src/lib/workspace-plan-import.ts",
       "line": 149,
-      "fingerprint": "bd8e3d713fc9680b346c5e103bba3244caf0f0d88162ce877f3ffc994f8e2102",
+      "fingerprint": "cfc64cb0e1346e8e196f46f61b184d80dee0af7a23b4e7d00ecdb14f4d0c2ef6",
       "sources": [
         "apps/api/src/lib/workspace-plan-import.ts"
       ],
-      "justification": "This SHA-256 fingerprints canonical import/preview JSON, including actor identifiers, rather than deriving a password verifier. Authentication-return taint reaches identity fields, but the digest is used for exact review/idempotency matching and grants no authority."
+      "justification": "This SHA-256 fingerprints canonical import/preview JSON, including actor identifiers, rather than deriving a password verifier. Authentication-return taint reaches identity fields, but the digest is used for exact review/idempotency matching and grants no authority. Re-reviewed for PR #428 (Defty W1-b read authorization) against raw CodeQL run 42791251995 on commit 555f7c5b. workspace-plan-import.ts is unchanged; only the fingerprint changed because agent-actions.ts flow steps move three lines (spaceMembers import and the read_canvas room-membership join). Mapping every flow step back through the branch diff reproduces the prior exact fingerprint and no flow step touches a changed line. Re-reviewed again for PR #428 against raw CodeQL run 42798401766 on commit 92e5af1f (after 1ff20dcf and 92e5af1f). workspace-plan-import.ts is unchanged; only the fingerprint changed. Mapping every location and flow step back through git diff 555f7c5b..92e5af1f reproduces the previously reviewed fingerprint; no flow step touches a changed line. agent-actions.ts gains one import (resolveReadableRoom), shifting flow steps one line, and the read_canvas block grows five lines, shifting later flow steps six lines; the canvas room resolver is not on the flow."
     },
     {
       "id": "FP-010",
