@@ -1,7 +1,7 @@
-import {and, eq, ilike, sql, type SQL} from 'drizzle-orm';
-import {agentActions, messages, notes, projects, spaces, tasks, wikiPages} from '@deft/db/schema';
+import {and, eq, sql, type SQL} from 'drizzle-orm';
+import {agentActions, messages, notes, projects, spaceMembers, spaces, tasks, wikiPages} from '@deft/db/schema';
 import {db} from './db.js';
-import {resolveSpaceTarget} from './resolve-space-target.js';
+import {resolveSpaceTargetFromRows} from './resolve-space-target.js';
 import {requireSpaceMembership} from './space-membership.js';
 import {visibleTaskCondition} from './task-visibility.js';
 import {visibleWikiPageCondition} from './wiki-visibility.js';
@@ -126,95 +126,115 @@ export function promotableNoteSql(userId: string): SQL {
   )`;
 }
 
-async function memberOfEverySpace(spaceIds: string[], userId: string, orgId: string): Promise<boolean> {
-  for (const spaceId of spaceIds) {
-    if (!(await requireSpaceMembership(spaceId, userId, orgId))) return false;
-  }
-  return true;
+const INVALID_TARGET = 'Invalid action target';
+
+function optionalString(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === 'string';
 }
 
+/** Non-archived spaces in the org the actor belongs to. */
+async function memberSpaces(orgId: string, userId: string) {
+  return db.select({ id: spaces.id, name: spaces.name, type: spaces.type, is_archived: spaces.is_archived })
+    .from(spaces)
+    .innerJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, userId)))
+    .where(and(eq(spaces.org_id, orgId), eq(spaces.is_archived, false)));
+}
+
+export type NativeActionTarget = { params: Record<string, any> } | { error: string };
+
 /**
- * Execution-time target check for native writes (C03). Each executor resolves
- * its target by org only; this resolves the same target the same way and
- * requires the acting principal (the user the action runs for, or the
- * employee's user) to pass the check the HTTP route applies: wiki page
- * visibility, or membership of the target space. A refusal reads like the
- * executor's own "not found" answer so it does not reveal the target.
- * Returns null when the action may proceed (or is not a governed write).
+ * Execution-time target authorization for native writes (C03). Rejects
+ * malformed target types, then resolves ONE target among the targets the
+ * acting principal (the user the action runs for, or the employee's user)
+ * may use under the HTTP route's rule: wiki page visibility, or membership of
+ * the target space. Name lookups only consider the actor's own spaces, so an
+ * answer never depends on, or reveals, a space the actor cannot see. The
+ * returned params carry the authorized space id, and the executor uses that
+ * id instead of repeating the name search. Caller-supplied resolved ids are
+ * dropped. Actions this does not govern pass through unchanged.
  */
-export async function nativeActionTargetAccessError(
+export async function authorizeNativeActionTarget(
   action: string,
   params: Record<string, any>,
   orgId: string,
   userId: string,
-): Promise<string | null> {
+): Promise<NativeActionTarget> {
   switch (action) {
     case 'post_message': {
-      const resolved = await resolveSpaceTarget(orgId, {
+      if (!optionalString(params.space_id) || !optionalString(params.resolved_space_id)
+        || !optionalString(params.space_name)) return { error: INVALID_TARGET };
+      const resolved = resolveSpaceTargetFromRows(await memberSpaces(orgId, userId), {
         spaceId: params.space_id ?? params.resolved_space_id,
         spaceName: params.space_name,
       });
-      const targets = resolved.status === 'resolved' ? [resolved.space]
-        : resolved.status === 'ambiguous' ? resolved.matches : [];
-      if (await memberOfEverySpace(targets.map((space) => space.id), userId, orgId)) return null;
-      const requestedId = params.space_id ?? params.resolved_space_id;
-      return typeof requestedId === 'string' && requestedId.trim()
-        ? `Space ${requestedId.trim()} was not found or is archived.`
-        : `Space "${resolved.requestedName ?? ''}" was not found. Choose an existing channel before approving.`;
+      if (resolved.status !== 'resolved') return { error: resolved.message };
+      return { params: { ...params, space_id: resolved.space.id, resolved_space_id: resolved.space.id } };
     }
     case 'add_knowledge':
     case 'write_canvas': {
-      const spaceName = typeof params.space_name === 'string'
-        ? (action === 'write_canvas' ? params.space_name.trim() : params.space_name)
-        : '';
-      if (!spaceName) return null;
-      // Every space the executor's name match could pick must be one the
-      // actor belongs to (the executor takes the first match unordered).
-      const matches = await db.select({ id: spaces.id }).from(spaces).where(and(
-        eq(spaces.org_id, orgId),
-        ilike(spaces.name, action === 'write_canvas' ? spaceName : `%${spaceName}%`),
-      ));
-      return await memberOfEverySpace(matches.map((space) => space.id), userId, orgId)
-        ? null
-        : `Space "${spaceName}" not found`;
+      const next = { ...params };
+      delete next.resolved_space_id;
+      if (action === 'write_canvas' && (params.space_name === undefined || params.space_name === null)) {
+        return { params: next };
+      }
+      if (typeof params.space_name !== 'string') return { error: INVALID_TARGET };
+      const spaceName = action === 'write_canvas' ? params.space_name.trim() : params.space_name;
+      if (!spaceName) return action === 'write_canvas' ? { params: next } : { error: INVALID_TARGET };
+      const wanted = spaceName.toLowerCase();
+      const rows = await memberSpaces(orgId, userId);
+      const exact = rows.filter((space) => space.name.toLowerCase() === wanted);
+      // write_canvas matches the whole name; add_knowledge matches a part of
+      // it, preferring a single whole-name match.
+      const candidates = action === 'write_canvas' || exact.length === 1
+        ? exact
+        : rows.filter((space) => space.name.toLowerCase().includes(wanted));
+      if (candidates.length === 0) return { error: `Space "${spaceName}" not found` };
+      if (candidates.length > 1) return { error: `Space "${spaceName}" matches more than one space; use its full name` };
+      return { params: { ...next, resolved_space_id: candidates[0]!.id } };
     }
     case 'post_thread_reply': {
-      const parentId = typeof params.parent_message_id === 'string' ? params.parent_message_id : '';
-      if (!parentId) return null;
+      if (!optionalString(params.parent_message_id)) return { error: INVALID_TARGET };
+      const parentId = params.parent_message_id;
+      if (!parentId) return { params };
       const [parent] = await db.select({ space_id: messages.space_id }).from(messages)
         .where(and(eq(messages.id, parentId), eq(messages.org_id, orgId), eq(messages.is_deleted, false)))
         .limit(1);
       return !parent || await requireSpaceMembership(parent.space_id, userId, orgId)
-        ? null
-        : 'Parent message not found in this org';
+        ? { params }
+        : { error: 'Parent message not found in this org' };
     }
     case 'create_note': {
-      if (params.visibility !== 'space' || typeof params.visibility_space_id !== 'string') return null;
+      if (params.visibility !== 'space') return { params };
+      if (!optionalString(params.visibility_space_id)) return { error: INVALID_TARGET };
+      if (!params.visibility_space_id) return { params };
       const [space] = await db.select({ id: spaces.id }).from(spaces).where(and(
         eq(spaces.id, params.visibility_space_id),
         eq(spaces.org_id, orgId),
         eq(spaces.is_archived, false),
       )).limit(1);
       return space && await requireSpaceMembership(space.id, userId, orgId)
-        ? null
-        : 'I could not verify access to the target space for this note.';
+        ? { params }
+        : { error: 'I could not verify access to the target space for this note.' };
     }
     case 'wiki_write': {
-      const slugs = [
-        ...(typeof params.slug === 'string' && params.slug ? [params.slug] : []),
-        ...(Array.isArray(params.related_slugs) ? params.related_slugs.filter((s: unknown) => typeof s === 'string') : []),
-      ] as string[];
+      if (!optionalString(params.slug)) return { error: INVALID_TARGET };
+      const related = params.related_slugs;
+      if (related !== undefined && related !== null
+        && !(Array.isArray(related) && related.every((slug: unknown) => typeof slug === 'string'))) {
+        return { error: INVALID_TARGET };
+      }
+      const slugs = [...(params.slug ? [params.slug as string] : []), ...((related ?? []) as string[])];
       for (const slug of slugs) {
         const pages = await db.select({ id: wikiPages.id }).from(wikiPages)
           .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.slug, slug)));
         if (pages.length === 0) continue;
         const visible = await db.select({ id: wikiPages.id }).from(wikiPages)
           .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.slug, slug), visibleWikiPageCondition(userId, orgId)));
-        if (visible.length !== pages.length) return `Wiki page "${slug}" not found`;
+        if (visible.length !== pages.length) return { error: `Wiki page "${slug}" not found` };
       }
-      return null;
+      return { params };
     }
     default:
-      return null;
+      return { params };
   }
 }

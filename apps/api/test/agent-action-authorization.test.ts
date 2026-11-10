@@ -149,7 +149,7 @@ after(async () => {
     await client.query('DELETE FROM messages WHERE org_id = $1', [orgId]);
     await client.query('DELETE FROM tasks WHERE org_id = $1', [orgId]);
     await client.query('DELETE FROM projects WHERE org_id = $1', [orgId]);
-    await client.query('DELETE FROM space_members WHERE space_id = ANY($1::text[])', [[privateSpaceId, sharedSpaceId]]);
+    await client.query('DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id = $1)', [orgId]);
     await client.query('DELETE FROM spaces WHERE org_id = $1', [orgId]);
     await client.query('DELETE FROM org_members WHERE org_id = $1', [orgId]);
     await client.query('DELETE FROM orgs WHERE id = $1', [orgId]);
@@ -322,6 +322,83 @@ test('C03: write_canvas, post_thread_reply, post_message and space notes require
     const result = await executeAction(actionId, action, params, orgId, requesterId);
     assert.equal(result.success, true, `${action}: ${result.error}`);
   }
+});
+
+test('R2-2: malformed target types are rejected before any native write', { skip: !canRun }, async () => {
+  const numericSlug = Number(`9${Date.now() % 1_000_000_000}`);
+  await client.query(
+    `INSERT INTO wiki_pages (id, org_id, scope, space_id, user_id, type, title, slug, content)
+     VALUES ($1, $2, 'space', $3, $4, 'fact', 'Numeric page', $5, 'numeric original')`,
+    [randomUUID(), orgId, privateSpaceId, requesterId, String(numericSlug)],
+  );
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ['add_knowledge', { space_name: [privateSpaceName], title: `malformed ${suffix}`, content: 'x' }],
+    ['add_knowledge', { space_name: { name: privateSpaceName }, title: `malformed2 ${suffix}`, content: 'x' }],
+    ['write_canvas', { space_name: [privateSpaceName], content: 'x' }],
+    ['wiki_write', { slug: numericSlug, content: 'overwritten' }],
+    ['wiki_write', { slug: `ok-${suffix}`, related_slugs: [numericSlug], content: 'x' }],
+    ['post_message', { space_id: [privateSpaceId], content: 'x' }],
+    ['post_message', { space_name: 42, content: 'x' }],
+    ['post_thread_reply', { parent_message_id: 7, content: 'x' }],
+    ['create_note', { title: 'n', visibility: 'space', visibility_space_id: [privateSpaceId] }],
+  ];
+  for (const [action, params] of cases) {
+    const actionId = await insertAction({ userId: otherMemberId, action, params, status: 'pending', executed: false });
+    const result = await executeAction(actionId, action, params, orgId, otherMemberId);
+    assert.equal(result.success, false, `${action} ${JSON.stringify(params)}`);
+    assert.equal(result.error, 'Invalid action target', `${action} ${JSON.stringify(params)}`);
+  }
+  const wiki = await client.query("SELECT count(*)::int AS n FROM wiki_pages WHERE org_id = $1 AND title LIKE 'malformed%'", [orgId]);
+  assert.equal(wiki.rows[0]?.n, 0);
+  const page = await client.query('SELECT content FROM wiki_pages WHERE org_id = $1 AND slug = $2', [orgId, String(numericSlug)]);
+  assert.equal(page.rows[0]?.content, 'numeric original');
+});
+
+test('R2-4: one accessible target resolves even when an inaccessible sibling shares the name', { skip: !canRun }, async () => {
+  const base = `w2a1-eng-${suffix}`;
+  const openId = randomUUID();
+  const siblingId = randomUUID();
+  const dupHiddenId = randomUUID();
+  await client.query(
+    `INSERT INTO spaces (id, org_id, name, type, created_by)
+     VALUES ($1, $4, $5, 'private', $7), ($2, $4, $6, 'private', $7), ($3, $4, $5, 'private', $7)`,
+    [openId, siblingId, dupHiddenId, orgId, base, `${base}-private`, requesterId],
+  );
+  // otherMember belongs only to the plainly named space; the prefixed sibling
+  // and a second space with the same name are private to the requester.
+  await client.query(
+    `INSERT INTO space_members (id, space_id, user_id) VALUES ($1, $2, $3), ($4, $5, $6), ($7, $8, $6)`,
+    [randomUUID(), openId, otherMemberId, randomUUID(), siblingId, requesterId, randomUUID(), dupHiddenId],
+  );
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ['add_knowledge', { space_name: base, title: `sibling knowledge ${suffix}`, content: 'k' }],
+    ['write_canvas', { space_name: base, content: 'sibling canvas' }],
+    ['post_message', { space_name: base, content: `sibling post ${suffix}` }],
+  ];
+  for (const [action, params] of cases) {
+    const actionId = await insertAction({ userId: otherMemberId, action, params, status: 'pending', executed: false });
+    const result = await executeAction(actionId, action, params, orgId, otherMemberId);
+    assert.equal(result.success, true, `${action}: ${result.error}`);
+  }
+  const knowledge = await client.query('SELECT space_id FROM wiki_pages WHERE org_id = $1 AND title = $2', [orgId, `sibling knowledge ${suffix}`]);
+  assert.deepEqual(knowledge.rows.map((r) => r.space_id), [openId]);
+  const canvas = await client.query('SELECT space_id FROM canvases WHERE space_id = ANY($1::text[])', [[openId, siblingId, dupHiddenId]]);
+  assert.deepEqual(canvas.rows.map((r) => r.space_id), [openId]);
+  const post = await client.query('SELECT space_id FROM messages WHERE org_id = $1 AND content = $2', [orgId, `sibling post ${suffix}`]);
+  assert.deepEqual(post.rows.map((r) => r.space_id), [openId]);
+
+  // A name only an inaccessible space carries reads as missing, without naming it.
+  const hiddenOnly = await insertAction({ userId: otherMemberId, action: 'post_message', params: { space_name: `${base}-private`, content: 'x' }, status: 'pending', executed: false });
+  const refused = await executeAction(hiddenOnly, 'post_message', { space_name: `${base}-private`, content: 'x' }, orgId, otherMemberId);
+  assert.equal(refused.success, false);
+  assert.doesNotMatch(refused.error ?? '', /#/, 'no space is listed');
+  // A caller-supplied resolved id is never trusted over the authorized target.
+  const forged = { space_name: base, resolved_space_id: siblingId, content: 'forged canvas' };
+  const forgedId = await insertAction({ userId: otherMemberId, action: 'write_canvas', params: forged, status: 'pending', executed: false });
+  const forgedResult = await executeAction(forgedId, 'write_canvas', forged, orgId, otherMemberId);
+  assert.equal(forgedResult.success, true, forgedResult.error);
+  const siblingCanvas = await client.query('SELECT count(*)::int AS n FROM canvases WHERE space_id = $1', [siblingId]);
+  assert.equal(siblingCanvas.rows[0]?.n, 0);
 });
 
 // ─── C13 ─────────────────────────────────────────────────────────────────────

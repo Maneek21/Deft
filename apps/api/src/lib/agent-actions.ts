@@ -51,7 +51,7 @@ import {
 } from './agent-tool-policy.js';
 import { getApprovalTier, isDestructiveAction, shouldAutoExecute } from './agent-approval.js';
 import { validateNativeAgentMentionWrite } from './native-mention-agent-writes.js';
-import { nativeActionTargetAccessError, promotableNoteSql } from './agent-action-visibility.js';
+import { authorizeNativeActionTarget, promotableNoteSql } from './agent-action-visibility.js';
 import {
   MODULE_OPERATION_REQUEST_SCHEMAS,
   ModuleIdSchema,
@@ -1472,7 +1472,7 @@ export async function executeAction(
       const referenceError = await validateNativeAgentMentionWrite(action, params, orgId, userId, agentEmployeeId ?? undefined);
       if (referenceError) return { success: false, result: null, error: referenceError };
     }
-    const targetAccessError = await nativeActionTargetAccessError(action, params, orgId, userId); if (targetAccessError) return { success: false, result: null, error: targetAccessError };
+    const target = await authorizeNativeActionTarget(action, params, orgId, userId); if ('error' in target) return { success: false, result: null, error: target.error }; params = target.params;
     const taskScopeError = await employeeTaskWriteScopeError(
       action,
       params,
@@ -2287,7 +2287,7 @@ export async function executeAction(
         const [space] = await db
           .select()
           .from(spaces)
-          .where(and(eq(spaces.org_id, orgId), ilike(spaces.name, `%${params.space_name}%`)))
+          .where(and(eq(spaces.org_id, orgId), params.resolved_space_id ? eq(spaces.id, params.resolved_space_id) : ilike(spaces.name, `%${params.space_name}%`)))
           .limit(1);
         if (!space) return { success: false, result: null, error: `Space "${params.space_name}" not found` };
 
@@ -3196,7 +3196,7 @@ export async function executeAction(
         const [space] = await db
           .select({ id: spaces.id, name: spaces.name })
           .from(spaces)
-          .where(and(eq(spaces.org_id, orgId), ilike(spaces.name, spaceName)))
+          .where(and(eq(spaces.org_id, orgId), params.resolved_space_id ? eq(spaces.id, params.resolved_space_id) : ilike(spaces.name, spaceName)))
           .limit(1);
         if (!space) return { success: false, result: null, error: `Space "${spaceName}" not found` };
 
