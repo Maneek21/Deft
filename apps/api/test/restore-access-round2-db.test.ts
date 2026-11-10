@@ -110,9 +110,9 @@ test('PR424 restore access round 2 (F02-F10)', { skip: !safe, timeout: 300000 },
     return next;
   }
   /** Record consent through the guarded proposed -> active lifecycle. */
-  async function insertRecordConsent(session: Record<string, any>, ownerId: string, createdAt: string) {
+  async function insertRecordConsent(session: Record<string, any>, ownerId: string, createdAt: string, ttlMs?: number) {
     const consentId = randomUUID();
-    const expiresAt = at(90 * 86400_000);
+    const expiresAt = ttlMs === undefined ? at(90 * 86400_000) : new Date(Date.parse(createdAt) + ttlMs).toISOString();
     const snapshot = {
       schema_version: 'deft.app_data_consent.v1', consent_id: consentId, scope: session.scope,
       connection: { session_id: session.session_id, session_revision: session.revision,
@@ -131,7 +131,7 @@ test('PR424 restore access round 2 (F02-F10)', { skip: !safe, timeout: 300000 },
   }
 
   type PairOptions = { action?: boolean; record?: boolean; observation?: boolean; ownerId?: string; webId?: string;
-    clearAccount?: boolean; currentAccount?: string; currentRecord?: boolean };
+    clearAccount?: boolean; currentAccount?: string; currentRecord?: boolean; priorRecordTtlMs?: number };
   async function createPair(targetKey: string, options: PairOptions = {}) {
     const ownerId = options.ownerId ?? owner;
     const webId = options.webId ?? webSessionId;
@@ -146,7 +146,7 @@ test('PR424 restore access round 2 (F02-F10)', { skip: !safe, timeout: 300000 },
       }] };
     }
     prior = await insertConnected(prior, webId, ownerId);
-    const recordConsentId = options.record ? await insertRecordConsent(prior, ownerId, priorAt) : null;
+    const recordConsentId = options.record ? await insertRecordConsent(prior, ownerId, priorAt, options.priorRecordTtlMs) : null;
     let observationConsentId: string | null = null;
     if (options.observation) {
       observationConsentId = randomUUID();
@@ -376,8 +376,21 @@ test('PR424 restore access round 2 (F02-F10)', { skip: !safe, timeout: 300000 },
     const grant = review.grants.find((item: any) => item.kind === 'observation_consent')!;
     const result = await service.activate(actor, envelope(review, 'f07', [grant.grant_id]));
     assert.equal(result.grants.length, 1);
-    const rows = (await client.query('SELECT snapshot,state FROM app_resource_observation_consents WHERE org_id=$1 AND consent_id=$2',
+    // PR424-N4: the activation response's `grant_id` is the NEW consent id
+    // (original_grant_id carries the predecessor); exactly one row must match.
+    assert.equal(result.grants[0]!.original_grant_id, pair.observationConsentId);
+    assert.notEqual(result.grants[0]!.grant_id, pair.observationConsentId);
+    const rows = (await client.query('SELECT consent_id,connection_session_id,snapshot,state FROM app_resource_observation_consents WHERE org_id=$1 AND consent_id=$2',
       [org, result.grants[0]!.grant_id])).rows;
+    assert.equal(rows.length, 1, 'exactly one restored observation row is addressed by the response grant_id');
+    assert.equal(rows[0].connection_session_id, pair.currentId);
+    assert.equal(rows[0].snapshot.consent_id, result.grants[0]!.grant_id);
+    const original = (await client.query('SELECT state FROM app_resource_observation_consents WHERE org_id=$1 AND consent_id=$2',
+      [org, pair.observationConsentId])).rows;
+    assert.equal(original[0].state, 'revoked', 'the predecessor observation consent is soft-transitioned');
+    const active = (await client.query("SELECT count(*)::int AS count FROM app_resource_observation_consents WHERE org_id=$1 AND resource_binding_id=$2 AND state='active'",
+      [org, fixture.binding_id])).rows;
+    assert.equal(active[0].count, 1, 'one active observation consent per binding');
     assert.equal(rows[0].state, 'active');
     assert.equal(rows[0].snapshot.connection.session_id, pair.currentId);
     assert.equal(rows[0].snapshot.connection.expected_custody_generation, null);
@@ -428,5 +441,126 @@ test('PR424 restore access round 2 (F02-F10)', { skip: !safe, timeout: 300000 },
       (error: any) => error.code === 'APP_REVIEW_REQUIRED' && error.status === 403);
     assert.equal((await sessionsOf(owner, targetKey)).length, 2, 'no successor is attempted');
     assert.equal((await reviewRow(review.review_id)).consumed_at, null, 'the review stays usable for other items');
+  });
+
+  /** A prior session whose action consent lasted exactly one hour (finite). */
+  async function createFiniteActionPair(targetKey: string) {
+    const priorId = randomUUID(), currentId = randomUUID();
+    const priorAt = at(-2 * 3600_000);
+    const actionConsentId = randomUUID();
+    let prior: Record<string, any> = { ...recordFor(priorId, targetKey, priorAt), action_consents: [{
+      action_binding_id: actionConsentId, action_key: 'mirror_inbox', authority_epoch: 1, consent_id: actionConsentId,
+      consent_digest: sha('d'), expires_at: new Date(Date.parse(priorAt) + 3600_000).toISOString() }] };
+    prior = await insertConnected(prior, webSessionId, owner);
+    await disconnect(prior, owner, false);
+    await insertConnected(recordFor(currentId, targetKey, at(-60_000)), webSessionId, owner);
+    return { priorId, currentId };
+  }
+
+  await t.test('PR424-N1: finite action grant is not widened to the live consent\'s expiry', async () => {
+    const consent = liveConsentFor();
+    // The live runtime consent lasts 30 days; the owner reviewed a one-hour grant.
+    const wide = new AppRestoreAccessService({ database: db as never, guard: noGuard, now: () => clock,
+      liveActionConsents: async () => [{ ...consent, expires_at: at(30 * 86400_000), consent_lifetime: undefined }] });
+    await createFiniteActionPair('n1');
+    const review = await wide.review(actor, nomination('n1'));
+    const grant = review.grants.find((item: any) => item.kind === 'action_consent')!;
+    assert.deepEqual(grant.lifetime, { kind: 'duration', seconds: 3600 }, 'precondition: the reviewed lifetime is one hour');
+    await assert.rejects(wide.activate(actor, envelope(review, 'n1', [grant.grant_id])),
+      (error: any) => error.code === 'APP_REVIEW_REQUIRED' && error.status === 403);
+    assert.equal((await sessionsOf(owner, 'n1')).length, 2, 'no successor is published with a widened action consent');
+    assert.equal((await reviewRow(review.review_id)).consumed_at, null, 'a refused activation leaves the review unconsumed');
+    // A live consent inside the reviewed hour is restored verbatim.
+    const narrow = { ...liveConsentFor(), expires_at: new Date(clock + 30 * 60_000).toISOString(), consent_lifetime: undefined };
+    const fits = new AppRestoreAccessService({ database: db as never, guard: noGuard, now: () => clock,
+      liveActionConsents: async () => [narrow] });
+    await createFiniteActionPair('n1_fits');
+    const okReview = await fits.review(actor, nomination('n1_fits'));
+    const okGrant = okReview.grants.find((item: any) => item.kind === 'action_consent')!;
+    const result = await fits.activate(actor, envelope(okReview, 'n1_fits', [okGrant.grant_id]));
+    const successor = (await sessionsOf(owner, 'n1_fits')).find((row) => row.session_id === result.session_id)!;
+    assert.deepEqual((successor.record as any).action_consents.map((item: any) => item.expires_at), [narrow.expires_at]);
+  });
+
+  const activeStoreConsents = async (sessionId: string) => (await client.query(
+    "SELECT consent_id,expires_at FROM app_data_consents WHERE org_id=$1 AND owner_user_id=$2 AND connection_session_id=$3 AND store_key='inbox' AND state='active'",
+    [org, owner, sessionId])).rows;
+
+  await t.test('PR424-N2: carried and restored record consents leave exactly one active consent per store', async () => {
+    // (a) Action restore publishes a successor: the current consent is carried
+    // AND the owner also selects the prior consent for the same store.
+    const consent = liveConsentFor();
+    const service = new AppRestoreAccessService({ database: db as never, guard: noGuard, now: () => clock,
+      liveActionConsents: async () => [consent] });
+    const pair = await createPair('n2_action', { action: true, record: true, currentRecord: true });
+    const review = await service.review(actor, nomination('n2_action'));
+    const actionGrant = review.grants.find((item: any) => item.kind === 'action_consent')!;
+    const result = await service.activate(actor, envelope(review, 'n2_action', [actionGrant.grant_id, pair.recordConsentId!]));
+    const onSuccessor = await activeStoreConsents(result.session_id);
+    assert.equal(onSuccessor.length, 1, 'exactly one active successor consent for the store');
+    assert.equal((await activeStoreConsents(pair.currentId)).length, 0, 'nothing stays active on the predecessor');
+    const liveExpiry = new Date((await client.query('SELECT expires_at FROM app_data_consents WHERE consent_id=$1', [pair.currentRecordConsentId])).rows[0].expires_at).getTime();
+    assert.ok(new Date(onSuccessor[0].expires_at).getTime() <= liveExpiry, 'never outlives the live consent');
+    // (b) No action: the current session already holds a live consent for the store.
+    const plain = new AppRestoreAccessService({ database: db as never, guard: noGuard, now: () => clock });
+    const second = await createPair('n2_plain', { record: true, currentRecord: true });
+    const plainReview = await plain.review(actor, nomination('n2_plain'));
+    const restored = await plain.activate(actor, envelope(plainReview, 'n2_plain', [second.recordConsentId!]));
+    const onCurrent = await activeStoreConsents(second.currentId);
+    assert.equal(onCurrent.length, 1, 'exactly one active consent for the store on the current connection');
+    assert.equal(restored.grants[0]!.grant_id, onCurrent[0].consent_id, 'the response names the one live consent');
+    assert.equal(restored.grants[0]!.outcome, 'already_present');
+  });
+
+  await t.test('PR424-N2: a restored lifetime shorter than the live consent narrows it, never widens', async () => {
+    const plain = new AppRestoreAccessService({ database: db as never, guard: noGuard, now: () => clock });
+    // The prior consent was reviewed for one hour only.
+    const pair = await createPair('n2_narrow', { record: true, currentRecord: true, priorRecordTtlMs: 3600_000 });
+    const review = await plain.review(actor, nomination('n2_narrow'));
+    const grant = review.grants.find((item: any) => item.grant_id === pair.recordConsentId)!;
+    assert.deepEqual(grant.lifetime, { kind: 'duration', seconds: 3600 });
+    const result = await plain.activate(actor, envelope(review, 'n2_narrow', [pair.recordConsentId!]));
+    const onCurrent = await activeStoreConsents(pair.currentId);
+    assert.equal(onCurrent.length, 1);
+    assert.equal(onCurrent[0].consent_id, result.grants[0]!.grant_id);
+    assert.ok(Math.abs(new Date(onCurrent[0].expires_at).getTime() - (clock + 3600_000)) < 1000, 'narrowed to the reviewed hour');
+    const old = (await client.query('SELECT state FROM app_data_consents WHERE consent_id=$1', [pair.currentRecordConsentId])).rows[0];
+    assert.equal(old.state, 'revoked');
+  });
+
+  await t.test('PR424-N3: concurrent observation activations never deadlock on a share->update session lock upgrade', async () => {
+    let arrived = 0;
+    const waiting: Array<() => void> = [];
+    const barrier = () => new Promise<void>((resolve) => {
+      arrived += 1;
+      if (arrived >= 2) { waiting.splice(0).forEach((release) => release()); resolve(); return; }
+      waiting.push(resolve);
+      setTimeout(resolve, 1500);
+    });
+    const seen = new WeakSet<object>();
+    // Mirrors the production observation reader's `FOR SHARE` on the session row.
+    const observationConnection = async (transaction: any, _actor: unknown, record: any) => {
+      await transaction.execute(sql`SELECT session_id FROM app_connection_sessions
+        WHERE org_id=${org} AND owner_user_id=${owner} AND session_id=${record.session_id} FOR SHARE`);
+      if (!seen.has(transaction)) { seen.add(transaction); await barrier(); }
+      return { receipt: null, resource_policy_digest: sha('7'), min_interval_seconds: 60 };
+    };
+    const service = new AppRestoreAccessService({ database: db as never, guard: noGuard, now: () => clock, observationConnection });
+    const pair = await createPair('n3', { observation: true });
+    const first = await service.review(actor, nomination('n3'));
+    const second = await service.review(actor, nomination('n3'));
+    const ids = [pair.observationConsentId!];
+    const outcomes = await Promise.allSettled([
+      service.activate(actor, envelope(first, 'n3', ids)), service.activate(actor, envelope(second, 'n3', ids))]);
+    const failures = outcomes.filter((item): item is PromiseRejectedResult => item.status === 'rejected').map((item) => item.reason);
+    for (const error of failures) {
+      const code = error?.code ?? error?.cause?.code;
+      assert.notEqual(code, '40P01', 'no deadlock: ' + String(error?.message));
+      assert.equal(code, 'APP_ACCESS_DENIED', 'the loser is refused cleanly: ' + String(error?.message));
+    }
+    assert.equal(outcomes.filter((item) => item.status === 'fulfilled').length, 1, 'exactly one activation wins');
+    const active = (await client.query("SELECT count(*)::int AS count FROM app_resource_observation_consents WHERE org_id=$1 AND resource_binding_id=$2 AND state='active'",
+      [org, fixture.binding_id])).rows;
+    assert.equal(active[0].count, 1);
   });
 });

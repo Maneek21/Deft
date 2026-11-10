@@ -5,7 +5,7 @@ import { and, eq, isNull, sql } from 'drizzle-orm';
 import { appConnectionSessions, appConnectionConsentContinuations, appDataConsents, appResourceObservationConsents, appIntegrationCapturePolicies, auditLog, appRestoreAccessReviews } from '@deft/db/schema';
 import { appConnectionForms } from '../../../../packages/db/src/schema/app-connection-forms.js';
 import { AppConnectionActionConsentSchema, AppDataConsentSnapshotSchema, ResourceObservationSnapshotSchema,
-  type AppConnectionActionConsent } from '@deft/app-kit/core';
+  appConsentDeadline, type AppConnectionActionConsent } from '@deft/app-kit/core';
 import { AppConnectionSessionRecordSchema, type AppConnectionSessionRecord } from './app-connection-session-service.js';
 import { appDataDigest } from './app-data-authority.js';
 import { digestAppGrantValue } from './app-grant-service.js';
@@ -126,6 +126,15 @@ async function reissueRecordConsent(transaction: RestoreAccessTransaction, actor
   return newId;
 }
 
+/** Effective deadline of a stored record consent; an invalid lifetime refuses. */
+function recordConsentDeadline(row: typeof appDataConsents.$inferSelect): number {
+  try {
+    return appConsentDeadline(row.expires_at, AppDataConsentSnapshotSchema.parse(row.snapshot).consent_lifetime);
+  } catch {
+    throw restoreAccessDenied();
+  }
+}
+
 /** App-neutral grant-kind registry (§5.5). Every enumerated kind has exactly one
  * handler; unknown kinds are refused rather than partially applied. */
 export const RESTORE_GRANT_HANDLERS: ReadonlyMap<RestoreGrantKind, RestoreGrantHandler> = new Map([
@@ -134,8 +143,35 @@ export const RESTORE_GRANT_HANDLERS: ReadonlyMap<RestoreGrantKind, RestoreGrantH
     const [original] = await transaction.select().from(appDataConsents).where(and(
       eq(appDataConsents.org_id, actor.org_id), eq(appDataConsents.owner_user_id, actor.user_id),
       eq(appDataConsents.consent_id, grant.grant_id))).for('update').limit(1);
-    if (!original) throw restoreAccessDenied();
-    const newId = await reissueRecordConsent(transaction, actor, record, original, reissuedExpiry(grant.lifetime, record.scope, now), now);
+    if (!original || original.store_key !== grant.store_key) throw restoreAccessDenied();
+    const restored = reissuedExpiry(grant.lifetime, record.scope, now);
+    // PR424-N2: the target connection may already hold a live consent for this
+    // store (one the owner granted on the current connection, or one carried to
+    // an action successor). Data authority admits exactly one valid consent per
+    // store, so the two are reconciled into ONE successor whose deadline is the
+    // earlier of (live, reviewed): never longer than either. The live row's
+    // terms (store definition, data policy) are kept; the prior row's terms are
+    // never reintroduced over them.
+    const live = (await transaction.select().from(appDataConsents).where(and(
+      eq(appDataConsents.org_id, actor.org_id), eq(appDataConsents.owner_user_id, actor.user_id),
+      eq(appDataConsents.connection_session_id, record.session_id), eq(appDataConsents.store_key, grant.store_key),
+      eq(appDataConsents.state, 'active'))).for('update'))
+      .filter((row) => row.consent_id !== original.consent_id && recordConsentDeadline(row) > now);
+    if (live.length > 1) throw restoreAccessDenied();
+    const current = live[0];
+    if (!current) {
+      const newId = await reissueRecordConsent(transaction, actor, record, original, restored, now);
+      return { new_grant_id: newId };
+    }
+    // The prior row is history either way: soft-transition it like a reissue.
+    await transaction.update(appDataConsents).set({ state: 'revoked', updated_at: new Date(now) }).where(and(
+      eq(appDataConsents.org_id, actor.org_id), eq(appDataConsents.owner_user_id, actor.user_id),
+      eq(appDataConsents.consent_id, original.consent_id)));
+    const restoredDeadline = restored.expires_at === null ? Infinity : restored.expires_at.getTime();
+    if (recordConsentDeadline(current) <= restoredDeadline) return { new_grant_id: current.consent_id, outcome: 'already_present' };
+    // The reviewed lifetime is shorter: narrow the live consent to it.
+    if (restored.expires_at === null || restoredDeadline <= now) throw restoreAccessDenied();
+    const newId = await reissueRecordConsent(transaction, actor, record, current, { expires_at: restored.expires_at }, now);
     return { new_grant_id: newId };
   }],
   ['observation_consent', async ({ transaction, actor, record, grant, now, live }) => {
@@ -205,12 +241,21 @@ export const RESTORE_GRANT_HANDLERS: ReadonlyMap<RestoreGrantKind, RestoreGrantH
     if (consent.action_key !== grant.action_key) throw restoreAccessDenied();
     // Never widen: a finite original never becomes indefinite, the consent must
     // still be live, and it can never outlive the connection's own consent.
-    const ceiling = reissuedExpiry({ kind: 'until_revoked' }, record.scope, now);
+    const connectionCeiling = reissuedExpiry({ kind: 'until_revoked' }, record.scope, now);
+    // PR424-N1: nor may it outlive what the owner originally reviewed. The live
+    // consent is stored verbatim (exact-consent comparisons depend on it), so it
+    // cannot be narrowed here; one lasting longer than the reviewed lifetime
+    // requires a fresh action review instead.
+    const reviewedCeiling = reissuedExpiry(grant.lifetime, record.scope, now);
     const liveExpiry = consent.expires_at === null ? Infinity : Date.parse(consent.expires_at);
-    if (consent.expires_at === null && (grant.lifetime.kind !== 'until_revoked' || ceiling.expires_at !== null)) {
+    if (consent.expires_at === null && (grant.lifetime.kind !== 'until_revoked' || reviewedCeiling.expires_at !== null)) {
       throw restoreAccessActionUnavailable(record.scope.installation_id, record.scope.target_key);
     }
-    if (liveExpiry <= now || (ceiling.expires_at !== null && liveExpiry > ceiling.expires_at.getTime())) throw restoreAccessDenied();
+    if (Number.isNaN(liveExpiry) || liveExpiry <= now
+      || (connectionCeiling.expires_at !== null && liveExpiry > connectionCeiling.expires_at.getTime())) throw restoreAccessDenied();
+    if (reviewedCeiling.expires_at !== null && liveExpiry > reviewedCeiling.expires_at.getTime()) {
+      throw restoreAccessActionUnavailable(record.scope.installation_id, record.scope.target_key);
+    }
     reservedActionKeys.add(grant.action_key);
     return { new_grant_id: consent.consent_id, action_consent: consent };
   }],
@@ -408,6 +453,15 @@ export class AppRestoreAccessService {
     const observationReader = this.ports.observationConnection ?? productionRestoreObservationConnection;
 
     const reissued = await this.ports.database.transaction(async (transaction) => {
+      // PR424-N3: the live readers take the session row FOR SHARE (observation
+      // custody) before it is locked FOR UPDATE below. Two concurrent
+      // activations for one target would both hold the share lock and deadlock
+      // on the upgrade, so activations for a target are serialized FIRST, before
+      // any row lock. The key is restore-specific: no other path takes it, so it
+      // cannot join a lock cycle and leaves the documented row-lock order
+      // (member -> App -> registration -> binding -> session) unchanged.
+      await transaction.execute(sql`SELECT pg_advisory_xact_lock(hashtext('deft.app_restore_access.activate.v1'),hashtext(${
+        [actor.org_id, actor.user_id, input.installation_id, input.target_key].join(':')}))`);
       const sessionWhere = and(
         eq(appConnectionSessions.org_id, actor.org_id),
         eq(appConnectionSessions.owner_user_id, actor.user_id),
