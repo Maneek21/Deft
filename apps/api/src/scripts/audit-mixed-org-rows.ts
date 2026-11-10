@@ -399,6 +399,15 @@ const MEMBER_COLUMNS: Array<[table: string, col: string]> = [
   ['work_intents', 'converted_by'],
   ['work_intents', 'dismissed_by'],
   ['workflow_rules', 'created_by'],
+  // rows with org_id NULL (bundled, marketplace, first-party) are excluded by the check itself
+  ['skills', 'created_by'],
+  ['task_templates', 'created_by'],
+  ['agent_employee_templates', 'created_by'],
+  // Defty is users.kind = agent with an org_members row in every org (ensure-defty-membership.ts)
+  ['app_private_defty_seals', 'defty_user_id'],
+  ['native_mention_deliveries', 'actor_user_id'],
+  ['agent_channel_events', 'actor_user_id'],
+  ['attention_events', 'actor_user_id'],
 ];
 
 /**
@@ -410,14 +419,7 @@ const MEMBER_COLUMNS: Array<[table: string, col: string]> = [
  */
 export const USER_FK_SKIPS: Array<{ table: string; col: string; reason: string }> = [
   { table: 'org_members', col: 'user_id', reason: 'this table is the membership record the other checks compare against' },
-  { table: 'skills', col: 'created_by', reason: 'bundled and marketplace rows are authored outside the owning org, so the author need not be a member' },
-  { table: 'task_templates', col: 'created_by', reason: 'global templates (org_id NULL) are authored outside any one org, so the author need not be a member' },
-  { table: 'agent_employee_templates', col: 'created_by', reason: 'first-party and community templates (org_id NULL) are authored outside any one org' },
   { table: 'oauth_audit_events', col: 'user_id', reason: 'append-only audit history with a nullable org; the actor may have left or never joined the org' },
-  { table: 'app_private_defty_seals', col: 'defty_user_id', reason: 'names the Defty system user, which is excluded from membership checks by design' },
-  { table: 'agent_channel_events', col: 'actor_user_id', reason: 'actor recorded as history; may be a user, agent or system actor' },
-  { table: 'attention_events', col: 'actor_user_id', reason: 'actor recorded as history; may be a user, agent or system actor' },
-  { table: 'native_mention_deliveries', col: 'actor_user_id', reason: 'actor recorded as history; may be a user, agent or system actor' },
 ];
 
 export function buildChecks(): CheckDef[] {
@@ -810,13 +812,22 @@ export function parseArgs(argv: string[], env: NodeJS.ProcessEnv = process.env):
   return { databaseUrl, jsonPath, limit, timeoutMs };
 }
 
-/** host:port/database, no credentials or query string. */
-export function maskTarget(url: string): string {
+/**
+ * host:port/database for display, or null when the URL is not a postgres URL
+ * with a real authority (//host) and a plain database name. Nothing but the
+ * host, port and database name is ever returned, never a user, password or
+ * query string, and a URL that fails these checks is not echoed at all.
+ */
+export function maskTarget(url: string): string | null {
+  if (!/^postgres(?:ql)?:\/\/[^/?#\s]/iu.test(url)) return null;
   try {
     const u = new URL(url);
-    return `${u.hostname}${u.port ? `:${u.port}` : ''}${u.pathname || '/'}`;
+    if (!['postgres:', 'postgresql:'].includes(u.protocol)) return null;
+    if (!/^[A-Za-z0-9._:[\]-]+$/u.test(u.hostname)) return null;
+    if (!/^\/[A-Za-z0-9_.-]*$/u.test(u.pathname)) return null;
+    return `${u.hostname}${u.port ? `:${u.port}` : ''}${u.pathname}`;
   } catch {
-    return '(unparseable database url)';
+    return null;
   }
 }
 
@@ -847,6 +858,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     return 1;
   }
   const target = maskTarget(args.databaseUrl);
+  if (target === null) {
+    console.error('[audit-mixed-org-rows] database url must be a postgres or postgresql url with a host and a plain database name (value withheld)');
+    return 1;
+  }
   console.log(`[audit-mixed-org-rows] target: ${target} (read-only)`);
   let client: pg.Client | undefined;
   try {
@@ -862,7 +877,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     console.log(formatSummary(report));
     if (args.jsonPath) {
       writeFileSync(args.jsonPath, `${JSON.stringify(report, null, 2)}\n`, { encoding: 'utf8' });
-      console.log(`[audit-mixed-org-rows] wrote ${args.jsonPath}`);
+      console.log('[audit-mixed-org-rows] JSON report written');
     }
     return exitCodeFor(report);
   } catch (err) {

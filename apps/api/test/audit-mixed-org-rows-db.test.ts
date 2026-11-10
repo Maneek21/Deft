@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import pg from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import * as s from '@deft/db/schema';
@@ -49,9 +52,11 @@ test('audit-mixed-org-rows: argument handling needs no database', () => {
   const ok = parseArgs(['--database-url', 'postgres://u:secret@h:5/d', '--json', 'o.json', '--limit', '7'], {});
   assert.deepEqual([ok.jsonPath, ok.limit], ['o.json', 7]);
   assert.equal(parseArgs([], { DATABASE_URL: 'postgres://u@h/d' }).databaseUrl, 'postgres://u@h/d');
-  const masked = maskTarget('postgres://user:secret@db.example:5432/deft?sslmode=require');
+  const masked = maskTarget('postgres://user:secret@db.example:5432/deft?sslmode=require&password=secret&user=alice');
   assert.equal(masked, 'db.example:5432/deft');
-  assert.ok(!masked.includes('secret') && !masked.includes('user'));
+  for (const bad of ['postgresql:alice:secret@host/db', 'postgresql://host/alice:secret@db', 'mysql://u:p@h/db', 'postgres:///db', 'postgres://@/db', 'not a url', 'postgres://h/db name']) {
+    assert.equal(maskTarget(bad), null, bad);
+  }
 });
 
 function capture(): { out: string[]; restore: () => void } {
@@ -85,6 +90,38 @@ test('audit-mixed-org-rows: S5-r2-1 error output never echoes arguments or crede
     assert.equal(code, 1);
     assert.ok(!/leakpass|leakuser|postgres(ql)?:\/\//u.test(text), text);
   }
+});
+
+test('audit-mixed-org-rows: S5-r3-1 target display never shows credentials and rejects non-authority URLs', async () => {
+  const rejected = ['postgresql:alice:secret@host/db', 'postgresql://127.0.0.1:1/alice:secret@db', 'postgresql:/alice:secret@host/db'];
+  for (const url of rejected) {
+    const cap = capture();
+    let code: number;
+    try { code = await main(['--database-url', url]); } finally { cap.restore(); }
+    const text = cap.out.join(String.fromCharCode(10));
+    assert.equal(code, 1, url);
+    assert.ok(!/alice|secret|target:/u.test(text), text);
+  }
+  for (const url of ['postgresql://alice:secret@127.0.0.1:1/db?password=secret&user=alice', 'postgresql://127.0.0.1:1/db?user=alice&password=secret']) {
+    const cap = capture();
+    try { await main(['--database-url', url]); } finally { cap.restore(); }
+    const text = cap.out.join(String.fromCharCode(10));
+    assert.ok(text.includes('target: 127.0.0.1:1/db (read-only)'), text);
+    assert.ok(!/alice|secret/u.test(text), text);
+  }
+});
+
+test('audit-mixed-org-rows: S5-r3-2 the success message does not print the json path', { skip: !safe && 'needs DEFT_TEST_DATABASE_URL = DATABASE_URL on a local deft_test* database' }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'audit-json-'));
+  const file = join(dir, 'zz-private-name.json');
+  const cap = capture();
+  try { await main(['--database-url', target!, '--json', file, '--limit', '0']); } finally { cap.restore(); }
+  try {
+    assert.ok(existsSync(file));
+    const text = cap.out.join(String.fromCharCode(10));
+    assert.ok(text.includes('JSON report written'), text);
+    assert.ok(!text.includes('zz-private-name') && !text.includes(dir), text);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('audit-mixed-org-rows: S5-r2-4 a statement timeout is an error for that check and forces exit 1', { skip: !safe && 'needs DEFT_TEST_DATABASE_URL = DATABASE_URL on a local deft_test* database' }, async () => {
@@ -184,6 +221,8 @@ test('audit-mixed-org-rows: database', { skip: !safe && 'needs DEFT_TEST_DATABAS
     const registered = new Set(buildChecks().filter((c) => c.orgB === null && c.severity === 'mismatch').map((c) => c.columns[0]));
     const skipped = new Map(USER_FK_SKIPS.map((x) => [`${x.table}.${x.col}`, x.reason] as const));
     assert.ok([...skipped.values()].every((reason) => reason.length > 20), 'every skip needs a reason');
+    assert.deepEqual([...skipped.keys()].sort(), ['oauth_audit_events.user_id', 'org_members.user_id'], 'only these two blanket skips are justified');
+    for (const k of ['skills.created_by', 'task_templates.created_by', 'agent_employee_templates.created_by', 'app_private_defty_seals.defty_user_id', 'native_mention_deliveries.actor_user_id', 'agent_channel_events.actor_user_id', 'attention_events.actor_user_id']) assert.ok(registered.has(k), k);
     const live = new Set(r.rows.map((x) => `${x.t}.${x.col}`));
     // composite (org_id, user) -> org_members keys make a cross-org member impossible to store
     const unhandled = r.rows.filter((x) => !x.covered).map((x) => `${x.t}.${x.col}`).filter((k) => !registered.has(k) && !skipped.has(k));
@@ -197,7 +236,7 @@ test('audit-mixed-org-rows: database', { skip: !safe && 'needs DEFT_TEST_DATABAS
 
   const before = await counts(client);
 
-  const clean = await runAudit(client, { limit: 5, target: maskTarget(target!) });
+  const clean = await runAudit(client, { limit: 5, target: maskTarget(target!)! });
   // The API test runner seeds src/scripts/seed-test-fixtures.ts before any test.
   // That seed leads the org B fixture project with a user who is only a member
   // of org A, and the audit rightly lists it. It is the one tolerated baseline
