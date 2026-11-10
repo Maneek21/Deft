@@ -160,7 +160,8 @@ test('E08-F2: descriptions say connected tools follow their configured tier', ()
   assert.match(autonomous!.desc, /such as posting messages and bulk task updates/);
   assert.match(autonomous!.desc, /does not run actions classed as destructive on its own/);
   assert.match(TRUST_CONNECTED_NOTE, /Connected \(MCP\) tools use the approval setting on their own connection/);
-  assert.match(TRUST_CONNECTED_NOTE, /does not let Defty run a call classed as destructive on its own/);
+  // Lane S2: the destructive exclusion now holds at every trust level.
+  assert.match(TRUST_CONNECTED_NOTE, /no trust level lets Defty run a call classed as destructive on its own/);
   assert.doesNotMatch(TRUST_CONNECTED_NOTE, /at any level/);
   assert.ok(render().includes(escapeHtml(TRUST_CONNECTED_NOTE)));
 });
