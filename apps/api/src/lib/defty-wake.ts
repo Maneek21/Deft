@@ -6,10 +6,9 @@
  *
  * Lifecycle for a caller that inserts one message:
  *   1. `planDeftyWake` before the insert transaction (reads only).
- *   2. `enqueueExplicitDeftyWake(tx, …)` inside the insert transaction, so an
- *      explicit wake commits (or rolls back) with the message.
- *   3. `finishDeftyWake` after commit: implicit thread-follow and the visible
- *      "no reasoning provider" reply.
+ *   2. `enqueueDeftyWake(tx, …)` inside the insert transaction, so the wake
+ *      (explicit, or an implicit thread-follow) commits with the message.
+ *   3. `finishDeftyWake` after commit: the visible "no reasoning provider" reply.
  */
 import { and, eq, inArray } from 'drizzle-orm';
 import { messages, orgMembers, orgs, spaceMembers, spaces, userGroupMembers, userGroups, users } from '@deft/db/schema';
@@ -18,7 +17,7 @@ import { DEFTY_EMAIL, ensureDeftyMembership } from './ensure-defty-membership.js
 import { parseMentions } from './mentions.js';
 import { resolveReasonProvider, type ResolvedReasonProvider } from './org-ai-config.js';
 import { enqueue, QUEUE_NAMES, type QueueExecutor } from './queues.js';
-import { shouldFollowThread } from './defty-thread-follow.js';
+import { loadThreadFollowContext, shouldFollowThread } from './defty-thread-follow.js';
 import { isPrivateDeftySpace } from './app-private-defty-message-guard.js';
 import { getIO } from '../socket.js';
 
@@ -81,8 +80,8 @@ export async function resolveMentionedUserIds(content: string, orgId: string): P
 
 /** Decide, before the message is inserted, whether this post explicitly wakes
  * Defty: a Defty mention (structured or legacy alias), or any post in a DM /
- * agent_conversation space Defty belongs to. Implicit thread-follow depends on
- * the committed trigger row and is decided after commit. */
+ * agent_conversation space Defty belongs to. Implicit thread-follow is decided
+ * inside the insert transaction (enqueueDeftyWake). */
 async function resolveExplicitDeftyWake(params: {
   orgId: string;
   userId: string;
@@ -130,6 +129,8 @@ export type DeftyWakeInput = {
 
 export type DeftyWakePlan = {
   explicit: boolean;
+  /** Set when an unaddressed reply here may follow an engaged Defty thread. */
+  followSpaceType: string | null;
   providerReason: ResolvedReasonProvider | null;
   providerReady: boolean;
   orgName: string;
@@ -153,89 +154,110 @@ async function resolveDeftyProvider(orgId: string) {
  * (the web route refuses to post there at all).
  */
 export async function planDeftyWake(input: DeftyWakeInput): Promise<DeftyWakePlan> {
-  const none: DeftyWakePlan = { explicit: false, providerReason: null, providerReady: false, orgName: 'Unknown' };
+  const none: DeftyWakePlan = { explicit: false, followSpaceType: null, providerReason: null, providerReady: false, orgName: 'Unknown' };
   if (await isPrivateDeftySpace(input.orgId, input.spaceId)) return none;
   const explicit = await resolveExplicitDeftyWake(input);
-  if (!explicit) return none;
-  return { explicit, ...(await resolveDeftyProvider(input.orgId)) };
+  if (!explicit) {
+    if (!input.parentId) return none;
+    const [spaceRow] = await db.select({ type: spaces.type })
+      .from(spaces).where(and(eq(spaces.id, input.spaceId), eq(spaces.org_id, input.orgId))).limit(1);
+    const followable = spaceRow && (spaceRow.type === 'public' || spaceRow.type === 'private' || spaceRow.type === 'group_dm');
+    return { ...none, followSpaceType: followable ? spaceRow.type : null };
+  }
+  return { explicit, followSpaceType: null, ...(await resolveDeftyProvider(input.orgId)) };
 }
 
-/** Step 2, inside the insert transaction. A failed job insert fails the
- * transaction, so the caller never reports success for a message Defty
- * was asked to answer but will never see. */
-export async function enqueueExplicitDeftyWake(
-  tx: QueueExecutor,
-  plan: DeftyWakePlan,
-  input: DeftyWakeInput & { messageId: string },
-): Promise<void> {
-  if (!plan.explicit || !plan.providerReady) return;
-  await enqueueAgentReply({
-    spaceId: input.spaceId,
-    messageId: input.messageId,
-    ...(input.parentId ? { parentId: input.parentId } : {}),
-    orgId: input.orgId,
-    userId: input.userId,
-    orgName: plan.orgName,
-    content: input.content,
-  }, tx);
-}
+type WakeTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-/** Step 3, after commit: implicit thread-follow, then the visible reply when
- * Defty was woken but no reasoning provider is usable. Never throws. */
-export async function finishDeftyWake(
+/** What step 2 decided; step 3 needs it for the no-provider reply. */
+export type DeftyWakeOutcome = {
+  woke: boolean;
+  providerReason: ResolvedReasonProvider | null;
+  providerReady: boolean;
+};
+
+/**
+ * Step 2, inside the insert transaction.
+ *
+ * An explicit wake's job joins the transaction: a failed job insert fails it,
+ * so the caller never reports success for a message Defty was asked to answer
+ * but will never see.
+ *
+ * An implicit thread-follow is decided here too, reading through the
+ * transaction (which sees its own trigger row), and its job joins the same
+ * commit, so a crash after commit cannot lose the wake. It runs in a savepoint:
+ * the user did not address Defty, so a follow failure is logged and the human
+ * message still commits. Both paths share the per-message dedupe key, so a
+ * message is never enqueued twice.
+ */
+export async function enqueueDeftyWake(
+  tx: WakeTransaction,
   plan: DeftyWakePlan,
   input: DeftyWakeInput & { messageId: string },
-): Promise<void> {
-  let woke = plan.explicit;
-  let providerReason = plan.providerReason;
-  let providerReady = plan.providerReady;
-  // Follow an engaged Defty thread — no mention required. This reads the
-  // committed trigger row, so it is decided (and enqueued) after commit.
-  if (!woke && input.parentId) {
-    try {
-      const [spaceRow] = await db.select({ type: spaces.type })
-        .from(spaces).where(and(eq(spaces.id, input.spaceId), eq(spaces.org_id, input.orgId))).limit(1);
-      if (spaceRow && (spaceRow.type === 'public' || spaceRow.type === 'private' || spaceRow.type === 'group_dm')
-        && !await isPrivateDeftySpace(input.orgId, input.spaceId)) {
-        const humanMentions = input.mentionedUserIds.length > 0
-          ? await db.select({ id: users.id }).from(users)
-            .where(and(inArray(users.id, input.mentionedUserIds), eq(users.kind, 'human'))).limit(1)
-          : [];
-        const followed = await shouldFollowThread({
-          orgId: input.orgId, spaceId: input.spaceId, triggerMessageId: input.messageId,
-          spaceType: spaceRow.type, parentId: input.parentId,
-          authorId: input.userId, content: input.content, mentionsHuman: humanMentions.length > 0,
-        });
-        if (followed) {
-          woke = true;
-          const provider = await resolveDeftyProvider(input.orgId);
-          providerReason = provider.providerReason;
-          providerReady = provider.providerReady;
-          if (providerReady) {
-            await enqueueAgentReply({
-              spaceId: input.spaceId,
-              messageId: input.messageId,
-              parentId: input.parentId,
-              orgId: input.orgId,
-              userId: input.userId,
-              orgName: provider.orgName,
-              content: input.content,
-              followed: true,
-            });
-          }
-        }
-      }
-    } catch (err) {
-      // An implicit thread-follow is best-effort: the message is already
-      // committed and the user did not address Defty directly.
-      console.error('Failed to enqueue agent reply (thread follow):', err);
+): Promise<DeftyWakeOutcome> {
+  if (plan.explicit) {
+    if (plan.providerReady) {
+      await enqueueAgentReply({
+        spaceId: input.spaceId,
+        messageId: input.messageId,
+        ...(input.parentId ? { parentId: input.parentId } : {}),
+        orgId: input.orgId,
+        userId: input.userId,
+        orgName: plan.orgName,
+        content: input.content,
+      }, tx);
     }
+    return { woke: true, providerReason: plan.providerReason, providerReady: plan.providerReady };
   }
-  if (woke && !providerReady && providerReason) {
-    await postProviderUnavailableReply(providerReason, input).catch((err) => {
-      console.error('Failed to post Defty provider-unavailable reply:', err);
+  const none: DeftyWakeOutcome = { woke: false, providerReason: null, providerReady: false };
+  const parentId = input.parentId;
+  const spaceType = plan.followSpaceType;
+  if (!parentId || !spaceType) return none;
+  try {
+    return await tx.transaction(async (savepoint) => {
+      const humanMentions = input.mentionedUserIds.length > 0
+        ? await savepoint.select({ id: users.id }).from(users)
+          .where(and(inArray(users.id, input.mentionedUserIds), eq(users.kind, 'human'))).limit(1)
+        : [];
+      const followed = await shouldFollowThread({
+        orgId: input.orgId, spaceId: input.spaceId, triggerMessageId: input.messageId,
+        spaceType, parentId,
+        authorId: input.userId, content: input.content, mentionsHuman: humanMentions.length > 0,
+      }, {
+        loadContext: (value) => loadThreadFollowContext(value, savepoint),
+      });
+      if (!followed) return none;
+      const provider = await resolveDeftyProvider(input.orgId);
+      if (provider.providerReady) {
+        await enqueueAgentReply({
+          spaceId: input.spaceId,
+          messageId: input.messageId,
+          parentId,
+          orgId: input.orgId,
+          userId: input.userId,
+          orgName: provider.orgName,
+          content: input.content,
+          followed: true,
+        }, savepoint);
+      }
+      return { woke: true, providerReason: provider.providerReason, providerReady: provider.providerReady };
     });
+  } catch (err) {
+    console.error('Failed to enqueue agent reply (thread follow):', err);
+    return none;
   }
+}
+
+/** Step 3, after commit: the visible reply when Defty was woken but no
+ * reasoning provider is usable. Never throws. */
+export async function finishDeftyWake(
+  outcome: DeftyWakeOutcome | null,
+  input: DeftyWakeInput & { messageId: string },
+): Promise<void> {
+  if (!outcome?.woke || outcome.providerReady || !outcome.providerReason) return;
+  await postProviderUnavailableReply(outcome.providerReason, input).catch((err) => {
+    console.error('Failed to post Defty provider-unavailable reply:', err);
+  });
 }
 
 async function postProviderUnavailableReply(

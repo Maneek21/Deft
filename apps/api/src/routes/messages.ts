@@ -17,7 +17,7 @@ import { enqueueChatObservation } from '../lib/chat-observation.js';
 import { createNotificationIfAllowed, createNotificationsIfAllowed } from '../lib/notification-policy.js';
 import { normalizePlainAgentMentions } from '../lib/agent-mention-normalization.js';
 import { enqueueAgentEmployeeMessageJobs, resolveAgentEmployeeMessageTargets } from '../lib/dispatch-agent-message.js';
-import { enqueueExplicitDeftyWake, finishDeftyWake, planDeftyWake, resolveMentionedUserIds } from '../lib/defty-wake.js';
+import { enqueueDeftyWake, finishDeftyWake, type DeftyWakeOutcome, planDeftyWake, resolveMentionedUserIds } from '../lib/defty-wake.js';
 import { projectPendingDeftyMetadataForOutbound } from '../lib/defty-pending-action.js';
 import { toPlainText } from '../lib/plain-text.js';
 import {
@@ -470,6 +470,7 @@ messageRoutes.post('/:spaceId', async (c) => {
     });
 
     let messageAttachments: MessageAttachment[] = [];
+    let deftyWakeOutcome: DeftyWakeOutcome | null = null;
     const { value: message, replayed } = await nativeCreate({
       orgId: user.org_id, userId: user.id, operation: `message:${spaceId}`,
       key: nativeCreateKey(c.req.header('Idempotency-Key')), payload: parsed.data,
@@ -485,7 +486,7 @@ messageRoutes.post('/:spaceId', async (c) => {
         if (!insertedMessage) throw new Error('Message insert returned no row');
         await enqueueNativeMentionPublication(tx, { orgId: user.org_id, userId: user.id },
           { kind: 'message', id: insertedMessage.id }, normalizedContent);
-        await enqueueExplicitDeftyWake(tx, deftyWake, { ...deftyWakeInput, messageId: insertedMessage.id });
+        deftyWakeOutcome = await enqueueDeftyWake(tx, deftyWake, { ...deftyWakeInput, messageId: insertedMessage.id });
         await enqueueAgentEmployeeMessageJobs(employeeWakeTargets, {
           messageId: insertedMessage.id, spaceId, orgId: user.org_id,
         }, tx);
@@ -707,9 +708,9 @@ messageRoutes.post('/:spaceId', async (c) => {
 
     // Defty is the only agent that fires agent-reply. BYOA agent mentions are
     // handled separately (agent-employee-message); we must NOT fire
-    // agent-reply for them. Explicit wakes already committed with the message;
-    // this adds an engaged-thread follow and the no-provider reply.
-    await finishDeftyWake(deftyWake, { ...deftyWakeInput, messageId: message!.id });
+    // agent-reply for them. Explicit and thread-follow wakes already committed
+    // with the message; this only adds the no-provider reply.
+    await finishDeftyWake(deftyWakeOutcome, { ...deftyWakeInput, messageId: message!.id });
 
     // BYOA agent-employee wakes already committed with the message (A07b).
 
