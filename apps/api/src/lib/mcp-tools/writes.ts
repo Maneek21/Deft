@@ -43,10 +43,13 @@ import {
   asPseudoResult,
   isDestructiveAction,
 } from '../agent-approval.js';
-import { isCanonicalDeftyEmployee, DEFTY_SYSTEM_RUNTIME_KIND } from '../defty-identity.js';
 import { invalidatePlatformContextCacheFor } from './context.js';
 import { generateReceipt } from '../receipts.js';
-import { checkReplyStorm, STORM_THRESHOLD } from '../storm-detector.js';
+import {
+  checkEmployeeChatPost,
+  employeeChatPostToolError,
+  type EmployeeChatPoster,
+} from '../employee-chat-post-guard.js';
 import { getProjectResolvedConfig } from '../project-resolved-config.js';
 import { allowedNextStatuses, isValidTransition } from '../task-status-machine.js';
 import { enqueue, QUEUE_NAMES } from '../queues.js';
@@ -139,45 +142,35 @@ const QUEUE_MESSAGE =
 //     destructive `mode`), which keeps the existing trust gate;
 //   - the canonical Defty system employee or any defty_system runtime row
 //     (Defty in chat stays approval-only);
-//   - an employee that is inactive, deleted, or marked unhealthy by the
-//     circuit breaker (those fall back to the existing trust gate).
-// Every other guard rail runs exactly as for an Autonomous post: space
-// visibility (employeeCanAccessSpace + the insert-time authority SQL), the
-// reply-storm detector, the daily action cap (charged in mcp-server-v1
-// dispatchTool before the handler runs), and the auto-executed action-log
-// row + receipt written by the execute* functions.
+//   - an employee that is inactive or deleted (refused by the shared guard).
+// An employee marked unhealthy by the circuit breaker never posts on its
+// own, at ANY trust level including Autonomous: it falls back to the
+// approval queue. Every guard rail lives in the shared
+// lib/employee-chat-post-guard.ts (also used by the Agent Channel reply and
+// the legacy /mcp/call post): reply-storm detector, health, active/deleted,
+// and the daily action cap (for MCP v1 charged in mcp-server-v1
+// dispatchTool before the handler runs). Space visibility is enforced by
+// the execute* functions (employeeCanAccessSpace + the insert-time authority
+// SQL), which also write the auto-executed action-log row + receipt.
 const EMPLOYEE_OWN_CHAT_MESSAGE_ARG_KEYS: Readonly<Record<'send_message' | 'message_post', ReadonlySet<string>>> = {
   send_message: new Set(['caller_employee_slug', 'target', 'space_id', 'thread_id', 'user_id', 'content']),
   message_post: new Set(['caller_employee_slug', 'space_id', 'content', 'parent_id']),
 };
 
-async function employeeOwnChatMessageAutoExecutes(
+function employeeOwnChatMessageAutoExecutes(
   toolName: 'send_message' | 'message_post',
   args: Record<string, unknown>,
   ctx: ToolContext,
-): Promise<boolean> {
-  // Unchanged trust gate first: Autonomous behaves exactly as before.
+  guard: { poster: EmployeeChatPoster; requiresApproval: boolean },
+): boolean {
+  // Defty keeps its unchanged trust gate (Defty in chat stays approval-only).
+  if (guard.poster.isDefty) return shouldAutoExecute(toolName, ctx.trust_level);
+  // Circuit breaker: never post on its own, whatever the trust level.
+  if (guard.requiresApproval) return false;
   if (shouldAutoExecute(toolName, ctx.trust_level)) return true;
   const allowedKeys = EMPLOYEE_OWN_CHAT_MESSAGE_ARG_KEYS[toolName];
   if (Object.keys(args).some((key) => !allowedKeys.has(key))) return false;
   if (isDestructiveAction(toolName, args)) return false;
-  const [employee] = await db
-    .select({
-      slug: agentEmployees.slug,
-      runtime_kind: agentEmployees.runtime_kind,
-      is_byoa: agentEmployees.is_byoa,
-      unhealthy: agentEmployees.unhealthy,
-    })
-    .from(agentEmployees)
-    .where(and(
-      eq(agentEmployees.id, ctx.employee_id),
-      eq(agentEmployees.org_id, ctx.org_id),
-      eq(agentEmployees.is_active, true),
-      eq(agentEmployees.is_deleted, false),
-    ))
-    .limit(1);
-  if (!employee || employee.unhealthy) return false;
-  if (isCanonicalDeftyEmployee(employee) || employee.runtime_kind === DEFTY_SYSTEM_RUNTIME_KIND) return false;
   return true;
 }
 
@@ -1055,21 +1048,18 @@ export async function messagePost(
   if (!args.space_id) return errorResult('message_post requires space_id');
   if (!args.content?.trim()) return errorResult('message_post requires content');
 
-  // Reply-storm guard for thread replies, matching send_message's thread
-  // branch. Runs before the trust decision at every level.
-  if (args.parent_id) {
-    const callerShadowId = await getShadowUserId(ctx.employee_id);
-    if (callerShadowId) {
-      const storm = await checkReplyStorm(callerShadowId, args.parent_id);
-      if (storm.tripped) {
-        return errorResult(
-          `STORM_DETECTED: agent exceeded ${STORM_THRESHOLD} replies in this thread within the rate-limit window; backing off`,
-        );
-      }
-    }
-  }
+  // Shared guard rails (storm detector for thread replies, active/deleted,
+  // circuit breaker). The daily action cap was charged by dispatchTool.
+  const guard = await checkEmployeeChatPost({
+    orgId: ctx.org_id,
+    employeeId: ctx.employee_id,
+    parentId: args.parent_id ?? null,
+    onUnhealthy: 'queue',
+    chargeDailyAction: false,
+  });
+  if (!guard.ok) return errorResult(employeeChatPostToolError(guard));
 
-  if (!(await employeeOwnChatMessageAutoExecutes('message_post', args as Record<string, unknown>, ctx))) {
+  if (!employeeOwnChatMessageAutoExecutes('message_post', args as Record<string, unknown>, ctx, guard)) {
     return queueAction('message_post', args as Record<string, unknown>, ctx);
   }
 
@@ -1118,6 +1108,18 @@ export async function sendMessage(
     return errorResult('send_message: target must include space_id, thread_id, or user_id');
   }
 
+  // Shared guard rails before any side effect (a DM space is created below):
+  // storm detector for thread replies, active/deleted, circuit breaker. The
+  // daily action cap was charged by dispatchTool.
+  const guard = await checkEmployeeChatPost({
+    orgId: ctx.org_id,
+    employeeId: ctx.employee_id,
+    parentId: 'thread_id' in target ? target.thread_id : null,
+    onUnhealthy: 'queue',
+    chargeDailyAction: false,
+  });
+  if (!guard.ok) return errorResult(employeeChatPostToolError(guard));
+
   // Resolve target → { spaceId, parentId? } so the rest is uniform.
   let spaceId: string;
   let parentId: string | null = null;
@@ -1135,17 +1137,6 @@ export async function sendMessage(
     }
     spaceId = parent.space_id;
     parentId = parent.id;
-
-    // Phase 6 — reply-storm guard.
-    const callerShadowId = await getShadowUserId(ctx.employee_id);
-    if (callerShadowId) {
-      const storm = await checkReplyStorm(callerShadowId, parent.id);
-      if (storm.tripped) {
-        return errorResult(
-          `STORM_DETECTED: agent exceeded ${STORM_THRESHOLD} replies in this thread within the rate-limit window; backing off`,
-        );
-      }
-    }
   } else if ('user_id' in target) {
     const shadowUserId = await getShadowUserId(ctx.employee_id);
     if (!shadowUserId) {
@@ -1164,7 +1155,7 @@ export async function sendMessage(
     return errorResult(`send_message: space ${spaceId} is not accessible to this employee`);
   }
 
-  if (!(await employeeOwnChatMessageAutoExecutes('send_message', args as Record<string, unknown>, ctx))) {
+  if (!employeeOwnChatMessageAutoExecutes('send_message', args as Record<string, unknown>, ctx, guard)) {
     return queueAction(
       'send_message',
       { ...args, resolved_space_id: spaceId, parent_id: parentId } as Record<string, unknown>,
@@ -1189,6 +1180,11 @@ export async function executeSendMessage(opts: {
   try {
     if (!(await employeeCanAccessSpace(ctx.employee_id, orgId, spaceId))) {
       return errorResult(`send_message: space ${spaceId} is not accessible to this employee`);
+    }
+    // A thread reply must stay in its thread's space (the Agent Channel reply
+    // accepts a runtime-supplied thread id).
+    if (parentId && !(await verifyParentMessageMatches(parentId, spaceId, orgId))) {
+      return errorResult(`send_message: thread ${parentId} is not in space ${spaceId}`);
     }
 
     const shadowUserId = await getShadowUserId(ctx.employee_id);

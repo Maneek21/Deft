@@ -46,6 +46,7 @@ import {
 } from '../lib/agent-channel.js';
 import { getIO } from '../socket.js';
 import { executeSendMessage, executeTaskUpdate } from '../lib/mcp-tools/writes.js';
+import { checkEmployeeChatPost } from '../lib/employee-chat-post-guard.js';
 import { currentAgentChannelEventAuthoritySql } from '../lib/agent-channel-authority.js';
 import { buildAgentChannelLifecyclePatch } from '../lib/agent-channel-lifecycle.js';
 import { reconcileAgentChannelRuntimeAttempt } from '../lib/agent-channel-reconciliation.js';
@@ -1350,6 +1351,26 @@ agentChannelRoutes.post('/reply', async (c) => {
   }
   if (!autonomousReply && (!parsed.data.claim_token || !hasActiveAgentChannelClaim(event, parsed.data.claim_token))) {
     return errorResponse(c, 409, 'STALE_CLAIM', 'The Agent Channel claim is missing, expired, or owned by another worker');
+  }
+  // A chat reply posts a message as the employee: the same guard rails as
+  // every other employee chat post (storm detector, circuit breaker, daily
+  // action cap). Runs only when this request will execute the post, before
+  // any delivery attempt is claimed, so a refusal writes nothing. The
+  // channel has no approval queue, so an unhealthy employee is refused. A
+  // 409 is not retried by the bundled bridge (it settles the event failed).
+  const chatReply = !autonomousTaskReply && !autonomousNotificationReply;
+  const replyWillExecute = !existingAttempt
+    || (existingAttempt.status === 'failed' && (autonomousReply || event.source_kind === 'certification'))
+    || (existingAttempt.status !== 'failed' && autonomousReply && attemptCanReconcile(existingAttempt));
+  if (chatReply && replyWillExecute) {
+    const guard = await checkEmployeeChatPost({
+      orgId: principal.org_id,
+      employeeId: principal.employee_id,
+      parentId,
+      onUnhealthy: 'refuse',
+      chargeDailyAction: true,
+    });
+    if (!guard.ok) return errorResponse(c, guard.status, guard.code, guard.message);
   }
   if (existingAttempt?.status === 'failed') {
     if (autonomousReply) {

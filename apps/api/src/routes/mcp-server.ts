@@ -9,6 +9,11 @@ import { executeActionDirect } from '../lib/agent-actions.js';
 import { ACTION_TOOLS } from '../lib/agent-tools.js';
 import { isAgentToolDisabled } from '../lib/agent-tool-policy.js';
 import { visibleAgentActionSourceSql } from '../lib/module-action-visibility.js';
+import { resolveSpaceTarget } from '../lib/resolve-space-target.js';
+import { employeeCanAccessSpace } from '../lib/mcp-tools/employee-space-access.js';
+import { messagePost } from '../lib/mcp-tools/writes.js';
+import type { ToolContext, TrustLevel } from '../lib/mcp-tools/types.js';
+import { checkEmployeeChatPost, employeeChatPostToolError } from '../lib/employee-chat-post-guard.js';
 
 export const mcpServerRoutes = new Hono();
 
@@ -165,6 +170,78 @@ function checkRateLimit(keyId: string, perMinute: number, perDay: number): boole
   return true;
 }
 
+// ═══ EMPLOYEE CHAT POST ═══
+
+const LEGACY_POST_TARGET_UNAVAILABLE = 'Space was not found or is not accessible to this agent employee.';
+
+type LegacyActionResult = { success: boolean; result: unknown; error?: string };
+
+/**
+ * `deft_post_message` for an agent-employee key: resolve the legacy
+ * `space_name` / `space_id` target, then post through the MCP v1
+ * `message_post` handler so membership, the approval exemption and every
+ * shared guard rail are identical to MCP v1. This path has no dispatchTool,
+ * so the shared guard charges the daily action slot here.
+ */
+async function legacyEmployeePostMessage(
+  orgId: string,
+  employeeId: string,
+  trustLevel: TrustLevel,
+  params: Record<string, any>,
+): Promise<{ pending: string } | { result: LegacyActionResult }> {
+  const fail = (error: string) => ({ result: { success: false, result: null, error } });
+  const content = typeof params.content === 'string' ? params.content : '';
+  if (!content.trim()) return fail('post_message requires content');
+
+  const resolved = await resolveSpaceTarget(orgId, {
+    spaceId: params.space_id ?? params.resolved_space_id,
+    spaceName: params.space_name,
+  });
+  // Never confirm that a space the employee cannot see exists.
+  if (resolved.status !== 'resolved' || !(await employeeCanAccessSpace(employeeId, orgId, resolved.space.id))) {
+    return fail(resolved.status === 'ambiguous'
+      ? 'More than one space matches this name; pass space_id instead.'
+      : LEGACY_POST_TARGET_UNAVAILABLE);
+  }
+
+  const guard = await checkEmployeeChatPost({
+    orgId,
+    employeeId,
+    parentId: null,
+    onUnhealthy: 'queue',
+    chargeDailyAction: true,
+  });
+  if (!guard.ok) return fail(employeeChatPostToolError(guard));
+
+  const ctx: ToolContext = {
+    org_id: orgId,
+    employee_id: employeeId,
+    employee_slug: guard.poster.slug,
+    trust_level: trustLevel,
+  };
+  const toolResult = await messagePost(
+    { caller_employee_slug: guard.poster.slug, space_id: resolved.space.id, content },
+    ctx,
+  );
+  const text = toolResult.content[0]?.text ?? '';
+  if (toolResult.isError) return fail(text || 'post_message failed');
+  let parsed: Record<string, unknown> = {};
+  try {
+    parsed = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return fail('post_message returned an unreadable result');
+  }
+  if (parsed.status === 'queued_for_approval' && typeof parsed.approval_id === 'string') {
+    return { pending: parsed.approval_id };
+  }
+  return {
+    result: {
+      success: true,
+      result: { message_id: parsed.id, space_id: resolved.space.id, space: resolved.space.name },
+    },
+  };
+}
+
 // ═══ ENDPOINTS ═══
 
 // Permission matcher: accept either the bare verb ("read"/"write") OR any
@@ -246,8 +323,16 @@ mcpServerRoutes.post('/call', async (c) => {
 
   let result: any;
 
-  // 6. Write tools — check approval
-  if (ACTION_TOOLS.has(internalToolName)) {
+  // 6a. An agent employee's own chat post takes the same path, rules and
+  // guard rails as MCP v1 `message_post` (no approval while healthy at any
+  // trust level; membership, storm detector, circuit breaker, daily cap).
+  if (internalToolName === 'post_message' && agentEmployeeId) {
+    const posted = await legacyEmployeePostMessage(orgId, agentEmployeeId, trustLevel, params);
+    if ('pending' in posted) {
+      return c.json({ status: 'pending_approval', action_id: posted.pending });
+    }
+    result = posted.result;
+  } else if (ACTION_TOOLS.has(internalToolName)) {
     if (shouldAutoExecute(internalToolName, trustLevel)) {
       const tier = getApprovalTier(internalToolName);
       const actionResult = await executeActionDirect(
