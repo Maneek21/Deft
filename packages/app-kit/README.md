@@ -52,6 +52,48 @@ explicit example CLI for historical Protocol 1/2 authoring fixtures. Importing
 the clean core registers no private operation, and the Host does not load the
 educational example. Existing Runtime Protocol 3–7 wire versions are retained.
 
+## Removal notice: alpha.44
+
+**Kit `0.1.0-alpha.44` is the "next breaking Kit alpha" named by the deprecation
+notices above. It ships no earlier than 2026-11-25, and never fewer than 14 days
+after this notice reached `master`.** The removal plan and its stages are in
+[docs/superpowers/plans/2026-11-06-email-host-kit-shrink.md](../../docs/superpowers/plans/2026-11-06-email-host-kit-shrink.md).
+Alpha.43 is unchanged and stays installable; published archives are immutable.
+This notice changes no code and no `@deprecated` text.
+
+Alpha.44 will remove:
+
+- The 26 deprecated names exported from the root and `/experience` entry points
+  (`compatibility`): `SafeComposeDocument`, `NATIVE_COMPOSE_BODY_LIMITS`,
+  `NativeComposeInlineAttachment`, `NativeComposeOptions`, `nativeComposeImageCid`,
+  `parseSafeComposeHtml`, `parseNativeSafeComposeHtml`, `canonicalNativeComposeLink`,
+  `plainTextToSafeComposeHtml`, `plainTextToNativeComposeHtml`,
+  `safeComposeHtmlFromEditorDocument`, `nativeSafeComposeHtmlFromEditorDocument`,
+  `nativeComposeDraftFromEditorDocument`, `nativeComposeInlineFileIds`,
+  `removeNativeComposeInlineFiles`, `MailboxAddress`, `MailboxListOptions`,
+  `MailboxListError`, `parseMailboxList`, `parseNativeMailboxList`,
+  `formatMailboxList`, `formatNativeMailboxList`, `NativeComposeRasterProfile`,
+  `NativeComposeRasterInfo`, `validateNativeComposeRaster` and
+  `inspectNativeComposeRaster`.
+- The 9 sandbox names re-exported from the root: `SandboxEmailSendInputSchema`,
+  `SandboxEmailSendOutputSchema`, `SandboxEmailSendInput`, `SandboxEmailSendOutput`,
+  `SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT`, `SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE`,
+  `APP_AUTOMATION_POLICY_V1`, `AppAutomationPolicyV1` and
+  `SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS`. Import them from
+  `@deft/app-kit/examples/email`, which stays as an opt-in subpath.
+- The root override of `checkDeftAppDeveloperContract`; the root will use the core
+  version. Importing only the root will no longer register the sandbox profile.
+- Three modules under `@deft/app-kit/examples/email`: `safe-compose-html`,
+  `mailbox-list` and `native-compose-raster`. The `sandbox`, `templates`,
+  `register` and `cli` modules and the three subpath exports are kept.
+
+What to do now: import generic contracts from `@deft/app-kit/core` and
+`@deft/app-kit/experience/core`, and take compose, address-list and raster helpers
+from deft-email's `runtime/domain` modules. Legacy tooling that needs the sandbox
+contract should import `@deft/app-kit/examples/email` explicitly. The root and
+`/experience` entry points remain as aliases of `/core` and `/experience/core`.
+Consumers that cannot migrate by then keep pinning alpha.43.
+
 ## Module validation
 
 `validateDeftModuleManifest` returns every static validation issue with the
