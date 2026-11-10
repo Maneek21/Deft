@@ -73,13 +73,14 @@ async function insertAction(values: {
   result?: Record<string, unknown> | null;
   executed?: boolean;
   tier?: 'auto' | 'quick' | 'full';
+  source?: string;
 }): Promise<string> {
   const id = randomUUID();
   await client.query(
     `INSERT INTO agent_actions
        (id, org_id, user_id, agent_employee_id, source, action, params, result,
         approval_tier, approval_status, executed_at, before_state, after_state)
-     VALUES ($1, $2, $3, NULL, 'mention', $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10::jsonb, $11::jsonb)`,
+     VALUES ($1, $2, $3, NULL, $12, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10::jsonb, $11::jsonb)`,
     [
       id, orgId, values.userId, values.action, JSON.stringify(values.params),
       values.result ? JSON.stringify(values.result) : null,
@@ -87,6 +88,7 @@ async function insertAction(values: {
       values.executed === false ? null : new Date(),
       JSON.stringify({ secret_before: 'private-before' }),
       JSON.stringify({ secret_after: 'private-after' }),
+      values.source ?? 'mention',
     ],
   );
   return id;
@@ -210,6 +212,30 @@ test('C01: an admin with access to the target may undo another member\'s action'
   const admin = await as(adminId, `/api/agent/actions/${actionId}/undo`, { method: 'POST' });
   assert.equal(admin.status, 200, await admin.text());
   await client.query('DELETE FROM space_members WHERE space_id = $1 AND user_id = $2', [sharedSpaceId, adminId]);
+});
+
+test('R2-U: undo honours params requester ids only on server-stamped capture actions', { skip: !canRun }, async () => {
+  // Caller-supplied source_user_id on an ordinary action does not grant undo.
+  const forgedMessage = await insertMessage(sharedSpaceId, requesterId, `forged ${suffix}`);
+  const forged = await insertAction({
+    userId: requesterId, action: 'post_message',
+    params: { space_id: sharedSpaceId, content: 'x', source_user_id: otherMemberId },
+    result: { message_id: forgedMessage, space_id: sharedSpaceId },
+  });
+  const denied = await as(otherMemberId, `/api/agent/actions/${forged}/undo`, { method: 'POST' });
+  assert.equal(denied.status, 404);
+  const kept = await client.query('SELECT is_deleted FROM messages WHERE id = $1', [forgedMessage]);
+  assert.equal(kept.rows[0]?.is_deleted, false);
+
+  // A Defty capture stamps the human source server-side; that human may undo.
+  const captureMessage = await insertMessage(sharedSpaceId, requesterId, `capture ${suffix}`);
+  const capture = await insertAction({
+    userId: adminId, action: 'post_message', source: 'defty_capture',
+    params: { space_id: sharedSpaceId, content: 'x', source_user_id: otherMemberId },
+    result: { message_id: captureMessage, space_id: sharedSpaceId },
+  });
+  const allowed = await as(otherMemberId, `/api/agent/actions/${capture}/undo`, { method: 'POST' });
+  assert.equal(allowed.status, 200, await allowed.text());
 });
 
 // ─── C02 / E01 ───────────────────────────────────────────────────────────────

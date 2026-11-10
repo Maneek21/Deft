@@ -77,11 +77,15 @@ function stringField(value: unknown, key: string): string | null {
  */
 export async function canUndoAgentAction(
   user: { id: string; org_id: string; role?: string },
-  action: { user_id: string; action: string; params: unknown; result: unknown; before_state: unknown },
+  action: { user_id: string; source?: string | null; action: string; params: unknown; result: unknown; before_state: unknown },
 ): Promise<boolean> {
+  // params.source_user_id / origin_user_id can be supplied by a caller, so
+  // they count only on Defty capture actions, where the server stamps them
+  // (lib/defty-capture.ts) and user_id is the Defty system user.
+  const serverStampedSource = action.source === 'defty_capture';
   const requester = action.user_id === user.id
-    || stringField(action.params, 'source_user_id') === user.id
-    || stringField(action.params, 'origin_user_id') === user.id;
+    || (serverStampedSource && stringField(action.params, 'source_user_id') === user.id)
+    || (serverStampedSource && stringField(action.params, 'origin_user_id') === user.id);
   if (!requester && user.role !== 'owner' && user.role !== 'admin') return false;
 
   switch (action.action) {
