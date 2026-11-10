@@ -39,7 +39,7 @@ type BindingLocator = Readonly<{ org_id: string; resource_binding_id: string; cl
   onConnectionRegistry?: (registry: AppConnectionSessionRegistry) => void;
   prelocked_participant_ids?: readonly string[] }>;
 type SessionLocator = Readonly<{ org_id: string; session_id: string;
-  token_hash: string; clock: () => Date }>;
+  token_hash: string; clock: () => Date; resume?: Readonly<{ graceMs: number }> }>;
 
 /** Participant kinds are read after waits without taking users locks after the
  * established member/App locks. Callers supply IDs from locked authority rows. */
@@ -256,6 +256,14 @@ export async function loadLiveAttachmentSyncAuthority(tx: AppRunTransaction,
   if (!await attachmentSyncParticipantsAreHuman(tx, bindingAuthority.binding.owner_user_id,
     bindingAuthority.registration.operator_user_id)) return null;
   const checkedAt = currentTime(input.clock);
+  const expired = !!session && !!checkedAt && session.expires_at <= checkedAt;
+  // Same grace-window resume as the v1 action channel: a lapsed until_revoked
+  // lease may resume only within the window, with every other predicate intact.
+  let resuming = false;
+  if (input.resume?.graceMs !== undefined && session && checkedAt
+    && session.renewal_lifetime === 'until_revoked' && expired) {
+    resuming = (await import('./app-runtime-renewal.js')).runtimeSessionResumable(session.expires_at, checkedAt, input.resume.graceMs);
+  }
   if (!session || !checkedAt || session.audience !== 'app_resource_sync'
     || session.runtime_binding_id !== null
     || session.resource_binding_id !== bindingAuthority.binding.id
@@ -264,7 +272,7 @@ export async function loadLiveAttachmentSyncAuthority(tx: AppRunTransaction,
     || session.runtime_epoch !== bindingAuthority.registration.runtime_epoch
     || session.lifecycle_epoch !== bindingAuthority.installation.lifecycle_epoch
     || session.grant_epoch !== bindingAuthority.installation.grant_epoch
-    || session.revoked_at || session.expires_at <= checkedAt
+    || session.revoked_at || (expired && !resuming)
     || appConsentDeadline(bindingAuthority.binding.consent_expires_at,bindingAuthority.binding.consent_lifetime??undefined)<=checkedAt.getTime()) return null;
   if(session.renewal_lifetime==='until_revoked'){
     if(session.renewable_until!==null||!session.renewal_web_session_id||!session.renewal_operator_role||bindingAuthority.binding.consent_lifetime!=='until_revoked')return null;
@@ -272,6 +280,6 @@ export async function loadLiveAttachmentSyncAuthority(tx: AppRunTransaction,
     if(!await runtimeRenewalPersistentPrincipal(tx,{org_id:input.org_id,operator_user_id:session.operator_user_id,role:session.renewal_operator_role}))return null;
   }
   if (!await attachmentFinalAuthorityIsCurrent(tx, [bindingAuthority.binding.owner_user_id, bindingAuthority.registration.operator_user_id],
-    { clock: input.clock, expires_at: [session.expires_at, ...(bindingAuthority.binding.consent_expires_at?[bindingAuthority.binding.consent_expires_at]:[])] })) return null;
+    { clock: input.clock, expires_at: [...(resuming?[]:[session.expires_at]), ...(bindingAuthority.binding.consent_expires_at?[bindingAuthority.binding.consent_expires_at]:[])] })) return null;
   return Object.freeze({ ...bindingAuthority, session, checked_at: checkedAt });
 }

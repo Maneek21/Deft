@@ -30,6 +30,7 @@ const HIDDEN_SPACE_ID = 'test-actions-routes-hidden-space';
 let TEST_PROJECT_ID: string | null = null;
 let testApp: Hono | null = null;
 let createdTestOrg = false;
+let createdDeftyUserId: string | null = null;
 
 async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
   const c = new pg.Client({ connectionString: DATABASE_URL });
@@ -194,6 +195,18 @@ async function teardownFixtures() {
         `DELETE FROM orgs WHERE id = $1 AND slug = 'actions-routes-test-org'`,
         [ORG_ID],
       );
+    }
+    if (createdDeftyUserId) {
+      // Only remove the canonical Defty row if this file created it and
+      // nothing else references it; otherwise leave the shared identity alone.
+      await c.query(
+        `DELETE FROM users
+          WHERE id = $1
+            AND NOT EXISTS (SELECT 1 FROM org_members WHERE user_id = $1)
+            AND NOT EXISTS (SELECT 1 FROM messages WHERE user_id = $1)`,
+        [createdDeftyUserId],
+      );
+      createdDeftyUserId = null;
     }
   });
 }
@@ -1187,7 +1200,10 @@ for (const sourceAuthor of ['human', 'employee'] as const) test(`approval confir
       assert.equal(count.rows[0].n, 1);
       return;
     }
-    assert.match(original.rows[0].content, /Created/i);
+    // The proposal loses its stale approval prompt and keeps its factual
+    // prose; the outcome lives only in the confirmation message so the Done
+    // summary is not rendered twice. Metadata preserves the original body.
+    assert.doesNotMatch(original.rows[0].content, /Created/i);
     assert.doesNotMatch(original.rows[0].content, /pending your approval/);
     assert.match(original.rows[0].content, /\[Playbook\]\(\/knowledge\/verified\)/);
     assert.deepEqual(original.rows[0].metadata.citations, [{ url: '/knowledge/verified', title: 'Playbook' }]);
@@ -1350,6 +1366,115 @@ test('the final rejected decision posts one settled-group confirmation', async (
     /new explicit user request/i,
   );
 
+});
+
+test('approving the last card in a proposal posts the Done summary once', async () => {
+  const label = `done-once-${Date.now()}`;
+  const deftyUserId = await withClient(async (c) => {
+    const existing = await c.query<{ id: string }>(
+      `SELECT id FROM users WHERE email = 'deft-agent@system.local' LIMIT 1`,
+    );
+    if (existing.rows.length > 0) return existing.rows[0].id;
+    const inserted = await c.query<{ id: string }>(
+      `INSERT INTO users (id, email, name, kind, is_agent)
+       VALUES ('test-actions-routes-defty', 'deft-agent@system.local', 'Defty', 'agent', true)
+       ON CONFLICT (email) DO UPDATE SET name = 'Defty', kind = 'agent', is_agent = true
+       RETURNING id`,
+    );
+    if (inserted.command === 'INSERT') createdDeftyUserId = inserted.rows[0].id;
+    return inserted.rows[0].id;
+  });
+
+  const group = await withClient(async (c) => {
+    const message = await c.query<{ id: string }>(
+      `INSERT INTO messages (id, org_id, space_id, user_id, content, metadata)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, $4, '{}'::jsonb)
+       RETURNING id`,
+      [
+        ORG_ID,
+        VISIBLE_SPACE_ID,
+        deftyUserId,
+        `I will file two tasks for ${label}. This is pending your approval before creation.`,
+      ],
+    );
+    const actions = await c.query<{ id: string }>(
+      `INSERT INTO agent_actions
+        (id, org_id, user_id, agent_employee_id, conversation_id, message_id, source, action, params,
+         approval_tier, approval_status)
+       VALUES
+        (gen_random_uuid()::text, $1, $2, NULL, $3, $4, 'defty', 'create_task', $5::jsonb, 'quick', 'pending'),
+        (gen_random_uuid()::text, $1, $2, NULL, $3, $4, 'defty', 'create_task', $6::jsonb, 'quick', 'pending')
+       RETURNING id`,
+      [
+        ORG_ID,
+        APPROVER_USER_ID,
+        VISIBLE_SPACE_ID,
+        message.rows[0].id,
+        JSON.stringify({
+          title: `${label} first`, project_id: TEST_PROJECT_ID,
+          resolved_project_id: TEST_PROJECT_ID, project_name: 'Actions Routes Test Project', priority: 'p2',
+        }),
+        JSON.stringify({
+          title: `${label} second`, project_id: TEST_PROJECT_ID,
+          resolved_project_id: TEST_PROJECT_ID, project_name: 'Actions Routes Test Project', priority: 'p2',
+        }),
+      ],
+    );
+    return { messageId: message.rows[0].id, actionIds: actions.rows.map((row) => row.id) };
+  });
+
+  // Back-to-back approval of the two cards in the same proposal.
+  for (const actionId of group.actionIds) {
+    assert.equal((await app().request(`/api/agent/actions/${actionId}/approve`, {
+      method: 'POST', body: JSON.stringify({}),
+    })).status, 200);
+  }
+
+  const confirmation = await withClient(async (c) => c.query<{
+    content: string;
+    metadata: Record<string, any>;
+  }>(
+    `SELECT content, metadata
+       FROM messages
+      WHERE org_id = $1
+        AND metadata->>'approval_confirmation_for_message_id' = $2`,
+    [ORG_ID, group.messageId],
+  ));
+  assert.equal(confirmation.rowCount, 1, 'the settled group posts exactly one confirmation message');
+  assert.match(confirmation.rows[0].content, /^Done - completed 2 approved actions\./);
+  assert.match(confirmation.rows[0].content, new RegExp(`${label} first`));
+  assert.match(confirmation.rows[0].content, new RegExp(`${label} second`));
+  assert.deepEqual(
+    [...confirmation.rows[0].metadata.confirmed_action_ids].sort(),
+    [...group.actionIds].sort(),
+  );
+
+  // The proposal body is cleaned of its stale approval prompt, but it must not
+  // restate the outcome: that is the confirmation message's job, and repeating
+  // it here is what rendered the "Done" summary twice after the second click.
+  const proposal = await withClient(async (c) => c.query<{
+    content: string;
+    metadata: Record<string, any>;
+  }>(
+    `SELECT content, metadata FROM messages WHERE org_id = $1 AND id = $2`,
+    [ORG_ID, group.messageId],
+  ));
+  assert.match(proposal.rows[0].content, new RegExp(`I will file two tasks for ${label}\\.`));
+  assert.doesNotMatch(proposal.rows[0].content, /pending your approval/i);
+  assert.doesNotMatch(
+    proposal.rows[0].content,
+    /Done -/i,
+    'the proposal must not repeat the confirmation summary',
+  );
+  assert.doesNotMatch(
+    proposal.rows[0].content,
+    new RegExp(`${label} first`),
+    'the proposal must not repeat the approved-action list',
+  );
+  assert.match(
+    proposal.rows[0].metadata.approval_proposal_original_content,
+    /pending your approval/i,
+  );
 });
 
 test('rejected tool action records one exact continuation result', async () => {

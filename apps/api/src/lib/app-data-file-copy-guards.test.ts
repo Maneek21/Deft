@@ -7,6 +7,7 @@ test('runtime-returned authoritative source metadata is withheld outside exact r
 test('file_copy shares real owner file-transfer admission and retains its slots until work unwinds',async()=>{
  const {withAppDataBinaryIo}=await import('./app-data-io-limits.js');const owner={org_id:'org',user_id:'owner'};const releases:Array<()=>void>=[];
  const hold=()=>withAppDataBinaryIo(owner,'file_copy',async()=>new Promise<void>(resolve=>releases.push(resolve)));
- const a=hold(),b=hold();await assert.rejects(withAppDataBinaryIo(owner,'file_upload',async()=>{}),/busy/);
- await withAppDataBinaryIo({org_id:'org',user_id:'other'},'file_copy',async()=>{});releases.forEach(release=>release());await Promise.all([a,b]);await withAppDataBinaryIo(owner,'file_copy',async()=>{});
+ // Four per-owner slots; a fifth transfer waits the bounded queue, then is refused.
+ const held=[hold(),hold(),hold(),hold()];await assert.rejects(withAppDataBinaryIo(owner,'file_upload',async()=>{}),/busy/);
+ await withAppDataBinaryIo({org_id:'org',user_id:'other'},'file_copy',async()=>{});releases.forEach(release=>release());await Promise.all(held);await withAppDataBinaryIo(owner,'file_copy',async()=>{});
 });

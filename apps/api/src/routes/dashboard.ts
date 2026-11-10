@@ -8,6 +8,7 @@ import { DEFTY_NAME } from '../lib/ensure-defty-membership.js';
 import { generateDailyStandup } from '../lib/standup-automation.js';
 import { visibleModuleActionSql } from '../lib/module-action-visibility.js';
 import {readEmailCalendarOccurrences} from '../lib/email-calendar-projection.js';
+import { getDayBoundaries, resolveViewerTimezone } from '../lib/task-dates.js';
 
 export const dashboardRoutes = new Hono();
 
@@ -16,9 +17,15 @@ dashboardRoutes.get('/', async (c) => {
   try {
     const user = c.get('user');
     const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const todayEnd = new Date(todayStart.getTime() + 86400000);
-    const weekEnd = new Date(todayStart.getTime() + 7 * 86400000);
+    // Day buckets are calendar-day questions in the *viewer's* timezone, not
+    // the server's. Resolve ?tz= (validated) → profile tz → org tz → UTC.
+    const viewerTz = await resolveViewerTimezone({
+      requestedTz: c.req.query('tz'),
+      userId: user.id,
+      orgId: user.org_id,
+    });
+    const { start: todayStart, end: todayEnd } = getDayBoundaries(viewerTz, 0, now);
+    const { start: weekEnd } = getDayBoundaries(viewerTz, 7, now);
 
     // 1. Tasks due today (assigned to me)
     const dueToday = await db.select({

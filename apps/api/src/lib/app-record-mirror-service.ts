@@ -3,18 +3,28 @@ import {discloseRecordMirrorRead} from './app-record-mirror-read-deadline.js';
 import {AppRunRetainedProviderResultSchema} from '@deft/shared';
 import {randomUUID} from 'node:crypto';
 import {db} from './db.js';
+import {AppError} from './app-errors.js';
 import {sql} from 'drizzle-orm';
 import {z} from 'zod';
 import {AppRecordMirrorReviewRequestSchema,AppRecordMirrorControlRequestSchema,AppRecordMirrorStatusSchema} from '@deft/app-kit/core';
 import {AppDataService} from './app-data-service.js';
-import {appDataDigest,appDataDenied,type CurrentAppDataAuthority} from './app-data-authority.js';
+import {appDataDigest,appDataDenied,appDataRetainedGuard,type CurrentAppDataAuthority} from './app-data-authority.js';
+import type {ExperienceCaller} from './app-experience-service.js';
 import type {HumanActionAuthorityPort,HumanActionAuthority} from './app-experience-human-action-service.js';
 import type {AppRunKeyProvider} from './app-run-keyrings.js';
 import type {AppRunTransaction} from './app-run-repository.js';
 import {ReviewedRecordMirrorAuthoritySchema,currentRecordMirrorAuthority,currentRecordMirrorReadAuthority,currentOwnerRecordMirrorReadAuthority} from './app-record-mirror-authority.js';
 import {PostgresRecordMirrorStore,type RecordMirrorAuthorityRow} from './app-record-mirror-store.js';
 import {RecordMirrorReviewTicketSchema,sealRecordMirrorReview,openRecordMirrorReview} from './app-record-mirror-review.js';
+import {currentAppIntegrationToolPrincipal,type AppIntegrationToolCaller} from './app-integration-tool-authority.js';
+const RecordBindingSchema=z.strictObject({record_id:z.string().uuid()});
 const confirmation=z.strictObject({ticket:z.string().min(1).max(100000),expected_authority_digest:z.string().regex(/^sha256:[a-f0-9]{64}$/u)});
+/** Agent-nominated mirror review: the exact record plus the owner's resolved
+ * connection/store pins. The nomination carries no purpose identity and issues
+ * no receipt; it only lands a pending approval card for the owner. */
+const NominationSchema=z.strictObject({connection_session_id:z.string().uuid(),store_key:z.string(),mirror_key:z.string(),
+ record_id:z.string().uuid(),request_id:z.string().uuid(),expected_revision:z.number().int().min(0).max(2147483646),
+ expires_at:z.iso.datetime(),max_attempts_per_day:z.number().int().min(1).max(1000)});
 /** Trusted generic persistent write review. Neither Worker settings nor an
  * ordinary data grant can enable this purpose, renew it or nominate effects. */
 export class AppRecordMirrorService{
@@ -29,12 +39,14 @@ export class AppRecordMirrorService{
   if(attempt){let mirror_state=attempt.state==='unknown'?'unknown':attempt.state==='running'?'running':['pending','pending_approval'].includes(String(attempt.state))?'queued':['cancelled','expired'].includes(String(attempt.state))?attempt.state:attempt.state==='succeeded'?'unknown':'failed';const runtime=await(await import('./app-run-runtime.js')).getAppRunRuntime(),id=z.string().uuid().parse(attempt.id),retained=await runtime.repository.latestRetainedAttemptId(row.org_id,id,tx);if(retained){const retainedOutput=await runtime.secretRepository.readRetainedOutput(row.org_id,id,retained,this.now,tx);const parsed=retainedOutput?AppRunRetainedProviderResultSchema.safeParse(retainedOutput.value):null;const output=parsed?.success?parsed.data.output:null;if(output&&typeof output==='object'&&!Array.isArray(output)&&['synced','cleaned','conflict','unknown','unsupported'].includes(String(output.mirror_state)))mirror_state=output.mirror_state;}activity={run_id:id,record_id:attempt.record_id,record_revision:attempt.record_revision,mirror_state,automatic_retry:false};}
   return AppRecordMirrorStatusSchema.parse({schema_version:'deft.app_record_mirror_status.v1',receipt_id:row.receipt_id,request_id:row.request_id,store_key:row.store_key,mirror_key:row.mirror_key,account_ref:row.account_ref,revision:row.revision,state:row.state==='enabled'&&row.expires_at<=this.now()?'expired':row.state,policy_digest:row.policy_digest,expires_at:row.expires_at.toISOString(),max_attempts_per_day:row.max_attempts_per_day,attempts_remaining:await this.store.remaining(tx,row,this.now()),activity});
   },this.now);}
- async review(experience:string,target:string,raw:unknown,signal?:AbortSignal){const request=AppRecordMirrorReviewRequestSchema.parse(raw),current=await this.data.current(request.connection_session_id,request.store_key),policy=current.store.record_mirrors?.find(row=>row.key===request.mirror_key);if(!policy||!current.consent)throw appDataDenied();
+ /** `binding` is server-side only (never read from the request body): an
+  * approved agent nomination binds the receipt to the one record reviewed. */
+ async review(experience:string,target:string,raw:unknown,signal?:AbortSignal,binding?:{record_id:string}){const request=AppRecordMirrorReviewRequestSchema.parse(raw),bound=binding===undefined?undefined:RecordBindingSchema.parse(binding),current=await this.data.current(request.connection_session_id,request.store_key),policy=current.store.record_mirrors?.find(row=>row.key===request.mirror_key);if(!policy||!current.consent)throw appDataDenied();
   return this.human.withHumanAction(this.data.caller,experience,policy.action_key,async(tx,human,final)=>{this.matches(current,experience,target,human);const now=this.now(),expiry=Date.parse(request.expires_at);if(!Number.isFinite(expiry)||expiry<=now.getTime()||expiry>now.getTime()+policy.max_authority_seconds*1000||request.max_attempts_per_day>policy.max_attempts_per_day)throw appDataDenied();
    const previous=await this.latest(tx,current,policy.key,true);if((previous?.revision??0)!==request.expected_revision)throw appDataDenied();
    const action_consents=(current.action_consents??(current.action_consent?[current.action_consent]:[])).filter(row=>row.action_key===policy.action_key);if(action_consents.length!==1||action_consents[0]!.action_binding_id!==human.runtime_binding_id)throw appDataDenied();
    const {resourceObservationBindingAuthority,loadObservationConnection}=await import('./app-resource-observation-authority.js');const binding=await resourceObservationBindingAuthority(tx,current.scope.org_id,current.scope.resource_binding_id,this.now),connection=await loadObservationConnection(tx,binding,current.connection.session_id);
-   const authority=ReviewedRecordMirrorAuthoritySchema.parse({schema_version:'deft.reviewed_record_mirror_authority.v1',review_session_id:experience,purpose_identity:human.authorization_identity,scope:current.scope,connection:current.connection,store_key:current.store.key,data_consent_id:current.consent!.consent_id,data_consent_digest:current.consent!.consent_digest,data_policy_digest:current.data_policy_digest,data_consent_expires_at:current.consent!.expires_at?.toISOString()??null,...(current.consent!.consent_lifetime?{consent_lifetime:current.consent!.consent_lifetime}:{}),policy,policy_digest:appDataDigest(policy),action_consents,custody_generation:connection.connection_receipt?.custody_generation??null,custody_receipt_digest:connection.connection_receipt?.receipt_digest??null,authority_expires_at:request.expires_at});
+   const authority=ReviewedRecordMirrorAuthoritySchema.parse({schema_version:'deft.reviewed_record_mirror_authority.v1',review_session_id:experience,purpose_identity:human.authorization_identity,scope:current.scope,connection:current.connection,store_key:current.store.key,data_consent_id:current.consent!.consent_id,data_consent_digest:current.consent!.consent_digest,data_policy_digest:current.data_policy_digest,data_consent_expires_at:current.consent!.expires_at?.toISOString()??null,...(current.consent!.consent_lifetime?{consent_lifetime:current.consent!.consent_lifetime}:{}),policy,policy_digest:appDataDigest(policy),action_consents,custody_generation:connection.connection_receipt?.custody_generation??null,custody_receipt_digest:connection.connection_receipt?.receipt_digest??null,authority_expires_at:request.expires_at,...(bound?{record_id:bound.record_id}:{})});
    await currentRecordMirrorAuthority(tx,authority,this.now);await final(tx);const authority_digest=appDataDigest(authority),ticket=RecordMirrorReviewTicketSchema.parse({schema_version:'deft.record_mirror_review_ticket.v1',org_id:this.data.caller.org_id,owner_user_id:this.data.caller.user_id,web_session_id:this.data.caller.sid,experience_session_id:experience,target_key:target,receipt_id:randomUUID(),previous_receipt_id:previous?.receipt_id??null,request,authority,authority_digest,issued_at:now.toISOString(),expires_at:new Date(Math.min(now.getTime()+120000,human.current_authority_expires_at.getTime(),human.session.expires_at.getTime(),expiry)).toISOString()});
    return {schema_version:'deft.app_record_mirror_review.v1',ticket:sealRecordMirrorReview(this.keys,ticket),authority_digest,account_ref:current.connection.account_ref,store_key:current.store.key,mirror_key:policy.key,expires_at:request.expires_at,max_attempts_per_day:request.max_attempts_per_day,operations:policy.operations,cleanup:policy.cleanup,max_mime_bytes:policy.max_mime_bytes,review_expires_at:ticket.expires_at};
   },signal,undefined,undefined,'human_action_preparation');
@@ -44,6 +56,59 @@ export class AppRecordMirrorService{
    const previous=await this.latest(tx,current,ticket.request.mirror_key,true);if((previous?.receipt_id??null)!==ticket.previous_receipt_id||(previous?.revision??0)!==ticket.request.expected_revision)throw appDataDenied();if(previous?.state==='enabled')await this.store.pause(tx,previous,previous.revision,this.now());await final(tx);
    const pins=ticket.authority,now=this.now();const result=await tx.execute(sql`INSERT INTO app_record_mirror_authorities(org_id,owner_user_id,receipt_id,request_id,review_web_session_id,store_key,mirror_key,account_ref,installation_id,app_version_id,grant_snapshot_id,runtime_registration_id,resource_binding_id,reviewed_authority,authority_digest,policy_digest,expires_at,max_attempts_per_day,created_at,updated_at) VALUES(${caller.org_id},${caller.user_id},${ticket.receipt_id},${ticket.request.request_id},${caller.sid},${pins.store_key},${pins.policy.key},${pins.connection.account_ref},${pins.scope.installation_id},${pins.scope.app_version_id},${pins.scope.grant_snapshot_id},${pins.scope.runtime_registration_id},${pins.scope.resource_binding_id},${JSON.stringify(pins)}::jsonb,${ticket.authority_digest},${pins.policy_digest},${new Date(pins.authority_expires_at)},${ticket.request.max_attempts_per_day},${now},${now}) RETURNING receipt_id`);if(!result.rows[0])throw appDataDenied();return this.status(tx,(await this.store.read(tx,caller.org_id,caller.user_id,ticket.receipt_id))!);
   },signal,undefined,undefined,'human_action_confirmation');
+ }
+ /** Agent-initiable record-mirror nomination. A Defty/personal-MCP caller may
+  * nominate a saved record for a declared record-mirror policy. The nomination
+  * only lands a pending approval card in the shared queue; no receipt is issued
+  * and no purpose identity is fabricated. The human's later approval re-runs the
+  * ordinary review()/confirm() authority, so owner_user_id and the app-data
+  * retention guard stay unchanged. The caller supplies `current` resolved through
+  * its own already-validated integration grant, never a fabricated scope. */
+ async nominate(caller:AppIntegrationToolCaller,current:CurrentAppDataAuthority,raw:unknown){
+  return nominateRecordMirror(caller,current,raw,this.now);
+ }
+ /** Owner approval of an agent-nominated record mirror. Re-runs the ordinary
+  * human review()/confirm() authority with the approving owner's web session, so
+  * a receipt is always issued under the owner's current human authority — never
+  * from the agent's grant. Re-checks the account_ref, installation and policy
+  * digest the nomination carried; any drift fails closed with no receipt. */
+ async approveNomination(raw:unknown){
+  const nomination=NominationSchema.extend({account_ref:z.string().min(1).max(512),installation_id:z.string().uuid(),policy_digest:z.string().regex(/^sha256:[a-f0-9]{64}$/u)}).parse(raw);
+  const caller=this.data.caller,current=await this.data.current(nomination.connection_session_id,nomination.store_key);
+  const policy=current.store.record_mirrors?.find(row=>row.key===nomination.mirror_key);
+  if(!policy||!current.consent)throw appDataDenied();
+  if(current.connection.account_ref!==nomination.account_ref||current.scope.installation_id!==nomination.installation_id||appDataDigest(policy)!==nomination.policy_digest)throw appDataDenied();
+  const target=current.scope.target_key;
+  let experience:string;
+  try {
+    experience=await this.experienceSession(caller,current.scope.installation_id,target);
+  } catch (error) {
+    // The approver's browser state is a precondition, not a verdict on the
+    // nomination: tag it pre-confirm so the resolver keeps the card pending.
+    throw recordMirrorPhaseError('review',error);
+  }
+  const {record_id,account_ref,installation_id,policy_digest,...review}=nomination;
+  void account_ref;void installation_id;void policy_digest;
+  let opened;
+  try {
+    // The owner approved this one nominated record, not the store-wide mirror
+    // policy: bind the receipt to it so it cannot admit another record.
+    opened=await this.review(experience,target,review,undefined,{record_id});
+  } catch (error) {
+    throw recordMirrorPhaseError('review',error);
+  }
+  try {
+    return await this.confirm(experience,target,{ticket:opened.ticket,expected_authority_digest:opened.authority_digest});
+  } catch (error) {
+    throw recordMirrorPhaseError('confirm',error);
+  }
+ }
+ private async experienceSession(caller:ExperienceCaller,installationId:string,target:string){
+  const rows=await db.execute(sql<{id:string}>`SELECT id FROM app_experience_sessions WHERE org_id=${caller.org_id} AND user_id=${caller.user_id} AND web_session_id=${caller.sid} AND app_installation_id=${installationId} AND resource_target_key=${target} AND revoked_at IS NULL AND expires_at>clock_timestamp() ORDER BY created_at DESC LIMIT 2`);
+  // Zero or several live experiences is ambiguous, never an ended data grant:
+  // fail closed without APP_ACCESS_DENIED so the nomination is not destroyed.
+  if(rows.rows.length!==1)throw new AppError('Open this app once in Deft in this browser, then approve again','APP_REVIEW_REQUIRED',409);
+  return z.string().uuid().parse(rows.rows[0]!.id);
  }
  private async ordinarySession(tx:AppRunTransaction,current:CurrentAppDataAuthority,experience:string,target:string){await this.data.guard(tx);const rows=await tx.execute(sql<{current:boolean;expires_at:Date}>`SELECT expires_at,expires_at>clock_timestamp() AND revoked_at IS NULL AS current FROM app_experience_sessions WHERE org_id=${this.data.caller.org_id} AND user_id=${this.data.caller.user_id} AND web_session_id=${this.data.caller.sid} AND id=${experience} AND resource_target_key=${target} AND app_installation_id=${current.scope.installation_id} AND app_version_id=${current.scope.app_version_id} AND grant_snapshot_id=${current.scope.grant_snapshot_id} FOR SHARE`);if(rows.rows[0]?.current!==true||current.scope.target_key!==target)throw appDataDenied();return z.coerce.date().parse(rows.rows[0].expires_at).getTime();}
  async read(experience:string,target:string,raw:unknown){
@@ -60,4 +125,46 @@ export class AppRecordMirrorService{
   });
  }
  async pause(experience:string,target:string,raw:unknown){const input=AppRecordMirrorControlRequestSchema.extend({connection_session_id:z.string().uuid(),store_key:z.string()}).parse(raw),current=await this.data.current(input.connection_session_id,input.store_key);return db.transaction(async tx=>{await this.ordinarySession(tx,current,experience,target);const row=await this.store.read(tx,this.data.caller.org_id,this.data.caller.user_id,input.receipt_id,true);if(!row||row.store_key!==input.store_key||row.account_ref!==current.connection.account_ref||row.installation_id!==current.scope.installation_id)throw appDataDenied();const paused=await this.store.pause(tx,row,input.expected_revision,this.now());await this.data.guard(tx);return this.status(tx,paused);});}
+}
+/** Agent-nominated record-mirror effect. A Defty/personal-MCP caller nominates a
+ * saved record for a declared record-mirror policy. The nomination only lands a
+ * pending approval card in the shared queue; no receipt is issued and no purpose
+ * identity is fabricated. The human's later approval re-runs the ordinary
+ * review()/confirm() authority, so owner_user_id and the app-data retention guard
+ * stay unchanged. The caller supplies `current` resolved through its own
+ * already-validated integration grant, never a fabricated scope. */
+export async function nominateRecordMirror(caller:AppIntegrationToolCaller,current:CurrentAppDataAuthority,raw:unknown,now:()=>Date=()=>new Date()){
+ const nomination=NominationSchema.parse(raw);
+ const policy=current.store.record_mirrors?.find(row=>row.key===nomination.mirror_key);
+ if(!policy||!current.consent||current.scope.org_id!==caller.org_id||current.scope.owner_user_id!==caller.user_id)throw appDataDenied();
+ const expiry=Date.parse(nomination.expires_at),nowMs=now().getTime();
+ if(!Number.isFinite(expiry)||expiry<=nowMs||expiry>nowMs+policy.max_authority_seconds*1000||nomination.max_attempts_per_day>policy.max_attempts_per_day)throw appDataDenied();
+ return db.transaction(async tx=>{
+  await currentAppIntegrationToolPrincipal(tx,caller);
+  const action_id=randomUUID();
+  const result=await tx.execute(sql`INSERT INTO agent_actions(id,org_id,user_id,source,action,params,approval_tier,approval_status) VALUES(${action_id},${caller.org_id},${caller.user_id},'app_record_mirror','app_record_mirror_nominate',${JSON.stringify({...nomination,account_ref:current.connection.account_ref,installation_id:current.scope.installation_id,policy_digest:appDataDigest(policy)})}::jsonb,'full','pending') RETURNING id`);
+  if(!result.rows[0])throw appDataDenied();
+  return {schema_version:'deft.app_record_mirror_nomination.v1',action_id,approval_status:'pending' as const,account_ref:current.connection.account_ref,store_key:current.store.key,mirror_key:policy.key,expires_at:nomination.expires_at};
+ });
+}
+/** Owner approval of an agent-nominated record mirror, reusing the ordinary
+ * human review()/confirm() authority under the approving owner's web session.
+ * This is the only path that issues a mirror receipt; the agent's nomination
+ * itself never fabricates a purpose identity or a receipt. */
+export async function approveRecordMirrorNomination(approver:ExperienceCaller,raw:unknown){
+ const runtime=await import('./app-run-runtime.js'),{getAppRunRuntime}=runtime,{AppExperienceExposureService}=await import('./app-experience-exposure.js');
+ const {keys}=await getAppRunRuntime();
+ const service=new AppRecordMirrorService(new AppDataService(approver,appDataRetainedGuard(approver)),new AppExperienceExposureService(keys),keys);
+ return service.approveNomination(raw);
+}
+
+/** Tag an error thrown while approving a record-mirror nomination with the
+ * phase (`review` or `confirm`) in which it occurred, so callers can tell a
+ * pre-confirm failure (safe to retry) from an uncertain post-confirm one. */
+export function recordMirrorPhaseError(phase:'review'|'confirm',cause:unknown):Error{
+ const base=cause instanceof Error?cause:new Error(String(cause));
+ (base as {phase?:'review'|'confirm'}).phase=phase;
+ if(cause instanceof Error && cause!==base)(base as {cause?:unknown}).cause=cause;
+ if(cause && typeof cause==='object' && 'code' in cause && (base as {code?:unknown}).code===undefined)(base as {code?:unknown}).code=(cause as {code?:unknown}).code;
+ return base;
 }

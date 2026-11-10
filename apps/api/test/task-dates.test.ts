@@ -22,6 +22,7 @@ import {
   isOverdue,
   isDueWithinDays,
   getDayBoundaries,
+  isValidTimezone,
 } from '../src/lib/task-dates.ts';
 
 test('isDueToday: task due at 23:00 UTC is due today in America/Los_Angeles (16:00 PDT)', () => {
@@ -99,4 +100,14 @@ test('DST spring-forward: LA 2025-03-09 day window still spans ~midnight-to-midn
   assert.equal(end.toISOString(), '2025-03-10T07:00:00.000Z');
   // A task due 20:00 UTC that day (13:00 PDT) is due today.
   assert.equal(isDueToday(new Date('2025-03-09T20:00:00.000Z'), 'America/Los_Angeles', now), true);
+});
+
+test('isValidTimezone accepts IANA zones and rejects empty or junk values', () => {
+  assert.equal(isValidTimezone('Asia/Kolkata'), true);
+  assert.equal(isValidTimezone('America/Los_Angeles'), true);
+  assert.equal(isValidTimezone('UTC'), true);
+  assert.equal(isValidTimezone('Not/A_Real_Zone'), false);
+  assert.equal(isValidTimezone(''), false);
+  assert.equal(isValidTimezone(null), false);
+  assert.equal(isValidTimezone(undefined), false);
 });

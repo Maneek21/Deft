@@ -21,8 +21,8 @@ importers:
         specifier: 3.9.28
         version: 3.9.28
       nodemailer:
-        specifier: 10.0.10
-        version: 10.0.10
+        specifier: 10.1.4
+        version: 10.1.4
 
 packages:
 
@@ -275,6 +275,10 @@ packages:
 
   nodemailer@10.0.10:
     resolution: {integrity: sha512-He9XskOFms62SyAKkLu8CcGcYHAo+BSHSsORI8s4PJH8qZgZY4L4lDfvyN0twvmbpyG+eGrxpyBlskj9d9rJ8A==}
+    engines: {node: '>=20.0.0'}
+
+  nodemailer@10.1.4:
+    resolution: {integrity: sha512-EsMnOR2oRv4LGnWvHgcVYkkQ4O2j8KO4WTw6l+PHR4sOXo8SAgIraxtEnGDmotjbhv0hDsu3IuDIFZm8iXwO4A==}
     engines: {node: '>=20.0.0'}
 
   on-exit-leak-free@2.1.2:
@@ -566,6 +570,8 @@ snapshots:
       tlds: 1.261.0
 
   nodemailer@10.0.10: {}
+
+  nodemailer@10.1.4: {}
 
   on-exit-leak-free@2.1.2: {}
 

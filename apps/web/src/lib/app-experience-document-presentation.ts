@@ -23,7 +23,7 @@ export function experienceDocumentStyleValue(property: string, raw: string): str
   if (value.length > 180 || /[\\@{};!<>]|(?:url|var|expression|image|attr)\s*\(/iu.test(value)) return null;
   if (Object.hasOwn(choices, property)) return choices[property].includes(value) ? value : null;
   if (['color', 'background', 'background-color', 'border-color'].includes(property)) return colour.test(value) ? value : null;
-  if (['width', 'max-width', 'height', 'max-height'].includes(property)) return value === 'auto' || sizing(value) ? value : null;
+  if (['width', 'max-width', 'height', 'max-height', 'min-width'].includes(property)) return value === 'auto' || sizing(value) ? value : null;
   if (property === 'font-size') return value === '0' ? '0px' : size.test(value) && Number.parseFloat(value) >= 0 && Number.parseFloat(value) <= 48 && /(?:px|pt)$/u.test(value) ? value : null;
   if (property === 'line-height') {
     if (/^(?:[0-3](?:\.\d{1,2})?|4(?:\.0+)?)$/u.test(value)) return value;

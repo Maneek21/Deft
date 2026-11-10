@@ -14,6 +14,9 @@ export const APP_RUNTIME_CHANNEL_VERSION = 'deft.app_runtime_channel.v1' as cons
 export const APP_RUNTIME_AUDIENCE = 'app_runtime' as const;
 export const APP_RUNTIME_SESSION_MS = 15 * 60_000;
 export const APP_RUNTIME_LEASE_MS = 60_000;
+/** An `until_revoked` background lease that lapses may be renewed (resumed)
+ * only within this window of its expiry. Outside it, renewal is a hard 403. */
+export const APP_RUNTIME_SESSION_RESUME_GRACE_MS = 24 * 60 * 60 * 1000;
 export const APP_ACTION_PAYLOAD_VERSION = 'deft.app_action_payload.v1' as const;
 export function runtimePayloadHandshakeAllowed(pointer: Readonly<{ snapshot_id: string | null; snapshot_digest: string | null }> | undefined,
   version: string | undefined): boolean {

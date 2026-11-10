@@ -22,7 +22,7 @@ export const EXPERIENCE_BOOTSTRAP_SCRIPT = String.raw`(() => {
       || typeof data.session_id !== 'string'
       || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(data.session_id)
       || typeof data.worker_source !== 'string'
-      || data.worker_source.length < 1 || data.worker_source.length > 98304
+      || data.worker_source.length < 1 || data.worker_source.length > 114688
       || event.ports.length !== 1) return;
     started = true;
     const port = event.ports[0];

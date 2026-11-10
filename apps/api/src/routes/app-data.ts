@@ -8,6 +8,7 @@ import {appDataRuntimeAuthority} from '../lib/app-data-authority.js';
 import {readBoundedAppDataBytes} from '../lib/app-connection-session-registry.js';
 import {resourceSyncWebAuthority,ResourceSyncWebAuthenticationError} from '../lib/app-resource-sync-web-authority.js';
 import {AppError} from '../lib/app-errors.js';
+import {appHttpFailureDetails} from '../lib/app-http-errors.js';
 import {isAppOwnerConnectionsEnabled} from '../lib/env.js';
 import {createAppResourceSyncLimits} from '../middleware/app-resource-sync-limits.js';
 import {createAppResourcePrivateReadLimits} from '../middleware/app-resource-private-limits.js';
@@ -32,7 +33,8 @@ async function readBody(c:Context,binary=false,limit?:number){
 async function service(c:Context){const auth=await resourceSyncWebAuthority(c.req.header('authorization'));return new AppDataService({org_id:auth.actor.org_id,user_id:auth.actor.actor_id,
  sid:auth.web_session.sid,access_expires_at:auth.web_session.expires_at},auth.guard);}
 function failure(c:Context,error:unknown){
- if(error instanceof AppError)return c.json({error:error.message,code:error.code,...(error.details?{details:error.details}:{})},error.status);
+ if(error instanceof AppError){const details=appHttpFailureDetails(error.code,error.details);
+  return c.json({error:error.message,code:error.code,...(details?{details}:{})},error.status);}
  if(error instanceof ResourceSyncWebAuthenticationError)return c.json({error:'App data authentication required',code:'APP_ACCESS_DENIED'},401);
  if(error instanceof z.ZodError||error instanceof SyntaxError||error instanceof TypeError)return c.json({error:'Invalid App data request',code:'VALIDATION_ERROR'},400);
  // A closed incoming request is not evidence of backend unavailability. Keep

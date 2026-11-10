@@ -25,6 +25,10 @@ export const ReviewedRecordMirrorAuthoritySchema=z.strictObject({
   .refine(rows=>new Set(rows.map(row=>row.action_key)).size===rows.length&&rows.every((row,i)=>i===0||rows[i-1]!.action_key<row.action_key)),
  custody_generation:z.number().int().min(1).max(2147483646).nullable(),custody_receipt_digest:digest.nullable(),
  authority_expires_at:z.iso.datetime(),
+ // Set only when the review approved one agent-nominated record: the receipt
+ // then admits mirror runs for that record alone. Absent for the in-app store
+ // review, whose reviewed meaning is the store-wide mirror policy.
+ record_id:id.optional(),
 }).refine(row=>appConsentExpiryValid(row.data_consent_expires_at,row.consent_lifetime)&&row.action_consents.some(consent=>consent.action_key===row.policy.action_key)
  &&row.action_consents.every(consent=>appConsentDeadline(consent.expires_at,consent.consent_lifetime)>=Date.parse(row.authority_expires_at))
  &&Date.parse(row.authority_expires_at)<=Math.min(appConsentDeadline(row.scope.consent_expires_at, row.scope.consent_lifetime),appConsentDeadline(row.data_consent_expires_at,row.consent_lifetime))

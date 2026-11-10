@@ -5,8 +5,8 @@ const uuid = z.string().uuid();
 const key = z.string().regex(/^[a-z][a-z0-9_]{0,47}$/);
 const taggedDigest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 export const PrivateFileDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
-export const PRIVATE_FILE_LIMITS = Object.freeze({ file_bytes: 2097152, payload_bytes: 8388608,
-  metadata_bytes: 65536, files: 8, retained_files: 256, retained_payloads: 64, transfer_ms: 10000 });
+export const PRIVATE_FILE_LIMITS = Object.freeze({ file_bytes: 8388608, payload_bytes: 8388608,
+  metadata_bytes: 65536, files: 8, retained_files: 256, retained_payloads: 64, transfer_ms: 30000 });
 export const PrivateFileScopeSchema = z.strictObject({ org_id: uuid, owner_user_id: uuid,
   installation_id: uuid, resource_target_key: key, state_key: key, record_id: uuid,
   artifact_digest: taggedDigest, declaration_digest: taggedDigest });

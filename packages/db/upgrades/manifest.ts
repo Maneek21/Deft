@@ -324,6 +324,10 @@ export const upgradeManifest = {
     {version:'0.3.0-preview.120',file:'0.3.0-preview.120-app-persistent-consent.sql',description:'Explicit owner-reviewed persistent consent with finite reviews and renewable technical sessions'},
     {version:'0.3.0-preview.128',file:'0.3.0-preview.128-app-upgrade-callback-recovery.sql',description:'Recover Runtime-proven untouched account upgrades while preserving consumed callback fences'},
     {version:'0.3.0-preview.131',file:'0.3.0-preview.131-app-upgrade-authority-code-pins.sql',description:'Separate code and compatibility pins from strict upgrade authority'},
+    {version:'0.3.0-preview.132',file:'0.3.0-preview.132-app-integration-capture-retirement.sql',description:'Retire ended capture policies with an audit-visible reason instead of retrying forever'},
+    {version:'0.3.0-preview.133',file:'0.3.0-preview.133-app-runtime-grace-resume.sql',description:'Resume a lapsed until_revoked runtime lease exactly once within the fixed grace window without changing authority'},
+    {version:'0.3.0-preview.134',file:'0.3.0-preview.134-app-restore-access-reviews.sql',description:'Store each issued restore-access review as a single-use, owner- and session-bound record of the exact offered grant set'},
+    {version:'0.3.0-preview.135',file:'0.3.0-preview.135-app-connection-restore-marker.sql',description:'Allow the restore successor marker on app connection session records'},
   ] satisfies UpgradeMigration[],
 } as const;
 

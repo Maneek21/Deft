@@ -19,7 +19,7 @@ const begin=component.indexOf('      read: async () => {',component.indexOf('con
 const end=component.indexOf('\n      change(state)',begin);
 assert.ok(begin>0&&end>begin,'extract the actual installed Experience connection read callback');
 const readText=component.slice(begin,end).trim().replace(/^read:\s*/,'').replace(/,$/,'');
-const validateBody=component.match(/\},validate:async\(child,signal\)=>\{([\s\S]*?)\},\s*retire:child=>/)?.[1];
+const validateBody=component.match(/\},validate:async\(child,signal(?:,[a-zA-Z]+)?\)=>\{([\s\S]*?)\},\s*retire:child=>/)?.[1];
 assert.ok(validateBody,'actual account child validation callback found');
 
 async function scenario({race=false,revoked=false,changeIdentity=false,expireResponse=false,bodyResponse,recover=false,pinChange}={}){
@@ -49,7 +49,7 @@ async function scenario({race=false,revoked=false,changeIdentity=false,expireRes
   let validating;
   if(race){
     now=15000;
-    const validate=vm.runInNewContext(stripTypeScriptTypes('(async(child,signal)=>{'+validateBody+'})',{mode:'transform'}),
+    const validate=vm.runInNewContext(stripTypeScriptTypes('(async(child,signal,selection)=>{'+validateBody+'})',{mode:'transform'}),
       {Response,AbortSignal,AbortController,Error,TypeError,DOMException,...globals,locallyCurrent:authorityCurrent,live:connection.ensure});
     const child={accountRef:'account',value:{lease,session:{pin:{session_id:'original'},bundle:{record_store_keys:['drafts']}},
       client:{select:async()=>({account:{account_ref:'account'}})}}};

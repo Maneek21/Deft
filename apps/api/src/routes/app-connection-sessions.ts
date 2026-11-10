@@ -4,6 +4,7 @@ import { appConnectionRuntimeAuthority, productionAppConnectionSessionPorts } fr
 import { resourceSyncWebAuthority, ResourceSyncWebAuthenticationError } from '../lib/app-resource-sync-web-authority.js';
 import { readBoundedConnectionJson } from '../lib/app-connection-session-registry.js';
 import { AppError } from '../lib/app-errors.js';
+import { appHttpNextStep } from '../lib/app-http-errors.js';
 import { z } from 'zod';
 import { isAppOwnerConnectionsEnabled } from '../lib/env.js';
 import { createAppResourceSyncLimits } from '../middleware/app-resource-sync-limits.js';
@@ -28,9 +29,17 @@ async function body(c: Context) {
   finally { clearTimeout(timer); c.req.raw.signal.removeEventListener('abort', abort); }
 }
 function failure(c: Context, error: unknown) {
-  if (error instanceof AppError) return c.json({ error: error.message, code: error.code,
-    ...(error.code==='APP_REVIEW_REQUIRED'&&error.details?.reason==='runtime_action_review_mismatch'&&error.details?.phase==='before_dispatch'
-      ?{reason:'runtime_action_review_mismatch',phase:'before_dispatch'}:{}) }, error.status);
+  if (error instanceof AppError) {
+    // Only a validated enum-typed recovery step ever leaves this boundary;
+    // APP_REVIEW_REQUIRED always carries one (a service step or the neutral
+    // review_consent default). No other error details are disclosed.
+    const nextStep = appHttpNextStep(error.details?.next_step)
+      ?? (error.code === 'APP_REVIEW_REQUIRED' ? { kind: 'review_consent' as const } : undefined);
+    return c.json({ error: error.message, code: error.code,
+      ...(error.code==='APP_REVIEW_REQUIRED'&&error.details?.reason==='runtime_action_review_mismatch'&&error.details?.phase==='before_dispatch'
+        ?{reason:'runtime_action_review_mismatch',phase:'before_dispatch'}:{}),
+      ...(nextStep ? { details: { next_step: nextStep } } : {}) }, error.status);
+  }
   if (error instanceof ResourceSyncWebAuthenticationError) return c.json({ error: 'Connection authentication required', code: 'APP_ACCESS_DENIED' }, 401);
   if (error instanceof z.ZodError) return c.json({ error: 'Invalid connection request', code: 'VALIDATION_ERROR' }, 400);
   // Callback codes and credentials must never enter error logs/responses.
@@ -100,6 +109,33 @@ export function createAppConnectionSessionRoutes() {
       const caller={org_id:auth.actor.org_id,user_id:auth.actor.actor_id,sid:auth.web_session.sid,access_expires_at:auth.web_session.expires_at};
       const {appConnectionUpgradeInstallationContext}=await import('../lib/app-connection-upgrade-context.js');
       return c.json(await appConnectionUpgradeInstallationContext(caller,z.string().uuid().parse(c.req.param('installationId')),auth.guard));
+    }catch(error){return failure(c,error);}
+  });
+  routes.use('/installations/:installationId/restore-context',ownerLimits);
+  for(const operation of ['review','activate'])routes.use(`/restore/${operation}`,ownerLimits);
+  routes.get('/installations/:installationId/restore-context',async c=>{
+    try{
+      // Only an optional explicit `target_key` is accepted (PR424-F03): the
+      // owner's selected target is reviewed, never the installation-wide newest.
+      const url=new URL(c.req.url);const params=[...url.searchParams.entries()];
+      if(url.search&&(params.length!==1||params[0]![0]!=='target_key'))throw invalid();
+      const query=z.strictObject({target_key:z.string().regex(/^[a-z][a-z0-9_]{0,47}$/u).optional()}).safeParse(Object.fromEntries(params));
+      if(!query.success)throw invalid();
+      const injected=c.get('user');
+      const auth=await resourceSyncWebAuthority(c.req.header('authorization'),injected?{org_id:injected.org_id,user_id:injected.id,sid:injected.sid}:undefined);
+      const caller={org_id:auth.actor.org_id,user_id:auth.actor.actor_id,sid:auth.web_session.sid,access_expires_at:auth.web_session.expires_at};
+      const {appRestoreAccessContext}=await import('../lib/app-restore-access-authority.js');
+      return c.json(await appRestoreAccessContext(caller,z.string().uuid().parse(c.req.param('installationId')),auth.guard,query.data.target_key));
+    }catch(error){return failure(c,error);}
+  });
+  for(const operation of ['review','activate'] as const)routes.post(`/restore/${operation}`,async c=>{
+    try{
+      const injected=c.get('user');
+      const auth=await resourceSyncWebAuthority(c.req.header('authorization'),injected?{org_id:injected.org_id,user_id:injected.id,sid:injected.sid}:undefined);
+      const caller={org_id:auth.actor.org_id,user_id:auth.actor.actor_id,sid:auth.web_session.sid,access_expires_at:auth.web_session.expires_at};
+      const {AppRestoreAccessService}=await import('../lib/app-restore-access-service.js');
+      const {productionAppRestoreAccessPorts}=await import('../lib/app-restore-access-authority.js');
+      return c.json(await new AppRestoreAccessService(productionAppRestoreAccessPorts(caller,auth.guard))[operation](caller,await body(c)));
     }catch(error){return failure(c,error);}
   });
   routes.use('/installations/:installationId/background-access',ownerLimits);

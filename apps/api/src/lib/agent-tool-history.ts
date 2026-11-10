@@ -90,6 +90,9 @@ export function normalizeAgentToolHistory(messages: Anthropic.MessageParam[]): A
   const output: Anthropic.MessageParam[] = [];
   for (const message of messages) {
     if (!Array.isArray(message.content)) { output.push(message); continue; }
+    // SDK 1.x widened MessageParam with a system variant whose array content is
+    // text-only. Tool-ordering repair applies to user/assistant turns only.
+    if (message.role === 'system') { output.push(message); continue; }
     const content = message.content.filter(block => block.type !== 'tool_result');
     if (!content.length) continue;
     output.push({ ...message, content });

@@ -143,32 +143,44 @@ test('persistent consent requires explicit mode, preserves finite consent, and k
   await c.query("INSERT INTO persistent_binding VALUES('active',$1,$1,$2,NULL,'until_revoked')",[owner,now]);
   await denied(()=>c.query("INSERT INTO persistent_binding VALUES('active',$1,$1,$2,NULL,NULL)",[owner,now]));
   await denied(()=>c.query("INSERT INTO persistent_binding VALUES('active',$1,$1,$2,$3,'until_revoked')",[owner,now,scope.consent_expires_at]));
-  await c.query('CREATE TEMP TABLE persistent_sessions(LIKE app_runtime_sessions INCLUDING DEFAULTS INCLUDING CONSTRAINTS)');
-  const attachSessionGuard=()=>c.query('CREATE TRIGGER persistent_session_guard BEFORE INSERT OR UPDATE OR DELETE ON persistent_sessions FOR EACH ROW EXECUTE FUNCTION enforce_app_runtime_session()');
-  await attachSessionGuard();
+  await c.query('SET LOCAL session_replication_role = replica');
+  await c.query('INSERT INTO orgs(id,name,slug) VALUES($1,$2,$3)',[scope.org_id,'T','t-'+scope.org_id]);
+  await c.query('INSERT INTO users(id,name,email,kind) VALUES($1,$2,$3,$4)',[owner,'O','o@example.test','human']);
+  await c.query('INSERT INTO org_members(id,org_id,user_id,role,is_active) VALUES($1,$2,$3,$4,true)',[randomUUID(),scope.org_id,owner,'owner']);
+  const inst=randomUUID();
+  await c.query(`INSERT INTO app_resource_bindings(id,org_id,app_installation_id,app_version_id,grant_snapshot_id,grant_snapshot_kind,runtime_registration_id,registration_contract_version,provider_kind,provider_instance_id,provider_snapshot_id,resource_key,target_key,resource_family,operation_name,interface_identity,reviewed_descriptor,descriptor_digest,owner_user_id,owner_scope,risk_class,review_requirement,review_scope,retry_class,retention_class,max_records_per_page,max_page_bytes,max_retained_records,max_retained_bytes,min_interval_seconds,state) VALUES($1,$2,$3,$4,$5,'effective',$6,'deft.app_runtime_channel.v2','app_runtime',$6,$6,'inbox','primary','message','sync_inbox',$7,$8,$9,$10,'private_user','internal_write','policy','reviewed_resource_sync','unsafe_or_unknown','standard',100,1024,10,1024,60,'disabled')`,
+    [scope.resource_binding_id,scope.org_id,inst,randomUUID(),randomUUID(),scope.runtime_registration_id,'deft.resource_sync.v2:'+scope.org_id.toLowerCase()+':'+inst.toLowerCase()+':inbox',JSON.stringify({schema_version:'deft.app_sync_descriptor.v1'}),'sha256:'+('d'.repeat(64)),owner]);
+  await c.query('SET LOCAL session_replication_role = origin');
+  const runtimeBindingId=randomUUID();
+  await c.query('SET LOCAL session_replication_role = replica');
+  await c.query(`INSERT INTO app_runtime_bindings(id,org_id,app_installation_id,app_version_id,grant_snapshot_id,runtime_registration_id,registration_contract_version,action_key,owner_resource_binding_id,interface_identity,provider_kind,provider_instance_id,provider_snapshot_id,operation_name,risk_class,review_requirement,retry_class,retention_class,state,reviewed_by_user_id,reviewed_at) VALUES($1,$2,$3,$4,$5,$6,'deft.app_runtime_channel.v1','x',$7,'deft.runtime.v1:'||lower($2)||':'||lower($3)||':x','app_runtime',$6,$8,'x','low','none','safe','standard','active',$9,now())`,
+    [runtimeBindingId,scope.org_id,inst,randomUUID(),randomUUID(),scope.runtime_registration_id,scope.resource_binding_id,randomUUID(),owner]);
+  await c.query('SET LOCAL session_replication_role = origin');
   const base={id:randomUUID(),org_id:scope.org_id,runtime_registration_id:scope.runtime_registration_id,runtime_binding_id:null,resource_binding_id:scope.resource_binding_id,
    operator_user_id:owner,token_hash:digest,audience:'app_resource_sync',session_epoch:0,runtime_epoch:1,lifecycle_epoch:1,grant_epoch:1,
    next_sequence:1,expires_at:new Date(now.getTime()+300000).toISOString(),revoked_at:null,created_at:now.toISOString(),updated_at:now.toISOString(),
    renewable_until:null,renewal_lifetime:'until_revoked',renewal_web_session_id:randomUUID(),renewal_operator_role:'owner'};
-  const insertSession=(row:Record<string,unknown>)=>c.query('INSERT INTO persistent_sessions SELECT * FROM jsonb_populate_record(NULL::persistent_sessions,$1)',[row]);
+  const insertSession=(row:Record<string,unknown>)=>{const h=String(row.id).replaceAll('-','');return c.query('INSERT INTO app_runtime_sessions SELECT * FROM jsonb_populate_record(NULL::app_runtime_sessions,$1)',[{...row,token_hash:'sha256:'+h+h}]);};
   await insertSession(base);
-  const actionSession={...base,id:randomUUID(),audience:'app_runtime',runtime_binding_id:randomUUID(),resource_binding_id:null};
+  const actionSession={...base,id:randomUUID(),audience:'app_runtime',runtime_binding_id:runtimeBindingId,resource_binding_id:null};
   await insertSession(actionSession);
   await insertSession({...actionSession,id:randomUUID(),renewal_lifetime:null,renewable_until:scope.consent_expires_at});
   await denied(()=>insertSession({...base,id:randomUUID(),renewal_lifetime:null,renewable_until:scope.consent_expires_at}));
-  await c.query("UPDATE persistent_sessions SET expires_at=timezone('UTC',clock_timestamp()+interval '10 minutes')");
-  await denied(()=>c.query("UPDATE persistent_sessions SET expires_at=timezone('UTC',clock_timestamp()+interval '16 minutes')"));
-  await denied(()=>c.query("UPDATE persistent_sessions SET renewal_lifetime=NULL"));
-  await denied(()=>c.query("UPDATE persistent_sessions SET renewal_web_session_id='foreign'"));
+  await c.query("UPDATE app_runtime_sessions SET expires_at=timezone('UTC',clock_timestamp()+interval '10 minutes') WHERE org_id=$1",[scope.org_id]);
+  await denied(()=>c.query("UPDATE app_runtime_sessions SET expires_at=timezone('UTC',clock_timestamp()+interval '16 minutes') WHERE org_id=$1",[scope.org_id]));
+  await denied(()=>c.query("UPDATE app_runtime_sessions SET renewal_lifetime=NULL WHERE org_id=$1",[scope.org_id]));
+  await denied(()=>c.query("UPDATE app_runtime_sessions SET renewal_web_session_id='foreign' WHERE org_id=$1",[scope.org_id]));
   await denied(()=>insertSession({...base,id:randomUUID(),renewal_lifetime:null}));
   await denied(()=>insertSession({...base,id:randomUUID(),renewable_until:scope.consent_expires_at}));
   await denied(()=>insertSession({...base,id:randomUUID(),renewal_lifetime:'forever'}));
   await denied(()=>insertSession({...base,id:randomUUID(),expires_at:new Date(now.getTime()+960000).toISOString()}),/APP_RUNTIME_RENEWAL_WINDOW_INVALID/);
-  await c.query('TRUNCATE persistent_sessions');
-  await c.query('DROP TRIGGER persistent_session_guard ON persistent_sessions');
-  await insertSession({...base,created_at:new Date(now.getTime()-600000).toISOString(),expires_at:new Date(now.getTime()-1000).toISOString()});
-  await attachSessionGuard();
-  await denied(()=>c.query("UPDATE persistent_sessions SET expires_at=timezone('UTC',clock_timestamp()+interval '10 minutes')"));
+  await c.query('SET LOCAL session_replication_role = replica');
+  await c.query('DELETE FROM app_runtime_sessions WHERE org_id=$1',[scope.org_id]);
+  await c.query('SET LOCAL session_replication_role = origin');
+  await insertSession({...base,created_at:new Date(now.getTime()-600000).toISOString(),expires_at:new Date(now.getTime()-1000).toISOString(),renewal_lifetime:null,renewable_until:null,renewal_web_session_id:null,renewal_operator_role:null});
+  // An expired finite (non-persistent) session can never be extended. Lapsed
+  // until_revoked sessions are covered by the preview.133 grace-resume tests.
+  await denied(()=>c.query("UPDATE app_runtime_sessions SET expires_at=timezone('UTC',clock_timestamp()+interval '10 minutes') WHERE org_id=$1",[scope.org_id]));
   console.log('# actual SQL120 explicit/implicit/mixed mode, five-minute review, and live-only 15-minute technical renewal guards passed');
  }finally{await c.query('ROLLBACK');await c.end();}
 });

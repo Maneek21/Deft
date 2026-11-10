@@ -4,6 +4,7 @@ import {readFileSync} from 'node:fs';
 import {stripTypeScriptTypes} from 'node:module';
 import {createAppIntegrationSource} from '../src/lib/app-integration-source.js';
 import {AppIntegrationSourceIdentitySchema} from '../../../packages/app-kit/src/app-integration-source.js';
+import {isAppError} from '../src/lib/app-errors.js';
 // Execute the real component closure with only DB/public transport ports replaced.
 const source=readFileSync(new URL('../src/lib/app-integration-capture-runtime.ts',import.meta.url),'utf8');
 const begin=source.indexOf(' const components='),end=source.indexOf('\n const human=components()',begin);
@@ -70,6 +71,6 @@ test('actual missing-AI capture guard defers before source candidate, claim or b
  const events:string[]=[],row={id:id(1),org_id:id(2),owner_user_id:id(3),revision:1};
  class Retry extends Error{constructor(message:string,readonly delay:number){super(message);}}
  const tx={select:()=>({from:()=>({where:()=>({limit:async()=>[row]})})})};
- const run=new Function('input','policies','and','eq','policyGuard','hasAnyAIProvider','RetryLaterJobError','APP_INTEGRATION_CAPTURE_JOB','denied',code)({transaction:async(fn:(tx:unknown)=>Promise<unknown>)=>fn(tx),gateway:{currentAccount:async()=>{assert.fail('no source dispatch while AI unavailable');}}},{},()=>true,()=>true,async()=>{events.push('current-policy');},async(org:string)=>{assert.equal(org,row.org_id);events.push('provider');return false;},Retry,'capture',()=>Error('denied'));
- await assert.rejects(run({id:id(4),name:'capture',lockToken:'current-lock',data:{policy_id:row.id,policy_revision:1}}),(error:unknown)=>error instanceof Retry&&error.delay===60000);assert.deepEqual(events,['current-policy','provider']);
+ const run=new Function('input','policies','and','eq','policyGuard','hasAnyAIProvider','RetryLaterJobError','APP_INTEGRATION_CAPTURE_JOB','denied','isAppError',code)({transaction:async(fn:(tx:unknown)=>Promise<unknown>)=>fn(tx),gateway:{currentAccount:async()=>{events.push('current-account');return {resource_key:'inbox',resource_binding_id:id(5)};}}},{},()=>true,()=>true,async()=>{events.push('current-policy');},async(org:string)=>{assert.equal(org,row.org_id);events.push('provider');return false;},Retry,'capture',()=>Error('denied'),isAppError);
+ await assert.rejects(run({id:id(4),name:'capture',lockToken:'current-lock',data:{policy_id:row.id,policy_revision:1}}),(error:unknown)=>error instanceof Retry&&error.delay===60000);assert.deepEqual(events,['current-policy','current-account','provider']);
 });

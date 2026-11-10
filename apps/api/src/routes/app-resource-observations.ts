@@ -5,6 +5,7 @@ import {resourceObservationRuntimeAuthority} from '../lib/app-resource-observati
 import {resourceSyncWebAuthority,ResourceSyncWebAuthenticationError} from '../lib/app-resource-sync-web-authority.js';
 import {readBoundedAppDataBytes} from '../lib/app-connection-session-registry.js';
 import {AppError} from '../lib/app-errors.js';
+import {appHttpFailureDetails} from '../lib/app-http-errors.js';
 import {isAppAttachmentBrokerEnabled,isAppOwnerConnectionsEnabled} from '../lib/env.js';
 import {createAppResourceSyncLimits} from '../middleware/app-resource-sync-limits.js';
 import {createAppResourcePrivateReadLimits} from '../middleware/app-resource-private-limits.js';
@@ -17,7 +18,8 @@ async function body(c:Context){
  finally{clearTimeout(timer);c.req.raw.signal.removeEventListener('abort',abort);}
 }
 function failure(c:Context,error:unknown){
- if(error instanceof AppError)return c.json({code:error.code,error:error.message},error.status);
+ if(error instanceof AppError){const details=appHttpFailureDetails(error.code,error.details);
+  return c.json({code:error.code,error:error.message,...(details?{details}:{})},error.status);}
  if(error instanceof ResourceSyncWebAuthenticationError)return c.json({code:'APP_ACCESS_DENIED',error:'Observation authentication required'},401);
  if(error instanceof z.ZodError||error instanceof SyntaxError||error instanceof TypeError)return c.json({code:'VALIDATION_ERROR',error:'Invalid observation request'},400);
  return c.json({code:'APP_PROVIDER_UNAVAILABLE',error:'Observation unavailable'},503);

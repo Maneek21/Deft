@@ -16,6 +16,7 @@ type ContextMessage = {
   createdAt: Date;
   parentId: string | null;
   replyCount: number;
+  metadata?: unknown;
 };
 
 type ContextProject = { id: string; name: string; prefix: string; linked: boolean };
@@ -31,7 +32,15 @@ export type RoomContextPack = {
   thread: ContextMessage[];
 };
 
-export type RoomContextWithSources = { content: string; citations: DeftyMessageCitation[] };
+export type RoomContextWithSources = {
+  content: string;
+  citations: DeftyMessageCitation[];
+  /**
+   * Messages whose metadata may carry a durable action result. Callers must
+   * re-check Module authority before formatting any identifier into a prompt.
+   */
+  resultSources: Array<{ id: string; metadata: unknown }>;
+};
 
 function relativeTime(time: Date, reference: Date): string {
   const minutes = Math.max(0, Math.floor((reference.getTime() - time.getTime()) / 60_000));
@@ -80,7 +89,7 @@ export function formatRoomContextPackWithSources(input: RoomContextPack): RoomCo
   const threadIds = new Set(input.thread.map(message => message.id));
   const threadRootCount = input.thread.filter(message => message.parentId === null).length;
   const entry = (message: ContextMessage) => ({ line: messageLine(message, input),
-    citation: deftyMessageCitation({ ...message, spaceId: input.spaceId }) });
+    citation: deftyMessageCitation({ ...message, spaceId: input.spaceId }), message });
   const channelEntries = input.messages.filter(message => !threadIds.has(message.id))
     .slice(-(MAX_MESSAGES - threadRootCount)).map(entry);
   const threadEntries = input.thread.map(entry);
@@ -93,7 +102,16 @@ export function formatRoomContextPackWithSources(input: RoomContextPack): RoomCo
   while (sections().join('\n').length > remaining && channelEntries.length) channelEntries.shift();
   while (sections().join('\n').length > remaining && threadEntries.length) threadEntries.shift();
   for (const line of sections()) add(line);
-  return { content: lines.join('\n'), citations: [...channelEntries, ...threadEntries].map(item => item.citation) };
+  const surviving = [...channelEntries, ...threadEntries];
+  return {
+    content: lines.join('\n'),
+    citations: surviving.map(item => item.citation),
+    // Bounded to the messages that actually entered the pack. Authority is
+    // re-checked by the caller before any identifier is shown to the model.
+    resultSources: [...new Map(surviving
+      .filter(item => item.message.metadata != null)
+      .map(item => [item.message.id, { id: item.message.id, metadata: item.message.metadata }])).values()],
+  };
 }
 
 type RoomContextInput = {
@@ -124,7 +142,7 @@ export async function buildRoomContextPackWithSources(input: RoomContextInput): 
     and(eq(messages.created_at, trigger.createdAt), lt(messages.id, trigger.id)));
   const atOrBeforeTrigger = or(beforeTrigger, eq(messages.id, trigger.id));
   const selection = { id: messages.id, author: users.name, content: messages.content,
-    createdAt: messages.created_at, parentId: messages.parent_id };
+    createdAt: messages.created_at, parentId: messages.parent_id, metadata: messages.metadata };
   const common = and(eq(messages.org_id, input.orgId), eq(messages.space_id, input.spaceId), eq(messages.is_deleted, false));
 
   const [recent, thread, people, activeProjects, linkedProjects] = await Promise.all([
