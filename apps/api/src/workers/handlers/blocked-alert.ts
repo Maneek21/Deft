@@ -148,7 +148,7 @@ export async function handleBlockedAlert(job: JobData): Promise<void> {
 
       // Emit notification in real time
       if (notification) {
-        emitToUser(targetUserId, 'notification:new', notification);
+        emitToUser(notification.org_id, targetUserId, 'notification:new', notification);
       }
 
       console.log(

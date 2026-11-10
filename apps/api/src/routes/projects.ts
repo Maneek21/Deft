@@ -678,7 +678,7 @@ projectRoutes.post('/:id/tasks', async (c) => {
           link: `/tasks?task=${taskId_str}`,
         }, { channel: 'tasks' });
         if (notification) {
-          emitToUser(task!.assignee_id, 'notification:new', notification);
+          emitToUser(notification.org_id, task!.assignee_id, 'notification:new', notification);
         }
       } catch {}
     }

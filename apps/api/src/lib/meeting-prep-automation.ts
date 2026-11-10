@@ -285,8 +285,8 @@ export async function generateMeetingPrep(eventId: string, now = new Date()) {
       link: '/calendar',
       metadata: { event_id: meeting.id, automation_run_id: claim.run.id, generator: synthesis.generator },
     }, { channel: 'calendar' });
-    if (notification) emitToUser(meeting.user_id, 'notification:new', notification);
-    emitToUser(meeting.user_id, 'meeting-brief:new', {
+    if (notification) emitToUser(notification.org_id, meeting.user_id, 'notification:new', notification);
+    emitToUser(meeting.org_id, meeting.user_id, 'meeting-brief:new', {
       event_id: meeting.id,
       event_title: meeting.title,
       brief_text: briefText,
