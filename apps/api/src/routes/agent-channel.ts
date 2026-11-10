@@ -45,8 +45,9 @@ import {
   type AgentChannelAdapterMode,
 } from '../lib/agent-channel.js';
 import { getIO } from '../socket.js';
-import { executeSendMessage, executeTaskUpdate } from '../lib/mcp-tools/writes.js';
-import { checkEmployeeChatPost } from '../lib/employee-chat-post-guard.js';
+import { executeSendMessage, executeTaskUpdate, verifyParentMessageMatches } from '../lib/mcp-tools/writes.js';
+import { employeeCanAccessSpace } from '../lib/mcp-tools/employee-space-access.js';
+import { chargeEmployeeChatPost, checkEmployeeChatPost } from '../lib/employee-chat-post-guard.js';
 import { currentAgentChannelEventAuthoritySql } from '../lib/agent-channel-authority.js';
 import { buildAgentChannelLifecyclePatch } from '../lib/agent-channel-lifecycle.js';
 import { reconcileAgentChannelRuntimeAttempt } from '../lib/agent-channel-reconciliation.js';
@@ -1353,26 +1354,54 @@ agentChannelRoutes.post('/reply', async (c) => {
     return errorResponse(c, 409, 'STALE_CLAIM', 'The Agent Channel claim is missing, expired, or owned by another worker');
   }
   // A chat reply posts a message as the employee: the same guard rails as
-  // every other employee chat post (storm detector, circuit breaker, daily
-  // action cap). Runs only when this request will execute the post, before
-  // any delivery attempt is claimed, so a refusal writes nothing. The
-  // channel has no approval queue, so an unhealthy employee is refused. A
-  // 409 is not retried by the bundled bridge (it settles the event failed).
+  // every other employee chat post. Replays were answered above without any
+  // charge. For a request that will post, decide ONE effective target (a
+  // reclaimed autonomous attempt executes its STORED thread; otherwise the
+  // requested one), validate it and run the non-charging rails (active,
+  // circuit breaker, reply storm) against it before anything is claimed, so
+  // a refusal writes nothing. The daily action slot is charged only after
+  // the idempotency claim is won (below), and the claim is released if the
+  // charge is refused. The channel has no approval queue, so an unhealthy
+  // employee is refused. These are 4xx: the bundled bridge retries only 429
+  // and 5xx (it settles the event failed).
   const chatReply = !autonomousTaskReply && !autonomousNotificationReply;
   const replyWillExecute = !existingAttempt
     || (existingAttempt.status === 'failed' && (autonomousReply || event.source_kind === 'certification'))
     || (existingAttempt.status !== 'failed' && autonomousReply && attemptCanReconcile(existingAttempt));
+  const attemptRequestOf = (attempt: typeof agentChannelDeliveryAttempts.$inferSelect) => (
+    attempt.request_json && typeof attempt.request_json === 'object'
+      ? attempt.request_json as Record<string, unknown>
+      : {}
+  );
+  // Must match how `executionThreadId` is derived from the claimed request.
+  const executionThreadOf = (request: Record<string, unknown>): string | null => (
+    autonomousReply && (request.thread_id === null || typeof request.thread_id === 'string')
+      ? request.thread_id
+      : parentId
+  );
+  const effectiveThreadId = existingAttempt && autonomousReply && attemptCanReconcile(existingAttempt)
+    ? executionThreadOf(attemptRequestOf(existingAttempt))
+    : parentId;
   if (chatReply && replyWillExecute) {
+    if (!(await employeeCanAccessSpace(principal.employee_id, principal.org_id, event.space_id!))) {
+      return errorResponse(c, 403, 'FORBIDDEN', 'This agent employee cannot post in the channel event space');
+    }
+    if (effectiveThreadId && !(await verifyParentMessageMatches(effectiveThreadId, event.space_id!, principal.org_id))) {
+      return errorResponse(c, 404, 'NOT_FOUND', 'Reply thread not found in the channel event space');
+    }
     const guard = await checkEmployeeChatPost({
       orgId: principal.org_id,
       employeeId: principal.employee_id,
-      parentId,
+      parentId: effectiveThreadId,
       onUnhealthy: 'refuse',
-      chargeDailyAction: true,
     });
     if (!guard.ok) return errorResponse(c, guard.status, guard.code, guard.message);
   }
+  // The row this request's claim replaced (null for a fresh insert), so a
+  // claim whose charge is refused can be released exactly.
+  let claimedFrom: typeof agentChannelDeliveryAttempts.$inferSelect | null = null;
   if (existingAttempt?.status === 'failed') {
+    claimedFrom = existingAttempt;
     if (autonomousReply) {
       claim = await reclaimAutonomousAttempt(existingAttempt);
     } else if (event.source_kind !== 'certification') {
@@ -1403,6 +1432,7 @@ agentChannelRoutes.post('/reply', async (c) => {
       return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'The failed reply is already being retried');
     }
   } else if (existingAttempt && autonomousReply && attemptCanReconcile(existingAttempt)) {
+    claimedFrom = existingAttempt;
     claim = await reclaimAutonomousAttempt(existingAttempt);
     if (!claim) {
       return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'The expired reply attempt was already reclaimed');
@@ -1411,6 +1441,7 @@ agentChannelRoutes.post('/reply', async (c) => {
     return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'A reply with this idempotency key is already in progress');
   }
   if (!claim) {
+    claimedFrom = null;
     const [insertedClaim] = await db
       .insert(agentChannelDeliveryAttempts)
       .values({
@@ -1538,6 +1569,7 @@ agentChannelRoutes.post('/reply', async (c) => {
       return c.json({ ok: true, idempotent: true, result: latestAttempt.response_json });
     }
     if (latestAttempt?.status === 'failed') {
+      claimedFrom = latestAttempt;
       if (autonomousReply) {
         claim = await reclaimAutonomousAttempt(latestAttempt);
       } else if (event.source_kind !== 'certification') {
@@ -1568,12 +1600,56 @@ agentChannelRoutes.post('/reply', async (c) => {
         return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'The failed reply is already being retried');
       }
     } else if (latestAttempt && autonomousReply && attemptCanReconcile(latestAttempt)) {
+      claimedFrom = latestAttempt;
       claim = await reclaimAutonomousAttempt(latestAttempt);
       if (!claim) {
         return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'The expired reply attempt was already reclaimed');
       }
     } else {
       return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'A reply with this idempotency key is already in progress');
+    }
+  }
+
+  if (chatReply) {
+    // Only the winning claimant reaches this point; charge its daily action
+    // slot now. A refused charge, or a claim that turned out to carry a
+    // different target than the one validated above (a concurrent request
+    // changed the attempt), releases the claim exactly and posts nothing.
+    const wonClaim = claim;
+    const priorAttempt = claimedFrom;
+    const releaseClaim = async () => {
+      const ownClaim = and(
+        eq(agentChannelDeliveryAttempts.id, wonClaim.id),
+        eq(agentChannelDeliveryAttempts.org_id, principal.org_id),
+        eq(agentChannelDeliveryAttempts.agent_employee_id, principal.employee_id),
+        eq(agentChannelDeliveryAttempts.event_id, event.id),
+        eq(agentChannelDeliveryAttempts.status, 'started'),
+        attemptGenerationMatches(wonClaim),
+      );
+      if (!priorAttempt) {
+        await db.delete(agentChannelDeliveryAttempts).where(ownClaim);
+        return;
+      }
+      await db.update(agentChannelDeliveryAttempts)
+        .set({
+          status: priorAttempt.status,
+          request_json: priorAttempt.request_json,
+          response_json: priorAttempt.response_json,
+          error: priorAttempt.error,
+          updated_at: priorAttempt.updated_at,
+        })
+        .where(ownClaim);
+    };
+    if (executionThreadOf(claim.request_json && typeof claim.request_json === 'object'
+      ? claim.request_json as Record<string, unknown>
+      : requestJson) !== effectiveThreadId) {
+      await releaseClaim();
+      return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'The reply attempt changed while its target was being checked; retry the reply');
+    }
+    const charge = await chargeEmployeeChatPost(principal.org_id, principal.employee_id);
+    if (!charge.ok) {
+      await releaseClaim();
+      return errorResponse(c, charge.status, charge.code, charge.message);
     }
   }
 

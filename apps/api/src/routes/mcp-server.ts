@@ -1,19 +1,19 @@
 import { Hono } from 'hono';
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, inArray, or, sql } from 'drizzle-orm';
 import bcrypt from 'bcryptjs';
 import { db } from '../lib/db.js';
-import { apiKeys, agentEmployees, agentActions } from '@deft/db/schema';
+import { apiKeys, agentEmployees, agentActions, spaceMembers, spaces } from '@deft/db/schema';
 import { executeToolCall } from '../lib/agent-context.js';
 import { shouldAutoExecute, getApprovalTier } from '../lib/agent-approval.js';
 import { executeActionDirect } from '../lib/agent-actions.js';
 import { ACTION_TOOLS } from '../lib/agent-tools.js';
 import { isAgentToolDisabled } from '../lib/agent-tool-policy.js';
 import { visibleAgentActionSourceSql } from '../lib/module-action-visibility.js';
-import { resolveSpaceTarget } from '../lib/resolve-space-target.js';
+import { resolveSpaceTargetFromRows } from '../lib/resolve-space-target.js';
 import { employeeCanAccessSpace } from '../lib/mcp-tools/employee-space-access.js';
 import { messagePost } from '../lib/mcp-tools/writes.js';
 import type { ToolContext, TrustLevel } from '../lib/mcp-tools/types.js';
-import { checkEmployeeChatPost, employeeChatPostToolError } from '../lib/employee-chat-post-guard.js';
+import { chargeEmployeeChatPost, checkEmployeeChatPost, employeeChatPostToolError } from '../lib/employee-chat-post-guard.js';
 
 export const mcpServerRoutes = new Hono();
 
@@ -193,25 +193,35 @@ async function legacyEmployeePostMessage(
   const content = typeof params.content === 'string' ? params.content : '';
   if (!content.trim()) return fail('post_message requires content');
 
-  const resolved = await resolveSpaceTarget(orgId, {
+  const guard = await checkEmployeeChatPost({ orgId, employeeId, parentId: null, onUnhealthy: 'queue' });
+  if (!guard.ok) return fail(employeeChatPostToolError(guard));
+
+  // Resolve only among spaces this employee can access, so an inaccessible
+  // match neither makes a name ambiguous nor is revealed by the response.
+  const accessibleSpaces = await db
+    .select({ id: spaces.id, name: spaces.name, type: spaces.type, is_archived: spaces.is_archived })
+    .from(spaces)
+    .where(and(
+      eq(spaces.org_id, orgId),
+      eq(spaces.is_archived, false),
+      or(
+        eq(spaces.type, 'public'),
+        inArray(spaces.id, db.select({ id: spaceMembers.space_id }).from(spaceMembers)
+          .where(eq(spaceMembers.user_id, guard.poster.userId))),
+      ),
+    ));
+  const resolved = resolveSpaceTargetFromRows(accessibleSpaces, {
     spaceId: params.space_id ?? params.resolved_space_id,
     spaceName: params.space_name,
   });
-  // Never confirm that a space the employee cannot see exists.
   if (resolved.status !== 'resolved' || !(await employeeCanAccessSpace(employeeId, orgId, resolved.space.id))) {
     return fail(resolved.status === 'ambiguous'
       ? 'More than one space matches this name; pass space_id instead.'
       : LEGACY_POST_TARGET_UNAVAILABLE);
   }
 
-  const guard = await checkEmployeeChatPost({
-    orgId,
-    employeeId,
-    parentId: null,
-    onUnhealthy: 'queue',
-    chargeDailyAction: true,
-  });
-  if (!guard.ok) return fail(employeeChatPostToolError(guard));
+  const charge = await chargeEmployeeChatPost(orgId, employeeId);
+  if (!charge.ok) return fail(employeeChatPostToolError(charge));
 
   const ctx: ToolContext = {
     org_id: orgId,

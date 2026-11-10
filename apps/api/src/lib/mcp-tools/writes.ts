@@ -296,7 +296,7 @@ async function loadAccessibleTaskForEmployee(
 
 /** Verifies a parent message exists, is in the caller's org, and is in
  * the same space as the proposed reply (prevents cross-space thread hijack). */
-async function verifyParentMessageMatches(
+export async function verifyParentMessageMatches(
   parentId: string,
   spaceId: string,
   orgId: string,
@@ -1055,7 +1055,6 @@ export async function messagePost(
     employeeId: ctx.employee_id,
     parentId: args.parent_id ?? null,
     onUnhealthy: 'queue',
-    chargeDailyAction: false,
   });
   if (!guard.ok) return errorResult(employeeChatPostToolError(guard));
 
@@ -1116,7 +1115,6 @@ export async function sendMessage(
     employeeId: ctx.employee_id,
     parentId: 'thread_id' in target ? target.thread_id : null,
     onUnhealthy: 'queue',
-    chargeDailyAction: false,
   });
   if (!guard.ok) return errorResult(employeeChatPostToolError(guard));
 

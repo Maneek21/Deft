@@ -10,8 +10,10 @@
  *     Paths with an approval queue (MCP) fall back to it; paths without one
  *     (the Agent Channel) refuse;
  *   - the daily action cap. MCP v1 charges it in `dispatchTool` before the
- *     handler runs, so MCP handlers pass `chargeDailyAction: false`; every
- *     other path asks this guard to charge it.
+ *     handler runs; every other path calls `chargeEmployeeChatPost` after the
+ *     non-charging `checkEmployeeChatPost`, once it will really post (the
+ *     Agent Channel only after winning its idempotency claim, so replays and
+ *     losing claimants never consume a slot).
  * Space membership / visibility is enforced by the write itself
  * (`executeSendMessage` / `executeMessagePost`), which every path uses.
  *
@@ -98,6 +100,13 @@ export function employeeChatPostToolError(refusal: EmployeeChatPostRefusal): str
   return refusal.code === 'STORM_DETECTED' ? `STORM_DETECTED: ${refusal.message}` : refusal.message;
 }
 
+/**
+ * The non-charging rails: active, reply storm (on the thread the post will
+ * actually be written to), circuit breaker. Has no side effects. A path that
+ * is not already charged by MCP v1 `dispatchTool` must call
+ * `chargeEmployeeChatPost` once it is certain it will execute the post (for
+ * an idempotent path: only after winning its idempotency claim).
+ */
 export async function checkEmployeeChatPost(opts: {
   orgId: string;
   employeeId: string;
@@ -105,8 +114,6 @@ export async function checkEmployeeChatPost(opts: {
   parentId: string | null | undefined;
   /** 'queue': the path has an approval queue (MCP). 'refuse': it has none. */
   onUnhealthy: 'queue' | 'refuse';
-  /** Charge one daily action slot. False only where the caller already did. */
-  chargeDailyAction: boolean;
 }): Promise<EmployeeChatPostGuardResult> {
   const poster = await loadEmployeeChatPoster(opts.orgId, opts.employeeId);
   if (!poster || (!poster.isDefty && !poster.active)) {
@@ -130,14 +137,17 @@ export async function checkEmployeeChatPost(opts: {
     };
   }
 
-  if (opts.chargeDailyAction) {
-    const budget = await consumeAgentDailyActionBudget(opts.orgId, opts.employeeId);
-    if (!budget.allowed) {
-      return budget.error === EMPLOYEE_INACTIVE_MESSAGE
-        ? { ok: false, code: 'EMPLOYEE_INACTIVE', message: budget.error, status: 403 }
-        : { ok: false, code: 'DAILY_ACTION_LIMIT', message: budget.error, status: 409 };
-    }
-  }
-
   return { ok: true, poster, requiresApproval: unhealthy };
+}
+
+/** Atomically reserve one daily action slot for an employee chat post. */
+export async function chargeEmployeeChatPost(
+  orgId: string,
+  employeeId: string,
+): Promise<{ ok: true } | EmployeeChatPostRefusal> {
+  const budget = await consumeAgentDailyActionBudget(orgId, employeeId);
+  if (budget.allowed) return { ok: true };
+  return budget.error === EMPLOYEE_INACTIVE_MESSAGE
+    ? { ok: false, code: 'EMPLOYEE_INACTIVE', message: budget.error, status: 403 }
+    : { ok: false, code: 'DAILY_ACTION_LIMIT', message: budget.error, status: 409 };
 }
