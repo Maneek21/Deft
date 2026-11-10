@@ -5,7 +5,8 @@
  * Run: pnpm --filter @deft/api exec tsx --test test/mcp-send-message.test.ts
  *
  * Key implementation details verified here:
- *   - send_message is 'full' tier → queues on conservative/standard, auto-execs on autonomous
+ *   - send_message is 'full' tier, but an employee's own plain post runs
+ *     without approval at every trust level (W1h, 2026-11-10)
  *   - queued result shape: { status: 'queued_for_approval', approval_id, message }
  *   - auto-exec result shape: { message_id, space_id, user_id, content, parent_id, created_at }
  *   - empty target {} → isError: true (error path, not a structured code)
@@ -288,36 +289,49 @@ test('send_message rejects an empty target shape with isError', async () => {
   );
 });
 
-// ─── Test 6: approval tier — conservative queues ─────────────────────────
+// ─── Test 6: an employee's own message posts at Conservative (W1h) ──────
+// Before W1h (owner decision 2026-11-10) conservative trust queued this
+// full-tier tool. An employee's own chat messages now post without approval
+// at every trust level; see employee-chat-message-approval-db.test.ts.
 
-test('send_message queues for approval when trust is conservative', async () => {
+test('send_message posts without approval when trust is conservative', async () => {
   const r = await sendMessage(
-    { caller_employee_slug: empSlug, target: { space_id: publicSpaceId }, content: 'needs approval' },
+    { caller_employee_slug: empSlug, target: { space_id: publicSpaceId }, content: 'conservative post' },
     mkCtx('conservative'),
   );
-  // Must not be an isError
   assert.ok(!r.isError, `unexpected error on conservative: ${r.content?.[0]?.text}`);
 
   const result = parseResult(r);
-  assert.equal(
+  assert.notEqual(
     result.status,
     'queued_for_approval',
-    `conservative trust must queue send_message (full-tier): got ${JSON.stringify(result)}`,
+    `conservative employee's own send_message must post: got ${JSON.stringify(result)}`,
   );
-  assert.ok(result.approval_id, 'queued result should have approval_id');
+  assert.ok(result.message_id, 'posted result should have message_id');
 });
 
 test('approved queued send_message inserts an agent-authored message', async () => {
+  // A pending send_message row (queued before W1h, or for an employee that
+  // keeps the trust gate) still executes through the approval resolver.
   const content = `approved send_message ${Date.now()}`;
-  const r = await sendMessage(
-    { caller_employee_slug: empSlug, target: { space_id: publicSpaceId }, content },
-    mkCtx('standard'),
-  );
-  assert.ok(!r.isError, `unexpected queue error: ${r.content?.[0]?.text}`);
-
-  const queued = parseResult(r);
-  assert.equal(queued.status, 'queued_for_approval');
-  assert.ok(queued.approval_id, 'queued result should have approval_id');
+  const { agentActions } = await import('@deft/db/schema');
+  const [pending] = await db.insert(agentActions).values({
+    org_id: orgId,
+    user_id: agentUserId,
+    agent_employee_id: agentEmployeeId,
+    source: 'mcp',
+    action: 'send_message',
+    params: {
+      caller_employee_slug: empSlug,
+      target: { space_id: publicSpaceId },
+      content,
+      resolved_space_id: publicSpaceId,
+      parent_id: null,
+    },
+    approval_tier: 'full',
+    approval_status: 'pending',
+  }).returning({ id: agentActions.id });
+  const queued = { approval_id: pending!.id };
 
   const { approveAction } = await import('../src/lib/agent-approval-resolver.js');
   const approved = await approveAction(queued.approval_id, humanUserId);

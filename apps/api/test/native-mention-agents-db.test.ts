@@ -179,8 +179,14 @@ test('agent MCP writes persist exact references in chat, tasks/comments and wiki
   assert.equal((await db.select().from(agentChannelEvents).where(eq(agentChannelEvents.org_id, f.orgId))).length, 0);
   assert.equal((await call(token, 'native_mentions_publish', { source: { kind: 'task', id: task.data.task_id }, content_hash: nativeContentHash(content) })).result.isError, true);
   await db.update(agentEmployees).set({ trust_level: 'conservative' }).where(eq(agentEmployees.id, f.employeeId));
-  const pending = await call(token, 'send_message', { space_id: f.publicSpaceId, content: 'Pending ' + content });
+  // W1h: an employee's own chat message posts at every trust level, so the
+  // still-gated example of a conservative write is a wiki page.
+  const conservativeChat = await call(token, 'send_message', { space_id: f.publicSpaceId, content: 'Posted ' + content });
+  assert.equal(conservativeChat.result.isError, false, JSON.stringify(conservativeChat.data));
+  assert.notEqual(conservativeChat.data?.status, 'queued_for_approval');
+  const pending = await call(token, 'wiki_create', { title: 'Pending reference wiki', content: 'Pending ' + content, scope: 'org', type: 'procedure' });
   assert.equal(pending.result.isError, false);
+  assert.equal(pending.data?.status, 'queued_for_approval');
   const actions = await db.select().from(agentActions).where(and(eq(agentActions.org_id, f.orgId), eq(agentActions.approval_status, 'pending')));
   assert(actions.some(action => (action.params as any).content === 'Pending ' + content), 'existing approval still owns conservative writes');
 });

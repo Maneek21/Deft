@@ -58,9 +58,13 @@ export const TRUST_CONNECTED_NOTE =
 // Confirmation body for upgrading ONE agent employee to Autonomous. Kept to
 // category-level exceptions on purpose: employee writes pass through several
 // approval paths (employee trust in lib/mcp-tools/writes.ts and modules.ts,
-// always-queued document send / plan import, App-owned review).
+// always-queued document send / plan import, App-owned review). An
+// employee's own chat messages (MCP send_message / message_post) post without
+// approval at every level while it is healthy (writes.ts
+// employeeOwnChatMessageAutoExecutes), so Autonomous does not unlock them.
 export const AUTONOMOUS_EMPLOYEE_CONFIRM: ReadonlyArray<string> = [
-  "Autonomous lets most of this employee's writes through Deft run without approval, including messages it posts in chat.",
+  "A healthy employee can already post its own chat messages without approval at Conservative and Standard, so Autonomous is not needed for chat.",
+  "Autonomous also lets most of this employee's other writes through Deft run without approval.",
   'Some requests still need approval, including actions classed as destructive (such as deleting, archiving, unlinking, or creating records in bulk), sending documents, importing workspace plans, and apps that require their own review.',
   'Most of its writes are recorded in the Action Log, with a signed receipt attached when one is recorded.',
   'Only workspace owners and admins can make this change, and Settings has no control to lower the level again afterwards.',

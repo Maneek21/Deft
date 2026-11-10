@@ -65,7 +65,7 @@ deft/
 The agent is NOT a chatbot. It's a workflow engine.
 
 **Two agent roles** (collapsed from five in Phase 9, 2026-04-28):
-- **Defty** — built-in platform agent. Runs in-process via Anthropic API, has direct SQL access plus 42+ native tools, multi-step planning (`create_plan`), memory (remember/recall), and streaming responses. Lives behind `apps/api/src/workers/handlers/agent-reply.ts` with a well-known `deft-agent@system.local` user. No `agent_employees` row, no `kind` column, no choice. Operates under the org-wide trust level. Reactive only — responds to `@mentions` and triggers.
+- **Defty** — built-in platform agent. Runs in-process via Anthropic API, has direct SQL access plus 42+ native tools, multi-step planning (`create_plan`), memory (remember/recall), and streaming responses. Lives behind `apps/api/src/workers/handlers/agent-reply.ts` with a well-known `deft-agent@system.local` user. No `agent_employees` row, no `kind` column, no choice. The org-wide trust level applies only to its approved plans; in chat it proposes writes for approval. Reactive only — responds to `@mentions` and triggers.
 - **BYOA employees** — every `agent_employees` row. External agents (Claude Code, Claude Desktop, Codex, Cursor, custom MCP runtimes) connecting via MCP. Authenticate with API key, get tools via `/api/mcp/v1`. Per-employee trust levels, daily action caps, cost tracking, circuit breakers. Push is gone — Deft never pushes to BYOA agents. They discover work via `poll_pending_work` MCP tool: `@mentions`, heartbeat ticks, and `trigger_subscriptions`-routed events all queue `agent_actions` rows that BYOA clients pull.
 
 Agent engine lives in `apps/api/src/lib/` (agent-context, agent-plans, agent-tools, agent-actions, agent-runner, agent-stream-loop, agent-approval, agent-approval-resolver). The `packages/ai` stub was removed 2026-04-16.
@@ -158,7 +158,7 @@ into `apps/web/src/components/ai-badge.tsx` and reused by both
 - Quick-approve: create task, schedule meeting (one-click card)
 - Full-review: multi-step plans and external writes (preview + edit)
 
-**Trust levels (per org):** Conservative → Standard → Autonomous
+**Trust levels:** Conservative → Standard → Autonomous. The workspace (org) trust level applies only to Defty's approved plans: whether a step that later steps depend on needs its own approval, and what Defty may run on its own when it retries a failed step (`agent-plans.ts` executePlan, `agent-runner.ts` background mode). Each agent employee has its own trust level, which governs its non-chat writes. An employee's own chat messages (MCP `send_message` / `message_post`) post without approval at every level while it is healthy. Defty in chat proposes its writes for approval (a few housekeeping actions such as saving a memory or drafting a plan excepted).
 
 **Native actions (direct SQL):** Create/update/assign tasks, post messages, set reminders
 **Connected actions (API):** Create calendar events and read connected work events
