@@ -252,10 +252,10 @@ messageRoutes.post('/forward', async (c) => {
       return c.json({ error: 'Message not found', code: 'NOT_FOUND' }, 404);
     }
 
-    const isSourceMember = await requireSpaceMembership(original.space_id, user.id);
+    const isSourceMember = await requireSpaceMembership(original.space_id, user.id, user.org_id);
     if (!isSourceMember) return c.json({ error: 'No access to source message', code: 'FORBIDDEN' }, 403);
 
-    const isTargetMember = await requireSpaceMembership(target_space_id, user.id);
+    const isTargetMember = await requireSpaceMembership(target_space_id, user.id, user.org_id);
     if (!isTargetMember) return c.json({ error: 'No access to target space', code: 'FORBIDDEN' }, 403);
     if (await isPrivateDeftySpace(user.org_id, original.space_id) || await isPrivateDeftySpace(user.org_id, target_space_id)) {
       return c.json({ error: 'Private context messages cannot be forwarded', code: 'PRIVATE_CONTEXT_REQUIRED' }, 409);
@@ -293,7 +293,7 @@ messageRoutes.get('/:spaceId', async (c) => {
     const user = c.get('user');
     const spaceId = c.req.param('spaceId');
 
-    const isMember = await requireSpaceMembership(spaceId, user.id);
+    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
     if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
     const cursor = c.req.query('cursor');
@@ -457,7 +457,7 @@ messageRoutes.post('/:spaceId', async (c) => {
     // Phase 7 invariant — verify membership BEFORE insert. Without this, any
     // authenticated user could POST a message into any space (including
     // cross-org spaces) by passing the foreign space_id in the URL.
-    const isMember = await requireSpaceMembership(spaceId, user.id);
+    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
     if (!isMember) {
       return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
     }
@@ -1248,7 +1248,7 @@ messageRoutes.get('/:spaceId/read-receipts', async (c) => {
     const user = c.get('user');
     const spaceId = c.req.param('spaceId');
 
-    const isMember = await requireSpaceMembership(spaceId, user.id);
+    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
     if (!isMember) {
       return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
     }

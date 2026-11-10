@@ -12,7 +12,7 @@ canvasRoutes.get('/:spaceId/canvas', async (c) => {
   const user = c.get('user');
   const spaceId = c.req.param('spaceId');
 
-  const isMember = await requireSpaceMembership(spaceId, user.id);
+  const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
   if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
   const [existing] = await db.select()
@@ -42,7 +42,7 @@ canvasRoutes.patch('/:spaceId/canvas', async (c) => {
   const body = await c.req.json();
   const { title, content } = body;
 
-  const isMember = await requireSpaceMembership(spaceId, user.id);
+  const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
   if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
   const updates: Record<string, unknown> = {

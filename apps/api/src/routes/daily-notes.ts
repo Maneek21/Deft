@@ -195,7 +195,7 @@ dailyNoteRoutes.post('/', async (c) => {
     if (!visibilitySpaceId) {
       return c.json({ error: 'visibility_space_id required for space-visible notes', code: 'VALIDATION_ERROR' }, 400);
     }
-    const isMember = await requireSpaceMembership(visibilitySpaceId, user.id);
+    const isMember = await requireSpaceMembership(visibilitySpaceId, user.id, user.org_id);
     if (!isMember) {
       return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
     }
@@ -280,7 +280,7 @@ dailyNoteRoutes.patch('/:id', async (c) => {
     if (!nextVisibilitySpaceId) {
       return c.json({ error: 'visibility_space_id required for space-visible notes', code: 'VALIDATION_ERROR' }, 400);
     }
-    const isMember = await requireSpaceMembership(nextVisibilitySpaceId, user.id);
+    const isMember = await requireSpaceMembership(nextVisibilitySpaceId, user.id, user.org_id);
     if (!isMember) {
       return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
     }

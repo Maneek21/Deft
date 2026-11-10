@@ -28,7 +28,7 @@ scheduledRoutes.post('/', async (c) => {
     return c.json({ error: 'scheduled_for must be a valid future date', code: 'VALIDATION_ERROR' }, 400);
   }
 
-  if (!(await requireSpaceMembership(parsed.data.space_id, user.id))) {
+  if (!(await requireSpaceMembership(parsed.data.space_id, user.id, user.org_id))) {
     return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
   }
 

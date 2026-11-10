@@ -235,7 +235,7 @@ wikiRoutes.get('/graph', async (c) => {
       if (!spaceId) {
         return c.json({ error: 'space_id is required for space graph mode', code: 'VALIDATION_ERROR' }, 400);
       }
-      const isMember = await requireSpaceMembership(spaceId, user.id);
+      const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
       if (!isMember) {
         return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
       }
@@ -657,7 +657,7 @@ wikiRoutes.post('/ask', async (c) => {
 
     const { query, space_id, include_org, limit } = parsed.data;
     if (space_id) {
-      const isMember = await requireSpaceMembership(space_id, user.id);
+      const isMember = await requireSpaceMembership(space_id, user.id, user.org_id);
       if (!isMember) {
         return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
       }
@@ -884,7 +884,7 @@ wikiRoutes.post('/', async (c) => {
       if (!space) {
         return c.json({ error: 'Space not found in your organization', code: 'FORBIDDEN' }, 403);
       }
-      const isMember = await requireSpaceMembership(space_id, user.id);
+      const isMember = await requireSpaceMembership(space_id, user.id, user.org_id);
       if (!isMember) {
         return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
       }

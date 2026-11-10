@@ -284,7 +284,7 @@ spaceRoutes.get('/:id', async (c) => {
       return c.json({ error: 'Space not found', code: 'NOT_FOUND' }, 404);
     }
 
-    const isMember = await requireSpaceMembership(spaceId, user.id);
+    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
     if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
     return c.json(space);
@@ -357,7 +357,7 @@ spaceRoutes.get('/:id/members', async (c) => {
       return c.json({ error: 'Space not found', code: 'NOT_FOUND' }, 404);
     }
 
-    const isMember = await requireSpaceMembership(spaceId, user.id);
+    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
     if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
     const members = await db.select({
@@ -408,7 +408,7 @@ spaceRoutes.post('/:id/members', async (c) => {
       return c.json({ error: 'Space not found', code: 'NOT_FOUND' }, 404);
     }
 
-    const isMember = await requireSpaceMembership(spaceId, user.id);
+    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
     if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
     const [targetMember] = await db.select({ id: users.id })
@@ -481,7 +481,7 @@ spaceRoutes.post('/:id/read', async (c) => {
     const user = c.get('user');
     const spaceId = c.req.param('id');
 
-    const isMember = await requireSpaceMembership(spaceId, user.id);
+    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
     if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
     // Get the latest message in this space
@@ -706,7 +706,7 @@ spaceRoutes.patch('/:id/notification-level', async (c) => {
       return c.json({ error: 'level must be all, mentions, or nothing', code: 'VALIDATION_ERROR' }, 400);
     }
 
-    const isMember = await requireSpaceMembership(spaceId, user.id);
+    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
     if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
     await db.update(spaceMembers)

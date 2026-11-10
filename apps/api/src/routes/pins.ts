@@ -15,7 +15,7 @@ pinRoutes.post('/:spaceId/pins', async (c) => {
 
   if (!message_id) return c.json({ error: 'message_id required', code: 'VALIDATION_ERROR' }, 400);
 
-  const isMember = await requireSpaceMembership(spaceId, user.id);
+  const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
   if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
   const [msg] = await db.select({ id: messages.id, content: messages.content })
@@ -53,7 +53,7 @@ pinRoutes.delete('/:spaceId/pins/:messageId', async (c) => {
   const spaceId = c.req.param('spaceId');
   const messageId = c.req.param('messageId');
 
-  const isMember = await requireSpaceMembership(spaceId, user.id);
+  const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
   if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
   await db.delete(pinnedMessages).where(and(eq(pinnedMessages.message_id, messageId), eq(pinnedMessages.space_id, spaceId)));
@@ -73,7 +73,7 @@ pinRoutes.get('/:spaceId/pins', async (c) => {
   const user = c.get('user');
   const spaceId = c.req.param('spaceId');
 
-  const isMember = await requireSpaceMembership(spaceId, user.id);
+  const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
   if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
   const pins = await db.select({
