@@ -159,6 +159,8 @@ export async function chargeEmployeeChatPost(
 const DAILY_ACTION_LIMIT_MESSAGE =
   'Daily action limit reached. Ask an admin to increase the limit or wait for the daily reset.';
 
+class UnpaidMarkerRollback extends Error {}
+
 /**
  * Charge at most ONE daily action slot per Agent Channel delivery attempt,
  * however many generations reclaim it. In one statement: mark the attempt
@@ -166,8 +168,8 @@ const DAILY_ACTION_LIMIT_MESSAGE =
  * the started claim and it is not yet marked) and increment the counter only
  * if the mark was written. The counter predicate mirrors
  * `consumeAgentDailyActionBudget` (active, not deleted unless canonical
- * Defty, under the cap). If the mark is written but the cap refuses, the
- * caller must release its claim, which drops the mark with it.
+ * Defty, under the cap). If the cap refuses, the statement is rolled back so
+ * the mark is never committed; the caller then releases its claim.
  *
  * Returns `claim_lost` when this generation no longer owns the claim.
  */
@@ -180,7 +182,13 @@ export async function chargeEmployeeChatPostOncePerAttempt(opts: {
   const ownsClaim = sql`id = ${opts.attemptId} and org_id = ${opts.orgId}
     and agent_employee_id = ${opts.employeeId} and status = 'started'
     and coalesce(request_json->>'attempt_generation', '') = ${opts.attemptGeneration}`;
-  const result = await db.execute(sql`with mark as (
+  // A refused charge must never publish the marker: the statement runs in a
+  // transaction that is rolled back when the mark was written but no slot
+  // was charged, so no other generation can ever observe an unpaid marker.
+  let counts = { marked: 0, charged: 0 };
+  try {
+    await db.transaction(async (tx) => {
+      const result = await tx.execute(sql`with mark as (
       update agent_channel_delivery_attempts
          set request_json = request_json || '{"daily_action_charged": true}'::jsonb
        where ${ownsClaim} and coalesce(request_json->>'daily_action_charged', '') <> 'true'
@@ -195,8 +203,14 @@ export async function chargeEmployeeChatPostOncePerAttempt(opts: {
       returning id
     )
     select (select count(*) from mark)::int as marked, (select count(*) from charge)::int as charged`);
-  const rows = (Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? []) as Array<{ marked: number; charged: number }>;
-  const { marked = 0, charged = 0 } = rows[0] ?? {};
+      const rows = (Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? []) as Array<{ marked: number; charged: number }>;
+      counts = { marked: Number(rows[0]?.marked ?? 0), charged: Number(rows[0]?.charged ?? 0) };
+      if (counts.marked > 0 && counts.charged === 0) throw new UnpaidMarkerRollback();
+    });
+  } catch (err) {
+    if (!(err instanceof UnpaidMarkerRollback)) throw err;
+  }
+  const { marked, charged } = counts;
   if (marked > 0 && charged > 0) return { ok: true, charged: true };
   if (marked > 0) {
     const poster = await loadEmployeeChatPoster(opts.orgId, opts.employeeId);

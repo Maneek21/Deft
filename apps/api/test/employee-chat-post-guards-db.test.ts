@@ -942,6 +942,40 @@ test('S1-R3-2: a charged reply attempt records that its slot was charged', async
   assert.equal((attempt!.request_json as Record<string, unknown>).daily_action_charged, true);
 });
 
+test('S1-R4: a charge refused at the cap never leaves a charged marker on the attempt', async () => {
+  const { chargeEmployeeChatPostOncePerAttempt } = await import('../src/lib/employee-chat-post-guard.js');
+  const { event, threadId } = await acceptedAutonomousEvent('standard');
+  const generation = `gen-r4-${randomUUID()}`;
+  const attempt = await insertStartedAutonomousAttempt('standard', event.id, `s1-r4-${randomUUID()}`, `s1 r4 ${randomUUID()}`, threadId, {
+    updatedAt: new Date(),
+    generation,
+  });
+  const before = await dailyCount('standard');
+  await db.execute(sql`update agent_employees set daily_action_count = max_daily_actions where id = ${employees.standard.id}`);
+  try {
+    const refused = await chargeEmployeeChatPostOncePerAttempt({
+      orgId, employeeId: employees.standard.id, attemptId: attempt.id, attemptGeneration: generation,
+    });
+    assert.equal(refused.ok, false);
+    assert.equal((refused as { code: string }).code, 'DAILY_ACTION_LIMIT');
+    const [row] = await db.select().from(agentChannelDeliveryAttempts).where(eq(agentChannelDeliveryAttempts.id, attempt.id));
+    assert.notEqual((row!.request_json as Record<string, unknown>).daily_action_charged, true, 'refused charge left a paid marker');
+  } finally {
+    await db.execute(sql`update agent_employees set daily_action_count = ${before} where id = ${employees.standard.id}`);
+  }
+  // With room under the cap the same attempt is charged exactly once.
+  const paid = await chargeEmployeeChatPostOncePerAttempt({
+    orgId, employeeId: employees.standard.id, attemptId: attempt.id, attemptGeneration: generation,
+  });
+  assert.deepEqual(paid, { ok: true, charged: true });
+  const again = await chargeEmployeeChatPostOncePerAttempt({
+    orgId, employeeId: employees.standard.id, attemptId: attempt.id, attemptGeneration: generation,
+  });
+  assert.deepEqual(again, { ok: true, charged: false });
+  assert.equal(await dailyCount('standard'), before + 1);
+  await db.delete(agentChannelDeliveryAttempts).where(eq(agentChannelDeliveryAttempts.id, attempt.id));
+});
+
 test('S1-R3-4: send_message to an inaccessible thread is indistinguishable from a nonexistent thread', async () => {
   const [hiddenRoot] = await db.insert(messages).values({
     org_id: orgId, space_id: hiddenSpaceId, user_id: ownerId, content: `s1 r3-4 hidden root ${randomUUID()}`,
