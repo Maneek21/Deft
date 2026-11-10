@@ -272,7 +272,7 @@ async function dispatchMentionNotifications(params: {
         metadata: { task_id: taskId, surface },
       }, { channel: 'tasks', isMention: true });
       if (notification) {
-        emitToUser(userId, 'notification:new', notification);
+        emitToUser(notification.org_id, userId, 'notification:new', notification);
       }
     } catch (err) {
       console.error('Failed to create mention notification:', err);
@@ -1448,7 +1448,7 @@ taskRoutes.post('/:id/comments', async (c) => {
           link: `/tasks?task=${taskId_str}`,
         }, { channel: 'tasks' });
         if (notification) {
-          emitToUser(commentedTask.assignee_id, 'notification:new', notification);
+          emitToUser(notification.org_id, commentedTask.assignee_id, 'notification:new', notification);
         }
       }
 
@@ -1836,7 +1836,7 @@ async function createTaskForProject(
         link: `/tasks?task=${taskId_str}`,
       }, { channel: 'tasks' });
       if (notification) {
-        emitToUser(task!.assignee_id, 'notification:new', notification);
+        emitToUser(notification.org_id, task!.assignee_id, 'notification:new', notification);
       }
     } catch {}
   }
@@ -2318,7 +2318,7 @@ taskRoutes.patch('/:id', async (c) => {
             link: `/tasks?task=${taskId_str}`,
           }, { channel: 'tasks' });
           if (notification) {
-            emitToUser(newAssignee, 'notification:new', notification);
+            emitToUser(notification.org_id, newAssignee, 'notification:new', notification);
           }
         } catch {}
       }
@@ -2351,7 +2351,7 @@ taskRoutes.patch('/:id', async (c) => {
             link: `/tasks?task=${taskId_str}`,
           }, { channel: 'tasks' });
           if (notification) {
-            emitToUser(assignee, 'notification:new', notification);
+            emitToUser(notification.org_id, assignee, 'notification:new', notification);
           }
         } catch {}
       }

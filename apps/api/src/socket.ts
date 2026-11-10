@@ -232,37 +232,53 @@ export async function evictActiveHuddleParticipants(scope: HuddleEvictionScope):
   return evicted;
 }
 
-// Track online users: userId → Set of socket IDs (user can have multiple tabs)
-const onlineUsers = new Map<string, Set<string>>();
-// Track idle users
-const idleUsers = new Set<string>();
-// Track user org mapping for room broadcasts
-const userOrgs = new Map<string, string>();
+// Presence is tracked per (org, user) from the sockets actually authenticated
+// for that org: orgId → userId → socket IDs (a user can have several tabs).
+// A person who belongs to orgs A and B but is only connected to B is offline
+// for A, so presence never reveals activity in another org.
+const onlineUsers = new Map<string, Map<string, Set<string>>>();
+// orgId → idle user IDs
+const idleUsers = new Map<string, Set<string>>();
+
+function idleSet(orgId: string): Set<string> {
+  let set = idleUsers.get(orgId);
+  if (!set) {
+    set = new Set();
+    idleUsers.set(orgId, set);
+  }
+  return set;
+}
+
+function clearIdle(orgId: string, userId: string): void {
+  const set = idleUsers.get(orgId);
+  if (!set) return;
+  set.delete(userId);
+  if (set.size === 0) idleUsers.delete(orgId);
+}
 
 export function getIO(): SocketIOServer | null {
   return io;
 }
 
-export function emitToUser(userId: string, event: string, data: unknown): void {
-  if (io) {
-    io.to(`user:${userId}`).emit(event, data);
-  }
-}
-
-function emitToOrgUser(orgId: string, userId: string, event: string, data: unknown): void {
+/**
+ * Emit a per-user event to that user's sockets authenticated for `orgId` only.
+ * `orgId` must be the org the event's data belongs to (for a notification, its
+ * `org_id`): a user who is a member of several orgs has one socket room per
+ * org, and an event about org B must never reach their org-A sockets.
+ */
+export function emitToUser(orgId: string, userId: string, event: string, data: unknown): void {
   io?.to(`org-user:${orgId}:${userId}`).emit(event, data);
 }
 
-/** Get all currently online user IDs */
-export function getOnlineUserIds(): string[] {
-  return Array.from(onlineUsers.keys());
+/** Get the IDs of users with a socket connected to `orgId`. */
+export function getOnlineUserIds(orgId: string): string[] {
+  return Array.from(onlineUsers.get(orgId)?.keys() ?? []);
 }
 
-/** Get presence status for a user */
-export function getUserStatus(userId: string): 'online' | 'idle' | 'offline' {
-  if (idleUsers.has(userId)) return 'idle';
-  if (onlineUsers.has(userId)) return 'online';
-  return 'offline';
+/** Get a user's presence status within `orgId`. */
+export function getUserStatus(orgId: string, userId: string): 'online' | 'idle' | 'offline' {
+  if (!onlineUsers.get(orgId)?.has(userId)) return 'offline';
+  return idleUsers.get(orgId)?.has(userId) ? 'idle' : 'online';
 }
 
 type SocketSetupDependencies = {
@@ -364,9 +380,10 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
         socket.disconnect(true);
         return;
       }
+      // No shared `user:<id>` room: it would span every org the user belongs
+      // to. Per-user events go to `org-user:<org>:<user>` (emitToUser).
       const dataRooms = [
         `org:${user.org_id}`,
-        `user:${user.id}`,
         `org-user:${user.org_id}:${user.id}`,
       ];
       if (user.role !== 'guest') dataRooms.push(`org-members:${user.org_id}`);
@@ -387,30 +404,38 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
       socket.emit('huddle:error', { event, code, message });
     };
 
-    // Track this socket
-    if (!onlineUsers.has(user.id)) {
-      onlineUsers.set(user.id, new Set());
+    // Track this socket under its authenticated org only.
+    let orgOnline = onlineUsers.get(user.org_id);
+    if (!orgOnline) {
+      orgOnline = new Map();
+      onlineUsers.set(user.org_id, orgOnline);
     }
-    onlineUsers.get(user.id)!.add(socket.id);
-    userOrgs.set(user.id, user.org_id);
-    idleUsers.delete(user.id);
+    let userSockets = orgOnline.get(user.id);
+    if (!userSockets) {
+      userSockets = new Set();
+      orgOnline.set(user.id, userSockets);
+    }
+    userSockets.add(socket.id);
+    clearIdle(user.org_id, user.id);
 
     // Update last_seen_at on connect
     recordLastSeen(user.id);
 
-    // Broadcast online to org (only if this is the first socket for this user)
-    if (onlineUsers.get(user.id)!.size === 1) {
+    // Broadcast online to the org (only for this user's first socket in the org)
+    if (userSockets.size === 1) {
       socket.to(`org:${user.org_id}`).emit('presence:update', {
         user_id: user.id,
         status: 'online',
       });
     }
 
-    // Send current online users to the newly connected client
+    // Send the users currently connected to this org to the new client. Cost:
+    // one pass over this org's online users; no DB query.
     const presenceList: { user_id: string; status: 'online' | 'idle' }[] = [];
-    for (const [uid] of onlineUsers) {
+    const orgIdle = idleUsers.get(user.org_id);
+    for (const uid of orgOnline.keys()) {
       if (uid !== user.id) {
-        presenceList.push({ user_id: uid, status: idleUsers.has(uid) ? 'idle' : 'online' });
+        presenceList.push({ user_id: uid, status: orgIdle?.has(uid) ? 'idle' : 'online' });
       }
     }
     socket.emit('presence:init', presenceList);
@@ -484,8 +509,9 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
 
     // Idle / active
     socket.on('presence:idle', () => {
-      if (!idleUsers.has(user.id)) {
-        idleUsers.add(user.id);
+      const orgIdle = idleSet(user.org_id);
+      if (!orgIdle.has(user.id)) {
+        orgIdle.add(user.id);
         socket.to(`org:${user.org_id}`).emit('presence:update', {
           user_id: user.id,
           status: 'idle',
@@ -495,8 +521,8 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
 
     socket.on('presence:active', () => {
       recordLastSeen(user.id);
-      if (idleUsers.has(user.id)) {
-        idleUsers.delete(user.id);
+      if (idleUsers.get(user.org_id)?.has(user.id)) {
+        clearIdle(user.org_id, user.id);
         socket.to(`org:${user.org_id}`).emit('presence:update', {
           user_id: user.id,
           status: 'online',
@@ -631,7 +657,7 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
 
           for (const recipientId of recipientIds) {
             if (!isRealtimeAccessGenerationCurrent(fanoutGeneration) || huddle.getRoom(id) !== room) return;
-            emitToOrgUser(user.org_id, recipientId, 'huddle:started', {
+            emitToUser(user.org_id, recipientId, 'huddle:started', {
               huddle_id: id,
               space_id: data.space_id,
               created_by: user.id,
@@ -654,7 +680,7 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
             if (!isRealtimeAccessGenerationCurrent(fanoutGeneration) || huddle.getRoom(id) !== room) return;
             if (!notification) continue;
 
-            emitToOrgUser(user.org_id, recipientId, 'huddle:ring', {
+            emitToUser(user.org_id, recipientId, 'huddle:ring', {
               huddle_id: id,
               space_id: data.space_id,
               space_name: spaceName,
@@ -663,7 +689,7 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
               participants,
             });
 
-            emitToOrgUser(user.org_id, recipientId, 'notification:new', notification);
+            emitToUser(user.org_id, recipientId, 'notification:new', notification);
           }
         } catch (err) {
           console.error('Failed to send huddle rings:', err);
@@ -902,13 +928,15 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
         }
       }
 
-      const sockets = onlineUsers.get(user.id);
-      if (sockets) {
+      const orgSockets = onlineUsers.get(user.org_id);
+      const sockets = orgSockets?.get(user.id);
+      if (orgSockets && sockets) {
         sockets.delete(socket.id);
-        // Only mark offline if ALL tabs/sockets are closed
+        // Only mark offline when ALL of this user's sockets in this org are closed
         if (sockets.size === 0) {
-          onlineUsers.delete(user.id);
-          idleUsers.delete(user.id);
+          orgSockets.delete(user.id);
+          if (orgSockets.size === 0) onlineUsers.delete(user.org_id);
+          clearIdle(user.org_id, user.id);
           recordLastSeen(user.id);
           socket.to(`org:${user.org_id}`).emit('presence:update', {
             user_id: user.id,

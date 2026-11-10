@@ -420,7 +420,7 @@ async function processNudge(params: NudgeParams): Promise<void> {
 
     // Emit notification to user via Socket.io
     if (notification && !existingNotification) {
-      emitToUser(targetUserId, 'notification:new', notification);
+      emitToUser(notification.org_id, targetUserId, 'notification:new', notification);
     }
 
     console.log(`[nudge-check] Sent ${nudgeType} nudge for ${taskIdentifier} to user ${targetUserId}`);
@@ -571,7 +571,7 @@ export async function checkWorkloadImbalance(): Promise<void> {
           }, { channel: 'tasks' });
 
           if (notification) {
-            emitToUser(admin.user_id, 'notification:new', notification);
+            emitToUser(notification.org_id, admin.user_id, 'notification:new', notification);
           }
 
           console.log(
