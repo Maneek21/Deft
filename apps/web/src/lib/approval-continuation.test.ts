@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   approvalContinuationGate,
-  consumeAgentContinuationStream,
+  approvalContinuationMessageBody,
   type ApprovalContinuationMessage,
 } from './approval-continuation';
 
@@ -93,24 +93,8 @@ test('limits the control to valid confirmations in agent conversations', () => {
   assert.equal(gate({ messages: [message('proposal-1'), message('confirmation-1')] }).show, false);
 });
 
-test('drains continuation SSE and surfaces a streamed server error', async () => {
-  const success = new Response([
-    'data: {"type":"heartbeat"}',
-    '',
-    'data: {"type":"text","text":"Continuing"}',
-    '',
-    'data: {"type":"done"}',
-    '',
-  ].join('\n'), { headers: { 'Content-Type': 'text/event-stream' } });
-  await consumeAgentContinuationStream(success);
-
-  const failure = new Response('data: {"type":"error","error":"Provider unavailable"}\n\n', {
-    headers: { 'Content-Type': 'text/event-stream' },
-  });
-  await assert.rejects(consumeAgentContinuationStream(failure), /Provider unavailable/);
-
-  const interrupted = new Response('data: {"type":"text","text":"Continuing"}\n\n', {
-    headers: { 'Content-Type': 'text/event-stream' },
-  });
-  await assert.rejects(consumeAgentContinuationStream(interrupted), /ended before completion/);
+test('continuation is an ordinary chat message, not a legacy conversation stream', () => {
+  const body = approvalContinuationMessageBody();
+  assert.deepEqual(body, { content: 'Continue.', file_ids: [] });
+  assert.equal(JSON.stringify(body).includes('/api/agent/conversations'), false);
 });

@@ -72,7 +72,7 @@ import { UserProfileCard } from './user-profile-card';
 import { parseReminderTime } from './slash-command-autocomplete';
 import ConfirmDialog from './confirm-dialog';
 import { normalizeInlineApprovalCopy } from '@/lib/agent-approval-copy';
-import { approvalContinuationGate, consumeAgentContinuationStream } from '@/lib/approval-continuation';
+import { approvalContinuationGate, approvalContinuationMessageBody } from '@/lib/approval-continuation';
 import { stripHtml } from '@/lib/strip-html';
 import { isTrustedSystemMessage, serializeQuotedMessage } from '@/lib/message-presentation';
 import { useEditor, EditorContent } from '@tiptap/react';
@@ -775,32 +775,40 @@ export function SpaceChat({
     continuingApprovalIdRef.current = confirmationId;
     setContinuingApprovalId(confirmationId);
     try {
-      const response = await api.fetch(`/api/agent/conversations/${encodeURIComponent(requestSpaceId)}/continue`, {
-        method: 'POST',
+      // Continue through the normal chat path: posting a message in this
+      // agent conversation wakes its agent (Defty via the queued agent-reply
+      // worker, which proposes writes for approval and never auto-executes
+      // them in chat). The reply arrives over the socket like any other.
+      // The idempotency key is scoped to this confirmation so a retry after
+      // a lost response cannot post the request twice.
+      const body = approvalContinuationMessageBody();
+      const intent = createNativeCreateIntent(`approval-continue:${requestSpaceId}:${confirmationId}`);
+      const intentKey = await intent.keyFor(body);
+      const response = await api.post(`/api/messages/${encodeURIComponent(requestSpaceId)}`, body, {
+        headers: { 'Idempotency-Key': intentKey },
       });
       if (!response.ok) {
         throw new Error(await apiErrorMessage(response, `Continue failed (${response.status})`));
       }
-      await consumeAgentContinuationStream(response);
+      const createdMessage = await response.json() as Message;
+      intent.acknowledgeSuccess(intentKey);
       setContinuedApprovalIds((current) => new Set(current).add(confirmationId));
-
-      const refreshed = await api.get(`/api/messages/${encodeURIComponent(requestSpaceId)}`);
-      if (refreshed.ok && activeSpaceIdRef.current === requestSpaceId) {
-        const data = await refreshed.json();
-        if (activeSpaceIdRef.current === requestSpaceId) {
-          setMessages(data.messages || data || []);
-          if (pendingBySpaceKey) void swrMutate(pendingBySpaceKey);
-          setTimeout(scrollToBottom, 50);
-        }
+      if (activeSpaceIdRef.current === requestSpaceId) {
+        setMessages((prev) => (
+          prev.some((message) => message.id === createdMessage.id)
+            ? prev
+            : [...prev, {
+                ...createdMessage,
+                reactions: createdMessage.reactions ?? [],
+                reply_count: createdMessage.reply_count ?? 0,
+                latest_reply_at: createdMessage.latest_reply_at ?? null,
+                file_ids: createdMessage.file_ids ?? [],
+              }]
+        ));
+        setTimeout(scrollToBottom, 50);
       }
     } catch {
-      const refreshed = await api.get(`/api/messages/${encodeURIComponent(requestSpaceId)}`).catch(() => null);
-      if (refreshed?.ok && activeSpaceIdRef.current === requestSpaceId) {
-        const data = await refreshed.json();
-        if (activeSpaceIdRef.current === requestSpaceId) setMessages(data.messages || data || []);
-      }
-      // A server can persist a successor action before the SSE connection
-      // fails. Refresh its approval state before allowing another continue.
+      // Refresh approval state before allowing another continue.
       if (pendingBySpaceKey) await swrMutate(pendingBySpaceKey).catch(() => undefined);
       if (activeSpaceIdRef.current === requestSpaceId) {
         setCmdToast('Defty could not continue. Try again.');
