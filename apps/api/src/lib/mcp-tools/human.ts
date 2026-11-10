@@ -76,7 +76,7 @@ import {
   parseModuleOperationArgs,
 } from './modules.js';
 import { dispatchAgentEmployeeMessage } from '../dispatch-agent-message.js';
-import { enqueueDeftyWake, finishDeftyWake, planDeftyWake, resolveMentionedUserIds, type DeftyWakeOutcome } from '../defty-wake.js';
+import { enqueueDeftyWake, finishDeftyWake, normalizeChatMentions, planDeftyWake, resolveMentionedUserIds, type DeftyWakeOutcome } from '../defty-wake.js';
 import {
   dispatchAgentEmployeeTask,
   publishTaskChannelEventForAssignee,
@@ -2395,8 +2395,8 @@ export async function humanMessagePost(args: { space_id?: string; content?: stri
   if (scopeError) return scopeError;
   if (!args.space_id) return errorResult('message_post requires space_id');
   const spaceId = args.space_id;
-  const content = args.content?.trim();
-  if (!content) return errorResult('message_post requires content');
+  const rawContent = args.content?.trim();
+  if (!rawContent) return errorResult('message_post requires content');
   return withIdempotency('message_post', args, ctx, async () => {
     if (!(await userCanSeeSpace(ctx, spaceId))) return errorResult('message_post: space not found or not visible to user');
     if (!(await userIsSpaceMember(ctx, spaceId))) return errorResult('message_post: user is not a member of this space');
@@ -2408,6 +2408,10 @@ export async function humanMessagePost(args: { space_id?: string; content?: stri
         .limit(1);
       if (!parent || parent.space_id !== spaceId) return errorResult('message_post: parent message not found in target space');
     }
+    // Same mention normalisation as the web route, before storage and the wake decision.
+    const normalized = await normalizeChatMentions(ctx.org_id, rawContent);
+    if (!normalized.ok) return errorResult(`message_post: ${normalized.error}`);
+    const content = normalized.content;
     // A08: wake Defty under exactly the web route's conditions (lib/defty-wake.ts).
     const deftyWakeInput = {
       orgId: ctx.org_id, userId: ctx.user_id, spaceId, content, parentId: args.parent_id ?? null,
@@ -2452,8 +2456,8 @@ type HumanSendMessageArgs = {
 export async function humanSendMessage(args: HumanSendMessageArgs, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'write:messages');
   if (scopeError) return scopeError;
-  const content = args.content?.trim();
-  if (!content) return errorResult('send_message requires content');
+  const rawContent = args.content?.trim();
+  if (!rawContent) return errorResult('send_message requires content');
 
   return withIdempotency('send_message', args, ctx, async () => {
     const target = args.target && typeof args.target === 'object' && !Array.isArray(args.target)
@@ -2508,6 +2512,10 @@ export async function humanSendMessage(args: HumanSendMessageArgs, ctx: HumanToo
       targetKind = 'dm';
     }
 
+    // Same mention normalisation as the web route, before storage and the wake decision.
+    const normalized = await normalizeChatMentions(ctx.org_id, rawContent);
+    if (!normalized.ok) return errorResult(`send_message: ${normalized.error}`);
+    const content = normalized.content;
     // A08: wake Defty under exactly the web route's conditions (lib/defty-wake.ts).
     const deftyWakeInput = {
       orgId: ctx.org_id, userId: ctx.user_id, spaceId: spaceId!, content, parentId,

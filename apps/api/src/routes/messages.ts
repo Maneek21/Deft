@@ -5,19 +5,17 @@ import { z } from 'zod';
 import { eq, and, desc, lt, lte, gt, sql, isNull, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { nativeCreate, nativeCreateKey, NativeCreateError } from '../lib/native-create.js';
-import { messages, users, reactions, spaces, spaceMembers, threadReads, messageVersions, agentEmployees, files, messageAttachments as messageAttachmentLinks } from '@deft/db/schema';
+import { messages, users, reactions, spaces, spaceMembers, threadReads, messageVersions, files, messageAttachments as messageAttachmentLinks } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
 import { extractNativeMentions, NativeMentionLimitError } from '@deft/shared';
 import { nativeMentionsEnabled, enqueueNativeMentionPublication } from '../lib/native-mentions.js';
 import { fetchLinkPreview, extractUrls, type LinkPreview } from '../lib/link-preview.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { requireSpaceMembership } from '../lib/space-membership.js';
-import { ensureDeftyMembership } from '../lib/ensure-defty-membership.js';
 import { enqueueChatObservation } from '../lib/chat-observation.js';
 import { createNotificationIfAllowed, createNotificationsIfAllowed } from '../lib/notification-policy.js';
-import { normalizePlainAgentMentions } from '../lib/agent-mention-normalization.js';
 import { enqueueAgentEmployeeMessageJobs, resolveAgentEmployeeMessageTargets } from '../lib/dispatch-agent-message.js';
-import { enqueueDeftyWake, finishDeftyWake, type DeftyWakeOutcome, planDeftyWake, resolveMentionedUserIds } from '../lib/defty-wake.js';
+import { enqueueDeftyWake, finishDeftyWake, type DeftyWakeOutcome, normalizeChatMentions, planDeftyWake, resolveMentionedUserIds } from '../lib/defty-wake.js';
 import { projectPendingDeftyMetadataForOutbound } from '../lib/defty-pending-action.js';
 import { toPlainText } from '../lib/plain-text.js';
 import {
@@ -379,51 +377,11 @@ messageRoutes.post('/:spaceId', async (c) => {
       }
     }
 
-    // Normalize plain @defty / @deft / @agent (case-insensitive) into structured
-    // mentions so the renderer styles them as pills uniformly.
-    let normalizedContent = parsed.data.content;
-    if (!/<@[^|]+\|Defty?>/i.test(normalizedContent)) {
-      const hasLegacyAgent = /(^|[^a-z0-9_])@(defty|deft|agent)\b/i.test(normalizedContent);
-      if (hasLegacyAgent) {
-        const deftyUserId = await ensureDeftyMembership(user.org_id);
-        normalizedContent = normalizedContent.replace(
-          /(^|[^a-z0-9_])@(defty|deft|agent)\b/gi,
-          (_match, prefix) => `${prefix}<@${deftyUserId}|Defty>`,
-        );
-      }
-    }
-
-    const plainMentionScan = normalizedContent.replace(/<@[^>]+>/g, '');
-    if (/(^|[^a-z0-9_])@[a-z0-9]/i.test(plainMentionScan)) {
-      const agentIdentities = await db
-        .select({
-          userId: agentEmployees.user_id,
-          name: agentEmployees.name,
-          slug: agentEmployees.slug,
-        })
-        .from(agentEmployees)
-        .innerJoin(users, eq(agentEmployees.user_id, users.id))
-        .where(and(
-          eq(agentEmployees.org_id, user.org_id),
-          eq(agentEmployees.is_active, true),
-        ));
-      const plainAgentMentions = normalizePlainAgentMentions(
-        normalizedContent,
-        agentIdentities.flatMap((agent) => agent.userId ? [{
-          userId: agent.userId,
-          name: agent.name,
-          slug: agent.slug,
-        }] : []),
-      );
-      if (plainAgentMentions.ambiguousAliases.length > 0) {
-        const handles = plainAgentMentions.ambiguousAliases.map((alias) => `@${alias}`).join(', ');
-        return c.json({
-          error: `${handles} matches more than one active agent. Choose the intended agent from the mention menu.`,
-          code: 'AMBIGUOUS_AGENT_MENTION',
-        }, 409);
-      }
-      normalizedContent = plainAgentMentions.content;
-    }
+    // Normalize plain @defty / @deft / @agent and plain agent-employee aliases
+    // into structured mentions (shared with the human MCP tools).
+    const normalized = await normalizeChatMentions(user.org_id, parsed.data.content);
+    if (!normalized.ok) return c.json({ error: normalized.error, code: normalized.code }, 409);
+    const normalizedContent = normalized.content;
 
     const attachmentIds = normalizeAttachmentIds(parsed.data.file_ids, normalizedContent);
     if (attachmentIds.length > MAX_MESSAGE_ATTACHMENTS) {

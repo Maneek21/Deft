@@ -11,7 +11,7 @@
  *   3. `finishDeftyWake` after commit: the visible "no reasoning provider" reply.
  */
 import { and, eq, inArray } from 'drizzle-orm';
-import { messages, orgMembers, orgs, spaceMembers, spaces, userGroupMembers, userGroups, users } from '@deft/db/schema';
+import { agentEmployees, messages, orgMembers, orgs, spaceMembers, spaces, userGroupMembers, userGroups, users } from '@deft/db/schema';
 import { db } from './db.js';
 import { DEFTY_EMAIL, ensureDeftyMembership } from './ensure-defty-membership.js';
 import { parseMentions } from './mentions.js';
@@ -20,6 +20,7 @@ import { enqueue, QUEUE_NAMES, type QueueExecutor } from './queues.js';
 import { loadThreadFollowContext, shouldFollowThread } from './defty-thread-follow.js';
 import { isPrivateDeftySpace } from './app-private-defty-message-guard.js';
 import { getIO } from '../socket.js';
+import { normalizePlainAgentMentions } from './agent-mention-normalization.js';
 import type { CoreDatabaseTransaction } from './database-transaction.js';
 
 export type AgentReplyJobData = {
@@ -70,6 +71,65 @@ async function resolveGroupMentionUserIds(content: string, orgId: string): Promi
     ));
 
   return Array.from(new Set(rows.map((row) => row.user_id)));
+}
+
+export type NormalizedChatContent =
+  | { ok: true; content: string }
+  | { ok: false; error: string; code: 'AMBIGUOUS_AGENT_MENTION' };
+
+/**
+ * Normalise a human's chat post before it is stored and before any wake
+ * decision: plain `@defty` / `@deft` / `@agent` become a structured Defty
+ * mention, and plain aliases of active agent employees become structured
+ * mentions of that employee. An alias owned by more than one active agent is
+ * refused. Used by the web route and the human MCP post tools.
+ */
+export async function normalizeChatMentions(orgId: string, content: string): Promise<NormalizedChatContent> {
+  let normalizedContent = content;
+  if (!/<@[^|]+\|Defty?>/i.test(normalizedContent)) {
+    const hasLegacyAgent = /(^|[^a-z0-9_])@(defty|deft|agent)\b/i.test(normalizedContent);
+    if (hasLegacyAgent) {
+      const deftyUserId = await ensureDeftyMembership(orgId);
+      normalizedContent = normalizedContent.replace(
+        /(^|[^a-z0-9_])@(defty|deft|agent)\b/gi,
+        (_match, prefix) => `${prefix}<@${deftyUserId}|Defty>`,
+      );
+    }
+  }
+
+  const plainMentionScan = normalizedContent.replace(/<@[^>]+>/g, '');
+  if (/(^|[^a-z0-9_])@[a-z0-9]/i.test(plainMentionScan)) {
+    const agentIdentities = await db
+      .select({
+        userId: agentEmployees.user_id,
+        name: agentEmployees.name,
+        slug: agentEmployees.slug,
+      })
+      .from(agentEmployees)
+      .innerJoin(users, eq(agentEmployees.user_id, users.id))
+      .where(and(
+        eq(agentEmployees.org_id, orgId),
+        eq(agentEmployees.is_active, true),
+      ));
+    const plainAgentMentions = normalizePlainAgentMentions(
+      normalizedContent,
+      agentIdentities.flatMap((agent) => agent.userId ? [{
+        userId: agent.userId,
+        name: agent.name,
+        slug: agent.slug,
+      }] : []),
+    );
+    if (plainAgentMentions.ambiguousAliases.length > 0) {
+      const handles = plainAgentMentions.ambiguousAliases.map((alias) => `@${alias}`).join(', ');
+      return {
+        ok: false,
+        error: `${handles} matches more than one active agent. Choose the intended agent from the mention menu.`,
+        code: 'AMBIGUOUS_AGENT_MENTION',
+      };
+    }
+    normalizedContent = plainAgentMentions.content;
+  }
+  return { ok: true, content: normalizedContent };
 }
 
 /** Direct `<@id|Name>` mentions plus active members of mentioned `@group` handles. */
