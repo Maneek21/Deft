@@ -10,6 +10,26 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### Notice: Kit `0.1.0-alpha.44` removes deprecated Email compatibility
+
+Not before 2026-11-25, and never fewer than 14 days after this notice merged.
+No code changes here and alpha.43 is unchanged. Alpha.44 is the "next breaking Kit
+alpha" the existing `@deprecated` notices name. It removes the 26 deprecated
+compose, address-list and raster names from the root and `/experience` entry
+points, the 9 sandbox names re-exported from the root, the root override of
+`checkDeftAppDeveloperContract`, and the `safe-compose-html`, `mailbox-list` and
+`native-compose-raster` modules under `@deft/app-kit/examples/email`. Importing only
+the root will no longer register the sandbox profile; the `sandbox`, `templates`,
+`register` and `cli` modules and the three `examples/email` subpath exports stay,
+opt-in. Use `@deft/app-kit/core` and the `deft-email` `runtime/domain` modules, or
+keep pinning alpha.43. Names and plan are listed in the Kit README and
+`docs/superpowers/plans/2026-11-06-email-host-kit-shrink.md`.
+
+- App-boundary gate: `scripts/app-boundary-ceiling.json` caps the exception count
+  at 1,277 (it may only be lowered), each exception's `milestone` now starts with
+  its burn-down bucket, and `node scripts/check-app-boundary.mjs --summary` prints
+  the counts per milestone. No finding changed.
+
 ### 0.3.0-preview.141 candidate - publication pending
 
 Operator notes:

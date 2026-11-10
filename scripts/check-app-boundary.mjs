@@ -251,14 +251,40 @@ export function validateAllowlist(findings, entries) {
   return errors;
 }
 
+/**
+ * The checked-in ceiling only moves down: each removal stage lowers it to that
+ * stage's target, so the gate shrinks the coupling instead of only stopping growth.
+ */
+export function validateAllowlistCeiling(entries, ceiling) {
+  const max = ceiling?.max_exceptions;
+  if (!Number.isSafeInteger(max) || max < 0) return [`Invalid exception ceiling: ${JSON.stringify(ceiling)}`];
+  if (entries.length > max) return [`Exception count ${entries.length} exceeds the ceiling ${max}; delete records with the code they cover, never raise the ceiling.`];
+  return [];
+}
+
+/** One `<count>	<milestone>` line per distinct milestone, sorted by milestone. */
+export function summarizeMilestones(entries) {
+  const counts = new Map();
+  for (const entry of entries) counts.set(entry.milestone, (counts.get(entry.milestone) ?? 0) + 1);
+  return [...counts].sort(([a], [b]) => a.localeCompare(b, 'en')).map(([milestone, count]) => `${count}	${milestone}`);
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
+    if (process.argv.includes('--summary')) {
+      // Reads only the exception file, so it needs no Kit build.
+      const entries = JSON.parse(fs.readFileSync(path.join(root, 'scripts/app-boundary-allowlist.json'), 'utf8'));
+      for (const line of summarizeMilestones(entries)) console.log(line);
+      console.log(`${entries.length}	total`);
+      process.exit(0);
+    }
     const findings = scanBoundary(root, { requireBuilt: true });
     if (process.argv.includes('--findings')) console.log(JSON.stringify(findings, null, 2));
     else {
       const entries = JSON.parse(fs.readFileSync(path.join(root, 'scripts/app-boundary-allowlist.json'), 'utf8'));
-      const errors = validateAllowlist(findings, entries);
+      const ceiling = JSON.parse(fs.readFileSync(path.join(root, 'scripts/app-boundary-ceiling.json'), 'utf8'));
+      const errors = [...validateAllowlist(findings, entries), ...validateAllowlistCeiling(entries, ceiling)];
       for (const error of errors) console.error(error);
       if (process.argv.includes('--verbose')) for (const finding of findings) {
         const exception = entries.find((entry) => identity(entry) === identity(finding));
