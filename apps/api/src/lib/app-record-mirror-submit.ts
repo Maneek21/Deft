@@ -37,6 +37,8 @@ export async function submitRecordMirrorRun(tx:AppRunTransaction,scope:AppConnec
  const guard=async()=>{
   const pins=await currentRecordMirrorAuthority(tx,row.reviewed_authority);
   if(appDataDigest(pins.scope)!==appDataDigest(scope)||pins.policy_digest!==row.policy_digest||row.authority_digest!==appDataDigest(pins)||row.expires_at<=new Date())throw appDataDenied();
+  // A receipt from an approved agent nomination covers only the reviewed record.
+  if(pins.record_id!==undefined&&pins.record_id!==input.record_id)throw appDataDenied();
   if(input.mirror_operation==='delete')await assertPreparedRecordCleanupSource(tx,pins,input);
   return pins;
  };
