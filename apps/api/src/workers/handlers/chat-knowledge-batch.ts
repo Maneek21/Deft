@@ -1,7 +1,8 @@
-import { and, eq, gte, lt, desc } from 'drizzle-orm';
+import { and, eq, gte, lt, desc, or, sql } from 'drizzle-orm';
 import {
   messageClassifications,
   messages,
+  spaceMembers,
   spaces,
   users,
 } from '@deft/db/schema';
@@ -14,6 +15,7 @@ import { toPlainText, truncatePlainText } from '../../lib/plain-text.js';
 import { hasNoKnowledgeDirective } from '../../lib/chat-observation.js';
 import { isSelfContainedDecision } from '../../lib/classifier.js';
 import { buildUntrustedWorkspaceContext } from '../../lib/agent-untrusted-context.js';
+import { DEFTY_EMAIL } from '../../lib/defty-identity.js';
 
 const BATCH_INTERVAL_MS = 30 * 60 * 1000;
 const LOOKBACK_OVERLAP_MS = 10 * 60 * 1000;
@@ -101,7 +103,12 @@ function tokenOverlap(a: string, b: string): number {
 
 function hasSocialTopic(value: string): boolean {
   const plain = normalize(value);
-  return /\b(?:pizza|deep dish|thin crust|pineapple|jalapeno|mushroom|cheese|lunch|breakfast|dinner|snack|coffee|tea|cake|eat|eating|birthday|party|weekend|movie|music|sports|commute|weather)\b/.test(plain);
+  if (/\b(?:pizza|deep dish|thin crust|pineapple|jalapeno|mushroom|cheese|lunch|breakfast|dinner|snack|coffee|tea|cake|eat|eating|birthday|party|movie|music|sports)\b/.test(plain)) {
+    return true;
+  }
+  // Timing/context words are social only when nothing was explicitly settled:
+  // "Decision: weekend on-call uses PagerDuty" is work knowledge.
+  return /\b(?:weekend|commute|weather)\b/.test(plain) && !hasSettledKnowledgeSignal(value);
 }
 
 function hasDomainWorkSignal(value: string): boolean {
@@ -267,11 +274,14 @@ function segmentRowsIntoEpisodes(rows: ClassifiedMessageRow[]): KnowledgeEpisode
   return episodes;
 }
 
-function excludeOptedOutDiscussions(rows: ClassifiedMessageRow[]): ClassifiedMessageRow[] {
+function keepDiscussions(
+  rows: ClassifiedMessageRow[],
+  keep: (discussion: ClassifiedMessageRow[]) => boolean,
+): ClassifiedMessageRow[] {
   const eligible: ClassifiedMessageRow[] = [];
   let discussion: ClassifiedMessageRow[] = [];
   const flush = () => {
-    if (!discussion.some((row) => hasNoKnowledgeDirective(row.content))) eligible.push(...discussion);
+    if (discussion.length > 0 && keep(discussion)) eligible.push(...discussion);
     discussion = [];
   };
   for (const row of rows) {
@@ -281,6 +291,20 @@ function excludeOptedOutDiscussions(rows: ClassifiedMessageRow[]): ClassifiedMes
   }
   flush();
   return eligible;
+}
+
+function excludeOptedOutDiscussions(rows: ClassifiedMessageRow[]): ClassifiedMessageRow[] {
+  return keepDiscussions(rows, (discussion) => !discussion.some((row) => hasNoKnowledgeDirective(row.content)));
+}
+
+/**
+ * A discussion with any message inside the quiet window is not settled yet: a
+ * correction or "don't save that" may still follow. Defer the whole
+ * discussion to a later run instead of capturing its earlier part now.
+ */
+function excludeUnsettledDiscussions(rows: ClassifiedMessageRow[], settledBefore: Date): ClassifiedMessageRow[] {
+  const cutoff = settledBefore.getTime();
+  return keepDiscussions(rows, (discussion) => discussion.every((row) => row.createdAt.getTime() < cutoff));
 }
 
 function chooseSourceRow(episode: KnowledgeEpisode): ClassifiedMessageRow {
@@ -491,11 +515,14 @@ Rules:
   }
 }
 
-async function buildCandidatesForSpace(rows: ClassifiedMessageRow[]): Promise<KnowledgeCandidate[]> {
+async function buildCandidatesForSpace(rows: ClassifiedMessageRow[], settledBefore: Date): Promise<KnowledgeCandidate[]> {
   const candidates: KnowledgeCandidate[] = [];
   // A no-save request applies to its settled discussion, including an addressed
   // directive that topic segmentation would otherwise split into an agent episode.
-  const eligibleRows = excludeOptedOutDiscussions(rows).filter((row) => !hasNonAffirmativeAgreement(row.content));
+  // Rows are fetched up to now so a late directive or correction is visible;
+  // discussions still active inside the quiet window are deferred.
+  const eligibleRows = excludeUnsettledDiscussions(excludeOptedOutDiscussions(rows), settledBefore)
+    .filter((row) => !hasNonAffirmativeAgreement(row.content));
   const episodes = segmentRowsIntoEpisodes(eligibleRows);
   for (let index = 0; index < episodes.length; index += 1) {
     const originalEpisode = episodes[index]!;
@@ -589,8 +616,23 @@ export async function handleChatKnowledgeBatch(job: JobData): Promise<void> {
       eq(messages.is_deleted, false),
       eq(users.is_agent, false),
       eq(spaces.is_archived, false),
+      // Passive capture reads public channels, and private channels only once
+      // Defty has been invited. DMs, group DMs and agent conversations are
+      // never scanned.
+      or(
+        eq(spaces.type, 'public'),
+        and(
+          eq(spaces.type, 'private'),
+          sql`exists (
+            select 1 from ${spaceMembers}
+            inner join ${users} as defty_user on defty_user.id = ${spaceMembers.user_id}
+            where ${spaceMembers.space_id} = ${spaces.id}
+              and defty_user.email = ${DEFTY_EMAIL}
+          )`,
+        ),
+      ),
       gte(messages.created_at, since),
-      lt(messages.created_at, before),
+      lt(messages.created_at, now),
     ))
     .orderBy(desc(messages.created_at))
     .limit(MAX_MESSAGES_PER_RUN);
@@ -615,7 +657,7 @@ export async function handleChatKnowledgeBatch(job: JobData): Promise<void> {
   let queuedCount = 0;
   let skippedCount = 0;
   for (const spaceRows of grouped.values()) {
-    const candidates = await buildCandidatesForSpace(spaceRows);
+    const candidates = await buildCandidatesForSpace(spaceRows, before);
     for (const candidate of candidates) {
       const result = await queueDeftyKnowledgeCapture({
         orgId: candidate.source.orgId,

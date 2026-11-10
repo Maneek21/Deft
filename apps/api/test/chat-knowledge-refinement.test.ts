@@ -15,7 +15,11 @@ function message(content: string, index = 0) {
     confidence: null, agentMentioned: null, memorableFacts: null, decision: null,
   };
 }
-function batchHarness(rows: ReturnType<typeof message>[], modelResult?: Record<string, unknown>) {
+function batchHarness(
+  rows: ReturnType<typeof message>[],
+  modelResult?: Record<string, unknown>,
+  options: { honourWindow?: boolean } = {},
+) {
   const captures: any[] = [];
   const prompts: any[] = [];
   const windows: Date[][] = [];
@@ -34,7 +38,13 @@ function batchHarness(rows: ReturnType<typeof message>[], modelResult?: Record<s
         (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value))).map((value) => new Date(value as string)));
       return this;
     },
-    orderBy() { return this; }, async limit() { return [...rows].reverse(); },
+    orderBy() { return this; },
+    async limit() {
+      // Optionally apply the fetched time window like Postgres would.
+      const [since, before] = options.honourWindow ? windows[windows.length - 1] ?? [] : [];
+      return rows.filter((row) => (!since || row.createdAt >= since) && (!before || row.createdAt < before))
+        .reverse();
+    },
   };
   const url = new URL('../src/workers/handlers/chat-knowledge-batch.ts', import.meta.url);
   const require = createRequire(url);
@@ -222,8 +232,9 @@ test('episode model receives conversation only inside untrusted workspace contex
 });
 test('episode model context is bounded per message and in total', async () => {
   const marker = 'BEYOND_MESSAGE_CONTEXT_LIMIT';
+  // Keep the whole 28-message discussion settled (older than the quiet window).
   const harness = batchHarness(Array.from({ length: 28 }, (_, index) =>
-    message(`Decision: the launch checklist is final. ${'x'.repeat(500)} ${marker}`, index)), {
+    at(`Decision: the launch checklist is final. ${'x'.repeat(500)} ${marker}`, index, 40 - index * 0.5)), {
     kind: 'durable_knowledge', confidence: 0.95, wikiType: 'decision', title: 'Launch checklist',
     summary: 'The launch checklist is final.', content: 'The launch checklist is final.', reason: 'Settled decision',
   });
@@ -239,4 +250,48 @@ test('unresolved agreement is not recaptured as knowledge', async () => {
     await harness.run();
     assert.equal(harness.captures.length, 0, content);
   }
+});
+
+function at(content: string, index: number, minutesAgo: number) {
+  const row = message(content, index);
+  row.createdAt = new Date(NOW - minutesAgo * 60_000);
+  return row;
+}
+
+test('D05: a late "do not save" inside the quiet window vetoes the earlier decision', async () => {
+  const harness = batchHarness([
+    at('Decision: demo moves to Friday 3pm', 0, 9),
+    at('Do not save this discussion.', 1, 4),
+  ], undefined, { honourWindow: true });
+  await harness.run();
+  assert.equal(harness.captures.length, 0, 'an unsettled discussion must not be captured before its directive is visible');
+  harness.clock.now += 30 * 60_000;
+  await harness.run();
+  assert.equal(harness.captures.length, 0, 'once settled, the directive vetoes the discussion');
+});
+
+test('D05: a discussion still active inside the quiet window is deferred, then captured once settled', async () => {
+  const harness = batchHarness([
+    at('Decision: demo moves to Friday 3pm', 0, 9),
+    at('Thanks, noting that for the team.', 1, 4),
+  ], undefined, { honourWindow: true });
+  await harness.run();
+  assert.equal(harness.captures.length, 0, 'deferred while the discussion is still moving');
+  harness.clock.now += 30 * 60_000;
+  await harness.run();
+  assert.equal(harness.captures.length, 1, 'captured on the next run once settled');
+  assert.match(harness.captures[0].content, /demo moves to Friday 3pm/);
+});
+
+test('D08: an explicit decision that mentions a social timing word is captured', async () => {
+  const harness = batchHarness([message('Decision: weekend on-call uses PagerDuty for paging.')]);
+  await harness.run();
+  assert.equal(harness.captures.length, 1);
+  assert.equal(harness.captures[0].wikiType, 'decision');
+});
+
+test('D08: social subjects stay rejected even with decision language', async () => {
+  const harness = batchHarness([message('Decision: pineapple is banned from the pizza policy forever.')]);
+  await harness.run();
+  assert.equal(harness.captures.length, 0);
 });

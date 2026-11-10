@@ -1,6 +1,7 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, or } from 'drizzle-orm';
 import { agentEmployees, spaceMembers, spaces } from '@deft/db/schema';
 import { db } from '../db.js';
+import { canonicalDeftyEmployeeCondition } from '../defty-identity.js';
 
 /**
  * Public spaces are visible across the org. Private and DM spaces require the
@@ -34,7 +35,10 @@ export async function employeeCanAccessSpace(
         eq(agentEmployees.id, employeeId),
         eq(agentEmployees.org_id, orgId),
         eq(agentEmployees.is_active, true),
-        eq(agentEmployees.is_deleted, false),
+        // The canonical Defty system employee is soft-hidden (is_deleted=true)
+        // by design; it is admitted on the same membership rule below. Any
+        // other deleted employee stays denied.
+        or(eq(agentEmployees.is_deleted, false), canonicalDeftyEmployeeCondition()),
       ),
     )
     .limit(1);
