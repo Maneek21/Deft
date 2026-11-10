@@ -1,5 +1,6 @@
 import { and, desc, eq, gte, lt, sql } from 'drizzle-orm';
 import {
+  automationRuns,
   messages,
   orgs,
   projects,
@@ -23,6 +24,7 @@ import { runAgentQuery } from './agent-runner.js';
 import { ensureDeftyMembership, DEFTY_NAME } from './ensure-defty-membership.js';
 import { resolveReasonProvider } from './org-ai-config.js';
 import { getIO } from '../socket.js';
+import { unrestrictedTaskCondition } from './task-visibility.js';
 
 type StandupEvidence = {
   source_id: string;
@@ -51,6 +53,13 @@ function fallbackDraft(evidence: StandupEvidence[]): StandupDraft {
 
 async function gatherStandupEvidence(orgId: string, now: Date) {
   const since = new Date(now.getTime() - 24 * 60 * 60_000);
+  // The standup is an org-wide artifact: it is posted to the default channel
+  // and shown on every member's dashboard. Only tasks every member may see
+  // (not restricted, in a live project) can contribute titles or owners.
+  const orgVisibleTask = and(
+    unrestrictedTaskCondition(),
+    eq(projects.is_deleted, false),
+  );
   const completedRows = await db
     .select({
       task_id: tasks.id,
@@ -70,6 +79,7 @@ async function gatherStandupEvidence(orgId: string, now: Date) {
       eq(taskActivity.field, 'status'),
       eq(taskActivity.new_value, 'done'),
       gte(taskActivity.created_at, since),
+      orgVisibleTask,
     ))
     .orderBy(desc(taskActivity.created_at));
 
@@ -90,6 +100,7 @@ async function gatherStandupEvidence(orgId: string, now: Date) {
       eq(tasks.is_deleted, false),
       gte(tasks.updated_at, since),
       sql`${tasks.status} NOT IN ('done', 'cancelled')`,
+      orgVisibleTask,
     ))
     .orderBy(desc(tasks.updated_at))
     .limit(12);
@@ -111,6 +122,7 @@ async function gatherStandupEvidence(orgId: string, now: Date) {
       eq(tasks.is_deleted, false),
       lt(tasks.due_date, now),
       sql`${tasks.status} NOT IN ('done', 'cancelled')`,
+      orgVisibleTask,
     ))
     .orderBy(tasks.due_date)
     .limit(8);
@@ -236,52 +248,89 @@ export async function generateDailyStandup(input: {
     const deftyUserId = await ensureDeftyMembership(input.orgId);
     const synthesis = await synthesizeStandup(input.orgId, org.name, deftyUserId, evidence);
     const summary = renderStandupDraft(synthesis.draft);
-    const [standup] = await db.insert(standups).values({
-      org_id: input.orgId,
-      date: now,
-      generated_by: deftyUserId,
-      summary,
-      raw_data: {
-        date_key: local.dateKey,
-        generator: synthesis.generator,
-        model: synthesis.model,
-        evidence,
-        draft: synthesis.draft,
-      },
-    }).returning();
-    if (!standup) throw new Error('Standup insert returned no row');
 
-    const [defaultSpace] = await db.select({ id: spaces.id }).from(spaces)
-      .where(and(eq(spaces.org_id, input.orgId), eq(spaces.is_default, true))).limit(1);
-    let messageId: string | null = null;
-    if (defaultSpace) {
-      await db.insert(spaceMembers).values({ space_id: defaultSpace.id, user_id: deftyUserId })
-        .onConflictDoNothing();
-      const [message] = await db.insert(messages).values({
-        org_id: input.orgId,
-        space_id: defaultSpace.id,
-        user_id: deftyUserId,
-        content: `**Daily standup**\n\n${summary}`,
-        metadata: { automation_run_id: claim.run.id, generator: synthesis.generator },
-      }).returning();
-      messageId = message?.id ?? null;
-      if (message) {
-        getIO()?.to(`org:${input.orgId}`).emit('message:new', {
-          ...message,
-          user_name: DEFTY_NAME,
-          user_avatar: null,
-        });
+    // The standup row, its channel message and the run's delivered state are
+    // written in one transaction under a row lock on the run, so a failed or
+    // reclaimed (stale) run can never leave a posted standup behind that a
+    // retry would post again. Realtime emission happens only after commit.
+    const delivery = await db.transaction(async (tx) => {
+      const [lockedRun] = await tx.select({
+        status: automationRuns.status,
+        result_entity_id: automationRuns.result_entity_id,
+      }).from(automationRuns)
+        .where(eq(automationRuns.id, claim.run.id))
+        .for('update');
+      if (lockedRun?.result_entity_id) {
+        const [existing] = await tx.select().from(standups)
+          .where(and(eq(standups.id, lockedRun.result_entity_id), eq(standups.org_id, input.orgId)))
+          .limit(1);
+        if (existing) {
+          const [run] = lockedRun.status === 'delivered'
+            ? await tx.select().from(automationRuns).where(eq(automationRuns.id, claim.run.id))
+            : await tx.update(automationRuns)
+              .set({ status: 'delivered', error: null, completed_at: new Date() })
+              .where(eq(automationRuns.id, claim.run.id))
+              .returning();
+          return { standup: existing, run: run ?? null, message: null, alreadyExisted: true };
+        }
       }
-    }
 
-    const run = await updateAutomationRun(claim.run.id, {
-      status: 'delivered',
-      generator: synthesis.generator,
-      output: { draft: synthesis.draft, model: synthesis.model, message_id: messageId },
-      resultEntityId: standup.id,
-      completedAt: new Date(),
+      const [standup] = await tx.insert(standups).values({
+        org_id: input.orgId,
+        date: now,
+        generated_by: deftyUserId,
+        summary,
+        raw_data: {
+          date_key: local.dateKey,
+          generator: synthesis.generator,
+          model: synthesis.model,
+          evidence,
+          draft: synthesis.draft,
+        },
+      }).returning();
+      if (!standup) throw new Error('Standup insert returned no row');
+
+      const [defaultSpace] = await tx.select({ id: spaces.id }).from(spaces)
+        .where(and(
+          eq(spaces.org_id, input.orgId),
+          eq(spaces.is_default, true),
+          eq(spaces.is_archived, false),
+        )).limit(1);
+      let message: typeof messages.$inferSelect | null = null;
+      if (defaultSpace) {
+        await tx.insert(spaceMembers).values({ space_id: defaultSpace.id, user_id: deftyUserId })
+          .onConflictDoNothing();
+        const [inserted] = await tx.insert(messages).values({
+          org_id: input.orgId,
+          space_id: defaultSpace.id,
+          user_id: deftyUserId,
+          content: `**Daily standup**\n\n${summary}`,
+          metadata: { automation_run_id: claim.run.id, generator: synthesis.generator },
+        }).returning();
+        message = inserted ?? null;
+      }
+
+      const [run] = await tx.update(automationRuns).set({
+        status: 'delivered',
+        generator: synthesis.generator,
+        output: { draft: synthesis.draft, model: synthesis.model, message_id: message?.id ?? null },
+        result_entity_id: standup.id,
+        error: null,
+        completed_at: new Date(),
+      }).where(eq(automationRuns.id, claim.run.id)).returning();
+      return { standup, run: run ?? null, message, alreadyExisted: false };
     });
-    return { standup, run, alreadyExisted: false };
+
+    if (delivery.message) {
+      // Only the destination channel's members (the `space:` room joined after
+      // a membership check) may receive the post, never the whole-org room.
+      getIO()?.to(`space:${delivery.message.space_id}`).emit('message:new', {
+        ...delivery.message,
+        user_name: DEFTY_NAME,
+        user_avatar: null,
+      });
+    }
+    return { standup: delivery.standup, run: delivery.run, alreadyExisted: delivery.alreadyExisted };
   } catch (error) {
     await failAutomationRun(claim.run.id, error);
     throw error;

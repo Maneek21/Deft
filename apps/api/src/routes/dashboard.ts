@@ -440,6 +440,11 @@ dashboardRoutes.get('/', async (c) => {
 dashboardRoutes.post('/standup', async (c) => {
   try {
     const user = c.get('user');
+    // Guests (and callers without a resolved org role) may not generate the
+    // org-wide standup; only full workspace members can trigger it.
+    if (user.role !== 'owner' && user.role !== 'admin' && user.role !== 'member') {
+      return c.json({ error: 'Only workspace members can generate the standup', code: 'FORBIDDEN' }, 403);
+    }
     const result = await generateDailyStandup({
       orgId: user.org_id,
       requestedByUserId: user.id,

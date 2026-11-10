@@ -1,7 +1,8 @@
-import { and, eq, gte, lt, desc } from 'drizzle-orm';
+import { and, eq, gte, lt, desc, or, sql } from 'drizzle-orm';
 import {
   messageClassifications,
   messages,
+  spaceMembers,
   spaces,
   users,
 } from '@deft/db/schema';
@@ -14,6 +15,7 @@ import { toPlainText, truncatePlainText } from '../../lib/plain-text.js';
 import { hasNoKnowledgeDirective } from '../../lib/chat-observation.js';
 import { isSelfContainedDecision } from '../../lib/classifier.js';
 import { buildUntrustedWorkspaceContext } from '../../lib/agent-untrusted-context.js';
+import { DEFTY_EMAIL } from '../../lib/defty-identity.js';
 
 const BATCH_INTERVAL_MS = 30 * 60 * 1000;
 const LOOKBACK_OVERLAP_MS = 10 * 60 * 1000;
@@ -101,7 +103,12 @@ function tokenOverlap(a: string, b: string): number {
 
 function hasSocialTopic(value: string): boolean {
   const plain = normalize(value);
-  return /\b(?:pizza|deep dish|thin crust|pineapple|jalapeno|mushroom|cheese|lunch|breakfast|dinner|snack|coffee|tea|cake|eat|eating|birthday|party|weekend|movie|music|sports|commute|weather)\b/.test(plain);
+  if (/\b(?:pizza|deep dish|thin crust|pineapple|jalapeno|mushroom|cheese|lunch|breakfast|dinner|snack|coffee|tea|cake|eat|eating|birthday|party|movie|music|sports)\b/.test(plain)) {
+    return true;
+  }
+  // Timing/context words are social only when nothing was explicitly settled:
+  // "Decision: weekend on-call uses PagerDuty" is work knowledge.
+  return /\b(?:weekend|commute|weather)\b/.test(plain) && !hasSettledKnowledgeSignal(value);
 }
 
 function hasDomainWorkSignal(value: string): boolean {
@@ -267,14 +274,29 @@ function segmentRowsIntoEpisodes(rows: ClassifiedMessageRow[]): KnowledgeEpisode
   return episodes;
 }
 
-function excludeOptedOutDiscussions(rows: ClassifiedMessageRow[]): ClassifiedMessageRow[] {
+type VetoContextRow = Pick<ClassifiedMessageRow, 'messageId' | 'content' | 'createdAt'>;
+
+/**
+ * Drops every discussion that contains a no-save directive. Only `rows` (all
+ * older than the quiet cutoff) can be returned. `recentRows` (newer than the
+ * cutoff) are veto context only: they extend a discussion exactly as the next
+ * run will group it, so a late directive vetoes that discussion now, but they
+ * are never returned as candidates or evidence.
+ */
+function excludeOptedOutDiscussions(
+  rows: ClassifiedMessageRow[],
+  recentRows: VetoContextRow[] = [],
+): ClassifiedMessageRow[] {
   const eligible: ClassifiedMessageRow[] = [];
-  let discussion: ClassifiedMessageRow[] = [];
+  let discussion: Array<ClassifiedMessageRow | VetoContextRow> = [];
+  const candidates = new Set<ClassifiedMessageRow | VetoContextRow>(rows);
   const flush = () => {
-    if (!discussion.some((row) => hasNoKnowledgeDirective(row.content))) eligible.push(...discussion);
+    if (!discussion.some((row) => hasNoKnowledgeDirective(row.content))) {
+      eligible.push(...discussion.filter((row): row is ClassifiedMessageRow => candidates.has(row)));
+    }
     discussion = [];
   };
-  for (const row of rows) {
+  for (const row of [...rows, ...recentRows]) {
     const previous = discussion[discussion.length - 1];
     if (previous && row.createdAt.getTime() - previous.createdAt.getTime() >= EPISODE_GAP_MS) flush();
     discussion.push(row);
@@ -491,11 +513,20 @@ Rules:
   }
 }
 
-async function buildCandidatesForSpace(rows: ClassifiedMessageRow[]): Promise<KnowledgeCandidate[]> {
+async function buildCandidatesForSpace(
+  rows: ClassifiedMessageRow[],
+  recentRows: VetoContextRow[] = [],
+): Promise<KnowledgeCandidate[]> {
   const candidates: KnowledgeCandidate[] = [];
   // A no-save request applies to its settled discussion, including an addressed
   // directive that topic segmentation would otherwise split into an agent episode.
-  const eligibleRows = excludeOptedOutDiscussions(rows).filter((row) => !hasNonAffirmativeAgreement(row.content));
+  const baselineRows = excludeOptedOutDiscussions(rows);
+  // A directive posted inside the quiet window also vetoes its discussion, but
+  // only subtractively: selection below runs on the baseline rows unchanged, and
+  // candidates touching these rows are dropped afterwards without backfill.
+  const quietWindowVetoed = new Set<ClassifiedMessageRow>(baselineRows);
+  for (const row of excludeOptedOutDiscussions(rows, recentRows)) quietWindowVetoed.delete(row);
+  const eligibleRows = baselineRows.filter((row) => !hasNonAffirmativeAgreement(row.content));
   const episodes = segmentRowsIntoEpisodes(eligibleRows);
   for (let index = 0; index < episodes.length; index += 1) {
     const originalEpisode = episodes[index]!;
@@ -542,7 +573,10 @@ async function buildCandidatesForSpace(rows: ClassifiedMessageRow[]): Promise<Kn
       classification,
     });
   }
-  return dedupeCandidates(candidates).slice(-MAX_CANDIDATES_PER_SPACE);
+  // Subtract after dedupe and the cap so a vetoed candidate never changes which
+  // other candidates are selected in this run.
+  return dedupeCandidates(candidates).slice(-MAX_CANDIDATES_PER_SPACE).filter((candidate) =>
+    ![candidate.source, ...candidate.evidence, ...candidate.episode.rows].some((row) => quietWindowVetoed.has(row)));
 }
 
 export async function handleChatKnowledgeBatch(job: JobData): Promise<void> {
@@ -557,6 +591,29 @@ export async function handleChatKnowledgeBatch(job: JobData): Promise<void> {
   const now = new Date();
   const since = new Date(now.getTime() - lookbackMs);
   const before = new Date(now.getTime() - quietMs);
+
+  // Passive capture reads public channels, and private channels only once
+  // Defty has been invited. DMs, group DMs and agent conversations are never
+  // scanned.
+  const captureScope = () => and(
+    data.orgId ? eq(messages.org_id, data.orgId) : undefined,
+    data.spaceId ? eq(messages.space_id, data.spaceId) : undefined,
+    eq(messages.is_deleted, false),
+    eq(users.is_agent, false),
+    eq(spaces.is_archived, false),
+    or(
+      eq(spaces.type, 'public'),
+      and(
+        eq(spaces.type, 'private'),
+        sql`exists (
+          select 1 from ${spaceMembers}
+          inner join ${users} as defty_user on defty_user.id = ${spaceMembers.user_id}
+          where ${spaceMembers.space_id} = ${spaces.id}
+            and defty_user.email = ${DEFTY_EMAIL}
+        )`,
+      ),
+    ),
+  );
 
   const rawRows = await db
     .select({
@@ -584,11 +641,7 @@ export async function handleChatKnowledgeBatch(job: JobData): Promise<void> {
     ))
     .innerJoin(users, eq(users.id, messages.user_id))
     .where(and(
-      data.orgId ? eq(messages.org_id, data.orgId) : undefined,
-      data.spaceId ? eq(messages.space_id, data.spaceId) : undefined,
-      eq(messages.is_deleted, false),
-      eq(users.is_agent, false),
-      eq(spaces.is_archived, false),
+      captureScope(),
       gte(messages.created_at, since),
       lt(messages.created_at, before),
     ))
@@ -612,10 +665,45 @@ export async function handleChatKnowledgeBatch(job: JobData): Promise<void> {
     grouped.set(row.spaceId, list);
   }
 
+  // Messages still inside the quiet window are read only as veto context: a
+  // late "do not save" blocks its discussion now, before it can be published.
+  // They are never candidates or evidence, so capture eligibility stays the
+  // quiet cutoff above.
+  const recentBySpace = new Map<string, VetoContextRow[]>();
+  if (grouped.size > 0) {
+    const candidateIds = new Set(rows.map((row) => row.messageId));
+    const recentRows = await db
+      .select({
+        messageId: messages.id,
+        spaceId: messages.space_id,
+        content: messages.content,
+        createdAt: messages.created_at,
+      })
+      .from(messages)
+      .innerJoin(spaces, and(
+        eq(spaces.id, messages.space_id),
+        eq(spaces.org_id, messages.org_id),
+      ))
+      .innerJoin(users, eq(users.id, messages.user_id))
+      .where(and(
+        captureScope(),
+        gte(messages.created_at, before),
+        lt(messages.created_at, now),
+      ))
+      .orderBy(desc(messages.created_at))
+      .limit(MAX_MESSAGES_PER_RUN);
+    for (const row of recentRows.reverse()) {
+      if (!grouped.has(row.spaceId) || candidateIds.has(row.messageId)) continue;
+      const list = recentBySpace.get(row.spaceId) ?? [];
+      list.push(row);
+      recentBySpace.set(row.spaceId, list);
+    }
+  }
+
   let queuedCount = 0;
   let skippedCount = 0;
-  for (const spaceRows of grouped.values()) {
-    const candidates = await buildCandidatesForSpace(spaceRows);
+  for (const [spaceId, spaceRows] of grouped) {
+    const candidates = await buildCandidatesForSpace(spaceRows, recentBySpace.get(spaceId));
     for (const candidate of candidates) {
       const result = await queueDeftyKnowledgeCapture({
         orgId: candidate.source.orgId,
