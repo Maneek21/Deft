@@ -71,7 +71,7 @@ import { ClipRecorder } from './clip-recorder';
 import { UserProfileCard } from './user-profile-card';
 import { parseReminderTime } from './slash-command-autocomplete';
 import ConfirmDialog from './confirm-dialog';
-import { normalizeInlineApprovalCopy } from '@/lib/agent-approval-copy';
+import { inlineApprovalDisplayContent } from '@/lib/agent-approval-copy';
 import {
   approvalContinuationGate,
   approvalContinuationIdempotencyKey,
@@ -647,11 +647,10 @@ export function SpaceChat({
     && !pendingActionsLoading
     && !pendingActionsError;
 
-  const displayContentForMessage = useCallback((msg: Message) => {
-    const hasInlineApproval = Boolean(pendingByMessage?.[msg.id]?.length);
-    const hasApprovalContext = hasInlineApproval || Object.keys(pendingByMessage ?? {}).length > 0;
-    return normalizeInlineApprovalCopy(msg.content, hasApprovalContext);
-  }, [pendingByMessage]);
+  const displayContentForMessage = useCallback(
+    (msg: Message) => inlineApprovalDisplayContent(msg, msg.content, pendingByMessage),
+    [pendingByMessage],
+  );
 
   const workIntentBySpaceKey = spaceId
     ? `/api/work-intents?space_id=${spaceId}&limit=100`

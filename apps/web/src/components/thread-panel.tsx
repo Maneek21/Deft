@@ -24,7 +24,7 @@ import { AgentActionCard, type AgentAction } from './agent-action-card';
 import { AgentMessageBlocks, type AgentMessageBlocksProps } from './agent-message-blocks';
 import { resolveAgentCitationLink } from '@/lib/agent-citations';
 import useSWR, { mutate as swrMutate } from 'swr';
-import { normalizeInlineApprovalCopy } from '@/lib/agent-approval-copy';
+import { inlineApprovalDisplayContent } from '@/lib/agent-approval-copy';
 
 type Reaction = {
   emoji: string;
@@ -504,10 +504,8 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
 
   const renderMessage = (msg: Message, isParent = false) => {
     const color = avatarColor(msg.user_name || '');
-    const inlineActions = pendingByMessage?.[msg.id] ?? [];
-    const hasApprovalContext = inlineActions.length > 0 || Object.keys(pendingByMessage ?? {}).length > 0;
     const legacyContent = parseLegacyFileMarkers(msg.content);
-    const displayContent = normalizeInlineApprovalCopy(legacyContent.text, hasApprovalContext);
+    const displayContent = inlineApprovalDisplayContent(msg, legacyContent.text, pendingByMessage);
     const messageFiles = [...(msg.files ?? []), ...legacyContent.files];
     return (
       <div className={`flex gap-3 ${isParent ? 'py-3' : 'py-2'}`}>
