@@ -14,7 +14,7 @@ import {
   users,
 } from '@deft/db/schema';
 import { db } from './db.js';
-import { getIO } from '../socket.js';
+import { emitToUser } from '../socket.js';
 import { sanitizeModuleActionParamsForHistory } from './module-service.js';
 import {
   MODULE_GOVERNED_WRITE_ACTION_NAMES,
@@ -325,7 +325,7 @@ export function approvalToAttentionDraft(action: AgentAction, userId: string): A
 }
 
 function emitAttention(event: 'attention:new' | 'attention:updated', item: typeof attentionItems.$inferSelect) {
-  getIO()?.to(`user:${item.user_id}`).emit(event, item);
+  emitToUser(item.org_id, item.user_id, event, item);
 }
 
 export async function upsertAttentionItem(

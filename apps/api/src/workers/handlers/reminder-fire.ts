@@ -88,7 +88,7 @@ export async function reminderFireHandler(job: JobData): Promise<void> {
     ));
 
   if (notif) {
-    emitToUser(reminder.user_id, 'notification:new', notif);
+    emitToUser(notif.org_id, reminder.user_id, 'notification:new', notif);
   }
 }
 

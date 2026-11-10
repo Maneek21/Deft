@@ -106,7 +106,7 @@ export async function handleWorkflowExecute(job: JobData): Promise<void> {
             link: `/tasks`,
             metadata: { workflow_id, task_id: task.id },
           }, { channel: 'tasks' });
-          if (notif) emitToUser(action.user_id, 'notification:new', notif);
+          if (notif) emitToUser(notif.org_id, action.user_id, 'notification:new', notif);
           results.push({ kind: 'notify', ok: true });
           break;
         }
@@ -155,7 +155,7 @@ export async function handleWorkflowExecute(job: JobData): Promise<void> {
               },
             }, { channel: 'tasks' });
             if (notif) {
-              emitToUser(dep.assignee_id, 'notification:new', notif);
+              emitToUser(notif.org_id, dep.assignee_id, 'notification:new', notif);
               notified++;
             }
           }
