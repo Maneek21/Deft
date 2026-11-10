@@ -13,6 +13,7 @@ import { api } from '@/lib/api';
 import { createNativeCreateIntent } from '@/lib/native-create-intent';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { getSocket } from '@/lib/socket';
+import { watchCatchUp, type CatchUpResult } from '@/lib/space-socket';
 import { useAuth } from '@/lib/auth-context';
 import { X, Smile, ArrowLeft, FileText } from 'lucide-react';
 import { formatMessageTime } from '@/lib/time';
@@ -413,29 +414,31 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     // Replies sent while the socket was down never arrive as events. After a
     // reconnect, read the thread again and merge by id without touching the
     // draft or the scroll position.
-    let missedEvents = false;
-    const onDisconnect = () => { missedEvents = true; };
-    const onReconnect = () => {
-      if (!missedEvents) return;
-      missedEvents = false;
+    const catchUp = async (): Promise<CatchUpResult> => {
       const reads = threadReadsRef.current;
       const ticket = reads.begin();
-      void api.get(`/api/messages/${messageId}/thread`).then(async (res) => {
-        if (!res.ok || activeMessageIdRef.current !== messageId || !reads.isLatest(ticket)) return;
+      if (pendingBySpaceKey) void swrMutate(pendingBySpaceKey).catch(() => undefined);
+      try {
+        const res = await api.get(`/api/messages/${messageId}/thread`);
+        if (activeMessageIdRef.current !== messageId || !reads.isLatest(ticket)) return 'superseded';
+        if (!res.ok) return 'failed';
         const data = await res.json();
-        if (activeMessageIdRef.current !== messageId || !reads.isLatest(ticket)) return;
+        if (activeMessageIdRef.current !== messageId || !reads.isLatest(ticket)) return 'superseded';
         const fetched: Message[] = data.replies || data.messages || [];
         setReplies((prev) => mergeMessagesById(prev, fetched, (id) => reads.changedSince(ticket, id)));
         setLoadError(false);
-      }).catch(() => {});
-      if (pendingBySpaceKey) void swrMutate(pendingBySpaceKey).catch(() => undefined);
+        return 'ok';
+      } catch {
+        if (activeMessageIdRef.current !== messageId || !reads.isLatest(ticket)) return 'superseded';
+        return 'failed';
+      }
     };
-    socket.on('disconnect', onDisconnect);
-    socket.on('connect', onReconnect);
+    // Starts from the socket's real connection state, so a thread opened
+    // while offline also catches up on the next connect.
+    const catchUpWatch = watchCatchUp(socket, `thread:${messageId}`, catchUp);
 
     return () => {
-      socket.off('disconnect', onDisconnect);
-      socket.off('connect', onReconnect);
+      catchUpWatch.dispose();
       socket.off('message:new', onNewMessage);
       socket.off('reaction:added', onReactionAdded);
       socket.off('reaction:removed', onReactionRemoved);

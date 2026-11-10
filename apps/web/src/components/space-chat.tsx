@@ -17,7 +17,7 @@ import { openDeftyDm } from '@/lib/quick-actions';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { getSocket } from '@/lib/socket';
 import { ChatMessageEventScope, createChatMessageNewHandler } from '@/lib/chat-message-event-scope';
-import { subscribeToSpace } from '@/lib/space-socket';
+import { subscribeToSpace, watchCatchUp, type CatchUpResult } from '@/lib/space-socket';
 import { useAuth } from '@/lib/auth-context';
 import { useChatContext } from '@/lib/chat-context';
 import { HUDDLES_ENABLED } from '@/lib/feature-flags';
@@ -1142,32 +1142,34 @@ export function SpaceChat({
     // Messages sent while the socket was down never arrive as events. After a
     // reconnect, read the history again and merge it by id: nothing already
     // shown moves or doubles, and the composer and scroll are left alone.
-    let missedEvents = false;
-    const onDisconnect = () => { missedEvents = true; };
-    const onReconnect = () => {
-      if (!missedEvents) return;
-      missedEvents = false;
+    const catchUp = async (): Promise<CatchUpResult> => {
       const reads = historyReadsRef.current;
       const ticket = reads.begin();
-      // Page back until the read reaches the oldest shown message (bounded by
-      // CATCH_UP_MAX_PAGES), so a long outage leaves no hole and older shown
-      // messages get their current content, deletion and thread counts.
-      void readHistoryBackTo<Message>((path: string) => api.get(path), `/api/messages/${spaceId}`, oldestCreatedAt(messagesRef.current)).then((read) => {
-        if (!visit.isCurrent() || !reads.isLatest(ticket)) return;
+      void swrMutate(`/api/agent/actions/pending-by-space?space_id=${spaceId}`).catch(() => undefined);
+      try {
+        // Page back until the read reaches the oldest shown message (bounded by
+        // CATCH_UP_MAX_PAGES), so a long outage leaves no hole and older shown
+        // messages get their current content, deletion and thread counts.
+        const read = await readHistoryBackTo<Message>((path: string) => api.get(path), `/api/messages/${spaceId}`, oldestCreatedAt(messagesRef.current));
+        if (!visit.isCurrent() || !reads.isLatest(ticket)) return 'superseded';
         setMessages((prev) => visit.isCurrent()
           ? applyHistoryRead(prev, read, (id) => reads.changedSince(ticket, id))
           : prev);
         if (!read.coversShown) setHasEarlierHistory(true);
         setHistoryStatus('ready');
-      }).catch(() => {});
-      void swrMutate(`/api/agent/actions/pending-by-space?space_id=${spaceId}`).catch(() => undefined);
+        return 'ok';
+      } catch {
+        if (!visit.isCurrent() || !reads.isLatest(ticket)) return 'superseded';
+        return 'failed';
+      }
     };
-    socket.on('disconnect', onDisconnect);
-    socket.on('connect', onReconnect);
+    // The socket may have been down before this space opened, so the watcher
+    // starts from its real connection state and remembers drops across
+    // effect re-runs.
+    const catchUpWatch = watchCatchUp(socket, `space:${spaceId}`, catchUp);
 
     return () => {
-      socket.off('disconnect', onDisconnect);
-      socket.off('connect', onReconnect);
+      catchUpWatch.dispose();
       visit.dispose();
       unsubscribeFromSpace();
       socket.off('message:new', onNewAndNote);

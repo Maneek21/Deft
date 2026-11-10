@@ -463,3 +463,19 @@ test('R2-2: past the page bound the view is replaced by the latest pages with a 
   }
 });
 
+test('R2-3: a thread opened while offline catches up on the next connect', async () => {
+  const page = await open(browser, { harness: 'defty-chat-harness.tsx', url: '/chat?space=s1', override: FAKE_SERVER });
+  try {
+    await page.getByText('Destination message from Priya').waitFor();
+    await drop(page);
+    await page.evaluate(() => window.__deftRouter.push('/chat?space=s1&thread=t1'));
+    const panel = page.locator('.w-\\[400px\\]');
+    await panel.getByText('for the detail.', { exact: false }).waitFor();
+    await srv(page, (data) => { window.__srv.thread = data; }, [REPLY, MISSED_REPLY]);
+    await reconnect(page);
+    await panel.getByText('Thread answer from while you were offline.').waitFor({ timeout: 4000 });
+  } finally {
+    await close(page);
+  }
+});
+
