@@ -89,7 +89,7 @@ Agent engine lives in `apps/api/src/lib/` (agent-context, agent-plans, agent-too
 **Event-driven triggers (PostgreSQL scheduled jobs):**
 - Task overdue → DM assignee + alert lead
 - Task stalled 48h → ask for update
-- BYOA/runtime trigger → a connected employee can react to external tool events it owns and use Deft-native task/message/wiki tools under its own employee trust level and approval rules (its own chat messages post without approval).
+- BYOA/runtime trigger → a connected employee can react to external tool events it owns and use Deft-native task/message/wiki tools under its own employee trust level and approval rules (while healthy, its own chat messages sent with `send_message` / `message_post` post without approval).
 - Meeting in 15min → generate prep briefing
 - 9am daily → auto-generate standup from activity
 

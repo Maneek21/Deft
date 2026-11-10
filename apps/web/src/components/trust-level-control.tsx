@@ -63,7 +63,7 @@ export const TRUST_CONNECTED_NOTE =
 // approval at every level while it is healthy (writes.ts
 // employeeOwnChatMessageAutoExecutes), so Autonomous does not unlock them.
 export const AUTONOMOUS_EMPLOYEE_CONFIRM: ReadonlyArray<string> = [
-  "This employee's chat messages already post without approval at every trust level, except while it is marked unhealthy.",
+  "A healthy employee can already post its own chat messages without approval at Conservative and Standard, so Autonomous is not needed for chat.",
   "Autonomous also lets most of this employee's other writes through Deft run without approval.",
   'Some requests still need approval, including actions classed as destructive (such as deleting, archiving, unlinking, or creating records in bulk), sending documents, importing workspace plans, and apps that require their own review.',
   'Most of its writes are recorded in the Action Log, with a signed receipt attached when one is recorded.',

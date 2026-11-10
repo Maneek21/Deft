@@ -175,7 +175,7 @@ test('E08-F3: the control is labelled as the Defty workspace policy and points t
 
 test('E08-F4: the employee Autonomous confirmation makes modest, enforced claims', () => {
   const text = AUTONOMOUS_EMPLOYEE_CONFIRM.join(' ');
-  assert.match(text, /This employee's chat messages already post without approval at every trust level, except while it is marked unhealthy\./);
+  assert.match(text, /A healthy employee can already post its own chat messages without approval at Conservative and Standard, so Autonomous is not needed for chat\./);
   assert.match(text, /Autonomous also lets most of this employee's other writes through Deft run without approval\./);
   assert.doesNotMatch(text, /including messages it posts in chat/, 'Autonomous no longer unlocks chat messages');
   assert.match(text, /actions classed as destructive \(such as deleting, archiving, unlinking, or creating records in bulk\)/);
