@@ -154,7 +154,7 @@ messageRoutes.post('/forward', async (c) => {
       user_id: messages.user_id,
       space_id: messages.space_id,
     }).from(messages)
-      .where(and(eq(messages.id, message_id), eq(messages.org_id, user.org_id)))
+      .where(and(eq(messages.id, message_id), eq(messages.org_id, user.org_id), eq(messages.is_deleted, false)))
       .limit(1);
 
     // A source the caller cannot read answers exactly like a missing one, so
