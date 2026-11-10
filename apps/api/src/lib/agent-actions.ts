@@ -6,6 +6,7 @@ import {
   projects,
   messages,
   spaces,
+  spaceMembers,
   agentActions,
   taskActivity,
   taskComments,
@@ -3139,9 +3140,12 @@ export async function executeAction(
         const spaceName = typeof params.space_name === 'string' ? params.space_name.trim() : '';
         if (!spaceName) return { success: false, result: null, error: 'space_name is required' };
 
+        // B06: a canvas is readable only by members of its room (same rule as
+        // GET /api/spaces/:id/canvas). The live dispatcher is executeToolCall.
         const [space] = await db
           .select({ id: spaces.id, name: spaces.name })
           .from(spaces)
+          .innerJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, userId)))
           .where(and(eq(spaces.org_id, orgId), ilike(spaces.name, spaceName)))
           .limit(1);
         if (!space) return { success: false, result: null, error: `Space "${spaceName}" not found` };
@@ -3149,7 +3153,7 @@ export async function executeAction(
         const [canvas] = await db
           .select({ id: canvases.id, title: canvases.title, content: canvases.content, updated_at: canvases.updated_at })
           .from(canvases)
-          .where(eq(canvases.space_id, space.id))
+          .where(and(eq(canvases.space_id, space.id), eq(canvases.org_id, orgId)))
           .limit(1);
 
         if (!canvas) {

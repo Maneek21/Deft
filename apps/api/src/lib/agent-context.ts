@@ -30,8 +30,14 @@ import {
   wikiOpsLog,
   agentEmployees,
   agentActions,
+  canvases,
+  notes,
 } from '@deft/db/schema';
-import { parseMCPToolName } from './mcp-tools.js';
+import { getMCPToolsForAgent, parseMCPToolName } from './mcp-tools.js';
+import { isDestructiveAction } from './agent-approval.js';
+import { visibleWikiPageCondition } from './wiki-visibility.js';
+import { emailKnowledgeAudienceCondition } from './email-knowledge-visibility.js';
+import { visibleNoteCondition } from './note-visibility.js';
 import { capabilityService } from './capability-service.js';
 import { eq, and, ilike, desc, sql, lt, gte, inArray, or } from 'drizzle-orm';
 import { retrieveContext } from './retrieve-context.js';
@@ -223,6 +229,23 @@ export async function executeToolCall(
   // Route MCP tool calls through the provider-neutral execution seam.
   if (toolName.startsWith('mcp__')) {
     const { connectionSlug, toolName: actualToolName } = parseMCPToolName(toolName);
+    // C04: this is the read path. Re-resolve the live MCP policy so a tool
+    // that was classified as an auto read at turn start, but has since been
+    // re-tiered or marked write, never reaches the provider here. Writes go
+    // through executeActionDirect, which re-checks the tier. A tool that is
+    // not in the live projection (inactive, unassigned, disabled, removed)
+    // falls through to capabilityService, which owns those exact denials.
+    const liveTool = (await getMCPToolsForAgent(orgId, agentEmployeeId).catch(() => []))
+      .find((candidate) => candidate.name === toolName);
+    if (liveTool && (liveTool.isWrite || liveTool.approvalTierMapped !== 'auto' || isDestructiveAction(liveTool.name))) {
+      return {
+        result: {
+          error: `MCP tool '${toolName}' is not an auto-approved read right now; propose it as an action for approval instead.`,
+          code: 'MCP_TOOL_REQUIRES_APPROVAL',
+        },
+        citations: [],
+      };
+    }
     const invocation = await capabilityService.invoke({
       org_id: orgId,
       actor: {
@@ -1036,7 +1059,12 @@ export async function executeToolCall(
         return { result: { error: 'key, value, and scope are required' }, citations: [] };
       }
 
-      const convId = scope === 'conversation' ? conversationId || null : null;
+      // B07: a conversation memory without its conversation would be stored
+      // with conversation_id NULL and leak into every later conversation.
+      if (scope === 'conversation' && !conversationId) {
+        return { result: { error: 'Conversation-scoped memory needs the current conversation.', code: 'CONVERSATION_REQUIRED' }, citations: [] };
+      }
+      const convId = scope === 'conversation' ? conversationId! : null;
 
       // Upsert: use ON CONFLICT on the unique index (user_id, conversation_id, key)
       await db
@@ -1061,92 +1089,36 @@ export async function executeToolCall(
     }
 
     case 'recall': {
-      const conditions: any[] = [eq(agentMemory.user_id, _userId)];
+      // A06/B07: every memory read is scoped to the org the user asked from.
+      // User and conversation memories also belong to the asking user, and
+      // conversation memories only to the current conversation.
+      const keyCondition = params.key ? [eq(agentMemory.key, params.key)] : [];
+      const memoryColumns = { key: agentMemory.key, value: agentMemory.value, scope: agentMemory.scope };
+      const readScope = (scope: 'user' | 'conversation' | 'org') => db
+        .select(memoryColumns)
+        .from(agentMemory)
+        .where(and(
+          eq(agentMemory.org_id, orgId),
+          eq(agentMemory.scope, scope),
+          ...(scope === 'org' ? [] : [eq(agentMemory.user_id, _userId)]),
+          ...(scope === 'conversation' ? [eq(agentMemory.conversation_id, conversationId!)] : []),
+          ...keyCondition,
+        ));
 
-      if (params.scope === 'conversation') {
-        if (conversationId) {
-          conditions.push(eq(agentMemory.conversation_id, conversationId));
-        }
-        conditions.push(eq(agentMemory.scope, 'conversation'));
-      } else if (params.scope === 'user') {
-        conditions.push(eq(agentMemory.scope, 'user'));
-      } else if (params.scope === 'org') {
-        // Org-scoped memories: match by org_id, not user_id
-        const orgMemories = await db
-          .select({ key: agentMemory.key, value: agentMemory.value, scope: agentMemory.scope })
-          .from(agentMemory)
-          .where(and(
-            eq(agentMemory.org_id, orgId),
-            eq(agentMemory.scope, 'org'),
-            ...(params.key ? [eq(agentMemory.key, params.key)] : []),
-          ));
-        return { result: orgMemories, citations: [] };
-      } else {
-        // No scope filter — return user-scope + conversation-scope + org-scope
-      }
-
-      if (params.key) {
-        conditions.push(eq(agentMemory.key, params.key));
+      if (params.scope === 'conversation' && !conversationId) {
+        return { result: { error: 'Conversation-scoped memory needs the current conversation.', code: 'CONVERSATION_REQUIRED' }, citations: [] };
       }
 
       let memories;
-      if (!params.scope && conversationId) {
-        // Get user-scoped, conversation-scoped, and org-scoped memories
-        const userMemories = await db
-          .select({ key: agentMemory.key, value: agentMemory.value, scope: agentMemory.scope })
-          .from(agentMemory)
-          .where(and(
-            eq(agentMemory.user_id, _userId),
-            eq(agentMemory.scope, 'user'),
-            ...(params.key ? [eq(agentMemory.key, params.key)] : []),
-          ));
-
-        const convoMemories = await db
-          .select({ key: agentMemory.key, value: agentMemory.value, scope: agentMemory.scope })
-          .from(agentMemory)
-          .where(and(
-            eq(agentMemory.user_id, _userId),
-            eq(agentMemory.conversation_id, conversationId),
-            eq(agentMemory.scope, 'conversation'),
-            ...(params.key ? [eq(agentMemory.key, params.key)] : []),
-          ));
-
-        const orgMemories = await db
-          .select({ key: agentMemory.key, value: agentMemory.value, scope: agentMemory.scope })
-          .from(agentMemory)
-          .where(and(
-            eq(agentMemory.org_id, orgId),
-            eq(agentMemory.scope, 'org'),
-            ...(params.key ? [eq(agentMemory.key, params.key)] : []),
-          ));
-
-        memories = [...userMemories, ...convoMemories, ...orgMemories];
-      } else if (!params.scope) {
-        // No conversationId — get user-scoped + org-scoped
-        const userMemories = await db
-          .select({ key: agentMemory.key, value: agentMemory.value, scope: agentMemory.scope })
-          .from(agentMemory)
-          .where(and(
-            eq(agentMemory.user_id, _userId),
-            eq(agentMemory.scope, 'user'),
-            ...(params.key ? [eq(agentMemory.key, params.key)] : []),
-          ));
-
-        const orgMemories = await db
-          .select({ key: agentMemory.key, value: agentMemory.value, scope: agentMemory.scope })
-          .from(agentMemory)
-          .where(and(
-            eq(agentMemory.org_id, orgId),
-            eq(agentMemory.scope, 'org'),
-            ...(params.key ? [eq(agentMemory.key, params.key)] : []),
-          ));
-
-        memories = [...userMemories, ...orgMemories];
+      if (params.scope === 'conversation' || params.scope === 'user' || params.scope === 'org') {
+        memories = await readScope(params.scope);
       } else {
-        memories = await db
-          .select({ key: agentMemory.key, value: agentMemory.value, scope: agentMemory.scope })
-          .from(agentMemory)
-          .where(and(...conditions));
+        // No scope filter: user-scope + org-scope, plus this conversation's.
+        memories = [
+          ...await readScope('user'),
+          ...(conversationId ? await readScope('conversation') : []),
+          ...await readScope('org'),
+        ];
       }
 
       return {
@@ -1158,20 +1130,35 @@ export async function executeToolCall(
     case 'search_decisions': {
       // If no query, fall back to listing all org decisions ordered by created_at DESC.
       if (!params.query) {
+        // B01: the listing path answers with the asker's wiki visibility,
+        // the same predicates retrieveContext applies on the query path.
         const decisionConditions: any[] = [
           eq(wikiPages.org_id, orgId),
           eq(wikiPages.type, 'decision'),
           eq(wikiPages.is_deleted, false),
+          visibleWikiPageCondition(_userId, orgId),
+          emailKnowledgeAudienceCondition(orgId, _userId, conversationId, agentEmployeeId),
         ];
 
-        // space_name filter for empty-query path
+        // space_name filter for empty-query path. Resolve only rooms the
+        // asker can read, and never drop an unresolved filter (which would
+        // broaden the listing to every decision in the org).
         if (params.space_name) {
           const [space] = await db
             .select({ id: spaces.id })
             .from(spaces)
-            .where(and(eq(spaces.org_id, orgId), ilike(spaces.name, params.space_name)))
+            .leftJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, _userId)))
+            .where(and(
+              eq(spaces.org_id, orgId),
+              eq(spaces.is_archived, false),
+              or(eq(spaces.type, 'public'), sql`${spaceMembers.id} IS NOT NULL`),
+              ilike(spaces.name, escapeSearchLike(String(params.space_name))),
+            ))
             .limit(1);
-          if (space) decisionConditions.push(eq(wikiPages.space_id, space.id));
+          if (!space) {
+            return { result: { error: 'Readable room not found.', code: 'SPACE_NOT_FOUND' }, citations: [] };
+          }
+          decisionConditions.push(eq(wikiPages.space_id, space.id));
         }
 
         const allDecisions = await db
@@ -2490,6 +2477,94 @@ export async function executeToolCall(
       });
 
       return { result: planResult, citations: [] };
+    }
+
+    // B06/C12: advertised read tools that previously fell through to
+    // "Unknown tool". Each read answers with the asker's visibility: a canvas
+    // only for a room the asker belongs to, notes only when owned, shared,
+    // org-visible, or space-visible in a room the asker belongs to.
+    case 'read_canvas': {
+      await requireActiveOrgMembership(orgId, _userId);
+      const spaceName = typeof params.space_name === 'string' ? params.space_name.trim().replace(/^#/, '') : '';
+      if (!spaceName) return { result: { error: 'space_name is required', code: 'SPACE_REQUIRED' }, citations: [] };
+      const rooms = await db
+        .select({ id: spaces.id, name: spaces.name })
+        .from(spaces)
+        .innerJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, _userId)))
+        .where(and(
+          eq(spaces.org_id, orgId),
+          eq(spaces.is_archived, false),
+          ilike(spaces.name, escapeSearchLike(spaceName.slice(0, 200))),
+        ))
+        .limit(2);
+      if (rooms.length !== 1) {
+        return { result: rooms.length
+          ? { error: 'Room name is ambiguous; choose a room from list_spaces.', code: 'SPACE_AMBIGUOUS' }
+          : { error: 'Readable room not found.', code: 'SPACE_NOT_FOUND' }, citations: [] };
+      }
+      const room = rooms[0]!;
+      const [canvas] = await db
+        .select({ id: canvases.id, title: canvases.title, content: canvases.content, updated_at: canvases.updated_at })
+        .from(canvases)
+        .where(and(eq(canvases.space_id, room.id), eq(canvases.org_id, orgId)))
+        .limit(1);
+      if (!canvas) return { result: { space: room.name, canvas: null, exists: false }, citations: [] };
+      return {
+        result: { space: room.name, canvas, exists: true },
+        citations: [{ type: 'canvas', id: canvas.id, title: `${room.name} canvas`.slice(0, 80) }],
+      };
+    }
+
+    case 'search_notes': {
+      await requireActiveOrgMembership(orgId, _userId);
+      const query = typeof params.query === 'string' ? params.query.trim() : '';
+      if (!query) return { result: { error: 'query is required', code: 'QUERY_REQUIRED' }, citations: [] };
+      const scope = ['mine', 'org', 'all'].includes(params.scope) ? params.scope : 'all';
+      const limit = Math.min(Math.max(Number(params.limit) || 10, 1), 50);
+      const pattern = `%${escapeSearchLike(query.slice(0, 200))}%`;
+      const rows = await db
+        .select({
+          id: notes.id,
+          title: notes.title,
+          visibility: notes.visibility,
+          updated_at: notes.updated_at,
+          snippet: sql<string>`substring(coalesce(${notes.content}, '') from 1 for 240)`,
+        })
+        .from(notes)
+        .where(and(
+          eq(notes.org_id, orgId),
+          eq(notes.is_deleted, false),
+          visibleNoteCondition(_userId),
+          scope === 'mine' ? eq(notes.user_id, _userId) : scope === 'org' ? eq(notes.visibility, 'org') : undefined,
+          or(ilike(notes.title, pattern), sql`coalesce(${notes.content}, '') ILIKE ${pattern}`),
+        ))
+        .orderBy(desc(notes.updated_at))
+        .limit(limit);
+      return {
+        result: { notes: rows, count: rows.length },
+        citations: rows.map((row) => ({ type: 'note', id: row.id, title: (row.title || 'Untitled note').slice(0, 80) })),
+      };
+    }
+
+    case 'read_note': {
+      await requireActiveOrgMembership(orgId, _userId);
+      const noteId = typeof params.note_id === 'string' ? params.note_id : '';
+      if (!noteId) return { result: { error: 'note_id is required', code: 'NOTE_REQUIRED' }, citations: [] };
+      const [row] = await db
+        .select({ id: notes.id, title: notes.title, content: notes.content, visibility: notes.visibility, updated_at: notes.updated_at })
+        .from(notes)
+        .where(and(
+          eq(notes.id, noteId),
+          eq(notes.org_id, orgId),
+          eq(notes.is_deleted, false),
+          visibleNoteCondition(_userId),
+        ))
+        .limit(1);
+      if (!row) return { result: { error: 'Note not found or not visible to caller', code: 'NOTE_NOT_FOUND' }, citations: [] };
+      return {
+        result: { id: row.id, title: row.title, content: row.content ?? '', visibility: row.visibility, updated_at: row.updated_at },
+        citations: [{ type: 'note', id: row.id, title: (row.title || 'Untitled note').slice(0, 80) }],
+      };
     }
 
     default:

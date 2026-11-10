@@ -6,7 +6,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { eq } from 'drizzle-orm';
-import { db, canvases, spaces, orgs, users, orgMembers } from '@deft/db';
+import { db, canvases, spaces, spaceMembers, orgs, users, orgMembers } from '@deft/db';
 import { executeActionDirect } from '../src/lib/agent-actions.js';
 
 let testOrgId: string;
@@ -41,9 +41,12 @@ before(async () => {
     type: 'public',
     created_by: testUserId,
   });
+  // read_canvas is scoped to room membership (B06).
+  await db.insert(spaceMembers).values({ space_id: spaceId, user_id: testUserId });
 });
 
 after(async () => {
+  await db.delete(spaceMembers).where(eq(spaceMembers.space_id, spaceId));
   await db.delete(canvases).where(eq(canvases.space_id, spaceId));
   await db.delete(spaces).where(eq(spaces.id, spaceId));
 });

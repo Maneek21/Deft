@@ -2,6 +2,7 @@ import { NATIVE_MENTION_AGENT_GUIDANCE } from './native-mention-agent-contract.j
 import { nativeMentionsEnabled } from './native-mentions.js';
 import { validateNativeAgentMentionWrite } from './native-mention-agent-writes.js';
 import { emailKnowledgeAudienceCondition } from './email-knowledge-visibility.js';
+import { visibleWikiPageCondition } from './wiki-visibility.js';
 // Reusable agent reasoning engine — used by @agent mentions in chat and other background jobs.
 // Supports two modes:
 //   'chat_mention' (default): write actions are skipped (safety for @mentions)
@@ -442,6 +443,9 @@ export async function runAgentQuery(params: {
             .where(and(
               eq(wikiPages.org_id, orgId),
               eq(wikiPages.is_deleted, false),
+              // A03/B01: the exact-match shortcut answers with the asker's
+              // own wiki visibility (private user/space pages included).
+              visibleWikiPageCondition(userId, orgId),
               emailKnowledgeAudienceCondition(orgId, userId, params.conversationId, agentEmployeeId),
               or(...terms.map((term) => {
                 const pattern = `%${term}%`;
@@ -719,6 +723,19 @@ export async function runAgentQuery(params: {
       if ((readOnlyRequest || requestedSourceGrounding) && !tools.some((allowed) => allowed.name === tool.name)) {
         toolResults.push({ type: 'tool_result', tool_use_id: tool.id, is_error: true, content: JSON.stringify({ code: 'READ_ONLY_REQUEST', error: 'This tool is not available for this read-only request.' }) });
         continue;
+      }
+      // C04: MCP classification was taken at turn start. Re-resolve the live
+      // policy before treating an MCP tool as a read, so a tool re-tiered to
+      // a write/approval tier mid-turn is proposed for approval instead. A tool
+      // that is no longer registered fails closed in executeToolCall.
+      if (agentEmployeeId && tool.name.startsWith('mcp__') && !allActionTools.has(tool.name)) {
+        const liveTool = (await getMCPToolsForAgent(orgId, agentEmployeeId).catch(() => []))
+          .find((candidate) => candidate.name === tool.name);
+        if (liveTool && (liveTool.isWrite || liveTool.approvalTierMapped !== 'auto' || isDestructiveAction(liveTool.name))) {
+          allActionTools.add(tool.name);
+          actionApprovalTiers.set(tool.name, liveTool.approvalTierMapped);
+          mcpConnectionIds.set(tool.name, liveTool.connectionId);
+        }
       }
       const isAction = allActionTools.has(tool.name);
 

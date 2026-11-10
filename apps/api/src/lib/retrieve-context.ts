@@ -780,12 +780,16 @@ async function fetchMemory(
       );
     }
 
-    if (conversation_id) {
+    // B07: conversation memories belong to the user who stored them (the
+    // `remember` tool writes them with the asker's user_id), so another member
+    // of a shared conversation never receives them.
+    if (conversation_id && user_id) {
       scopeClauses.push(
         and(
           eq(agentMemory.scope, 'conversation'),
           // conversation_id can be null on rows; sql coalesce guard.
           sql`${agentMemory.conversation_id} = ${conversation_id}`,
+          eq(agentMemory.user_id, user_id),
           eq(agentMemory.org_id, org_id),
         ),
       );
