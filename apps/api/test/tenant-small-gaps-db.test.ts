@@ -361,3 +361,33 @@ test('S4-f: dashboard recent activity hides restricted tasks and the notificatio
   const inB = await call('dashboard', callerB, 'GET', '/api/dashboard?tz=UTC');
   assert.equal((inB.json as { unread_notifications: number }).unread_notifications, 1);
 });
+
+test('S4-a/c review: parent ids must be strings, deleting a folder detaches its children, removed members leave the share list', async () => {
+  const arr = await call('daily-notes', callerA, 'POST', '/api/daily-notes/folders', { name: 's4 array parent', parent_folder_id: [FOLDER_OWN_A] });
+  assert.equal(arr.status, 400, arr.text);
+  assert.equal(await scalar(`SELECT count(*)::int AS v FROM note_folders WHERE user_id = $1 AND name = 's4 array parent'`, [CALLER]), 0);
+
+  const parent = await call('daily-notes', callerA, 'POST', '/api/daily-notes/folders', { name: 's4 doomed parent' });
+  const parentId = (parent.json as { id: string }).id;
+  const child = await call('daily-notes', callerA, 'POST', '/api/daily-notes/folders', { name: 's4 orphan', parent_folder_id: parentId });
+  const childId = (child.json as { id: string }).id;
+  const arrPatch = await call('daily-notes', callerA, 'PATCH', `/api/daily-notes/folders/${childId}`, { parent_folder_id: [FOLDER_OWN_A] });
+  assert.equal(arrPatch.status, 400, arrPatch.text);
+  assert.equal(await scalar(`SELECT parent_folder_id AS v FROM note_folders WHERE id = $1`, [childId]), parentId);
+
+  const del = await call('daily-notes', callerA, 'DELETE', `/api/daily-notes/folders/${parentId}`);
+  assert.equal(del.status, 200, del.text);
+  assert.equal(await scalar(`SELECT parent_folder_id AS v FROM note_folders WHERE id = $1`, [childId]), null);
+  const deadParent = await call('daily-notes', callerA, 'PATCH', `/api/daily-notes/folders/${childId}`, { parent_folder_id: parentId });
+  assert.equal(deadParent.status, 404, deadParent.text);
+
+  await call('daily-notes', callerA, 'POST', `/api/daily-notes/${NOTE_OWN_A}/shares`, { user_id: OTHER });
+  await withClient((c) => c.query(`UPDATE org_members SET is_active = false WHERE org_id = $1 AND user_id = $2`, [ORG_A, OTHER]));
+  try {
+    const list = await call('daily-notes', callerA, 'GET', `/api/daily-notes/${NOTE_OWN_A}/shares`);
+    assert.equal(list.status, 200, list.text);
+    assert.ok(!list.text.includes(email(OTHER)), 'listing shows a removed member');
+  } finally {
+    await withClient((c) => c.query(`UPDATE org_members SET is_active = true WHERE org_id = $1 AND user_id = $2`, [ORG_A, OTHER]));
+  }
+});

@@ -98,7 +98,11 @@ dailyNoteRoutes.post('/folders', async (c) => {
   const body = await c.req.json();
   const { name, icon, parent_folder_id } = body;
   if (!name) return c.json({ error: 'Name required', code: 'VALIDATION_ERROR' }, 400);
-  if (parent_folder_id && !(await ownsFolder(String(parent_folder_id), user))) return c.json(FOLDER_NOT_FOUND, 404);
+  // The value checked is the value written: only a string id is accepted.
+  if (parent_folder_id && typeof parent_folder_id !== 'string') {
+    return c.json({ error: 'parent_folder_id must be a string', code: 'VALIDATION_ERROR' }, 400);
+  }
+  if (parent_folder_id && !(await ownsFolder(parent_folder_id, user))) return c.json(FOLDER_NOT_FOUND, 404);
 
   const [folder] = await db.insert(noteFolders).values({
     org_id: user.org_id,
@@ -124,10 +128,13 @@ dailyNoteRoutes.patch('/folders/:id', async (c) => {
     // A folder may only be nested under another live folder the caller owns in
     // this org; anything else answers exactly like a missing folder (S4-a).
     if (body.parent_folder_id !== null) {
+      if (typeof body.parent_folder_id !== 'string' || body.parent_folder_id === '') {
+        return c.json({ error: 'parent_folder_id must be a string or null', code: 'VALIDATION_ERROR' }, 400);
+      }
       if (body.parent_folder_id === folderId) {
         return c.json({ error: 'A folder cannot be its own parent', code: 'VALIDATION_ERROR' }, 400);
       }
-      if (!(await ownsFolder(String(body.parent_folder_id), user))) return c.json(FOLDER_NOT_FOUND, 404);
+      if (!(await ownsFolder(body.parent_folder_id, user))) return c.json(FOLDER_NOT_FOUND, 404);
     }
     updates.parent_folder_id = body.parent_folder_id;
   }
@@ -150,6 +157,11 @@ dailyNoteRoutes.delete('/folders/:id', async (c) => {
   await db.update(noteFolders)
     .set({ is_deleted: true })
     .where(and(eq(noteFolders.id, folderId), eq(noteFolders.org_id, user.org_id), eq(noteFolders.user_id, user.id)));
+
+  // Child folders must not keep pointing at a deleted parent: move them to the top level.
+  await db.update(noteFolders)
+    .set({ parent_folder_id: null })
+    .where(and(eq(noteFolders.parent_folder_id, folderId), eq(noteFolders.org_id, user.org_id), eq(noteFolders.user_id, user.id)));
 
   // Unset folder_id on notes in this folder
   await db.update(notes)
@@ -431,7 +443,11 @@ dailyNoteRoutes.get('/:id/shares', async (c) => {
     .innerJoin(users, eq(noteShares.shared_with_user_id, users.id))
     // Only recipients who belong to this org are listed; a share row for a
     // stranger never exposes their name or email (S4-c).
-    .innerJoin(orgMembers, and(eq(orgMembers.user_id, users.id), eq(orgMembers.org_id, user.org_id)))
+    .innerJoin(orgMembers, and(
+      eq(orgMembers.user_id, users.id),
+      eq(orgMembers.org_id, user.org_id),
+      eq(orgMembers.is_active, true),
+    ))
     .where(eq(noteShares.note_id, noteId));
 
   return c.json({ shares });
