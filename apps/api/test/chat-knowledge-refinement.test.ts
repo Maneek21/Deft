@@ -319,6 +319,48 @@ test('D05: a decision settled at run time is captured even while acknowledgement
   assert.match(harness.captures[0].content, /demo moves to Friday 3pm/);
 });
 
+test('D05: a quiet-window opt-out never un-suppresses a neighbouring discussion', async () => {
+  // Reviewer case at a 12:00 run (cutoff 11:52): master suppresses the 11:41
+  // decision because the next episode is an agent task command; the 11:55
+  // opt-out must not remove that command and so make the decision capturable.
+  const harness = batchHarness([
+    at('Decision: release deadline is Friday at 3pm.', 0, 19),
+    at('@Defty create a task for the release.', 1, 9),
+    at('Do not save this discussion.', 2, 5),
+  ], undefined, { honourWindow: true });
+  await harness.run();
+  assert.equal(harness.captures.length, 0);
+});
+
+test('D05: a vetoed candidate does not free a cap slot for another candidate', async () => {
+  // Six separate discussions; master keeps the last five (cap). The newest
+  // one is vetoed by a quiet-window opt-out, so exactly the other four remain.
+  const decisions = [
+    'Decision: invoices are sent on the first business day of each month',
+    'Decision: the support rotation changes every Monday morning',
+    'Decision: staging deploys freeze on Thursday afternoons',
+    'Decision: vendor contracts need legal signoff before renewal',
+    'Decision: the quarterly roadmap review happens in the large room',
+    'Decision: release notes are owned by the product manager',
+  ];
+  const rows = decisions.map((content, index) => at(content, index, 47 - index * 7));
+  const control = batchHarness(rows, undefined, { honourWindow: true });
+  await control.run();
+  assert.deepEqual(
+    control.captures.map((capture) => capture.metadata.batch_message_ids.join(',')),
+    ['message-1', 'message-2', 'message-3', 'message-4', 'message-5'],
+    'without the opt-out the cap keeps the newest five',
+  );
+  rows.push(at('Do not save this discussion.', 6, 6));
+  const harness = batchHarness(rows, undefined, { honourWindow: true });
+  await harness.run();
+  assert.deepEqual(
+    harness.captures.map((capture) => capture.metadata.batch_message_ids.join(',')),
+    ['message-1', 'message-2', 'message-3', 'message-4'],
+    'master selection (messages 1-5) minus the vetoed message 5; message 0 is not backfilled',
+  );
+});
+
 test('D08: an explicit decision that mentions a social timing word is captured', async () => {
   const harness = batchHarness([message('Decision: weekend on-call uses PagerDuty for paging.')]);
   await harness.run();

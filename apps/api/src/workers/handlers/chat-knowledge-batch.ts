@@ -519,10 +519,14 @@ async function buildCandidatesForSpace(
 ): Promise<KnowledgeCandidate[]> {
   const candidates: KnowledgeCandidate[] = [];
   // A no-save request applies to its settled discussion, including an addressed
-  // directive that topic segmentation would otherwise split into an agent episode,
-  // and a directive posted inside the quiet window after the discussion's rows.
-  const eligibleRows = excludeOptedOutDiscussions(rows, recentRows)
-    .filter((row) => !hasNonAffirmativeAgreement(row.content));
+  // directive that topic segmentation would otherwise split into an agent episode.
+  const baselineRows = excludeOptedOutDiscussions(rows);
+  // A directive posted inside the quiet window also vetoes its discussion, but
+  // only subtractively: selection below runs on the baseline rows unchanged, and
+  // candidates touching these rows are dropped afterwards without backfill.
+  const quietWindowVetoed = new Set<ClassifiedMessageRow>(baselineRows);
+  for (const row of excludeOptedOutDiscussions(rows, recentRows)) quietWindowVetoed.delete(row);
+  const eligibleRows = baselineRows.filter((row) => !hasNonAffirmativeAgreement(row.content));
   const episodes = segmentRowsIntoEpisodes(eligibleRows);
   for (let index = 0; index < episodes.length; index += 1) {
     const originalEpisode = episodes[index]!;
@@ -569,7 +573,10 @@ async function buildCandidatesForSpace(
       classification,
     });
   }
-  return dedupeCandidates(candidates).slice(-MAX_CANDIDATES_PER_SPACE);
+  // Subtract after dedupe and the cap so a vetoed candidate never changes which
+  // other candidates are selected in this run.
+  return dedupeCandidates(candidates).slice(-MAX_CANDIDATES_PER_SPACE).filter((candidate) =>
+    ![candidate.source, ...candidate.evidence, ...candidate.episode.rows].some((row) => quietWindowVetoed.has(row)));
 }
 
 export async function handleChatKnowledgeBatch(job: JobData): Promise<void> {
