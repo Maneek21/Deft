@@ -76,6 +76,7 @@ import {
   parseModuleOperationArgs,
 } from './modules.js';
 import { dispatchAgentEmployeeMessage } from '../dispatch-agent-message.js';
+import { enqueueExplicitDeftyWake, finishDeftyWake, planDeftyWake, resolveMentionedUserIds } from '../defty-wake.js';
 import {
   dispatchAgentEmployeeTask,
   publishTaskChannelEventForAssignee,
@@ -2407,14 +2408,22 @@ export async function humanMessagePost(args: { space_id?: string; content?: stri
         .limit(1);
       if (!parent || parent.space_id !== spaceId) return errorResult('message_post: parent message not found in target space');
     }
+    // A08: wake Defty under exactly the web route's conditions (lib/defty-wake.ts).
+    const deftyWakeInput = {
+      orgId: ctx.org_id, userId: ctx.user_id, spaceId, content, parentId: args.parent_id ?? null,
+      mentionedUserIds: await resolveMentionedUserIds(content, ctx.org_id),
+    };
+    const deftyWake = await planDeftyWake(deftyWakeInput);
     const row = await db.transaction(async tx => {
       const [inserted] = await tx.insert(messages).values({
         org_id: ctx.org_id, space_id: spaceId, user_id: ctx.user_id, content, parent_id: args.parent_id ?? null,
       }).returning();
       await enqueueNativeMentionPublication(tx, { orgId: ctx.org_id, userId: ctx.user_id },
         { kind: 'message', id: inserted!.id }, content);
+      await enqueueExplicitDeftyWake(tx, deftyWake, { ...deftyWakeInput, messageId: inserted!.id });
       return inserted;
     });
+    await finishDeftyWake(deftyWake, { ...deftyWakeInput, messageId: row!.id });
     await dispatchAgentEmployeeMessage({
       messageId: row!.id,
       spaceId,
@@ -2498,14 +2507,22 @@ export async function humanSendMessage(args: HumanSendMessageArgs, ctx: HumanToo
       targetKind = 'dm';
     }
 
+    // A08: wake Defty under exactly the web route's conditions (lib/defty-wake.ts).
+    const deftyWakeInput = {
+      orgId: ctx.org_id, userId: ctx.user_id, spaceId: spaceId!, content, parentId,
+      mentionedUserIds: await resolveMentionedUserIds(content, ctx.org_id),
+    };
+    const deftyWake = await planDeftyWake(deftyWakeInput);
     const row = await db.transaction(async tx => {
       const [inserted] = await tx.insert(messages).values({
         org_id: ctx.org_id, space_id: spaceId!, user_id: ctx.user_id, content, parent_id: parentId,
       }).returning();
       await enqueueNativeMentionPublication(tx, { orgId: ctx.org_id, userId: ctx.user_id },
         { kind: 'message', id: inserted!.id }, content);
+      await enqueueExplicitDeftyWake(tx, deftyWake, { ...deftyWakeInput, messageId: inserted!.id });
       return inserted;
     });
+    await finishDeftyWake(deftyWake, { ...deftyWakeInput, messageId: row!.id });
 
     await dispatchAgentEmployeeMessage({
       messageId: row!.id,
