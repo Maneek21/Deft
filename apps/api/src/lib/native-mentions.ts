@@ -372,7 +372,7 @@ async function deliverNativeMentionLocked(orgId: string, deliveryId: string) {
   });
   if (!delivery.agent && delivery.pending.status !== 'delivered') {
     const [notification] = await db.select().from(notifications).where(eq(notifications.id, deliveryId));
-    if (notification) emitToUser(delivery.pending.recipient_user_id, 'notification:new', notification);
+    if (notification) emitToUser(notification.org_id, delivery.pending.recipient_user_id, 'notification:new', notification);
   }
 }
 

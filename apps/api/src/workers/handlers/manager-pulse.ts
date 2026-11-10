@@ -81,7 +81,7 @@ export async function handleManagerPulse(job: JobData): Promise<void> {
           });
 
           // Emit via socket
-          emitToUser(manager.userId, 'notification:new', {
+          emitToUser(org.id, manager.userId, 'notification:new', {
             type: 'system',
             title: notifTitle,
             body: result.summary,
