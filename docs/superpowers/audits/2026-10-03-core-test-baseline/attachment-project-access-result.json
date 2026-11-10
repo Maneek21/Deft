@@ -1,0 +1,10 @@
+{
+  "unauthenticated": 401,
+  "activeProjectDownload": 200,
+  "crossOrgDownload": 404,
+  "projectDelete": 204,
+  "deletedProjectDownload": 200,
+  "deletedTaskDownload": 404,
+  "revokedMembershipDownload": 403,
+  "deletedProjectStillDownloadable": true
+}

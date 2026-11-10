@@ -1,0 +1,45 @@
+{
+  "run": "2026-10-22T12-29-59-729Z",
+  "api": "http://127.0.0.1:3111",
+  "results": [
+    {
+      "id": "S4_whats_on_plate",
+      "goal": "Answer a people question from task data.",
+      "expect": "Lists Rahul's open tasks: DEFT-11 in progress, DEFT-13 in review, DEFT-7 todo, DEFT-1/3 backlog.",
+      "steps": [
+        {
+          "as": "Sara Kim",
+          "say": "@Defty what has Rahul got on his plate right now?",
+          "messageId": "85733e6d-c07c-4af4-a590-bef3def30225",
+          "defty": [
+            {
+              "id": "bd122307-9c99-487e-a23f-fcc737fa32d4",
+              "parent_id": "85733e6d-c07c-4af4-a590-bef3def30225",
+              "text": "I could not complete this lookup because the AI provider did not return a usable response. Please retry. This failure does not mean the requested records are missing.",
+              "metadata": {
+                "model": "llama3.1",
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "is_agent_reply": true,
+                "read_diagnostics": {
+                  "entries": [],
+                  "version": 1,
+                  "omitted_count": 0
+                },
+                "agent_run_metrics": {
+                  "total_ms": 1047,
+                  "iterations": 1,
+                  "reasoning_ms": 33,
+                  "retrieval_ms": 451
+                }
+              }
+            }
+          ],
+          "latencyMs": 8134,
+          "responded": true
+        }
+      ],
+      "spaceId": "0661fc23-a05b-4108-8d06-8a90814c07fb"
+    }
+  ]
+}

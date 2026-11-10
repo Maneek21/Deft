@@ -1,0 +1,352 @@
+{
+  "database": "postgresql://deft_test@127.0.0.1:55433/deft_attention_baseline_test",
+  "authentication": "Production routes mounted with fixture authenticated user contexts; actual database authorization and mutations, no DB/access mocks; credential verification excluded",
+  "timezone": {
+    "initial": "Asia/Calcutta",
+    "followup": "UTC with process TZ=UTC on new connections; only own database default changed"
+  },
+  "totals": {
+    "rawAssertions": 37,
+    "excludedHarnessControls": 2,
+    "effectiveAssertions": 35,
+    "verifiedControls": 22,
+    "controlsMismatched": 0,
+    "behaviorMismatchObservations": 13
+  },
+  "results": [
+    {
+      "name": "public task detail allowed",
+      "control": true,
+      "observed": 200,
+      "expected": 200,
+      "match": true
+    },
+    {
+      "name": "restricted task detail denied",
+      "control": true,
+      "observed": 404,
+      "expected": 404,
+      "match": true
+    },
+    {
+      "name": "cross-org project list denied",
+      "control": true,
+      "observed": 404,
+      "expected": 404,
+      "match": true
+    },
+    {
+      "name": "project list hides restricted task",
+      "control": false,
+      "observed": true,
+      "expected": false,
+      "match": false
+    },
+    {
+      "name": "watch unauthorized restricted task denied",
+      "control": false,
+      "observed": 200,
+      "expected": 404,
+      "match": false
+    },
+    {
+      "name": "restricted task remains denied after watch",
+      "control": false,
+      "observed": 200,
+      "expected": 404,
+      "match": false
+    },
+    {
+      "name": "watch cross-org task denied",
+      "control": false,
+      "observed": 200,
+      "expected": 404,
+      "match": false
+    },
+    {
+      "name": "attention exists for visible task",
+      "control": true,
+      "observed": true,
+      "expected": true,
+      "match": true
+    },
+    {
+      "name": "restrict task route succeeded",
+      "control": true,
+      "observed": 200,
+      "expected": 200,
+      "match": true
+    },
+    {
+      "name": "newly restricted task detail denied",
+      "control": true,
+      "observed": 404,
+      "expected": 404,
+      "match": true
+    },
+    {
+      "name": "attention redacted after task ACL revocation",
+      "control": false,
+      "observed": {
+        "status": 200,
+        "body": "Copied confidential body"
+      },
+      "expected": {
+        "status": 404
+      },
+      "match": false
+    },
+    {
+      "name": "task delete route succeeds",
+      "control": true,
+      "observed": 200,
+      "expected": 200,
+      "match": true
+    },
+    {
+      "name": "deleted task detail denied",
+      "control": true,
+      "observed": 404,
+      "expected": 404,
+      "match": true
+    },
+    {
+      "name": "deleted task attention hidden",
+      "control": false,
+      "observed": 200,
+      "expected": 404,
+      "match": false
+    },
+    {
+      "name": "active project task searchable",
+      "control": true,
+      "observed": true,
+      "expected": true,
+      "match": true
+    },
+    {
+      "name": "project soft delete succeeds",
+      "control": true,
+      "observed": 204,
+      "expected": 204,
+      "match": true,
+      "annotation": "Actual route contract is HTTP204; original harness expected200"
+    },
+    {
+      "name": "deleted project task absent from search",
+      "control": false,
+      "observed": true,
+      "expected": false,
+      "match": false
+    },
+    {
+      "name": "calendar valid create",
+      "control": true,
+      "observed": 201,
+      "expected": 201,
+      "match": true
+    },
+    {
+      "name": "calendar invalid range create denied",
+      "control": true,
+      "observed": 400,
+      "expected": 400,
+      "match": true
+    },
+    {
+      "name": "calendar other-user patch denied",
+      "control": true,
+      "observed": 404,
+      "expected": 404,
+      "match": true
+    },
+    {
+      "name": "calendar invalid range patch denied",
+      "control": false,
+      "observed": 200,
+      "expected": 400,
+      "match": false
+    },
+    {
+      "name": "calendar invalid date patch structured validation",
+      "control": false,
+      "observed": {
+        "status": 500
+      },
+      "expected": {
+        "status": 400,
+        "code": "INVALID_DATE"
+      },
+      "match": false
+    },
+    {
+      "name": "calendar same-user other-org patch denied",
+      "control": false,
+      "observed": 200,
+      "expected": 404,
+      "match": false
+    },
+    {
+      "name": "wiki first content edit succeeds",
+      "control": true,
+      "observed": 200,
+      "expected": 200,
+      "match": true
+    },
+    {
+      "name": "concurrent wiki edit must conflict or preserve both versions",
+      "control": false,
+      "observed": {
+        "statuses": [
+          200,
+          200
+        ],
+        "version": 3,
+        "history": [
+          "Initial",
+          "First edit"
+        ]
+      },
+      "expected": {
+        "statuses": [
+          200,
+          409
+        ],
+        "version": 3,
+        "history": [
+          "Initial",
+          "First edit"
+        ]
+      },
+      "match": false
+    },
+    {
+      "name": "foreign watched task detail still tenant-denied",
+      "control": true,
+      "observed": 404,
+      "expected": 404,
+      "match": true
+    },
+    {
+      "name": "cross-org watch inserted foreign relationship",
+      "control": false,
+      "observed": 1,
+      "expected": 0,
+      "match": false
+    },
+    {
+      "name": "table positive public task present",
+      "control": true,
+      "observed": {
+        "status": 200,
+        "present": true
+      },
+      "expected": {
+        "status": 200,
+        "present": true
+      },
+      "match": true
+    },
+    {
+      "name": "table correctly excludes restricted task",
+      "control": true,
+      "observed": false,
+      "expected": false,
+      "match": true
+    },
+    {
+      "name": "two real loopback feeds initially sync",
+      "control": true,
+      "observed": [
+        1,
+        1
+      ],
+      "expected": [
+        1,
+        1
+      ],
+      "match": true
+    },
+    {
+      "name": "identical feed UIDs remain subscription-isolated",
+      "control": true,
+      "observed": 2,
+      "expected": 2,
+      "match": true
+    },
+    {
+      "name": "feed update replaces event without duplicates",
+      "control": true,
+      "observed": {
+        "count": 2,
+        "updated": true,
+        "other": true
+      },
+      "expected": {
+        "count": 2,
+        "updated": true,
+        "other": true
+      },
+      "match": true
+    },
+    {
+      "name": "empty valid feed sync succeeds and reports zero",
+      "control": true,
+      "observed": {
+        "count": 0,
+        "storedCount": 0,
+        "lastError": null
+      },
+      "expected": {
+        "count": 0,
+        "storedCount": 0,
+        "lastError": null
+      },
+      "match": true
+    },
+    {
+      "name": "removed event reconciled out of feed A",
+      "control": false,
+      "observed": 1,
+      "expected": 0,
+      "match": false
+    },
+    {
+      "name": "other subscription event remains",
+      "control": true,
+      "observed": 1,
+      "expected": 1,
+      "match": true
+    }
+  ],
+  "excludedOriginalControls": [
+    "table hides restricted task",
+    "two concurrent wiki updates exercised real row wait"
+  ],
+  "limits": [
+    "No actual credential/authentication middleware exercised: fixture c.user context injected; all route-level DB/access logic actual",
+    "Concurrent wiki both edits returned200 from version2, resulting version3 with one edit absent from history; two-blocked-update synchronization monitor did not pass, so controlled barrier claim excluded",
+    "Cross-org watcher relation inserted, but task detail remains404 in original org; no cross-org task detail leak proven",
+    "Initial table request lacked required project_id/mine and inspected wrong response key; replaced by real project-scoped data-array controls",
+    "No source edits or production network; ICS HTTP requests only to two owned ephemeral loopback feeds"
+  ],
+  "sources": {
+    "taskList": "apps/api/src/routes/tasks.ts:1665",
+    "watch": "apps/api/src/routes/tasks.ts:907",
+    "watchVisibility": "apps/api/src/lib/task-visibility.ts:21",
+    "attentionVisibility": "apps/api/src/lib/attention.ts:57",
+    "attentionTaskSources": "apps/api/src/lib/attention.ts:193",
+    "attentionFiltering": "apps/api/src/lib/attention.ts:578",
+    "taskDelete": "apps/api/src/routes/tasks.ts:2487",
+    "search": "apps/api/src/routes/search.ts:45",
+    "eventPatch": "apps/api/src/routes/events.ts:94",
+    "wikiPatch": "apps/api/src/routes/wiki.ts:965",
+    "icsUpsert": "apps/api/src/workers/handlers/ics-sync.ts:67"
+  },
+  "logs": [
+    "attention-db-push.log",
+    "attention-real-db-probe.log",
+    "attention-ics-followup.log",
+    "attention-ics-followup-initial-harness.log"
+  ]
+}

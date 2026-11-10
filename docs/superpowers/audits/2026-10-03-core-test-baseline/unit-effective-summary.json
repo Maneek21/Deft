@@ -1,0 +1,118 @@
+{
+  "checkout": "C:\\Users\\Osheen Pradhan\\.codex\\worktrees\\core-baseline-tests-20261003\\Deft Main Repo",
+  "collections": [
+    {
+      "name": "web",
+      "files": 53,
+      "tests": 258,
+      "pass": 258,
+      "fail": 0,
+      "skipped": 0
+    },
+    {
+      "name": "shared",
+      "files": 6,
+      "tests": 80,
+      "pass": 80,
+      "fail": 0,
+      "skipped": 0
+    },
+    {
+      "name": "app-kit",
+      "files": 9,
+      "tests": 63,
+      "pass": 63,
+      "fail": 0,
+      "skipped": 0
+    },
+    {
+      "name": "scripts",
+      "files": 23,
+      "tests": 152,
+      "pass": 148,
+      "fail": 3,
+      "skipped": 1
+    }
+  ],
+  "totals": {
+    "files": 91,
+    "tests": 553,
+    "pass": 549,
+    "fail": 3,
+    "skipped": 1
+  },
+  "failures": [
+    {
+      "file": "scripts/app-platform-track-a-certification-setup.test.mjs",
+      "line": 18,
+      "test": "Track A setup delegates Phase 6 and adds only the frozen automation prerequisites",
+      "classification": "stale test assertion",
+      "reason": "Expected candidate ff5a3fae3e21b80fe51849e6cd8023d5228389d0; setup hook currently pins121aa7c0b332819abc039874dc421b390d5ed106"
+    },
+    {
+      "file": "scripts/release-workflow.test.mjs",
+      "line": 140,
+      "test": "release scope is commit-pinned and fails closed before publication",
+      "classification": "Windows line-ending sensitivity",
+      "reason": "Regex expects literal LF after workflow step, actual file has CRLF; matching release_scope condition present at release.yml204-205"
+    },
+    {
+      "file": "scripts/docker-entrypoint.test.mjs",
+      "line": 85,
+      "test": "exits with the web failure when the API remains alive",
+      "classification": "timing/environment-sensitive failure; product implication unverified",
+      "reason": "Entrypoint did not exit within hard1500ms; run under Windows Git sh, concurrent baseline checks"
+    }
+  ],
+  "skips": [
+    {
+      "file": "scripts/docker-entrypoint.test.mjs",
+      "line": 98,
+      "test": "forwards SIGTERM to both children before exiting",
+      "reason": "Explicit process.platform === win32 skip"
+    }
+  ],
+  "harnessCorrections": [
+    {
+      "files": [
+        "apps/web/src/app/(app)/notes/protected-note-image.test.ts",
+        "apps/web/src/hooks/use-modules-cache.test.ts",
+        "apps/web/src/lib/agent-action-presentation.test.ts",
+        "apps/web/src/lib/app-actions.test.ts",
+        "apps/web/src/lib/app-automations.test.ts",
+        "apps/web/src/lib/module-session-cache.test.ts"
+      ],
+      "reason": "Root cwd omitted web alias tsconfig; only failed-to-load files retried",
+      "result": "25pass"
+    },
+    {
+      "files": [
+        "packages/app-kit/test/packed-external.test.ts",
+        "packages/app-kit/test/packed-module-validation.test.ts",
+        "scripts/crm-packed-author.test.mts"
+      ],
+      "reason": "pnpm exec omits npm_execpath required by packed proofs; explicit pinned CLI supplied offline",
+      "result": "3pass"
+    }
+  ],
+  "safety": {
+    "databaseTestsRun": false,
+    "productionNetworkCalls": false,
+    "excludedCollections": [],
+    "temporaryFixturesAllowed": true,
+    "sourceEdits": false
+  },
+  "rawSummaries": [
+    "unit-summary.json",
+    "web-alias-retry-summary.json",
+    "packed-runner-retry-summary.json"
+  ],
+  "logs": [
+    "web.tap.log",
+    "shared.tap.log",
+    "kit.tap.log",
+    "scripts.tap.log",
+    "web-alias-retry.tap.log",
+    "packed-runner-retry.tap.log"
+  ]
+}

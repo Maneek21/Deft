@@ -1,0 +1,82 @@
+{
+  "schema": "deft.identity.native.baseline.v1",
+  "identity": {
+    "scenarios": 12,
+    "passed": 9,
+    "failedExpectedDenials": 3,
+    "artifact": "identity-governance-results.json"
+  },
+  "nativePostgres": {
+    "tests": 21,
+    "passed": 21,
+    "failed": 0,
+    "skipped": 0,
+    "concurrencyCertification": true,
+    "artifact": "native-mention-evidence/agent-and-native-tests.log"
+  },
+  "unchangedBrowser": {
+    "certified": false,
+    "coldRun": "chat navigation timeout30s; server eventually200 at34s",
+    "warmRun": "desktop chat/thread/task workflows complete; wiki immediate save→notify409 aborts unchanged harness",
+    "artifact": "native-mention-evidence/warm-retry/browser-results.json"
+  },
+  "exploratory": {
+    "scenarios": 5,
+    "successfulSteps": 4,
+    "immediateWikiPublish409": 1,
+    "runtimeErrors": [
+      "Not found"
+    ],
+    "mode": "explicit reload workaround;120s timeout; no fullbrowsercertification",
+    "artifact": "native-mention-evidence/exploratory/results.json"
+  },
+  "seenRepeatProbe": {
+    "loginStatus": 200,
+    "visibleGetStatus": 200,
+    "state": "open_seen",
+    "repeatSeenStatus": 404,
+    "artifact": "native-mention-evidence/seen404-route-repro.json"
+  },
+  "findings": [
+    {
+      "name": "Private-message audit disclosure",
+      "source": [
+        "apps/api/src/routes/audit.ts:58",
+        "apps/api/src/routes/audit.ts:124",
+        "apps/api/src/lib/agent-actions.ts:2262"
+      ]
+    },
+    {
+      "name": "Pending reinvite revoke leaves existing-password member active",
+      "source": [
+        "apps/api/src/routes/members.ts:1118",
+        "apps/api/src/routes/members.ts:1300",
+        "apps/api/src/routes/invites.ts:142"
+      ]
+    },
+    {
+      "name": "Wiki save publication hashes stale detail.content",
+      "source": [
+        "apps/web/src/app/(app)/knowledge/page.tsx:584",
+        "apps/web/src/app/(app)/knowledge/page.tsx:587",
+        "apps/web/src/app/(app)/knowledge/page.tsx:988",
+        "apps/web/src/lib/native-mentions.ts:83"
+      ]
+    },
+    {
+      "name": "Duplicate seen transition returns404 then unhandled UI rejection",
+      "source": [
+        "apps/api/src/lib/attention.ts:823",
+        "apps/api/src/lib/attention.ts:853",
+        "apps/api/src/routes/attention.ts:198",
+        "apps/web/src/app/(app)/inbox/page.tsx:79",
+        "apps/web/src/app/(app)/inbox/page.tsx:195",
+        "apps/web/src/hooks/use-attention.ts:113"
+      ]
+    }
+  ],
+  "otherObservations": [
+    "Duplicate React key warning for repeated Avery chat_mention approval entries after multiple real reference messages; UIidentity warning observed, no demonstrated dataACL leak."
+  ],
+  "cleanup": "Own Next4010 and API4011 stopped; only Next-generated next-env.d.ts devtypes diff restored from known clean state; both source worktrees clean."
+}

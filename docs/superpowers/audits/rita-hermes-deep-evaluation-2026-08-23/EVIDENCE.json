@@ -1,0 +1,30 @@
+{
+  "evaluated_at": "2026-08-23",
+  "environment": "https://demo.deft.ing",
+  "agent": {
+    "name": "Rita",
+    "employee_id": "b8b36159-3e6c-4ce9-8401-0c20f6027a71",
+    "slug": "rita",
+    "runtime": "hermes",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "medium",
+    "trust": "standard",
+    "max_daily_actions": 80,
+    "closing_daily_action_count": 59
+  },
+  "readiness": {
+    "functional_scenarios_passed": 7,
+    "functional_scenarios_total": 7,
+    "unattended_production_decision": "no-go",
+    "current_safe_scope": "supervised, bounded internal workflows"
+  },
+  "scenarios": [
+    {"scenario":"Multi-person operations thread","score":100,"result":"pass","surface":"Chat + Tasks","primary_ids":["OPS-1","OPS-13","OPS-14","OPS-15","OPS-16"]},
+    {"scenario":"Knowledge task — explicit source","score":100,"result":"pass","surface":"Tasks + Knowledge","primary_ids":["SAFE-9","2398ed73-f4b1-4785-862e-3a10e0c5aa58"]},
+    {"scenario":"Knowledge task — implicit source","score":100,"result":"pass","surface":"Tasks + Knowledge","primary_ids":["BUY-12","BUY-13","5151a506-b4f6-458f-a028-0fb4743a0294"]},
+    {"scenario":"Lead research into Contacts","score":80,"result":"functional pass; reliability fail","surface":"Tasks + Contacts + public web","primary_ids":["WHL-11","WHL-12","WHL-13","WHL-14"]},
+    {"scenario":"Greenhouse humidity incident","score":90,"result":"pass with recovery","surface":"Chat + Knowledge + Tasks","primary_ids":["OPS-17","OPS-18","OPS-19","OPS-20","OPS-21"]},
+    {"scenario":"Cross-project launch reconciliation","score":100,"result":"pass","surface":"Tasks + Knowledge","primary_ids":["MKT-42","54275a2f-c999-46fc-959d-0b37395a7316"]},
+    {"scenario":"Buyer complaint workflow","score":100,"result":"pass","surface":"Chat + Contacts + Knowledge + Tasks","primary_ids":["21040f49-301b-43f3-848b-45d075999b14","c100bc52-228c-4302-b9ad-3018a22ec074","OPS-22","OPS-23","OPS-24","OPS-25","OPS-26"]}
+  ]
+}

@@ -1,0 +1,38 @@
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
+import { randomUUID } from 'node:crypto';
+import { mkdir, writeFile } from 'node:fs/promises';
+const root='C:/Users/Osheen Pradhan/.codex/worktrees/core-baseline-tests-20261003/Deft Main Repo';
+const require=createRequire(root+'/apps/api/package.json');
+process.chdir('C:/tmp/deft-core-baseline-20261003');
+const pg=require('pg'); const bcrypt=require('bcryptjs');
+const client=new pg.Client({connectionString:process.env.DATABASE_URL}); await client.connect();
+const load=(p:string)=>import(pathToFileURL(root+'/'+p).href);
+const {app}=await load('apps/api/src/index.ts');
+const {closeDb}=await load('apps/api/src/lib/db.ts');
+const ids=Array.from({length:7},()=>randomUUID()); const [org,otherOrg,user,otherUser,project,task,file]=ids;
+const email='probe-'+user+'@example.test'; const otherEmail='probe-'+otherUser+'@example.test'; const pw=randomUUID(); const hash=await bcrypt.hash(pw,4);
+await client.query('INSERT INTO orgs(id,name,slug) VALUES($1,$2,$3),($4,$5,$6)',[org,'Probe org','probe-'+org,otherOrg,'Other probe org','probe-'+otherOrg]);
+await client.query('INSERT INTO users(id,name,email,password_hash,email_verified) VALUES($1,$2,$3,$4,true),($5,$6,$7,$4,true)',[user,'Probe owner',email,hash,otherUser,'Other owner',otherEmail]);
+await client.query('INSERT INTO org_members(id,org_id,user_id,role) VALUES($1,$2,$3,$4),($5,$6,$7,$4)',[randomUUID(),org,user,'owner',randomUUID(),otherOrg,otherUser]);
+await client.query('INSERT INTO projects(id,org_id,name,prefix,lead_id) VALUES($1,$2,$3,$4,$5)',[project,org,'Probe project','PRB',user]);
+await client.query('INSERT INTO tasks(id,org_id,project_id,number,title,created_by) VALUES($1,$2,$3,1,$4,$5)',[task,org,project,'Probe task',user]);
+await mkdir('uploads',{recursive:true}); const key='probe-'+file+'.txt'; await writeFile('uploads/'+key,'private fixture bytes');
+await client.query('INSERT INTO files(id,org_id,uploaded_by,filename,mime_type,size_bytes,storage_key,task_id,processing_status,detected_mime_type) VALUES($1,$2,$3,$4,$5,21,$6,$7,$8,$5)',[file,org,user,'probe.txt','text/plain',key,task,'ready']);
+async function login(mail:string){const r=await app.request('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:mail,password:pw})});assert.equal(r.status,200);const b=await r.json();assert.ok(b.accessToken);return b.accessToken;}
+const token=await login(email);const otherToken=await login(otherEmail);
+async function request(path:string,t=token,method='GET'){return app.request(path,{method,headers:{Authorization:'Bearer '+t}});}
+const evidence:any={};
+evidence.unauthenticated=(await app.request('/api/files/'+file)).status;assert.equal(evidence.unauthenticated,401);
+evidence.activeProjectDownload=(await request('/api/files/'+file)).status;assert.equal(evidence.activeProjectDownload,200);
+evidence.crossOrgDownload=(await request('/api/files/'+file,otherToken)).status;assert.equal(evidence.crossOrgDownload,404);
+evidence.projectDelete=(await request('/api/projects/'+project,token,'DELETE')).status;assert.equal(evidence.projectDelete,204);
+evidence.deletedProjectDownload=(await request('/api/files/'+file)).status;
+await client.query('UPDATE tasks SET is_deleted=true WHERE id=$1',[task]);
+evidence.deletedTaskDownload=(await request('/api/files/'+file)).status;assert.equal(evidence.deletedTaskDownload,404);
+await client.query('UPDATE org_members SET is_active=false WHERE org_id=$1 AND user_id=$2',[org,user]);
+evidence.revokedMembershipDownload=(await request('/api/files/'+file)).status;assert.equal(evidence.revokedMembershipDownload,403);
+evidence.deletedProjectStillDownloadable=evidence.deletedProjectDownload===200;
+console.log(JSON.stringify(evidence,null,2));await writeFile('C:/tmp/deft-core-baseline-20261003/attachment-project-access-result.json',JSON.stringify(evidence,null,2));
+await closeDb();await client.end();

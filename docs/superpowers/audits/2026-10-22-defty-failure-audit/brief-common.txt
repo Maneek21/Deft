@@ -1,0 +1,13 @@
+You are auditing "Defty", the built-in workspace AI agent of Deft (repo at the current directory; a pnpm monorepo: apps/api Hono API + workers, apps/web Next.js, packages/db Drizzle schema, packages/shared contracts). Read AGENTS.md first. This is a READ-ONLY review: do not modify any files. Do not run the dev server or touch any database. You MAY run read-only commands (rg, git log/blame, cat) and focused unit tests via `pnpm --filter @deft/api exec tsx --test <file>` if helpful.
+
+Goal: find where Defty FAILS — real defects that a user or operator would hit (wrong behaviour, silent failure, crashes, hangs, duplicate actions, security/tenant-isolation holes, bad UX, misleading output, missing error handling, dead or contradictory code paths, prompt/tool contract mismatches). Prioritise by user impact. Do not pad with style nits.
+
+For EVERY finding give:
+- ID, severity (P0 blocks release / P1 must fix / P2 should fix), one-line title
+- Evidence: exact file:line references and a short quote of the offending code
+- Failure scenario: concrete inputs/state -> observed wrong outcome
+- Confidence: CONFIRMED (traced end to end or reproduced by a test) / PLAUSIBLE (needs runtime check)
+- Fix sketch: the smallest change that fixes it, and the test that would prove it
+
+End with: (a) a ranked top-5 list, (b) a proposed fix plan grouped into independent work packages (files each touches, ordering dependencies, how to verify), (c) open questions needing runtime verification.
+Write in plain Markdown. Be concrete and evidence-based; no speculation without labelling it.

@@ -1,0 +1,109 @@
+{
+  "database": "postgresql://deft_test@127.0.0.1:55433/deft_attention_baseline_test",
+  "authentication": "Fixture route user context, auth middleware credential verification excluded",
+  "loopbackPort": 63425,
+  "results": [
+    {
+      "name": "foreign watched task detail still tenant-denied",
+      "control": true,
+      "observed": 404,
+      "expected": 404,
+      "match": true
+    },
+    {
+      "name": "cross-org watch inserted foreign relationship",
+      "control": false,
+      "observed": 1,
+      "expected": 0,
+      "match": false
+    },
+    {
+      "name": "table positive public task present",
+      "control": true,
+      "observed": {
+        "status": 200,
+        "present": true
+      },
+      "expected": {
+        "status": 200,
+        "present": true
+      },
+      "match": true
+    },
+    {
+      "name": "table correctly excludes restricted task",
+      "control": true,
+      "observed": false,
+      "expected": false,
+      "match": true
+    },
+    {
+      "name": "two real loopback feeds initially sync",
+      "control": true,
+      "observed": [
+        1,
+        1
+      ],
+      "expected": [
+        1,
+        1
+      ],
+      "match": true
+    },
+    {
+      "name": "identical feed UIDs remain subscription-isolated",
+      "control": true,
+      "observed": 2,
+      "expected": 2,
+      "match": true
+    },
+    {
+      "name": "feed update replaces event without duplicates",
+      "control": true,
+      "observed": {
+        "count": 2,
+        "updated": true,
+        "other": true
+      },
+      "expected": {
+        "count": 2,
+        "updated": true,
+        "other": true
+      },
+      "match": true
+    },
+    {
+      "name": "empty valid feed sync succeeds and reports zero",
+      "control": true,
+      "observed": {
+        "count": 0,
+        "storedCount": 0,
+        "lastError": null
+      },
+      "expected": {
+        "count": 0,
+        "storedCount": 0,
+        "lastError": null
+      },
+      "match": true
+    },
+    {
+      "name": "removed event reconciled out of feed A",
+      "control": false,
+      "observed": 1,
+      "expected": 0,
+      "match": false
+    },
+    {
+      "name": "other subscription event remains",
+      "control": true,
+      "observed": 1,
+      "expected": 1,
+      "match": true
+    }
+  ],
+  "limitations": [
+    "Initial probe table assertion inspected wrong response keys; replaced by actual data-array positive/negative controls in this followup",
+    "Concurrent wiki observed overwrite but two-blocked-updates monitor condition not met; exact synchronization control unverified"
+  ]
+}

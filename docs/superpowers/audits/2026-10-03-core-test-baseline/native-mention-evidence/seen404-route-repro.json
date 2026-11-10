@@ -1,0 +1,15 @@
+{
+  "loginStatus": 200,
+  "getStatus": 200,
+  "visibleItem": {
+    "id": "444cdaa0-4573-407f-bdaf-356b5b4d31db",
+    "org_id": "9c45d59d-3966-4d57-aecb-b659defb3115",
+    "user_id": "ef971f62-fd44-484e-8fcf-e4ca622d7ed3",
+    "state": "open_seen"
+  },
+  "postStatus": 404,
+  "postBody": {
+    "error": "Not found",
+    "code": "NOT_FOUND"
+  }
+}

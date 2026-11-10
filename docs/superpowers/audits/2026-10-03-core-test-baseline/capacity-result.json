@@ -1,0 +1,258 @@
+{
+  "run_id": "20261003122506848",
+  "started_at": "2026-10-03T12:25:06.848Z",
+  "configuration": {
+    "users": 60,
+    "burst_messages": 60,
+    "sustained_messages": 120,
+    "sustained_duration_seconds": 30,
+    "queue_jobs": 120,
+    "budgets": {
+      "message_write_p95_ms": 5000,
+      "inbox_read_p95_ms": 3000,
+      "queue_drain_seconds": 90,
+      "recovery_seconds": 45,
+      "attention_projection_seconds": 30,
+      "attention_projection_p95_ms": 5000
+    }
+  },
+  "phases": {
+    "database_bootstrap": {
+      "seconds": 3.5,
+      "method": "schema clone of deft_identity_baseline_test, all data truncated",
+      "schema_proof": {
+        "required_tables": 11,
+        "required_user_columns": 2
+      }
+    },
+    "seed": {
+      "orgs": 1,
+      "users": 60,
+      "shared_space_members": 60
+    },
+    "initial_boot": {
+      "seconds": 8.2
+    },
+    "login_burst": {
+      "succeeded": 60,
+      "rate_limited": 0,
+      "other_failures": 0,
+      "latency": {
+        "count": 60,
+        "min_ms": 4391.6,
+        "p50_ms": 4588.1,
+        "p95_ms": 4737.7,
+        "p99_ms": 4747.3,
+        "max_ms": 4747.3
+      }
+    },
+    "websocket_connect": {
+      "connected": 60,
+      "seconds": 1.7
+    },
+    "message_and_notification_load": {
+      "burst": {
+        "attempted": 60,
+        "succeeded": 60,
+        "failed": [],
+        "latency": {
+          "count": 60,
+          "min_ms": 3769,
+          "p50_ms": 3898.7,
+          "p95_ms": 4044.7,
+          "p99_ms": 4103.9,
+          "max_ms": 4103.9
+        }
+      },
+      "sustained": {
+        "attempted": 120,
+        "succeeded": 120,
+        "failed": [],
+        "latency": {
+          "count": 120,
+          "min_ms": 28.6,
+          "p50_ms": 72.8,
+          "p95_ms": 357.1,
+          "p99_ms": 618.7,
+          "max_ms": 787.5
+        }
+      },
+      "socket_message_deliveries": {
+        "expected": 10800,
+        "actual": 10800,
+        "ratio": 100
+      },
+      "socket_notification_deliveries": {
+        "expected": 10620,
+        "actual": 10620,
+        "ratio": 100
+      }
+    },
+    "notification_fanout_profile": {
+      "samples": 180,
+      "requested_notifications": 10740,
+      "allowed_notifications": 10740,
+      "policy_read": {
+        "count": 180,
+        "min_ms": 1.4,
+        "p50_ms": 4.7,
+        "p95_ms": 537,
+        "p99_ms": 658.4,
+        "max_ms": 659.5
+      },
+      "notification_insert": {
+        "count": 180,
+        "min_ms": 6.9,
+        "p50_ms": 20.9,
+        "p95_ms": 648.4,
+        "p99_ms": 739.4,
+        "max_ms": 757.7
+      },
+      "attention_enqueue": {
+        "count": 180,
+        "min_ms": 0.9,
+        "p50_ms": 2.9,
+        "p95_ms": 705.7,
+        "p99_ms": 723.1,
+        "max_ms": 747.1
+      },
+      "total": {
+        "count": 180,
+        "min_ms": 9.5,
+        "p50_ms": 28.9,
+        "p95_ms": 1648.5,
+        "p99_ms": 1770.8,
+        "max_ms": 1813.2
+      },
+      "attention_projection": {
+        "jobs": 90,
+        "notifications": 10740,
+        "projected_items": 10740,
+        "queue_delay": {
+          "count": 90,
+          "min_ms": 23,
+          "p50_ms": 82,
+          "p95_ms": 778,
+          "p99_ms": 8126,
+          "max_ms": 8126
+        },
+        "projection": {
+          "count": 90,
+          "min_ms": 28.8,
+          "p50_ms": 64.1,
+          "p95_ms": 665.7,
+          "p99_ms": 1332.8,
+          "max_ms": 1332.8
+        },
+        "end_to_end": {
+          "count": 90,
+          "min_ms": 61.9,
+          "p50_ms": 145.1,
+          "p95_ms": 1068.6,
+          "p99_ms": 9458.8,
+          "max_ms": 9458.8
+        }
+      }
+    },
+    "load_notification_inventory": [
+      {
+        "kind": "human",
+        "seeded_human": true,
+        "notifications": 10620
+      },
+      {
+        "kind": "agent",
+        "seeded_human": false,
+        "notifications": 180
+      }
+    ],
+    "attention_projection": {
+      "expected": 10620,
+      "actual": 10620,
+      "post_load_drain_seconds": 24.3,
+      "end_to_end_p95_ms": 1068.6
+    },
+    "notification_policy_integrity": {
+      "post_succeeded": true,
+      "expected_recipients": 55,
+      "actual_recipients": 56,
+      "blocked_policy_leaks": 0,
+      "policies_checked": [
+        "do_not_disturb",
+        "chat_channel_disabled",
+        "space_muted",
+        "space_mentions_only"
+      ]
+    },
+    "notification_inbox_reads": {
+      "succeeded": 60,
+      "latency": {
+        "count": 60,
+        "min_ms": 189.5,
+        "p50_ms": 516,
+        "p95_ms": 583,
+        "p99_ms": 587.6,
+        "max_ms": 587.6
+      },
+      "unread_min": 177,
+      "unread_max": 179
+    },
+    "org_job_backlog": {
+      "observed": {
+        "completed": 362
+      }
+    },
+    "queue_pressure_and_recovery": {
+      "service_health_recovery_seconds": 7.3,
+      "injected_pending_jobs": 120,
+      "injected_stale_running_jobs": 5,
+      "drain_seconds": 5,
+      "final_states": {
+        "completed": 125
+      },
+      "stale_final_states": {
+        "completed": 5
+      }
+    },
+    "post_restart_proof": {
+      "post_succeeded": 1,
+      "connected": 60,
+      "socket_deliveries_expected": 60,
+      "socket_deliveries_actual": 60
+    }
+  },
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Bulk notification policy changed recipient semantics",
+      "detail": "Expected 55, inserted 56, blocked-policy leaks 0."
+    }
+  ],
+  "boundaries": [
+    "This certifies one Deft API instance. Multi-instance Socket.IO fanout is not covered because the current server uses in-memory room and presence state.",
+    "Queue pressure uses deterministic no-op jobs to isolate dispatcher throughput and stale-job recovery. External AI-provider latency, quotas, and cost are not certified here.",
+    "Browser rendering is outside this backend/realtime load run; product UI has separate dogfood coverage.",
+    "Scratch harness correction: use actual login accessTokens required by current web-session auth; all original load volumes and budgets unchanged.",
+    "Scratch harness scope: attention projection proves notifications for the 60 explicitly seeded people; system accounts are measured separately, not mistaken for missing human deliveries.",
+    "Scratch harness correlation: durable attention proof selects only notification bodies with this run marker, excluding independent startup maintenance. Load volumes, exact fanout and release budgets unchanged."
+  ],
+  "summary": {
+    "messages_succeeded": 181,
+    "socket_fanout_ratio": 100,
+    "notification_fanout_ratio": 100,
+    "worst_message_write_p95_ms": 4044.7,
+    "notification_read_p95_ms": 583,
+    "queue_drain_seconds": 5,
+    "recovery_seconds": 7.3,
+    "attention_projection_seconds": 24.3,
+    "attention_projection_p95_ms": 1068.6
+  },
+  "verdict": "FAIL",
+  "cleanup": {
+    "database_name": "deft_cert_20261003122506848_32780",
+    "database_removed": true
+  },
+  "completed_at": "2026-10-03T12:26:52.258Z",
+  "duration_seconds": 105.4,
+  "api_log_tail": "[worker] Job certification-noop (f97bd95e) completed\n[worker] Job certification-noop (3745d77f) completed\n[worker] Job certification-noop (041a3782) completed\n[worker] Job certification-noop (b79e0b10) completed\n[worker] Job certification-noop (b0017bd5) completed\n[worker] Job certification-noop (0eff6cc7) completed\n[worker] Job certification-noop (80ad78a7) completed\n[worker] Job certification-noop (49183ff1) completed\n[worker] Job certification-noop (5bdc2d8b) completed\n[worker] Job certification-noop (efc3f83c) completed\n[worker] Job certification-noop (6e55709c) completed\n[worker] Job certification-noop (1a366a03) completed\n[worker] Job certification-noop (25877678) completed\n[worker] Job certification-noop (8fd7db10) completed\n[worker] Job certification-noop (094f6d07) completed\n[worker] Job certification-noop (adc869b1) completed\n[worker] Job certification-noop (6f7006c9) completed\n[worker] Job certification-noop (11592b70) completed\n[worker] Job certification-noop (16ee035b) completed\n[worker] Job certification-noop (1093c5bf) completed\n[worker] Job certification-noop (6dc4a024) completed\n[worker] Job certification-noop (19739934) completed\n[worker] Job certification-noop (c186485b) completed\n[worker] Job certification-noop (5e3432e2) completed\n[worker] Job certification-noop (c9d65047) completed\n[worker] Job certification-noop (a4d97c7c) completed\n[worker] Job certification-noop (6d6ae8b8) completed\n[worker] Job certification-noop (127a9d05) completed\n[worker] Job certification-noop (21efca23) completed\n[worker] Job certification-noop (93b50b23) completed\n[worker] Job certification-noop (49b1e203) completed\n[worker] Job certification-noop (d0be69d5) completed\n[worker] Job certification-noop (f29f1d57) completed\n<-- POST /api/messages/4f90329a-bb31-4343-ae6a-02446cf800ba\n[capacity-profile] {\"event\":\"notification_fanout\",\"requested\":60,\"allowed\":60,\"policy_read_ms\":9.4,\"notification_insert_ms\":42.5,\"attention_enqueue_ms\":4.2,\"attention_mode\":\"queued\",\"total_ms\":56.1}\n--> POST /api/messages/4f90329a-bb31-4343-ae6a-02446cf800ba 201 201ms\n[worker] Job observe-chat-message (63841db4) completed\n[capacity-profile] {\"event\":\"attention_projection\",\"notifications\":60,\"projected_items\":60,\"queue_delay_ms\":174,\"projection_ms\":162.9,\"end_to_end_ms\":336.9}\n[worker] Job group notification-attention-sync settled 1/1 jobs\n"
+}

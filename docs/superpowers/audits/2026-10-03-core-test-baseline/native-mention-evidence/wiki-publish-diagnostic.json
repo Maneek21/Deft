@@ -1,0 +1,107 @@
+{
+  "patch": {
+    "status": 200,
+    "contentHash": "21d578e76354a1c3dae0fb6fec9e7bb9091affefcc4ad564e2cf26b95d4fa77a",
+    "response": {
+      "success": true,
+      "slug": "launch-checklist-97f94c08-c391-4063-809a-54c3d97491cb"
+    }
+  },
+  "publications": [
+    {
+      "status": 409,
+      "requestedHash": "c65d9c7b26a45c764a3a3e6c80c3ed84f0e81ddb524df608ddbffc1b211e00b5",
+      "response": {
+        "error": "Content changed. Save or reload before notifying mentions.",
+        "code": "NATIVE_MENTION_REVISION_CONFLICT"
+      }
+    },
+    {
+      "status": 200,
+      "requestedHash": "21d578e76354a1c3dae0fb6fec9e7bb9091affefcc4ad564e2cf26b95d4fa77a",
+      "response": {
+        "source": {
+          "kind": "wiki_page",
+          "id": "97f94c08-c391-4063-809a-54c3d97491cb"
+        },
+        "content_hash": "21d578e76354a1c3dae0fb6fec9e7bb9091affefcc4ad564e2cf26b95d4fa77a",
+        "status": "queued",
+        "queued_count": 2,
+        "blocked_count": 0
+      }
+    }
+  ],
+  "wikiReadbacks": [
+    {
+      "status": 200,
+      "version": 2,
+      "contentHash": "c65d9c7b26a45c764a3a3e6c80c3ed84f0e81ddb524df608ddbffc1b211e00b5"
+    },
+    {
+      "status": 200,
+      "version": 3,
+      "contentHash": "21d578e76354a1c3dae0fb6fec9e7bb9091affefcc4ad564e2cf26b95d4fa77a"
+    },
+    {
+      "status": 200,
+      "version": 3,
+      "contentHash": "21d578e76354a1c3dae0fb6fec9e7bb9091affefcc4ad564e2cf26b95d4fa77a"
+    },
+    {
+      "status": 200,
+      "version": 3,
+      "contentHash": "21d578e76354a1c3dae0fb6fec9e7bb9091affefcc4ad564e2cf26b95d4fa77a"
+    }
+  ],
+  "results": [
+    {
+      "name": "immediate-wiki-save-notify",
+      "status": 409,
+      "body": {
+        "error": "Content changed. Save or reload before notifying mentions.",
+        "code": "NATIVE_MENTION_REVISION_CONFLICT"
+      },
+      "patchContentHash": "21d578e76354a1c3dae0fb6fec9e7bb9091affefcc4ad564e2cf26b95d4fa77a"
+    },
+    {
+      "name": "reload-then-wiki-notify-workaround",
+      "status": 200,
+      "body": {
+        "source": {
+          "kind": "wiki_page",
+          "id": "97f94c08-c391-4063-809a-54c3d97491cb"
+        },
+        "content_hash": "21d578e76354a1c3dae0fb6fec9e7bb9091affefcc4ad564e2cf26b95d4fa77a",
+        "status": "queued",
+        "queued_count": 2,
+        "blocked_count": 0
+      }
+    },
+    {
+      "name": "recipient-task-mention-deeplink",
+      "pass": true,
+      "taskId": "a3d4d935-5fae-4b59-a558-8819e688a062"
+    },
+    {
+      "name": "mobile-picker-and-person-reference",
+      "pass": true,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "bounds": {
+        "x": 58,
+        "y": 703,
+        "width": 320,
+        "height": 82
+      }
+    },
+    {
+      "name": "mobile-wiki-reference-rendering",
+      "pass": true
+    }
+  ],
+  "pageErrors": [
+    "Not found"
+  ]
+}

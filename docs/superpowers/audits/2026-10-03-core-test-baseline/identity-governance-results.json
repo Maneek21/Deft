@@ -1,0 +1,166 @@
+{
+  "schema": "deft.core.baseline.identity.v1",
+  "timestamp": "2026-10-03T11:21:17.662Z",
+  "database": {
+    "host": "127.0.0.1",
+    "port": "55433",
+    "name": "deft_identity_baseline_test"
+  },
+  "fixtures": {
+    "org": "baseline-id-org-6efdc33f-0cb9-44db-853d-11b125045d6c",
+    "foreignOrg": "baseline-id-foreign-org-6efdc33f-0cb9-44db-853d-11b125045d6c",
+    "owner": "baseline-id-owner-6efdc33f-0cb9-44db-853d-11b125045d6c",
+    "member": "baseline-id-member-6efdc33f-0cb9-44db-853d-11b125045d6c",
+    "foreign": "baseline-id-foreign-6efdc33f-0cb9-44db-853d-11b125045d6c",
+    "privateSpace": "baseline-id-private-6efdc33f-0cb9-44db-853d-11b125045d6c",
+    "publicSpace": "baseline-id-public-6efdc33f-0cb9-44db-853d-11b125045d6c",
+    "message": "baseline-id-message-6efdc33f-0cb9-44db-853d-11b125045d6c"
+  },
+  "outcomes": [
+    {
+      "scenario": "private-message-authorized-control",
+      "expected": "200 contains canary",
+      "actual": 200,
+      "pass": true
+    },
+    {
+      "scenario": "private-message-member-denial-control",
+      "expected": 403,
+      "actual": 403,
+      "pass": true
+    },
+    {
+      "scenario": "audit-authorized-control",
+      "expected": "200 contains canary",
+      "actual": 200,
+      "pass": true
+    },
+    {
+      "scenario": "audit-cross-org-denial-control",
+      "expected": "no canary",
+      "actual": 200,
+      "pass": true,
+      "detail": []
+    },
+    {
+      "scenario": "audit-private-message-denial",
+      "expected": "403/404 or no private payload",
+      "actual": {
+        "status": 200,
+        "body": [
+          {
+            "id": "71583061-e007-4986-95c4-4e69b941f3fb",
+            "org_id": "baseline-id-org-6efdc33f-0cb9-44db-853d-11b125045d6c",
+            "actor_type": "agent",
+            "actor_id": "baseline-id-owner-6efdc33f-0cb9-44db-853d-11b125045d6c",
+            "action": "post_message",
+            "entity_type": "message",
+            "entity_id": "baseline-id-message-6efdc33f-0cb9-44db-853d-11b125045d6c",
+            "before_state": null,
+            "after_state": {
+              "content": "PRIVATE_AUDIT_CANARY_6efdc33f-0cb9-44db-853d-11b125045d6c",
+              "space_id": "baseline-id-private-6efdc33f-0cb9-44db-853d-11b125045d6c",
+              "message_id": "baseline-id-message-6efdc33f-0cb9-44db-853d-11b125045d6c"
+            },
+            "metadata": {
+              "space_name": "Private leadership"
+            },
+            "created_at": "2026-10-03T16:51:14.285Z"
+          }
+        ]
+      },
+      "pass": false
+    },
+    {
+      "scenario": "offboarding-success-control",
+      "expected": 200,
+      "actual": 200,
+      "pass": true,
+      "detail": {
+        "success": true,
+        "receipt": {
+          "revoked_at": "2026-10-03T11:21:16.769Z",
+          "revoked": {
+            "spaces": [
+              {
+                "id": "baseline-id-public-6efdc33f-0cb9-44db-853d-11b125045d6c",
+                "name": "Baseline public",
+                "type": "public"
+              }
+            ],
+            "teams": [],
+            "groups": [],
+            "secondary_task_assignments": 0,
+            "active_mcp_tokens": 0,
+            "active_api_keys": 0,
+            "active_oauth_grants": 0
+          },
+          "reassigned": {
+            "replacement_user_id": null,
+            "primary_open_tasks": 0,
+            "led_projects": 0,
+            "led_teams": 0
+          },
+          "remaining_reassignment": {
+            "primary_open_tasks": [],
+            "led_projects": [],
+            "led_teams": []
+          },
+          "remaining_counts": {
+            "primary_open_tasks": 0,
+            "led_projects": 0,
+            "led_teams": 0
+          }
+        }
+      }
+    },
+    {
+      "scenario": "offboarded-login-denial-control",
+      "expected": 403,
+      "actual": 403,
+      "pass": true,
+      "detail": "ORG_MEMBERSHIP_INACTIVE"
+    },
+    {
+      "scenario": "offboarded-existing-session-denial-control",
+      "expected": "401/403",
+      "actual": 401,
+      "pass": true
+    },
+    {
+      "scenario": "reinvite-create-control",
+      "expected": 201,
+      "actual": 201,
+      "pass": true
+    },
+    {
+      "scenario": "pending-reinvite-login-denial",
+      "expected": "403 until invite accepted",
+      "actual": 200,
+      "pass": false
+    },
+    {
+      "scenario": "pending-reinvite-revoke-control",
+      "expected": 200,
+      "actual": 200,
+      "pass": true
+    },
+    {
+      "scenario": "revoked-reinvite-login-denial",
+      "expected": 403,
+      "actual": {
+        "status": 200,
+        "membership": {
+          "is_active": true,
+          "role": "member"
+        }
+      },
+      "pass": false
+    }
+  ],
+  "notes": [
+    "Actual Hono routes, JWT login/session verification, actual PostgreSQL queries. No database mocks.",
+    "Private audit fixture persisted through actual logAuditEvent writer matching agent post_message payload; agent executor not invoked.",
+    "Fixtures retained in designated disposable baseline DB for independent inspection."
+  ]
+}

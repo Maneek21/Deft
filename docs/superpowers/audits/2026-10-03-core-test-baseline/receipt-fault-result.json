@@ -1,0 +1,27 @@
+{
+  "normal": {
+    "http_status": 200,
+    "action": {
+      "approval_status": "approved",
+      "executed": true,
+      "error": null
+    },
+    "message_count": 1,
+    "receipt_count": 1,
+    "receipts_verified": [
+      true
+    ]
+  },
+  "fault": {
+    "http_status": 200,
+    "action": {
+      "approval_status": "approved",
+      "executed": true,
+      "error": null
+    },
+    "message_count": 1,
+    "receipt_count": 0,
+    "receipts_verified": []
+  },
+  "trigger_remaining": 0
+}

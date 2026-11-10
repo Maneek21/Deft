@@ -1,0 +1,10 @@
+{
+  "extension_version": "0.8.2",
+  "extension_archive_sha256": "EBA9E9BF0036447A75D8F9671A20F0628A712C7A355775134530FEFCCCF2656B",
+  "installed_runtime_modified": false,
+  "extension_source": "https://repository.cybertec.at/windows/public/16/extension/pgvector-16-public-v0.8.2-1.zip",
+  "installed_EDB_PG16_13_vector_probe": "failed incompatible vendor extension procedure",
+  "runtime_source": "https://repository.cybertec.at/windows/public/16/postgresql-ee-16.14_EE_1.3.11-public-2.zip",
+  "isolated_port": 55433,
+  "runtime_archive_sha256": "525E37E1F0165A1ECE9EDDA7E53E62140944782BBE28467F0EA10B3999268F38"
+}

@@ -1,0 +1,17 @@
+{
+  "database_canaries_match": true,
+  "restored_database": "deft_restore_baseline_test",
+  "upload_canaries": [
+    {
+      "restored": true,
+      "sha256": "589493F48D8D138C2B68CE72662B05530B07796006070EBD4D9D0B843C933130",
+      "name": "probe-d3fef32c-7585-4cd7-bc29-5e9c78457f74.txt"
+    },
+    {
+      "restored": true,
+      "sha256": "589493F48D8D138C2B68CE72662B05530B07796006070EBD4D9D0B843C933130",
+      "name": "probe-fc0d994b-bdeb-463f-8370-b0e1dfbc079f.txt"
+    }
+  ],
+  "dump_sha256": "03E96132EBDD99414D7B51CDA335CA578C62AE8C0F310C88AE8434680F09407A"
+}

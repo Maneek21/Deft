@@ -1,0 +1,8 @@
+{
+  "exit": 0,
+  "source_sha": "b567af6ff12e5e4c61dbc54eddde17a81b986a28",
+  "instrumentation": "import resolution, screenshots, declared Huddles-OFF absence check; other assertions unchanged",
+  "huddles": "off at build time; flag-on certified separately in pinned GitHub CI",
+  "api_port": 3471,
+  "web_port": 3470
+}

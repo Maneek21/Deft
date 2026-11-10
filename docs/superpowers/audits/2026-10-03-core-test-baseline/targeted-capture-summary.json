@@ -1,0 +1,45 @@
+{
+  "exit": 0,
+  "results": [
+    {
+      "name": "mobile-tasks-settled rendered without document overflow",
+      "status": "pass",
+      "overflow": 0,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      }
+    },
+    {
+      "name": "Visible task screenshot after row visibility and animation settle",
+      "status": "pass",
+      "text": "Construction permit — county inspector follow-up",
+      "box": {
+        "x": 51,
+        "y": 512.75,
+        "width": 310,
+        "height": 35.75
+      }
+    },
+    {
+      "name": "desktop-dashboard-mywork actual card capture",
+      "status": "pass",
+      "text": "MY WORK\nView →\nTO DO\n0\n\nNothing queued\n\nIN PROGRESS\n1\nGH3-6\nP1\nConstruction permit — county inspector follow-up\nOct 7\nIN REVIEW\n0\n\nNothing in review",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      }
+    },
+    {
+      "name": "mobile-dashboard-mywork actual card capture",
+      "status": "pass",
+      "text": "MY WORK\nView →\nTO DO\n0\n\nNothing queued\n\nIN PROGRESS\n1\nGH3-6\nP1\nConstruction permit — county inspector follow-up\nOct 7\nIN REVIEW\n0\n\nNothing in review",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      }
+    }
+  ],
+  "pageErrors": [],
+  "cleanup": "Owned trees terminated; no data writes other than login session"
+}

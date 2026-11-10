@@ -1,0 +1,937 @@
+{
+  "schema": "deft.core.executed-baseline.v1",
+  "date": "2026-10-03",
+  "revision": "b567af6ff12e5e4c61dbc54eddde17a81b986a28",
+  "tree": "9def613431b27241d839a3bb2484133a00ac6d2e",
+  "checkout": "C:/Users/Osheen Pradhan/.codex/worktrees/core-baseline-tests-20261003/Deft Main Repo",
+  "raw_evidence": "C:/tmp/deft-core-baseline-20261003",
+  "application_source_changed": false,
+  "synthetic_fixtures_only": true,
+  "environment": {
+    "os": "Windows",
+    "postgres": "Cybertec 16.14 EE1.3.11+demo",
+    "pgvector": "0.8.2",
+    "host": "127.0.0.1",
+    "port": 55433,
+    "timezone": "UTC (initial non-UTC failures retained)",
+    "cluster": "C:/tmp/deft-core-baseline-20261003/vendor-pgdata",
+    "owned_cluster_stopped": true,
+    "installed_postgres_untouched": true
+  },
+  "counts": {
+    "api_raw": {
+      "tests": 1474,
+      "passed": 1462,
+      "failed": 1,
+      "skipped": 11,
+      "files": 281
+    },
+    "api_effective": {
+      "tests": 1482,
+      "passed": 1482,
+      "failed": 0,
+      "uncovered_skipped_cases": 0,
+      "method": "Replace failed session wrapper with nine passing entries (+8 total); replace eleven gated skips with focused passes. Do not add repeated cases from focused files."
+    },
+    "api_focused_closure": {
+      "session_raw_passes": 9,
+      "resource_passes": 3,
+      "ancestry_passes": 1,
+      "mcp_cutover_passes": 6,
+      "native_concurrency_previously_skipped_passes": 1
+    },
+    "units": {
+      "tests": 553,
+      "passed": 549,
+      "failed": 3,
+      "skipped": 1,
+      "files": 91
+    },
+    "production_browser_passes": 13,
+    "targeted_ui_assertions_passed": 15,
+    "attention_controls_passed": 22,
+    "attention_behavior_mismatch_observations": 13,
+    "identity_controls_passed": 9,
+    "identity_expected_denials_failed": 3,
+    "knowledge_retrieval_passes": 8,
+    "db_upgrade_unit_passes": 28
+  },
+  "github_ci": {
+    "url": "https://github.com/Maneek21/Deft/actions/runs/37026892933",
+    "same_revision": true,
+    "api": {
+      "tests": 1482,
+      "passed": 1474,
+      "failed": 0,
+      "skipped": 8
+    },
+    "hermes_employee_gate": "skipped"
+  },
+  "capacity": {
+    "raw_verdict": "FAIL",
+    "finding": "Policy query counted 56 total recipients versus 55 expected human recipients; zero blocked-policy leaks. SQL load inventory separates 10620 human notifications and 180 agent notifications. No full stock-harness certification claimed.",
+    "all_measured_latency_delivery_and_recovery_budgets_met": true,
+    "harness_changes": [
+      "Actual login session tokens",
+      "Correlate attention to run bodies",
+      "Scope attention proof to seeded humans"
+    ],
+    "original_loads_and_budgets_preserved": true
+  },
+  "unverified": [
+    "Live OAuth/email/provider writes",
+    "Real AI/Hermes end-to-end quality and cost",
+    "Semantic retrieval relevance",
+    "Hardware audio/video",
+    "Safari/Firefox",
+    "Multi-instance realtime",
+    "Every unmerged thread working tree"
+  ],
+  "artifacts": [
+    {
+      "path": "unit-effective-summary.json",
+      "bytes": 3476,
+      "sha256": "6ec405a95c6efb3036e01a8fc43380e84cd1b897a234f4b24c2f26aced8294e7",
+      "source": "C:/tmp/deft-core-baseline-20261003/unit-effective-summary.json"
+    },
+    {
+      "path": "attention-real-db-effective-summary.json",
+      "bytes": 8896,
+      "sha256": "a1a1384445a86767c309e4f2e064e86cc320cd8cc04e4f27344986f2d86b0492",
+      "source": "C:/tmp/deft-core-baseline-20261003/attention-real-db-effective-summary.json"
+    },
+    {
+      "path": "attention-ics-followup-summary.json",
+      "bytes": 2598,
+      "sha256": "12a82842369e0b35bafc183ffda9051edd616be754a3ebc61543938cfb0ee4d5",
+      "source": "C:/tmp/deft-core-baseline-20261003/attention-ics-followup-summary.json"
+    },
+    {
+      "path": "identity-native-summary.json",
+      "bytes": 2839,
+      "sha256": "4542aa3be733f47d4ea5f0302a187fdb3f198376ed980081f327b15a8ccc1944",
+      "source": "C:/tmp/deft-core-baseline-20261003/identity-native-summary.json"
+    },
+    {
+      "path": "identity-governance-results.json",
+      "bytes": 5061,
+      "sha256": "dcdef844bc37e1b5d5ffcf51859d9381c87dc2d280f2ca710a6057070a5ccfb4",
+      "source": "C:/tmp/deft-core-baseline-20261003/identity-governance-results.json"
+    },
+    {
+      "path": "attachment-project-access-result.json",
+      "bytes": 253,
+      "sha256": "d5e96d19cbf5457b34e73ef760e28aeb64cb6dc3db3fdf2a85db66e4e6ea98b8",
+      "source": "C:/tmp/deft-core-baseline-20261003/attachment-project-access-result.json"
+    },
+    {
+      "path": "receipt-fault-result.json",
+      "bytes": 489,
+      "sha256": "042c505637337de9f7ec950c77fca0c9abc3871028e9ae259f0bbf9ae3272ce0",
+      "source": "C:/tmp/deft-core-baseline-20261003/receipt-fault-result.json"
+    },
+    {
+      "path": "restore-evidence/result.json",
+      "bytes": 588,
+      "sha256": "c61bc2c91309a8b0d6de1857e9b2f434d2354b0515405994ac8058d42d6b74a8",
+      "source": "C:/tmp/deft-core-baseline-20261003/restore-evidence/result.json"
+    },
+    {
+      "path": "production-browser-result.json",
+      "bytes": 318,
+      "sha256": "792083adc619fd275054d7b7107a8da78e206ebce66a152f2745ada02f09a115",
+      "source": "C:/tmp/deft-core-baseline-20261003/production-browser-result.json"
+    },
+    {
+      "path": "targeted-browser-summary.json",
+      "bytes": 4364,
+      "sha256": "1c32277bf2aaaee1a9c13a90dbe91b998dc23c195712a13b95083bde35c26d8c",
+      "source": "C:/tmp/deft-core-baseline-20261003/targeted-browser-summary.json"
+    },
+    {
+      "path": "targeted-capture-summary.json",
+      "bytes": 1346,
+      "sha256": "a3c3f402cca342ed6b1ae1316e1ed2abe43d4994d51c13f7db8b5630817dbba3",
+      "source": "C:/tmp/deft-core-baseline-20261003/targeted-capture-summary.json"
+    },
+    {
+      "path": "api-utc-result.json",
+      "bytes": 136,
+      "sha256": "15aa02a991cc0f0e6f176fa39af6daa668774011fcef42537956bdf32304b8b0",
+      "source": "C:/tmp/deft-core-baseline-20261003/api-utc-result.json"
+    },
+    {
+      "path": "api-utc-inventory.json",
+      "bytes": 10603,
+      "sha256": "a628f3d388ceb2ae4b011edcf2d40afa4101b7477903f517b70515ab06d0f51e",
+      "source": "C:/tmp/deft-core-baseline-20261003/api-utc-inventory.json"
+    },
+    {
+      "path": "pgvector-provenance.json",
+      "bytes": 625,
+      "sha256": "01058b120c7ac6450c636d344190893bb6156bd9c60ca8ccc7b4ecadf39ee7bd",
+      "source": "C:/tmp/deft-core-baseline-20261003/pgvector-provenance.json"
+    },
+    {
+      "path": "github-ci-jobs.json",
+      "bytes": 17116,
+      "sha256": "c050c5b9d807b7801935d1d4e304dc3c17c936ecaac5aea797d3104771b20d31",
+      "source": "C:/tmp/deft-core-baseline-20261003/github-ci-jobs.json"
+    },
+    {
+      "path": "api-utc-suite.log",
+      "bytes": 350595,
+      "sha256": "853a4352fffa1ac550ff3db12e97d0947fa5d3827d6e388ae105dfe80526f70b",
+      "source": "C:/tmp/deft-core-baseline-20261003/api-utc-suite.log"
+    },
+    {
+      "path": "phase4-resource-gates.log",
+      "bytes": 616,
+      "sha256": "db25546cd29d506126e723bd01748968df6d92ae3ae8e819df020e6861f2e77b",
+      "source": "C:/tmp/deft-core-baseline-20261003/phase4-resource-gates.log"
+    },
+    {
+      "path": "web-session-family-focused.log",
+      "bytes": 1033,
+      "sha256": "418539e18d993495d7b88cb791facacbea5f1a8fda2d4140f6897676fe0db9e7",
+      "source": "C:/tmp/deft-core-baseline-20261003/web-session-family-focused.log"
+    },
+    {
+      "path": "phase5-mcp-cutover-isolated-tests.log",
+      "bytes": 880,
+      "sha256": "6e481a735d69270e10da05bd23b2e79e4a26802d00a8cc88cbc947d9d1a5b3dc",
+      "source": "C:/tmp/deft-core-baseline-20261003/phase5-mcp-cutover-isolated-tests.log"
+    },
+    {
+      "path": "app-origin-direct-UTC-rerun.log",
+      "bytes": 278,
+      "sha256": "ef472c46f44e909476379b4e17d5d9551091ab95d8fbfe99753220b5bad1041c",
+      "source": "C:/tmp/deft-core-baseline-20261003/app-origin-direct-UTC-rerun.log"
+    },
+    {
+      "path": "native-mention-evidence/agent-and-native-tests.log",
+      "bytes": 2658,
+      "sha256": "4b781698f36c933cd3283bd3129ba5ef3b2c49081fa2cc906c96eed24259680a",
+      "source": "C:/tmp/deft-core-baseline-20261003/native-mention-evidence/agent-and-native-tests.log"
+    },
+    {
+      "path": "native-mention-evidence/wiki-publish-diagnostic.json",
+      "bytes": 2852,
+      "sha256": "b2ef7feec7e4e90d47b2d25211d4ab2908dff765f2273b7fc998caae6ffa2e1d",
+      "source": "C:/tmp/deft-core-baseline-20261003/native-mention-evidence/wiki-publish-diagnostic.json"
+    },
+    {
+      "path": "native-mention-evidence/seen404-route-repro.json",
+      "bytes": 344,
+      "sha256": "cbb58a2ca1d315660b164d6ceb191d7d5bcbd41009d9ba0496e2bf7cc1b07e30",
+      "source": "C:/tmp/deft-core-baseline-20261003/native-mention-evidence/seen404-route-repro.json"
+    },
+    {
+      "path": "scripts.tap.log",
+      "bytes": 76978,
+      "sha256": "0298f1498dd5ad6ab7eb751a5fcf93202983413d66cf5c2f624148860933b235",
+      "source": "C:/tmp/deft-core-baseline-20261003/scripts.tap.log"
+    },
+    {
+      "path": "production-browser-smoke.log",
+      "bytes": 862,
+      "sha256": "480ad78be4bc5e97cb1f6512c39c65980ecfc88f17f4fe79529a9223703829ac",
+      "source": "C:/tmp/deft-core-baseline-20261003/production-browser-smoke.log"
+    },
+    {
+      "path": "knowledge-retrieval.log",
+      "bytes": 310,
+      "sha256": "636b8cc07c30d05bcf552d397a3257ec5a08077f7baeca3a6e2e42fc995fe0b3",
+      "source": "C:/tmp/deft-core-baseline-20261003/knowledge-retrieval.log"
+    },
+    {
+      "path": "receipt-fault-probe.mts",
+      "bytes": 4312,
+      "sha256": "b1c950d54b1c2941447535f88e0d9cbe9a29ca4dc9a54357a8ea306c6da32da7",
+      "source": "C:/tmp/deft-core-baseline-20261003/receipt-fault-probe.mts"
+    },
+    {
+      "path": "identity-governance-probe.ts",
+      "bytes": 8201,
+      "sha256": "5cfbc024661c3d0730e6c98a6c210ee237eab96bee6f81d028c39262c7181711",
+      "source": "C:/tmp/deft-core-baseline-20261003/identity-governance-probe.ts"
+    },
+    {
+      "path": "attention-real-db-probe.mts",
+      "bytes": 9536,
+      "sha256": "ef0557ba6308fdb7277deeae075127302d802becd98590ab9c73b4b7de003d01",
+      "source": "C:/tmp/deft-core-baseline-20261003/attention-real-db-probe.mts"
+    },
+    {
+      "path": "attachment-project-access-probe.mts",
+      "bytes": 4004,
+      "sha256": "3addaac33162dda5f08a980e3509dc5e4fdbcf490c435d019cbeeb2dcb13fc17",
+      "source": "C:/tmp/deft-core-baseline-20261003/attachment-project-access-probe.mts"
+    },
+    {
+      "path": "run-api-baseline-utc.mjs",
+      "bytes": 2968,
+      "sha256": "8c31cfd61405d0e0fb72d4fdd662292018c69dfcb44e6f9f85ff681bd50f391f",
+      "source": "C:/tmp/deft-core-baseline-20261003/run-api-baseline-utc.mjs"
+    },
+    {
+      "path": "run-production-browser.mjs",
+      "bytes": 5263,
+      "sha256": "674b40c1973359a6d8f2493075550a45c044970f9874d7669842d0d12f77060f",
+      "source": "C:/tmp/deft-core-baseline-20261003/run-production-browser.mjs"
+    },
+    {
+      "path": "run-targeted-browser.mjs",
+      "bytes": 11410,
+      "sha256": "cb98a572b584829a03b8f4f584f6128a1ae7bf0a9990797535fbe21fd20456ea",
+      "source": "C:/tmp/deft-core-baseline-20261003/run-targeted-browser.mjs"
+    },
+    {
+      "path": "certify-60-person-seeded-users.mjs",
+      "bytes": 38637,
+      "sha256": "fc9d09239a857ae756c549da9d9210003d1d62f7e13e1c73486c57fad3e99d1f",
+      "source": "C:/tmp/deft-core-baseline-20261003/certify-60-person-seeded-users.mjs"
+    },
+    {
+      "path": "targeted-browser-screenshots/mobile-tasks-settled.png",
+      "bytes": 43388,
+      "sha256": "e4d6aad0fac38c59f1900fab95ae963b8a3aa23fbe546df8c05f3a9019bf5581",
+      "source": "C:/tmp/deft-core-baseline-20261003/targeted-browser-screenshots/mobile-tasks-settled.png"
+    },
+    {
+      "path": "targeted-browser-screenshots/mobile-dashboard-mywork.png",
+      "bytes": 12001,
+      "sha256": "6c410dc8726a6ebfc6b1fef5e971b5247802be063cfcd73e6934f6f22e73ac71",
+      "source": "C:/tmp/deft-core-baseline-20261003/targeted-browser-screenshots/mobile-dashboard-mywork.png"
+    },
+    {
+      "path": "targeted-browser-screenshots/mobile-note-reloaded.png",
+      "bytes": 21954,
+      "sha256": "6363f196204213b58418fc54664c06eb5ea4a1f0531af3a86a1a80d89dc03f98",
+      "source": "C:/tmp/deft-core-baseline-20261003/targeted-browser-screenshots/mobile-note-reloaded.png"
+    },
+    {
+      "path": "capacity-result.json",
+      "bytes": 9438,
+      "sha256": "0a25bd9245504054f6dba44a628b51bd8542aabb8b6255292ca1871135be5604",
+      "source": "C:/Users/Osheen Pradhan/.codex/worktrees/core-baseline-tests-20261003/Deft Main Repo/reports/deft-60-person-certification-20261003122506848.json"
+    }
+  ],
+  "raw_inventory": [
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/api-build.log",
+      "bytes": 24,
+      "sha256": "f876ec7553e281fa587d8701697920d525b114d9d39b68dbbc592bcfec6b09ce"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/api-suite.log",
+      "bytes": 30802,
+      "sha256": "1642d45c3259f75cd0811dc0d3cfea3ca9c70b7856398ae13ded96ca818007fe"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/api-utc-current-process.json",
+      "bytes": 10761,
+      "sha256": "c3f9a70d236ad79276053e0290d87431c2e4415dca51dfafc289b5a6b3c6cd07"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/api-utc-fixture-seed.log",
+      "bytes": 148,
+      "sha256": "195315f78547c0301e14e59126529dc1f59cae7824ad81c6cb768255c7e0ab90"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/api-utc-inventory.json",
+      "bytes": 10603,
+      "sha256": "a628f3d388ceb2ae4b011edcf2d40afa4101b7477903f517b70515ab06d0f51e"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/api-utc-platform-seed.log",
+      "bytes": 922,
+      "sha256": "090778b57a852939d55c2d12b02fe507936336965358c942c6c580a443aa7797"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/api-utc-result.json",
+      "bytes": 136,
+      "sha256": "15aa02a991cc0f0e6f176fa39af6daa668774011fcef42537956bdf32304b8b0"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/api-utc-runner.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/api-utc-suite.log",
+      "bytes": 350595,
+      "sha256": "853a4352fffa1ac550ff3db12e97d0947fa5d3827d6e388ae105dfe80526f70b"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/app-origin-direct-rerun.log",
+      "bytes": 1415,
+      "sha256": "7d7053b27bb84eff9b1b1dc0ffafe1f09774cebfc9f9934e28c2389dcd50ef09"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/app-origin-direct-UTC-rerun.log",
+      "bytes": 278,
+      "sha256": "ef472c46f44e909476379b4e17d5d9551091ab95d8fbfe99753220b5bad1041c"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/attachment-project-access-probe.mts",
+      "bytes": 4004,
+      "sha256": "3addaac33162dda5f08a980e3509dc5e4fdbcf490c435d019cbeeb2dcb13fc17"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/attachment-project-access-result.json",
+      "bytes": 253,
+      "sha256": "d5e96d19cbf5457b34e73ef760e28aeb64cb6dc3db3fdf2a85db66e4e6ea98b8"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/attachment-project-access.log",
+      "bytes": 1412,
+      "sha256": "3b7aa0ab0f95a4472941cf315946bcc5fa476e38478e2bdf55edeb7adb0ac01c"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/attention-db-push.log",
+      "bytes": 2719,
+      "sha256": "999eb45d4da70db629f5ed00bb3d60e7c97e447f2db770222fa2a1d947199e5a"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/attention-ics-followup-initial-harness.log",
+      "bytes": 6189,
+      "sha256": "8f78081893d3741c1acfdb2def3d1ea7ed95cd17d62b810d05a7cdc310afcb7d"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/attention-ics-followup-summary.json",
+      "bytes": 2598,
+      "sha256": "12a82842369e0b35bafc183ffda9051edd616be754a3ebc61543938cfb0ee4d5"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/attention-ics-followup.log",
+      "bytes": 1810,
+      "sha256": "99352e73848f18abf85da16cee7625a134c6e462d6ab825dd7ea40aba5d40972"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/attention-ics-followup.mts",
+      "bytes": 5596,
+      "sha256": "0c7e2c078686f55505aa56f53dedf93bd2043e959c18d3ba033676e62e8defe1"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/attention-real-db-effective-summary.json",
+      "bytes": 8896,
+      "sha256": "a1a1384445a86767c309e4f2e064e86cc320cd8cc04e4f27344986f2d86b0492"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/attention-real-db-probe.log",
+      "bytes": 4595,
+      "sha256": "a81b4fc941b2f0a8bb1ab211137af1a8370299eb588c2c0057bcc245144102b4"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/attention-real-db-probe.mts",
+      "bytes": 9536,
+      "sha256": "ef0557ba6308fdb7277deeae075127302d802becd98590ab9c73b4b7de003d01"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/attention-real-db-summary.json",
+      "bytes": 5311,
+      "sha256": "7489f52b904bbe2b2d244f7b19eefe2d257fd9960c3f2cf94c2bc19a4c50a900"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/browser-schema.log",
+      "bytes": 2717,
+      "sha256": "417d8b6e7a2dbee66a7daa61f1038a2af7d03f4172d11df77f38a599c9c17ba0"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/browser-seed.log",
+      "bytes": 2162,
+      "sha256": "0ef7a568c9b2e00d91dbc2b662d264eb206c83a241385dbdd585eeb26a31b71c"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/capacity-configured.log",
+      "bytes": 1370,
+      "sha256": "df6deb7b9adbc87ed9b5fe2c96c72aa81aa1e3c3e54e145852d28498025765fe"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/capacity-correlated.log",
+      "bytes": 997,
+      "sha256": "6df27c4e246a1420eb047057daf929d15c769807f499c160a5bdd33eb1e2b080"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/capacity-real-sessions.log",
+      "bytes": 1004,
+      "sha256": "07a2ac36827951f937b0901b06012da722f3ebdfbcca912bdf59e11fcff92cea"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/capacity-seeded-users.log",
+      "bytes": 953,
+      "sha256": "6a34ed6617915b69957a6aa0e3e4844f0ce41918eef0ff1e697a78f539de0e09"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/capacity.log",
+      "bytes": 1872,
+      "sha256": "0c3e18c63e7164700bfc972993fb8eafd85768ef1a06849cc9437d42bca459c2"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/capture-targeted-ui-body.mjs",
+      "bytes": 2775,
+      "sha256": "d3f2b9e4020e219a264f8800bd3e47574bf8f017fe32a35d2585cbc50ad1b6a8"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/certify-60-person-correlated.mjs",
+      "bytes": 37764,
+      "sha256": "ff42604883c4bdb47bdbfb8b63e66f3535b4b8913e758c57861789f252993737"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/certify-60-person-real-sessions.mjs",
+      "bytes": 37285,
+      "sha256": "50357b9bc924f1ae8683b96a0964b9d221ae4cdc7a2ff0ac7d59576a99176c55"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/certify-60-person-seeded-users.mjs",
+      "bytes": 38637,
+      "sha256": "fc9d09239a857ae756c549da9d9210003d1d62f7e13e1c73486c57fad3e99d1f"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/consolidate-units.mjs",
+      "bytes": 2477,
+      "sha256": "7ec90e600221bc84b04099aa52b0ec75b03cc870a525dee8b17a6c67133f0c5b"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/db-push-full.log",
+      "bytes": 2667,
+      "sha256": "7ce6eeff7397d1dc532ff9a43581a69d12071e7b3e04e05a821e6160f3c1accb"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/db-upgrade-unit.log",
+      "bytes": 2701,
+      "sha256": "4f6b361d68ad573700ea098d107c2bbdec1bcf91b292e0286e2a3c0e1f2faf12"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/export-baseline-evidence.mjs",
+      "bytes": 5372,
+      "sha256": "d6fa84095ba042931dfcf8511beeabbd5a9a2b040cad57c84aacebaa688a9ead"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/files-apps-db-push.log",
+      "bytes": 2767,
+      "sha256": "8e9bdfc1bd5068e2ad08caf66902467012f81645193ed774d696d1c6a9accb1e"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/files-apps-lifecycle-tests.log",
+      "bytes": 2509,
+      "sha256": "355edae38872720657bc65c8acffea445123f1c9d79142438dae6779c40937c8"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/files-apps-original-timezone.log",
+      "bytes": 61,
+      "sha256": "fd4fe5dda36c0c4706afd72ac33fd8e01207bb22ae1d76ef1ee9f950982610b2"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/files-apps-schema-clone.log",
+      "bytes": 14091,
+      "sha256": "cf9d9489202ff91de17fc5d6ce88f198780f653bd18e87868695d0b55180f060"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/files-apps-timezone-change.log",
+      "bytes": 16,
+      "sha256": "e698a53421fff84c3ffaec44c37e1b3769e775ada9139fd33240fede3cefddbd"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/files-apps-upgrade-repeat.log",
+      "bytes": 307,
+      "sha256": "e73d4802458c876275fcf2124c539e1add1171f56a5f2f4d1f75ce9098c5d27d"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/files-apps-upgrade-status.log",
+      "bytes": 259,
+      "sha256": "2a26af5641d1ab1a4cf3bcede251e29be77808cafeb6b34bf4fb410363dce563"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/files-apps-upgrade.log",
+      "bytes": 3517,
+      "sha256": "cf481ebce3f01a2b4c3a8081161689b5b6b515cc0c9837c24679440c2892cc5d"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/github-ci-jobs.json",
+      "bytes": 17116,
+      "sha256": "c050c5b9d807b7801935d1d4e304dc3c17c936ecaac5aea797d3104771b20d31"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/github-ci.log",
+      "bytes": 2160195,
+      "sha256": "8eaa0c45786a7e60450f378e96953ffe24c69899cc9bc8e9d3cedd4d75d13c5e"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/github-runs.json",
+      "bytes": 760,
+      "sha256": "01c1f327a5a177f9d01cff2f4c5cf8b57ed82c5bff274b055f58d56b35fc1e93"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/identity-governance-probe.log",
+      "bytes": 2515,
+      "sha256": "57153f41bb53f576c24c17ce7e9578e946509fbb416ed28b8f701027b85ce438"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/identity-governance-probe.ts",
+      "bytes": 8201,
+      "sha256": "5cfbc024661c3d0730e6c98a6c210ee237eab96bee6f81d028c39262c7181711"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/identity-governance-results.json",
+      "bytes": 5061,
+      "sha256": "dcdef844bc37e1b5d5ffcf51859d9381c87dc2d280f2ca710a6057070a5ccfb4"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/identity-native-summary.json",
+      "bytes": 2839,
+      "sha256": "4542aa3be733f47d4ea5f0302a187fdb3f198376ed980081f327b15a8ccc1944"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/initdb.log",
+      "bytes": 942,
+      "sha256": "4bd35010d07f299bbce418f4eb11364747dd7d71e5f20ab9ae3179c1f08e5404"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/kit.tap.log",
+      "bytes": 16823,
+      "sha256": "296c2063478bf90e4182371dbb0badc40a3556834b881c5e344f42accc1b6d87"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/knowledge-retrieval.log",
+      "bytes": 310,
+      "sha256": "636b8cc07c30d05bcf552d397a3257ec5a08077f7baeca3a6e2e42fc995fe0b3"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/native-mention-exploratory.mjs",
+      "bytes": 5575,
+      "sha256": "83569712e48c6b03d65c484ddf3a0a229be43cd94df1d8b52830e300c4b9a099"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/packed-runner-retry-summary.json",
+      "bytes": 1167,
+      "sha256": "1d5514218af3194f899c562f5b5cea09a0a4d0c8395acd87feec6b4a076ed917"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/packed-runner-retry.tap.log",
+      "bytes": 824,
+      "sha256": "f1095fb9df66dfe92b1e013727efed8bb3f5cbb868830f0a6634e40e6c57eefc"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/pgvector-provenance.json",
+      "bytes": 625,
+      "sha256": "01058b120c7ac6450c636d344190893bb6156bd9c60ca8ccc7b4ecadf39ee7bd"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/phase4-clone.log",
+      "bytes": 16,
+      "sha256": "e698a53421fff84c3ffaec44c37e1b3769e775ada9139fd33240fede3cefddbd"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/phase4-resource-gates.log",
+      "bytes": 616,
+      "sha256": "db25546cd29d506126e723bd01748968df6d92ae3ae8e819df020e6861f2e77b"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/phase5-clone.log",
+      "bytes": 16,
+      "sha256": "e698a53421fff84c3ffaec44c37e1b3769e775ada9139fd33240fede3cefddbd"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/phase5-cutover-tests.log",
+      "bytes": 9372,
+      "sha256": "c1122a9393f3211e0a3f6277ce5ddc3c8b47c57eec9cfa313171264c63e804b3"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/phase5-mcp-clone.log",
+      "bytes": 16,
+      "sha256": "e698a53421fff84c3ffaec44c37e1b3769e775ada9139fd33240fede3cefddbd"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/phase5-mcp-cutover-isolated-tests.log",
+      "bytes": 880,
+      "sha256": "6e481a735d69270e10da05bd23b2e79e4a26802d00a8cc88cbc947d9d1a5b3dc"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/postgres.stderr.log",
+      "bytes": 2402,
+      "sha256": "3eb440e1cf2a78a5496566db0c7be82a341d0e04964090ecc3146df3b166cfc3"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/postgres.stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/prepare-capacity-correlated.mjs",
+      "bytes": 913,
+      "sha256": "b49ad13292076fb473180467e7c485cf29b2fe5109227d55c41be3a5c135a765"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/prepare-capacity-seeded-users.mjs",
+      "bytes": 1535,
+      "sha256": "2c682606b5efcaff5eb8cf71876b93be3df6da3875a1984c1fe4f7a74bac3e7d"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/production-browser-api.log",
+      "bytes": 34721,
+      "sha256": "bb1158879390c88669eae6ddf13e089e6bc54fbdea1920012fdbc6ab36331c6e"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/production-browser-approval-seed.log",
+      "bytes": 281,
+      "sha256": "bfc9b1240df577002075ee529f0566fe3b143bb678b58af948732123079819d3"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/production-browser-first-api.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/production-browser-first-result.json",
+      "bytes": 258,
+      "sha256": "c401864f8227c18402361ed6c511108d86148455bb1f8c6ac1cab79c85b3ddc0"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/production-browser-pids.json",
+      "bytes": 13,
+      "sha256": "2a16670b4751a919903775d600b455c26db3276660957a769db62260d33535e7"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/production-browser-result.json",
+      "bytes": 318,
+      "sha256": "792083adc619fd275054d7b7107a8da78e206ebce66a152f2745ada02f09a115"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/production-browser-runner.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/production-browser-second-result.json",
+      "bytes": 200,
+      "sha256": "fb49ca4312d804e2932b2e215313ab5396245f800fb09664c67f3996ae84bf2d"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/production-browser-second-smoke.log",
+      "bytes": 448,
+      "sha256": "1c515346c7dcbd77e3991c3abb5c8db9bc311927cecfbfdd00a8134c16fffbfa"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/production-browser-smoke-instrumented.mjs",
+      "bytes": 13175,
+      "sha256": "70b82eeca600f9b7f06239a614392fc37cfc85095b72a9470749b15ef29a12d3"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/production-browser-smoke.log",
+      "bytes": 862,
+      "sha256": "480ad78be4bc5e97cb1f6512c39c65980ecfc88f17f4fe79529a9223703829ac"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/production-browser-web.log",
+      "bytes": 157,
+      "sha256": "2d2668fa041004d1a0858d72722ed0bd8f9e7f920bd22e442e5f810c061f2239"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/receipt-fault-probe.log",
+      "bytes": 7199,
+      "sha256": "66be152d9818cc8f15d2167753eb1e3c05560d50044f868034bb5cb716bb9600"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/receipt-fault-probe.mts",
+      "bytes": 4312,
+      "sha256": "b1c950d54b1c2941447535f88e0d9cbe9a29ca4dc9a54357a8ea306c6da32da7"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/receipt-fault-result.json",
+      "bytes": 489,
+      "sha256": "042c505637337de9f7ec950c77fca0c9abc3871028e9ae259f0bbf9ae3272ce0"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/receipt-signature-verify.log",
+      "bytes": 108,
+      "sha256": "453bc8afa3b88be5fe4c8b0d583eee1a9a80bec8b5d3b0e51b03dc661381a5d0"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/receipt-signature-verify.mts",
+      "bytes": 1231,
+      "sha256": "1afeb4b0d11d22eeb280d3ae66237c7a45d0065571164527c38a9f245227b112"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/retry-packed-runner.mjs",
+      "bytes": 1592,
+      "sha256": "0263e332331642c4aaaad0452efe3dc6687fd39e5afd3a078a126e3d54f5bc33"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/retry-web-aliases.mjs",
+      "bytes": 1513,
+      "sha256": "79fdfc9a07fc27da209601b12c6f3dd7cda6830545be419c52ac02b1f605284f"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/run-api-baseline-utc.mjs",
+      "bytes": 2968,
+      "sha256": "8c31cfd61405d0e0fb72d4fdd662292018c69dfcb44e6f9f85ff681bd50f391f"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/run-production-browser.mjs",
+      "bytes": 5263,
+      "sha256": "674b40c1973359a6d8f2493075550a45c044970f9874d7669842d0d12f77060f"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/run-safe-units.mjs",
+      "bytes": 2212,
+      "sha256": "aeb3c94df14a9a3bb6abe5194801e1c18e5309236f44632d42f4c73d13eee718"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/run-targeted-browser.mjs",
+      "bytes": 11410,
+      "sha256": "cb98a572b584829a03b8f4f584f6128a1ae7bf0a9990797535fbe21fd20456ea"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/run-targeted-capture.mjs",
+      "bytes": 5026,
+      "sha256": "55d054dfe2ecfd34f8c8d07794f1186b69ecc19d63b762aa084c461267a0c254"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/scripts.tap.log",
+      "bytes": 76978,
+      "sha256": "0298f1498dd5ad6ab7eb751a5fcf93202983413d66cf5c2f624148860933b235"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/shared.tap.log",
+      "bytes": 19719,
+      "sha256": "4eec7405e399f484aaf02923889385d3f85f0421ce7ea0205e14e72daf8626a7"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/targeted-browser-api.log",
+      "bytes": 10926,
+      "sha256": "8277a8694882a1aad0f021d65ca0672e454e645df31006dfb602b21f7e4312f8"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/targeted-browser-initial-harness-summary.json",
+      "bytes": 867,
+      "sha256": "582803717d32adf42d4e95af52a6e551ab48d0be7531cec1ccc3542c80ba86ca"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/targeted-browser-initial-harness.log",
+      "bytes": 831,
+      "sha256": "069113401952ba2e7586799273b8d38ae56129ec6f749fd56f7eb5905fce2f6f"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/targeted-browser-mobile-selector-summary.json",
+      "bytes": 1285,
+      "sha256": "bff8bb54dc3e0696d5b4e8891437fc66a6ab6c10f05e255c70924e0d5129123a"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/targeted-browser-pids.json",
+      "bytes": 24,
+      "sha256": "64b124934f73d1d362263e43996bd6244f02dc2fcbcece25efe599d4f1aa3909"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/targeted-browser-runner.log",
+      "bytes": 2634,
+      "sha256": "ef8e374645c598548996ed396a367ac59fd5769526fb98de32ea7bb10ac2acfd"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/targeted-browser-summary.json",
+      "bytes": 4364,
+      "sha256": "1c32277bf2aaaee1a9c13a90dbe91b998dc23c195712a13b95083bde35c26d8c"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/targeted-browser-web.log",
+      "bytes": 157,
+      "sha256": "9792d177f0257cebd9b206800872b4425a789329443391fc1cf6708645852c68"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/targeted-capture-api.log",
+      "bytes": 6212,
+      "sha256": "2517166ee496471d5e4f8550b5dcd3227b88b32adb71a744eaa79f2bae1d68a2"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/targeted-capture-runner.log",
+      "bytes": 955,
+      "sha256": "ba94f6ea801af096fcde1551669d50b1bed6ec583ab89f9433aa601b116614e3"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/targeted-capture-summary.json",
+      "bytes": 1346,
+      "sha256": "a3c3f402cca342ed6b1ae1316e1ed2abe43d4994d51c13f7db8b5630817dbba3"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/targeted-capture-web.log",
+      "bytes": 157,
+      "sha256": "89d8b38afab9407fd922bc3f9d52d503bda67397edc532aab8053ea4c73a86af"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/typecheck.log",
+      "bytes": 496,
+      "sha256": "a6fadc95c5aaec3e9f6cf5b48af48dcbe23294780e9328a7975840dd3b83d04a"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/unit-effective-summary.json",
+      "bytes": 3476,
+      "sha256": "6ec405a95c6efb3036e01a8fc43380e84cd1b897a234f4b24c2f26aced8294e7"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/unit-inventory.json",
+      "bytes": 5136,
+      "sha256": "c043b07e3c1a5de5d942e62e6ca87777f58ab5e7a59c4c6ad064012dbe932d9d"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/unit-summary.json",
+      "bytes": 8222,
+      "sha256": "a8c1462b6c4ec0e4535a0453e3e3db299b76d95d1f7baf209d267d6ff45066db"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/vector-probe.log",
+      "bytes": 558,
+      "sha256": "496aae6a26f91be326f729e6ce1e2ad34cd1331bced4b939fa791a0d9b13eb03"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/vendor-initdb.log",
+      "bytes": 1005,
+      "sha256": "01c8e65969ec8acf1b0e381b1c47dc4c9b5ac0c9b728afff47fefee12e59c83e"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/vendor-postgres.stderr.log",
+      "bytes": 189,
+      "sha256": "9644a9d192c9ba25af4806e1babdab2146801f8a065e297633c91b4de2e71474"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/vendor-postgres.stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/web-alias-retry-summary.json",
+      "bytes": 1315,
+      "sha256": "98e2f75eff364259f2e7714b5a6ff140e7319b967228dab19ad3f9db2eb186b4"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/web-alias-retry.tap.log",
+      "bytes": 5677,
+      "sha256": "e26b9e9f69e8cdb9cbc853a279f648ec458605c280844b652044bbcb16fbd41c"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/web-build.log",
+      "bytes": 2046,
+      "sha256": "a69618a25ca998a92a01bc04b7692b987300b3c5c773c816143de38f5f3fd256"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/web-lint.log",
+      "bytes": 346,
+      "sha256": "2d6272b83de42e4550f956f2231e7d7cb1dac81892b8b826455cac6e1d2b9ae3"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/web-session-clone.log",
+      "bytes": 16,
+      "sha256": "e698a53421fff84c3ffaec44c37e1b3769e775ada9139fd33240fede3cefddbd"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/web-session-family-focused.log",
+      "bytes": 1033,
+      "sha256": "418539e18d993495d7b88cb791facacbea5f1a8fda2d4140f6897676fe0db9e7"
+    },
+    {
+      "path": "C:/tmp/deft-core-baseline-20261003/web.tap.log",
+      "bytes": 63499,
+      "sha256": "da7243b6f13705bbae8509944af32a5feb1b4b48bbc335cbf769bce032c23e29"
+    }
+  ]
+}

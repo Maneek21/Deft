@@ -1,0 +1,159 @@
+{
+  "exit": 0,
+  "results": [
+    {
+      "name": "Actual UI authentication positive control",
+      "status": "pass"
+    },
+    {
+      "name": "Mobile Tasks has a loaded SQL-backed task",
+      "status": "pass",
+      "title": "Construction permit — county inspector follow-up"
+    },
+    {
+      "name": "mobile-tasks-loaded rendered without document overflow",
+      "status": "pass",
+      "overflow": 0,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      }
+    },
+    {
+      "name": "desktop-dashboard API summary counts match SQL",
+      "status": "pass",
+      "counts": {
+        "in_progress": 1,
+        "due_today": 0,
+        "overdue": 0
+      }
+    },
+    {
+      "name": "desktop-dashboard rendered My work column counts match SQL",
+      "status": "pass",
+      "groups": {
+        "todo": 0,
+        "in_progress": 1,
+        "in_review": 0
+      },
+      "widgetText": "MY WORK\nView →\nTO DO\n0\n\nNothing queued\n\nIN PROGRESS\n1\nGH3-6\nP1\nConstruction permit — county inspector follow-up\nOct 7\nIN REVIEW\n0\n\nNothing in review"
+    },
+    {
+      "name": "desktop-dashboard rendered without document overflow",
+      "status": "pass",
+      "overflow": 0,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      }
+    },
+    {
+      "name": "mobile-dashboard API summary counts match SQL",
+      "status": "pass",
+      "counts": {
+        "in_progress": 1,
+        "due_today": 0,
+        "overdue": 0
+      }
+    },
+    {
+      "name": "mobile-dashboard rendered My work column counts match SQL",
+      "status": "pass",
+      "groups": {
+        "todo": 0,
+        "in_progress": 1,
+        "in_review": 0
+      },
+      "widgetText": "MY WORK\nView →\nTO DO\n0\n\nNothing queued\n\nIN PROGRESS\n1\nGH3-6\nP1\nConstruction permit — county inspector follow-up\nOct 7\nIN REVIEW\n0\n\nNothing in review"
+    },
+    {
+      "name": "mobile-dashboard rendered without document overflow",
+      "status": "pass",
+      "overflow": 0,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      }
+    },
+    {
+      "name": "Notes UI creates and autosaves synthetic title and body",
+      "status": "pass",
+      "noteId": "1d3f3a89-dbd2-44aa-b869-dbbd5aba2e91",
+      "marker": "Baseline UI canary 1791030267825"
+    },
+    {
+      "name": "Notes edited body survives actual reload and matches SQL",
+      "status": "pass",
+      "noteId": "1d3f3a89-dbd2-44aa-b869-dbbd5aba2e91",
+      "marker": "Baseline UI canary 1791030267825"
+    },
+    {
+      "name": "desktop-note-reloaded rendered without document overflow",
+      "status": "pass",
+      "overflow": 0,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      }
+    },
+    {
+      "name": "mobile-note-reloaded rendered without document overflow",
+      "status": "pass",
+      "overflow": 0,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      }
+    },
+    {
+      "name": "Pre-existing notes unchanged",
+      "status": "pass",
+      "count": 2
+    },
+    {
+      "name": "No browser page errors",
+      "status": "pass",
+      "pageErrors": [],
+      "requestFailures": [
+        {
+          "url": "http://localhost:3470/license?_rsc=_H_fFy2_Q06N8BA7",
+          "error": "net::ERR_ABORTED"
+        },
+        {
+          "url": "http://localhost:3470/modules/contacts?_rsc=VdgVh5Y9XZ9q085p",
+          "error": "net::ERR_ABORTED"
+        },
+        {
+          "url": "http://localhost:3470/modules/contacts?_rsc=VdgVh5Y9XZ9q085p",
+          "error": "net::ERR_ABORTED"
+        }
+      ],
+      "httpFailures": []
+    }
+  ],
+  "pageErrors": [],
+  "requestFailures": [
+    {
+      "url": "http://localhost:3470/license?_rsc=_H_fFy2_Q06N8BA7",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://localhost:3470/modules/contacts?_rsc=VdgVh5Y9XZ9q085p",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://localhost:3470/modules/contacts?_rsc=VdgVh5Y9XZ9q085p",
+      "error": "net::ERR_ABORTED"
+    }
+  ],
+  "httpFailures": [],
+  "noteId": "1d3f3a89-dbd2-44aa-b869-dbbd5aba2e91",
+  "api_port": 3471,
+  "web_port": 3470,
+  "buildFlags": {
+    "apps": true,
+    "huddles": false
+  },
+  "database": "postgresql://deft_test@127.0.0.1:55433/deft_browser_baseline_test",
+  "cleanup": "Owned API and web process trees terminated in finally; canary note preserved"
+}
