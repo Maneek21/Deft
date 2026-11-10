@@ -2,21 +2,23 @@
  * Trust level + approval tier routing for agent actions.
  *
  * Trust levels (set per org in Settings > Agent):
- *   conservative — every write action requires explicit user approval
+ *   conservative — only 'auto' executes immediately
  *   standard     — 'auto' and 'quick' execute immediately, only 'full' needs approval
- *   autonomous   — 'auto', 'quick', AND 'full' execute immediately,
- *                  EXCEPT destructive actions (admin tools, delete_* names, mode=delete/pause/revoke)
+ *   autonomous   — 'auto', 'quick', AND 'full' execute immediately
+ *   At EVERY level, destructive actions queue (see below), whatever their tier.
  *
- * Approval matrix (tier × trust):
+ * Approval matrix (tier × trust), for non-destructive actions:
  *   tier \ trust  | conservative | standard | autonomous
- *   auto          |    queue     |   exec   |    exec
+ *   auto          |    exec      |   exec   |    exec
  *   quick         |    queue     |   exec   |    exec
- *   full          |    queue     |   queue  |    exec (unless destructive)
+ *   full          |    queue     |   queue  |    exec
  *
- * Destructive guard (still queues even under Autonomous):
+ * Destructive guard (queues at every trust level, native and MCP tools,
+ * after stripping any mcp__<connection>__ prefix from the name):
  *   - admin tool set: manage_agent_employee, manage_mcp_connection, remove_member
+ *   - module operations classed destructive (unlink, archive) + bulk create
  *   - tool name starts with "delete_" (future-proof for delete_task, delete_project, etc.)
- *   - params.mode matches /^(delete|pause|revoke)$/i
+ *   - params.mode matches /^(delete|pause|revoke)$/i (only when params are passed)
  *
  * Matrix update (task #58 / Option 2 — 2026-04-14):
  *   Previously `standard` was near-identical to `conservative` — it only
@@ -185,23 +187,21 @@ const DESTRUCTIVE_MODULE_TOOLS: ReadonlySet<string> = new Set(
  *   3. params is an object with a `mode` string key matching delete|pause|revoke.
  */
 export function isDestructiveAction(toolName: string, params?: unknown): boolean {
-  if (DESTRUCTIVE_ADMIN_TOOLS.has(toolName)) return true;
-  // MCP tools are exposed to the model as mcp__<connection>__<tool>. Apply
-  // destructive-name policy to the server's original tool name as well as to
-  // native tool names so prefixing cannot bypass Autonomous review.
+  // MCP tools are exposed to the model as mcp__<connection>__<tool>. Strip the
+  // connection prefix BEFORE every name-based check so a connected tool named
+  // like an admin tool, a delete_* tool or a module operation is classed
+  // exactly like its native namesake. The unprefixed name is still checked
+  // too, so nothing classed destructive today is narrowed.
   const effectiveToolName = toolName.startsWith('mcp__')
     ? toolName.split('__').slice(2).join('__')
     : toolName;
-  // Archive does not use the legacy `delete_` prefix, so its destructive
-  // classification must come from the shared module operation definition.
-  // Check both native and MCP-prefixed forms.
-  if (
-    DESTRUCTIVE_MODULE_TOOLS.has(toolName)
-    || DESTRUCTIVE_MODULE_TOOLS.has(effectiveToolName)
-  ) {
-    return true;
+  for (const name of [toolName, effectiveToolName]) {
+    if (DESTRUCTIVE_ADMIN_TOOLS.has(name)) return true;
+    // Archive/unlink/bulk-create do not use the legacy `delete_` prefix, so
+    // their classification comes from the shared module operation definition.
+    if (DESTRUCTIVE_MODULE_TOOLS.has(name)) return true;
+    if (name.startsWith('delete_')) return true;
   }
-  if (effectiveToolName.startsWith('delete_')) return true;
   if (
     params !== null &&
     typeof params === 'object' &&
@@ -214,19 +214,30 @@ export function isDestructiveAction(toolName: string, params?: unknown): boolean
   return false;
 }
 
-/** Returns true if the action should be auto-executed (no user approval needed). */
+/**
+ * Returns true if the action should be auto-executed (no user approval needed).
+ *
+ * One rule, enforced here for every trust level: an action classed as
+ * destructive (isDestructiveAction) is never auto-executed, for native and
+ * connected (MCP) tools alike, whatever tier it carries — including an
+ * `auto`/`quick` tier taken from a connection or tool override. Destructive
+ * tool names are caught without params; a params-dependent destructive call
+ * (params.mode = delete|pause|revoke) is caught only when the caller passes
+ * the invocation params, so callers that have them must pass them.
+ */
 export function shouldAutoExecute(
   action: string,
   trustLevel: TrustLevel,
   params?: unknown,
   approvalTierOverride?: ApprovalTier,
 ): boolean {
+  if (isDestructiveAction(action, params)) return false;
+
   const tier = getApprovalTier(action, approvalTierOverride);
 
   if (trustLevel === 'conservative') return tier === 'auto';
   if (trustLevel === 'standard') return tier === 'auto' || tier === 'quick';
   if (trustLevel === 'autonomous') {
-    if (isDestructiveAction(action, params)) return false;
     return tier === 'auto' || tier === 'quick' || tier === 'full';
   }
 
