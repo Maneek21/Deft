@@ -51,6 +51,7 @@ import {
 } from './agent-tool-policy.js';
 import { getApprovalTier, shouldAutoExecute } from './agent-approval.js';
 import { validateNativeAgentMentionWrite } from './native-mention-agent-writes.js';
+import { nativeActionTargetAccessError } from './agent-action-visibility.js';
 import {
   MODULE_OPERATION_REQUEST_SCHEMAS,
   ModuleIdSchema,
@@ -1471,6 +1472,7 @@ export async function executeAction(
       const referenceError = await validateNativeAgentMentionWrite(action, params, orgId, userId, agentEmployeeId ?? undefined);
       if (referenceError) return { success: false, result: null, error: referenceError };
     }
+    const targetAccessError = await nativeActionTargetAccessError(action, params, orgId, userId); if (targetAccessError) return { success: false, result: null, error: targetAccessError };
     const taskScopeError = await employeeTaskWriteScopeError(
       action,
       params,
