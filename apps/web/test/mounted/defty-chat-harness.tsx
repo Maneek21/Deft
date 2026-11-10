@@ -27,7 +27,7 @@ function Harness() {
     markSpaceRead: () => {},
     refreshSpaces: () => {},
     orgMembers: [],
-    openDmWith: async () => {},
+    openDmWith: async () => false,
     startHuddle: async () => {},
     joinHuddleBySpace: async () => {},
     huddleSpaceId: null,

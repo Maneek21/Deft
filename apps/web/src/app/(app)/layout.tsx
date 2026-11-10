@@ -14,6 +14,7 @@ import { ExperienceNavigationProvider } from '@/components/apps/experience-navig
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { applyPresenceSnapshot, applyPresenceUpdate } from '@/lib/presence-state';
+import { openDirectMessage } from '@/lib/quick-actions';
 import { useHuddle } from '@/hooks/use-huddle';
 import { useAudioLevels } from '@/hooks/use-audio-levels';
 import { HuddleOverlay } from '@/components/huddle-overlay';
@@ -417,21 +418,17 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }, []);
 
   const openDmWith = useCallback(
-    async (memberId: string) => {
-      const member = orgMembers.find((m) => m.id === memberId);
-      if (!member || !user) return;
-      // POST /api/spaces with type dm — backend deduplicates
-      const res = await api.post('/api/spaces', {
-        name: `${user.name}, ${member.name}`,
-        type: 'dm',
-        user_ids: [memberId],
+    async (memberId: string, memberName?: string): Promise<boolean> => {
+      if (!user) return false;
+      return openDirectMessage({
+        api,
+        currentUserName: user.name,
+        memberId,
+        memberName,
+        cachedMembers: orgMembers,
+        reloadSpaces: loadSpaces,
+        selectSpace: handleSelectSpace,
       });
-      if (res.ok) {
-        const space = await res.json();
-        // Refresh spaces to include the new/existing DM
-        await loadSpaces();
-        handleSelectSpace(space.id);
-      }
     },
     [orgMembers, user, loadSpaces, handleSelectSpace],
   );

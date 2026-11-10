@@ -2231,7 +2231,11 @@ export function SpaceChat({
           uploadProgress={progress}
           onViewScheduled={() => setShowScheduled(true)}
           onClipRecord={() => setClipRecording(true)}
-          onAskDefty={() => { void openDeftyDm(api, openDmWith); }}
+          onAskDefty={() => {
+            void openDeftyDm(api, openDmWith).then((opened) => {
+              if (!opened) setCmdToast('Could not open a chat with Defty. Try again.');
+            });
+          }}
           spaceId={spaceId}
           onSlashCommand={async (command, args) => {
             switch (command) {

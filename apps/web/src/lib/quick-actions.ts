@@ -129,15 +129,74 @@ export async function createReminderFromArgs(
  */
 const DEFTY_EMAIL = 'deft-agent@system.local';
 
+type MemberSummary = { id: string; name?: string; email?: string; kind?: string };
+
+async function fetchMembers(api: Pick<Api, 'get'>): Promise<MemberSummary[] | null> {
+  const res = await api.get('/api/members');
+  if (!res.ok) return null;
+  const data = await res.json() as unknown;
+  const list = Array.isArray(data) ? data : (data as { members?: unknown } | null)?.members;
+  return Array.isArray(list) ? list as MemberSummary[] : null;
+}
+
+/**
+ * Open (or reuse) a DM with one member and select it. Returns true only when
+ * the DM space exists and was selected. It never throws, and it does not need
+ * the member to be in a cached list: the name comes from the caller, the
+ * cache, or a fresh member read, in that order.
+ */
+export async function openDirectMessage({
+  api,
+  currentUserName,
+  memberId,
+  memberName,
+  cachedMembers,
+  reloadSpaces,
+  selectSpace,
+}: {
+  api: Pick<Api, 'get' | 'post'>;
+  currentUserName: string;
+  memberId: string;
+  memberName?: string;
+  cachedMembers: ReadonlyArray<{ id: string; name: string }>;
+  reloadSpaces: () => Promise<void>;
+  selectSpace: (spaceId: string) => void;
+}): Promise<boolean> {
+  try {
+    let name = memberName?.trim() || cachedMembers.find((m) => m.id === memberId)?.name;
+    if (!name) {
+      const members = await fetchMembers(api);
+      name = members?.find((m) => m.id === memberId)?.name;
+    }
+    if (!name) return false;
+    // POST /api/spaces with type dm: the API returns the existing DM if one exists.
+    const res = await api.post('/api/spaces', {
+      name: `${currentUserName}, ${name}`,
+      type: 'dm',
+      user_ids: [memberId],
+    });
+    if (!res.ok) return false;
+    const space = await res.json() as { id?: unknown } | null;
+    if (!space || typeof space.id !== 'string' || !space.id) return false;
+    await reloadSpaces();
+    selectSpace(space.id);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Find Defty and open its DM. Returns true only when the DM actually opened. */
 export async function openDeftyDm(
   api: Api,
-  openDmWith: (memberId: string) => Promise<void>,
+  openDmWith: (memberId: string, memberName?: string) => Promise<boolean>,
 ): Promise<boolean> {
-  const res = await api.get('/api/members');
-  if (!res.ok) return false;
-  const members = await res.json() as Array<{ id: string; email?: string; kind?: string }>;
-  const defty = members.find(m => m.email === DEFTY_EMAIL);
-  if (!defty) return false;
-  await openDmWith(defty.id);
-  return true;
+  try {
+    const members = await fetchMembers(api);
+    const defty = members?.find(m => m.email === DEFTY_EMAIL);
+    if (!defty) return false;
+    return (await openDmWith(defty.id, defty.name)) === true;
+  } catch {
+    return false;
+  }
 }
