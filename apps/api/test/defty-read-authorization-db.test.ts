@@ -525,6 +525,36 @@ describe('W1-b Defty read authorization', { skip: !canRun }, () => {
     }
   });
 
+  test('R8: many fallback-name rooms never crowd out or hide the exactly named room', async () => {
+    const base = `w1b-crowd-${run}`;
+    const plain = Array.from({ length: 30 }, () => ({ id: randomUUID(), name: base }));
+    const exact = { id: randomUUID(), name: `#${base}` };
+    const second = { id: randomUUID(), name: `#${base}` };
+    const all = [...plain, exact, second];
+    // Fallback rooms are inserted first so an unordered shared cap would fill with them.
+    await db.insert(spaces).values(plain.map((room) => ({ id: room.id, org_id: orgA, name: room.name, type: 'private' as const, created_by: alice })));
+    await db.insert(spaces).values({ id: exact.id, org_id: orgA, name: exact.name, type: 'private', created_by: alice });
+    await db.insert(spaceMembers).values([...plain, exact].map((room) => ({ space_id: room.id, user_id: alice })));
+    const canary = `crowd-${run}`;
+    await db.insert(canvases).values({ org_id: orgA, space_id: exact.id, title: 'Crowd canvas',
+      content: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: canary }] }] } });
+    try {
+      const one = await executeToolCall('read_canvas', { space_name: exact.name }, orgA, alice);
+      assert.ok(text(one.result).includes(canary), 'the exactly named room must resolve despite 30 fallback-name rooms');
+      // A second exactly named room is an ambiguity, not hidden behind the fallbacks.
+      await db.insert(spaces).values({ id: second.id, org_id: orgA, name: second.name, type: 'private', created_by: alice });
+      await db.insert(spaceMembers).values({ space_id: second.id, user_id: alice });
+      const two = await executeToolCall('read_canvas', { space_name: exact.name }, orgA, alice);
+      assert.equal((two.result as any).code, 'SPACE_AMBIGUOUS');
+      assert.ok(!text(two.result).includes(canary));
+    } finally {
+      const ids = all.map((room) => room.id);
+      await db.delete(canvases).where(inArray(canvases.space_id, ids));
+      await db.delete(spaceMembers).where(inArray(spaceMembers.space_id, ids));
+      await db.delete(spaces).where(inArray(spaces.id, ids));
+    }
+  });
+
   test('R5: the read_canvas action handler uses the same literal, unambiguous room resolution', async () => {
     await db.insert(canvases).values({ org_id: orgA, space_id: wildSpace, title: 'Wild canvas',
       content: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: wildCanary }] }] } })
