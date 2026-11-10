@@ -51,7 +51,7 @@ import {
 } from './agent-tool-policy.js';
 import { getApprovalTier, shouldAutoExecute } from './agent-approval.js';
 import { validateNativeAgentMentionWrite } from './native-mention-agent-writes.js';
-import { nativeActionTargetAccessError } from './agent-action-visibility.js';
+import { nativeActionTargetAccessError, promotableNoteSql } from './agent-action-visibility.js';
 import {
   MODULE_OPERATION_REQUEST_SCHEMAS,
   ModuleIdSchema,
@@ -3465,7 +3465,7 @@ export async function executeAction(
               eq(notes.id, noteId),
               eq(notes.org_id, orgId),
               eq(notes.is_deleted, false),
-              sql`(${notes.user_id} = ${userId} OR ${notes.visibility} = 'org')`,
+              promotableNoteSql(userId),
             ),
           )
           .limit(1);

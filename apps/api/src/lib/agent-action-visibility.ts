@@ -1,5 +1,5 @@
 import {and, eq, ilike, sql, type SQL} from 'drizzle-orm';
-import {agentActions, messages, projects, spaces, tasks, wikiPages} from '@deft/db/schema';
+import {agentActions, messages, notes, projects, spaces, tasks, wikiPages} from '@deft/db/schema';
 import {db} from './db.js';
 import {resolveSpaceTarget} from './resolve-space-target.js';
 import {requireSpaceMembership} from './space-membership.js';
@@ -107,6 +107,23 @@ export async function canUndoAgentAction(
     default:
       return true;
   }
+}
+
+/**
+ * Note promotion (C13): the same predicate the Defty proposal applies — the
+ * actor's own note, an org note, or a space note in a space the actor is a
+ * member of.
+ */
+export function promotableNoteSql(userId: string): SQL {
+  return sql`(
+    ${notes.user_id} = ${userId}
+    OR ${notes.visibility} = 'org'
+    OR (${notes.visibility} = 'space' AND EXISTS (
+      SELECT 1 FROM space_members promotable_note_sm
+      WHERE promotable_note_sm.space_id = ${notes.visibility_space_id}
+        AND promotable_note_sm.user_id = ${userId}
+    ))
+  )`;
 }
 
 async function memberOfEverySpace(spaceIds: string[], userId: string, orgId: string): Promise<boolean> {
