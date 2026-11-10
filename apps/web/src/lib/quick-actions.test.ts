@@ -62,7 +62,7 @@ test('E12: openDirectMessage opens a DM with an empty member cache', async () =>
     memberId: 'u-defty',
     memberName: 'Defty',
     cachedMembers: [],
-    reloadSpaces: async () => { reloaded++; },
+    reloadSpaces: async () => { reloaded++; return [{ id: 'dm-1' }]; },
     selectSpace: (id) => selected.push(id),
   });
   assert.equal(opened, true);
@@ -82,7 +82,7 @@ test('E12: openDirectMessage looks the name up when neither the caller nor the c
   });
   const opened = await openDirectMessage({
     api, currentUserName: 'Priya Shah', memberId: 'u-rahul', cachedMembers: [],
-    reloadSpaces: async () => {}, selectSpace: () => {},
+    reloadSpaces: async () => [{ id: 'dm-2' }], selectSpace: () => {},
   });
   assert.equal(opened, true);
   assert.deepEqual((calls.at(-1)?.body as { name: string }).name, 'Priya Shah, Rahul Mehta');
@@ -94,9 +94,26 @@ test('E12: openDirectMessage returns false on a refused or failed request and do
     const selected: string[] = [];
     const opened = await openDirectMessage({
       api, currentUserName: 'Priya Shah', memberId: 'u-x', memberName: 'X', cachedMembers: [],
-      reloadSpaces: async () => {}, selectSpace: (id) => selected.push(id),
+      reloadSpaces: async () => [{ id: 'dm-x' }], selectSpace: (id) => selected.push(id),
     });
     assert.equal(opened, false);
     assert.deepEqual(selected, []);
+  }
+});
+
+test('R2-6: openDirectMessage reports failure when the space list cannot be reloaded or lacks the DM', async () => {
+  for (const reloadSpaces of [
+    async () => null,
+    async () => [{ id: 'other-space' }],
+    async () => { throw new Error('offline'); },
+  ]) {
+    const { api } = fakeApi({ 'POST /api/spaces': () => response({ id: 'dm-9' }) });
+    const selected: string[] = [];
+    const opened = await openDirectMessage({
+      api, currentUserName: 'Priya Shah', memberId: 'u-x', memberName: 'X', cachedMembers: [],
+      reloadSpaces: reloadSpaces as never, selectSpace: (id) => selected.push(id),
+    });
+    assert.equal(opened, false);
+    assert.deepEqual(selected, [], 'must not select a space the chat cannot render');
   }
 });

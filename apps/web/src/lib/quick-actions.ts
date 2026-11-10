@@ -141,7 +141,7 @@ async function fetchMembers(api: Pick<Api, 'get'>): Promise<MemberSummary[] | nu
 
 /**
  * Open (or reuse) a DM with one member and select it. Returns true only when
- * the DM space exists and was selected. It never throws, and it does not need
+ * the DM space exists, is in the reloaded space list, and was selected. It never throws, and it does not need
  * the member to be in a cached list: the name comes from the caller, the
  * cache, or a fresh member read, in that order.
  */
@@ -159,7 +159,8 @@ export async function openDirectMessage({
   memberId: string;
   memberName?: string;
   cachedMembers: ReadonlyArray<{ id: string; name: string }>;
-  reloadSpaces: () => Promise<void>;
+  /** Reloads the space list; resolves to the loaded spaces, or null when the reload failed. */
+  reloadSpaces: () => Promise<ReadonlyArray<{ id: string }> | null>;
   selectSpace: (spaceId: string) => void;
 }): Promise<boolean> {
   try {
@@ -178,7 +179,10 @@ export async function openDirectMessage({
     if (!res.ok) return false;
     const space = await res.json() as { id?: unknown } | null;
     if (!space || typeof space.id !== 'string' || !space.id) return false;
-    await reloadSpaces();
+    // The chat page renders only a space that is in the loaded list, so
+    // report success only once the reload succeeded and includes this DM.
+    const spaces = await reloadSpaces();
+    if (!spaces?.some((loaded) => loaded.id === space.id)) return false;
     selectSpace(space.id);
     return true;
   } catch {

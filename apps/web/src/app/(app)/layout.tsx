@@ -108,15 +108,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     }
   }, [user]);
 
-  const loadSpaces = useCallback(async () => {
-    if (!user) return;
+  // Resolves to the spaces it loaded (and stored), or null when it did not.
+  const loadSpaces = useCallback(async (): Promise<Space[] | null> => {
+    if (!user) return null;
     const loadGeneration = ++spacesLoadGeneration.current;
     const unreadVersionsAtStart = new Map(unreadMutationVersions.current);
     const pendingReadsAtStart = new Map(pendingReadRequests.current);
     const res = await api.get('/api/spaces');
-    if (!res.ok || loadGeneration !== spacesLoadGeneration.current) return;
+    if (!res.ok || loadGeneration !== spacesLoadGeneration.current) return null;
     const loadedSpaces: Space[] = await res.json();
-    if (loadGeneration !== spacesLoadGeneration.current) return;
+    if (loadGeneration !== spacesLoadGeneration.current) return null;
 
     const loadedSpaceIds = new Set(loadedSpaces.map((space) => space.id));
     setSpaces(loadedSpaces);
@@ -136,7 +137,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     const unreadRes = await api.get('/api/spaces/unread');
     if (unreadRes.ok && loadGeneration === spacesLoadGeneration.current) {
       const counts: { space_id: string; unread: number }[] = await unreadRes.json();
-      if (loadGeneration !== spacesLoadGeneration.current) return;
+      if (loadGeneration !== spacesLoadGeneration.current) return loadedSpaces;
       const serverCounts = new Map(counts.map((count) => [count.space_id, count.unread]));
       setUnreadCounts((previous) => {
         const next = new Map<string, number>();
@@ -156,6 +157,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         return next;
       });
     }
+    return loadedSpaces;
   }, [user]);
 
   // Load org members
