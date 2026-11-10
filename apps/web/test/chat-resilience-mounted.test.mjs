@@ -242,3 +242,63 @@ test('E13: a failed approval read is shown in the channel and in the thread pane
   }
 });
 
+// ── E15: replies that finished during a disconnect are fetched on reconnect ─
+
+const BASE = { space_id: 's1', user_avatar: null, is_deleted: false, edited_at: null, reactions: [], reply_count: 0, latest_reply_at: null, file_ids: [] };
+const ROOT = { ...BASE, id: 't1', parent_id: null, user_id: 'u-priya', user_name: 'Priya Shah', content: 'Launch is Friday. Earlier note: [the deploy plan](/chat?space=s1&message=m2)', created_at: '2026-10-22T10:00:00.000Z', reply_count: 2, latest_reply_at: '2026-10-22T10:21:00.000Z' };
+const DEST = { ...BASE, id: 'm2', parent_id: null, user_id: 'u-priya', user_name: 'Priya Shah', content: 'Destination message from Priya', created_at: '2026-10-22T10:10:00.000Z' };
+const REPLY = { ...BASE, id: 'r1', parent_id: 't1', user_id: 'u-rahul', user_name: 'Rahul Mehta', content: 'See [the source message](/chat?space=s1&message=m2) for the detail.', created_at: '2026-10-22T10:05:00.000Z' };
+const MISSED_CHANNEL = { ...BASE, id: 'm-missed', parent_id: null, user_id: 'defty', user_name: 'Defty', content: 'Summary that finished while you were offline.', created_at: '2026-10-22T10:20:00.000Z', metadata: { is_agent_reply: true } };
+const MISSED_REPLY = { ...MISSED_CHANNEL, id: 'r-missed', parent_id: 't1', content: 'Thread answer from while you were offline.', created_at: '2026-10-22T10:21:00.000Z' };
+
+test('E15: after a reconnect the channel and the open thread fetch what they missed, once, in order, keeping the draft', async () => {
+  const serverAfter = {
+    channel: { messages: [ROOT, DEST, MISSED_CHANNEL] },
+    thread: { replies: [REPLY, MISSED_REPLY] },
+  };
+  const page = await open(browser, {
+    harness: 'defty-chat-harness.tsx',
+    url: '/chat?space=s1&thread=t1',
+    override: `(() => { let after = false; window.__deftServerMoved = () => { after = true; };
+      const data = ${JSON.stringify(serverAfter)};
+      return (method, path) => {
+        if (!after || method !== 'GET') return undefined;
+        if (path === '/api/messages/s1') return { body: data.channel };
+        if (path === '/api/messages/t1/thread') return { body: data.thread };
+        return undefined;
+      };
+    })()`,
+  });
+  try {
+    await page.getByRole('heading', { name: 'Thread' }).waitFor();
+    const panel = page.locator('.w-\\[400px\\]');
+    await panel.getByText('for the detail.', { exact: false }).waitFor();
+    // An unsent draft in the thread composer.
+    await panel.locator('.deft-editor').click();
+    await page.keyboard.type('draft in progress');
+
+    await page.evaluate(() => window.__deftDeliver('disconnect', 'transport close'));
+    await page.evaluate(() => window.__deftServerMoved());
+    await page.evaluate(() => window.__deftDeliver('connect'));
+
+    await page.getByText('Summary that finished while you were offline.').waitFor({ timeout: 3000 });
+    await panel.getByText('Thread answer from while you were offline.').waitFor({ timeout: 3000 });
+
+    const channelOrder = await page.evaluate(() => [...document.querySelectorAll('[data-message-id]')]
+      .map((el) => el.getAttribute('data-message-id'))
+      .filter((id) => ['t1', 'm2', 'm-missed'].includes(id)));
+    assert.deepEqual([...new Set(channelOrder)], ['t1', 'm2', 'm-missed']);
+    assert.equal(channelOrder.filter((id) => id === 'm-missed').length, 1, 'no duplicate');
+    assert.equal(await panel.getByText('Thread answer from while you were offline.').count(), 1);
+    assert.match(await panel.locator('.deft-editor').innerText(), /draft in progress/);
+
+    // A second reconnect with the same server state adds nothing.
+    await page.evaluate(() => window.__deftDeliver('disconnect', 'transport close'));
+    await page.evaluate(() => window.__deftDeliver('connect'));
+    await page.waitForTimeout(300);
+    assert.equal(await page.getByText('Summary that finished while you were offline.').count(), 1);
+    assert.equal(await panel.getByText('Thread answer from while you were offline.').count(), 1);
+  } finally {
+    await close(page);
+  }
+});

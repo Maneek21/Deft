@@ -398,7 +398,30 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     socket.on('reaction:added', onReactionAdded);
     socket.on('reaction:removed', onReactionRemoved);
 
+    // Replies sent while the socket was down never arrive as events. After a
+    // reconnect, read the thread again and merge by id without touching the
+    // draft or the scroll position.
+    let missedEvents = false;
+    const onDisconnect = () => { missedEvents = true; };
+    const onReconnect = () => {
+      if (!missedEvents) return;
+      missedEvents = false;
+      void api.get(`/api/messages/${messageId}/thread`).then(async (res) => {
+        if (!res.ok || activeMessageIdRef.current !== messageId) return;
+        const data = await res.json();
+        if (activeMessageIdRef.current !== messageId) return;
+        const fetched: Message[] = data.replies || data.messages || [];
+        setReplies((prev) => mergeMessagesById(prev, fetched));
+        setLoadError(false);
+      }).catch(() => {});
+      if (pendingBySpaceKey) void swrMutate(pendingBySpaceKey).catch(() => undefined);
+    };
+    socket.on('disconnect', onDisconnect);
+    socket.on('connect', onReconnect);
+
     return () => {
+      socket.off('disconnect', onDisconnect);
+      socket.off('connect', onReconnect);
       socket.off('message:new', onNewMessage);
       socket.off('reaction:added', onReactionAdded);
       socket.off('reaction:removed', onReactionRemoved);

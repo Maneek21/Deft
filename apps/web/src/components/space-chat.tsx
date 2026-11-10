@@ -1086,7 +1086,30 @@ export function SpaceChat({
     socket.on('message:pinned', onMessagePinned);
     socket.on('message:unpinned', onMessageUnpinned);
 
+    // Messages sent while the socket was down never arrive as events. After a
+    // reconnect, read the history again and merge it by id: nothing already
+    // shown moves or doubles, and the composer and scroll are left alone.
+    let missedEvents = false;
+    const onDisconnect = () => { missedEvents = true; };
+    const onReconnect = () => {
+      if (!missedEvents) return;
+      missedEvents = false;
+      void api.get(`/api/messages/${spaceId}`).then(async (res) => {
+        if (!res.ok || !visit.isCurrent()) return;
+        const data = await res.json();
+        if (!visit.isCurrent()) return;
+        const fetched: Message[] = data.messages || data || [];
+        setMessages((prev) => visit.isCurrent() ? mergeMessagesById(prev, fetched) : prev);
+        setHistoryStatus('ready');
+      }).catch(() => {});
+      void swrMutate(`/api/agent/actions/pending-by-space?space_id=${spaceId}`).catch(() => undefined);
+    };
+    socket.on('disconnect', onDisconnect);
+    socket.on('connect', onReconnect);
+
     return () => {
+      socket.off('disconnect', onDisconnect);
+      socket.off('connect', onReconnect);
       visit.dispose();
       unsubscribeFromSpace();
       socket.off('message:new', onNew);
