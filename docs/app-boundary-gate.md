@@ -53,14 +53,25 @@ or retained data requires an exception:
    another unchecked occurrence. CRLF/LF are normalized. Non-import text context
    is the trimmed source line; import context is its AST declaration/expression.
 3. Explain why the match is necessary, name an accountable owner and a real
-   tracking issue, and specify a removal/review milestone. Historical migrations
-   may say `permanent historical`; temporary Knowledge/Calendar/key-reference
-   and Kit mail compatibility must say `to be removed by plan C/D`.
-4. Include before/after findings in the PR review. Run the fixtures and checker
-   again. Use `--verbose` to see file/line/rule/token and the applicable reason.
+   tracking issue, and specify a removal/review milestone. The milestone has the
+   form `<bucket>: <stage> of docs/superpowers/plans/2026-11-06-email-host-kit-shrink.md`,
+   for example `D1: S3 of ...` or `P1: permanent of ...`. The bucket ID (`N1`,
+   `D1`, `E1`, `C1`, `K1`, `K2`, `C2`, `R1`, `W1`, `R2`, `R3`, `X1`, `P1`, `P2`,
+   `P3`) is defined in that plan; `permanent` means historical migrations,
+   ICS interoperability and reviewed tooling that are never removed. A new
+   record uses an existing bucket or the plan is updated first.
+4. Do not raise `scripts/app-boundary-ceiling.json`. It holds `max_exceptions`, the
+   most records the allowlist may contain, and the checker fails when the
+   allowlist is longer. Each removal stage lowers it to that stage's target in
+   the same PR that deletes the records. An added record needs the ceiling
+   discussed in review first, because the gate is meant to shrink.
+5. Include before/after findings in the PR review. Run the fixtures and checker
+   again. Use `--verbose` to see file/line/rule/token and the applicable reason, and
+   `--summary` to see the record count per milestone (it reads only the exception
+   file, so it needs no Kit build).
 
 Missing, stale, duplicate, changed-context/count, malformed and wildcard-path
-exceptions fail. Delete records when deleting or migrating code; do not retain
+exceptions fail, and so does an allowlist longer than the ceiling. Delete records when deleting or migrating code; do not retain
 stale records or regenerate the baseline. After a Kit change, rebuild before
 removing both source and generated-artifact entries. Tracking issue
 [#382](https://github.com/Maneek21/Deft/issues/382) records the initial baseline.
