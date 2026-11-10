@@ -249,6 +249,14 @@ function stubDiscovery(
   return calls;
 }
 
+async function classifyAsAutoRead(t: TestContext): Promise<void> {
+  stubDiscovery(t, { isWrite: false, approvalTier: 'auto-execute' });
+  await client.query(
+    `UPDATE mcp_connections SET default_trust_tier = 'auto' WHERE id = $1`,
+    [CONNECTION_ID],
+  );
+}
+
 async function queueReviewedAction(approvalTier: 'quick' | 'full'): Promise<string> {
   await client.query(
     `UPDATE mcp_connections
@@ -303,6 +311,10 @@ async function receiptRows(actionId: string) {
 }
 
 legacyTest('immediate MCP success preserves exact structured output, citation, config, and one call', async (t) => {
+  // The read path invokes only a tool the live projection positively
+  // classifies as an auto-tier, non-write read (W1-b R1); without discovery
+  // the call now fails closed with MCP_TOOL_UNAVAILABLE.
+  await classifyAsAutoRead(t);
   const rawResult = {
     content: [{ type: 'text', text: 'sent' }],
     structuredContent: { report_id: 'report-1' },
@@ -355,6 +367,10 @@ legacyTest('immediate MCP success preserves exact structured output, citation, c
 });
 
 legacyTest('immediate MCP compatibility output survives an unavailable strict projection', async (t) => {
+  // The read path invokes only a tool the live projection positively
+  // classifies as an auto-tier, non-write read (W1-b R1); without discovery
+  // the call now fails closed with MCP_TOOL_UNAVAILABLE.
+  await classifyAsAutoRead(t);
   const rawResult = {
     content: [{ type: 'text', text: 'provider completed the effect' }],
     structuredContent: { unsupported_counter: 1n },
@@ -378,6 +394,10 @@ legacyTest('immediate MCP compatibility output survives an unavailable strict pr
 });
 
 legacyTest('immediate MCP tool and transport failures retain exact payloads and resolved citations', async (t) => {
+  // The read path invokes only a tool the live projection positively
+  // classifies as an auto-tier, non-write read (W1-b R1); without discovery
+  // the call now fails closed with MCP_TOOL_UNAVAILABLE.
+  await classifyAsAutoRead(t);
   const rawError = {
     content: [{ type: 'text', text: 'invalid report' }],
     structuredContent: { code: 'INVALID_REPORT' },

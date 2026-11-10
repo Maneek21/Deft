@@ -756,6 +756,92 @@ test('strict invocation inputs fail before resolution and pre-call/runtime throw
   assert.equal(executeCalls, 1);
 });
 
+test('preflight resolves and validates the target like invoke but never calls the provider', async () => {
+  const base = {
+    org_id: connection.org_id,
+    actor: { user_id: 'user_ada', agent_employee_id: 'employee_1' },
+    provider: {
+      provider_kind: 'mcp' as const,
+      connection_slug: connection.slug,
+      operation_name: 'read_status',
+    },
+    input: {},
+  };
+  for (const cutover of [false, true]) {
+    let executeCalls = 0;
+    let governedCalls = 0;
+    const resolutionCalls: unknown[][] = [];
+    const executeTool = async (): Promise<MCPResult> => {
+      executeCalls++;
+      throw new Error('preflight reached the provider');
+    };
+    const governed = {
+      async invoke(): Promise<never> {
+        governedCalls++;
+        throw new Error('preflight reached the governed executor');
+      },
+    };
+    const service = new CapabilityService(providerForRuntime({
+      resolveExecutable: async (...args) => {
+        resolutionCalls.push(args);
+        return { connection };
+      },
+      executeTool,
+    }), governed, () => cutover);
+    assert.deepEqual(await service.preflight(base), {
+      status: 'resolved',
+      resolved_provider: {
+        org_id: connection.org_id,
+        provider_kind: 'mcp',
+        provider_instance_id: connection.id,
+      },
+    });
+    assert.deepEqual(resolutionCalls, [[connection.org_id, connection.slug, 'read_status', 'employee_1']]);
+
+    for (const denial of [{
+      error: `MCP connection '${connection.slug}' is unavailable`,
+      reason: 'provider_unavailable' as const,
+      expectedCode: 'CAPABILITY_PROVIDER_UNAVAILABLE',
+    }, {
+      error: "MCP tool 'read_status' is disabled for this agent employee",
+      reason: 'operation_unavailable' as const,
+      expectedCode: 'CAPABILITY_OPERATION_UNAVAILABLE',
+    }]) {
+      const denied = await new CapabilityService(providerForRuntime({
+        resolveExecutable: async () => ({ connection: null, error: denial.error, reason: denial.reason }),
+        executeTool,
+      }), governed, () => cutover).preflight(base);
+      assert.deepEqual(denied, {
+        status: 'unavailable',
+        legacy_output: { error: denial.error },
+        error: denial.error,
+        error_code: denial.expectedCode,
+      });
+    }
+
+    await assert.rejects(
+      new CapabilityService(providerForRuntime({
+        resolveExecutable: async () => ({
+          connection: { ...connection, server_url: 'http://127.0.0.1/private' },
+        }),
+        executeTool,
+      }), governed, () => cutover).preflight(base),
+      /Invalid MCP connection target:/,
+    );
+    await assert.rejects(service.preflight({ ...base, input: { invalid: undefined } }));
+    await assert.rejects(service.preflight({ ...base, grant: 'admin' }));
+    assert.equal(resolutionCalls.length, 1, 'strict input rejection happens before resolution');
+    assert.equal(executeCalls, 0);
+    assert.equal(governedCalls, 0);
+  }
+
+  const withoutPreflight = new CapabilityService({
+    discover: async () => { throw new Error('unused'); },
+    invoke: async () => { throw new Error('unused'); },
+  });
+  await assert.rejects(withoutPreflight.preflight(base), /cannot preflight/);
+});
+
 test('pinned App Run execution resolves the exact provider once and preserves returned MCP payloads', async () => {
   const resolutionCalls: unknown[][] = [];
   const executionCalls: unknown[][] = [];
