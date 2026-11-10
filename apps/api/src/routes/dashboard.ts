@@ -9,6 +9,12 @@ import { generateDailyStandup } from '../lib/standup-automation.js';
 import { visibleModuleActionSql } from '../lib/module-action-visibility.js';
 import {readEmailCalendarOccurrences} from '../lib/email-calendar-projection.js';
 import { getDayBoundaries, resolveViewerTimezone } from '../lib/task-dates.js';
+import { visibleTaskCondition } from '../lib/task-visibility.js';
+
+/** Full workspace members; guests and unresolved roles are excluded from org-wide standups. */
+function isWorkspaceMember(role: string | undefined): boolean {
+  return role === 'owner' || role === 'admin' || role === 'member';
+}
 
 export const dashboardRoutes = new Hono();
 
@@ -206,6 +212,7 @@ dashboardRoutes.get('/', async (c) => {
         eq(tasks.is_deleted, false),
         eq(projects.is_deleted, false),
         eq(projects.is_archived, false),
+        visibleTaskCondition(user.id),
       ))
       .orderBy(desc(taskActivity.created_at))
       .limit(15);
@@ -270,7 +277,7 @@ dashboardRoutes.get('/', async (c) => {
     // 8. Unread notification count
     const [notifCount] = await db.select({ count: sql<number>`count(*)::int` })
       .from(notifications)
-      .where(and(eq(notifications.user_id, user.id), eq(notifications.is_read, false)));
+      .where(and(eq(notifications.org_id, user.org_id), eq(notifications.user_id, user.id), eq(notifications.is_read, false)));
 
     // 8b. Recent/pending agent activity for the cockpit surface. This keeps
     // the dashboard useful even when the frontend only renders a subset.
@@ -315,31 +322,34 @@ dashboardRoutes.get('/', async (c) => {
       .limit(5);
 
     // 9. Today's standup
+    // The org standup is withheld from guests, matching POST /standup (S4-e).
     let standup: { summary: string; date: string; generator?: string; model?: string | null } | null = null;
-    try {
-      const [todayStandup] = await db
-        .select({ summary: standups.summary, date: standups.date, raw_data: standups.raw_data })
-        .from(standups)
-        .where(
-          and(
-            eq(standups.org_id, user.org_id),
-            gte(standups.date, todayStart),
-            lt(standups.date, todayEnd),
-          ),
-        )
-        .orderBy(desc(standups.created_at))
-        .limit(1);
+    if (isWorkspaceMember(user.role)) {
+      try {
+        const [todayStandup] = await db
+          .select({ summary: standups.summary, date: standups.date, raw_data: standups.raw_data })
+          .from(standups)
+          .where(
+            and(
+              eq(standups.org_id, user.org_id),
+              gte(standups.date, todayStart),
+              lt(standups.date, todayEnd),
+            ),
+          )
+          .orderBy(desc(standups.created_at))
+          .limit(1);
 
-      if (todayStandup) {
-        const rawData = todayStandup.raw_data as Record<string, unknown> | null;
-        standup = {
-          summary: todayStandup.summary,
-          date: todayStandup.date.toISOString(),
-          generator: typeof rawData?.generator === 'string' ? rawData.generator : undefined,
-          model: typeof rawData?.model === 'string' ? rawData.model : null,
-        };
-      }
-    } catch {}
+        if (todayStandup) {
+          const rawData = todayStandup.raw_data as Record<string, unknown> | null;
+          standup = {
+            summary: todayStandup.summary,
+            date: todayStandup.date.toISOString(),
+            generator: typeof rawData?.generator === 'string' ? rawData.generator : undefined,
+            model: typeof rawData?.model === 'string' ? rawData.model : null,
+          };
+        }
+      } catch {}
+    }
 
     // 10. Calendar events for today. Includes native events, imported ICS
     // feeds, and legacy Google calendar rows.

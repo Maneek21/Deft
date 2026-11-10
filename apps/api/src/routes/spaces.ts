@@ -9,6 +9,19 @@ import { DEFTY_EMAIL } from '../lib/ensure-defty-membership.js';
 
 export const spaceRoutes = new Hono();
 
+const NOT_A_MEMBER = { error: 'Not a member of this space', code: 'FORBIDDEN' } as const;
+
+/**
+ * Creator-only routes: a missing space, a space in another org and a same-org
+ * space the caller is neither in nor created all get the one denial the
+ * membership-guarded routes use (W1-g), so the creator check cannot be used to
+ * probe for a private space's existence (S4-f). The creator keeps access even
+ * after leaving the space, as before.
+ */
+async function canSeeSpaceForCreatorRoute(space: { id: string; created_by: string | null }, user: { id: string; org_id: string }) {
+  return space.created_by === user.id || requireSpaceMembership(space.id, user.id, user.org_id);
+}
+
 const VALID_SPACE_TYPES = ['public', 'private', 'dm', 'group_dm'] as const;
 
 function visibleLiveSpaceMemberForOrg(orgId: string) {
@@ -309,9 +322,7 @@ spaceRoutes.patch('/:id', async (c) => {
       .where(and(eq(spaces.id, spaceId), eq(spaces.org_id, user.org_id)))
       .limit(1);
 
-    if (!existing) {
-      return c.json({ error: 'Space not found', code: 'NOT_FOUND' }, 404);
-    }
+    if (!existing || !(await canSeeSpaceForCreatorRoute(existing, user))) return c.json(NOT_A_MEMBER, 403);
 
     // Only creator can update (could extend to admin/owner check)
     if (existing.created_by !== user.id) {
@@ -520,9 +531,7 @@ spaceRoutes.delete('/:id/members/:userId', async (c) => {
       .where(and(eq(spaces.id, spaceId), eq(spaces.org_id, user.org_id)))
       .limit(1);
 
-    if (!space) {
-      return c.json({ error: 'Space not found', code: 'NOT_FOUND' }, 404);
-    }
+    if (!space || !(await canSeeSpaceForCreatorRoute(space, user))) return c.json(NOT_A_MEMBER, 403);
 
     // Only creator can remove members
     if (space.created_by !== user.id) {
@@ -562,13 +571,10 @@ spaceRoutes.delete('/:id/members/me', async (c) => {
     const user = c.get('user');
     const spaceId = c.req.param('id');
 
-    const [space] = await db.select({ id: spaces.id })
-      .from(spaces)
-      .where(and(eq(spaces.id, spaceId), eq(spaces.org_id, user.org_id)))
-      .limit(1);
-    if (!space) {
-      return c.json({ error: 'Space not found', code: 'NOT_FOUND' }, 404);
-    }
+    // A missing space, a space in another org and a space the caller is not in
+    // all get the one W1-g denial (S4-d).
+    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
+    if (!isMember) return c.json(NOT_A_MEMBER, 403);
 
     const deleted = await db.delete(spaceMembers)
       .where(
@@ -579,9 +585,7 @@ spaceRoutes.delete('/:id/members/me', async (c) => {
       )
       .returning();
 
-    if (deleted.length === 0) {
-      return c.json({ error: 'Not a member of this space', code: 'NOT_FOUND' }, 404);
-    }
+    if (deleted.length === 0) return c.json(NOT_A_MEMBER, 403);
 
     await evictActiveHuddleParticipants({
       orgId: user.org_id,
@@ -608,9 +612,7 @@ spaceRoutes.delete('/:id', async (c) => {
       .where(and(eq(spaces.id, spaceId), eq(spaces.org_id, user.org_id)))
       .limit(1);
 
-    if (!space) {
-      return c.json({ error: 'Space not found', code: 'NOT_FOUND' }, 404);
-    }
+    if (!space || !(await canSeeSpaceForCreatorRoute(space, user))) return c.json(NOT_A_MEMBER, 403);
 
     if (space.is_default) {
       return c.json({ error: 'Cannot delete the default space', code: 'FORBIDDEN' }, 403);
@@ -654,6 +656,11 @@ spaceRoutes.post('/:id/mark-unread', async (c) => {
     if (!message_id) {
       return c.json({ error: 'message_id required', code: 'VALIDATION_ERROR' }, 400);
     }
+
+    // Membership first, so a non-member cannot tell an existing message/space
+    // pair from a missing one (S4-d).
+    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
+    if (!isMember) return c.json(NOT_A_MEMBER, 403);
 
     // Get the message's created_at, then set read position to 1ms before it
     const [msg] = await db.select({ created_at: messages.created_at })

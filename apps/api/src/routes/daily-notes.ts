@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, ilike } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { notes, noteFolders, noteVersions, noteShares, users } from '@deft/db/schema';
+import { notes, noteFolders, noteVersions, noteShares, users, orgMembers } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { requireSpaceMembership } from '../lib/space-membership.js';
 import { visibleNoteCondition } from '../lib/note-visibility.js';
@@ -35,6 +35,25 @@ async function enqueueNoteCrossReference(
 
 export const dailyNoteRoutes = new Hono();
 
+const FOLDER_NOT_FOUND = { error: 'Folder not found', code: 'NOT_FOUND' } as const;
+
+/**
+ * True when `folderId` is a live folder owned by the caller in the caller's
+ * active org. Another user's folder, the caller's own folder in a different
+ * org and a missing id are all indistinguishable (S4-a/S4-b).
+ */
+async function ownsFolder(folderId: string, user: { id: string; org_id: string }): Promise<boolean> {
+  const [folder] = await db.select({ id: noteFolders.id }).from(noteFolders)
+    .where(and(
+      eq(noteFolders.id, folderId),
+      eq(noteFolders.org_id, user.org_id),
+      eq(noteFolders.user_id, user.id),
+      eq(noteFolders.is_deleted, false),
+    ))
+    .limit(1);
+  return !!folder;
+}
+
 const visibilityEnum = z.enum(['private', 'org', 'space']).optional().default('private');
 
 const createNoteSchema = z.object({
@@ -45,6 +64,11 @@ const createNoteSchema = z.object({
   is_template: z.boolean().optional(),
   visibility: visibilityEnum,
   visibility_space_id: z.string().nullable().optional(),
+});
+
+const shareNoteSchema = z.object({
+  user_id: z.string().min(1),
+  permission: z.string().optional().default('view'),
 });
 
 const updateNoteSchema = z.object({
@@ -74,6 +98,11 @@ dailyNoteRoutes.post('/folders', async (c) => {
   const body = await c.req.json();
   const { name, icon, parent_folder_id } = body;
   if (!name) return c.json({ error: 'Name required', code: 'VALIDATION_ERROR' }, 400);
+  // The value checked is the value written: only a string id is accepted.
+  if (parent_folder_id && typeof parent_folder_id !== 'string') {
+    return c.json({ error: 'parent_folder_id must be a string', code: 'VALIDATION_ERROR' }, 400);
+  }
+  if (parent_folder_id && !(await ownsFolder(parent_folder_id, user))) return c.json(FOLDER_NOT_FOUND, 404);
 
   const [folder] = await db.insert(noteFolders).values({
     org_id: user.org_id,
@@ -95,7 +124,20 @@ dailyNoteRoutes.patch('/folders/:id', async (c) => {
   const updates: Record<string, any> = {};
   if (body.name !== undefined) updates.name = body.name;
   if (body.icon !== undefined) updates.icon = body.icon;
-  if (body.parent_folder_id !== undefined) updates.parent_folder_id = body.parent_folder_id;
+  if (body.parent_folder_id !== undefined) {
+    // A folder may only be nested under another live folder the caller owns in
+    // this org; anything else answers exactly like a missing folder (S4-a).
+    if (body.parent_folder_id !== null) {
+      if (typeof body.parent_folder_id !== 'string' || body.parent_folder_id === '') {
+        return c.json({ error: 'parent_folder_id must be a string or null', code: 'VALIDATION_ERROR' }, 400);
+      }
+      if (body.parent_folder_id === folderId) {
+        return c.json({ error: 'A folder cannot be its own parent', code: 'VALIDATION_ERROR' }, 400);
+      }
+      if (!(await ownsFolder(body.parent_folder_id, user))) return c.json(FOLDER_NOT_FOUND, 404);
+    }
+    updates.parent_folder_id = body.parent_folder_id;
+  }
   if (body.sort_order !== undefined) updates.sort_order = body.sort_order;
 
   const [updated] = await db.update(noteFolders)
@@ -115,6 +157,11 @@ dailyNoteRoutes.delete('/folders/:id', async (c) => {
   await db.update(noteFolders)
     .set({ is_deleted: true })
     .where(and(eq(noteFolders.id, folderId), eq(noteFolders.org_id, user.org_id), eq(noteFolders.user_id, user.id)));
+
+  // Child folders must not keep pointing at a deleted parent: move them to the top level.
+  await db.update(noteFolders)
+    .set({ parent_folder_id: null })
+    .where(and(eq(noteFolders.parent_folder_id, folderId), eq(noteFolders.org_id, user.org_id), eq(noteFolders.user_id, user.id)));
 
   // Unset folder_id on notes in this folder
   await db.update(notes)
@@ -201,6 +248,10 @@ dailyNoteRoutes.post('/', async (c) => {
     }
   }
 
+  if (parsed.success && parsed.data.folder_id && !(await ownsFolder(parsed.data.folder_id, user))) {
+    return c.json(FOLDER_NOT_FOUND, 404);
+  }
+
   const note = await createNativeNote(db, user, {
     ...(parsed.success ? parsed.data : {}),
     visibility,
@@ -271,7 +322,10 @@ dailyNoteRoutes.patch('/:id', async (c) => {
   if (parsed.data.content !== undefined) updates.content = parsed.data.content;
   if (parsed.data.icon !== undefined) updates.icon = parsed.data.icon;
   if (parsed.data.is_pinned !== undefined) updates.is_pinned = parsed.data.is_pinned;
-  if (parsed.data.folder_id !== undefined) updates.folder_id = parsed.data.folder_id;
+  if (parsed.data.folder_id !== undefined) {
+    if (parsed.data.folder_id && !(await ownsFolder(parsed.data.folder_id, user))) return c.json(FOLDER_NOT_FOUND, 404);
+    updates.folder_id = parsed.data.folder_id;
+  }
   const nextVisibility = parsed.data.visibility ?? full.visibility;
   const nextVisibilitySpaceId = parsed.data.visibility_space_id !== undefined
     ? parsed.data.visibility_space_id
@@ -387,6 +441,13 @@ dailyNoteRoutes.get('/:id/shares', async (c) => {
   })
     .from(noteShares)
     .innerJoin(users, eq(noteShares.shared_with_user_id, users.id))
+    // Only recipients who belong to this org are listed; a share row for a
+    // stranger never exposes their name or email (S4-c).
+    .innerJoin(orgMembers, and(
+      eq(orgMembers.user_id, users.id),
+      eq(orgMembers.org_id, user.org_id),
+      eq(orgMembers.is_active, true),
+    ))
     .where(eq(noteShares.note_id, noteId));
 
   return c.json({ shares });
@@ -396,14 +457,25 @@ dailyNoteRoutes.get('/:id/shares', async (c) => {
 dailyNoteRoutes.post('/:id/shares', async (c) => {
   const user = c.get('user');
   const noteId = c.req.param('id');
-  const { user_id: targetUserId, permission = 'view' } = await c.req.json();
-
-  if (!targetUserId) return c.json({ error: 'user_id required', code: 'VALIDATION_ERROR' }, 400);
+  const parsedShare = shareNoteSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsedShare.success) return c.json({ error: 'user_id required', code: 'VALIDATION_ERROR' }, 400);
+  const { user_id: targetUserId, permission } = parsedShare.data;
 
   const [note] = await db.select({ id: notes.id }).from(notes)
     .where(and(eq(notes.id, noteId), eq(notes.org_id, user.org_id), eq(notes.user_id, user.id)))
     .limit(1);
   if (!note) return c.json({ error: 'Note not found', code: 'NOT_FOUND' }, 404);
+
+  // The recipient must be an active member of the caller's active org. A user
+  // from another org answers exactly like an unknown id (S4-c).
+  const [recipient] = await db.select({ id: orgMembers.user_id }).from(orgMembers)
+    .where(and(
+      eq(orgMembers.org_id, user.org_id),
+      eq(orgMembers.user_id, targetUserId),
+      eq(orgMembers.is_active, true),
+    ))
+    .limit(1);
+  if (!recipient) return c.json({ error: 'Member not found or inactive', code: 'MEMBER_NOT_FOUND' }, 404);
 
   const [share] = await db.insert(noteShares).values({
     note_id: noteId,
