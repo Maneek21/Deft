@@ -805,8 +805,9 @@ See [current limitations](current-limitations.md) before upgrading production.
 Every table carries an `org_id`. Before the fixes in PR #439, some routes could
 store a row whose `org_id` differed from the org of the space, task, note or
 other row it belonged to. The audit script lists such rows, and users who hold a
-grant (space member, task assignee or watcher, note share) without a membership
-in the row's org. It only reports; it never changes data and has no repair mode.
+grant or authorship column (space member, task assignee or watcher, note share,
+token, OAuth grant, agent employee and workflow rule owners and similar) without
+a membership in the row's org. It only reports; it never changes data and has no repair mode.
 
 ```bash
 pnpm --filter @deft/api exec tsx src/scripts/audit-mixed-org-rows.ts \
@@ -824,6 +825,11 @@ pnpm --filter @deft/api exec tsx src/scripts/audit-mixed-org-rows.ts \
 - `--json` writes up to `--limit` samples per check. Samples contain row ids,
   both org ids and `created_at`, never message text, note bodies, names or
   emails.
+- Error output is deliberately terse: an unrecognised argument is reported by
+  position only, and a failure prints a fixed description with the SQLSTATE or
+  network code, never the connection string, user name or driver message. A
+  check that hits its statement timeout is listed as an error and the exit code
+  is `1`.
 - Exit code `0` means no mismatches, `2` means mismatches were found, `1` means
   an error or an unfinished check. Running through `pnpm exec` can report `1`
   for any non-zero exit; call `tsx` directly if a script needs to tell them apart.

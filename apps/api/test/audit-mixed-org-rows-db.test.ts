@@ -7,6 +7,10 @@ import * as s from '@deft/db/schema';
 import {
   FK_PAIRS,
   SKIPS,
+  USER_FK_SKIPS,
+  catalogInfo,
+  exitCodeFor,
+  main,
   UNCONSTRAINED_REFS,
   buildChecks,
   formatSummary,
@@ -39,7 +43,7 @@ test('audit-mixed-org-rows: argument handling needs no database', () => {
   assert.throws(() => parseArgs(['--fix'], {}), /read-only/u);
   assert.throws(() => parseArgs(['--delete', '--database-url', 'postgres://x/y'], {}), /read-only/u);
   assert.throws(() => parseArgs(['--repair=1'], { DATABASE_URL: 'postgres://x/y' }), /read-only/u);
-  assert.throws(() => parseArgs(['--bogus'], { DATABASE_URL: 'postgres://x/y' }), /unknown argument/u);
+  assert.throws(() => parseArgs(['--bogus'], { DATABASE_URL: 'postgres://x/y' }), /unknown argument at position 1/u);
   assert.throws(() => parseArgs([], {}), /--database-url/u);
   assert.throws(() => parseArgs(['--limit', '-1', '--database-url', 'postgres://x/y'], {}), /--limit/u);
   const ok = parseArgs(['--database-url', 'postgres://u:secret@h:5/d', '--json', 'o.json', '--limit', '7'], {});
@@ -48,6 +52,65 @@ test('audit-mixed-org-rows: argument handling needs no database', () => {
   const masked = maskTarget('postgres://user:secret@db.example:5432/deft?sslmode=require');
   assert.equal(masked, 'db.example:5432/deft');
   assert.ok(!masked.includes('secret') && !masked.includes('user'));
+});
+
+function capture(): { out: string[]; restore: () => void } {
+  const out: string[] = [];
+  const log = console.log; const err = console.error;
+  console.log = (...a: unknown[]) => { out.push(a.join(' ')); };
+  console.error = (...a: unknown[]) => { out.push(a.join(' ')); };
+  return { out, restore: () => { console.log = log; console.error = err; } };
+}
+
+test('audit-mixed-org-rows: S5-r2-1 error output never echoes arguments or credentials', async () => {
+  const cases: string[][] = [
+    ['postgresql://user:secret@host/db'],
+    ['--databse-url=postgresql://user:secret@host.invalid/db'],
+    ['--fixsecret=postgresql://user:secret@host/db'],
+  ];
+  for (const argv of cases) {
+    const cap = capture();
+    let code: number;
+    try { code = await main(argv); } finally { cap.restore(); }
+    const text = cap.out.join('\n');
+    assert.equal(code, 1);
+    assert.ok(!text.includes('secret') && !text.includes('postgresql://') && !text.includes('user:'), text);
+  }
+  // unreachable host or malformed URL with credentials
+  for (const url of ['postgresql://leakuser:leakpass@127.0.0.1:1/db', 'postgresql://leakuser:leakpass@nonexistent.invalid:5432/db', 'postgres://leakuser:leakpass@[bad']) {
+    const cap = capture();
+    let code: number;
+    try { code = await main(['--database-url', url]); } finally { cap.restore(); }
+    const text = cap.out.join('\n');
+    assert.equal(code, 1);
+    assert.ok(!/leakpass|leakuser|postgres(ql)?:\/\//u.test(text), text);
+  }
+});
+
+test('audit-mixed-org-rows: S5-r2-4 a statement timeout is an error for that check and forces exit 1', { skip: !safe && 'needs DEFT_TEST_DATABASE_URL = DATABASE_URL on a local deft_test* database' }, async () => {
+  const client = new pg.Client({ connectionString: target });
+  await client.connect();
+  try {
+    let slept = false;
+    const seam = {
+      query: ((text: any, params?: any) => {
+        if (!slept && typeof text === 'string' && text.startsWith('SELECT count(*)')) {
+          slept = true;
+          return client.query('SELECT pg_sleep(4)');
+        }
+        return client.query(text, params);
+      }) as pg.Client['query'],
+    };
+    const report = await runAudit(seam, { limit: 1, statementTimeoutMs: 1500, target: 'test' });
+    assert.equal(report.errors, 1);
+    const bad = report.checks.filter((c) => c.error);
+    assert.equal(bad.length, 1);
+    assert.match(bad[0]!.error!, /57014/u);
+    assert.ok(!/pg_sleep|canceling/u.test(bad[0]!.error!));
+    assert.equal(exitCodeFor(report), 1);
+    assert.equal(exitCodeFor({ ...report, errors: 0, mismatch_rows: 3 }), 2);
+    assert.equal(exitCodeFor({ ...report, errors: 0, mismatch_rows: 0 }), 0);
+  } finally { await client.end(); }
 });
 
 test('audit-mixed-org-rows: the check registry is read-only SELECT text', () => {
@@ -90,6 +153,46 @@ test('audit-mixed-org-rows: database', { skip: !safe && 'needs DEFT_TEST_DATABAS
     const stale = [...registered].filter((k) => !live.has(k));
     assert.deepEqual(stale, [], 'FK_PAIRS lists a constraint that no longer exists');
     assert.ok(UNCONSTRAINED_REFS.length > 0 && SKIPS.length > 0);
+  });
+
+  await t.test('S5-r2-2 primary key discovery ignores INCLUDE columns', async () => {
+    await client.query('BEGIN');
+    try {
+      await client.query('CREATE TABLE audit_pk_probe (id text NOT NULL, payload text, CONSTRAINT audit_pk_probe_pk PRIMARY KEY (id) INCLUDE (payload))');
+      const info = await catalogInfo(client);
+      assert.deepEqual(info.pk.get('audit_pk_probe'), ['id']);
+    } finally {
+      await client.query('ROLLBACK');
+    }
+    assert.equal((await client.query(`SELECT to_regclass('public.audit_pk_probe') AS r`)).rows[0].r, null);
+  });
+
+  await t.test('S5-r2-3 every user FK from an org-bearing table is a membership check or a documented skip', async () => {
+    const r = await client.query<{ t: string; col: string; covered: boolean }>(
+      `SELECT DISTINCT cl.relname AS t, a.attname AS col,
+              EXISTS (SELECT 1 FROM pg_constraint k JOIN pg_class kp ON kp.oid = k.confrelid
+                       WHERE k.contype = 'f' AND k.conrelid = con.conrelid AND kp.relname = 'org_members'
+                         AND array_length(k.conkey, 1) > 1 AND a.attnum = ANY (k.conkey)) AS covered
+         FROM pg_constraint con
+         JOIN pg_class cl ON cl.oid = con.conrelid
+         JOIN pg_class p ON p.oid = con.confrelid
+         JOIN pg_namespace ns ON ns.oid = cl.relnamespace
+         JOIN pg_attribute a ON a.attrelid = cl.oid AND a.attnum = con.conkey[1]
+        WHERE con.contype = 'f' AND ns.nspname = 'public' AND p.relname = 'users' AND array_length(con.conkey, 1) = 1
+          AND EXISTS (SELECT 1 FROM pg_attribute x WHERE x.attrelid = cl.oid AND x.attname = 'org_id' AND NOT x.attisdropped)`,
+    );
+    const registered = new Set(buildChecks().filter((c) => c.orgB === null && c.severity === 'mismatch').map((c) => c.columns[0]));
+    const skipped = new Map(USER_FK_SKIPS.map((x) => [`${x.table}.${x.col}`, x.reason] as const));
+    assert.ok([...skipped.values()].every((reason) => reason.length > 20), 'every skip needs a reason');
+    const live = new Set(r.rows.map((x) => `${x.t}.${x.col}`));
+    // composite (org_id, user) -> org_members keys make a cross-org member impossible to store
+    const unhandled = r.rows.filter((x) => !x.covered).map((x) => `${x.t}.${x.col}`).filter((k) => !registered.has(k) && !skipped.has(k));
+    assert.deepEqual(unhandled, [], 'register a member check in MEMBER_COLUMNS or add a reasoned USER_FK_SKIPS entry');
+    assert.deepEqual([...skipped.keys()].filter((k) => !live.has(k)), [], 'USER_FK_SKIPS lists a column that no longer exists');
+    assert.deepEqual([...skipped.keys()].filter((k) => registered.has(k)), [], 'a column is both registered and skipped');
+    for (const k of ['mcp_tokens.user_id', 'oauth_grants.user_id', 'agent_employees.user_id', 'workflow_rules.created_by']) {
+      assert.ok(registered.has(k), k);
+    }
   });
 
   const before = await counts(client);

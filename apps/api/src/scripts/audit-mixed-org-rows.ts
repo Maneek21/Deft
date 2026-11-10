@@ -121,7 +121,7 @@ function member(o: MemberOpts): CheckDef {
     severity: o.inactive ? 'info' : 'mismatch',
     childTable: o.table,
     from: `${q(o.table)} c${join} JOIN users u ON u.id = c.${q(o.userCol)}`,
-    where: `u.kind::text <> 'system'${o.via?.extra ? ` AND ${o.via.extra}` : ''} AND ${memberPred}`,
+    where: `u.kind::text <> 'system'${o.via ? '' : ' AND c.org_id IS NOT NULL'}${o.via?.extra ? ` AND ${o.via.extra}` : ''} AND ${memberPred}`,
     orgA: orgExpr,
     orgB: null,
   };
@@ -334,6 +334,90 @@ const MEMBER_COLUMNS: Array<[table: string, col: string]> = [
   ['clips', 'created_by'],
   ['cross_references', 'created_by'],
   ['work_intents', 'source_user_id'],
+  // user references found by the catalog completeness test (S5 round 2)
+  ['action_receipts', 'approver_id'],
+  ['agent_action_approvers', 'user_id'],
+  ['agent_actions', 'user_id'],
+  ['agent_actions', 'approved_by_user_id'],
+  ['agent_channel_tokens', 'created_by'],
+  ['agent_employees', 'user_id'],
+  ['agent_employees', 'created_by'],
+  ['agent_nudges', 'user_id'],
+  ['agent_webhooks', 'created_by'],
+  ['api_keys', 'created_by'],
+  ['app_action_batches', 'owner_user_id'],
+  ['app_action_payloads', 'owner_user_id'],
+  ['app_installations', 'installed_by_user_id'],
+  ['app_integration_capture_policies', 'owner_user_id'],
+  ['app_integration_destination_receipts', 'owner_user_id'],
+  ['app_integration_notification_policies', 'owner_user_id'],
+  ['app_private_defty_seals', 'owner_user_id'],
+  ['app_private_files', 'owner_user_id'],
+  ['app_private_state_records', 'owner_user_id'],
+  ['app_restore_access_reviews', 'owner_user_id'],
+  ['attention_deliveries', 'user_id'],
+  ['attention_events', 'user_id'],
+  ['attention_items', 'user_id'],
+  ['automation_runs', 'user_id'],
+  ['burnout_alerts', 'user_id'],
+  ['burnout_alerts', 'alerted_to'],
+  ['connected_accounts', 'user_id'],
+  ['custom_emoji', 'uploaded_by'],
+  ['email_context_transfers', 'owner_user_id'],
+  ['ics_subscriptions', 'user_id'],
+  ['integrations', 'connected_by'],
+  ['invites', 'invited_by'],
+  ['invites', 'accepted_by'],
+  ['manager_settings', 'user_id'],
+  ['mcp_connections', 'created_by'],
+  ['mcp_tokens', 'user_id'],
+  ['mcp_tokens', 'created_by'],
+  ['meeting_briefs', 'user_id'],
+  ['message_observations', 'user_id'],
+  ['module_installations', 'installed_by_user_id'],
+  ['native_create_requests', 'user_id'],
+  ['native_mention_deliveries', 'recipient_user_id'],
+  ['oauth_access_tokens', 'user_id'],
+  ['oauth_authorization_codes', 'user_id'],
+  ['oauth_grants', 'user_id'],
+  ['oneone_preps', 'manager_id'],
+  ['oneone_preps', 'report_id'],
+  ['people_expertise', 'user_id'],
+  ['people_influence', 'user_id'],
+  ['people_interactions', 'user_a_id'],
+  ['people_interactions', 'user_b_id'],
+  ['people_patterns', 'user_id'],
+  ['people_relationships', 'user_a_id'],
+  ['people_relationships', 'user_b_id'],
+  ['team_resources', 'created_by'],
+  ['teams', 'created_by'],
+  ['triggers', 'created_by'],
+  ['user_groups', 'created_by'],
+  ['web_push_subscriptions', 'user_id'],
+  ['web_sessions', 'user_id'],
+  ['wiki_citations', 'source_user_id'],
+  ['work_intents', 'converted_by'],
+  ['work_intents', 'dismissed_by'],
+  ['workflow_rules', 'created_by'],
+];
+
+/**
+ * User foreign keys on org-bearing tables that are deliberately not membership
+ * checks. A column whose table also has a composite (org_id, user) foreign key
+ * to org_members is covered by PostgreSQL itself and needs no entry. The test
+ * file derives the full list from the live catalog and fails on anything that
+ * is neither registered above nor listed here.
+ */
+export const USER_FK_SKIPS: Array<{ table: string; col: string; reason: string }> = [
+  { table: 'org_members', col: 'user_id', reason: 'this table is the membership record the other checks compare against' },
+  { table: 'skills', col: 'created_by', reason: 'bundled and marketplace rows are authored outside the owning org, so the author need not be a member' },
+  { table: 'task_templates', col: 'created_by', reason: 'global templates (org_id NULL) are authored outside any one org, so the author need not be a member' },
+  { table: 'agent_employee_templates', col: 'created_by', reason: 'first-party and community templates (org_id NULL) are authored outside any one org' },
+  { table: 'oauth_audit_events', col: 'user_id', reason: 'append-only audit history with a nullable org; the actor may have left or never joined the org' },
+  { table: 'app_private_defty_seals', col: 'defty_user_id', reason: 'names the Defty system user, which is excluded from membership checks by design' },
+  { table: 'agent_channel_events', col: 'actor_user_id', reason: 'actor recorded as history; may be a user, agent or system actor' },
+  { table: 'attention_events', col: 'actor_user_id', reason: 'actor recorded as history; may be a user, agent or system actor' },
+  { table: 'native_mention_deliveries', col: 'actor_user_id', reason: 'actor recorded as history; may be a user, agent or system actor' },
 ];
 
 export function buildChecks(): CheckDef[] {
@@ -547,12 +631,13 @@ export async function withReadOnlyTransaction<T>(
   }
 }
 
-async function catalogInfo(client: Queryable): Promise<{ pk: Map<string, string[]>; created: Set<string> }> {
+export async function catalogInfo(client: Queryable): Promise<{ pk: Map<string, string[]>; created: Set<string> }> {
   const pkRows = await client.query<{ rel: string; cols: string[] }>(
     `SELECT cl.relname AS rel,
             (SELECT array_agg(a.attname::text ORDER BY k.ord)
                FROM unnest(i.indkey) WITH ORDINALITY k(attnum, ord)
-               JOIN pg_attribute a ON a.attrelid = cl.oid AND a.attnum = k.attnum) AS cols
+               JOIN pg_attribute a ON a.attrelid = cl.oid AND a.attnum = k.attnum
+              WHERE k.ord <= i.indnkeyatts) AS cols
        FROM pg_index i
        JOIN pg_class cl ON cl.oid = i.indrelid
        JOIN pg_namespace n ON n.oid = cl.relnamespace
@@ -608,7 +693,7 @@ export async function runAudit(client: Queryable, options: AuditOptions = {}): P
         await client.query('RELEASE SAVEPOINT audit_check');
       } catch (err) {
         await client.query('ROLLBACK TO SAVEPOINT audit_check');
-        result.error = err instanceof Error ? err.message : String(err);
+        result.error = describeError(err);
       }
       results.push(result);
     }
@@ -628,6 +713,58 @@ export async function runAudit(client: Queryable, options: AuditOptions = {}): P
       skipped: SKIPS,
     };
   }, timeout);
+}
+
+// ---------------------------------------------------------------------------
+// Error text. Driver messages can carry connection strings, user names or row
+// data, so only a fixed description chosen from the error code is ever shown.
+// ---------------------------------------------------------------------------
+
+/** Argument errors carry fixed text only and are the only messages main() prints verbatim. */
+export class CliError extends Error {}
+
+const SQLSTATE_TEXT: Record<string, string> = {
+  '28P01': 'authentication failed',
+  '28000': 'authorization rejected',
+  '3D000': 'database does not exist',
+  '57014': 'statement timeout or cancelled query',
+  '25006': 'read-only transaction rejected a write',
+  '42501': 'insufficient privilege',
+  '42P01': 'table does not exist',
+  '42703': 'column does not exist',
+  '53300': 'too many connections',
+  '57P01': 'server shutting down',
+  '55P03': 'lock timeout',
+};
+const NODE_TEXT: Record<string, string> = {
+  ECONNREFUSED: 'connection refused',
+  ENOTFOUND: 'host not found',
+  EAI_AGAIN: 'host lookup failed',
+  ETIMEDOUT: 'connection timed out',
+  ECONNRESET: 'connection reset',
+  EHOSTUNREACH: 'host unreachable',
+  ENETUNREACH: 'network unreachable',
+};
+
+export function describeError(err: unknown): string {
+  if (err instanceof CliError) return err.message;
+  const code = typeof err === 'object' && err !== null ? (err as { code?: unknown }).code : undefined;
+  if (typeof code === 'string') {
+    const node = NODE_TEXT[code];
+    if (node) return `${code} (${node})`;
+    if (/^[0-9A-Z]{5}$/u.test(code)) {
+      const text = SQLSTATE_TEXT[code] ?? (code.startsWith('08') ? 'connection exception' : 'database error');
+      return `SQLSTATE ${code} (${text})`;
+    }
+  }
+  if (err instanceof Error && /timeout expired|Connection terminated/iu.test(err.message)) return 'connection timed out or terminated';
+  return 'unexpected error (details withheld)';
+}
+
+/** Exit code for a finished report: 1 any errored check, 2 mismatches, 0 clean. */
+export function exitCodeFor(report: Pick<AuditReport, 'errors' | 'mismatch_rows'>): number {
+  if (report.errors > 0) return 1;
+  return report.mismatch_rows > 0 ? 2 : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -651,24 +788,25 @@ export function parseArgs(argv: string[], env: NodeJS.ProcessEnv = process.env):
   for (let i = 0; i < argv.length; i++) {
     const raw = argv[i]!;
     const [flag, inline] = raw.startsWith('--') && raw.includes('=') ? [raw.slice(0, raw.indexOf('=')), raw.slice(raw.indexOf('=') + 1)] : [raw, undefined];
-    if (REFUSED.test(flag)) throw new Error(`${flag} is not supported: this audit is read-only and has no fix mode`);
+    const refused = REFUSED.exec(flag);
+    if (refused) throw new CliError(`${refused[0]} is not supported: this audit is read-only and has no fix mode`);
     const value = (): string => {
       const v = inline ?? argv[++i];
-      if (v === undefined || v.startsWith('--')) throw new Error(`${flag} needs a value`);
+      if (v === undefined || v.startsWith('--')) throw new CliError(`${flag} needs a value`);
       return v;
     };
     if (flag === '--database-url') databaseUrl = value();
     else if (flag === '--json') jsonPath = value();
     else if (flag === '--limit') {
       limit = Number(value());
-      if (!Number.isInteger(limit) || limit < 0 || limit > 10_000) throw new Error('--limit must be an integer from 0 to 10000');
+      if (!Number.isInteger(limit) || limit < 0 || limit > 10_000) throw new CliError('--limit must be an integer from 0 to 10000');
     } else if (flag === '--timeout-ms') {
       timeoutMs = Number(value());
-      if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 600_000) throw new Error('--timeout-ms must be an integer from 1000 to 600000');
-    } else throw new Error(`unknown argument ${raw}`);
+      if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 600_000) throw new CliError('--timeout-ms must be an integer from 1000 to 600000');
+    } else throw new CliError(`unknown argument at position ${i + 1}`);
   }
   databaseUrl ??= env.DATABASE_URL;
-  if (!databaseUrl) throw new Error('pass --database-url <url> (or set DATABASE_URL)');
+  if (!databaseUrl) throw new CliError('pass --database-url <url> (or set DATABASE_URL)');
   return { databaseUrl, jsonPath, limit, timeoutMs };
 }
 
@@ -705,18 +843,20 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   try {
     args = parseArgs(argv);
   } catch (err) {
-    console.error(`[audit-mixed-org-rows] ${err instanceof Error ? err.message : String(err)}`);
+    console.error(`[audit-mixed-org-rows] ${err instanceof CliError ? err.message : 'invalid arguments (details withheld)'}`);
     return 1;
   }
   const target = maskTarget(args.databaseUrl);
   console.log(`[audit-mixed-org-rows] target: ${target} (read-only)`);
-  const client = new pg.Client({
-    connectionString: args.databaseUrl,
-    application_name: 'deft-audit-mixed-org-rows',
-    statement_timeout: args.timeoutMs,
-    connectionTimeoutMillis: 15_000,
-  });
+  let client: pg.Client | undefined;
   try {
+    client = new pg.Client({
+      connectionString: args.databaseUrl,
+      application_name: 'deft-audit-mixed-org-rows',
+      statement_timeout: args.timeoutMs,
+      connectionTimeoutMillis: 15_000,
+    });
+    client.on('error', () => undefined);
     await client.connect();
     const report = await runAudit(client, { limit: args.limit, statementTimeoutMs: args.timeoutMs, target });
     console.log(formatSummary(report));
@@ -724,13 +864,12 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       writeFileSync(args.jsonPath, `${JSON.stringify(report, null, 2)}\n`, { encoding: 'utf8' });
       console.log(`[audit-mixed-org-rows] wrote ${args.jsonPath}`);
     }
-    if (report.errors > 0) return 1;
-    return report.mismatch_rows > 0 ? 2 : 0;
+    return exitCodeFor(report);
   } catch (err) {
-    console.error(`[audit-mixed-org-rows] failed: ${err instanceof Error ? err.message : String(err)}`);
+    console.error(`[audit-mixed-org-rows] failed: ${describeError(err)}`);
     return 1;
   } finally {
-    await client.end().catch(() => undefined);
+    await client?.end().catch(() => undefined);
   }
 }
 
