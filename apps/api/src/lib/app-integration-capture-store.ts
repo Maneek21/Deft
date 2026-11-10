@@ -1,6 +1,6 @@
 import {randomUUID} from 'node:crypto';
-import {and,eq,sql} from 'drizzle-orm';
-import {orgs,orgMembers,users,spaces,spaceMembers,wikiPages,wikiPageVersions,wikiCitations} from '@deft/db/schema';
+import {and,eq,or,sql,desc,gte,isNull} from 'drizzle-orm';
+import {orgs,orgMembers,users,spaces,spaceMembers,wikiPages,wikiPageVersions,wikiCitations,appRuntimeSessions,appRuntimeBindings,appResourceBindings} from '@deft/db/schema';
 import {appIntegrationCapturePolicies as policies,appIntegrationCaptureClaims as claims,appIntegrationCaptureThreads as threads,appIntegrationCaptureSources as sources} from '../../../../packages/db/src/app-integration-capture-schema.js';
 import {AppIntegrationCapturePolicyInputSchema,type AppIntegrationSourceTarget} from '../../../../packages/app-kit/src/app-integration-source.js';
 import type {AppRunTransaction as Tx} from './app-run-repository.js';
@@ -8,9 +8,91 @@ import type {AppIntegrationSourceCaller} from './app-integration-source.js';
 import type {AppIntegrationCapturePolicy,AppIntegrationCapturePorts} from './app-integration-capture.js';
 import {createNativeKnowledge} from './native-context-create.js';
 import {reserveKnowledgeCaptureBudget} from './native-knowledge-budget.js';
+import {APP_RUNTIME_SESSION_RESUME_GRACE_MS} from './app-runtime-contract.js';
 
-const scope=(caller:AppIntegrationSourceCaller,target:AppIntegrationSourceTarget)=>({org_id:caller.org_id,owner_user_id:caller.user_id,installation_id:target.installation_id,account_ref:target.account_ref,store_key:target.store_key});
-const where=(table:typeof policies|typeof claims|typeof threads|typeof sources,caller:AppIntegrationSourceCaller,target:AppIntegrationSourceTarget)=>{
+const scope=(caller:AppIntegrationSourceCaller,target:Pick<AppIntegrationSourceTarget,'installation_id'|'account_ref'|'store_key'>)=>({org_id:caller.org_id,owner_user_id:caller.user_id,installation_id:target.installation_id,account_ref:target.account_ref,store_key:target.store_key});
+
+/** App-neutral background lease health, derived from `until_revoked` runtime
+ * sessions. `paused` means a lapsed lease still inside the grace window;
+ * `ended` means outside it or revoked. `null` means no background lease. */
+export type BackgroundHealthState='healthy'|'paused'|'ended';
+export type BackgroundHealth=Readonly<{state:BackgroundHealthState;since:string;reason:string}>;
+type BackgroundSessionRow=Readonly<{expires_at:Date;revoked_at:Date|null;updated_at:Date}>;
+function sessionBackgroundState(session:BackgroundSessionRow,now:Date,graceMs:number):Readonly<{state:BackgroundHealthState;since:Date;reason:string}>{
+ if(session.revoked_at)return{state:'ended',since:session.revoked_at,reason:'revoked'};
+ if(session.expires_at>now)return{state:'healthy',since:session.updated_at,reason:'live'};
+ const gap=now.getTime()-session.expires_at.getTime();
+ if(gap<=graceMs)return{state:'paused',since:session.expires_at,reason:'lapsed'};
+ return{state:'ended',since:new Date(session.expires_at.getTime()+graceMs),reason:'expired'};
+}
+/** Health follows the current lease: a live lease wins over any lapsed/ended one;
+ *  a lapsed (in-grace) lease wins over ended; otherwise the most recently ended
+ *  lease supplies `since`/`reason`. No lease at all → null. */
+export function deriveBackgroundHealth(sessions:readonly BackgroundSessionRow[],now:Date,graceMs=APP_RUNTIME_SESSION_RESUME_GRACE_MS):BackgroundHealth|null{
+ const states=sessions.map(session=>sessionBackgroundState(session,now,graceMs));
+ const live=states.filter(s=>s.state==='healthy');
+ if(live.length){const chosen=live.reduce((a,b)=>a.since>b.since?a:b);return{state:'healthy',since:chosen.since.toISOString(),reason:'live'};}
+ const paused=states.filter(s=>s.state==='paused');
+ if(paused.length){const chosen=paused.reduce((a,b)=>a.since>b.since?a:b);return{state:'paused',since:chosen.since.toISOString(),reason:'lapsed'};}
+ const ended=states.filter(s=>s.state==='ended');
+ if(ended.length){const chosen=ended.reduce((a,b)=>a.since>b.since?a:b);return{state:'ended',since:chosen.since.toISOString(),reason:chosen.reason};}
+ return null;
+}
+/** Minimal-baseline tolerant: absent runtime tables yield null background.
+ *  Health follows the connection owner whose grant/consent the `until_revoked`
+ *  lease runs on — never the runtime operator. The owner is the resource
+ *  binding's `owner_user_id`, reached directly for resource-sync sessions and
+ *  through the runtime binding's `owner_resource_binding_id` for action sessions. */
+export async function readBackgroundHealth(tx:Tx,caller:{org_id:string;user_id:string},installationId:string,nowMs:number,targetKey?:string):Promise<BackgroundHealth|null>{
+ const map=await readBackgroundHealthMap(tx,caller,installationId,nowMs,targetKey);
+ if(targetKey!==undefined)return map.get(targetKey)??null;
+ const healths=[...map.values()];
+ const live=healths.filter((h):h is BackgroundHealth=>h!==null&&h.state==='healthy');
+ if(live.length){const chosen=live.reduce((a,b)=>new Date(a.since)>new Date(b.since)?a:b);return{state:'healthy',since:chosen.since,reason:'live'};}
+ const paused=healths.filter((h):h is BackgroundHealth=>h!==null&&h.state==='paused');
+ if(paused.length){const chosen=paused.reduce((a,b)=>new Date(a.since)>new Date(b.since)?a:b);return{state:'paused',since:chosen.since,reason:'lapsed'};}
+ const ended=healths.filter((h):h is BackgroundHealth=>h!==null&&h.state==='ended');
+ if(ended.length){const chosen=ended.reduce((a,b)=>new Date(a.since)>new Date(b.since)?a:b);return{state:'ended',since:chosen.since,reason:chosen.reason};}
+ return null;
+}
+
+/** One grouped read of background health for every target of an installation.
+ *  Probes the runtime table at most once and runs a single bounded query. */
+export async function readBackgroundHealthMap(tx:Tx,caller:{org_id:string;user_id:string},installationId:string,nowMs:number,targetKey?:string):Promise<Map<string,BackgroundHealth|null>>{
+ const probe=await tx.execute(sql`SELECT to_regclass('app_runtime_sessions') IS NOT NULL AS present`);
+ const result=new Map<string,BackgroundHealth|null>();
+ if(!probe.rows[0]?.present)return result;
+ const graceMs=APP_RUNTIME_SESSION_RESUME_GRACE_MS;
+ const graceCutoff=new Date(nowMs-graceMs);
+ const newestEndedSubquery=sql`SELECT DISTINCT ON (COALESCE(res.target_key,'primary')) s.id
+  FROM app_runtime_sessions s
+  LEFT JOIN app_runtime_bindings rb ON (rb.org_id = s.org_id AND rb.id = s.runtime_binding_id)
+  LEFT JOIN app_resource_bindings res ON (res.org_id = s.org_id AND (res.id = s.resource_binding_id OR res.id = rb.owner_resource_binding_id))
+  WHERE s.org_id = ${caller.org_id}
+   AND res.owner_user_id = ${caller.user_id}
+   AND s.renewal_lifetime = 'until_revoked'
+   AND (rb.app_installation_id = ${installationId} OR res.app_installation_id = ${installationId})
+   ${targetKey===undefined?sql``:sql`AND res.target_key = ${targetKey}`}
+   AND (s.revoked_at IS NOT NULL OR s.expires_at < ${graceCutoff})
+  ORDER BY COALESCE(res.target_key,'primary'), COALESCE(s.revoked_at, s.expires_at + (${graceMs} * interval '1 millisecond')) DESC`;
+ const rows=await tx.select({expires_at:appRuntimeSessions.expires_at,revoked_at:appRuntimeSessions.revoked_at,updated_at:appRuntimeSessions.updated_at,target_key:appResourceBindings.target_key})
+  .from(appRuntimeSessions)
+  .leftJoin(appRuntimeBindings,and(eq(appRuntimeBindings.org_id,appRuntimeSessions.org_id),eq(appRuntimeBindings.id,appRuntimeSessions.runtime_binding_id)))
+  .leftJoin(appResourceBindings,and(eq(appResourceBindings.org_id,appRuntimeSessions.org_id),
+   or(eq(appResourceBindings.id,appRuntimeSessions.resource_binding_id),eq(appResourceBindings.id,appRuntimeBindings.owner_resource_binding_id))))
+  .where(and(eq(appRuntimeSessions.org_id,caller.org_id),eq(appResourceBindings.owner_user_id,caller.user_id),eq(appRuntimeSessions.renewal_lifetime,'until_revoked'),
+   sql`(${appRuntimeBindings.app_installation_id}=${installationId} OR ${appResourceBindings.app_installation_id}=${installationId})`,
+   targetKey===undefined?undefined:eq(appResourceBindings.target_key,targetKey),
+   or(
+     and(isNull(appRuntimeSessions.revoked_at),gte(appRuntimeSessions.expires_at,graceCutoff)),
+     sql`${appRuntimeSessions.id} IN (${newestEndedSubquery})`
+   )));
+ const grouped=new Map<string,BackgroundSessionRow[]>();
+ for(const row of rows){const key=row.target_key??'primary';const session:BackgroundSessionRow={expires_at:row.expires_at,revoked_at:row.revoked_at,updated_at:row.updated_at};if(!grouped.has(key))grouped.set(key,[]);grouped.get(key)!.push(session);}
+ for(const [key,group] of grouped){result.set(key,deriveBackgroundHealth(group,new Date(nowMs)));}
+ return result;
+}
+const where=(table:typeof policies|typeof claims|typeof threads|typeof sources,caller:AppIntegrationSourceCaller,target:Pick<AppIntegrationSourceTarget,'installation_id'|'account_ref'|'store_key'>)=>{
  const s=scope(caller,target);return and(eq(table.org_id,s.org_id),eq(table.owner_user_id,s.owner_user_id),eq(table.installation_id,s.installation_id),eq(table.account_ref,s.account_ref),eq(table.store_key,s.store_key));
 };
 const key=(policy:AppIntegrationCapturePolicy)=>policy.destination.scope==='user'?'user':`space:${policy.destination.space_id}`;
@@ -97,13 +179,22 @@ export function createAppIntegrationCaptureStore(input:{
   async failed(claim_id:string,caller:AppIntegrationSourceCaller,error:string){await input.transaction(async tx=>{await tx.update(claims).set({state:'failed',error_code:error,updated_at:new Date(now())})
    .where(and(eq(claims.org_id,caller.org_id),eq(claims.owner_user_id,caller.user_id),eq(claims.id,claim_id),eq(claims.state,'processing')));});},
  } satisfies Pick<AppIntegrationCapturePorts<Tx>,'transaction'|'policy'|'destination'|'thread'|'claim'|'skipped'|'reserveBudget'|'commit'|'failed'>;
+ const readHealth=async(tx:Tx,caller:AppIntegrationSourceCaller,target:Pick<AppIntegrationSourceTarget,'installation_id'|'account_ref'|'store_key'>,grantActive:boolean)=>{
+  const [row]=await tx.select({enabled:policies.enabled,retired_reason:policies.retired_reason,retired_at:policies.retired_at,last_error:policies.last_error}).from(policies).where(where(policies,caller,target)).limit(1).for('share');
+  const [counts]=await tx.select({failed:sql<number>`count(*) FILTER(WHERE state='failed')::int`,last_success_at:sql<string|null>`max(updated_at) FILTER(WHERE state IN ('captured','updated'))`}).from(claims).where(where(claims,caller,target));
+  const enabled=row?.enabled??false,retired_reason=row?.retired_reason??null;
+  const state:('healthy'|'grant_ended'|'never_enabled'|'retrying')=!enabled?retired_reason==='grant_ended'?'grant_ended':'never_enabled':retired_reason==='grant_ended'||!grantActive?'grant_ended':(counts?.failed??0)>0?'retrying':'healthy';
+  const background=await readBackgroundHealth(tx,caller,target.installation_id,now());
+  return {account_grant_active:grantActive,state,last_error:row?.last_error??null,last_success_at:counts?.last_success_at?new Date(counts.last_success_at).toISOString():null,retired_reason,retired_at:row?.retired_at?new Date(row.retired_at).toISOString():null,background};
+ };
  return {...ports,
-  async settings(tx:Tx,caller:AppIntegrationSourceCaller,target:AppIntegrationSourceTarget){
+  async settings(tx:Tx,caller:AppIntegrationSourceCaller,target:AppIntegrationSourceTarget,grantActive=true){
    const [row]=await tx.select({id:policies.id}).from(policies).where(where(policies,caller,target)).limit(1).for('share');
    const values=row?await policy(tx,caller,target):{enabled:false,destination:{scope:'user' as const,space_id:null},history_days:30,include_bulk:false,excluded_senders:[],excluded_folders:[],expected_revision:0,id:null,revision:0,history_since:null};
    const [counts]=await tx.select({processed:sql<number>`count(*)::int`,captured:sql<number>`count(*) FILTER(WHERE state IN ('captured','updated'))::int`,skipped:sql<number>`count(*) FILTER(WHERE state IN ('skipped','protected'))::int`,failed:sql<number>`count(*) FILTER(WHERE state='failed')::int`}).from(claims).where(where(claims,caller,target));
-   return {...values,progress:counts??{processed:0,captured:0,skipped:0,failed:0}};
+   return {...values,progress:counts??{processed:0,captured:0,skipped:0,failed:0},health:await readHealth(tx,caller,target,grantActive)};
   },
+  async health(tx:Tx,caller:AppIntegrationSourceCaller,target:Pick<AppIntegrationSourceTarget,'installation_id'|'account_ref'|'store_key'>,grantActive:boolean){return readHealth(tx,caller,target,grantActive);},
   async writePolicy(caller:AppIntegrationSourceCaller,target:AppIntegrationSourceTarget,raw:unknown,authorize:(tx:Tx)=>Promise<void>,afterWrite?:(tx:Tx,policy:AppIntegrationCapturePolicy)=>Promise<void>){
    if(caller.kind!=='human')throw denied();const parsed=AppIntegrationCapturePolicyInputSchema.parse(raw);
    return input.transaction(async tx=>{

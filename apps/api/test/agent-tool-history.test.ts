@@ -22,6 +22,18 @@ test('mixed reviewed actions have adjacent results before the next user turn', (
   assert.deepEqual(messages, before);
   assert.deepEqual(normalizeAgentToolHistory(result), result);
 });
+test('leaves system messages untouched while repairing tool ordering', () => {
+  const messages: Anthropic.MessageParam[] = [
+    { role: 'system', content: [{ type: 'text', text: 'Follow the workspace policy.' }] },
+    { role: 'user', content: 'hello' },
+  ];
+  const result = normalizeAgentToolHistory(messages);
+  assert.deepEqual(result[0], {
+    role: 'system',
+    content: [{ type: 'text', text: 'Follow the workspace policy.' }],
+  });
+  assert.equal(result[1]?.content, 'hello');
+});
 test('preserves ordinary conversation and valid tool errors without duplicate results', () => {
   const valid: Anthropic.MessageParam[] = [{role:'user',content:'hello'}, {role:'assistant',content:[call('read')]}, {role:'user',content:[{type:'tool_result',tool_use_id:'read',content:'denied',is_error:true},{type:'text',text:'Please explain.'}]}];
   const output=normalizeAgentToolHistory(valid);

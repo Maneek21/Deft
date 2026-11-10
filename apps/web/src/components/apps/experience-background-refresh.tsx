@@ -7,15 +7,15 @@ import {createResourceObservationFlow,type ObservationIdentity} from '@/lib/app-
 import type {AppConnectionTarget} from '@/lib/app-connection-session-flow';
 import {observationIntervalChoices,observationIntervalLabel} from '@/lib/app-experience-settings-display';
 import {ExperienceBackgroundRefreshReview} from './experience-background-refresh-review';
-export function ExperienceBackgroundRefresh({target,ownerId,orgId,disabled,onBusy,description,troubleshooting}:{target:AppConnectionTarget;ownerId:string;orgId:string;disabled:boolean;onBusy:(busy:boolean)=>void;description?:string;troubleshooting?:ReactNode}){
+export function ExperienceBackgroundRefresh({target,ownerId,orgId,disabled,onBusy,description,diagnostics}:{target:AppConnectionTarget;ownerId:string;orgId:string;disabled:boolean;onBusy:(busy:boolean)=>void;description?:string;diagnostics?:ReactNode}){
  if(target.session?.state!=='connected'||!target.session.account)return null;
  const identity:ObservationIdentity={installation_id:target.scope.installation_id,owner_user_id:ownerId,org_id:orgId,target_key:target.target_key,scope:target.scope,connection_session_id:target.session.session_id,account_ref:target.session.account.account_ref};
- return <Workspace key={JSON.stringify(identity)} identity={identity} disabled={disabled} onBusy={onBusy} description={description} troubleshooting={troubleshooting}/>;
+ return <Workspace key={JSON.stringify(identity)} identity={identity} disabled={disabled} onBusy={onBusy} description={description} diagnostics={diagnostics}/>;
 }
-function Workspace({identity,disabled,onBusy,description,troubleshooting}:{identity:ObservationIdentity;disabled:boolean;onBusy:(busy:boolean)=>void;description?:string;troubleshooting?:ReactNode}){
+function Workspace({identity,disabled,onBusy,description,diagnostics}:{identity:ObservationIdentity;disabled:boolean;onBusy:(busy:boolean)=>void;description?:string;diagnostics?:ReactNode}){
  const [lifetime,setLifetime]=useState<'date'|'until_revoked'>('date');
  const [version,setVersion]=useState(0),[busy,setBusy]=useState(false),[notice,setNotice]=useState('Checking background refresh…'),[clock,setClock]=useState(Date.now()),[reload,setReload]=useState(0),[interval,setInterval]=useState(900),[hours,setHours]=useState(24);
- const troubleshootingPanel=useRef<HTMLDetailsElement>(null);
+ const diagnosticsPanel=useRef<HTMLDetailsElement>(null);
  const flow=useRef<ReturnType<typeof createResourceObservationFlow>|null>(null),generation=useRef(0),operation=useRef(false),notify=useRef(onBusy);notify.current=onBusy;
  useEffect(()=>{const request=++generation.current,controller=new AbortController(),anchor=api.getAccessToken();let active=true;
   const current=()=>active&&!controller.signal.aborted&&request===generation.current&&!document.hidden&&isSameWebSession(anchor,api.getAccessToken());
@@ -40,24 +40,28 @@ function Workspace({identity,disabled,onBusy,description,troubleshooting}:{ident
   finally{if(request===generation.current&&owned===flow.current&&!document.hidden){operation.current=false;setBusy(false);notify.current(false);}}
  }
  const uncertain=client?.uncertain,expired=!!status&&appConsentDeadline(status.review.expires_at,status.review.consent_lifetime)<=clock;
+ const attention=!busy&&(expired||status?.state==='unavailable'||!!notice);
  return <section aria-label="Background refresh" className="min-w-0 space-y-3 text-sm" style={{borderColor:'var(--ghost-border)'}}>
-  {troubleshooting&&<p role="status" className="font-medium leading-6">Connected{status?.state==='active'&&!expired?` \u00b7 syncing every ${observationIntervalLabel(status.review.interval_seconds)}`:busy?' \u00b7 checking sync status':status?.state==='revoked'||client?.target?.consent===null?' \u00b7 background refresh off':expired?' \u00b7 refresh permission expired':' \u00b7 sync status needs checking'}</p>}
-  {troubleshooting&&!busy&&(expired||status?.state==='unavailable'||!!notice)&&<button type="button" className="deft-pill min-h-11" disabled={disabled} onClick={()=>{if(troubleshootingPanel.current)troubleshootingPanel.current.open=true;}}>Check sync setup</button>}
-  <details ref={troubleshootingPanel} className="min-w-0"><summary className="min-h-11 cursor-pointer py-3">Troubleshooting</summary><div className="space-y-4 pb-3">
-  {troubleshooting}
-  <h4 className="font-medium">Background refresh</h4><p>{description ?? "Keep this app's data current while it is closed."}</p>
-  <p>Trusted compatible updates keep your existing approvals. Changes to permissions still require review. Files and attachments are not fetched in the background.</p>
-  {notice&&<AppRequestNotice message={notice} role="status"/>}{busy&&<p role="status">{uncertain?'Checking background refresh…':'Checking reviewed access…'}</p>}
-  {client?.target?.consent===null&&!client.pending&&!notice&&<p>Off</p>}
-  {status&&<p>{status.state==='active'&&!expired?'Enabled':expired?'Expired':status.state==='proposed'?'Review needed':status.state==='revoked'?'Off':'Unavailable'}{status.state==='active'&&!expired&&` · at most every ${observationIntervalLabel(status.review.interval_seconds)} ${status.review.consent_lifetime==='until_revoked'?'until revoked':`until ${new Date(status.review.expires_at!).toLocaleString()}`}`}</p>}
-  {uncertain?<><p role="status">The previous request was not confirmed. Check status before continuing; it will not be repeated automatically.</p><button type="button" className="deft-pill min-h-11" disabled={busy||disabled} onClick={()=>void act('status')}>Check status</button></>:review?<ExperienceBackgroundRefreshReview review={review} now={clock} busy={busy||disabled} onAllow={()=>void act('activate')} onCheck={()=>void act('status')} onClose={()=>{client?.closeReview();setVersion(n=>n+1);setNotice('Review remains pending. Check status to resume it.');}}/>:client?.pending?<button type="button" className="deft-pill min-h-11" disabled={busy||disabled} onClick={()=>void act('status')}>Resume review</button>:<>
-   {status?.state==='active'&&!expired&&<button type="button" className="deft-pill min-h-11" disabled={busy||disabled} onClick={()=>void act('revoke')}>Turn off background refresh</button>}
-   <div className="flex flex-wrap items-end gap-3"><ExperienceRefreshInterval min={min} value={interval} disabled={busy||disabled} onChange={setInterval}/>
-    <label className="block">Permission lifetime<select className="mt-1 block min-h-11 rounded-xl bg-[var(--surface-container-high)] px-3" value={lifetime} disabled={busy||disabled} onChange={event=>setLifetime(event.target.value==='until_revoked'&&client?.target?.allow_until_revoked===true?'until_revoked':'date')}><option value="date">Until date</option>{client?.target?.allow_until_revoked===true&&<option value="until_revoked">Until revoked</option>}</select></label>{lifetime==='date'&&<label className="block">Requested duration<select className="mt-1 block min-h-11 rounded-xl bg-[var(--surface-container-high)] px-3" value={hours} disabled={busy||disabled} onChange={event=>setHours(Number(event.target.value))}><option value={1}>1 hour</option><option value={24}>24 hours</option><option value={168}>7 days</option></select></label>}
-    <button type="button" className="deft-pill min-h-11" disabled={busy||disabled||!client?.target||!Number.isSafeInteger(interval)||interval<min||interval>86400} onClick={()=>void act('review')}>Review background refresh</button></div><p className="text-xs text-[var(--on-surface-variant)]">The review shows the exact lifetime, limited by the current account permission. Sending still requires its own review.</p>
-  </>}
-  <button type="button" className="deft-pill min-h-11" disabled={busy||disabled} onClick={()=>setReload(n=>n+1)}>Reload background status</button>
- </div></details></section>;
+  <p role="status" className="font-medium leading-6">Connected{status?.state==='active'&&!expired?` \u00b7 syncing every ${observationIntervalLabel(status.review.interval_seconds)}`:busy?' \u00b7 checking sync status':status?.state==='revoked'||client?.target?.consent===null?' \u00b7 background refresh off':expired?' \u00b7 refresh permission expired':' \u00b7 sync status needs checking'}</p>
+  {attention&&<button type="button" className="deft-pill min-h-11" disabled={disabled} onClick={()=>{if(diagnosticsPanel.current)diagnosticsPanel.current.open=true;}}>Check sync setup</button>}
+  <div className="min-w-0 space-y-3">
+   <h4 className="font-medium">Background refresh</h4><p>{description ?? "Keep this app's data current while it is closed."}</p>
+   <p>Trusted compatible updates keep your existing approvals. Changes to permissions still require review. Files and attachments are not fetched in the background.</p>
+   {notice&&<AppRequestNotice message={notice} role="status"/>}{busy&&<p role="status">{uncertain?'Checking background refresh…':'Checking reviewed access…'}</p>}
+   {client?.target?.consent===null&&!client.pending&&!notice&&<p>Off</p>}
+   {status&&<p>{status.state==='active'&&!expired?'Enabled':expired?'Expired':status.state==='proposed'?'Review needed':status.state==='revoked'?'Off':'Unavailable'}{status.state==='active'&&!expired&&` · at most every ${observationIntervalLabel(status.review.interval_seconds)} ${status.review.consent_lifetime==='until_revoked'?'until revoked':`until ${new Date(status.review.expires_at!).toLocaleString()}`}`}</p>}
+   {uncertain?<><p role="status">The previous request was not confirmed. Check status before continuing; it will not be repeated automatically.</p><button type="button" className="deft-pill min-h-11" disabled={busy||disabled} onClick={()=>void act('status')}>Check status</button></>:review?<ExperienceBackgroundRefreshReview review={review} now={clock} busy={busy||disabled} onAllow={()=>void act('activate')} onCheck={()=>void act('status')} onClose={()=>{client?.closeReview();setVersion(n=>n+1);setNotice('Review remains pending. Check status to resume it.');}}/>:client?.pending?<button type="button" className="deft-pill min-h-11" disabled={busy||disabled} onClick={()=>void act('status')}>Resume review</button>:<>
+    {status?.state==='active'&&!expired&&<button type="button" className="deft-pill min-h-11" disabled={busy||disabled} onClick={()=>void act('revoke')}>Turn off background refresh</button>}
+    <div className="flex flex-wrap items-end gap-3"><ExperienceRefreshInterval min={min} value={interval} disabled={busy||disabled} onChange={setInterval}/>
+     <label className="block">Permission lifetime<select className="mt-1 block min-h-11 rounded-xl bg-[var(--surface-container-high)] px-3" value={lifetime} disabled={busy||disabled} onChange={event=>setLifetime(event.target.value==='until_revoked'&&client?.target?.allow_until_revoked===true?'until_revoked':'date')}><option value="date">Until date</option>{client?.target?.allow_until_revoked===true&&<option value="until_revoked">Until revoked</option>}</select></label>{lifetime==='date'&&<label className="block">Requested duration<select className="mt-1 block min-h-11 rounded-xl bg-[var(--surface-container-high)] px-3" value={hours} disabled={busy||disabled} onChange={event=>setHours(Number(event.target.value))}><option value={1}>1 hour</option><option value={24}>24 hours</option><option value={168}>7 days</option></select></label>}
+     <button type="button" className="deft-pill min-h-11" disabled={busy||disabled||!client?.target||!Number.isSafeInteger(interval)||interval<min||interval>86400} onClick={()=>void act('review')}>Review background refresh</button></div><p className="text-xs text-[var(--on-surface-variant)]">The review shows the exact lifetime, limited by the current account permission. Sending still requires its own review.</p>
+   </>}
+  </div>
+  <details ref={diagnosticsPanel} className="min-w-0"><summary className="min-h-11 cursor-pointer py-3">Manage connection &amp; diagnostics</summary><div className="space-y-3 pb-3 pt-1">
+   <button type="button" className="deft-pill min-h-11" disabled={busy||disabled} onClick={()=>setReload(n=>n+1)}>Reload background status</button>
+   {diagnostics}
+  </div></details>
+ </section>;
 }
 
 /** Presentation default only; the review flow still validates every consent choice. */

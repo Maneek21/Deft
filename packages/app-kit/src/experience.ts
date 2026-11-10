@@ -11,7 +11,8 @@ export const DEFT_EXPERIENCE_RENDERER_V2_VERSION = 'deft.trusted_renderer.v2' as
 export const DEFT_EXPERIENCE_MEDIA_TYPE = 'application/vnd.deft.experience+json' as const;
 
 const MAX_BUNDLE_BYTES = 128 * 1024;
-const MAX_WORKER_BYTES = 96 * 1024;
+// Leaves room inside the 128 KiB bundle for JSON escaping and the other fields.
+const MAX_WORKER_BYTES = 112 * 1024;
 const MAX_REFERENCES = 16;
 const encoder = new TextEncoder();
 const digestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -72,7 +73,7 @@ const bundleV4=z.strictObject({...bundleV3.shape,schema_version:z.literal('deft.
  .refine(value=>value.record_intakes.every(intake=>value.record_store_keys?.includes(intake.store_key)),'Intake stores must be declared');
 export const DeftExperienceBundleSchema = z.union([bundleV1, bundleV2, bundleV3,bundleV4]).superRefine((value, ctx) => {
   if (encoder.encode(value.worker_source).byteLength > MAX_WORKER_BYTES) {
-    ctx.addIssue({ code: 'custom', path: ['worker_source'], message: 'Worker source exceeds 96 KiB' });
+    ctx.addIssue({ code: 'custom', path: ['worker_source'], message: 'Worker source exceeds 112 KiB' });
   }
 });
 export type DeftExperienceBundle = z.infer<typeof DeftExperienceBundleSchema>;

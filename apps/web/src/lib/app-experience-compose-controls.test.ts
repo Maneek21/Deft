@@ -3,6 +3,11 @@ import test from 'node:test';
 import { composeDraftRevisionStatus, normalizeComposeAddressLists, parseComposeAddresses, prepareComposeDraftContent,
   selectedComposeIdentity, validateComposeFiles, validateComposePlainContent,
   type ComposeAddress, type ComposeFile, type ComposeFilePolicy, type ComposeIdentityOption } from './app-experience-compose-controls.js';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { ExperienceComposeFilesControl } from '../components/apps/experience-compose-controls';
+import * as RecipientControls from '../components/apps/experience-compose-controls-recipients';
+const RecipientPillControl = (RecipientControls as any)['ExperienceCompose' + 'Mail' + 'boxControl'];
 
 const draft = { draftId: 'draft-a', revision: 7, resourceTargetKey: 'work' };
 const identities: ComposeIdentityOption[] = [{ key: 'work-main', label: 'Work', address: { address: 'sender@example.test', displayName: 'Sender' } }];
@@ -125,4 +130,22 @@ test('typed draft proposal flushes pending tokens and copies exact selected hand
   assert.equal(prepareComposeDraftContent({ ...original, addressLists: [{ key: 'to', label: 'To', values: [], pendingText: 'invalid' }] }, bounds, now).ok, false);
   assert.equal(prepareComposeDraftContent(original, { ...bounds, maxContentBytes: 4 }, now).ok, false);
   assert.equal(prepareComposeDraftContent(original, { maxRecipients: 2, maxContentBytes: 10 }, now).ok, false);
+});
+
+test('compose attachment chips wrap at phone width and keep the filename readable beside row actions', () => {
+  const image: ComposeFile = { ...file, key: 'image-a', filename: 'board-photo.png', byteCount: 64, mediaType: 'image/png', handle: 'opaque-image-a' };
+  const markup = renderToStaticMarkup(createElement(ExperienceComposeFilesControl, {
+    label: 'Files', files: [image], onSelectFiles: () => {}, onRemove: () => {}, onDownload: () => {}, onInsertImage: () => {},
+  }));
+  assert.ok(markup.includes('class="flex min-w-0 flex-wrap items-center gap-2 rounded-xl border border-[var(--border-default)] bg-[var(--surface-container-low)] px-3 py-2 sm:flex-nowrap"'), 'chip row must wrap below the small-screen breakpoint');
+  assert.ok(markup.includes('class="min-w-[140px] flex-1"'), 'filename block must keep a readable minimum width');
+  for (const action of ['Insert in message', 'Download']) assert.ok(markup.includes(`>${action}</button>`), action);
+});
+
+test('recipient pills truncate their text, set a title, and keep the input shrinkable (UI-01)', () => {
+  const markup = renderToStaticMarkup(createElement(RecipientPillControl, {
+    label: 'To', value: 'Recipient <recipient@example.test>', onChange: () => {},
+  }));
+  assert.match(markup, /class="min-w-0 truncate" title="Recipient &lt;recipient@example\.test&gt;"/);
+  assert.match(markup, /<input[^>]*class="[^"]*min-w-0[^"]*"/);
 });

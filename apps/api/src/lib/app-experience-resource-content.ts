@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { parseRuntimeObjectInput } from '@deft/app-kit/core';
 import { AppError } from './app-errors.js';
 import type { AppExperienceExposureService } from './app-experience-exposure.js';
+import type { AppConnectionProjection } from './app-connection-contract.js';
 import type { ExperienceCaller } from './app-experience-service.js';
 import { getAppConnectionRegistry, type AppConnectionRegistry } from './app-connection-registry.js';
 import { humanActionDigest } from './app-experience-human-action-contract.js';
@@ -24,16 +25,20 @@ const unavailable = () => new AppError('Original content is unavailable for this
 type Authority = Pick<AppExperienceExposureService, 'sourceRecord' | 'connectionSetup'>;
 type SourceReadingPolicy = (input: { caller: ExperienceCaller; entry: ReturnType<AppConnectionRegistry['select']>;
   record: Record<string, unknown>; signal: AbortSignal }) => Promise<'ask' | 'always'>;
+type AttachmentTiming = { elapsed_ms: number; outcome: 'completed' | 'failed'; authority_calls: number; authority_ms: number; adapter_ms: number };
 
 /** Fixed private adapter, exact host source, and a current source read ceiling.
  * This port cannot prepare an action or nominate provider URLs. */
 export class AppExperienceResourceContentService {
   constructor(private readonly authority: Authority, private readonly registry: () => Promise<AppConnectionRegistry> = getAppConnectionRegistry,
-    private readonly now = Date.now, private readonly timeoutMs = 15000,
+    private readonly now = Date.now, private readonly timeoutMs = 30000,
     // Legacy resource readers have no app-owned preference record. Never infer
     // content disclosure policy from a native product's account tables.
-    private readonly readingPolicy: SourceReadingPolicy = async () => 'ask') {
-    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 15000) throw new TypeError('Invalid content timeout');
+    private readonly readingPolicy: SourceReadingPolicy = async () => 'ask',
+    private readonly observe: (timing: AttachmentTiming) => void = timing => {
+      if (process.env.NODE_ENV === 'production') console.info(JSON.stringify({ event: 'app_data_timing', operation: 'attachment', ...timing }));
+    }) {
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000) throw new TypeError('Invalid content timeout');
   }
   async read(caller: ExperienceCaller, sessionId: string, resourceKey: string, raw: unknown, signal?: AbortSignal) {
     const input = ExperienceResourceContentRequestSchema.parse(raw);
@@ -46,16 +51,36 @@ export class AppExperienceResourceContentService {
     const abort = () => { captured?.fill(0); rejectLimit(unavailable()); };
     workSignal.addEventListener('abort', abort, { once: true });
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    const work = this.readCurrent(caller, sessionId, resourceKey, input, workSignal,bytes=>{captured=bytes;if(workSignal.aborted)bytes.fill(0);}).then(output => {
+    const timing: AttachmentTiming = { elapsed_ms: 0, outcome: 'failed', authority_calls: 0, authority_ms: 0, adapter_ms: 0 };
+    const started = performance.now();
+    const work = this.readCurrent(caller, sessionId, resourceKey, input, workSignal, timing,bytes=>{captured=bytes;if(workSignal.aborted)bytes.fill(0);}).then(output => {
       if (workSignal.aborted) {captured?.fill(0);throw unavailable();} return output;
     });
-    try { return await Promise.race([work, limit]); }
+    try { const result = await Promise.race([work, limit]); timing.outcome = 'completed'; return result; }
     catch { throw unavailable(); }
-    finally { clearTimeout(timer); workSignal.removeEventListener('abort', abort); }
+    finally {
+      clearTimeout(timer); workSignal.removeEventListener('abort', abort);
+      timing.elapsed_ms = Math.round(performance.now() - started);
+      timing.authority_ms = Math.round(timing.authority_ms);
+      timing.adapter_ms = Math.round(timing.adapter_ms);
+      try { this.observe({ ...timing }); } catch { /* Diagnostics must never affect authority or the response. */ }
+    }
   }
   private async readCurrent(caller: ExperienceCaller, sessionId: string, resourceKey: string,
-    input: z.infer<typeof ExperienceResourceContentRequestSchema>, signal: AbortSignal,capture:(bytes:Uint8Array)=>void) {
-    const source = await this.authority.sourceRecord(caller, sessionId, resourceKey, input.record_id, signal);
+    input: z.infer<typeof ExperienceResourceContentRequestSchema>, signal: AbortSignal, timing: AttachmentTiming, capture:(bytes:Uint8Array)=>void) {
+    const timedAuthority = async <T,>(work: () => Promise<T>): Promise<T> => {
+      const at = performance.now(); timing.authority_calls++;
+      try { return await work(); } finally { timing.authority_ms += performance.now() - at; }
+    };
+    const timedAdapter = async <T,>(work: () => Promise<T>): Promise<T> => {
+      const at = performance.now();
+      try { return await work(); } finally { timing.adapter_ms += performance.now() - at; }
+    };
+    const measuredAuthority = {
+      sourceRecord: (...args: Parameters<Authority['sourceRecord']>) => timedAuthority(() => this.authority.sourceRecord(...args)),
+      connectionSetup: (...args: Parameters<Authority['connectionSetup']>) => timedAuthority(() => this.authority.connectionSetup(...args)),
+    };
+    const source = await measuredAuthority.sourceRecord(caller, sessionId, resourceKey, input.record_id, signal);
     const sourceInspection=['list_files','read_file','read_presentation','read_image'].includes(input.operation);
     const purpose=sourceInspection?'read_source':input.operation as 'read_document'|'read_source'|'triage_options';
     if (source.record.record_id !== input.record_id) throw unavailable();
@@ -63,7 +88,7 @@ export class AppExperienceResourceContentService {
       installation_id: source.installation_id, target_key: source.target_key });
     if (entry.pins.resource_key !== resourceKey || entry.pins.resource_binding_id !== source.resource_binding_id
       || input.operation==='read_document'&&!entry.adapter.readResource || input.operation==='read_source'&&!entry.adapter.readSource || input.operation==='triage_options'&&!entry.adapter.readTriageOptions || sourceInspection&&!entry.adapter.readSourceFiles) throw unavailable();
-    const initial = structuredClone(await this.authority.connectionSetup(caller, sessionId, entry.pins, signal, purpose));
+    const initial = structuredClone(await measuredAuthority.connectionSetup(caller, sessionId, entry.pins, signal, purpose));
     const policy = initial.content_policy;
     if (initial.purpose !== purpose || !initial.allowed_operations.includes('read_one')
       || input.operation==='read_document'&&!policy?.document || purpose==='read_source'&&!policy?.source || input.operation==='triage_options'&&!policy?.triage_options) throw unavailable();
@@ -74,22 +99,27 @@ export class AppExperienceResourceContentService {
     const deadline = Math.min(initial.expires_at, this.now() + this.timeoutMs), same = humanActionDigest(source);
     if (!Number.isFinite(deadline)) throw unavailable();
     const check = () => { signal?.throwIfAborted(); if (this.now() >= deadline) throw unavailable(); };
+    let pendingRecheck: Promise<AppConnectionProjection> | null = null;
     const recheck = async () => {
       check();
-      const current = await this.authority.connectionSetup(caller, sessionId, entry.pins, signal, purpose);
-      if (current.purpose !== purpose || !current.allowed_operations.includes('read_one') || !Number.isFinite(current.expires_at) || current.expires_at < deadline
-        || current.lifecycle_epoch !== initial.lifecycle_epoch || current.grant_epoch !== initial.grant_epoch || current.runtime_epoch !== initial.runtime_epoch) throw unavailable();
-      if (projectionDigest(current) !== expectedProjectionDigest) throw unavailable();
-      check(); return { ...current, expires_at: deadline };
+      if (!pendingRecheck) pendingRecheck = (async () => {
+        const current = await measuredAuthority.connectionSetup(caller, sessionId, entry.pins, signal, purpose);
+        if (current.purpose !== purpose || !current.allowed_operations.includes('read_one') || !Number.isFinite(current.expires_at) || current.expires_at < deadline
+          || current.lifecycle_epoch !== initial.lifecycle_epoch || current.grant_epoch !== initial.grant_epoch || current.runtime_epoch !== initial.runtime_epoch) throw unavailable();
+        if (projectionDigest(current) !== expectedProjectionDigest) throw unavailable();
+        return { ...current, expires_at: deadline };
+      })().finally(() => { pendingRecheck = null; });
+      const current = await pendingRecheck;
+      check(); return { ...current };
     };
     let captured:Uint8Array|undefined;
     try {
-      await recheck();
+      check();
       if(sourceInspection){
-        const raw=await entry.adapter.readSourceFiles!({record:structuredClone(source.record),...(input.operation==='read_file'?{file_ref:input.file_ref}:{}),...(input.operation==='read_image'?{image_ref:input.image_ref}:{}),...(input.operation==='read_presentation'?{presentation:true as const}:{})},{projection:structuredClone({...initial,expires_at:deadline}),recheck,signal});
+        const raw=await timedAdapter(()=>entry.adapter.readSourceFiles!({record:structuredClone(source.record),...(input.operation==='read_file'?{file_ref:input.file_ref}:{}),...(input.operation==='read_image'?{image_ref:input.image_ref}:{}),...(input.operation==='read_presentation'?{presentation:true as const}:{})},{projection:structuredClone({...initial,expires_at:deadline}),recheck,signal}));
         if(!raw||typeof raw!=='object'||Array.isArray(raw))throw unavailable();const result=raw as Record<string,unknown>;
         if(result.bytes instanceof Uint8Array){captured=result.bytes;capture(captured);}
-        await recheck();const currentSource=await this.authority.sourceRecord(caller,sessionId,resourceKey,input.record_id,signal);
+        await recheck();const currentSource=await measuredAuthority.sourceRecord(caller,sessionId,resourceKey,input.record_id,signal);
         if(same!==humanActionDigest(currentSource))throw unavailable();
         const common={exposure_id:source.exposure_id,exposure_epoch:source.exposure_epoch,expires_at:new Date(initial.expires_at).toISOString()},files=sourceFiles.parse(result.files);
         const omitted=z.number().int().min(0).max(256).optional().parse(result.omitted_file_count),inventory=omitted===undefined?{}:{omitted_file_count:omitted};
@@ -101,7 +131,7 @@ export class AppExperienceResourceContentService {
           const presentation=presentationSchema.parse(result.presentation);
           if(presentation.metadata!==undefined){if(!policy?.document.metadata_schema)throw unavailable();presentation.metadata=parseRuntimeObjectInput(policy.document.metadata_schema,presentation.metadata);}
           const external_images=await this.readingPolicy({caller,entry,record:source.record,signal});
-          await recheck();const finalSource=await this.authority.sourceRecord(caller,sessionId,resourceKey,input.record_id,signal);
+          await recheck();const finalSource=await measuredAuthority.sourceRecord(caller,sessionId,resourceKey,input.record_id,signal);
           if(same!==humanActionDigest(finalSource)||!['ask','always'].includes(external_images))throw unavailable();check();
           return {kind:'presentation' as const,presentation:{...presentation,...inventory,external_images},...common};
         }
@@ -111,21 +141,21 @@ export class AppExperienceResourceContentService {
         throw unavailable();
       }
       if(input.operation==='triage_options'){
-        const options=ExperienceTriageOptionsSchema.parse(await entry.adapter.readTriageOptions!({record:structuredClone(source.record)},{projection:structuredClone({...initial,expires_at:deadline}),recheck,signal}));
-        await recheck();const currentSource=await this.authority.sourceRecord(caller,sessionId,resourceKey,input.record_id,signal);
+        const options=ExperienceTriageOptionsSchema.parse(await timedAdapter(()=>entry.adapter.readTriageOptions!({record:structuredClone(source.record)},{projection:structuredClone({...initial,expires_at:deadline}),recheck,signal})));
+        await recheck();const currentSource=await measuredAuthority.sourceRecord(caller,sessionId,resourceKey,input.record_id,signal);
         if(same!==humanActionDigest(currentSource)||options.destinations.length+options.labels.length>policy!.triage_options!.max_options||Buffer.byteLength(JSON.stringify(options),'utf8')>60000)throw unavailable();
         check();return {kind:'options' as const,options,exposure_id:source.exposure_id,exposure_epoch:source.exposure_epoch};
       }
       if(input.operation==='read_source'){
-        const output=await entry.adapter.readSource!({record:structuredClone(source.record)},{projection:structuredClone({...initial,expires_at:deadline}),recheck,signal});
+        const output=await timedAdapter(()=>entry.adapter.readSource!({record:structuredClone(source.record)},{projection:structuredClone({...initial,expires_at:deadline}),recheck,signal}));
         if(!(output.bytes instanceof Uint8Array))throw unavailable();captured=output.bytes;capture(captured);
-        await recheck();const currentSource=await this.authority.sourceRecord(caller,sessionId,resourceKey,input.record_id,signal);
+        await recheck();const currentSource=await measuredAuthority.sourceRecord(caller,sessionId,resourceKey,input.record_id,signal);
         if(same!==humanActionDigest(currentSource)||captured.byteLength<1||captured.byteLength>policy!.source!.max_bytes||output.media_type!==policy!.source!.media_type||output.filename!==policy!.source!.filename)throw unavailable();
         check();return {kind:'source' as const,bytes:captured,media_type:output.media_type,filename:output.filename,exposure_id:source.exposure_id,exposure_epoch:source.exposure_epoch};
       }
-      const output = await entry.adapter.readResource!({ operation: 'read_document', record: structuredClone(source.record) }, { projection: structuredClone({ ...initial, expires_at: deadline }), recheck, signal });
+      const output = await timedAdapter(() => entry.adapter.readResource!({ operation: 'read_document', record: structuredClone(source.record) }, { projection: structuredClone({ ...initial, expires_at: deadline }), recheck, signal }));
       await recheck();
-      const currentSource = await this.authority.sourceRecord(caller, sessionId, resourceKey, input.record_id, signal);
+      const currentSource = await measuredAuthority.sourceRecord(caller, sessionId, resourceKey, input.record_id, signal);
       if (same !== humanActionDigest(currentSource)) throw unavailable();
       check();
       const document = ExperienceResourceDocumentSchema.parse(output);

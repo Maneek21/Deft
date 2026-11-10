@@ -6,6 +6,9 @@ type Account={installation_id:string;account_ref:string;store_key:string};type O
 type Grant={id:string;revision:number;principal_kind:'defty'|'personal_mcp';principal_id:string;operations:Op[];expires_at:string};
 type Context={schema_version:'deft.app_integration_permissions.v1';resource_binding_id:string;principals:{kind:Grant['principal_kind'];id:string;name:string}[];grants:Grant[]};
 const ops:Op[]=['read','draft','triage','send'];const uuid=/^[a-f0-9-]{36}$/iu;
+/** A fresh Defty delegation defaults to read-only access; write operations are
+ * explicit opt-ins. Other principals start with nothing granted. */
+export function defaultIntegrationOperations(principalKey:string):Op[]{return principalKey.startsWith('defty:')?['read']:[];}
 function parseContext(raw:unknown):Context{const row=raw as Context;if(!row||row.schema_version!=='deft.app_integration_permissions.v1'||!uuid.test(row.resource_binding_id)||!Array.isArray(row.principals)||row.principals.length>101||!Array.isArray(row.grants)||row.grants.length>101||row.principals.some(p=>!p||!['defty','personal_mcp'].includes(p.kind)||!uuid.test(p.id)||typeof p.name!=='string'||p.name.length>512)||row.grants.some(g=>!g||!uuid.test(g.id)||!Number.isInteger(g.revision)||g.revision<1||!uuid.test(g.principal_id)||!['defty','personal_mcp'].includes(g.principal_kind)||!Array.isArray(g.operations)||!g.operations.length||g.operations.length>4||new Set(g.operations).size!==g.operations.length||g.operations.some(op=>!ops.includes(op))||!Number.isFinite(Date.parse(g.expires_at))))throw Error();return row;}
 export function IntegrationAccessSettings({account,current,signal}:{account:Account;current:()=>boolean;signal:AbortSignal}){
  const [context,setContext]=useState<Context>(),[principal,setPrincipal]=useState(''),[operations,setOperations]=useState<Op[]>([]),[days,setDays]=useState(7),[notification,setNotification]=useState<{enabled:boolean;revision:number}>(),[notice,setNotice]=useState(''),[busy,setBusy]=useState(false);
@@ -13,7 +16,7 @@ export function IntegrationAccessSettings({account,current,signal}:{account:Acco
  const reload=async()=>{const [raw,setting]=await Promise.all([request('/api/app-integrations/permissions/context',account),request('/api/app-integrations/notifications/settings/read',account)]);const parsed=parseContext(raw),n=setting as {enabled:boolean;revision:number};if(typeof n.enabled!=='boolean'||!Number.isInteger(n.revision)||n.revision<0)throw Error();setContext(parsed);setNotification(n);};
  useEffect(()=>{let active=true;void reload().catch(()=>{if(active&&!signal.aborted)setNotice('Account permissions are unavailable.');});return()=>{active=false;};},[account,current,signal]);
  const selected=context?.principals.find(p=>p.kind+':'+p.id===principal),grant=context?.grants.find(g=>g.principal_kind===selected?.kind&&g.principal_id===selected.id);
- useEffect(()=>{setOperations(grant?.operations??[]);},[principal,grant]);
+ useEffect(()=>{setOperations(grant?.operations??defaultIntegrationOperations(principal));},[principal,grant]);
  const run=async(fn:()=>Promise<unknown>)=>{if(busy||!current())return;setBusy(true);setNotice('');try{await fn();await reload();setNotice('Account settings saved.');}catch{setNotice('Settings changed or are unavailable. Reopen account settings before trying again.');}finally{setBusy(false);}};
  return <section className="space-y-4 rounded-xl bg-[var(--surface-container-low)] p-4 text-sm" aria-label="Account automation permissions">
   <h3 className="font-medium">Notifications and assistant access</h3>

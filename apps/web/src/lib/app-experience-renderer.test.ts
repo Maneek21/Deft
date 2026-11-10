@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { renderExperienceView, clearExperienceView, flushExperienceInputs, suspendExperienceView, type ExperienceUiEvent, type ExperienceDocumentContext } from './app-experience-renderer';
+import { renderExperienceView, clearExperienceView, flushExperienceInputs, suspendExperienceView, EXPERIENCE_RENDERER_CSS, type ExperienceUiEvent, type ExperienceDocumentContext } from './app-experience-renderer';
 import type { ExperienceView, ExperienceNode } from './app-experience-bridge';
 
 // Minimal DOM seam exercises native event delivery and replacement, rather than CSS.
@@ -10,7 +10,7 @@ class Element {
   style: Record<string,string> = {};
   selectionStart: number | null = 0; selectionEnd: number | null = 0;
   classList = { add() {}, toggle() {} };
-  listeners = new Map<string, (() => void)[]>();
+  listeners = new Map<string, ((event?: unknown) => void)[]>();
   constructor(readonly tag: string) {}
   get tagName() { return this.tag.toUpperCase(); }
   get firstElementChild() { return this.children[0]; }
@@ -22,8 +22,8 @@ class Element {
   setAttribute(name:string,value:string) { this.attributes.set(name,value); }
   removeAttribute(name:string) { this.attributes.delete(name); }
   getAttribute(name:string) { return this.attributes.get(name) ?? null; }
-  addEventListener(name: string, callback: () => void) { this.listeners.set(name, [...this.listeners.get(name) ?? [], callback]); }
-  fire(name: string) { this.listeners.get(name)?.forEach(callback => callback()); }
+  addEventListener(name: string, callback: (event?: unknown) => void) { this.listeners.set(name, [...this.listeners.get(name) ?? [], callback]); }
+  fire(name: string, event?: unknown) { this.listeners.get(name)?.forEach(callback => callback(event)); }
   focus() { dom.activeElement = this; }
   setSelectionRange(start: number, end: number) { this.selectionStart = start; this.selectionEnd = end; }
   contains(element: Element): boolean { return this.children.some(child => child === element || child.contains(element)); }
@@ -284,6 +284,86 @@ test('trusted unchanged reader retains its delayed read across unrelated renders
  try{renderExperienceView(container,view,()=>{},options);await Promise.resolve();await Promise.resolve();const wrapper=(container as unknown as Element).children[0];renderExperienceView(container,view,()=>{},options);await Promise.resolve();assert.equal(reads,1);assert.equal(contexts[0].current(),true);assert.equal(contexts[0].signal.aborted,false);assert.equal((container as unknown as Element).children[0],wrapper);release({kind:'document',id:'body',format:'plain',content:'Exact current source'});await new Promise<void>(done=>setImmediate(done));assert.equal(mounts,1);clearExperienceView(container);assert.equal(disposed,1);assert.equal(contexts[0].current(),false);}
  finally{clearExperienceView(container);for(const [key,descriptor]of saved)if(descriptor)Object.defineProperty(globalThis,key,descriptor);else Reflect.deleteProperty(globalThis,key);}
 });
+test('status and progress text nodes are announced politely and icon buttons expose their label',()=>{
+ const original=globalThis.document;Object.assign(globalThis,{document:{...dom,createElementNS:(_namespace:string,tag:string)=>new Element(tag)},HTMLElement:Element,HTMLInputElement:Input,HTMLTextAreaElement:Textarea});
+ const container=new Element('div') as unknown as HTMLElement;
+ try{
+  renderExperienceView(container,{root:{kind:'stack',id:'root',children:[
+    {kind:'text',id:'status',text:'Workspace updated.'},
+    {kind:'text',id:'sync_progress',text:'Refreshing…'},
+    {kind:'text',id:'save_notice',text:'Draft saved.'},
+    {kind:'text',id:'body',text:'Ordinary text.'},
+    {kind:'button',id:'refresh',label:'Refresh',icon:'refresh'},
+  ]}},()=>undefined);
+  const nodes=(container as unknown as Element).querySelectorAll('*');
+  const byText=(text:string)=>nodes.find(node=>node.textContent===text)!;
+  for(const text of ['Workspace updated.','Refreshing…','Draft saved.']){
+   const node=byText(text);assert.equal(node.getAttribute('role'),'status',text);assert.equal(node.getAttribute('aria-live'),'polite',text);
+  }
+  assert.equal(byText('Ordinary text.').getAttribute('role'),null,'ordinary prose is not a live region');
+  assert.equal(nodes.find(node=>node.tag==='button')!.getAttribute('aria-label'),'Refresh');
+ }finally{clearExperienceView(container);Object.assign(globalThis,{document:original});}
+});
+
+test('Enter in a search input flushes the typed value and activates the adjacent search control',()=>{
+ const saved=new Map(['document','HTMLElement','HTMLInputElement','HTMLTextAreaElement'].map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));
+ Object.assign(globalThis,{document:{...dom,createElementNS:(_namespace:string,tag:string)=>new Element(tag)},HTMLElement:Element,HTMLInputElement:Input,HTMLTextAreaElement:Textarea});
+ const container=new Element('div') as unknown as HTMLElement,events:ExperienceUiEvent[]=[];
+ try{
+  renderExperienceView(container,{root:{kind:'stack',id:'root',layout:'toolbar',children:[
+    {kind:'input',id:'query',label:'Search',value:'',appearance:'search'},
+    {kind:'button',id:'search',label:'Search',icon:'search'},
+  ]}},event=>{events.push(event);});
+  const input=(container as unknown as Element).querySelectorAll('input[data-focus-key]')[0]!;
+  input.value='quarterly plan';input.fire('input');input.fire('keydown',{key:'Enter'});
+  assert.deepEqual(events,[{kind:'input',node_id:'query',value:'quarterly plan'},{kind:'click',node_id:'search'}],
+   'Enter flushes the pending search text before activating the search control');
+ }finally{clearExperienceView(container);for(const[key,descriptor]of saved)if(descriptor)Object.defineProperty(globalThis,key,descriptor);else Reflect.deleteProperty(globalThis,key);}
+});
+
+test('shared renderer styles use Obsidian tokens, wrap reader headings and expose skeleton and attachment surfaces',()=>{
+ for(const legacy of ['#1e293b','#f8fafc','#64748b','#2563eb','#eff6ff','#cbd5e1'])assert.equal(EXPERIENCE_RENDERER_CSS.includes(legacy),false,legacy);
+ for(const token of ['var(--on-surface','var(--on-surface-variant','var(--surface)','var(--surface-container-low)','var(--surface-container)','var(--primary)','var(--primary-container)','var(--on-primary-container)','var(--border-default)','var(--accent-subtle)'])assert.ok(EXPERIENCE_RENDERER_CSS.includes(token),token);
+ assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-stack-document\s*>\s*\.ex-stack-toolbar\s*>\s*\.ex-text-heading\{[^}]*white-space:normal/);
+ const headingRule=/\.ex-stack-document\s*>\s*\.ex-stack-toolbar\s*>\s*\.ex-text-heading\{([^}]*)\}/u.exec(EXPERIENCE_RENDERER_CSS)?.[1]??'';
+ assert.ok(headingRule,'the document toolbar heading rule is present');
+ assert.doesNotMatch(headingRule,/-webkit-line-clamp|display:-webkit-box/u,'the full subject must be able to wrap');
+ assert.match(headingRule,/white-space:normal/u);assert.match(headingRule,/overflow-wrap:anywhere/u);
+ assert.match(EXPERIENCE_RENDERER_CSS,/@media\(max-width:480px\)/);
+ assert.match(EXPERIENCE_RENDERER_CSS,/@container\(max-width:480px\)/);
+ assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-document-view\[aria-busy="true"\]\{[^}]*linear-gradient/);
+ assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-document-view\[aria-busy="true"\]\{[^}]*animation:shimmer 1\.5s ease infinite/);
+ assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-attachment-chip\{[^}]*background:var\(--surface-container-low\)/);
+ assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-attachment-name\{[^}]*overflow-wrap:anywhere/);
+});
+
+test('primary action tokens keep small button text at 4.5:1 in both themes',()=>{
+ const contrast=(foreground:string,background:string)=>{
+  const luminance=(value:string)=>{const channels=(value.replace('#','').match(/../gu)??[]).map(channel=>Number.parseInt(channel,16)/255)
+   .map(channel=>channel<=0.03928?channel/12.92:Math.pow((channel+0.055)/1.055,2.4));
+   return 0.2126*channels[0]+0.7152*channels[1]+0.0722*channels[2];};
+  const first=luminance(foreground),second=luminance(background);
+  return (Math.max(first,second)+0.05)/(Math.min(first,second)+0.05);
+ };
+ const declarations=(name:string)=>[...EXPERIENCE_RENDERER_CSS.matchAll(new RegExp(`--${name}:(#[0-9a-fA-F]{6})`,'gu'))].map(match=>match[1]);
+ for(const name of ['ex-primary-fill','ex-primary-text','ex-primary-hover']){
+  assert.equal(declarations(name).length,2,`${name} declares a dark and a light value`);
+ }
+ assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-button-primary:hover:not\(:disabled\),\.deft-experience button\[data-record-primary\]:hover:not\(:disabled\)\s*\{[^}]*background-color:var\(--ex-primary-hover\)/);
+ assert.match(EXPERIENCE_RENDERER_CSS,/\.deft-experience button\s*\{[^}]*background:var\(--ex-primary-fill\)[^}]*color:var\(--ex-primary-text\)/);
+ for(let index=0;index<2;index++){
+  const fill=declarations('ex-primary-fill')[index],text=declarations('ex-primary-text')[index],hover=declarations('ex-primary-hover')[index];
+  assert.ok(contrast(text,fill)>=4.5,`${text} on ${fill}`);
+  assert.ok(contrast(text,hover)>=4.5,`${text} on hover ${hover}`);
+ }
+});
+
+test('phone document toolbars without a menu put the heading on its own row before wrapping actions',()=>{
+ assert.match(EXPERIENCE_RENDERER_CSS,/@media\(max-width:720px\)\{[^@]*\.ex-stack-document>\.ex-stack-toolbar:not\(:has\(\.ex-menu\)\)\{[^}]*flex-direction:column/);
+ assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-stack-document>\.ex-stack-toolbar:not\(:has\(\.ex-menu\)\)>\.ex-text-heading\{[^}]*flex:0 0 auto;[^}]*width:100%/);
+ assert.match(EXPERIENCE_RENDERER_CSS,/\.ex-stack-document>\.ex-stack-toolbar:not\(:has\(\.ex-menu\)\)>\.ex-stack-horizontal\{[^}]*flex-wrap:wrap/);
+});
+
 test('retention never survives changed record digest policy trusted scope suspension or clear',async()=>{
  const saved=new Map(['document','HTMLElement','HTMLInputElement','HTMLTextAreaElement'].map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));Object.assign(globalThis,{document:dom,HTMLElement:Element,HTMLInputElement:Input,HTMLTextAreaElement:Textarea});
  try{for(const change of ['record','digest','policy','scope','revoked','suspend','clear']){
@@ -296,4 +376,14 @@ test('retention never survives changed record digest policy trusted scope suspen
   if(change==='suspend')suspendExperienceView(container);else if(change==='clear')clearExperienceView(container);else renderExperienceView(container,view(),()=>{},options);
   assert.equal(contexts[0].signal.aborted,true,change);assert.equal(contexts[0].current(),false,change);releases[0]({kind:'document',id:'body',format:'plain',content:'MUST NOT REVEAL LATE SOURCE'});await new Promise<void>(done=>setImmediate(done));assert.equal((container as unknown as Element).children.some(child=>child.textContent==='MUST NOT REVEAL LATE SOURCE'),false,change);assert.equal(mounts,0,'late previous source must never mount: '+change);assert.ok(reads<=2);clearExperienceView(container);releases.slice(1).forEach(done=>done({kind:'document',id:'body',format:'plain',content:'late'}));
  }}finally{for(const [key,descriptor]of saved)if(descriptor)Object.defineProperty(globalThis,key,descriptor);else Reflect.deleteProperty(globalThis,key);}
+});
+
+test('phone document toolbar becomes a grid so the subject wraps at its real width (N-04)', () => {
+  assert.ok(EXPERIENCE_RENDERER_CSS.includes('@media(max-width:720px){.deft-experience .ex-stack-document>.ex-stack-toolbar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center}'));
+  assert.ok(EXPERIENCE_RENDERER_CSS.includes('.deft-experience .ex-stack-document>.ex-stack-toolbar>.ex-text-heading{grid-column:1/-1;grid-row:2;'));
+  assert.ok(EXPERIENCE_RENDERER_CSS.includes('.deft-experience .ex-stack-document>.ex-stack-toolbar:has(.ex-menu)') && EXPERIENCE_RENDERER_CSS.includes('flex-wrap:wrap'));
+});
+test('renderer excludes checkboxes/radios from full-width input rule and keeps checkbox rows 44px (UI-15)', () => {
+  assert.match(EXPERIENCE_RENDERER_CSS, /\.deft-experience input:not\(\[type="checkbox"\]\):not\(\[type="radio"\]\),\.deft-experience textarea \{[^}]*width:100%/);
+  assert.match(EXPERIENCE_RENDERER_CSS, /\.deft-experience label:has\(> input\[type="checkbox"\]\),\.deft-experience label:has\(> input\[type="radio"\]\) \{[^}]*min-height:44px/);
 });

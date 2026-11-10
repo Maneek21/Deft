@@ -17,6 +17,7 @@ import { AppConnectionProfileSchema, AppConnectionRuntimeRequestSchema, AppConne
   type AppConnectionRuntimeV2Request,type AppConnectionUpgradeRuntimeRequest,
   canonicalAppConnectionProfileJson, type AppConnectionProfile, type AppConnectionSessionScope,
   type AppConnectionRegisteredRuntime, type OwnerConnectionPolicyDeclaration } from '@deft/app-kit/core';
+import { getScopedAppConnectionSessionRegistry } from './app-authority-registry-scope.js';
 import { AppError } from './app-errors.js';
 import { appRuntimeResponseError } from './app-runtime-response-error.js';
 import type { AppRunTransaction } from './app-run-repository.js';
@@ -60,6 +61,10 @@ export function connectionTransportEntryDigest(entry: Entry) {
 export class AppConnectionSessionRegistry {
   private readonly entries: readonly Entry[];
   private readonly transportRoots: readonly Entry[];
+  // Pure per-entry CPU reuse; `connectionTransportEntryDigest` is deterministic
+  // over immutable entry bytes and is computed once at construction instead of
+  // again on every profile()/transportDigest()/preauthenticate()/reviewedProtocol().
+  private readonly transportDigests = new Map<Entry, string>();
   constructor(raw: unknown, private readonly fetcher: typeof fetch = fetch, trustedSuccessors: readonly Entry[] = []) {
     const parsed = AppConnectionSessionRegistryConfigSchema.parse(raw);
     const rootCount=parsed.entries.length;
@@ -70,22 +75,34 @@ export class AppConnectionSessionRegistry {
     const identities = parsed.entries.map(entry => `${entry.org_id}:${entry.runtime_registration_id}:${entry.runtime_epoch}`);
     if (new Set(identities).size !== identities.length) throw unavailable();
     const reviews = new Map<string, string>();
+    const digestByRawEntry = new Map<Entry, string>();
     for (const entry of parsed.entries) {
+      const transportDigest = connectionTransportEntryDigest(entry);
+      digestByRawEntry.set(entry, transportDigest);
       const key = JSON.stringify([entry.org_id, entry.installation_id, entry.profile.key, entry.profile.operator_user_id,
         entry.profile.resource_key, entry.profile.runtime_requirement_key, entry.profile.action_keys]);
-      const reviewed = `${connectionProfileDigest(entry.profile)}:${connectionTransportEntryDigest(entry)}:${entry.connection_protocol??'v1'}`;
+      const reviewed = `${connectionProfileDigest(entry.profile)}:${transportDigest}:${entry.connection_protocol??'v1'}`;
       if (reviews.has(key) && reviews.get(key) !== reviewed) throw unavailable();
       reviews.set(key, reviewed);
     }
-    this.entries = Object.freeze(parsed.entries.map(entry => Object.freeze({ ...entry, profile: Object.freeze(entry.profile) })));
+    this.entries = Object.freeze(parsed.entries.map(entry => {
+      const frozen = Object.freeze({ ...entry, profile: Object.freeze(entry.profile) });
+      this.transportDigests.set(frozen, digestByRawEntry.get(entry)!);
+      return frozen;
+    }));
     this.transportRoots=Object.freeze(this.entries.slice(0,rootCount));
+  }
+  private entryTransportDigest(entry: Entry) {
+    let digest = this.transportDigests.get(entry);
+    if (digest === undefined) { digest = connectionTransportEntryDigest(entry); this.transportDigests.set(entry, digest); }
+    return digest;
   }
   profile(orgId: string, installationId: string, policy: OwnerConnectionPolicyDeclaration, operatorId?: string) {
     const entries = this.entries.filter(entry => entry.org_id === orgId && entry.installation_id === installationId
       && entry.profile.key === policy.provider_profile_key && (!operatorId || entry.profile.operator_user_id === operatorId)
       && entry.profile.resource_key === policy.resource_key && entry.profile.runtime_requirement_key === policy.runtime_requirement_key
       && JSON.stringify(entry.profile.action_keys) === JSON.stringify(policy.action_keys));
-    if (!entries.length || new Set(entries.map(entry => `${connectionProfileDigest(entry.profile)}:${connectionTransportEntryDigest(entry)}:${entry.connection_protocol??'v1'}`)).size !== 1) throw unavailable();
+    if (!entries.length || new Set(entries.map(entry => `${connectionProfileDigest(entry.profile)}:${this.entryTransportDigest(entry)}:${entry.connection_protocol??'v1'}`)).size !== 1) throw unavailable();
     const profile = entries[0]!.profile;
     if (profile.resource_key !== policy.resource_key || profile.runtime_requirement_key !== policy.runtime_requirement_key
       || JSON.stringify(profile.action_keys) !== JSON.stringify(policy.action_keys)) throw unavailable();
@@ -94,7 +111,7 @@ export class AppConnectionSessionRegistry {
   transportDigest(orgId: string, installationId: string, profile: AppConnectionProfile) {
     const entries = this.entries.filter(entry => entry.org_id === orgId && entry.installation_id === installationId
       && connectionProfileDigest(entry.profile) === connectionProfileDigest(profile));
-    const digests = new Set(entries.map(connectionTransportEntryDigest));
+    const digests = new Set(entries.map(entry => this.entryTransportDigest(entry)));
     if (digests.size !== 1) throw unavailable();
     return digests.values().next().value!;
   }
@@ -116,7 +133,7 @@ export class AppConnectionSessionRegistry {
     if(!token)throw denied();
     const entries=this.transportRoots.filter(entry=>entry.org_id===scope.org_id&&entry.installation_id===scope.installation_id
       &&entry.profile.operator_user_id===scope.operator_user_id&&connectionProfileDigest(entry.profile)===scope.profile_digest);
-    if(!entries.length||new Set(entries.map(entry=>`${connectionTransportEntryDigest(entry)}:${entry.connection_protocol??'v1'}`)).size!==1)throw denied();
+    if(!entries.length||new Set(entries.map(entry=>`${this.entryTransportDigest(entry)}:${entry.connection_protocol??'v1'}`)).size!==1)throw denied();
     const expected=Buffer.from(entries[0]!.authority_token_sha256.slice(7),'hex');
     if(!timingSafeEqual(expected,createHash('sha256').update(token).digest()))throw denied();
   }
@@ -133,7 +150,7 @@ export class AppConnectionSessionRegistry {
   reviewedProtocol(orgId:string,installationId:string,profile:AppConnectionProfile):'v1'|'v2'|'credential_form.v1'{
     const entries=this.entries.filter(entry=>entry.org_id===orgId&&entry.installation_id===installationId
       &&connectionProfileDigest(entry.profile)===connectionProfileDigest(profile));
-    const reviews=new Set(entries.map(entry=>`${connectionTransportEntryDigest(entry)}:${entry.connection_protocol??'v1'}`));
+    const reviews=new Set(entries.map(entry=>`${this.entryTransportDigest(entry)}:${entry.connection_protocol??'v1'}`));
     if(reviews.size!==1)throw unavailable();return entries[0]!.connection_protocol??'v1';
   }
   assertReady(scope:AppConnectionSessionScope,profile:AppConnectionProfile){
@@ -287,16 +304,27 @@ export async function readBoundedConnectionJson(stream: ReadableStream<Uint8Arra
   finally { signal?.removeEventListener('abort', cancel); reader.releaseLock(); }
 }
 
+export type AppConnectionSessionRegistryStatIdentity = Readonly<{ path: string; dev: number; ino: number; size: number; mtimeMs: number }>;
+
+/** `lstat` plus the exact file-shape guards from `loadAppConnectionSessionRegistry`,
+ * returned as a stable identity. A replaced/removed/symlinked/oversized file or a
+ * mode-bits change throws the same `APP_CONNECTION_PROFILE_UNAVAILABLE` error, so
+ * a caller can decide whether a previously parsed registry is still current. */
+export async function statAppConnectionSessionRegistryFile(path: string): Promise<AppConnectionSessionRegistryStatIdentity> {
+  if (!isAbsolute(path)) throw unavailable();
+  const stat = await lstat(path);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 131072
+    || process.platform !== 'win32' && (stat.mode & 0o077) !== 0) throw unavailable();
+  return { path, dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs };
+}
+
 /** Only an explicitly supplied authority transaction is reused. Callers without
  * one retain an independent committed-state proof read. */
 export async function loadAppConnectionSessionRegistry(path: string | undefined, transaction?: AppRunTransaction,
   options:Readonly<{trustedSuccessors?:boolean}>={}) {
   if (!path) return new AppConnectionSessionRegistry({ schema_version: 'deft.app_connection_http_registrations.v1', entries: [] });
   try {
-    if (!isAbsolute(path)) throw unavailable();
-    const stat = await lstat(path);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 131072
-      || process.platform !== 'win32' && (stat.mode & 0o077) !== 0) throw unavailable();
+    await statAppConnectionSessionRegistryFile(path);
     const config = AppConnectionSessionRegistryConfigSchema.parse(JSON.parse(await readFile(path, 'utf8')));
     if(options.trustedSuccessors===false)return new AppConnectionSessionRegistry(config);
     const { trustedUpgradeRegistryEntries } = await import('./app-upgrade-trust-registry.js');
@@ -306,7 +334,11 @@ export async function loadAppConnectionSessionRegistry(path: string | undefined,
 }
 // Reread deployment review on each authority check; replacement/removal revokes
 // access without waiting for an API restart. Credentials never enter responses.
-export const getAppConnectionSessionRegistry = (transaction?: AppRunTransaction) => loadAppConnectionSessionRegistry(process.env.DEFT_APP_CONNECTION_HTTP_CONFIG, transaction);
+// Within one request `withAuthorityRegistryScope` shares the parsed registry
+// object (still lstat-validated on every lookup) across no-transaction call sites.
+export async function getAppConnectionSessionRegistry(transaction?: AppRunTransaction) {
+  return getScopedAppConnectionSessionRegistry(transaction);
+}
 
 /** Fresh static deployment credential check only; no proof/result/registry is
  * retained. Full current authority and final exact authentication stay required. */

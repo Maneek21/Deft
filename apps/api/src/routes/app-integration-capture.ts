@@ -8,13 +8,14 @@ import type {AppIntegrationSourceCaller} from '../lib/app-integration-source.js'
 export function createAppIntegrationCaptureRoutes(ports:{
  authenticate(request:Request):Promise<AppIntegrationSourceCaller>;
  settings(caller:AppIntegrationSourceCaller,target:AppIntegrationSourceIdentity):Promise<unknown>;
+ health(caller:AppIntegrationSourceCaller,target:AppIntegrationSourceIdentity):Promise<unknown>;
  write(caller:AppIntegrationSourceCaller,target:AppIntegrationSourceIdentity,policy:unknown):Promise<unknown>;
  related(caller:AppIntegrationSourceCaller,target:AppIntegrationSourceIdentity):Promise<unknown>;
  open(caller:AppIntegrationSourceCaller,source_id:string):Promise<string>;
 }){
  const app=new Hono();app.use('*',bodyLimit({maxSize:16384,onError:c=>c.json({code:'APP_INTEGRATION_INVALID'},413)}));
  app.use('*',async(c,next)=>{c.header('Cache-Control','no-store');await next();});
- for(const name of ['settings','write','related'] as const)app.post('/'+name,async c=>{
+ for(const name of ['settings','health','write','related'] as const)app.post('/'+name,async c=>{
   try{
    const caller=await ports.authenticate(c.req.raw);if(caller.kind!=='human')return c.json({code:'APP_ACCESS_DENIED'},403);
    if(new URL(c.req.url).search||!/^application\/json(?:\s*;|$)/iu.test(c.req.header('Content-Type')??''))return c.json({code:'APP_INTEGRATION_INVALID'},400);

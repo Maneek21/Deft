@@ -22,11 +22,11 @@
     "studio": "drizzle-kit studio"
   },
   "dependencies": {
-    "@neondatabase/serverless": "^1.1.0",
+    "@neondatabase/serverless": "^1.2.0",
     "bcryptjs": "^3.0.3",
-    "dotenv": "^18.0.4",
-    "drizzle-orm": "^0.45.3",
-    "pg": "^8.23.0"
+    "dotenv": "^18.0.9",
+    "drizzle-orm": "^0.45.4",
+    "pg": "^8.23.1"
   },
   "devDependencies": {
     "@types/bcryptjs": "^3.0.0",

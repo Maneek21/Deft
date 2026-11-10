@@ -1,6 +1,6 @@
 # `@deft/app-kit`
 
-The current authoring Kit is `0.1.0-alpha.42`, isolating app-owned domain helpers and retaining domain-neutral source nomination v3 while retaining the optional App-owned `background_refresh_description` in experience bundles and targeted resource Refresh. Bundles using the new field require Host `0.3.0-preview.127` or newer. It retains alpha.35 persistent permission and alpha.33 provider-independent principal identifiers, declared resource source types/search fields, `record_form.v3`, and one sealed supplemental effect per action. Email grammar and provider outcomes belong to the independent Email Runtime. The [Email compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.16/compatibility.json) pairs App `1.9.0-preview.13` on alpha.38 with Runtime `0.4.0-preview.16` on alpha.35, Host `0.3.0-preview.122` and schema 120. The two Kit versions are deliberate. Existing sealed older packages and their exact proofs remain historical inputs.
+The current authoring Kit is `0.1.0-alpha.43`, isolating app-owned domain helpers and retaining domain-neutral source nomination v3 while retaining the optional App-owned `background_refresh_description` in experience bundles and targeted resource Refresh. Bundles using the new field require Host `0.3.0-preview.127` or newer. It retains alpha.35 persistent permission and alpha.33 provider-independent principal identifiers, declared resource source types/search fields, `record_form.v3`, and one sealed supplemental effect per action. Email grammar and provider outcomes belong to the independent Email Runtime. The [Email compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.16/compatibility.json) pairs App `1.9.0-preview.13` on alpha.38 with Runtime `0.4.0-preview.16` on alpha.35, Host `0.3.0-preview.122` and schema 120. The two Kit versions are deliberate. Existing sealed older packages and their exact proofs remain historical inputs.
 
 Record form v3 declares scalar fields, optional mailbox-list pill controls, verified identities, trusted rich text/files, labels and review captions. Field names do not select product behavior. Existing record revision, content digest, source reference, unsaved seed and action fences still apply. A Runtime independently validates domain data before preparing an effect.
 
@@ -28,9 +28,9 @@ A signed owner policy may opt in with `allow_until_revoked: true`. An existing c
 
 Persistent permission does not make requests indefinite: continuation reviews last two minutes, data/observation reviews five minutes, and technical channel leases remain finite (at most fifteen minutes). The existing credential can renew only while its Host lease and current account, installation, custody and human membership remain valid. Revocation still denies subsequent use. `appConsentDeadline`, `appConsentIsCurrent` and `appConsentWithin` validate these pairs; only explicit mode plus null represents a persistent durable deadline. Exact-message Send review remains separate. Alpha.35 persistent grants require a compatible Host with the additive consent migration and a Runtime that understands explicit lifetimes; alpha.33 archives remain unchanged. Contract tests do not establish live provider acceptance.
 
-## alpha.42 ownership and compatibility
+## alpha.43 ownership and compatibility
 
-alpha.42 is prepared for the coordinated Host 134 release. Its clean public
+alpha.43 is prepared for the coordinated Host 134 release. Its clean public
 entry points separate generic contracts from historical author-tool compatibility:
 
 | Purpose | Entry point |
@@ -89,12 +89,12 @@ link:
 mkdir connected-campaigns
 cd connected-campaigns
 pnpm init
-pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.42.tgz
+pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.43.tgz
 ```
 
 The installed binary is available as `pnpm exec deft`.
 
-This review candidate is `0.1.0-alpha.42`. Package metadata,
+This review candidate is `0.1.0-alpha.43`. Package metadata,
 `DEFT_APP_KIT_VERSION`, and CLI compatibility output use that identity. Alpha.35
 retains connection v2 sessions and independent action consents, reviewed
 same-account upgrade/reattachment, consent continuation and credential repair,

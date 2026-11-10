@@ -6,7 +6,7 @@ import pg from 'pg';
 import { assertReviewedFreshBootstrap, convergeReviewedRelease } from './lineage-convergence.mjs';
 import { reconcileFreshSchemaContracts } from './fresh-schema-contracts.mjs';
 import { loadRootEnv, maskDatabaseUrl, resolveDatabaseUrl } from './db-url.ts';
-import { LOCK_ID, baselineChecksum, sha256 } from './upgrade.ts';
+import { LOCK_ID, baselineChecksum, sha256, applyManifestTailMigrations } from './upgrade.ts';
 import { upgradeManifest } from '../upgrades/manifest.ts';
 
 const { Client } = pg;
@@ -93,6 +93,7 @@ export async function main() {
       // A failure here leaves an exactly reviewed117 ledger that db:upgrade
       // can recover. Never stamp118 before its SQL and final catalog succeed.
       await convergeReviewedRelease(client);
+      await applyManifestTailMigrations(client);
       console.log(`[OK] Recorded ${upgradeManifest.migrations.length + 1} current schema ledger version(s).`);
     } finally {
       await client.query('SELECT pg_advisory_unlock($1)', [LOCK_ID]);

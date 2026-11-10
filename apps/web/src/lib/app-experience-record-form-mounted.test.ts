@@ -106,3 +106,19 @@ test('reserved seed UUID acknowledgement retains one mounted opening instead of 
   assert.match(await page.getByRole('textbox',{name:'Message',exact:true}).inputValue(),/Original quoted message/);
  }finally{await browser.close();}
 });
+
+test('compose opening shows a structured skeleton instead of recovery jargon while the draft loads',async()=>{
+ const {browser,page}=await fixture();try{
+  await page.evaluate(()=>(window as any).Probe.mount());
+  await page.waitForFunction(()=>(window as any).Probe.read().calls.includes('recoveryScope'));
+  const pending=await page.evaluate(()=>{const skeleton=document.querySelector('[data-compose-skeleton="true"]');return {busy:skeleton?.getAttribute('aria-busy'),rows:skeleton?Array.from(skeleton.querySelectorAll('.skeleton')).map(node=>node.className):[],text:(document.getElementById('root') as HTMLElement).textContent??''};});
+  assert.equal(pending.busy,'true','the opening surface must be marked busy');
+  assert.equal(pending.rows.length,4,'three control rows plus a body block');
+  assert.deepEqual(pending.rows,['h-9 w-48 rounded-full skeleton','h-10 w-full rounded-lg skeleton','h-10 w-full rounded-lg skeleton','h-44 w-full rounded-xl skeleton']);
+  assert.doesNotMatch(pending.text,/Checking browser recovery/);
+  assert.match(pending.text,/Opening draft/);
+  await page.evaluate(()=>(window as any).Probe.release());
+  await page.getByRole('textbox',{name:'Subject',exact:true}).waitFor();
+  assert.equal(await page.evaluate(()=>document.querySelectorAll('[data-compose-skeleton="true"]').length),0,'the skeleton must not outlive the opening');
+ }finally{await browser.close();}
+});

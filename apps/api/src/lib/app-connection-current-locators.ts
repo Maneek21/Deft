@@ -4,8 +4,9 @@ import type {AppRunTransaction} from './app-run-repository.js';
 
 /** Successful custody transitions retain their source rows. Only a published
  * success receipt removes that source from metadata nomination; pending and
- * uncertain work still reaches the existing locked availability fences. */
-function noPublishedConnectionSuccessor(){
+ * uncertain work still reaches the existing locked availability fences.
+ * Also the "still current" test for PostgresAppDataStore.activate (PR424-N2c). */
+export function noPublishedConnectionSuccessor(){
  return and(
   sql`NOT EXISTS (SELECT 1 FROM app_connection_sessions published_successor
    WHERE published_successor.org_id=${appConnectionSessions.org_id}
@@ -16,7 +17,9 @@ function noPublishedConnectionSuccessor(){
     AND jsonb_typeof(published_successor.record->'upgrade'->'receipt')='object')
    OR (published_successor.record->'credential_repair'->>'schema_version'='deft.app_connection_credential_repair.v1'
     AND published_successor.record->'credential_repair'->'source'->>'session_id'=${appConnectionSessions.session_id}
-    AND jsonb_typeof(published_successor.record->'credential_repair'->'receipt')='object')))`,
+    AND jsonb_typeof(published_successor.record->'credential_repair'->'receipt')='object')
+   OR (published_successor.record->'restore'->>'schema_version'='deft.app_connection_restore.v1'
+    AND published_successor.record->'restore'->'source'->>'session_id'=${appConnectionSessions.session_id})))`,
   sql`NOT EXISTS (SELECT 1 FROM app_connection_consent_continuations published_continuation
    WHERE published_continuation.org_id=${appConnectionSessions.org_id}
    AND published_continuation.owner_user_id=${appConnectionSessions.owner_user_id}

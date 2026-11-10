@@ -55,7 +55,7 @@ export function ExperienceComposeMailboxControl({ label, value, maxItems = 32, m
         <input id={id} data-compose-writing-control="true" data-compose-has-value={current.addresses.length > 0 || Boolean(current.pending.trim())} type="text" inputMode="email" autoComplete="off" spellCheck={false}
           value={current.pending} disabled={disabled} placeholder={current.addresses.length ? 'Add recipient' : 'Add an email address'}
           aria-invalid={invalid} aria-describedby={`${id}-detail`}
-          className="min-h-11 min-w-20 flex-1 rounded-full bg-transparent px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] disabled:opacity-60"
+          className="min-h-11 min-w-0 flex-1 rounded-full bg-transparent px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] disabled:opacity-60"
           onChange={event => { write(current.addresses, event.target.value); setNotice(''); }} onBlur={commit}
           onKeyDown={event => {
             if (event.nativeEvent.isComposing) return;
@@ -113,7 +113,7 @@ export function ExperienceComposeAddressControl({ label, value, pendingText, max
     <div className={`rounded-xl bg-[var(--surface-container-low)] p-2 focus-within:ring-2 focus-within:ring-[var(--primary)] ${error ? 'border-[var(--error)]' : 'border-[var(--outline-variant)]'}`}>
       {value.length > 0 && <ul className="mb-1 flex flex-wrap gap-1.5" aria-label={`${label} addresses`}>
         {value.map((address, index) => <li key={`${address.address.toLowerCase()}-${index}`} className="flex min-w-0 max-w-full items-center gap-1 rounded-full bg-[var(--surface-container-high)] pl-2.5 text-sm">
-          <span className="min-w-0 break-all py-1" title={composeAddressLabel(address)}>{composeAddressLabel(address)}</span>
+          <span className="min-w-0 truncate py-1" title={composeAddressLabel(address)}>{composeAddressLabel(address)}</span>
           <button type="button" className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] disabled:opacity-50"
             aria-label={`Remove ${address.address} from ${label}`} disabled={disabled} onClick={() => onChange(value.filter((_, item) => item !== index))}><X size={14} aria-hidden="true" /></button>
         </li>)}

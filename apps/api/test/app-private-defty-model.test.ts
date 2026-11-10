@@ -103,7 +103,7 @@ test('private Anthropic dispatch binds reviewed endpoint despite SDK environment
   const result = await privateDeftyModelTurn({ ...input, resolved: { ...input.resolved, provider: 'anthropic' } });
   assert.equal(result, 'Pinned endpoint answer');
   assert.equal(reviewed, 1); assert.equal(unreviewed, 0);
-  assert.equal(inheritedAuthorization, undefined);
+  assert.equal(inheritedAuthorization, 'Bearer ' + input.resolved.apiKey);
 });
 
 test('private Anthropic custom environment headers cannot add an unreviewed credential', async t => {

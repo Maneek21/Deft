@@ -4,17 +4,46 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { ExperienceSettings } from './experience-settings';
 import { ExperienceRequestStatus } from './experience-run-review';
 
-test('settings displays the host-selected account and retains source details without inventing preferences', () => {
+test('settings renders one account card with health, permissions, agent requests and a visible switcher', () => {
   const html = renderToStaticMarkup(<ExperienceSettings experienceLabel="Email" onBack={() => {}}
     accounts={[{ key: 'work', label: 'Work', statusLabel: 'Connected', detail: 'Reviewed work mailbox' }, { key: 'personal', label: 'Personal' }]}
-    selectedAccountKey="work" onSelectAccount={() => {}} access={{ state: 'active' }} />);
+    selectedAccountKey="work" onSelectAccount={() => {}} access={{ state: 'active' }}
+    accountHealth={[{ key: 'work', connection: 'connected', background: { state: 'healthy', since: '2026-11-04T00:00:00.000Z', reason: 'live' } }]}
+    connectAccount={<p>Connection controls</p>} accessReview={<p>Exact private records</p>}
+    agentPolicy={<p>Read messages policy</p>} />);
+  assert.match(html, /Everything is healthy · Private access and background sync are active\./);
   assert.match(html, /Current account/);
   assert.match(html, /aria-label="Use account Personal"/);
   assert.match(html, /<summary[^>]*>Source details<\/summary>/);
   assert.match(html, /Reviewed work mailbox/);
-  assert.match(html, /Actions you choose/);
+  assert.match(html, /Connection controls/);
+  assert.match(html, /Exact private records/);
+  assert.equal((html.match(/Agent requests/g) ?? []).length, 1);
+  assert.match(html, /Read messages policy/);
+  assert.match(html, /Open approvals/);
   assert.match(html, /Every permitted request still needs your approval/);
+  assert.doesNotMatch(html, /settings sections|<summary[^>]*>Accounts<\/summary>/);
+  assert.doesNotMatch(html, /hidden=""/);
   assert.doesNotMatch(html, /Preferences|default sending|last sync/i);
+});
+
+test('attention state replaces the healthy summary and offers a restore action', () => {
+  const html = renderToStaticMarkup(<ExperienceSettings experienceLabel="Email" onBack={() => {}}
+    accounts={[{ key: 'work', label: 'Work', statusLabel: 'Reconnect needed' }]} selectedAccountKey="work"
+    access={{ state: 'review_required' }} onReviewAccess={() => {}} />);
+  assert.match(html, /Attention needed · Review connection or permissions below\./);
+  assert.match(html, /Restore access/);
+  assert.match(html, /Access requires your review/);
+  assert.doesNotMatch(html, /Everything is healthy/);
+});
+
+test('long account labels wrap on a phone instead of forcing horizontal overflow', () => {
+  const label = 'a'.repeat(72) + '@example.test';
+  const html = renderToStaticMarkup(<ExperienceSettings experienceLabel="Email" onBack={() => {}}
+    accounts={[{ key: 'work', label }]} selectedAccountKey="work" access={{ state: 'active' }} />);
+  assert.match(html, new RegExp(`title="${label}"`));
+  assert.match(html, /break-all/);
+  assert.match(html, /sm:truncate/);
 });
 
 test('unsupported account selection has no fabricated action', () => {
@@ -24,12 +53,17 @@ test('unsupported account selection has no fabricated action', () => {
   assert.match(html, /Private access unavailable/);
 });
 
-test('direct Access entry opens its section while a missing Preferences section falls back to Accounts', () => {
+test('direct Access and Approvals entry keeps the whole card mounted and Preferences only when supplied', () => {
   const props = {experienceLabel:'Email',onBack:()=>{},accounts:[],selectedAccountKey:'primary',access:{state:'active' as const}};
-  const access = renderToStaticMarkup(<ExperienceSettings {...props} initialSection="access" accessReview={<p>Exact private records</p>} />);
-  assert.match(access, /<section aria-labelledby="[^"]+-access">/);assert.match(access, /Exact private records/);assert.match(access, /<section hidden="" aria-labelledby="[^"]+-accounts">/);
-  const fallback = renderToStaticMarkup(<ExperienceSettings {...props} initialSection="preferences" />);
-  assert.match(fallback, /<section aria-labelledby="[^"]+-accounts">/);assert.doesNotMatch(fallback, /aria-labelledby="[^"]+-preferences"/);
+  for (const initialSection of ['access', 'approvals'] as const) {
+    const html = renderToStaticMarkup(<ExperienceSettings {...props} initialSection={initialSection} accessReview={<p>Exact private records</p>} />);
+    assert.match(html, /Exact private records/);
+    assert.match(html, /Agent requests/);
+    assert.doesNotMatch(html, /aria-labelledby="[^"]+-preferences"/);
+  }
+  const preferences = renderToStaticMarkup(<ExperienceSettings {...props} initialSection="preferences" preferences={<p>Preference form</p>} />);
+  assert.match(preferences, /Preference form/);
+  assert.match(preferences, /Agent requests/);
 });
 
 test('request outcomes distinguish pending, provider wait, failure, and unknown without claiming delivery', () => {
