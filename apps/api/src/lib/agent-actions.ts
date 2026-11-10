@@ -3738,7 +3738,7 @@ async function executeActionDirectLocked(
     } else {
       const tierRank = { auto: 0, quick: 1, full: 2 } as const;
       effectiveMcpConnectionId = currentTool.connectionId;
-      if (isDestructiveAction(action, params, currentTool.annotations)) requiresFreshApproval = true;
+      if (isDestructiveAction(action, params, currentTool.annotations)) { requiresFreshApproval = true; effectiveApprovalTier = 'full'; }
       if (tierRank[currentTool.approvalTierMapped] > tierRank[approvalTier]) {
         effectiveApprovalTier = currentTool.approvalTierMapped;
         requiresFreshApproval = true;
@@ -3756,6 +3756,7 @@ async function executeActionDirectLocked(
       requiresFreshApproval = true;
     }
   }
+  if (requiresFreshApproval && isDestructiveAction(action, params)) effectiveApprovalTier = 'full';
 
   const actionValues = {
     org_id: orgId,

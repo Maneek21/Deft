@@ -24,6 +24,7 @@ import { createPlanRow } from '../src/lib/agent-plans.js';
 import { agentRoutes } from '../src/routes/agent.js';
 import { agentPlanRoutes } from '../src/routes/agent-plans.js';
 import { dashboardRoutes } from '../src/routes/dashboard.js';
+import { inboxRoutes } from '../src/routes/inbox.js';
 import { handlePlanExecutor } from '../src/workers/handlers/plan-executor.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 
@@ -58,6 +59,7 @@ app.use('*', async (c, next) => {
 app.route('/api/agent', agentRoutes);
 app.route('/api/agent-plans', agentPlanRoutes);
 app.route('/api/dashboard', dashboardRoutes);
+app.route('/api/inbox', inboxRoutes);
 
 function as(userId: string, path: string, init?: RequestInit) {
   return app.request(path, { ...init, headers: { ...(init?.headers ?? {}), 'x-test-user': userId } });
@@ -485,10 +487,28 @@ test('PLAN: a destructive leaf step of an approved plan waits for its own approv
   assert.equal(plan.rows[0]?.status, 'paused', JSON.stringify(plan.rows[0]));
   assert.equal(plan.rows[0]?.steps[0]?.status, 'waiting_approval');
   const actions = await client.query(
-    "SELECT approval_status, executed_at FROM agent_actions WHERE plan_id = $1 AND plan_step_id = 'leaf'",
+    "SELECT id, approval_status, approval_tier, executed_at FROM agent_actions WHERE plan_id = $1 AND plan_step_id = 'leaf'",
     [plan_id],
   );
   assert.equal(actions.rows.length, 1);
   assert.equal(actions.rows[0]?.approval_status, 'pending');
   assert.equal(actions.rows[0]?.executed_at, null);
+
+  // R2-3: a mandatory destructive approval is stored at tier full, so the
+  // requester can find it in /actions/pending and the inbox, and approving it
+  // runs the step once.
+  const actionId = actions.rows[0]!.id as string;
+  assert.equal(actions.rows[0]?.approval_tier, 'full');
+  const pending = await (await as(requesterId, '/api/agent/actions/pending')).json() as any;
+  assert.ok(pending.actions.some((a: any) => a.id === actionId), 'pending approvals list the destructive step');
+  const inbox = await (await as(requesterId, '/api/inbox?kind=pending_approval')).text();
+  assert.ok(inbox.includes(actionId), 'the inbox lists the destructive step');
+  const approve = await as(requesterId, `/api/agent/actions/${actionId}/approve`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+  assert.equal(approve.status, 200, await approve.text());
+  const again = await as(requesterId, `/api/agent/actions/${actionId}/approve`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+  assert.ok(again.status < 500);
+  const done = await client.query('SELECT status FROM tasks WHERE id = $1', [taskId]);
+  assert.equal(done.rows[0]?.status, 'done');
+  const activity = await client.query("SELECT count(*)::int AS n FROM task_activity WHERE task_id = $1 AND action = 'status_changed'", [taskId]);
+  assert.equal(activity.rows[0]?.n, 1, 'the step ran exactly once');
 });

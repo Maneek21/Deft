@@ -8,6 +8,9 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test, { after, before, type TestContext } from 'node:test';
 import pg from 'pg';
+import { Hono } from 'hono';
+import { agentRoutes } from '../src/routes/agent.js';
+import { inboxRoutes } from '../src/routes/inbox.js';
 import {
   mcpClientManager,
   type MCPConnectionConfig,
@@ -232,9 +235,33 @@ legacyTest('W2a1-b: a direct call of a connected tool that declares destructiveH
   assert.equal(outcome.success, false);
   assert.equal(outcome.requiresApproval, true);
   assert.equal(calls.length, 0, 'the provider must not be called before approval');
-  const row = await client.query('SELECT approval_status, executed_at FROM agent_actions WHERE id = $1', [outcome.actionId]);
+  const row = await client.query('SELECT approval_status, approval_tier, executed_at FROM agent_actions WHERE id = $1', [outcome.actionId]);
   assert.equal(row.rows[0].approval_status, 'pending');
   assert.equal(row.rows[0].executed_at, null);
+
+  // R2-3: stored and returned at tier full, visible to the requester, and
+  // approving it calls the provider exactly once.
+  assert.equal(row.rows[0].approval_tier, 'full');
+  assert.equal(outcome.approvalTier, 'full');
+  const app = new Hono();
+  app.use('*', async (c, next) => {
+    c.set('user', { id: USER_ID, org_id: ORG_ID, email: `${USER_ID}@test.local`, role: 'owner' } as any);
+    await next();
+  });
+  app.route('/api/agent', agentRoutes);
+  app.route('/api/inbox', inboxRoutes);
+  const pending = await (await app.request('/api/agent/actions/pending')).json() as any;
+  assert.ok(pending.actions.some((a: any) => a.id === outcome.actionId), 'pending approvals list the hinted call');
+  const inbox = await (await app.request('/api/inbox?kind=pending_approval')).text();
+  assert.ok(inbox.includes(outcome.actionId), 'the inbox lists the hinted call');
+  const approve = await app.request(`/api/agent/actions/${outcome.actionId}/approve`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+  });
+  assert.equal(approve.status, 200, await approve.text());
+  await app.request(`/api/agent/actions/${outcome.actionId}/approve`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+  });
+  assert.equal(calls.length, 1, 'approval runs the provider call once');
 });
 
 legacyTest('W2a1-b: a leaf plan step calling a destructiveHint tool waits for its own approval', async (t) => {
