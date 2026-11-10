@@ -1,5 +1,5 @@
 'use client';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { MoreHorizontal, Terminal, Webhook, Copy, FileText } from 'lucide-react';
 import { api } from '@/lib/api';
@@ -7,11 +7,16 @@ import { ReceiptViewer } from '@/components/receipt-viewer';
 import { ConfirmDangerous } from '@/components/confirm-dangerous';
 import { SessionTurnCard, type SessionTurn } from '@/components/session-turn-card';
 import {
+  AUTONOMOUS_EMPLOYEE_CONFIRM,
+  TRUST_LEGEND,
+  TRUST_LOAD_ERROR,
   TrustLevelControl,
   canEditTrustLevel,
-  isTrustLevel,
-  saveTrustLevel,
+  createGenerationGuard,
+  loadTrustLevel,
+  saveTrustLevelAndReconcile,
   type TrustLevel,
+  type TrustViewPatch,
 } from '@/components/trust-level-control';
 import { useAuth } from '@/lib/auth-context';
 
@@ -96,6 +101,16 @@ export default function AgentSettingsPage() {
   const [trustLoadError, setTrustLoadError] = useState<string | null>(null);
   const [trustSaveError, setTrustSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // Every trust GET/PATCH takes a generation; only the newest may update state,
+  // so an obsolete load (e.g. a Strict Mode effect replay) cannot overwrite a
+  // value confirmed by a later save or reload.
+  const trustGuard = useRef(createGenerationGuard());
+  const applyTrustPatch = useCallback((patch: TrustViewPatch) => {
+    if (patch.value !== undefined) setTrustLevel(patch.value);
+    if (patch.loadError !== undefined) setTrustLoadError(patch.loadError);
+    if (patch.saveError !== undefined) setTrustSaveError(patch.saveError);
+    if (patch.saving !== undefined) setSaving(patch.saving);
+  }, []);
 
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [employeesLoading, setEmployeesLoading] = useState(true);
@@ -188,34 +203,32 @@ export default function AgentSettingsPage() {
   useEffect(() => {
     void fetchActions();
     void fetchEmployees();
-    void (async () => {
-      try {
-        const res = await api.get('/api/agent/settings');
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        if (!isTrustLevel(data?.trust_level)) throw new Error('unexpected response');
-        setTrustLevel(data.trust_level);
-      } catch {
-        setTrustLoadError('Could not load the current trust level. Reload the page to try again.');
-      }
-    })();
   }, [fetchActions, fetchEmployees]);
+
+  useEffect(() => {
+    const guard = trustGuard.current;
+    const isCurrent = guard.begin();
+    void loadTrustLevel((path) => api.get(path)).then((result) => {
+      if (!isCurrent()) return;
+      if (result.ok) applyTrustPatch({ value: result.value, loadError: null });
+      else applyTrustPatch({ loadError: TRUST_LOAD_ERROR });
+    });
+    return () => guard.cancel();
+  }, [applyTrustPatch]);
 
   const changeTrustLevel = useCallback(
     async (next: TrustLevel) => {
       if (!canEditTrust || saving) return;
-      setSaving(true);
-      setTrustSaveError(null);
-      const result = await saveTrustLevel((path, body) => api.patch(path, body), next);
-      if (result.ok) {
-        setTrustLevel(result.value);
-        flash('success', 'Trust level saved');
-      } else {
-        setTrustSaveError(result.error);
-      }
-      setSaving(false);
+      const isCurrent = trustGuard.current.begin();
+      const outcome = await saveTrustLevelAndReconcile(
+        { patch: (path, body) => api.patch(path, body), get: (path) => api.get(path) },
+        next,
+        applyTrustPatch,
+        isCurrent,
+      );
+      if (outcome === 'saved') flash('success', 'Trust level saved');
     },
-    [canEditTrust, saving, flash],
+    [canEditTrust, saving, flash, applyTrustPatch],
   );
 
   const fetchTurns = useCallback(
@@ -334,7 +347,7 @@ export default function AgentSettingsPage() {
           Agent governance
         </h1>
         <p className="text-[12px] mt-1 max-w-[640px]" style={{ color: 'var(--muted)' }}>
-          Set global trust rails for Defty and shared agent employees, then review approvals, receipts, and agent health from one place.
+          Set Defty's workspace trust level, check each agent employee's own trust level, and review approvals, receipts, and agent health from one place.
         </p>
       </div>
 
@@ -352,13 +365,13 @@ export default function AgentSettingsPage() {
         <Link href="/inbox?tab=approvals" className="underline" style={{ color: 'var(--accent)' }}>Inbox &gt; Approvals</Link>.
       </div>
 
-      {/* Trust level — owner/admin only; value shown only once the server confirms it */}
+      {/* Workspace (Defty) trust level — owner/admin only; value shown only once the server confirms it */}
       <div className="mb-8">
         <h3
           className="text-[14px] font-semibold mb-1"
           style={{ color: 'var(--on-surface)', fontFamily: 'var(--font-heading)' }}
         >
-          Trust Level
+          {TRUST_LEGEND}
         </h3>
         <TrustLevelControl
           value={trustLevel}
@@ -673,13 +686,11 @@ export default function AgentSettingsPage() {
           title="Upgrade trust level to AUTONOMOUS?"
           body={
             <>
-              <p className="mb-2">
-                Autonomous trust lets this employee&apos;s writes run without approval,
-                including posting messages. Deletions and other destructive actions
-                still wait for approval. Every action will still produce a signed
-                receipt in the action log.
-              </p>
-              <p>This cannot be undone without another confirmation.</p>
+              {AUTONOMOUS_EMPLOYEE_CONFIRM.map((line) => (
+                <p key={line} className="mb-2 last:mb-0">
+                  {line}
+                </p>
+              ))}
             </>
           }
           confirmWord="AUTONOMOUS"
