@@ -52,8 +52,17 @@ export const TRUST_CHAT_NOTE =
 export const TRUST_EMPLOYEE_NOTE =
   'Agent employees are not affected. Each employee has its own trust level, chosen when it is connected and shown when you open it under Employees below.';
 
+// Destructive exclusion holds at every level: shouldAutoExecute returns false
+// for any call isDestructiveAction classes destructive, before the tier/trust
+// check (apps/api/src/lib/agent-approval.ts:234), with the mcp__ prefix
+// stripped before every name check (agent-approval.ts:198). Defty's paths that
+// consult the level pass the call's params: plan dependency steps
+// (agent-plans.ts:585) and the background retry run (agent-runner.ts:766,
+// destructive MCP calls forced to 'full' at :735/:746). Approved plan steps no
+// later step depends on run under the plan approval (TRUST_SCOPE_NOTE), so
+// they are not "on its own".
 export const TRUST_CONNECTED_NOTE =
-  'The examples above are built-in actions. Connected (MCP) tools use the approval setting on their own connection instead, and Autonomous does not let Defty run a call classed as destructive on its own.';
+  'The examples above are built-in actions. Connected (MCP) tools use the approval setting on their own connection instead, and no trust level lets Defty run a call classed as destructive on its own.';
 
 // Confirmation body for upgrading ONE agent employee to Autonomous. Kept to
 // category-level exceptions on purpose: employee writes pass through several
