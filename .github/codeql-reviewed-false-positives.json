@@ -4,7 +4,7 @@
   "review_original_sarif_sha256": "74fca9d731caa803a9b62d44951053656b5eb7a9202823acbd908dea9a09f6ea",
   "sources": {
     "examples/apps/email/fixtures/launch-stage0/verify.test.mjs": "134b1e413cdfade7efbc67e9c246f916c28a0e525ae8a199fba263ed0f8c7322",
-    "apps/api/src/lib/agent-actions.ts": "f17f15f830de55a4203cd54166018fb79152747aea6c776be0b122c0f09ab7a6",
+    "apps/api/src/lib/agent-actions.ts": "e1aff24d5721b668f9f34d114d454d07fe4845ae3332c672514a21c21c7adc64",
     "apps/api/src/lib/app-installed-tool-discovery.ts": "47e783f1423f04df862aaea444198cb512f5bccf8ba5e17ea2d99745ed906639",
     "apps/api/src/lib/app-integration-tool-runtime.ts": "7e36690c6527e1c190d2c9410986293422a55f9f750f0e89a4bf5a09ec03af80",
     "apps/api/src/lib/document-send.ts": "eed5824a4f4b82e08da04ef787e13454e462a6a00af02e0683a16798d8727668",
