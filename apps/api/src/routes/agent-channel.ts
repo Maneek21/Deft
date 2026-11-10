@@ -47,7 +47,7 @@ import {
 import { getIO } from '../socket.js';
 import { executeSendMessage, executeTaskUpdate, verifyParentMessageMatches } from '../lib/mcp-tools/writes.js';
 import { employeeCanAccessSpace } from '../lib/mcp-tools/employee-space-access.js';
-import { chargeEmployeeChatPost, checkEmployeeChatPost } from '../lib/employee-chat-post-guard.js';
+import { chargeEmployeeChatPostOncePerAttempt, checkEmployeeChatPost } from '../lib/employee-chat-post-guard.js';
 import { currentAgentChannelEventAuthoritySql } from '../lib/agent-channel-authority.js';
 import { buildAgentChannelLifecyclePatch } from '../lib/agent-channel-lifecycle.js';
 import { reconcileAgentChannelRuntimeAttempt } from '../lib/agent-channel-reconciliation.js';
@@ -1198,34 +1198,31 @@ agentChannelRoutes.post('/reply', async (c) => {
       .returning({ id: agentChannelDeliveryAttempts.id });
     return reconciled ? durable : { lostRace: true as const };
   };
+  // One clock reading per request: guard eligibility, the effective target
+  // and the reclaim itself must agree on whether a started lease expired.
+  const leaseExpiredBefore = new Date(Date.now() - AGENT_CHANNEL_DEFAULT_LEASE_MS);
   const attemptCanReconcile = (attempt: typeof agentChannelDeliveryAttempts.$inferSelect) => (
     attempt.status === 'failed'
-    || (
-      attempt.status === 'started'
-      && attempt.updated_at.getTime() <= Date.now() - AGENT_CHANNEL_DEFAULT_LEASE_MS
-    )
+    || (attempt.status === 'started' && attempt.updated_at.getTime() <= leaseExpiredBefore.getTime())
   );
   const reclaimAutonomousAttempt = async (
     attempt: typeof agentChannelDeliveryAttempts.$inferSelect,
   ) => {
     if (!autonomousReply || !attemptCanReconcile(attempt)) return undefined;
-    const storedRequest = attempt.request_json && typeof attempt.request_json === 'object'
-      ? attempt.request_json as Record<string, unknown>
-      : {};
     const reclaimableState = attempt.status === 'failed'
       ? eq(agentChannelDeliveryAttempts.status, 'failed')
       : and(
         eq(agentChannelDeliveryAttempts.status, 'started'),
-        sql`${agentChannelDeliveryAttempts.updated_at} <= ${new Date(Date.now() - AGENT_CHANNEL_DEFAULT_LEASE_MS)}`,
+        sql`${agentChannelDeliveryAttempts.updated_at} <= ${leaseExpiredBefore}`,
       );
+    // Merge in SQL (not from the snapshot) so a marker the previous
+    // generation wrote after this request read the row (the daily action
+    // charge) is carried over.
     const [reclaimed] = await db
       .update(agentChannelDeliveryAttempts)
       .set({
         status: 'started',
-        request_json: {
-          ...storedRequest,
-          attempt_generation: randomUUID(),
-        },
+        request_json: sql`(case when jsonb_typeof(${agentChannelDeliveryAttempts.request_json}) = 'object' then ${agentChannelDeliveryAttempts.request_json} else '{}'::jsonb end) || jsonb_build_object('attempt_generation', ${randomUUID()}::text)`,
         response_json: null,
         error: null,
         updated_at: new Date(),
@@ -1646,7 +1643,17 @@ agentChannelRoutes.post('/reply', async (c) => {
       await releaseClaim();
       return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'The reply attempt changed while its target was being checked; retry the reply');
     }
-    const charge = await chargeEmployeeChatPost(principal.org_id, principal.employee_id);
+    // At most one slot per attempt: a generation that reclaims an attempt an
+    // earlier generation already charged is not charged again.
+    const charge = await chargeEmployeeChatPostOncePerAttempt({
+      orgId: principal.org_id,
+      employeeId: principal.employee_id,
+      attemptId: claim.id,
+      attemptGeneration: attemptGenerationOf(claim),
+    });
+    if (!charge.ok && charge.code === 'CLAIM_LOST') {
+      return errorResponse(c, 409, 'REPLY_ATTEMPT_RECLAIMED', 'The reply attempt was reclaimed before this handler could charge it');
+    }
     if (!charge.ok) {
       await releaseClaim();
       return errorResponse(c, charge.status, charge.code, charge.message);

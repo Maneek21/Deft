@@ -21,10 +21,14 @@
  * health and approval behaviour are unchanged by this guard (only the
  * storm detector applies, as before).
  */
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { agentEmployees } from '@deft/db/schema';
 import { db } from './db.js';
-import { isCanonicalDeftyEmployee, DEFTY_SYSTEM_RUNTIME_KIND } from './defty-identity.js';
+import {
+  canonicalDeftyEmployeeCondition,
+  isCanonicalDeftyEmployee,
+  DEFTY_SYSTEM_RUNTIME_KIND,
+} from './defty-identity.js';
 import { checkReplyStorm, STORM_THRESHOLD } from './storm-detector.js';
 import { consumeAgentDailyActionBudget } from './agent-tool-policy.js';
 
@@ -150,4 +154,60 @@ export async function chargeEmployeeChatPost(
   return budget.error === EMPLOYEE_INACTIVE_MESSAGE
     ? { ok: false, code: 'EMPLOYEE_INACTIVE', message: budget.error, status: 403 }
     : { ok: false, code: 'DAILY_ACTION_LIMIT', message: budget.error, status: 409 };
+}
+
+const DAILY_ACTION_LIMIT_MESSAGE =
+  'Daily action limit reached. Ask an admin to increase the limit or wait for the daily reset.';
+
+/**
+ * Charge at most ONE daily action slot per Agent Channel delivery attempt,
+ * however many generations reclaim it. In one statement: mark the attempt
+ * (`request_json.daily_action_charged`, only while this generation still owns
+ * the started claim and it is not yet marked) and increment the counter only
+ * if the mark was written. The counter predicate mirrors
+ * `consumeAgentDailyActionBudget` (active, not deleted unless canonical
+ * Defty, under the cap). If the mark is written but the cap refuses, the
+ * caller must release its claim, which drops the mark with it.
+ *
+ * Returns `claim_lost` when this generation no longer owns the claim.
+ */
+export async function chargeEmployeeChatPostOncePerAttempt(opts: {
+  orgId: string;
+  employeeId: string;
+  attemptId: string;
+  attemptGeneration: string;
+}): Promise<{ ok: true; charged: boolean } | EmployeeChatPostRefusal | { ok: false; code: 'CLAIM_LOST' }> {
+  const ownsClaim = sql`id = ${opts.attemptId} and org_id = ${opts.orgId}
+    and agent_employee_id = ${opts.employeeId} and status = 'started'
+    and coalesce(request_json->>'attempt_generation', '') = ${opts.attemptGeneration}`;
+  const result = await db.execute(sql`with mark as (
+      update agent_channel_delivery_attempts
+         set request_json = request_json || '{"daily_action_charged": true}'::jsonb
+       where ${ownsClaim} and coalesce(request_json->>'daily_action_charged', '') <> 'true'
+      returning id
+    ), charge as (
+      update agent_employees
+         set daily_action_count = daily_action_count + 1
+       where id = ${opts.employeeId} and org_id = ${opts.orgId} and is_active = true
+         and (is_deleted = false or ${canonicalDeftyEmployeeCondition()})
+         and daily_action_count < max_daily_actions
+         and exists (select 1 from mark)
+      returning id
+    )
+    select (select count(*) from mark)::int as marked, (select count(*) from charge)::int as charged`);
+  const rows = (Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? []) as Array<{ marked: number; charged: number }>;
+  const { marked = 0, charged = 0 } = rows[0] ?? {};
+  if (marked > 0 && charged > 0) return { ok: true, charged: true };
+  if (marked > 0) {
+    const poster = await loadEmployeeChatPoster(opts.orgId, opts.employeeId);
+    return !poster || (!poster.isDefty && !poster.active)
+      ? { ok: false, code: 'EMPLOYEE_INACTIVE', message: EMPLOYEE_INACTIVE_MESSAGE, status: 403 }
+      : { ok: false, code: 'DAILY_ACTION_LIMIT', message: DAILY_ACTION_LIMIT_MESSAGE, status: 409 };
+  }
+  // Not marked now: either an earlier generation already charged this
+  // attempt (no second charge) or this generation lost the claim.
+  const owned = await db.execute(sql`select coalesce(request_json->>'daily_action_charged', '') = 'true' as charged
+    from agent_channel_delivery_attempts where ${ownsClaim} limit 1`);
+  const ownedRows = (Array.isArray(owned) ? owned : (owned as { rows?: unknown[] }).rows ?? []) as Array<{ charged: boolean }>;
+  return ownedRows[0]?.charged ? { ok: true, charged: false } : { ok: false, code: 'CLAIM_LOST' };
 }

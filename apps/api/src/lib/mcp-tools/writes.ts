@@ -1130,7 +1130,9 @@ export async function sendMessage(
       .from(messages)
       .where(and(eq(messages.id, target.thread_id), eq(messages.org_id, ctx.org_id)))
       .limit(1);
-    if (!parent) {
+    // A thread in a space this employee cannot access is reported exactly
+    // like a missing one (no space id).
+    if (!parent || !(await employeeCanAccessSpace(ctx.employee_id, ctx.org_id, parent.space_id))) {
       return errorResult('send_message: thread_id not found');
     }
     spaceId = parent.space_id;

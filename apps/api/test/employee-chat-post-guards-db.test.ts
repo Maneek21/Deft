@@ -12,7 +12,7 @@
  *
  * Test names carry the brief's item ids (S1-a … S1-c).
  */
-import { test, before, after } from 'node:test';
+import { test, before, after, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
@@ -833,4 +833,124 @@ test('S1-R2-d: a foreign-space, foreign-org or nonexistent reply thread is a str
     assert.equal((await attemptsFor(event.id)).length, 0, `${label}: no attempt claimed`);
     assert.equal((await messagesWithContent(content)).length, 0);
   }
+});
+
+// ─── Round 3 (second review of 1ce237a2) ───────────────────────────────────
+//
+// S1-R3-1: reclaimability is decided once per request (one clock reading), so
+//          a lease that expires mid-request cannot skip the guard and then
+//          reclaim anyway.
+// S1-R3-2: one attempt is charged at most one daily action slot, even when a
+//          later generation reclaims it.
+// S1-R3-4: an MCP send_message thread target the employee cannot access is
+//          indistinguishable from a nonexistent one.
+
+const LEASE_MS = 120_000;
+
+async function insertStartedAutonomousAttempt(trust: Trust, eventId: string, key: string, content: string, threadId: string | null, opts: { updatedAt: Date; generation: string; charged?: boolean }) {
+  const effectId = `agent-channel-autonomous-reply:${createHash('sha256')
+    .update([orgId, employees[trust].id, eventId, key].join('\0'))
+    .digest('hex')}`;
+  const [row] = await db.insert(agentChannelDeliveryAttempts).values({
+    org_id: orgId,
+    agent_employee_id: employees[trust].id,
+    event_id: eventId,
+    direction: 'inbound_reply',
+    idempotency_key: key,
+    status: 'started',
+    request_json: {
+      event_id: eventId,
+      content,
+      thread_id: threadId,
+      outcome: null,
+      adapter_mode: 'autonomous_platform',
+      reply_target: 'chat_message',
+      summary: null,
+      runtime_session_key: null,
+      runtime_request_key: null,
+      runtime_response_id: null,
+      durable_effect_id: effectId,
+      attempt_generation: opts.generation,
+      ...(opts.charged ? { daily_action_charged: true } : {}),
+    },
+    updated_at: opts.updatedAt,
+  }).returning();
+  return row!;
+}
+
+test('S1-R3-1: a lease that expires mid-request cannot skip the storm guard and still reclaim', async () => {
+  const { event, threadId } = await acceptedAutonomousEvent('standard');
+  const key = `s1-r3-1-${randomUUID()}`;
+  const content = `s1 r3-1 lease race ${randomUUID()}`;
+  const base = Date.now();
+  // Not expired at `base`; expired once the clock jumps by two leases.
+  await insertStartedAutonomousAttempt('standard', event.id, key, content, threadId, {
+    updatedAt: new Date(base - LEASE_MS + 30_000),
+    generation: `gen-${randomUUID()}`,
+  });
+  await seedStorm('standard', publicSpaceId, threadId);
+  const before = await dailyCount('standard');
+  // The clock reads `base` until the reclaimability predicate has read it
+  // three times (pre-reconcile check, guard eligibility, effective target),
+  // then jumps past the lease. Code that re-reads the clock for each decision
+  // skips the guard but still reclaims; code that decides once does not.
+  let predicateReads = 0;
+  let jumped = false;
+  const clock = mock.method(Date, 'now', () => {
+    if (!jumped && /attemptCanReconcile/.test(new Error().stack ?? '')) {
+      predicateReads += 1;
+      if (predicateReads > 3) jumped = true;
+    }
+    return jumped ? base + 2 * LEASE_MS : base;
+  });
+  let res;
+  try {
+    res = await autonomousReply('standard', event.id, key, content);
+  } finally {
+    clock.mock.restore();
+  }
+  assert.equal((await messagesWithContent(content)).length, 0, `nothing posted into the stormed thread: ${JSON.stringify(res)}`);
+  assert.equal(res.status, 409, JSON.stringify(res.body));
+  assert.equal(await dailyCount('standard'), before, 'no slot consumed');
+});
+
+test('S1-R3-2: reclaiming an attempt whose earlier generation was charged does not charge again', async () => {
+  const { event, threadId } = await acceptedAutonomousEvent('standard');
+  const key = `s1-r3-2-${randomUUID()}`;
+  const content = `s1 r3-2 charged once ${randomUUID()}`;
+  await insertStartedAutonomousAttempt('standard', event.id, key, content, threadId, {
+    updatedAt: new Date(Date.now() - 2 * LEASE_MS),
+    generation: `gen-n-${randomUUID()}`,
+    charged: true,
+  });
+  const before = await dailyCount('standard');
+  const res = await autonomousReply('standard', event.id, key, content);
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal((await messagesWithContent(content)).length, 1);
+  assert.equal(await dailyCount('standard'), before, 'generation N+1 is not charged a second slot');
+});
+
+test('S1-R3-2: a charged reply attempt records that its slot was charged', async () => {
+  const { event } = await claimedMessageEvent('conservative');
+  const key = `s1-r3-2-mark-${randomUUID()}`;
+  const content = `s1 r3-2 marker ${randomUUID()}`;
+  const before = await dailyCount('conservative');
+  const res = await channelReply('conservative', event, content, { idempotency_key: key });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(await dailyCount('conservative'), before + 1);
+  const [attempt] = await attemptsFor(event.id);
+  assert.equal((attempt!.request_json as Record<string, unknown>).daily_action_charged, true);
+});
+
+test('S1-R3-4: send_message to an inaccessible thread is indistinguishable from a nonexistent thread', async () => {
+  const [hiddenRoot] = await db.insert(messages).values({
+    org_id: orgId, space_id: hiddenSpaceId, user_id: ownerId, content: `s1 r3-4 hidden root ${randomUUID()}`,
+  }).returning();
+  const content = `s1 r3-4 ${randomUUID()}`;
+  const hidden = await mcpCall('standard', 'send_message', { target: { thread_id: hiddenRoot!.id }, content });
+  const missing = await mcpCall('standard', 'send_message', { target: { thread_id: `s1-r3-4-missing-${randomUUID()}` }, content });
+  assert.equal(hidden.body.isError, true, hidden.text);
+  assert.equal(hidden.text, missing.text, 'same error for inaccessible and nonexistent threads');
+  assert.doesNotMatch(hidden.text, new RegExp(hiddenSpaceId));
+  assert.equal((await messagesWithContent(content)).length, 0);
 });
