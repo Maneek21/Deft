@@ -716,28 +716,45 @@ export async function runAgentQuery(params: {
     // Execute tool calls
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
     for (const tool of toolUseBlocks) {
-      if (requestedSourceGrounding && (allActionTools.has(tool.name) || incidentalWrites.has(tool.name))) {
+      // C04: MCP classification was taken at turn start. Re-resolve the live
+      // policy (including parameter-dependent destructive modes) BEFORE the
+      // read-only / source-grounding vetoes, so a tool re-tiered to a
+      // write/approval tier mid-turn is vetoed exactly like a tool that was an
+      // action at turn start, and otherwise proposed for approval. A tool that
+      // is no longer registered fails closed in executeToolCall.
+      let callIsAction = allActionTools.has(tool.name);
+      let callApprovalTier = actionApprovalTiers.get(tool.name);
+      if (agentEmployeeId && tool.name.startsWith('mcp__') && !callIsAction) {
+        const liveTool = (await getMCPToolsForAgent(orgId, agentEmployeeId).catch(() => []))
+          .find((candidate) => candidate.name === tool.name);
+        const destructiveCall = liveTool ? isDestructiveAction(liveTool.name, tool.input) : false;
+        if (liveTool && (liveTool.isWrite || liveTool.approvalTierMapped !== 'auto' || destructiveCall)) {
+          callIsAction = true;
+          // A destructive call never inherits an auto tier: route it to full
+          // review so no trust level auto-executes it.
+          callApprovalTier = destructiveCall ? 'full' : liveTool.approvalTierMapped;
+          mcpConnectionIds.set(tool.name, liveTool.connectionId);
+          if (!destructiveCall) {
+            // A tool-level reclassification holds for the rest of the turn; a
+            // parameter-dependent one applies only to this call.
+            allActionTools.add(tool.name);
+            actionApprovalTiers.set(tool.name, liveTool.approvalTierMapped);
+          }
+        }
+      }
+      if (callIsAction && tool.name.startsWith('mcp__') && isDestructiveAction(tool.name, tool.input)) {
+        callApprovalTier = 'full';
+      }
+      if (requestedSourceGrounding && (callIsAction || incidentalWrites.has(tool.name))) {
         toolResults.push({ type: 'tool_result', tool_use_id: tool.id, is_error: true, content: JSON.stringify({ code: 'READ_ONLY_REQUEST', error: 'Source verification permits reads only.' }) });
         continue;
       }
-      if ((readOnlyRequest || requestedSourceGrounding) && !tools.some((allowed) => allowed.name === tool.name)) {
+      if ((readOnlyRequest || requestedSourceGrounding)
+        && (callIsAction || incidentalWrites.has(tool.name) || !tools.some((allowed) => allowed.name === tool.name))) {
         toolResults.push({ type: 'tool_result', tool_use_id: tool.id, is_error: true, content: JSON.stringify({ code: 'READ_ONLY_REQUEST', error: 'This tool is not available for this read-only request.' }) });
         continue;
       }
-      // C04: MCP classification was taken at turn start. Re-resolve the live
-      // policy before treating an MCP tool as a read, so a tool re-tiered to
-      // a write/approval tier mid-turn is proposed for approval instead. A tool
-      // that is no longer registered fails closed in executeToolCall.
-      if (agentEmployeeId && tool.name.startsWith('mcp__') && !allActionTools.has(tool.name)) {
-        const liveTool = (await getMCPToolsForAgent(orgId, agentEmployeeId).catch(() => []))
-          .find((candidate) => candidate.name === tool.name);
-        if (liveTool && (liveTool.isWrite || liveTool.approvalTierMapped !== 'auto' || isDestructiveAction(liveTool.name))) {
-          allActionTools.add(tool.name);
-          actionApprovalTiers.set(tool.name, liveTool.approvalTierMapped);
-          mcpConnectionIds.set(tool.name, liveTool.connectionId);
-        }
-      }
-      const isAction = allActionTools.has(tool.name);
+      const isAction = callIsAction;
 
       if (isAction) {
         const referenceError = await validateNativeAgentMentionWrite(tool.name, tool.input as Record<string, unknown>, orgId, userId, params.agentEmployeeId);
@@ -745,7 +762,7 @@ export async function runAgentQuery(params: {
           toolResults.push({ type: 'tool_result', tool_use_id: tool.id, is_error: true, content: JSON.stringify({ error: referenceError }) });
           continue;
         }
-        const approvalTier = getApprovalTier(tool.name, actionApprovalTiers.get(tool.name));
+        const approvalTier = getApprovalTier(tool.name, callApprovalTier);
         if (mode === 'background' && shouldAutoExecute(tool.name, trustLevel, tool.input, approvalTier)) {
           // Background mode: auto-execute if trust level permits
           // Thread the triggering message id into write actions that understand

@@ -9,9 +9,9 @@
  * Tasks 1.3–1.5 will swap the existing call sites over to this gateway.
  */
 
-import { eq, and, or, sql, inArray } from 'drizzle-orm';
+import { eq, and, or, sql, inArray, ilike } from 'drizzle-orm';
 import { db } from './db.js';
-import { wikiPages, agentMemory, notes, tasks, spaceMembers, projects, agentEmployees, orgMembers } from '@deft/db/schema';
+import { wikiPages, agentMemory, notes, tasks, spaceMembers, spaces, projects, agentEmployees, orgMembers } from '@deft/db/schema';
 import { embedQuiet, EMBED_DIMS } from './embed.js';
 import { unrestrictedTaskCondition, visibleTaskCondition } from './task-visibility.js';
 import { visibleWikiPageCondition, wikiPageRelevantToSpaceCondition } from './wiki-visibility.js';
@@ -1087,6 +1087,44 @@ async function fetchModuleContext(
 export function retrievedWikiAudienceCondition(orgId: string, userId?: string,
   conversationId?: string, agentEmployeeId?: string) {
   return emailKnowledgeAudienceCondition(orgId, userId, conversationId, agentEmployeeId);
+}
+
+export type ReadableRoomResolution =
+  | { room: { id: string; name: string }; error?: never; code?: never }
+  | { room?: never; error: string; code: 'SPACE_NOT_FOUND' | 'SPACE_AMBIGUOUS' };
+
+/** Resolve a room name the model supplied to exactly one room the asker can
+ * read. The name is matched literally and case-insensitively (LIKE wildcards
+ * are escaped), archived rooms are excluded, and more than one match is an
+ * ambiguity error rather than an arbitrary pick. `includePublic` admits public
+ * rooms the asker has not joined; otherwise membership is required. Every
+ * agent read that targets a room by name uses this one resolver. */
+export async function resolveReadableRoom(input: {
+  orgId: string;
+  userId: string;
+  name: unknown;
+  includePublic: boolean;
+}): Promise<ReadableRoomResolution> {
+  const name = typeof input.name === 'string' ? input.name.trim().replace(/^#/, '').slice(0, 200) : '';
+  if (!name) return { error: 'Readable room not found.', code: 'SPACE_NOT_FOUND' };
+  const literal = name.replace(/[\\%_]/g, '\\$&');
+  const rooms = await db
+    .select({ id: spaces.id, name: spaces.name })
+    .from(spaces)
+    .leftJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, input.userId)))
+    .where(and(
+      eq(spaces.org_id, input.orgId),
+      eq(spaces.is_archived, false),
+      input.includePublic
+        ? or(eq(spaces.type, 'public'), sql`${spaceMembers.id} IS NOT NULL`)
+        : sql`${spaceMembers.id} IS NOT NULL`,
+      ilike(spaces.name, literal),
+    ))
+    .limit(2);
+  if (rooms.length === 1) return { room: rooms[0]! };
+  return rooms.length
+    ? { error: 'Room name is ambiguous; choose a room from list_spaces.', code: 'SPACE_AMBIGUOUS' }
+    : { error: 'Readable room not found.', code: 'SPACE_NOT_FOUND' };
 }
 
 export async function retrieveContextWithDiagnostics(

@@ -9,7 +9,8 @@ import { randomUUID } from 'node:crypto';
 import { after, before, describe, test } from 'node:test';
 import { eq, inArray } from 'drizzle-orm';
 import {
-  agentMemory, canvases, mcpConnections, mcpToolOverrides, notes, orgMembers, orgs, spaceMembers, spaces, users, wikiPages,
+  agentActions, agentEmployees, agentMemory, canvases, mcpConnections, mcpToolOverrides, notes, orgMembers, orgs, spaceMembers,
+  spaces, users, wikiPages,
 } from '@deft/db/schema';
 import { db, closeDb } from '../src/lib/db.js';
 import { env } from '../src/lib/env.js';
@@ -18,6 +19,7 @@ import { retrieveContext } from '../src/lib/retrieve-context.js';
 import { runAgentQuery } from '../src/lib/agent-runner.js';
 import { AGENT_TOOLS, ACTION_TOOLS } from '../src/lib/agent-tools.js';
 import { capabilityService } from '../src/lib/capability-service.js';
+import { executeActionDirect } from '../src/lib/agent-actions.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 
 const canRun = Boolean(safeTestDatabaseUrl());
@@ -34,6 +36,12 @@ const spaceNoteCanary = `zqspacenotecanary${run}`;
 const privateNoteId = randomUUID(), spaceNoteId = randomUUID();
 const mcpConnectionId = randomUUID();
 const mcpSlug = `w1b-mcp-${run}`;
+const agentUser = randomUUID(), employeeId = randomUUID();
+const dupSpaceA = randomUUID(), dupSpaceB = randomUUID(), wildSpace = randomUUID();
+const dupName = `w1b-dup-${run}`;
+const wildName = `w1bxops${run}`;
+const dupCanary = `zqdupcanary${run}`;
+const wildCanary = `zqwildcanary${run}`;
 
 function text(value: unknown): string {
   return JSON.stringify(value) ?? '';
@@ -84,17 +92,20 @@ describe('W1-b Defty read authorization', { skip: !canRun }, () => {
   });
 
   after(async () => {
+    await db.delete(agentActions).where(inArray(agentActions.org_id, [orgA, orgB]));
+    await db.delete(agentEmployees).where(eq(agentEmployees.id, employeeId));
     await db.delete(agentMemory).where(inArray(agentMemory.org_id, [orgA, orgB]));
     await db.delete(notes).where(inArray(notes.org_id, [orgA, orgB]));
     await db.delete(canvases).where(inArray(canvases.org_id, [orgA, orgB]));
     await db.delete(wikiPages).where(inArray(wikiPages.org_id, [orgA, orgB]));
     await db.delete(mcpToolOverrides).where(eq(mcpToolOverrides.mcp_connection_id, mcpConnectionId));
     await db.delete(mcpConnections).where(eq(mcpConnections.id, mcpConnectionId));
-    await db.delete(spaceMembers).where(inArray(spaceMembers.space_id, [privateSpace, publicSpace, dmSpace, orgBSpace]));
+    await db.delete(spaceMembers).where(inArray(spaceMembers.space_id,
+      [privateSpace, publicSpace, dmSpace, orgBSpace, dupSpaceA, dupSpaceB, wildSpace]));
     await db.delete(spaces).where(inArray(spaces.org_id, [orgA, orgB]));
     await db.delete(orgMembers).where(inArray(orgMembers.org_id, [orgA, orgB]));
     await db.delete(orgs).where(inArray(orgs.id, [orgA, orgB]));
-    await db.delete(users).where(inArray(users.id, [alice, bob]));
+    await db.delete(users).where(inArray(users.id, [alice, bob, agentUser]));
     await closeDb();
   });
 
@@ -279,5 +290,210 @@ describe('W1-b Defty read authorization', { skip: !canRun }, () => {
     const overridden = await executeToolCall(toolName, {}, orgA, alice);
     assert.equal(invoke.mock.callCount(), 1);
     assert.equal((overridden.result as any).code, 'MCP_TOOL_REQUIRES_APPROVAL');
+  });
+  const mcpToolName = `mcp__${mcpSlug}__read_status`;
+
+  async function ensureMcpConnection(): Promise<void> {
+    await db.insert(mcpConnections).values({ id: mcpConnectionId, org_id: orgA, name: 'W1b MCP', slug: mcpSlug,
+      server_url: 'https://w1b.example.test/mcp', transport: 'streamable-http', auth_type: 'none', is_active: true,
+      default_trust_tier: 'auto', created_by: alice }).onConflictDoNothing();
+    await db.delete(mcpToolOverrides).where(eq(mcpToolOverrides.mcp_connection_id, mcpConnectionId));
+  }
+
+  async function ensureEmployee(): Promise<void> {
+    await db.insert(users).values({ id: agentUser, name: 'W1b Agent', email: `agent-${run}@w1b.test`, kind: 'agent' } as any)
+      .onConflictDoNothing();
+    await db.insert(agentEmployees).values({ id: employeeId, org_id: orgA, user_id: agentUser, name: 'W1b Employee',
+      slug: `w1b-employee-${run}`, role: 'custom', system_prompt: 'test', mcp_connection_ids: [mcpConnectionId],
+      disabled_tools: [], trust_level: 'autonomous', max_daily_actions: 50, daily_action_count: 0, created_by: alice,
+      is_active: true, is_deleted: false } as any).onConflictDoNothing();
+  }
+
+  function liveMcpTool(tier: 'auto-execute' | 'full-review', isWrite = false) {
+    return {
+      name: mcpToolName, originalName: 'read_status', description: 'Read status',
+      inputSchema: { type: 'object', properties: { mode: { type: 'string' } } }, connectionId: mcpConnectionId,
+      connectionSlug: mcpSlug, isWrite, approvalTier: tier, annotations: { readOnlyHint: !isWrite },
+      rawTool: { name: 'read_status', description: 'Read status', inputSchema: { type: 'object', properties: {} } },
+    };
+  }
+
+  function mockInvoke(t: any) {
+    return t.mock.method(capabilityService, 'invoke', async () => ({
+      legacy_output: { ok: true }, provider: { resolved_provider: null }, provider_display_name: undefined,
+    }) as any);
+  }
+
+  test('R1: an MCP read fails closed when live discovery fails or no longer lists the tool', async (t) => {
+    await ensureMcpConnection();
+    let discovery: 'throw' | 'absent' | 'read' = 'throw';
+    t.mock.method(capabilityService, 'discover', async () => {
+      if (discovery === 'throw') throw new Error('tools/list unavailable');
+      return { tools: discovery === 'absent' ? [] : [liveMcpTool('auto-execute')] } as any;
+    });
+    const invoke = mockInvoke(t);
+
+    const failed = await executeToolCall(mcpToolName, {}, orgA, alice);
+    assert.equal((failed.result as any).code, 'MCP_TOOL_UNAVAILABLE');
+    assert.equal(invoke.mock.callCount(), 0, 'discovery failure must not reach tools/call');
+
+    discovery = 'absent';
+    const absent = await executeToolCall(mcpToolName, {}, orgA, alice);
+    assert.equal((absent.result as any).code, 'MCP_TOOL_UNAVAILABLE');
+    assert.equal(invoke.mock.callCount(), 0, 'a tool missing from discovery must not be invoked');
+
+    // A tool on a connection that does not exist never classifies, and keeps
+    // its resolution denial.
+    discovery = 'read';
+    const missing = await executeToolCall(`mcp__w1b-missing-${run}__read_status`, {}, orgA, alice);
+    assert.match(String((missing.result as any).error), /is unavailable/);
+    assert.equal(invoke.mock.callCount(), 0);
+
+    // Positive control: a live auto read is invoked once.
+    await executeToolCall(mcpToolName, {}, orgA, alice);
+    assert.equal(invoke.mock.callCount(), 1);
+  });
+
+  test('R2: an auto-read MCP tool called with a destructive mode is not invoked as a read', async (t) => {
+    await ensureMcpConnection();
+    t.mock.method(capabilityService, 'discover', async () => ({ tools: [liveMcpTool('auto-execute')] }) as any);
+    const invoke = mockInvoke(t);
+    for (const mode of ['delete', 'pause', 'revoke', 'DELETE']) {
+      const blocked = await executeToolCall(mcpToolName, { mode }, orgA, alice);
+      assert.equal((blocked.result as any).code, 'MCP_TOOL_REQUIRES_APPROVAL', `mode=${mode}`);
+    }
+    assert.equal(invoke.mock.callCount(), 0);
+    await executeToolCall(mcpToolName, { mode: 'summary' }, orgA, alice);
+    assert.equal(invoke.mock.callCount(), 1);
+  });
+
+  async function runWithToolCall(t: any, options: {
+    content: string; input: Record<string, unknown>; mode?: 'chat_mention' | 'background';
+  }) {
+    const providerKeys = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'OLLAMA_URL'] as const;
+    const savedEnv = Object.fromEntries(providerKeys.map(key => [key, env[key]]));
+    const savedProcess = Object.fromEntries(providerKeys.map(key => [key, process.env[key]]));
+    const configured = { ANTHROPIC_API_KEY: '', OPENAI_API_KEY: 'test', OPENROUTER_API_KEY: '', OLLAMA_URL: '' };
+    Object.assign(env, configured); Object.assign(process.env, configured);
+    const bodies: string[] = [];
+    let turns = 0;
+    const fetchMock = t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
+      if (String(url).includes('/embeddings')) return Response.json({ data: [{ embedding: Array(1536).fill(0) }] });
+      bodies.push(typeof init?.body === 'string' ? init.body : '');
+      turns += 1;
+      return Response.json(turns === 1
+        ? { status: 'completed', output: [{ type: 'function_call', name: mcpToolName, call_id: `call-${run}`,
+            arguments: JSON.stringify(options.input) }], usage: { input_tokens: 1, output_tokens: 1 } }
+        : { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: 'ok' }] }],
+            usage: { input_tokens: 1, output_tokens: 1 } });
+    });
+    try {
+      const result = await runAgentQuery({ content: options.content, orgId: orgA, userId: alice, orgName: 'W1b Org A',
+        conversationId: publicSpace, spaceContext: { type: 'public', name: 'w1b-public' }, maxIterations: 2,
+        skipVerification: true, agentEmployeeId: employeeId, mode: options.mode ?? 'chat_mention',
+        ...(options.mode === 'background' ? { trustLevelOverride: 'autonomous' as const } : {}) });
+      return { result, bodies };
+    } finally {
+      fetchMock.mock.restore();
+      Object.assign(env, savedEnv);
+      for (const key of providerKeys) {
+        if (savedProcess[key] === undefined) delete process.env[key];
+        else process.env[key] = savedProcess[key];
+      }
+    }
+  }
+
+  test('R3: a tool reclassified mid-turn is vetoed by a read-only request, not proposed', async (t) => {
+    await ensureMcpConnection();
+    await ensureEmployee();
+    // Turn start sees an auto read; every later live lookup sees full-review.
+    let discoveries = 0;
+    t.mock.method(capabilityService, 'discover', async () => {
+      discoveries += 1;
+      return { tools: [liveMcpTool(discoveries === 1 ? 'auto-execute' : 'full-review')] } as any;
+    });
+    const invoke = mockInvoke(t);
+    for (const mode of ['chat_mention', 'background'] as const) {
+      discoveries = 0;
+      const { result, bodies } = await runWithToolCall(t, {
+        content: 'Read-only: what does read_status report? Do not propose any changes.', input: {}, mode,
+      });
+      assert.ok(bodies.length >= 1, 'provider was called');
+      assert.ok(discoveries >= 2, `the live classification was re-read (${mode})`);
+      assert.deepEqual(result.pendingActions, [], `no action is proposed for a read-only request (${mode})`);
+      assert.ok(bodies.slice(1).join('\n').includes('READ_ONLY_REQUEST'), `the call is vetoed as read-only (${mode})`);
+    }
+    assert.equal(invoke.mock.callCount(), 0);
+    const queued = await db.select({ id: agentActions.id }).from(agentActions)
+      .where(eq(agentActions.agent_employee_id, employeeId));
+    assert.deepEqual(queued, [], 'nothing was queued or executed');
+  });
+
+  test('R2: the runner routes a destructive-mode call to an auto-read MCP tool to full review', async (t) => {
+    await ensureMcpConnection();
+    await ensureEmployee();
+    t.mock.method(capabilityService, 'discover', async () => ({ tools: [liveMcpTool('auto-execute')] }) as any);
+    const invoke = mockInvoke(t);
+    const { result } = await runWithToolCall(t, {
+      content: `Use read_status for run ${run}.`, input: { mode: 'delete' }, mode: 'background',
+    });
+    assert.equal(invoke.mock.callCount(), 0, 'a destructive call is never executed as a read');
+    assert.equal(result.pendingActions.length, 1);
+    assert.equal(result.pendingActions[0]!.action, mcpToolName);
+    assert.equal(result.pendingActions[0]!.approval_tier, 'full');
+    await db.delete(agentActions).where(eq(agentActions.agent_employee_id, employeeId));
+  });
+
+  test('R4: search_decisions refuses an ambiguous room name instead of picking one', async () => {
+    await db.insert(spaces).values([
+      { id: dupSpaceA, org_id: orgA, name: dupName, type: 'public', created_by: alice },
+      { id: dupSpaceB, org_id: orgA, name: dupName.toUpperCase(), type: 'public', created_by: alice },
+      { id: wildSpace, org_id: orgA, name: wildName, type: 'private', created_by: alice },
+    ]).onConflictDoNothing();
+    await db.insert(spaceMembers).values([
+      { space_id: dupSpaceA, user_id: alice }, { space_id: dupSpaceB, user_id: alice }, { space_id: wildSpace, user_id: alice },
+    ]).onConflictDoNothing();
+    await db.insert(wikiPages).values({ org_id: orgA, scope: 'space', space_id: dupSpaceB, type: 'decision',
+      title: `Dup decision ${run}`, slug: `w1b-dup-decision-${run}`, content: `We decided ${dupCanary}.`, user_id: alice })
+      .onConflictDoNothing();
+    const ambiguous = await executeToolCall('search_decisions', { space_name: dupName }, orgA, alice);
+    assert.equal((ambiguous.result as any).code, 'SPACE_AMBIGUOUS');
+    assert.ok(!text(ambiguous.result).includes(dupCanary));
+    const queried = await executeToolCall('search_decisions', { query: 'decided', space_name: dupName }, orgA, alice);
+    assert.equal((queried.result as any).code, 'SPACE_AMBIGUOUS');
+    // Wildcards are literal: '_' and '%' never match another room.
+    for (const pattern of [wildName.replace('x', '_'), `%${run}%`]) {
+      const wild = await executeToolCall('search_decisions', { space_name: pattern }, orgA, alice);
+      assert.equal((wild.result as any).code, 'SPACE_NOT_FOUND', pattern);
+    }
+  });
+
+  test('R5: the read_canvas action handler uses the same literal, unambiguous room resolution', async () => {
+    await db.insert(canvases).values({ org_id: orgA, space_id: wildSpace, title: 'Wild canvas',
+      content: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: wildCanary }] }] } })
+      .onConflictDoNothing();
+    await db.insert(canvases).values({ org_id: orgA, space_id: dupSpaceA, title: 'Dup canvas',
+      content: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: dupCanary }] }] } })
+      .onConflictDoNothing();
+    for (const pattern of [wildName.replace('x', '_'), `%${run}%`, `%ops${run}`]) {
+      const viaAction = await executeActionDirect('read_canvas', { space_name: pattern }, orgA, alice, null, 'auto');
+      assert.equal(viaAction.success, false, pattern);
+      assert.ok(!text(viaAction).includes(wildCanary), `action handler leaked a canvas for ${pattern}`);
+      assert.match(String(viaAction.error), /not found/);
+      const viaDispatcher = await executeToolCall('read_canvas', { space_name: pattern }, orgA, alice);
+      assert.equal((viaDispatcher.result as any).code, 'SPACE_NOT_FOUND', pattern);
+    }
+    const ambiguousAction = await executeActionDirect('read_canvas', { space_name: dupName }, orgA, alice, null, 'auto');
+    assert.equal(ambiguousAction.success, false);
+    assert.match(String(ambiguousAction.error), /ambiguous/);
+    assert.ok(!text(ambiguousAction).includes(dupCanary));
+    const ambiguousDispatcher = await executeToolCall('read_canvas', { space_name: dupName }, orgA, alice);
+    assert.equal((ambiguousDispatcher.result as any).code, 'SPACE_AMBIGUOUS');
+    // Positive control: the exact literal name still reads, on both paths.
+    const exact = await executeActionDirect('read_canvas', { space_name: wildName.toUpperCase() }, orgA, alice, null, 'auto');
+    assert.equal(exact.success, true);
+    assert.ok(text(exact.result).includes(wildCanary));
+    const exactDispatch = await executeToolCall('read_canvas', { space_name: wildName }, orgA, alice);
+    assert.ok(text(exactDispatch.result).includes(wildCanary));
   });
 });

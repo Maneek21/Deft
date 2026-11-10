@@ -34,12 +34,13 @@ import {
   notes,
 } from '@deft/db/schema';
 import { getMCPToolsForAgent, parseMCPToolName } from './mcp-tools.js';
+import { getExecutableMcpConnection, toConnectionConfig } from './mcp-runtime.js';
 import { isDestructiveAction } from './agent-approval.js';
 import { visibleWikiPageCondition } from './wiki-visibility.js';
 import { visibleNoteCondition } from './note-visibility.js';
 import { capabilityService } from './capability-service.js';
 import { eq, and, ilike, desc, sql, lt, gte, inArray, or } from 'drizzle-orm';
-import { retrieveContext, retrievedWikiAudienceCondition } from './retrieve-context.js';
+import { resolveReadableRoom, retrieveContext, retrievedWikiAudienceCondition } from './retrieve-context.js';
 import { isManager } from '../middleware/privacy-guard.js';
 import { velocityCalculator, workloadAnalyzer, skillsGapAnalyzer } from '../services/team-analytics.js';
 import { generateOneOnePrep } from '../services/oneone-prep.js';
@@ -228,15 +229,35 @@ export async function executeToolCall(
   // Route MCP tool calls through the provider-neutral execution seam.
   if (toolName.startsWith('mcp__')) {
     const { connectionSlug, toolName: actualToolName } = parseMCPToolName(toolName);
-    // C04: this is the read path. Re-resolve the live MCP policy so a tool
-    // that was classified as an auto read at turn start, but has since been
-    // re-tiered or marked write, never reaches the provider here. Writes go
-    // through executeActionDirect, which re-checks the tier. A tool that is
-    // not in the live projection (inactive, unassigned, disabled, removed)
-    // falls through to capabilityService, which owns those exact denials.
-    const liveTool = (await getMCPToolsForAgent(orgId, agentEmployeeId).catch(() => []))
-      .find((candidate) => candidate.name === toolName);
-    if (liveTool && (liveTool.isWrite || liveTool.approvalTierMapped !== 'auto' || isDestructiveAction(liveTool.name))) {
+    // C04: this is the read path, and it fails closed. The provider is
+    // reached only when the live projection positively resolves this exact
+    // tool, on this connection, as a non-write, auto-tier, non-destructive
+    // (for these params) operation. Writes go through executeActionDirect.
+    //
+    // 1. Execution-time resolution (connection active, assigned to the
+    //    employee, tool enabled, not disabled by employee or override) is
+    //    DB-only and returns the same denial the capability service would.
+    const resolved = await getExecutableMcpConnection(orgId, connectionSlug, actualToolName, agentEmployeeId);
+    if (!resolved.connection) {
+      return { result: { error: resolved.error }, citations: [] };
+    }
+    // Target validation keeps its historical throw before any provider call.
+    toConnectionConfig(resolved.connection);
+    // 2. Live classification. Discovery failure or absence is not a read.
+    const liveTools = await getMCPToolsForAgent(orgId, agentEmployeeId).catch(() => null);
+    const liveTool = liveTools?.find((candidate) => (
+      candidate.name === toolName && candidate.connectionId === resolved.connection.id
+    ));
+    if (!liveTool) {
+      return {
+        result: {
+          error: `MCP tool '${toolName}' could not be classified as a read right now; it was not invoked.`,
+          code: 'MCP_TOOL_UNAVAILABLE',
+        },
+        citations: [],
+      };
+    }
+    if (liveTool.isWrite || liveTool.approvalTierMapped !== 'auto' || isDestructiveAction(liveTool.name, params)) {
       return {
         result: {
           error: `MCP tool '${toolName}' is not an auto-approved read right now; propose it as an action for approval instead.`,
@@ -1143,21 +1164,11 @@ export async function executeToolCall(
         // asker can read, and never drop an unresolved filter (which would
         // broaden the listing to every decision in the org).
         if (params.space_name) {
-          const [space] = await db
-            .select({ id: spaces.id })
-            .from(spaces)
-            .leftJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, _userId)))
-            .where(and(
-              eq(spaces.org_id, orgId),
-              eq(spaces.is_archived, false),
-              or(eq(spaces.type, 'public'), sql`${spaceMembers.id} IS NOT NULL`),
-              ilike(spaces.name, escapeSearchLike(String(params.space_name))),
-            ))
-            .limit(1);
-          if (!space) {
-            return { result: { error: 'Readable room not found.', code: 'SPACE_NOT_FOUND' }, citations: [] };
+          const resolvedRoom = await resolveReadableRoom({ orgId, userId: _userId, name: params.space_name, includePublic: true });
+          if (!resolvedRoom.room) {
+            return { result: { error: resolvedRoom.error, code: resolvedRoom.code }, citations: [] };
           }
-          decisionConditions.push(eq(wikiPages.space_id, space.id));
+          decisionConditions.push(eq(wikiPages.space_id, resolvedRoom.room.id));
         }
 
         const allDecisions = await db
@@ -1205,16 +1216,16 @@ export async function executeToolCall(
       // Post-filter by space_name if provided.
       let filteredResults = contextResults;
       if (params.space_name) {
-        const [space] = await db
-          .select({ id: spaces.id })
-          .from(spaces)
-          .where(and(eq(spaces.org_id, orgId), ilike(spaces.name, params.space_name)))
-          .limit(1);
-        if (space) {
-          filteredResults = contextResults.filter(
-            (r) => (r as any).space_id === space.id,
-          );
+        // Same literal, asker-readable, unambiguous resolution as the listing
+        // path; an unresolved filter is an error, never a dropped filter.
+        const resolvedRoom = await resolveReadableRoom({ orgId, userId: _userId, name: params.space_name, includePublic: true });
+        if (!resolvedRoom.room) {
+          return { result: { error: resolvedRoom.error, code: resolvedRoom.code }, citations: [] };
         }
+        const roomId = resolvedRoom.room.id;
+        filteredResults = contextResults.filter(
+          (r) => (r as any).space_id === roomId,
+        );
       }
 
       // Re-fetch full fields (tags, confidence, created_at) for matched IDs.
@@ -2486,22 +2497,11 @@ export async function executeToolCall(
       await requireActiveOrgMembership(orgId, _userId);
       const spaceName = typeof params.space_name === 'string' ? params.space_name.trim().replace(/^#/, '') : '';
       if (!spaceName) return { result: { error: 'space_name is required', code: 'SPACE_REQUIRED' }, citations: [] };
-      const rooms = await db
-        .select({ id: spaces.id, name: spaces.name })
-        .from(spaces)
-        .innerJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, _userId)))
-        .where(and(
-          eq(spaces.org_id, orgId),
-          eq(spaces.is_archived, false),
-          ilike(spaces.name, escapeSearchLike(spaceName.slice(0, 200))),
-        ))
-        .limit(2);
-      if (rooms.length !== 1) {
-        return { result: rooms.length
-          ? { error: 'Room name is ambiguous; choose a room from list_spaces.', code: 'SPACE_AMBIGUOUS' }
-          : { error: 'Readable room not found.', code: 'SPACE_NOT_FOUND' }, citations: [] };
+      const resolvedRoom = await resolveReadableRoom({ orgId, userId: _userId, name: spaceName, includePublic: false });
+      if (!resolvedRoom.room) {
+        return { result: { error: resolvedRoom.error, code: resolvedRoom.code }, citations: [] };
       }
-      const room = rooms[0]!;
+      const room = resolvedRoom.room;
       const [canvas] = await db
         .select({ id: canvases.id, title: canvases.title, content: canvases.content, updated_at: canvases.updated_at })
         .from(canvases)
