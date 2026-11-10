@@ -535,12 +535,15 @@ describe('W1-b Defty read authorization', { skip: !canRun }, () => {
     await db.insert(spaces).values(plain.map((room) => ({ id: room.id, org_id: orgA, name: room.name, type: 'private' as const, created_by: alice })));
     await db.insert(spaces).values({ id: exact.id, org_id: orgA, name: exact.name, type: 'private', created_by: alice });
     await db.insert(spaceMembers).values([...plain, exact].map((room) => ({ space_id: room.id, user_id: alice })));
-    const canary = `crowd-${run}`;
+    // The canary must not occur in any room name, or a wrong room would match it.
+    const canary = `exact-canvas-${randomUUID()}`;
     await db.insert(canvases).values({ org_id: orgA, space_id: exact.id, title: 'Crowd canvas',
       content: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: canary }] }] } });
     try {
       const one = await executeToolCall('read_canvas', { space_name: exact.name }, orgA, alice);
-      assert.ok(text(one.result).includes(canary), 'the exactly named room must resolve despite 30 fallback-name rooms');
+      assert.equal((one.result as any).space, exact.name, 'the exactly named room must resolve despite 30 fallback-name rooms');
+      assert.equal((one.result as any).exists, true);
+      assert.ok(text(one.result).includes(canary), 'the exactly named room\'s own canvas must be returned');
       // A second exactly named room is an ambiguity, not hidden behind the fallbacks.
       await db.insert(spaces).values({ id: second.id, org_id: orgA, name: second.name, type: 'private', created_by: alice });
       await db.insert(spaceMembers).values({ space_id: second.id, user_id: alice });
