@@ -69,6 +69,27 @@ export interface McpCapabilityInvocationAdapterResult {
   duration_ms: number;
 }
 
+/** Outcome of resolving and validating an invocation target without calling
+ * the provider. `unavailable` carries the exact legacy denial payload. */
+export type McpCapabilityInvocationPreflight =
+  | Readonly<{
+      status: 'resolved';
+      resolved_provider: Readonly<{
+        org_id: string;
+        provider_kind: 'mcp';
+        provider_instance_id: string;
+      }>;
+    }>
+  | Readonly<{
+      status: 'unavailable';
+      legacy_output: { error: string };
+      error: string;
+      error_code: Extract<
+        CapabilityInvocationErrorCode,
+        'CAPABILITY_PROVIDER_UNAVAILABLE' | 'CAPABILITY_OPERATION_UNAVAILABLE'
+      >;
+    }>;
+
 export interface McpDiscoveryClient {
   getCachedToolDiscovery(
     config: ReturnType<typeof toConnectionConfig>,
@@ -284,6 +305,41 @@ export class McpCapabilityProvider {
       request.provider.operation_name,
       request.actor.agent_employee_id,
     );
+  }
+
+  /** Provider-call-free preflight for a consumer that must classify the
+   * exact resolved provider before invoking it. It performs the same
+   * execution-time resolution and target validation as `invoke` (same denial
+   * text, same historical throw for an invalid target) and stops there: it
+   * never reaches the low-level client. */
+  async preflight(
+    request: McpCapabilityInvocationRequest,
+  ): Promise<McpCapabilityInvocationPreflight> {
+    const resolved = await this.runtime.resolveExecutable(
+      request.org_id,
+      request.provider.connection_slug,
+      request.provider.operation_name,
+      request.actor.agent_employee_id,
+    );
+    if (!resolved.connection) {
+      return {
+        status: 'unavailable',
+        legacy_output: { error: resolved.error },
+        error: resolved.error,
+        error_code: resolved.reason === 'operation_unavailable'
+          ? 'CAPABILITY_OPERATION_UNAVAILABLE'
+          : 'CAPABILITY_PROVIDER_UNAVAILABLE',
+      };
+    }
+    toConnectionConfig(resolved.connection);
+    return {
+      status: 'resolved',
+      resolved_provider: {
+        org_id: resolved.connection.org_id,
+        provider_kind: 'mcp',
+        provider_instance_id: resolved.connection.id,
+      },
+    };
   }
 
   /** Execute one App Run attempt against the immutable provider identity.
