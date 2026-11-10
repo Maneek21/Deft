@@ -13,6 +13,7 @@ import { AppHeaderProvider, useAppHeaderContext } from '@/components/app-header-
 import { ExperienceNavigationProvider } from '@/components/apps/experience-navigation-context';
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
+import { applyPresenceSnapshot, applyPresenceUpdate } from '@/lib/presence-state';
 import { useHuddle } from '@/hooks/use-huddle';
 import { useAudioLevels } from '@/hooks/use-audio-levels';
 import { HuddleOverlay } from '@/components/huddle-overlay';
@@ -213,26 +214,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
     // Initial presence snapshot from server
     const handlePresenceInit = (list: { user_id: string; status: 'online' | 'idle' }[]) => {
-      setPresence((prev) => {
-        const next = new Map(prev);
-        for (const entry of list) {
-          next.set(entry.user_id, entry.status);
-        }
-        return next;
-      });
+      setPresence((prev) => applyPresenceSnapshot(prev, Array.isArray(list) ? list : [], user?.id));
     };
 
     // Live presence updates
     const handlePresence = (data: { user_id: string; status: 'online' | 'idle' | 'offline' }) => {
-      setPresence((prev) => {
-        const next = new Map(prev);
-        if (data.status === 'offline') {
-          next.delete(data.user_id);
-        } else {
-          next.set(data.user_id, data.status);
-        }
-        return next;
-      });
+      setPresence((prev) => applyPresenceUpdate(prev, data));
     };
 
     const handleNewMessage = (data: { space_id?: string; user_id?: string; parent_id?: string | null; has_mention?: boolean }) => {
