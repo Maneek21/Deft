@@ -290,3 +290,31 @@ legacyTest('W2a1-b: a leaf plan step calling a destructiveHint tool waits for it
   assert.equal(planRow.rows[0]?.steps[0]?.status, 'waiting_approval');
   assert.equal(calls.length, 0, 'the provider must not be called before approval');
 });
+
+legacyTest('R2-5: the plan payload marks a destructiveHint step destructive', async (t) => {
+  stubHintedProvider(t);
+  const { agentPlanRoutes } = await import('../src/routes/agent-plans.js');
+  const plan = await createPlanRow({
+    org_id: ORG_ID,
+    user_id: USER_ID,
+    agent_employee_id: EMPLOYEE_ID,
+    title: `R2-5 hinted plan ${suffix}`,
+    steps: [
+      { id: 'purge', description: 'Purge', tool: PREFIXED_HINTED, params: { segment: 'all' } },
+      { id: 'gone', description: 'Unknown tool', tool: `mcp__${CONNECTION_SLUG}__not_listed`, params: {} },
+    ],
+  });
+  planIds.push(plan.plan_id);
+  const app = new Hono();
+  app.use('*', async (c, next) => {
+    c.set('user', { id: USER_ID, org_id: ORG_ID, email: `${USER_ID}@test.local`, role: 'owner' } as any);
+    await next();
+  });
+  app.route('/api/agent-plans', agentPlanRoutes);
+  const detail = await (await app.request(`/api/agent-plans/${plan.plan_id}`)).json() as any;
+  assert.equal(detail.steps.find((s: any) => s.id === 'purge').destructive, true);
+  // A step whose live tool cannot be resolved falls back to name and params.
+  assert.equal(detail.steps.find((s: any) => s.id === 'gone').destructive, false);
+  const list = await (await app.request('/api/agent-plans')).json() as any[];
+  assert.equal(list.find((p) => p.id === plan.plan_id).steps.find((s: any) => s.id === 'purge').destructive, true);
+});
