@@ -163,3 +163,82 @@ test('E11: with matches open, Enter still picks the highlighted mention instead 
   }
 });
 
+// ── E13: a failed history or approval read is not an empty conversation ────
+
+const START_TEXT = /This is the start of/;
+
+test('E13: a failed channel history read shows an error with Retry, not the empty state', async () => {
+  const page = await open(browser, {
+    harness: 'defty-chat-harness.tsx',
+    url: '/chat?space=s1',
+    override: `(() => { let fail = true; window.__deftHistoryFail = (v) => { fail = v; };
+      return (method, path) => (fail && method === 'GET' && path === '/api/messages/s1') ? { status: 500, body: { error: 'boom', code: 'X' } } : undefined; })()`,
+  });
+  try {
+    await page.getByText('Could not load messages.').waitFor();
+    assert.equal(await page.getByText(START_TEXT).count(), 0, 'must not claim the conversation is empty');
+    await page.evaluate(() => window.__deftHistoryFail(false));
+    await page.getByRole('button', { name: 'Retry' }).first().click();
+    await page.getByText('Launch is Friday.', { exact: false }).first().waitFor();
+    assert.equal(await page.getByText('Could not load messages.').count(), 0);
+  } finally {
+    await close(page);
+  }
+});
+
+test('E13: a network failure on channel history also shows the error', async () => {
+  const page = await open(browser, {
+    harness: 'defty-chat-harness.tsx',
+    url: '/chat?space=s1',
+    override: `(method, path) => (method === 'GET' && path === '/api/messages/s1') ? 'network-error' : undefined`,
+  });
+  try {
+    await page.getByText('Could not load messages.').waitFor();
+    assert.equal(await page.getByText(START_TEXT).count(), 0);
+  } finally {
+    await close(page);
+  }
+});
+
+test('E13: a failed thread read shows an error with Retry in the thread panel', async () => {
+  const page = await open(browser, {
+    harness: 'defty-chat-harness.tsx',
+    url: '/chat?space=s1&thread=t1',
+    // The page's deep-link read (first) succeeds so the panel opens; the
+    // panel's own replies read (second) fails.
+    override: `(() => { let fail = true; let reads = 0; window.__deftThreadFail = (v) => { fail = v; };
+      return (method, path) => {
+        if (method !== 'GET' || path !== '/api/messages/t1/thread') return undefined;
+        reads += 1;
+        return (fail && reads >= 2) ? { status: 503, body: { error: 'down', code: 'X' } } : undefined;
+      }; })()`,
+  });
+  try {
+    await page.getByRole('heading', { name: 'Thread' }).waitFor();
+    const panel = page.locator('.w-\\[400px\\]');
+    await panel.getByText('Could not load replies.').waitFor();
+    await page.evaluate(() => window.__deftThreadFail(false));
+    await panel.getByRole('button', { name: 'Retry' }).click();
+    await panel.getByText('for the detail.', { exact: false }).waitFor();
+    assert.equal(await panel.getByText('Could not load replies.').count(), 0);
+  } finally {
+    await close(page);
+  }
+});
+
+test('E13: a failed approval read is shown in the channel and in the thread panel', async () => {
+  const page = await open(browser, {
+    harness: 'defty-chat-harness.tsx',
+    url: '/chat?space=s1&thread=t1',
+    override: `(method, path) => (method === 'GET' && path === '/api/agent/actions/pending-by-space') ? { status: 500, body: { error: 'x', code: 'X' } } : undefined`,
+  });
+  try {
+    await page.getByRole('heading', { name: 'Thread' }).waitFor();
+    const panel = page.locator('.w-\\[400px\\]');
+    await panel.getByText('Could not load approvals.').waitFor();
+    assert.ok(await page.getByText('Could not load approvals.').count() >= 2, 'channel and thread both say so');
+  } finally {
+    await close(page);
+  }
+});
+

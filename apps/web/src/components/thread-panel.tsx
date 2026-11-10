@@ -25,6 +25,8 @@ import { AgentMessageBlocks, type AgentMessageBlocksProps } from './agent-messag
 import { resolveAgentCitationLink } from '@/lib/agent-citations';
 import useSWR, { mutate as swrMutate } from 'swr';
 import { inlineApprovalDisplayContent } from '@/lib/agent-approval-copy';
+import { mergeMessagesById } from '@/lib/chat-history-merge';
+import { ChatLoadError } from './chat-load-error';
 
 type Reaction = {
   emoji: string;
@@ -255,11 +257,11 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     ? `/api/agent/actions/pending-by-space?space_id=${spaceId}`
     : null;
 
-  const { data: pendingByMessage } = useSWR(
+  const { data: pendingByMessage, error: pendingActionsError } = useSWR(
     pendingBySpaceKey,
     async (url: string) => {
       const res = await api.get(url);
-      if (!res.ok) return {} as Record<string, AgentAction[]>;
+      if (!res.ok) throw new Error(`Unable to load pending actions (${res.status})`);
       const list: Array<AgentAction & { message_id: string }> = await res.json();
       const map: Record<string, AgentAction[]> = {};
       for (const action of list) {
@@ -296,9 +298,13 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     repliesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, []);
 
+  const [loadError, setLoadError] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
+
   // Load thread replies only (parent message is passed as a prop)
   useEffect(() => {
     setLoading(true);
+    setLoadError(false);
     setReplies([]);
     setPendingFiles([]);
     let cancelled = false;
@@ -306,18 +312,20 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     async function load() {
       try {
         const threadRes = await api.get(`/api/messages/${messageId}/thread`);
-
-        if (threadRes.ok && !cancelled && activeMessageIdRef.current === messageId) {
-          const data = await threadRes.json();
-          if (cancelled || activeMessageIdRef.current !== messageId) return;
-          setReplies(data.replies || data.messages || []);
+        if (cancelled || activeMessageIdRef.current !== messageId) return;
+        if (!threadRes.ok) {
+          setLoadError(true);
+          return;
         }
+        const data = await threadRes.json();
+        if (cancelled || activeMessageIdRef.current !== messageId) return;
+        const loaded: Message[] = data.replies || data.messages || [];
+        // Keep replies the socket delivered while this read was in flight.
+        setReplies((previous) => mergeMessagesById(loaded, previous));
         // Mark thread as read
-        if (!cancelled && activeMessageIdRef.current === messageId) {
-          void api.post(`/api/messages/${messageId}/thread-read`).catch(() => {});
-        }
+        void api.post(`/api/messages/${messageId}/thread-read`).catch(() => {});
       } catch {
-        // ignore
+        if (!cancelled && activeMessageIdRef.current === messageId) setLoadError(true);
       } finally {
         if (!cancelled && activeMessageIdRef.current === messageId) {
           setLoading(false);
@@ -329,7 +337,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     }
     void load();
     return () => { cancelled = true; };
-  }, [messageId, scrollToBottom]);
+  }, [messageId, scrollToBottom, loadAttempt]);
 
   // Socket listeners
   useEffect(() => {
@@ -678,6 +686,16 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
                   {replies.length} {replies.length === 1 ? 'reply' : 'replies'}
                 </span>
               </div>
+            )}
+
+            {loadError && (
+              <ChatLoadError message="Could not load replies." onRetry={() => setLoadAttempt((attempt) => attempt + 1)} />
+            )}
+            {pendingActionsError && (
+              <ChatLoadError
+                message="Could not load approvals."
+                onRetry={() => { if (pendingBySpaceKey) void swrMutate(pendingBySpaceKey).catch(() => undefined); }}
+              />
             )}
 
             {/* Replies */}

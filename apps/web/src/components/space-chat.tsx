@@ -72,6 +72,8 @@ import { UserProfileCard } from './user-profile-card';
 import { parseReminderTime } from './slash-command-autocomplete';
 import ConfirmDialog from './confirm-dialog';
 import { inlineApprovalDisplayContent } from '@/lib/agent-approval-copy';
+import { mergeMessagesById } from '@/lib/chat-history-merge';
+import { ChatLoadError } from './chat-load-error';
 import {
   approvalContinuationGate,
   approvalContinuationIdempotencyKey,
@@ -918,41 +920,54 @@ export function SpaceChat({
 
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
 
+  const [historyStatus, setHistoryStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [historyAttempt, setHistoryAttempt] = useState(0);
+  const retryHistory = useCallback(() => setHistoryAttempt((attempt) => attempt + 1), []);
+
   useEffect(() => {
     const visit = messageEventScopeRef.current.capture(spaceId, sessionCacheScope);
     setMessages([]);
+    setHistoryStatus('loading');
     if (!visit.isCurrent()) return () => visit.dispose();
     let cancelled = false;
     async function load() {
       const res = await api.get(`/api/messages/${spaceId}`);
-      if (res.ok && !cancelled && visit.isCurrent()) {
-        const data = await res.json();
-        if (cancelled || !visit.isCurrent()) return;
-        setMessages(previous => visit.isCurrent() ? (data.messages || data || []) : previous);
-        if (highlightMessageId) {
-          // Scroll to the highlighted message after render
-          setTimeout(() => {
-            if (cancelled || !visit.isCurrent()) return;
-            const el = document.querySelector(`[data-message-id="${highlightMessageId}"]`);
-            if (el) {
-              el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-              setHighlightedId(highlightMessageId);
-              // Clear highlight after animation
-              setTimeout(() => {
-                if (!cancelled && visit.isCurrent()) setHighlightedId(null);
-              }, 3000);
-            }
-          }, 200);
-        } else {
-          setTimeout(() => {
-            if (!cancelled && visit.isCurrent()) scrollToBottom();
-          }, 100);
-        }
+      if (cancelled || !visit.isCurrent()) return;
+      if (!res.ok) {
+        setHistoryStatus('error');
+        return;
+      }
+      const data = await res.json();
+      if (cancelled || !visit.isCurrent()) return;
+      const loaded: Message[] = data.messages || data || [];
+      // Keep anything the socket delivered while this read was in flight.
+      setMessages(previous => visit.isCurrent() ? mergeMessagesById(loaded, previous) : previous);
+      setHistoryStatus('ready');
+      if (highlightMessageId) {
+        // Scroll to the highlighted message after render
+        setTimeout(() => {
+          if (cancelled || !visit.isCurrent()) return;
+          const el = document.querySelector(`[data-message-id="${highlightMessageId}"]`);
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            setHighlightedId(highlightMessageId);
+            // Clear highlight after animation
+            setTimeout(() => {
+              if (!cancelled && visit.isCurrent()) setHighlightedId(null);
+            }, 3000);
+          }
+        }, 200);
+      } else {
+        setTimeout(() => {
+          if (!cancelled && visit.isCurrent()) scrollToBottom();
+        }, 100);
       }
     }
-    void load().catch(() => {});
+    void load().catch(() => {
+      if (!cancelled && visit.isCurrent()) setHistoryStatus('error');
+    });
     return () => { cancelled = true; visit.dispose(); };
-  }, [spaceId, sessionCacheScope, scrollToBottom, highlightMessageId]);
+  }, [spaceId, sessionCacheScope, scrollToBottom, highlightMessageId, historyAttempt]);
 
   useEffect(() => {
     if (!sessionCacheScope) return;
@@ -1472,7 +1487,16 @@ export function SpaceChat({
               <div className="text-[0.8125rem] leading-relaxed" style={{ color: 'var(--on-surface-variant)' }} dangerouslySetInnerHTML={{ __html: sanitizeHtml(renderSimpleMarkdown(recapSummary)) }} />
             </div>
           )}
-          {messages.length === 0 && (
+          {historyStatus === 'error' && (
+            <ChatLoadError message="Could not load messages." onRetry={retryHistory} />
+          )}
+          {pendingActionsError && (
+            <ChatLoadError
+              message="Could not load approvals."
+              onRetry={() => { if (pendingBySpaceKey) void swrMutate(pendingBySpaceKey).catch(() => undefined); }}
+            />
+          )}
+          {historyStatus === 'ready' && messages.length === 0 && (
             <EmptyState
               icon={<MessageSquare size={20} strokeWidth={1.5} style={{ color: 'var(--outline)' }} />}
               title={`This is the start of ${isDm ? displayName : '#' + spaceName}`}
