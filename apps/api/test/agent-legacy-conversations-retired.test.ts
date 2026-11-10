@@ -11,6 +11,8 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { Hono } from 'hono';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
@@ -190,7 +192,11 @@ test('W1a-N2 memory preload: no legacy route builds a streaming context from uns
 });
 
 test('A11: the streaming tool loop is retired, so no streamed turn can end silently', async () => {
-  await assert.rejects(import('../src/lib/agent-stream-loop.js' as string));
+  // Static check (no import): the streaming loop module must stay deleted.
+  for (const ext of ['ts', 'js']) {
+    const modulePath = fileURLToPath(new URL(`../src/lib/agent-stream-loop.${ext}`, import.meta.url));
+    assert.equal(existsSync(modulePath), false, `${modulePath} must stay deleted`);
+  }
   as(member);
   await assertRetired(await request(`/conversations/${DEFTY_CONVO}/continue`, 'POST'));
 });

@@ -72,7 +72,11 @@ import { UserProfileCard } from './user-profile-card';
 import { parseReminderTime } from './slash-command-autocomplete';
 import ConfirmDialog from './confirm-dialog';
 import { normalizeInlineApprovalCopy } from '@/lib/agent-approval-copy';
-import { approvalContinuationGate, approvalContinuationMessageBody } from '@/lib/approval-continuation';
+import {
+  approvalContinuationGate,
+  approvalContinuationIdempotencyKey,
+  approvalContinuationMessageBody,
+} from '@/lib/approval-continuation';
 import { stripHtml } from '@/lib/strip-html';
 import { isTrustedSystemMessage, serializeQuotedMessage } from '@/lib/message-presentation';
 import { useEditor, EditorContent } from '@tiptap/react';
@@ -779,11 +783,11 @@ export function SpaceChat({
       // agent conversation wakes its agent (Defty via the queued agent-reply
       // worker, which proposes writes for approval and never auto-executes
       // them in chat). The reply arrives over the socket like any other.
-      // The idempotency key is scoped to this confirmation so a retry after
-      // a lost response cannot post the request twice.
+      // The idempotency key is derived from this space + confirmation (not
+      // random, not storage-backed), so every retry after a lost response
+      // replays the same key and cannot start a second agent turn.
       const body = approvalContinuationMessageBody();
-      const intent = createNativeCreateIntent(`approval-continue:${requestSpaceId}:${confirmationId}`);
-      const intentKey = await intent.keyFor(body);
+      const intentKey = await approvalContinuationIdempotencyKey(requestSpaceId, confirmationId);
       const response = await api.post(`/api/messages/${encodeURIComponent(requestSpaceId)}`, body, {
         headers: { 'Idempotency-Key': intentKey },
       });
@@ -791,7 +795,6 @@ export function SpaceChat({
         throw new Error(await apiErrorMessage(response, `Continue failed (${response.status})`));
       }
       const createdMessage = await response.json() as Message;
-      intent.acknowledgeSuccess(intentKey);
       setContinuedApprovalIds((current) => new Set(current).add(confirmationId));
       if (activeSpaceIdRef.current === requestSpaceId) {
         setMessages((prev) => (

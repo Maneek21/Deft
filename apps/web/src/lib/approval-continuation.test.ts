@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   approvalContinuationGate,
+  approvalContinuationIdempotencyKey,
   approvalContinuationMessageBody,
   type ApprovalContinuationMessage,
 } from './approval-continuation';
@@ -97,4 +98,25 @@ test('continuation is an ordinary chat message, not a legacy conversation stream
   const body = approvalContinuationMessageBody();
   assert.deepEqual(body, { content: 'Continue.', file_ids: [] });
   assert.equal(JSON.stringify(body).includes('/api/agent/conversations'), false);
+});
+
+const API_IDEMPOTENCY_KEY = /^[A-Za-z0-9._:-]{1,128}$/;
+
+test('W1a-R2: continuation idempotency key is stable per confirmation', async () => {
+  const first = await approvalContinuationIdempotencyKey('space-1', 'confirmation-1');
+  const retry = await approvalContinuationIdempotencyKey('space-1', 'confirmation-1');
+  assert.equal(retry, first);
+  assert.match(first, API_IDEMPOTENCY_KEY);
+  const odd = await approvalContinuationIdempotencyKey('space with spaces/é'.repeat(20), 'c#1'.repeat(50));
+  assert.match(odd, API_IDEMPOTENCY_KEY);
+});
+
+test('W1a-R2: distinct confirmations get distinct continuation idempotency keys', async () => {
+  const base = await approvalContinuationIdempotencyKey('space-1', 'confirmation-1');
+  assert.notEqual(await approvalContinuationIdempotencyKey('space-1', 'confirmation-2'), base);
+  assert.notEqual(await approvalContinuationIdempotencyKey('space-2', 'confirmation-1'), base);
+  assert.notEqual(
+    await approvalContinuationIdempotencyKey('a:b', 'c'),
+    await approvalContinuationIdempotencyKey('a', 'b:c'),
+  );
 });

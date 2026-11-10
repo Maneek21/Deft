@@ -83,3 +83,24 @@ export const APPROVAL_CONTINUATION_MESSAGE = 'Continue.';
 export function approvalContinuationMessageBody(): { content: string; file_ids: string[] } {
   return { content: APPROVAL_CONTINUATION_MESSAGE, file_ids: [] };
 }
+
+const CONTINUATION_KEY_PREFIX = 'approval-continue:';
+
+/**
+ * Idempotency-Key for the continuation post. Derived only from the space and
+ * the approval-confirmation message, so every retry of the same confirmation
+ * (including after a lost response with no working sessionStorage) replays
+ * the same key and the server returns the already-committed message instead
+ * of starting another agent turn. A later confirmation message gets a
+ * different key. Hashed so the result always fits the API's key contract
+ * (1-128 chars of [A-Za-z0-9._:-]) whatever characters the IDs contain.
+ */
+export async function approvalContinuationIdempotencyKey(
+  spaceId: string,
+  confirmationId: string,
+): Promise<string> {
+  const material = new TextEncoder().encode(JSON.stringify([spaceId, confirmationId]));
+  const hash = await globalThis.crypto.subtle.digest('SHA-256', material);
+  const hex = Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `${CONTINUATION_KEY_PREFIX}${hex}`;
+}
