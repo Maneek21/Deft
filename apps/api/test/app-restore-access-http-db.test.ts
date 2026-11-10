@@ -330,14 +330,26 @@ test('restore access review re-issues prior grants at the same lifetime, never w
       eq(schema.appDataConsents.org_id, orgA), eq(schema.appDataConsents.state, 'active')));
     assert.equal(before.filter((row) => row.store_key === 'alpha').length, 1, 'failed attempts issue nothing');
 
+    // PR424-F05/F07: these synthetic rows have no live runtime binding or
+    // observation authority, so action and observation restores are refused by
+    // the production live readers instead of fabricating pins or copying a
+    // predecessor custody receipt. The refusal consumes nothing.
+    const actionOnly = await call('/api/app-connection-sessions/restore/activate', sessionA.accessToken,
+      { ...envelope, grant_ids: [reviewGrants.find((grant) => grant.kind === 'action_consent').grant_id] });
+    assert.equal(actionOnly.status, 403, JSON.stringify(actionOnly.body));
+    const observationOnly = await call('/api/app-connection-sessions/restore/activate', sessionA.accessToken,
+      { ...envelope, grant_ids: [reviewGrants.find((grant) => grant.kind === 'observation_consent').grant_id] });
+    assert.equal(observationOnly.status, 403, JSON.stringify(observationOnly.body));
+
     // §2.3 one transaction, same lifetime, old rows soft-transitioned.
+    const recordsOnly = ['alpha', 'lapsed'].map((key) => grantOf(reviewGrants, key).grant_id);
     const activated = await call('/api/app-connection-sessions/restore/activate', sessionA.accessToken,
-      { ...envelope, grant_ids: chosen });
+      { ...envelope, grant_ids: recordsOnly });
     assert.equal(activated.status, 200, JSON.stringify(activated.body));
     assert.equal(activated.body.schema_version, 'deft.app_restore_access_activate.v1');
-    assert.equal(activated.body.grants.length, 4);
+    assert.equal(activated.body.grants.length, 2);
     const activatedKinds = activated.body.grants.map((grant: any) => grant.kind).sort();
-    assert.deepEqual(activatedKinds, ['action_consent', 'observation_consent', 'record_consent', 'record_consent']);
+    assert.deepEqual(activatedKinds, ['record_consent', 'record_consent']);
 
     const rows = await db.select().from(schema.appDataConsents).where(eq(schema.appDataConsents.org_id, orgA));
     const alphaRows = rows.filter((row) => row.store_key === 'alpha');
@@ -360,32 +372,26 @@ test('restore access review re-issues prior grants at the same lifetime, never w
 
     const observations = await db.select().from(schema.appResourceObservationConsents)
       .where(eq(schema.appResourceObservationConsents.org_id, orgA));
-    const activeObservations = observations.filter((row) => row.state === 'active');
-    assert.equal(activeObservations.length, 1, 'the unique active observation index is satisfied');
-    assert.notEqual(activeObservations[0]!.consent_id, observationConsentId);
-    assert.equal((activeObservations[0]!.snapshot as any).interval_seconds, 300);
-    assert.equal(observations.find((row) => row.consent_id === observationConsentId)!.state, 'revoked');
+    assert.equal(observations.length, 1, 'the refused observation restore wrote nothing');
+    assert.equal(observations[0]!.consent_id, observationConsentId);
+    assert.equal(observations[0]!.state, 'active');
 
+    // No action restored, so no successor session was published.
+    assert.equal(activated.body.session_id, review.body.session_id);
     const [currentRow] = await db.select().from(schema.appConnectionSessions).where(and(
       eq(schema.appConnectionSessions.org_id, orgA), eq(schema.appConnectionSessions.session_id, activated.body.session_id)));
-    const restoredAction = ((currentRow!.record as any).action_consents as any[])
-      .find((consent) => consent.action_key === 'send_item');
-    assert.ok(restoredAction, 'the action consent is re-issued on the reconnected session record');
-    assert.notEqual(restoredAction.consent_id, actionConsentId);
-    assert.ok(Math.abs(seconds(restoredAction.expires_at)! - Date.now() - 5 * 86400_000) < 120_000,
-      'action consent replays its original duration');
+    assert.ok(!((currentRow!.record as any).action_consents ?? []).some((consent: any) => consent.consent_id === actionConsentId));
 
     const audit = await db.select().from(schema.auditLog).where(and(
       eq(schema.auditLog.org_id, orgA), eq(schema.auditLog.action, 'app_restore_access_activate')));
-    assert.equal(audit.length, 4);
+    assert.equal(audit.length, 2);
     for (const entry of audit) {
       const metadata = entry.metadata as any;
       assert.equal(metadata.review_id, review.body.review_id);
       assert.ok(metadata.restored_from_grant_id);
       assert.ok(entry.entity_id);
     }
-    assert.deepEqual(new Set(audit.map((entry) => (entry.metadata as any).kind)),
-      new Set(['record_consent', 'observation_consent', 'action_consent']));
+    assert.deepEqual(new Set(audit.map((entry) => (entry.metadata as any).kind)), new Set(['record_consent']));
 
     // §5.1 same provider account only.
     const mismatchInstallation = randomUUID();

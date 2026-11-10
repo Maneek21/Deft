@@ -115,12 +115,17 @@ export function createAppConnectionSessionRoutes() {
   for(const operation of ['review','activate'])routes.use(`/restore/${operation}`,ownerLimits);
   routes.get('/installations/:installationId/restore-context',async c=>{
     try{
-      if(new URL(c.req.url).search)throw invalid();
+      // Only an optional explicit `target_key` is accepted (PR424-F03): the
+      // owner's selected target is reviewed, never the installation-wide newest.
+      const url=new URL(c.req.url);const params=[...url.searchParams.entries()];
+      if(url.search&&(params.length!==1||params[0]![0]!=='target_key'))throw invalid();
+      const query=z.strictObject({target_key:z.string().regex(/^[a-z][a-z0-9_]{0,47}$/u).optional()}).safeParse(Object.fromEntries(params));
+      if(!query.success)throw invalid();
       const injected=c.get('user');
       const auth=await resourceSyncWebAuthority(c.req.header('authorization'),injected?{org_id:injected.org_id,user_id:injected.id,sid:injected.sid}:undefined);
       const caller={org_id:auth.actor.org_id,user_id:auth.actor.actor_id,sid:auth.web_session.sid,access_expires_at:auth.web_session.expires_at};
       const {appRestoreAccessContext}=await import('../lib/app-restore-access-authority.js');
-      return c.json(await appRestoreAccessContext(caller,z.string().uuid().parse(c.req.param('installationId')),auth.guard));
+      return c.json(await appRestoreAccessContext(caller,z.string().uuid().parse(c.req.param('installationId')),auth.guard,query.data.target_key));
     }catch(error){return failure(c,error);}
   });
   for(const operation of ['review','activate'] as const)routes.post(`/restore/${operation}`,async c=>{

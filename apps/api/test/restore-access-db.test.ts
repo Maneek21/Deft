@@ -146,7 +146,15 @@ test('restore access: guarded action/record restores, stored reviews, explicit o
     let clock = now;
     // The module is imported after env/keyring setup, matching production.
     const { AppRestoreAccessService } = await import('../src/lib/app-restore-access-service.js');
-    const service = new AppRestoreAccessService({ database: db as never, guard: async () => {}, now: () => clock });
+    // This fixture has no live owner-connection runtime binding, so the live
+    // runtime-authority reader is supplied here (PR424-F05). Production uses the
+    // real reader; its refusal without a binding is proven in round2 F05.
+    const liveActionConsents = async () => {
+      const bindingId = randomUUID();
+      return [{ action_binding_id: bindingId, action_key: 'mirror_inbox', authority_epoch: 1, consent_id: bindingId,
+        consent_digest: sha('5'), expires_at: null, consent_lifetime: 'until_revoked' as const }];
+    };
+    const service = new AppRestoreAccessService({ database: db as never, guard: async () => {}, now: () => clock, liveActionConsents } as never);
     const nomination = (targetKey: string) => ({ installation_id: fixture.installation_id, target_key: targetKey });
     const envelope = (review: any, grantIds?: string[]) => ({
       installation_id: fixture.installation_id, target_key: 'unused', review_id: review.review_id,
