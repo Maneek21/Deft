@@ -2495,8 +2495,9 @@ export async function executeToolCall(
     // org-visible, or space-visible in a room the asker belongs to.
     case 'read_canvas': {
       await requireActiveOrgMembership(orgId, _userId);
-      const spaceName = typeof params.space_name === 'string' ? params.space_name.trim().replace(/^#/, '') : '';
-      if (!spaceName) return { result: { error: 'space_name is required', code: 'SPACE_REQUIRED' }, citations: [] };
+      const spaceName = typeof params.space_name === 'string' ? params.space_name : '';
+      if (!spaceName.trim()) return { result: { error: 'space_name is required', code: 'SPACE_REQUIRED' }, citations: [] };
+      // The resolver owns every name normalization, so all read paths agree.
       const resolvedRoom = await resolveReadableRoom({ orgId, userId: _userId, name: spaceName, includePublic: false });
       if (!resolvedRoom.room) {
         return { result: { error: resolvedRoom.error, code: resolvedRoom.code }, citations: [] };

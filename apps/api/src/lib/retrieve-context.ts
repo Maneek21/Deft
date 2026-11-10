@@ -1107,10 +1107,16 @@ export async function resolveReadableRoom(input: {
 }): Promise<ReadableRoomResolution> {
   // The complete name is matched. Truncating it would resolve a different,
   // shorter-named room, so an over-long name is refused instead.
-  const name = typeof input.name === 'string' ? input.name.trim().replace(/^#/, '') : '';
-  if (!name || name.length > 1000) return { error: 'Readable room not found.', code: 'SPACE_NOT_FOUND' };
-  const literal = name.replace(/[\\%_]/g, '\\$&');
-  const rooms = await db
+  const raw = typeof input.name === 'string' ? input.name : '';
+  if (!raw.trim() || raw.length > 1000) return { error: 'Readable room not found.', code: 'SPACE_NOT_FOUND' };
+  // Room names may themselves carry surrounding whitespace or a leading '#'.
+  // The name exactly as requested wins; the trimmed form and the form without
+  // a leading '#' (how people usually write a channel) are only fallbacks, so
+  // a convenience normalization never selects a different room than the one
+  // that was named.
+  const trimmed = raw.trim();
+  const variants = [...new Set([raw, trimmed, trimmed.replace(/^#/, '')])].filter((value) => value.length > 0);
+  const candidates = await db
     .select({ id: spaces.id, name: spaces.name })
     .from(spaces)
     .leftJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, input.userId)))
@@ -1120,13 +1126,19 @@ export async function resolveReadableRoom(input: {
       input.includePublic
         ? or(eq(spaces.type, 'public'), sql`${spaceMembers.id} IS NOT NULL`)
         : sql`${spaceMembers.id} IS NOT NULL`,
-      ilike(spaces.name, literal),
+      or(...variants.map((value) => ilike(spaces.name, value.replace(/[\\%_]/g, '\\$&')))),
     ))
-    .limit(2);
-  if (rooms.length === 1) return { room: rooms[0]! };
-  return rooms.length
-    ? { error: 'Room name is ambiguous; choose a room from list_spaces.', code: 'SPACE_AMBIGUOUS' }
-    : { error: 'Readable room not found.', code: 'SPACE_NOT_FOUND' };
+    .limit(25);
+  const ambiguous = { error: 'Room name is ambiguous; choose a room from list_spaces.', code: 'SPACE_AMBIGUOUS' } as const;
+  for (const variant of variants) {
+    const rooms = candidates.filter((room) => room.name.toLowerCase() === variant.toLowerCase());
+    if (rooms.length === 1) return { room: rooms[0]! };
+    if (rooms.length > 1) return ambiguous;
+  }
+  // The database matched case-insensitively where the comparison above did
+  // not (locale-specific casing): never guess between several rooms.
+  if (candidates.length === 1) return { room: candidates[0]! };
+  return candidates.length ? ambiguous : { error: 'Readable room not found.', code: 'SPACE_NOT_FOUND' };
 }
 
 export async function retrieveContextWithDiagnostics(

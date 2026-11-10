@@ -3138,8 +3138,8 @@ export async function executeAction(
 
       case 'read_canvas': {
         // Block 2.3 — read a space's shared canvas by space_name.
-        const spaceName = typeof params.space_name === 'string' ? params.space_name.trim() : '';
-        if (!spaceName) return { success: false, result: null, error: 'space_name is required' };
+        const spaceName = typeof params.space_name === 'string' ? params.space_name : '';
+        if (!spaceName.trim()) return { success: false, result: null, error: 'space_name is required' };
 
         // B06: a canvas is readable only by members of its room (same rule as
         // GET /api/spaces/:id/canvas). The live dispatcher is executeToolCall;

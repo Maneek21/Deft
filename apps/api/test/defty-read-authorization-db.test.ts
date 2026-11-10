@@ -488,6 +488,43 @@ describe('W1-b Defty read authorization', { skip: !canRun }, () => {
     }
   });
 
+  test('R7: the name exactly as requested wins over its trimmed or #-stripped form', async () => {
+    const base = `w1b-norm-${run}`;
+    const rooms = [
+      { id: randomUUID(), name: base, canary: `plain-${run}` },
+      { id: randomUUID(), name: `#${base}`, canary: `hash-${run}` },
+      { id: randomUUID(), name: ` ${base} `, canary: `spaced-${run}` },
+    ];
+    await db.insert(spaces).values(rooms.map((room) => ({ id: room.id, org_id: orgA, name: room.name, type: 'private' as const, created_by: alice })));
+    await db.insert(spaceMembers).values(rooms.map((room) => ({ space_id: room.id, user_id: alice })));
+    await db.insert(canvases).values(rooms.map((room) => ({ org_id: orgA, space_id: room.id, title: 'Norm canvas',
+      content: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: room.canary }] }] } })));
+    try {
+      for (const room of rooms) {
+        const viaDispatcher = await executeToolCall('read_canvas', { space_name: room.name }, orgA, alice);
+        assert.ok(text(viaDispatcher.result).includes(room.canary), `dispatcher resolved the wrong room for ${JSON.stringify(room.name)}`);
+        const viaAction = await executeActionDirect('read_canvas', { space_name: room.name }, orgA, alice, null, 'auto');
+        assert.ok(text(viaAction).includes(room.canary), `action handler resolved the wrong room for ${JSON.stringify(room.name)}`);
+        for (const other of rooms.filter((candidate) => candidate !== room)) {
+          assert.ok(!text(viaDispatcher.result).includes(other.canary));
+        }
+      }
+      // With only the plain room left, '#name' and padded names still reach it.
+      await db.delete(canvases).where(inArray(canvases.space_id, [rooms[1]!.id, rooms[2]!.id]));
+      await db.delete(spaceMembers).where(inArray(spaceMembers.space_id, [rooms[1]!.id, rooms[2]!.id]));
+      await db.delete(spaces).where(inArray(spaces.id, [rooms[1]!.id, rooms[2]!.id]));
+      for (const alias of [`#${base}`, `  ${base}  `]) {
+        const fallback = await executeToolCall('read_canvas', { space_name: alias }, orgA, alice);
+        assert.ok(text(fallback.result).includes(rooms[0]!.canary), `fallback failed for ${JSON.stringify(alias)}`);
+      }
+    } finally {
+      const ids = rooms.map((room) => room.id);
+      await db.delete(canvases).where(inArray(canvases.space_id, ids));
+      await db.delete(spaceMembers).where(inArray(spaceMembers.space_id, ids));
+      await db.delete(spaces).where(inArray(spaces.id, ids));
+    }
+  });
+
   test('R5: the read_canvas action handler uses the same literal, unambiguous room resolution', async () => {
     await db.insert(canvases).values({ org_id: orgA, space_id: wildSpace, title: 'Wild canvas',
       content: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: wildCanary }] }] } })
