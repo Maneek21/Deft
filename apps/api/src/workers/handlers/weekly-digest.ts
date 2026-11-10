@@ -9,7 +9,7 @@ import {
 } from '@deft/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { generateWeeklyDigest } from '../../services/weekly-digest.js';
-import { getIO } from '../../socket.js';
+import { emitToUser } from '../../socket.js';
 import type { JobData } from '../types.js';
 
 export async function handleWeeklyDigest(job: JobData): Promise<void> {
@@ -75,9 +75,8 @@ export async function handleWeeklyDigest(job: JobData): Promise<void> {
             .returning();
 
           // Emit via socket
-          const io = getIO();
-          if (io && notification) {
-            io.to(`user:${manager.userId}`).emit('notification:new', notification);
+          if (notification) {
+            emitToUser(notification.org_id, manager.userId, 'notification:new', notification);
           }
 
           console.log(

@@ -142,7 +142,7 @@ export async function handleDuplicateDetect(job: JobData): Promise<void> {
         }, { channel: 'tasks' });
 
         if (notification) {
-          emitToUser(newTask.created_by, 'notification:new', notification);
+          emitToUser(notification.org_id, newTask.created_by, 'notification:new', notification);
         }
 
         console.log(

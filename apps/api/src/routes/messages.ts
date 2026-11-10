@@ -245,15 +245,14 @@ messageRoutes.post('/forward', async (c) => {
       user_id: messages.user_id,
       space_id: messages.space_id,
     }).from(messages)
-      .where(eq(messages.id, message_id))
+      .where(and(eq(messages.id, message_id), eq(messages.org_id, user.org_id)))
       .limit(1);
 
-    if (!original) {
+    // A source the caller cannot read answers exactly like a missing one, so
+    // the response never confirms that a foreign or private message id exists.
+    if (!original || !await requireSpaceMembership(original.space_id, user.id, user.org_id)) {
       return c.json({ error: 'Message not found', code: 'NOT_FOUND' }, 404);
     }
-
-    const isSourceMember = await requireSpaceMembership(original.space_id, user.id, user.org_id);
-    if (!isSourceMember) return c.json({ error: 'No access to source message', code: 'FORBIDDEN' }, 403);
 
     const isTargetMember = await requireSpaceMembership(target_space_id, user.id, user.org_id);
     if (!isTargetMember) return c.json({ error: 'No access to target space', code: 'FORBIDDEN' }, 403);
@@ -720,7 +719,7 @@ messageRoutes.post('/:spaceId', async (c) => {
         }, { channel: 'chat', spaceId, isMention: true });
 
         if (notification) {
-          emitToUser(mentionedUserId, 'notification:new', notification);
+          emitToUser(notification.org_id, mentionedUserId, 'notification:new', notification);
         }
       } catch (err) {
         console.error(`Failed to create mention notification for ${mentionedUserId}:`, err);
@@ -750,7 +749,7 @@ messageRoutes.post('/:spaceId', async (c) => {
           }, { channel: 'chat', spaceId, isMention: true });
 
           if (notification) {
-            emitToUser(parentMessage.user_id, 'notification:new', notification);
+            emitToUser(notification.org_id, parentMessage.user_id, 'notification:new', notification);
           }
         }
 
@@ -814,7 +813,7 @@ messageRoutes.post('/:spaceId', async (c) => {
           { channel: 'chat', spaceId, isMention: false, respectDnd: true },
         );
         for (const notification of recipientNotifications) {
-          emitToUser(notification.user_id, 'notification:new', notification);
+          emitToUser(notification.org_id, notification.user_id, 'notification:new', notification);
         }
       }
     } catch (err) {
