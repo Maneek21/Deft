@@ -371,9 +371,9 @@ export async function runAgentQuery(params: {
     const mcpAnthropicTools = mcpTools.map(mcpToolToAnthropicFormat);
     tools = [...tools, ...mcpAnthropicTools];
     mcpTools.forEach(t => {
-      if (t.isWrite || t.approvalTierMapped !== 'auto' || isDestructiveAction(t.name)) {
+      if (t.isWrite || t.approvalTierMapped !== 'auto' || isDestructiveAction(t.name, undefined, t.annotations)) {
         allActionTools.add(t.name);
-        actionApprovalTiers.set(t.name, t.approvalTierMapped);
+        actionApprovalTiers.set(t.name, isDestructiveAction(t.name, undefined, t.annotations) ? 'full' : t.approvalTierMapped);
         mcpConnectionIds.set(t.name, t.connectionId);
       }
     });
@@ -727,7 +727,7 @@ export async function runAgentQuery(params: {
       if (agentEmployeeId && tool.name.startsWith('mcp__') && !callIsAction) {
         const liveTool = (await getMCPToolsForAgent(orgId, agentEmployeeId).catch(() => []))
           .find((candidate) => candidate.name === tool.name);
-        const destructiveCall = liveTool ? isDestructiveAction(liveTool.name, tool.input) : false;
+        const destructiveCall = liveTool ? isDestructiveAction(liveTool.name, tool.input, liveTool.annotations) : false;
         if (liveTool && (liveTool.isWrite || liveTool.approvalTierMapped !== 'auto' || destructiveCall)) {
           callIsAction = true;
           // A destructive call never inherits an auto tier: route it to full
