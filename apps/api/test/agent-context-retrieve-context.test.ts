@@ -201,10 +201,14 @@ describe('Task 1.3 — agent wiki auto-load via retrieveContext', () => {
       'agent.ts should not contain inline "allRelevantPages" array after refactor',
     );
 
-    // The gateway call should be present.
+    // The streaming conversation routes that built reply context in agent.ts
+    // were retired (W1-a); replies are built by the agent-reply worker via the
+    // runner, which owns the retrieveContext call. agent.ts must not grow a
+    // second context path of its own.
+    const runnerSrc = readFileSync(join(dirname(__filename), '../src/lib/agent-runner.ts'), 'utf8');
     assert.ok(
-      src.includes('retrieveContext'),
-      'agent.ts should call retrieveContext after refactor',
+      runnerSrc.includes('retrieveContext'),
+      'agent-runner.ts should build reply context through retrieveContext',
     );
   });
 });
