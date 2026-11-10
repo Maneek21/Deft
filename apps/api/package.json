@@ -8,7 +8,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
     "pretypecheck": "pnpm --filter @deft/app-kit build",
-    "typecheck": "tsc -p tsconfig.typecheck.json",
+    "typecheck": "node ../../node_modules/ts7/bin/tsc -p tsconfig.typecheck.json",
     "pretest": "pnpm --filter @deft/app-kit build",
     "test": "tsx src/scripts/run-api-tests.ts",
     "inbox:compact": "tsx src/scripts/compact-inbox-history.ts",
@@ -41,6 +41,7 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^26.6.5",
     "@types/pg": "^8.23.1",
-    "@types/web-push": "^3.6.4"
+    "@types/web-push": "^3.6.4",
+    "typescript": "^6.0.3"
   }
 }
