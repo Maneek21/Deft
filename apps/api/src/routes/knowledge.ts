@@ -178,7 +178,7 @@ knowledgeRoutes.get('/:spaceId/knowledge', async (c) => {
     const typeFilter = c.req.query('type');
     const limitParam = Math.min(parseInt(c.req.query('limit') || '50'), 100);
 
-    const isMember = await requireSpaceMembership(spaceId, user.id);
+    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
     if (!isMember) {
       return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
     }
@@ -243,7 +243,7 @@ knowledgeRoutes.post('/:spaceId/knowledge/capture-discussion', async (c) => {
       8 * 60,
     );
 
-    const isMember = await requireSpaceMembership(spaceId, user.id);
+    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
     if (!isMember) {
       return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
     }
@@ -276,7 +276,7 @@ knowledgeRoutes.post('/:spaceId/knowledge', async (c) => {
     const { type, title, content, source_message_id } = body;
     const metadata = cleanMetadata(body.metadata);
 
-    const isMember = await requireSpaceMembership(spaceId, user.id);
+    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
     if (!isMember) {
       return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
     }
@@ -381,7 +381,7 @@ knowledgeRoutes.patch('/:spaceId/knowledge/:id', async (c) => {
     const entryId = c.req.param('id');
     const body = await c.req.json();
 
-    const isMember = await requireSpaceMembership(spaceId, user.id);
+    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
     if (!isMember) {
       return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
     }
@@ -448,7 +448,7 @@ knowledgeRoutes.delete('/:spaceId/knowledge/:id', async (c) => {
     const spaceId = c.req.param('spaceId');
     const entryId = c.req.param('id');
 
-    const isMember = await requireSpaceMembership(spaceId, user.id);
+    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
     if (!isMember) {
       return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
     }

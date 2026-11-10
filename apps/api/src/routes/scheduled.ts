@@ -28,7 +28,7 @@ scheduledRoutes.post('/', async (c) => {
     return c.json({ error: 'scheduled_for must be a valid future date', code: 'VALIDATION_ERROR' }, 400);
   }
 
-  if (!(await requireSpaceMembership(parsed.data.space_id, user.id))) {
+  if (!(await requireSpaceMembership(parsed.data.space_id, user.id, user.org_id))) {
     return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
   }
 
@@ -105,7 +105,7 @@ scheduledRoutes.get('/', async (c) => {
   const user = c.get('user');
   const pending = await db.select()
     .from(scheduledMessages)
-    .where(and(eq(scheduledMessages.user_id, user.id), eq(scheduledMessages.status, 'pending')))
+    .where(and(eq(scheduledMessages.org_id, user.org_id), eq(scheduledMessages.user_id, user.id), eq(scheduledMessages.status, 'pending')))
     .orderBy(scheduledMessages.scheduled_for);
   return c.json(pending);
 });
@@ -119,6 +119,7 @@ scheduledRoutes.delete('/:id', async (c) => {
       .set({ status: 'cancelled' })
       .where(and(
         eq(scheduledMessages.id, id),
+        eq(scheduledMessages.org_id, user.org_id),
         eq(scheduledMessages.user_id, user.id),
         eq(scheduledMessages.status, 'pending'),
       ))
