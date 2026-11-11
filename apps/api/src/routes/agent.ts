@@ -8,7 +8,7 @@ import { getModuleInstallation, getModuleRecord, humanModuleActor, listModuleRec
 import { parseModuleRecordResourceId } from '@deft/shared/modules';
 import { appHttpFailure } from './app-http-errors.js';
 import { randomUUID } from 'node:crypto';
-import { eq, and, asc, desc, sql, inArray } from 'drizzle-orm';
+import { eq, and, asc, desc, sql, inArray, isNull } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import {
   agentActions,
@@ -1819,6 +1819,12 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
   return c.json({ success: true });
 });
 
+class UndoRefusal extends Error {
+  constructor(readonly status: 400 | 409, readonly code: string, message: string) {
+    super(message);
+  }
+}
+
 agentRoutes.post('/actions/:id/undo', async (c) => {
   const user = c.get('user');
   const actionId = c.req.param('id');
@@ -1845,19 +1851,39 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
   const afterState = action.after_state as Record<string, any> | null;
   const result = action.result as Record<string, any> | null;
 
+  // The reversal and the undone_at stamp commit together. The stamp is a
+  // conditional claim, so two undos cannot both run, and each reversal only
+  // applies while the target still holds the value this action wrote: a
+  // later change by someone else is never overwritten.
+  let audit: Parameters<typeof logAuditEvent>[0] | null = null;
   try {
-    switch (action.action) {
-      case 'create_task': {
-        const taskId = result?.task_id;
-        if (taskId) {
-          await db.update(tasks).set({ is_deleted: true }).where(and(eq(tasks.id, taskId), eq(tasks.org_id, user.org_id)));
-          await db.insert(taskActivity).values({
+    await db.transaction(async (tx) => {
+      const [claimed] = await tx
+        .update(agentActions)
+        .set({ undone_at: new Date() })
+        .where(and(
+          eq(agentActions.id, actionId),
+          eq(agentActions.org_id, user.org_id),
+          isNull(agentActions.undone_at),
+        ))
+        .returning({ id: agentActions.id });
+      if (!claimed) throw new UndoRefusal(400, 'ALREADY_UNDONE', 'Already undone');
+
+      switch (action.action) {
+        case 'create_task': {
+          const taskId = result?.task_id;
+          if (!taskId) break;
+          const [deleted] = await tx.update(tasks).set({ is_deleted: true })
+            .where(and(eq(tasks.id, taskId), eq(tasks.org_id, user.org_id), eq(tasks.is_deleted, false)))
+            .returning({ id: tasks.id });
+          if (!deleted) throw new UndoRefusal(409, 'UNDO_CONFLICT', 'The task was already deleted.');
+          await tx.insert(taskActivity).values({
             org_id: user.org_id,
             task_id: taskId,
             user_id: user.id,
             action: 'deleted',
           });
-          await logAuditEvent({
+          audit = {
             orgId: user.org_id,
             actorType: 'user',
             actorId: user.id,
@@ -1867,26 +1893,34 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
             beforeState: afterState,
             afterState: { is_deleted: true },
             metadata: { action_id: actionId },
-          });
+          };
+          break;
         }
-        break;
-      }
 
-      case 'update_task_status': {
-        const taskId = beforeState?.task_id || result?.task_id;
-        const oldStatus = beforeState?.status;
-        if (taskId && oldStatus) {
-          await db.update(tasks).set({ status: oldStatus }).where(and(eq(tasks.id, taskId), eq(tasks.org_id, user.org_id)));
-          await db.insert(taskActivity).values({
+        case 'update_task_status': {
+          const taskId = beforeState?.task_id || result?.task_id;
+          const oldStatus = beforeState?.status;
+          if (!taskId || !oldStatus) break;
+          const writtenStatus = afterState?.status;
+          if (typeof writtenStatus !== 'string') {
+            throw new UndoRefusal(409, 'UNDO_CONFLICT', 'This action did not record the status it set, so it cannot be undone safely.');
+          }
+          const [reverted] = await tx.update(tasks).set({ status: oldStatus })
+            .where(and(eq(tasks.id, taskId), eq(tasks.org_id, user.org_id), eq(tasks.status, writtenStatus as any)))
+            .returning({ id: tasks.id });
+          if (!reverted) {
+            throw new UndoRefusal(409, 'UNDO_CONFLICT', 'The task status has changed since this action. Undo would overwrite that change.');
+          }
+          await tx.insert(taskActivity).values({
             org_id: user.org_id,
             task_id: taskId,
             user_id: user.id,
             action: 'status_changed',
             field: 'status',
-            old_value: afterState?.status,
+            old_value: writtenStatus,
             new_value: oldStatus,
           });
-          await logAuditEvent({
+          audit = {
             orgId: user.org_id,
             actorType: 'user',
             actorId: user.id,
@@ -1896,26 +1930,38 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
             beforeState: afterState,
             afterState: beforeState,
             metadata: { action_id: actionId },
-          });
+          };
+          break;
         }
-        break;
-      }
 
-      case 'assign_task': {
-        const taskId = beforeState?.task_id || result?.task_id;
-        const oldAssigneeId = beforeState?.assignee_id ?? null;
-        if (taskId) {
-          await db.update(tasks).set({ assignee_id: oldAssigneeId }).where(and(eq(tasks.id, taskId), eq(tasks.org_id, user.org_id)));
-          await db.insert(taskActivity).values({
+        case 'assign_task': {
+          const taskId = beforeState?.task_id || result?.task_id;
+          const oldAssigneeId = beforeState?.assignee_id ?? null;
+          if (!taskId) break;
+          if (!afterState || !('assignee_id' in afterState)) {
+            throw new UndoRefusal(409, 'UNDO_CONFLICT', 'This action did not record the assignee it set, so it cannot be undone safely.');
+          }
+          const writtenAssigneeId: string | null = afterState.assignee_id ?? null;
+          const [reverted] = await tx.update(tasks).set({ assignee_id: oldAssigneeId })
+            .where(and(
+              eq(tasks.id, taskId),
+              eq(tasks.org_id, user.org_id),
+              writtenAssigneeId === null ? isNull(tasks.assignee_id) : eq(tasks.assignee_id, writtenAssigneeId),
+            ))
+            .returning({ id: tasks.id });
+          if (!reverted) {
+            throw new UndoRefusal(409, 'UNDO_CONFLICT', 'The task has been reassigned since this action. Undo would overwrite that change.');
+          }
+          await tx.insert(taskActivity).values({
             org_id: user.org_id,
             task_id: taskId,
             user_id: user.id,
             action: 'field_changed',
             field: 'assignee',
-            old_value: afterState?.assignee_id || null,
+            old_value: writtenAssigneeId,
             new_value: oldAssigneeId,
           });
-          await logAuditEvent({
+          audit = {
             orgId: user.org_id,
             actorType: 'user',
             actorId: user.id,
@@ -1925,16 +1971,18 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
             beforeState: afterState,
             afterState: beforeState,
             metadata: { action_id: actionId },
-          });
+          };
+          break;
         }
-        break;
-      }
 
-      case 'post_message': {
-        const messageId = result?.message_id;
-        if (messageId) {
-          await db.update(messages).set({ is_deleted: true }).where(and(eq(messages.id, messageId), eq(messages.org_id, user.org_id)));
-          await logAuditEvent({
+        case 'post_message': {
+          const messageId = result?.message_id;
+          if (!messageId) break;
+          const [deleted] = await tx.update(messages).set({ is_deleted: true })
+            .where(and(eq(messages.id, messageId), eq(messages.org_id, user.org_id), eq(messages.is_deleted, false)))
+            .returning({ id: messages.id });
+          if (!deleted) throw new UndoRefusal(409, 'UNDO_CONFLICT', 'The message was already deleted.');
+          audit = {
             orgId: user.org_id,
             actorType: 'user',
             actorId: user.id,
@@ -1944,24 +1992,20 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
             beforeState: afterState,
             afterState: { is_deleted: true },
             metadata: { action_id: actionId },
-          });
+          };
+          break;
         }
-        break;
       }
-    }
+    });
   } catch (err) {
+    if (err instanceof UndoRefusal) {
+      return c.json({ error: err.message, code: err.code }, err.status);
+    }
     console.error('[undo] Failed to reverse action:', err);
-    return c.json({
-      error: 'Failed to undo action',
-      code: 'UNDO_FAILED',
-      detail: err instanceof Error ? err.message : 'Unknown error',
-    }, 500);
+    return c.json({ error: 'Failed to undo action', code: 'UNDO_FAILED' }, 500);
   }
 
-  await db
-    .update(agentActions)
-    .set({ undone_at: new Date() })
-    .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, user.org_id)));
+  if (audit) await logAuditEvent(audit);
   return c.json({ success: true });
 });
 
