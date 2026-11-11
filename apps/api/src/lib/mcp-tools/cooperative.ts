@@ -268,6 +268,7 @@ export async function recordProgress(args: ProgressArgs, ctx: ToolContext): Prom
         status,
         task_id: event.source_id,
         channel_event_id: eventId,
+        bound_channel_event_id: eventId,
         runtime_request_key: ctx.runtime_request_key,
         idempotency_digest: digest,
         artifacts,
@@ -339,6 +340,21 @@ export async function recordProgress(args: ProgressArgs, ctx: ToolContext): Prom
   });
 }
 
+/**
+ * A record's source is the channel event the server bound to this MCP call
+ * (`ctx.channel_event_id`, resolved from the employee's active delivery, never
+ * from tool arguments). It is stored as `bound_channel_event_id`, written last
+ * so a caller-supplied value is always replaced or removed. A caller-supplied
+ * `channel_event_id` naming another event is dropped. The activity feed
+ * authorizes record text only against this bound source.
+ */
+function boundRecordMetadata(ctx: ToolContext, metadata: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
+  const { bound_channel_event_id: _callerBound, ...rest } = metadata && typeof metadata === 'object' && !Array.isArray(metadata) ? metadata : {};
+  if (rest.channel_event_id !== undefined && rest.channel_event_id !== ctx.channel_event_id) delete rest.channel_event_id;
+  if (ctx.channel_event_id) return { ...rest, bound_channel_event_id: ctx.channel_event_id };
+  return Object.keys(rest).length > 0 || metadata ? rest : null;
+}
+
 async function appendLog(
   ctx: ToolContext,
   kind:
@@ -367,7 +383,7 @@ async function appendLog(
         employee_id: ctx.employee_id,
         kind,
         summary,
-        metadata: args.metadata ?? null,
+        metadata: boundRecordMetadata(ctx, args.metadata),
         session_turn_id: args.session_turn_id ?? null,
       })
       .returning({ id: agentCooperativeLog.id, created_at: agentCooperativeLog.created_at });
@@ -404,7 +420,7 @@ async function appendLog(
       employee_id: ctx.employee_id,
       kind,
       summary,
-      metadata: { ...(args.metadata ?? {}), idempotency_digest: digest },
+      metadata: { ...(boundRecordMetadata(ctx, args.metadata) ?? {}), idempotency_digest: digest },
       session_turn_id: args.session_turn_id ?? null,
     }).returning({ id: agentCooperativeLog.id, created_at: agentCooperativeLog.created_at });
     return { ...row!, replayed: false };

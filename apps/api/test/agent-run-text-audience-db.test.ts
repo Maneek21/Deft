@@ -16,9 +16,9 @@ import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 
 const url = safeTestDatabaseUrl();
 const orgId = randomUUID();
-const ids = { admin: randomUUID(), insider: randomUUID(), peer: randomUUID(), guest: randomUUID(), agent: randomUUID(), defty: randomUUID() };
+const ids = { admin: randomUUID(), insider: randomUUID(), peer: randomUUID(), guest: randomUUID(), agent: randomUUID(), defty: randomUUID(), extra: randomUUID() };
 const roles: Record<string, 'owner' | 'admin' | 'member' | 'guest'> = {
-  [ids.admin]: 'admin', [ids.insider]: 'member', [ids.peer]: 'member', [ids.guest]: 'guest', [ids.agent]: 'member', [ids.defty]: 'member',
+  [ids.admin]: 'admin', [ids.insider]: 'member', [ids.peer]: 'member', [ids.guest]: 'guest', [ids.agent]: 'member', [ids.defty]: 'member', [ids.extra]: 'member',
 };
 const employeeId = randomUUID();
 const privateSpace = randomUUID();
@@ -99,6 +99,7 @@ after(async () => {
   await realtime?.close();
   if (seeded && client) {
     await client.query('DELETE FROM task_watchers WHERE task_id=$1', [taskId]);
+    await client.query('DELETE FROM task_assignees WHERE task_id=$1', [taskId]);
     for (const table of ['agent_channel_delivery_attempts', 'agent_channel_cursors', 'agent_channel_connections', 'agent_channel_tokens', 'agent_cooperative_log',
       'agent_session_turns', 'agent_mcp_call_audit', 'agent_heartbeat_turns', 'attention_events', 'attention_items', 'agent_channel_events', 'agent_actions',
       'task_activity', 'tasks', 'projects']) {
@@ -133,7 +134,7 @@ test('W2a4-A: activity text goes to the audience of each entry\'s source; others
     'CANARY-LOOSE-DETAIL', 'CANARY-LOOSE-ERROR', 'CANARY-TURN',
   ], 'owners/admins keep every diagnostic');
   const insider = await read(ids.insider);
-  assert.deepEqual(canaries(JSON.stringify(insider)), ['CANARY-COOP-TURN', 'CANARY-EVENT-DETAIL', 'CANARY-EVENT-ERROR', 'CANARY-TURN'],
+  assert.deepEqual(canaries(JSON.stringify(insider)), ['CANARY-EVENT-DETAIL', 'CANARY-EVENT-ERROR', 'CANARY-TURN'],
     'a reader of the source receives the text of entries from that source only');
   for (const viewer of [ids.peer, ids.guest]) {
     const entries = await read(viewer);
@@ -336,4 +337,114 @@ test('W2a4-D2: heartbeat summaries and outcome reasons go to owners/admins only'
     assert.deepEqual(canaries(JSON.stringify(body)), []);
     assert.equal(body.turns[0]?.outcome, 'error', 'the outcome stays');
   }
+});
+
+// ── Round 2: record sources are bound by the server ─────────────────────
+test('W2a4-R1: a cooperative record\'s text follows only the source the server bound to its call', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const { recordDecision } = await import('../src/lib/mcp-tools/cooperative.js');
+  // A widely readable event of the same employee: a message in a public room.
+  const publicMessage = randomUUID();
+  const publicEvent = randomUUID();
+  await client!.query('INSERT INTO messages(id,org_id,space_id,user_id,content) VALUES($1,$2,$3,$4,$5)', [publicMessage, orgId, publicSpace, ids.peer, 'public ask']);
+  await client!.query(`INSERT INTO agent_channel_events(id,org_id,agent_employee_id,kind,source_kind,source_id,space_id,idempotency_key,status)
+    VALUES($1,$2,$3,'message.created','message',$4,$5,$6,'acknowledged')`, [publicEvent, orgId, employeeId, publicMessage, publicSpace, `w2a4:${publicEvent}`]);
+  const ctx = (eventId?: string) => ({ org_id: orgId, employee_id: employeeId, employee_slug: 'runner', trust_level: 'standard', ...(eventId ? { channel_event_id: eventId } : {}) }) as any;
+  // Made while working on the restricted task, naming the public event and a turn.
+  const restricted = await recordDecision({ summary: 'CANARY-RESTRICTED-RECORD', metadata: { channel_event_id: publicEvent, bound_channel_event_id: publicEvent }, session_turn_id: turnId }, ctx(taskEventId));
+  assert.notEqual(restricted.isError, true, JSON.stringify(restricted));
+  // Made outside any delivery, claiming a bound source.
+  await recordDecision({ summary: 'CANARY-UNBOUND-RECORD', metadata: { bound_channel_event_id: publicEvent } }, ctx());
+  // Made while working on the public event.
+  await recordDecision({ summary: 'CANARY-PUBLIC-RECORD', idempotency_key: `w2a4-${randomUUID()}` }, ctx(publicEvent));
+  // A stored row whose ids disagree.
+  await client!.query(`INSERT INTO agent_cooperative_log(id,org_id,employee_id,kind,summary,metadata) VALUES($1,$2,$3,'decision','CANARY-CONFLICT-RECORD',$4)`,
+    [randomUUID(), orgId, employeeId, JSON.stringify({ bound_channel_event_id: taskEventId, channel_event_id: publicEvent })]);
+  const [stored] = (await client!.query(`SELECT metadata FROM agent_cooperative_log WHERE org_id=$1 AND summary='CANARY-RESTRICTED-RECORD'`, [orgId])).rows;
+  assert.deepEqual(stored.metadata, { bound_channel_event_id: taskEventId }, 'the caller cannot choose the stored source');
+  const feed = async (viewer: string) => canaries(JSON.stringify(await (await asViewer(viewer, `/${employeeId}/activity`)).json()))
+    .filter((canary) => canary.endsWith('-RECORD'));
+  assert.deepEqual(await feed(ids.admin), ['CANARY-CONFLICT-RECORD', 'CANARY-PUBLIC-RECORD', 'CANARY-RESTRICTED-RECORD', 'CANARY-UNBOUND-RECORD']);
+  assert.deepEqual(await feed(ids.insider), ['CANARY-PUBLIC-RECORD', 'CANARY-RESTRICTED-RECORD'], 'the restricted source\'s reader keeps its record');
+  assert.deepEqual(await feed(ids.peer), ['CANARY-PUBLIC-RECORD'], 'a reader of the public event receives only the record bound to it');
+});
+
+// ── Round 2: revocation between audience resolution and delivery ────────
+test('W2a4-R2: an authority removed while delivery is resolved leaves that socket with the neutral payload', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  realtime ??= await startRealtime();
+  const { setBeforeAudienceDeliveryForTest } = await import('../src/lib/agent-channel.js');
+  const taskRoutes = (await import('../src/routes/tasks.js')).taskRoutes;
+  const as = (viewerId: string, mount: string, routes: Hono) => {
+    const hono = new Hono();
+    hono.use('*', async (c, next) => { c.set('user', { id: viewerId, org_id: orgId, email: `${viewerId}@example.test`, role: roles[viewerId] } as any); await next(); });
+    hono.route(mount, routes);
+    return hono;
+  };
+  const channel = new Hono();
+  channel.route('/api/agent-channel/v1', channelRoutes!);
+  const progressOf = (events: Array<{ event: string; data: any }>) => events.filter((entry) => entry.event === 'task:agent_progress' && entry.data?.task_id === taskId);
+  const report = async (detail: string, expectedStatus = 200) => {
+    const response = await channel.request('/api/agent-channel/v1/status', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ event_id: taskEventId, state: 'working', claim_token: claimToken, detail }),
+    });
+    assert.equal(response.status, expectedStatus, await response.clone().text());
+    await settle();
+  };
+  await client!.query('INSERT INTO task_assignees(id,task_id,user_id) VALUES($1,$2,$3)', [randomUUID(), taskId, ids.extra]);
+  const extra = await realtime.open(ids.extra);
+  const insider = await realtime.open(ids.insider);
+  try {
+    await report('CANARY-BEFORE-REVOKE');
+    assert.deepEqual(canaries(JSON.stringify(progressOf(extra))), ['CANARY-BEFORE-REVOKE'], 'an additional assignee reads the task');
+
+    // The additional assignee is removed after the audience is resolved.
+    setBeforeAudienceDeliveryForTest(async () => {
+      const removed = await as(ids.insider, '/api/tasks', taskRoutes).request(`/api/tasks/${taskId}/assignees/${ids.extra}`, { method: 'DELETE' });
+      assert.equal(removed.status, 200, await removed.clone().text());
+    });
+    await report('CANARY-ASSIGNEE-REVOKED');
+    setBeforeAudienceDeliveryForTest(null);
+    const afterRemoval = progressOf(extra).at(-1)!;
+    assert.deepEqual(canaries(JSON.stringify(afterRemoval)), [], 'the removed assignee receives the neutral payload');
+    assert.equal(afterRemoval.data.status, 'started');
+
+    // The employee is paused after the audience is resolved.
+    setBeforeAudienceDeliveryForTest(async () => {
+      const paused = await as(ids.admin, '/api/agent-employees', employeeRoutes!).request(`/api/agent-employees/${employeeId}/pause`, { method: 'POST' });
+      assert.equal(paused.status, 200, await paused.clone().text());
+    });
+    // The response itself is answered after the pause, so the event is no longer the employee's to report on.
+    await report('CANARY-EMPLOYEE-PAUSED', 404);
+    setBeforeAudienceDeliveryForTest(null);
+    const afterPause = progressOf(insider).at(-1)!;
+    assert.deepEqual(canaries(JSON.stringify(afterPause)), [], 'the task reader receives the neutral payload once the employee is paused');
+  } finally {
+    setBeforeAudienceDeliveryForTest(null);
+    await client!.query('UPDATE agent_employees SET is_active=true WHERE id=$1', [employeeId]);
+  }
+});
+
+test('W2a4-R2b: a delivery failure mid-send gives every remaining socket the neutral payload and never reaches the caller', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const { emitOrgEventByAudience } = await import('../src/lib/agent-channel.js');
+  const received: Record<string, unknown[]> = { a: [], b: [], c: [] };
+  const socket = (name: string, user: string, fail = false) => ({
+    rooms: new Set([`org-user:${orgId}:${user}`]),
+    emit: (_event: string, payload: unknown) => {
+      if (fail && received[name]!.length === 0) { received[name]!.push('attempt'); throw new Error('socket closed'); }
+      received[name]!.push(payload);
+    },
+  });
+  const sockets = [socket('a', ids.admin), socket('b', ids.insider, true), socket('c', ids.peer)];
+  const io = { to: () => ({ emit: () => undefined }), in: () => ({ fetchSockets: async () => sockets }) };
+  await emitOrgEventByAudience(io, {
+    orgId, event: 'x', neutral: { text: null }, detailed: { text: 'CANARY-DETAIL' },
+    audience: async () => new Set([ids.admin, ids.insider]),
+  });
+  assert.deepEqual(received.a, [{ text: 'CANARY-DETAIL' }]);
+  assert.deepEqual(received.b, ['attempt', { text: null }]);
+  assert.deepEqual(received.c, [{ text: null }]);
 });
