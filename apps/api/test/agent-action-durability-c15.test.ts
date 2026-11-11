@@ -121,3 +121,25 @@ test('C15: a reject that loses to an approve records no rejection and resolves A
     assert.equal(resolution, 'resolved:approved');
   }
 });
+
+test('C15: a losing rejection whose reason reads "already rejected" does not record a decision', { skip: !canRun }, async () => {
+  const actionId = await pendingResolverAction();
+
+  await blocker.query('BEGIN');
+  await blocker.query('SELECT id FROM agent_actions WHERE id = $1 FOR UPDATE', [actionId]);
+  const rejecting = f.as(f.requesterId, `/api/agent/actions/${actionId}/reject`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ reason: 'already rejected' }),
+  });
+  await waitForBlockedBackend();
+  // Another request rejects first.
+  await blocker.query("UPDATE agent_actions SET approval_status = 'rejected' WHERE id = $1", [actionId]);
+  await blocker.query('COMMIT');
+  const response = await rejecting;
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal(((await response.json()) as { status: string }).status, 'rejected');
+  assert.notEqual((await decisions(actionId)).get(f.requesterId), 'rejected',
+    'the losing request must not be recorded as the one that decided');
+});

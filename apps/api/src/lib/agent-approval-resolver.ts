@@ -575,9 +575,13 @@ export type ApprovalResolverError =
   | { status: 'error'; code: 'EMPLOYEE_MISSING'; message: string }
   | { status: 'error'; code: 'EXECUTE_FAILED'; message: string };
 
+/**
+ * `decidedElsewhere` is set when the row was already settled or another
+ * request won the claim: this call applied no decision of its own.
+ */
 export type ApprovalResolverSuccess =
-  | { status: 'approved'; message?: string; result?: unknown }
-  | { status: 'rejected'; message?: string };
+  | { status: 'approved'; message?: string; result?: unknown; decidedElsewhere?: true }
+  | { status: 'rejected'; message?: string; decidedElsewhere?: true };
 
 export type ApprovalResolverResult =
   | ApprovalResolverSuccess
@@ -941,7 +945,7 @@ async function approveActionLocked(
     }
     return {
       status: 'approved',
-      message: 'already approved',
+      decidedElsewhere: true, message: 'already approved',
       result: row.result ?? undefined,
     };
   }
@@ -949,7 +953,7 @@ async function approveActionLocked(
     if (isModuleMutation) await repairRejectedModuleTerminalState(row);
     return {
       status: 'rejected',
-      message: 'already rejected',
+      decidedElsewhere: true, message: 'already rejected',
     };
   }
   if (row.approval_status === 'expired') {
@@ -1160,13 +1164,13 @@ async function approveActionLocked(
         if (isModuleMutation || isModuleTaskLink) await ensureApprovedModuleReceipt(winner);
         return {
           status: 'approved',
-          message: 'already approved (lost race)',
+          decidedElsewhere: true, message: 'already approved (lost race)',
           result: winner.result ?? undefined,
         };
       }
       if (winner?.approval_status === 'rejected') {
         if (isModuleMutation) await repairRejectedModuleTerminalState(winner);
-        return { status: 'rejected', message: 'already rejected (lost race)' };
+        return { status: 'rejected', decidedElsewhere: true, message: 'already rejected (lost race)' };
       }
       if (winner?.approval_status === 'expired') {
         if (isModuleMutation) await repairExpiredModuleTerminalState(winner);
@@ -1412,11 +1416,11 @@ async function resolveRecordMirrorNominationAction(
     const [winner] = await db.select().from(agentActions).where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id))).limit(1);
     if (winner?.approval_status === 'approved') {
       if (winner.result != null) {
-        return { status: 'approved', message: 'already approved', result: winner.result ?? undefined };
+        return { status: 'approved', decidedElsewhere: true, message: 'already approved', result: winner.result ?? undefined };
       }
       return { status: 'error', code: 'EXECUTE_FAILED', message: winner.error ? winner.error.slice(0, 2000) : 'earlier approval attempt failed' };
     }
-    if (winner?.approval_status === 'rejected') return { status: 'rejected', message: 'already rejected' };
+    if (winner?.approval_status === 'rejected') return { status: 'rejected', decidedElsewhere: true, message: 'already rejected' };
     if (winner?.approval_status === 'expired') {
       return { status: 'error', code: 'EXECUTE_FAILED', message: winner.error ? winner.error.slice(0, 2000) : 'nomination can no longer be approved' };
     }
@@ -1537,12 +1541,12 @@ async function rejectActionOnce(
 
   if (row.approval_status === 'rejected') {
     if (isModuleMutation) await repairRejectedModuleTerminalState(row);
-    return { status: 'rejected', message: 'already rejected' };
+    return { status: 'rejected', decidedElsewhere: true, message: 'already rejected' };
   }
   if (row.approval_status === 'approved') {
     return {
       status: 'approved',
-      message: 'already approved — cannot reject after approval',
+      decidedElsewhere: true, message: 'already approved — cannot reject after approval',
       result: row.result ?? undefined,
     };
   }
@@ -1615,13 +1619,13 @@ async function rejectActionOnce(
     if (winner?.approval_status === 'approved') {
       return {
         status: 'approved',
-        message: 'already approved — cannot reject after approval',
+        decidedElsewhere: true, message: 'already approved — cannot reject after approval',
         result: winner.result ?? undefined,
       };
     }
     if (winner?.approval_status === 'rejected') {
       if (isModuleMutation) await repairRejectedModuleTerminalState(winner);
-      return { status: 'rejected', message: 'already rejected' };
+      return { status: 'rejected', decidedElsewhere: true, message: 'already rejected' };
     }
     if (winner?.approval_status === 'expired') {
       if (isModuleMutation) await repairExpiredModuleTerminalState(winner);

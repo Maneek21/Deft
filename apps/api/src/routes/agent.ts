@@ -258,30 +258,15 @@ async function maybePostApprovalConfirmation(params: {
 
 
 /**
- * Resolver answers for a row this request did not decide: it was already
- * settled, or another request won the claim.
- */
-const RESOLVER_UNCHANGED_MESSAGES = new Set([
-  'already approved',
-  'already approved (lost race)',
-  'already approved — cannot reject after approval',
-  'already rejected',
-  'already rejected (lost race)',
-]);
-
-/**
- * True when this request's own decision is what the resolver applied. A
- * successful rejection echoes the caller's reason as its message, so a
- * reason that happens to read like an "already" answer still counts.
+ * True when this request's own decision is what the resolver applied: the
+ * resolver answered with the requested status and did not report that the
+ * row was already settled or that another request won the claim.
  */
 function resolverDecidedHere(
   requested: 'approved' | 'rejected',
-  result: { status: string; message?: string },
-  reason?: string,
+  result: { status: string; decidedElsewhere?: true },
 ): boolean {
-  if (result.status !== requested) return false;
-  if (requested === 'rejected' && result.message === reason) return true;
-  return !(typeof result.message === 'string' && RESOLVER_UNCHANGED_MESSAGES.has(result.message));
+  return result.status === requested && result.decidedElsewhere !== true;
 }
 
 function visibleActionSql(user: { id: string; org_id: string; role?: string }) {
@@ -1337,7 +1322,7 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
     // An action approved earlier whose execution failed is reported as
     // failed, not as a fresh success.
     if (result.status === 'approved' && !action.app_run_id && action.approval_status === 'approved'
-      && action.error && result.message?.startsWith('already approved')) {
+      && action.error && result.decidedElsewhere === true) {
       return c.json(approvedButFailedBody(action.error));
     }
     return c.json({
@@ -1694,7 +1679,7 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
         : 400;
       return c.json({ error: result.message, code: result.code }, statusCode);
     }
-    if (action.approval_status === 'pending' && resolverDecidedHere('rejected', result, reason)) {
+    if (action.approval_status === 'pending' && resolverDecidedHere('rejected', result)) {
       await recordActionApproverDecision({
         orgId: user.org_id,
         actionId,
