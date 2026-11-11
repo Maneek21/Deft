@@ -117,13 +117,14 @@ export async function assertDeliveryOwnedBeforeCommit(tx: Executor, delivery?: D
 
 /**
  * True when an error (or anything in its cause chain) is a PostgreSQL lock or
- * statement timeout. The reply transaction bounds its waits to the remaining
+ * statement timeout, or a statement refused because the transaction was already aborted. The reply transaction bounds its waits to the remaining
  * lease, so these mean "try the delivery again", never "publish a fallback".
  */
 export function isDatabaseWaitTimeout(err: unknown): boolean {
   for (let cur: unknown = err, depth = 0; cur && depth < 8; depth += 1) {
     const code = (cur as { code?: unknown }).code;
-    if (code === '55P03' || code === '57014') return true;
+    // 25P02: a statement ran after an earlier error aborted the transaction.
+    if (code === '55P03' || code === '57014' || code === '25P02') return true;
     cur = (cur as { cause?: unknown }).cause;
   }
   return false;

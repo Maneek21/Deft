@@ -3,6 +3,7 @@ import {collectCompilerReadFacts,validateCompilerGrounding} from './agent-compil
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { agentActions, messages, orgs, projects, tasks } from '@deft/db/schema';
 import { getApprovalTier } from './agent-approval.js';
+import { isDatabaseWaitTimeout } from './defty-reply-guard.js';
 import { db } from './db.js';
 import { getOrgAIConfig } from './org-ai-config.js';
 import { resolveProjectTarget } from './resolve-project-target.js';
@@ -297,6 +298,8 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
         );
         proposal.params = canonicalParams as Record<string, any>;
       } catch (error) {
+        // A lock or statement timeout aborts the transaction: retry the delivery, never continue.
+        if (isDatabaseWaitTimeout(error)) throw error;
         rejectedAtBoundary.add(proposal);
         rejectedModuleActions.push(proposal.action);
         console.warn('[agent-action-proposals] Rejected module proposal at transaction boundary', {

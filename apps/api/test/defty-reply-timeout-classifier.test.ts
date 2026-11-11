@@ -6,6 +6,7 @@ test('A09 round 3: lock and statement timeouts are recognised through a wrapped 
   const lock = Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' });
   const statement = Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
   assert.equal(isDatabaseWaitTimeout(lock), true);
+  assert.equal(isDatabaseWaitTimeout(new Error('Failed query', { cause: Object.assign(new Error('current transaction is aborted'), { code: '25P02' }) })), true);
   assert.equal(isDatabaseWaitTimeout(statement), true);
   assert.equal(isDatabaseWaitTimeout(new Error('Failed query', { cause: lock })), true);
   assert.equal(isDatabaseWaitTimeout(new Error('outer', { cause: new Error('Failed query', { cause: statement }) })), true);
