@@ -30,7 +30,85 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
   its burn-down bucket, and `node scripts/check-app-boundary.mjs --summary` prints
   the counts per milestone. No finding changed.
 
-### 0.3.0-preview.141 candidate - publication pending
+### Unreleased: merged to `master` after `v0.3.0-preview.141`
+
+Agents and approvals:
+
+- No trust level auto-runs a call classed as destructive. Conservative and
+  Standard now queue those calls for approval, as Autonomous already did. This
+  includes connected (MCP) tools named like an admin tool or `delete_*`, and
+  `module_record_task_unlink`.
+- One set of guard rails covers every path on which an agent employee posts a
+  chat message as itself: MCP `send_message` and `message_post`, the Agent
+  Channel reply and the legacy `deft_post_message` call. The employee must be
+  active; the reply-storm detector applies to thread replies; an unhealthy
+  (circuit breaker) employee does not post on its own, and an unhealthy
+  Autonomous employee falls back to the approval queue; the daily action cap is
+  charged once per executed post. The Agent Channel refuses with `409`
+  (`EMPLOYEE_UNHEALTHY`, `STORM_DETECTED` or `DAILY_ACTION_LIMIT`) before any
+  delivery is attempted.
+- A thread reply must name a parent message in the target space.
+
+Workspace isolation:
+
+- Realtime rooms and presence are per workspace. A person who belongs to two
+  workspaces shows as online only in the workspace where their session is
+  connected, and per-user events reach only that workspace's sockets.
+- Note folders, note shares and space actions check the caller's current
+  workspace. Note shares are limited to active members of the workspace. Guests
+  no longer receive the workspace standup, recent activity follows task
+  visibility, and the unread notification count is per workspace.
+
+Operator tooling:
+
+- New read-only script `apps/api/src/scripts/audit-mixed-org-rows.ts` lists rows
+  whose workspace differs from the workspace of the row they belong to. It never
+  writes. See "Checking For Rows Stamped With The Wrong Org" in
+  `docs/self-hosting.md`.
+
+### 0.3.0-preview.141 - published 2026-11-10 (prerelease)
+
+Agents and chat:
+
+- An agent employee's own chat messages (MCP `send_message` to a space, thread
+  or DM, and `message_post`) post without approval at every trust level, within
+  the guard rails of space membership and visibility, the reply-storm detector,
+  the daily action cap and the unhealthy state. Everything else an employee
+  writes follows that employee's trust level. Defty's chat writes always wait for
+  approval; the workspace trust level applies to Defty's approved plans and
+  background work. A direct message from an employee needs an active workspace
+  member as its target.
+- Defty answers reads with the asker's visibility: wiki pages, decision lists,
+  canvases, notes and conversation memory follow what the asker may read.
+- Chat is the only agent-conversation surface. The older endpoints for posting,
+  continuing, renaming and deleting a conversation
+  (`/api/agent/conversations/:id/...`) answer `410 ENDPOINT_RETIRED`; the list,
+  detail, history and trace export endpoints remain and are limited to
+  conversations the caller belongs to. Changing the workspace trust setting
+  requires an active owner or admin.
+- The trust-level and AI settings pages show only what the server confirmed,
+  report failed saves, and state that chat requests to Defty always wait for
+  approval.
+- A message that wakes Defty or a BYOA agent employee is committed together with
+  the job that wakes it; if the job cannot be queued the request fails and can be
+  retried safely.
+- The daily standup uses only unrestricted tasks in live projects, is delivered
+  to its own space, and cannot be triggered by guests. Passive knowledge capture
+  waits out a quiet window so a later correction or a "don't save" is honoured,
+  and scans only public spaces and private spaces Defty was invited to.
+
+Workspace isolation:
+
+- Space membership checks are bound to the caller's current workspace, so a
+  member of two workspaces cannot reach one workspace's space with a session for
+  the other.
+
+Tooling:
+
+- Typecheck scripts run on TypeScript 7; builds stay on TypeScript 6.
+- Dependency updates, including a patched `minimatch` for the ESLint tooling.
+
+The Email-ready release (#424) also shipped in this version:
 
 Operator notes:
 
