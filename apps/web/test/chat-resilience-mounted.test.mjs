@@ -812,3 +812,22 @@ test('R4-3: a live reaction on a thread reply that is not shown yet is applied w
     await close(page);
   }
 });
+
+// ── W2-6: the open thread shows edits and deletes of its replies live ──────
+
+test('W2-6: an edit and a delete of a reply show in the open thread panel without a reload', async () => {
+  const page = await open(browser, { harness: 'defty-chat-harness.tsx', url: '/chat?space=s1&thread=t1' });
+  try {
+    await page.getByRole('heading', { name: 'Thread' }).waitFor();
+    const panel = page.locator('.w-\\[400px\\]');
+    await panel.getByText('for the detail.', { exact: false }).waitFor();
+    await page.evaluate((edit) => window.__deftDeliver('message:edited', edit),
+      { id: 'r1', content: 'Reply edited by Rahul.', edited_at: '2026-10-22T10:30:00.000Z' });
+    await panel.getByText('Reply edited by Rahul.').waitFor({ timeout: 3000 });
+    await page.evaluate((id) => window.__deftDeliver('message:deleted', { id }), 'r1');
+    await panel.getByText('This message was deleted').waitFor({ timeout: 3000 });
+    assert.equal(await panel.getByText('Reply edited by Rahul.').count(), 0);
+  } finally {
+    await close(page);
+  }
+});
