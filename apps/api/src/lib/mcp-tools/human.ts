@@ -2461,6 +2461,11 @@ export async function humanSendMessage(args: HumanSendMessageArgs, ctx: HumanToo
   if (!rawContent) return errorResult('send_message requires content');
 
   return withIdempotency('send_message', args, ctx, async () => {
+    // Same mention normalisation as the web route, before any write (including
+    // creating a DM space), storage and the wake decision.
+    const normalized = await normalizeChatMentions(ctx.org_id, rawContent);
+    if (!normalized.ok) return errorResult(`send_message: ${normalized.error}`);
+    const content = normalized.content;
     const target = args.target && typeof args.target === 'object' && !Array.isArray(args.target)
       ? args.target
       : {};
@@ -2513,10 +2518,6 @@ export async function humanSendMessage(args: HumanSendMessageArgs, ctx: HumanToo
       targetKind = 'dm';
     }
 
-    // Same mention normalisation as the web route, before storage and the wake decision.
-    const normalized = await normalizeChatMentions(ctx.org_id, rawContent);
-    if (!normalized.ok) return errorResult(`send_message: ${normalized.error}`);
-    const content = normalized.content;
     // A08: wake Defty under exactly the web route's conditions (lib/defty-wake.ts).
     const deftyWakeInput = {
       orgId: ctx.org_id, userId: ctx.user_id, spaceId: spaceId!, content, parentId,
