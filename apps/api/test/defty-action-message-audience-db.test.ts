@@ -255,3 +255,16 @@ test('W2a3-1: a new proposal stores only action markers in the message; params s
   const row = (await client!.query('SELECT params FROM agent_actions WHERE id=$1', [persisted.actions[0]!.id])).rows[0];
   assert.equal(row.params.content, 'CANARY-STORED');
 });
+
+const mcpCtx = (viewerId: string) => ({ org_id: orgId, user_id: viewerId, role: roles[viewerId] as any, scopes: ['read:workspace', 'read:messages'] });
+
+test('W2a3-R1: MCP fetch of a message gives run details only to the action audience', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const { humanFetch } = await import('../src/lib/mcp-tools/human.js');
+  const fetchAs = async (viewer: string) => JSON.stringify(await humanFetch({ id: `message:${replyId}` }, mcpCtx(viewer)));
+  assert.deepEqual(canaries(await fetchAs(ids.peer)), []);
+  assert.deepEqual(canaries(await fetchAs(ids.guestApprover)), []);
+  assert.deepEqual(canaries(await fetchAs(ids.requester)), ['CANARY-A-GRAPH', 'CANARY-A-TOOL-ARG']);
+  assert.deepEqual(canaries(await fetchAs(ids.admin)), ['CANARY-A-GRAPH', 'CANARY-A-TOOL-ARG']);
+});
+

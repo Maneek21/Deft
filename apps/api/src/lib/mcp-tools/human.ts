@@ -77,6 +77,7 @@ import {
   parseModuleOperationArgs,
 } from './modules.js';
 import { dispatchAgentEmployeeMessage } from '../dispatch-agent-message.js';
+import { projectMessagesForViewer } from '../agent-message-run-details.js';
 import { enqueueDeftyWake, finishDeftyWake, normalizeChatMentions, planDeftyWake, resolveMentionedUserIds, type DeftyWakeOutcome } from '../defty-wake.js';
 import {
   dispatchAgentEmployeeTask,
@@ -1493,7 +1494,8 @@ export async function humanFetch(args: { id?: string }, ctx: HumanToolContext): 
     const [row] = await db.select().from(messages).where(and(eq(messages.org_id, ctx.org_id), eq(messages.id, rawId), eq(messages.is_deleted, false))).limit(1);
     if (!row) return errorResult('fetch: message not found');
     if (!(await userCanSeeSpace(ctx, row.space_id))) return errorResult('fetch: message not visible to user');
-    return textResult(row);
+    const [projected] = await projectMessagesForViewer({ id: ctx.user_id, org_id: ctx.org_id, role: ctx.role }, [row]);
+    return textResult(projected);
   }
 
   if (kind === 'event') {
