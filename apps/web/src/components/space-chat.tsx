@@ -982,8 +982,10 @@ export function SpaceChat({
     historyReadsRef.current = reads;
     if (!visit.isCurrent()) return () => visit.dispose();
     let cancelled = false;
+    // The ticket stays in scope so every outcome of this read, including a
+    // rejection, is ignored once a catch-up or retry has superseded it.
+    const ticket = reads.begin();
     async function load() {
-      const ticket = reads.begin();
       const res = await api.get(`/api/messages/${spaceId}`);
       if (cancelled || !visit.isCurrent() || !reads.isLatest(ticket)) return;
       if (!res.ok) {
@@ -1019,7 +1021,7 @@ export function SpaceChat({
       }
     }
     void load().catch(() => {
-      if (!cancelled && visit.isCurrent()) setHistoryStatus('error');
+      if (!cancelled && visit.isCurrent() && reads.isLatest(ticket)) setHistoryStatus('error');
     });
     return () => { cancelled = true; visit.dispose(); };
   }, [spaceId, sessionCacheScope, scrollToBottom, highlightMessageId]);

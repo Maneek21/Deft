@@ -610,3 +610,41 @@ test('R3-2: a live reaction during a catch-up does not discard the edit the catc
   }
 });
 
+test('R3-3: an initial read that fails after a successful catch-up does not bring back the error (channel and thread)', async () => {
+  const page = await open(browser, {
+    harness: 'defty-chat-harness.tsx', url: '/chat?space=s1&thread=t1',
+    // Hold the channel's first read and the panel's own thread read (the
+    // second); both fail with a network error when released.
+    override: `(() => { const handler = ${FAKE_SERVER};
+      const first = (path) => (path === '/api/messages/s1' && window.__srv.channelReads === 1)
+        || (path === '/api/messages/t1/thread' && window.__srv.threadReads === 2);
+      window.__srv.netFailWhen = first;
+      window.__srv.holdWhen = first;
+      return handler; })()`,
+  });
+  try {
+    await page.getByRole('heading', { name: 'Thread' }).waitFor();
+    await waitHeld(page, 2);
+    await srv(page, ([channel, thread]) => { window.__srv.channel = channel; window.__srv.thread = thread; },
+      [[ROOT, DEST, MISSED_CHANNEL], [REPLY, MISSED_REPLY]]);
+    await drop(page);
+    await reconnect(page);
+    const panel = page.locator('.w-\\[400px\\]');
+    await page.getByText('Summary that finished while you were offline.').waitFor();
+    await panel.getByText('Thread answer from while you were offline.').waitFor();
+    await release(page, 0);
+    await release(page, 1);
+    // A later catch-up proves the released reads were processed first.
+    await drop(page);
+    await srv(page, ([channel, thread]) => { window.__srv.channel = channel; window.__srv.thread = thread; },
+      [[ROOT, DEST, MISSED_CHANNEL, marker('r3-c', 40, 'Round three channel marker')],
+        [REPLY, MISSED_REPLY, { ...marker('r3-r', 40, 'Round three reply marker'), parent_id: 't1' }]]);
+    await reconnect(page);
+    await page.getByText('Round three channel marker').waitFor();
+    await panel.getByText('Round three reply marker').waitFor();
+    assert.equal(await page.getByText('Could not load messages.').count(), 0);
+    assert.equal(await panel.getByText('Could not load replies.').count(), 0);
+  } finally {
+    await close(page);
+  }
+});

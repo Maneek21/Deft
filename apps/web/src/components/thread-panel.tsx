@@ -329,8 +329,10 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     const reads = new ConversationReads();
     threadReadsRef.current = reads;
 
+    // The ticket stays in scope so every outcome of this read (error,
+    // completion, scroll) is ignored once a catch-up has superseded it.
+    const ticket = reads.begin();
     async function load() {
-      const ticket = reads.begin();
       try {
         const threadRes = await api.get(`/api/messages/${messageId}/thread`);
         if (cancelled || activeMessageIdRef.current !== messageId || !reads.isLatest(ticket)) return;
@@ -346,12 +348,12 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
         // Mark thread as read
         void api.post(`/api/messages/${messageId}/thread-read`).catch(() => {});
       } catch {
-        if (!cancelled && activeMessageIdRef.current === messageId) setLoadError(true);
+        if (!cancelled && activeMessageIdRef.current === messageId && reads.isLatest(ticket)) setLoadError(true);
       } finally {
-        if (!cancelled && activeMessageIdRef.current === messageId) {
+        if (!cancelled && activeMessageIdRef.current === messageId && reads.isLatest(ticket)) {
           setLoading(false);
           setTimeout(() => {
-            if (!cancelled && activeMessageIdRef.current === messageId) scrollToBottom();
+            if (!cancelled && activeMessageIdRef.current === messageId && reads.isLatest(ticket)) scrollToBottom();
           }, 100);
         }
       }
@@ -379,6 +381,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
       const loaded: Message[] = data.replies || data.messages || [];
       setReplies((prev) => mergeMessagesById(prev, loaded, (id) => reads.changedSince(ticket, id)));
       setLoadError(false);
+      setLoading(false);
       void api.post(`/api/messages/${requestMessageId}/thread-read`).catch(() => {});
     } catch {
       if (activeMessageIdRef.current === requestMessageId && reads.isLatest(ticket)) setLoadError(true);
@@ -470,6 +473,8 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
         setReplies((prev) => mergeMessagesById(prev, fetched, (id) => reads.changedSince(ticket, id)));
         setLoadError(false);
         setCatchUpError(false);
+        // It may have superseded the initial read, which then never ends loading.
+        setLoading(false);
         return 'ok';
       } catch {
         if (activeMessageIdRef.current !== messageId || !reads.isLatest(ticket)) return 'superseded';
