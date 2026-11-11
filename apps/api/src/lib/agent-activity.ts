@@ -57,26 +57,6 @@ export function sessionTurnContentAudienceSql(params: { orgId: string; employeeI
         ELSE false END`;
 }
 
-/**
- * The channel event the server bound to the MCP call that wrote a cooperative
- * record (mcp-tools/cooperative.ts: `bound_channel_event_id`, which callers
- * cannot set). A milestone's `channel_event_id` is server-written too:
- * milestones come only from record_progress, from its execution context.
- * Other caller-supplied ids (`session_turn_id`, metadata) never authorize. A
- * record without a bound source, or whose ids disagree, has no reader
- * audience: its text stays with owners/admins.
- */
-function recordSourceEventId(record: typeof agentCooperativeLog.$inferSelect): string | null {
-  const metadata = record.metadata;
-  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
-  const { bound_channel_event_id: bound, channel_event_id: named } = metadata as Record<string, unknown>;
-  const source = typeof bound === 'string' && bound.length > 0
-    ? bound
-    : record.kind === 'milestone' && typeof named === 'string' && named.length > 0 ? named : null;
-  if (!source || (named !== undefined && named !== source)) return null;
-  return source;
-}
-
 function actionStatus(row: typeof agentActions.$inferSelect): AgentActivityItem['status'] {
   if (row.error || row.approval_status === 'rejected' || row.approval_status === 'expired') return 'failed';
   if (row.executed_at) return 'completed';
@@ -91,10 +71,9 @@ function actionStatus(row: typeof agentActions.$inferSelect): AgentActivityItem[
  * to the source go only to owners/admins and to readers of that entry's
  * source: the action audience for action rows (module-action-visibility.ts,
  * which also scopes which action rows are listed), the channel event's source
- * under the employee source rule, the session turn's content audience, and
- * for a cooperative record the channel event the server bound to it
- * (recordSourceEventId). Entries without a source (tool calls, unbound
- * records) keep their text for owners/admins.
+ * under the employee source rule, and the session turn's content audience.
+ * Tool calls and cooperative records (whatever ids they carry) keep their
+ * text for owners/admins.
  */
 export async function loadAgentActivity(params: { orgId: string; employeeId: string; viewer: { id: string; role?: string }; limit?: number }) {
   const perSource = Math.min(Math.max(params.limit ?? 50, 1), 100);
@@ -131,7 +110,7 @@ export async function loadAgentActivity(params: { orgId: string; employeeId: str
       .from(agentEmployees)
       .where(and(eq(agentEmployees.id, params.employeeId), eq(agentEmployees.org_id, params.orgId)))
       .limit(1);
-    const eventIds = [...new Set([...events.map((event) => event.id), ...records.map(recordSourceEventId).filter((id): id is string => Boolean(id))])];
+    const eventIds = events.map((event) => event.id);
     const turnIds = sessions.map((session) => session.id);
     const [eventRows, turnRows] = await Promise.all([
       eventIds.length > 0
@@ -234,7 +213,7 @@ export async function loadAgentActivity(params: { orgId: string; employeeId: str
       kind: 'record',
       label: record.kind.replaceAll('_', ' '),
       status: record.kind === 'action_attempt' ? 'running' : 'completed',
-      detail: canSeeAll || textEvents.has(recordSourceEventId(record) ?? '') ? record.summary : null,
+      detail: canSeeAll ? record.summary : null,
       occurred_at: record.created_at,
       target_url: null,
       error: null,
