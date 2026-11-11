@@ -10,7 +10,7 @@ import { parseModuleRecordResourceId } from '@deft/shared/modules';
 import { appHttpFailure } from './app-http-errors.js';
 import { randomUUID } from 'node:crypto';
 import { eq, and, asc, desc, sql, inArray, isNull } from 'drizzle-orm';
-import { db } from '../lib/db.js';
+import { db, type DbAdvisoryLease } from '../lib/db.js';
 import {
   agentActions,
   appRuns,
@@ -1370,7 +1370,7 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
     });
   }
 
-  const leased = await tryWithApprovalLease(actionId, {}, () => approveOrdinaryActionLeased(c, user, actionId));
+  const leased = await tryWithApprovalLease(actionId, {}, (lease) => approveOrdinaryActionLeased(c, user, actionId, lease));
   if (!leased.acquired) {
     // Another request holds this action's execution lease, so its executor
     // (or a recovery) is alive; or every advisory connection is busy. Either
@@ -1428,13 +1428,14 @@ async function approveOrdinaryActionLeased(
   c: Context,
   user: { id: string; org_id: string },
   actionId: string,
+  lease: DbAdvisoryLease,
 ): Promise<Response> {
   const current = await loadOrgAction(actionId, user.org_id);
   if (!current) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
 
   if (current.approval_status === 'approved') {
     // Holding the lease proves no executor is running this approval.
-    const recovery = await recoverInterruptedApproval(current, approvalFinaliserHooks);
+    const recovery = await recoverInterruptedApproval(current, approvalFinaliserHooks, 'legacy', lease);
     if (recovery.kind === 'reexecuted') return ownedApprovalResponse(c, current, user.id, recovery.outcome);
     if (recovery.kind === 'not_interrupted') {
       // Repairs bookkeeping that a crash after the outcome write left undone.
@@ -1456,6 +1457,7 @@ async function approveOrdinaryActionLeased(
     { ...current, approval_status: 'approved', approved_by_user_id: user.id },
     token,
     approvalFinaliserHooks,
+    lease,
   );
   return ownedApprovalResponse(c, current, user.id, outcome);
 }
@@ -1466,6 +1468,11 @@ async function ownedApprovalResponse(
   actorUserId: string,
   outcome: OwnedExecutionOutcome,
 ): Promise<Response> {
+  if (outcome.kind === 'lease_lost') {
+    // Nothing was recorded; recovery settles the action once it can tell
+    // this request is gone.
+    return c.json({ status: 'executing', message: 'execution is already in progress' }, 202);
+  }
   if (outcome.kind === 'superseded') {
     return c.json({
       error: 'This approval was settled by another request while it ran',

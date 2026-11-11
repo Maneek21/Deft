@@ -35,7 +35,7 @@ import type { AppRunTransaction } from './app-run-repository.js';
  * every conservative-trust employee's approved writes.
  */
 import { eq, and, or, sql, isNull } from 'drizzle-orm';
-import { db } from './db.js';
+import { db, type DbAdvisoryLease } from './db.js';
 import {
   APPROVAL_INTERRUPTED_ERROR,
   currentClaimToken,
@@ -614,6 +614,13 @@ async function actionSourceIsCurrent(actionId: string, readerUserId?: string) {
   return Boolean(row);
 }
 
+/** This request's lease dropped: nothing recorded, the row is left for recovery. */
+const leaseLost = (actionId: string): ApprovalResolverError => ({
+  status: 'error',
+  code: 'INVALID_STATE',
+  message: `approval of action ${actionId} lost its execution lease; it will be settled by recovery`,
+});
+
 const sourceUnavailable = (): ApprovalResolverError => ({
   status: 'error', code: 'FORBIDDEN', message: 'The action source is no longer available',
 });
@@ -893,7 +900,7 @@ export async function approveAction(
   // tell a live executor from one that is gone.
   const result = await withApprovalLease(
     actionId,
-    () => approveActionLocked(actionId, approverUserId, options),
+    (lease) => approveActionLocked(actionId, approverUserId, options, lease),
   );
   if (result.status === 'approved' || result.status === 'rejected' || result.code === 'EXECUTE_FAILED') {
     await publishApprovalResolution(actionId, approverUserId);
@@ -906,6 +913,7 @@ async function approveActionLocked(
   actionId: string,
   approverUserId: string,
   options: { internal?: boolean; appRunFinalGuard?: (tx: AppRunTransaction) => Promise<void>; humanWebSessionId?: string },
+  lease: DbAdvisoryLease,
 ): Promise<ApprovalResolverResult> {
   // Pre-checks read immutable fields so they are safe to run before the
   // atomic claim. If any pre-check fails we return without ever flipping
@@ -968,7 +976,7 @@ async function approveActionLocked(
   // This call holds the action's lease, so an approval that was claimed but
   // never recorded an outcome has no live executor. It is not re-run.
   if (isInterruptedApproval(row, 'resolver')) {
-    const recovery = await recoverInterruptedApproval(row, {}, 'resolver');
+    const recovery = await recoverInterruptedApproval(row, {}, 'resolver', lease);
     if (recovery.kind === 'settled_failed') {
       return { status: 'error', code: 'EXECUTE_FAILED', message: APPROVAL_INTERRUPTED_ERROR };
     }
@@ -1035,6 +1043,8 @@ async function approveActionLocked(
   // review()/confirm() authority — never from the agent's grant — so a receipt
   // is only ever issued after a fresh consent/account/policy re-check.
   if (row.action === 'app_record_mirror_nominate') {
+    // No recovery settles a record-mirror approval, so its claim fence alone
+    // guards these writes.
     return resolveRecordMirrorNominationAction(row, approverUserId, options);
   }
 
@@ -1069,6 +1079,7 @@ async function approveActionLocked(
   if (resumesApprovedModule) {
     const committed = await recoverModuleMutationByAgentActionId(row.org_id, row.id);
     if (committed) {
+      if (lease.lost) return leaseLost(actionId);
       const recoveredParams = {
         ...sanitizeModuleActionParamsForHistory(row.action, row.params),
         idempotency_digest: committed.idempotencyDigest,
@@ -1332,6 +1343,7 @@ async function approveActionLocked(
     userId: row.user_id,
     agentEmployeeId: row.agent_employee_id,
   }, hasHumanMcpBulkProvenance(row));
+  if (lease.lost) return leaseLost(actionId);
   const stampedAction = await db.transaction(async (tx) => {
     const [stamped] = await tx
       .update(agentActions)

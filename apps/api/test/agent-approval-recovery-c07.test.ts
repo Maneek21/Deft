@@ -286,7 +286,9 @@ test('C07-d: a request that lost its claim cannot overwrite the recovery', { ski
   // The first request now finishes its execution. Its own outcome write is
   // rejected: the action stays failed, approved, and on the recovery's claim.
   const late = await first!;
-  assert.equal(late.status, 409, await late.clone().text());
+  // Its lease dropped, so it writes nothing (202); had it kept the lease, the
+  // claim fence would still refuse the write (409).
+  assert.ok([202, 409].includes(late.status), await late.clone().text());
   // The lost request's executor did run; only its outcome write was refused.
   assert.equal(await taskStatus(taskId), 'done');
   const final = await actionRow(actionId);
@@ -510,4 +512,46 @@ test('C07-k: a retry of a settled resolver approval resolves Attention as the st
   );
   assert.ok(events.rows.length > 0);
   assert.deepEqual(events.rows.map((row) => row.actor_user_id), [f.requesterId]);
+});
+
+test('C07-l: a request whose lease dropped records no outcome and leaves the action for recovery', { skip: !canRun }, async () => {
+  const taskId = await insertTask(`c07l ${randomUUID()}`);
+  const actionId = await f.insertAction({
+    action: 'update_task_status',
+    params: { task_identifier: await taskIdentifier(taskId), new_status: 'done' },
+    status: 'pending',
+    executed: false,
+  });
+  const receipts = async () => (await f.client.query(
+    'SELECT count(*)::int AS n FROM action_receipts WHERE action_id = $1', [actionId])).rows[0].n as number;
+  const decisions = async () => (await f.client.query(
+    "SELECT count(*)::int AS n FROM agent_action_approvers WHERE action_id = $1 AND decision = 'approved'", [actionId])).rows[0].n as number;
+
+  const locker = new pg.Client({ connectionString: durabilityDatabaseUrl });
+  await locker.connect();
+  await locker.query('BEGIN');
+  await locker.query('SELECT id FROM tasks WHERE id = $1 FOR UPDATE', [taskId]);
+  let first: Promise<Response> | null = null;
+  try {
+    first = Promise.resolve(approve(actionId));
+    const pid = await waitFor(() => leaseHolderPid(actionId), 'the request to hold the execution lease');
+    await waitFor(async () => (await actionRow(actionId)).approval_status === 'approved', 'the claim');
+    // The lease connection dies; no recovery runs before the request finishes.
+    await f.client.query('SELECT pg_terminate_backend($1)', [pid]);
+    await waitFor(async () => (await leaseHolderPid(actionId)) === null, 'the lease to be released');
+  } finally {
+    await locker.query('COMMIT');
+    await locker.end();
+  }
+  const late = await first!;
+  assert.equal(late.status, 202, await late.clone().text());
+  assert.equal(await receipts(), 0);
+  assert.equal(await decisions(), 0);
+  assert.equal((await actionRow(actionId)).approval_status, 'approved');
+
+  // The next approval attempt holds the lease and settles the action once.
+  const settled = await approve(actionId);
+  assert.equal(settled.status, 200, await settled.clone().text());
+  assert.equal(await receipts(), 1);
+  assert.equal(await decisions(), 1);
 });

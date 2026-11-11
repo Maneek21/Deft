@@ -336,7 +336,13 @@ export type OwnedExecutionOutcome =
   | { kind: 'failed_terminal'; error: string; result: unknown }
   | { kind: 'reopened'; error: string; result: unknown }
   /** The claim moved while this request executed; nothing was written. */
-  | { kind: 'superseded' };
+  | { kind: 'superseded' }
+  /** This request's lease dropped while it executed; nothing was written and
+   *  the row is left for recovery. */
+  | { kind: 'lease_lost' };
+
+/** A lease that was never lost. For callers that hold no advisory lease. */
+const HELD_LEASE: DbAdvisoryLease = { lost: false };
 
 /**
  * Execute an ordinary (non-resolver) approved action under the caller's
@@ -347,6 +353,7 @@ export async function executeClaimedApproval(
   row: AgentActionRow,
   token: ClaimToken,
   hooks: ApprovalFinaliserHooks,
+  lease: DbAdvisoryLease = HELD_LEASE,
 ): Promise<OwnedExecutionOutcome> {
   // The executor receives the ORIGINAL proposer's user id, never the approver's.
   const execResult = await executeAction(
@@ -364,6 +371,9 @@ export async function executeClaimedApproval(
     ownsClaim(token),
   );
 
+  // A request whose lease dropped can no longer prove to a recovery that it
+  // is alive: write nothing and leave the row for recovery.
+  if (lease.lost) return { kind: 'lease_lost' };
   if (execResult.success) {
     const [written] = await db
       .update(agentActions)
@@ -478,14 +488,15 @@ export async function recoverInterruptedApproval(
   row: AgentActionRow,
   hooks: ApprovalFinaliserHooks,
   receipt: ApprovalReceiptMode = 'legacy',
+  lease: DbAdvisoryLease = HELD_LEASE,
 ): Promise<InterruptedRecovery> {
   if (!isInterruptedApproval(row, receipt)) return { kind: 'not_interrupted' };
   const token = await currentClaimToken(row.id, row.org_id);
-  if (!token) return { kind: 'raced' };
+  if (!token || lease.lost) return { kind: 'raced' };
   if (receipt === 'legacy' && isReexecutableAfterInterruption(row.action)) {
     const next = await takeOverInterruptedApproval(row, token);
     if (!next) return { kind: 'raced' };
-    return { kind: 'reexecuted', outcome: await executeClaimedApproval(row, next, hooks) };
+    return { kind: 'reexecuted', outcome: await executeClaimedApproval(row, next, hooks, lease) };
   }
   if (!await settleInterruptedApproval(row, token)) return { kind: 'raced' };
   await finalizeApprovalOutcome({ actionId: row.id, orgId: row.org_id, receipt, hooks });
@@ -534,7 +545,7 @@ export async function recoverInterruptedApprovals(options: {
   const result: InterruptedApprovalSweepResult = { examined: candidates.length, recovered: 0, live: 0, poolBusy: false };
   for (const candidate of candidates) {
     try {
-      const held = await tryWithApprovalLease(candidate.id, { acquireTimeoutMs: SWEEP_ACQUIRE_TIMEOUT_MS }, async () => {
+      const held = await tryWithApprovalLease(candidate.id, { acquireTimeoutMs: SWEEP_ACQUIRE_TIMEOUT_MS }, async (lease) => {
         const [row] = await db
           .select()
           .from(agentActions)
@@ -546,6 +557,7 @@ export async function recoverInterruptedApprovals(options: {
           row,
           options.hooks ?? {},
           resolverOwned ? 'resolver' : 'legacy',
+          lease,
         );
         if (recovery.kind === 'settled_failed' && resolverOwned) {
           await options.onResolverRecovered?.(row.id, row.approved_by_user_id ?? row.user_id);
