@@ -29,11 +29,11 @@ deft/
 - API: Hono on Node.js, TypeScript
 - Database: PostgreSQL + pgvector (Drizzle ORM)
 - Real-time: Socket.io in-process (single app instance; no cross-instance adapter)
-- Auth: better-auth (JWT + refresh tokens). Google OAuth is retired from the self-hosted v1 product contract.
+- Auth: Custom JWT + bcrypt (jsonwebtoken + bcryptjs, refresh tokens). Google OAuth is retired from the self-hosted v1 product contract.
 - Background jobs: PostgreSQL `job_queue` with in-process workers
 - File storage: Cloudflare R2 or local (presigned uploads)
 - AI: provider-neutral LLM routing. Anthropic, OpenAI/OpenAI-compatible, OpenRouter, and local Ollama-style providers are optional; core workspace flows must run without any provider key.
-- Email: Resend (transactional)
+- Email: none. Invites and password recovery are admin-generated one-time URLs (`apps/api/src/routes/invites.ts`, `POST /api/members/:id/recovery-url`), shared out-of-band. Self-hosted Deft never sends mail.
 - Monorepo: pnpm workspaces
 
 ## Database Design Principles
@@ -215,7 +215,7 @@ Migrations added: `0051_org_scoped_templates.sql`, `0052_agent_webhooks.sql`.
 - Don't put domain-specific CRM logic in core. CRM capabilities belong in declarative modules; core stays generic.
 - Don't over-abstract. Build for the current scope, refactor when needed
 - Don't cache prematurely. Postgres is fast enough for our scale
-- Don't build a custom auth system. Use better-auth
+- Don't replace the existing auth system without a migration plan. It's custom JWT + bcrypt, not a library — changes affect every authenticated route.
 - Don't use Supabase (blocked in India)
 - Don't deploy to Vercel for the API (need WebSocket support). Use Railway or Fly.io
 - Don't import full TipTap — use only the extensions we need

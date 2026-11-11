@@ -1,13 +1,13 @@
 # Getting started
 
-Choose the journey that matches what you want to evaluate. The general workspace/Module examples below preserve the `v0.3.0-preview.15` baseline. For the current connected-App developer preview, obtain the Apps-enabled Host `v0.3.0-preview.120`/schema120 and public Kit/Email artifacts from the [compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.13/compatibility.json), then follow the [Email setup](https://github.com/Maneek21/deft-email/blob/main/docs/setup.md) and [current author guide](connected-app-author-guide.md). Email builds independently; the historical alpha.2 CLI recipe below is not its Protocol7 installation path.
+Choose the journey that matches what you want to evaluate. The general workspace/Module examples below preserve the `v0.3.0-preview.15` baseline. For the current connected-App developer preview, obtain an Apps-enabled Host (the latest, `v0.3.0-preview.141`, is) and the public Kit/Email artifacts from the `compatibility.json` attached to the Email release you install, then follow the [Email setup](https://github.com/Maneek21/deft-email/blob/main/docs/setup.md) and [current author guide](connected-app-author-guide.md). Email builds independently; the historical alpha.2 CLI recipe below is not its Protocol7 installation path.
 
 ## Start a team workspace
 
-You need Docker Compose and `openssl`. Download the [preview.15 release assets](https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.15) into an empty directory, copy `default.env.example` to `.env`, and use a separate `openssl rand -hex 32` value for each required secret: `POSTGRES_PASSWORD`, `JWT_SECRET`, `JWT_REFRESH_SECRET`, and `ENCRYPTION_KEY`.
+You need Docker Compose and `openssl`. Download the [preview.141 release assets](https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.141) into an empty directory, copy `default.env.example` to `.env`, and use a separate `openssl rand -hex 32` value for each required secret: `POSTGRES_PASSWORD`, `JWT_SECRET`, `JWT_REFRESH_SECRET`, and `ENCRYPTION_KEY`.
 
 ```bash
-export DEFT_IMAGE=ghcr.io/maneek21/deft:0.3.0-preview.15
+export DEFT_IMAGE=ghcr.io/maneek21/deft:0.3.0-preview.141
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml pull
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml up -d postgres
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml run --rm init
