@@ -75,6 +75,7 @@ import { inlineApprovalDisplayContent } from '@/lib/agent-approval-copy';
 import {
   ConversationReads,
   HISTORY_PAGE_SIZE,
+  type ChangeGroup,
   applyHistoryRead,
   mergeMessagesById,
   oldestCreatedAt,
@@ -1079,13 +1080,13 @@ export function SpaceChat({
       scroll: scrollToBottom,
       schedule: (callback, delay) => setTimeout(callback, delay),
     });
-    const noteChange = (id: string | undefined) => { if (id) historyReadsRef.current.noteChange(id); };
+    const noteChange = (id: string | undefined, group: ChangeGroup) => { if (id) historyReadsRef.current.noteChange(id, group); };
     const onNewAndNote = (msg: Message & { parent_id?: string | null }) => {
-      if (!msg.parent_id) noteChange(msg.id);
+      if (!msg.parent_id) noteChange(msg.id, 'all');
       onNew(msg);
     };
     const onThreadUpdated = (data: { parent_id: string; reply_count: number; latest_reply_at: string }) => {
-      noteChange(data.parent_id);
+      noteChange(data.parent_id, 'thread');
       setMessages((prev) =>
         prev.map((m) =>
           m.id === data.parent_id
@@ -1095,11 +1096,11 @@ export function SpaceChat({
       );
     };
     const onEdited = (msg: any) => {
-      noteChange(msg?.id);
+      noteChange(msg?.id, 'content');
       setMessages((prev) => prev.map((m) => m.id === msg.id ? { ...m, content: msg.content, edited_at: msg.edited_at, metadata: msg.metadata ?? (m as any).metadata } : m));
     };
     const onDeleted = (data: { id: string }) => {
-      noteChange(data?.id);
+      noteChange(data?.id, 'deleted');
       setMessages((prev) => prev.map((m) => m.id === data.id ? { ...m, is_deleted: true } : m));
     };
     const onTypingStart = (data: { user_id: string; user_name: string; space_id: string }) => {
@@ -1111,7 +1112,7 @@ export function SpaceChat({
     // presence is handled globally in the app layout
 
     const onReactionAdded = (data: { message_id: string; emoji: string; user_id: string }) => {
-      noteChange(data?.message_id);
+      noteChange(data?.message_id, 'reactions');
       setMessages((prev) =>
         prev.map((m) => {
           if (m.id !== data.message_id) return m;
@@ -1131,7 +1132,7 @@ export function SpaceChat({
     };
 
     const onReactionRemoved = (data: { message_id: string; emoji: string; user_id: string }) => {
-      noteChange(data?.message_id);
+      noteChange(data?.message_id, 'reactions');
       setMessages((prev) =>
         prev.map((m) => {
           if (m.id !== data.message_id) return m;
@@ -1169,11 +1170,11 @@ export function SpaceChat({
     socket.on('message:link_previews', onLinkPreviews);
 
     const onMessagePinned = (data: { message_id: string }) => {
-      noteChange(data?.message_id);
+      noteChange(data?.message_id, 'pin');
       setMessages(prev => prev.map(m => m.id === data.message_id ? { ...m, is_pinned: true } : m));
     };
     const onMessageUnpinned = (data: { message_id: string }) => {
-      noteChange(data?.message_id);
+      noteChange(data?.message_id, 'pin');
       setMessages(prev => prev.map(m => m.id === data.message_id ? { ...m, is_pinned: false } : m));
     };
     socket.on('message:pinned', onMessagePinned);

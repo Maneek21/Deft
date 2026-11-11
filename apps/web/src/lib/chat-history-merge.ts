@@ -5,18 +5,31 @@ function timeOf(message: { created_at: string }): number {
   return Number.isNaN(value) ? 0 : value;
 }
 
+/** Which part of a message a live socket event changed. 'all' is a whole new message. */
+export type ChangeGroup = 'content' | 'deleted' | 'reactions' | 'pin' | 'thread' | 'all';
+
+const GROUP_FIELDS: Record<Exclude<ChangeGroup, 'all'>, readonly string[]> = {
+  content: ['content', 'edited_at', 'metadata'],
+  deleted: ['is_deleted'],
+  reactions: ['reactions'],
+  pin: ['is_pinned'],
+  thread: ['reply_count', 'latest_reply_at'],
+};
+
+const NO_CHANGES: ReadonlySet<ChangeGroup> = new Set();
+
 /**
  * Merge a fresh history read into what is on screen, for example after a
  * socket reconnect. Messages already shown keep their position and take the
- * server's fields, unless `keepLocal(id)` says a live socket update for that
- * message arrived after the read started (then the shown version wins). A
- * message shown as deleted stays deleted. Messages the client missed are
- * inserted by `created_at`. Nothing is dropped and no id appears twice.
+ * server's fields, except the field groups that `localChanges(id)` reports a
+ * live socket event changed after the read started: those keep the shown
+ * values. A message shown as deleted stays deleted. Messages the client
+ * missed are inserted by `created_at`. Nothing is dropped and no id appears twice.
  */
 export function mergeMessagesById<T extends HistoryMessage>(
   current: readonly T[],
   fetched: readonly T[],
-  keepLocal: (id: string) => boolean = () => false,
+  localChanges: (id: string) => ReadonlySet<ChangeGroup> = () => NO_CHANGES,
 ): T[] {
   if (fetched.length === 0) return current as T[];
   const fetchedById = new Map(fetched.map((message) => [message.id, message]));
@@ -24,9 +37,18 @@ export function mergeMessagesById<T extends HistoryMessage>(
   const merged: T[] = current.map((message) => {
     shown.add(message.id);
     const fresh = fetchedById.get(message.id);
-    if (!fresh || keepLocal(message.id)) return message;
-    const next = { ...message, ...fresh };
-    return message.is_deleted === true ? { ...next, is_deleted: true } : next;
+    if (!fresh) return message;
+    const groups = localChanges(message.id);
+    if (groups.has('all')) return message;
+    const next: Record<string, unknown> = { ...message, ...fresh };
+    const local = message as Record<string, unknown>;
+    for (const group of groups) {
+      for (const field of GROUP_FIELDS[group as Exclude<ChangeGroup, 'all'>]) {
+        if (field in local) next[field] = local[field];
+      }
+    }
+    if (message.is_deleted === true) next.is_deleted = true;
+    return next as T;
   });
 
   const missing = fetched
@@ -50,7 +72,7 @@ export type ReadTicket = { generation: number; startSeq: number };
 export class ConversationReads {
   private generation = 0;
   private seq = 0;
-  private readonly changedAt = new Map<string, number>();
+  private readonly changedAt = new Map<string, Map<ChangeGroup, number>>();
   private disposed = false;
 
   /** Start a read that supersedes every earlier one. */
@@ -73,14 +95,21 @@ export class ConversationReads {
     this.disposed = true;
   }
 
-  /** Record a live socket change to one message. */
-  noteChange(id: string): void {
+  /** Record a live socket change to one part of one message. */
+  noteChange(id: string, group: ChangeGroup = 'all'): void {
     this.seq += 1;
-    this.changedAt.set(id, this.seq);
+    const groups = this.changedAt.get(id) ?? new Map<ChangeGroup, number>();
+    groups.set(group, this.seq);
+    this.changedAt.set(id, groups);
   }
 
-  changedSince(ticket: ReadTicket, id: string): boolean {
-    return (this.changedAt.get(id) ?? 0) > ticket.startSeq;
+  /** The parts of a message that live events changed after `ticket` started. */
+  changedSince(ticket: ReadTicket, id: string): ReadonlySet<ChangeGroup> {
+    const groups = this.changedAt.get(id);
+    if (!groups) return NO_CHANGES;
+    const changed = new Set<ChangeGroup>();
+    for (const [group, seq] of groups) if (seq > ticket.startSeq) changed.add(group);
+    return changed;
   }
 }
 
@@ -149,11 +178,11 @@ export async function readHistoryBackTo<T extends HistoryMessage>(
 export function applyHistoryRead<T extends HistoryMessage>(
   current: readonly T[],
   read: HistoryRead<T>,
-  keepLocal: (id: string) => boolean,
+  localChanges: (id: string) => ReadonlySet<ChangeGroup>,
 ): T[] {
-  if (read.coversShown || read.messages.length === 0) return mergeMessagesById(current, read.messages, keepLocal);
+  if (read.coversShown || read.messages.length === 0) return mergeMessagesById(current, read.messages, localChanges);
   const oldest = timeOf(read.messages[0]!);
-  return mergeMessagesById(current.filter((m) => timeOf(m) >= oldest), read.messages, keepLocal);
+  return mergeMessagesById(current.filter((m) => timeOf(m) >= oldest), read.messages, localChanges);
 }
 
 /** The oldest created_at in a list, or null when it is empty. */

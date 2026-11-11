@@ -590,3 +590,23 @@ test('R3-1: a Load earlier read superseded by a catch-up does not bring back an 
   }
 });
 
+test('R3-2: a live reaction during a catch-up does not discard the edit the catch-up fetched', async () => {
+  const page = await open(browser, { harness: 'defty-chat-harness.tsx', url: '/chat?space=s1', override: FAKE_SERVER });
+  try {
+    await page.getByText('Destination message from Priya').waitFor();
+    await drop(page);
+    await srv(page, (data) => { window.__srv.channel = data; window.__srv.hold = true; },
+      [ROOT, { ...DEST, content: 'Destination edited while offline', edited_at: '2026-10-22T10:40:00.000Z' }, marker('mk-r3', 30, 'Catch-up marker three')]);
+    await reconnect(page);
+    await waitHeld(page, 1);
+    await page.evaluate(() => window.__deftDeliver('reaction:added', { message_id: 'm2', emoji: '🎉', user_id: 'u-rahul' }));
+    await page.locator('[data-message-id="m2"]').getByText('🎉').waitFor();
+    await release(page, 0);
+    await page.getByText('Catch-up marker three').waitFor();
+    assert.equal(await page.getByText('Destination edited while offline').count(), 1, 'fetched edit applies');
+    assert.equal(await page.locator('[data-message-id="m2"]').getByText('🎉').count(), 1, 'live reaction stays');
+  } finally {
+    await close(page);
+  }
+});
+

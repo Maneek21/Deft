@@ -26,7 +26,7 @@ import { AgentMessageBlocks, type AgentMessageBlocksProps } from './agent-messag
 import { resolveAgentCitationLink } from '@/lib/agent-citations';
 import useSWR, { mutate as swrMutate } from 'swr';
 import { inlineApprovalDisplayContent } from '@/lib/agent-approval-copy';
-import { ConversationReads, mergeMessagesById } from '@/lib/chat-history-merge';
+import { ConversationReads, mergeMessagesById, type ChangeGroup } from '@/lib/chat-history-merge';
 import { ChatLoadError } from './chat-load-error';
 
 type Reaction = {
@@ -393,10 +393,10 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     if (!token) return;
     const socket = getSocket(token);
 
-    const noteChange = (id: string | undefined) => { if (id) threadReadsRef.current.noteChange(id); };
+    const noteChange = (id: string | undefined, group: ChangeGroup) => { if (id) threadReadsRef.current.noteChange(id, group); };
     const onNewMessage = (msg: Message & { parent_id?: string }) => {
       if (msg.parent_id === messageId) {
-        noteChange(msg.id);
+        noteChange(msg.id, 'all');
         setReplies((prev) => (
           prev.some((reply) => reply.id === msg.id) ? prev : [...prev, msg]
         ));
@@ -406,7 +406,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     };
 
     const onReactionAdded = (data: { message_id: string; emoji: string; user_id: string }) => {
-      noteChange(data?.message_id);
+      noteChange(data?.message_id, 'reactions');
       const updateReactions = (msgs: Message[]) =>
         msgs.map((m) => {
           if (m.id !== data.message_id) return m;
@@ -427,7 +427,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     };
 
     const onReactionRemoved = (data: { message_id: string; emoji: string; user_id: string }) => {
-      noteChange(data?.message_id);
+      noteChange(data?.message_id, 'reactions');
       const updateReactions = (msgs: Message[]) =>
         msgs.map((m) => {
           if (m.id !== data.message_id) return m;

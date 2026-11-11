@@ -93,7 +93,7 @@ test('R2-2: catch-up stops at the page bound and reports it did not cover the sh
   assert.equal(read.hasEarlier, true);
   assert.equal(read.messages.length, CATCH_UP_MAX_PAGES * HISTORY_PAGE_SIZE);
   const shown = [{ id: 's-0', content: 'old', created_at: at(0) }, { id: 'live', content: 'live', created_at: at(900) }];
-  const applied = applyHistoryRead(shown, read, () => false);
+  const applied = applyHistoryRead(shown, read, () => new Set());
   assert.equal(applied.some((m) => m.id === 's-0'), false, 'messages older than the read are dropped, not left beside a hole');
   assert.equal(applied.at(-1)!.id, 'live', 'newer live messages stay');
   assert.equal(applied.length, CATCH_UP_MAX_PAGES * HISTORY_PAGE_SIZE + 1);
@@ -102,4 +102,29 @@ test('R2-2: catch-up stops at the page bound and reports it did not cover the sh
 test('R2-2: a failed page fails the whole catch-up', async () => {
   const get = async () => ({ ok: false, status: 500, json: async () => ({}) }) as Response;
   await assert.rejects(readHistoryBackTo(get, '/api/messages/s1', null));
+});
+
+test('R3-2: a live change keeps only its own fields; every other fetched field still applies', () => {
+  const reads = new ConversationReads();
+  const ticket = reads.begin();
+  reads.noteChange('a', 'reactions');
+  const shown = [{ ...msg('a', 1, 'old text'), reactions: ['live'], reply_count: 0 }];
+  const fetched = [{ ...msg('a', 1, 'edited offline'), reactions: [] as string[], reply_count: 3 }];
+  const [merged] = mergeMessagesById(shown, fetched, (id) => reads.changedSince(ticket, id));
+  assert.equal(merged!.content, 'edited offline');
+  assert.equal(merged!.reply_count, 3);
+  assert.deepEqual(merged!.reactions, ['live']);
+});
+
+test('R3-2: a live edit keeps the shown text but takes a fetched deletion', () => {
+  const reads = new ConversationReads();
+  const ticket = reads.begin();
+  reads.noteChange('a', 'content');
+  const [merged] = mergeMessagesById(
+    [{ ...msg('a', 1, 'live edit'), is_deleted: false }],
+    [{ ...msg('a', 1, 'stale'), is_deleted: true }],
+    (id) => reads.changedSince(ticket, id),
+  );
+  assert.equal(merged!.content, 'live edit');
+  assert.equal(merged!.is_deleted, true);
 });
