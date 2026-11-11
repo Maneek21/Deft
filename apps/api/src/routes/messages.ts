@@ -16,7 +16,7 @@ import { enqueueChatObservation } from '../lib/chat-observation.js';
 import { createNotificationIfAllowed, createNotificationsIfAllowed } from '../lib/notification-policy.js';
 import { enqueueAgentEmployeeMessageJobs, resolveAgentEmployeeMessageTargets } from '../lib/dispatch-agent-message.js';
 import { enqueueDeftyWake, finishDeftyWake, type DeftyWakeOutcome, normalizeChatMentions, planDeftyWake, resolveMentionedUserIds } from '../lib/defty-wake.js';
-import { projectPendingDeftyMetadataForOutbound } from '../lib/defty-pending-action.js';
+import { emitMessageToSpaceViewers, projectMessagesForViewer } from '../lib/agent-message-run-details.js';
 import { toPlainText } from '../lib/plain-text.js';
 import {
   getMessageAttachments,
@@ -103,7 +103,8 @@ async function getVisibleMessage(messageId: string, orgId: string, userId: strin
     ))
     .limit(1);
 
-  return msg ? { ...msg, metadata: projectPendingDeftyMetadataForOutbound(msg.metadata) } : null;
+  // Raw metadata: a caller that returns it must project it with projectMessagesForViewer.
+  return msg ?? null;
 }
 
 // Helper: get reply counts and latest_reply_at for a set of message IDs
@@ -243,9 +244,9 @@ messageRoutes.get('/:spaceId', async (c) => {
         getReplyStats(messageIds),
         getMessageAttachments(messageIds, user.org_id),
       ]);
-      const result = unique.map(msg => ({
+      const projected = await projectMessagesForViewer(user, unique);
+      const result = projected.map(msg => ({
         ...msg,
-        metadata: projectPendingDeftyMetadataForOutbound(msg.metadata),
         reactions: reactionsMap.get(msg.id) ?? [],
         reply_count: replyStatsMap.get(msg.id)?.reply_count ?? 0,
         latest_reply_at: replyStatsMap.get(msg.id)?.latest_reply_at ?? null,
@@ -316,7 +317,7 @@ messageRoutes.get('/:spaceId', async (c) => {
     }
 
     // Merge reactions, reply stats, and thread unread state
-    const messagesWithExtras = result.map((msg) => {
+    const messagesWithExtras = (await projectMessagesForViewer(user, result)).map((msg) => {
       const replyStats = replyStatsMap.get(msg.id);
       const replyCount = replyStats?.reply_count ?? 0;
       const latestReplyAt = replyStats?.latest_reply_at ?? null;
@@ -327,7 +328,6 @@ messageRoutes.get('/:spaceId', async (c) => {
       }
       return {
         ...msg,
-        metadata: projectPendingDeftyMetadataForOutbound(msg.metadata),
         reactions: reactionsMap.get(msg.id) ?? [],
         reply_count: replyCount,
         latest_reply_at: latestReplyAt,
@@ -339,7 +339,9 @@ messageRoutes.get('/:spaceId', async (c) => {
 
     return c.json({
       messages: messagesWithExtras.reverse(),
-      next_cursor: result.length === limit ? result[0]?.created_at?.toISOString() : null,
+      // The oldest returned row (the query is newest-first): following the
+      // cursor pages to older messages.
+      next_cursor: result.length === limit ? result[result.length - 1]?.created_at?.toISOString() : null,
     });
   } catch (err) {
     console.error('Failed to fetch messages:', err);
@@ -752,11 +754,12 @@ messageRoutes.patch('/:id', async (c) => {
   });
 
   const io = getIO();
-  if (io) {
-    io.to(`space:${existing.space_id}`).emit('message:edited', updated);
+  if (io && updated) {
+    await emitMessageToSpaceViewers(io, { orgId: user.org_id, spaceId: existing.space_id, event: 'message:edited', message: updated });
   }
 
-  return c.json(updated);
+  const [projected] = updated ? await projectMessagesForViewer(user, [updated]) : [updated];
+  return c.json(projected);
 });
 
 // DELETE /api/messages/:id — soft delete
@@ -926,16 +929,16 @@ messageRoutes.get('/:id/thread', async (c) => {
       getReactionsForMessages(attachmentMessageIds),
       getMessageAttachments(attachmentMessageIds, user.org_id),
     ]);
+    const [projectedParent, ...projectedReplies] = await projectMessagesForViewer(user, [parentMsg, ...replies]);
     const parentWithReactions = {
-      ...parentMsg,
+      ...projectedParent!,
       reactions: reactionsMap.get(parentMsg.id) ?? [],
       file_ids: (attachmentsMap.get(parentMsg.id) ?? []).map((file) => file.id),
       files: attachmentsMap.get(parentMsg.id) ?? [],
     };
 
-    const repliesWithReactions = replies.map((reply) => ({
+    const repliesWithReactions = projectedReplies.map((reply) => ({
       ...reply,
-      metadata: projectPendingDeftyMetadataForOutbound(reply.metadata),
       reactions: reactionsMap.get(reply.id) ?? [],
       file_ids: (attachmentsMap.get(reply.id) ?? []).map((file) => file.id),
       files: attachmentsMap.get(reply.id) ?? [],

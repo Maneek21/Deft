@@ -4,6 +4,7 @@ import { and, eq, isNotNull, isNull } from 'drizzle-orm';
 import { agentActions } from '@deft/db/schema';
 import { db } from './db.js';
 import { getModuleRecord } from './module-service.js';
+import { visibleModuleActionSql } from './module-action-visibility.js';
 import {
   durableAgentActionResult,
   durableAgentActionResultFromMetadata,
@@ -29,11 +30,14 @@ function durableAgentResultActionId(metadata: unknown): string | null {
 }
 
 /**
- * Anchor the metadata to its terminal action row, then recheck current Module
- * authority before a durable result identifier enters model context.
+ * Anchor the metadata to its terminal action row, then recheck the action's
+ * current audience for the reader (shared rule) and current Module authority
+ * before a durable result identifier enters model context.
  */
 export async function authorizedDurableAgentResult(params: {
   actor: ModuleActor;
+  /** The person whose request the context is built for. */
+  viewer: { userId: string; role?: string };
   orgId: string;
   conversationId: string;
   metadata: unknown;
@@ -52,6 +56,7 @@ export async function authorizedDurableAgentResult(params: {
         eq(agentActions.approval_status, 'approved'),
         isNotNull(agentActions.executed_at),
         isNull(agentActions.error),
+        visibleModuleActionSql(params.viewer.role, { userId: params.viewer.userId, orgId: params.orgId }),
       ))
       .limit(1);
     if (!action || action.action !== claimedResult.operation) return null;

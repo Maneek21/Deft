@@ -26,6 +26,7 @@ const suffix = randomUUID().replaceAll('-', '').slice(0, 12);
 const ORG_ID = `action-result-history-org-${suffix}`;
 const OWNER_ID = `action-result-history-owner-${suffix}`;
 const AGENT_USER_ID = `action-result-history-agent-${suffix}`;
+const MEMBER_ID = `action-result-history-member-${suffix}`;
 const SPACE_ID = `action-result-history-space-${suffix}`;
 
 let client: pg.Client | null = null;
@@ -114,6 +115,10 @@ before(async () => {
      VALUES ($1, $2, $3, 'owner', true)`,
     [`action-result-member-${suffix}`, ORG_ID, OWNER_ID],
   );
+  await client.query(`INSERT INTO users (id, email, name, is_agent, email_verified) VALUES ($1, $2, 'Action Result Member', false, true)`,
+    [MEMBER_ID, `action-result-member-user-${suffix}@test.local`]);
+  await client.query(`INSERT INTO org_members (id, org_id, user_id, role, is_active) VALUES ($1, $2, $3, 'member', true)`,
+    [`action-result-member2-${suffix}`, ORG_ID, MEMBER_ID]);
   await client.query(
     `INSERT INTO spaces (id, org_id, name, type, created_by)
      VALUES ($1, $2, 'Action result history', 'agent_conversation', $3)`,
@@ -157,7 +162,7 @@ after(async () => {
     await client.query('DELETE FROM space_members WHERE space_id = $1', [SPACE_ID]);
     await client.query('DELETE FROM spaces WHERE org_id = $1', [ORG_ID]);
     await client.query('DELETE FROM org_members WHERE org_id = $1', [ORG_ID]);
-    await client.query('DELETE FROM users WHERE id = ANY($1::text[])', [[OWNER_ID, AGENT_USER_ID]]);
+    await client.query('DELETE FROM users WHERE id = ANY($1::text[])', [[OWNER_ID, AGENT_USER_ID, MEMBER_ID]]);
     await client.query('DELETE FROM orgs WHERE id = $1', [ORG_ID]);
     await client.end();
   }
@@ -195,3 +200,19 @@ for (const type of ['public', 'group_dm']) {
     await updateModuleInstallation(ownerActor, 'contacts', {enabled:true});
   });
 }
+
+test('W2a3-R3-2: a stored execution result enters history only for its action audience', { skip: !canRun }, async () => {
+  assert.ok(client && app);
+  await client.query('UPDATE spaces SET type=$1 WHERE id=$2', ['public', SPACE_ID]);
+  await client.query('INSERT INTO space_members (id, space_id, user_id) VALUES (gen_random_uuid()::text, $1, $2) ON CONFLICT DO NOTHING', [SPACE_ID, MEMBER_ID]);
+  const pending = await insertPendingCreate(null);
+  assert.equal((await app.request(`/api/agent/actions/${pending.actionId}/approve`, { method: 'POST' })).status, 200);
+  const stored = (await client.query(`SELECT metadata FROM messages WHERE org_id=$1 AND metadata->>'approval_execution_result_for_action_id'=$2`, [ORG_ID, pending.actionId])).rows[0];
+  const memberActor = humanModuleActor({ orgId: ORG_ID, userId: MEMBER_ID, role: 'member' });
+  const record = await (await import('../src/lib/module-service.js')).getModuleRecord(memberActor, stored.metadata.approval_execution_result.record_id);
+  assert.equal(record.id, stored.metadata.approval_execution_result.record_id, 'the member can read the record itself');
+  const asMember = await authorizedDurableAgentResult({ actor: memberActor, viewer: { userId: MEMBER_ID, role: 'member' }, orgId: ORG_ID, conversationId: SPACE_ID, metadata: stored.metadata } as any);
+  assert.equal(asMember, null, 'a member outside the action audience does not get the action snapshot');
+  const asOwner = await authorizedDurableAgentResult({ actor: ownerActor, viewer: { userId: OWNER_ID, role: 'owner' }, orgId: ORG_ID, conversationId: SPACE_ID, metadata: stored.metadata } as any);
+  assert.ok(asOwner, 'the requester keeps it');
+});

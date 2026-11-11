@@ -440,7 +440,6 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
       const inlineActions = linkedActions.map((action) => ({
         id: action.id,
         action: action.action,
-        params: safeActionParamsForMessage(action.action, action.params),
         approval_tier: action.approval_tier,
         status: action.approval_status,
       }));
@@ -482,10 +481,11 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
       .returning();
 
     const persistedActions = [...linkedActions, ...actions];
+    // Message metadata reaches every space member; it anchors each action by
+    // id only. Params stay on the audience-checked agent_actions row.
     const inlineActions = persistedActions.map((action) => ({
       id: action.id,
       action: action.action,
-      params: safeActionParamsForMessage(action.action, action.params),
       approval_tier: action.approval_tier,
       status: action.approval_status,
     }));
