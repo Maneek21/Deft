@@ -9,7 +9,7 @@ import { getModuleInstallation, getModuleRecord, humanModuleActor, listModuleRec
 import { parseModuleRecordResourceId } from '@deft/shared/modules';
 import { appHttpFailure } from './app-http-errors.js';
 import { randomUUID } from 'node:crypto';
-import { eq, and, asc, desc, sql, inArray } from 'drizzle-orm';
+import { eq, and, asc, desc, sql, inArray, isNull } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import {
   agentActions,
@@ -205,7 +205,8 @@ async function maybePostApprovalConfirmation(params: {
           is_agent_reply: true,
           subtype: 'approval_confirmation',
           approval_confirmation_for_message_id: actionMessageId,
-          confirmed_action_ids: approvedActions.map((row) => row.id),
+          confirmed_action_ids: approvedActions.filter((row) => !row.error).map((row) => row.id),
+          failed_action_ids: approvedActions.filter((row) => row.error).map((row) => row.id),
           rejected_action_ids: rejectedActions.map((row) => row.id),
           requested_by_user_id: params.actorUserId,
         } as any,
@@ -256,6 +257,18 @@ async function maybePostApprovalConfirmation(params: {
   }
 }
 
+
+/**
+ * True when this request's own decision is what the resolver applied: the
+ * resolver answered with the requested status and did not report that the
+ * row was already settled or that another request won the claim.
+ */
+function resolverDecidedHere(
+  requested: 'approved' | 'rejected',
+  result: { status: string; decidedElsewhere?: true },
+): boolean {
+  return result.status === requested && result.decidedElsewhere !== true;
+}
 
 function visibleActionSql(user: { id: string; org_id: string; role?: string }) {
   return and(
@@ -1268,7 +1281,9 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
         statusCode,
       );
     }
-    if (action.approval_status === 'pending') {
+    // The resolver's answer is the decision of record: a request that lost a
+    // race to the opposite decision must not record its own.
+    if (action.approval_status === 'pending' && resolverDecidedHere('approved', result)) {
       await recordActionApproverDecision({
         orgId: user.org_id,
         actionId,
@@ -1302,9 +1317,15 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
       orgId: user.org_id,
       sourceType: 'agent_action',
       sourceId: actionId,
-      resolution: 'approved',
+      resolution: result.status,
       actorUserId: user.id,
     });
+    // An action approved earlier whose execution failed is reported as
+    // failed, not as a fresh success.
+    if (result.status === 'approved' && !action.app_run_id && action.approval_status === 'approved'
+      && action.error && result.decidedElsewhere === true) {
+      return c.json(approvedButFailedBody(action.error));
+    }
     return c.json({
       status: result.status,
       message: 'message' in result ? result.message : undefined,
@@ -1316,6 +1337,7 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
     if ((action.result as any)?.lifecycle_state === 'executing') {
       return c.json({ status: 'executing', message: 'execution is already in progress' }, 202);
     }
+    if (action.error) return c.json(approvedButFailedBody(action.error));
     return c.json({ status: 'approved', message: 'already approved', result: action.result ?? undefined });
   }
   if (action.approval_status === 'rejected') {
@@ -1352,6 +1374,7 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
       .select({
         approval_status: agentActions.approval_status,
         result: agentActions.result,
+        error: agentActions.error,
       })
       .from(agentActions)
       .where(and(
@@ -1363,6 +1386,7 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
       if ((winner.result as any)?.lifecycle_state === 'executing') {
         return c.json({ status: 'executing', message: 'execution is already in progress' }, 202);
       }
+      if (winner.error) return c.json(approvedButFailedBody(winner.error));
       return c.json({ status: 'approved', message: 'already approved', result: winner.result ?? undefined });
     }
     if (winner?.approval_status === 'rejected') {
@@ -1656,7 +1680,7 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
         : 400;
       return c.json({ error: result.message, code: result.code }, statusCode);
     }
-    if (action.approval_status === 'pending') {
+    if (action.approval_status === 'pending' && resolverDecidedHere('rejected', result)) {
       await recordActionApproverDecision({
         orgId: user.org_id,
         actionId,
@@ -1683,7 +1707,7 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
       orgId: user.org_id,
       sourceType: 'agent_action',
       sourceId: actionId,
-      resolution: 'rejected',
+      resolution: result.status,
       actorUserId: user.id,
     });
     return c.json({ status: result.status });
@@ -1797,6 +1821,31 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
   return c.json({ success: true });
 });
 
+class UndoRefusal extends Error {
+  constructor(readonly status: 400 | 409, readonly code: string, message: string) {
+    super(message);
+  }
+}
+
+/** Answer for an action that was approved earlier but did not complete. */
+function approvedButFailedBody(error: string) {
+  return { status: 'failed' as const, message: 'approved, but it did not complete', error };
+}
+
+function nothingRecorded() {
+  return new UndoRefusal(409, 'UNDO_NOT_APPLICABLE', 'This action did not record what it changed, so it cannot be undone.');
+}
+
+/** Action names undo can reverse, mapped to the reversal that applies. */
+const UNDO_KIND_BY_ACTION: Record<string, 'create_task' | 'update_task_status' | 'assign_task' | 'post_message'> = {
+  create_task: 'create_task',
+  update_task_status: 'update_task_status',
+  close_task: 'update_task_status',
+  reopen_task: 'update_task_status',
+  assign_task: 'assign_task',
+  post_message: 'post_message',
+};
+
 agentRoutes.post('/actions/:id/undo', async (c) => {
   const user = c.get('user');
   const actionId = c.req.param('id');
@@ -1810,32 +1859,76 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
       visibleActionSql(user),
     ))
     .limit(1);
+  // close_task / reopen_task are stored under their own names but executed
+  // (and reversed) as a status change.
+  const undoKind = action ? UNDO_KIND_BY_ACTION[action.action] : undefined;
   // Only the requester or an owner/admin who can still see the target may
   // undo; anyone else gets the same answer as for a missing action.
-  if (!action || !(await canUndoAgentAction(user, action))) {
+  if (!action || !(await canUndoAgentAction(user, { ...action, action: undoKind ?? action.action }))) {
     return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+  }
+  if (!undoKind) {
+    return c.json({ error: 'This action cannot be undone.', code: 'UNDO_UNSUPPORTED' }, 400);
   }
   if (action.undone_at) {
     return c.json({ error: 'Already undone', code: 'ALREADY_UNDONE' }, 400);
+  }
+  if (action.approval_status !== 'approved' || !action.executed_at || action.error) {
+    return c.json({ error: 'This action did not complete, so there is nothing to undo.', code: 'UNDO_NOT_APPLICABLE' }, 409);
   }
 
   const beforeState = action.before_state as Record<string, any> | null;
   const afterState = action.after_state as Record<string, any> | null;
   const result = action.result as Record<string, any> | null;
 
+  // The reversal and the undone_at stamp commit together. The stamp is a
+  // conditional claim, so two undos cannot both run, and each reversal only
+  // applies while the target still holds the value this action wrote: a
+  // later change by someone else is never overwritten.
+  let audit: Parameters<typeof logAuditEvent>[0] | null = null;
   try {
-    switch (action.action) {
-      case 'create_task': {
-        const taskId = result?.task_id;
-        if (taskId) {
-          await db.update(tasks).set({ is_deleted: true }).where(and(eq(tasks.id, taskId), eq(tasks.org_id, user.org_id)));
-          await db.insert(taskActivity).values({
+    await db.transaction(async (tx) => {
+      const [claimed] = await tx
+        .update(agentActions)
+        .set({ undone_at: new Date() })
+        .where(and(
+          eq(agentActions.id, actionId),
+          eq(agentActions.org_id, user.org_id),
+          isNull(agentActions.undone_at),
+        ))
+        .returning({ id: agentActions.id });
+      if (!claimed) throw new UndoRefusal(400, 'ALREADY_UNDONE', 'Already undone');
+
+      switch (undoKind) {
+        case 'create_task': {
+          const taskId = result?.task_id;
+          if (!taskId) throw nothingRecorded();
+          const [deleted] = await tx.update(tasks).set({ is_deleted: true })
+            .where(and(eq(tasks.id, taskId), eq(tasks.org_id, user.org_id), eq(tasks.is_deleted, false)))
+            .returning({ id: tasks.id });
+          if (!deleted) throw new UndoRefusal(409, 'UNDO_CONFLICT', 'The task was already deleted.');
+          // Subtasks this action created go with their parent. Only ids the
+          // action recorded, still under that parent, in this org.
+          const subtaskIds = (Array.isArray(result?.subtasks) ? result.subtasks : [])
+            .map((subtask: unknown) => (subtask && typeof subtask === 'object'
+              ? (subtask as Record<string, unknown>).id ?? (subtask as Record<string, unknown>).task_id
+              : null))
+            .filter((id: unknown): id is string => typeof id === 'string' && id.length > 0);
+          const deletedSubtasks = subtaskIds.length === 0 ? [] : await tx.update(tasks).set({ is_deleted: true })
+            .where(and(
+              inArray(tasks.id, subtaskIds),
+              eq(tasks.org_id, user.org_id),
+              eq(tasks.parent_task_id, taskId),
+              eq(tasks.is_deleted, false),
+            ))
+            .returning({ id: tasks.id });
+          await tx.insert(taskActivity).values([taskId, ...deletedSubtasks.map((row) => row.id)].map((id) => ({
             org_id: user.org_id,
-            task_id: taskId,
+            task_id: id,
             user_id: user.id,
             action: 'deleted',
-          });
-          await logAuditEvent({
+          })));
+          audit = {
             orgId: user.org_id,
             actorType: 'user',
             actorId: user.id,
@@ -1844,27 +1937,35 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
             entityId: taskId,
             beforeState: afterState,
             afterState: { is_deleted: true },
-            metadata: { action_id: actionId },
-          });
+            metadata: { action_id: actionId, deleted_subtask_ids: deletedSubtasks.map((row) => row.id) },
+          };
+          break;
         }
-        break;
-      }
 
-      case 'update_task_status': {
-        const taskId = beforeState?.task_id || result?.task_id;
-        const oldStatus = beforeState?.status;
-        if (taskId && oldStatus) {
-          await db.update(tasks).set({ status: oldStatus }).where(and(eq(tasks.id, taskId), eq(tasks.org_id, user.org_id)));
-          await db.insert(taskActivity).values({
+        case 'update_task_status': {
+          const taskId = beforeState?.task_id || result?.task_id;
+          const oldStatus = beforeState?.status;
+          if (!taskId || !oldStatus) throw nothingRecorded();
+          const writtenStatus = afterState?.status;
+          if (typeof writtenStatus !== 'string') {
+            throw new UndoRefusal(409, 'UNDO_CONFLICT', 'This action did not record the status it set, so it cannot be undone safely.');
+          }
+          const [reverted] = await tx.update(tasks).set({ status: oldStatus })
+            .where(and(eq(tasks.id, taskId), eq(tasks.org_id, user.org_id), eq(tasks.status, writtenStatus as any)))
+            .returning({ id: tasks.id });
+          if (!reverted) {
+            throw new UndoRefusal(409, 'UNDO_CONFLICT', 'The task status has changed since this action. Undo would overwrite that change.');
+          }
+          await tx.insert(taskActivity).values({
             org_id: user.org_id,
             task_id: taskId,
             user_id: user.id,
             action: 'status_changed',
             field: 'status',
-            old_value: afterState?.status,
+            old_value: writtenStatus,
             new_value: oldStatus,
           });
-          await logAuditEvent({
+          audit = {
             orgId: user.org_id,
             actorType: 'user',
             actorId: user.id,
@@ -1874,26 +1975,38 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
             beforeState: afterState,
             afterState: beforeState,
             metadata: { action_id: actionId },
-          });
+          };
+          break;
         }
-        break;
-      }
 
-      case 'assign_task': {
-        const taskId = beforeState?.task_id || result?.task_id;
-        const oldAssigneeId = beforeState?.assignee_id ?? null;
-        if (taskId) {
-          await db.update(tasks).set({ assignee_id: oldAssigneeId }).where(and(eq(tasks.id, taskId), eq(tasks.org_id, user.org_id)));
-          await db.insert(taskActivity).values({
+        case 'assign_task': {
+          const taskId = beforeState?.task_id || result?.task_id;
+          const oldAssigneeId = beforeState?.assignee_id ?? null;
+          if (!taskId) throw nothingRecorded();
+          if (!afterState || !('assignee_id' in afterState)) {
+            throw new UndoRefusal(409, 'UNDO_CONFLICT', 'This action did not record the assignee it set, so it cannot be undone safely.');
+          }
+          const writtenAssigneeId: string | null = afterState.assignee_id ?? null;
+          const [reverted] = await tx.update(tasks).set({ assignee_id: oldAssigneeId })
+            .where(and(
+              eq(tasks.id, taskId),
+              eq(tasks.org_id, user.org_id),
+              writtenAssigneeId === null ? isNull(tasks.assignee_id) : eq(tasks.assignee_id, writtenAssigneeId),
+            ))
+            .returning({ id: tasks.id });
+          if (!reverted) {
+            throw new UndoRefusal(409, 'UNDO_CONFLICT', 'The task has been reassigned since this action. Undo would overwrite that change.');
+          }
+          await tx.insert(taskActivity).values({
             org_id: user.org_id,
             task_id: taskId,
             user_id: user.id,
             action: 'field_changed',
             field: 'assignee',
-            old_value: afterState?.assignee_id || null,
+            old_value: writtenAssigneeId,
             new_value: oldAssigneeId,
           });
-          await logAuditEvent({
+          audit = {
             orgId: user.org_id,
             actorType: 'user',
             actorId: user.id,
@@ -1903,16 +2016,18 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
             beforeState: afterState,
             afterState: beforeState,
             metadata: { action_id: actionId },
-          });
+          };
+          break;
         }
-        break;
-      }
 
-      case 'post_message': {
-        const messageId = result?.message_id;
-        if (messageId) {
-          await db.update(messages).set({ is_deleted: true }).where(and(eq(messages.id, messageId), eq(messages.org_id, user.org_id)));
-          await logAuditEvent({
+        case 'post_message': {
+          const messageId = result?.message_id;
+          if (!messageId) throw nothingRecorded();
+          const [deleted] = await tx.update(messages).set({ is_deleted: true })
+            .where(and(eq(messages.id, messageId), eq(messages.org_id, user.org_id), eq(messages.is_deleted, false)))
+            .returning({ id: messages.id });
+          if (!deleted) throw new UndoRefusal(409, 'UNDO_CONFLICT', 'The message was already deleted.');
+          audit = {
             orgId: user.org_id,
             actorType: 'user',
             actorId: user.id,
@@ -1922,24 +2037,20 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
             beforeState: afterState,
             afterState: { is_deleted: true },
             metadata: { action_id: actionId },
-          });
+          };
+          break;
         }
-        break;
       }
-    }
+    });
   } catch (err) {
+    if (err instanceof UndoRefusal) {
+      return c.json({ error: err.message, code: err.code }, err.status);
+    }
     console.error('[undo] Failed to reverse action:', err);
-    return c.json({
-      error: 'Failed to undo action',
-      code: 'UNDO_FAILED',
-      detail: err instanceof Error ? err.message : 'Unknown error',
-    }, 500);
+    return c.json({ error: 'Failed to undo action', code: 'UNDO_FAILED' }, 500);
   }
 
-  await db
-    .update(agentActions)
-    .set({ undone_at: new Date() })
-    .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, user.org_id)));
+  if (audit) await logAuditEvent(audit);
   return c.json({ success: true });
 });
 

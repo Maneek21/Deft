@@ -6,7 +6,7 @@ import { agentActionIcon, fmtAgentAction } from '../lib/shared';
 import { formatRelativeCompact } from '@/lib/time';
 
 function AgentWidget(_props: WidgetProps) {
-  const { agentActivity, agentEmployees, widgetContext, refreshAgentActivity } = useDashboardData();
+  const { agentActivity, agentEmployees } = useDashboardData();
   const [employeeFilter, setEmployeeFilter] = useState('all');
 
   const filtered = agentActivity.filter(a =>
@@ -59,33 +59,14 @@ function AgentWidget(_props: WidgetProps) {
                     {formatRelativeCompact(a.executed_at || a.created_at)}
                   </p>
                   {a.approval_status === 'pending' && (
-                    <div style={{ display: 'flex', gap: 5, marginTop: 6 }}>
-                      <button type="button"
-                        onClick={async e => {
-                          e.stopPropagation();
-                          if (await widgetContext.api.approveAgentAction(a.id)) {
-                            await refreshAgentActivity();
-                          }
-                        }}
-                        style={{
-                          fontSize: 10, fontWeight: 600, padding: '3px 9px',
-                          borderRadius: 5, border: 'none', cursor: 'pointer',
-                          background: 'var(--status-green)', color: 'white',
-                        }}>Approve</button>
-                      <button type="button"
-                        onClick={async e => {
-                          e.stopPropagation();
-                          if (await widgetContext.api.rejectAgentAction(a.id)) {
-                            await refreshAgentActivity();
-                          }
-                        }}
-                        style={{
-                          fontSize: 10, fontWeight: 500, padding: '3px 9px',
-                          borderRadius: 5, cursor: 'pointer',
-                          background: 'transparent', color: 'var(--text-secondary)',
-                          border: '1px solid var(--border-default)',
-                        }}>Reject</button>
-                    </div>
+                    // The one-line summary does not show the full write, so
+                    // the decision is made on the full card in the inbox.
+                    <a href="/inbox" onClick={e => e.stopPropagation()}
+                      style={{
+                        display: 'inline-block', marginTop: 6, fontSize: 10, fontWeight: 600,
+                        padding: '3px 9px', borderRadius: 5, textDecoration: 'none',
+                        color: 'var(--text-secondary)', border: '1px solid var(--border-default)',
+                      }}>Review in Inbox</a>
                   )}
                 </div>
               </div>

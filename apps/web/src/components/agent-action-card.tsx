@@ -36,7 +36,9 @@ import { loadTaskReviewLabels, taskReviewAssignmentLines, taskReviewDisplayParam
 import { humanizeToolName } from '@/lib/tool-display';
 import { stripHtml } from '@/lib/strip-html';
 import {
+  getAgentActionDisplayStatus,
   getAgentActionPresentation,
+  getApprovalMutationStatus,
   getAppRunApprovalCompletionLabel,
   getAppRunInspectorLabel,
   getAppRunReference,
@@ -63,13 +65,14 @@ export type AgentAction = {
   proposer?: 'employee' | 'defty' | string | null;
 };
 
-type LocalStatus = 'approving' | 'rejecting' | 'approved' | 'rejected' | null;
+type LocalStatus = 'approving' | 'rejecting' | 'approved' | 'rejected' | 'failed' | 'executing' | null;
 type AgentActionCardVariant = 'review' | 'compact';
 export type AgentActionMutationResult = {
   status?: string;
   approval_status?: string;
   success?: boolean;
   result?: unknown;
+  error?: string;
 } | void;
 
 const ACTION_LABELS: Record<string, string> = {
@@ -465,10 +468,22 @@ function getDraftDetailText(actionName: string, params: Record<string, any>, lab
     }
     return lines.filter(Boolean).join('\n\n');
   }
-  if (actionName === 'task_update' && params.patch && typeof params.patch === 'object'
-    && typeof params.patch.comment === 'string') {
+  if (actionName === 'task_update' && params.patch && typeof params.patch === 'object' && !Array.isArray(params.patch)) {
+    // Every field the update writes, including the ones it clears.
     const task = getStringParam(params, ['task_identifier', 'task_id']);
-    return [task ? `Task: ${task}` : '', params.patch.comment].filter(Boolean).join('\n\n');
+    const fields = Object.entries(params.patch as Record<string, unknown>)
+      .filter(([key]) => key !== 'comment')
+      .map(([key, value]) => `${key.replaceAll('_', ' ')}: ${value === null || value === '' ? 'cleared'
+        : typeof value === 'string' ? value : JSON.stringify(value)}`);
+    const comment = typeof params.patch.comment === 'string' ? params.patch.comment : '';
+    return [task ? `Task: ${task}` : '', fields.join('\n'), comment].filter(Boolean).join('\n\n');
+  }
+  if (actionName === 'create_reminder') {
+    const remindAt = typeof params.remind_at === 'string' ? new Date(params.remind_at) : null;
+    const when = remindAt && Number.isFinite(remindAt.getTime())
+      ? remindAt.toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })
+      : getStringParam(params, ['remind_at']);
+    return [when ? `When: ${when}` : '', getStringParam(params, ['content', 'message', 'title'])].filter(Boolean).join('\n\n');
   }
   const messageActions = new Set(['post_message', 'message_post', 'send_message', 'post_thread_reply']);
   if (messageActions.has(actionName)) {
@@ -495,8 +510,10 @@ function getDraftDetailText(actionName: string, params: Record<string, any>, lab
     const task = getStringParam(params, ['task_identifier', 'task_id', 'id']);
     const status = getStringParam(params, ['new_status', 'status']) ||
       (actionName === 'close_task' ? 'done' : actionName === 'reopen_task' ? 'reopened' : '');
-    const assignee = getStringParam(params, ['assignee_name', 'assignee']);
-    const due = getStringParam(params, ['due_date', 'dueDate']);
+    const assignee = getStringParam(params, ['assignee_name', 'assignee'])
+      || (actionName === 'assign_task' && 'assignee_name' in params && !params.assignee_name ? 'cleared' : '');
+    const due = getStringParam(params, ['due_date', 'dueDate'])
+      || (actionName === 'set_due_date' && 'due_date' in params && !params.due_date ? 'cleared' : '');
     const priority = getStringParam(params, ['priority']);
     return [
       task ? `Task: ${task}` : '',
@@ -519,6 +536,26 @@ function getTierLabel(tier?: string | null) {
   return null;
 }
 
+/**
+ * Local card state on top of the server's. An in-flight approve/reject is
+ * always shown; an outcome the card learned from its own request is shown
+ * only while the server still reports the state it had when the request
+ * started. Once refreshed server props differ, they win and the local
+ * outcome is dropped, so a 202 'executing' answer cannot pin the card.
+ */
+function useAgentActionLocalStatus(serverStatus: string) {
+  const [local, setLocal] = useState<{ status: Exclude<LocalStatus, null>; base: string } | null>(null);
+  const inFlight = local?.status === 'approving' || local?.status === 'rejecting';
+  const stale = local !== null && !inFlight && local.base !== serverStatus;
+  useEffect(() => {
+    if (stale) setLocal(null);
+  }, [stale]);
+  const set = useCallback((next: LocalStatus) => {
+    setLocal(next ? { status: next, base: serverStatus } : null);
+  }, [serverStatus]);
+  return [local && !stale ? local.status : null, set] as const;
+}
+
 export function AgentActionCard({
   action,
   onApprove,
@@ -532,7 +569,8 @@ export function AgentActionCard({
   onUndo?: () => void;
   variant?: AgentActionCardVariant;
 }) {
-  const [localStatus, setLocalStatus] = useState<LocalStatus>(null);
+  const serverStatus = getAgentActionDisplayStatus(action);
+  const [localStatus, setLocalStatus] = useAgentActionLocalStatus(serverStatus);
   const [localError, setLocalError] = useState<string | null>(null);
   const [localResult, setLocalResult] = useState<unknown>(null);
   const [taskLinkReview, setTaskLinkReview] = useState<{ actionId: string; record: { label: string; href: string }; task: { identifier: string; title: string; project_name: string; href: string } } | null>(null);
@@ -610,7 +648,6 @@ export function AgentActionCard({
     : typeof action.params.space_id === 'string'
       ? action.params.space_id
       : null;
-  const serverStatus = action.status ?? action.approval_status ?? 'pending';
   const resolvedStatus = localStatus ?? serverStatus;
   const isBusy = resolvedStatus === 'approving' || resolvedStatus === 'rejecting' || resolvedStatus === 'executing';
   const hasReceipt = action.has_receipt === true;
@@ -728,9 +765,12 @@ export function AgentActionCard({
     setLocalStatus('approving');
     try {
       const result = await onApprove();
-      const status = normalizeReturnedStatus(result, 'approved');
+      const status = getApprovalMutationStatus(result, 'approved');
       if (result && typeof result === 'object' && 'result' in result) {
         setLocalResult(result.result);
+      }
+      if (status === 'failed') {
+        setLocalError(result && typeof result.error === 'string' ? result.error : 'The approved action did not complete.');
       }
       setLocalStatus(status);
     } catch (err) {
@@ -745,7 +785,7 @@ export function AgentActionCard({
     setLocalStatus('rejecting');
     try {
       const result = await onReject();
-      const status = normalizeReturnedStatus(result, 'rejected');
+      const status = getApprovalMutationStatus(result, 'rejected');
       setLocalStatus(status);
     } catch (err) {
       setLocalStatus(null);
@@ -841,14 +881,20 @@ export function AgentActionCard({
           <div className="flex items-start gap-2">
             <AlertTriangle size={15} strokeWidth={1.8} className="mt-0.5 flex-shrink-0" />
             <div className="min-w-0">
-              <p className="font-medium break-words">{isAppRunAction ? 'App action could not run.' : `${captureHeadline} could not run.`}</p>
-              <p className="mt-0.5 break-words" style={{ color: 'var(--muted)' }}>
-                {action.error ? truncate(stripHtml(action.error), 160) : 'The proposal is preserved for review.'}
+              <p className="font-medium break-words">
+                {isAppRunAction
+                  ? 'App action could not run.'
+                  : isCapture
+                    ? `${captureHeadline} could not run.`
+                    : `Approved, but ${displayLabel.toLowerCase()} did not complete.`}
               </p>
-              {isAppRunAction ? appRunInspectorButton : <a href="/inbox?tab=captures" className="inline-flex items-center gap-1 mt-1.5 underline underline-offset-2" style={{ color: 'var(--primary)' }}>
+              <p className="mt-0.5 break-words" style={{ color: 'var(--muted)' }}>
+                {(action.error ?? localError) ? truncate(stripHtml((action.error ?? localError)!), 160) : 'The proposal is preserved for review.'}
+              </p>
+              {isAppRunAction ? appRunInspectorButton : isCapture ? <a href="/inbox?tab=captures" className="inline-flex items-center gap-1 mt-1.5 underline underline-offset-2" style={{ color: 'var(--primary)' }}>
                 Open Captures for retry
                 <ExternalLink size={12} strokeWidth={1.7} />
-              </a>}
+              </a> : null}
             </div>
           </div>
         </div>
@@ -1362,15 +1408,4 @@ export function AgentActionCard({
       {appRunInspector}
     </div>
   );
-}
-
-function normalizeReturnedStatus(
-  result: AgentActionMutationResult,
-  fallback: 'approved' | 'rejected',
-): 'approved' | 'rejected' {
-  if (result && typeof result === 'object') {
-    const status = result.status ?? result.approval_status;
-    if (status === 'approved' || status === 'rejected') return status;
-  }
-  return fallback;
 }

@@ -29,8 +29,8 @@ import {
 export const APP_RUN_APPROVAL_ACTION = 'app_run_invoke';
 
 export type AppRunApprovalResolution =
-  | { status: 'approved'; message?: string; result?: unknown }
-  | { status: 'rejected'; message?: string }
+  | { status: 'approved'; message?: string; result?: unknown; decidedElsewhere?: true }
+  | { status: 'rejected'; message?: string; decidedElsewhere?: true }
   | { status: 'error'; code: 'NOT_FOUND' | 'INVALID_STATE'; message: string };
 
 export interface AppRunApprovalAdapter {
@@ -157,7 +157,8 @@ export class PostgresAppRunApprovalResolver {
         return { status: 'error', code: 'INVALID_STATE', message: 'App Run approval is no longer valid' };
       }
       if (run.execution_release_kind === 'approved') {
-        await this.#markApproved(tx, action.id, approverUserId, run);
+        // A replay keeps the original approver and approval time.
+        await this.#markApproved(tx, action.id, action.approved_by_user_id ?? approverUserId, run, action.approved_at ?? undefined);
         await this.#writeApprovalReceipt(
           tx,
           action.id,
@@ -167,18 +168,18 @@ export class PostgresAppRunApprovalResolver {
           run.execution_released_at ?? this.now(),
         );
         await this.attemptScheduler.scheduleInTransaction(tx, run, this.now());
-        return { status: 'approved', message: 'already approved', result: this.#safeResult(run, true) };
+        return { status: 'approved', decidedElsewhere: true, message: 'already approved', result: this.#safeResult(run, true) };
       }
       if (run.state === 'cancelled') {
         await this.#markRejected(tx, action.id);
-        return { status: 'rejected', message: 'already rejected' };
+        return { status: 'rejected', decidedElsewhere: true, message: 'already rejected' };
       }
       if (run.state === 'expired' || run.state === 'failed') {
         await this.#markExpired(tx, action.id);
         return { status: 'error', code: 'INVALID_STATE', message: 'App Run approval is no longer valid' };
       }
       if (action.approval_status === 'rejected') {
-        return { status: 'rejected', message: 'already rejected' };
+        return { status: 'rejected', decidedElsewhere: true, message: 'already rejected' };
       }
       if (action.approval_status === 'expired') {
         return { status: 'error', code: 'INVALID_STATE', message: 'App Run approval is no longer valid' };
@@ -257,12 +258,12 @@ export class PostgresAppRunApprovalResolver {
       }
 
       if (run.execution_release_kind === 'approved') {
-        await this.#markApproved(tx, action.id, action.approved_by_user_id ?? rejecterUserId, run);
-        return { status: 'approved', message: 'already approved', result: this.#safeResult(run, true) };
+        await this.#markApproved(tx, action.id, action.approved_by_user_id ?? rejecterUserId, run, action.approved_at ?? undefined);
+        return { status: 'approved', decidedElsewhere: true, message: 'already approved', result: this.#safeResult(run, true) };
       }
       if (run.state === 'cancelled' || action.approval_status === 'rejected') {
         await this.#markRejected(tx, action.id);
-        return { status: 'rejected', message: 'already rejected' };
+        return { status: 'rejected', decidedElsewhere: true, message: 'already rejected' };
       }
       if (run.state !== 'pending_approval') {
         await this.#markExpired(tx, action.id);
@@ -311,10 +312,11 @@ export class PostgresAppRunApprovalResolver {
     actionId: string,
     approverUserId: string,
     run: AppRunSafeView,
+    approvedAt?: Date,
   ): Promise<void> {
     await tx.update(agentActions).set({
       approval_status: 'approved',
-      approved_at: this.now(),
+      approved_at: approvedAt ?? this.now(),
       approved_by_user_id: approverUserId,
       result: this.#safeResult(run, true),
       error: null,

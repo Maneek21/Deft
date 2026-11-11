@@ -131,6 +131,7 @@ test('reviewed task-link actions preserve retry identity and recover approved cl
     assert.equal(pendingLink.requiresApproval, true);
     const approvedLink = await approveAction(pendingLink.actionId, ownerId);
     assert.equal(approvedLink.status, 'approved');
+    assert.equal((approvedLink as { decidedElsewhere?: true }).decidedElsewhere, undefined);
     await assertTerminalEnvelope(pendingLink.actionId, firstTaskId);
 
     const linkReplay = await propose('module_record_task_link', firstTaskId, linkKey);
@@ -161,6 +162,8 @@ test('reviewed task-link actions preserve retry identity and recover approved cl
     );
     const recovered = await approveAction(pendingRecovery.actionId, ownerId);
     assert.equal(recovered.status, 'approved');
+    // Resuming an approval that an earlier request already decided is not this caller's decision.
+    assert.equal((recovered as { decidedElsewhere?: true }).decidedElsewhere, true);
     await assertTerminalEnvelope(pendingRecovery.actionId, secondTaskId);
 
     await linkModuleRecordToTask(owner, firstTaskId, resourceId);
