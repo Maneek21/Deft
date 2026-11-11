@@ -157,7 +157,8 @@ export class PostgresAppRunApprovalResolver {
         return { status: 'error', code: 'INVALID_STATE', message: 'App Run approval is no longer valid' };
       }
       if (run.execution_release_kind === 'approved') {
-        await this.#markApproved(tx, action.id, approverUserId, run);
+        // A replay keeps the original approver and approval time.
+        await this.#markApproved(tx, action.id, action.approved_by_user_id ?? approverUserId, run, action.approved_at ?? undefined);
         await this.#writeApprovalReceipt(
           tx,
           action.id,
@@ -257,7 +258,7 @@ export class PostgresAppRunApprovalResolver {
       }
 
       if (run.execution_release_kind === 'approved') {
-        await this.#markApproved(tx, action.id, action.approved_by_user_id ?? rejecterUserId, run);
+        await this.#markApproved(tx, action.id, action.approved_by_user_id ?? rejecterUserId, run, action.approved_at ?? undefined);
         return { status: 'approved', decidedElsewhere: true, message: 'already approved', result: this.#safeResult(run, true) };
       }
       if (run.state === 'cancelled' || action.approval_status === 'rejected') {
@@ -311,10 +312,11 @@ export class PostgresAppRunApprovalResolver {
     actionId: string,
     approverUserId: string,
     run: AppRunSafeView,
+    approvedAt?: Date,
   ): Promise<void> {
     await tx.update(agentActions).set({
       approval_status: 'approved',
-      approved_at: this.now(),
+      approved_at: approvedAt ?? this.now(),
       approved_by_user_id: approverUserId,
       result: this.#safeResult(run, true),
       error: null,
