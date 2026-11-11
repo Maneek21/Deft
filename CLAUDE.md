@@ -198,7 +198,7 @@ Tasks 8.1–8.6 shipped on the heartbeat worker:
 
 - **Heartbeat lifecycle** (Task 8.1) — PostgreSQL scheduled jobs dispatch due employees based on `heartbeat_interval_min`. Post-Phase-9, all employees are BYOA; heartbeat ticks queue pending work for MCP polling.
 - **Per-tick logging** (Task 8.4) — every tick writes to `agent_heartbeat_turns` (fired_at, prompt_sha, action_count, tokens_in/out, cost_cents, outcome, summary) and broadcasts `agent:heartbeat:turn` via Socket.io.
-- **Cost guardrails** (Task 8.5) — `daily_budget_cents` per employee (default $100/day); `daily_cost_cents` is cleared by the recurring 24-hour `agent-daily-reset` job and the heartbeat and trigger dispatch skip an employee at or over budget, but nothing increments `daily_cost_cents`, so the budget is NOT enforced today. Circuit breaker: the `unhealthy` flag is tripped by the heartbeat loop detector (the five most recent actions repeat a normalised task title or message-text prefix) and blocks autonomous dispatch until manually cleared via `PATCH /api/agent-employees/:id { mark_healthy: true }`.
+- **Cost guardrails** (Task 8.5) — `daily_budget_cents` per employee (default $100/day); `daily_cost_cents` is cleared by the recurring 24-hour `agent-daily-reset` job and the heartbeat and trigger dispatch skip an employee at or over budget, but nothing increments `daily_cost_cents`, so the budget is NOT enforced today. Circuit breaker: the `unhealthy` flag is tripped by the heartbeat loop detector (the five most recent actions repeat a normalised task title or message-text prefix) ; heartbeat and trigger-dispatch scans skip an unhealthy employee until an owner or admin clears the flag via `PATCH /api/agent-employees/:id { mark_healthy: true }`.
 - **Loop detection** (Task 8.6) — prompt_sha idempotency skips re-dispatch when nothing changed since last no_op tick. Consecutive identical action detector trips the circuit breaker.
 
 **Not yet shipped:** skill-defined trigger dispatcher (arbitrary triggers from skill manifests, not just the hardcoded set of `cron:standup`, `member.joined`, `webhook`, `task.status_changed`).
@@ -274,7 +274,7 @@ Block 2 closed the dead zones where agents couldn't act and surfaced agent activ
 - **unblock_dependents workflow action.** New action kind for workflow rules. When the triggering task enters `done`, DMs each open+assigned dependent task's assignee with a `subtype:'unblocked'` notification.
 - **Decision ↔ task tools.** `link_decision_to_tasks(decision_id, task_ids, context?)` → cross_reference edges (idempotent). `mark_decision_implemented(decision_id)` → stamps `decisions.implemented_at` (migration 0050).
 - **member.joined onboarding trigger.** `POST /api/members` fans out `employee-trigger` jobs to every agent whose `trigger_subscriptions` contains `member.joined`. Opt-in via HR skill install.
-- **Dashboard inline approve/reject.** `/api/agent/actions/recent` returns recent actions; the existing "Agent Activity" bento card on `/dashboard` links pending items to the Inbox for review (`Review in Inbox`).
+- **Dashboard approval navigation.** `/api/agent/actions/recent` returns recent actions; the existing "Agent Activity" bento card on `/dashboard` links pending items to the Inbox for review (`Review in Inbox`).
 - **Structured heartbeat checklist builder.** New `<HeartbeatChecklistBuilder/>` component replaces the textarea for `HEARTBEAT.md` on the Personality editor. Rows → `- [ ] every Nmin: …` markdown the existing heartbeat parser already understands.
 
 Migration added: `0050_decision_implemented.sql`.

@@ -76,21 +76,26 @@ Agents and approvals:
 - Apps developer preview: the runtime authority check for a resource observation
   is decided in one transaction.
 - Agent actions: task creation from an approved action is idempotent per action,
-  and a reused creation does not dispatch its assigned agents again. Undo applies
+  and a retry notifies each assigned agent once per assignment. Undo applies
   only while the task still has the value the action set and answers with a
   conflict otherwise; it refuses action types it cannot reverse, removes the
   subtasks when a task creation is undone, and covers closing and reopening a
   task. When approve and reject race, the recorded decision is the one that was
   applied. The completion message lists succeeded and failed actions separately,
-  and an approved action that failed shows as failed with its error. Approval
-  cards list every field an action writes, including cleared fields and full date
-  and time. The dashboard agent widget links to the Inbox for review.
+  and an approved action that failed shows as failed with its error. Task-update
+  approval cards list the patched fields, including cleared values, and reminder
+  previews include the date, time and time zone. A decision made elsewhere is
+  shown as already decided, and an App Run approval that is replayed keeps its
+  original approver and time. The dashboard agent widget links to the Inbox for
+  review.
 - Defty chat messages: tool inputs and results, proposed action parameters and
   drafts attached to a Defty message are delivered only to the person who asked,
   an assigned approver, and owners and admins, in the message list, threads, live
   updates, the agent conversation endpoints, the trace export and the MCP read
   tools. Other members of the space see the reply text and tool names. Attention
-  items for approvals follow the same audience. The space message list pages
+  items for approvals follow the same audience. The input, tool calls, reply
+  text and error of a Defty turn are shown to the person who triggered it and to
+  owners and admins; other members see that the turn happened. The space message list pages
   toward older messages, and one plain failure reply is posted when a Defty reply
   job fails for good.
 - Web: the Autonomous confirmation for an agent employee says owners and admins

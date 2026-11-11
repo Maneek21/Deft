@@ -152,7 +152,7 @@ Client availability and connector UI vary by vendor and account tier. Deft canno
 - User and agent identity preserved on native actions
 - Pending approval cards in the source conversation where supported
 - Inbox mirror for centralized approval review
-- Execution receipts, recent agent actions, and audit history. Approval cards list every field an action writes, and undo applies only while the task still has the value the action set
+- Execution receipts, recent agent actions, and audit history. Task-update approval cards list the patched fields, including cleared values, and undo applies only while the task still has the value the action set
 - Token scopes, revocation, daily action limits, and circuit breakers. The per-employee daily cost budget is not enforced today
 - Space membership checks on REST and WebSocket access
 - Org ownership checks on task, wiki, workflow, message, and agent operations
