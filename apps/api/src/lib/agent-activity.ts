@@ -8,6 +8,7 @@ import {
 } from '@deft/db/schema';
 import { db } from './db.js';
 import { summarizeAgentChannelLifecycle } from './agent-channel-lifecycle.js';
+import { visibleModuleActionSql } from './module-action-visibility.js';
 
 export type AgentActivityItem = {
   id: string;
@@ -28,7 +29,8 @@ function actionStatus(row: typeof agentActions.$inferSelect): AgentActivityItem[
   return 'running';
 }
 
-export async function loadAgentActivity(params: { orgId: string; employeeId: string; limit?: number }) {
+/** `viewer` scopes the action rows to the shared action audience (module-action-visibility.ts). */
+export async function loadAgentActivity(params: { orgId: string; employeeId: string; viewer: { id: string; role?: string }; limit?: number }) {
   const perSource = Math.min(Math.max(params.limit ?? 50, 1), 100);
   const [events, actions, calls, sessions, records] = await Promise.all([
     db.select().from(agentChannelEvents).where(and(
@@ -38,6 +40,7 @@ export async function loadAgentActivity(params: { orgId: string; employeeId: str
     db.select().from(agentActions).where(and(
       eq(agentActions.org_id, params.orgId),
       eq(agentActions.agent_employee_id, params.employeeId),
+      visibleModuleActionSql(params.viewer.role, { userId: params.viewer.id, orgId: params.orgId }),
     )).orderBy(desc(agentActions.created_at)).limit(perSource),
     db.select().from(agentMcpCallAudit).where(and(
       eq(agentMcpCallAudit.org_id, params.orgId),

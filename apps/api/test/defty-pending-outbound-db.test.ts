@@ -17,9 +17,10 @@ const spaceId = randomUUID();
 const parentId = randomUUID();
 let unavailable = databaseUrl ? '' : 'Set matching DEFT_TEST_DATABASE_URL and DATABASE_URL to a disposable test database';
 let seeded = false;
+let viewerId = memberId;
 const app = new Hono();
 app.use('*', async (c, next) => {
-  c.set('user', { id: memberId, org_id: orgId, email: `${memberId}@example.test` } as any);
+  c.set('user', { id: viewerId, org_id: orgId, email: `${viewerId}@example.test` } as any);
   await next();
 });
 
@@ -90,8 +91,17 @@ test('message list responses never expose privileged pending module values', asy
   assert.equal(response.status, 200, await response.clone().text());
   const body = await response.json() as { messages: Array<{ metadata: Record<string, any> }> };
   assert.doesNotMatch(JSON.stringify(body), /PRIVATE-READ-CANARY/);
+  // A member who did not make the request receives the question, not the draft.
   const pending = body.messages.find((message) => message.metadata?.defty_pending)?.metadata.defty_pending;
-  assert.deepEqual(pending.draft.actions[0].params.changed_fields, ['notes']);
+  assert.equal(pending.question, 'Which record?');
+  assert.equal(pending.draft, undefined);
+  viewerId = ownerId;
+  try {
+    const own = await (await app.request(`/api/messages/${spaceId}`)).json() as { messages: Array<{ metadata: Record<string, any> }> };
+    assert.doesNotMatch(JSON.stringify(own), /PRIVATE-READ-CANARY/);
+    const ownPending = own.messages.find((message) => message.metadata?.defty_pending)?.metadata.defty_pending;
+    assert.deepEqual(ownPending.draft.actions[0].params.changed_fields, ['notes']);
+  } finally { viewerId = memberId; }
 });
 
 test('thread responses never expose privileged pending module values', async (t) => {
@@ -100,5 +110,11 @@ test('thread responses never expose privileged pending module values', async (t)
   assert.equal(response.status, 200, await response.clone().text());
   const body = await response.json() as { replies: Array<{ metadata: Record<string, any> }> };
   assert.doesNotMatch(JSON.stringify(body), /PRIVATE-READ-CANARY/);
-  assert.deepEqual(body.replies[0]!.metadata.defty_pending.draft.actions[0].params.changed_fields, ['notes']);
+  assert.equal(body.replies[0]!.metadata.defty_pending.draft, undefined);
+  viewerId = ownerId;
+  try {
+    const own = await (await app.request(`/api/messages/${parentId}/thread`)).json() as { replies: Array<{ metadata: Record<string, any> }> };
+    assert.doesNotMatch(JSON.stringify(own), /PRIVATE-READ-CANARY/);
+    assert.deepEqual(own.replies[0]!.metadata.defty_pending.draft.actions[0].params.changed_fields, ['notes']);
+  } finally { viewerId = memberId; }
 });

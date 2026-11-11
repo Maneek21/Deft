@@ -8,9 +8,11 @@ import {
   attentionItems,
 } from '@deft/db/schema';
 import { db } from '../lib/db.js';
+import { visibleModuleActionSql } from '../lib/module-action-visibility.js';
 import {
   ensureAttentionBackfillForUser,
   filterVisibleAttentionItems,
+  projectAttentionItem,
   recordAttentionFeedback,
   transitionAttentionItem,
   visibleAttentionCondition,
@@ -75,7 +77,15 @@ async function hasVisibleItem(orgId: string, userId: string, itemId: string) {
   return Boolean(item);
 }
 
-async function hydrateApprovals(rows: Array<typeof attentionItems.$inferSelect>) {
+/**
+ * Attach each agent-action item's approval for the viewer. An item whose
+ * action is outside the viewer's current action audience (for example after
+ * a role change) is dropped, so neither its params nor its summary are served.
+ */
+async function hydrateApprovals(
+  viewer: { id: string; org_id: string; role?: string },
+  rows: Array<typeof attentionItems.$inferSelect>,
+) {
   const actionIds = rows
     .filter((item) => item.source_type === 'agent_action')
     .map((item) => item.source_id);
@@ -99,10 +109,14 @@ async function hydrateApprovals(rows: Array<typeof attentionItems.$inferSelect>)
     })
     .from(agentActions)
     .leftJoin(agentEmployees, eq(agentEmployees.id, agentActions.agent_employee_id))
-    .where(inArray(agentActions.id, actionIds));
+    .where(and(
+      inArray(agentActions.id, actionIds),
+      eq(agentActions.org_id, viewer.org_id),
+      visibleModuleActionSql(viewer.role, { userId: viewer.id, orgId: viewer.org_id }),
+    ));
   const byId = new Map(actions.map((action) => [action.id, {...action,proposer:attentionActionProposer(action)}]));
-  return rows.map((item) => ({
-    ...item,
+  return rows.filter((item) => item.source_type !== 'agent_action' || byId.has(item.source_id)).map((item) => ({
+    ...projectAttentionItem(item),
     approval: item.source_type === 'agent_action' ? byId.get(item.source_id) ?? null : null,
   }));
 }
@@ -140,7 +154,7 @@ attentionRoutes.get('/', async (c) => {
   const visibleRows = await filterVisibleAttentionItems(user.id, rows);
   const hasMore = visibleRows.length > limit;
   const page = visibleRows.slice(0, limit);
-  const hydrated = await hydrateApprovals(page);
+  const hydrated = await hydrateApprovals(user, page);
   const counts = await db
     .select({
       lane: attentionItems.lane,
@@ -171,7 +185,7 @@ attentionRoutes.get('/', async (c) => {
 });
 
 attentionRoutes.get('/:id', async (c) => {
-  const user = c.get('user') as { id: string; org_id: string };
+  const user = c.get('user') as { id: string; org_id: string; role?: string };
   const [item] = await db
     .select()
     .from(attentionItems)
@@ -185,7 +199,8 @@ attentionRoutes.get('/:id', async (c) => {
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
   const visible = await filterVisibleAttentionItems(user.id, [item]);
   if (visible.length === 0) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-  const [hydrated] = await hydrateApprovals(visible);
+  const [hydrated] = await hydrateApprovals(user, visible);
+  if (!hydrated) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
   return c.json({ item: hydrated });
 });
 
@@ -202,7 +217,7 @@ attentionRoutes.post('/:id/seen', async (c) => {
     actorUserId: user.id,
   });
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-  return c.json({ item });
+  return c.json({ item: projectAttentionItem(item) });
 });
 
 attentionRoutes.post('/:id/acknowledge', async (c) => {
@@ -218,7 +233,7 @@ attentionRoutes.post('/:id/acknowledge', async (c) => {
     actorUserId: user.id,
   });
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-  return c.json({ item });
+  return c.json({ item: projectAttentionItem(item) });
 });
 
 attentionRoutes.post('/:id/snooze', async (c) => {
@@ -240,7 +255,7 @@ attentionRoutes.post('/:id/snooze', async (c) => {
     actorUserId: user.id,
   });
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-  return c.json({ item });
+  return c.json({ item: projectAttentionItem(item) });
 });
 
 attentionRoutes.post('/:id/resolve', async (c) => {
@@ -258,7 +273,7 @@ attentionRoutes.post('/:id/resolve', async (c) => {
     actorUserId: user.id,
   });
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-  return c.json({ item });
+  return c.json({ item: projectAttentionItem(item) });
 });
 
 attentionRoutes.post('/:id/feedback', async (c) => {
@@ -277,7 +292,7 @@ attentionRoutes.post('/:id/feedback', async (c) => {
     feedback: body.feedback,
   });
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-  return c.json({ item });
+  return c.json({ item: projectAttentionItem(item) });
 });
 
 attentionRoutes.post('/mark-all-seen', async (c) => {

@@ -48,6 +48,7 @@ import { toPlainText } from '../plain-text.js';
 import {
   ensureAttentionBackfillForUser,
   filterVisibleAttentionItems,
+  projectAttentionItem,
   visibleAttentionCondition,
   transitionAttentionItem,
   type AttentionLane,
@@ -76,6 +77,7 @@ import {
   parseModuleOperationArgs,
 } from './modules.js';
 import { dispatchAgentEmployeeMessage } from '../dispatch-agent-message.js';
+import { projectMessagesForViewer } from '../agent-message-run-details.js';
 import { enqueueDeftyWake, finishDeftyWake, normalizeChatMentions, planDeftyWake, resolveMentionedUserIds, type DeftyWakeOutcome } from '../defty-wake.js';
 import {
   dispatchAgentEmployeeTask,
@@ -1492,7 +1494,8 @@ export async function humanFetch(args: { id?: string }, ctx: HumanToolContext): 
     const [row] = await db.select().from(messages).where(and(eq(messages.org_id, ctx.org_id), eq(messages.id, rawId), eq(messages.is_deleted, false))).limit(1);
     if (!row) return errorResult('fetch: message not found');
     if (!(await userCanSeeSpace(ctx, row.space_id))) return errorResult('fetch: message not visible to user');
-    return textResult(row);
+    const [projected] = await projectMessagesForViewer({ id: ctx.user_id, org_id: ctx.org_id, role: ctx.role }, [row]);
+    return textResult(projected);
   }
 
   if (kind === 'event') {
@@ -2460,6 +2463,11 @@ export async function humanSendMessage(args: HumanSendMessageArgs, ctx: HumanToo
   if (!rawContent) return errorResult('send_message requires content');
 
   return withIdempotency('send_message', args, ctx, async () => {
+    // Same mention normalisation as the web route, before any write (including
+    // creating a DM space), storage and the wake decision.
+    const normalized = await normalizeChatMentions(ctx.org_id, rawContent);
+    if (!normalized.ok) return errorResult(`send_message: ${normalized.error}`);
+    const content = normalized.content;
     const target = args.target && typeof args.target === 'object' && !Array.isArray(args.target)
       ? args.target
       : {};
@@ -2512,10 +2520,6 @@ export async function humanSendMessage(args: HumanSendMessageArgs, ctx: HumanToo
       targetKind = 'dm';
     }
 
-    // Same mention normalisation as the web route, before storage and the wake decision.
-    const normalized = await normalizeChatMentions(ctx.org_id, rawContent);
-    if (!normalized.ok) return errorResult(`send_message: ${normalized.error}`);
-    const content = normalized.content;
     // A08: wake Defty under exactly the web route's conditions (lib/defty-wake.ts).
     const deftyWakeInput = {
       orgId: ctx.org_id, userId: ctx.user_id, spaceId: spaceId!, content, parentId,
@@ -2561,7 +2565,9 @@ export async function humanThreadFetch(args: { parent_message_id?: string; limit
   const [parent] = await db.select().from(messages).where(and(eq(messages.id, args.parent_message_id), eq(messages.org_id, ctx.org_id), eq(messages.is_deleted, false))).limit(1);
   if (!parent || !(await userCanSeeSpace(ctx, parent.space_id))) return errorResult('thread_fetch: thread not visible');
   const replies = await db.select().from(messages).where(and(eq(messages.parent_id, parent.id), eq(messages.org_id, ctx.org_id), eq(messages.is_deleted, false))).orderBy(desc(messages.created_at)).limit(Math.min(Math.max(1, args.limit ?? 100), 200));
-  return textResult({ parent, replies: replies.reverse() });
+  const [projectedParent, ...projectedReplies] = await projectMessagesForViewer(
+    { id: ctx.user_id, org_id: ctx.org_id, role: ctx.role }, [parent, ...replies.reverse()]);
+  return textResult({ parent: projectedParent, replies: projectedReplies });
 }
 
 export async function humanMemberList(args: { query?: string; include_agents?: boolean; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
@@ -3452,7 +3458,7 @@ export async function humanAttentionList(args: { lane?: string; state?: string; 
     ))
     .groupBy(attentionItems.lane);
   return textResult({
-    items: visibleRows.map((row) => ({ ...row, url: row.link ?? `/inbox?lane=${row.lane}` })),
+    items: visibleRows.map((row) => ({ ...projectAttentionItem(row), url: row.link ?? `/inbox?lane=${row.lane}` })),
     counts: Object.fromEntries(counts.map((row) => [row.lane, { count: Number(row.count), unseen: Number(row.unseen) }])),
   });
 }
@@ -3475,7 +3481,7 @@ export async function humanAttentionGet(args: { attention_id?: string }, ctx: Hu
   if (!row) return errorResult('Attention item not found');
   const visible = await filterVisibleAttentionItems(ctx.user_id, [row]);
   return visible[0]
-    ? textResult({ ...visible[0], url: visible[0].link ?? `/inbox?lane=${visible[0].lane}` })
+    ? textResult({ ...projectAttentionItem(visible[0]), url: visible[0].link ?? `/inbox?lane=${visible[0].lane}` })
     : errorResult('Attention item not found');
 }
 
@@ -3513,7 +3519,7 @@ async function transitionHumanAttention(
       resolution: action === 'resolve' && typeof args.resolution === 'string' ? args.resolution.slice(0, 120) : action,
       actorUserId: ctx.user_id,
     });
-    return row ? textResult({ updated: true, item: row }) : errorResult('Attention item not found');
+    return row ? textResult({ updated: true, item: projectAttentionItem(row) }) : errorResult('Attention item not found');
   });
 }
 
