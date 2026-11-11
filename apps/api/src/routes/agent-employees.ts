@@ -38,6 +38,8 @@ import {
   wikiMemorySyncs,
   wikiPages,
 } from '@deft/db/schema';
+import { visibleModuleActionSql } from '../lib/module-action-visibility.js';
+import { currentEmployeeMessageAuthoritySql, currentEmployeeSpaceAuthoritySql, currentUserSpaceAuthoritySql } from '../lib/agent-channel-authority.js';
 import type { SkillAgentConfig } from '../lib/skill-config.js';
 import {
   AGENT_CHANNEL_PROTOCOL_VERSION,
@@ -58,6 +60,7 @@ import { evaluateAgentOnboardingPreflight } from '../lib/agent-onboarding-prefli
 import { generateReceipt } from '../lib/receipts.js';
 import { invalidatePlatformContextCacheFor } from '../lib/mcp-tools/context.js';
 import {
+  isCanonicalDeftyEmployee,
   isReservedDeftyEmployeeSlug,
   isReservedDeftyRuntimeKind,
 } from '../lib/defty-identity.js';
@@ -247,7 +250,7 @@ agentEmployeeRoutes.get('/:id/turns', async (c) => {
 
     // Scope check — the caller must share the employee's org.
     const [existing] = await db
-      .select({ id: agentEmployees.id, org_id: agentEmployees.org_id })
+      .select({ id: agentEmployees.id, org_id: agentEmployees.org_id, slug: agentEmployees.slug, runtime_kind: agentEmployees.runtime_kind, is_byoa: agentEmployees.is_byoa })
       .from(agentEmployees)
       .where(eq(agentEmployees.id, id))
       .limit(1);
@@ -305,7 +308,47 @@ agentEmployeeRoutes.get('/:id/turns', async (c) => {
       .orderBy(desc(agentSessionTurns.created_at))
       .limit(limit);
 
-    return c.json({ turns, limit });
+    // Any org member sees that a turn happened. Its content (input messages,
+    // tool calls, reply, error) follows the action rule: owners/admins; for a
+    // Defty turn, the requester only (the author of the triggering message:
+    // the one link to the request that the server itself records); for
+    // an employee turn, the employee source rule (current employee access to
+    // the source and the reader's access to it). A turn whose requester or
+    // source cannot be established keeps its content for owners/admins.
+    const canSeeAll = user.role === 'owner' || user.role === 'admin';
+    let contentIds = new Set<string>();
+    if (!canSeeAll && turns.length > 0) {
+      const org = sql`${user.org_id}`;
+      const reader = sql`${user.id}`;
+      const trigger = sql`${agentSessionTurns.triggering_message_id}`;
+      const turnSpace = sql`${agentSessionTurns.space_id}`;
+      const audience = isCanonicalDeftyEmployee(existing)
+        ? sql`${agentSessionTurns.triggering_message_id} IS NOT NULL AND (
+            EXISTS (SELECT 1 FROM messages turn_request
+              WHERE turn_request.id = ${trigger} AND turn_request.org_id = ${org}
+                AND turn_request.user_id = ${reader} AND turn_request.is_deleted = false
+                AND (${turnSpace} IS NULL OR turn_request.space_id = ${turnSpace})))`
+        : sql`CASE
+            WHEN ${agentSessionTurns.triggering_message_id} IS NOT NULL THEN
+              ${currentEmployeeMessageAuthoritySql(org, sql`${id}`, trigger)}
+              AND EXISTS (SELECT 1 FROM messages turn_source
+                WHERE turn_source.id = ${trigger} AND turn_source.org_id = ${org} AND turn_source.is_deleted = false
+                  AND ${currentUserSpaceAuthoritySql(org, reader, sql`turn_source.space_id`)})
+            WHEN ${agentSessionTurns.space_id} IS NOT NULL THEN
+              ${currentEmployeeSpaceAuthoritySql(org, sql`${id}`, turnSpace)}
+              AND ${currentUserSpaceAuthoritySql(org, reader, turnSpace)}
+            ELSE false END`;
+      contentIds = new Set((await db.select({ id: agentSessionTurns.id }).from(agentSessionTurns).where(and(
+        inArray(agentSessionTurns.id, turns.map((turn) => turn.id)),
+        eq(agentSessionTurns.org_id, user.org_id),
+        audience,
+      ))).map((row) => row.id));
+    }
+    const visibleTurns = turns.map((turn) => canSeeAll || contentIds.has(turn.id)
+      ? turn
+      : { ...turn, input_messages_json: null, tool_calls_json: null, raw_reply_text: null, error: null });
+
+    return c.json({ turns: visibleTurns, limit });
   } catch (err) {
     console.error('Failed to list employee turns:', err);
     return c.json({ error: 'Failed to list employee turns', code: 'INTERNAL_ERROR' }, 500);
@@ -435,12 +478,15 @@ agentEmployeeRoutes.get('/:id/turns/:turn_id/receipt', async (c) => {
 
     // Find the most recent agent_actions row for this employee where the
     // receipt landed within a small window around the turn.
+    // Only receipts of actions in the caller's current action audience (shared
+    // rule), filtered before LIMIT so a newer hidden receipt never shadows one.
     const rows = await db.execute(sql`
       SELECT r.*
       FROM action_receipts r
-      JOIN agent_actions a ON a.id = r.action_id
-      WHERE a.agent_employee_id = ${id}
-        AND a.org_id = ${user.org_id}
+      JOIN agent_actions ON agent_actions.id = r.action_id
+      WHERE agent_actions.agent_employee_id = ${id}
+        AND agent_actions.org_id = ${user.org_id}
+        AND ${visibleModuleActionSql(user.role, { userId: user.id, orgId: user.org_id })}
         AND r.created_at BETWEEN ${turn.created_at}::timestamp - interval '5 seconds'
                              AND ${turn.created_at}::timestamp + interval '30 seconds'
       ORDER BY r.created_at DESC
@@ -2573,7 +2619,7 @@ agentEmployeeRoutes.get('/:id/activity', async (c) => {
     }
 
     const limit = Math.min(Math.max(Number.parseInt(c.req.query('limit') ?? '50', 10) || 50, 1), 100);
-    return c.json(await loadAgentActivity({ orgId: user.org_id, employeeId: id, limit }));
+    return c.json(await loadAgentActivity({ orgId: user.org_id, employeeId: id, viewer: user, limit }));
   } catch (err) {
     console.error('Failed to get agent employee activity:', err);
     return c.json({ error: 'Failed to get activity', code: 'INTERNAL_ERROR' }, 500);
@@ -2883,7 +2929,7 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
       .where(and(eq(agentChannelEvents.agent_employee_id, id), eq(agentChannelEvents.org_id, user.org_id)))
       .orderBy(desc(agentChannelEvents.created_at))
       .limit(100);
-    const activity = await loadAgentActivity({ orgId: user.org_id, employeeId: id, limit: 30 });
+    const activity = await loadAgentActivity({ orgId: user.org_id, employeeId: id, viewer: user, limit: 30 });
 
     const challengeEvidence = latestChallenge
       ? await loadCertificationChallengeEvidence({

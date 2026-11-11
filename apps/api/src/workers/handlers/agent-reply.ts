@@ -32,7 +32,9 @@ import { getMessageAttachmentContext } from '../../lib/agent-message-attachments
 import { compileMessageModuleCsvImport } from '../../lib/module-csv-import.js';
 import { compileMessageWorkspacePlanImport } from '../../lib/workspace-plan-import.js';
 import { buildRoomContextPackWithSources } from '../../lib/defty-room-context.js';
-import { loadPendingDeftyDraft, pendingDeftyDraftContext, projectPendingDeftyMetadataForOutbound, type PendingDeftyDraft } from '../../lib/defty-pending-action.js';
+import { loadPendingDeftyDraft, pendingDeftyDraftContext, type PendingDeftyDraft } from '../../lib/defty-pending-action.js';
+import { emitMessageToSpaceViewers } from '../../lib/agent-message-run-details.js';
+import { promotableNoteSql } from '../../lib/agent-action-visibility.js';
 import { visibleTaskCondition } from '../../lib/task-visibility.js';
 import { assertDeliveryOwnedBeforeCommit, claimDeftyReplySlot, DeftyDeliveryLostError, findExistingDeftyReply, isDatabaseWaitTimeout, throwIfDeliveryLost, type DeftyReplyDelivery } from '../../lib/defty-reply-guard.js';
 
@@ -504,10 +506,11 @@ export async function resolvePendingActionTargets(
       const [targetSpace] = spaceId ? await db.select({ id: spaces.id, name: spaces.name }).from(spaces).innerJoin(
         spaceMembers,
         and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, userId)),
+      // Membership only, as the executor and the HTTP notes route: an archived
+      // space the requester belongs to is a valid target.
       ).where(and(
         eq(spaces.id, spaceId),
         eq(spaces.org_id, orgId),
-        eq(spaces.is_archived, false),
       )).limit(1) : [];
       if (!targetSpace) {
         warnings.push('I could not verify access to the target space for this note.');
@@ -519,18 +522,12 @@ export async function resolvePendingActionTargets(
 
     if (action.action === 'note_to_wiki') {
       const noteId = typeof action.params.note_id === 'string' ? action.params.note_id : '';
+      // Same rule as the executor: a space note's space is in the note's org.
       const [visibleNote] = noteId ? await db.select({ id: notes.id, title: notes.title }).from(notes).where(and(
         eq(notes.id, noteId),
         eq(notes.org_id, orgId),
         eq(notes.is_deleted, false),
-        sql`(
-          ${notes.user_id} = ${userId}
-          OR ${notes.visibility} = 'org'
-          OR (${notes.visibility} = 'space' AND EXISTS (
-            SELECT 1 FROM space_members sm
-            WHERE sm.space_id = ${notes.visibility_space_id} AND sm.user_id = ${userId}
-          ))
-        )`,
+        promotableNoteSql(userId),
       )).limit(1) : [];
       if (!visibleNote) {
         warnings.push('I could not find that note or you do not have access to it.');
@@ -1460,6 +1457,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
         moduleHistoryActor ??= await buildModuleReadActor(orgId, userId, { conversationId: spaceId });
         if (!await authorizedDurableAgentResult({
           actor: moduleHistoryActor,
+          viewer: { userId, role: 'role' in moduleHistoryActor ? moduleHistoryActor.role : undefined },
           orgId,
           conversationId: spaceId,
           metadata,
@@ -2187,7 +2185,6 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
       agentMessage = persisted.message;
     } catch (err) {
       if (pendingActions.length === 0 || err instanceof DeftyDeliveryLostError || isDatabaseWaitTimeout(err)) throw err;
-      const pendingActionPersistError = err instanceof Error ? err.message : String(err);
       console.error('[agent-reply] Failed to persist agent reply with pending actions:', err);
       const failedApprovalContent = [
         'I drafted the action, but I could not create the approval card.',
@@ -2205,7 +2202,8 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
           metadata: {
             ...sanitizeAgentReplyActionMetadata(replyMetadata),
             pending_actions: undefined,
-            pending_actions_error: pendingActionPersistError,
+            // The exception (logged above) can carry the query and its values; members get a code.
+            pending_actions_error: 'APPROVAL_CARD_NOT_CREATED',
           } as never,
         }).returning();
         await assertDeliveryOwnedBeforeCommit(tx, delivery);
@@ -2250,7 +2248,6 @@ async function broadcastAgentReply(params: {
 
   const messageWithUser = {
     ...agentMessage,
-    metadata: projectPendingDeftyMetadataForOutbound(agentMessage.metadata),
     user_name: agentUserData?.name ?? DEFTY_NAME,
     user_avatar: agentUserData?.avatar_url ?? null,
     reactions: [],
@@ -2261,7 +2258,8 @@ async function broadcastAgentReply(params: {
   // Broadcast via Socket.io
   const io = dependencies.io === undefined ? getIO() : dependencies.io;
   if (!io) return;
-  io.to(`space:${spaceId}`).emit('message:new', messageWithUser);
+  // Run details reach only the action audience's sockets (agent-message-run-details.ts).
+  await emitMessageToSpaceViewers(io, { orgId: agentMessage.org_id, spaceId, event: 'message:new', message: messageWithUser });
 
   // Only emit thread:updated when the reply is actually in a thread.
   if (threadParentId) {

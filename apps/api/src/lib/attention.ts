@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, ne, notInArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, ne, sql, type SQL } from 'drizzle-orm';
 import {
   agentActionApprovers,
   agentActions,
@@ -15,12 +15,7 @@ import {
 } from '@deft/db/schema';
 import { db } from './db.js';
 import { emitToUser } from '../socket.js';
-import { sanitizeModuleActionParamsForHistory } from './module-service.js';
-import {
-  MODULE_GOVERNED_WRITE_ACTION_NAMES,
-  isModuleGovernedWriteActionName,
-  isModuleWriteActionName,
-} from './module-action-visibility.js';
+import { isModuleGovernedWriteActionName, visibleModuleActionSql } from './module-action-visibility.js';
 import { scheduleAttentionDeliveries, scheduleAttentionDelivery } from './web-push.js';
 import { nativeDeliveryAccessSql } from './native-mention-visibility.js';
 
@@ -94,19 +89,38 @@ export function visibleAttentionCondition(userId: string) {
         FROM ${agentActions}
         WHERE ${agentActions.id} = ${attentionItems.source_id}
           AND ${agentActions.org_id} = ${attentionItems.org_id}
-          AND (
-            ${notInArray(agentActions.action, [...MODULE_GOVERNED_WRITE_ACTION_NAMES])}
-            OR NOT EXISTS (
-              SELECT 1 FROM ${orgMembers} module_attention_member
-              WHERE module_attention_member.org_id = ${attentionItems.org_id}
-                AND module_attention_member.user_id = ${userId}
-                AND module_attention_member.is_active = true
-                AND module_attention_member.role = 'guest'
-            )
-          )
+          AND ${currentActionAudienceSql(userId)}
       )
     )
   )`;
+}
+
+/**
+ * The shared action audience (visibleModuleActionSql) for `userId` under the
+ * user's current active role in the action's org. Every attention read, count,
+ * mutation, emission and backfill of an approval item goes through it, so an
+ * item stops being served once its owner leaves the action's audience.
+ */
+function currentActionAudienceSql(userId: string): SQL {
+  const hasRole = (roles: string[]) => sql`EXISTS (
+    SELECT 1 FROM ${orgMembers} audience_member
+    WHERE audience_member.org_id = ${agentActions.org_id}
+      AND audience_member.user_id = ${userId}
+      AND audience_member.is_active = true
+      AND audience_member.role IN (${sql.join(roles.map((role) => sql`${role}`), sql`, `)})
+  )`;
+  return sql`(
+    (${hasRole(['owner', 'admin'])} AND ${visibleModuleActionSql('owner', { userId })})
+    OR (${hasRole(['member'])} AND ${visibleModuleActionSql('member', { userId })})
+    OR (${hasRole(['guest'])} AND ${visibleModuleActionSql('guest', { userId })})
+  )`;
+}
+
+/** Outbound attention item: approval items never carry action params. */
+export function projectAttentionItem<T extends { metadata: unknown }>(item: T): T {
+  if (!item.metadata || typeof item.metadata !== 'object' || !Object.hasOwn(item.metadata, 'params')) return item;
+  const { params: _params, ...metadata } = item.metadata as Record<string, unknown>;
+  return { ...item, metadata };
 }
 
 type LegacyNotification = typeof notifications.$inferSelect;
@@ -274,23 +288,8 @@ function approvalActionLabel(action: AgentAction): string {
     ?? action.action.replaceAll('_', ' ');
 }
 
-function sanitizeModuleTaskLinkParamsForAttention(
-  params: Record<string, unknown>,
-): Record<string, unknown> {
-  const safe: Record<string, unknown> = {};
-  for (const key of ['resource_id', 'task_identifier', 'idempotency_digest', 'input_digest']) {
-    if (typeof params[key] === 'string') safe[key] = params[key];
-  }
-  return safe;
-}
-
 export function approvalToAttentionDraft(action: AgentAction, userId: string): AttentionDraft {
   const params = objectMetadata(action.params);
-  const attentionParams = isModuleWriteActionName(action.action)
-    ? sanitizeModuleActionParamsForHistory(action.action, params)
-    : isModuleGovernedWriteActionName(action.action)
-      ? sanitizeModuleTaskLinkParamsForAttention(params)
-      : params;
   const sourceSpaceId = metadataString(params, 'source_space_id', 'origin_space_id', 'space_id')
     ?? action.conversation_id;
   const sourceMessageId = metadataString(params, 'source_message_id') ?? action.message_id;
@@ -315,7 +314,6 @@ export function approvalToAttentionDraft(action: AgentAction, userId: string): A
     metadata: {
       action_id: action.id,
       action: action.action,
-      params: attentionParams,
       approval_tier: action.approval_tier,
       agent_employee_id: action.agent_employee_id,
       source: action.source,
@@ -324,8 +322,19 @@ export function approvalToAttentionDraft(action: AgentAction, userId: string): A
   };
 }
 
-function emitAttention(event: 'attention:new' | 'attention:updated', item: typeof attentionItems.$inferSelect) {
-  emitToUser(item.org_id, item.user_id, event, item);
+/** Emit only to an owner who may still open the item; never with action params. */
+async function emitAttention(event: 'attention:new' | 'attention:updated', item: typeof attentionItems.$inferSelect) {
+  try {
+    if (item.source_type === 'agent_action') {
+      const [visible] = await db.select({ id: agentActions.id }).from(agentActions).where(and(
+        eq(agentActions.id, item.source_id), eq(agentActions.org_id, item.org_id), currentActionAudienceSql(item.user_id),
+      )).limit(1);
+      if (!visible) return;
+    }
+    emitToUser(item.org_id, item.user_id, event, projectAttentionItem(item));
+  } catch (error) {
+    console.warn('[attention] realtime delivery skipped:', error instanceof Error ? error.message : error);
+  }
 }
 
 export async function upsertAttentionItem(
@@ -418,7 +427,7 @@ export async function upsertAttentionItem(
     .onConflictDoNothing();
 
   const deliver = async () => {
-    emitAttention(item.event_count > 1 ? 'attention:updated' : 'attention:new', item);
+    await emitAttention(item.event_count > 1 ? 'attention:updated' : 'attention:new', item);
     if (options.deliver !== false) {
       try {
         await scheduleAttentionDelivery(item);
@@ -570,7 +579,7 @@ export async function syncNotificationsToAttention(
     return projected;
   });
 
-  for (const item of items) emitAttention(item.event_count > 1 ? 'attention:updated' : 'attention:new', item);
+  for (const item of items) await emitAttention(item.event_count > 1 ? 'attention:updated' : 'attention:new', item);
   if (options.deliver !== false) {
     await scheduleAttentionDeliveries(items).catch((error) => {
       console.warn('[attention] push scheduling failed:', error instanceof Error ? error.message : error);
@@ -614,16 +623,7 @@ export async function filterVisibleAttentionItems<T extends typeof attentionItem
       .from(agentActions)
       .where(and(
         inArray(agentActions.id, actionIds),
-        sql`(
-          ${notInArray(agentActions.action, [...MODULE_GOVERNED_WRITE_ACTION_NAMES])}
-          OR NOT EXISTS (
-            SELECT 1 FROM ${orgMembers} module_attention_member
-            WHERE module_attention_member.org_id = ${agentActions.org_id}
-              AND module_attention_member.user_id = ${userId}
-              AND module_attention_member.is_active = true
-              AND module_attention_member.role = 'guest'
-          )
-        )`,
+        currentActionAudienceSql(userId),
       ))
     : [];
   const allowedMessages = new Set(visibleMessages.filter((row) => row.type === 'public' || row.member_id).map((row) => row.id));
@@ -764,9 +764,8 @@ export async function ensureAttentionBackfillForUser(params: { orgId: string; us
       eq(agentActions.org_id, params.orgId),
       eq(agentActions.approval_status, 'pending'),
       inArray(agentActions.approval_tier, ['quick', 'full']),
-      params.role === 'guest'
-        ? notInArray(agentActions.action, [...MODULE_GOVERNED_WRITE_ACTION_NAMES])
-        : sql`true`,
+      // Only actions in the user's current audience (shared rule).
+      visibleModuleActionSql(params.role, { userId: params.userId, orgId: params.orgId }),
       sql`(
         EXISTS (
           SELECT 1 FROM ${agentActionApprovers}
@@ -865,7 +864,7 @@ export async function transitionAttentionItem(params: {
     actor_user_id: params.actorUserId ?? params.userId,
     payload: { resolution: params.resolution ?? null, snoozed_until: params.snoozedUntil?.toISOString() ?? null },
   });
-  emitAttention('attention:updated', item);
+  await emitAttention('attention:updated', item);
   return item;
 }
 
@@ -923,7 +922,7 @@ export async function recordAttentionFeedback(params: {
     actor_user_id: params.userId,
     payload: { feedback: 'not_urgent' },
   });
-  emitAttention('attention:updated', item);
+  await emitAttention('attention:updated', item);
   return item;
 }
 

@@ -319,7 +319,19 @@ export async function failJob(
       error,
     });
   }
+  if (row.status === 'failed') await noticeFailedAgentReply(row);
   return true;
+}
+
+/** A reply job that failed for good tells its requester once (defty-wake.ts). */
+async function noticeFailedAgentReply(row: Record<string, unknown>): Promise<void> {
+  if (row.name !== 'agent-reply') return;
+  try {
+    const { postDeftyReplyFailureNotice } = await import('./defty-wake.js');
+    await postDeftyReplyFailureNotice(typeof row.data === 'string' ? JSON.parse(row.data) : row.data);
+  } catch (err) {
+    console.warn('[queues] agent-reply failure notice not posted', err instanceof Error ? err.message : String(err));
+  }
 }
 
 /** Return a live claimed job to pending without spending one max-attempt slot.
@@ -402,6 +414,7 @@ export async function cleanupStaleJobs(): Promise<number> {
   `);
   const rows = resultRows(result);
   for (const row of rows) {
+    if (row.status === 'failed') await noticeFailedAgentReply(row);
     if (row.name !== OBSERVE_CHAT_MESSAGE_JOB) continue;
     await markObservationFailedFromJobData({
       data: typeof row.data === 'string' ? JSON.parse(row.data) : row.data,

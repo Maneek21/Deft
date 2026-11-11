@@ -19,6 +19,7 @@ import { resolveReasonProvider, type ResolvedReasonProvider } from './org-ai-con
 import { enqueue, QUEUE_NAMES, type QueueExecutor } from './queues.js';
 import { loadThreadFollowContext, shouldFollowThread } from './defty-thread-follow.js';
 import { isPrivateDeftySpace } from './app-private-defty-message-guard.js';
+import { claimDeftyReplySlot } from './defty-reply-guard.js';
 import { getIO } from '../socket.js';
 import { normalizePlainAgentMentions } from './agent-mention-normalization.js';
 import type { CoreDatabaseTransaction } from './database-transaction.js';
@@ -360,6 +361,56 @@ async function postProviderUnavailableReply(
       reactions: [],
       reply_count: 0,
       latest_reply_at: null,
+    });
+  }
+}
+
+/**
+ * Called when an `agent-reply` job has failed for good (its queue attempts are
+ * exhausted, or it was failed as terminal). Posts one plain reply so the
+ * requester is not left with a stopped working indicator. It goes through the
+ * same one-reply guard as the handler, so a reply that already committed for
+ * the trigger is never followed by a second one. The requester must still be
+ * an active member of the (unarchived) space and the trigger must still exist,
+ * as for the handler itself.
+ */
+export async function postDeftyReplyFailureNotice(jobData: unknown): Promise<void> {
+  if (!jobData || typeof jobData !== 'object') return;
+  const data = jobData as Record<string, unknown>;
+  const { orgId, spaceId, messageId, userId } = data;
+  const parentId = typeof data.parentId === 'string' ? data.parentId : undefined;
+  if (typeof orgId !== 'string' || typeof spaceId !== 'string' || typeof messageId !== 'string' || typeof userId !== 'string') return;
+  const [space] = await db.select({ type: spaces.type }).from(spaces)
+    .innerJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, userId)))
+    .innerJoin(orgMembers, and(eq(orgMembers.org_id, spaces.org_id), eq(orgMembers.user_id, userId), eq(orgMembers.is_active, true)))
+    .where(and(eq(spaces.id, spaceId), eq(spaces.org_id, orgId), eq(spaces.is_archived, false)))
+    .limit(1);
+  if (!space) return;
+  const [trigger] = await db.select({ created_at: messages.created_at }).from(messages).where(and(
+    eq(messages.id, messageId), eq(messages.org_id, orgId), eq(messages.space_id, spaceId),
+    eq(messages.user_id, userId), eq(messages.is_deleted, false),
+  )).limit(1);
+  if (!trigger) return;
+  const agentUserId = await ensureDeftyMembership(orgId);
+  const isDmLike = space.type === 'dm' || space.type === 'group_dm' || space.type === 'agent_conversation';
+  const parent = isDmLike ? (parentId ?? null) : (parentId || messageId);
+  const replyTrigger = { orgId, spaceId, agentUserId, triggerMessageId: messageId, triggerCreatedAt: trigger.created_at };
+  const posted = await db.transaction(async (tx) => {
+    if (await claimDeftyReplySlot(tx, replyTrigger)) return null;
+    const [row] = await tx.insert(messages).values({
+      org_id: orgId,
+      space_id: spaceId,
+      user_id: agentUserId,
+      content: 'I could not finish this reply. Please try again.',
+      parent_id: parent,
+      metadata: { is_agent_reply: true, reply_to_message_id: messageId, kind: 'defty_reply_failed' } as never,
+    }).returning();
+    return row ?? null;
+  });
+  const io = getIO();
+  if (io && posted) {
+    io.to(`space:${spaceId}`).emit('message:new', {
+      ...posted, user_name: 'Defty', user_avatar: null, reactions: [], reply_count: 0, latest_reply_at: null,
     });
   }
 }
