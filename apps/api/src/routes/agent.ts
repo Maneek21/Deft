@@ -1825,6 +1825,20 @@ class UndoRefusal extends Error {
   }
 }
 
+function nothingRecorded() {
+  return new UndoRefusal(409, 'UNDO_NOT_APPLICABLE', 'This action did not record what it changed, so it cannot be undone.');
+}
+
+/** Action names undo can reverse, mapped to the reversal that applies. */
+const UNDO_KIND_BY_ACTION: Record<string, 'create_task' | 'update_task_status' | 'assign_task' | 'post_message'> = {
+  create_task: 'create_task',
+  update_task_status: 'update_task_status',
+  close_task: 'update_task_status',
+  reopen_task: 'update_task_status',
+  assign_task: 'assign_task',
+  post_message: 'post_message',
+};
+
 agentRoutes.post('/actions/:id/undo', async (c) => {
   const user = c.get('user');
   const actionId = c.req.param('id');
@@ -1838,13 +1852,22 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
       visibleActionSql(user),
     ))
     .limit(1);
+  // close_task / reopen_task are stored under their own names but executed
+  // (and reversed) as a status change.
+  const undoKind = action ? UNDO_KIND_BY_ACTION[action.action] : undefined;
   // Only the requester or an owner/admin who can still see the target may
   // undo; anyone else gets the same answer as for a missing action.
-  if (!action || !(await canUndoAgentAction(user, action))) {
+  if (!action || !(await canUndoAgentAction(user, { ...action, action: undoKind ?? action.action }))) {
     return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+  }
+  if (!undoKind) {
+    return c.json({ error: 'This action cannot be undone.', code: 'UNDO_UNSUPPORTED' }, 400);
   }
   if (action.undone_at) {
     return c.json({ error: 'Already undone', code: 'ALREADY_UNDONE' }, 400);
+  }
+  if (action.approval_status !== 'approved' || !action.executed_at || action.error) {
+    return c.json({ error: 'This action did not complete, so there is nothing to undo.', code: 'UNDO_NOT_APPLICABLE' }, 409);
   }
 
   const beforeState = action.before_state as Record<string, any> | null;
@@ -1869,10 +1892,10 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
         .returning({ id: agentActions.id });
       if (!claimed) throw new UndoRefusal(400, 'ALREADY_UNDONE', 'Already undone');
 
-      switch (action.action) {
+      switch (undoKind) {
         case 'create_task': {
           const taskId = result?.task_id;
-          if (!taskId) break;
+          if (!taskId) throw nothingRecorded();
           const [deleted] = await tx.update(tasks).set({ is_deleted: true })
             .where(and(eq(tasks.id, taskId), eq(tasks.org_id, user.org_id), eq(tasks.is_deleted, false)))
             .returning({ id: tasks.id });
@@ -1900,7 +1923,7 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
         case 'update_task_status': {
           const taskId = beforeState?.task_id || result?.task_id;
           const oldStatus = beforeState?.status;
-          if (!taskId || !oldStatus) break;
+          if (!taskId || !oldStatus) throw nothingRecorded();
           const writtenStatus = afterState?.status;
           if (typeof writtenStatus !== 'string') {
             throw new UndoRefusal(409, 'UNDO_CONFLICT', 'This action did not record the status it set, so it cannot be undone safely.');
@@ -1937,7 +1960,7 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
         case 'assign_task': {
           const taskId = beforeState?.task_id || result?.task_id;
           const oldAssigneeId = beforeState?.assignee_id ?? null;
-          if (!taskId) break;
+          if (!taskId) throw nothingRecorded();
           if (!afterState || !('assignee_id' in afterState)) {
             throw new UndoRefusal(409, 'UNDO_CONFLICT', 'This action did not record the assignee it set, so it cannot be undone safely.');
           }
@@ -1977,7 +2000,7 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
 
         case 'post_message': {
           const messageId = result?.message_id;
-          if (!messageId) break;
+          if (!messageId) throw nothingRecorded();
           const [deleted] = await tx.update(messages).set({ is_deleted: true })
             .where(and(eq(messages.id, messageId), eq(messages.org_id, user.org_id), eq(messages.is_deleted, false)))
             .returning({ id: messages.id });
