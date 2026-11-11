@@ -1900,12 +1900,27 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
             .where(and(eq(tasks.id, taskId), eq(tasks.org_id, user.org_id), eq(tasks.is_deleted, false)))
             .returning({ id: tasks.id });
           if (!deleted) throw new UndoRefusal(409, 'UNDO_CONFLICT', 'The task was already deleted.');
-          await tx.insert(taskActivity).values({
+          // Subtasks this action created go with their parent. Only ids the
+          // action recorded, still under that parent, in this org.
+          const subtaskIds = (Array.isArray(result?.subtasks) ? result.subtasks : [])
+            .map((subtask: unknown) => (subtask && typeof subtask === 'object'
+              ? (subtask as Record<string, unknown>).id ?? (subtask as Record<string, unknown>).task_id
+              : null))
+            .filter((id: unknown): id is string => typeof id === 'string' && id.length > 0);
+          const deletedSubtasks = subtaskIds.length === 0 ? [] : await tx.update(tasks).set({ is_deleted: true })
+            .where(and(
+              inArray(tasks.id, subtaskIds),
+              eq(tasks.org_id, user.org_id),
+              eq(tasks.parent_task_id, taskId),
+              eq(tasks.is_deleted, false),
+            ))
+            .returning({ id: tasks.id });
+          await tx.insert(taskActivity).values([taskId, ...deletedSubtasks.map((row) => row.id)].map((id) => ({
             org_id: user.org_id,
-            task_id: taskId,
+            task_id: id,
             user_id: user.id,
             action: 'deleted',
-          });
+          })));
           audit = {
             orgId: user.org_id,
             actorType: 'user',
@@ -1915,7 +1930,7 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
             entityId: taskId,
             beforeState: afterState,
             afterState: { is_deleted: true },
-            metadata: { action_id: actionId },
+            metadata: { action_id: actionId, deleted_subtask_ids: deletedSubtasks.map((row) => row.id) },
           };
           break;
         }
