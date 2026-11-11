@@ -73,3 +73,19 @@ export function createCoalescedRefresh(refresh: () => Promise<void>): () => Prom
     return inFlight;
   };
 }
+
+/**
+ * Tell whether a read that was started earlier may still be applied.
+ * `capture()` marks the start of a read and returns a check; `invalidate()`
+ * makes every check captured before it answer false.
+ */
+export function createSnapshotGuard(): { capture: () => () => boolean; invalidate: () => void } {
+  let epoch = 0;
+  return {
+    capture: () => {
+      const started = epoch;
+      return () => started === epoch;
+    },
+    invalidate: () => { epoch += 1; },
+  };
+}

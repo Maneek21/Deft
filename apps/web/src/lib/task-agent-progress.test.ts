@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   createCoalescedRefresh,
+  createSnapshotGuard,
   progressAfterRead,
   progressFromEvent,
   type TaskAgentProgress,
@@ -76,4 +77,24 @@ test('W2a4-B-web: a failed read does not stop later events from refreshing', asy
   await refresh();
   await refresh();
   assert.equal(reads, 2);
+});
+
+test('a progress read that started before a terminal event is not applied after it', async () => {
+  const guard = createSnapshotGuard();
+  const applied: string[] = [];
+  const response = deferred();
+  const read = (async () => {
+    const isCurrent = guard.capture();
+    await response.promise;
+    if (isCurrent()) applied.push('started');
+  })();
+  // The terminal event arrives and its reload finishes while the read is in flight.
+  guard.invalidate();
+  applied.push('completed');
+  response.resolve();
+  await read;
+  assert.deepEqual(applied, ['completed']);
+
+  const later = guard.capture();
+  assert.equal(later(), true, 'a read started after the terminal event applies');
 });

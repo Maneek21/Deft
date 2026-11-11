@@ -52,7 +52,7 @@ import {
   Repeat,
 } from 'lucide-react';
 import { statusLabel } from '@/lib/task-status-labels';
-import { createCoalescedRefresh, progressAfterRead, progressFromEvent, TERMINAL_AGENT_PROGRESS_STATUSES, type TaskAgentProgressEvent } from '@/lib/task-agent-progress';
+import { createCoalescedRefresh, createSnapshotGuard, progressAfterRead, progressFromEvent, TERMINAL_AGENT_PROGRESS_STATUSES, type TaskAgentProgressEvent } from '@/lib/task-agent-progress';
 import { useProjectResolvedConfig, priorityLabel, priorityFullLabel, type CanonicalPriority } from '@/hooks/use-project-resolved-config';
 
 // Register built-in slash menu commands (idempotent).
@@ -885,14 +885,18 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
 
   // Step text comes from the task read, which only readers of the task get;
   // progress events carry state only. A burst of events refreshes it once at a time.
+  // A terminal event reloads the whole task; a progress read that started
+  // before it must not be applied afterwards.
+  const progressSnapshots = useMemo(() => createSnapshotGuard(), [taskId]);
   const refreshAgentProgress = useMemo(() => createCoalescedRefresh(async () => {
+    const isCurrent = progressSnapshots.capture();
     const res = await api.get(`/api/tasks/${taskId}`);
-    if (activeTaskId.current !== taskId || !res.ok) return;
+    if (activeTaskId.current !== taskId || !res.ok || !isCurrent()) return;
     const data = await res.json();
-    if (activeTaskId.current !== taskId) return;
+    if (activeTaskId.current !== taskId || !isCurrent()) return;
     setAgentOutcome(data.agent_outcome || null);
     setAgentProgress((current) => progressAfterRead(current, data));
-  }), [taskId]);
+  }), [taskId, progressSnapshots]);
 
   // Socket: live updates for the currently-open task
   useEffect(() => {
@@ -917,6 +921,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
       if (payload.task_id !== taskId) return;
       setAgentProgress(progressFromEvent(payload));
       if (TERMINAL_AGENT_PROGRESS_STATUSES.includes(payload.status)) {
+        progressSnapshots.invalidate();
         void loadTask();
       } else {
         void refreshAgentProgress();
@@ -931,7 +936,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
       socket.off('task:deleted', onDeleted);
       socket.off('task:agent_progress', onAgentProgress);
     };
-  }, [taskId, loadTask, onClose, refreshAgentProgress]);
+  }, [taskId, loadTask, onClose, refreshAgentProgress, progressSnapshots]);
 
   // Task 3.10 — auto-dismiss the agent progress strip once the agent has
   // finished. Completed steps clear after 5s; failed steps linger 30s so the
