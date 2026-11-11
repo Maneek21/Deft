@@ -956,6 +956,9 @@ export function SpaceChat({
   const loadEarlierHistory = useCallback(async () => {
     const visit = messageEventScopeRef.current.capture(spaceId, sessionCacheScope);
     const reads = historyReadsRef.current;
+    // Not while a load, retry or catch-up is in flight: that read may replace
+    // the window this page would be cut from.
+    if (reads.replacingReadInFlight) return;
     // A side read: it does not supersede the others, but applies only while
     // still latest, and live events during it are replayed onto its rows.
     const ticket = reads.begin({ supersede: false });

@@ -139,8 +139,8 @@ test('R3-a: the event buffer is empty when no read is in flight and is pruned on
   reads.record('e1');
   const b = reads.begin();
   reads.record('e2');
-  // B settles first: it gets everything since the oldest in-flight read (A) began.
-  assert.deepEqual(reads.settle(b), ['e1', 'e2']);
+  // B settles first: it gets only what arrived after B itself started.
+  assert.deepEqual(reads.settle(b), ['e2']);
   assert.equal(reads.bufferedEvents, 2, 'A is still in flight');
   assert.deepEqual(reads.settle(a), ['e1', 'e2']);
   assert.equal(reads.bufferedEvents, 0);
@@ -164,4 +164,38 @@ test('R4: a side read (Load earlier) does not supersede, but a later read supers
   const catchUp = reads.begin();
   assert.equal(reads.isLatest(side), false);
   assert.equal(reads.isLatest(catchUp), true);
+});
+
+test('R5-1: an event from before a read started is not replayed onto that read', () => {
+  const reads = new ConversationReads<string>();
+  const first = reads.begin();
+  reads.record('reaction added, later removed on the server');
+  const catchUp = reads.begin();
+  reads.record('after catch-up started');
+  // Whichever settles first, the catch-up never replays the older event.
+  assert.deepEqual(reads.settle(catchUp), ['after catch-up started']);
+  reads.settle(first);
+  const again = new ConversationReads<string>();
+  const a = again.begin();
+  again.record('old');
+  const b = again.begin();
+  again.record('new');
+  again.settle(a);
+  assert.deepEqual(again.settle(b), ['new']);
+});
+
+test('R5-2: a side read may not start while a load, retry or catch-up is in flight', () => {
+  const reads = new ConversationReads<string>();
+  assert.equal(reads.replacingReadInFlight, false);
+  const catchUp = reads.begin();
+  assert.equal(reads.replacingReadInFlight, true);
+  reads.settle(catchUp);
+  assert.equal(reads.replacingReadInFlight, false);
+  const side = reads.begin({ supersede: false });
+  assert.equal(reads.replacingReadInFlight, false, 'a side read does not block another');
+  reads.settle(side);
+  const later = reads.begin();
+  reads.dispose();
+  assert.equal(reads.replacingReadInFlight, false);
+  void later;
 });

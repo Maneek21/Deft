@@ -60,27 +60,39 @@ export type ReadTicket = { id: number; generation: number; startSeq: number };
  * when R settles, because R is in flight from its start until it settles and
  * the buffer only ever drops events older than the oldest in-flight start. So
  * every event R's response might not reflect is replayed onto R's result.
- * Events from before R started (but after an older overlapping read began)
- * are replayed too; that is harmless because the reducer is idempotent and
- * ignores edits and thread counts older than the row it is applied to.
+ * Events from before R started are NOT replayed onto R: the server answered
+ * R after them, and replaying one could undo a later change R already holds.
  */
 export class ConversationReads<E = unknown> {
   private generation = 0;
   private seq = 0;
   private nextId = 0;
   private readonly inFlight = new Map<number, number>();
+  private readonly superseding = new Set<number>();
   private buffer: Array<{ seq: number; event: E }> = [];
   private disposed = false;
 
   begin(options: { supersede?: boolean } = {}): ReadTicket {
     if (options.supersede !== false) this.generation += 1;
     this.nextId += 1;
-    if (!this.disposed) this.inFlight.set(this.nextId, this.seq);
+    if (!this.disposed) {
+      this.inFlight.set(this.nextId, this.seq);
+      if (options.supersede !== false) this.superseding.add(this.nextId);
+    }
     return { id: this.nextId, generation: this.generation, startSeq: this.seq };
   }
 
   isLatest(ticket: ReadTicket): boolean {
     return !this.disposed && ticket.generation === this.generation;
+  }
+
+  /**
+   * True while a read that may replace the history window (initial load,
+   * retry, catch-up) is in flight. A side read must not start then: its page
+   * would be cut from the window that read is about to replace.
+   */
+  get replacingReadInFlight(): boolean {
+    return this.superseding.size > 0;
   }
 
   /** Record one live event if a read is in flight. */
@@ -92,8 +104,11 @@ export class ConversationReads<E = unknown> {
 
   /** End a read (any outcome). Returns the events to replay onto its result. */
   settle(ticket: ReadTicket): E[] {
-    const replay = this.buffer.map((entry) => entry.event);
+    // Only events that arrived after this read started: an older event may
+    // already have been reversed on the server, and the fetched rows say so.
+    const replay = this.buffer.filter((entry) => entry.seq > ticket.startSeq).map((entry) => entry.event);
     this.inFlight.delete(ticket.id);
+    this.superseding.delete(ticket.id);
     if (this.inFlight.size === 0) {
       this.buffer = [];
     } else {
@@ -112,6 +127,7 @@ export class ConversationReads<E = unknown> {
   dispose(): void {
     this.disposed = true;
     this.inFlight.clear();
+    this.superseding.clear();
     this.buffer = [];
   }
 }

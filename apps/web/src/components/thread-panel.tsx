@@ -311,12 +311,11 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
   // Every outcome of the latest read ends the loading state it may have
   // superseded; a failure while nothing has loaded shows the load error.
   const failLatestRead = useCallback((scope: 'load' | 'catch-up') => {
-    if (scope === 'load' || loadingRef.current) {
-      setLoading(false);
-      setLoadError(true);
-    } else {
-      setCatchUpError(true);
-    }
+    // Always end loading: the ref can lag a just-queued load, and a spinner
+    // left on would hide the error and its Retry. The ref only picks the copy.
+    setLoading(false);
+    if (scope === 'load' || loadingRef.current) setLoadError(true);
+    else setCatchUpError(true);
   }, []);
   // A catch-up read after a reconnect failed: shown replies stay, and the
   // catch-up stays pending until a read succeeds.
