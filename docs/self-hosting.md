@@ -489,9 +489,7 @@ approval over MCP or is refused on the Agent Channel. Everything else an employe
 trust level. Defty does not extract tasks from chat on its own and does not manage
 agent employees, connections or triggers. A connected tool that declares itself
 destructive always needs approval. Only an action's requester, or an owner or
-admin who still has access to the target, can undo it. Known limitation: action
-details can still reach other members of the space through the chat message that
-carries the proposal; a fix is in progress.
+admin who still has access to the target, can undo it.
 
 The resolver checks review authority and action state and claims pending work
 before execution. Repeated approval of a completed action returns its existing

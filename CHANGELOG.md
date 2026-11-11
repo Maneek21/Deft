@@ -49,8 +49,7 @@ Agents and approvals:
   delivery is attempted.
 - A thread reply must name a parent message in the target space.
 - Only the requester of an action, or an owner or admin who can still see its
-  target, can undo it. A Defty action is visible only to its requester, an
-  assigned approver and owners and admins; guests see only their own.
+  target, can undo it. The action lists, receipts, dashboard activity and inbox show a Defty action only to its requester, an assigned approver and owners and admins; guests see only their own.
 - Native writes (wiki, canvas, knowledge, thread reply, space notes, posting a
   message) check wiki visibility or space membership when they run.
 - A connected tool that declares itself destructive always needs approval, and
