@@ -9,18 +9,18 @@ notes before upgrading, and keep a tested backup of your workspace.
 
 ## Choose a version
 
-The general workspace baseline in the table below is **v0.3.0-preview.15**, a **core** release. The connected-App developer-preview set is **v0.3.0-preview.120**/schema120 with independent Email App13/Runtime15 and public Kit38/Kit35. Use the [compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.13/compatibility.json) for exact public artifacts and [App release boundaries](app-release-boundaries.md) for current scope. Its explicitly Apps-enabled profile differs from the general default-off configuration.
-Development on `master` may include changes absent from the published image.
+The latest published prerelease is **v0.3.0-preview.141**, a **core** release built with the Apps-enabled browser profile and Author Kit `0.1.0-alpha.43`. The standalone Email App and its Runtime are released separately; the `compatibility.json` attached to each Email release names the Host version it requires. See [App release boundaries](app-release-boundaries.md) for scope. The Apps-enabled browser profile differs from the general default-off configuration.
+Development on `master` may include changes absent from the published image; the [changelog](../CHANGELOG.md) lists them under Unreleased.
 
 | Capability | Availability | How to start |
 |---|---|---|
 | Chat, tasks, notes, Knowledge, calendar and team administration | Available in the published preview | [Install Deft](self-hosting.md) |
-| Defty | Available when an operator configures a supported AI provider | [AI and agent limits](current-limitations.md#ai-and-agents) |
+| Defty | Available when an operator configures a supported AI provider. Its chat writes always wait for approval | [AI and agent limits](current-limitations.md#ai-and-agents) |
 | Personal MCP access | Available; authentication and client support vary | [Connect an AI client](getting-started.md#connect-an-ai-client) |
 | Standalone Modules | Available; install a manifest in Settings → Modules | [Build your first Module](tutorials/first-module.md) |
 | Internal App packages | Experimental and disabled by default; package declarative resources with App Kit | [Build an internal App](getting-started.md#build-an-internal-app) |
-| Connected Apps and bounded scheduled actions | Included in the published preview; experimental and disabled by default | [Connected App author guide](connected-app-author-guide.md) |
-| Certified Hermes bundle | Release-specific historical support; excluded from preview.15 | Read the chosen release's compatibility and certification notes |
+| Connected Apps and bounded scheduled actions | Included in the published preview; experimental; the runtime flags below are off unless an operator sets them | [Connected App author guide](connected-app-author-guide.md) |
+| Certified Hermes bundle | Release-specific historical support; not part of the preview.141 core release | Read the chosen release's compatibility and certification notes |
 | External Runtime, governed source sync and trusted App UI | Available in the scoped Apps developer preview; requires reviewed setup and compatible artifacts | [Connected App author guide](connected-app-author-guide.md) |
 | Arbitrary custom App UI and public portals | Planned; outside the trusted renderer contract | [Roadmap](../ROADMAP.md) |
 | Hosted Deft service | Not currently offered | Self-host using the supported Docker Compose path |
@@ -44,6 +44,8 @@ supported tools enforce workspace permissions; governed actions follow approval
 policies and produce attributable receipts. Ordinary workspace edits retain the
 history provided by that feature. Personal MCP access acts with the permissions
 of the person who authorized it.
+
+Approvals follow these rules. Defty's chat writes always wait for approval, at every trust level; the workspace trust level governs only Defty's approved plans and background work. An agent employee's own chat messages (post, reply, direct message) run without approval at every trust level, within guard rails: space membership and visibility, the reply-storm detector, the daily action cap and the unhealthy (circuit breaker) state. Everything else an employee writes follows that employee's own trust level. No trust level auto-runs a call classed as destructive. The per-employee daily cost budget is not enforced today. Defty does not extract tasks from chat on its own, and does not manage agent employees, connections or triggers.
 
 An external agent can also have private memory, its own skills, model settings and
 tools. Its operator owns those choices and the costs they incur outside Deft.

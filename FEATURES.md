@@ -1,6 +1,6 @@
 # Deft capability reference
 
-> Availability last reconciled on September 8, 2026. The latest published image is `v0.3.0-preview.15`, a core release. Features present on `master` may be absent from that image. See the [availability map](docs/product-status.md).
+> Availability last reconciled on November 11, 2026. The latest published image is `v0.3.0-preview.141`, a core release. Features present on `master` may be absent from that image; the [changelog](CHANGELOG.md) lists them under Unreleased. See the [availability map](docs/product-status.md).
 >
 > Deft is an alpha. This file describes the current product surface, not a compatibility guarantee. See [current limitations](docs/current-limitations.md) and the [roadmap](ROADMAP.md) before planning a production deployment.
 
@@ -22,7 +22,7 @@ Deft is a self-hostable work record shared by human employees and AI agents.
 - Threads with independent read state
 - Rich text, links, code, lists, block quotes, files, and inline media
 - Structured mentions, message and task references, emoji reactions, pins, and saved messages
-- Typing state, online/idle presence, custom status, and do-not-disturb
+- Typing state, online/idle presence, custom status, and do-not-disturb. Realtime rooms and presence are per workspace: a person in two workspaces shows as online only where their session is connected
 - Scheduled messages, message history, and quiet chat-to-knowledge capture
 - Huddles and asynchronous audio/video clips, subject to browser and deployment support
 - Defty and agent employees participate in the same chat surfaces as people
@@ -92,12 +92,14 @@ Current capabilities include:
 - Resolve natural-language references against the current conversation and workspace
 - Draft and create tasks, including structured descriptions, subtasks, dependencies, and assignments
 - Update task fields and transition task status
-- Draft and post messages or thread replies
+- Draft messages or thread replies, which post after approval
 - Create or update wiki pages and notes
 - Read and write space canvases
 - Link decisions to tasks and mark decisions implemented
 - Produce approval cards in chat and mirror pending approvals in the inbox
 - Post completion confirmations with result details for supported actions
+
+Defty's chat writes always wait for approval, at every trust level. The workspace trust level governs only Defty's approved plans and background work. Defty does not extract tasks from chat on its own (passive extraction is off by default), and it does not manage agent employees, connections or triggers.
 
 Defty is not a deterministic rules engine. Output quality depends on the configured provider, model, available context, permissions, and request clarity. Validation, approval policy, and executor contracts remain authoritative even when the model proposes an invalid action.
 
@@ -111,9 +113,10 @@ Agent employees are separate workspace identities backed by a customer-controlle
 - Wake from structured mentions and assigned work
 - Read unread work, claim tasks, post progress, and complete supported actions
 - Operate under trust level, scope, health, action-cap, audit, and approval rules
+- Post their own chat messages (post, reply, direct message) without approval at every trust level, within guard rails: space membership and visibility, the reply-storm detector, the daily action cap, and the unhealthy (circuit breaker) state. Everything else an employee writes follows that employee's own trust level
 - Expose supervision state, recent contact, failures, and bridge health to admins
 
-Deft does not require a specific agent framework. A compatible customer-operated runtime can use the streamable HTTP MCP endpoint. Hermes support is release-specific historical compatibility; it is excluded from the preview.15 core release and is not a new compatibility claim.
+Deft does not require a specific agent framework. A compatible customer-operated runtime can use the streamable HTTP MCP endpoint. Hermes support is release-specific historical compatibility; it is not part of the preview.141 core release and is not a new compatibility claim.
 
 ## Personal AI app connections
 
@@ -144,12 +147,12 @@ Client availability and connector UI vary by vendor and account tier. Deft canno
 ## Governance and audit
 
 - Approval tiers: automatic, quick approval, and full review
-- Org trust levels: Conservative, Standard, and Autonomous
+- Org trust levels: Conservative, Standard, and Autonomous. The org level governs Defty's approved plans and background work; each agent employee has its own trust level. No trust level auto-runs a call classed as destructive
 - User and agent identity preserved on native actions
 - Pending approval cards in the source conversation where supported
 - Inbox mirror for centralized approval review
 - Execution receipts, recent agent actions, and audit history
-- Token scopes, revocation, daily action limits, cost accounting, and circuit breakers
+- Token scopes, revocation, daily action limits, and circuit breakers. The per-employee daily cost budget is not enforced today
 - Space membership checks on REST and WebSocket access
 - Org ownership checks on task, wiki, workflow, message, and agent operations
 
@@ -183,8 +186,8 @@ Fresh installs use `init` (`pnpm db:push-full` plus platform seed). Supported ve
 - Modules define domain records, relationships, and Deft-rendered native views. Standalone manifests install through Settings → Modules without the Apps feature flags.
 - Module v1 data is shared with owners, admins, and members; it has no private rows or fields. [Choose between a Module and an App](docs/modules-and-apps.md).
 - Declarative internal Apps package Modules for review and installation and are an opt-in alpha capability.
-- Connected Apps and bounded daily actions are experimental. Historical preview.15 ships them disabled by default. The Apps-enabled Host preview.120/schema120 profile supports the independent [Email reference app](https://github.com/Maneek21/deft-email), using the exact [compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.13/compatibility.json) and [current author guide](docs/connected-app-author-guide.md). Compiled feature availability does not replace reviewed operator or member permission.
-- The current App protocols do not provide arbitrary custom UI, public portals, general external runtimes, or synchronization.
+- Connected Apps and bounded daily actions are experimental and stay off until an operator enables them. The Apps-enabled browser profile in Host preview.141 supports the independent [Email reference app](https://github.com/Maneek21/deft-email); use the `compatibility.json` attached to the Email release you install and the [current author guide](docs/connected-app-author-guide.md). Compiled feature availability does not replace reviewed operator or member permission.
+- The current App protocols do not provide arbitrary custom UI or public portals. External Runtime and governed source sync are bounded developer-preview contracts that need reviewed setup.
 
 ## Security posture
 

@@ -20,7 +20,7 @@ Capture a team discussion into knowledge, ask Defty to propose a task using that
 
 ## Quick start with Docker
 
-Use the prebuilt [v0.3.0-preview.15 release](https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.15) for evaluation. It targets **Linux amd64** and needs Docker Desktop or Docker Engine with Compose v2. An AI provider is optional. No source build, Node.js, or pnpm is needed for this path.
+Use the prebuilt [v0.3.0-preview.141 release](https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.141), the latest published prerelease, for evaluation. It targets **Linux amd64** and needs Docker Desktop or Docker Engine with Compose v2. An AI provider is optional. No source build, Node.js, or pnpm is needed for this path.
 
 Download `docker-compose.yml`, `compose.prod.yml`, `compose.release.yml`, and `default.env.example` from that release into a **new directory**. In Bash (macOS, Linux, or Git Bash on Windows):
 
@@ -37,7 +37,7 @@ Paste each independently generated secret into its corresponding `.env` variable
 Add this pinned release image to `.env`:
 
 ```dotenv
-DEFT_IMAGE=ghcr.io/maneek21/deft@sha256:665a66083adaaf9db876fa815203c854509c5fdde72b89a0db212fe2e07d398b
+DEFT_IMAGE=ghcr.io/maneek21/deft@sha256:2239e1cee9443d2266210e0ecb6d35abf67dfb78d8347c5f60c475324f3403c8
 ```
 
 Then run, from that directory:
@@ -71,7 +71,7 @@ Use `init` only with a fresh database. For custom ports, public URLs, image veri
 
 1. **Capture the discussion.** Save useful decisions and references in Knowledge with links back to their source conversation.
 2. **Ask Defty for a task.** With an AI provider configured, Defty can use workspace context to propose the title, owner, dates, and description.
-3. **Review and approve.** Under a policy requiring review, inspect the proposed details before approving. Trust settings can permit some actions to execute automatically.
+3. **Review and approve.** Defty's chat requests always wait for your approval, whatever the trust level; inspect the proposed details before approving. The workspace trust level applies only to Defty's approved plans and background work, and each agent employee has its own trust level.
 4. **Keep the agreed details.** The task stores the approved content, and governed agent actions have approval history and receipts to inspect.
 
 Optional video chapters: [Knowledge capture — 1:09](https://youtu.be/7z9EH4c9k2o?t=69) · [Defty task request and approval — 2:06](https://youtu.be/7z9EH4c9k2o?t=126) · [ChatGPT connection and workspace read/write — 3:25](https://youtu.be/7z9EH4c9k2o?t=205).
@@ -108,7 +108,7 @@ Modules add domain records, relationships, and native views. Apps package Module
 
 The bundled **Contacts** module is the first example of this model. The goal is not to turn Deft's core into every application a company might need, but to let new capabilities live on the same shared substrate instead of becoming another disconnected system.
 
-See [Deft, App Kit and domain App boundaries](docs/app-boundaries.md) for authoring contracts, permissions and execution limits. The Apps developer preview exposes generic Protocol 7 forms, external Runtime and source contracts. [Standalone Email](https://github.com/Maneek21/deft-email) is the reference implementation, with App Kit alpha.38 and Runtime Kit alpha.35 on Host preview.122/schema 120. Follow the [connected App author guide](docs/connected-app-author-guide.md) and [authoritative compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.16/compatibility.json). Use the explicitly Apps-enabled preview image; enabling runtime variables cannot turn on browser features omitted at build time. This is an operator-managed developer preview, not a production Gmail replacement.
+See [Deft, App Kit and domain App boundaries](docs/app-boundaries.md) for authoring contracts, permissions and execution limits. The Apps developer preview exposes generic Protocol 7 forms, external Runtime and source contracts. [Standalone Email](https://github.com/Maneek21/deft-email) is the reference implementation. Host v0.3.0-preview.141 is published with the Apps-enabled browser profile and Author Kit 0.1.0-alpha.43. Follow the [connected App author guide](docs/connected-app-author-guide.md) and the `compatibility.json` attached to the Email release you install, which names the Host version it requires. Use an explicitly Apps-enabled preview image; enabling runtime variables cannot turn on browser features omitted at build time. This is an operator-managed developer preview, not a production Gmail replacement.
 
 ## Product surfaces
 
@@ -178,6 +178,7 @@ deft/
 |   |-- web/       Next.js 16, React 19, Tailwind CSS, TipTap
 |   `-- api/       Hono, Socket.io, PostgreSQL job workers, agent and MCP runtime
 |-- packages/
+|   |-- app-kit/   Author Kit for Modules and Apps
 |   |-- db/        PostgreSQL, pgvector, Drizzle schema and migrations
 |   |-- mcp/       Shared MCP protocol support
 |   `-- shared/    Shared types, schemas, and constants
@@ -207,6 +208,7 @@ Important current boundaries:
 - Versioned upgrades are supported from the `v0.2.0-preview.1` baseline forward; older untracked alpha databases require a reviewed migration or fresh install.
 - Native Google, Slack, Gmail, and GitHub OAuth integrations are not part of the current self-hosted v1 promise. Use ICS for calendar subscriptions and bring external tools through your own agent or MCP runtime.
 - Agent quality depends on the configured model, scopes, workspace data, and approval policy.
+- The per-employee daily cost budget is not enforced: nothing records spend against it, so do not rely on it to cap cost. The daily action cap and the unhealthy (circuit breaker) state do apply.
 - This repository is open source under GNU AGPL v3.0 only.
 
 Security reports should follow [SECURITY.md](SECURITY.md). Operational support boundaries are documented in [docs/self-hosted-v1-contract.md](docs/self-hosted-v1-contract.md).
