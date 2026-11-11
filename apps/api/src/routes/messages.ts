@@ -339,7 +339,9 @@ messageRoutes.get('/:spaceId', async (c) => {
 
     return c.json({
       messages: messagesWithExtras.reverse(),
-      next_cursor: result.length === limit ? result[0]?.created_at?.toISOString() : null,
+      // The oldest returned row (the query is newest-first): following the
+      // cursor pages to older messages.
+      next_cursor: result.length === limit ? result[result.length - 1]?.created_at?.toISOString() : null,
     });
   } catch (err) {
     console.error('Failed to fetch messages:', err);
