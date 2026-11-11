@@ -156,7 +156,12 @@ export async function setupDurabilityFixture(label: string): Promise<DurabilityF
         await client.query('DELETE FROM projects WHERE org_id = $1', [orgId]).catch(() => undefined);
         await client.query('DELETE FROM space_members WHERE space_id = $1', [spaceId]).catch(() => undefined);
         await client.query('DELETE FROM spaces WHERE org_id = $1', [orgId]).catch(() => undefined);
+        const memberIds = (await client.query('SELECT user_id FROM org_members WHERE org_id = $1', [orgId])).rows
+          .map((row) => row.user_id as string);
+        await client.query('UPDATE users SET agent_employee_id = NULL WHERE id = ANY($1::text[])', [memberIds]).catch(() => undefined);
+        await client.query('DELETE FROM agent_employees WHERE org_id = $1', [orgId]).catch(() => undefined);
         await client.query('DELETE FROM org_members WHERE org_id = $1', [orgId]).catch(() => undefined);
+        await client.query('DELETE FROM users WHERE id = ANY($1::text[])', [memberIds]).catch(() => undefined);
         await client.query('DELETE FROM orgs WHERE id = $1', [orgId]).catch(() => undefined);
         await client.query('DELETE FROM users WHERE id = ANY($1::text[])', [[requesterId, otherId, adminId]]).catch(() => undefined);
       } finally {

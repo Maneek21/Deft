@@ -1,6 +1,6 @@
 import { and, asc, eq, sql } from 'drizzle-orm';
 import { db } from './db.js';
-import { agentActions, tasks, taskActivity, projects, taskRelationships } from '@deft/db/schema';
+import { tasks, taskActivity, projects, taskRelationships } from '@deft/db/schema';
 import { reserveTaskNumberRange } from './task-numbering.js';
 import { resolveAssigneeWithMatches } from './resolve-assignee.js';
 import { currentAgentChannelEventAuthoritySql } from './agent-channel-authority.js';
@@ -66,8 +66,9 @@ export type TaskBundleCreateResult = {
   allTasks: CreatedTaskSummary[];
   /**
    * True when `actionId` had already committed a bundle and that bundle was
-   * returned instead of creating a new one. Callers skip one-time side
-   * effects (assignee dispatch, created events) for a reused bundle.
+   * returned instead of creating a new one. The earlier attempt may have
+   * stopped before its post-commit side effects, so callers repeat them and
+   * make them idempotent per action (assignee dispatch is deduplicated).
    */
   reused: boolean;
 };
@@ -286,28 +287,6 @@ export async function createTaskBundle(params: TaskBundleCreateParams): Promise<
       if (!authorized) throw new Error('task_create: source is no longer accessible');
     }
 
-    // Record the outcome on the action in the same transaction, so a
-    // committed bundle is never left looking unexecuted (and retryable) when
-    // a later, post-commit step fails or the process stops.
-    if (params.actionId) {
-      const summary = bundleActionResult(parent, childRows, project.prefix);
-      await tx.update(agentActions).set({
-        result: summary,
-        before_state: null,
-        after_state: {
-          id: parent.id,
-          title: parent.title,
-          status: parent.status,
-          priority: parent.priority,
-          assignee_id: parent.assignee_id,
-          project_id: parent.project_id,
-          number: parent.number,
-          subtasks: summary.subtasks,
-        },
-        executed_at: new Date(),
-      }).where(and(eq(agentActions.id, params.actionId), eq(agentActions.org_id, params.orgId)));
-    }
-
     return { parent, children: childRows, reused: false };
   });
 
@@ -348,37 +327,6 @@ async function loadCommittedTaskBundleRows(
   const parent = created.find((task) => !created.some((other) => other.id === task.parent_task_id));
   if (!parent) return null;
   return { parent, children: created.filter((task) => task.parent_task_id === parent.id) };
-}
-
-/**
- * The stored result of a create_task action whose bundle already committed,
- * or null when nothing was created for this action. Same shape as the
- * executor's `agent_actions.result` for create_task.
- */
-export async function findCommittedTaskBundleResult(
-  orgId: string,
-  actionId: string,
-): Promise<ReturnType<typeof bundleActionResult> | null> {
-  const rows = await loadCommittedTaskBundleRows(db, orgId, actionId);
-  if (!rows) return null;
-  const [project] = await db
-    .select({ prefix: projects.prefix })
-    .from(projects)
-    .where(and(eq(projects.id, rows.parent.project_id), eq(projects.org_id, orgId)))
-    .limit(1);
-  return bundleActionResult(rows.parent, rows.children, project?.prefix ?? '');
-}
-
-function bundleActionResult(parentRow: TaskRow, childRows: TaskRow[], prefix: string) {
-  const parent = toCreatedTaskSummary(parentRow, prefix);
-  return {
-    task_id: parent.id,
-    identifier: parent.identifier,
-    number: parent.number,
-    prefix,
-    title: parent.title,
-    subtasks: childRows.map((task) => toCreatedTaskSummary(task, prefix)),
-  };
 }
 
 function normalizeSubtaskInputs(subtasks: TaskBundleSubtaskInput[] | null | undefined) {

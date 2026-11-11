@@ -31,6 +31,8 @@ export async function dispatchAgentEmployeeTask(params: {
   orgId: string;
   assigneeUserId: string;
   assignedBy: string;
+  /** Same key, same assignment: a repeated dispatch enqueues nothing new. */
+  dedupeKey?: string;
 }): Promise<AgentTaskDispatchResult> {
   const { taskId, orgId, assigneeUserId, assignedBy } = params;
   try {
@@ -69,7 +71,7 @@ export async function dispatchAgentEmployeeTask(params: {
         orgId,
         employeeId: assigneeUser.agent_employee_id,
         assignedBy,
-      });
+      }, params.dedupeKey ? { dedupeKey: params.dedupeKey } : undefined);
       return { queued: true, employeeId: assigneeUser.agent_employee_id };
     }
     return { queued: false, reason: 'not_agent' };

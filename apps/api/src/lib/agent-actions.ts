@@ -1905,12 +1905,12 @@ export async function executeAction(
         });
 
         // If an assignee is an agent employee, wake them up to work the task.
-        for (const createdTask of (bundle.reused ? [] : bundle.allTasks).filter((row) => row.assignee_id)) {
+        for (const createdTask of bundle.allTasks.filter((row) => row.assignee_id)) {
           await dispatchAgentEmployeeTask({
             taskId: createdTask.id,
             orgId,
             assigneeUserId: createdTask.assignee_id!,
-            assignedBy: userId,
+            assignedBy: userId, dedupeKey: `agent-action:${actionId}:task-dispatch:${createdTask.id}:${createdTask.assignee_id}`,
           });
         }
 
