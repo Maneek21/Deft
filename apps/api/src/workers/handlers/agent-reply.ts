@@ -34,6 +34,7 @@ import { compileMessageWorkspacePlanImport } from '../../lib/workspace-plan-impo
 import { buildRoomContextPackWithSources } from '../../lib/defty-room-context.js';
 import { loadPendingDeftyDraft, pendingDeftyDraftContext, type PendingDeftyDraft } from '../../lib/defty-pending-action.js';
 import { emitMessageToSpaceViewers } from '../../lib/agent-message-run-details.js';
+import { promotableNoteSql } from '../../lib/agent-action-visibility.js';
 import { visibleTaskCondition } from '../../lib/task-visibility.js';
 import { assertDeliveryOwnedBeforeCommit, claimDeftyReplySlot, DeftyDeliveryLostError, findExistingDeftyReply, isDatabaseWaitTimeout, throwIfDeliveryLost, type DeftyReplyDelivery } from '../../lib/defty-reply-guard.js';
 
@@ -505,10 +506,11 @@ export async function resolvePendingActionTargets(
       const [targetSpace] = spaceId ? await db.select({ id: spaces.id, name: spaces.name }).from(spaces).innerJoin(
         spaceMembers,
         and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, userId)),
+      // Membership only, as the executor and the HTTP notes route: an archived
+      // space the requester belongs to is a valid target.
       ).where(and(
         eq(spaces.id, spaceId),
         eq(spaces.org_id, orgId),
-        eq(spaces.is_archived, false),
       )).limit(1) : [];
       if (!targetSpace) {
         warnings.push('I could not verify access to the target space for this note.');
@@ -520,18 +522,12 @@ export async function resolvePendingActionTargets(
 
     if (action.action === 'note_to_wiki') {
       const noteId = typeof action.params.note_id === 'string' ? action.params.note_id : '';
+      // Same rule as the executor: a space note's space is in the note's org.
       const [visibleNote] = noteId ? await db.select({ id: notes.id, title: notes.title }).from(notes).where(and(
         eq(notes.id, noteId),
         eq(notes.org_id, orgId),
         eq(notes.is_deleted, false),
-        sql`(
-          ${notes.user_id} = ${userId}
-          OR ${notes.visibility} = 'org'
-          OR (${notes.visibility} = 'space' AND EXISTS (
-            SELECT 1 FROM space_members sm
-            WHERE sm.space_id = ${notes.visibility_space_id} AND sm.user_id = ${userId}
-          ))
-        )`,
+        promotableNoteSql(userId),
       )).limit(1) : [];
       if (!visibleNote) {
         warnings.push('I could not find that note or you do not have access to it.');
