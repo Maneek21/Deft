@@ -727,7 +727,6 @@ async function runStaleMaintenance(): Promise<void> {
     })(),
     import('../lib/app-private-state-retention.js').then(mod => mod.purgeExpiredPrivateAppState()),
     APP_RUNS_ENABLED ? import('../lib/app-run-maintenance.js').then(mod => mod.runAppRunMaintenance('recovery')) : Promise.resolve(),
-    import('../lib/agent-action-execution-lease.js').then(mod => mod.recoverStaleAgentActionExecutions()),
   ]);
 }
 

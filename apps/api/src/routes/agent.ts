@@ -49,7 +49,6 @@ import {
 } from '../lib/agent-approval-resolver.js';
 import { generateReceipt } from '../lib/receipts.js';
 import { findCommittedTaskBundleResult } from '../lib/task-bundle.js';
-import { isExecutionLeaseExpired, recoverStaleActionExecution } from '../lib/agent-action-execution-lease.js';
 import {
   markWorkIntentConvertedForAction,
   markWorkIntentDismissedForAction,
@@ -1199,7 +1198,7 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
   const user = c.get('user');
   const actionId = c.req.param('id');
 
-  const loadReviewableAction = async () => (await db
+  const [action] = await db
     .select()
     .from(agentActions)
     .where(and(
@@ -1207,8 +1206,7 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
       eq(agentActions.org_id, user.org_id),
       reviewableActionSql(user),
     ))
-    .limit(1))[0];
-  let action = await loadReviewableAction();
+    .limit(1);
   if (!action) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
 
   // Resolver-owned MCP writes and App Run releases enter the shared approval
@@ -1348,19 +1346,6 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
       message: 'message' in result ? result.message : undefined,
       result: 'result' in result ? result.result : undefined,
     });
-  }
-
-  // An approval whose execution was interrupted after the claim is
-  // recovered once its lease expires: an idempotent action goes back to
-  // pending and is claimed again below; anything else is recorded as failed.
-  if (isExecutionLeaseExpired(action)) {
-    const recovery = await recoverStaleActionExecution(user.org_id, actionId);
-    if (recovery.outcome === 'failed') {
-      return c.json({ error: recovery.error, code: 'EXECUTION_INTERRUPTED' }, 409);
-    }
-    const reloaded = await loadReviewableAction();
-    if (!reloaded) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-    action = reloaded;
   }
 
   if (action.approval_status === 'approved') {
