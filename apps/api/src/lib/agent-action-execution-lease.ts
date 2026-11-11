@@ -70,12 +70,16 @@ const RELEASE_RECORDED_ELSEWHERE: ReadonlySet<string> = new Set(['app_run_invoke
 
 export const approvalLeaseKey = (actionId: string) => `agent-approval:${actionId}`;
 
-/** Run with the action's execution lease, or report that someone holds it. */
+/**
+ * Run with the action's execution lease, or report promptly that someone
+ * holds it (`held`) or that no advisory connection freed up (`pool_busy`).
+ */
 export function tryWithApprovalLease<T>(
   actionId: string,
+  options: { acquireTimeoutMs?: number },
   run: (lease: DbAdvisoryLease) => Promise<T>,
 ) {
-  return withDbAdvisoryLease(approvalLeaseKey(actionId), { wait: false }, run);
+  return withDbAdvisoryLease(approvalLeaseKey(actionId), { wait: false, ...options }, run);
 }
 
 /** Run with the action's execution lease, waiting for any current holder. */
@@ -484,7 +488,10 @@ export async function recoverInterruptedApproval(
   return { kind: 'settled_failed' };
 }
 
-export type InterruptedApprovalSweepResult = { examined: number; recovered: number; live: number };
+export type InterruptedApprovalSweepResult = { examined: number; recovered: number; live: number; poolBusy: boolean };
+
+/** The sweep never queues behind long-running work for a connection. */
+const SWEEP_ACQUIRE_TIMEOUT_MS = 250;
 
 /**
  * Maintenance sweep. Selects approvals that recorded no outcome for a while
@@ -520,10 +527,10 @@ export async function recoverInterruptedApprovals(options: {
     .orderBy(agentActions.approved_at)
     .limit(batchSize);
 
-  const result: InterruptedApprovalSweepResult = { examined: candidates.length, recovered: 0, live: 0 };
+  const result: InterruptedApprovalSweepResult = { examined: candidates.length, recovered: 0, live: 0, poolBusy: false };
   for (const candidate of candidates) {
     try {
-      const held = await tryWithApprovalLease(candidate.id, async () => {
+      const held = await tryWithApprovalLease(candidate.id, { acquireTimeoutMs: SWEEP_ACQUIRE_TIMEOUT_MS }, async () => {
         const [row] = await db
           .select()
           .from(agentActions)
@@ -541,6 +548,11 @@ export async function recoverInterruptedApprovals(options: {
         }
         return recovery.kind === 'settled_failed' || recovery.kind === 'reexecuted';
       });
+      if (!held.acquired && held.reason === 'pool_busy') {
+        // Every advisory connection is busy: try again on the next run.
+        result.poolBusy = true;
+        break;
+      }
       if (!held.acquired) result.live += 1;
       else if (held.value) result.recovered += 1;
     } catch (err) {

@@ -1349,10 +1349,15 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
     });
   }
 
-  const leased = await tryWithApprovalLease(actionId, () => approveOrdinaryActionLeased(c, user, actionId));
+  const leased = await tryWithApprovalLease(actionId, {}, () => approveOrdinaryActionLeased(c, user, actionId));
   if (!leased.acquired) {
     // Another request holds this action's execution lease, so its executor
-    // (or a recovery) is alive. Never take over a live execution.
+    // (or a recovery) is alive; or every advisory connection is busy. Either
+    // way nothing was claimed or changed: answer with the retryable busy.
+    // Never take over a live execution.
+    if (leased.reason === 'pool_busy') {
+      return c.json({ status: 'executing', message: 'approvals are busy; try again shortly' }, 202);
+    }
     const current = await loadOrgAction(actionId, user.org_id);
     if (!current) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
     if (current.approval_status === 'pending'
