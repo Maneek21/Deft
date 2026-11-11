@@ -14,7 +14,7 @@ import test, { after, before } from 'node:test';
 
 import { withDbAdvisoryLease } from '../src/lib/db.js';
 import { recoverInterruptedApprovals } from '../src/lib/agent-action-execution-lease.js';
-import { isApprovalResolverAction } from '../src/lib/agent-approval-resolver.js';
+import { APPROVAL_RESOLVER_ACTION_NAMES, isApprovalResolverAction } from '../src/lib/agent-approval-resolver.js';
 import { APP_DATABASE_POOL_BUDGET } from '../src/lib/app-database-pool-budget.js';
 import {
   durabilityDatabaseUrl,
@@ -100,7 +100,7 @@ test('lease-busy: an approval returns the busy answer promptly when no advisory 
     assert.deepEqual(await snapshot(actionId), before);
 
     const sweep = await within(
-      recoverInterruptedApprovals({ isResolverAction: isApprovalResolverAction, batchSize: 100 }),
+      recoverInterruptedApprovals({ isResolverAction: isApprovalResolverAction, resolverActionNames: APPROVAL_RESOLVER_ACTION_NAMES, batchSize: 100 }),
       5_000,
       'the maintenance sweep',
     );

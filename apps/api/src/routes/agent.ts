@@ -42,6 +42,7 @@ import {
 import { logAuditEvent } from '../lib/audit.js';
 import {
   approveAction as resolveApproveAction,
+  APPROVAL_RESOLVER_ACTION_NAMES,
   isApprovalResolverAction,
   rejectAction as resolveRejectAction,
   publishSettledApprovalResolution,
@@ -1412,6 +1413,7 @@ export function recoverInterruptedApprovalsNow() {
   return recoverInterruptedApprovals({
     hooks: approvalFinaliserHooks,
     isResolverAction: isApprovalResolverAction,
+    resolverActionNames: APPROVAL_RESOLVER_ACTION_NAMES,
     onResolverRecovered: publishSettledApprovalResolution,
   });
 }

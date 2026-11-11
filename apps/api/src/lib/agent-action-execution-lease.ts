@@ -29,7 +29,7 @@
  * nothing.
  */
 import { and, eq, isNull, ne, sql } from 'drizzle-orm';
-import { agentActionApprovers, agentActions } from '@deft/db/schema';
+import { actionReceipts, agentActionApprovers, agentActions, attentionItems } from '@deft/db/schema';
 import { db, withDbAdvisoryLease, type DbAdvisoryLease } from './db.js';
 import {
   executeAction,
@@ -509,7 +509,14 @@ export async function recoverInterruptedApproval(
   return { kind: 'settled_failed' };
 }
 
-export type InterruptedApprovalSweepResult = { examined: number; recovered: number; live: number; poolBusy: boolean };
+export type InterruptedApprovalSweepResult = {
+  examined: number;
+  recovered: number;
+  live: number;
+  poolBusy: boolean;
+  /** Settled human approvals whose bookkeeping this run completed. */
+  finalised: number;
+};
 
 /** The sweep never queues behind long-running work for a connection. */
 const SWEEP_ACQUIRE_TIMEOUT_MS = 250;
@@ -522,6 +529,8 @@ const SWEEP_ACQUIRE_TIMEOUT_MS = 250;
 export async function recoverInterruptedApprovals(options: {
   hooks?: ApprovalFinaliserHooks;
   isResolverAction: (action: string) => boolean;
+  /** Every action name the approval resolver owns (it signs their receipts). */
+  resolverActionNames: readonly string[];
   onResolverRecovered?: (actionId: string, actorUserId: string) => Promise<void>;
   batchSize?: number;
   minimumAgeMs?: number;
@@ -548,7 +557,9 @@ export async function recoverInterruptedApprovals(options: {
     .orderBy(agentActions.approved_at)
     .limit(batchSize);
 
-  const result: InterruptedApprovalSweepResult = { examined: candidates.length, recovered: 0, live: 0, poolBusy: false };
+  const result: InterruptedApprovalSweepResult = {
+    examined: candidates.length, recovered: 0, live: 0, poolBusy: false, finalised: 0,
+  };
   for (const candidate of candidates) {
     try {
       const held = await tryWithApprovalLease(candidate.id, { acquireTimeoutMs: SWEEP_ACQUIRE_TIMEOUT_MS }, async (lease) => {
@@ -584,6 +595,109 @@ export async function recoverInterruptedApprovals(options: {
       });
     }
   }
+  if (!result.poolBusy) {
+    const finalisation = await finaliseUnfinishedApprovals({
+      hooks: options.hooks ?? {},
+      isResolverAction: options.isResolverAction,
+      resolverActionNames: options.resolverActionNames,
+      batchSize,
+      minimumAgeMs,
+    });
+    result.finalised = finalisation.finalised;
+    result.poolBusy = finalisation.poolBusy;
+  }
   return result;
 }
 
+/**
+ * Settled human approvals whose bookkeeping is unfinished. A row matches
+ * only while one of these holds, and the finaliser removes each one:
+ *  - a receipt is due and missing: no 'approved' receipt for the action,
+ *    where one is due (every ordinary approval; a resolver-owned approval
+ *    only when it was settled as interrupted, because the resolver signs its
+ *    own outcomes);
+ *  - an approver decision row is still pending;
+ *  - an approval Attention item is still open.
+ * Automatic executions (no stored approver), App Runs, record-mirror
+ * nominations and unsettled rows never match.
+ */
+function unfinishedApprovalSql(resolverActionNames: readonly string[]) {
+  const resolverNames = resolverActionNames.length > 0
+    ? sql.join(resolverActionNames.map((name) => sql`${name}`), sql`, `)
+    : sql`NULL`;
+  return and(
+    eq(agentActions.approval_status, 'approved'),
+    sql`${agentActions.approved_by_user_id} IS NOT NULL`,
+    sql`${agentActions.executed_at} IS NOT NULL`,
+    isNull(agentActions.app_run_id),
+    ne(agentActions.action, 'app_record_mirror_nominate'),
+    sql`(
+      (
+        (${agentActions.action} NOT IN (${resolverNames}) OR ${agentActions.error} = ${APPROVAL_INTERRUPTED_ERROR})
+        AND NOT EXISTS (
+          SELECT 1 FROM ${actionReceipts}
+          WHERE ${actionReceipts.action_id} = ${agentActions.id} AND ${actionReceipts.decision} = 'approved'
+        )
+      )
+      OR EXISTS (
+        SELECT 1 FROM ${agentActionApprovers}
+        WHERE ${agentActionApprovers.action_id} = ${agentActions.id}
+          AND ${agentActionApprovers.org_id} = ${agentActions.org_id}
+          AND ${agentActionApprovers.decision} = 'pending'
+      )
+      OR EXISTS (
+        SELECT 1 FROM ${attentionItems}
+        WHERE ${attentionItems.org_id} = ${agentActions.org_id}
+          AND ${attentionItems.source_type} = 'agent_action'
+          AND ${attentionItems.source_id} = ${agentActions.id}
+          AND ${attentionItems.state} IN ('open_unseen', 'open_seen', 'acknowledged', 'snoozed')
+      )
+    )`,
+  );
+}
+
+async function finaliseUnfinishedApprovals(options: {
+  hooks: ApprovalFinaliserHooks;
+  isResolverAction: (action: string) => boolean;
+  resolverActionNames: readonly string[];
+  batchSize: number;
+  minimumAgeMs: number;
+}): Promise<{ finalised: number; poolBusy: boolean }> {
+  const candidates = await db
+    .select({ id: agentActions.id, org_id: agentActions.org_id })
+    .from(agentActions)
+    .where(and(
+      unfinishedApprovalSql(options.resolverActionNames),
+      sql`${agentActions.executed_at} < now() - (${options.minimumAgeMs} * interval '1 millisecond')`,
+    ))
+    .orderBy(agentActions.executed_at)
+    .limit(options.batchSize);
+  let finalised = 0;
+  for (const candidate of candidates) {
+    try {
+      const held = await tryWithApprovalLease(candidate.id, { acquireTimeoutMs: SWEEP_ACQUIRE_TIMEOUT_MS }, async (lease) => {
+        if (lease.lost) return false;
+        const [row] = await db
+          .select({ action: agentActions.action })
+          .from(agentActions)
+          .where(and(eq(agentActions.id, candidate.id), eq(agentActions.org_id, candidate.org_id)))
+          .limit(1);
+        if (!row) return false;
+        return finalizeApprovalOutcome({
+          actionId: candidate.id,
+          orgId: candidate.org_id,
+          receipt: options.isResolverAction(row.action) ? 'resolver' : 'legacy',
+          hooks: options.hooks,
+        });
+      });
+      if (!held.acquired && held.reason === 'pool_busy') return { finalised, poolBusy: true };
+      if (held.acquired && held.value) finalised += 1;
+    } catch (err) {
+      console.warn('[agent-approval] approval bookkeeping repair failed', {
+        actionId: candidate.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return { finalised, poolBusy: false };
+}

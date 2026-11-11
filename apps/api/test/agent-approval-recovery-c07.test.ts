@@ -25,7 +25,7 @@ import {
   recoverInterruptedApprovals,
   settleInterruptedApproval,
 } from '../src/lib/agent-action-execution-lease.js';
-import { isApprovalResolverAction } from '../src/lib/agent-approval-resolver.js';
+import { APPROVAL_RESOLVER_ACTION_NAMES, isApprovalResolverAction } from '../src/lib/agent-approval-resolver.js';
 import { syncApprovalToAttention } from '../src/lib/attention.js';
 import {
   durabilityDatabaseUrl,
@@ -434,7 +434,7 @@ test('C07-i: the maintenance sweep recovers only approvals whose executor is gon
   const holder = await holdLease(live);
   try {
     const before = await actionRow(live);
-    const result = await recoverInterruptedApprovals({ isResolverAction: isApprovalResolverAction, batchSize: 100 });
+    const result = await recoverInterruptedApprovals({ isResolverAction: isApprovalResolverAction, resolverActionNames: APPROVAL_RESOLVER_ACTION_NAMES, batchSize: 100 });
     assert.ok(result.live >= 1);
     assert.deepEqual(await actionRow(live), before);
   } finally {
@@ -617,4 +617,111 @@ test('C07-n: recovery that finds its lease lost reports it and changes nothing',
   const recovery = await recoverInterruptedApproval(row, {}, 'legacy', { lost: true });
   assert.equal(recovery.kind, 'lease_lost');
   assert.deepEqual(await actionRow(actionId), before);
+});
+
+const sweepOnce = () => recoverInterruptedApprovals({
+  isResolverAction: isApprovalResolverAction,
+  resolverActionNames: APPROVAL_RESOLVER_ACTION_NAMES,
+  batchSize: 100,
+  minimumAgeMs: 0,
+});
+
+test('C07-o: maintenance finishes the bookkeeping of a write whose request lost its lease, once', { skip: !canRun }, async () => {
+  const taskId = await insertTask(`c07o ${randomUUID()}`);
+  const actionId = await f.insertAction({
+    action: 'update_task_status',
+    params: { task_identifier: await taskIdentifier(taskId), new_status: 'done' },
+    status: 'pending',
+    executed: false,
+  });
+  const [pending] = (await f.client.query('SELECT * FROM agent_actions WHERE id = $1', [actionId])).rows;
+  await syncApprovalToAttention(pending, { deliver: false });
+
+  const locker = new pg.Client({ connectionString: durabilityDatabaseUrl });
+  await locker.connect();
+  await locker.query('BEGIN');
+  await locker.query('SELECT id FROM tasks WHERE id = $1 FOR UPDATE', [taskId]);
+  let first: Promise<Response> | null = null;
+  try {
+    first = Promise.resolve(approve(actionId));
+    const pid = await waitFor(() => leaseHolderPid(actionId), 'the request to hold the execution lease');
+    await waitFor(async () => (await actionRow(actionId)).approval_status === 'approved', 'the claim');
+    await f.client.query('SELECT pg_terminate_backend($1)', [pid]);
+    await waitFor(async () => (await leaseHolderPid(actionId)) === null, 'the lease to be released');
+  } finally {
+    await locker.query('COMMIT');
+    await locker.end();
+  }
+  assert.equal((await first!).status, 202);
+  // The executor stored its own outcome; the request recorded no bookkeeping.
+  assert.notEqual((await actionRow(actionId)).executed_at, null);
+
+  const state = async () => ({
+    receipts: (await f.client.query(
+      "SELECT approver_id FROM action_receipts WHERE action_id = $1 AND decision = 'approved'", [actionId])).rows,
+    decisions: (await f.client.query(
+      'SELECT user_id, decision FROM agent_action_approvers WHERE action_id = $1', [actionId])).rows,
+    attention: (await f.client.query(
+      `SELECT i.state, e.actor_user_id FROM attention_items i
+         LEFT JOIN attention_events e ON e.attention_item_id = i.id AND e.event_type = 'resolved'
+        WHERE i.source_type = 'agent_action' AND i.source_id = $1`, [actionId])).rows,
+    action: (await f.client.query(
+      'SELECT approval_status, error, result, executed_at::text, approved_at::text FROM agent_actions WHERE id = $1',
+      [actionId])).rows[0],
+  });
+  const before = await state();
+  assert.equal(before.receipts.length, 0);
+
+  const first_ = await sweepOnce();
+  assert.ok(first_.finalised >= 1);
+  const after = await state();
+  assert.deepEqual(after.receipts, [{ approver_id: f.requesterId }]);
+  assert.deepEqual(after.decisions, [{ user_id: f.requesterId, decision: 'approved' }]);
+  assert.ok(after.attention.length > 0);
+  for (const item of after.attention) {
+    assert.equal(item.state, 'resolved');
+    assert.equal(item.actor_user_id, f.requesterId);
+  }
+  // Status and outcome are untouched.
+  assert.deepEqual(after.action, before.action);
+
+  // The row no longer matches: a second pass changes nothing.
+  const second = await sweepOnce();
+  assert.equal(second.finalised, 0);
+  assert.deepEqual(await state(), after);
+});
+
+test('C07-p: maintenance leaves automatic executions and fully settled resolver approvals alone', { skip: !canRun }, async () => {
+  // Automatic execution: no stored approver, a pending approver row and no receipt.
+  const automatic = await f.insertAction({
+    action: 'update_task_status',
+    params: { task_identifier: `${f.prefix}-1`, new_status: 'done' },
+    status: 'approved',
+    executed: true,
+    result: { ok: true },
+  });
+  await f.client.query(
+    `INSERT INTO agent_action_approvers (id, org_id, action_id, user_id, decision) VALUES ($1, $2, $3, $4, 'pending')`,
+    [randomUUID(), f.orgId, automatic, f.requesterId],
+  );
+  // Resolver-owned approval that succeeded: the resolver signs its own
+  // outcome, so no receipt is due here even though none exists.
+  const resolverOwned = await f.insertAction({
+    action: 'task_create',
+    params: { title: `c07p ${randomUUID()}` },
+    status: 'approved',
+    executed: true,
+    result: { ok: true },
+  });
+  await f.client.query('UPDATE agent_actions SET approved_by_user_id = $2 WHERE id = $1', [resolverOwned, f.requesterId]);
+
+  await sweepOnce();
+  await sweepOnce();
+  for (const id of [automatic, resolverOwned]) {
+    const receipts = await f.client.query('SELECT count(*)::int AS n FROM action_receipts WHERE action_id = $1', [id]);
+    assert.equal(receipts.rows[0].n, 0, id);
+  }
+  const pending = await f.client.query(
+    "SELECT decision FROM agent_action_approvers WHERE action_id = $1", [automatic]);
+  assert.deepEqual(pending.rows, [{ decision: 'pending' }]);
 });

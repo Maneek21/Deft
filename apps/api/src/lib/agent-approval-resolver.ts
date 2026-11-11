@@ -148,6 +148,11 @@ export function isApprovalResolverAction(action: string): boolean {
   return action === 'email_send' || action === 'app_record_mirror_nominate' || action === APP_RUN_APPROVAL_ACTION || MCP_ACTION_KINDS.has(action);
 }
 
+/** The action names `isApprovalResolverAction` accepts, for SQL filters. */
+export const APPROVAL_RESOLVER_ACTION_NAMES: readonly string[] = Object.freeze([
+  'email_send', 'app_record_mirror_nominate', APP_RUN_APPROVAL_ACTION, ...MCP_ACTION_KINDS,
+]);
+
 const MODULE_MUTATION_ACTIONS: ReadonlySet<string> = new Set(
   MODULE_OPERATION_NAMES.filter(
     (operation) => MODULE_OPERATION_DEFINITIONS[operation].mode === 'write',
