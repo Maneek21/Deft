@@ -25,6 +25,7 @@ import {
   settleInterruptedApproval,
 } from '../src/lib/agent-action-execution-lease.js';
 import { isApprovalResolverAction } from '../src/lib/agent-approval-resolver.js';
+import { syncApprovalToAttention } from '../src/lib/attention.js';
 import {
   durabilityDatabaseUrl,
   setupDurabilityFixture,
@@ -476,4 +477,37 @@ test('C07-j: an interrupted resolver-owned approval is settled as failed on the 
   const decision = await f.client.query(
     'SELECT decision FROM agent_action_approvers WHERE action_id = $1 AND user_id = $2', [actionId, f.requesterId]);
   assert.equal(decision.rows[0].decision, 'approved');
+});
+
+test('C07-k: a retry of a settled resolver approval resolves Attention as the stored approver, not the retrying user', { skip: !canRun }, async () => {
+  const actionId = await f.insertAction({
+    action: 'task_create',
+    params: { title: `c07k ${randomUUID()}` },
+    status: 'pending',
+    executed: false,
+  });
+  for (const userId of [f.requesterId, f.adminId]) {
+    await f.client.query(
+      `INSERT INTO agent_action_approvers (id, org_id, action_id, user_id, decision) VALUES ($1, $2, $3, $4, 'pending')`,
+      [randomUUID(), f.orgId, actionId, userId],
+    );
+  }
+  const [pending] = (await f.client.query('SELECT * FROM agent_actions WHERE id = $1', [actionId])).rows;
+  await syncApprovalToAttention(pending, { deliver: false });
+  // Approved and executed by the requester; the request stopped before its bookkeeping.
+  await f.client.query(
+    `UPDATE agent_actions SET approval_status = 'approved', approved_by_user_id = $2, approved_at = now(),
+            executed_at = now(), result = '{"ok":true}'::jsonb WHERE id = $1`,
+    [actionId, f.requesterId],
+  );
+  const response = await approve(actionId, f.adminId);
+  assert.equal(response.status, 200, await response.clone().text());
+  const events = await f.client.query(
+    `SELECT DISTINCT e.actor_user_id FROM attention_events e
+       JOIN attention_items i ON i.id = e.attention_item_id
+      WHERE i.source_type = 'agent_action' AND i.source_id = $1 AND e.event_type = 'resolved'`,
+    [actionId],
+  );
+  assert.ok(events.rows.length > 0);
+  assert.deepEqual(events.rows.map((row) => row.actor_user_id), [f.requesterId]);
 });

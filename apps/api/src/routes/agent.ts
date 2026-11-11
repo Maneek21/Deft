@@ -276,6 +276,27 @@ function resolverDecidedHere(
   return result.status === requested && result.decidedElsewhere !== true;
 }
 
+/**
+ * Who Attention records as resolving the action. This request only when it
+ * applied the decision; otherwise the stored approver of an approval, or no
+ * one, so a retry never changes attribution.
+ */
+async function resolutionActor(
+  actionId: string,
+  user: { id: string; org_id: string },
+  result: { status: string; decidedElsewhere?: true },
+  requested: 'approved' | 'rejected',
+): Promise<{ actorUserId?: string }> {
+  if (resolverDecidedHere(requested, result)) return { actorUserId: user.id };
+  if (result.status !== 'approved') return {};
+  const [row] = await db
+    .select({ approved_by_user_id: agentActions.approved_by_user_id })
+    .from(agentActions)
+    .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, user.org_id)))
+    .limit(1);
+  return row?.approved_by_user_id ? { actorUserId: row.approved_by_user_id } : {};
+}
+
 function visibleActionSql(user: { id: string; org_id: string; role?: string }) {
   return and(
     visibleCaptureActionSql(user),
@@ -1329,7 +1350,7 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
       sourceType: 'agent_action',
       sourceId: actionId,
       resolution: result.status,
-      actorUserId: user.id,
+      ...await resolutionActor(actionId, user, result, 'approved'),
     });
     if (result.status === 'approved') {
       // Repairs an approver decision a crash left pending, attributed to the
@@ -1582,7 +1603,7 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
       sourceType: 'agent_action',
       sourceId: actionId,
       resolution: result.status,
-      actorUserId: user.id,
+      ...await resolutionActor(actionId, user, result, 'rejected'),
     });
     return c.json({ status: result.status });
   }
