@@ -26,7 +26,8 @@ import { AgentMessageBlocks, type AgentMessageBlocksProps } from './agent-messag
 import { resolveAgentCitationLink } from '@/lib/agent-citations';
 import useSWR, { mutate as swrMutate } from 'swr';
 import { inlineApprovalDisplayContent } from '@/lib/agent-approval-copy';
-import { ConversationReads, mergeMessagesById, type ChangeGroup } from '@/lib/chat-history-merge';
+import { ConversationReads, mergeMessagesById } from '@/lib/chat-history-merge';
+import { applyMessageEvent, replayMessageEvents, type MessageEvent } from '@/lib/chat-message-events';
 import { ChatLoadError } from './chat-load-error';
 
 type Reaction = {
@@ -301,10 +302,22 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
 
   const [loadError, setLoadError] = useState(false);
   const [loadRetrying, setLoadRetrying] = useState(false);
-  // Orders this thread's reads and remembers live socket changes, so a slow
-  // or superseded read never undoes newer state. Disposed when the thread
-  // changes or the panel closes.
-  const threadReadsRef = useRef(new ConversationReads());
+  // Orders this thread's reads and buffers live socket events received while
+  // a read is in flight, to replay them onto its result. Disposed when the
+  // thread changes or the panel closes.
+  const threadReadsRef = useRef(new ConversationReads<MessageEvent<Message>>());
+  const loadingRef = useRef(loading);
+  useEffect(() => { loadingRef.current = loading; }, [loading]);
+  // Every outcome of the latest read ends the loading state it may have
+  // superseded; a failure while nothing has loaded shows the load error.
+  const failLatestRead = useCallback((scope: 'load' | 'catch-up') => {
+    if (scope === 'load' || loadingRef.current) {
+      setLoading(false);
+      setLoadError(true);
+    } else {
+      setCatchUpError(true);
+    }
+  }, []);
   // A catch-up read after a reconnect failed: shown replies stay, and the
   // catch-up stays pending until a read succeeds.
   const [catchUpError, setCatchUpError] = useState(false);
@@ -326,7 +339,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     setPendingFiles([]);
     let cancelled = false;
     threadReadsRef.current.dispose();
-    const reads = new ConversationReads();
+    const reads = new ConversationReads<MessageEvent<Message>>();
     threadReadsRef.current = reads;
 
     // The ticket stays in scope so every outcome of this read (error,
@@ -341,15 +354,18 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
           return;
         }
         const data = await threadRes.json();
+        const events = reads.settle(ticket);
         if (cancelled || activeMessageIdRef.current !== messageId || !reads.isLatest(ticket)) return;
         const loaded: Message[] = data.replies || data.messages || [];
-        // Keep replies the socket delivered while this read was in flight.
-        setReplies((previous) => mergeMessagesById(previous, loaded, (id) => reads.changedSince(ticket, id)));
+        // Fetched rows are authoritative; live events received during the
+        // read are replayed on top.
+        setReplies((previous) => replayMessageEvents(mergeMessagesById(previous, loaded), events));
         // Mark thread as read
         void api.post(`/api/messages/${messageId}/thread-read`).catch(() => {});
       } catch {
         if (!cancelled && activeMessageIdRef.current === messageId && reads.isLatest(ticket)) setLoadError(true);
       } finally {
+        reads.settle(ticket);
         if (!cancelled && activeMessageIdRef.current === messageId && reads.isLatest(ticket)) {
           setLoading(false);
           setTimeout(() => {
@@ -373,22 +389,25 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
       const res = await api.get(`/api/messages/${requestMessageId}/thread`);
       if (activeMessageIdRef.current !== requestMessageId || !reads.isLatest(ticket)) return;
       if (!res.ok) {
-        setLoadError(true);
+        failLatestRead('load');
         return;
       }
       const data = await res.json();
+      const events = reads.settle(ticket);
       if (activeMessageIdRef.current !== requestMessageId || !reads.isLatest(ticket)) return;
       const loaded: Message[] = data.replies || data.messages || [];
-      setReplies((prev) => mergeMessagesById(prev, loaded, (id) => reads.changedSince(ticket, id)));
+      setReplies((prev) => replayMessageEvents(mergeMessagesById(prev, loaded), events));
       setLoadError(false);
+      setCatchUpError(false);
       setLoading(false);
       void api.post(`/api/messages/${requestMessageId}/thread-read`).catch(() => {});
     } catch {
-      if (activeMessageIdRef.current === requestMessageId && reads.isLatest(ticket)) setLoadError(true);
+      if (activeMessageIdRef.current === requestMessageId && reads.isLatest(ticket)) failLatestRead('load');
     } finally {
+      reads.settle(ticket);
       setLoadRetrying(false);
     }
-  }, [messageId]);
+  }, [messageId, failLatestRead]);
 
   // Socket listeners
   useEffect(() => {
@@ -396,57 +415,26 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     if (!token) return;
     const socket = getSocket(token);
 
-    const noteChange = (id: string | undefined, group: ChangeGroup) => { if (id) threadReadsRef.current.noteChange(id, group); };
+    // Every live change goes through the same pure reducer that replays it
+    // onto a read that was in flight when it arrived.
+    const live = (event: MessageEvent<Message>) => {
+      threadReadsRef.current.record(event);
+      setReplies((prev) => applyMessageEvent(prev, event));
+    };
     const onNewMessage = (msg: Message & { parent_id?: string }) => {
       if (msg.parent_id === messageId) {
-        noteChange(msg.id, 'all');
-        setReplies((prev) => (
-          prev.some((reply) => reply.id === msg.id) ? prev : [...prev, msg]
-        ));
+        live({ type: 'new', message: msg });
         if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
         setTimeout(scrollToBottom, 50);
       }
     };
 
     const onReactionAdded = (data: { message_id: string; emoji: string; user_id: string }) => {
-      noteChange(data?.message_id, 'reactions');
-      const updateReactions = (msgs: Message[]) =>
-        msgs.map((m) => {
-          if (m.id !== data.message_id) return m;
-          const reactions = [...(m.reactions || [])];
-          const existing = reactions.find((r) => r.emoji === data.emoji);
-          if (existing) {
-            if (!existing.users.includes(data.user_id)) {
-              existing.count++;
-              existing.users.push(data.user_id);
-            }
-          } else {
-            reactions.push({ emoji: data.emoji, count: 1, users: [data.user_id] });
-          }
-          return { ...m, reactions };
-        });
-
-      setReplies(updateReactions);
+      live({ type: 'reaction_added', message_id: data.message_id, emoji: data.emoji, user_id: data.user_id });
     };
 
     const onReactionRemoved = (data: { message_id: string; emoji: string; user_id: string }) => {
-      noteChange(data?.message_id, 'reactions');
-      const updateReactions = (msgs: Message[]) =>
-        msgs.map((m) => {
-          if (m.id !== data.message_id) return m;
-          let reactions = [...(m.reactions || [])];
-          const existing = reactions.find((r) => r.emoji === data.emoji);
-          if (existing) {
-            existing.count--;
-            existing.users = existing.users.filter((u) => u !== data.user_id);
-            if (existing.count <= 0) {
-              reactions = reactions.filter((r) => r.emoji !== data.emoji);
-            }
-          }
-          return { ...m, reactions };
-        });
-
-      setReplies(updateReactions);
+      live({ type: 'reaction_removed', message_id: data.message_id, emoji: data.emoji, user_id: data.user_id });
     };
 
     socket.on('message:new', onNewMessage);
@@ -464,13 +452,14 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
         const res = await api.get(`/api/messages/${messageId}/thread`);
         if (activeMessageIdRef.current !== messageId || !reads.isLatest(ticket)) return 'superseded';
         if (!res.ok) {
-          setCatchUpError(true);
+          failLatestRead('catch-up');
           return 'failed';
         }
         const data = await res.json();
+        const events = reads.settle(ticket);
         if (activeMessageIdRef.current !== messageId || !reads.isLatest(ticket)) return 'superseded';
         const fetched: Message[] = data.replies || data.messages || [];
-        setReplies((prev) => mergeMessagesById(prev, fetched, (id) => reads.changedSince(ticket, id)));
+        setReplies((prev) => replayMessageEvents(mergeMessagesById(prev, fetched), events));
         setLoadError(false);
         setCatchUpError(false);
         // It may have superseded the initial read, which then never ends loading.
@@ -478,8 +467,11 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
         return 'ok';
       } catch {
         if (activeMessageIdRef.current !== messageId || !reads.isLatest(ticket)) return 'superseded';
-        setCatchUpError(true);
+        // Network or JSON failure: also ends the loading state it superseded.
+        failLatestRead('catch-up');
         return 'failed';
+      } finally {
+        reads.settle(ticket);
       }
     };
     // Starts from the socket's real connection state, so a thread opened
@@ -494,7 +486,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
       socket.off('reaction:added', onReactionAdded);
       socket.off('reaction:removed', onReactionRemoved);
     };
-  }, [messageId, pendingBySpaceKey, scrollToBottom]);
+  }, [messageId, pendingBySpaceKey, scrollToBottom, failLatestRead]);
 
   // Escape to close
   useEffect(() => {

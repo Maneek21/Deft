@@ -5,31 +5,17 @@ function timeOf(message: { created_at: string }): number {
   return Number.isNaN(value) ? 0 : value;
 }
 
-/** Which part of a message a live socket event changed. 'all' is a whole new message. */
-export type ChangeGroup = 'content' | 'deleted' | 'reactions' | 'pin' | 'thread' | 'all';
-
-const GROUP_FIELDS: Record<Exclude<ChangeGroup, 'all'>, readonly string[]> = {
-  content: ['content', 'edited_at', 'metadata'],
-  deleted: ['is_deleted'],
-  reactions: ['reactions'],
-  pin: ['is_pinned'],
-  thread: ['reply_count', 'latest_reply_at'],
-};
-
-const NO_CHANGES: ReadonlySet<ChangeGroup> = new Set();
-
 /**
- * Merge a fresh history read into what is on screen, for example after a
- * socket reconnect. Messages already shown keep their position and take the
- * server's fields, except the field groups that `localChanges(id)` reports a
- * live socket event changed after the read started: those keep the shown
- * values. A message shown as deleted stays deleted. Messages the client
- * missed are inserted by `created_at`. Nothing is dropped and no id appears twice.
+ * Merge a fresh history read into what is on screen. Fetched rows are
+ * authoritative for every field; the caller then replays the live events
+ * buffered during the read (see ConversationReads). Messages already shown
+ * keep their position, and a message shown as deleted stays deleted (the
+ * API has no undelete). Messages the client missed are inserted by
+ * `created_at`. Nothing is dropped and no id appears twice.
  */
 export function mergeMessagesById<T extends HistoryMessage>(
   current: readonly T[],
   fetched: readonly T[],
-  localChanges: (id: string) => ReadonlySet<ChangeGroup> = () => NO_CHANGES,
 ): T[] {
   if (fetched.length === 0) return current as T[];
   const fetchedById = new Map(fetched.map((message) => [message.id, message]));
@@ -38,17 +24,8 @@ export function mergeMessagesById<T extends HistoryMessage>(
     shown.add(message.id);
     const fresh = fetchedById.get(message.id);
     if (!fresh) return message;
-    const groups = localChanges(message.id);
-    if (groups.has('all')) return message;
-    const next: Record<string, unknown> = { ...message, ...fresh };
-    const local = message as Record<string, unknown>;
-    for (const group of groups) {
-      for (const field of GROUP_FIELDS[group as Exclude<ChangeGroup, 'all'>]) {
-        if (field in local) next[field] = local[field];
-      }
-    }
-    if (message.is_deleted === true) next.is_deleted = true;
-    return next as T;
+    const next = { ...message, ...fresh };
+    return message.is_deleted === true ? { ...next, is_deleted: true } : next;
   });
 
   const missing = fetched
@@ -62,64 +39,80 @@ export function mergeMessagesById<T extends HistoryMessage>(
   return merged;
 }
 
-export type ReadTicket = { generation: number; startSeq: number };
+export type ReadTicket = { id: number; generation: number; startSeq: number };
 
 /**
- * Orders the history reads of one conversation. Only the latest read may
- * apply, and a read never overrides a message that a live socket event
- * changed after the read started.
+ * Orders the history reads of one conversation and buffers live events for
+ * replay.
+ *
+ * - Only the latest read (by generation) may apply. `begin({ supersede:
+ *   false })` starts a side read (Load earlier) that must still be latest
+ *   when it resolves, but does not supersede the others.
+ * - While any read is in flight, every live event is recorded, in arrival
+ *   order. The buffer always starts at the start of the OLDEST read still in
+ *   flight; nothing is recorded while no read is in flight.
+ * - `settle(ticket)` must be called for every outcome of every read. It
+ *   returns the whole buffer (all events since the oldest in-flight read
+ *   started, which includes every event since this read started), then drops
+ *   events no remaining in-flight read could need.
+ *
+ * Overlap guarantee: an event received after read R started is in the buffer
+ * when R settles, because R is in flight from its start until it settles and
+ * the buffer only ever drops events older than the oldest in-flight start. So
+ * every event R's response might not reflect is replayed onto R's result.
+ * Events from before R started (but after an older overlapping read began)
+ * are replayed too; that is harmless because the reducer is idempotent and
+ * ignores edits and thread counts older than the row it is applied to.
  */
-export class ConversationReads {
+export class ConversationReads<E = unknown> {
   private generation = 0;
   private seq = 0;
-  private readonly changedAt = new Map<string, Map<ChangeGroup, number>>();
+  private nextId = 0;
+  private readonly inFlight = new Map<number, number>();
+  private buffer: Array<{ seq: number; event: E }> = [];
   private disposed = false;
 
-  /**
-   * Start a read that supersedes every earlier one. Every read applies only
-   * while its ticket is latest, so changes recorded before this point can no
-   * longer matter and are dropped (bounded retention).
-   */
-  begin(): ReadTicket {
-    this.generation += 1;
-    this.changedAt.clear();
-    return { generation: this.generation, startSeq: this.seq };
-  }
-
-  /** How many messages have recorded live changes (for tests). */
-  get trackedChanges(): number {
-    return this.changedAt.size;
-  }
-
-  /** A ticket that does not supersede other reads (for example loading older pages). */
-  peek(): ReadTicket {
-    return { generation: this.generation, startSeq: this.seq };
+  begin(options: { supersede?: boolean } = {}): ReadTicket {
+    if (options.supersede !== false) this.generation += 1;
+    this.nextId += 1;
+    if (!this.disposed) this.inFlight.set(this.nextId, this.seq);
+    return { id: this.nextId, generation: this.generation, startSeq: this.seq };
   }
 
   isLatest(ticket: ReadTicket): boolean {
     return !this.disposed && ticket.generation === this.generation;
   }
 
+  /** Record one live event if a read is in flight. */
+  record(event: E): void {
+    if (this.disposed || this.inFlight.size === 0) return;
+    this.seq += 1;
+    this.buffer.push({ seq: this.seq, event });
+  }
+
+  /** End a read (any outcome). Returns the events to replay onto its result. */
+  settle(ticket: ReadTicket): E[] {
+    const replay = this.buffer.map((entry) => entry.event);
+    this.inFlight.delete(ticket.id);
+    if (this.inFlight.size === 0) {
+      this.buffer = [];
+    } else {
+      const oldestStart = Math.min(...this.inFlight.values());
+      this.buffer = this.buffer.filter((entry) => entry.seq > oldestStart);
+    }
+    return replay;
+  }
+
+  /** How many events are buffered (for tests). */
+  get bufferedEvents(): number {
+    return this.buffer.length;
+  }
+
   /** The conversation was closed or changed: no read may apply any more. */
   dispose(): void {
     this.disposed = true;
-  }
-
-  /** Record a live socket change to one part of one message. */
-  noteChange(id: string, group: ChangeGroup = 'all'): void {
-    this.seq += 1;
-    const groups = this.changedAt.get(id) ?? new Map<ChangeGroup, number>();
-    groups.set(group, this.seq);
-    this.changedAt.set(id, groups);
-  }
-
-  /** The parts of a message that live events changed after `ticket` started. */
-  changedSince(ticket: ReadTicket, id: string): ReadonlySet<ChangeGroup> {
-    const groups = this.changedAt.get(id);
-    if (!groups) return NO_CHANGES;
-    const changed = new Set<ChangeGroup>();
-    for (const [group, seq] of groups) if (seq > ticket.startSeq) changed.add(group);
-    return changed;
+    this.inFlight.clear();
+    this.buffer = [];
   }
 }
 
@@ -188,11 +181,10 @@ export async function readHistoryBackTo<T extends HistoryMessage>(
 export function applyHistoryRead<T extends HistoryMessage>(
   current: readonly T[],
   read: HistoryRead<T>,
-  localChanges: (id: string) => ReadonlySet<ChangeGroup>,
 ): T[] {
-  if (read.coversShown || read.messages.length === 0) return mergeMessagesById(current, read.messages, localChanges);
+  if (read.coversShown || read.messages.length === 0) return mergeMessagesById(current, read.messages);
   const oldest = timeOf(read.messages[0]!);
-  return mergeMessagesById(current.filter((m) => timeOf(m) >= oldest), read.messages, localChanges);
+  return mergeMessagesById(current.filter((m) => timeOf(m) >= oldest), read.messages);
 }
 
 /** The oldest created_at in a list, or null when it is empty. */

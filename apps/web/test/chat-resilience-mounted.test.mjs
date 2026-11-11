@@ -343,7 +343,7 @@ const FAKE_SERVER = `(() => {
       S.threadReads += 1;
       if (S.netFail.thread || (S.netFailWhen && S.netFailWhen(path))) res = 'network-error';
       else if (S.fail.thread || S.threadReads >= S.failThreadFromRead) res = failure;
-      else if (S.thread) res = { body: { replies: S.thread } };
+      else if (S.thread) res = { body: { parent: ${JSON.stringify(ROOT)}, replies: S.thread } };
     }
     if (!res) return undefined;
     // holdWhen(path, fullPath) holds chosen reads only.
@@ -644,6 +644,124 @@ test('R3-3: an initial read that fails after a successful catch-up does not brin
     await panel.getByText('Round three reply marker').waitFor();
     assert.equal(await page.getByText('Could not load messages.').count(), 0);
     assert.equal(await panel.getByText('Could not load replies.').count(), 0);
+  } finally {
+    await close(page);
+  }
+});
+
+// ── Round 4: buffered live events replayed onto the latest read ────────────
+
+const reactionCount = async (scope, emoji) => {
+  const pill = scope.locator('button', { hasText: emoji }).first();
+  if (await pill.count() === 0) return 0;
+  return Number((await pill.innerText()).replace(emoji, '').trim());
+};
+
+test('R4-1: a failed catch-up that superseded the initial read ends the loading state and offers Retry (thread and channel)', async () => {
+  const page = await open(browser, {
+    harness: 'defty-chat-harness.tsx', url: '/chat?space=s1&thread=t1',
+    // Hold the initial reads (channel #1, panel's thread read #2); fail the
+    // catch-up reads that follow (channel #2, thread #3).
+    override: `(() => { const handler = ${FAKE_SERVER};
+      window.__srv.channel = ${JSON.stringify([ROOT, DEST])};
+      window.__srv.thread = ${JSON.stringify([REPLY])};
+      window.__srv.holdWhen = (path) => (path === '/api/messages/s1' && window.__srv.channelReads === 1)
+        || (path === '/api/messages/t1/thread' && window.__srv.threadReads === 2);
+      window.__srv.netFailWhen = (path) => (path === '/api/messages/s1' && window.__srv.channelReads === 2)
+        || (path === '/api/messages/t1/thread' && window.__srv.threadReads === 3);
+      return handler; })()`,
+  });
+  try {
+    await page.getByRole('heading', { name: 'Thread' }).waitFor();
+    await waitHeld(page, 2);
+    await drop(page);
+    await reconnect(page);
+    const panel = page.locator('.w-\\[400px\\]');
+    const threadAlert = panel.getByRole('alert').filter({ hasText: 'Could not load' });
+    await threadAlert.getByRole('button', { name: 'Retry' }).waitFor();
+    const channelAlert = page.getByRole('alert').filter({ hasText: /Could not load (new )?messages\./ });
+    await channelAlert.getByRole('button', { name: 'Retry' }).waitFor();
+    // The superseded initial reads resolve later and must not change that.
+    await release(page, 0); await release(page, 1);
+    await srv(page, ([channel, thread]) => { window.__srv.channel = channel; window.__srv.thread = thread; },
+      [[ROOT, DEST, MISSED_CHANNEL], [REPLY, MISSED_REPLY]]);
+    await threadAlert.getByRole('button', { name: 'Retry' }).click();
+    await panel.getByText('Thread answer from while you were offline.').waitFor();
+    await channelAlert.getByRole('button', { name: 'Retry' }).click();
+    await page.getByText('Summary that finished while you were offline.').waitFor();
+  } finally {
+    await close(page);
+  }
+});
+
+test('R4-2: a reaction fetched by catch-up and one added live during it both stay; a live removal removes from the fetched set', async () => {
+  const page = await open(browser, { harness: 'defty-chat-harness.tsx', url: '/chat?space=s1', override: FAKE_SERVER });
+  try {
+    await page.getByText('Destination message from Priya').waitFor();
+    await drop(page);
+    await srv(page, (data) => { window.__srv.channel = data; window.__srv.hold = true; }, [
+      { ...ROOT, reactions: [{ emoji: '👍', count: 2, users: ['u-alice', 'u-bob'] }] },
+      { ...DEST, reactions: [{ emoji: '🎉', count: 1, users: ['u-alice'] }] },
+      marker('mk-r4', 30, 'Catch-up marker four'),
+    ]);
+    await reconnect(page);
+    await waitHeld(page, 1);
+    await page.evaluate(() => {
+      window.__deftDeliver('reaction:added', { message_id: 'm2', emoji: '🎉', user_id: 'u-bob' });
+      window.__deftDeliver('reaction:removed', { message_id: 't1', emoji: '👍', user_id: 'u-alice' });
+    });
+    await release(page, 0);
+    await page.getByText('Catch-up marker four').waitFor();
+    assert.equal(await reactionCount(page.locator('[data-message-id="m2"]'), '🎉'), 2, 'Alice (fetched) and Bob (live)');
+    assert.equal(await reactionCount(page.locator('[data-message-id="t1"]'), '👍'), 1, 'live removal of Alice');
+  } finally {
+    await close(page);
+  }
+});
+
+test('R4-3: a live delete or reaction for a row the read introduces is applied when the row is inserted', async () => {
+  const page = await open(browser, { harness: 'defty-chat-harness.tsx', url: '/chat?space=s1', override: FAKE_SERVER });
+  try {
+    await page.getByText('Destination message from Priya').waitFor();
+    await drop(page);
+    await srv(page, (data) => { window.__srv.channel = data; }, [ROOT, DEST, ...many(600)]);
+    await reconnect(page);
+    const earlier = page.getByRole('button', { name: 'Load earlier messages' });
+    await earlier.waitFor();
+    await srv(page, () => { window.__srv.hold = true; });
+    await earlier.click();
+    await waitHeld(page, 1);
+    await page.evaluate(() => {
+      window.__deftDeliver('message:deleted', { id: 'x-050' });
+      window.__deftDeliver('reaction:added', { message_id: 'x-060', emoji: '🚀', user_id: 'u-bob' });
+    });
+    await release(page, 0);
+    await page.getByText('Missed x 001', { exact: true }).waitFor();
+    assert.equal(await page.getByText('Missed x 050', { exact: true }).count(), 0, 'deleted live before it was shown');
+    assert.equal(await page.locator('[data-message-id="x-050"]').getByText('This message was deleted').count(), 1);
+    assert.equal(await reactionCount(page.locator('[data-message-id="x-060"]'), '🚀'), 1);
+  } finally {
+    await close(page);
+  }
+});
+
+test('R4-3: a live reaction on a thread reply that is not shown yet is applied when the reply arrives', async () => {
+  const page = await open(browser, {
+    harness: 'defty-chat-harness.tsx', url: '/chat?space=s1&thread=t1',
+    override: `(() => { const handler = ${FAKE_SERVER};
+      window.__srv.thread = ${JSON.stringify([REPLY])};
+      window.__srv.holdWhen = (path) => path === '/api/messages/t1/thread' && window.__srv.threadReads === 2;
+      return handler; })()`,
+  });
+  try {
+    await page.getByRole('heading', { name: 'Thread' }).waitFor();
+    await waitHeld(page, 1);
+    await page.evaluate(() => window.__deftDeliver('reaction:added', { message_id: 'r1', emoji: '🚀', user_id: 'u-bob' }));
+    await release(page, 0);
+    const panel = page.locator('.w-\\[400px\\]');
+    await panel.getByText('for the detail.', { exact: false }).waitFor();
+    await panel.locator('button', { hasText: '🚀' }).first().waitFor({ timeout: 3000 });
+    assert.equal(await reactionCount(panel, '🚀'), 1);
   } finally {
     await close(page);
   }

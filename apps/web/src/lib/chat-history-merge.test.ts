@@ -8,6 +8,9 @@ import {
   mergeMessagesById,
   readHistoryBackTo,
 } from './chat-history-merge';
+import { replayMessageEvents, type ChatReaction, type MessageEvent } from './chat-message-events';
+
+type Row = { id: string; content: string; created_at: string; edited_at?: string | null; is_deleted?: boolean; reactions?: ChatReaction[]; reply_count?: number };
 
 const msg = (id: string, minute: number, content = id) => ({
   id,
@@ -41,12 +44,12 @@ test('E15: an empty fetch leaves the list unchanged', () => {
 });
 
 test('R2-1: a read never undoes a live change made after it started, and never resurrects a deletion', () => {
-  const reads = new ConversationReads();
+  const reads = new ConversationReads<MessageEvent<Row>>();
   const ticket = reads.begin();
-  reads.noteChange('a'); // live edit after the read started
-  const shown = [{ ...msg('a', 1, 'edited live'), is_deleted: false }, { ...msg('b', 2), is_deleted: true }];
-  const stale = [{ ...msg('a', 1, 'old'), is_deleted: false }, { ...msg('b', 2), is_deleted: false }];
-  const merged = mergeMessagesById(shown, stale, (id) => reads.changedSince(ticket, id));
+  reads.record({ type: 'edited', id: 'a', content: 'edited live', edited_at: '2026-11-10T11:00:00.000Z' });
+  const shown: Row[] = [{ ...msg('a', 1, 'edited live'), is_deleted: false }, { ...msg('b', 2), is_deleted: true }];
+  const stale: Row[] = [{ ...msg('a', 1, 'old'), is_deleted: false }, { ...msg('b', 2), is_deleted: false }];
+  const merged = replayMessageEvents(mergeMessagesById(shown, stale), reads.settle(ticket));
   assert.equal(merged[0]!.content, 'edited live');
   assert.equal(merged[1]!.is_deleted, true);
 });
@@ -93,7 +96,7 @@ test('R2-2: catch-up stops at the page bound and reports it did not cover the sh
   assert.equal(read.hasEarlier, true);
   assert.equal(read.messages.length, CATCH_UP_MAX_PAGES * HISTORY_PAGE_SIZE);
   const shown = [{ id: 's-0', content: 'old', created_at: at(0) }, { id: 'live', content: 'live', created_at: at(900) }];
-  const applied = applyHistoryRead(shown, read, () => new Set());
+  const applied = applyHistoryRead(shown, read);
   assert.equal(applied.some((m) => m.id === 's-0'), false, 'messages older than the read are dropped, not left beside a hole');
   assert.equal(applied.at(-1)!.id, 'live', 'newer live messages stay');
   assert.equal(applied.length, CATCH_UP_MAX_PAGES * HISTORY_PAGE_SIZE + 1);
@@ -104,38 +107,61 @@ test('R2-2: a failed page fails the whole catch-up', async () => {
   await assert.rejects(readHistoryBackTo(get, '/api/messages/s1', null));
 });
 
-test('R3-2: a live change keeps only its own fields; every other fetched field still applies', () => {
-  const reads = new ConversationReads();
+test('R3-2: a live reaction is replayed onto the fetched row, so the fetched edit and other fields still apply', () => {
+  const reads = new ConversationReads<MessageEvent<Row>>();
   const ticket = reads.begin();
-  reads.noteChange('a', 'reactions');
-  const shown = [{ ...msg('a', 1, 'old text'), reactions: ['live'], reply_count: 0 }];
-  const fetched = [{ ...msg('a', 1, 'edited offline'), reactions: [] as string[], reply_count: 3 }];
-  const [merged] = mergeMessagesById(shown, fetched, (id) => reads.changedSince(ticket, id));
+  reads.record({ type: 'reaction_added', message_id: 'a', emoji: '🎉', user_id: 'bob' });
+  const shown: Row[] = [{ ...msg('a', 1, 'old text'), reactions: [{ emoji: '🎉', count: 1, users: ['bob'] }], reply_count: 0 }];
+  const fetched: Row[] = [{ ...msg('a', 1, 'edited offline'), reactions: [], reply_count: 3 }];
+  const [merged] = replayMessageEvents(mergeMessagesById(shown, fetched), reads.settle(ticket));
   assert.equal(merged!.content, 'edited offline');
   assert.equal(merged!.reply_count, 3);
-  assert.deepEqual(merged!.reactions, ['live']);
+  assert.deepEqual(merged!.reactions, [{ emoji: '🎉', count: 1, users: ['bob'] }]);
 });
 
-test('R3-2: a live edit keeps the shown text but takes a fetched deletion', () => {
-  const reads = new ConversationReads();
+test('R3-2: a live edit is replayed onto a fetched deletion: the text updates and it stays deleted', () => {
+  const reads = new ConversationReads<MessageEvent<Row>>();
   const ticket = reads.begin();
-  reads.noteChange('a', 'content');
-  const [merged] = mergeMessagesById(
-    [{ ...msg('a', 1, 'live edit'), is_deleted: false }],
-    [{ ...msg('a', 1, 'stale'), is_deleted: true }],
-    (id) => reads.changedSince(ticket, id),
+  reads.record({ type: 'edited', id: 'a', content: 'live edit', edited_at: '2026-11-10T11:00:00.000Z' });
+  const [merged] = replayMessageEvents(
+    mergeMessagesById([{ ...msg('a', 1, 'live edit'), is_deleted: false }], [{ ...msg('a', 1, 'stale'), is_deleted: true }]),
+    reads.settle(ticket),
   );
   assert.equal(merged!.content, 'live edit');
   assert.equal(merged!.is_deleted, true);
 });
 
-test('R3-a: recorded live changes are dropped when a new read starts', () => {
-  const reads = new ConversationReads();
-  reads.noteChange('a', 'content');
-  reads.noteChange('b', 'reactions');
-  assert.equal(reads.trackedChanges, 2);
-  const ticket = reads.begin();
-  assert.equal(reads.trackedChanges, 0);
-  reads.noteChange('a', 'pin');
-  assert.deepEqual([...reads.changedSince(ticket, 'a')], ['pin']);
+test('R3-a: the event buffer is empty when no read is in flight and is pruned on settle', () => {
+  const reads = new ConversationReads<string>();
+  reads.record('before any read');
+  assert.equal(reads.bufferedEvents, 0);
+  const a = reads.begin();
+  reads.record('e1');
+  const b = reads.begin();
+  reads.record('e2');
+  // B settles first: it gets everything since the oldest in-flight read (A) began.
+  assert.deepEqual(reads.settle(b), ['e1', 'e2']);
+  assert.equal(reads.bufferedEvents, 2, 'A is still in flight');
+  assert.deepEqual(reads.settle(a), ['e1', 'e2']);
+  assert.equal(reads.bufferedEvents, 0);
+});
+
+test('R4: an event after a read started is replayed even when an older read settles first', () => {
+  const reads = new ConversationReads<string>();
+  const older = reads.begin();
+  const newer = reads.begin();
+  reads.record('after both started');
+  reads.settle(older);
+  assert.deepEqual(reads.settle(newer), ['after both started']);
+});
+
+test('R4: a side read (Load earlier) does not supersede, but a later read supersedes it', () => {
+  const reads = new ConversationReads<string>();
+  const main = reads.begin();
+  reads.settle(main);
+  const side = reads.begin({ supersede: false });
+  assert.equal(reads.isLatest(side), true);
+  const catchUp = reads.begin();
+  assert.equal(reads.isLatest(side), false);
+  assert.equal(reads.isLatest(catchUp), true);
 });

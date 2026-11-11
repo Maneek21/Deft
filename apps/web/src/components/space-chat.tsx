@@ -18,6 +18,7 @@ import { sanitizeHtml } from '@/lib/sanitize';
 import { getSocket } from '@/lib/socket';
 import { ChatMessageEventScope, createChatMessageNewHandler } from '@/lib/chat-message-event-scope';
 import { subscribeToSpace, watchCatchUp, type CatchUpResult } from '@/lib/space-socket';
+import { applyMessageEvent, replayMessageEvents, type MessageEvent } from '@/lib/chat-message-events';
 import { useAuth } from '@/lib/auth-context';
 import { useChatContext } from '@/lib/chat-context';
 import { HUDDLES_ENABLED } from '@/lib/feature-flags';
@@ -75,7 +76,6 @@ import { inlineApprovalDisplayContent } from '@/lib/agent-approval-copy';
 import {
   ConversationReads,
   HISTORY_PAGE_SIZE,
-  type ChangeGroup,
   applyHistoryRead,
   mergeMessagesById,
   oldestCreatedAt,
@@ -931,9 +931,11 @@ export function SpaceChat({
 
   const [historyStatus, setHistoryStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [historyRetrying, setHistoryRetrying] = useState(false);
+  const historyStatusRef = useRef(historyStatus);
+  useEffect(() => { historyStatusRef.current = historyStatus; }, [historyStatus]);
   // Orders this conversation's history reads and remembers live socket
   // changes, so a slow or superseded read never undoes newer state.
-  const historyReadsRef = useRef(new ConversationReads());
+  const historyReadsRef = useRef(new ConversationReads<MessageEvent<Message>>());
   const messagesRef = useRef<Message[]>([]);
   useEffect(() => { messagesRef.current = messages; }, [messages]);
   // Set when a catch-up stopped at its page bound and replaced the view:
@@ -954,19 +956,23 @@ export function SpaceChat({
   const loadEarlierHistory = useCallback(async () => {
     const visit = messageEventScopeRef.current.capture(spaceId, sessionCacheScope);
     const reads = historyReadsRef.current;
-    const ticket = reads.peek();
+    // A side read: it does not supersede the others, but applies only while
+    // still latest, and live events during it are replayed onto its rows.
+    const ticket = reads.begin({ supersede: false });
     setLoadingEarlier(true);
     try {
       const before = oldestCreatedAt(messagesRef.current) ?? undefined;
       const page = await readHistoryPage<Message>((path: string) => api.get(path), `/api/messages/${spaceId}`, before);
+      const events = reads.settle(ticket);
       // A catch-up or retry that started meanwhile may have replaced the
       // view; this older page would then sit beside it as a stray segment.
       if (!visit.isCurrent() || reads !== historyReadsRef.current || !reads.isLatest(ticket)) return;
-      setMessages((prev) => mergeMessagesById(prev, page, (id) => reads.changedSince(ticket, id)));
+      setMessages((prev) => replayMessageEvents(mergeMessagesById(prev, page), events));
       setHasEarlierHistory(page.length === HISTORY_PAGE_SIZE);
     } catch {
       if (visit.isCurrent() && reads.isLatest(ticket)) setCmdToast('Could not load earlier messages. Try again.');
     } finally {
+      reads.settle(ticket);
       setLoadingEarlier(false);
     }
   }, [spaceId, sessionCacheScope]);
@@ -978,7 +984,7 @@ export function SpaceChat({
     setHasEarlierHistory(false);
     setCatchUpError(false);
     historyReadsRef.current.dispose();
-    const reads = new ConversationReads();
+    const reads = new ConversationReads<MessageEvent<Message>>();
     historyReadsRef.current = reads;
     if (!visit.isCurrent()) return () => visit.dispose();
     let cancelled = false;
@@ -993,11 +999,13 @@ export function SpaceChat({
         return;
       }
       const data = await res.json();
+      const events = reads.settle(ticket);
       if (cancelled || !visit.isCurrent() || !reads.isLatest(ticket)) return;
       const loaded: Message[] = data.messages || data || [];
-      // Keep anything the socket delivered while this read was in flight.
+      // Fetched rows are authoritative; live events received during the read
+      // are replayed on top.
       setMessages(previous => visit.isCurrent()
-        ? mergeMessagesById(previous, loaded, (id) => reads.changedSince(ticket, id))
+        ? replayMessageEvents(mergeMessagesById(previous, loaded), events)
         : previous);
       setHistoryStatus('ready');
       if (highlightMessageId) {
@@ -1022,7 +1030,7 @@ export function SpaceChat({
     }
     void load().catch(() => {
       if (!cancelled && visit.isCurrent() && reads.isLatest(ticket)) setHistoryStatus('error');
-    });
+    }).finally(() => { reads.settle(ticket); });
     return () => { cancelled = true; visit.dispose(); };
   }, [spaceId, sessionCacheScope, scrollToBottom, highlightMessageId]);
 
@@ -1042,13 +1050,15 @@ export function SpaceChat({
         return;
       }
       const data = await res.json();
+      const events = reads.settle(ticket);
       if (!visit.isCurrent() || !reads.isLatest(ticket)) return;
       const loaded: Message[] = data.messages || data || [];
-      setMessages((prev) => mergeMessagesById(prev, loaded, (id) => reads.changedSince(ticket, id)));
+      setMessages((prev) => replayMessageEvents(mergeMessagesById(prev, loaded), events));
       setHistoryStatus('ready');
     } catch {
       if (visit.isCurrent() && reads.isLatest(ticket)) setHistoryStatus('error');
     } finally {
+      reads.settle(ticket);
       setHistoryRetrying(false);
     }
   }, [spaceId, sessionCacheScope]);
@@ -1061,10 +1071,11 @@ export function SpaceChat({
     const unsubscribeFromSpace = subscribeToSpace(socket, spaceId);
 
     const visit = messageEventScopeRef.current.capture(spaceId, sessionCacheScope);
+    const normalizeLiveMessage = (msg: Message): Message => ({ ...msg, reactions: msg.reactions ?? [], reply_count: msg.reply_count ?? 0, latest_reply_at: msg.latest_reply_at ?? null, file_ids: msg.file_ids ?? [] });
     const onNew = createChatMessageNewHandler<Message>({
       visit,
       update: setMessages,
-      normalize: (msg) => ({ ...msg, reactions: msg.reactions ?? [], reply_count: msg.reply_count ?? 0, latest_reply_at: msg.latest_reply_at ?? null, file_ids: msg.file_ids ?? [] }),
+      normalize: normalizeLiveMessage,
       openThread: (parent) => {
         setThreadMessage({
           id: parent.id,
@@ -1082,28 +1093,28 @@ export function SpaceChat({
       scroll: scrollToBottom,
       schedule: (callback, delay) => setTimeout(callback, delay),
     });
-    const noteChange = (id: string | undefined, group: ChangeGroup) => { if (id) historyReadsRef.current.noteChange(id, group); };
+    // Every live change goes through the same pure reducer that replays it
+    // onto a history read that was in flight when it arrived.
+    const live = (event: MessageEvent<Message>) => {
+      historyReadsRef.current.record(event);
+      setMessages((prev) => applyMessageEvent(prev, event));
+    };
     const onNewAndNote = (msg: Message & { parent_id?: string | null }) => {
-      if (!msg.parent_id) noteChange(msg.id, 'all');
+      // The live path keeps its own handler (thread opening, scroll); a
+      // top-level message for this space is also buffered for replay.
+      if (!msg.parent_id && visit.accepts(msg.space_id)) {
+        historyReadsRef.current.record({ type: 'new', message: normalizeLiveMessage(msg) });
+      }
       onNew(msg);
     };
     const onThreadUpdated = (data: { parent_id: string; reply_count: number; latest_reply_at: string }) => {
-      noteChange(data.parent_id, 'thread');
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === data.parent_id
-            ? { ...m, reply_count: data.reply_count, latest_reply_at: data.latest_reply_at }
-            : m
-        )
-      );
+      live({ type: 'thread_updated', parent_id: data.parent_id, reply_count: data.reply_count, latest_reply_at: data.latest_reply_at });
     };
-    const onEdited = (msg: any) => {
-      noteChange(msg?.id, 'content');
-      setMessages((prev) => prev.map((m) => m.id === msg.id ? { ...m, content: msg.content, edited_at: msg.edited_at, metadata: msg.metadata ?? (m as any).metadata } : m));
+    const onEdited = (msg: { id: string; content: string; edited_at: string | null; metadata?: unknown }) => {
+      live({ type: 'edited', id: msg.id, content: msg.content, edited_at: msg.edited_at, metadata: msg.metadata });
     };
     const onDeleted = (data: { id: string }) => {
-      noteChange(data?.id, 'deleted');
-      setMessages((prev) => prev.map((m) => m.id === data.id ? { ...m, is_deleted: true } : m));
+      live({ type: 'deleted', id: data.id });
     };
     const onTypingStart = (data: { user_id: string; user_name: string; space_id: string }) => {
       if (data.space_id === spaceId && data.user_id !== user?.id) setTypingUsers((prev) => new Map(prev).set(data.user_id, data.user_name));
@@ -1114,42 +1125,11 @@ export function SpaceChat({
     // presence is handled globally in the app layout
 
     const onReactionAdded = (data: { message_id: string; emoji: string; user_id: string }) => {
-      noteChange(data?.message_id, 'reactions');
-      setMessages((prev) =>
-        prev.map((m) => {
-          if (m.id !== data.message_id) return m;
-          const reactions = [...(m.reactions || [])];
-          const existing = reactions.find((r) => r.emoji === data.emoji);
-          if (existing) {
-            if (!existing.users.includes(data.user_id)) {
-              existing.count++;
-              existing.users.push(data.user_id);
-            }
-          } else {
-            reactions.push({ emoji: data.emoji, count: 1, users: [data.user_id] });
-          }
-          return { ...m, reactions };
-        })
-      );
+      live({ type: 'reaction_added', message_id: data.message_id, emoji: data.emoji, user_id: data.user_id });
     };
 
     const onReactionRemoved = (data: { message_id: string; emoji: string; user_id: string }) => {
-      noteChange(data?.message_id, 'reactions');
-      setMessages((prev) =>
-        prev.map((m) => {
-          if (m.id !== data.message_id) return m;
-          let reactions = [...(m.reactions || [])];
-          const existing = reactions.find((r) => r.emoji === data.emoji);
-          if (existing) {
-            existing.count--;
-            existing.users = existing.users.filter((u) => u !== data.user_id);
-            if (existing.count <= 0) {
-              reactions = reactions.filter((r) => r.emoji !== data.emoji);
-            }
-          }
-          return { ...m, reactions };
-        })
-      );
+      live({ type: 'reaction_removed', message_id: data.message_id, emoji: data.emoji, user_id: data.user_id });
     };
 
     socket.on('message:new', onNewAndNote);
@@ -1172,12 +1152,10 @@ export function SpaceChat({
     socket.on('message:link_previews', onLinkPreviews);
 
     const onMessagePinned = (data: { message_id: string }) => {
-      noteChange(data?.message_id, 'pin');
-      setMessages(prev => prev.map(m => m.id === data.message_id ? { ...m, is_pinned: true } : m));
+      live({ type: 'pinned', message_id: data.message_id });
     };
     const onMessageUnpinned = (data: { message_id: string }) => {
-      noteChange(data?.message_id, 'pin');
-      setMessages(prev => prev.map(m => m.id === data.message_id ? { ...m, is_pinned: false } : m));
+      live({ type: 'unpinned', message_id: data.message_id });
     };
     socket.on('message:pinned', onMessagePinned);
     socket.on('message:unpinned', onMessageUnpinned);
@@ -1194,17 +1172,23 @@ export function SpaceChat({
         // CATCH_UP_MAX_PAGES), so a long outage leaves no hole and older shown
         // messages get their current content, deletion and thread counts.
         const read = await readHistoryBackTo<Message>((path: string) => api.get(path), `/api/messages/${spaceId}`, oldestCreatedAt(messagesRef.current));
+        const events = reads.settle(ticket);
         if (!visit.isCurrent() || !reads.isLatest(ticket)) return 'superseded';
         setMessages((prev) => visit.isCurrent()
-          ? applyHistoryRead(prev, read, (id) => reads.changedSince(ticket, id))
+          ? replayMessageEvents(applyHistoryRead(prev, read), events)
           : prev);
         if (!read.coversShown) setHasEarlierHistory(true);
         setHistoryStatus('ready');
         setCatchUpError(false);
         return 'ok';
       } catch {
+        reads.settle(ticket);
         if (!visit.isCurrent() || !reads.isLatest(ticket)) return 'superseded';
-        setCatchUpError(true);
+        // This read superseded any initial read still loading. If nothing
+        // loaded yet, show the full load error (its Retry reads history);
+        // otherwise keep what is shown and offer the catch-up Retry.
+        if (historyStatusRef.current === 'loading') setHistoryStatus('error');
+        else setCatchUpError(true);
         return 'failed';
       }
     };
