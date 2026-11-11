@@ -831,3 +831,96 @@ test('W2-6: an edit and a delete of a reply show in the open thread panel withou
     await close(page);
   }
 });
+
+// ── W2-5: composer and popup keys (IME, Shift+Enter, Tab, Escape) ──────────
+
+const TASK_HIT = { id: 'task-12', number: 12, title: 'Ship the launch checklist', status: 'todo', priority: 'p1', project_prefix: 'LAUNCH' };
+// The # popup lists the tasks passed in as page data.
+const TASK_SEARCH = `(method, path) => (method === 'GET' && path === '/api/tasks/search') ? { body: window.__deftTestData.tasks } : undefined`;
+// An IME session: the composition starts, then Enter confirms the candidate.
+const composingEnter = (page) => page.evaluate(() => {
+  const target = document.querySelector('.deft-editor');
+  target.dispatchEvent(new CompositionEvent('compositionstart', { data: '', bubbles: true }));
+  target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', isComposing: true, bubbles: true, cancelable: true }));
+});
+
+test('W2-5: Enter that confirms an IME composition does not pick from the @ popup', async () => {
+  const { page, editor } = await openComposer();
+  try {
+    await page.keyboard.type('Hi @Rah');
+    await page.getByRole('button', { name: 'Rahul Mehta' }).waitFor();
+    await composingEnter(page);
+    await page.waitForTimeout(200);
+    assert.equal(await page.getByRole('button', { name: 'Rahul Mehta' }).count(), 1, 'the popup stays open');
+    assert.doesNotMatch(await editor.innerText(), /Rahul Mehta/);
+    assert.deepEqual(await sent(page), []);
+  } finally {
+    await close(page);
+  }
+});
+
+test('W2-5: Enter that confirms an IME composition does not send', async () => {
+  const { page } = await openComposer();
+  try {
+    await page.keyboard.type('Hello');
+    await composingEnter(page);
+    await page.waitForTimeout(200);
+    assert.deepEqual(await sent(page), []);
+  } finally {
+    await close(page);
+  }
+});
+
+test('W2-5: Shift+Enter with the @ popup open inserts a newline instead of picking', async () => {
+  const { page, editor } = await openComposer();
+  try {
+    await page.keyboard.type('Hi @Rah');
+    await page.getByRole('button', { name: 'Rahul Mehta' }).waitFor();
+    await page.keyboard.press('Shift+Enter');
+    await page.waitForTimeout(200);
+    assert.doesNotMatch(await editor.innerText(), /Rahul Mehta/);
+    assert.equal(await editor.locator('br').count() >= 1, true, 'a line break was inserted');
+    assert.deepEqual(await sent(page), []);
+  } finally {
+    await close(page);
+  }
+});
+
+test('W2-5: Tab picks the highlighted task in the # popup', async () => {
+  const page = await open(browser, { harness: 'composer-harness.tsx', url: '/chat?space=s1', override: TASK_SEARCH, pageData: { tasks: [TASK_HIT] } });
+  try {
+    const editor = page.locator('.deft-editor');
+    await editor.waitFor();
+    await editor.click();
+    await page.keyboard.type('See #lau');
+    await page.getByRole('button', { name: /Ship the launch checklist/ }).waitFor();
+    await page.keyboard.press('Tab');
+    await page.getByRole('button', { name: /Ship the launch checklist/ }).waitFor({ state: 'detached' });
+    assert.match(await editor.innerText(), /LAUNCH-12/);
+    assert.deepEqual(await sent(page), []);
+  } finally {
+    await close(page);
+  }
+});
+
+test('W2-5: Escape with a popup open in the thread composer closes the popup, not the thread', async () => {
+  const page = await open(browser, {
+    harness: 'defty-chat-harness.tsx', url: '/chat?space=s1&thread=t1', override: TASK_SEARCH, pageData: { tasks: [TASK_HIT] },
+  });
+  try {
+    await page.getByRole('heading', { name: 'Thread' }).waitFor();
+    const panel = page.locator('.w-\\[400px\\]');
+    await panel.locator('.deft-editor').click();
+    await page.keyboard.type('#lau');
+    await page.getByRole('button', { name: /Ship the launch checklist/ }).waitFor();
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: /Ship the launch checklist/ }).waitFor({ state: 'detached' });
+    await page.waitForTimeout(200);
+    assert.equal(await page.getByRole('heading', { name: 'Thread' }).count(), 1, 'the thread stays open');
+    // With no popup open, Escape closes the thread as before.
+    await page.keyboard.press('Escape');
+    await page.getByRole('heading', { name: 'Thread' }).waitFor({ state: 'detached' });
+  } finally {
+    await close(page);
+  }
+});

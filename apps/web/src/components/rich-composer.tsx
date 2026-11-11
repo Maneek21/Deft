@@ -249,6 +249,19 @@ export function RichComposer({
         class: 'deft-editor',
       },
       handleKeyDown(view, event) {
+        // Escape with a popup showing closes only the popup: it does not
+        // reach outer surfaces, such as the thread panel, that close on
+        // Escape. The slash menu closes itself (Suggestion plugin).
+        if (event.key === 'Escape' && slashMenuOpenRef.current) {
+          event.stopPropagation();
+          return false;
+        }
+        if (event.key === 'Escape' && autocompleteTakesKeysRef.current()) {
+          event.stopPropagation();
+          setMentionsOpen(false);
+          setTaskAutocompleteOpen(false);
+          return true;
+        }
         // Arrow up when editor is empty → edit last message
         if (event.key === 'ArrowUp' && !event.shiftKey) {
           const text = view.state.doc.textContent;
