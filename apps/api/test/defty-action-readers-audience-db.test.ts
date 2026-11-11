@@ -213,22 +213,46 @@ test('W2a3-R5: backfill does not create approval items outside the viewer\'s cur
   assert.equal(rows[0].n, 0);
 });
 
-test('W2a3-R3-3: the web approval route lets an assigned approver act on a Defty action; the resolver accepts only the requester or an owner/admin', async (t) => {
+test('W2a3-R3-3: an assigned approver can act on a Defty action through the web route and the resolver; others still cannot', async (t) => {
   if (unavailable) return t.skip(unavailable);
   routes['/api/agent'] ??= (await import('../src/routes/agent.js')).agentRoutes;
-  const make = async (action: string) => {
+  const { approveAction } = await import('../src/lib/agent-approval-resolver.js');
+  const make = async (action: string, approver: string) => {
     const id = randomUUID();
     await client!.query(`INSERT INTO agent_actions(id,org_id,user_id,action,params,approval_tier,approval_status,source)
       VALUES($1,$2,$3,$4,$5,'quick','pending','mention')`, [id, orgId, ids.requester, action, JSON.stringify({ title: 'Fact check', content: 'Fact check' })]);
-    await client!.query('INSERT INTO agent_action_approvers(id,org_id,action_id,user_id) VALUES($1,$2,$3,$4)', [randomUUID(), orgId, id, ids.approver]);
+    await client!.query('INSERT INTO agent_action_approvers(id,org_id,action_id,user_id) VALUES($1,$2,$3,$4)', [randomUUID(), orgId, id, approver]);
     return id;
   };
-  const approve = (id: string) => request(ids.approver, '/api/agent', `/actions/${id}/approve`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
-  const legacy = await approve(await make('create_reminder'));
+  const approveAs = (viewer: string, id: string) => request(viewer, '/api/agent', `/actions/${id}/approve`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+  const legacy = await approveAs(ids.approver, await make('create_reminder', ids.approver));
   assert.ok(![403, 404].includes(legacy.status), `assigned approver passes the web gate for a Defty action (got ${legacy.status})`);
-  const resolver = await approve(await make('task_create'));
-  assert.equal(resolver.status, 403);
-  assert.equal(((await resolver.json()) as { code: string }).code, 'FORBIDDEN');
+
+  // The resolver accepts the assigned approver; this queued MCP write then
+  // stops on its own precondition (it names no agent employee), not on
+  // authorization, and nothing is claimed.
+  const resolverAction = await make('task_create', ids.approver);
+  const resolver = await approveAs(ids.approver, resolverAction);
+  assert.equal(resolver.status, 400);
+  assert.equal(((await resolver.json()) as { code: string }).code, 'EMPLOYEE_MISSING');
+  const [unclaimed] = (await client!.query('SELECT approval_status FROM agent_actions WHERE id=$1', [resolverAction])).rows;
+  assert.equal(unclaimed.approval_status, 'pending');
+
+  // An assigned guest is outside the action's audience on the web route,
+  // and the resolver refuses it as well.
+  const guestAction = await make('task_create', ids.guestApprover);
+  assert.equal((await approveAs(ids.guestApprover, guestAction)).status, 404);
+  const guestDirect = await approveAction(guestAction, ids.guestApprover);
+  assert.equal(guestDirect.status, 'error');
+  assert.equal((guestDirect as { code: string }).code, 'FORBIDDEN');
+
+  // A member who is neither assigned nor the requester is refused by the
+  // web gate and by the resolver itself.
+  const notAssigned = await make('task_create', ids.approver);
+  assert.equal((await approveAs(ids.peer, notAssigned)).status, 404);
+  const direct = await approveAction(notAssigned, ids.peer);
+  assert.equal(direct.status, 'error');
+  assert.equal((direct as { code: string }).code, 'FORBIDDEN');
 });
 
 test('W2a3-R3-1: employee turn receipts and turn payloads follow the action and source audience', async (t) => {

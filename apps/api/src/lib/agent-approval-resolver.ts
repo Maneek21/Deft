@@ -15,7 +15,11 @@ import type { AppRunTransaction } from './app-run-repository.js';
  * eventual expiry cron.
  *
  * Permission model: the effective requester may approve or reject their own
- * proposed write. Org owners and admins may review any proposal. Internal
+ * proposed write. Org owners and admins may review any proposal. An assigned
+ * reviewer (an `agent_action_approvers` row in the action's workspace, held
+ * by an active, non-guest member) may review that action. Action-specific
+ * rules stay stricter: record-mirror nominations are owner-only and App Run
+ * releases keep their owner and web-session rules. Internal
  * system flows must opt into the explicit `internal` bypass instead of
  * impersonating a human reviewer.
  *
@@ -31,9 +35,20 @@ import type { AppRunTransaction } from './app-run-repository.js';
  * every conservative-trust employee's approved writes.
  */
 import { eq, and, or, sql, isNull } from 'drizzle-orm';
-import { db, withDbAdvisoryLock } from './db.js';
+import { db, type DbAdvisoryLease } from './db.js';
+import {
+  APPROVAL_INTERRUPTED_ERROR,
+  currentClaimToken,
+  isInterruptedApproval,
+  ownsClaim,
+  recoverInterruptedApproval,
+  tryWithApprovalLease,
+  withApprovalLease,
+  type ClaimToken,
+} from './agent-action-execution-lease.js';
 import { AppError } from './app-errors.js';
 import {
+  agentActionApprovers,
   agentActions,
   agentChannelEvents,
   agentEmployees,
@@ -133,6 +148,11 @@ export { sanitizeModuleActionParamsForReceipt };
 export function isApprovalResolverAction(action: string): boolean {
   return action === 'email_send' || action === 'app_record_mirror_nominate' || action === APP_RUN_APPROVAL_ACTION || MCP_ACTION_KINDS.has(action);
 }
+
+/** The action names `isApprovalResolverAction` accepts, for SQL filters. */
+export const APPROVAL_RESOLVER_ACTION_NAMES: readonly string[] = Object.freeze([
+  'email_send', 'app_record_mirror_nominate', APP_RUN_APPROVAL_ACTION, ...MCP_ACTION_KINDS,
+]);
 
 const MODULE_MUTATION_ACTIONS: ReadonlySet<string> = new Set(
   MODULE_OPERATION_NAMES.filter(
@@ -573,7 +593,10 @@ export type ApprovalResolverError =
   | { status: 'error'; code: 'INVALID_STATE'; message: string }
   | { status: 'error'; code: 'UNSUPPORTED_ACTION'; message: string }
   | { status: 'error'; code: 'EMPLOYEE_MISSING'; message: string }
-  | { status: 'error'; code: 'EXECUTE_FAILED'; message: string };
+  | { status: 'error'; code: 'EXECUTE_FAILED'; message: string }
+  /** This request's execution lease dropped: nothing was recorded and the
+   *  approved action is left for recovery to settle. */
+  | { status: 'error'; code: 'LEASE_LOST'; message: string };
 
 /**
  * `decidedElsewhere` is set when the row was already settled or another
@@ -599,6 +622,13 @@ async function actionSourceIsCurrent(actionId: string, readerUserId?: string) {
     .where(and(eq(agentActions.id, actionId), actionSourceAuthoritySql(readerUserId))).limit(1);
   return Boolean(row);
 }
+
+/** This request's lease dropped: nothing recorded, the row is left for recovery. */
+const leaseLost = (actionId: string): ApprovalResolverError => ({
+  status: 'error',
+  code: 'LEASE_LOST',
+  message: `approval of action ${actionId} lost its execution lease; it will be settled by recovery`,
+});
 
 const sourceUnavailable = (): ApprovalResolverError => ({
   status: 'error', code: 'FORBIDDEN', message: 'The action source is no longer available',
@@ -632,6 +662,33 @@ async function loadReviewMembership(
     )
     .limit(1);
   return row ?? null;
+}
+
+/**
+ * True when the user is an assigned reviewer of the action: an approver row
+ * in the action's own workspace, held by an active member who is not a
+ * guest. `membership` must be the user's active membership in that
+ * workspace (see loadReviewMembership).
+ */
+async function isAssignedReviewer(
+  row: { id: string; org_id: string; action: string },
+  userId: string,
+  membership: { role: string } | null,
+): Promise<boolean> {
+  // A record-mirror nomination concerns its owner's private mirror consent:
+  // reviewer assignment never widens who may approve or reject it.
+  if (row.action === 'app_record_mirror_nominate') return false;
+  if (!membership || membership.role === 'guest') return false;
+  const [assigned] = await db
+    .select({ id: agentActionApprovers.id })
+    .from(agentActionApprovers)
+    .where(and(
+      eq(agentActionApprovers.action_id, row.id),
+      eq(agentActionApprovers.org_id, row.org_id),
+      eq(agentActionApprovers.user_id, userId),
+    ))
+    .limit(1);
+  return Boolean(assigned);
 }
 
 /** Look up the employee row for a queued action so we can rebuild ctx. */
@@ -848,9 +905,11 @@ export async function approveAction(
   approverUserId: string,
   options: { internal?: boolean; appRunFinalGuard?: (tx: AppRunTransaction) => Promise<void>; humanWebSessionId?: string } = {},
 ): Promise<ApprovalResolverResult> {
-  const result = await withDbAdvisoryLock(
-    `agent-approval:${actionId}`,
-    () => approveActionLocked(actionId, approverUserId, options),
+  // The execution lease is held for the whole approval so a recovery can
+  // tell a live executor from one that is gone.
+  const result = await withApprovalLease(
+    actionId,
+    (lease) => approveActionLocked(actionId, approverUserId, options, lease),
   );
   if (result.status === 'approved' || result.status === 'rejected' || result.code === 'EXECUTE_FAILED') {
     await publishApprovalResolution(actionId, approverUserId);
@@ -863,6 +922,7 @@ async function approveActionLocked(
   actionId: string,
   approverUserId: string,
   options: { internal?: boolean; appRunFinalGuard?: (tx: AppRunTransaction) => Promise<void>; humanWebSessionId?: string },
+  lease: DbAdvisoryLease,
 ): Promise<ApprovalResolverResult> {
   // Pre-checks read immutable fields so they are safe to run before the
   // atomic claim. If any pre-check fails we return without ever flipping
@@ -902,16 +962,11 @@ async function approveActionLocked(
     actionRequesterId(row) === approverUserId
     || membership.role === 'owner'
     || membership.role === 'admin'
+    || await isAssignedReviewer(row, approverUserId, membership)
   );
   const canReview = row.action === APP_RUN_APPROVAL_ACTION
     ? !options.internal && humanCanReview
-    : options.internal || (
-    membership !== null && (
-      actionRequesterId(row) === approverUserId ||
-      membership.role === 'owner' ||
-      membership.role === 'admin'
-    )
-  );
+    : options.internal || humanCanReview;
   if (!canReview) {
     return {
       status: 'error',
@@ -925,6 +980,21 @@ async function approveActionLocked(
 
   if (row.action === APP_RUN_APPROVAL_ACTION) {
     return (await appRunApprovalResolver()).approve(actionId, approverUserId, options.appRunFinalGuard);
+  }
+
+  // This call holds the action's lease, so an approval that was claimed but
+  // never recorded an outcome has no live executor. It is not re-run.
+  if (isInterruptedApproval(row, 'resolver')) {
+    const recovery = await recoverInterruptedApproval(row, {}, 'resolver', lease);
+    if (recovery.kind === 'settled_failed') {
+      return { status: 'error', code: 'EXECUTE_FAILED', message: APPROVAL_INTERRUPTED_ERROR };
+    }
+    if (recovery.kind === 'lease_lost') return leaseLost(actionId);
+    return {
+      status: 'error',
+      code: 'INVALID_STATE',
+      message: `action ${actionId} changed while its interrupted approval was being settled; retry`,
+    };
   }
 
   const resumesApprovedModule = isModuleMutation
@@ -983,6 +1053,8 @@ async function approveActionLocked(
   // review()/confirm() authority — never from the agent's grant — so a receipt
   // is only ever issued after a fresh consent/account/policy re-check.
   if (row.action === 'app_record_mirror_nominate') {
+    // No recovery settles a record-mirror approval, so its claim fence alone
+    // guards these writes.
     return resolveRecordMirrorNominationAction(row, approverUserId, options);
   }
 
@@ -1007,9 +1079,17 @@ async function approveActionLocked(
     };
   }
 
+  let claimToken: ClaimToken | null = resumesApprovedModule
+    ? await currentClaimToken(row.id, row.org_id)
+    : null;
+  if (resumesApprovedModule && !claimToken) {
+    return { status: 'error', code: 'INVALID_STATE', message: `action ${actionId} approval changed; retry to resume` };
+  }
+
   if (resumesApprovedModule) {
     const committed = await recoverModuleMutationByAgentActionId(row.org_id, row.id);
     if (committed) {
+      if (lease.lost) return leaseLost(actionId);
       const recoveredParams = {
         ...sanitizeModuleActionParamsForHistory(row.action, row.params),
         idempotency_digest: committed.idempotencyDigest,
@@ -1030,6 +1110,7 @@ async function approveActionLocked(
             eq(agentActions.org_id, row.org_id),
             eq(agentActions.approval_status, 'approved'),
             sql`${agentActions.executed_at} IS NULL`,
+            ownsClaim(claimToken!),
           ))
           .returning();
         if (!stamped) return null;
@@ -1138,17 +1219,22 @@ async function approveActionLocked(
   // returns zero rows, we lost the race and return the idempotent result.
   if (!resumesApprovedModule) {
     const claimed = await db.execute(
+      // The executing marker is the one the ordinary approval claim writes:
+      // approval surfaces show the row as executing until an outcome write
+      // (or recovery) replaces `result`.
       sql`UPDATE agent_actions
              SET approval_status = 'approved',
-                 approved_at = NOW(),
-                 approved_by_user_id = ${approverUserId}
+                 approved_at = clock_timestamp(),
+                 approved_by_user_id = ${approverUserId},
+                 result = jsonb_build_object('lifecycle_state', 'executing', 'started_at', ${new Date().toISOString()}::text)
            WHERE id = ${actionId} AND approval_status = 'pending'
              AND ${actionSourceAuthoritySql(sourceReaderId)}
-           RETURNING id`,
+           RETURNING approved_at::text AS token`,
     );
     const claimedRows =
       (claimed as { rows?: any[] }).rows ?? (claimed as unknown as any[]);
-    if (claimedRows.length === 0) {
+    claimToken = typeof claimedRows[0]?.token === 'string' ? claimedRows[0].token : null;
+    if (claimedRows.length === 0 || !claimToken) {
       const [winner] = await db
         .select()
         .from(agentActions)
@@ -1271,6 +1357,7 @@ async function approveActionLocked(
     userId: row.user_id,
     agentEmployeeId: row.agent_employee_id,
   }, hasHumanMcpBulkProvenance(row));
+  if (lease.lost) return leaseLost(actionId);
   const stampedAction = await db.transaction(async (tx) => {
     const [stamped] = await tx
       .update(agentActions)
@@ -1284,6 +1371,7 @@ async function approveActionLocked(
         eq(agentActions.id, actionId),
         eq(agentActions.org_id, row.org_id),
         eq(agentActions.approval_status, 'approved'),
+        ownsClaim(claimToken!),
       ))
       .returning({ id: agentActions.id });
     if (!stamped) return null;
@@ -1410,12 +1498,13 @@ async function resolveRecordMirrorNominationAction(
 
   const claimed = await db.execute(
     sql`UPDATE agent_actions
-           SET approval_status = 'approved', approved_at = NOW(), approved_by_user_id = ${approverUserId}
+           SET approval_status = 'approved', approved_at = clock_timestamp(), approved_by_user_id = ${approverUserId}
          WHERE id = ${row.id} AND org_id = ${row.org_id} AND approval_status = 'pending'
-         RETURNING id`,
+         RETURNING approved_at::text AS token`,
   );
-  const claimedRows = (claimed as { rows?: unknown[] }).rows ?? [];
-  if (claimedRows.length === 0) {
+  const claimedRows = (claimed as { rows?: Array<{ token?: unknown }> }).rows ?? [];
+  const claimToken = typeof claimedRows[0]?.token === 'string' ? claimedRows[0].token : null;
+  if (claimedRows.length === 0 || !claimToken) {
     const [winner] = await db.select().from(agentActions).where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id))).limit(1);
     if (winner?.approval_status === 'approved') {
       if (winner.result != null) {
@@ -1431,11 +1520,18 @@ async function resolveRecordMirrorNominationAction(
   }
 
   const approver = { org_id: row.org_id, user_id: approverUserId, sid: session.id, access_expires_at: session.expires_at.getTime() };
+  // Every outcome write below is fenced on this request's claim.
+  const ownedClaim = and(
+    eq(agentActions.id, row.id),
+    eq(agentActions.org_id, row.org_id),
+    eq(agentActions.approval_status, 'approved'),
+    ownsClaim(claimToken),
+  );
   try {
     const { approveRecordMirrorNomination } = await import('./app-record-mirror-service.js');
     const receipt = await approveRecordMirrorNomination(approver, row.params);
     await db.update(agentActions).set({ executed_at: new Date(), result: receipt as never, error: null })
-      .where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id)));
+      .where(ownedClaim);
     return { status: 'approved', result: receipt };
   } catch (error) {
     const phase = (error as { phase?: unknown } | null)?.phase;
@@ -1463,7 +1559,7 @@ async function resolveRecordMirrorNominationAction(
         executed_at: new Date(),
         result: null,
         error: sanitized.slice(0, 2000),
-      }).where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id)));
+      }).where(ownedClaim);
     } else {
       await db.update(agentActions).set({
         approval_status: 'pending',
@@ -1472,10 +1568,63 @@ async function resolveRecordMirrorNominationAction(
         executed_at: null,
         result: null,
         error: sanitized.slice(0, 2000),
-      }).where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id)));
+      }).where(ownedClaim);
     }
     return { status: 'error', code: 'EXECUTE_FAILED', message: sanitized };
   }
+}
+
+export type ModuleResumeOutcome = 'resumed' | 'held' | 'busy' | 'skipped';
+
+/**
+ * Maintenance: resume an approved module mutation that recorded no outcome
+ * (its request lost its lease, or stopped), through the same idempotent
+ * resume an approve retry takes, acting as the stored approver. Never
+ * waits for a lease: a live holder means the executor is still running.
+ */
+export async function resumeApprovedModuleActionForMaintenance(
+  actionId: string,
+  orgId: string,
+  acquireTimeoutMs: number,
+): Promise<ModuleResumeOutcome> {
+  const [row] = await db
+    .select({
+      action: agentActions.action,
+      approval_status: agentActions.approval_status,
+      executed_at: agentActions.executed_at,
+      approved_by_user_id: agentActions.approved_by_user_id,
+      app_run_id: agentActions.app_run_id,
+    })
+    .from(agentActions)
+    .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, orgId)))
+    .limit(1);
+  const approverId = row?.approved_by_user_id;
+  if (!row || !approverId || row.approval_status !== 'approved' || row.executed_at !== null
+    || row.app_run_id !== null || !MODULE_MUTATION_ACTIONS.has(row.action)
+    || !isApprovalResolverAction(row.action)) return 'skipped';
+  const held = await tryWithApprovalLease(actionId, { acquireTimeoutMs }, async (lease) => {
+    // Re-check under the lease: another request may have settled it.
+    const [current] = await db
+      .select({ approval_status: agentActions.approval_status, executed_at: agentActions.executed_at })
+      .from(agentActions)
+      .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, orgId)))
+      .limit(1);
+    if (!current || current.approval_status !== 'approved' || current.executed_at !== null) return null;
+    return approveActionLocked(actionId, approverId, {}, lease);
+  });
+  if (!held.acquired) return held.reason === 'pool_busy' ? 'busy' : 'held';
+  const result = held.value;
+  if (!result) return 'skipped';
+  if (result.status === 'approved' || result.status === 'rejected' || result.code === 'EXECUTE_FAILED') {
+    await publishApprovalResolution(actionId, approverId);
+    return 'resumed';
+  }
+  return 'skipped';
+}
+
+/** Publish the resolution of an approval settled outside a request. */
+export async function publishSettledApprovalResolution(actionId: string, actorUserId: string): Promise<void> {
+  await publishApprovalResolution(actionId, actorUserId);
 }
 
 /**
@@ -1526,7 +1675,8 @@ async function rejectActionOnce(
   const canReview = membership !== null && (
     actionRequesterId(row) === rejecterUserId ||
     membership.role === 'owner' ||
-    membership.role === 'admin'
+    membership.role === 'admin' ||
+    await isAssignedReviewer(row, rejecterUserId, membership)
   );
   if (!canReview) {
     return {
