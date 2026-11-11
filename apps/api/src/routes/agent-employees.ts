@@ -209,6 +209,10 @@ agentEmployeeRoutes.get('/', async (c) => {
       });
     }
 
+    // Runtime error text is an operator diagnostic: owners/admins receive it;
+    // every other member receives the neutral channel state and whether an
+    // error is recorded.
+    const canSeeDiagnostics = user.role === 'owner' || user.role === 'admin';
     const enriched = employees.map((emp) => {
       const turn = turnMap.get(emp.id);
       const channel = channelMap.get(emp.id);
@@ -221,7 +225,8 @@ agentEmployeeRoutes.get('/', async (c) => {
         avg_latency_ms_24h: turn?.avg_latency ?? null,
         channel_status: channel?.status ?? null,
         channel_last_seen_at: channel?.last_seen_at ?? null,
-        channel_last_error: channel?.last_error ?? null,
+        channel_last_error: canSeeDiagnostics ? channel?.last_error ?? null : null,
+        channel_has_error: Boolean(channel?.last_error),
         installed_skill_count: skill?.count ?? 0,
         required_workspace_skill_installed: skill?.hasWorkspaceSkill ?? false,
       };

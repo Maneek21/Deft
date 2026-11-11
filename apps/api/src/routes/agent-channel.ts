@@ -34,6 +34,8 @@ import {
   DEFT_BUILD_COMMIT,
   DEFT_RELEASE_VERSION,
   DEFT_SCHEMA_HEAD,
+  channelEventTextReaders,
+  emitOrgEventByAudience,
   getAgentChannelPrincipal,
   hasActiveAgentChannelClaim,
   listPendingChannelEvents,
@@ -99,19 +101,34 @@ function channelContract() {
   };
 }
 
-function emitTaskProgress(event: typeof agentChannelEvents.$inferSelect, employeeId: string, status: string, detail?: string | null) {
+/**
+ * Task progress goes to every org socket as a neutral update (state only). The
+ * runtime's own text (summary, detail, error) goes only to sockets of owners/
+ * admins and readers of the task under the employee source rule.
+ */
+async function emitTaskProgress(event: typeof agentChannelEvents.$inferSelect, employeeId: string, status: string, detail?: string | null) {
   if (event.source_kind !== 'task' || !event.source_id) return;
   const normalized = status === 'running' || status === 'working' || status === 'typing'
     ? 'started'
     : status;
-  getIO()?.to(`org:${event.org_id}`).emit('task:agent_progress', {
+  const neutral = {
     task_id: event.source_id,
     agent_employee_id: employeeId,
     step_index: 0,
     total_steps: 1,
-    step_description: detail || 'Agent employee activity updated',
+    step_description: 'Agent employee activity updated',
     status: normalized,
-    error: normalized === 'failed' ? detail ?? undefined : undefined,
+  };
+  if (!detail) {
+    getIO()?.to(`org:${event.org_id}`).emit('task:agent_progress', neutral);
+    return;
+  }
+  await emitOrgEventByAudience(getIO(), {
+    orgId: event.org_id,
+    event: 'task:agent_progress',
+    neutral,
+    detailed: { ...neutral, step_description: detail, ...(normalized === 'failed' ? { error: detail } : {}) },
+    audience: (userIds) => channelEventTextReaders(event.org_id, event.id, userIds),
   });
 }
 
@@ -810,7 +827,7 @@ agentChannelRoutes.post('/ack', async (c) => {
       detail: parsed.data.detail ?? null,
       outcome: reportedOutcome,
     });
-    emitTaskProgress(event, principal.employee_id, reportedOutcome, parsed.data.detail ?? parsed.data.error);
+    await emitTaskProgress(event, principal.employee_id, reportedOutcome, parsed.data.detail ?? parsed.data.error);
   }
 
   return c.json({ ok: true, event: updated });
@@ -990,7 +1007,7 @@ agentChannelRoutes.post('/reply', async (c) => {
         : null,
       error: reportedOutcome === 'failed' ? summary : null,
     });
-    emitTaskProgress(settledEvent, principal.employee_id, reportedOutcome, summary);
+    await emitTaskProgress(settledEvent, principal.employee_id, reportedOutcome, summary);
     await touchAgentChannelConnection(principal, {
       status: reportedOutcome === 'failed' ? 'degraded' : 'connected',
       lastEventId: event.id,
@@ -1840,7 +1857,7 @@ agentChannelRoutes.post('/reply', async (c) => {
     error: replyFailed ? text : null,
   });
 
-  emitTaskProgress(event, principal.employee_id, reportedOutcome, parsed.data.summary ?? (replyFailed ? text : null));
+  await emitTaskProgress(event, principal.employee_id, reportedOutcome, parsed.data.summary ?? (replyFailed ? text : null));
 
   await touchAgentChannelConnection(principal, {
     status: replyFailed ? 'degraded' : 'connected',
@@ -1918,7 +1935,7 @@ agentChannelRoutes.post('/status', async (c) => {
           ));
       }
       if (parsed.data.detail) {
-        emitTaskProgress(event, principal.employee_id, signal, parsed.data.detail);
+        await emitTaskProgress(event, principal.employee_id, signal, parsed.data.detail);
       }
     }
   }

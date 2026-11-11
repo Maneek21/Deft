@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import bcrypt from 'bcryptjs';
-import { and, desc, eq, gt, inArray, isNotNull, isNull, notInArray, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNotNull, isNull, notInArray, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { db } from './db.js';
 import {
   agentChannelConnections,
@@ -9,12 +9,13 @@ import {
   agentChannelEvents,
   agentChannelTokens,
   agentEmployees,
+  orgMembers,
   projects,
   tasks,
 } from '@deft/db/schema';
 import { McpAuthError } from './mcp-token.js';
 import { currentAgentChannelEventAuthoritySql } from './agent-channel-authority.js';
-import { getIO } from '../socket.js';
+import { captureRealtimeAccessGeneration, getIO, isRealtimeAccessGenerationCurrent } from '../socket.js';
 import {
   employeeCanAccessProject,
   employeeProjectAccessAllows,
@@ -439,15 +440,93 @@ export async function touchAgentChannelConnection(
     .returning();
 
   if (connection) {
+    // Every org socket receives presence: neutral status only. The error text
+    // stays in the owner/admin diagnostics reads.
     getIO()?.to(`org:${principal.org_id}`).emit('agent:presence', {
       employee_id: principal.employee_id,
       status: connection.status,
       runtime_kind: connection.runtime_kind,
       last_seen_at: connection.last_seen_at?.toISOString() ?? now.toISOString(),
-      last_error: connection.last_error ?? null,
+      has_error: Boolean(connection.last_error),
     });
   }
   return connection ?? null;
+}
+
+/**
+ * Free text an employee run produced for one channel event (outcome detail,
+ * error, progress summary) is for readers of the event's source under the
+ * employee source rule: the employee's current access to the source and the
+ * reader's own access to it. An event without a space or task source has no
+ * reader audience; its text stays with owners/admins.
+ */
+export function channelEventTextAudienceSql(eventId: SQLWrapper, readerUserId: SQLWrapper): SQL {
+  return sql`exists (select 1 from agent_channel_events text_event
+    where text_event.id = ${eventId}
+      and (text_event.space_id is not null or (text_event.source_kind = 'task' and text_event.source_id is not null))
+      and ${currentAgentChannelEventAuthoritySql(sql`text_event.id`, readerUserId)})`;
+}
+
+/** Of `userIds`, the active members who may read the run text of one channel event. */
+export async function channelEventTextReaders(orgId: string, eventId: string, userIds: readonly string[]): Promise<Set<string>> {
+  if (userIds.length === 0) return new Set();
+  const rows = await db.select({ user_id: orgMembers.user_id }).from(orgMembers).where(and(
+    eq(orgMembers.org_id, orgId),
+    inArray(orgMembers.user_id, [...userIds]),
+    eq(orgMembers.is_active, true),
+    sql`(${orgMembers.role} in ('owner', 'admin') or ${channelEventTextAudienceSql(sql`${eventId}`, orgMembers.user_id)})`,
+  ));
+  return new Set(rows.map((row) => row.user_id));
+}
+
+type AudienceSocket = { rooms: Set<string>; emit(event: string, payload: unknown): unknown };
+type OrgEmitter = {
+  to(room: string): { emit(event: string, payload: unknown): unknown };
+  in?(room: string): { fetchSockets(): Promise<AudienceSocket[]> };
+};
+
+/**
+ * Emit an org-wide event whose `neutral` payload every org socket may receive;
+ * sockets of users in `audience` receive `detailed` instead. Same delivery
+ * approach as chat run details (agent-message-run-details.ts): sockets are
+ * listed again after the audience query, and an access change during
+ * resolution, or any failure, sends the neutral payload to everyone.
+ */
+export async function emitOrgEventByAudience(io: OrgEmitter | null | undefined, input: {
+  orgId: string;
+  event: string;
+  neutral: Record<string, unknown>;
+  detailed: Record<string, unknown>;
+  audience: (userIds: string[]) => Promise<Set<string>>;
+}): Promise<void> {
+  if (!io) return;
+  const room = `org:${input.orgId}`;
+  if (!io.in) {
+    io.to(room).emit(input.event, input.neutral);
+    return;
+  }
+  const prefix = `org-user:${input.orgId}:`;
+  const socketUser = (socket: AudienceSocket) => [...socket.rooms].find((name) => name.startsWith(prefix))?.slice(prefix.length);
+  const generation = captureRealtimeAccessGeneration();
+  let resolved: { allowed: Set<string>; current: AudienceSocket[] };
+  try {
+    const sockets = await io.in(room).fetchSockets();
+    const userIds = [...new Set(sockets.map(socketUser).filter((id): id is string => Boolean(id)))];
+    const allowed = userIds.length > 0 ? await input.audience(userIds) : new Set<string>();
+    resolved = { allowed, current: await io.in(room).fetchSockets() };
+  } catch (error) {
+    console.warn('[agent-channel] per-viewer delivery unavailable; sending neutral status', error instanceof Error ? error.message : String(error));
+    io.to(room).emit(input.event, input.neutral);
+    return;
+  }
+  if (!isRealtimeAccessGenerationCurrent(generation)) {
+    io.to(room).emit(input.event, input.neutral);
+    return;
+  }
+  for (const socket of resolved.current) {
+    const userId = socketUser(socket);
+    socket.emit(input.event, userId && resolved.allowed.has(userId) ? input.detailed : input.neutral);
+  }
 }
 
 export async function updateAgentChannelCursor(params: {
