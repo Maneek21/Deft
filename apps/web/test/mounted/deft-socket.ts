@@ -36,6 +36,9 @@ export function getSocket(_token?: string) {
 }
 
 export function deliver(event: string, payload?: unknown) {
+  // Mirror Socket.IO: `connected` flips before the event's listeners run.
+  if (event === 'disconnect') socket.connected = false;
+  if (event === 'connect') socket.connected = true;
   for (const listener of [...(listeners.get(event) ?? [])]) listener(payload);
 }
 

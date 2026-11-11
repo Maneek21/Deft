@@ -206,6 +206,26 @@ export function RichComposer({
   // checks this to let Enter fall through to the Suggestion plugin so the
   // user's selected command actually fires.
   const slashMenuOpenRef = useRef(false);
+  // Whether an @ / # popup is open and has at least one option to pick. The
+  // editor's key handler is created once, so it reads this through a ref.
+  const mentionOptionCountRef = useRef(0);
+  const taskOptionCountRef = useRef(0);
+  const showMentionsRef = useRef(false);
+  const showTaskAutocompleteRef = useRef(false);
+  const autocompleteTakesKeysRef = useRef(() => (
+    (showMentionsRef.current && mentionOptionCountRef.current > 0)
+    || (showTaskAutocompleteRef.current && taskOptionCountRef.current > 0)
+  ));
+  const setMentionsOpen = useCallback((open: boolean) => {
+    showMentionsRef.current = open;
+    setShowMentions(open);
+  }, []);
+  const setTaskAutocompleteOpen = useCallback((open: boolean) => {
+    showTaskAutocompleteRef.current = open;
+    setShowTaskAutocomplete(open);
+  }, []);
+  const reportMentionOptionCount = useCallback((count: number) => { mentionOptionCountRef.current = count; }, []);
+  const reportTaskResultCount = useCallback((count: number) => { taskOptionCountRef.current = count; }, []);
 
   const editor = useEditor({
     immediatelyRender: false,
@@ -245,12 +265,12 @@ export function RichComposer({
           if (slashMenuOpenRef.current) {
             return false;
           }
-          const { from } = view.state.selection;
-          const textBefore = view.state.doc.textBetween(Math.max(0, from - 20), from);
-          if (textBefore.match(/#(\w*)$/) || (!nativeMentionsAvailable() && textBefore.match(/@+(\w*)$/))) {
+          if (autocompleteTakesKeysRef.current()) {
             // # / @ autocomplete are React popups with document-level
             // listeners — prevent ProseMirror's default but let the
-            // listener catch the key.
+            // listener pick the highlighted option. Only while a popup is
+            // open AND has an option: after Escape, or with no matches,
+            // Enter sends.
             event.preventDefault();
             return true;
           }
@@ -280,10 +300,10 @@ export function RichComposer({
       // Task autocomplete (#)
       const hashMatch = textBefore.match(/#(\w*)$/);
       if (hashMatch) {
-        setShowTaskAutocomplete(true);
+        setTaskAutocompleteOpen(true);
         setTaskQuery(hashMatch[1]);
       } else {
-        setShowTaskAutocomplete(false);
+        setTaskAutocompleteOpen(false);
         setTaskQuery('');
       }
 
@@ -294,14 +314,14 @@ export function RichComposer({
       // on click.
       const atMatch = nativeMentionsAvailable() ? null : mentionQueryAtCursor(editor.state.doc.textBetween(0, from, '\n'));
       if (atMatch) {
-        setShowMentions(true);
+        setMentionsOpen(true);
         setMentionQuery(atMatch.query);
         mentionRangeRef.current = {
           from: from - atMatch.length,
           to: from,
         };
       } else {
-        setShowMentions(false);
+        setMentionsOpen(false);
         setMentionQuery('');
         mentionRangeRef.current = null;
       }
@@ -442,7 +462,7 @@ export function RichComposer({
         .run();
     }
     mentionRangeRef.current = null;
-    setShowMentions(false);
+    setMentionsOpen(false);
   };
 
   const handleTaskSelect = (task: TaskResult) => {
@@ -457,7 +477,7 @@ export function RichComposer({
         .insertContent(`<task|${task.project_prefix}-${task.number}|${task.id}>`)
         .run();
     }
-    setShowTaskAutocomplete(false);
+    setTaskAutocompleteOpen(false);
   };
 
   if (!editor) return null;
@@ -482,14 +502,16 @@ export function RichComposer({
         <MentionAutocomplete
           query={mentionQuery}
           onSelect={handleMentionSelect}
-          onClose={() => setShowMentions(false)}
+          onClose={() => setMentionsOpen(false)}
+          onOptionCountChange={reportMentionOptionCount}
         />
       )}
       {showTaskAutocomplete && (
         <TaskAutocomplete
           query={taskQuery}
           onSelect={handleTaskSelect}
-          onClose={() => setShowTaskAutocomplete(false)}
+          onClose={() => setTaskAutocompleteOpen(false)}
+          onResultCountChange={reportTaskResultCount}
           anchorRef={composerRef}
         />
       )}

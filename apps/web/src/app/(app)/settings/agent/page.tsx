@@ -7,18 +7,19 @@ import { ReceiptViewer } from '@/components/receipt-viewer';
 import { ConfirmDangerous } from '@/components/confirm-dangerous';
 import { SessionTurnCard, type SessionTurn } from '@/components/session-turn-card';
 import {
-  AUTONOMOUS_EMPLOYEE_CONFIRM,
   TRUST_LEGEND,
   TRUST_LOAD_ERROR,
   TrustLevelControl,
   canEditTrustLevel,
   createGenerationGuard,
+  trustLevelLabel,
   loadTrustLevel,
   saveTrustLevelAndReconcile,
   type TrustLevel,
   type TrustViewPatch,
 } from '@/components/trust-level-control';
 import { useAuth } from '@/lib/auth-context';
+import { EmployeeTrustActions, employeeAutonomousConfirmLines } from './employee-trust-actions';
 
 // Phase 10 — mirrors apps/api/src/lib/model-pricing.ts. Kept in sync by hand
 // because the cost column is advisory only.
@@ -172,6 +173,7 @@ export default function AgentSettingsPage() {
 
   // Phase 10 — typed-confirmation modals for the drawer's destructive actions.
   const [confirmAutonomous, setConfirmAutonomous] = useState(false);
+  const [employeeTrustBusy, setEmployeeTrustBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -289,21 +291,35 @@ export default function AgentSettingsPage() {
     [drawerEmp, turnReceiptIds],
   );
 
-  const upgradeToAutonomous = useCallback(async () => {
+  const setEmployeeTrust = useCallback(async (level: TrustLevel) => {
     if (!drawerEmp) return;
-    const res = await api.patch(`/api/agent-employees/${drawerEmp.id}`, {
-      trust_level: 'autonomous',
-    });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({} as any));
-      throw new Error(body.error || 'Failed to upgrade trust level');
+    const target = drawerEmp;
+    setEmployeeTrustBusy(true);
+    try {
+      const res = await api.patch(`/api/agent-employees/${target.id}`, {
+        trust_level: level,
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({} as any));
+        throw new Error(body.error || 'Failed to change trust level');
+      }
+      setDrawerEmp((current) => (current && current.id === target.id ? { ...current, trust_level: level } : current));
+      setEmployees((prev) =>
+        prev.map((e) => (e.id === target.id ? { ...e, trust_level: level } : e)),
+      );
+      flash('success', `${target.name} trust set to ${trustLevelLabel(level).toLowerCase()}`);
+    } finally {
+      setEmployeeTrustBusy(false);
     }
-    setDrawerEmp({ ...drawerEmp, trust_level: 'autonomous' });
-    setEmployees((prev) =>
-      prev.map((e) => (e.id === drawerEmp.id ? { ...e, trust_level: 'autonomous' } : e)),
-    );
-    flash('success', `${drawerEmp.name} upgraded to autonomous`);
   }, [drawerEmp, flash]);
+
+  const upgradeToAutonomous = useCallback(() => setEmployeeTrust('autonomous'), [setEmployeeTrust]);
+
+  const lowerEmployeeTrust = useCallback((level: TrustLevel) => {
+    void setEmployeeTrust(level).catch((error: unknown) => {
+      flash('error', error instanceof Error ? error.message : 'Failed to change trust level');
+    });
+  }, [setEmployeeTrust, flash]);
 
   const deleteEmployee = useCallback(async () => {
     if (!drawerEmp) return;
@@ -686,7 +702,7 @@ export default function AgentSettingsPage() {
           title="Upgrade trust level to AUTONOMOUS?"
           body={
             <>
-              {AUTONOMOUS_EMPLOYEE_CONFIRM.map((line) => (
+              {employeeAutonomousConfirmLines().map((line) => (
                 <p key={line} className="mb-2 last:mb-0">
                   {line}
                 </p>
@@ -786,31 +802,14 @@ export default function AgentSettingsPage() {
 
             <div className="p-5">
               {/* Phase 10 — destructive action gates */}
-              <div className="flex gap-2 mb-4">
-                {drawerEmp.trust_level !== 'autonomous' ? (
-                  <button
-                    onClick={() => setConfirmAutonomous(true)}
-                    className="flex-1 text-[12px] px-3 py-2 rounded font-medium"
-                    style={{
-                      background: 'var(--warning, #f59e0b)',
-                      color: 'white',
-                    }}
-                    data-testid="upgrade-autonomous-btn"
-                  >
-                    Upgrade to autonomous
-                  </button>
-                ) : (
-                  <div
-                    className="flex-1 text-[11px] px-3 py-2 rounded text-center"
-                    style={{
-                      background: 'var(--surface-container)',
-                      color: 'var(--muted)',
-                      border: '1px solid var(--border)',
-                    }}
-                  >
-                    Trust: autonomous
-                  </div>
-                )}
+              <div className="flex items-start gap-2 mb-4">
+                <EmployeeTrustActions
+                  trustLevel={drawerEmp.trust_level}
+                  canEdit={canEditTrust}
+                  busy={employeeTrustBusy}
+                  onUpgrade={() => setConfirmAutonomous(true)}
+                  onLower={lowerEmployeeTrust}
+                />
                 <button
                   onClick={() => setConfirmDelete(true)}
                   className="text-[12px] px-3 py-2 rounded font-medium"

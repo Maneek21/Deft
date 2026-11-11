@@ -416,13 +416,15 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
       orgOnline.set(user.id, userSockets);
     }
     userSockets.add(socket.id);
+    const wasIdle = idleUsers.get(user.org_id)?.has(user.id) ?? false;
     clearIdle(user.org_id, user.id);
 
     // Update last_seen_at on connect
     recordLastSeen(user.id);
 
-    // Broadcast online to the org (only for this user's first socket in the org)
-    if (userSockets.size === 1) {
+    // Broadcast online to the org for this user's first socket in the org, or
+    // when a new socket ends an idle period: peers must not keep showing idle.
+    if (userSockets.size === 1 || wasIdle) {
       socket.to(`org:${user.org_id}`).emit('presence:update', {
         user_id: user.id,
         status: 'online',

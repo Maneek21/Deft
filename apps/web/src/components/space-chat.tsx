@@ -17,7 +17,8 @@ import { openDeftyDm } from '@/lib/quick-actions';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { getSocket } from '@/lib/socket';
 import { ChatMessageEventScope, createChatMessageNewHandler } from '@/lib/chat-message-event-scope';
-import { subscribeToSpace } from '@/lib/space-socket';
+import { subscribeToSpace, watchCatchUp, type CatchUpResult } from '@/lib/space-socket';
+import { applyMessageEvent, replayMessageEvents, type MessageEvent } from '@/lib/chat-message-events';
 import { useAuth } from '@/lib/auth-context';
 import { useChatContext } from '@/lib/chat-context';
 import { HUDDLES_ENABLED } from '@/lib/feature-flags';
@@ -71,7 +72,17 @@ import { ClipRecorder } from './clip-recorder';
 import { UserProfileCard } from './user-profile-card';
 import { parseReminderTime } from './slash-command-autocomplete';
 import ConfirmDialog from './confirm-dialog';
-import { normalizeInlineApprovalCopy } from '@/lib/agent-approval-copy';
+import { inlineApprovalDisplayContent } from '@/lib/agent-approval-copy';
+import {
+  ConversationReads,
+  HISTORY_PAGE_SIZE,
+  applyHistoryRead,
+  mergeMessagesById,
+  oldestCreatedAt,
+  readHistoryBackTo,
+  readHistoryPage,
+} from '@/lib/chat-history-merge';
+import { ChatLoadError } from './chat-load-error';
 import {
   approvalContinuationGate,
   approvalContinuationIdempotencyKey,
@@ -647,11 +658,10 @@ export function SpaceChat({
     && !pendingActionsLoading
     && !pendingActionsError;
 
-  const displayContentForMessage = useCallback((msg: Message) => {
-    const hasInlineApproval = Boolean(pendingByMessage?.[msg.id]?.length);
-    const hasApprovalContext = hasInlineApproval || Object.keys(pendingByMessage ?? {}).length > 0;
-    return normalizeInlineApprovalCopy(msg.content, hasApprovalContext);
-  }, [pendingByMessage]);
+  const displayContentForMessage = useCallback(
+    (msg: Message) => inlineApprovalDisplayContent(msg, msg.content, pendingByMessage),
+    [pendingByMessage],
+  );
 
   const workIntentBySpaceKey = spaceId
     ? `/api/work-intents?space_id=${spaceId}&limit=100`
@@ -919,41 +929,142 @@ export function SpaceChat({
 
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
 
+  const [historyStatus, setHistoryStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [historyRetrying, setHistoryRetrying] = useState(false);
+  const historyStatusRef = useRef(historyStatus);
+  useEffect(() => { historyStatusRef.current = historyStatus; }, [historyStatus]);
+  // Orders this conversation's history reads and remembers live socket
+  // changes, so a slow or superseded read never undoes newer state.
+  const historyReadsRef = useRef(new ConversationReads<MessageEvent<Message>>());
+  const messagesRef = useRef<Message[]>([]);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+  // Set when a catch-up stopped at its page bound and replaced the view:
+  // older history exists but is not shown.
+  const [hasEarlierHistory, setHasEarlierHistory] = useState(false);
+  // A catch-up read after a reconnect failed: shown messages stay, and the
+  // catch-up stays pending until a read succeeds.
+  const [catchUpError, setCatchUpError] = useState(false);
+  const [catchUpRetrying, setCatchUpRetrying] = useState(false);
+  const catchUpRetryRef = useRef<(() => Promise<CatchUpResult>) | null>(null);
+  const retryCatchUp = useCallback(() => {
+    const retry = catchUpRetryRef.current;
+    if (!retry) return;
+    setCatchUpRetrying(true);
+    void retry().finally(() => setCatchUpRetrying(false));
+  }, []);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const loadEarlierHistory = useCallback(async () => {
+    const visit = messageEventScopeRef.current.capture(spaceId, sessionCacheScope);
+    const reads = historyReadsRef.current;
+    // Not while a load, retry or catch-up is in flight: that read may replace
+    // the window this page would be cut from.
+    if (reads.replacingReadInFlight) return;
+    // A side read: it does not supersede the others, but applies only while
+    // still latest, and live events during it are replayed onto its rows.
+    const ticket = reads.begin({ supersede: false });
+    setLoadingEarlier(true);
+    try {
+      const before = oldestCreatedAt(messagesRef.current) ?? undefined;
+      const page = await readHistoryPage<Message>((path: string) => api.get(path), `/api/messages/${spaceId}`, before);
+      const events = reads.settle(ticket);
+      // A catch-up or retry that started meanwhile may have replaced the
+      // view; this older page would then sit beside it as a stray segment.
+      if (!visit.isCurrent() || reads !== historyReadsRef.current || !reads.isLatest(ticket)) return;
+      setMessages((prev) => replayMessageEvents(mergeMessagesById(prev, page), events));
+      setHasEarlierHistory(page.length === HISTORY_PAGE_SIZE);
+    } catch {
+      if (visit.isCurrent() && reads.isLatest(ticket)) setCmdToast('Could not load earlier messages. Try again.');
+    } finally {
+      reads.settle(ticket);
+      setLoadingEarlier(false);
+    }
+  }, [spaceId, sessionCacheScope]);
+
   useEffect(() => {
     const visit = messageEventScopeRef.current.capture(spaceId, sessionCacheScope);
     setMessages([]);
+    setHistoryStatus('loading');
+    setHasEarlierHistory(false);
+    setCatchUpError(false);
+    historyReadsRef.current.dispose();
+    const reads = new ConversationReads<MessageEvent<Message>>();
+    historyReadsRef.current = reads;
     if (!visit.isCurrent()) return () => visit.dispose();
     let cancelled = false;
+    // The ticket stays in scope so every outcome of this read, including a
+    // rejection, is ignored once a catch-up or retry has superseded it.
+    const ticket = reads.begin();
     async function load() {
       const res = await api.get(`/api/messages/${spaceId}`);
-      if (res.ok && !cancelled && visit.isCurrent()) {
-        const data = await res.json();
-        if (cancelled || !visit.isCurrent()) return;
-        setMessages(previous => visit.isCurrent() ? (data.messages || data || []) : previous);
-        if (highlightMessageId) {
-          // Scroll to the highlighted message after render
-          setTimeout(() => {
-            if (cancelled || !visit.isCurrent()) return;
-            const el = document.querySelector(`[data-message-id="${highlightMessageId}"]`);
-            if (el) {
-              el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-              setHighlightedId(highlightMessageId);
-              // Clear highlight after animation
-              setTimeout(() => {
-                if (!cancelled && visit.isCurrent()) setHighlightedId(null);
-              }, 3000);
-            }
-          }, 200);
-        } else {
-          setTimeout(() => {
-            if (!cancelled && visit.isCurrent()) scrollToBottom();
-          }, 100);
-        }
+      if (cancelled || !visit.isCurrent() || !reads.isLatest(ticket)) return;
+      if (!res.ok) {
+        setHistoryStatus('error');
+        return;
+      }
+      const data = await res.json();
+      const events = reads.settle(ticket);
+      if (cancelled || !visit.isCurrent() || !reads.isLatest(ticket)) return;
+      const loaded: Message[] = data.messages || data || [];
+      // Fetched rows are authoritative; live events received during the read
+      // are replayed on top.
+      setMessages(previous => visit.isCurrent()
+        ? replayMessageEvents(mergeMessagesById(previous, loaded), events)
+        : previous);
+      setHistoryStatus('ready');
+      if (highlightMessageId) {
+        // Scroll to the highlighted message after render
+        setTimeout(() => {
+          if (cancelled || !visit.isCurrent()) return;
+          const el = document.querySelector(`[data-message-id="${highlightMessageId}"]`);
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            setHighlightedId(highlightMessageId);
+            // Clear highlight after animation
+            setTimeout(() => {
+              if (!cancelled && visit.isCurrent()) setHighlightedId(null);
+            }, 3000);
+          }
+        }, 200);
+      } else {
+        setTimeout(() => {
+          if (!cancelled && visit.isCurrent()) scrollToBottom();
+        }, 100);
       }
     }
-    void load().catch(() => {});
+    void load().catch(() => {
+      if (!cancelled && visit.isCurrent() && reads.isLatest(ticket)) setHistoryStatus('error');
+    }).finally(() => { reads.settle(ticket); });
     return () => { cancelled = true; visit.dispose(); };
   }, [spaceId, sessionCacheScope, scrollToBottom, highlightMessageId]);
+
+  // Retry a failed history read without resetting the conversation: shown
+  // messages (for example ones the socket delivered) and the draft stay, and
+  // a successful read is merged in.
+  const retryHistory = useCallback(async () => {
+    const visit = messageEventScopeRef.current.capture(spaceId, sessionCacheScope);
+    const reads = historyReadsRef.current;
+    const ticket = reads.begin();
+    setHistoryRetrying(true);
+    try {
+      const res = await api.get(`/api/messages/${spaceId}`);
+      if (!visit.isCurrent() || !reads.isLatest(ticket)) return;
+      if (!res.ok) {
+        setHistoryStatus('error');
+        return;
+      }
+      const data = await res.json();
+      const events = reads.settle(ticket);
+      if (!visit.isCurrent() || !reads.isLatest(ticket)) return;
+      const loaded: Message[] = data.messages || data || [];
+      setMessages((prev) => replayMessageEvents(mergeMessagesById(prev, loaded), events));
+      setHistoryStatus('ready');
+    } catch {
+      if (visit.isCurrent() && reads.isLatest(ticket)) setHistoryStatus('error');
+    } finally {
+      reads.settle(ticket);
+      setHistoryRetrying(false);
+    }
+  }, [spaceId, sessionCacheScope]);
 
   useEffect(() => {
     if (!sessionCacheScope) return;
@@ -963,10 +1074,11 @@ export function SpaceChat({
     const unsubscribeFromSpace = subscribeToSpace(socket, spaceId);
 
     const visit = messageEventScopeRef.current.capture(spaceId, sessionCacheScope);
+    const normalizeLiveMessage = (msg: Message): Message => ({ ...msg, reactions: msg.reactions ?? [], reply_count: msg.reply_count ?? 0, latest_reply_at: msg.latest_reply_at ?? null, file_ids: msg.file_ids ?? [] });
     const onNew = createChatMessageNewHandler<Message>({
       visit,
       update: setMessages,
-      normalize: (msg) => ({ ...msg, reactions: msg.reactions ?? [], reply_count: msg.reply_count ?? 0, latest_reply_at: msg.latest_reply_at ?? null, file_ids: msg.file_ids ?? [] }),
+      normalize: normalizeLiveMessage,
       openThread: (parent) => {
         setThreadMessage({
           id: parent.id,
@@ -984,20 +1096,28 @@ export function SpaceChat({
       scroll: scrollToBottom,
       schedule: (callback, delay) => setTimeout(callback, delay),
     });
-    const onThreadUpdated = (data: { parent_id: string; reply_count: number; latest_reply_at: string }) => {
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === data.parent_id
-            ? { ...m, reply_count: data.reply_count, latest_reply_at: data.latest_reply_at }
-            : m
-        )
-      );
+    // Every live change goes through the same pure reducer that replays it
+    // onto a history read that was in flight when it arrived.
+    const live = (event: MessageEvent<Message>) => {
+      historyReadsRef.current.record(event);
+      setMessages((prev) => applyMessageEvent(prev, event));
     };
-    const onEdited = (msg: any) => {
-      setMessages((prev) => prev.map((m) => m.id === msg.id ? { ...m, content: msg.content, edited_at: msg.edited_at, metadata: msg.metadata ?? (m as any).metadata } : m));
+    const onNewAndNote = (msg: Message & { parent_id?: string | null }) => {
+      // The live path keeps its own handler (thread opening, scroll); a
+      // top-level message for this space is also buffered for replay.
+      if (!msg.parent_id && visit.accepts(msg.space_id)) {
+        historyReadsRef.current.record({ type: 'new', message: normalizeLiveMessage(msg) });
+      }
+      onNew(msg);
+    };
+    const onThreadUpdated = (data: { parent_id: string; reply_count: number; latest_reply_at: string }) => {
+      live({ type: 'thread_updated', parent_id: data.parent_id, reply_count: data.reply_count, latest_reply_at: data.latest_reply_at });
+    };
+    const onEdited = (msg: { id: string; content: string; edited_at: string | null; metadata?: unknown }) => {
+      live({ type: 'edited', id: msg.id, content: msg.content, edited_at: msg.edited_at, metadata: msg.metadata });
     };
     const onDeleted = (data: { id: string }) => {
-      setMessages((prev) => prev.map((m) => m.id === data.id ? { ...m, is_deleted: true } : m));
+      live({ type: 'deleted', id: data.id });
     };
     const onTypingStart = (data: { user_id: string; user_name: string; space_id: string }) => {
       if (data.space_id === spaceId && data.user_id !== user?.id) setTypingUsers((prev) => new Map(prev).set(data.user_id, data.user_name));
@@ -1008,43 +1128,14 @@ export function SpaceChat({
     // presence is handled globally in the app layout
 
     const onReactionAdded = (data: { message_id: string; emoji: string; user_id: string }) => {
-      setMessages((prev) =>
-        prev.map((m) => {
-          if (m.id !== data.message_id) return m;
-          const reactions = [...(m.reactions || [])];
-          const existing = reactions.find((r) => r.emoji === data.emoji);
-          if (existing) {
-            if (!existing.users.includes(data.user_id)) {
-              existing.count++;
-              existing.users.push(data.user_id);
-            }
-          } else {
-            reactions.push({ emoji: data.emoji, count: 1, users: [data.user_id] });
-          }
-          return { ...m, reactions };
-        })
-      );
+      live({ type: 'reaction_added', message_id: data.message_id, emoji: data.emoji, user_id: data.user_id });
     };
 
     const onReactionRemoved = (data: { message_id: string; emoji: string; user_id: string }) => {
-      setMessages((prev) =>
-        prev.map((m) => {
-          if (m.id !== data.message_id) return m;
-          let reactions = [...(m.reactions || [])];
-          const existing = reactions.find((r) => r.emoji === data.emoji);
-          if (existing) {
-            existing.count--;
-            existing.users = existing.users.filter((u) => u !== data.user_id);
-            if (existing.count <= 0) {
-              reactions = reactions.filter((r) => r.emoji !== data.emoji);
-            }
-          }
-          return { ...m, reactions };
-        })
-      );
+      live({ type: 'reaction_removed', message_id: data.message_id, emoji: data.emoji, user_id: data.user_id });
     };
 
-    socket.on('message:new', onNew);
+    socket.on('message:new', onNewAndNote);
     socket.on('message:edited', onEdited);
     socket.on('message:deleted', onDeleted);
     socket.on('typing:start', onTypingStart);
@@ -1064,18 +1155,58 @@ export function SpaceChat({
     socket.on('message:link_previews', onLinkPreviews);
 
     const onMessagePinned = (data: { message_id: string }) => {
-      setMessages(prev => prev.map(m => m.id === data.message_id ? { ...m, is_pinned: true } : m));
+      live({ type: 'pinned', message_id: data.message_id });
     };
     const onMessageUnpinned = (data: { message_id: string }) => {
-      setMessages(prev => prev.map(m => m.id === data.message_id ? { ...m, is_pinned: false } : m));
+      live({ type: 'unpinned', message_id: data.message_id });
     };
     socket.on('message:pinned', onMessagePinned);
     socket.on('message:unpinned', onMessageUnpinned);
 
+    // Messages sent while the socket was down never arrive as events. After a
+    // reconnect, read the history again and merge it by id: nothing already
+    // shown moves or doubles, and the composer and scroll are left alone.
+    const catchUp = async (): Promise<CatchUpResult> => {
+      const reads = historyReadsRef.current;
+      const ticket = reads.begin();
+      void swrMutate(`/api/agent/actions/pending-by-space?space_id=${spaceId}`).catch(() => undefined);
+      try {
+        // Page back until the read reaches the oldest shown message (bounded by
+        // CATCH_UP_MAX_PAGES), so a long outage leaves no hole and older shown
+        // messages get their current content, deletion and thread counts.
+        const read = await readHistoryBackTo<Message>((path: string) => api.get(path), `/api/messages/${spaceId}`, oldestCreatedAt(messagesRef.current));
+        const events = reads.settle(ticket);
+        if (!visit.isCurrent() || !reads.isLatest(ticket)) return 'superseded';
+        setMessages((prev) => visit.isCurrent()
+          ? replayMessageEvents(applyHistoryRead(prev, read), events)
+          : prev);
+        if (!read.coversShown) setHasEarlierHistory(true);
+        setHistoryStatus('ready');
+        setCatchUpError(false);
+        return 'ok';
+      } catch {
+        reads.settle(ticket);
+        if (!visit.isCurrent() || !reads.isLatest(ticket)) return 'superseded';
+        // This read superseded any initial read still loading. If nothing
+        // loaded yet, show the full load error (its Retry reads history);
+        // otherwise keep what is shown and offer the catch-up Retry.
+        if (historyStatusRef.current === 'loading') setHistoryStatus('error');
+        else setCatchUpError(true);
+        return 'failed';
+      }
+    };
+    // The socket may have been down before this space opened, so the watcher
+    // starts from its real connection state and remembers drops across
+    // effect re-runs.
+    const catchUpWatch = watchCatchUp(socket, `space:${spaceId}`, catchUp);
+    catchUpRetryRef.current = catchUpWatch.retry;
+
     return () => {
+      catchUpWatch.dispose();
+      if (catchUpRetryRef.current === catchUpWatch.retry) catchUpRetryRef.current = null;
       visit.dispose();
       unsubscribeFromSpace();
-      socket.off('message:new', onNew);
+      socket.off('message:new', onNewAndNote);
       socket.off('message:edited', onEdited);
       socket.off('message:deleted', onDeleted);
       socket.off('typing:start', onTypingStart);
@@ -1473,7 +1604,32 @@ export function SpaceChat({
               <div className="text-[0.8125rem] leading-relaxed" style={{ color: 'var(--on-surface-variant)' }} dangerouslySetInnerHTML={{ __html: sanitizeHtml(renderSimpleMarkdown(recapSummary)) }} />
             </div>
           )}
-          {messages.length === 0 && (
+          {historyStatus === 'error' && (
+            <ChatLoadError message="Could not load messages." onRetry={() => { void retryHistory(); }} retrying={historyRetrying} />
+          )}
+          {catchUpError && (
+            <ChatLoadError message="Could not load new messages." onRetry={retryCatchUp} retrying={catchUpRetrying} />
+          )}
+          {hasEarlierHistory && (
+            <div className="flex justify-center py-2">
+              <button
+                type="button"
+                onClick={() => { void loadEarlierHistory(); }}
+                disabled={loadingEarlier}
+                className="rounded-md px-3 py-1 text-[12px] font-semibold disabled:opacity-60"
+                style={{ border: '1px solid var(--border)', color: 'var(--on-surface)' }}
+              >
+                {loadingEarlier ? 'Loading earlier messages…' : 'Load earlier messages'}
+              </button>
+            </div>
+          )}
+          {pendingActionsError && (
+            <ChatLoadError
+              message="Could not load approvals."
+              onRetry={() => { if (pendingBySpaceKey) void swrMutate(pendingBySpaceKey).catch(() => undefined); }}
+            />
+          )}
+          {historyStatus === 'ready' && messages.length === 0 && (
             <EmptyState
               icon={<MessageSquare size={20} strokeWidth={1.5} style={{ color: 'var(--outline)' }} />}
               title={`This is the start of ${isDm ? displayName : '#' + spaceName}`}
@@ -2232,7 +2388,11 @@ export function SpaceChat({
           uploadProgress={progress}
           onViewScheduled={() => setShowScheduled(true)}
           onClipRecord={() => setClipRecording(true)}
-          onAskDefty={() => { void openDeftyDm(api, openDmWith); }}
+          onAskDefty={() => {
+            void openDeftyDm(api, openDmWith).then((opened) => {
+              if (!opened) setCmdToast('Could not open a chat with Defty. Try again.');
+            });
+          }}
           spaceId={spaceId}
           onSlashCommand={async (command, args) => {
             switch (command) {
