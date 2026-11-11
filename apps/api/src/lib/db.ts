@@ -68,8 +68,13 @@ async function connectAdvisoryWithin(timeoutMs: number): Promise<pg.PoolClient |
   const pending = advisoryPool.connect();
   let timer: NodeJS.Timeout | undefined;
   const timedOut = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), timeoutMs); });
-  const winner = await Promise.race([pending, timedOut]);
-  clearTimeout(timer);
+  let winner: pg.PoolClient | null;
+  try {
+    winner = await Promise.race([pending, timedOut]);
+  } finally {
+    // Also when the connect itself rejects.
+    clearTimeout(timer);
+  }
   if (winner) return winner;
   // The queued connect may still be granted later: hand it straight back so
   // a timed-out caller never keeps a connection.
