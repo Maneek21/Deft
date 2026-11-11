@@ -8,7 +8,6 @@ import { searchNativeMentions, publishNativeMentions, enqueueNativeMentionPublic
 import { nativeNotificationAccessSql } from '../native-mention-visibility.js';
 import {
   connectedAccounts,
-  agentActionApprovers,
   agentActions,
   agentEmployees,
   attentionItems,
@@ -3575,45 +3574,18 @@ export async function humanInboxMarkAllRead(args: Record<string, unknown>, ctx: 
   });
 }
 
-/**
- * Approvals the connected user can act on: owners/admins see the org's; any
- * other member sees what it requested and what it is assigned to approve.
- * Callers also apply visibleModuleActionSql, so a guest stays requester-only.
- */
-function humanApprovalReviewerSql(ctx: HumanToolContext) {
-  if (ctx.role === 'owner' || ctx.role === 'admin') return sql`true`;
-  return sql`(
-    COALESCE(${agentActions.params}->>'source_user_id', ${agentActions.params}->>'origin_user_id', ${agentActions.user_id}) = ${ctx.user_id}
-    OR EXISTS (
-      SELECT 1 FROM ${agentActionApprovers}
-      WHERE ${agentActionApprovers.action_id} = ${agentActions.id}
-        AND ${agentActionApprovers.org_id} = ${ctx.org_id}
-        AND ${agentActionApprovers.user_id} = ${ctx.user_id}
-    )
-  )`;
-}
-
-/**
- * Whether approval_approve / approval_reject can act on this row for the
- * caller. Both delegate to the approval resolver, which accepts only the
- * requester or an org owner/admin (and only the owning user for a record
- * mirror nomination). An assigned approver who is neither sees the approval
- * as view only.
- */
-function humanApprovalActionable(row: { action: string; user_id: string; params: unknown }, ctx: HumanToolContext): boolean {
-  const params = row.params && typeof row.params === 'object' && !Array.isArray(row.params) ? row.params as Record<string, unknown> : {};
-  const source = params.source_user_id ?? params.origin_user_id;
-  const requester = typeof source === 'string' && source.trim() ? source : row.user_id;
-  if (row.action === 'app_record_mirror_nominate') return row.user_id === ctx.user_id;
-  return requester === ctx.user_id || ctx.role === 'owner' || ctx.role === 'admin';
-}
-
 async function ownApproval(
   ctx: HumanToolContext,
   actionId: string,
   access: 'read' | 'write' = 'read',
 ) {
-  const canReview = humanApprovalReviewerSql(ctx);
+  const canReview = ctx.role === 'owner' || ctx.role === 'admin'
+    ? sql`true`
+    : sql`COALESCE(
+        ${agentActions.params}->>'source_user_id',
+        ${agentActions.params}->>'origin_user_id',
+        ${agentActions.user_id}
+      ) = ${ctx.user_id}`;
   const [row] = await db.select().from(agentActions).where(and(
     eq(agentActions.id, actionId),
     eq(agentActions.org_id, ctx.org_id),
@@ -3628,25 +3600,25 @@ export async function humanApprovalList(args: { status?: string; limit?: number 
   const scopeError = requireScope(ctx, 'read:workspace'); if (scopeError) return scopeError;
   const status = args.status ?? 'pending';
   if (!['pending', 'approved', 'rejected', 'expired', 'all'].includes(status)) return errorResult('status must be pending, approved, rejected, expired, or all');
-  const canReview = humanApprovalReviewerSql(ctx);
+  const canReview = ctx.role === 'owner' || ctx.role === 'admin'
+    ? sql`true`
+    : sql`COALESCE(${agentActions.params}->>'source_user_id', ${agentActions.params}->>'origin_user_id', ${agentActions.user_id}) = ${ctx.user_id}`;
   const rows = await db.select().from(agentActions).where(and(eq(agentActions.org_id, ctx.org_id), visibleModuleActionSql(ctx.role, { userId: ctx.user_id, orgId: ctx.org_id }), visibleModuleActionScopeSql(ctx.scopes, 'read'), canReview, status === 'all' ? sql`true` : eq(agentActions.approval_status, status as any))).orderBy(desc(agentActions.created_at)).limit(Math.min(Math.max(1, args.limit ?? 50), 100));
-  return textResult(rows.map((row) => ({ ...row, actionable: humanApprovalActionable(row, ctx), url: '/inbox?lane=needs_you' })));
+  return textResult(rows.map((row) => ({ ...row, url: '/inbox?lane=needs_you' })));
 }
 
 export async function humanApprovalGet(args: { action_id?: string }, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:workspace'); if (scopeError) return scopeError;
   if (!args.action_id) return errorResult('action_id is required');
   const row = await ownApproval(ctx, args.action_id);
-  return row ? textResult({ ...row, actionable: humanApprovalActionable(row, ctx), url: '/inbox?lane=needs_you' }) : errorResult('Approval not found');
+  return row ? textResult({ ...row, url: '/inbox?lane=needs_you' }) : errorResult('Approval not found');
 }
 
 export async function humanApprovalApprove(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'write:workspace'); if (scopeError) return scopeError;
   if (typeof args.action_id !== 'string') return errorResult('action_id is required');
   return withIdempotency('approval_approve', args, ctx, async () => {
-    const approval = await ownApproval(ctx, args.action_id as string, 'write');
-    if (!approval) return errorResult('Approval not found');
-    if (!humanApprovalActionable(approval, ctx)) return errorResult('This approval is view only for you: only the requester or an org owner/admin can approve it.');
+    if (!(await ownApproval(ctx, args.action_id as string, 'write'))) return errorResult('Approval not found');
     const result = await approveAction(args.action_id as string, ctx.user_id);
     return result.status === 'error' ? errorResult(`${result.code}: ${result.message}`) : textResult(result);
   });
@@ -3656,9 +3628,7 @@ export async function humanApprovalReject(args: Record<string, unknown>, ctx: Hu
   const scopeError = requireScope(ctx, 'write:workspace'); if (scopeError) return scopeError;
   if (typeof args.action_id !== 'string') return errorResult('action_id is required');
   return withIdempotency('approval_reject', args, ctx, async () => {
-    const approval = await ownApproval(ctx, args.action_id as string, 'write');
-    if (!approval) return errorResult('Approval not found');
-    if (!humanApprovalActionable(approval, ctx)) return errorResult('This approval is view only for you: only the requester or an org owner/admin can reject it.');
+    if (!(await ownApproval(ctx, args.action_id as string, 'write'))) return errorResult('Approval not found');
     const result = await rejectAction(args.action_id as string, ctx.user_id, typeof args.reason === 'string' ? args.reason : undefined);
     return result.status === 'error' ? errorResult(`${result.code}: ${result.message}`) : textResult(result);
   });

@@ -8,13 +8,10 @@ import {
   spaces,
   spaceMembers,
   messages,
-  agentActionApprovers,
   agentActions,
   agentEmployees,
-  users,
 } from '@deft/db/schema';
 import { visibleModuleActionSql } from '../lib/module-action-visibility.js';
-import { isApprovalResolverAction } from '../lib/agent-approval-resolver.js';
 
 export const inboxRoutes = new Hono();
 
@@ -44,8 +41,6 @@ export type InboxItem = {
     action: string;
     params: Record<string, unknown>;
     approval_tier: 'auto' | 'quick' | 'full';
-    /** False when the caller can see the approval but the approval route will not let them act on it. */
-    actionable: boolean;
     agent_employee_id: string | null;
     employee_name: string | null;
     employee_slug: string | null;
@@ -182,76 +177,12 @@ function reviewableActionSql(user: { id: string; org_id: string; role?: string }
   return and(
     visibleCaptureActionSql(user),
     visibleModuleActionSql(user.role, { userId: user.id, orgId: user.org_id }),
-    // The requester, or an approver assigned to the action. The shared
-    // predicate above keeps a guest requester-only.
-    sql`(
-      COALESCE(
-        ${agentActions.params}->>'source_user_id',
-        ${agentActions.params}->>'origin_user_id',
-        ${agentActions.user_id}
-      ) = ${user.id}
-      OR EXISTS (
-        SELECT 1 FROM ${agentActionApprovers}
-        WHERE ${agentActionApprovers.action_id} = ${agentActions.id}
-          AND ${agentActionApprovers.org_id} = ${user.org_id}
-          AND ${agentActionApprovers.user_id} = ${user.id}
-      )
-    )`,
+    sql`COALESCE(
+      ${agentActions.params}->>'source_user_id',
+      ${agentActions.params}->>'origin_user_id',
+      ${agentActions.user_id}
+    ) = ${user.id}`,
   );
-}
-
-/**
- * The approval route's own reviewer gate (routes/agent.ts reviewableActionSql):
- * an assigned approver, or, for an action with no assigned approvers, its
- * requester or an owner/admin when the requester is not an active human member.
- */
-function webApprovalGateSql(user: { id: string; org_id: string; role?: string }) {
-  const canReviewOrgActions = user.role === 'owner' || user.role === 'admin';
-  return sql<boolean>`(
-    EXISTS (
-      SELECT 1 FROM ${agentActionApprovers}
-      WHERE ${agentActionApprovers.action_id} = ${agentActions.id}
-        AND ${agentActionApprovers.org_id} = ${user.org_id}
-        AND ${agentActionApprovers.user_id} = ${user.id}
-    )
-    OR (
-      NOT EXISTS (SELECT 1 FROM ${agentActionApprovers} WHERE ${agentActionApprovers.action_id} = ${agentActions.id})
-      AND (
-        COALESCE(${agentActions.params}->>'source_user_id', ${agentActions.params}->>'origin_user_id', ${agentActions.user_id}) = ${user.id}
-        OR (
-          ${canReviewOrgActions}
-          AND NOT EXISTS (
-            SELECT 1 FROM ${users}
-            INNER JOIN org_members inbox_review_om
-              ON inbox_review_om.user_id = ${users.id}
-              AND inbox_review_om.org_id = ${agentActions.org_id}
-              AND inbox_review_om.is_active = true
-            WHERE ${users.id} = COALESCE(${agentActions.params}->>'source_user_id', ${agentActions.params}->>'origin_user_id', ${agentActions.user_id})
-              AND ${users.is_agent} = false
-              AND ${users.kind} = 'human'
-          )
-        )
-      )
-    )
-  )`;
-}
-
-/**
- * Whether the caller can approve or reject through the web route: its gate
- * above, and for resolver-owned actions the resolver's own rule (the
- * requester or an owner/admin; only the owning user for a record mirror).
- */
-function approvalActionable(
-  row: { action: string; user_id: string; params: unknown; web_gate: boolean },
-  user: { id: string; role?: string },
-): boolean {
-  if (!row.web_gate) return false;
-  if (!isApprovalResolverAction(row.action)) return true;
-  if (row.action === 'app_record_mirror_nominate') return row.user_id === user.id;
-  const params = row.params && typeof row.params === 'object' && !Array.isArray(row.params) ? row.params as Record<string, unknown> : {};
-  const source = params.source_user_id ?? params.origin_user_id;
-  const requester = typeof source === 'string' && source.trim() ? source : row.user_id;
-  return requester === user.id || user.role === 'owner' || user.role === 'admin';
 }
 
 inboxRoutes.get('/', async (c) => {
@@ -367,8 +298,6 @@ inboxRoutes.get('/', async (c) => {
       action: agentActions.action,
       params: agentActions.params,
       action_source: agentActions.source,
-      user_id: agentActions.user_id,
-      web_gate: webApprovalGateSql(user),
       approval_tier: agentActions.approval_tier,
       created_at: agentActions.created_at,
       agent_employee_id: agentActions.agent_employee_id,
@@ -415,7 +344,6 @@ inboxRoutes.get('/', async (c) => {
           employee_slug: r.employee_slug,
           employee_avatar: r.employee_avatar,
           proposer: isCapture || !r.agent_employee_id ? 'defty' : 'employee',
-          actionable: approvalActionable(r, user),
         },
       };
     });

@@ -137,32 +137,30 @@ test('W2a3-2c: legacy MCP action status answers only the key owner\'s own action
   assert.equal((await own.json() as { id: string }).id, actionId);
 });
 
-test('W2a3-2d: human MCP approval tools reach an assigned approver; others stay outside', async (t) => {
+test('W2a3-2d: human MCP approval tools list and open approvals for the requester and owners/admins only', async (t) => {
   if (unavailable) return t.skip(unavailable);
   const { humanApprovalList, humanApprovalGet } = await import('../src/lib/mcp-tools/human.js');
   const ctx = (viewer: string) => ({ org_id: orgId, user_id: viewer, role: roles[viewer]!, scopes: ['read:workspace', 'write:workspace'] });
   const listed = async (viewer: string) => JSON.stringify(await humanApprovalList({ status: 'pending' }, ctx(viewer)));
   const got = async (viewer: string) => (await humanApprovalGet({ action_id: actionId }, ctx(viewer))).isError !== true;
-  assert.equal(has(await listed(ids.approver), actionId), true, 'an assigned approver lists the approval');
-  assert.equal(await got(ids.approver), true, 'an assigned approver reads the approval');
-  assert.equal(has(await listed(ids.peer), actionId), false);
-  assert.equal(await got(ids.peer), false);
-  assert.equal(has(await listed(ids.guestApprover), actionId), false, 'a guest approver stays requester-only');
-  assert.equal(await got(ids.guestApprover), false);
-  assert.equal(await got(ids.requester), true);
+  for (const viewer of [ids.requester, ids.admin]) {
+    assert.equal(has(await listed(viewer), actionId), true);
+    assert.equal(await got(viewer), true);
+  }
+  for (const viewer of [ids.approver, ids.peer, ids.guestApprover]) {
+    assert.equal(has(await listed(viewer), actionId), false);
+    assert.equal(await got(viewer), false);
+  }
 });
-
-test('W2a3-2e: the legacy inbox approval filter lists approvals for their assigned approver', async (t) => {
+test('W2a3-2e: the legacy inbox approval filter lists approvals for their requester only', async (t) => {
   if (unavailable) return t.skip(unavailable);
   const read = async (viewer: string) => {
     const response = await request(viewer, '/api/inbox', '?kind=pending_approval');
     assert.equal(response.status, 200, await response.clone().text());
     return JSON.stringify(await response.json());
   };
-  assert.equal(has(await read(ids.approver), actionId), true);
   assert.equal(has(await read(ids.requester), actionId), true);
-  assert.equal(has(await read(ids.peer), actionId), false);
-  assert.equal(has(await read(ids.guestApprover), actionId), false);
+  for (const viewer of [ids.approver, ids.peer, ids.guestApprover]) assert.equal(has(await read(viewer), actionId), false);
 });
 
 const itemOf = async (viewer: string) => (await client!.query(
@@ -212,40 +210,7 @@ test('W2a3-R5: backfill does not create approval items outside the viewer\'s cur
   assert.equal(rows[0].n, 0);
 });
 
-test('W2a3-R8: MCP approval tools mark approvals the caller cannot act on as view only and do not act on them', async (t) => {
-  if (unavailable) return t.skip(unavailable);
-  const { humanApprovalList, humanApprovalGet, humanApprovalApprove, humanApprovalReject } = await import('../src/lib/mcp-tools/human.js');
-  const payload = (result: { content: Array<{ text: string }> }) => JSON.parse(result.content[0]!.text);
-  const listed = (payload(await humanApprovalList({ status: 'pending' }, mcpCtx(ids.approver)) as any) as Array<{ id: string; actionable: boolean }>).find((row) => row.id === actionId)!;
-  assert.equal(listed.actionable, false);
-  assert.equal((payload(await humanApprovalGet({ action_id: actionId }, mcpCtx(ids.approver)) as any) as { actionable: boolean }).actionable, false);
-  for (const act of [humanApprovalApprove, humanApprovalReject]) {
-    const result = await act({ action_id: actionId, idempotency_key: randomUUID() }, mcpCtx(ids.approver));
-    assert.equal(result.isError, true);
-    assert.match(JSON.stringify(result), /view only/i);
-  }
-  const [row] = (await client!.query('SELECT approval_status FROM agent_actions WHERE id=$1', [actionId])).rows;
-  assert.equal(row.approval_status, 'pending');
-  assert.equal((payload(await humanApprovalGet({ action_id: actionId }, mcpCtx(ids.requester)) as any) as { actionable: boolean }).actionable, true);
-  assert.equal((payload(await humanApprovalGet({ action_id: actionId }, mcpCtx(ids.admin)) as any) as { actionable: boolean }).actionable, true);
-});
-
-test('W2a3-R8: inbox approvals say whether the web approval route lets the caller act', async (t) => {
-  if (unavailable) return t.skip(unavailable);
-  const resolverAction = randomUUID();
-  await client!.query(`INSERT INTO agent_actions(id,org_id,user_id,action,params,approval_tier,approval_status,source)
-    VALUES($1,$2,$3,'task_create',$4,'quick','pending','mcp')`, [resolverAction, orgId, ids.requester, JSON.stringify({ title: 'Resolver-owned' })]);
-  await client!.query('INSERT INTO agent_action_approvers(id,org_id,action_id,user_id) VALUES($1,$2,$3,$4)', [randomUUID(), orgId, resolverAction, ids.approver]);
-  const items = async (viewer: string) => ((await (await request(viewer, '/api/inbox', '?kind=pending_approval')).json()) as { items: Array<{ approval?: { action_id: string; actionable: boolean } }> })
-    .items.flatMap((item) => item.approval ? [item.approval] : []);
-  const approverItems = await items(ids.approver);
-  assert.equal(approverItems.find((item) => item.action_id === actionId)?.actionable, true, 'an assigned approver acts on a Defty action through the web route');
-  assert.equal(approverItems.find((item) => item.action_id === resolverAction)?.actionable, false, 'resolver-owned approvals accept only the requester or an owner/admin');
-  const requesterItems = await items(ids.requester);
-  assert.equal(requesterItems.find((item) => item.action_id === actionId)?.actionable, false, 'assigned approvers, not the requester, review an action that has them');
-});
-
-test('W2a3-R8: web approval route facts — an assigned approver passes the route gate, the resolver accepts only requester or owner/admin', async (t) => {
+test('W2a3-R3-3: the web approval route lets an assigned approver act on a Defty action; the resolver accepts only the requester or an owner/admin', async (t) => {
   if (unavailable) return t.skip(unavailable);
   routes['/api/agent'] ??= (await import('../src/routes/agent.js')).agentRoutes;
   const make = async (action: string) => {
