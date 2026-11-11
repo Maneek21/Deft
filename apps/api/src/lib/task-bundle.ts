@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import { db } from './db.js';
 import { tasks, taskActivity, projects, taskRelationships } from '@deft/db/schema';
 import { reserveTaskNumberRange } from './task-numbering.js';
@@ -64,6 +64,13 @@ export type TaskBundleCreateResult = {
   parent: CreatedTaskSummary;
   subtasks: CreatedTaskSummary[];
   allTasks: CreatedTaskSummary[];
+  /**
+   * True when `actionId` had already committed a bundle and that bundle was
+   * returned instead of creating a new one. The earlier attempt may have
+   * stopped before its post-commit side effects, so callers repeat them and
+   * make them idempotent per action (assignee dispatch is deduplicated).
+   */
+  reused: boolean;
 };
 
 type NormalizedSubtask = {
@@ -182,6 +189,17 @@ export async function createTaskBundle(params: TaskBundleCreateParams): Promise<
   const subtasks = await normalizeSubtasksForOrg(params.subtasks, params.orgId, params.priority);
   const count = 1 + subtasks.length;
   const created = await db.transaction(async (tx) => {
+    // One agent action creates at most one bundle. A retry of an action
+    // whose bundle already committed (a failure after commit, approved
+    // again) returns that bundle instead of
+    // creating a duplicate. The lock serialises concurrent retries.
+    if (params.actionId) {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(
+        ${`task-bundle:${params.orgId}:${params.actionId}`}, 0
+      ))`);
+      const existing = await loadCommittedTaskBundleRows(tx, params.orgId, params.actionId);
+      if (existing) return { ...existing, reused: true };
+    }
     const range = await reserveTaskNumberRange({
       projectId: params.projectId,
       orgId: params.orgId,
@@ -269,7 +287,7 @@ export async function createTaskBundle(params: TaskBundleCreateParams): Promise<
       if (!authorized) throw new Error('task_create: source is no longer accessible');
     }
 
-    return { parent, children: childRows };
+    return { parent, children: childRows, reused: false };
   });
 
   const parentSummary = toCreatedTaskSummary(created.parent, project.prefix);
@@ -278,7 +296,37 @@ export async function createTaskBundle(params: TaskBundleCreateParams): Promise<
     parent: parentSummary,
     subtasks: subtaskSummaries,
     allTasks: [parentSummary, ...subtaskSummaries],
+    reused: created.reused,
   };
+}
+
+type TaskRow = typeof tasks.$inferSelect;
+type TaskBundleExecutor = Pick<typeof db, 'select'>;
+
+/**
+ * The bundle an agent action committed, found through the `created` activity
+ * rows the bundle transaction writes with `agent_action_id`. Org-scoped.
+ */
+async function loadCommittedTaskBundleRows(
+  executor: TaskBundleExecutor,
+  orgId: string,
+  actionId: string,
+): Promise<{ parent: TaskRow; children: TaskRow[] } | null> {
+  const rows = await executor
+    .select({ task: tasks })
+    .from(tasks)
+    .innerJoin(taskActivity, and(
+      eq(taskActivity.task_id, tasks.id),
+      eq(taskActivity.org_id, orgId),
+      eq(taskActivity.agent_action_id, actionId),
+      eq(taskActivity.action, 'created'),
+    ))
+    .where(eq(tasks.org_id, orgId))
+    .orderBy(asc(tasks.number));
+  const created = [...new Map(rows.map(({ task }) => [task.id, task])).values()];
+  const parent = created.find((task) => !created.some((other) => other.id === task.parent_task_id));
+  if (!parent) return null;
+  return { parent, children: created.filter((task) => task.parent_task_id === parent.id) };
 }
 
 function normalizeSubtaskInputs(subtasks: TaskBundleSubtaskInput[] | null | undefined) {
