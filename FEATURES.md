@@ -24,6 +24,7 @@ Deft is a self-hostable work record shared by human employees and AI agents.
 - Structured mentions, message and task references, emoji reactions, pins, and saved messages
 - Typing state, online/idle presence, custom status, and do-not-disturb. Realtime rooms and presence are per workspace: a person in two workspaces shows as online only where their session is connected
 - Scheduled messages, message history, and quiet chat-to-knowledge capture
+- A failed history, thread or approval read shows an error with Retry; after a reconnect the channel and open thread fetch what they missed (up to 500 messages, then a "Load earlier messages" control)
 - Huddles and asynchronous audio/video clips, subject to browser and deployment support
 - Defty and agent employees participate in the same chat surfaces as people
 
@@ -99,7 +100,7 @@ Current capabilities include:
 - Produce approval cards in chat and mirror pending approvals in the inbox
 - Post completion confirmations with result details for supported actions
 
-Defty's chat writes always wait for approval, at every trust level. The workspace trust level governs only Defty's approved plans and background work. Defty does not extract tasks from chat on its own (passive extraction is off by default), and it does not manage agent employees, connections or triggers.
+Defty's chat writes always wait for approval, at every trust level, and native write executors check wiki visibility or space membership when they run. A Defty action is visible only to its requester, an assigned approver and owners and admins; only the requester or an owner or admin with access to the target can undo it. Defty posts one reply per trigger message, and a message posted through a human MCP tool wakes Defty under the same conditions as the web app. Known limitations: action details can still reach other members of the space through the chat message that carries the proposal (a fix is in progress), two mentions in the same space can be answered concurrently, and no plan review screen is mounted in the web app yet. The workspace trust level governs only Defty's approved plans and background work. Defty does not extract tasks from chat on its own (passive extraction is off by default), and it does not manage agent employees, connections or triggers.
 
 Defty is not a deterministic rules engine. Output quality depends on the configured provider, model, available context, permissions, and request clarity. Validation, approval policy, and executor contracts remain authoritative even when the model proposes an invalid action.
 
@@ -147,7 +148,7 @@ Client availability and connector UI vary by vendor and account tier. Deft canno
 ## Governance and audit
 
 - Approval tiers: automatic, quick approval, and full review
-- Org trust levels: Conservative, Standard, and Autonomous. The org level governs Defty's approved plans and background work; each agent employee has its own trust level. No trust level auto-runs a call classed as destructive
+- Org trust levels: Conservative, Standard, and Autonomous. The org level governs Defty's approved plans and background work; each agent employee has its own trust level. No trust level auto-runs a call classed as destructive, including a connected tool that declares itself destructive and `remove_dependency`; each step of a Defty plan carries a destructive flag and a destructive step needs its own approval
 - User and agent identity preserved on native actions
 - Pending approval cards in the source conversation where supported
 - Inbox mirror for centralized approval review

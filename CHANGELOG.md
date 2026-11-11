@@ -48,6 +48,36 @@ Agents and approvals:
   (`EMPLOYEE_UNHEALTHY`, `STORM_DETECTED` or `DAILY_ACTION_LIMIT`) before any
   delivery is attempted.
 - A thread reply must name a parent message in the target space.
+- Only the requester of an action, or an owner or admin who can still see its
+  target, can undo it. A Defty action is visible only to its requester, an
+  assigned approver and owners and admins; guests see only their own.
+- Native writes (wiki, canvas, knowledge, thread reply, space notes, posting a
+  message) check wiki visibility or space membership when they run.
+- A connected tool that declares itself destructive always needs approval, and
+  destructive tool names are matched regardless of case. `remove_dependency` is
+  classed destructive. A destructive action held for approval is stored at the
+  full tier, so it shows in pending approvals and the inbox.
+- Each step of a Defty plan carries a server-computed destructive flag, and a
+  destructive step needs its own approval when the plan runs.
+- Defty posts exactly one reply per trigger message, and a cancelled or
+  lease-lost reply job does not publish. A database wait timeout retries the
+  reply instead of publishing a fallback.
+- Messages posted through the human MCP tools (`message_post`, `send_message`)
+  wake Defty under the same conditions as the web app, and their @mentions are
+  normalised the same way. A thread-follow wake is saved with the message.
+- Forwarding a deleted message is refused.
+- A retried meeting-prep run does not notify twice. A new socket for an idle user
+  broadcasts that user as online.
+- Chat (web): Enter sends after Escape closes the @ or # popup. A failed history,
+  thread or approval read shows an error with Retry. After a reconnect the channel
+  and the open thread fetch what they missed (up to 500 messages, then a "Load
+  earlier messages" control). "Ask Defty" reports a failure instead of doing
+  nothing. Presence snapshots replace the online list. Members see an employee's
+  trust level read-only; owners and admins can lower it.
+- Apps developer preview: the runtime authority check for a resource observation
+  is decided in one transaction.
+- Docs: the Apps flags section of `docs/self-hosting.md` documents flag
+  dependencies and the developer preview profile.
 
 Workspace isolation:
 
