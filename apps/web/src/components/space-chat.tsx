@@ -76,7 +76,9 @@ import { inlineApprovalDisplayContent } from '@/lib/agent-approval-copy';
 import {
   ConversationReads,
   applyHistoryRead,
+  cursorAfterMergingRead,
   mergeMessagesById,
+  serverNextCursor,
   oldestCreatedAt,
   oldestHistoryCursor,
   readHistoryBackTo,
@@ -944,6 +946,15 @@ export function SpaceChat({
   // The server's next_cursor for the page before the oldest page read, kept
   // apart from the shown list (whose millisecond timestamps can tie).
   const earlierCursorRef = useRef<string | null>(null);
+  // Whether a history read has set earlierCursorRef for this space yet.
+  const earlierKnownRef = useRef(false);
+  // Set while a Load earlier read is in flight (state lags a fast double click).
+  const loadingEarlierRef = useRef(false);
+  const setEarlierCursor = useCallback((cursor: string | null) => {
+    earlierCursorRef.current = cursor;
+    earlierKnownRef.current = true;
+    setHasEarlierHistory(cursor !== null);
+  }, []);
   // A catch-up read after a reconnect failed: shown messages stay, and the
   // catch-up stays pending until a read succeeds.
   const [catchUpError, setCatchUpError] = useState(false);
@@ -977,10 +988,11 @@ export function SpaceChat({
     const reads = historyReadsRef.current;
     // Not while a load, retry or catch-up is in flight: that read may replace
     // the window this page would be cut from.
-    if (reads.replacingReadInFlight) return;
+    if (reads.replacingReadInFlight || loadingEarlierRef.current) return;
     // A side read: it does not supersede the others, but applies only while
     // still latest, and live events during it are replayed onto its rows.
     const ticket = reads.begin({ supersede: false });
+    loadingEarlierRef.current = true;
     setLoadingEarlier(true);
     try {
       const before = earlierCursorRef.current ?? oldestHistoryCursor(messagesRef.current) ?? undefined;
@@ -990,15 +1002,15 @@ export function SpaceChat({
       // view; this older page would then sit beside it as a stray segment.
       if (!visit.isCurrent() || reads !== historyReadsRef.current || !reads.isLatest(ticket)) return;
       setMessages((prev) => replayMessageEvents(mergeMessagesById(prev, page.messages, { earlier: true }), events));
-      earlierCursorRef.current = page.nextCursor;
-      setHasEarlierHistory(page.nextCursor !== null);
+      setEarlierCursor(page.nextCursor);
     } catch {
       if (visit.isCurrent() && reads.isLatest(ticket)) setCmdToast('Could not load earlier messages. Try again.');
     } finally {
       reads.settle(ticket);
+      loadingEarlierRef.current = false;
       setLoadingEarlier(false);
     }
-  }, [spaceId, sessionCacheScope]);
+  }, [spaceId, sessionCacheScope, setEarlierCursor]);
 
   useEffect(() => {
     const visit = messageEventScopeRef.current.capture(spaceId, sessionCacheScope);
@@ -1006,6 +1018,8 @@ export function SpaceChat({
     setHistoryStatus('loading');
     setHasEarlierHistory(false);
     earlierCursorRef.current = null;
+    earlierKnownRef.current = false;
+    loadingEarlierRef.current = false;
     setCatchUpError(false);
     historyReadsRef.current.dispose();
     const reads = new ConversationReads<MessageEvent<Message>>();
@@ -1034,6 +1048,7 @@ export function SpaceChat({
       setMessages(previous => visit.isCurrent()
         ? replayMessageEvents(mergeMessagesById(previous, loaded), events)
         : previous);
+      setEarlierCursor(serverNextCursor(data));
       setHistoryStatus('ready');
       if (highlightMessageId) {
         // Scroll to the highlighted message after render
@@ -1059,7 +1074,7 @@ export function SpaceChat({
       if (!cancelled && visit.isCurrent() && reads.isLatest(ticket)) setHistoryStatus('error');
     }).finally(() => { reads.settle(ticket); releaseLoad(); });
     return () => { cancelled = true; visit.dispose(); };
-  }, [spaceId, sessionCacheScope, scrollToBottom, highlightMessageId, trackReplacingRead]);
+  }, [spaceId, sessionCacheScope, scrollToBottom, highlightMessageId, trackReplacingRead, setEarlierCursor]);
 
   // Retry a failed history read without resetting the conversation: shown
   // messages (for example ones the socket delivered) and the draft stay, and
@@ -1082,6 +1097,7 @@ export function SpaceChat({
       if (!visit.isCurrent() || !reads.isLatest(ticket)) return;
       const loaded: Message[] = data.messages || data || [];
       setMessages((prev) => replayMessageEvents(mergeMessagesById(prev, loaded), events));
+      setEarlierCursor(serverNextCursor(data));
       setHistoryStatus('ready');
     } catch {
       if (visit.isCurrent() && reads.isLatest(ticket)) setHistoryStatus('error');
@@ -1090,7 +1106,7 @@ export function SpaceChat({
       releaseRetry();
       setHistoryRetrying(false);
     }
-  }, [spaceId, sessionCacheScope, trackReplacingRead]);
+  }, [spaceId, sessionCacheScope, trackReplacingRead, setEarlierCursor]);
 
   useEffect(() => {
     if (!sessionCacheScope) return;
@@ -1201,17 +1217,18 @@ export function SpaceChat({
         // Page back until the read reaches the oldest shown message (bounded by
         // CATCH_UP_MAX_PAGES), so a long outage leaves no hole and older shown
         // messages get their current content, deletion and thread counts.
-        const read = await readHistoryBackTo<Message>((path: string) => api.get(path), `/api/messages/${spaceId}`, oldestCreatedAt(messagesRef.current));
+        const shownBefore = messagesRef.current;
+        const read = await readHistoryBackTo<Message>((path: string) => api.get(path), `/api/messages/${spaceId}`, oldestCreatedAt(shownBefore));
         const events = reads.settle(ticket);
         if (!visit.isCurrent() || !reads.isLatest(ticket)) return 'superseded';
         setMessages((prev) => visit.isCurrent()
           ? replayMessageEvents(applyHistoryRead(prev, read), events)
           : prev);
-        if (!read.coversShown) {
-          // The view now starts at the catch-up's oldest page.
-          earlierCursorRef.current = read.nextCursor;
-          setHasEarlierHistory(read.nextCursor !== null);
-        }
+        // A replaced view starts at the catch-up's oldest page; a merged one
+        // keeps the cursor of the oldest range it still shows.
+        setEarlierCursor(read.coversShown
+          ? cursorAfterMergingRead(earlierKnownRef.current, earlierCursorRef.current, shownBefore, read)
+          : read.nextCursor);
         setHistoryStatus('ready');
         setCatchUpError(false);
         return 'ok';
@@ -1252,7 +1269,7 @@ export function SpaceChat({
       socket.off('message:pinned', onMessagePinned);
       socket.off('message:unpinned', onMessageUnpinned);
     };
-  }, [spaceId, sessionCacheScope, user?.id, scrollToBottom, trackReplacingRead]);
+  }, [spaceId, sessionCacheScope, user?.id, scrollToBottom, trackReplacingRead, setEarlierCursor]);
 
   const serializeMentions = (html: string) => html.replace(
     /<span[^>]*data-mention-uuid="([^"]+)"[^>]*data-mention-name="([^"]+)"[^>]*>[^<]*<\/span>/g,

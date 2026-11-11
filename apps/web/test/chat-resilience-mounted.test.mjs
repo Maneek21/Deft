@@ -1016,3 +1016,118 @@ test('W2R2-2: with no popup, Tab in a list item still indents it', async () => {
     await close(page);
   }
 });
+
+// ── W2R3-2: earlier history is reachable from a fresh open and after Retry ──
+
+const loadEarlier = (page) => page.getByRole('button', { name: 'Load earlier messages' });
+// Clicks Load earlier until it is gone (bounded), waiting out each read.
+async function loadAllEarlier(page, maxClicks = 10) {
+  let clicks = 0;
+  for (; clicks < maxClicks; clicks++) {
+    const button = loadEarlier(page);
+    if (await button.count() === 0) break;
+    await page.waitForFunction(() => {
+      const b = [...document.querySelectorAll('button')].find((x) => x.textContent.includes('Load earlier'));
+      return !b || !b.disabled;
+    }, null, { timeout: 4000 });
+    if (await button.count() === 0) break;
+    await button.click();
+    await page.waitForFunction(() => !document.body.textContent.includes('Loading earlier messages'), null, { timeout: 4000 });
+  }
+  return clicks;
+}
+const shownIds = (page) => page.evaluate(() => [...document.querySelectorAll('[data-message-id]')].map((el) => el.getAttribute('data-message-id')));
+
+test('W2R3-2: opening a space with more than one page reaches the very first message, each once', async () => {
+  const page = await open(browser, {
+    harness: 'defty-chat-harness.tsx', url: '/chat?space=s1', override: FAKE_SERVER,
+    setupArg: many(130), setup: (rows) => { window.__srv.channel = rows; },
+  });
+  try {
+    await page.getByText('Missed x 130', { exact: true }).waitFor();
+    assert.equal(await page.getByText('Missed x 080', { exact: true }).count(), 0, 'the first read shows the newest 50');
+    await loadEarlier(page).waitFor();
+    await loadAllEarlier(page);
+    await page.getByText('Missed x 001', { exact: true }).waitFor();
+    const ids = (await shownIds(page)).filter((id) => id.startsWith('x-'));
+    assert.equal(ids.length, 130);
+    assert.equal(new Set(ids).size, 130);
+    assert.equal(await loadEarlier(page).count(), 0, 'no more history: the control is gone');
+  } finally {
+    await close(page);
+  }
+});
+
+test('W2R3-2: after Retry following a failed first read, earlier history is reachable', async () => {
+  const page = await open(browser, {
+    harness: 'defty-chat-harness.tsx', url: '/chat?space=s1', override: FAKE_SERVER,
+    setupArg: many(130), setup: (rows) => { window.__srv.channel = rows; window.__srv.fail.channel = true; },
+  });
+  try {
+    await page.getByText('Could not load messages.').waitFor();
+    await srv(page, () => { window.__srv.fail.channel = false; });
+    await page.getByRole('button', { name: 'Retry' }).first().click();
+    await page.getByText('Missed x 130', { exact: true }).waitFor();
+    await loadEarlier(page).waitFor();
+    await loadAllEarlier(page);
+    await page.getByText('Missed x 001', { exact: true }).waitFor();
+    const ids = (await shownIds(page)).filter((id) => id.startsWith('x-'));
+    assert.equal(new Set(ids).size, 130);
+    assert.equal(ids.length, 130);
+  } finally {
+    await close(page);
+  }
+});
+
+test('W2R3-2: an exact multiple of the page size ends on an empty page and the control disappears', async () => {
+  // 50 on open, then a full page of 100: its cursor is not null, so one more
+  // (empty) read is needed, after which the control goes away.
+  const page = await open(browser, {
+    harness: 'defty-chat-harness.tsx', url: '/chat?space=s1', override: FAKE_SERVER,
+    setupArg: many(150), setup: (rows) => { window.__srv.channel = rows; },
+  });
+  try {
+    await page.getByText('Missed x 150', { exact: true }).waitFor();
+    await loadEarlier(page).click();
+    await page.getByText('Missed x 001', { exact: true }).waitFor();
+    await loadEarlier(page).waitFor();
+    await page.waitForFunction(() => {
+      const b = [...document.querySelectorAll('button')].find((x) => x.textContent.includes('Load earlier'));
+      return b && !b.disabled;
+    }, null, { timeout: 4000 });
+    await loadEarlier(page).click();
+    await loadEarlier(page).waitFor({ state: 'detached' });
+    const cursorReads = await page.evaluate(() => window.__deftApiCalls.filter((c) => c.path.startsWith('/api/messages/s1?') && c.path.includes('cursor=')).length);
+    assert.equal(cursorReads, 2);
+    const ids = (await shownIds(page)).filter((id) => id.startsWith('x-'));
+    assert.equal(ids.length, 150);
+  } finally {
+    await close(page);
+  }
+});
+
+test('W2R3-2: a double click while the earlier page is held fetches one page', async () => {
+  const page = await open(browser, {
+    harness: 'defty-chat-harness.tsx', url: '/chat?space=s1', override: FAKE_SERVER,
+    setupArg: many(130), setup: (rows) => {
+      window.__srv.channel = rows;
+      window.__srv.holdWhen = (path, full) => path === '/api/messages/s1' && full.includes('cursor=');
+    },
+  });
+  try {
+    await page.getByText('Missed x 130', { exact: true }).waitFor();
+    await loadEarlier(page).waitFor();
+    await page.evaluate(() => {
+      const b = [...document.querySelectorAll('button')].find((x) => x.textContent.includes('Load earlier'));
+      b.click();
+      b.click();
+    });
+    await waitHeld(page, 1);
+    await page.waitForTimeout(300);
+    assert.equal(await page.evaluate(() => window.__srv.held.length), 1, 'one earlier read');
+    await release(page, 0);
+    await page.getByText('Missed x 080', { exact: true }).waitFor();
+  } finally {
+    await close(page);
+  }
+});

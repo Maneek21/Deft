@@ -5,6 +5,7 @@ import {
   ConversationReads,
   HISTORY_PAGE_SIZE,
   applyHistoryRead,
+  cursorAfterMergingRead,
   historyCursorOf,
   mergeMessagesById,
   readHistoryBackTo,
@@ -308,4 +309,28 @@ test('W2R3-1: a live message after the load is appended at the end', () => {
   assert.deepEqual(ids(live), ['z', 'a', 'n']);
   const tie = applyMessageEvent(loaded, { type: 'new', message: stored('b', 950) });
   assert.deepEqual(ids(tie), ['z', 'a', 'b'], 'a live message in the same millisecond also goes last');
+});
+
+// ── W2R3-2: Load earlier cursor after a catch-up that merged ───────────────
+
+test('W2R3-2: a merging catch-up keeps the older cursor already held', () => {
+  const shown = [msg('b', 2), msg('c', 3)];
+  const read = { messages: [msg('c', 3), msg('d', 4)], nextCursor: 'cursor-before-c' };
+  assert.equal(cursorAfterMergingRead(true, 'cursor-before-b', shown, read), 'cursor-before-b');
+});
+
+test('W2R3-2: a merging catch-up that reached past the oldest shown message takes its own cursor', () => {
+  const shown = [msg('b', 2), msg('c', 3)];
+  const read = { messages: [msg('a', 1), msg('b', 2), msg('c', 3)], nextCursor: 'cursor-before-a' };
+  assert.equal(cursorAfterMergingRead(true, 'cursor-before-b', shown, read), 'cursor-before-a');
+});
+
+test('W2R3-2: a catch-up that superseded the initial load sets the cursor', () => {
+  assert.equal(cursorAfterMergingRead(false, null, [], { messages: [msg('a', 1)], nextCursor: 'cursor-before-a' }), 'cursor-before-a');
+  assert.equal(cursorAfterMergingRead(false, null, [], { messages: [msg('a', 1)], nextCursor: null }), null);
+});
+
+test('W2R3-2: with no older history known, a catch-up that does not reach past it keeps none', () => {
+  const shown = [msg('a', 1), msg('b', 2)];
+  assert.equal(cursorAfterMergingRead(true, null, shown, { messages: [msg('b', 2), msg('c', 3)], nextCursor: 'cursor-before-b' }), null);
 });

@@ -184,6 +184,12 @@ export function historyCursorOf(message: { id: string; created_at: string }): st
   return `${message.created_at}|${message.id}`;
 }
 
+/** A history response's next_cursor; null when it is missing or empty (no older history). */
+export function serverNextCursor(data: unknown): string | null {
+  const cursor = data && typeof data === 'object' && !Array.isArray(data) ? (data as { next_cursor?: unknown }).next_cursor : null;
+  return typeof cursor === 'string' && cursor ? cursor : null;
+}
+
 /**
  * Read one page of top-level history, oldest first: the latest page, or the
  * page before `before` (a history cursor, normally the server's next_cursor).
@@ -196,7 +202,7 @@ export async function readHistoryPage<T extends HistoryMessage>(get: Get, basePa
   if (!res.ok) throw new Error(`History read failed (${res.status})`);
   const data = await res.json() as { messages?: T[]; next_cursor?: unknown } | T[] | null;
   const list = Array.isArray(data) ? data : data?.messages;
-  const nextCursor = !Array.isArray(data) && typeof data?.next_cursor === 'string' && data.next_cursor ? data.next_cursor : null;
+  const nextCursor = serverNextCursor(data);
   return { messages: Array.isArray(list) ? [...list] : [], nextCursor };
 }
 
@@ -264,3 +270,25 @@ export function oldestHistoryCursor(list: ReadonlyArray<{ id: string; created_at
   return oldest ? historyCursorOf(oldest) : null;
 }
 
+/**
+ * The Load earlier cursor after a catch-up that merged into the view (it
+ * reached back to what was shown). The cursor belongs to the oldest range
+ * still shown: the read's own cursor when its oldest message is new to the
+ * view and not newer than the oldest message shown before (the read reached
+ * past it), or when pagination was not known yet (the catch-up superseded
+ * the initial load); otherwise the cursor already held, which is older.
+ */
+export function cursorAfterMergingRead(
+  known: boolean,
+  held: string | null,
+  shownBefore: ReadonlyArray<{ id: string; created_at: string }>,
+  read: Pick<HistoryRead<{ id: string; created_at: string }>, 'messages' | 'nextCursor'>,
+): string | null {
+  if (!known) return read.nextCursor;
+  const first = read.messages[0];
+  if (!first) return held;
+  if (shownBefore.some((message) => message.id === first.id)) return held;
+  const oldestShown = oldestOf(shownBefore);
+  if (oldestShown && timeOf(first) > timeOf(oldestShown)) return held;
+  return read.nextCursor;
+}
