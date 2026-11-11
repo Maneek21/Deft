@@ -268,3 +268,10 @@ test('W2a3-R1: MCP fetch of a message gives run details only to the action audie
   assert.deepEqual(canaries(await fetchAs(ids.admin)), ['CANARY-A-GRAPH', 'CANARY-A-TOOL-ARG']);
 });
 
+test('W2a3-R2: MCP thread_fetch projects the parent and every reply for the viewer', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const { humanThreadFetch } = await import('../src/lib/mcp-tools/human.js');
+  const threadAs = async (viewer: string) => JSON.stringify(await humanThreadFetch({ parent_message_id: triggerId }, mcpCtx(viewer)));
+  assert.deepEqual(canaries(await threadAs(ids.peer)), []);
+  assert.deepEqual(canaries(await threadAs(ids.requester)), ['CANARY-T-GRAPH', 'CANARY-T-TOOL-ARG']);
+});

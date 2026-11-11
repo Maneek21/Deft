@@ -2565,7 +2565,9 @@ export async function humanThreadFetch(args: { parent_message_id?: string; limit
   const [parent] = await db.select().from(messages).where(and(eq(messages.id, args.parent_message_id), eq(messages.org_id, ctx.org_id), eq(messages.is_deleted, false))).limit(1);
   if (!parent || !(await userCanSeeSpace(ctx, parent.space_id))) return errorResult('thread_fetch: thread not visible');
   const replies = await db.select().from(messages).where(and(eq(messages.parent_id, parent.id), eq(messages.org_id, ctx.org_id), eq(messages.is_deleted, false))).orderBy(desc(messages.created_at)).limit(Math.min(Math.max(1, args.limit ?? 100), 200));
-  return textResult({ parent, replies: replies.reverse() });
+  const [projectedParent, ...projectedReplies] = await projectMessagesForViewer(
+    { id: ctx.user_id, org_id: ctx.org_id, role: ctx.role }, [parent, ...replies.reverse()]);
+  return textResult({ parent: projectedParent, replies: projectedReplies });
 }
 
 export async function humanMemberList(args: { query?: string; include_agents?: boolean; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
