@@ -21,6 +21,7 @@ import {
   claimPendingApproval,
   executeClaimedApproval,
   finalizeApprovalOutcome,
+  recoverInterruptedApproval,
   recoverInterruptedApprovals,
   settleInterruptedApproval,
 } from '../src/lib/agent-action-execution-lease.js';
@@ -554,4 +555,66 @@ test('C07-l: a request whose lease dropped records no outcome and leaves the act
   assert.equal(settled.status, 200, await settled.clone().text());
   assert.equal(await receipts(), 1);
   assert.equal(await decisions(), 1);
+});
+
+test('C07-m: a resolver approval whose lease dropped answers 202 and leaves the action for recovery', { skip: !canRun }, async () => {
+  const employeeId = randomUUID();
+  const shadowId = randomUUID();
+  await f.client.query(
+    `INSERT INTO users (id, email, name, kind, is_agent, email_verified) VALUES ($1, $2, $3, 'agent', true, true)`,
+    [shadowId, `c07m-agent-${shadowId}@example.test`, `C07m agent ${shadowId.slice(0, 4)}`],
+  );
+  await f.client.query('INSERT INTO org_members (id, org_id, user_id, role, is_active) VALUES ($1, $2, $3, $4, true)',
+    [randomUUID(), f.orgId, shadowId, 'member']);
+  await f.client.query(
+    `INSERT INTO agent_employees (id, org_id, user_id, name, slug, role, system_prompt, trust_level, is_byoa, is_active, created_by)
+     VALUES ($1, $2, $3, 'C07m agent', $4, 'project_manager', 'Fixture', 'conservative', true, true, $5)`,
+    [employeeId, f.orgId, shadowId, `c07m-agent-${employeeId.slice(0, 8)}`, f.requesterId],
+  );
+  await f.client.query('UPDATE users SET agent_employee_id = $2 WHERE id = $1', [shadowId, employeeId]);
+  const actionId = randomUUID();
+  await f.client.query(
+    `INSERT INTO agent_actions (id, org_id, user_id, agent_employee_id, source, action, params, approval_tier, approval_status)
+     VALUES ($1, $2, $3, $4, 'mcp', 'task_create', $5::jsonb, 'full', 'pending')`,
+    [actionId, f.orgId, shadowId, employeeId, JSON.stringify({ title: `c07m ${randomUUID()}`, project_id: f.projectId })],
+  );
+  await f.client.query(
+    `INSERT INTO agent_action_approvers (id, org_id, action_id, user_id, decision) VALUES ($1, $2, $3, $4, 'pending')`,
+    [randomUUID(), f.orgId, actionId, f.requesterId],
+  );
+
+  // Block task inserts so the executor waits mid-execution.
+  const locker = new pg.Client({ connectionString: durabilityDatabaseUrl });
+  await locker.connect();
+  await locker.query('BEGIN');
+  await locker.query('LOCK TABLE tasks IN SHARE MODE');
+  let first: Promise<Response> | null = null;
+  try {
+    first = Promise.resolve(approve(actionId));
+    const pid = await waitFor(() => leaseHolderPid(actionId), 'the resolver to hold the execution lease');
+    await waitFor(async () => (await actionRow(actionId)).approval_status === 'approved', 'the claim');
+    await f.client.query('SELECT pg_terminate_backend($1)', [pid]);
+    await waitFor(async () => (await leaseHolderPid(actionId)) === null, 'the lease to be released');
+  } finally {
+    await locker.query('COMMIT');
+    await locker.end();
+  }
+  const late = await first!;
+  assert.equal(late.status, 202, await late.clone().text());
+  const row = await actionRow(actionId);
+  assert.equal(row.approval_status, 'approved');
+  assert.equal(row.executed_at, null);
+  assert.equal((await f.client.query('SELECT count(*)::int AS n FROM action_receipts WHERE action_id = $1', [actionId])).rows[0].n, 0);
+});
+
+test('C07-n: recovery that finds its lease lost reports it and changes nothing', { skip: !canRun }, async () => {
+  const actionId = await interruptedAction({
+    action: 'update_task_status',
+    params: { task_identifier: `${f.prefix}-1`, new_status: 'done' },
+  });
+  const before = await actionRow(actionId);
+  const [row] = (await f.client.query('SELECT * FROM agent_actions WHERE id = $1', [actionId])).rows;
+  const recovery = await recoverInterruptedApproval(row, {}, 'legacy', { lost: true });
+  assert.equal(recovery.kind, 'lease_lost');
+  assert.deepEqual(await actionRow(actionId), before);
 });

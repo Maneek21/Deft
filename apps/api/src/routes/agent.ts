@@ -1297,6 +1297,11 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
       result = await resolveApproveAction(actionId, user.id, { appRunFinalGuard: nativeGuard, ...(user.sid ? { humanWebSessionId: user.sid } : {}) });
     }
     catch (error) { return appHttpFailure(c, error, 'App Run', 'app-runs'); }
+    if (result.status === 'error' && result.code === 'LEASE_LOST') {
+      // The action stays claimed; recovery settles it and the card follows
+      // the server status from there. No bookkeeping happens here.
+      return c.json({ status: 'executing', message: 'execution is already in progress' }, 202);
+    }
     if (result.status === 'error') {
       // A settled failure still gets its decision, Attention, receipt and
       // sibling confirmation. A row that is not settled is left untouched.
@@ -1444,6 +1449,11 @@ async function approveOrdinaryActionLeased(
     // Holding the lease proves no executor is running this approval.
     const recovery = await recoverInterruptedApproval(current, approvalFinaliserHooks, 'legacy', lease);
     if (recovery.kind === 'reexecuted') return ownedApprovalResponse(c, current, user.id, recovery.outcome);
+    if (recovery.kind === 'lease_lost' || lease.lost) {
+      // Claimed and not settled: recovery settles it later. Answer before any
+      // settled-state response or bookkeeping.
+      return c.json({ status: 'executing', message: 'execution is already in progress' }, 202);
+    }
     if (recovery.kind === 'not_interrupted') {
       // Repairs bookkeeping that a crash after the outcome write left undone.
       await finalizeApprovalOutcome({ actionId, orgId: user.org_id, receipt: 'legacy', hooks: approvalFinaliserHooks });

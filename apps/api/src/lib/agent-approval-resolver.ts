@@ -587,7 +587,10 @@ export type ApprovalResolverError =
   | { status: 'error'; code: 'INVALID_STATE'; message: string }
   | { status: 'error'; code: 'UNSUPPORTED_ACTION'; message: string }
   | { status: 'error'; code: 'EMPLOYEE_MISSING'; message: string }
-  | { status: 'error'; code: 'EXECUTE_FAILED'; message: string };
+  | { status: 'error'; code: 'EXECUTE_FAILED'; message: string }
+  /** This request's execution lease dropped: nothing was recorded and the
+   *  approved action is left for recovery to settle. */
+  | { status: 'error'; code: 'LEASE_LOST'; message: string };
 
 /**
  * `decidedElsewhere` is set when the row was already settled or another
@@ -617,7 +620,7 @@ async function actionSourceIsCurrent(actionId: string, readerUserId?: string) {
 /** This request's lease dropped: nothing recorded, the row is left for recovery. */
 const leaseLost = (actionId: string): ApprovalResolverError => ({
   status: 'error',
-  code: 'INVALID_STATE',
+  code: 'LEASE_LOST',
   message: `approval of action ${actionId} lost its execution lease; it will be settled by recovery`,
 });
 
@@ -980,6 +983,7 @@ async function approveActionLocked(
     if (recovery.kind === 'settled_failed') {
       return { status: 'error', code: 'EXECUTE_FAILED', message: APPROVAL_INTERRUPTED_ERROR };
     }
+    if (recovery.kind === 'lease_lost') return leaseLost(actionId);
     return {
       status: 'error',
       code: 'INVALID_STATE',

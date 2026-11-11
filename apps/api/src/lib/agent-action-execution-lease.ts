@@ -478,7 +478,10 @@ export type InterruptedRecovery =
   | { kind: 'settled_failed' }
   | { kind: 'reexecuted'; outcome: OwnedExecutionOutcome }
   /** The claim changed between reading and recovering; nothing was done. */
-  | { kind: 'raced' };
+  | { kind: 'raced' }
+  /** This request's lease dropped; nothing was done and the row is left
+   *  for a later recovery. */
+  | { kind: 'lease_lost' };
 
 /**
  * Recover one ordinary approval whose executor is gone. The caller must hold
@@ -492,12 +495,15 @@ export async function recoverInterruptedApproval(
 ): Promise<InterruptedRecovery> {
   if (!isInterruptedApproval(row, receipt)) return { kind: 'not_interrupted' };
   const token = await currentClaimToken(row.id, row.org_id);
-  if (!token || lease.lost) return { kind: 'raced' };
+  if (lease.lost) return { kind: 'lease_lost' };
+  if (!token) return { kind: 'raced' };
   if (receipt === 'legacy' && isReexecutableAfterInterruption(row.action)) {
     const next = await takeOverInterruptedApproval(row, token);
     if (!next) return { kind: 'raced' };
+    if (lease.lost) return { kind: 'lease_lost' };
     return { kind: 'reexecuted', outcome: await executeClaimedApproval(row, next, hooks, lease) };
   }
+  if (lease.lost) return { kind: 'lease_lost' };
   if (!await settleInterruptedApproval(row, token)) return { kind: 'raced' };
   await finalizeApprovalOutcome({ actionId: row.id, orgId: row.org_id, receipt, hooks });
   return { kind: 'settled_failed' };
