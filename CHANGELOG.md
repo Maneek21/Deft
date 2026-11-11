@@ -84,18 +84,19 @@ Agents and approvals:
   applied. The completion message lists succeeded and failed actions separately,
   and an approved action that failed shows as failed with its error. Task-update
   approval cards list the patched fields, including cleared values, and reminder
-  previews include the date, time and time zone. A decision made elsewhere is
-  shown as already decided, and an App Run approval that is replayed keeps its
-  original approver and time. The dashboard agent widget links to the Inbox for
+  previews include the date, time and time zone. Approval resolution returns
+  the recorded decision when another request has already decided the action, and
+  a replayed App Run approval keeps its original approver and time. The dashboard agent widget links to the Inbox for
   review.
 - Defty chat messages: tool inputs and results, proposed action parameters and
   drafts attached to a Defty message are delivered only to the person who asked,
   an assigned approver, and owners and admins, in the message list, threads, live
   updates, the agent conversation endpoints, the trace export and the MCP read
   tools. Other members of the space see the reply text and tool names. Attention
-  items for approvals follow the same audience. The input, tool calls, reply
-  text and error of a Defty turn are shown to the person who triggered it and to
-  owners and admins; other members see that the turn happened. The space message list pages
+  items for approvals follow the same audience. The employee turn list shows
+  the input, tool calls, reply text and error of a Defty turn to the person who
+  triggered it and to owners and admins; other members see that the turn
+  happened. The space message list pages
   toward older messages, and one plain failure reply is posted when a Defty reply
   job fails for good.
 - Web: the Autonomous confirmation for an agent employee says owners and admins
