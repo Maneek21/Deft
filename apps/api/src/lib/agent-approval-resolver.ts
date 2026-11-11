@@ -1046,7 +1046,8 @@ async function approveActionLocked(
       });
       if (recoveredRow) {
         await ensureApprovedModuleReceipt(recoveredRow);
-        return { status: 'approved', result: committed.mutation };
+        // This request resumed an approval another request had already decided.
+        return { status: 'approved', decidedElsewhere: true, result: committed.mutation };
       }
     }
   }
@@ -1370,6 +1371,8 @@ async function approveActionLocked(
 
   return {
     status: 'approved',
+    // Resuming an already-approved module action: the decision was made by an earlier request.
+    ...(resumesApprovedModule ? { decidedElsewhere: true as const } : {}),
     result: parsedResult,
   };
 }

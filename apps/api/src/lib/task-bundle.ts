@@ -190,8 +190,8 @@ export async function createTaskBundle(params: TaskBundleCreateParams): Promise<
   const count = 1 + subtasks.length;
   const created = await db.transaction(async (tx) => {
     // One agent action creates at most one bundle. A retry of an action
-    // whose bundle already committed (a failure after commit, or an
-    // interrupted approval taken over later) returns that bundle instead of
+    // whose bundle already committed (a failure after commit, approved
+    // again) returns that bundle instead of
     // creating a duplicate. The lock serialises concurrent retries.
     if (params.actionId) {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(
