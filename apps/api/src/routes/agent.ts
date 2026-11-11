@@ -34,7 +34,6 @@ import { ensureDeftyMembership } from '../lib/ensure-defty-membership.js';
 import { DEFTY_EMAIL, DEFTY_SYSTEM_RUNTIME_KIND } from '../lib/defty-identity.js';
 import { ensureAgentConversationSpace } from '../lib/ensure-agent-conversation-space.js';
 import {
-  executeAction,
   isModuleTaskLinkWriteAction,
   resolveTaskIdentifier,
   sanitizeModuleTaskLinkActionParamsForHistory,
@@ -44,18 +43,25 @@ import {
   approveAction as resolveApproveAction,
   isApprovalResolverAction,
   rejectAction as resolveRejectAction,
+  publishSettledApprovalResolution,
   sanitizeModuleActionParamsForReceipt,
   hasHumanMcpBulkProvenance,
 } from '../lib/agent-approval-resolver.js';
 import { generateReceipt } from '../lib/receipts.js';
-import {
-  markWorkIntentConvertedForAction,
-  markWorkIntentDismissedForAction,
-  markWorkIntentFailedForAction,
-} from '../lib/work-intents.js';
+import { markWorkIntentDismissedForAction } from '../lib/work-intents.js';
 import { getIO } from '../socket.js';
 import { formatApprovalConfirmation } from '../lib/agent-action-confirmation.js';
 import { recordActionApproverDecision, resolveAttentionBySource } from '../lib/attention.js';
+import {
+  claimPendingApproval,
+  executeClaimedApproval,
+  finalizeApprovalOutcome,
+  recoverInterruptedApproval,
+  recoverInterruptedApprovals,
+  tryWithApprovalLease,
+  type ApprovalFinaliserHooks,
+  type OwnedExecutionOutcome,
+} from '../lib/agent-action-execution-lease.js';
 import {
   isModuleWriteActionName,
   visibleModuleActionSql,
@@ -1270,6 +1276,11 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
     }
     catch (error) { return appHttpFailure(c, error, 'App Run', 'app-runs'); }
     if (result.status === 'error') {
+      // A settled failure still gets its decision, Attention, receipt and
+      // sibling confirmation. A row that is not settled is left untouched.
+      if (result.code === 'EXECUTE_FAILED') {
+        await finalizeApprovalOutcome({ actionId, orgId: user.org_id, receipt: 'resolver', hooks: approvalFinaliserHooks });
+      }
       const statusCode =
         result.code === 'NOT_FOUND' ? 404
         : result.code === 'FORBIDDEN' ? 403
@@ -1319,6 +1330,11 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
       resolution: result.status,
       actorUserId: user.id,
     });
+    if (result.status === 'approved') {
+      // Repairs an approver decision a crash left pending, attributed to the
+      // stored approver rather than to this request.
+      await finalizeApprovalOutcome({ actionId, orgId: user.org_id, receipt: 'resolver' });
+    }
     // An action approved earlier whose execution failed is reported as
     // failed, not as a fresh success.
     if (result.status === 'approved' && !action.app_run_id && action.approval_status === 'approved'
@@ -1332,253 +1348,106 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
     });
   }
 
-  if (action.approval_status === 'approved') {
-    if ((action.result as any)?.lifecycle_state === 'executing') {
+  const leased = await tryWithApprovalLease(actionId, () => approveOrdinaryActionLeased(c, user, actionId));
+  if (!leased.acquired) {
+    // Another request holds this action's execution lease, so its executor
+    // (or a recovery) is alive. Never take over a live execution.
+    const current = await loadOrgAction(actionId, user.org_id);
+    if (!current) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+    if (current.approval_status === 'pending'
+      || (current.approval_status === 'approved' && current.executed_at === null)) {
       return c.json({ status: 'executing', message: 'execution is already in progress' }, 202);
     }
-    if (action.error) return c.json(approvedButFailedBody(action.error));
-    return c.json({ status: 'approved', message: 'already approved', result: action.result ?? undefined });
+    return settledApprovalResponse(c, current);
   }
-  if (action.approval_status === 'rejected') {
-    return c.json({ status: 'rejected', message: 'already rejected' });
-  }
-  if (action.approval_status === 'expired') {
-    return c.json({ error: 'Action has expired', code: 'NOT_FOUND' }, 404);
-  }
-  if (action.approval_status !== 'pending') {
-    return c.json({ error: 'Action is not pending', code: 'INVALID_STATE' }, 409);
-  }
+  return leased.value;
+});
 
-  const [claimedAction] = await db
-    .update(agentActions)
-    .set({
-      approval_status: 'approved',
-      approved_at: new Date(),
-      result: { lifecycle_state: 'executing', started_at: new Date().toISOString() } as any,
-      error: null,
-    })
-    .where(and(
-      eq(agentActions.id, actionId),
-      eq(agentActions.org_id, user.org_id),
-      eq(agentActions.approval_status, 'pending'),
-    ))
-    .returning({
-      id: agentActions.id,
-      approval_status: agentActions.approval_status,
-      result: agentActions.result,
-    });
+/** Finaliser hooks shared by the approve route and the maintenance sweep. */
+export const approvalFinaliserHooks: ApprovalFinaliserHooks = {
+  postConfirmation: maybePostApprovalConfirmation,
+};
 
-  if (!claimedAction) {
-    const [winner] = await db
-      .select({
-        approval_status: agentActions.approval_status,
-        result: agentActions.result,
-        error: agentActions.error,
-      })
-      .from(agentActions)
-      .where(and(
-        eq(agentActions.id, actionId),
-        eq(agentActions.org_id, user.org_id),
-      ))
-      .limit(1);
-    if (winner?.approval_status === 'approved') {
-      if ((winner.result as any)?.lifecycle_state === 'executing') {
-        return c.json({ status: 'executing', message: 'execution is already in progress' }, 202);
-      }
-      if (winner.error) return c.json(approvedButFailedBody(winner.error));
-      return c.json({ status: 'approved', message: 'already approved', result: winner.result ?? undefined });
-    }
-    if (winner?.approval_status === 'rejected') {
-      return c.json({ status: 'rejected', message: 'already rejected' });
-    }
-    if (winner?.approval_status === 'expired') {
-      return c.json({ error: 'Action has expired', code: 'NOT_FOUND' }, 404);
-    }
-    return c.json({ error: 'Action is no longer pending', code: 'INVALID_STATE' }, 409);
+/** One bounded maintenance pass over approvals interrupted after their claim. */
+export function recoverInterruptedApprovalsNow() {
+  return recoverInterruptedApprovals({
+    hooks: approvalFinaliserHooks,
+    isResolverAction: isApprovalResolverAction,
+    onResolverRecovered: publishSettledApprovalResolution,
+  });
+}
+
+async function loadOrgAction(actionId: string, orgId: string) {
+  const [row] = await db
+    .select()
+    .from(agentActions)
+    .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, orgId)))
+    .limit(1);
+  return row ?? null;
+}
+
+function settledApprovalResponse(c: Context, row: typeof agentActions.$inferSelect) {
+  if (row.approval_status === 'approved') {
+    if (row.error) return c.json(approvedButFailedBody(row.error));
+    return c.json({ status: 'approved', message: 'already approved', result: row.result ?? undefined });
   }
+  if (row.approval_status === 'rejected') return c.json({ status: 'rejected', message: 'already rejected' });
+  if (row.approval_status === 'expired') return c.json({ error: 'Action has expired', code: 'NOT_FOUND' }, 404);
+  return c.json({ error: 'Action is no longer pending', code: 'INVALID_STATE' }, 409);
+}
 
-  // Phase 6 invariant — the executor must receive the ORIGINAL proposer's
-  // user_id (action.user_id), not the approver's. Otherwise:
-  //   1. Inserted messages would be authored by the human approver,
-  //      not by the proposing agent.
-  //   2. The reply-storm guard would count the approver's replies
-  //      instead of the agent's, defeating Phase 6 in the manual-
-  //      approval path.
-  const execResult = await executeAction(
-    actionId,
-    action.action,
-    action.params as any,
-    user.org_id,
-    action.user_id,
-    { agentEmployeeId: action.agent_employee_id ?? undefined },
+/** Ordinary (non-resolver) approval, run while holding the action's lease. */
+async function approveOrdinaryActionLeased(
+  c: Context,
+  user: { id: string; org_id: string },
+  actionId: string,
+): Promise<Response> {
+  const current = await loadOrgAction(actionId, user.org_id);
+  if (!current) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+
+  if (current.approval_status === 'approved') {
+    // Holding the lease proves no executor is running this approval.
+    const recovery = await recoverInterruptedApproval(current, approvalFinaliserHooks);
+    if (recovery.kind === 'reexecuted') return ownedApprovalResponse(c, current, user.id, recovery.outcome);
+    if (recovery.kind === 'not_interrupted') {
+      // Repairs bookkeeping that a crash after the outcome write left undone.
+      await finalizeApprovalOutcome({ actionId, orgId: user.org_id, receipt: 'legacy', hooks: approvalFinaliserHooks });
+    }
+    const settled = await loadOrgAction(actionId, user.org_id);
+    if (!settled) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+    return settledApprovalResponse(c, settled);
+  }
+  if (current.approval_status !== 'pending') return settledApprovalResponse(c, current);
+
+  const token = await claimPendingApproval(current, user.id);
+  if (!token) {
+    const winner = await loadOrgAction(actionId, user.org_id);
+    if (!winner) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+    return settledApprovalResponse(c, winner);
+  }
+  const outcome = await executeClaimedApproval(
+    { ...current, approval_status: 'approved', approved_by_user_id: user.id },
+    token,
+    approvalFinaliserHooks,
   );
+  return ownedApprovalResponse(c, current, user.id, outcome);
+}
 
-  // Only mark approved after execution succeeds. If the executor failed
-  // (e.g. "Project not found" because the named project was deleted between
-  // proposal and approval), leave the row pending and record the error so
-  // the user can retry without losing the proposed params. Without this,
-  // a failed exec left the row stuck in approved+null-result, invisible
-  // to "/api/agent/actions/pending" but unactionable.
-  if (execResult.success) {
-    await db
-      .update(agentActions)
-      .set({
-        approval_status: 'approved',
-        approved_at: new Date(),
-        result: execResult.result as any,
-        error: null,
-      })
-      .where(eq(agentActions.id, actionId));
-    await recordActionApproverDecision({
-      orgId: user.org_id,
-      actionId,
-      userId: user.id,
-      decision: 'approved',
-    });
-    if (
-      action.action === 'create_task'
-      || action.source === 'defty_capture'
-      || isModuleTaskLinkWriteAction(action.action)
-      || isModuleWriteActionName(action.action)
-      || isModuleRecordBulkCreateAction(action.action)
-      || action.action === WORKSPACE_PLAN_IMPORT_ACTION
-      || action.action === DOCUMENT_SEND_ACTION
-    ) {
-      const [terminalReceiptAction] = await db
-        .select({ params: agentActions.params })
-        .from(agentActions)
-        .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, action.org_id)))
-        .limit(1);
-      const terminalReceiptParams = terminalReceiptAction?.params ?? action.params;
-      await generateReceipt({
-        actionId,
-        orgId: action.org_id,
-        employeeId: action.agent_employee_id ?? null,
-        proposer: action.agent_employee_id ? 'employee' : 'defty',
-        proposerId: action.agent_employee_id ?? action.user_id,
-        approverId: user.id,
-        decision: 'approved',
-        decisionReason: null,
-        actionName: action.action,
-        actionParams: isModuleTaskLinkWriteAction(action.action)
-          ? sanitizeModuleTaskLinkActionParamsForHistory(terminalReceiptParams)
-          : isModuleWriteActionName(action.action)
-            ? sanitizeModuleActionParamsForReceipt(action.action, terminalReceiptParams)
-            : isModuleRecordBulkCreateAction(action.action)
-              ? sanitizeModuleBulkCreateParamsForHistory(terminalReceiptParams)
-              : action.action === WORKSPACE_PLAN_IMPORT_ACTION
-                ? sanitizeWorkspacePlanImportParams(terminalReceiptParams)
-                : action.action === DOCUMENT_SEND_ACTION
-                  ? sanitizeDocumentSendParams(terminalReceiptParams)
-            : terminalReceiptParams,
-        resultJson: execResult.result,
-      });
-    }
-    if (action.source === 'defty_capture') {
-      await markWorkIntentConvertedForAction({
-        actionId,
-        orgId: action.org_id,
-        actionParams: action.params,
-        result: execResult.result,
-        convertedBy: user.id,
-      });
-    }
-    try {
-      await maybePostApprovalConfirmation({
-        orgId: user.org_id,
-        actionMessageId: action.message_id,
-        actorUserId: action.user_id,
-      });
-    } catch (err) {
-      console.warn('[agent-routes] Failed to post approval confirmation', {
-        actionId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-    await resolveAttentionBySource({
-      orgId: user.org_id,
-      sourceType: 'agent_action',
-      sourceId: actionId,
-      resolution: 'approved',
-      actorUserId: user.id,
-    });
-  } else {
-    if (isModuleTaskLinkWriteAction(action.action) || isModuleWriteActionName(action.action)) {
-      // Idempotency keys are single-use terminal claims. A failed approved
-      // edge mutation must not be reopened as pending after executeAction has
-      // scrubbed its raw key, otherwise the next button click can neither
-      // safely replay nor prove a single budget/receipt outcome.
-      const [terminalAction] = await db
-        .update(agentActions)
-        .set({
-          approval_status: 'approved',
-          approved_at: new Date(),
-          result: null,
-          error: execResult.error ?? 'Action failed',
-          executed_at: new Date(),
-        })
-        .where(eq(agentActions.id, actionId))
-        .returning({ params: agentActions.params });
-      await recordActionApproverDecision({
-        orgId: user.org_id,
-        actionId,
-        userId: user.id,
-        decision: 'approved',
-      });
-      await generateReceipt({
-        actionId,
-        orgId: action.org_id,
-        employeeId: action.agent_employee_id ?? null,
-        proposer: action.agent_employee_id ? 'employee' : 'defty',
-        proposerId: action.agent_employee_id ?? action.user_id,
-        approverId: user.id,
-        decision: 'approved',
-        decisionReason: `execution failed: ${execResult.error ?? 'unknown'}`.slice(0, 2_000),
-        actionName: action.action,
-        actionParams: isModuleTaskLinkWriteAction(action.action)
-          ? sanitizeModuleTaskLinkActionParamsForHistory(terminalAction?.params ?? action.params)
-          : sanitizeModuleActionParamsForReceipt(
-              action.action,
-              terminalAction?.params ?? action.params,
-            ),
-        resultJson: null,
-      });
-      if (action.source === 'defty_capture') {
-        await markWorkIntentFailedForAction({
-          actionId,
-          orgId: action.org_id,
-          actionParams: action.params,
-          reason: execResult.error ?? 'Action failed',
-        });
-      }
-    } else {
-      const preservedFailureResult = execResult.result
-        && typeof execResult.result === 'object'
-        && !Array.isArray(execResult.result)
-        ? execResult.result as Record<string, unknown>
-        : { upstream_result: execResult.result ?? null };
-      await db
-        .update(agentActions)
-        .set({
-          approval_status: 'pending',
-          approved_at: null,
-          result: {
-            ...preservedFailureResult,
-            lifecycle_state: 'failed',
-            failed_at: new Date().toISOString(),
-            retryable: true,
-          } as any,
-          error: execResult.error ?? 'Action failed',
-        })
-        .where(eq(agentActions.id, actionId));
-      await markWorkIntentFailedForAction({
-        actionId,
-        orgId: action.org_id,
-        actionParams: action.params,
-        reason: execResult.error ?? 'Action failed',
-      });
-    }
+async function ownedApprovalResponse(
+  c: Context,
+  action: typeof agentActions.$inferSelect,
+  actorUserId: string,
+  outcome: OwnedExecutionOutcome,
+): Promise<Response> {
+  if (outcome.kind === 'superseded') {
+    return c.json({
+      error: 'This approval was settled by another request while it ran',
+      code: 'APPROVAL_SUPERSEDED',
+    }, 409);
   }
+  const execResult = outcome.kind === 'succeeded'
+    ? { success: true as const, result: outcome.result }
+    : { success: false as const, result: outcome.result, error: outcome.error };
 
   // Insert a hidden tool_result message into the unified messages table so
   // the next agent turn in this conversation sees a valid Anthropic tool_use →
@@ -1589,10 +1458,10 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
     : null;
   if (durableExecutionResult) {
     try {
-      await recordApprovedActionExecutionContext(action, user.id, execResult.result);
+      await recordApprovedActionExecutionContext(action, actorUserId, execResult.result);
     } catch (err) {
       console.warn('[agent-routes] Failed to record approved action result context', {
-        actionId,
+        actionId: action.id,
         error: err instanceof Error ? err.message : String(err),
       });
     }
@@ -1646,7 +1515,7 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
   }
 
   return c.json(legacyResultBody);
-});
+}
 
 agentRoutes.post('/actions/:id/reject', async (c) => {
   const user = c.get('user');

@@ -46,6 +46,54 @@ export async function withDbAdvisoryLock<T>(
   }
 }
 
+export type DbAdvisoryLease = { readonly lost: boolean };
+
+/**
+ * Hold a session advisory lock on a dedicated advisory-pool connection for
+ * the whole of `run`, so another process can tell with
+ * `pg_try_advisory_lock` whether the holder is still alive. With
+ * `wait: false` the call returns `{ acquired: false }` immediately when the
+ * lock is held elsewhere. If the holder connection fails, `lease.lost`
+ * turns true and the broken connection is discarded instead of reused.
+ */
+export async function withDbAdvisoryLease<T>(
+  key: string,
+  options: { wait: boolean },
+  run: (lease: DbAdvisoryLease) => Promise<T>,
+): Promise<{ acquired: true; value: T } | { acquired: false }> {
+  const client = await advisoryPool.connect();
+  let lostError: Error | null = null;
+  const onError = (error: Error) => { lostError = error; };
+  client.on('error', onError);
+  let acquired = false;
+  try {
+    if (options.wait) {
+      await client.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [key]);
+      acquired = true;
+    } else {
+      const locked = await client.query<{ acquired: boolean }>(
+        'SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS acquired',
+        [key],
+      );
+      acquired = locked.rows[0]?.acquired === true;
+    }
+    if (!acquired) return { acquired: false };
+    const lease: DbAdvisoryLease = { get lost() { return lostError !== null; } };
+    return { acquired: true, value: await run(lease) };
+  } finally {
+    let releaseError: Error | undefined = lostError ?? undefined;
+    if (acquired && !releaseError) {
+      try {
+        await client.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [key]);
+      } catch (error) {
+        releaseError = error instanceof Error ? error : new Error(String(error));
+      }
+    }
+    client.off('error', onError);
+    client.release(releaseError);
+  }
+}
+
 /** Drain the shared PostgreSQL pool during process shutdown. */
 export async function closeDb(): Promise<void> {
   await Promise.all([pool.end(), advisoryPool.end(), closeAppAutomationScanDatabase(), closeExperienceExposureDatabase(), closePrivateSearchDatabase()]);

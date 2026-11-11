@@ -31,7 +31,16 @@ import type { AppRunTransaction } from './app-run-repository.js';
  * every conservative-trust employee's approved writes.
  */
 import { eq, and, or, sql, isNull } from 'drizzle-orm';
-import { db, withDbAdvisoryLock } from './db.js';
+import { db } from './db.js';
+import {
+  APPROVAL_INTERRUPTED_ERROR,
+  currentClaimToken,
+  isInterruptedApproval,
+  ownsClaim,
+  recoverInterruptedApproval,
+  withApprovalLease,
+  type ClaimToken,
+} from './agent-action-execution-lease.js';
 import { AppError } from './app-errors.js';
 import {
   agentActions,
@@ -848,8 +857,10 @@ export async function approveAction(
   approverUserId: string,
   options: { internal?: boolean; appRunFinalGuard?: (tx: AppRunTransaction) => Promise<void>; humanWebSessionId?: string } = {},
 ): Promise<ApprovalResolverResult> {
-  const result = await withDbAdvisoryLock(
-    `agent-approval:${actionId}`,
+  // The execution lease is held for the whole approval so a recovery can
+  // tell a live executor from one that is gone.
+  const result = await withApprovalLease(
+    actionId,
     () => approveActionLocked(actionId, approverUserId, options),
   );
   if (result.status === 'approved' || result.status === 'rejected' || result.code === 'EXECUTE_FAILED') {
@@ -925,6 +936,20 @@ async function approveActionLocked(
 
   if (row.action === APP_RUN_APPROVAL_ACTION) {
     return (await appRunApprovalResolver()).approve(actionId, approverUserId, options.appRunFinalGuard);
+  }
+
+  // This call holds the action's lease, so an approval that was claimed but
+  // never recorded an outcome has no live executor. It is not re-run.
+  if (isInterruptedApproval(row, 'resolver')) {
+    const recovery = await recoverInterruptedApproval(row, {}, 'resolver');
+    if (recovery.kind === 'settled_failed') {
+      return { status: 'error', code: 'EXECUTE_FAILED', message: APPROVAL_INTERRUPTED_ERROR };
+    }
+    return {
+      status: 'error',
+      code: 'INVALID_STATE',
+      message: `action ${actionId} changed while its interrupted approval was being settled; retry`,
+    };
   }
 
   const resumesApprovedModule = isModuleMutation
@@ -1007,6 +1032,13 @@ async function approveActionLocked(
     };
   }
 
+  let claimToken: ClaimToken | null = resumesApprovedModule
+    ? await currentClaimToken(row.id, row.org_id)
+    : null;
+  if (resumesApprovedModule && !claimToken) {
+    return { status: 'error', code: 'INVALID_STATE', message: `action ${actionId} approval changed; retry to resume` };
+  }
+
   if (resumesApprovedModule) {
     const committed = await recoverModuleMutationByAgentActionId(row.org_id, row.id);
     if (committed) {
@@ -1030,6 +1062,7 @@ async function approveActionLocked(
             eq(agentActions.org_id, row.org_id),
             eq(agentActions.approval_status, 'approved'),
             sql`${agentActions.executed_at} IS NULL`,
+            ownsClaim(claimToken!),
           ))
           .returning();
         if (!stamped) return null;
@@ -1140,15 +1173,16 @@ async function approveActionLocked(
     const claimed = await db.execute(
       sql`UPDATE agent_actions
              SET approval_status = 'approved',
-                 approved_at = NOW(),
+                 approved_at = clock_timestamp(),
                  approved_by_user_id = ${approverUserId}
            WHERE id = ${actionId} AND approval_status = 'pending'
              AND ${actionSourceAuthoritySql(sourceReaderId)}
-           RETURNING id`,
+           RETURNING approved_at::text AS token`,
     );
     const claimedRows =
       (claimed as { rows?: any[] }).rows ?? (claimed as unknown as any[]);
-    if (claimedRows.length === 0) {
+    claimToken = typeof claimedRows[0]?.token === 'string' ? claimedRows[0].token : null;
+    if (claimedRows.length === 0 || !claimToken) {
       const [winner] = await db
         .select()
         .from(agentActions)
@@ -1284,6 +1318,7 @@ async function approveActionLocked(
         eq(agentActions.id, actionId),
         eq(agentActions.org_id, row.org_id),
         eq(agentActions.approval_status, 'approved'),
+        ownsClaim(claimToken!),
       ))
       .returning({ id: agentActions.id });
     if (!stamped) return null;
@@ -1410,12 +1445,13 @@ async function resolveRecordMirrorNominationAction(
 
   const claimed = await db.execute(
     sql`UPDATE agent_actions
-           SET approval_status = 'approved', approved_at = NOW(), approved_by_user_id = ${approverUserId}
+           SET approval_status = 'approved', approved_at = clock_timestamp(), approved_by_user_id = ${approverUserId}
          WHERE id = ${row.id} AND org_id = ${row.org_id} AND approval_status = 'pending'
-         RETURNING id`,
+         RETURNING approved_at::text AS token`,
   );
-  const claimedRows = (claimed as { rows?: unknown[] }).rows ?? [];
-  if (claimedRows.length === 0) {
+  const claimedRows = (claimed as { rows?: Array<{ token?: unknown }> }).rows ?? [];
+  const claimToken = typeof claimedRows[0]?.token === 'string' ? claimedRows[0].token : null;
+  if (claimedRows.length === 0 || !claimToken) {
     const [winner] = await db.select().from(agentActions).where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id))).limit(1);
     if (winner?.approval_status === 'approved') {
       if (winner.result != null) {
@@ -1431,11 +1467,18 @@ async function resolveRecordMirrorNominationAction(
   }
 
   const approver = { org_id: row.org_id, user_id: approverUserId, sid: session.id, access_expires_at: session.expires_at.getTime() };
+  // Every outcome write below is fenced on this request's claim.
+  const ownedClaim = and(
+    eq(agentActions.id, row.id),
+    eq(agentActions.org_id, row.org_id),
+    eq(agentActions.approval_status, 'approved'),
+    ownsClaim(claimToken),
+  );
   try {
     const { approveRecordMirrorNomination } = await import('./app-record-mirror-service.js');
     const receipt = await approveRecordMirrorNomination(approver, row.params);
     await db.update(agentActions).set({ executed_at: new Date(), result: receipt as never, error: null })
-      .where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id)));
+      .where(ownedClaim);
     return { status: 'approved', result: receipt };
   } catch (error) {
     const phase = (error as { phase?: unknown } | null)?.phase;
@@ -1463,7 +1506,7 @@ async function resolveRecordMirrorNominationAction(
         executed_at: new Date(),
         result: null,
         error: sanitized.slice(0, 2000),
-      }).where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id)));
+      }).where(ownedClaim);
     } else {
       await db.update(agentActions).set({
         approval_status: 'pending',
@@ -1472,10 +1515,15 @@ async function resolveRecordMirrorNominationAction(
         executed_at: null,
         result: null,
         error: sanitized.slice(0, 2000),
-      }).where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id)));
+      }).where(ownedClaim);
     }
     return { status: 'error', code: 'EXECUTE_FAILED', message: sanitized };
   }
+}
+
+/** Publish the resolution of an approval settled outside a request. */
+export async function publishSettledApprovalResolution(actionId: string, actorUserId: string): Promise<void> {
+  await publishApprovalResolution(actionId, actorUserId);
 }
 
 /**
