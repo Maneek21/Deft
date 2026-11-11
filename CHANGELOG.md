@@ -84,9 +84,8 @@ Agents and approvals:
   applied. The completion message lists succeeded and failed actions separately,
   and an approved action that failed shows as failed with its error. Task-update
   approval cards list the patched fields, including cleared values, and reminder
-  previews include the date, time and time zone. Approval resolution returns
-  the recorded decision when another request has already decided the action, and
-  a replayed App Run approval keeps its original approver and time. The dashboard agent widget links to the Inbox for
+  previews include the date, time and time zone. A replayed App Run
+  approval keeps its original approver and time. The dashboard agent widget links to the Inbox for
   review.
 - Defty chat messages: tool inputs and results, proposed action parameters and
   drafts attached to a Defty message are delivered only to the person who asked,
