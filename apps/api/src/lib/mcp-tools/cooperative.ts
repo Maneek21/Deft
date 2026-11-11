@@ -44,6 +44,7 @@ import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
 import { normalizeMcpApprovalAction } from '../mcp-approval-actions.js';
 import { getIO } from '../../socket.js';
+import { channelEventTextReaders, emitOrgEventByAudience } from '../agent-channel.js';
 import {
   upsertAttentionItem,
   type AttentionDraft,
@@ -305,17 +306,26 @@ export async function recordProgress(args: ProgressArgs, ctx: ToolContext): Prom
     }
   }
   if (!recorded.replayed) {
-    getIO()?.to(`org:${ctx.org_id}`).emit('task:agent_progress', {
+    // Neutral progress to the org; the summary to owners/admins and readers
+    // of the task under the employee source rule.
+    const neutral = {
       task_id: recorded.task_id,
       agent_employee_id: ctx.employee_id,
       step_index: 0,
       total_steps: 1,
-      step_description: summary,
+      step_description: 'Agent employee activity updated',
       status: status === 'working' || status === 'retrying'
         ? 'started'
         : status === 'waiting_human'
           ? 'needs_human'
           : status,
+    };
+    await emitOrgEventByAudience(getIO(), {
+      orgId: ctx.org_id,
+      event: 'task:agent_progress',
+      neutral,
+      detailed: { ...neutral, step_description: summary },
+      audience: (userIds) => channelEventTextReaders(ctx.org_id, eventId, userIds),
     });
   }
 

@@ -413,8 +413,12 @@ agentEmployeeRoutes.get('/:id/heartbeats', async (c) => {
         ),
       );
 
+    // The summary (a slice of the heartbeat prompt, which carries the
+    // employee's tasks and room messages) and the outcome reason (dispatcher
+    // errors, health reasons) are operator diagnostics for owners/admins.
+    const canSeeDiagnostics = user.role === 'owner' || user.role === 'admin';
     return c.json({
-      turns,
+      turns: canSeeDiagnostics ? turns : turns.map((turn) => ({ ...turn, summary: null, outcome_reason: null })),
       limit,
       cost_summary_24h: costSummary ?? { total_cents: 0, total_actions: 0, turn_count: 0 },
     });

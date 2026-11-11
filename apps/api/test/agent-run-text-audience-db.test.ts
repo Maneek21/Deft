@@ -87,6 +87,9 @@ before(async () => {
   await q(`INSERT INTO agent_cooperative_log(id,org_id,employee_id,kind,summary,session_turn_id) VALUES($1,$2,$3,'outcome','CANARY-COOP-TURN',$4)`, [randomUUID(), orgId, employeeId, turnId]);
   await q(`INSERT INTO agent_cooperative_log(id,org_id,employee_id,kind,summary) VALUES($1,$2,$3,'milestone','CANARY-COOP-LOOSE')`, [randomUUID(), orgId, employeeId]);
   await q(`INSERT INTO agent_channel_connections(id,org_id,agent_employee_id,runtime_kind,status,last_error) VALUES($1,$2,$3,'hermes','degraded','CANARY-CONNECTION')`, [randomUUID(), orgId, employeeId]);
+  await q('INSERT INTO task_watchers(id,task_id,user_id) VALUES($1,$2,$3)', [randomUUID(), taskId, ids.insider]);
+  await q(`INSERT INTO agent_heartbeat_turns(id,org_id,agent_employee_id,cadence_minutes,prompt_sha,outcome,outcome_reason,summary)
+    VALUES($1,$2,$3,30,'sha','error','CANARY-HEARTBEAT-REASON','CANARY-HEARTBEAT-SUMMARY')`, [randomUUID(), orgId, employeeId]);
   employeeRoutes = (await import('../src/routes/agent-employees.js')).agentEmployeeRoutes;
   channelRoutes = (await import('../src/routes/agent-channel.js')).agentChannelRoutes;
   seeded = true;
@@ -95,8 +98,10 @@ before(async () => {
 after(async () => {
   await realtime?.close();
   if (seeded && client) {
+    await client.query('DELETE FROM task_watchers WHERE task_id=$1', [taskId]);
     for (const table of ['agent_channel_delivery_attempts', 'agent_channel_cursors', 'agent_channel_connections', 'agent_channel_tokens', 'agent_cooperative_log',
-      'agent_session_turns', 'agent_mcp_call_audit', 'agent_channel_events', 'agent_actions', 'task_activity', 'tasks', 'projects']) {
+      'agent_session_turns', 'agent_mcp_call_audit', 'agent_heartbeat_turns', 'attention_events', 'attention_items', 'agent_channel_events', 'agent_actions',
+      'task_activity', 'tasks', 'projects']) {
       await client.query(`DELETE FROM ${table} WHERE org_id=$1`, [orgId]);
     }
     await client.query('UPDATE users SET agent_employee_id=NULL WHERE id=$1', [ids.agent]);
@@ -211,7 +216,6 @@ test('W2a4-B3: task progress text goes only to the task source audience; the org
   if (unavailable) return t.skip(unavailable);
   realtime ??= await startRealtime();
   const viewers = { admin: await realtime.open(ids.admin), insider: await realtime.open(ids.insider), peer: await realtime.open(ids.peer) };
-  await client!.query('INSERT INTO task_watchers(id,task_id,user_id) VALUES($1,$2,$3)', [randomUUID(), taskId, ids.insider]);
   const hono = new Hono();
   hono.route('/api/agent-channel/v1', channelRoutes!);
   const response = await hono.request('/api/agent-channel/v1/status', {
@@ -294,4 +298,42 @@ test('W2a4-E: a run row with malformed or conflicting result markers gives detai
   assert.equal(insider.has(blankThenValid.id), false, 'a malformed marker beside a valid one resolves to no action');
   const admin = await agentRunDetailAudience({ id: ids.admin, org_id: orgId, role: 'admin' }, rows);
   for (const entry of rows) assert.equal(admin.has(entry.id), true);
+});
+
+// ── D. Same pattern on the remaining carriers ───────────────────────────
+test('W2a4-D1: a recorded progress milestone goes to the task source audience; the org gets a neutral update', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  realtime ??= await startRealtime();
+  const viewers = { admin: await realtime.open(ids.admin), insider: await realtime.open(ids.insider), peer: await realtime.open(ids.peer) };
+  const { recordProgress } = await import('../src/lib/mcp-tools/cooperative.js');
+  const result = await recordProgress({ summary: 'CANARY-MILESTONE drafted the plan', status: 'working', idempotency_key: `w2a4-${randomUUID()}` }, {
+    org_id: orgId, employee_id: employeeId, employee_slug: 'runner', trust_level: 'standard',
+    channel_event_id: taskEventId, runtime_request_key: `deft-channel:${taskEventId}:attempt:1`,
+  } as any);
+  assert.notEqual(result.isError, true, JSON.stringify(result));
+  await settle();
+  const progress = (events: Array<{ event: string; data: any }>) => events.filter((entry) => entry.event === 'task:agent_progress' && entry.data?.task_id === taskId);
+  for (const [name, events] of Object.entries(viewers)) assert.equal(progress(events).length, 1, `${name} receives one progress update`);
+  assert.deepEqual(canaries(JSON.stringify(progress(viewers.peer))), []);
+  assert.deepEqual(canaries(JSON.stringify(progress(viewers.insider))), ['CANARY-MILESTONE']);
+  assert.deepEqual(canaries(JSON.stringify(progress(viewers.admin))), ['CANARY-MILESTONE']);
+  // The milestone in the activity feed follows the same event audience.
+  const feed = async (viewer: string) => JSON.stringify(await (await asViewer(viewer, `/${employeeId}/activity`)).json());
+  assert.equal(canaries(await feed(ids.insider)).includes('CANARY-MILESTONE'), true);
+  assert.equal(canaries(await feed(ids.peer)).includes('CANARY-MILESTONE'), false);
+});
+
+test('W2a4-D2: heartbeat summaries and outcome reasons go to owners/admins only', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const read = async (viewer: string) => {
+    const response = await asViewer(viewer, `/${employeeId}/heartbeats`);
+    assert.equal(response.status, 200, await response.clone().text());
+    return await response.json() as { turns: Array<{ outcome: string }> };
+  };
+  assert.deepEqual(canaries(JSON.stringify(await read(ids.admin))), ['CANARY-HEARTBEAT-REASON', 'CANARY-HEARTBEAT-SUMMARY']);
+  for (const viewer of [ids.insider, ids.peer, ids.guest]) {
+    const body = await read(viewer);
+    assert.deepEqual(canaries(JSON.stringify(body)), []);
+    assert.equal(body.turns[0]?.outcome, 'error', 'the outcome stays');
+  }
 });

@@ -479,7 +479,21 @@ export async function channelEventTextReaders(orgId: string, eventId: string, us
   return new Set(rows.map((row) => row.user_id));
 }
 
-type AudienceSocket = { rooms: Set<string>; emit(event: string, payload: unknown): unknown };
+/** Of `userIds`, the active members who are owners/admins or one of `listed`. */
+export async function ownersAdminsOrListed(orgId: string, userIds: readonly string[], listed: readonly string[]): Promise<Set<string>> {
+  if (userIds.length === 0) return new Set();
+  const rows = await db.select({ user_id: orgMembers.user_id }).from(orgMembers).where(and(
+    eq(orgMembers.org_id, orgId),
+    inArray(orgMembers.user_id, [...userIds]),
+    eq(orgMembers.is_active, true),
+    listed.length > 0
+      ? sql`(${orgMembers.role} in ('owner', 'admin') or ${inArray(orgMembers.user_id, [...listed])})`
+      : sql`${orgMembers.role} in ('owner', 'admin')`,
+  ));
+  return new Set(rows.map((row) => row.user_id));
+}
+
+type AudienceSocket ={ rooms: Set<string>; emit(event: string, payload: unknown): unknown };
 type OrgEmitter = {
   to(room: string): { emit(event: string, payload: unknown): unknown };
   in?(room: string): { fetchSockets(): Promise<AudienceSocket[]> };

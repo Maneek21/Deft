@@ -57,6 +57,14 @@ export function sessionTurnContentAudienceSql(params: { orgId: string; employeeI
         ELSE false END`;
 }
 
+/** The channel event a cooperative record (a task progress milestone) belongs to. */
+function recordEventId(record: typeof agentCooperativeLog.$inferSelect): string | null {
+  const metadata = record.metadata;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
+  const id = (metadata as Record<string, unknown>).channel_event_id;
+  return typeof id === 'string' && id.length > 0 ? id : null;
+}
+
 function actionStatus(row: typeof agentActions.$inferSelect): AgentActivityItem['status'] {
   if (row.error || row.approval_status === 'rejected' || row.approval_status === 'expired') return 'failed';
   if (row.executed_at) return 'completed';
@@ -72,7 +80,7 @@ function actionStatus(row: typeof agentActions.$inferSelect): AgentActivityItem[
  * source: the action audience for action rows (module-action-visibility.ts,
  * which also scopes which action rows are listed), the channel event's source
  * under the employee source rule, the session turn's content audience (a
- * cooperative record follows the turn it names). Entries without a source
+ * cooperative record follows the turn or channel event it names). Entries without a source
  * (tool calls, records without a turn) keep their text for owners/admins.
  */
 export async function loadAgentActivity(params: { orgId: string; employeeId: string; viewer: { id: string; role?: string }; limit?: number }) {
@@ -110,7 +118,7 @@ export async function loadAgentActivity(params: { orgId: string; employeeId: str
       .from(agentEmployees)
       .where(and(eq(agentEmployees.id, params.employeeId), eq(agentEmployees.org_id, params.orgId)))
       .limit(1);
-    const eventIds = events.map((event) => event.id);
+    const eventIds = [...new Set([...events.map((event) => event.id), ...records.map(recordEventId).filter((id): id is string => Boolean(id))])];
     const turnIds = [...new Set([
       ...sessions.map((session) => session.id),
       ...records.map((record) => record.session_turn_id).filter((id): id is string => Boolean(id)),
@@ -120,6 +128,7 @@ export async function loadAgentActivity(params: { orgId: string; employeeId: str
         ? db.select({ id: agentChannelEvents.id }).from(agentChannelEvents).where(and(
           inArray(agentChannelEvents.id, eventIds),
           eq(agentChannelEvents.org_id, params.orgId),
+          eq(agentChannelEvents.agent_employee_id, params.employeeId),
           channelEventTextAudienceSql(agentChannelEvents.id, sql`${params.viewer.id}`),
         ))
         : [],
@@ -215,7 +224,11 @@ export async function loadAgentActivity(params: { orgId: string; employeeId: str
       kind: 'record',
       label: record.kind.replaceAll('_', ' '),
       status: record.kind === 'action_attempt' ? 'running' : 'completed',
-      detail: canSeeAll || (record.session_turn_id !== null && textTurns.has(record.session_turn_id)) ? record.summary : null,
+      detail: canSeeAll
+        || (record.session_turn_id !== null && textTurns.has(record.session_turn_id))
+        || textEvents.has(recordEventId(record) ?? '')
+        ? record.summary
+        : null,
       occurred_at: record.created_at,
       target_url: null,
       error: null,
