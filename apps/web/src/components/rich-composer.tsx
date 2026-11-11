@@ -262,6 +262,13 @@ export function RichComposer({
           setTaskAutocompleteOpen(false);
           return true;
         }
+        // Tab picks from an @ / # popup with options (its document listener
+        // selects); reserve it like Enter so editor keymaps such as list
+        // indentation do not also run. With no popup, Tab is unchanged.
+        if (event.key === 'Tab' && autocompleteTakesKeysRef.current()) {
+          event.preventDefault();
+          return true;
+        }
         // Arrow up when editor is empty → edit last message
         if (event.key === 'ArrowUp' && !event.shiftKey) {
           const text = view.state.doc.textContent;

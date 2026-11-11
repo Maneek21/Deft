@@ -956,3 +956,63 @@ test('W2-5: Escape with a popup open in the thread composer closes the popup, no
     await close(page);
   }
 });
+
+// ── W2R2-2: Tab picks from a popup without also running list indentation ───
+
+// Pastes a two-item bullet list; the cursor ends in the second item.
+const pasteList = (page) => page.evaluate(() => {
+  const data = new DataTransfer();
+  data.setData('text/html', '<ul><li><p>first</p></li><li><p>second</p></li></ul>');
+  data.setData('text/plain', 'first\nsecond');
+  document.querySelector('.deft-editor').dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+});
+
+async function openListComposer() {
+  const page = await open(browser, { harness: 'composer-harness.tsx', url: '/chat?space=s1', override: TASK_SEARCH, pageData: { tasks: [TASK_HIT] } });
+  const editor = page.locator('.deft-editor');
+  await editor.waitFor();
+  await editor.click();
+  await pasteList(page);
+  await editor.locator('li', { hasText: 'second' }).waitFor();
+  return { page, editor };
+}
+
+test('W2R2-2: Tab in a list item picks the # task and leaves the list depth unchanged', async () => {
+  const { page, editor } = await openListComposer();
+  try {
+    await page.keyboard.type(' #lau');
+    await page.getByRole('button', { name: /Ship the launch checklist/ }).waitFor();
+    await page.keyboard.press('Tab');
+    await page.getByRole('button', { name: /Ship the launch checklist/ }).waitFor({ state: 'detached' });
+    assert.match(await editor.innerText(), /LAUNCH-12/);
+    assert.equal(await editor.locator('ul ul').count(), 0, 'the item was not indented');
+    assert.deepEqual(await sent(page), []);
+  } finally {
+    await close(page);
+  }
+});
+
+test('W2R2-2: Tab in a list item picks the @ mention and leaves the list depth unchanged', async () => {
+  const { page, editor } = await openListComposer();
+  try {
+    await page.keyboard.type(' @Rah');
+    await page.getByRole('button', { name: 'Rahul Mehta' }).waitFor();
+    await page.keyboard.press('Tab');
+    await page.getByRole('button', { name: 'Rahul Mehta' }).waitFor({ state: 'detached' });
+    assert.match(await editor.innerText(), /Rahul Mehta/);
+    assert.equal(await editor.locator('ul ul').count(), 0, 'the item was not indented');
+  } finally {
+    await close(page);
+  }
+});
+
+test('W2R2-2: with no popup, Tab in a list item still indents it', async () => {
+  const { page, editor } = await openListComposer();
+  try {
+    await page.keyboard.press('Tab');
+    await editor.locator('ul ul').waitFor({ timeout: 3000 });
+    assert.equal(await editor.locator('ul ul li', { hasText: 'second' }).count(), 1);
+  } finally {
+    await close(page);
+  }
+});
