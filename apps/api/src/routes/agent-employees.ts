@@ -38,6 +38,7 @@ import {
   wikiMemorySyncs,
   wikiPages,
 } from '@deft/db/schema';
+import { visibleModuleActionSql } from '../lib/module-action-visibility.js';
 import type { SkillAgentConfig } from '../lib/skill-config.js';
 import {
   AGENT_CHANNEL_PROTOCOL_VERSION,
@@ -305,7 +306,23 @@ agentEmployeeRoutes.get('/:id/turns', async (c) => {
       .orderBy(desc(agentSessionTurns.created_at))
       .limit(limit);
 
-    return c.json({ turns, limit });
+    // Any org member sees that a turn happened. Its content (input messages,
+    // tool calls, reply, error) comes from the turn's space, so it is returned
+    // only to owners/admins and to members of that space; a turn with no space
+    // keeps its content for owners/admins.
+    const canSeeAll = user.role === 'owner' || user.role === 'admin';
+    const turnSpaceIds = [...new Set(turns.flatMap((turn) => turn.space_id ? [turn.space_id] : []))];
+    const memberSpaces = canSeeAll || turnSpaceIds.length === 0 ? new Set<string>() : new Set((await db
+      .select({ space_id: spaceMembers.space_id })
+      .from(spaceMembers)
+      .innerJoin(spaces, and(eq(spaces.id, spaceMembers.space_id), eq(spaces.org_id, user.org_id)))
+      .where(and(eq(spaceMembers.user_id, user.id), inArray(spaceMembers.space_id, turnSpaceIds))))
+      .map((row) => row.space_id));
+    const visibleTurns = turns.map((turn) => canSeeAll || (turn.space_id && memberSpaces.has(turn.space_id))
+      ? turn
+      : { ...turn, input_messages_json: null, tool_calls_json: null, raw_reply_text: null, error: null });
+
+    return c.json({ turns: visibleTurns, limit });
   } catch (err) {
     console.error('Failed to list employee turns:', err);
     return c.json({ error: 'Failed to list employee turns', code: 'INTERNAL_ERROR' }, 500);
@@ -435,12 +452,15 @@ agentEmployeeRoutes.get('/:id/turns/:turn_id/receipt', async (c) => {
 
     // Find the most recent agent_actions row for this employee where the
     // receipt landed within a small window around the turn.
+    // Only receipts of actions in the caller's current action audience (shared
+    // rule), filtered before LIMIT so a newer hidden receipt never shadows one.
     const rows = await db.execute(sql`
       SELECT r.*
       FROM action_receipts r
-      JOIN agent_actions a ON a.id = r.action_id
-      WHERE a.agent_employee_id = ${id}
-        AND a.org_id = ${user.org_id}
+      JOIN agent_actions ON agent_actions.id = r.action_id
+      WHERE agent_actions.agent_employee_id = ${id}
+        AND agent_actions.org_id = ${user.org_id}
+        AND ${visibleModuleActionSql(user.role, { userId: user.id, orgId: user.org_id })}
         AND r.created_at BETWEEN ${turn.created_at}::timestamp - interval '5 seconds'
                              AND ${turn.created_at}::timestamp + interval '30 seconds'
       ORDER BY r.created_at DESC

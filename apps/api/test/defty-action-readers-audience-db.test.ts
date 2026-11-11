@@ -83,7 +83,7 @@ before(async () => {
 
 after(async () => {
   if (seeded && client) {
-    for (const table of ['api_keys', 'attention_events', 'attention_items', 'agent_action_approvers', 'agent_actions', 'notifications', 'space_members', 'agent_employees', 'org_members']) {
+    for (const table of ['api_keys', 'attention_events', 'attention_items', 'action_receipts', 'agent_session_turns', 'agent_action_approvers', 'agent_actions', 'notifications', 'space_members', 'agent_employees', 'org_members']) {
       if (table === 'space_members') await client.query('DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id=$1)', [orgId]);
       else await client.query(`DELETE FROM ${table} WHERE org_id=$1`, [orgId]);
     }
@@ -261,4 +261,46 @@ test('W2a3-R8: web approval route facts — an assigned approver passes the rout
   const resolver = await approve(await make('task_create'));
   assert.equal(resolver.status, 403);
   assert.equal(((await resolver.json()) as { code: string }).code, 'FORBIDDEN');
+});
+
+test('W2a3-R3-1: employee turn receipts and turn payloads follow the action and source audience', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const turnSpace = randomUUID();
+  await client!.query('INSERT INTO spaces(id,org_id,name,type,created_by) VALUES($1,$2,$3,\'private\',$4)', [turnSpace, orgId, `turns-${turnSpace}`, ids.requester]);
+  await client!.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), turnSpace, ids.requester]);
+  const turnId = randomUUID();
+  const at = new Date();
+  await client!.query(`INSERT INTO agent_session_turns(id,org_id,employee_id,trigger_kind,space_id,input_messages_json,tool_calls_json,raw_reply_text,latency_ms,result,created_at)
+    VALUES($1,$2,$3,'mention',$4,$5,$6,'CANARY-REPLY',10,'success',$7::timestamp)`,
+    [turnId, orgId, deftyEmployeeId, turnSpace, JSON.stringify([{ role: 'user', content: 'CANARY-INPUT' }]), JSON.stringify([{ tool: 'wiki_read', params: { slug: 'CANARY-TOOL' } }]), at.toISOString()]);
+  // Receipt times use the same parameter encoding as the route's window bound.
+  // The requester's receipt, then a newer receipt for an action outside the requester's audience.
+  const guestOwn = randomUUID();
+  await client!.query(`INSERT INTO agent_actions(id,org_id,user_id,agent_employee_id,action,params,approval_tier,approval_status,source)
+    VALUES($1,$2,$3,$4,'create_task',$5,'quick','approved','mention')`, [guestOwn, orgId, ids.guestApprover, deftyEmployeeId, JSON.stringify({ title: 'CANARY-OTHER' })]);
+  const receipt = (actionId: string, title: string, offsetMs: number) => client!.query(`INSERT INTO action_receipts(id,org_id,action_id,employee_id,proposer,decision,action_name,action_params_json,signature_hmac,created_at)
+    VALUES($1,$2,$3,$4,'defty','approved','create_task',$5,'sig',$6::timestamp)`, [randomUUID(), orgId, actionId, deftyEmployeeId, JSON.stringify({ title }), new Date(at.getTime() + offsetMs)]);
+  await receipt(employeeActionId, 'CANARY-RECEIPT', 1000);
+  await receipt(guestOwn, 'CANARY-OTHER', 2000);
+  const receiptAs = async (viewer: string) => {
+    const response = await request(viewer, '/api/agent-employees', `/${deftyEmployeeId}/turns/${turnId}/receipt`);
+    return { status: response.status, body: await response.text() };
+  };
+  const own = await receiptAs(ids.requester);
+  assert.equal(own.status, 200);
+  assert.equal(has(own.body, 'CANARY-RECEIPT'), true, 'the requester gets its own receipt, not a newer one it cannot see');
+  assert.equal(has(own.body, 'CANARY-OTHER'), false);
+  assert.equal((await receiptAs(ids.peer)).status, 404);
+  const turnsAs = async (viewer: string) => {
+    const response = await request(viewer, '/api/agent-employees', `/${deftyEmployeeId}/turns`);
+    assert.equal(response.status, 200);
+    return JSON.stringify(((await response.json()) as { turns: Array<{ id: string }> }).turns.filter((turn) => turn.id === turnId));
+  };
+  const peerTurn = await turnsAs(ids.peer);
+  assert.equal(has(peerTurn, turnId), true, 'members still see that the turn happened');
+  for (const canary of ['CANARY-INPUT', 'CANARY-TOOL', 'CANARY-REPLY']) assert.equal(has(peerTurn, canary), false, canary);
+  for (const viewer of [ids.requester, ids.admin]) {
+    const body = await turnsAs(viewer);
+    for (const canary of ['CANARY-INPUT', 'CANARY-TOOL', 'CANARY-REPLY']) assert.equal(has(body, canary), true, `${roles[viewer]} ${canary}`);
+  }
 });
