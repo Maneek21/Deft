@@ -212,21 +212,16 @@ export type ApprovalFinaliserHooks = {
 
 /** Which receipt the outcome gets today. */
 export type ApprovalReceiptMode =
-  /** Web approval of an ordinary agent action: the receipt whitelist. */
+  /** Web approval of an ordinary agent action: every settled outcome of an
+   *  executed native write is signed, with the failure reason when it failed. */
   | 'legacy'
   /** Resolver-owned actions: the resolver signs its own outcomes; only an
    *  interrupted outcome, which the resolver never reached, is signed here. */
   | 'resolver';
 
-function legacyReceiptKind(row: AgentActionRow): boolean {
-  return row.action === 'create_task'
-    || row.source === 'defty_capture'
-    || scrubsTerminalParams(row.action);
-}
-
 function approvalReceipt(row: AgentActionRow, mode: ApprovalReceiptMode): GenerateReceiptParams | null {
   const interrupted = row.error === APPROVAL_INTERRUPTED_ERROR;
-  if (mode === 'legacy' ? !legacyReceiptKind(row) : !interrupted) return null;
+  if (mode === 'resolver' && !interrupted) return null;
   const failed = row.error !== null;
   const proposerIsDefty = mode === 'legacy'
     ? !row.agent_employee_id
