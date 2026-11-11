@@ -39,6 +39,13 @@ export type CreateAgentMessageParams = {
   privateResponseBytes?: number;
 };
 
+/** A caller signal (for example a client disconnect) adds to the provider
+ * deadline; it must never replace it. */
+function providerDeadlineSignal(p: CreateAgentMessageParams, timeoutMs: number): AbortSignal {
+  const deadline = AbortSignal.timeout(timeoutMs);
+  return p.abortSignal ? AbortSignal.any([p.abortSignal, deadline]) : deadline;
+}
+
 async function agentFetch(p: CreateAgentMessageParams, input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const response = await fetch(input, p.privateResponseBytes === undefined ? init : { ...init, redirect: 'error' });
   if (p.privateResponseBytes === undefined) return response;
@@ -178,7 +185,7 @@ async function callOpenAIAgent(p: CreateAgentMessageParams): Promise<AgentMessag
       Authorization: `Bearer ${p.resolved.apiKey}`,
     },
     body: JSON.stringify(body),
-    signal: p.abortSignal ?? AbortSignal.timeout(60_000),
+    signal: providerDeadlineSignal(p, 60_000),
   });
 
   if (!res.ok) {
@@ -226,7 +233,7 @@ async function callOpenAIResponsesAgent(p: CreateAgentMessageParams): Promise<Ag
       Authorization: `Bearer ${p.resolved.apiKey}`,
     },
     body: JSON.stringify(body),
-    signal: p.abortSignal ?? AbortSignal.timeout(120_000),
+    signal: providerDeadlineSignal(p, 120_000),
   });
 
   if (!res.ok) {
@@ -273,7 +280,7 @@ async function callOllamaAgent(p: CreateAgentMessageParams): Promise<AgentMessag
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-    signal: p.abortSignal ?? AbortSignal.timeout(120_000),
+    signal: providerDeadlineSignal(p, 120_000),
   });
 
   if (!res.ok) {
