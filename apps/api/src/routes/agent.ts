@@ -1,7 +1,7 @@
 import {canUndoAgentAction, visibleCaptureActionSql} from '../lib/agent-action-visibility.js';
 import type { AppRunTransaction } from '../lib/app-run-repository.js';
 import { reconcileApprovalReplyText } from '../lib/agent-approval-copy.js';
-import { projectMessagesForViewer } from '../lib/agent-message-run-details.js';
+import { emitMessageToSpaceViewers, projectMessagesForViewer } from '../lib/agent-message-run-details.js';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { AppRunError } from '../lib/app-run-errors.js';
@@ -247,7 +247,7 @@ async function maybePostApprovalConfirmation(params: {
 
   const io = getIO();
   if (io && posted?.confirmation) {
-    if (posted.reconciledMessage) io.to(`space:${posted.approvalMessage.space_id}`).emit('message:edited', posted.reconciledMessage);
+    if (posted.reconciledMessage) await emitMessageToSpaceViewers(io, { orgId: params.orgId, spaceId: posted.approvalMessage.space_id, event: 'message:edited', message: posted.reconciledMessage });
     io.to(`space:${posted.approvalMessage.space_id}`).emit('message:new', {
       ...posted.confirmation,
       user_name: posted.actor?.name ?? 'Defty',
