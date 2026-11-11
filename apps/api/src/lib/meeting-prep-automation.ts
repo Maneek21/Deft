@@ -2,6 +2,7 @@ import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import {
   events,
   meetingBriefs,
+  notifications,
   messages,
   orgs,
   orgMembers,
@@ -276,7 +277,14 @@ export async function generateMeetingPrep(eventId: string, now = new Date()) {
     }).returning();
     if (!brief) throw new Error('Meeting brief insert returned no row');
 
-    const notification = await createNotificationIfAllowed({
+    // D09: a failed run is reclaimed with the same run id. If an earlier
+    // attempt already notified for this run, the retry must not notify again.
+    const [alreadyNotified] = await db.select({ id: notifications.id }).from(notifications).where(and(
+      eq(notifications.org_id, meeting.org_id),
+      eq(notifications.user_id, meeting.user_id),
+      sql`${notifications.metadata}->>'automation_run_id' = ${claim.run.id}`,
+    )).limit(1);
+    const notification = alreadyNotified ? null : await createNotificationIfAllowed({
       org_id: meeting.org_id,
       user_id: meeting.user_id,
       type: 'system',
