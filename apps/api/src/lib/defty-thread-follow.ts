@@ -1,6 +1,7 @@
 import { and, desc, eq, lte, ne, or, sql } from 'drizzle-orm';
 import { messages, spaceMembers, spaces, users } from '@deft/db/schema';
 import { db } from './db.js';
+import type { CoreDatabaseTransaction } from './database-transaction.js';
 import { DEFTY_EMAIL } from './defty-identity.js';
 import { parseMentions } from './mentions.js';
 import { toPlainText } from './plain-text.js';
@@ -55,12 +56,17 @@ export async function shouldFollowThread(
     && context.pending.requesterId === input.authorId && isRecent(context.pending.createdAt, now));
 }
 
-async function loadThreadFollowContext(input: ThreadFollowInput): Promise<ThreadFollowContext | null> {
+/** Reads with `executor`, which may be the transaction that inserted the
+ * trigger message (it sees its own uncommitted row). */
+export async function loadThreadFollowContext(
+  input: ThreadFollowInput,
+  executor: Pick<CoreDatabaseTransaction, 'select' | 'selectDistinct'> = db,
+): Promise<ThreadFollowContext | null> {
   if (!input.parentId) return null;
   // The just-inserted trigger is also the cutoff. Reading a whole thread after
   // insertion would mistake that human message for the newest prior message.
   const [[trigger], [parent], [defty]] = await Promise.all([
-    db.select({ createdAt: messages.created_at, kind: users.kind, isAgent: users.is_agent, spaceType: spaces.type })
+    executor.select({ createdAt: messages.created_at, kind: users.kind, isAgent: users.is_agent, spaceType: spaces.type })
       .from(messages)
       .innerJoin(users, eq(messages.user_id, users.id))
       .innerJoin(spaces, and(eq(spaces.id, messages.space_id), eq(spaces.org_id, input.orgId)))
@@ -69,10 +75,10 @@ async function loadThreadFollowContext(input: ThreadFollowInput): Promise<Thread
         eq(messages.space_id, input.spaceId), eq(messages.user_id, input.authorId),
         eq(messages.parent_id, input.parentId), eq(messages.is_deleted, false)))
       .limit(1),
-    db.select({ id: messages.id }).from(messages)
+    executor.select({ id: messages.id }).from(messages)
       .where(and(eq(messages.id, input.parentId), eq(messages.org_id, input.orgId),
         eq(messages.space_id, input.spaceId), eq(messages.is_deleted, false))).limit(1),
-    db.select({ id: users.id }).from(users).where(eq(users.email, DEFTY_EMAIL)).limit(1),
+    executor.select({ id: users.id }).from(users).where(eq(users.email, DEFTY_EMAIL)).limit(1),
   ]);
   if (!trigger || !parent || !defty || trigger.spaceType !== input.spaceType) return null;
 
@@ -81,13 +87,13 @@ async function loadThreadFollowContext(input: ThreadFollowInput): Promise<Thread
     ne(messages.id, input.triggerMessageId),
     or(eq(messages.id, input.parentId), eq(messages.parent_id, input.parentId)));
   const [[latest], [pendingMessage], participants] = await Promise.all([
-    db.select({ userId: messages.user_id, createdAt: messages.created_at }).from(messages)
+    executor.select({ userId: messages.user_id, createdAt: messages.created_at }).from(messages)
       .where(threadScope).orderBy(desc(messages.created_at), desc(messages.id)).limit(1),
-    db.select({ metadata: messages.metadata }).from(messages)
+    executor.select({ metadata: messages.metadata }).from(messages)
       .where(and(threadScope, eq(messages.user_id, defty.id),
         sql`${messages.metadata}->'defty_pending'->>'kind' = 'action_draft'`))
       .orderBy(desc(messages.created_at), desc(messages.id)).limit(1),
-    db.selectDistinct({ name: users.name }).from(messages)
+    executor.selectDistinct({ name: users.name }).from(messages)
       .innerJoin(users, eq(messages.user_id, users.id))
       .where(and(threadScope, ne(users.id, input.authorId), ne(users.id, defty.id))),
   ]);
@@ -96,7 +102,7 @@ async function loadThreadFollowContext(input: ThreadFollowInput): Promise<Thread
   const draft = metadata?.defty_pending as Record<string, unknown> | undefined;
   let pending: ThreadFollowContext['pending'] = null;
   if (draft && typeof draft.request_message_id === 'string' && typeof draft.created_at === 'string') {
-    const [request] = await db.select({ userId: messages.user_id }).from(messages)
+    const [request] = await executor.select({ userId: messages.user_id }).from(messages)
       .where(and(eq(messages.id, draft.request_message_id), eq(messages.org_id, input.orgId),
         eq(messages.space_id, input.spaceId), eq(messages.is_deleted, false))).limit(1);
     if (request) pending = { requesterId: request.userId, createdAt: new Date(draft.created_at),

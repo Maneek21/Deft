@@ -1,5 +1,10 @@
-import {sql} from 'drizzle-orm';
-import {agentActions} from '@deft/db/schema';
+import {and, eq, sql, type SQL} from 'drizzle-orm';
+import {agentActions, messages, notes, projects, spaceMembers, spaces, tasks, wikiPages} from '@deft/db/schema';
+import {db} from './db.js';
+import {resolveSpaceTargetFromRows} from './resolve-space-target.js';
+import {requireSpaceMembership} from './space-membership.js';
+import {visibleTaskCondition} from './task-visibility.js';
+import {visibleWikiPageCondition} from './wiki-visibility.js';
 export function visibleCaptureActionSql(user: { id: string; org_id: string }) {
   return sql`(
     ${agentActions.source} IS DISTINCT FROM 'defty_capture'
@@ -56,4 +61,189 @@ export function visibleCaptureActionSql(user: { id: string; org_id: string }) {
       )
     )
   )`;
+}
+
+function stringField(value: unknown, key: string): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const field = (value as Record<string, unknown>)[key];
+  return typeof field === 'string' && field.trim() ? field : null;
+}
+
+/**
+ * Undo authority (C01). The caller must be the action's requester or an org
+ * owner/admin, AND must still be able to see the object the undo would change
+ * (task visibility for task actions, space membership for posted messages).
+ * Callers answer `false` exactly like a missing action.
+ */
+export async function canUndoAgentAction(
+  user: { id: string; org_id: string; role?: string },
+  action: { user_id: string; source?: string | null; action: string; params: unknown; result: unknown; before_state: unknown },
+): Promise<boolean> {
+  // params.source_user_id / origin_user_id can be supplied by a caller, so
+  // they count only on Defty capture actions, where the server stamps them
+  // (lib/defty-capture.ts) and user_id is the Defty system user.
+  const serverStampedSource = action.source === 'defty_capture';
+  const requester = action.user_id === user.id
+    || (serverStampedSource && stringField(action.params, 'source_user_id') === user.id)
+    || (serverStampedSource && stringField(action.params, 'origin_user_id') === user.id);
+  if (!requester && user.role !== 'owner' && user.role !== 'admin') return false;
+
+  switch (action.action) {
+    case 'create_task':
+    case 'update_task_status':
+    case 'assign_task': {
+      const taskId = stringField(action.before_state, 'task_id') ?? stringField(action.result, 'task_id');
+      if (!taskId) return true;
+      const [task] = await db.select({ id: tasks.id }).from(tasks)
+        .innerJoin(projects, eq(projects.id, tasks.project_id))
+        .where(and(eq(tasks.id, taskId), eq(tasks.org_id, user.org_id), visibleTaskCondition(user.id)))
+        .limit(1);
+      return Boolean(task);
+    }
+    case 'post_message': {
+      const messageId = stringField(action.result, 'message_id');
+      if (!messageId) return true;
+      const [message] = await db.select({ space_id: messages.space_id }).from(messages)
+        .where(and(eq(messages.id, messageId), eq(messages.org_id, user.org_id)))
+        .limit(1);
+      return Boolean(message && await requireSpaceMembership(message.space_id, user.id, user.org_id));
+    }
+    default:
+      return true;
+  }
+}
+
+/**
+ * Note promotion (C13): the actor's own note, an org note, or a space note
+ * in a space of the note's own org that the actor is a member of.
+ */
+export function promotableNoteSql(userId: string): SQL {
+  return sql`(
+    ${notes.user_id} = ${userId}
+    OR ${notes.visibility} = 'org'
+    OR (${notes.visibility} = 'space' AND EXISTS (
+      SELECT 1 FROM space_members promotable_note_sm
+      INNER JOIN spaces promotable_note_s ON promotable_note_s.id = promotable_note_sm.space_id
+      WHERE promotable_note_sm.space_id = ${notes.visibility_space_id}
+        AND promotable_note_s.org_id = ${notes.org_id}
+        AND promotable_note_sm.user_id = ${userId}
+    ))
+  )`;
+}
+
+const INVALID_TARGET = 'Invalid action target';
+
+function optionalString(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === 'string';
+}
+
+/**
+ * Spaces in the org the actor belongs to. Posting is limited to active
+ * spaces (as the post_message executor always was); canvas, knowledge and
+ * space-note writes follow their HTTP routes, which authorize by membership
+ * alone, so archived spaces are included for them.
+ */
+async function memberSpaces(orgId: string, userId: string, includeArchived = false) {
+  return db.select({ id: spaces.id, name: spaces.name, type: spaces.type, is_archived: spaces.is_archived })
+    .from(spaces)
+    .innerJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, userId)))
+    .where(and(eq(spaces.org_id, orgId), includeArchived ? undefined : eq(spaces.is_archived, false)));
+}
+
+export type NativeActionTarget = { params: Record<string, any> } | { error: string };
+
+/**
+ * Execution-time target authorization for native writes (C03). Rejects
+ * malformed target types, then resolves ONE target among the targets the
+ * acting principal (the user the action runs for, or the employee's user)
+ * may use under the HTTP route's rule: wiki page visibility, or membership of
+ * the target space. Name lookups only consider the actor's own spaces, so an
+ * answer never depends on, or reveals, a space the actor cannot see. The
+ * returned params carry the authorized space id, and the executor uses that
+ * id instead of repeating the name search. Caller-supplied resolved ids are
+ * dropped. Actions this does not govern pass through unchanged.
+ */
+export async function authorizeNativeActionTarget(
+  action: string,
+  params: Record<string, any>,
+  orgId: string,
+  userId: string,
+): Promise<NativeActionTarget> {
+  switch (action) {
+    case 'post_message': {
+      if (!optionalString(params.space_id) || !optionalString(params.resolved_space_id)
+        || !optionalString(params.space_name)) return { error: INVALID_TARGET };
+      const resolved = resolveSpaceTargetFromRows(await memberSpaces(orgId, userId), {
+        spaceId: params.space_id ?? params.resolved_space_id,
+        spaceName: params.space_name,
+      });
+      if (resolved.status !== 'resolved') return { error: resolved.message };
+      return { params: { ...params, space_id: resolved.space.id, resolved_space_id: resolved.space.id } };
+    }
+    case 'add_knowledge':
+    case 'write_canvas': {
+      const next = { ...params };
+      delete next.resolved_space_id;
+      if (action === 'write_canvas' && (params.space_name === undefined || params.space_name === null)) {
+        return { params: next };
+      }
+      if (typeof params.space_name !== 'string') return { error: INVALID_TARGET };
+      const spaceName = action === 'write_canvas' ? params.space_name.trim() : params.space_name;
+      if (!spaceName) return action === 'write_canvas' ? { params: next } : { error: INVALID_TARGET };
+      const wanted = spaceName.toLowerCase();
+      const rows = await memberSpaces(orgId, userId, true);
+      const exact = rows.filter((space) => space.name.toLowerCase() === wanted);
+      // write_canvas matches the whole name; add_knowledge matches a part of
+      // it, preferring a single whole-name match.
+      const candidates = action === 'write_canvas' || exact.length === 1
+        ? exact
+        : rows.filter((space) => space.name.toLowerCase().includes(wanted));
+      if (candidates.length === 0) return { error: `Space "${spaceName}" not found` };
+      if (candidates.length > 1) return { error: `Space "${spaceName}" matches more than one space; use its full name` };
+      return { params: { ...next, resolved_space_id: candidates[0]!.id } };
+    }
+    case 'post_thread_reply': {
+      if (!optionalString(params.parent_message_id)) return { error: INVALID_TARGET };
+      const parentId = params.parent_message_id;
+      if (!parentId) return { params };
+      const [parent] = await db.select({ space_id: messages.space_id }).from(messages)
+        .where(and(eq(messages.id, parentId), eq(messages.org_id, orgId), eq(messages.is_deleted, false)))
+        .limit(1);
+      return !parent || await requireSpaceMembership(parent.space_id, userId, orgId)
+        ? { params }
+        : { error: 'Parent message not found in this org' };
+    }
+    case 'create_note': {
+      if (params.visibility !== 'space') return { params };
+      if (!optionalString(params.visibility_space_id)) return { error: INVALID_TARGET };
+      if (!params.visibility_space_id) return { params };
+      const [space] = await db.select({ id: spaces.id }).from(spaces).where(and(
+        eq(spaces.id, params.visibility_space_id),
+        eq(spaces.org_id, orgId),
+      )).limit(1);
+      return space && await requireSpaceMembership(space.id, userId, orgId)
+        ? { params }
+        : { error: 'I could not verify access to the target space for this note.' };
+    }
+    case 'wiki_write': {
+      if (!optionalString(params.slug)) return { error: INVALID_TARGET };
+      const related = params.related_slugs;
+      if (related !== undefined && related !== null
+        && !(Array.isArray(related) && related.every((slug: unknown) => typeof slug === 'string'))) {
+        return { error: INVALID_TARGET };
+      }
+      const slugs = [...(params.slug ? [params.slug as string] : []), ...((related ?? []) as string[])];
+      for (const slug of slugs) {
+        const pages = await db.select({ id: wikiPages.id }).from(wikiPages)
+          .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.slug, slug)));
+        if (pages.length === 0) continue;
+        const visible = await db.select({ id: wikiPages.id }).from(wikiPages)
+          .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.slug, slug), visibleWikiPageCondition(userId, orgId)));
+        if (visible.length !== pages.length) return { error: `Wiki page "${slug}" not found` };
+      }
+      return { params };
+    }
+    default:
+      return { params };
+  }
 }

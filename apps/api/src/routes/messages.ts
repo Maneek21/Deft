@@ -5,21 +5,17 @@ import { z } from 'zod';
 import { eq, and, desc, lt, lte, gt, sql, isNull, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { nativeCreate, nativeCreateKey, NativeCreateError } from '../lib/native-create.js';
-import { messages, users, reactions, spaces, spaceMembers, orgs, threadReads, messageVersions, agentEmployees, userGroups, userGroupMembers, orgMembers, files, messageAttachments as messageAttachmentLinks } from '@deft/db/schema';
+import { messages, users, reactions, spaces, spaceMembers, threadReads, messageVersions, files, messageAttachments as messageAttachmentLinks } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
-import { parseMentions } from '../lib/mentions.js';
 import { extractNativeMentions, NativeMentionLimitError } from '@deft/shared';
 import { nativeMentionsEnabled, enqueueNativeMentionPublication } from '../lib/native-mentions.js';
 import { fetchLinkPreview, extractUrls, type LinkPreview } from '../lib/link-preview.js';
-import { enqueue, QUEUE_NAMES, type QueueExecutor } from '../lib/queues.js';
-import { resolveReasonProvider } from '../lib/org-ai-config.js';
+import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { requireSpaceMembership } from '../lib/space-membership.js';
-import { DEFTY_EMAIL, ensureDeftyMembership } from '../lib/ensure-defty-membership.js';
 import { enqueueChatObservation } from '../lib/chat-observation.js';
 import { createNotificationIfAllowed, createNotificationsIfAllowed } from '../lib/notification-policy.js';
-import { normalizePlainAgentMentions } from '../lib/agent-mention-normalization.js';
 import { enqueueAgentEmployeeMessageJobs, resolveAgentEmployeeMessageTargets } from '../lib/dispatch-agent-message.js';
-import { shouldFollowThread } from '../lib/defty-thread-follow.js';
+import { enqueueDeftyWake, finishDeftyWake, type DeftyWakeOutcome, normalizeChatMentions, planDeftyWake, resolveMentionedUserIds } from '../lib/defty-wake.js';
 import { projectPendingDeftyMetadataForOutbound } from '../lib/defty-pending-action.js';
 import { toPlainText } from '../lib/plain-text.js';
 import {
@@ -110,95 +106,6 @@ async function getVisibleMessage(messageId: string, orgId: string, userId: strin
   return msg ? { ...msg, metadata: projectPendingDeftyMetadataForOutbound(msg.metadata) } : null;
 }
 
-async function resolveGroupMentionUserIds(content: string, orgId: string): Promise<string[]> {
-  const handles = Array.from(
-    new Set(
-      Array.from(content.matchAll(/(^|[\s(>])@([a-z0-9][a-z0-9-]*[a-z0-9]|[a-z0-9])\b/g))
-        .map((match) => match[2]?.toLowerCase())
-        .filter((handle): handle is string => !!handle),
-    ),
-  );
-  if (handles.length === 0) return [];
-
-  const rows = await db
-    .select({ user_id: userGroupMembers.user_id })
-    .from(userGroups)
-    .innerJoin(userGroupMembers, eq(userGroupMembers.group_id, userGroups.id))
-    .innerJoin(orgMembers, and(
-      eq(orgMembers.user_id, userGroupMembers.user_id),
-      eq(orgMembers.org_id, userGroups.org_id),
-      eq(orgMembers.is_active, true),
-    ))
-    .where(and(
-      eq(userGroups.org_id, orgId),
-      inArray(userGroups.handle, handles),
-    ));
-
-  return Array.from(new Set(rows.map((row) => row.user_id)));
-}
-
-type AgentReplyJobData = {
-  spaceId: string;
-  messageId: string;
-  parentId?: string;
-  orgId: string;
-  userId: string;
-  orgName: string;
-  content: string;
-  followed?: true;
-};
-
-/** One agent-reply job per trigger message. The dedupe key is derived from the
- * message id, so a retried or replayed enqueue is absorbed by the queue's
- * unique (org_id, dedupe_key) index instead of waking Defty twice. Pass the
- * message's transaction as `executor` so the job commits with the message. */
-function enqueueAgentReply(data: AgentReplyJobData, executor?: QueueExecutor): Promise<void> {
-  return enqueue(QUEUE_NAMES.AGENT_JOBS, 'agent-reply', data, {
-    orgId: data.orgId,
-    dedupeKey: `agent-reply:${data.messageId}`,
-    ...(executor ? { executor } : {}),
-  });
-}
-
-/** Decide, before the message is inserted, whether this post explicitly wakes
- * Defty: a Defty mention (structured or legacy alias), or any post in a DM /
- * agent_conversation space Defty belongs to. Implicit thread-follow depends on
- * the committed trigger row and is decided after commit. */
-async function resolveExplicitDeftyWake(params: {
-  orgId: string;
-  userId: string;
-  spaceId: string;
-  content: string;
-  mentionedUserIds: string[];
-}): Promise<boolean> {
-  if (params.mentionedUserIds.length > 0) {
-    const deftyMatch = await db
-      .select({ id: users.id })
-      .from(users)
-      .where(and(
-        inArray(users.id, params.mentionedUserIds),
-        eq(users.email, DEFTY_EMAIL),
-      ))
-      .limit(1);
-    if (deftyMatch.length > 0) return true;
-  }
-  // Backwards-compat fallback: legacy `<@agent|Deft>` and freeform `@defty`/`@deft`/`@agent` still trigger Defty.
-  if (/@(agent|defty|deft)\b|<@agent\|Defty?>/i.test(params.content)) return true;
-  const [spaceRow] = await db.select({ type: spaces.type })
-    .from(spaces).where(and(eq(spaces.id, params.spaceId), eq(spaces.org_id, params.orgId))).limit(1);
-  if (spaceRow && (spaceRow.type === 'dm' || spaceRow.type === 'agent_conversation')) {
-    const deftyUserId = await ensureDeftyMembership(params.orgId);
-    if (deftyUserId !== params.userId) {
-      const [deftyMember] = await db.select({ user_id: spaceMembers.user_id })
-        .from(spaceMembers)
-        .where(and(eq(spaceMembers.space_id, params.spaceId), eq(spaceMembers.user_id, deftyUserId)))
-        .limit(1);
-      if (deftyMember) return true;
-    }
-  }
-  return false;
-}
-
 // Helper: get reply counts and latest_reply_at for a set of message IDs
 async function getReplyStats(messageIds: string[]) {
   if (messageIds.length === 0) return new Map();
@@ -245,7 +152,7 @@ messageRoutes.post('/forward', async (c) => {
       user_id: messages.user_id,
       space_id: messages.space_id,
     }).from(messages)
-      .where(and(eq(messages.id, message_id), eq(messages.org_id, user.org_id)))
+      .where(and(eq(messages.id, message_id), eq(messages.org_id, user.org_id), eq(messages.is_deleted, false)))
       .limit(1);
 
     // A source the caller cannot read answers exactly like a missing one, so
@@ -470,51 +377,11 @@ messageRoutes.post('/:spaceId', async (c) => {
       }
     }
 
-    // Normalize plain @defty / @deft / @agent (case-insensitive) into structured
-    // mentions so the renderer styles them as pills uniformly.
-    let normalizedContent = parsed.data.content;
-    if (!/<@[^|]+\|Defty?>/i.test(normalizedContent)) {
-      const hasLegacyAgent = /(^|[^a-z0-9_])@(defty|deft|agent)\b/i.test(normalizedContent);
-      if (hasLegacyAgent) {
-        const deftyUserId = await ensureDeftyMembership(user.org_id);
-        normalizedContent = normalizedContent.replace(
-          /(^|[^a-z0-9_])@(defty|deft|agent)\b/gi,
-          (_match, prefix) => `${prefix}<@${deftyUserId}|Defty>`,
-        );
-      }
-    }
-
-    const plainMentionScan = normalizedContent.replace(/<@[^>]+>/g, '');
-    if (/(^|[^a-z0-9_])@[a-z0-9]/i.test(plainMentionScan)) {
-      const agentIdentities = await db
-        .select({
-          userId: agentEmployees.user_id,
-          name: agentEmployees.name,
-          slug: agentEmployees.slug,
-        })
-        .from(agentEmployees)
-        .innerJoin(users, eq(agentEmployees.user_id, users.id))
-        .where(and(
-          eq(agentEmployees.org_id, user.org_id),
-          eq(agentEmployees.is_active, true),
-        ));
-      const plainAgentMentions = normalizePlainAgentMentions(
-        normalizedContent,
-        agentIdentities.flatMap((agent) => agent.userId ? [{
-          userId: agent.userId,
-          name: agent.name,
-          slug: agent.slug,
-        }] : []),
-      );
-      if (plainAgentMentions.ambiguousAliases.length > 0) {
-        const handles = plainAgentMentions.ambiguousAliases.map((alias) => `@${alias}`).join(', ');
-        return c.json({
-          error: `${handles} matches more than one active agent. Choose the intended agent from the mention menu.`,
-          code: 'AMBIGUOUS_AGENT_MENTION',
-        }, 409);
-      }
-      normalizedContent = plainAgentMentions.content;
-    }
+    // Normalize plain @defty / @deft / @agent and plain agent-employee aliases
+    // into structured mentions (shared with the human MCP tools).
+    const normalized = await normalizeChatMentions(user.org_id, parsed.data.content);
+    if (!normalized.ok) return c.json({ error: normalized.error, code: normalized.code }, 409);
+    const normalizedContent = normalized.content;
 
     const attachmentIds = normalizeAttachmentIds(parsed.data.file_ids, normalizedContent);
     if (attachmentIds.length > MAX_MESSAGE_ATTACHMENTS) {
@@ -524,12 +391,7 @@ messageRoutes.post('/:spaceId', async (c) => {
       }, 400);
     }
 
-    const { userIds: directMentionedUserIds } = parseMentions(normalizedContent);
-    const groupMentionedUserIds = await resolveGroupMentionUserIds(normalizedContent, user.org_id);
-    const mentionedUserIds = Array.from(new Set([
-      ...directMentionedUserIds,
-      ...groupMentionedUserIds,
-    ]));
+    const mentionedUserIds = await resolveMentionedUserIds(normalizedContent, user.org_id);
 
     // A07: an explicit Defty wake is decided before the insert so the
     // agent-reply job commits in the same transaction as the message. If the
@@ -543,20 +405,11 @@ messageRoutes.post('/:spaceId', async (c) => {
     // openai / openrouter / ollama), and the key usually lives in org config,
     // not env. Gating on Anthropic here silently dropped Defty whenever the
     // org ran on OpenAI/etc. with no Anthropic key.
-    const explicitDeftyWake = await resolveExplicitDeftyWake({
+    const deftyWakeInput = {
       orgId: user.org_id, userId: user.id, spaceId, content: normalizedContent, mentionedUserIds,
-    });
-    let deftyProviderReason: Awaited<ReturnType<typeof resolveReasonProvider>> | null = null;
-    let deftyProviderReady = false;
-    if (explicitDeftyWake) {
-      deftyProviderReason = await resolveReasonProvider(user.org_id);
-      deftyProviderReady = Boolean(deftyProviderReason.apiKey) || deftyProviderReason.provider === 'ollama';
-    }
-    let deftyOrgName = 'Unknown';
-    if (explicitDeftyWake && deftyProviderReady) {
-      const [org] = await db.select({ name: orgs.name }).from(orgs).where(eq(orgs.id, user.org_id)).limit(1);
-      deftyOrgName = org?.name ?? 'Unknown';
-    }
+      parentId: parsed.data.parent_id ?? null,
+    };
+    const deftyWake = await planDeftyWake(deftyWakeInput);
 
     // A07b: BYOA employee wakes (employee mention, or any post in a dm /
     // agent_conversation an employee belongs to) are resolved before the
@@ -575,6 +428,7 @@ messageRoutes.post('/:spaceId', async (c) => {
     });
 
     let messageAttachments: MessageAttachment[] = [];
+    let deftyWakeOutcome: DeftyWakeOutcome | null = null;
     const { value: message, replayed } = await nativeCreate({
       orgId: user.org_id, userId: user.id, operation: `message:${spaceId}`,
       key: nativeCreateKey(c.req.header('Idempotency-Key')), payload: parsed.data,
@@ -590,17 +444,7 @@ messageRoutes.post('/:spaceId', async (c) => {
         if (!insertedMessage) throw new Error('Message insert returned no row');
         await enqueueNativeMentionPublication(tx, { orgId: user.org_id, userId: user.id },
           { kind: 'message', id: insertedMessage.id }, normalizedContent);
-        if (explicitDeftyWake && deftyProviderReady) {
-          await enqueueAgentReply({
-            spaceId,
-            messageId: insertedMessage.id,
-            parentId: parsed.data.parent_id,
-            orgId: user.org_id,
-            userId: user.id,
-            orgName: deftyOrgName,
-            content: normalizedContent,
-          }, tx);
-        }
+        deftyWakeOutcome = await enqueueDeftyWake(tx, deftyWake, { ...deftyWakeInput, messageId: insertedMessage.id });
         await enqueueAgentEmployeeMessageJobs(employeeWakeTargets, {
           messageId: insertedMessage.id, spaceId, orgId: user.org_id,
         }, tx);
@@ -822,93 +666,9 @@ messageRoutes.post('/:spaceId', async (c) => {
 
     // Defty is the only agent that fires agent-reply. BYOA agent mentions are
     // handled separately (agent-employee-message); we must NOT fire
-    // agent-reply for them. Explicit wakes (Defty mention, DM /
-    // agent_conversation with Defty) were decided before the insert and, when
-    // a provider is ready, their job already committed with the message.
-    let agentMentioned = explicitDeftyWake;
-    // Follow an engaged Defty thread — no mention required. This reads the
-    // committed trigger row, so it is decided (and enqueued) after commit.
-    if (!agentMentioned) {
-      const [spaceRow] = await db.select({ type: spaces.type })
-        .from(spaces).where(and(eq(spaces.id, spaceId), eq(spaces.org_id, user.org_id))).limit(1);
-      if (spaceRow && parsed.data.parent_id
-        && (spaceRow.type === 'public' || spaceRow.type === 'private' || spaceRow.type === 'group_dm')) {
-        const humanMentions = mentionedUserIds.length > 0
-          ? await db.select({ id: users.id }).from(users)
-            .where(and(inArray(users.id, mentionedUserIds), eq(users.kind, 'human'))).limit(1)
-          : [];
-        const followed = await shouldFollowThread({
-          orgId: user.org_id, spaceId, triggerMessageId: message!.id,
-          spaceType: spaceRow.type, parentId: parsed.data.parent_id,
-          authorId: user.id, content: normalizedContent, mentionsHuman: humanMentions.length > 0,
-        });
-        if (followed) {
-          agentMentioned = true;
-          deftyProviderReason = await resolveReasonProvider(user.org_id);
-          deftyProviderReady = Boolean(deftyProviderReason.apiKey) || deftyProviderReason.provider === 'ollama';
-          if (deftyProviderReady) {
-            try {
-              const [org] = await db.select({ name: orgs.name })
-                .from(orgs)
-                .where(eq(orgs.id, user.org_id))
-                .limit(1);
-              await enqueueAgentReply({
-                spaceId,
-                messageId: message!.id,
-                parentId: parsed.data.parent_id,
-                orgId: user.org_id,
-                userId: user.id,
-                orgName: org?.name ?? 'Unknown',
-                content: normalizedContent,
-                followed: true,
-              });
-            } catch (err) {
-              // An implicit thread-follow is best-effort: the message is already
-              // committed and the user did not address Defty directly.
-              console.error('Failed to enqueue agent reply (thread follow):', err);
-            }
-          }
-        }
-      }
-    }
-    if (agentMentioned && !deftyProviderReady && deftyProviderReason) {
-      try {
-        const [spaceRow] = await db.select({ type: spaces.type })
-          .from(spaces)
-          .where(eq(spaces.id, spaceId))
-          .limit(1);
-        const isDmLike = spaceRow?.type === 'dm' || spaceRow?.type === 'group_dm' || spaceRow?.type === 'agent_conversation';
-        const replyParentId = isDmLike ? (parsed.data.parent_id ?? null) : (parsed.data.parent_id || message!.id);
-        const deftyUserId = await ensureDeftyMembership(user.org_id);
-        const [agentMessage] = await db.insert(messages).values({
-          org_id: user.org_id,
-          space_id: spaceId,
-          user_id: deftyUserId,
-          content: `I need a usable reasoning model before I can answer. The current Defty reasoning route resolves to ${deftyProviderReason.provider}, but no usable ${deftyProviderReason.provider === 'ollama' ? 'Ollama endpoint' : 'API key'} is configured. Ask an admin to configure a reasoning provider in Settings > AI.`,
-          parent_id: replyParentId,
-          metadata: {
-            is_agent_reply: true,
-            kind: 'defty_provider_unavailable',
-            provider: deftyProviderReason.provider,
-            model: deftyProviderReason.model,
-          } as never,
-        }).returning();
-
-        const io = getIO();
-        if (io && agentMessage) {
-          io.to(`space:${spaceId}`).emit('message:new', {
-            ...agentMessage,
-            user_name: 'Defty',
-            user_avatar: null,
-            reactions: [],
-            reply_count: 0,
-            latest_reply_at: null,
-          });
-        }
-      } catch (err) {
-        console.error('Failed to post Defty provider-unavailable reply:', err);
-      }
-    }
+    // agent-reply for them. Explicit and thread-follow wakes already committed
+    // with the message; this only adds the no-provider reply.
+    await finishDeftyWake(deftyWakeOutcome, { ...deftyWakeInput, messageId: message!.id });
 
     // BYOA agent-employee wakes already committed with the message (A07b).
 

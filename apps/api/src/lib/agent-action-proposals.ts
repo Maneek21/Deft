@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import {collectCompilerReadFacts,validateCompilerGrounding} from './agent-compiler-read-facts.js';
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { agentActions, messages, orgs, projects, tasks } from '@deft/db/schema';
-import { getApprovalTier } from './agent-approval.js';
+import { getApprovalTier, mandatoryApprovalTier } from './agent-approval.js';
+import { isDatabaseError } from './defty-reply-guard.js';
 import { db } from './db.js';
 import { getOrgAIConfig } from './org-ai-config.js';
 import { resolveProjectTarget } from './resolve-project-target.js';
@@ -70,6 +71,11 @@ type PersistReplyWithActionsParams = {
   resolvePendingMessageId?: string;
   metadata: Record<string, any>;
   pendingActions: ProposedAgentAction[];
+  /** Runs first inside the reply transaction. Returning a row means this
+   * reply already exists: nothing is inserted and that row is returned. */
+  replyGuard?: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => Promise<typeof messages.$inferSelect | null>;
+  /** Runs last inside the reply transaction, immediately before COMMIT; throwing rolls the reply back. */
+  beforeCommit?: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => Promise<void>;
 };
 
 function safeActionParamsForMessage(action: string, actionParams: unknown): unknown {
@@ -225,6 +231,8 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
   }
 
   const persisted = await db.transaction(async (tx) => {
+    const existingReply = params.replyGuard ? await params.replyGuard(tx) : null;
+    if (existingReply) return { message: existingReply, actions: [], duplicates: [], replayed: true };
     const resolvePendingClarifications = async (currentMessageId: string) => {
       if (!params.resolvePendingMessageId) return;
       const pendingScope = and(
@@ -290,6 +298,8 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
         );
         proposal.params = canonicalParams as Record<string, any>;
       } catch (error) {
+        // Any database error aborts the transaction: surface it with its own SQLSTATE, never continue.
+        if (isDatabaseError(error)) throw error;
         rejectedAtBoundary.add(proposal);
         rejectedModuleActions.push(proposal.action);
         console.warn('[agent-action-proposals] Rejected module proposal at transaction boundary', {
@@ -442,10 +452,12 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
       const coherentMetadata = reconcileProposalTextBlocks(finalMetadata, finalContent, params.content);
       await tx.update(messages).set({ content: finalContent, metadata: coherentMetadata as never }).where(eq(messages.id, agentMessage.id));
       await resolvePendingClarifications(agentMessage.id);
+      await params.beforeCommit?.(tx);
       return {
         message: { ...agentMessage, content: finalContent, metadata: coherentMetadata as never },
         actions: linkedActions,
         duplicates: duplicateActions,
+        replayed: false,
       };
     }
 
@@ -486,10 +498,12 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
     await tx.update(messages).set({ content: finalContent, metadata: coherentMetadata as never }).where(eq(messages.id, agentMessage.id));
 
     await resolvePendingClarifications(agentMessage.id);
+    await params.beforeCommit?.(tx);
     return {
       message: { ...agentMessage, content: finalContent, metadata: coherentMetadata as never },
       actions: persistedActions,
       duplicates: duplicateActions,
+      replayed: false,
     };
   });
   await Promise.all(persisted.actions.map((action) =>
@@ -504,7 +518,7 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
 }
 
 function normalizeApprovalTier(action: ProposedAgentAction): ApprovalTier {
-  const tier = action.approval_tier ?? getApprovalTier(action.action);
+  const tier = mandatoryApprovalTier(action.action, action.approval_tier ?? getApprovalTier(action.action), action.params);
   return tier === 'auto' ? 'quick' : tier;
 }
 

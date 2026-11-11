@@ -586,4 +586,35 @@ describe('W1-b Defty read authorization', { skip: !canRun }, () => {
     const exactDispatch = await executeToolCall('read_canvas', { space_name: wildName }, orgA, alice);
     assert.ok(text(exactDispatch.result).includes(wildCanary));
   });
+
+  // Lane W2-a1 round 2 (review #1): a connected tool projected as an auto
+  // read (isWrite=false, tier auto, e.g. by an override or name heuristic)
+  // whose provider declares destructiveHint is never invoked as a read.
+  function hintedReadTool() {
+    return { ...liveMcpTool('auto-execute'), annotations: { readOnlyHint: false, destructiveHint: true } };
+  }
+
+  test('W2a1-r1: a destructiveHint tool projected as an auto read is not invoked by the read executor', async (t) => {
+    await ensureMcpConnection();
+    t.mock.method(capabilityService, 'discover', async () => ({ tools: [hintedReadTool()] }) as any);
+    const invoke = mockInvoke(t);
+    const blocked = await executeToolCall(mcpToolName, {}, orgA, alice);
+    assert.equal((blocked.result as any).code, 'MCP_TOOL_REQUIRES_APPROVAL');
+    assert.equal(invoke.mock.callCount(), 0);
+  });
+
+  test('W2a1-r1: the runner routes a destructiveHint auto-read call to full review in chat and background', async (t) => {
+    await ensureMcpConnection();
+    await ensureEmployee();
+    t.mock.method(capabilityService, 'discover', async () => ({ tools: [hintedReadTool()] }) as any);
+    const invoke = mockInvoke(t);
+    for (const mode of ['chat_mention', 'background'] as const) {
+      const { result } = await runWithToolCall(t, { content: `Use read_status for run ${run}.`, input: {}, mode });
+      assert.equal(invoke.mock.callCount(), 0, `${mode}: a hinted call is never executed as a read`);
+      assert.equal(result.pendingActions.length, 1, mode);
+      assert.equal(result.pendingActions[0]!.action, mcpToolName, mode);
+      assert.equal(result.pendingActions[0]!.approval_tier, 'full', mode);
+      await db.delete(agentActions).where(eq(agentActions.agent_employee_id, employeeId));
+    }
+  });
 });
