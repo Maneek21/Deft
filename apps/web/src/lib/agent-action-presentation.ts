@@ -306,11 +306,83 @@ function getDueLabel(params: Record<string, any>) {
     'remind_at',
   ]);
   if (!value) return '';
-  const parsed = new Date(value);
-  if (Number.isFinite(parsed.getTime()) && /^\d{4}-\d{2}-\d{2}/.test(value)) {
-    return parsed.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return formatApprovalDateTime(value);
+}
+
+/**
+ * A date or date-time a reviewer approves, in full: a date-only value as a
+ * calendar date, anything with a time as date, time and time zone.
+ */
+export function formatApprovalDateTime(value: string): string {
+  const trimmed = value.trim();
+  const parsed = new Date(trimmed);
+  if (!/^\d{4}-\d{2}-\d{2}/.test(trimmed) || !Number.isFinite(parsed.getTime())) {
+    return truncateApprovalText(trimmed, 40);
   }
-  return truncateApprovalText(value, 30);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return parsed.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' });
+  }
+  return parsed.toLocaleString(undefined, {
+    year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short',
+  });
+}
+
+const TASK_PATCH_HANDLED_KEYS = new Set([
+  'status', 'assignee_name', 'priority', 'due_date', 'label_name', 'comment', 'task_identifier',
+]);
+
+function humanizeField(key: string) {
+  return key.replace(/_id$/, '').replaceAll('_', ' ');
+}
+
+/**
+ * Every change a task mutation will make, including fields it clears, so a
+ * reviewer never approves a write they cannot see.
+ */
+export function getTaskChangeList(params: Record<string, any>, actionName = ''): string[] {
+  const changes: string[] = [];
+  const add = (change: string) => {
+    if (change && !changes.includes(change)) changes.push(change);
+  };
+  const status = getNestedStringParam(params, ['new_status', 'status', 'patch.status']);
+  if (status) add(`move to ${status.replaceAll('_', ' ')}`);
+  const assignee = getNestedStringParam(params, ['assignee_name', 'assignee', 'patch.assignee_name']);
+  if (assignee) add(`assign to ${assignee}`);
+  const priority = getNestedStringParam(params, ['priority', 'patch.priority']);
+  if (priority) add(`set priority ${priority.toUpperCase()}`);
+  const due = getDueLabel(params);
+  if (due) add(`set due ${due}`);
+  const label = getNestedStringParam(params, ['label_name', 'patch.label_name']);
+  if (label) add(`add label ${label}`);
+  const comment = getNestedStringParam(params, ['comment', 'content', 'patch.comment']);
+  if (comment) add('add a comment');
+  if (actionName === 'set_due_date' && 'due_date' in params && (params.due_date === null || params.due_date === '')) {
+    add('clear due date');
+  }
+  if (actionName === 'assign_task' && !assignee && 'assignee_name' in params
+    && (params.assignee_name === null || params.assignee_name === '')) {
+    add('clear assignee');
+  }
+  const patch = objectValue(params.patch);
+  for (const [key, value] of Object.entries(patch ?? {})) {
+    if (value === null || (typeof value === 'string' && !value.trim())) {
+      add(`clear ${humanizeField(key)}`);
+      continue;
+    }
+    if (TASK_PATCH_HANDLED_KEYS.has(key)) continue;
+    if (key === 'assignee_id') {
+      if (!assignee) add('change assignee');
+    } else if (key === 'title' && typeof value === 'string') {
+      add(`rename to "${truncateApprovalText(cleanText(value), 40)}"`);
+    } else if (typeof value === 'string' && /(_date|_at)$/.test(key)) {
+      add(`set ${humanizeField(key)} ${formatApprovalDateTime(value)}`);
+    } else if (typeof value === 'number' || typeof value === 'boolean') {
+      add(`set ${humanizeField(key)} to ${String(value)}`);
+    } else {
+      add(`update ${humanizeField(key)}`);
+    }
+  }
+  return changes;
 }
 
 function getScopeLabel(params: Record<string, any>) {
@@ -377,6 +449,13 @@ function getTaskPatchSummary(params: Record<string, any>, actionName = '') {
 
   if (actionName === 'close_task') return `Mark ${task} done`;
   if (actionName === 'reopen_task') return `Reopen ${task}`;
+  // Several changes (or any clear) are listed in full; one change keeps the
+  // short phrasing below.
+  const changes = getTaskChangeList(params, actionName);
+  const singlePhrased = ['move to ', 'assign to ', 'set priority ', 'set due ', 'add label ', 'add a comment'];
+  if (changes.length > 1 || (changes.length === 1 && !singlePhrased.some((prefix) => changes[0]!.startsWith(prefix)))) {
+    return `Update ${task}: ${changes.join('; ')}`;
+  }
   if (status) return `Move ${task} to ${status.replaceAll('_', ' ')}`;
   if (assignee) return `Assign ${task} to ${assignee}`;
   if (priority) return `Set ${task} to ${priority.toUpperCase()}`;

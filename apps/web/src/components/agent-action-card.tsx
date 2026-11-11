@@ -468,10 +468,22 @@ function getDraftDetailText(actionName: string, params: Record<string, any>, lab
     }
     return lines.filter(Boolean).join('\n\n');
   }
-  if (actionName === 'task_update' && params.patch && typeof params.patch === 'object'
-    && typeof params.patch.comment === 'string') {
+  if (actionName === 'task_update' && params.patch && typeof params.patch === 'object' && !Array.isArray(params.patch)) {
+    // Every field the update writes, including the ones it clears.
     const task = getStringParam(params, ['task_identifier', 'task_id']);
-    return [task ? `Task: ${task}` : '', params.patch.comment].filter(Boolean).join('\n\n');
+    const fields = Object.entries(params.patch as Record<string, unknown>)
+      .filter(([key]) => key !== 'comment')
+      .map(([key, value]) => `${key.replaceAll('_', ' ')}: ${value === null || value === '' ? 'cleared'
+        : typeof value === 'string' ? value : JSON.stringify(value)}`);
+    const comment = typeof params.patch.comment === 'string' ? params.patch.comment : '';
+    return [task ? `Task: ${task}` : '', fields.join('\n'), comment].filter(Boolean).join('\n\n');
+  }
+  if (actionName === 'create_reminder') {
+    const remindAt = typeof params.remind_at === 'string' ? new Date(params.remind_at) : null;
+    const when = remindAt && Number.isFinite(remindAt.getTime())
+      ? remindAt.toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })
+      : getStringParam(params, ['remind_at']);
+    return [when ? `When: ${when}` : '', getStringParam(params, ['content', 'message', 'title'])].filter(Boolean).join('\n\n');
   }
   const messageActions = new Set(['post_message', 'message_post', 'send_message', 'post_thread_reply']);
   if (messageActions.has(actionName)) {
@@ -498,8 +510,10 @@ function getDraftDetailText(actionName: string, params: Record<string, any>, lab
     const task = getStringParam(params, ['task_identifier', 'task_id', 'id']);
     const status = getStringParam(params, ['new_status', 'status']) ||
       (actionName === 'close_task' ? 'done' : actionName === 'reopen_task' ? 'reopened' : '');
-    const assignee = getStringParam(params, ['assignee_name', 'assignee']);
-    const due = getStringParam(params, ['due_date', 'dueDate']);
+    const assignee = getStringParam(params, ['assignee_name', 'assignee'])
+      || (actionName === 'assign_task' && 'assignee_name' in params && !params.assignee_name ? 'cleared' : '');
+    const due = getStringParam(params, ['due_date', 'dueDate'])
+      || (actionName === 'set_due_date' && 'due_date' in params && !params.due_date ? 'cleared' : '');
     const priority = getStringParam(params, ['priority']);
     return [
       task ? `Task: ${task}` : '',
