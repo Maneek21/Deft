@@ -10,7 +10,7 @@ import { parseModuleRecordResourceId } from '@deft/shared/modules';
 import { appHttpFailure } from './app-http-errors.js';
 import { randomUUID } from 'node:crypto';
 import { eq, and, asc, desc, sql, inArray, isNull } from 'drizzle-orm';
-import { db, type DbAdvisoryLease } from '../lib/db.js';
+import { ADVISORY_LEASE_ACQUIRE_TIMEOUT_MS, db, type DbAdvisoryLease } from '../lib/db.js';
 import {
   agentActions,
   appRuns,
@@ -1377,7 +1377,11 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
     // way nothing was claimed or changed: answer with the retryable busy.
     // Never take over a live execution.
     if (leased.reason === 'pool_busy') {
-      return c.json({ status: 'executing', message: 'approvals are busy; try again shortly' }, 202);
+      // Nothing was claimed, so no recovery will move this action: answer
+      // with a retryable refusal (not "executing") so the card offers its
+      // approve and reject controls again.
+      c.header('Retry-After', String(APPROVAL_BUSY_RETRY_AFTER_SECONDS));
+      return c.json({ error: 'Approvals are busy right now. Try again in a moment.', code: 'APPROVAL_BUSY' }, 503);
     }
     const current = await loadOrgAction(actionId, user.org_id);
     if (!current) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
@@ -1389,6 +1393,9 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
   }
   return leased.value;
 });
+
+/** Matches the lease's connection wait: a retry after this has a fair chance. */
+const APPROVAL_BUSY_RETRY_AFTER_SECONDS = Math.ceil(ADVISORY_LEASE_ACQUIRE_TIMEOUT_MS / 1000);
 
 /** Finaliser hooks shared by the approve route and the maintenance sweep. */
 export const approvalFinaliserHooks: ApprovalFinaliserHooks = {

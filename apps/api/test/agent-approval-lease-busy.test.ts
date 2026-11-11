@@ -58,9 +58,10 @@ function within<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
 }
 
 test('lease-busy: an approval returns the busy answer promptly when no advisory connection is free', { skip: !canRun }, async () => {
+  const projectName = (await f.client.query('SELECT name FROM projects WHERE id = $1', [f.projectId])).rows[0].name;
   const actionId = await f.insertAction({
-    action: 'update_task_status',
-    params: { task_identifier: `${f.prefix}-1`, new_status: 'done' },
+    action: 'create_task',
+    params: { title: `lease busy ${randomUUID()}`, project_name: projectName },
     status: 'pending',
     executed: false,
   });
@@ -89,8 +90,13 @@ test('lease-busy: an approval returns the busy answer promptly when no advisory 
       10_000,
       'the approve request',
     );
-    assert.equal(response.status, 202, await response.clone().text());
-    assert.equal((await response.json() as { status: string }).status, 'executing');
+    // A retryable refusal, not "executing": the card puts its approve and
+    // reject controls back, and nothing was claimed.
+    assert.equal(response.status, 503, await response.clone().text());
+    assert.equal(response.headers.get('retry-after'), '3');
+    const body = await response.json() as { error?: string; code?: string };
+    assert.equal(body.code, 'APPROVAL_BUSY');
+    assert.equal(typeof body.error, 'string');
     assert.deepEqual(await snapshot(actionId), before);
 
     const sweep = await within(
@@ -108,4 +114,9 @@ test('lease-busy: an approval returns the busy answer promptly when no advisory 
   // A timed-out wait did not keep a connection: the whole pool is usable again.
   const reacquired = await within(occupyAdvisoryPool(), 5_000, 'reacquiring every advisory connection');
   await reacquired();
+
+  // Once the pool frees, the same approval goes through.
+  const retried = await f.as(f.requesterId, `/api/agent/actions/${actionId}/approve`, { method: 'POST' });
+  assert.equal(retried.status, 200, await retried.clone().text());
+  assert.equal((await snapshot(actionId)).approval_status, 'approved');
 });
