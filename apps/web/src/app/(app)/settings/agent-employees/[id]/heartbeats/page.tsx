@@ -31,8 +31,6 @@ type EmployeeSummary = {
   name: string;
   daily_action_count: number;
   max_daily_actions: number;
-  daily_cost_cents: number;
-  daily_budget_cents: number;
   unhealthy: boolean;
   unhealthy_reason: string | null;
 };
@@ -99,8 +97,6 @@ export default function HeartbeatsPage() {
           name: emp.name,
           daily_action_count: emp.daily_action_count ?? 0,
           max_daily_actions: emp.max_daily_actions ?? 0,
-          daily_cost_cents: emp.daily_cost_cents ?? 0,
-          daily_budget_cents: emp.daily_budget_cents ?? 0,
           unhealthy: !!emp.unhealthy,
           unhealthy_reason: emp.unhealthy_reason ?? null,
         });
@@ -225,20 +221,11 @@ export default function HeartbeatsPage() {
               {employee.unhealthy_reason ? `: ${employee.unhealthy_reason}` : '.'}
             </div>
           )}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3">
             <div>
               <div className="text-xs text-slate-500">Actions</div>
               <div className="text-lg font-semibold mt-0.5">
                 {employee.daily_action_count} / {employee.max_daily_actions}
-              </div>
-            </div>
-            <div>
-              <div className="text-xs text-slate-500 flex items-center">
-                <DollarSign size={11} className="mr-0.5" />
-                Cost
-              </div>
-              <div className="text-lg font-semibold mt-0.5">
-                {fmtCost(employee.daily_cost_cents)} / {fmtCost(employee.daily_budget_cents)}
               </div>
             </div>
           </div>
