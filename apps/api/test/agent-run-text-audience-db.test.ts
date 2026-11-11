@@ -256,7 +256,7 @@ test('W2a4-C: references from an earlier reply\'s audience-only citations reach 
     'the requester continuing their own conversation keeps the reference');
   assert.deepEqual(await collectRecentAgentTaskReferences({ ...options(bobNext, ids.peer), promptContent: 'mark it as done' }), [],
     'another member\'s compiler prompt receives no reference from audience-only citations');
-  const fallback = async (messageId: string, requesterId: string) => JSON.stringify(await buildReferentialStatusUpdateFallback({ ...options(messageId, requesterId), content: 'mark it as done' }));
+  const fallback = async (messageId: string, requesterId: string) => JSON.stringify(await buildReferentialStatusUpdateFallback({ ...options(messageId, requesterId), content: 'mark them as done' }));
   assert.match(await fallback(aliceNext, ids.insider), /SECRET-12/);
   assert.doesNotMatch(await fallback(bobNext, ids.peer), /SECRET-12/);
   // A reference in the shared, visible body still serves everyone.
