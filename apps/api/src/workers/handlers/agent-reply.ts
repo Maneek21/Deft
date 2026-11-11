@@ -2184,7 +2184,6 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
       agentMessage = persisted.message;
     } catch (err) {
       if (pendingActions.length === 0 || err instanceof DeftyDeliveryLostError || isDatabaseWaitTimeout(err)) throw err;
-      const pendingActionPersistError = err instanceof Error ? err.message : String(err);
       console.error('[agent-reply] Failed to persist agent reply with pending actions:', err);
       const failedApprovalContent = [
         'I drafted the action, but I could not create the approval card.',
@@ -2202,7 +2201,8 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
           metadata: {
             ...sanitizeAgentReplyActionMetadata(replyMetadata),
             pending_actions: undefined,
-            pending_actions_error: pendingActionPersistError,
+            // The exception (logged above) can carry the query and its values; members get a code.
+            pending_actions_error: 'APPROVAL_CARD_NOT_CREATED',
           } as never,
         }).returning();
         await assertDeliveryOwnedBeforeCommit(tx, delivery);

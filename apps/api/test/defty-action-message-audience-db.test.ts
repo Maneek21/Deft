@@ -275,3 +275,63 @@ test('W2a3-R2: MCP thread_fetch projects the parent and every reply for the view
   assert.deepEqual(canaries(await threadAs(ids.peer)), []);
   assert.deepEqual(canaries(await threadAs(ids.requester)), ['CANARY-T-GRAPH', 'CANARY-T-TOOL-ARG']);
 });
+
+test('W2a3-R3: agent message metadata is an allowlist; sources, result copies, errors and unknown keys stay in the audience', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const room = randomUUID();
+  const trigger = randomUUID();
+  await client!.query('INSERT INTO spaces(id,org_id,name,type,created_by) VALUES($1,$2,$3,\'public\',$4)', [room, orgId, `allow-${room}`, ids.requester]);
+  for (const id of [ids.requester, ids.peer, ids.agent]) await client!.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), room, id]);
+  const insert = (id: string, user: string, content: string, metadata: unknown) =>
+    client!.query('INSERT INTO messages(id,org_id,space_id,user_id,content,metadata) VALUES($1,$2,$3,$4,$5,$6)', [id, orgId, room, user, content, JSON.stringify(metadata)]);
+  await insert(trigger, ids.requester, '@Defty where is the plan?', {});
+  await insert(randomUUID(), ids.agent, 'It is in the plan page.', {
+    is_agent_reply: true, reply_to_message_id: trigger, model: 'stub', tokens_in: 1, tokens_out: 2,
+    agent_blocks: [{ type: 'text', text: 'It is in the plan page.' }],
+    citations: [{ type: 'wiki', id: 'w1', title: 'CANARY-CITE', url: '/wiki/canary-cite' }],
+    pending_actions_error: 'insert failed: params CANARY-ERR',
+    proposal_preparation_warnings: ['CANARY-WARN'],
+    future_key: 'CANARY-UNKNOWN',
+  });
+  await insert(randomUUID(), ids.requester, '', {
+    kind: 'tool_result', hidden: true, approval_execution_result_for_action_id: actionId,
+    approval_execution_result: { changed_fields: ['CANARY-EXEC'] },
+    agent_blocks: [{ type: 'text', text: 'Result: CANARY-EXECTEXT' }],
+  });
+  const path = `/api/messages/${room}`;
+  assert.deepEqual(canaries(await request(ids.peer, path)), []);
+  assert.deepEqual(canaries(await request(ids.requester, path)), ['CANARY-CITE', 'CANARY-ERR', 'CANARY-EXEC', 'CANARY-EXECTEXT', 'CANARY-UNKNOWN', 'CANARY-WARN']);
+  const peerReply = (JSON.parse(await request(ids.peer, path)) as { messages: Array<{ content: string; metadata: any }> }).messages.find((m) => m.content.startsWith('It is'))!;
+  assert.deepEqual(peerReply.metadata, {
+    is_agent_reply: true, reply_to_message_id: trigger, model: 'stub', tokens_in: 1, tokens_out: 2,
+    agent_blocks: [{ type: 'text', text: 'It is in the plan page.' }],
+  });
+});
+
+test('W2a3-R3: a failed approval-card write stores a neutral error code, never the raw exception', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  // A database rejection whose message would echo the action's values.
+  await client!.query(`CREATE OR REPLACE FUNCTION w2a3_reject_action() RETURNS trigger AS $$
+    BEGIN IF NEW.org_id = '${orgId}' THEN RAISE EXCEPTION 'rejected params %', NEW.params::text; END IF; RETURN NEW; END $$ LANGUAGE plpgsql`);
+  await client!.query('CREATE TRIGGER w2a3_reject_action BEFORE INSERT ON agent_actions FOR EACH ROW EXECUTE FUNCTION w2a3_reject_action()');
+  try {
+    const content = '@Defty remind me tomorrow at 9am to send the plan';
+    const trigger = randomUUID();
+    await client!.query('INSERT INTO messages(id,org_id,space_id,user_id,content) VALUES($1,$2,$3,$4,$5)', [trigger, orgId, spaceId, ids.requester, content]);
+    const reminder = { action: 'create_reminder', params: { content: 'CANARY-RAW send the plan', remind_at: '2030-01-01T09:00:00Z' }, approval_tier: 'quick' };
+    const runQuery = (async () => ({
+      text: 'Drafted.', executedActions: [], citations: [], model: 'stub', tokensIn: 0, tokensOut: 0, assistantBlocks: [], pendingActions: [reminder],
+    })) as any;
+    const compileDraft = (async () => ({ actions: [reminder], graph: { actions: [] }, metrics: { duration_ms: 0, tokens_in: 0, tokens_out: 0, model: 'stub' } })) as any;
+    await handleAgentReply({ id: randomUUID(), name: 'agent-reply', attempts: 1, data: { orgId, spaceId, messageId: trigger, userId: ids.requester, orgName: 'Action audience', content } } as any,
+      { io: null, runQuery, compileDraft } as any);
+    const rows = (await client!.query(`SELECT content, metadata FROM messages WHERE org_id=$1 AND metadata->>'reply_to_message_id'=$2`, [orgId, trigger])).rows;
+    assert.equal(rows.length, 1);
+    assert.match(rows[0].content, /could not create the approval card/);
+    assert.equal(rows[0].metadata.pending_actions_error, 'APPROVAL_CARD_NOT_CREATED');
+    assert.doesNotMatch(JSON.stringify(rows[0].metadata), /CANARY-RAW/);
+  } finally {
+    await client!.query('DROP TRIGGER IF EXISTS w2a3_reject_action ON agent_actions');
+    await client!.query('DROP FUNCTION IF EXISTS w2a3_reject_action()');
+  }
+});

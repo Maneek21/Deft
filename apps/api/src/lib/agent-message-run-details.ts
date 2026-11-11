@@ -14,8 +14,10 @@ import { canonicalDeftyActionSql, visibleModuleActionSql } from './module-action
  * the same audience as the actions themselves (module-action-visibility.ts):
  * the requester, an assigned approver of a Defty action anchored to the
  * message, and org owners/admins; a guest only for its own request. Every
- * other member of the space receives the reply text, the tool names and a
- * neutral marker of each proposed action (id, action, tier, status).
+ * other member of the space receives only the allowlisted metadata of an
+ * agent message (AGENT_METADATA_FOR_EVERYONE): the reply text, the tool names,
+ * identity/status keys and a neutral marker of each proposed action (id,
+ * action, tier, status). Anything else is audience-only.
  *
  * `pending_actions` entries never carry params on any outbound path: approval
  * cards load action details from the audience-checked action endpoints.
@@ -41,43 +43,88 @@ export function pendingActionMarkers(value: unknown): unknown {
   });
 }
 
-/** True when metadata holds values beyond the reply text that the audience rule governs. */
-export function hasAgentRunDetails(metadata: unknown): boolean {
-  if (!isRecord(metadata)) return false;
-  if (metadata.action_graph !== undefined || metadata.tool_calls !== undefined) return true;
-  if (isRecord(metadata.defty_pending) && Object.hasOwn(metadata.defty_pending, 'draft')) return true;
-  return Array.isArray(metadata.agent_blocks)
-    && metadata.agent_blocks.some((block: unknown) => !isRecord(block) || block.type !== 'text' || Object.keys(block).some((key) => key !== 'type' && key !== 'text'));
+/**
+ * Metadata keys of agent messages (Defty replies, approval confirmations and
+ * results, provider/failure notices, agent documents) that every member of the
+ * space may receive: identity, status, the reply's own text and model usage.
+ * `agent_blocks`, `tool_calls`, `defty_pending` and `pending_actions` are
+ * projected field by field below. Every other key (sources, result copies,
+ * error text, warnings, diagnostics, metrics, the action graph, and any key a
+ * future writer adds) is delivered only to the action audience.
+ */
+const AGENT_METADATA_FOR_EVERYONE = new Set([
+  'is_agent_reply', 'reply_to_message_id', 'kind', 'hidden', 'subtype', 'model', 'tokens_in', 'tokens_out',
+  'duplicate_action_ids', 'rejected_module_actions', 'rejected_action_proposals', 'defty_pending_resolved_at',
+  'approval_confirmation_for_message_id', 'confirmed_action_ids', 'rejected_action_ids', 'requested_by_user_id',
+  'approval_proposal_original_content', 'approval_resolution_message_id',
+  'approval_rejection_result_for_action_id', 'approval_execution_result_for_action_id',
+  'agent_action_id', 'source_message_id', 'provider',
+]);
+/** Keys that make a message an agent-run message wherever they appear. */
+const AGENT_RUN_MARKER_KEYS = [
+  'agent_blocks', 'tool_calls', 'action_graph', 'defty_pending', 'citations',
+  'approval_execution_result', 'pending_actions_error', 'pending_actions',
+] as const;
+const DEFTY_PENDING_FOR_EVERYONE = ['kind', 'request_message_id', 'request_text', 'question', 'created_at'] as const;
+
+function isAgentRunMessage(metadata: Record<string, any>): boolean {
+  return metadata.is_agent_reply === true || metadata.kind === 'tool_result'
+    || AGENT_RUN_MARKER_KEYS.some((key) => Object.hasOwn(metadata, key));
+}
+
+function projectedAgentBlocks(metadata: Record<string, any>): Record<string, unknown>[] | undefined {
+  // A tool-result row's text is the result itself, not a reply.
+  if (!Array.isArray(metadata.agent_blocks) || metadata.kind === 'tool_result') return undefined;
+  return metadata.agent_blocks.flatMap((block: unknown): Record<string, unknown>[] => {
+    if (!isRecord(block)) return [];
+    if (block.type === 'text' && typeof block.text === 'string') return [{ type: 'text', text: block.text }];
+    if (block.type === 'tool_use' && typeof block.name === 'string') {
+      return [{ type: 'tool_use', ...(typeof block.id === 'string' ? { id: block.id } : {}), name: block.name }];
+    }
+    if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
+      return [{ type: 'tool_result', tool_use_id: block.tool_use_id, ...(block.is_error === true ? { is_error: true } : {}) }];
+    }
+    return [];
+  });
 }
 
 function withoutRunDetails(metadata: Record<string, any>): Record<string, any> {
-  const { action_graph: _graph, tool_calls: toolCalls, ...rest } = metadata;
-  const out: Record<string, any> = { ...rest };
-  if (Array.isArray(toolCalls)) {
-    out.tool_calls = toolCalls.flatMap((call: unknown) => {
+  const out: Record<string, any> = {};
+  for (const key of Object.keys(metadata)) {
+    if (AGENT_METADATA_FOR_EVERYONE.has(key)) out[key] = metadata[key];
+  }
+  const blocks = projectedAgentBlocks(metadata);
+  if (blocks) out.agent_blocks = blocks;
+  if (Array.isArray(metadata.tool_calls)) {
+    out.tool_calls = metadata.tool_calls.flatMap((call: unknown) => {
       if (!isRecord(call)) return [];
       const name = typeof call.tool === 'string' ? { tool: call.tool } : typeof call.name === 'string' ? { name: call.name } : null;
       return name ? [{ ...(typeof call.id === 'string' ? { id: call.id } : {}), ...name }] : [];
     });
   }
-  if (Array.isArray(metadata.agent_blocks)) {
-    out.agent_blocks = metadata.agent_blocks.flatMap((block: unknown): Record<string, unknown>[] => {
-      if (!isRecord(block)) return [];
-      if (block.type === 'text' && typeof block.text === 'string') return [{ type: 'text', text: block.text }];
-      if (block.type === 'tool_use' && typeof block.name === 'string') {
-        return [{ type: 'tool_use', ...(typeof block.id === 'string' ? { id: block.id } : {}), name: block.name }];
-      }
-      if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
-        return [{ type: 'tool_result', tool_use_id: block.tool_use_id, ...(block.is_error === true ? { is_error: true } : {}) }];
-      }
-      return [];
-    });
-  }
   if (isRecord(metadata.defty_pending)) {
-    const { draft: _draft, ...pending } = metadata.defty_pending;
+    const pending: Record<string, unknown> = {};
+    for (const key of DEFTY_PENDING_FOR_EVERYONE) if (Object.hasOwn(metadata.defty_pending, key)) pending[key] = metadata.defty_pending[key];
     out.defty_pending = pending;
   }
+  if (Object.hasOwn(metadata, 'pending_actions')) out.pending_actions = pendingActionMarkers(metadata.pending_actions);
   return out;
+}
+
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+  if (isRecord(value)) return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`;
+  return JSON.stringify(value) ?? 'null';
+}
+
+/** True when an agent message holds anything beyond what every member may receive. */
+export function hasAgentRunDetails(metadata: unknown): boolean {
+  if (!isRecord(metadata) || !isAgentRunMessage(metadata)) return false;
+  const everyone = withoutRunDetails(metadata);
+  const full = Object.hasOwn(metadata, 'pending_actions')
+    ? { ...metadata, pending_actions: pendingActionMarkers(metadata.pending_actions) }
+    : metadata;
+  return canonical(everyone) !== canonical(full);
 }
 
 /** Outbound metadata for one viewer: `withDetails` comes from agentRunDetailAudience. */
