@@ -57,7 +57,8 @@ type ChatContextType = {
   markSpaceRead: (spaceId: string) => void;
   refreshSpaces: () => void;
   orgMembers: OrgMember[];
-  openDmWith: (memberId: string) => Promise<void>;
+  /** Opens (or reuses) a DM and selects it. Resolves true only when it opened. */
+  openDmWith: (memberId: string, memberName?: string) => Promise<boolean>;
   startHuddle?: (spaceId: string) => Promise<void>;
   joinHuddleBySpace?: (spaceId: string) => Promise<void>;
   huddleSpaceId?: string | null;
@@ -80,7 +81,7 @@ export const ChatContext = createContext<ChatContextType>({
   markSpaceRead: () => {},
   refreshSpaces: () => {},
   orgMembers: [],
-  openDmWith: async () => {},
+  openDmWith: async () => false,
   startHuddle: async () => {},
   joinHuddleBySpace: async () => {},
   huddleBusy: false,
