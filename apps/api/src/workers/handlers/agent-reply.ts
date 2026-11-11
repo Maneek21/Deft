@@ -32,7 +32,8 @@ import { getMessageAttachmentContext } from '../../lib/agent-message-attachments
 import { compileMessageModuleCsvImport } from '../../lib/module-csv-import.js';
 import { compileMessageWorkspacePlanImport } from '../../lib/workspace-plan-import.js';
 import { buildRoomContextPackWithSources } from '../../lib/defty-room-context.js';
-import { loadPendingDeftyDraft, pendingDeftyDraftContext, projectPendingDeftyMetadataForOutbound, type PendingDeftyDraft } from '../../lib/defty-pending-action.js';
+import { loadPendingDeftyDraft, pendingDeftyDraftContext, type PendingDeftyDraft } from '../../lib/defty-pending-action.js';
+import { emitMessageToSpaceViewers } from '../../lib/agent-message-run-details.js';
 import { visibleTaskCondition } from '../../lib/task-visibility.js';
 import { assertDeliveryOwnedBeforeCommit, claimDeftyReplySlot, DeftyDeliveryLostError, findExistingDeftyReply, isDatabaseWaitTimeout, throwIfDeliveryLost, type DeftyReplyDelivery } from '../../lib/defty-reply-guard.js';
 
@@ -2250,7 +2251,6 @@ async function broadcastAgentReply(params: {
 
   const messageWithUser = {
     ...agentMessage,
-    metadata: projectPendingDeftyMetadataForOutbound(agentMessage.metadata),
     user_name: agentUserData?.name ?? DEFTY_NAME,
     user_avatar: agentUserData?.avatar_url ?? null,
     reactions: [],
@@ -2261,7 +2261,8 @@ async function broadcastAgentReply(params: {
   // Broadcast via Socket.io
   const io = dependencies.io === undefined ? getIO() : dependencies.io;
   if (!io) return;
-  io.to(`space:${spaceId}`).emit('message:new', messageWithUser);
+  // Run details reach only the action audience's sockets (agent-message-run-details.ts).
+  await emitMessageToSpaceViewers(io, { orgId: agentMessage.org_id, spaceId, event: 'message:new', message: messageWithUser });
 
   // Only emit thread:updated when the reply is actually in a thread.
   if (threadParentId) {

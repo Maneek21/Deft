@@ -1,6 +1,7 @@
 import {canUndoAgentAction, visibleCaptureActionSql} from '../lib/agent-action-visibility.js';
 import type { AppRunTransaction } from '../lib/app-run-repository.js';
 import { reconcileApprovalReplyText } from '../lib/agent-approval-copy.js';
+import { projectMessagesForViewer } from '../lib/agent-message-run-details.js';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { AppRunError } from '../lib/app-run-errors.js';
@@ -787,7 +788,7 @@ agentRoutes.get('/conversations/:id/messages', async (c) => {
 
   // Map to the shape AgentChat expects and attach pending_actions.
   const visibleToolNames = new Map<string, string>();
-  const messagesWithActions = visible.map((r) => {
+  const messagesWithActions = (await projectMessagesForViewer(user, visible)).map((r) => {
     const m = sanitizeAgentMetadataForStorage(r.metadata, visibleToolNames);
     const role = (agentUserId && r.user_id === agentUserId) ? 'assistant' : 'user';
     return {
@@ -1021,7 +1022,7 @@ agentRoutes.get('/conversations/:id/trace.json', async (c) => {
   const traceAgentUserId = convo.agentUserId;
 
   const traceToolNames = new Map<string, string>();
-  const msgs = msgRows.map((r) => {
+  const msgs = (await projectMessagesForViewer(user, msgRows)).map((r) => {
     const m = sanitizeAgentMetadataForStorage(r.metadata, traceToolNames);
     const role = (traceAgentUserId && r.user_id === traceAgentUserId) ? 'assistant' : 'user';
     return {
