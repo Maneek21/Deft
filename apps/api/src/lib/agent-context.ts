@@ -271,7 +271,7 @@ export async function executeToolCall(
         citations: [],
       };
     }
-    if (liveTool.isWrite || liveTool.approvalTierMapped !== 'auto' || isDestructiveAction(liveTool.name, params)) {
+    if (liveTool.isWrite || liveTool.approvalTierMapped !== 'auto' || isDestructiveAction(liveTool.name, params, liveTool.annotations)) {
       return {
         result: {
           error: `MCP tool '${toolName}' is not an auto-approved read right now; propose it as an action for approval instead.`,

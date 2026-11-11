@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import {collectCompilerReadFacts,validateCompilerGrounding} from './agent-compiler-read-facts.js';
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { agentActions, messages, orgs, projects, tasks } from '@deft/db/schema';
-import { getApprovalTier } from './agent-approval.js';
+import { getApprovalTier, mandatoryApprovalTier } from './agent-approval.js';
 import { isDatabaseError } from './defty-reply-guard.js';
 import { db } from './db.js';
 import { getOrgAIConfig } from './org-ai-config.js';
@@ -518,7 +518,7 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
 }
 
 function normalizeApprovalTier(action: ProposedAgentAction): ApprovalTier {
-  const tier = action.approval_tier ?? getApprovalTier(action.action);
+  const tier = mandatoryApprovalTier(action.action, action.approval_tier ?? getApprovalTier(action.action), action.params);
   return tier === 'auto' ? 'quick' : tier;
 }
 
