@@ -1,4 +1,4 @@
-import {hasHumanMcpBulkProvenance} from '../lib/agent-approval-resolver.js';
+import {hasHumanMcpBulkProvenance, viewerReviewAuthority} from '../lib/agent-approval-resolver.js';
 import { Hono } from 'hono';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import {
@@ -114,7 +114,12 @@ async function hydrateApprovals(
       eq(agentActions.org_id, viewer.org_id),
       visibleModuleActionSql(viewer.role, { userId: viewer.id, orgId: viewer.org_id }),
     ));
-  const byId = new Map(actions.map((action) => [action.id, {...action,proposer:attentionActionProposer(action)}]));
+  // Whether this viewer may approve or reject, as the approve and reject routes answer.
+  const reviewAuthority = await viewerReviewAuthority(viewer, actions.map((action) => action.id));
+  const byId = new Map(actions.map((action) => [action.id, {...action,proposer:attentionActionProposer(action),
+    viewer_can_approve: reviewAuthority.get(action.id)?.viewer_can_approve ?? false,
+    viewer_can_reject: reviewAuthority.get(action.id)?.viewer_can_reject ?? false,
+  }]));
   return rows.filter((item) => item.source_type !== 'agent_action' || byId.has(item.source_id)).map((item) => ({
     ...projectAttentionItem(item),
     approval: item.source_type === 'agent_action' ? byId.get(item.source_id) ?? null : null,
