@@ -48,6 +48,7 @@ import {
   hasHumanMcpBulkProvenance,
 } from '../lib/agent-approval-resolver.js';
 import { generateReceipt } from '../lib/receipts.js';
+import { findCommittedTaskBundleResult } from '../lib/task-bundle.js';
 import {
   markWorkIntentConvertedForAction,
   markWorkIntentDismissedForAction,
@@ -1380,7 +1381,7 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
   //   2. The reply-storm guard would count the approver's replies
   //      instead of the agent's, defeating Phase 6 in the manual-
   //      approval path.
-  const execResult = await executeAction(
+  let execResult = await executeAction(
     actionId,
     action.action,
     action.params as any,
@@ -1388,6 +1389,13 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
     action.user_id,
     { agentEmployeeId: action.agent_employee_id ?? undefined },
   );
+  // A task creation whose bundle committed is done even if a later,
+  // post-commit step failed. Reporting it as failed would reopen the row for
+  // a retry; record the committed tasks instead.
+  if (!execResult.success && action.action === 'create_task') {
+    const committed = await findCommittedTaskBundleResult(user.org_id, actionId);
+    if (committed) execResult = { success: true, result: committed };
+  }
 
   // Only mark approved after execution succeeds. If the executor failed
   // (e.g. "Project not found" because the named project was deleted between
