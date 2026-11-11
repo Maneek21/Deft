@@ -400,21 +400,35 @@ test('add_dependency refuses to close a blocks-cycle and writes nothing', async 
 });
 
 test('remove_dependency deletes the relationship', async () => {
-  const { executeActionDirect } = await import('../src/lib/agent-actions.js');
+  const { executeActionDirect, executeAction } = await import('../src/lib/agent-actions.js');
+  const params = {
+    source_task_identifier: TASK_A_ID,
+    target_task_identifier: TASK_B_ID,
+    type: 'blocks',
+  };
+  // Lane W2-a1: remove_dependency is classed destructive, so a direct call
+  // waits for approval at every trust level and deletes nothing yet.
   const r = await executeActionDirect(
     'remove_dependency',
-    {
-      source_task_identifier: TASK_A_ID,
-      target_task_identifier: TASK_B_ID,
-      type: 'blocks',
-    },
+    params,
     ORG_ID,
     CALLER_USER_ID,
     null,
     'quick',
     { agentEmployeeId: EMP_ID },
   );
-  assert.equal(r.success, true, JSON.stringify(r));
+  assert.equal(r.success, false, JSON.stringify(r));
+  assert.equal(r.requiresApproval, true, JSON.stringify(r));
+  await withClient(async (c) => {
+    const rel = await c.query(
+      `SELECT * FROM task_relationships WHERE source_task_id = $1 AND target_task_id = $2`,
+      [TASK_A_ID, TASK_B_ID],
+    );
+    assert.equal(rel.rows.length, 1);
+  });
+  // Once approved, the executor deletes the relationship.
+  const approved = await executeAction(r.actionId, 'remove_dependency', params, ORG_ID, CALLER_USER_ID, { agentEmployeeId: EMP_ID });
+  assert.equal(approved.success, true, JSON.stringify(approved));
   await withClient(async (c) => {
     const rel = await c.query(
       `SELECT * FROM task_relationships WHERE source_task_id = $1 AND target_task_id = $2`,

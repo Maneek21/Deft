@@ -44,7 +44,7 @@ export const TRUST_LEVELS: ReadonlyArray<{ value: TrustLevel; label: string; des
 export const TRUST_LEGEND = 'Defty trust level';
 
 export const TRUST_SCOPE_NOTE =
-  'This workspace setting applies to plans Defty runs after you approve them. Steps of a plan you approved run under that approval. This level decides whether a change that later steps depend on can run on its own or needs its own approval, and it limits what Defty may run on its own when it retries a failed step.';
+  'This workspace setting applies to plans Defty runs after you approve them. Steps of a plan you approved run under that approval, except a step classed as destructive, which always needs its own approval. This level decides whether a change that later steps depend on can run on its own or needs its own approval, and it limits what Defty may run on its own when it retries a failed step.';
 
 export const TRUST_CHAT_NOTE =
   'Chat does not use this level. In chat, Defty proposes tasks, messages and similar changes for your approval. A few housekeeping actions happen without a prompt, such as saving a memory, drafting a plan for your review, or cancelling its own unsent app work.';
@@ -60,7 +60,8 @@ export const TRUST_EMPLOYEE_NOTE =
 // (agent-plans.ts:585) and the background retry run (agent-runner.ts:766,
 // destructive MCP calls forced to 'full' at :735/:746). Approved plan steps no
 // later step depends on run under the plan approval (TRUST_SCOPE_NOTE), so
-// they are not "on its own".
+// they are not "on its own"; a destructive step is routed to its own approval
+// even then (agent-plans.ts executePlan, destructiveStep).
 export const TRUST_CONNECTED_NOTE =
   'The examples above are built-in actions. Connected (MCP) tools use the approval setting on their own connection instead, and no trust level lets Defty run a call classed as destructive on its own.';
 
