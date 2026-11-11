@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { AUTONOMOUS_EMPLOYEE_CONFIRM } from '@/components/trust-level-control';
 import {
   EmployeeTrustActions,
-  employeeAutonomousConfirmLines,
   lowerTrustLevels,
 } from './employee-trust-actions';
 
@@ -37,8 +37,8 @@ test('Trust-b: an owner or admin can lower trust to each level below the current
   assert.doesNotMatch(render('conservative', true), /lower-trust-/);
 });
 
-test('Trust-b: the drawer confirmation no longer says Settings cannot lower the level', () => {
-  const text = employeeAutonomousConfirmLines().join(' ');
+test('Trust-b: the shared Autonomous confirmation no longer says Settings cannot lower the level', () => {
+  const text = AUTONOMOUS_EMPLOYEE_CONFIRM.join(' ');
   assert.doesNotMatch(text, /no control to lower/);
-  assert.match(text, /Only workspace owners and admins can make this change\. They can lower it again from this panel\./);
+  assert.match(text, /Only workspace owners and admins can make this change, and they can lower the level again from the employee panel in Settings./);
 });

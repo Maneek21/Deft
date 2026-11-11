@@ -596,6 +596,39 @@ test('R3-1: a Load earlier read superseded by a catch-up does not bring back an 
   }
 });
 
+test('W2-3: Load earlier messages is disabled while a catch-up read is in flight and usable again once it settles, on success and on failure', async () => {
+  const page = await open(browser, { harness: 'defty-chat-harness.tsx', url: '/chat?space=s1', override: FAKE_SERVER });
+  try {
+    await page.getByText('Destination message from Priya').waitFor();
+    await drop(page);
+    await srv(page, (data) => { window.__srv.channel = data; }, [ROOT, DEST, ...many(600)]);
+    await reconnect(page);
+    const earlier = page.getByRole('button', { name: 'Load earlier messages' });
+    await earlier.waitFor();
+    assert.equal(await earlier.isDisabled(), false);
+    for (const outcome of ['success', 'failure']) {
+      await drop(page);
+      await srv(page, (failing) => {
+        window.__srv.hold = true;
+        window.__srv.netFail.channel = failing;
+        window.__srv.held = [];
+      }, outcome === 'failure');
+      await reconnect(page);
+      await waitHeld(page, 1);
+      assert.equal(await earlier.isDisabled(), true, `disabled while the ${outcome} catch-up is held`);
+      await srv(page, () => { window.__srv.hold = false; });
+      await release(page, 0);
+      await page.waitForFunction(() => {
+        const button = [...document.querySelectorAll('button')].find((b) => (b.textContent || '').includes('Load earlier messages'));
+        return !!button && !button.disabled;
+      });
+      await srv(page, () => { window.__srv.netFail.channel = false; });
+    }
+  } finally {
+    await close(page);
+  }
+});
+
 test('R3-2: a live reaction during a catch-up does not discard the edit the catch-up fetched', async () => {
   const page = await open(browser, { harness: 'defty-chat-harness.tsx', url: '/chat?space=s1', override: FAKE_SERVER });
   try {
