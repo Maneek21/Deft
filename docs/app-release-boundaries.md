@@ -1,6 +1,6 @@
 # App release boundaries
 
-The supported connected-App developer-preview set is Deft Host `0.3.0-preview.120` with schema 120, Email App `1.9.0-preview.13` using Author Kit `0.1.0-alpha.38`, and Email Runtime `0.4.0-preview.15` using Kit `0.1.0-alpha.35`. The different Kit versions are intentional. Obtain the exact commits, image digest, contracts, download URLs and checksums from the [published compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.13/compatibility.json). A version label or this document alone is not evidence that an artifact has been published or accepted.
+The latest published Deft Host is `0.3.0-preview.141`, built with the Apps-enabled browser profile and Author Kit `0.1.0-alpha.43`. The Email App and Email Runtime are released separately and may use different Kit versions. Obtain the exact Host version, commits, image digest, contracts, download URLs and checksums from the `compatibility.json` attached to the Email release you install. A version label or this document alone is not evidence that an artifact has been published or accepted.
 
 ## Source and deployment ownership
 

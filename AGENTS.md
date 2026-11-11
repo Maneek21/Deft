@@ -29,11 +29,11 @@ deft/
 - API: Hono on Node.js, TypeScript
 - Database: PostgreSQL + pgvector (Drizzle ORM)
 - Real-time: Socket.io in-process (single app instance; no cross-instance adapter)
-- Auth: better-auth (JWT + refresh tokens). Google OAuth is retired from the self-hosted v1 product contract.
+- Auth: Custom JWT + bcrypt (jsonwebtoken + bcryptjs, refresh tokens). Google OAuth is retired from the self-hosted v1 product contract.
 - Background jobs: PostgreSQL `job_queue` with in-process workers
 - File storage: Cloudflare R2 or local (presigned uploads)
 - AI: provider-neutral LLM routing. Anthropic, OpenAI/OpenAI-compatible, OpenRouter, and local Ollama-style providers are optional; core workspace flows must run without any provider key.
-- Email: Resend (transactional)
+- Email: none. Invites and password recovery are admin-generated one-time URLs (`apps/api/src/routes/invites.ts`, `POST /api/members/:id/recovery-url`), shared out-of-band. Self-hosted Deft never sends mail.
 - Monorepo: pnpm workspaces
 
 ## Database Design Principles
@@ -81,7 +81,7 @@ Agent engine lives in `apps/api/src/lib/` (agent-context, agent-plans, agent-too
 - Quick-approve: create task, schedule meeting (one-click card)
 - Full-review: multi-step plans and external writes (preview + edit)
 
-**Trust levels:** Conservative → Standard → Autonomous. The workspace (org) trust level applies only to Defty's approved plans: whether a step that later steps depend on needs its own approval, and what Defty may run on its own when it retries a failed step (`agent-plans.ts` executePlan, `agent-runner.ts` background mode). Each agent employee has its own trust level, which governs its non-chat writes. An employee's own chat messages (MCP `send_message` / `message_post`) post without approval at every level while it is healthy. Defty in chat proposes its writes for approval (a few housekeeping actions such as saving a memory or drafting a plan excepted).
+**Trust levels:** Conservative → Standard → Autonomous. The workspace (org) trust level applies only to Defty's approved plans: whether a step that later steps depend on needs its own approval, and what Defty may run on its own when it retries a failed step (`agent-plans.ts` executePlan, `agent-runner.ts` background mode). Each agent employee has its own trust level, which governs its non-chat writes. An employee's own chat messages (MCP `send_message` / `message_post`) post without approval at every level, within the guard rails in `lib/employee-chat-post-guard.ts` (active employee, reply-storm detector, daily action cap, not `unhealthy`; an unhealthy employee's message waits for approval). Defty in chat proposes its writes for approval (a few housekeeping actions such as saving a memory or drafting a plan excepted).
 
 **Native actions (direct SQL):** Create/update/assign tasks, post messages, set reminders
 **Connected actions:** Read/write native calendar events, ingest ICS calendar subscriptions, and call BYOA/MCP tools that the agent runtime brings with it.
@@ -119,9 +119,9 @@ Phase 8 has NOT shipped yet. Flagged here so future edits don't claim it:
 
 - OpenClaw autonomous heartbeat lifecycle (long-running employees with scheduled self-wake).
 - Skill-defined trigger dispatcher (arbitrary triggers from skill manifests, not just `cron:standup`).
-- Heartbeat cost guardrails (per-turn + per-day caps, circuit-breakers).
+- Per-employee cost-budget enforcement. BYOA heartbeat dispatch and the unhealthy circuit breaker are implemented; `daily_budget_cents` is not enforced today because nothing increments `daily_cost_cents`.
 
-The current `agent-employee-heartbeat` worker is a scaffold; the autonomous loop ships in Phase 8.
+The `agent-employee-heartbeat` worker queues BYOA heartbeat work and applies the unhealthy guard; the rest of the autonomous loop ships in Phase 8.
 
 ## Key Design Decisions
 
@@ -140,7 +140,7 @@ and added invisible-today primitives. See
 `docs/superpowers/plans/2026-04-19-openclaw-unlock.md` for the full plan.
 
 **Shipped:**
-- **Trust levels enforce per-tier.** Conservative auto-execs only `auto`; Standard adds `quick`; Autonomous adds `full` EXCEPT destructive admin tools (`manage_agent_employee`, `manage_mcp_connection`, `remove_member`, any `delete_*`, or any call with `params.mode: delete|pause|revoke`). 35-case matrix test in `apps/api/test/agent-approval-matrix.test.ts`.
+- **Trust levels enforce per-tier.** Conservative auto-execs only `auto`; Standard adds `quick`; Autonomous adds `full`. No level auto-runs a call classed destructive by `isDestructiveAction` (`manage_agent_employee`, `manage_mcp_connection`, `remove_member`, any `delete_*`, module archive/unlink/bulk create, or any call with `params.mode: delete|pause|revoke`); those always queue. The approval policy is covered by `apps/api/test/agent-approval-matrix.test.ts`.
 - **Reminders durable.** Moved from in-process `setTimeout` to the Postgres-backed `scheduled-jobs` queue. Boot rehydrates pending reminders from `reminders.is_sent=false`. New `create_reminder` native agent tool.
 - **Wiki search semantic.** `wiki_search` tool routes through `retrieveContext` which blends FTS + pgvector cosine (0.4 / 0.6 weight × confidence). Falls back to FTS-only when embeddings API is unavailable.
 - **Wizards unified.** Old 7-step `/settings/agent/deploy` deleted; `NEXT_PUBLIC_FEATURE_OPENCLAW_EMPLOYEES` flag removed; canonical flow is the 3-step `/settings/agent-employees/create`.
@@ -188,7 +188,7 @@ Block 2 closed the dead zones where agents couldn't act and surfaced agent activ
 - **unblock_dependents workflow action.** New action kind for workflow rules. When the triggering task enters `done`, DMs each open+assigned dependent task's assignee with a `subtype:'unblocked'` notification.
 - **Decision ↔ task tools.** `link_decision_to_tasks(decision_id, task_ids, context?)` → cross_reference edges (idempotent). `mark_decision_implemented(decision_id)` → stamps `decisions.implemented_at` (migration 0050).
 - **member.joined onboarding trigger.** `POST /api/members` fans out `employee-trigger` jobs to every agent whose `trigger_subscriptions` contains `member.joined`. Opt-in via HR skill install.
-- **Dashboard inline approve/reject.** `/api/agent/actions/recent` returns recent actions; the existing "Agent Activity" bento card on `/dashboard` renders inline Approve/Reject buttons on pending items.
+- **Dashboard approval navigation.** `/api/agent/actions/recent` returns recent actions; the existing "Agent Activity" bento card on `/dashboard` links pending items to the Inbox for review (`Review in Inbox`).
 - **Structured heartbeat checklist builder.** New `<HeartbeatChecklistBuilder/>` component replaces the textarea for `HEARTBEAT.md` on the Personality editor. Rows → `- [ ] every Nmin: …` markdown the existing heartbeat parser already understands.
 
 Migration added: `0050_decision_implemented.sql`.
@@ -215,7 +215,7 @@ Migrations added: `0051_org_scoped_templates.sql`, `0052_agent_webhooks.sql`.
 - Don't put domain-specific CRM logic in core. CRM capabilities belong in declarative modules; core stays generic.
 - Don't over-abstract. Build for the current scope, refactor when needed
 - Don't cache prematurely. Postgres is fast enough for our scale
-- Don't build a custom auth system. Use better-auth
+- Don't replace the existing auth system without a migration plan. It's custom JWT + bcrypt, not a library — changes affect every authenticated route.
 - Don't use Supabase (blocked in India)
 - Don't deploy to Vercel for the API (need WebSocket support). Use Railway or Fly.io
 - Don't import full TipTap — use only the extensions we need
