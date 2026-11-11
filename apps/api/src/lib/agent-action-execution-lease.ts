@@ -308,7 +308,11 @@ export async function finalizeApprovalOutcome(params: {
     resolution: row.error ? 'failed' : 'approved',
     ...(row.approved_by_user_id ? { actorUserId: row.approved_by_user_id } : {}),
   });
-  const receipt = approvalReceipt(row, params.receipt);
+  // Only a durable human approval (a stored approver, which every approval
+  // claim records and automatic execution never does) earns an approval
+  // receipt or an approver decision. An automatically executed action keeps
+  // the receipt and decisions it already has.
+  const receipt = row.approved_by_user_id ? approvalReceipt(row, params.receipt) : null;
   if (receipt) await generateReceipt(receipt);
   if (params.hooks?.postConfirmation) {
     try {

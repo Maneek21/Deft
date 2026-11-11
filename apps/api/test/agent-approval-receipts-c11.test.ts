@@ -11,6 +11,8 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test, { after, before } from 'node:test';
 
+import { generateReceipt } from '../src/lib/receipts.js';
+
 import {
   durabilityDatabaseUrl,
   setupDurabilityFixture,
@@ -57,4 +59,34 @@ test('C11: approving a task status change issues one signed receipt naming the a
   assert.equal(retry.status, 200, await retry.clone().text());
   const after = await f.client.query('SELECT count(*)::int AS n FROM action_receipts WHERE action_id = $1', [actionId]);
   assert.equal(after.rows[0].n, 1);
+});
+
+test('C11-auto: retrying an automatically executed action adds no receipt and records no approver', { skip: !canRun }, async () => {
+  // Automatic execution stamps approved + executed with no human approver.
+  const actionId = await f.insertAction({
+    action: 'update_task_status',
+    params: { task_identifier: `${f.prefix}-1`, new_status: 'done' },
+    status: 'approved',
+    executed: true,
+    result: { task_id: randomUUID() },
+  });
+  await generateReceipt({
+    actionId,
+    orgId: f.orgId,
+    employeeId: null,
+    proposer: 'defty',
+    proposerId: f.requesterId,
+    approverId: null,
+    decision: 'auto_executed',
+    decisionReason: null,
+    actionName: 'update_task_status',
+    actionParams: { task_identifier: `${f.prefix}-1`, new_status: 'done' },
+    resultJson: null,
+  });
+  const response = await f.as(f.requesterId, `/api/agent/actions/${actionId}/approve`, { method: 'POST' });
+  assert.equal(response.status, 200, await response.clone().text());
+  const receipts = await f.client.query('SELECT decision FROM action_receipts WHERE action_id = $1', [actionId]);
+  assert.deepEqual(receipts.rows.map((row) => row.decision), ['auto_executed']);
+  const approvers = await f.client.query('SELECT count(*)::int AS n FROM agent_action_approvers WHERE action_id = $1', [actionId]);
+  assert.equal(approvers.rows[0].n, 0);
 });
