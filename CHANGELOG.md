@@ -75,6 +75,28 @@ Agents and approvals:
   trust level read-only; owners and admins can lower it.
 - Apps developer preview: the runtime authority check for a resource observation
   is decided in one transaction.
+- Agent actions: task creation from an approved action is idempotent per action,
+  and a reused creation does not dispatch its assigned agents again. Undo applies
+  only while the task still has the value the action set and answers with a
+  conflict otherwise; it refuses action types it cannot reverse, removes the
+  subtasks when a task creation is undone, and covers closing and reopening a
+  task. When approve and reject race, the recorded decision is the one that was
+  applied. The completion message lists succeeded and failed actions separately,
+  and an approved action that failed shows as failed with its error. Approval
+  cards list every field an action writes, including cleared fields and full date
+  and time. The dashboard agent widget links to the Inbox for review.
+- Defty chat messages: tool inputs and results, proposed action parameters and
+  drafts attached to a Defty message are delivered only to the person who asked,
+  an assigned approver, and owners and admins, in the message list, threads, live
+  updates, the agent conversation endpoints, the trace export and the MCP read
+  tools. Other members of the space see the reply text and tool names. Attention
+  items for approvals follow the same audience. The space message list pages
+  toward older messages, and one plain failure reply is posted when a Defty reply
+  job fails for good.
+- Web: the Autonomous confirmation for an agent employee says owners and admins
+  can lower the level again from the employee panel. The heartbeats page does not
+  show a cost-against-budget figure. "Load earlier messages" is disabled while a
+  load or catch-up is in flight.
 - Docs: the Apps flags section of `docs/self-hosting.md` documents flag
   dependencies and the developer preview profile.
 
@@ -85,7 +107,7 @@ Workspace isolation:
   connected, and per-user events reach only that workspace's sockets.
 - Note folders, note shares and space actions check the caller's current
   workspace. Note shares are limited to active members of the workspace. Guests
-  no longer receive the workspace standup, recent activity follows task
+  do not receive the workspace standup, recent activity follows task
   visibility, and the unread notification count is per workspace.
 
 Operator tooling:
@@ -128,9 +150,7 @@ Agents and chat:
 
 Workspace isolation:
 
-- Space membership checks are bound to the caller's current workspace, so a
-  member of two workspaces cannot reach one workspace's space with a session for
-  the other.
+- Space membership checks apply within the caller's current workspace.
 
 Tooling:
 

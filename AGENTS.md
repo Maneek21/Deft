@@ -188,7 +188,7 @@ Block 2 closed the dead zones where agents couldn't act and surfaced agent activ
 - **unblock_dependents workflow action.** New action kind for workflow rules. When the triggering task enters `done`, DMs each open+assigned dependent task's assignee with a `subtype:'unblocked'` notification.
 - **Decision ↔ task tools.** `link_decision_to_tasks(decision_id, task_ids, context?)` → cross_reference edges (idempotent). `mark_decision_implemented(decision_id)` → stamps `decisions.implemented_at` (migration 0050).
 - **member.joined onboarding trigger.** `POST /api/members` fans out `employee-trigger` jobs to every agent whose `trigger_subscriptions` contains `member.joined`. Opt-in via HR skill install.
-- **Dashboard inline approve/reject.** `/api/agent/actions/recent` returns recent actions; the existing "Agent Activity" bento card on `/dashboard` renders inline Approve/Reject buttons on pending items.
+- **Dashboard inline approve/reject.** `/api/agent/actions/recent` returns recent actions; the existing "Agent Activity" bento card on `/dashboard` links pending items to the Inbox for review (`Review in Inbox`).
 - **Structured heartbeat checklist builder.** New `<HeartbeatChecklistBuilder/>` component replaces the textarea for `HEARTBEAT.md` on the Personality editor. Rows → `- [ ] every Nmin: …` markdown the existing heartbeat parser already understands.
 
 Migration added: `0050_decision_implemented.sql`.

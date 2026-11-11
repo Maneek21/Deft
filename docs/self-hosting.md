@@ -891,9 +891,8 @@ See [current limitations](current-limitations.md) before upgrading production.
 
 ## Checking For Rows Stamped With The Wrong Org
 
-Every table carries an `org_id`. Before the fixes in PR #439, some routes could
-store a row whose `org_id` differed from the org of the space, task, note or
-other row it belonged to. The audit script lists such rows, and users who hold a
+Every table carries an `org_id`. The audit script lists rows whose `org_id`
+differs from the org of the space, task, note or other row they belong to, and users who hold a
 grant or authorship column (space member, task assignee or watcher, note share,
 token, OAuth grant, agent employee and workflow rule owners and similar) without
 a membership in the row's org. It only reports; it never changes data and has no repair mode.

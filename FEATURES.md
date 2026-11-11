@@ -97,10 +97,10 @@ Current capabilities include:
 - Create or update wiki pages and notes
 - Read and write space canvases
 - Link decisions to tasks and mark decisions implemented
-- Produce approval cards in chat and mirror pending approvals in the inbox
+- Produce approval cards in chat and mirror pending approvals in the inbox. Tool inputs and results, proposed parameters and drafts on a Defty message are delivered only to the person who asked, an assigned approver, and owners and admins; other members see the reply text and tool names
 - Post completion confirmations with result details for supported actions
 
-Defty's chat writes always wait for approval, at every trust level, and native write executors check wiki visibility or space membership when they run. The action lists, receipts, dashboard activity and inbox show a Defty action only to its requester, an assigned approver and owners and admins; only the requester or an owner or admin with access to the target can undo it. Defty posts one reply per trigger message, and a message posted through a human MCP tool wakes Defty under the same conditions as the web app. Known limitations: two mentions in the same space can be answered concurrently, and no plan review screen is mounted in the web app yet. The workspace trust level governs only Defty's approved plans and background work. Defty does not extract tasks from chat on its own (passive extraction is off by default), and it does not manage agent employees, connections or triggers.
+Defty's chat writes always wait for approval, at every trust level, and native write executors check wiki visibility or space membership when they run. The action lists, receipts, dashboard activity and inbox show a Defty action only to its requester, an assigned approver and owners and admins; only the requester or an owner or admin with access to the target can undo it. Defty posts one reply per trigger message, and a message posted through a human MCP tool wakes Defty under the same conditions as the web app. The workspace trust level governs only Defty's approved plans and background work. Defty does not extract tasks from chat on its own (passive extraction is off by default), and it does not manage agent employees, connections or triggers.
 
 Defty is not a deterministic rules engine. Output quality depends on the configured provider, model, available context, permissions, and request clarity. Validation, approval policy, and executor contracts remain authoritative even when the model proposes an invalid action.
 
@@ -152,7 +152,7 @@ Client availability and connector UI vary by vendor and account tier. Deft canno
 - User and agent identity preserved on native actions
 - Pending approval cards in the source conversation where supported
 - Inbox mirror for centralized approval review
-- Execution receipts, recent agent actions, and audit history
+- Execution receipts, recent agent actions, and audit history. Approval cards list every field an action writes, and undo applies only while the task still has the value the action set
 - Token scopes, revocation, daily action limits, and circuit breakers. The per-employee daily cost budget is not enforced today
 - Space membership checks on REST and WebSocket access
 - Org ownership checks on task, wiki, workflow, message, and agent operations
