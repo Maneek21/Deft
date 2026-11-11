@@ -52,8 +52,8 @@ export type ReadTicket = { id: number; generation: number; startSeq: number };
  *   order. The buffer always starts at the start of the OLDEST read still in
  *   flight; nothing is recorded while no read is in flight.
  * - `settle(ticket)` must be called for every outcome of every read. It
- *   returns the whole buffer (all events since the oldest in-flight read
- *   started, which includes every event since this read started), then drops
+ *   returns only the events that arrived after THAT read started (not the
+ *   whole buffer, which may reach back to an older read's start), then drops
  *   events no remaining in-flight read could need.
  *
  * Overlap guarantee: an event received after read R started is in the buffer
