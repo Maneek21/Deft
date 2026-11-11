@@ -39,7 +39,6 @@ import {
   wikiPages,
 } from '@deft/db/schema';
 import { visibleModuleActionSql } from '../lib/module-action-visibility.js';
-import { currentEmployeeMessageAuthoritySql, currentEmployeeSpaceAuthoritySql, currentUserSpaceAuthoritySql } from '../lib/agent-channel-authority.js';
 import type { SkillAgentConfig } from '../lib/skill-config.js';
 import {
   AGENT_CHANNEL_PROTOCOL_VERSION,
@@ -53,7 +52,7 @@ import { markWorkIntentsExpiredForActions } from '../lib/work-intents.js';
 import { terminalizePendingModuleActions } from '../lib/module-action-terminalization.js';
 import { MODULE_WRITE_ACTION_NAMES } from '../lib/module-action-visibility.js';
 import { summarizeAgentChannelLifecycle, summarizeAgentChannelMetrics } from '../lib/agent-channel-lifecycle.js';
-import { loadAgentActivity } from '../lib/agent-activity.js';
+import { loadAgentActivity, sessionTurnContentAudienceSql } from '../lib/agent-activity.js';
 import { describeAgentRuntimeRecovery } from '../lib/agent-runtime-recovery.js';
 import { ensureAgentConversationSpace } from '../lib/ensure-agent-conversation-space.js';
 import { evaluateAgentOnboardingPreflight } from '../lib/agent-onboarding-preflight.js';
@@ -323,26 +322,12 @@ agentEmployeeRoutes.get('/:id/turns', async (c) => {
     const canSeeAll = user.role === 'owner' || user.role === 'admin';
     let contentIds = new Set<string>();
     if (!canSeeAll && turns.length > 0) {
-      const org = sql`${user.org_id}`;
-      const reader = sql`${user.id}`;
-      const trigger = sql`${agentSessionTurns.triggering_message_id}`;
-      const turnSpace = sql`${agentSessionTurns.space_id}`;
-      const audience = isCanonicalDeftyEmployee(existing)
-        ? sql`${agentSessionTurns.triggering_message_id} IS NOT NULL AND (
-            EXISTS (SELECT 1 FROM messages turn_request
-              WHERE turn_request.id = ${trigger} AND turn_request.org_id = ${org}
-                AND turn_request.user_id = ${reader} AND turn_request.is_deleted = false
-                AND (${turnSpace} IS NULL OR turn_request.space_id = ${turnSpace})))`
-        : sql`CASE
-            WHEN ${agentSessionTurns.triggering_message_id} IS NOT NULL THEN
-              ${currentEmployeeMessageAuthoritySql(org, sql`${id}`, trigger)}
-              AND EXISTS (SELECT 1 FROM messages turn_source
-                WHERE turn_source.id = ${trigger} AND turn_source.org_id = ${org} AND turn_source.is_deleted = false
-                  AND ${currentUserSpaceAuthoritySql(org, reader, sql`turn_source.space_id`)})
-            WHEN ${agentSessionTurns.space_id} IS NOT NULL THEN
-              ${currentEmployeeSpaceAuthoritySql(org, sql`${id}`, turnSpace)}
-              AND ${currentUserSpaceAuthoritySql(org, reader, turnSpace)}
-            ELSE false END`;
+      const audience = sessionTurnContentAudienceSql({
+        orgId: user.org_id,
+        employeeId: id,
+        readerId: user.id,
+        defty: isCanonicalDeftyEmployee(existing),
+      });
       contentIds = new Set((await db.select({ id: agentSessionTurns.id }).from(agentSessionTurns).where(and(
         inArray(agentSessionTurns.id, turns.map((turn) => turn.id)),
         eq(agentSessionTurns.org_id, user.org_id),
