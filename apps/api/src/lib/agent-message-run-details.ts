@@ -194,9 +194,15 @@ export async function projectMessagesForViewer<T extends DetailMessage>(viewer: 
  * projection for its own user, resolved by the same audience rule as reads.
  * An emitter that cannot list sockets receives the projection without details.
  */
+function socketUser(rooms: Set<string>, orgId: string): string | undefined {
+  const prefix = `org-user:${orgId}:`;
+  return [...rooms].find((name) => name.startsWith(prefix))?.slice(prefix.length);
+}
+
+type ListedSocket = { rooms: Set<string>; emit(event: string, payload: unknown): unknown };
 type SpaceEmitter = {
   to(room: string): { emit(event: string, payload: unknown): unknown };
-  in?(room: string): { fetchSockets(): Promise<Array<{ rooms: Set<string>; emit(event: string, payload: unknown): unknown }>> };
+  in?(room: string): { fetchSockets(): Promise<ListedSocket[]> };
 };
 
 export async function emitMessageToSpaceViewers(io: SpaceEmitter, input: {
@@ -216,28 +222,37 @@ export async function emitMessageToSpaceViewers(io: SpaceEmitter, input: {
   // Access changes (space removal, org removal, role change) bump the realtime
   // generation; if one happened while delivery was resolved, nobody gets details.
   const generation = captureRealtimeAccessGeneration();
-  const sockets = await io.in(room).fetchSockets();
-  const prefix = `org-user:${input.orgId}:`;
-  const socketUser = (rooms: Set<string>) => [...rooms].find((name) => name.startsWith(prefix))?.slice(prefix.length);
-  const userIds = [...new Set(sockets.map((socket) => socketUser(socket.rooms)).filter((id): id is string => Boolean(id)))];
-  const members = userIds.length ? await db.select({ user_id: orgMembers.user_id, role: orgMembers.role }).from(orgMembers).where(and(
-    eq(orgMembers.org_id, input.orgId), inArray(orgMembers.user_id, userIds), eq(orgMembers.is_active, true),
-  )) : [];
-  const allowed = new Set<string>();
-  for (const member of members) {
-    const audience = await agentRunDetailAudience({ id: member.user_id, org_id: input.orgId, role: member.role }, [input.message]);
-    if (audience.has(input.message.id)) allowed.add(member.user_id);
+  let resolved: { allowed: Set<string>; current: ListedSocket[] } | null = null;
+  try {
+    const sockets = await io.in(room).fetchSockets();
+    const userIds = [...new Set(sockets.map((socket) => socketUser(socket.rooms, input.orgId)).filter((id): id is string => Boolean(id)))];
+    const members = userIds.length ? await db.select({ user_id: orgMembers.user_id, role: orgMembers.role }).from(orgMembers).where(and(
+      eq(orgMembers.org_id, input.orgId), inArray(orgMembers.user_id, userIds), eq(orgMembers.is_active, true),
+    )) : [];
+    const allowed = new Set<string>();
+    for (const member of members) {
+      const audience = await agentRunDetailAudience({ id: member.user_id, org_id: input.orgId, role: member.role }, [input.message]);
+      if (audience.has(input.message.id)) allowed.add(member.user_id);
+    }
+    // Deliver to the sockets in the room now, not the ones listed before the
+    // queries: a socket that left the room gets nothing, a new one gets the
+    // projection without details.
+    const current = await io.in(room).fetchSockets();
+    resolved = { allowed, current };
+  } catch (error) {
+    // Resolution failed before any socket was sent to: the space still gets
+    // the message, without details, and the caller's later emits still run.
+    console.warn('[agent-message-run-details] per-viewer delivery unavailable; sending without details', error instanceof Error ? error.message : String(error));
+    io.to(room).emit(input.event, redacted);
+    return;
   }
-  // Deliver to the sockets in the room now, not the ones listed before the
-  // queries: a socket that left the room gets nothing, a new one gets the
-  // projection without details.
-  const current = await io.in(room).fetchSockets();
+  const { allowed, current } = resolved;
   if (!isRealtimeAccessGenerationCurrent(generation)) {
     io.to(room).emit(input.event, redacted);
     return;
   }
   for (const socket of current) {
-    const userId = socketUser(socket.rooms);
+    const userId = socketUser(socket.rooms, input.orgId);
     socket.emit(input.event, userId && allowed.has(userId) ? full : redacted);
   }
 }

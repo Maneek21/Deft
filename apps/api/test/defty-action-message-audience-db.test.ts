@@ -365,7 +365,7 @@ async function startRealtime() {
     const deadline = Date.now() + 5_000;
     while (Date.now() < deadline) {
       const members = await io.in(`space:${space}`).fetchSockets();
-      if (members.some((socket) => socket.rooms.has(`org-user:${orgId}:${userId}`))) break;
+      if (members.some((socket) => socket.id === client.id)) break;
       await new Promise((r) => setTimeout(r, 20));
     }
     return { client, events };
@@ -438,3 +438,19 @@ test('W2a3-R6: a viewer removed from the space while delivery is resolved receiv
   assert.deepEqual(canaries(JSON.stringify(newMessages(peer.events, message.id))), []);
 });
 
+test('W2a3-R7: when delivery cannot be resolved, the space still receives the message without run details', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  realtime ??= await startRealtime();
+  const requester = await realtime.open(ids.requester, spaceId);
+  const peer = await realtime.open(ids.peer, spaceId);
+  const { emitMessageToSpaceViewers } = await import('../src/lib/agent-message-run-details.js');
+  const io = realtime.io;
+  const failing = { to: (name: string) => io.to(name), in: () => ({ fetchSockets: async () => { throw new Error('adapter unavailable'); } }) };
+  const message = { ...(await storedReply()), id: randomUUID() };
+  await emitMessageToSpaceViewers(failing as any, { orgId, spaceId, event: 'message:new', message });
+  await settle();
+  for (const socket of [requester, peer]) {
+    assert.equal(newMessages(socket.events, message.id).length, 1);
+    assert.deepEqual(canaries(JSON.stringify(newMessages(socket.events, message.id))), []);
+  }
+});
