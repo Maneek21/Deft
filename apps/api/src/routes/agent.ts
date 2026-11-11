@@ -46,6 +46,7 @@ import {
   isApprovalResolverAction,
   rejectAction as resolveRejectAction,
   publishSettledApprovalResolution,
+  resumeApprovedModuleActionForMaintenance,
   sanitizeModuleActionParamsForReceipt,
   hasHumanMcpBulkProvenance,
 } from '../lib/agent-approval-resolver.js';
@@ -1415,6 +1416,7 @@ export function recoverInterruptedApprovalsNow() {
     isResolverAction: isApprovalResolverAction,
     resolverActionNames: APPROVAL_RESOLVER_ACTION_NAMES,
     onResolverRecovered: publishSettledApprovalResolution,
+    resumeResolverModuleAction: resumeApprovedModuleActionForMaintenance,
   });
 }
 

@@ -516,6 +516,8 @@ export type InterruptedApprovalSweepResult = {
   poolBusy: boolean;
   /** Settled human approvals whose bookkeeping this run completed. */
   finalised: number;
+  /** Approved module mutations this run resumed. */
+  resumed: number;
 };
 
 /** The sweep never queues behind long-running work for a connection. */
@@ -531,6 +533,9 @@ export async function recoverInterruptedApprovals(options: {
   isResolverAction: (action: string) => boolean;
   /** Every action name the approval resolver owns (it signs their receipts). */
   resolverActionNames: readonly string[];
+  /** Drives the resolver's idempotent module resume for one action. */
+  resumeResolverModuleAction?: (actionId: string, orgId: string, acquireTimeoutMs: number)
+    => Promise<'resumed' | 'held' | 'busy' | 'skipped'>;
   onResolverRecovered?: (actionId: string, actorUserId: string) => Promise<void>;
   batchSize?: number;
   minimumAgeMs?: number;
@@ -558,7 +563,7 @@ export async function recoverInterruptedApprovals(options: {
     .limit(batchSize);
 
   const result: InterruptedApprovalSweepResult = {
-    examined: candidates.length, recovered: 0, live: 0, poolBusy: false, finalised: 0,
+    examined: candidates.length, recovered: 0, live: 0, poolBusy: false, finalised: 0, resumed: 0,
   };
   for (const candidate of candidates) {
     try {
@@ -594,6 +599,18 @@ export async function recoverInterruptedApprovals(options: {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  }
+  if (!result.poolBusy && options.resumeResolverModuleAction) {
+    const resumption = await resumeApprovedModuleActions({
+      resume: options.resumeResolverModuleAction,
+      hooks: options.hooks ?? {},
+      resumableNames: [...RESOLVER_RESUMABLE_ACTIONS].filter((name) => options.isResolverAction(name)),
+      batchSize,
+      minimumAgeMs,
+    });
+    result.resumed = resumption.resumed;
+    result.live += resumption.live;
+    result.poolBusy = resumption.poolBusy;
   }
   if (!result.poolBusy) {
     const finalisation = await finaliseUnfinishedApprovals({
@@ -700,4 +717,55 @@ async function finaliseUnfinishedApprovals(options: {
     }
   }
   return { finalised, poolBusy: false };
+}
+
+/**
+ * Approved module mutations that recorded no outcome. The resolver resumes
+ * these idempotently (a committed mutation is recorded, an uncommitted one
+ * runs once), so they never go through the "interrupted; outcome unknown"
+ * settlement. Each resumed row is then finalised from its stored approver.
+ */
+async function resumeApprovedModuleActions(options: {
+  resume: NonNullable<Parameters<typeof recoverInterruptedApprovals>[0]['resumeResolverModuleAction']>;
+  hooks: ApprovalFinaliserHooks;
+  resumableNames: readonly string[];
+  batchSize: number;
+  minimumAgeMs: number;
+}): Promise<{ resumed: number; live: number; poolBusy: boolean }> {
+  if (options.resumableNames.length === 0) return { resumed: 0, live: 0, poolBusy: false };
+  const candidates = await db
+    .select({ id: agentActions.id, org_id: agentActions.org_id })
+    .from(agentActions)
+    .where(and(
+      eq(agentActions.approval_status, 'approved'),
+      sql`${agentActions.approved_by_user_id} IS NOT NULL`,
+      isNull(agentActions.executed_at),
+      isNull(agentActions.app_run_id),
+      sql`${agentActions.action} IN (${sql.join(options.resumableNames.map((name) => sql`${name}`), sql`, `)})`,
+      sql`${agentActions.approved_at} < now() - (${options.minimumAgeMs} * interval '1 millisecond')`,
+    ))
+    .orderBy(agentActions.approved_at)
+    .limit(options.batchSize);
+  let resumed = 0;
+  let live = 0;
+  for (const candidate of candidates) {
+    try {
+      const outcome = await options.resume(candidate.id, candidate.org_id, SWEEP_ACQUIRE_TIMEOUT_MS);
+      if (outcome === 'busy') return { resumed, live, poolBusy: true };
+      if (outcome === 'held') live += 1;
+      if (outcome === 'resumed') {
+        resumed += 1;
+        // Decision, Attention and confirmation, from the stored approver.
+        await finalizeApprovalOutcome({
+          actionId: candidate.id, orgId: candidate.org_id, receipt: 'resolver', hooks: options.hooks,
+        });
+      }
+    } catch (err) {
+      console.warn('[agent-approval] module approval resume failed', {
+        actionId: candidate.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return { resumed, live, poolBusy: false };
 }

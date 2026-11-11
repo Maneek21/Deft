@@ -42,6 +42,7 @@ import {
   isInterruptedApproval,
   ownsClaim,
   recoverInterruptedApproval,
+  tryWithApprovalLease,
   withApprovalLease,
   type ClaimToken,
 } from './agent-action-execution-lease.js';
@@ -1571,6 +1572,54 @@ async function resolveRecordMirrorNominationAction(
     }
     return { status: 'error', code: 'EXECUTE_FAILED', message: sanitized };
   }
+}
+
+export type ModuleResumeOutcome = 'resumed' | 'held' | 'busy' | 'skipped';
+
+/**
+ * Maintenance: resume an approved module mutation that recorded no outcome
+ * (its request lost its lease, or stopped), through the same idempotent
+ * resume an approve retry takes, acting as the stored approver. Never
+ * waits for a lease: a live holder means the executor is still running.
+ */
+export async function resumeApprovedModuleActionForMaintenance(
+  actionId: string,
+  orgId: string,
+  acquireTimeoutMs: number,
+): Promise<ModuleResumeOutcome> {
+  const [row] = await db
+    .select({
+      action: agentActions.action,
+      approval_status: agentActions.approval_status,
+      executed_at: agentActions.executed_at,
+      approved_by_user_id: agentActions.approved_by_user_id,
+      app_run_id: agentActions.app_run_id,
+    })
+    .from(agentActions)
+    .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, orgId)))
+    .limit(1);
+  const approverId = row?.approved_by_user_id;
+  if (!row || !approverId || row.approval_status !== 'approved' || row.executed_at !== null
+    || row.app_run_id !== null || !MODULE_MUTATION_ACTIONS.has(row.action)
+    || !isApprovalResolverAction(row.action)) return 'skipped';
+  const held = await tryWithApprovalLease(actionId, { acquireTimeoutMs }, async (lease) => {
+    // Re-check under the lease: another request may have settled it.
+    const [current] = await db
+      .select({ approval_status: agentActions.approval_status, executed_at: agentActions.executed_at })
+      .from(agentActions)
+      .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, orgId)))
+      .limit(1);
+    if (!current || current.approval_status !== 'approved' || current.executed_at !== null) return null;
+    return approveActionLocked(actionId, approverId, {}, lease);
+  });
+  if (!held.acquired) return held.reason === 'pool_busy' ? 'busy' : 'held';
+  const result = held.value;
+  if (!result) return 'skipped';
+  if (result.status === 'approved' || result.status === 'rejected' || result.code === 'EXECUTE_FAILED') {
+    await publishApprovalResolution(actionId, approverId);
+    return 'resumed';
+  }
+  return 'skipped';
 }
 
 /** Publish the resolution of an approval settled outside a request. */
