@@ -110,14 +110,14 @@ export async function setupDurabilityFixture(label: string): Promise<DurabilityF
           id, orgId, values.userId ?? requesterId, values.action, JSON.stringify(values.params),
           values.result === undefined || values.result === null ? null : JSON.stringify(values.result),
           values.status ?? 'approved',
-          (values.status ?? 'approved') === 'approved' ? new Date() : null,
-          values.executed === false ? null : new Date(),
+          (values.status ?? 'approved') === 'approved' ? new Date().toISOString() : null,
+          values.executed === false ? null : new Date().toISOString(),
           values.error ?? null,
           values.beforeState ? JSON.stringify(values.beforeState) : null,
           values.afterState ? JSON.stringify(values.afterState) : null,
           values.messageId ?? null,
           values.messageId ? spaceId : null,
-          values.createdAt ?? new Date(),
+          (values.createdAt ?? new Date()).toISOString(),
         ],
       );
       return id;

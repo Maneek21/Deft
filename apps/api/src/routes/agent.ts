@@ -49,6 +49,7 @@ import {
 } from '../lib/agent-approval-resolver.js';
 import { generateReceipt } from '../lib/receipts.js';
 import { findCommittedTaskBundleResult } from '../lib/task-bundle.js';
+import { WIKI_PROPOSAL_STALE_ERROR } from '../lib/wiki-proposal-freshness.js';
 import { isExecutionLeaseExpired, recoverStaleActionExecution } from '../lib/agent-action-execution-lease.js';
 import {
   markWorkIntentConvertedForAction,
@@ -1589,6 +1590,25 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
           reason: execResult.error ?? 'Action failed',
         });
       }
+    } else if (execResult.error === WIKI_PROPOSAL_STALE_ERROR) {
+      // A stale wiki proposal can never succeed as approved; close it as
+      // failed instead of reopening it for a retry that would fail again.
+      await db
+        .update(agentActions)
+        .set({
+          approval_status: 'approved',
+          approved_at: new Date(),
+          result: null,
+          error: execResult.error,
+          executed_at: new Date(),
+        })
+        .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, user.org_id)));
+      await markWorkIntentFailedForAction({
+        actionId,
+        orgId: action.org_id,
+        actionParams: action.params,
+        reason: execResult.error,
+      });
     } else {
       const preservedFailureResult = execResult.result
         && typeof execResult.result === 'object'

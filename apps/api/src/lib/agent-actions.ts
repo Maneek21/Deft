@@ -41,7 +41,7 @@ import { dispatchAgentEmployeeTask } from './dispatch-agent-task.js';
 import { checkReplyStorm, STORM_THRESHOLD } from './storm-detector.js';
 import { DEFTY_NAME } from './ensure-defty-membership.js';
 import { resolveSpaceTarget } from './resolve-space-target.js';
-import { createTaskBundle } from './task-bundle.js';
+import { createTaskBundle } from './task-bundle.js'; import { staleWikiProposalError, WIKI_PROPOSAL_STALE_ERROR, wikiWriteTargetCondition } from './wiki-proposal-freshness.js';
 import { bulkUpdateTasks, BulkTaskUpdateError } from './task-bulk-update.js';
 import {
   agentToolPolicyError,
@@ -2362,9 +2362,9 @@ export async function executeAction(
           const [existing] = await db
             .select()
             .from(wikiPages)
-            .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.slug, existingSlug), eq(wikiPages.is_deleted, false)))
+            .where(and(eq(wikiPages.org_id, orgId), wikiWriteTargetCondition(params, existingSlug), eq(wikiPages.is_deleted, false)))
             .limit(1);
-          if (!existing) return { success: false, result: null, error: `Wiki page "${existingSlug}" not found` };
+          if (!existing) return { success: false, result: null, error: `Wiki page "${existingSlug}" not found` }; const staleError = await staleWikiProposalError(actionId, orgId, params, existing); if (staleError) return { success: false, result: null, error: staleError };
 
           const updates: Record<string, any> = {};
           if (title) updates.title = title;
@@ -2390,7 +2390,7 @@ export async function executeAction(
                   target: [wikiPageVersions.page_id, wikiPageVersions.version],
                 });
               }
-              await tx.update(wikiPages).set(updates).where(eq(wikiPages.id, existing.id));
+              const [applied] = await tx.update(wikiPages).set(updates).where(and(eq(wikiPages.id, existing.id), eq(wikiPages.version, existing.version))).returning({ id: wikiPages.id }); if (!applied) throw new Error(WIKI_PROPOSAL_STALE_ERROR);
             });
           }
 
