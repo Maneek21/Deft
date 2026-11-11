@@ -337,6 +337,11 @@ const FAKE_SERVER = `(() => {
     const list = cursor ? all.filter((m) => m.created_at < time || (m.created_at === time && id !== undefined && m.id < id)) : all;
     return list.slice(-limit);
   };
+  // Like the API: a full page names its oldest row as the next cursor.
+  const nextCursor = (rows, full) => {
+    const limit = Math.min(Number(new URL(full, 'http://x').searchParams.get('limit') || 50), 100);
+    return rows.length === limit ? rows[0].created_at + '|' + rows[0].id : null;
+  };
   const failure = { status: 500, body: { error: 'boom', code: 'X' } };
   return (method, path, full) => {
     if (method !== 'GET') return undefined;
@@ -345,7 +350,7 @@ const FAKE_SERVER = `(() => {
       S.channelReads += 1;
       if (S.netFail.channel || (S.netFailWhen && S.netFailWhen(path))) res = 'network-error';
       else if (S.fail.channel) res = failure;
-      else if (S.channel) res = { body: { messages: page(S.channel, full), next_cursor: null } };
+      else if (S.channel) { const rows = page(S.channel, full); res = { body: { messages: rows, next_cursor: nextCursor(rows, full) } }; }
     } else if (path === '/api/messages/t1/thread') {
       S.threadReads += 1;
       if (S.netFail.thread || (S.netFailWhen && S.netFailWhen(path))) res = 'network-error';
@@ -469,6 +474,33 @@ test('R2-2: past the page bound the view is replaced by the latest pages with a 
     assert.equal(await page.getByText('Destination message from Priya').count(), 0, 'no gap: older messages are not kept beside it');
     await earlier.click();
     await page.getByText('Missed x 001', { exact: true }).waitFor();
+  } finally {
+    await close(page);
+  }
+});
+
+test('W2R2-1: two Load earlier clicks across messages that share one timestamp reach the oldest page, each message once', async () => {
+  const page = await open(browser, { harness: 'defty-chat-harness.tsx', url: '/chat?space=s1', override: FAKE_SERVER });
+  try {
+    await page.getByText('Destination message from Priya').waitFor();
+    await drop(page);
+    // 700 messages at one instant: the catch-up shows the newest 500.
+    const tied = Array.from({ length: 700 }, (_, i) => ({
+      ...BASE, id: `t-${String(i + 1).padStart(3, '0')}`, parent_id: null, user_id: 'u-rahul', user_name: 'Rahul Mehta',
+      content: `Tied t ${String(i + 1).padStart(3, '0')}`, created_at: '2026-10-22T11:00:00.000Z',
+    }));
+    await srv(page, (data) => { window.__srv.channel = data; }, [ROOT, DEST, ...tied]);
+    await reconnect(page);
+    await page.getByText('Tied t 700', { exact: true }).waitFor();
+    const earlier = page.getByRole('button', { name: 'Load earlier messages' });
+    await earlier.waitFor();
+    assert.equal(await page.getByText('Tied t 200', { exact: true }).count(), 0);
+    await earlier.click();
+    await page.getByText('Tied t 101', { exact: true }).waitFor();
+    await page.waitForFunction(() => !document.querySelector('button[disabled]')?.textContent?.includes('Load earlier'), null, { timeout: 4000 });
+    await earlier.click();
+    await page.getByText('Tied t 001', { exact: true }).waitFor();
+    assert.equal(await page.locator('[data-message-id^="t-"]').count(), 700, 'each tied message shown once');
   } finally {
     await close(page);
   }

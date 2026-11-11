@@ -6,12 +6,23 @@ function timeOf(message: { created_at: string }): number {
 }
 
 /**
+ * Display order: created_at, then id on a tie, matching the API's
+ * (created_at, id) history order, so an earlier page that shares the
+ * boundary timestamp lands before the messages already shown.
+ */
+function compareHistory(a: { id?: string; created_at: string }, b: { id?: string; created_at: string }): number {
+  const aId = a.id ?? '';
+  const bId = b.id ?? '';
+  return timeOf(a) - timeOf(b) || (aId < bId ? -1 : aId > bId ? 1 : 0);
+}
+
+/**
  * Merge a fresh history read into what is on screen. Fetched rows are
  * authoritative for every field; the caller then replays the live events
  * buffered during the read (see ConversationReads). Messages already shown
  * keep their position, and a message shown as deleted stays deleted (the
  * API has no undelete). Messages the client missed are inserted by
- * `created_at`. Nothing is dropped and no id appears twice.
+ * (`created_at`, id). Nothing is dropped and no id appears twice.
  */
 export function mergeMessagesById<T extends HistoryMessage>(
   current: readonly T[],
@@ -30,10 +41,10 @@ export function mergeMessagesById<T extends HistoryMessage>(
 
   const missing = fetched
     .filter((message, index) => !shown.has(message.id) && fetched.findIndex((m) => m.id === message.id) === index)
-    .sort((a, b) => timeOf(a) - timeOf(b));
+    .sort(compareHistory);
   for (const message of missing) {
     let at = merged.length;
-    while (at > 0 && timeOf(merged[at - 1]!) > timeOf(message)) at--;
+    while (at > 0 && compareHistory(merged[at - 1]!, message) > 0) at--;
     merged.splice(at, 0, message);
   }
   return merged;
@@ -139,6 +150,15 @@ export type HistoryRead<T> = {
   coversShown: boolean;
   /** True when the server may hold messages older than the oldest one read. */
   hasEarlier: boolean;
+  /** The server's cursor for the page before the oldest one read; null when there is none. */
+  nextCursor: string | null;
+};
+
+export type HistoryPage<T> = {
+  /** Oldest first. */
+  messages: T[];
+  /** The server's cursor for the page before this one; null (or absent) means no older history. */
+  nextCursor: string | null;
 };
 
 type Get = (path: string) => Promise<Pick<Response, 'ok' | 'status' | 'json'>>;
@@ -159,23 +179,25 @@ export function historyCursorOf(message: { id: string; created_at: string }): st
 
 /**
  * Read one page of top-level history, oldest first: the latest page, or the
- * page before `before` (a history cursor). Throws on a failed read.
+ * page before `before` (a history cursor, normally the server's next_cursor).
+ * Throws on a failed read.
  */
-export async function readHistoryPage<T extends HistoryMessage>(get: Get, basePath: string, before?: string): Promise<T[]> {
+export async function readHistoryPage<T extends HistoryMessage>(get: Get, basePath: string, before?: string): Promise<HistoryPage<T>> {
   const query = new URLSearchParams({ limit: String(HISTORY_PAGE_SIZE) });
   if (before) query.set('cursor', before);
   const res = await get(`${basePath}?${query.toString()}`);
   if (!res.ok) throw new Error(`History read failed (${res.status})`);
-  const data = await res.json() as { messages?: T[] } | T[] | null;
+  const data = await res.json() as { messages?: T[]; next_cursor?: unknown } | T[] | null;
   const list = Array.isArray(data) ? data : data?.messages;
-  return Array.isArray(list) ? [...list].sort((a, b) => timeOf(a) - timeOf(b)) : [];
+  const nextCursor = !Array.isArray(data) && typeof data?.next_cursor === 'string' && data.next_cursor ? data.next_cursor : null;
+  return { messages: Array.isArray(list) ? [...list].sort(compareHistory) : [], nextCursor };
 }
 
 /**
  * Read history from the newest message back until the read reaches
  * `oldestShownAt` (the oldest message on screen), for at most `maxPages`
- * pages. Each next page uses the oldest message of the previous one as its
- * cursor (the API's own next_cursor is not used). Throws on any failed page.
+ * pages. Each next page follows the server's next_cursor; a page without one
+ * is the oldest. Throws on any failed page.
  */
 export async function readHistoryBackTo<T extends HistoryMessage>(
   get: Get,
@@ -188,13 +210,15 @@ export async function readHistoryBackTo<T extends HistoryMessage>(
   let before: string | undefined;
   for (let pageIndex = 0; pageIndex < maxPages; pageIndex++) {
     const page = await readHistoryPage<T>(get, basePath, before);
-    const pageIds = new Set(page.map((m) => m.id));
-    collected = [...page, ...collected.filter((m) => !pageIds.has(m.id))];
-    if (page.length < HISTORY_PAGE_SIZE) return { messages: collected, coversShown: true, hasEarlier: false };
-    if (Number.isNaN(target) || timeOf(page[0]!) <= target) return { messages: collected, coversShown: true, hasEarlier: true };
-    before = historyCursorOf(page[0]!);
+    const pageIds = new Set(page.messages.map((m) => m.id));
+    collected = [...page.messages, ...collected.filter((m) => !pageIds.has(m.id))];
+    if (!page.nextCursor) return { messages: collected, coversShown: true, hasEarlier: false, nextCursor: null };
+    if (Number.isNaN(target) || timeOf(page.messages[0]!) <= target) {
+      return { messages: collected, coversShown: true, hasEarlier: true, nextCursor: page.nextCursor };
+    }
+    before = page.nextCursor;
   }
-  return { messages: collected, coversShown: false, hasEarlier: true };
+  return { messages: collected, coversShown: false, hasEarlier: true, nextCursor: before ?? null };
 }
 
 /**
@@ -214,7 +238,7 @@ export function applyHistoryRead<T extends HistoryMessage>(
 
 function oldestOf<T extends { created_at: string }>(list: ReadonlyArray<T>): T | null {
   let oldest: T | null = null;
-  for (const message of list) if (!oldest || timeOf(message) < timeOf(oldest)) oldest = message;
+  for (const message of list) if (!oldest || compareHistory(message, oldest) < 0) oldest = message;
   return oldest;
 }
 
@@ -223,7 +247,11 @@ export function oldestCreatedAt(list: ReadonlyArray<{ created_at: string }>): st
   return oldestOf(list)?.created_at ?? null;
 }
 
-/** The history cursor of the oldest message in a list, or null when it is empty. */
+/**
+ * The history cursor of the oldest message in a list, or null when it is
+ * empty. Only a fallback: prefer the server's next_cursor, since the list
+ * holds millisecond timestamps and the server orders by its full precision.
+ */
 export function oldestHistoryCursor(list: ReadonlyArray<{ id: string; created_at: string }>): string | null {
   const oldest = oldestOf(list);
   return oldest ? historyCursorOf(oldest) : null;

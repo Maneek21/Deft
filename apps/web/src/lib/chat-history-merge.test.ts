@@ -8,6 +8,7 @@ import {
   historyCursorOf,
   mergeMessagesById,
   readHistoryBackTo,
+  readHistoryPage,
 } from './chat-history-merge';
 import { replayMessageEvents, type ChatReaction, type MessageEvent } from './chat-message-events';
 
@@ -76,7 +77,10 @@ function pagedGet(all: ReturnType<typeof serverOf>, calls: string[]) {
     // Like the API: `<created_at>|<id>` pages before that row in (created_at, id) order.
     const [time, id] = (cursor ?? '').split('|');
     const list = cursor ? all.filter((m) => m.created_at < time! || (m.created_at === time && id !== undefined && m.id < id)) : all;
-    return { ok: true, status: 200, json: async () => ({ messages: list.slice(-limit) }) } as Response;
+    const page = list.slice(-limit);
+    // Like the API: a full page names its oldest row as the next cursor.
+    const next_cursor = page.length === limit ? `${page[0]!.created_at}|${page[0]!.id}` : null;
+    return { ok: true, status: 200, json: async () => ({ messages: page, next_cursor }) } as Response;
   };
 }
 
@@ -115,6 +119,31 @@ test('W2-1: messages sharing one timestamp across page boundaries are each read 
   assert.equal(new Set(read.messages.map((m) => m.id)).size, 250);
   assert.match(calls[1]!, /cursor=/);
   assert.equal(new URL(calls[1]!, 'http://x').searchParams.get('cursor'), historyCursorOf(all[150]!));
+});
+
+test('W2R2-1: an earlier page that shares the boundary timestamp lands before what is shown, in server order', () => {
+  const same = at(5);
+  const row = (i: number) => ({ id: `t-${String(i).padStart(3, '0')}`, content: `t-${i}`, created_at: same });
+  const shown = Array.from({ length: 3 }, (_, i) => row(i + 3));
+  const earlier = Array.from({ length: 3 }, (_, i) => row(i));
+  assert.deepEqual(mergeMessagesById(shown, earlier).map((m) => m.id), ['t-000', 't-001', 't-002', 't-003', 't-004', 't-005']);
+});
+
+test('W2R2-1: Load earlier follows the server cursor across three pages that share one timestamp, then stops', async () => {
+  const same = at(5);
+  const all = Array.from({ length: 250 }, (_, i) => ({ id: `t-${String(i).padStart(3, '0')}`, content: `t-${i}`, created_at: same }));
+  const calls: string[] = [];
+  const get = pagedGet(all, calls);
+  let shown: typeof all = [];
+  let cursor: string | undefined;
+  for (let guard = 0; guard < 10; guard++) {
+    const page = await readHistoryPage<(typeof all)[number]>(get, '/api/messages/s1', cursor);
+    shown = mergeMessagesById(shown, page.messages);
+    if (!page.nextCursor) break;
+    cursor = page.nextCursor;
+  }
+  assert.equal(calls.length, 3, 'three requests, then stop');
+  assert.deepEqual(shown.map((m) => m.id), all.map((m) => m.id), 'each message once, in server order');
 });
 
 test('R2-2: a failed page fails the whole catch-up', async () => {
