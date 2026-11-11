@@ -1,8 +1,8 @@
 # Current limitations
 
-The general workspace baseline below is historical `v0.3.0-preview.15` (September 8, 2026). The separate connected-App developer-preview set is Host `0.3.0-preview.120`/schema120, Email App `1.9.0-preview.13` on Kit38 and Runtime `0.4.0-preview.15` on Kit35. Use its [authoritative compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.13/compatibility.json), [current author guide](connected-app-author-guide.md) and [Email limitations](https://github.com/Maneek21/deft-email/blob/main/docs/limitations.md). The explicitly Apps-enabled image compiles the required browser gates; general release defaults remain off. Exact artifact acceptance is recorded with the release, and historical receipts do not establish a different build.
+This page describes `v0.3.0-preview.141`, the latest published prerelease (November 10, 2026), plus changes merged to `master` since; the [changelog](../CHANGELOG.md) lists those under Unreleased. The standalone Email App and its Runtime are released separately: use the `compatibility.json` attached to the Email release you install, the [current author guide](connected-app-author-guide.md) and the [Email limitations](https://github.com/Maneek21/deft-email/blob/main/docs/limitations.md). The preview.141 image is built with the Apps-enabled browser profile; the API flags that turn Apps on stay off until an operator sets them.
 
-Installation and agent boundary notes updated September 11, 2026.
+Last reconciled on November 11, 2026.
 
 Deft is an alpha. It is suitable for technical evaluation, internal use, and controlled pilots where an operator can tolerate breaking changes and investigate failures.
 
@@ -35,9 +35,17 @@ Deft is an alpha. It is suitable for technical evaluation, internal use, and con
 - Self-hosted storage does not imply local AI processing: configured providers and permitted external clients can receive workspace content. See [AI data flow](self-hosting.md#ai-data-flow).
 - Model output is probabilistic. Deft validates structured drafts and applies permission and approval rules, but cannot guarantee perfect interpretation.
 - Agent employees require a separately operated compatible runtime. Deft does not host every external runtime or tool.
-- A seeded demo identity is not proof of a live Hermes integration. Preview.15 is a core release without new Hermes certification.
+- A seeded demo identity is not proof of a live Hermes integration. Preview.141 is a core release and carries no Hermes certification.
 - A healthy token or connection does not guarantee that an external runtime is online, subscribed, or able to finish assigned work.
 - Autonomous behavior remains bounded by scopes, trust, approvals, action caps, provider availability, and customer configuration.
+- Defty's chat writes always wait for approval, at every trust level. The workspace trust level governs only Defty's approved plans and background work.
+- An agent employee's own chat messages (post, reply, direct message) run without approval at every trust level, within guard rails: space membership and visibility, the reply-storm detector, the daily action cap and the unhealthy (circuit breaker) state. Everything else an employee writes follows that employee's own trust level.
+- No trust level auto-runs a call classed as destructive. That includes a connected tool that declares itself destructive, tools whose names match a destructive name in any letter case, and `remove_dependency`. A destructive action held for approval is stored at the full tier. Each step of a Defty plan carries a destructive flag, and a destructive step needs its own approval.
+- The action lists, receipts, dashboard activity and inbox show a Defty action only to its requester, an assigned approver and owners and admins (guests: their own only). Only the requester, or an owner or admin who can still see the target, can undo it, and only while the task still has the value the action set. Defty posts one reply per trigger message.
+- The per-employee daily cost budget (`daily_budget_cents`) is not enforced: nothing records spend against it.
+- Defty does not turn chat messages into tasks on its own (passive extraction is off unless an operator sets `DEFT_ENABLE_BACKGROUND_TASK_CAPTURE=1`). Defty does not manage agent employees, connections or triggers.
+- Realtime rooms and presence are per workspace: a person who belongs to two workspaces shows as online only in the workspace where their session is connected.
+- Self-hosted Deft sends no email. Invites and password recovery are links an admin generates and shares.
 
 ## MCP and external tools
 
@@ -52,8 +60,8 @@ Deft is an alpha. It is suitable for technical evaluation, internal use, and con
 [Modules and Apps](modules-and-apps.md) use different packaging and installation paths. Standalone Modules do not require the experimental Apps flags. Module v1 records are organization-wide for owners, admins, and members; guests are denied, and private rows, collections, and fields are not supported.
 
 - Apps are disabled by default. The API requires `DEFT_APPS_ENABLED=true`, and the web build requires `NEXT_PUBLIC_FEATURE_APPS=true`.
-- Connected App execution and bounded automations add further flags and operator review. They are included in preview.15, experimental, and disabled by default.
-- App Protocol v0 provides declarative internal records and native views. The published preview.15 baseline does not provide arbitrary custom UI, public portals, general external runtimes or synchronization. The review candidate adds bounded generic trusted UI/Runtime/sync contracts, not arbitrary iframe UI or self-granted execution.
+- Connected App execution and bounded automations add further flags and operator review. They are included in preview.141, experimental, and disabled by default.
+- Internal Apps provide declarative records and native views. The Apps developer preview adds bounded trusted UI, external Runtime and governed source-sync contracts that need reviewed setup. Arbitrary custom UI, public portals and self-granted execution are not provided.
 - A package's requested permissions are review input. The host owns installation, grants, connector binding, activation, and execution authority.
 
 ## Scale and performance

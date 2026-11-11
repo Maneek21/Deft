@@ -39,14 +39,13 @@ Commands below use Bash; Windows users can use Git Bash with Docker Desktop.
 
 ### Recommended: prebuilt release
 
-For the independently sideloaded Email developer preview, use Host
-`v0.3.0-preview.123` and the **apps-developer-preview** browser profile listed
-in its `browser-feature-evidence.json`. Follow the independent
+For the independently sideloaded Email developer preview, use a Host
+built with the **apps-developer-preview** browser profile, such as
+`v0.3.0-preview.141`; its `browser-feature-evidence.json` lists the profile. Follow the independent
 [Email setup guide](https://github.com/Maneek21/deft-email/blob/main/docs/setup.md)
-and its [compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.17/compatibility.json)
-for the exact image digest, schema 120, sealed Kit downloads, HTTPS/OAuth and
-Runtime configuration. Host preview 122 includes the session-refresh pool fix
-and production JWT-secret validation, retaining schema 120 without a new migration.
+and the `compatibility.json` attached to the Email release being installed
+for the exact Host version and image digest, schema version, sealed Kit downloads, HTTPS/OAuth and
+Runtime configuration.
 This path requires an operator; it is not the stable
 core quick start below. Feature flags beginning `NEXT_PUBLIC_` are compiled
 into the browser bundle. Setting them only when a container starts does not
@@ -56,7 +55,7 @@ required. Keep only one active Host when operating the small demo database;
 overlapping Host processes consume separate connection pools.
 
 For a fresh evaluation, follow the [README quick start](../README.md#quick-start-with-docker),
-which pins `v0.3.0-preview.15` and its image digest. Use that release's own Compose
+which pins `v0.3.0-preview.141` and its image digest. Use that release's own Compose
 files and environment template together; this source checkout can differ from
 the published image. The source-build instructions below are for contributors.
 Tagged preview releases publish an amd64 image to
@@ -76,7 +75,7 @@ and surrounding whitespace, and preserves accepted key bytes exactly. Docker
 runs in production mode even on localhost. Set the image in `.env` (the tag has no leading `v`):
 
 ```bash
-DEFT_IMAGE=ghcr.io/maneek21/deft:0.3.0-preview.15
+DEFT_IMAGE=ghcr.io/maneek21/deft:0.3.0-preview.141
 ```
 
 For another host or port, set `NEXT_PUBLIC_APP_URL`, `NEXT_PUBLIC_API_URL`,
@@ -451,7 +450,9 @@ POST https://your-domain.com/api/mcp/v1
 Create an agent employee from Settings -> Agent Employees, copy the bearer token,
 and paste the generated MCP config into your runtime. Agent employee tokens act
 as that employee and are governed by the employee's trust level, approval rules,
-health status, and MCP audit log.
+health status, and MCP audit log. The per-employee daily cost budget is not
+enforced today: nothing records spend against it. The daily action cap and the
+unhealthy (circuit breaker) state do apply.
 
 Personal tokens and agent employee tokens use the same endpoint, but they are not
 the same authority model. Use personal tokens when a human wants their own AI
@@ -470,10 +471,23 @@ actions, so grant that scope deliberately.
 Defty and Agent Employees use agent identities. The API routes governed writes
 through tool tiers and trust policy, then resolves required approvals on the
 server. In the shared tier policy, Conservative auto-executes `auto` actions,
-Standard also permits `quick`, and Autonomous also permits `full` except guarded
-destructive/admin operations. Individual workflows can require stricter review.
+Standard also permits `quick`, and Autonomous also permits `full`. No trust level
+auto-runs a call classed as destructive (admin tools, `delete_*` tools, module
+archive and unlink, bulk record creation, or a delete, pause or revoke mode); those
+always wait for approval. Individual workflows can require stricter review.
 Task creation is normally `quick`; posting a message is `full`. A task proposal
 in the walkthrough is not a promise that every configured task write pauses.
+
+Two rules sit on top of the tier policy. Defty's chat writes always wait for
+approval, at every trust level; the workspace trust level governs only Defty's
+approved plans and background work. An agent employee's own chat messages (post,
+reply, direct message) run without approval at every trust level, within guard
+rails: space membership and visibility, the reply-storm detector, the daily action
+cap, and the unhealthy (circuit breaker) state, in which the message waits for
+approval over MCP or is refused on the Agent Channel. Everything else an employee writes follows that employee's own
+trust level. Passive task-candidate extraction from chat is disabled by default; operators can enable it with `DEFT_ENABLE_BACKGROUND_TASK_CAPTURE=1`. Defty does not manage agent employees, connections or triggers. A connected tool that declares itself
+destructive always needs approval. Only an action's requester, or an owner or
+admin who still has access to the target, can undo it.
 
 The resolver checks review authority and action state and claims pending work
 before execution. Repeated approval of a completed action returns its existing
@@ -877,9 +891,8 @@ See [current limitations](current-limitations.md) before upgrading production.
 
 ## Checking For Rows Stamped With The Wrong Org
 
-Every table carries an `org_id`. Before the fixes in PR #439, some routes could
-store a row whose `org_id` differed from the org of the space, task, note or
-other row it belonged to. The audit script lists such rows, and users who hold a
+Every table carries an `org_id`. The audit script lists rows whose `org_id`
+differs from the org of the space, task, note or other row they belong to, and users who hold a
 grant or authorship column (space member, task assignee or watcher, note share,
 token, OAuth grant, agent employee and workflow rule owners and similar) without
 a membership in the row's org. It only reports; it never changes data and has no repair mode.

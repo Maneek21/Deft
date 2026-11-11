@@ -1,6 +1,6 @@
 # Connected App author guide
 
-> **Apps developer preview:** use the supported Host/Email/Kit combination in the [Email compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.17/compatibility.json). Deft `0.3.0-preview.123` requires schema 120 and the Apps-enabled browser build profile. Historical preview.15 and its alpha.2 artifacts are unchanged.
+> **Apps developer preview:** use the Host version named by the `compatibility.json` attached to the Email release you install. The latest published Host, `0.3.0-preview.141`, is built with the Apps-enabled browser profile. Historical preview.15 and its alpha.2 artifacts are unchanged.
 
 For a standalone tracker, use the [Module tutorial](tutorials/first-module.md). A `deft.module.json` installs through Settings â†’ Modules; this guide packages resources in a separate `deft.app.json` and uses Settings â†’ Apps. [Compare the two paths](modules-and-apps.md).
 
@@ -9,14 +9,13 @@ and submit it for workspace review. Current connected applications use the
 programmatic Protocol 7 packaging APIs and public sideload review. The workspace
 operator reviews access, chooses provider bindings and activates the App.
 
-The current App authoring artifact is `@deft/app-kit@0.1.0-alpha.38`. Use a packed
+The current App authoring artifact is `@deft/app-kit@0.1.0-alpha.43`. Use a packed
 tarball of that exact version; do not substitute a monorepo workspace link or
 import private Deft packages.
 
 The independent [Email repository](https://github.com/Maneek21/deft-email) contains
-App `1.9.0-preview.14` built with Kit alpha.38 and Runtime `0.4.0-preview.17`
-built with Kit alpha.35. These deliberately different pins are compatible with
-the supported Host; preserve both sealed tarballs and locks. Follow its current
+the App and the Runtime, which may be built with different Kit versions. Use the
+versions named in the `compatibility.json` attached to the Email release you install; preserve both sealed tarballs and locks. Follow its current
 [setup instructions](https://github.com/Maneek21/deft-email/blob/main/docs/setup.md)
 and the release acceptance evidence. Kit parsing alone does not establish
 database compatibility or live provider acceptance.
@@ -292,7 +291,7 @@ contract. The historical host used the legacy fields
 | v1 | `deft.app.package.v1` | `stage_only` |
 
 The additive compatibility object must include `@deft/app-kit` version
-`0.1.0-alpha.32` (with `0.1.0-alpha.2` and `0.1.0-alpha.1` retained as compatible predecessors on this host).
+`0.1.0-alpha.43` (this Host also accepts earlier alphas, including `0.1.0-alpha.2` and `0.1.0-alpha.1`).
 The legacy `app_protocol: "0"` scalar remains `"0"` even when
 the additive object advertises v1; do not use that scalar alone to infer v1
 support.
