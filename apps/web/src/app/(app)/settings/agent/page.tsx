@@ -9,6 +9,7 @@ import { SessionTurnCard, type SessionTurn } from '@/components/session-turn-car
 import {
   TRUST_LEGEND,
   TRUST_LOAD_ERROR,
+  AUTONOMOUS_EMPLOYEE_CONFIRM,
   TrustLevelControl,
   canEditTrustLevel,
   createGenerationGuard,
@@ -19,7 +20,7 @@ import {
   type TrustViewPatch,
 } from '@/components/trust-level-control';
 import { useAuth } from '@/lib/auth-context';
-import { EmployeeTrustActions, employeeAutonomousConfirmLines } from './employee-trust-actions';
+import { EmployeeTrustActions } from './employee-trust-actions';
 
 // Phase 10 — mirrors apps/api/src/lib/model-pricing.ts. Kept in sync by hand
 // because the cost column is advisory only.
@@ -702,7 +703,7 @@ export default function AgentSettingsPage() {
           title="Upgrade trust level to AUTONOMOUS?"
           body={
             <>
-              {employeeAutonomousConfirmLines().map((line) => (
+              {AUTONOMOUS_EMPLOYEE_CONFIRM.map((line) => (
                 <p key={line} className="mb-2 last:mb-0">
                   {line}
                 </p>

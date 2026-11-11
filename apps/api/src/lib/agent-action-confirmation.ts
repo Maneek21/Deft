@@ -2,6 +2,8 @@ export type ConfirmedAction = {
   action: string;
   params?: unknown;
   result?: unknown;
+  /** Set when the approved action failed to execute. */
+  error?: string | null;
 };
 
 function record(value: unknown): Record<string, any> {
@@ -73,12 +75,31 @@ export function summarizeConfirmedAction(action: ConfirmedAction) {
   }
 }
 
+/** Plain label for an approved action that did not complete. */
+export function summarizeFailedAction(action: ConfirmedAction) {
+  const params = record(action.params);
+  const target = typeof params.title === 'string' && params.title.trim()
+    ? params.title.trim()
+    : typeof params.task_identifier === 'string' && params.task_identifier.trim()
+      ? params.task_identifier.trim()
+      : '';
+  const label = humanize(action.action);
+  return `${label.charAt(0).toUpperCase()}${label.slice(1)}${target ? ` "${target}"` : ''} did not complete.`;
+}
+
 export function formatApprovalConfirmation(actions: ConfirmedAction[]) {
-  const summaries = actions.map(summarizeConfirmedAction);
-  if (summaries.length === 0) return '';
-  if (summaries.length === 1) return `Done - ${summaries[0]}`;
-  return [
-    `Done - completed ${summaries.length} approved actions.`,
-    ...summaries.map((summary) => `- ${summary}`),
-  ].join('\n');
+  const succeeded = actions.filter((action) => !action.error).map(summarizeConfirmedAction);
+  const failed = actions.filter((action) => action.error).map(summarizeFailedAction);
+  const lines: string[] = [];
+  if (succeeded.length === 1) {
+    lines.push(`Done - ${succeeded[0]}`);
+  } else if (succeeded.length > 1) {
+    lines.push(`Done - completed ${succeeded.length} approved actions.`, ...succeeded.map((summary) => `- ${summary}`));
+  }
+  if (failed.length === 1) {
+    lines.push(`Failed - ${failed[0]}`);
+  } else if (failed.length > 1) {
+    lines.push(`Failed - ${failed.length} approved actions did not complete.`, ...failed.map((summary) => `- ${summary}`));
+  }
+  return lines.join('\n');
 }

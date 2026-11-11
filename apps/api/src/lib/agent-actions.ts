@@ -1910,7 +1910,7 @@ export async function executeAction(
             taskId: createdTask.id,
             orgId,
             assigneeUserId: createdTask.assignee_id!,
-            assignedBy: userId,
+            assignedBy: userId, dedupeKey: `agent-action:${actionId}:task-dispatch:${createdTask.id}:${createdTask.assignee_id}`,
           });
         }
 
