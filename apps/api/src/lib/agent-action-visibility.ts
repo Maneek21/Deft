@@ -137,12 +137,17 @@ function optionalString(value: unknown): boolean {
   return value === undefined || value === null || typeof value === 'string';
 }
 
-/** Non-archived spaces in the org the actor belongs to. */
-async function memberSpaces(orgId: string, userId: string) {
+/**
+ * Spaces in the org the actor belongs to. Posting is limited to active
+ * spaces (as the post_message executor always was); canvas, knowledge and
+ * space-note writes follow their HTTP routes, which authorize by membership
+ * alone, so archived spaces are included for them.
+ */
+async function memberSpaces(orgId: string, userId: string, includeArchived = false) {
   return db.select({ id: spaces.id, name: spaces.name, type: spaces.type, is_archived: spaces.is_archived })
     .from(spaces)
     .innerJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, userId)))
-    .where(and(eq(spaces.org_id, orgId), eq(spaces.is_archived, false)));
+    .where(and(eq(spaces.org_id, orgId), includeArchived ? undefined : eq(spaces.is_archived, false)));
 }
 
 export type NativeActionTarget = { params: Record<string, any> } | { error: string };
@@ -186,7 +191,7 @@ export async function authorizeNativeActionTarget(
       const spaceName = action === 'write_canvas' ? params.space_name.trim() : params.space_name;
       if (!spaceName) return action === 'write_canvas' ? { params: next } : { error: INVALID_TARGET };
       const wanted = spaceName.toLowerCase();
-      const rows = await memberSpaces(orgId, userId);
+      const rows = await memberSpaces(orgId, userId, true);
       const exact = rows.filter((space) => space.name.toLowerCase() === wanted);
       // write_canvas matches the whole name; add_knowledge matches a part of
       // it, preferring a single whole-name match.
@@ -215,7 +220,6 @@ export async function authorizeNativeActionTarget(
       const [space] = await db.select({ id: spaces.id }).from(spaces).where(and(
         eq(spaces.id, params.visibility_space_id),
         eq(spaces.org_id, orgId),
-        eq(spaces.is_archived, false),
       )).limit(1);
       return space && await requireSpaceMembership(space.id, userId, orgId)
         ? { params }
