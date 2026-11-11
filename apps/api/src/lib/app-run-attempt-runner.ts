@@ -1,6 +1,8 @@
 import {futureRecordActionGate,optionalFutureRecordAction,settleFutureRecordAction} from './app-future-record-action-dispatch.js';
 import { appConsentDeadline, APP_RESOURCE_SYNC_CHANNEL_VERSION_V3, SyncRequestV2Schema } from '@deft/app-kit/core';
-import {requireCurrentResourceObservationRun,observedResourceAuthorization,hasResourceObservationPin} from './app-resource-observation-authority.js';
+import {requireCurrentResourceObservationRun,observedResourceAuthorization,hasResourceObservationPin,observationDenied} from './app-resource-observation-authority.js';
+import {ResourceObservationAuthorityRequestSchema,ResourceObservationAuthorityResultSchema} from '../../../../packages/app-kit/src/resource-observation.js';
+import { digestAppGrantValue } from './app-grant-service.js';
 import { loadLiveAttachmentSyncAuthority, loadLiveAttachmentSyncBindingAuthority,
   type LiveAttachmentSyncBindingAuthority } from './app-attachment-sync-authority.js';
 import { buildAttachmentSyncAuthorizationSnapshot } from './app-attachment-sync-run.js';
@@ -86,6 +88,13 @@ type ClaimedAttempt = Readonly<{
   run: AppRunSafeView;
   attempt: typeof appRunAttempts.$inferSelect;
 }>;
+type ResourceSyncHeartbeatInput = Readonly<{
+  org_id: string; run_id: string; attempt_id: string; session_id: string;
+  token_hash: string; claim_token: string; sequence: number;
+}>;
+type ResourceSyncHeartbeatAck = Readonly<{ run_id: string; attempt_id: string; sequence: number; lease_expires_at: string }>;
+type ResourceObservationAuthorityRequest = ReturnType<typeof ResourceObservationAuthorityRequestSchema.parse>;
+type ResourceObservationAuthorityResult = ReturnType<typeof ResourceObservationAuthorityResultSchema.parse>;
 
 export type AppRunRecoveryOptions = Readonly<{
   transaction?: <T>(work: (tx: AppRunTransaction) => Promise<T>) => Promise<T>;
@@ -145,13 +154,18 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
   async #syncFinal(tx: AppRunTransaction,authority: Awaited<ReturnType<typeof loadLiveResourceSyncAuthority>> | Awaited<ReturnType<typeof loadLiveAttachmentSyncAuthority>> | LiveAttachmentSyncBindingAuthority | LiveResourceSyncBindingAuthority,
     runId:string,deadlines: readonly Date[]) {
     if (this.syncMode !== 'attachment_v3') return;
+    // The current observation it verified is returned so a caller can project
+    // it from this same transaction; other callers ignore it.
+    let observed: Awaited<ReturnType<typeof requireCurrentResourceObservationRun>> | undefined;
     if(authority){const [run]=await tx.select({authorization:appRuns.authorization_snapshot}).from(appRuns).where(and(eq(appRuns.org_id,authority.binding.org_id),eq(appRuns.id,runId))).limit(1);
       if(run&&hasResourceObservationPin(run.authorization,authority.binding.id)){
-        if(!await requireCurrentResourceObservationRun(tx,authority.binding.org_id,runId,authority as LiveAttachmentSyncBindingAuthority,this.now))throw new Error('APP_ATTACHMENT_AUTHORITY_STALE');
+        observed=await requireCurrentResourceObservationRun(tx,authority.binding.org_id,runId,authority as LiveAttachmentSyncBindingAuthority,this.now);
+        if(!observed)throw new Error('APP_ATTACHMENT_AUTHORITY_STALE');
       }}
     if (!authority || appConsentDeadline(authority.binding.consent_expires_at, authority.binding.consent_lifetime ?? undefined) <= this.now().getTime() || !await attachmentFinalAuthorityIsCurrent(tx,
       [authority.binding.owner_user_id,authority.registration.operator_user_id],{clock:this.now,
         expires_at:[...('session' in authority ? [authority.session.expires_at] : []),...(authority.binding.consent_expires_at ? [authority.binding.consent_expires_at] : []),...deadlines]})) throw new Error('APP_ATTACHMENT_AUTHORITY_STALE');
+    return observed;
   }
 
   /** A v2 Run is host-created for one reviewed private binding. The live
@@ -675,10 +689,31 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     return this.renewLease(input.org_id, input.attempt_id, input.claim_token, input);
   }
 
-  async heartbeatResourceSyncAttempt(input: Readonly<{
-    org_id: string; run_id: string; attempt_id: string; session_id: string;
-    token_hash: string; claim_token: string; sequence: number;
-  }>) {
+  async heartbeatResourceSyncAttempt(input: ResourceSyncHeartbeatInput) {
+    return this.#heartbeatResourceSyncAttempt(input);
+  }
+
+  /** Read-only observation authority for a v3 Runtime. The heartbeat, every
+   * authority and fence check, and the projected consent are decided in ONE
+   * transaction; any refusal rolls back the lease renewal. Never mints a
+   * session, admits a Run or invokes a provider. */
+  async resourceObservationAuthority(input: Readonly<{ org_id: string; token_hash: string; request: unknown }>) {
+    if (this.syncMode !== 'attachment_v3') return null;
+    const request = ResourceObservationAuthorityRequestSchema.parse(input.request), now = this.now().getTime(), requested = Date.parse(request.expires_at);
+    if (!Number.isFinite(now) || requested <= now || requested > now + 30_000) return null;
+    try {
+      return await this.#heartbeatResourceSyncAttempt({ org_id: input.org_id, token_hash: input.token_hash,
+        run_id: request.run_id, attempt_id: request.attempt_id, session_id: request.session_id,
+        claim_token: request.claim_token, sequence: request.sequence }, request);
+    } catch (error) {
+      if (error instanceof Error && error.message === 'APP_ATTACHMENT_AUTHORITY_STALE') return null;
+      throw error;
+    }
+  }
+
+  async #heartbeatResourceSyncAttempt(input: ResourceSyncHeartbeatInput): Promise<ResourceSyncHeartbeatAck | null>;
+  async #heartbeatResourceSyncAttempt(input: ResourceSyncHeartbeatInput, request: ResourceObservationAuthorityRequest): Promise<ResourceObservationAuthorityResult | null>;
+  async #heartbeatResourceSyncAttempt(input: ResourceSyncHeartbeatInput, request?: ResourceObservationAuthorityRequest): Promise<ResourceSyncHeartbeatAck | ResourceObservationAuthorityResult | null> {
     if (!this.#syncEnabled()) return null;
     return this.repository.transaction(async (tx) => {
       const run = await this.repository.lockRun(tx, input.org_id, input.run_id);
@@ -722,6 +757,8 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         || !['pending', 'running'].includes(run.state)
         || run.input_expires_at <= now || appConsentDeadline(authority.binding.consent_expires_at, authority.binding.consent_lifetime ?? undefined) <= now.getTime()
         || authority.session.expires_at <= now) return null;
+      // An observation projection is only for a provider call in progress.
+      if (request && (run.state !== 'running' || attempt.state !== 'provider_call_started')) return null;
       const leaseExpiresAt = new Date(now.getTime() + boundedLeaseMs(this.leaseMs));
       const [renewed] = await tx.update(appRunAttempts).set({
         lease_expires_at: leaseExpiresAt, updated_at: now,
@@ -729,9 +766,17 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         eq(appRunAttempts.id, attempt.id),
         eq(appRunAttempts.claim_token, input.claim_token))).returning({ id: appRunAttempts.id });
       if (!renewed) return null;
-      await this.#syncFinal(tx,authority,run.id,[run.input_expires_at,run.result_expires_at,leaseExpiresAt]);
-      return Object.freeze({ run_id: input.run_id, attempt_id: input.attempt_id,
+      const observed = await this.#syncFinal(tx,authority,run.id,[run.input_expires_at,run.result_expires_at,leaseExpiresAt]);
+      if (!request) return Object.freeze({ run_id: input.run_id, attempt_id: input.attempt_id,
         sequence: input.sequence, lease_expires_at: leaseExpiresAt.toISOString() });
+      // Throwing rolls back the lease renewal with the refused projection.
+      if (!observed) throw observationDenied();
+      const deadline = Math.min(Date.parse(request.expires_at),
+        appConsentDeadline(observed.snapshot.expires_at, observed.snapshot.consent_lifetime),
+        run.input_expires_at.getTime(), run.result_expires_at.getTime(), authority.session.expires_at.getTime(), leaseExpiresAt.getTime());
+      if (!Number.isFinite(deadline) || deadline <= this.now().getTime()) throw observationDenied();
+      return ResourceObservationAuthorityResultSchema.parse({ ...request, allowed: true, expires_at: new Date(deadline).toISOString(),
+        snapshot: observed.snapshot, consent_digest: digestAppGrantValue(observed.snapshot) });
     });
   }
 

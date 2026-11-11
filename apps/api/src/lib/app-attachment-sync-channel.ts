@@ -15,6 +15,7 @@ import {
   ResourceSyncClaimRequestV3Schema, ResourceSyncHeartbeatRequestV3Schema,
   ResourceSyncResultRequestV3Schema, ResourceSyncStartRequestV3Schema,
 } from '@deft/app-kit/core';
+import {ResourceObservationAuthorityRequestSchema} from '../../../../packages/app-kit/src/resource-observation.js';
 
 /** Separate channel3 entry point; channel2 credentials and envelopes remain closed. */
 export function appAttachmentSyncChannelEnabled(): boolean {
@@ -94,6 +95,17 @@ export class AppAttachmentSyncChannel {
       session_id: request.session_id, token_hash: identity.token_hash,
       claim_token: request.claim_token, sequence: request.sequence,
     });
+  }
+
+  /** Observation authority on the same v3 credential. Org and token identity
+   * are derived from the credential; the runner decides it in one transaction. */
+  async resourceObservationAuthority(value: unknown, sessionToken: string) {
+    if (!appAttachmentSyncChannelEnabled()) return null;
+    const request = ResourceObservationAuthorityRequestSchema.parse(value);
+    if (!/^[A-Za-z0-9_-]{32,512}$/u.test(sessionToken)) return null;
+    const identity = await this.#session(request.session_id, sessionToken);
+    if (!identity) return null;
+    return this.runner.resourceObservationAuthority({ org_id: identity.org_id, token_hash: identity.token_hash, request });
   }
 
   async heartbeat(value: unknown) {
