@@ -79,6 +79,7 @@ import {
   applyHistoryRead,
   mergeMessagesById,
   oldestCreatedAt,
+  oldestHistoryCursor,
   readHistoryBackTo,
   readHistoryPage,
 } from '@/lib/chat-history-merge';
@@ -980,7 +981,7 @@ export function SpaceChat({
     const ticket = reads.begin({ supersede: false });
     setLoadingEarlier(true);
     try {
-      const before = oldestCreatedAt(messagesRef.current) ?? undefined;
+      const before = oldestHistoryCursor(messagesRef.current) ?? undefined;
       const page = await readHistoryPage<Message>((path: string) => api.get(path), `/api/messages/${spaceId}`, before);
       const events = reads.settle(ticket);
       // A catch-up or retry that started meanwhile may have replaced the

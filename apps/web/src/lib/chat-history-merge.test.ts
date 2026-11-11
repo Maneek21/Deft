@@ -5,6 +5,7 @@ import {
   ConversationReads,
   HISTORY_PAGE_SIZE,
   applyHistoryRead,
+  historyCursorOf,
   mergeMessagesById,
   readHistoryBackTo,
 } from './chat-history-merge';
@@ -72,7 +73,9 @@ function pagedGet(all: ReturnType<typeof serverOf>, calls: string[]) {
     const q = new URL(path, 'http://x').searchParams;
     const limit = Number(q.get('limit'));
     const cursor = q.get('cursor');
-    const list = cursor ? all.filter((m) => m.created_at < cursor) : all;
+    // Like the API: `<created_at>|<id>` pages before that row in (created_at, id) order.
+    const [time, id] = (cursor ?? '').split('|');
+    const list = cursor ? all.filter((m) => m.created_at < time! || (m.created_at === time && id !== undefined && m.id < id)) : all;
     return { ok: true, status: 200, json: async () => ({ messages: list.slice(-limit) }) } as Response;
   };
 }
@@ -100,6 +103,18 @@ test('R2-2: catch-up stops at the page bound and reports it did not cover the sh
   assert.equal(applied.some((m) => m.id === 's-0'), false, 'messages older than the read are dropped, not left beside a hole');
   assert.equal(applied.at(-1)!.id, 'live', 'newer live messages stay');
   assert.equal(applied.length, CATCH_UP_MAX_PAGES * HISTORY_PAGE_SIZE + 1);
+});
+
+test('W2-1: messages sharing one timestamp across page boundaries are each read once', async () => {
+  const same = at(5);
+  const all = Array.from({ length: 250 }, (_, i) => ({ id: `t-${String(i).padStart(3, '0')}`, content: `t-${i}`, created_at: same }));
+  const calls: string[] = [];
+  const read = await readHistoryBackTo(pagedGet(all, calls), '/api/messages/s1', at(0));
+  assert.equal(calls.length, 3);
+  assert.equal(read.messages.length, 250);
+  assert.equal(new Set(read.messages.map((m) => m.id)).size, 250);
+  assert.match(calls[1]!, /cursor=/);
+  assert.equal(new URL(calls[1]!, 'http://x').searchParams.get('cursor'), historyCursorOf(all[150]!));
 });
 
 test('R2-2: a failed page fails the whole catch-up', async () => {

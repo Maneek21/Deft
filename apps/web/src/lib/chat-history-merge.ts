@@ -149,8 +149,17 @@ export const HISTORY_PAGE_SIZE = 100;
 export const CATCH_UP_MAX_PAGES = 5;
 
 /**
+ * The history cursor for a message: the page before it, in the API's
+ * (created_at, id) order, so messages sharing a timestamp are neither skipped
+ * nor repeated across pages.
+ */
+export function historyCursorOf(message: { id: string; created_at: string }): string {
+  return `${message.created_at}|${message.id}`;
+}
+
+/**
  * Read one page of top-level history, oldest first: the latest page, or the
- * page before `before` (a created_at). Throws on a failed read.
+ * page before `before` (a history cursor). Throws on a failed read.
  */
 export async function readHistoryPage<T extends HistoryMessage>(get: Get, basePath: string, before?: string): Promise<T[]> {
   const query = new URLSearchParams({ limit: String(HISTORY_PAGE_SIZE) });
@@ -165,8 +174,8 @@ export async function readHistoryPage<T extends HistoryMessage>(get: Get, basePa
 /**
  * Read history from the newest message back until the read reaches
  * `oldestShownAt` (the oldest message on screen), for at most `maxPages`
- * pages. Each next page uses the oldest created_at of the previous one as
- * its cursor (the API's own next_cursor is not used). Throws on any failed page.
+ * pages. Each next page uses the oldest message of the previous one as its
+ * cursor (the API's own next_cursor is not used). Throws on any failed page.
  */
 export async function readHistoryBackTo<T extends HistoryMessage>(
   get: Get,
@@ -183,7 +192,7 @@ export async function readHistoryBackTo<T extends HistoryMessage>(
     collected = [...page, ...collected.filter((m) => !pageIds.has(m.id))];
     if (page.length < HISTORY_PAGE_SIZE) return { messages: collected, coversShown: true, hasEarlier: false };
     if (Number.isNaN(target) || timeOf(page[0]!) <= target) return { messages: collected, coversShown: true, hasEarlier: true };
-    before = page[0]!.created_at;
+    before = historyCursorOf(page[0]!);
   }
   return { messages: collected, coversShown: false, hasEarlier: true };
 }
@@ -203,9 +212,19 @@ export function applyHistoryRead<T extends HistoryMessage>(
   return mergeMessagesById(current.filter((m) => timeOf(m) >= oldest), read.messages);
 }
 
+function oldestOf<T extends { created_at: string }>(list: ReadonlyArray<T>): T | null {
+  let oldest: T | null = null;
+  for (const message of list) if (!oldest || timeOf(message) < timeOf(oldest)) oldest = message;
+  return oldest;
+}
+
 /** The oldest created_at in a list, or null when it is empty. */
 export function oldestCreatedAt(list: ReadonlyArray<{ created_at: string }>): string | null {
-  let oldest: { created_at: string } | null = null;
-  for (const message of list) if (!oldest || timeOf(message) < timeOf(oldest)) oldest = message;
-  return oldest?.created_at ?? null;
+  return oldestOf(list)?.created_at ?? null;
+}
+
+/** The history cursor of the oldest message in a list, or null when it is empty. */
+export function oldestHistoryCursor(list: ReadonlyArray<{ id: string; created_at: string }>): string | null {
+  const oldest = oldestOf(list);
+  return oldest ? historyCursorOf(oldest) : null;
 }

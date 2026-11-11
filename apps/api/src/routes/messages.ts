@@ -36,6 +36,26 @@ const sendMessageSchema = z.object({
 
 class AttachmentClaimError extends Error {}
 
+/**
+ * History cursor: `<created_at ISO>|<message id>` names the oldest message of
+ * the previous page. A plain ISO timestamp is also accepted.
+ */
+function parseHistoryCursor(cursor: string): { before: Date; id: string | null } | null {
+  const separator = cursor.lastIndexOf('|');
+  const time = separator >= 0 ? cursor.slice(0, separator) : cursor;
+  const tail = separator >= 0 ? cursor.slice(separator + 1) : '';
+  // An id the server could not have issued pages by the timestamp alone.
+  const id = /^[A-Za-z0-9_-]{1,64}$/.test(tail) ? tail : null;
+  const before = new Date(time);
+  if (!time || Number.isNaN(before.getTime())) return null;
+  return { before, id };
+}
+
+function historyCursorFor(message: { id: string; created_at: Date | null } | undefined): string | null {
+  if (!message?.created_at) return null;
+  return `${message.created_at.toISOString()}|${message.id}`;
+}
+
 // Helper: aggregate reactions for a set of message IDs
 async function getReactionsForMessages(messageIds: string[]) {
   if (messageIds.length === 0) return new Map();
@@ -256,18 +276,27 @@ messageRoutes.get('/:spaceId', async (c) => {
       return c.json({ messages: result, next_cursor: null });
     }
 
-    const whereConditions = cursor
-      ? and(
-          eq(messages.space_id, spaceId),
-          eq(messages.org_id, user.org_id),
-          isNull(messages.parent_id),
-          lt(messages.created_at, new Date(cursor)),
-        )
-      : and(
-          eq(messages.space_id, spaceId),
-          eq(messages.org_id, user.org_id),
-          isNull(messages.parent_id),
-        );
+    const parsedCursor = cursor ? parseHistoryCursor(cursor) : null;
+    if (cursor && !parsedCursor) return c.json({ error: 'Invalid cursor', code: 'VALIDATION_ERROR' }, 400);
+    const pageScope = and(
+      eq(messages.space_id, spaceId),
+      eq(messages.org_id, user.org_id),
+      isNull(messages.parent_id),
+    );
+    // A cursor that names a message pages strictly before that row in
+    // (created_at, id) order, compared at the row's full stored precision. A
+    // plain timestamp cursor (older clients) pages before that instant.
+    const cursorRow = parsedCursor?.id
+      ? (await db.select({ id: messages.id }).from(messages)
+          .where(and(pageScope, eq(messages.id, parsedCursor.id))).limit(1))[0]
+      : undefined;
+    const whereConditions = cursorRow
+      ? and(pageScope, sql`(${messages.created_at}, ${messages.id}) < (
+          SELECT cursor_row.created_at, cursor_row.id FROM messages AS cursor_row
+          WHERE cursor_row.id = ${cursorRow.id} AND cursor_row.org_id = ${user.org_id})`)
+      : parsedCursor
+        ? and(pageScope, lt(messages.created_at, parsedCursor.before))
+        : pageScope;
 
     const result = await db.select({
       id: messages.id,
@@ -287,7 +316,7 @@ messageRoutes.get('/:spaceId', async (c) => {
       .from(messages)
       .innerJoin(users, eq(messages.user_id, users.id))
       .where(whereConditions)
-      .orderBy(desc(messages.created_at))
+      .orderBy(desc(messages.created_at), desc(messages.id))
       .limit(limit);
 
     const messageIds = result.map((m) => m.id);
@@ -341,7 +370,7 @@ messageRoutes.get('/:spaceId', async (c) => {
       messages: messagesWithExtras.reverse(),
       // The oldest returned row (the query is newest-first): following the
       // cursor pages to older messages.
-      next_cursor: result.length === limit ? result[result.length - 1]?.created_at?.toISOString() : null,
+      next_cursor: result.length === limit ? historyCursorFor(result[result.length - 1]) : null,
     });
   } catch (err) {
     console.error('Failed to fetch messages:', err);
@@ -919,7 +948,7 @@ messageRoutes.get('/:id/thread', async (c) => {
           eq(messages.org_id, user.org_id),
         )
       )
-      .orderBy(messages.created_at);
+      .orderBy(messages.created_at, messages.id);
 
     // Fetch reactions for parent + replies so deep-linked thread drawers can
     // hydrate from this endpoint without needing the parent message list first.

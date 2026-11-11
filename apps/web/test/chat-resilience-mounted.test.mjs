@@ -332,7 +332,9 @@ const FAKE_SERVER = `(() => {
     const q = new URL(full, 'http://x').searchParams;
     const limit = Math.min(Number(q.get('limit') || 50), 100);
     const cursor = q.get('cursor');
-    const list = cursor ? all.filter((m) => m.created_at < cursor) : all;
+    // Like the API: '<created_at>|<id>' pages before that row in (created_at, id) order.
+    const [time, id] = (cursor || '').split('|');
+    const list = cursor ? all.filter((m) => m.created_at < time || (m.created_at === time && id !== undefined && m.id < id)) : all;
     return list.slice(-limit);
   };
   const failure = { status: 500, body: { error: 'boom', code: 'X' } };
