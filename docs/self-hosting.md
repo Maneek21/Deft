@@ -520,13 +520,7 @@ can supply its own AI independently of Deft's provider configuration.
 | `JWT_SECRET` | Yes | Signs access tokens | none |
 | `JWT_REFRESH_SECRET` | Yes | Signs refresh tokens | none |
 | `ENCRYPTION_KEY` | Yes for Docker/production | Encrypts stored credentials and signs receipts; at least 32 characters, unique and non-placeholder | none suitable for Docker |
-| `DEFT_APPS_ENABLED` | No | Exact `true` enables the experimental Apps API; keep aligned with the web build flag | `false` |
-| `NEXT_PUBLIC_FEATURE_APPS` | No | Build-time public flag that exposes Apps in the web bundle; changing it requires rebuilding the image | `false` |
-| `DEFT_APP_RUNS_ENABLED` | No | Exact `true` enables the App Run runtime and draining; invalid or missing keyrings then fail startup | `false` |
-| `DEFT_APP_RUN_KEYRINGS` | Only when App Runs enabled | Single-line versioned JSON document containing separate 32-byte base64 Run-encryption, receipt-signing, and fingerprint keyrings | none |
-| `DEFT_APP_RUN_APP_ORIGIN_ENABLED` | No | Exact `true` admits reviewed connected-App actions to App Runs; requires both `DEFT_APPS_ENABLED=true` and the Run engine | `false` |
-| `DEFT_APP_AUTOMATIONS_ENABLED` | No | Exact `true` enables the bounded governed App-automation scanner and workers; requires Apps, App Runs, and App-origin Runs. Keep disabled until the installation has reviewed its connector, grant, budget, and backup/restore readiness | `false` |
-| `DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED` | No | Exact `true` routes supported legacy MCP capability calls into App Runs; requires the Run engine to be enabled | `false` |
+| Apps flags | No | See "Apps feature flags" below; all are off by default | off |
 | `DATABASE_URL` | No for Compose | External Postgres URL for non-Compose installs | derived |
 | `NEXT_PUBLIC_APP_URL` | Recommended | Public web URL and invite-link base | `http://localhost:3000` |
 | `NEXT_PUBLIC_API_URL` | Recommended | Public API URL seen by browser | `http://localhost:3001` |
@@ -543,6 +537,85 @@ can supply its own AI independently of Deft's provider configuration.
 | `OLLAMA_URL` | No | Optional local Ollama endpoint; set only when running | none |
 | `R2_ENDPOINT` / `R2_ACCESS_KEY` / `R2_SECRET_KEY` / `R2_BUCKET` | No | Cloudflare R2 uploads | local uploads volume |
 | `METRICS_SCRAPE_TOKEN` | No | Bearer token for `/api/metrics` and `/health/queue`; unset disables detailed telemetry | none |
+
+### Apps feature flags
+
+**Core: set nothing.** Every Apps flag is off by default. A flag is on only when
+its value is exactly `true`. A normal install needs none of them.
+
+#### Apps developer preview
+
+The preview is two separate things. Do not treat one as the other.
+
+**1. The browser build profile.** Three web flags are compiled into the browser
+bundle at build time:
+
+| Build flag | Needs |
+|---|---|
+| `NEXT_PUBLIC_FEATURE_APPS` | nothing |
+| `NEXT_PUBLIC_FEATURE_APP_RESOURCE_SYNC` | `NEXT_PUBLIC_FEATURE_APPS` |
+| `NEXT_PUBLIC_FEATURE_APP_ATTACHMENT_BROKER` | `NEXT_PUBLIC_FEATURE_APP_RESOURCE_SYNC` |
+
+`release/browser-profile.json` names the profile (`apps-developer-preview` or
+`core`). The release workflow builds the published image with the flags that
+profile selects and writes the result to `browser-feature-evidence.json`.
+Check that file for the image you plan to use. The profile is allowed only on
+prerelease versions (see [RELEASING.md](../RELEASING.md)).
+
+Setting these variables when a container starts does not change a built image.
+To change them, use a published image built with the profile you want, or
+rebuild. With Compose, set the three variables in `.env` and run
+`docker compose build`. Compose passes only these three to the build
+(`Dockerfile` has no build argument for the other `NEXT_PUBLIC_FEATURE_APP_*`
+flags). `NEXT_PUBLIC_FEATURE_APP_PRIVATE_SHARING` and
+`NEXT_PUBLIC_FEATURE_APP_PRIVATE_MCP` are read by the web app but need a custom
+build argument. `NEXT_PUBLIC_FEATURE_APP_PRIVATE_DEFTY` has no effect in this
+release.
+
+**2. The server flags.** The repository does not define one complete server
+set for the preview. The Email developer preview documents its own server
+settings with the Email app. The checklist below lists what each flag needs, so
+you can build your own set. Do the steps in order and enable only what you need.
+
+Compose gives `.env` to the `deft`, `init`, `upgrade`, `doctor` and `smoke`
+services (`env_file: .env`). Every variable below can therefore be set in `.env`
+and reaches the API container. `docker-compose.yml` also lists a few of them under
+`environment:` for the `deft` service (`DEFT_APPS_ENABLED` and
+`DEFT_APP_DEVELOPER_PAIRING_ENABLED`); those read the same `.env` value. After a
+change, recreate the container.
+
+| Step | Server flag | Must already be on | Notes |
+|---|---|---|---|
+| 1 | `DEFT_APPS_ENABLED` | none | Turns on the Apps API |
+| 2 | `DEFT_APP_DEVELOPER_PAIRING_ENABLED` | step 1 | Developer pairing codes |
+| 3 | `DEFT_APP_RUNS_ENABLED` | a valid `DEFT_APP_RUN_KEYRINGS` | Missing or invalid keyrings stop startup. Generate keyrings as described in the keyring section below |
+| 4 | `DEFT_APP_RUN_APP_ORIGIN_ENABLED` | steps 1 and 3 | Startup fails if Apps or Runs is off |
+| 5 | `DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED` | step 3 | Startup fails if Runs is off |
+| 6 | `DEFT_APP_AUTOMATIONS_ENABLED` | steps 1, 3 and 4 | Startup fails if any is off |
+| 7 | `DEFT_APP_RUNTIME_CHANNEL_ENABLED` | steps 3 and 4 | |
+| 8 | `DEFT_APP_V5_RUNTIME_ACTIONS_ENABLED` | step 7 | |
+| 9 | `DEFT_APP_NATIVE_CALENDAR_ENABLED` | steps 1, 3 and 4 | |
+| 10 | `DEFT_APP_RESOURCE_SYNC_CHANNEL_ENABLED` | steps 1, 3 and 4 | Private resource sync |
+| 11 | `DEFT_APP_RESOURCE_SYNC_SCHEDULER_ENABLED` | step 10 | |
+| 12 | `DEFT_APP_EXPERIENCE_RESOURCE_EXPOSURE_ENABLED` | step 10 | |
+| 13 | `DEFT_APP_PRIVATE_STATE_ENABLED` | step 12 | |
+| 14 | `DEFT_APP_ATTACHMENT_BROKER_ENABLED` | step 10 | |
+| 15 | `DEFT_APP_OWNER_CONNECTIONS_ENABLED` | step 14 | |
+| 16 | `DEFT_APP_PRIVATE_SHARING_ENABLED` | step 10 | |
+| 17 | `DEFT_APP_PRIVATE_MCP_ENABLED` | step 16 | |
+| 18 | `DEFT_APP_PRIVATE_DEFTY_ENABLED` | step 10 | |
+| 19 | `DEFT_APP_PUBLIC_INGRESS_ENABLED` | step 1 | Mounts `/api/public/apps` |
+
+Only the combinations marked "startup fails" stop the API. For every other
+flag, a missing requirement leaves the feature off. It does not report an error.
+
+Several owner-connection routes answer `503` until the whole chain up to step 15
+is on: `/api/app-connection-sessions`, `/api/app-connection-forms`,
+`/api/app-data`, the App data actions, App integration tools, App local jobs and
+App resource observations. Resource observations also need step 14.
+
+Enabling a flag grants no data access. Grants, consent and reviews are still
+required for each App.
 
 ### Opt-in Governed App Run keyrings
 
