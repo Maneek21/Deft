@@ -311,8 +311,11 @@ test('W2a3-R4-B: turn content follows the requester or source audience, never ba
   await q(`INSERT INTO agent_actions(id,org_id,user_id,agent_employee_id,action,params,approval_tier,approval_status,source)
     VALUES($1,$2,$3,$4,'create_task',$5,'quick','pending','mention')`, [anchored, orgId, ids.requester, deftyEmployeeId, JSON.stringify({ title: 'x', source_message_id: ask })]);
   await q('INSERT INTO agent_action_approvers(id,org_id,action_id,user_id) VALUES($1,$2,$3,$4)', [randomUUID(), orgId, anchored, ids.approver]);
-  for (const viewer of [ids.requester, ids.admin, ids.approver]) assert.equal(await sees(viewer, deftyEmployeeId, deftyTurn, 'CANARY-DEFTY-TURN'), true, `defty turn: ${viewer}`);
-  for (const viewer of [ids.peer, ids.guestApprover]) assert.equal(await sees(viewer, deftyEmployeeId, deftyTurn, 'CANARY-DEFTY-TURN'), false, `defty turn: ${viewer}`);
+  // A peer's own action that names the requester's message as its source does not open the requester's turn.
+  await q(`INSERT INTO agent_actions(id,org_id,user_id,agent_employee_id,action,params,approval_tier,approval_status,source)
+    VALUES($1,$2,$3,$4,'create_task',$5,'quick','pending','mention')`, [randomUUID(), orgId, ids.peer, deftyEmployeeId, JSON.stringify({ title: 'y', source_message_id: ask })]);
+  for (const viewer of [ids.requester, ids.admin]) assert.equal(await sees(viewer, deftyEmployeeId, deftyTurn, 'CANARY-DEFTY-TURN'), true, `defty turn: ${viewer}`);
+  for (const viewer of [ids.peer, ids.approver, ids.guestApprover]) assert.equal(await sees(viewer, deftyEmployeeId, deftyTurn, 'CANARY-DEFTY-TURN'), false, `defty turn: ${viewer}`);
 
   // Defty turn with no resolvable requester: owners/admins only.
   const orphan = await turn(deftyEmployeeId, 'CANARY-ORPHAN-TURN', null, null);

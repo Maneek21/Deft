@@ -310,8 +310,8 @@ agentEmployeeRoutes.get('/:id/turns', async (c) => {
 
     // Any org member sees that a turn happened. Its content (input messages,
     // tool calls, reply, error) follows the action rule: owners/admins; for a
-    // Defty turn, the requester (author of the triggering message) and anyone
-    // the shared action predicate admits to an action from that request; for
+    // Defty turn, the requester only (the author of the triggering message:
+    // the one link to the request that the server itself records); for
     // an employee turn, the employee source rule (current employee access to
     // the source and the reader's access to it). A turn whose requester or
     // source cannot be established keeps its content for owners/admins.
@@ -327,12 +327,7 @@ agentEmployeeRoutes.get('/:id/turns', async (c) => {
             EXISTS (SELECT 1 FROM messages turn_request
               WHERE turn_request.id = ${trigger} AND turn_request.org_id = ${org}
                 AND turn_request.user_id = ${reader} AND turn_request.is_deleted = false
-                AND (${turnSpace} IS NULL OR turn_request.space_id = ${turnSpace}))
-            OR EXISTS (SELECT 1 FROM ${agentActions}
-              WHERE ${agentActions.org_id} = ${user.org_id}
-                AND (${agentActions.agent_employee_id} IS NULL OR ${agentActions.agent_employee_id} = ${id})
-                AND (${agentActions.message_id} = ${trigger} OR ${agentActions.params}->>'source_message_id' = ${trigger})
-                AND ${visibleModuleActionSql(user.role, { userId: user.id, orgId: user.org_id })}))`
+                AND (${turnSpace} IS NULL OR turn_request.space_id = ${turnSpace})))`
         : sql`CASE
             WHEN ${agentSessionTurns.triggering_message_id} IS NOT NULL THEN
               ${currentEmployeeMessageAuthoritySql(org, sql`${id}`, trigger)}
