@@ -727,6 +727,7 @@ async function runStaleMaintenance(): Promise<void> {
     })(),
     import('../lib/app-private-state-retention.js').then(mod => mod.purgeExpiredPrivateAppState()),
     APP_RUNS_ENABLED ? import('../lib/app-run-maintenance.js').then(mod => mod.runAppRunMaintenance('recovery')) : Promise.resolve(),
+    import('../routes/agent.js').then(mod => mod.recoverInterruptedApprovalsNow()).then(() => undefined, (err) => console.warn('[workers] interrupted approval recovery failed:', (err as Error).message)),
   ]);
 }
 
