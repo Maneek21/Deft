@@ -27,6 +27,7 @@ let client: pg.Client | undefined;
 let unavailable = url ? '' : 'Set DEFT_TEST_DATABASE_URL to a disposable test database';
 let seeded = false;
 let routes: Record<string, Hono> = {};
+const extraUsers: string[] = [];
 
 async function request(viewerId: string, mount: string, path: string, init?: RequestInit) {
   const hono = new Hono();
@@ -87,8 +88,10 @@ after(async () => {
       if (table === 'space_members') await client.query('DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id=$1)', [orgId]);
       else await client.query(`DELETE FROM ${table} WHERE org_id=$1`, [orgId]);
     }
+    await client.query('DELETE FROM messages WHERE org_id=$1', [orgId]);
     await client.query('DELETE FROM spaces WHERE org_id=$1', [orgId]);
     await client.query('DELETE FROM orgs WHERE id=$1', [orgId]);
+    await client.query('DELETE FROM users WHERE id=ANY($1::text[])', [extraUsers]);
     await client.query('DELETE FROM users WHERE id=ANY($1::text[])', [Object.values(ids)]);
   }
   await client?.end().catch(() => undefined);
@@ -235,9 +238,11 @@ test('W2a3-R3-1: employee turn receipts and turn payloads follow the action and 
   await client!.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), turnSpace, ids.requester]);
   const turnId = randomUUID();
   const at = new Date();
-  await client!.query(`INSERT INTO agent_session_turns(id,org_id,employee_id,trigger_kind,space_id,input_messages_json,tool_calls_json,raw_reply_text,latency_ms,result,created_at)
-    VALUES($1,$2,$3,'mention',$4,$5,$6,'CANARY-REPLY',10,'success',$7::timestamp)`,
-    [turnId, orgId, deftyEmployeeId, turnSpace, JSON.stringify([{ role: 'user', content: 'CANARY-INPUT' }]), JSON.stringify([{ tool: 'wiki_read', params: { slug: 'CANARY-TOOL' } }]), at.toISOString()]);
+  const turnAsk = randomUUID();
+  await client!.query('INSERT INTO messages(id,org_id,space_id,user_id,content) VALUES($1,$2,$3,$4,$5)', [turnAsk, orgId, turnSpace, ids.requester, '@Defty look this up']);
+  await client!.query(`INSERT INTO agent_session_turns(id,org_id,employee_id,trigger_kind,space_id,triggering_message_id,input_messages_json,tool_calls_json,raw_reply_text,latency_ms,result,created_at)
+    VALUES($1,$2,$3,'mention',$4,$8,$5,$6,'CANARY-REPLY',10,'success',$7::timestamp)`,
+    [turnId, orgId, deftyEmployeeId, turnSpace, JSON.stringify([{ role: 'user', content: 'CANARY-INPUT' }]), JSON.stringify([{ tool: 'wiki_read', params: { slug: 'CANARY-TOOL' } }]), at.toISOString(), turnAsk]);
   // Receipt times use the same parameter encoding as the route's window bound.
   // The requester's receipt, then a newer receipt for an action outside the requester's audience.
   const guestOwn = randomUUID();
@@ -268,4 +273,67 @@ test('W2a3-R3-1: employee turn receipts and turn payloads follow the action and 
     const body = await turnsAs(viewer);
     for (const canary of ['CANARY-INPUT', 'CANARY-TOOL', 'CANARY-REPLY']) assert.equal(has(body, canary), true, `${roles[viewer]} ${canary}`);
   }
+});
+
+test('W2a3-R4-B: turn content follows the requester or source audience, never bare space membership', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const q = (text: string, values: unknown[]) => client!.query(text, values);
+  const space = async (type: string, members: string[]) => {
+    const id = randomUUID();
+    await q('INSERT INTO spaces(id,org_id,name,type,created_by) VALUES($1,$2,$3,$4,$5)', [id, orgId, `turn-${id}`, type, ids.requester]);
+    for (const user of members) await q('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), id, user]);
+    return id;
+  };
+  const message = async (spaceId: string, author: string) => {
+    const id = randomUUID();
+    await q('INSERT INTO messages(id,org_id,space_id,user_id,content) VALUES($1,$2,$3,$4,\'@agent please\')', [id, orgId, spaceId, author]);
+    return id;
+  };
+  const turn = async (employeeId: string, canary: string, spaceId: string | null, triggerId: string | null) => {
+    const id = randomUUID();
+    await q(`INSERT INTO agent_session_turns(id,org_id,employee_id,trigger_kind,space_id,triggering_message_id,input_messages_json,latency_ms,result)
+      VALUES($1,$2,$3,'mention',$4,$5,$6,10,'success')`, [id, orgId, employeeId, spaceId, triggerId, JSON.stringify([{ role: 'user', content: canary }])]);
+    return id;
+  };
+  const sees = async (viewer: string, employeeId: string, turnId: string, canary: string) => {
+    const response = await request(viewer, '/api/agent-employees', `/${employeeId}/turns?limit=100`);
+    assert.equal(response.status, 200);
+    const rows = ((await response.json()) as { turns: Array<{ id: string }> }).turns.filter((row) => row.id === turnId);
+    assert.equal(rows.length, 1, 'every member sees that the turn happened');
+    return has(JSON.stringify(rows), canary);
+  };
+
+  // Defty turn in a shared channel.
+  const channel = await space('public', [ids.requester, ids.peer, ids.approver]);
+  const ask = await message(channel, ids.requester);
+  const deftyTurn = await turn(deftyEmployeeId, 'CANARY-DEFTY-TURN', channel, ask);
+  const anchored = randomUUID();
+  await q(`INSERT INTO agent_actions(id,org_id,user_id,agent_employee_id,action,params,approval_tier,approval_status,source)
+    VALUES($1,$2,$3,$4,'create_task',$5,'quick','pending','mention')`, [anchored, orgId, ids.requester, deftyEmployeeId, JSON.stringify({ title: 'x', source_message_id: ask })]);
+  await q('INSERT INTO agent_action_approvers(id,org_id,action_id,user_id) VALUES($1,$2,$3,$4)', [randomUUID(), orgId, anchored, ids.approver]);
+  for (const viewer of [ids.requester, ids.admin, ids.approver]) assert.equal(await sees(viewer, deftyEmployeeId, deftyTurn, 'CANARY-DEFTY-TURN'), true, `defty turn: ${viewer}`);
+  for (const viewer of [ids.peer, ids.guestApprover]) assert.equal(await sees(viewer, deftyEmployeeId, deftyTurn, 'CANARY-DEFTY-TURN'), false, `defty turn: ${viewer}`);
+
+  // Defty turn with no resolvable requester: owners/admins only.
+  const orphan = await turn(deftyEmployeeId, 'CANARY-ORPHAN-TURN', null, null);
+  assert.equal(await sees(ids.admin, deftyEmployeeId, orphan, 'CANARY-ORPHAN-TURN'), true);
+  for (const viewer of [ids.requester, ids.peer]) assert.equal(await sees(viewer, deftyEmployeeId, orphan, 'CANARY-ORPHAN-TURN'), false);
+
+  // BYOA turn: the employee source rule (current employee access and reader access to the source).
+  const agentUser = randomUUID();
+  extraUsers.push(agentUser);
+  const byoa = randomUUID();
+  await q('INSERT INTO users(id,email,name,kind,is_agent) VALUES($1,$2,\'Rita\',\'agent\',true)', [agentUser, `${agentUser}@example.test`]);
+  await q('INSERT INTO org_members(id,org_id,user_id,role) VALUES($1,$2,$3,\'member\')', [randomUUID(), orgId, agentUser]);
+  await q(`INSERT INTO agent_employees(id,org_id,user_id,name,slug,role,system_prompt,expertise_description,trust_level,is_active,is_byoa,runtime_kind,wake_mode,certification_status,created_by)
+    VALUES($1,$2,$3,'Rita',$4,'custom','Test.','Test.','conservative',true,true,'custom_mcp','manual','token_issued',$5)`, [byoa, orgId, agentUser, `rita-${byoa.slice(0, 8)}`, ids.requester]);
+  const room = await space('private', [ids.requester, ids.peer, agentUser]);
+  const byoaTurn = await turn(byoa, 'CANARY-BYOA-TURN', room, await message(room, ids.requester));
+  assert.equal(await sees(ids.peer, byoa, byoaTurn, 'CANARY-BYOA-TURN'), true, 'a reader of the source sees an employee turn');
+  assert.equal(await sees(ids.approver, byoa, byoaTurn, 'CANARY-BYOA-TURN'), false, 'a non-reader of the source does not');
+  await q('DELETE FROM space_members WHERE space_id=$1 AND user_id=$2', [room, agentUser]);
+  assert.equal(await sees(ids.peer, byoa, byoaTurn, 'CANARY-BYOA-TURN'), false, 'revoked employee access closes the content');
+  assert.equal(await sees(ids.admin, byoa, byoaTurn, 'CANARY-BYOA-TURN'), true);
+  const byoaOrphan = await turn(byoa, 'CANARY-BYOA-ORPHAN', null, null);
+  assert.equal(await sees(ids.peer, byoa, byoaOrphan, 'CANARY-BYOA-ORPHAN'), false);
 });
