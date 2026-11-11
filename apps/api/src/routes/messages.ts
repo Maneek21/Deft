@@ -16,7 +16,7 @@ import { enqueueChatObservation } from '../lib/chat-observation.js';
 import { createNotificationIfAllowed, createNotificationsIfAllowed } from '../lib/notification-policy.js';
 import { enqueueAgentEmployeeMessageJobs, resolveAgentEmployeeMessageTargets } from '../lib/dispatch-agent-message.js';
 import { enqueueDeftyWake, finishDeftyWake, type DeftyWakeOutcome, normalizeChatMentions, planDeftyWake, resolveMentionedUserIds } from '../lib/defty-wake.js';
-import { projectMessagesForViewer } from '../lib/agent-message-run-details.js';
+import { emitMessageToSpaceViewers, projectMessagesForViewer } from '../lib/agent-message-run-details.js';
 import { toPlainText } from '../lib/plain-text.js';
 import {
   getMessageAttachments,
@@ -754,11 +754,12 @@ messageRoutes.patch('/:id', async (c) => {
   });
 
   const io = getIO();
-  if (io) {
-    io.to(`space:${existing.space_id}`).emit('message:edited', updated);
+  if (io && updated) {
+    await emitMessageToSpaceViewers(io, { orgId: user.org_id, spaceId: existing.space_id, event: 'message:edited', message: updated });
   }
 
-  return c.json(updated);
+  const [projected] = updated ? await projectMessagesForViewer(user, [updated]) : [updated];
+  return c.json(projected);
 });
 
 // DELETE /api/messages/:id — soft delete

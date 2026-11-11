@@ -128,6 +128,7 @@ after(async () => {
     await client.query('DELETE FROM job_queue WHERE org_id=$1', [orgId]);
     await client.query('DELETE FROM agent_action_approvers WHERE org_id=$1', [orgId]);
     await client.query('DELETE FROM agent_actions WHERE org_id=$1', [orgId]);
+    await client.query('DELETE FROM message_versions WHERE message_id IN (SELECT id FROM messages WHERE org_id=$1)', [orgId]);
     await client.query('DELETE FROM messages WHERE org_id=$1', [orgId]);
     await client.query('DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id=$1)', [orgId]);
     await client.query('DELETE FROM spaces WHERE org_id=$1', [orgId]);
@@ -334,4 +335,62 @@ test('W2a3-R3: a failed approval-card write stores a neutral error code, never t
     await client!.query('DROP TRIGGER IF EXISTS w2a3_reject_action ON agent_actions');
     await client!.query('DROP FUNCTION IF EXISTS w2a3_reject_action()');
   }
+});
+
+// ── Real Socket.IO delivery ──────────────────────────────────────────────
+let realtime: Awaited<ReturnType<typeof startRealtime>> | undefined;
+async function startRealtime() {
+  const { createServer } = await import('node:http');
+  const { createRequire } = await import('node:module');
+  const { setupSocket } = await import('../src/socket.js');
+  const { io: connect } = createRequire(new URL('../../web/package.json', import.meta.url))('socket.io-client');
+  const server = createServer();
+  const io = setupSocket(server, {
+    verifyAccess: async (token: string) => ({ id: token, org_id: orgId, email: `${token}@example.test`, sid: `sid-${token}`, exp: Math.floor(Date.now() / 1000) + 600 }) as any,
+    recordLastSeen: () => {},
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+  const clients: any[] = [];
+  const open = async (userId: string, space: string) => {
+    const client = connect(`http://127.0.0.1:${port}`, { auth: { token: userId }, transports: ['websocket'], reconnection: false });
+    clients.push(client);
+    const events: Array<{ event: string; data: any }> = [];
+    client.onAny((event: string, data: unknown) => events.push({ event, data }));
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('socket init timed out')), 5_000);
+      client.once('presence:init', () => { clearTimeout(timer); resolve(); });
+    });
+    client.emit('space:join', space);
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      const members = await io.in(`space:${space}`).fetchSockets();
+      if (members.some((socket) => socket.rooms.has(`org-user:${orgId}:${userId}`))) break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    return { client, events };
+  };
+  return {
+    io, open,
+    close: async () => { for (const client of clients) client.close(); await new Promise<void>((resolve) => io.close(() => resolve())); },
+  };
+}
+after(async () => { await realtime?.close(); });
+const settle = () => new Promise((r) => setTimeout(r, 200));
+
+test('W2a3-R4: editing a message delivers its metadata to each viewer by the audience rule', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  realtime ??= await startRealtime();
+  const requester = await realtime.open(ids.requester, spaceId);
+  const peer = await realtime.open(ids.peer, spaceId);
+  const hono = app(ids.requester);
+  hono.route('/api/messages', routes!.messageRoutes);
+  const response = await hono.request(`/api/messages/${toolResultId}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content: 'edited' }) });
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual(canaries(await response.text()), ['CANARY-RESULT'], 'the author keeps its own details');
+  await settle();
+  const edited = (events: Array<{ event: string; data: any }>) => events.filter((entry) => entry.event === 'message:edited' && entry.data?.id === toolResultId);
+  assert.equal(edited(peer.events).length, 1);
+  assert.deepEqual(canaries(JSON.stringify(edited(peer.events))), []);
+  assert.deepEqual(canaries(JSON.stringify(edited(requester.events))), ['CANARY-RESULT']);
 });
