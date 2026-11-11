@@ -655,10 +655,13 @@ async function loadReviewMembership(
  * workspace (see loadReviewMembership).
  */
 async function isAssignedReviewer(
-  row: { id: string; org_id: string },
+  row: { id: string; org_id: string; action: string },
   userId: string,
   membership: { role: string } | null,
 ): Promise<boolean> {
+  // A record-mirror nomination concerns its owner's private mirror consent:
+  // reviewer assignment never widens who may approve or reject it.
+  if (row.action === 'app_record_mirror_nominate') return false;
   if (!membership || membership.role === 'guest') return false;
   const [assigned] = await db
     .select({ id: agentActionApprovers.id })

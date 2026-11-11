@@ -154,3 +154,24 @@ test('B-g: a record-mirror nomination stays approvable by its owner only', { ski
   assert.equal((result as { code?: string }).code, 'FORBIDDEN');
   assert.equal(await status(actionId), 'pending');
 });
+
+test('B-h: an assigned member cannot reject a record-mirror nomination they do not own; the owner and an admin still can', { skip: !canRun }, async () => {
+  const nomination = async () => {
+    const actionId = randomUUID();
+    await f.client.query(
+      `INSERT INTO agent_actions (id, org_id, user_id, agent_employee_id, source, action, params, approval_tier, approval_status)
+       VALUES ($1, $2, $3, $4, 'mcp', 'app_record_mirror_nominate', '{}'::jsonb, 'full', 'pending')`,
+      [actionId, f.orgId, f.requesterId, employeeId],
+    );
+    await assign(actionId, f.otherId);
+    return actionId;
+  };
+  const refused = await nomination();
+  assert.equal(((await rejectAction(refused, f.otherId)) as { code?: string }).code, 'FORBIDDEN');
+  assert.equal(await status(refused), 'pending');
+
+  const byOwner = await nomination();
+  assert.equal((await rejectAction(byOwner, f.requesterId)).status, 'rejected');
+  const byAdmin = await nomination();
+  assert.equal((await rejectAction(byAdmin, f.adminId)).status, 'rejected');
+});
