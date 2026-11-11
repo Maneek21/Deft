@@ -2573,7 +2573,7 @@ agentEmployeeRoutes.get('/:id/activity', async (c) => {
     }
 
     const limit = Math.min(Math.max(Number.parseInt(c.req.query('limit') ?? '50', 10) || 50, 1), 100);
-    return c.json(await loadAgentActivity({ orgId: user.org_id, employeeId: id, limit }));
+    return c.json(await loadAgentActivity({ orgId: user.org_id, employeeId: id, viewer: user, limit }));
   } catch (err) {
     console.error('Failed to get agent employee activity:', err);
     return c.json({ error: 'Failed to get activity', code: 'INTERNAL_ERROR' }, 500);
@@ -2883,7 +2883,7 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
       .where(and(eq(agentChannelEvents.agent_employee_id, id), eq(agentChannelEvents.org_id, user.org_id)))
       .orderBy(desc(agentChannelEvents.created_at))
       .limit(100);
-    const activity = await loadAgentActivity({ orgId: user.org_id, employeeId: id, limit: 30 });
+    const activity = await loadAgentActivity({ orgId: user.org_id, employeeId: id, viewer: user, limit: 30 });
 
     const challengeEvidence = latestChallenge
       ? await loadCertificationChallengeEvidence({

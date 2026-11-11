@@ -2610,7 +2610,7 @@ test('agent activity merges delivery and action records into one ordered stream'
     approval_status: 'pending',
   }).returning({ id: agentActions.id });
 
-  const activity = await loadAgentActivity({ orgId, employeeId, limit: 20 });
+  const activity = await loadAgentActivity({ orgId, employeeId, viewer: { id: humanUserId, role: 'member' }, limit: 20 });
   const delivery = activity.find((item) => item.id === `delivery:${event.id}`);
   const proposedAction = activity.find((item) => item.id === `action:${action!.id}`);
 

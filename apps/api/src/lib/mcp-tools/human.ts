@@ -8,6 +8,7 @@ import { searchNativeMentions, publishNativeMentions, enqueueNativeMentionPublic
 import { nativeNotificationAccessSql } from '../native-mention-visibility.js';
 import {
   connectedAccounts,
+  agentActionApprovers,
   agentActions,
   agentEmployees,
   attentionItems,
@@ -3568,18 +3569,30 @@ export async function humanInboxMarkAllRead(args: Record<string, unknown>, ctx: 
   });
 }
 
+/**
+ * Approvals the connected user can act on: owners/admins see the org's; any
+ * other member sees what it requested and what it is assigned to approve.
+ * Callers also apply visibleModuleActionSql, so a guest stays requester-only.
+ */
+function humanApprovalReviewerSql(ctx: HumanToolContext) {
+  if (ctx.role === 'owner' || ctx.role === 'admin') return sql`true`;
+  return sql`(
+    COALESCE(${agentActions.params}->>'source_user_id', ${agentActions.params}->>'origin_user_id', ${agentActions.user_id}) = ${ctx.user_id}
+    OR EXISTS (
+      SELECT 1 FROM ${agentActionApprovers}
+      WHERE ${agentActionApprovers.action_id} = ${agentActions.id}
+        AND ${agentActionApprovers.org_id} = ${ctx.org_id}
+        AND ${agentActionApprovers.user_id} = ${ctx.user_id}
+    )
+  )`;
+}
+
 async function ownApproval(
   ctx: HumanToolContext,
   actionId: string,
   access: 'read' | 'write' = 'read',
 ) {
-  const canReview = ctx.role === 'owner' || ctx.role === 'admin'
-    ? sql`true`
-    : sql`COALESCE(
-        ${agentActions.params}->>'source_user_id',
-        ${agentActions.params}->>'origin_user_id',
-        ${agentActions.user_id}
-      ) = ${ctx.user_id}`;
+  const canReview = humanApprovalReviewerSql(ctx);
   const [row] = await db.select().from(agentActions).where(and(
     eq(agentActions.id, actionId),
     eq(agentActions.org_id, ctx.org_id),
@@ -3594,9 +3607,7 @@ export async function humanApprovalList(args: { status?: string; limit?: number 
   const scopeError = requireScope(ctx, 'read:workspace'); if (scopeError) return scopeError;
   const status = args.status ?? 'pending';
   if (!['pending', 'approved', 'rejected', 'expired', 'all'].includes(status)) return errorResult('status must be pending, approved, rejected, expired, or all');
-  const canReview = ctx.role === 'owner' || ctx.role === 'admin'
-    ? sql`true`
-    : sql`COALESCE(${agentActions.params}->>'source_user_id', ${agentActions.params}->>'origin_user_id', ${agentActions.user_id}) = ${ctx.user_id}`;
+  const canReview = humanApprovalReviewerSql(ctx);
   const rows = await db.select().from(agentActions).where(and(eq(agentActions.org_id, ctx.org_id), visibleModuleActionSql(ctx.role, { userId: ctx.user_id, orgId: ctx.org_id }), visibleModuleActionScopeSql(ctx.scopes, 'read'), canReview, status === 'all' ? sql`true` : eq(agentActions.approval_status, status as any))).orderBy(desc(agentActions.created_at)).limit(Math.min(Math.max(1, args.limit ?? 50), 100));
   return textResult(rows.map((row) => ({ ...row, url: '/inbox?lane=needs_you' })));
 }

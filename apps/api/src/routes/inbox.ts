@@ -8,6 +8,7 @@ import {
   spaces,
   spaceMembers,
   messages,
+  agentActionApprovers,
   agentActions,
   agentEmployees,
 } from '@deft/db/schema';
@@ -177,11 +178,21 @@ function reviewableActionSql(user: { id: string; org_id: string; role?: string }
   return and(
     visibleCaptureActionSql(user),
     visibleModuleActionSql(user.role, { userId: user.id, orgId: user.org_id }),
-    sql`COALESCE(
-      ${agentActions.params}->>'source_user_id',
-      ${agentActions.params}->>'origin_user_id',
-      ${agentActions.user_id}
-    ) = ${user.id}`,
+    // The requester, or an approver assigned to the action. The shared
+    // predicate above keeps a guest requester-only.
+    sql`(
+      COALESCE(
+        ${agentActions.params}->>'source_user_id',
+        ${agentActions.params}->>'origin_user_id',
+        ${agentActions.user_id}
+      ) = ${user.id}
+      OR EXISTS (
+        SELECT 1 FROM ${agentActionApprovers}
+        WHERE ${agentActionApprovers.action_id} = ${agentActions.id}
+          AND ${agentActionApprovers.org_id} = ${user.org_id}
+          AND ${agentActionApprovers.user_id} = ${user.id}
+      )
+    )`,
   );
 }
 
