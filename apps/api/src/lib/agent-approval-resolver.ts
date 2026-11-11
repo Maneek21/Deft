@@ -15,7 +15,11 @@ import type { AppRunTransaction } from './app-run-repository.js';
  * eventual expiry cron.
  *
  * Permission model: the effective requester may approve or reject their own
- * proposed write. Org owners and admins may review any proposal. Internal
+ * proposed write. Org owners and admins may review any proposal. An assigned
+ * reviewer (an `agent_action_approvers` row in the action's workspace, held
+ * by an active, non-guest member) may review that action. Action-specific
+ * rules stay stricter: record-mirror nominations are owner-only and App Run
+ * releases keep their owner and web-session rules. Internal
  * system flows must opt into the explicit `internal` bypass instead of
  * impersonating a human reviewer.
  *
@@ -43,6 +47,7 @@ import {
 } from './agent-action-execution-lease.js';
 import { AppError } from './app-errors.js';
 import {
+  agentActionApprovers,
   agentActions,
   agentChannelEvents,
   agentEmployees,
@@ -643,6 +648,30 @@ async function loadReviewMembership(
   return row ?? null;
 }
 
+/**
+ * True when the user is an assigned reviewer of the action: an approver row
+ * in the action's own workspace, held by an active member who is not a
+ * guest. `membership` must be the user's active membership in that
+ * workspace (see loadReviewMembership).
+ */
+async function isAssignedReviewer(
+  row: { id: string; org_id: string },
+  userId: string,
+  membership: { role: string } | null,
+): Promise<boolean> {
+  if (!membership || membership.role === 'guest') return false;
+  const [assigned] = await db
+    .select({ id: agentActionApprovers.id })
+    .from(agentActionApprovers)
+    .where(and(
+      eq(agentActionApprovers.action_id, row.id),
+      eq(agentActionApprovers.org_id, row.org_id),
+      eq(agentActionApprovers.user_id, userId),
+    ))
+    .limit(1);
+  return Boolean(assigned);
+}
+
 /** Look up the employee row for a queued action so we can rebuild ctx. */
 async function loadEmployeeForAction(employeeId: string) {
   const [row] = await db
@@ -913,16 +942,11 @@ async function approveActionLocked(
     actionRequesterId(row) === approverUserId
     || membership.role === 'owner'
     || membership.role === 'admin'
+    || await isAssignedReviewer(row, approverUserId, membership)
   );
   const canReview = row.action === APP_RUN_APPROVAL_ACTION
     ? !options.internal && humanCanReview
-    : options.internal || (
-    membership !== null && (
-      actionRequesterId(row) === approverUserId ||
-      membership.role === 'owner' ||
-      membership.role === 'admin'
-    )
-  );
+    : options.internal || humanCanReview;
   if (!canReview) {
     return {
       status: 'error',
@@ -1574,7 +1598,8 @@ async function rejectActionOnce(
   const canReview = membership !== null && (
     actionRequesterId(row) === rejecterUserId ||
     membership.role === 'owner' ||
-    membership.role === 'admin'
+    membership.role === 'admin' ||
+    await isAssignedReviewer(row, rejecterUserId, membership)
   );
   if (!canReview) {
     return {
