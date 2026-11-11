@@ -4,7 +4,7 @@ import { eq, and, desc, gt, sql, inArray, isNull } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { nativeCreate, nativeCreateKey, NativeCreateError } from '../lib/native-create.js';
 import { projects, tasks, taskLabels, labels, users, taskActivity } from '@deft/db/schema';
-import { getIO, emitToUser, invalidateRealtimeAudiences } from '../socket.js';
+import { getIO, emitToUser } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
 import {
@@ -334,7 +334,6 @@ projectRoutes.patch('/:id', async (c) => {
       .set(updates)
       .where(eq(projects.id, projectId))
       .returning();
-    if (updates.lead_id !== undefined) invalidateRealtimeAudiences();
 
     return c.json(updated);
   } catch (err) {
@@ -370,7 +369,6 @@ projectRoutes.delete('/:id', async (c) => {
     await db.update(projects)
       .set({ is_deleted: true, deleted_at: new Date() })
       .where(eq(projects.id, projectId));
-    invalidateRealtimeAudiences();
 
     return c.body(null, 204);
   } catch (err) {

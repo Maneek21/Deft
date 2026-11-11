@@ -14,7 +14,7 @@ import { getProjectResolvedConfig } from './project-resolved-config.js';
 import { resolveAssignableAssigneeId } from './resolve-assignee.js';
 import { isValidTransition } from './task-status-machine.js';
 import { visibleTaskCondition } from './task-visibility.js';
-import { emitToUser, getIO, invalidateRealtimeAudiences } from '../socket.js';
+import { emitToUser, getIO } from '../socket.js';
 
 export const bulkTaskUpdateSchema = z.object({
   task_ids: z.array(z.string().min(1)).min(1).max(50),
@@ -203,7 +203,6 @@ export async function bulkUpdateTasks(input: BulkTaskUpdateInput, actor: BulkTas
     }
     if (activityRows.length) await tx.insert(taskActivity).values(activityRows);
   });
-  if (updates.assignee_id !== undefined) invalidateRealtimeAudiences();
 
   const assignedIds = targetTasks
     .filter((task) => updates.assignee_id !== undefined && task.assignee_id !== nextAssigneeId)

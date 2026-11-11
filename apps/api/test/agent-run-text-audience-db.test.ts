@@ -3,7 +3,8 @@
  * error strings, last-error fields) and references taken from a reply's
  * audience-only metadata reach only the audience of the run's source.
  * Owners/admins keep full diagnostics; everyone else who may see the
- * surface receives a neutral entry or status.
+ * surface receives a neutral entry or status. Org-wide progress events carry
+ * no run text for anyone: readers of a task read it from the task.
  */
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -16,9 +17,9 @@ import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 
 const url = safeTestDatabaseUrl();
 const orgId = randomUUID();
-const ids = { admin: randomUUID(), insider: randomUUID(), peer: randomUUID(), guest: randomUUID(), agent: randomUUID(), defty: randomUUID(), extra: randomUUID() };
+const ids = { admin: randomUUID(), insider: randomUUID(), peer: randomUUID(), guest: randomUUID(), agent: randomUUID(), defty: randomUUID() };
 const roles: Record<string, 'owner' | 'admin' | 'member' | 'guest'> = {
-  [ids.admin]: 'admin', [ids.insider]: 'member', [ids.peer]: 'member', [ids.guest]: 'guest', [ids.agent]: 'member', [ids.defty]: 'member', [ids.extra]: 'member',
+  [ids.admin]: 'admin', [ids.insider]: 'member', [ids.peer]: 'member', [ids.guest]: 'guest', [ids.agent]: 'member', [ids.defty]: 'member',
 };
 const employeeId = randomUUID();
 const privateSpace = randomUUID();
@@ -181,42 +182,52 @@ async function startRealtime() {
   const open = async (userId: string) => {
     const socket = connect(`http://127.0.0.1:${port}`, { auth: { token: userId }, transports: ['websocket'], reconnection: false });
     clients.push(socket);
-    const events: Array<{ event: string; data: any }> = [];
-    socket.onAny((event: string, data: unknown) => events.push({ event, data }));
+    const waiters: Array<{ name: string; match: (data: any) => boolean; resolve: (data: any) => void }> = [];
+    socket.onAny((event: string, data: unknown) => {
+      for (const waiter of [...waiters]) {
+        if (waiter.name !== event || !waiter.match(data)) continue;
+        waiters.splice(waiters.indexOf(waiter), 1);
+        waiter.resolve(data);
+      }
+    });
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('socket init timed out')), 5_000);
       socket.once('presence:init', () => { clearTimeout(timer); resolve(); });
     });
-    return events;
+    /** Resolves with the next matching event; register before triggering it. */
+    const next = (name: string, match: (data: any) => boolean) => new Promise<any>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`${userId}: timed out waiting for ${name}`)), 5_000);
+      waiters.push({ name, match, resolve: (data) => { clearTimeout(timer); resolve(data); } });
+    });
+    return { next };
   };
   return {
     open,
     close: async () => { for (const socket of clients) socket.close(); await new Promise<void>((resolve) => io.close(() => resolve())); },
   };
 }
-const settle = () => new Promise((r) => setTimeout(r, 300));
+const NEUTRAL_PROGRESS_KEYS = ['agent_employee_id', 'status', 'step_description', 'step_index', 'task_id', 'total_steps'];
 
 test('W2a4-B2: agent presence goes out org-wide with neutral status and no error text', async (t) => {
   if (unavailable) return t.skip(unavailable);
   realtime ??= await startRealtime();
   const viewers = { admin: await realtime.open(ids.admin), peer: await realtime.open(ids.peer), guest: await realtime.open(ids.guest) };
+  const received = Object.entries(viewers).map(([name, viewer]) => viewer.next('agent:presence', (data) => data?.employee_id === employeeId).then((data) => [name, data] as const));
   const { touchAgentChannelConnection, getAgentChannelPrincipal } = await import('../src/lib/agent-channel.js');
   const principal = await getAgentChannelPrincipal(employeeId, orgId);
   await touchAgentChannelConnection(principal!, { status: 'degraded', lastError: 'CANARY-PRESENCE' });
-  await settle();
-  for (const [name, events] of Object.entries(viewers)) {
-    const presence = events.filter((entry) => entry.event === 'agent:presence' && entry.data?.employee_id === employeeId);
-    assert.equal(presence.length, 1, `${name} receives the presence update`);
-    assert.equal(presence[0]!.data.status, 'degraded');
-    assert.equal(presence[0]!.data.has_error, true);
+  for (const [name, presence] of await Promise.all(received)) {
+    assert.equal(presence.status, 'degraded');
+    assert.equal(presence.has_error, true);
     assert.deepEqual(canaries(JSON.stringify(presence)), [], `${name} receives no error text over the org room`);
   }
 });
 
-test('W2a4-B3: task progress text goes only to the task source audience; the org gets a neutral update', async (t) => {
+test('W2a4-B3: task progress goes to every socket as a neutral update; no viewer receives runtime text', async (t) => {
   if (unavailable) return t.skip(unavailable);
   realtime ??= await startRealtime();
-  const viewers = { admin: await realtime.open(ids.admin), insider: await realtime.open(ids.insider), peer: await realtime.open(ids.peer) };
+  const viewers = { admin: await realtime.open(ids.admin), taskReader: await realtime.open(ids.insider), peer: await realtime.open(ids.peer), guest: await realtime.open(ids.guest) };
+  const received = Object.entries(viewers).map(([name, viewer]) => viewer.next('task:agent_progress', (data) => data?.task_id === taskId).then((data) => [name, data] as const));
   const hono = new Hono();
   hono.route('/api/agent-channel/v1', channelRoutes!);
   const response = await hono.request('/api/agent-channel/v1/status', {
@@ -225,13 +236,12 @@ test('W2a4-B3: task progress text goes only to the task source audience; the org
     body: JSON.stringify({ event_id: taskEventId, state: 'working', claim_token: claimToken, detail: 'CANARY-PROGRESS' }),
   });
   assert.equal(response.status, 200, await response.clone().text());
-  await settle();
-  const progress = (events: Array<{ event: string; data: any }>) => events.filter((entry) => entry.event === 'task:agent_progress' && entry.data?.task_id === taskId);
-  for (const [name, events] of Object.entries(viewers)) assert.equal(progress(events).length, 1, `${name} receives one progress update`);
-  assert.deepEqual(canaries(JSON.stringify(progress(viewers.peer))), [], 'a member who cannot read the task receives no progress text');
-  assert.equal(progress(viewers.peer)[0]!.data.status, 'started');
-  assert.deepEqual(canaries(JSON.stringify(progress(viewers.insider))), ['CANARY-PROGRESS']);
-  assert.deepEqual(canaries(JSON.stringify(progress(viewers.admin))), ['CANARY-PROGRESS']);
+  for (const [name, progress] of await Promise.all(received)) {
+    assert.deepEqual(canaries(JSON.stringify(progress)), [], `${name} receives no runtime text`);
+    assert.deepEqual(Object.keys(progress).sort(), NEUTRAL_PROGRESS_KEYS, `${name} receives the neutral payload only`);
+    assert.equal(progress.status, 'started');
+    assert.equal(progress.step_description, 'Agent employee activity updated');
+  }
 });
 
 // ── C. References taken from earlier replies ────────────────────────────
@@ -302,26 +312,37 @@ test('W2a4-E: a run row with malformed or conflicting result markers gives detai
 });
 
 // ── D. Same pattern on the remaining carriers ───────────────────────────
-test('W2a4-D1: a recorded progress milestone goes to the task source audience; the org gets a neutral update', async (t) => {
+test('W2a4-D1: a progress milestone reaches readers of the task through the task read; every socket gets a neutral update', async (t) => {
   if (unavailable) return t.skip(unavailable);
   realtime ??= await startRealtime();
-  const viewers = { admin: await realtime.open(ids.admin), insider: await realtime.open(ids.insider), peer: await realtime.open(ids.peer) };
+  const viewers = { admin: await realtime.open(ids.admin), taskReader: await realtime.open(ids.insider), peer: await realtime.open(ids.peer), guest: await realtime.open(ids.guest) };
+  const received = Object.entries(viewers).map(([name, viewer]) => viewer.next('task:agent_progress', (data) => data?.task_id === taskId).then((data) => [name, data] as const));
   const { recordProgress } = await import('../src/lib/mcp-tools/cooperative.js');
   const result = await recordProgress({ summary: 'CANARY-MILESTONE drafted the plan', status: 'working', idempotency_key: `w2a4-${randomUUID()}` }, {
     org_id: orgId, employee_id: employeeId, employee_slug: 'runner', trust_level: 'standard',
     channel_event_id: taskEventId, runtime_request_key: `deft-channel:${taskEventId}:attempt:1`,
   } as any);
   assert.notEqual(result.isError, true, JSON.stringify(result));
-  await settle();
-  const progress = (events: Array<{ event: string; data: any }>) => events.filter((entry) => entry.event === 'task:agent_progress' && entry.data?.task_id === taskId);
-  for (const [name, events] of Object.entries(viewers)) assert.equal(progress(events).length, 1, `${name} receives one progress update`);
-  assert.deepEqual(canaries(JSON.stringify(progress(viewers.peer))), []);
-  assert.deepEqual(canaries(JSON.stringify(progress(viewers.insider))), ['CANARY-MILESTONE']);
-  assert.deepEqual(canaries(JSON.stringify(progress(viewers.admin))), ['CANARY-MILESTONE']);
-  // The milestone in the activity feed follows the same event audience.
-  const feed = async (viewer: string) => JSON.stringify(await (await asViewer(viewer, `/${employeeId}/activity`)).json());
-  assert.equal(canaries(await feed(ids.insider)).includes('CANARY-MILESTONE'), true);
-  assert.equal(canaries(await feed(ids.peer)).includes('CANARY-MILESTONE'), false);
+  for (const [name, progress] of await Promise.all(received)) {
+    assert.deepEqual(canaries(JSON.stringify(progress)), [], `${name} receives no milestone text over the org room`);
+    assert.deepEqual(Object.keys(progress).sort(), NEUTRAL_PROGRESS_KEYS);
+  }
+  // The task read is the reader's source of the step text (what the strip refetches).
+  const taskRoutes = (await import('../src/routes/tasks.js')).taskRoutes;
+  const readTask = (viewerId: string) => {
+    const hono = new Hono();
+    hono.use('*', async (c, next) => { c.set('user', { id: viewerId, org_id: orgId, email: `${viewerId}@example.test`, role: roles[viewerId] } as any); await next(); });
+    hono.route('/api/tasks', taskRoutes);
+    return hono.request(`/api/tasks/${taskId}`);
+  };
+  const readerView = await readTask(ids.insider);
+  assert.equal(readerView.status, 200, await readerView.clone().text());
+  assert.match((await readerView.json() as any).agent_progress?.step_description ?? '', /CANARY-MILESTONE/);
+  assert.equal((await readTask(ids.peer)).status, 404, 'a member who cannot read the task gets no task read');
+  // The activity feed keeps cooperative text for owners/admins.
+  const feed = async (viewer: string) => canaries(JSON.stringify(await (await asViewer(viewer, `/${employeeId}/activity`)).json()));
+  assert.equal((await feed(ids.admin)).includes('CANARY-MILESTONE'), true);
+  for (const viewer of [ids.insider, ids.peer]) assert.equal((await feed(viewer)).includes('CANARY-MILESTONE'), false);
 });
 
 test('W2a4-D2: heartbeat summaries and outcome reasons go to owners/admins only', async (t) => {
@@ -339,112 +360,21 @@ test('W2a4-D2: heartbeat summaries and outcome reasons go to owners/admins only'
   }
 });
 
-// ── Round 2: record sources are bound by the server ─────────────────────
-test('W2a4-R1: a cooperative record\'s text follows only the source the server bound to its call', async (t) => {
+test('W2a4-R1: a cooperative record\'s text reaches owners/admins only, whatever ids it carries', async (t) => {
   if (unavailable) return t.skip(unavailable);
   const { recordDecision } = await import('../src/lib/mcp-tools/cooperative.js');
-  // A widely readable event of the same employee: a message in a public room.
   const publicMessage = randomUUID();
   const publicEvent = randomUUID();
   await client!.query('INSERT INTO messages(id,org_id,space_id,user_id,content) VALUES($1,$2,$3,$4,$5)', [publicMessage, orgId, publicSpace, ids.peer, 'public ask']);
   await client!.query(`INSERT INTO agent_channel_events(id,org_id,agent_employee_id,kind,source_kind,source_id,space_id,idempotency_key,status)
     VALUES($1,$2,$3,'message.created','message',$4,$5,$6,'acknowledged')`, [publicEvent, orgId, employeeId, publicMessage, publicSpace, `w2a4:${publicEvent}`]);
   const ctx = (eventId?: string) => ({ org_id: orgId, employee_id: employeeId, employee_slug: 'runner', trust_level: 'standard', ...(eventId ? { channel_event_id: eventId } : {}) }) as any;
-  // Made while working on the restricted task, naming the public event and a turn.
-  const restricted = await recordDecision({ summary: 'CANARY-RESTRICTED-RECORD', metadata: { channel_event_id: publicEvent, bound_channel_event_id: publicEvent }, session_turn_id: turnId }, ctx(taskEventId));
-  assert.notEqual(restricted.isError, true, JSON.stringify(restricted));
-  // Made outside any delivery, claiming a bound source.
-  await recordDecision({ summary: 'CANARY-UNBOUND-RECORD', metadata: { bound_channel_event_id: publicEvent } }, ctx());
-  // Made while working on the public event.
+  await recordDecision({ summary: 'CANARY-RESTRICTED-RECORD', metadata: { channel_event_id: publicEvent, bound_channel_event_id: publicEvent }, session_turn_id: turnId }, ctx(taskEventId));
   await recordDecision({ summary: 'CANARY-PUBLIC-RECORD', idempotency_key: `w2a4-${randomUUID()}` }, ctx(publicEvent));
-  // A stored row whose ids disagree.
-  await client!.query(`INSERT INTO agent_cooperative_log(id,org_id,employee_id,kind,summary,metadata) VALUES($1,$2,$3,'decision','CANARY-CONFLICT-RECORD',$4)`,
-    [randomUUID(), orgId, employeeId, JSON.stringify({ bound_channel_event_id: taskEventId, channel_event_id: publicEvent })]);
-  const [stored] = (await client!.query(`SELECT metadata FROM agent_cooperative_log WHERE org_id=$1 AND summary='CANARY-RESTRICTED-RECORD'`, [orgId])).rows;
-  assert.deepEqual(stored.metadata, { bound_channel_event_id: taskEventId }, 'the caller cannot choose the stored source');
+  await client!.query(`INSERT INTO agent_cooperative_log(id,org_id,employee_id,kind,summary,metadata) VALUES($1,$2,$3,'milestone','CANARY-STORED-RECORD',$4)`,
+    [randomUUID(), orgId, employeeId, JSON.stringify({ bound_channel_event_id: publicEvent, channel_event_id: publicEvent })]);
   const feed = async (viewer: string) => canaries(JSON.stringify(await (await asViewer(viewer, `/${employeeId}/activity`)).json()))
     .filter((canary) => canary.endsWith('-RECORD'));
-  assert.deepEqual(await feed(ids.admin), ['CANARY-CONFLICT-RECORD', 'CANARY-PUBLIC-RECORD', 'CANARY-RESTRICTED-RECORD', 'CANARY-UNBOUND-RECORD']);
-  assert.deepEqual(await feed(ids.insider), ['CANARY-PUBLIC-RECORD', 'CANARY-RESTRICTED-RECORD'], 'the restricted source\'s reader keeps its record');
-  assert.deepEqual(await feed(ids.peer), ['CANARY-PUBLIC-RECORD'], 'a reader of the public event receives only the record bound to it');
-});
-
-// ── Round 2: revocation between audience resolution and delivery ────────
-test('W2a4-R2: an authority removed while delivery is resolved leaves that socket with the neutral payload', async (t) => {
-  if (unavailable) return t.skip(unavailable);
-  realtime ??= await startRealtime();
-  const { setBeforeAudienceDeliveryForTest } = await import('../src/lib/agent-channel.js');
-  const taskRoutes = (await import('../src/routes/tasks.js')).taskRoutes;
-  const as = (viewerId: string, mount: string, routes: Hono) => {
-    const hono = new Hono();
-    hono.use('*', async (c, next) => { c.set('user', { id: viewerId, org_id: orgId, email: `${viewerId}@example.test`, role: roles[viewerId] } as any); await next(); });
-    hono.route(mount, routes);
-    return hono;
-  };
-  const channel = new Hono();
-  channel.route('/api/agent-channel/v1', channelRoutes!);
-  const progressOf = (events: Array<{ event: string; data: any }>) => events.filter((entry) => entry.event === 'task:agent_progress' && entry.data?.task_id === taskId);
-  const report = async (detail: string, expectedStatus = 200) => {
-    const response = await channel.request('/api/agent-channel/v1/status', {
-      method: 'POST',
-      headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ event_id: taskEventId, state: 'working', claim_token: claimToken, detail }),
-    });
-    assert.equal(response.status, expectedStatus, await response.clone().text());
-    await settle();
-  };
-  await client!.query('INSERT INTO task_assignees(id,task_id,user_id) VALUES($1,$2,$3)', [randomUUID(), taskId, ids.extra]);
-  const extra = await realtime.open(ids.extra);
-  const insider = await realtime.open(ids.insider);
-  try {
-    await report('CANARY-BEFORE-REVOKE');
-    assert.deepEqual(canaries(JSON.stringify(progressOf(extra))), ['CANARY-BEFORE-REVOKE'], 'an additional assignee reads the task');
-
-    // The additional assignee is removed after the audience is resolved.
-    setBeforeAudienceDeliveryForTest(async () => {
-      const removed = await as(ids.insider, '/api/tasks', taskRoutes).request(`/api/tasks/${taskId}/assignees/${ids.extra}`, { method: 'DELETE' });
-      assert.equal(removed.status, 200, await removed.clone().text());
-    });
-    await report('CANARY-ASSIGNEE-REVOKED');
-    setBeforeAudienceDeliveryForTest(null);
-    const afterRemoval = progressOf(extra).at(-1)!;
-    assert.deepEqual(canaries(JSON.stringify(afterRemoval)), [], 'the removed assignee receives the neutral payload');
-    assert.equal(afterRemoval.data.status, 'started');
-
-    // The employee is paused after the audience is resolved.
-    setBeforeAudienceDeliveryForTest(async () => {
-      const paused = await as(ids.admin, '/api/agent-employees', employeeRoutes!).request(`/api/agent-employees/${employeeId}/pause`, { method: 'POST' });
-      assert.equal(paused.status, 200, await paused.clone().text());
-    });
-    // The response itself is answered after the pause, so the event is no longer the employee's to report on.
-    await report('CANARY-EMPLOYEE-PAUSED', 404);
-    setBeforeAudienceDeliveryForTest(null);
-    const afterPause = progressOf(insider).at(-1)!;
-    assert.deepEqual(canaries(JSON.stringify(afterPause)), [], 'the task reader receives the neutral payload once the employee is paused');
-  } finally {
-    setBeforeAudienceDeliveryForTest(null);
-    await client!.query('UPDATE agent_employees SET is_active=true WHERE id=$1', [employeeId]);
-  }
-});
-
-test('W2a4-R2b: a delivery failure mid-send gives every remaining socket the neutral payload and never reaches the caller', async (t) => {
-  if (unavailable) return t.skip(unavailable);
-  const { emitOrgEventByAudience } = await import('../src/lib/agent-channel.js');
-  const received: Record<string, unknown[]> = { a: [], b: [], c: [] };
-  const socket = (name: string, user: string, fail = false) => ({
-    rooms: new Set([`org-user:${orgId}:${user}`]),
-    emit: (_event: string, payload: unknown) => {
-      if (fail && received[name]!.length === 0) { received[name]!.push('attempt'); throw new Error('socket closed'); }
-      received[name]!.push(payload);
-    },
-  });
-  const sockets = [socket('a', ids.admin), socket('b', ids.insider, true), socket('c', ids.peer)];
-  const io = { to: () => ({ emit: () => undefined }), in: () => ({ fetchSockets: async () => sockets }) };
-  await emitOrgEventByAudience(io, {
-    orgId, event: 'x', neutral: { text: null }, detailed: { text: 'CANARY-DETAIL' },
-    audience: async () => new Set([ids.admin, ids.insider]),
-  });
-  assert.deepEqual(received.a, [{ text: 'CANARY-DETAIL' }]);
-  assert.deepEqual(received.b, ['attempt', { text: null }]);
-  assert.deepEqual(received.c, [{ text: null }]);
+  assert.deepEqual(await feed(ids.admin), ['CANARY-PUBLIC-RECORD', 'CANARY-RESTRICTED-RECORD', 'CANARY-STORED-RECORD']);
+  for (const viewer of [ids.insider, ids.peer, ids.guest]) assert.deepEqual(await feed(viewer), [], `${roles[viewer]} receives no record text`);
 });

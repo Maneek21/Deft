@@ -9,19 +9,12 @@ import {
   agentChannelEvents,
   agentChannelTokens,
   agentEmployees,
-  orgMembers,
   projects,
   tasks,
 } from '@deft/db/schema';
 import { McpAuthError } from './mcp-token.js';
 import { currentAgentChannelEventAuthoritySql } from './agent-channel-authority.js';
-import {
-  captureRealtimeAccessGeneration,
-  captureRealtimeAudienceGeneration,
-  getIO,
-  isRealtimeAccessGenerationCurrent,
-  isRealtimeAudienceGenerationCurrent,
-} from '../socket.js';
+import { getIO } from '../socket.js';
 import {
   employeeCanAccessProject,
   employeeProjectAccessAllows,
@@ -461,7 +454,7 @@ export async function touchAgentChannelConnection(
 
 /**
  * Free text an employee run produced for one channel event (outcome detail,
- * error, progress summary) is for readers of the event's source under the
+ * error) is for readers of the event's source under the
  * employee source rule: the employee's current access to the source and the
  * reader's own access to it. An event without a space or task source has no
  * reader audience; its text stays with owners/admins.
@@ -471,106 +464,6 @@ export function channelEventTextAudienceSql(eventId: SQLWrapper, readerUserId: S
     where text_event.id = ${eventId}
       and (text_event.space_id is not null or (text_event.source_kind = 'task' and text_event.source_id is not null))
       and ${currentAgentChannelEventAuthoritySql(sql`text_event.id`, readerUserId)})`;
-}
-
-/** Of `userIds`, the active members who may read the run text of one channel event. */
-export async function channelEventTextReaders(orgId: string, eventId: string, userIds: readonly string[]): Promise<Set<string>> {
-  if (userIds.length === 0) return new Set();
-  const rows = await db.select({ user_id: orgMembers.user_id }).from(orgMembers).where(and(
-    eq(orgMembers.org_id, orgId),
-    inArray(orgMembers.user_id, [...userIds]),
-    eq(orgMembers.is_active, true),
-    sql`(${orgMembers.role} in ('owner', 'admin') or ${channelEventTextAudienceSql(sql`${eventId}`, orgMembers.user_id)})`,
-  ));
-  return new Set(rows.map((row) => row.user_id));
-}
-
-/** Of `userIds`, the active members who are owners/admins or one of `listed`. */
-export async function ownersAdminsOrListed(orgId: string, userIds: readonly string[], listed: readonly string[]): Promise<Set<string>> {
-  if (userIds.length === 0) return new Set();
-  const rows = await db.select({ user_id: orgMembers.user_id }).from(orgMembers).where(and(
-    eq(orgMembers.org_id, orgId),
-    inArray(orgMembers.user_id, [...userIds]),
-    eq(orgMembers.is_active, true),
-    listed.length > 0
-      ? sql`(${orgMembers.role} in ('owner', 'admin') or ${inArray(orgMembers.user_id, [...listed])})`
-      : sql`${orgMembers.role} in ('owner', 'admin')`,
-  ));
-  return new Set(rows.map((row) => row.user_id));
-}
-
-type AudienceSocket = { rooms: Set<string>; emit(event: string, payload: unknown): unknown };
-type OrgEmitter = {
-  to(room: string): { emit(event: string, payload: unknown): unknown };
-  in?(room: string): { fetchSockets(): Promise<AudienceSocket[]> };
-};
-
-/** Test seam: a step run after the audience is resolved and before delivery. */
-let beforeAudienceDelivery: (() => Promise<void>) | null = null;
-export function setBeforeAudienceDeliveryForTest(step: (() => Promise<void>) | null): void {
-  beforeAudienceDelivery = step;
-}
-
-/**
- * Emit an org-wide event whose `neutral` payload every org socket may receive;
- * sockets of users in `audience` receive `detailed` instead. Same delivery
- * approach as chat run details (agent-message-run-details.ts): sockets are
- * listed again after the audience query. An access change (org/space) or an
- * audience change (task, employee or source authority; socket.ts
- * invalidateRealtimeAudiences) during resolution sends the neutral payload to
- * everyone. Any failure sends the neutral payload to every socket that has not
- * received one; nothing propagates to the caller.
- */
-export async function emitOrgEventByAudience(io: OrgEmitter | null | undefined, input: {
-  orgId: string;
-  event: string;
-  neutral: Record<string, unknown>;
-  detailed: Record<string, unknown>;
-  audience: (userIds: string[]) => Promise<Set<string>>;
-}): Promise<void> {
-  if (!io) return;
-  const room = `org:${input.orgId}`;
-  const broadcastNeutral = () => {
-    try { io.to(room).emit(input.event, input.neutral); } catch (error) {
-      console.warn('[agent-channel] neutral delivery failed', error instanceof Error ? error.message : String(error));
-    }
-  };
-  if (!io.in) {
-    broadcastNeutral();
-    return;
-  }
-  const prefix = `org-user:${input.orgId}:`;
-  const socketUser = (socket: AudienceSocket) => [...socket.rooms].find((name) => name.startsWith(prefix))?.slice(prefix.length);
-  const accessGeneration = captureRealtimeAccessGeneration();
-  const audienceGeneration = captureRealtimeAudienceGeneration();
-  let current: AudienceSocket[] = [];
-  const sent = new Set<AudienceSocket>();
-  try {
-    const sockets = await io.in(room).fetchSockets();
-    const userIds = [...new Set(sockets.map(socketUser).filter((id): id is string => Boolean(id)))];
-    const allowed = userIds.length > 0 ? await input.audience(userIds) : new Set<string>();
-    current = await io.in(room).fetchSockets();
-    if (beforeAudienceDelivery) await beforeAudienceDelivery();
-    if (!isRealtimeAccessGenerationCurrent(accessGeneration) || !isRealtimeAudienceGenerationCurrent(audienceGeneration)) {
-      broadcastNeutral();
-      return;
-    }
-    for (const socket of current) {
-      const userId = socketUser(socket);
-      socket.emit(input.event, userId && allowed.has(userId) ? input.detailed : input.neutral);
-      sent.add(socket);
-    }
-  } catch (error) {
-    console.warn('[agent-channel] per-viewer delivery unavailable; sending neutral status', error instanceof Error ? error.message : String(error));
-    if (sent.size === 0) {
-      broadcastNeutral();
-      return;
-    }
-    for (const socket of current) {
-      if (sent.has(socket)) continue;
-      try { socket.emit(input.event, input.neutral); } catch { /* the socket is gone */ }
-    }
-  }
 }
 
 export async function updateAgentChannelCursor(params: {

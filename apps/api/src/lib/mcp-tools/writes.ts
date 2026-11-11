@@ -786,7 +786,6 @@ export async function executeTaskUpdate(
       : [existingTask];
 
     if (!row) return errorResult(`task_update: task ${args.task_id} not found`);
-    if ('assignee_id' in update) (await import('../../socket.js')).invalidateRealtimeAudiences();
 
     const comment = typeof patch.comment === 'string' ? patch.comment.trim() : '';
     if (comment) {

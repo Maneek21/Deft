@@ -2244,7 +2244,6 @@ export async function humanTaskUpdate(args: { task_id?: string; patch?: Record<s
     }
     const [task] = await db.update(tasks).set(updates).where(and(eq(tasks.id, taskId), eq(tasks.org_id, ctx.org_id), eq(tasks.is_deleted, false))).returning();
     if (!task) return errorResult('task_update: task not found');
-    if ('assignee_id' in updates || 'metadata' in updates) (await import('../../socket.js')).invalidateRealtimeAudiences();
     const activityEntries: Array<{ action: string; field: string; old_value: string | null; new_value: string | null }> = [];
     if (typeof updates.status === 'string' && updates.status !== existingTask.status) {
       activityEntries.push({ action: 'status_changed', field: 'status', old_value: existingTask.status, new_value: updates.status });
@@ -3720,7 +3719,6 @@ export async function humanAgentEmployeeUpdateState(args: Record<string, unknown
     else if (args.state === 'healthy') { updates.unhealthy = false; updates.unhealthy_reason = null; }
     else return errorResult('state must be active, paused, or healthy');
     const [updated] = await db.update(agentEmployees).set(updates).where(and(eq(agentEmployees.id, args.employee_id as string), eq(agentEmployees.org_id, ctx.org_id), eq(agentEmployees.is_deleted, false))).returning({ id: agentEmployees.id, name: agentEmployees.name, is_active: agentEmployees.is_active, unhealthy: agentEmployees.unhealthy });
-    if (updated && updates.is_active === false) (await import('../../socket.js')).invalidateRealtimeAudiences();
     return updated ? textResult({ updated: true, employee: updated, url: `/settings/agent-employees/${updated.id}` }) : errorResult('Agent employee not found');
   });
 }

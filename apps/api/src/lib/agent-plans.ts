@@ -25,7 +25,6 @@ import { ACTION_TOOLS } from './agent-tools.js';
 import { runAgentQuery } from './agent-runner.js';
 import type { TrustLevel } from './agent-approval.js';
 import { getIO } from '../socket.js';
-import { emitOrgEventByAudience, ownersAdminsOrListed } from './agent-channel.js';
 import { getMCPToolsForAgent } from './mcp-tools.js';
 import { getActiveAgentToolPolicy } from './agent-tool-policy.js';
 
@@ -468,29 +467,24 @@ async function executePlanUnlocked(
   const planTaskId =
     typeof (context as any)?.task_id === 'string' ? ((context as any).task_id as string) : null;
   const totalSteps = steps.length;
-  // Step text and errors go to the plan's requester and owners/admins; every
-  // other org socket receives the step position and status only.
-  const emitTaskProgress = async (
+  // Every org socket receives the step position and status only; step text
+  // and errors stay with the plan (its requester reads them from the plan).
+  const emitTaskProgress = (
     stepIndex: number,
-    stepDescription: string,
+    _stepDescription: string,
     status: 'started' | 'completed' | 'failed',
-    error?: string,
+    _error?: string,
   ) => {
     if (!planTaskId) return;
-    const neutral = {
+    const io = getIO();
+    if (!io) return;
+    io.to(`org:${orgId}`).emit('task:agent_progress', {
       task_id: planTaskId,
       agent_employee_id: plan.agent_employee_id ?? null,
       step_index: stepIndex,
       step_description: `Step ${stepIndex + 1} of ${totalSteps}`,
       status,
       total_steps: totalSteps,
-    };
-    await emitOrgEventByAudience(getIO(), {
-      orgId,
-      event: 'task:agent_progress',
-      neutral,
-      detailed: { ...neutral, step_description: stepDescription, ...(error ? { error } : {}) },
-      audience: (userIds) => ownersAdminsOrListed(orgId, userIds, [plan.user_id]),
     });
   };
 
@@ -539,7 +533,7 @@ async function executePlanUnlocked(
     step.status = 'running';
     await updatePlanProgress(planId, steps, context, i);
     onEvent?.({ type: 'step:start', stepId: step.id });
-    await emitTaskProgress(i, step.description, 'started');
+    emitTaskProgress(i, step.description, 'started');
 
     try {
       const resolvedParams = resolveStepReferences(step.params, context);
@@ -648,11 +642,11 @@ async function executePlanUnlocked(
 
       await updatePlanProgress(planId, steps, context, i + 1);
       onEvent?.({ type: 'step:complete', stepId: step.id, data: step.result });
-      await emitTaskProgress(i, step.description, 'completed');
+      emitTaskProgress(i, step.description, 'completed');
 
     } catch (err) {
       const errorMsg = (err as Error).message;
-      await emitTaskProgress(i, step.description, 'failed', errorMsg);
+      emitTaskProgress(i, step.description, 'failed', errorMsg);
 
       if (err instanceof PlanApprovalBoundaryError) {
         step.status = 'failed';
