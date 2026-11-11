@@ -183,7 +183,7 @@ legacyTest('S2-b: an auto-tier connected delete_* plan step that a later step de
   assert.equal(actions.rows[0].approval_status, 'pending');
 });
 
-function stubHintedProvider(t: TestContext) {
+function stubHintedProvider(t: TestContext, approvalTier: 'auto-execute' | 'quick-approve' = 'auto-execute') {
   const originalDiscovery = mcpClientManager.getCachedToolDiscovery;
   const originalExecute = mcpClientManager.executeTool;
   const rawTool = {
@@ -202,7 +202,7 @@ function stubHintedProvider(t: TestContext) {
       connectionSlug: CONNECTION_SLUG,
       isWrite: true,
       // The connection's tier would let it run; only the hint says destructive.
-      approvalTier: 'auto-execute',
+      approvalTier,
       annotations: { destructiveHint: true },
       rawTool,
     }],
@@ -317,4 +317,22 @@ legacyTest('R2-5: the plan payload marks a destructiveHint step destructive', as
   assert.equal(detail.steps.find((s: any) => s.id === 'gone').destructive, false);
   const list = await (await app.request('/api/agent-plans')).json() as any[];
   assert.equal(list.find((p) => p.id === plan.plan_id).steps.find((s: any) => s.id === 'purge').destructive, true);
+});
+
+legacyTest('R3-1: a hinted call entering at auto whose live policy is quick is stored at tier full', async (t) => {
+  await client.query("UPDATE mcp_connections SET default_trust_tier = 'quick' WHERE id = $1", [CONNECTION_ID]);
+  try {
+    const calls = stubHintedProvider(t, 'quick-approve');
+    const outcome = await executeActionDirect(
+      PREFIXED_HINTED, { segment: 'some' }, ORG_ID, USER_ID, null, 'auto',
+      { agentEmployeeId: EMPLOYEE_ID, source: 'runner' },
+    );
+    assert.equal(outcome.requiresApproval, true);
+    assert.equal(outcome.approvalTier, 'full');
+    assert.equal(calls.length, 0);
+    const row = await client.query('SELECT approval_tier FROM agent_actions WHERE id = $1', [outcome.actionId]);
+    assert.equal(row.rows[0].approval_tier, 'full');
+  } finally {
+    await client.query("UPDATE mcp_connections SET default_trust_tier = 'auto' WHERE id = $1", [CONNECTION_ID]);
+  }
 });

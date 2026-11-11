@@ -49,7 +49,7 @@ import {
   getActiveAgentToolPolicy,
   isAgentToolDisabled,
 } from './agent-tool-policy.js';
-import { getApprovalTier, isDestructiveAction, shouldAutoExecute } from './agent-approval.js';
+import { getApprovalTier, isDestructiveAction, mandatoryApprovalTier, shouldAutoExecute, type ToolAnnotations } from './agent-approval.js';
 import { validateNativeAgentMentionWrite } from './native-mention-agent-writes.js';
 import { authorizeNativeActionTarget, promotableNoteSql } from './agent-action-visibility.js';
 import {
@@ -3729,6 +3729,7 @@ async function executeActionDirectLocked(
   // plan), so a connection owner may have raised the tier in the meantime.
   // In that race, persist a pending action at the stricter current tier and
   // do not execute it under the stale, weaker decision.
+  let liveAnnotations: ToolAnnotations = null;
   if (action.startsWith('mcp__')) {
     const currentTool = (await getMCPToolsForAgent(orgId, options?.agentEmployeeId))
       .find((tool) => tool.name === action);
@@ -3738,7 +3739,7 @@ async function executeActionDirectLocked(
     } else {
       const tierRank = { auto: 0, quick: 1, full: 2 } as const;
       effectiveMcpConnectionId = currentTool.connectionId;
-      if (isDestructiveAction(action, params, currentTool.annotations)) { requiresFreshApproval = true; effectiveApprovalTier = 'full'; }
+      if (isDestructiveAction(action, params, currentTool.annotations)) { requiresFreshApproval = true; liveAnnotations = currentTool.annotations; }
       if (tierRank[currentTool.approvalTierMapped] > tierRank[approvalTier]) {
         effectiveApprovalTier = currentTool.approvalTierMapped;
         requiresFreshApproval = true;
@@ -3756,7 +3757,7 @@ async function executeActionDirectLocked(
       requiresFreshApproval = true;
     }
   }
-  if (requiresFreshApproval && isDestructiveAction(action, params)) effectiveApprovalTier = 'full';
+  if (requiresFreshApproval) effectiveApprovalTier = mandatoryApprovalTier(action, effectiveApprovalTier, params, liveAnnotations);
 
   const actionValues = {
     org_id: orgId,

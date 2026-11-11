@@ -21,6 +21,7 @@ import pg from 'pg';
 import { closeDb } from '../src/lib/db.js';
 import { executeAction } from '../src/lib/agent-actions.js';
 import { createPlanRow } from '../src/lib/agent-plans.js';
+import { persistAgentReplyWithActions } from '../src/lib/agent-action-proposals.js';
 import { agentRoutes } from '../src/routes/agent.js';
 import { agentPlanRoutes } from '../src/routes/agent-plans.js';
 import { dashboardRoutes } from '../src/routes/dashboard.js';
@@ -498,6 +499,76 @@ test('R2-7: note promotion ignores space membership in another org', { skip: !ca
     await client.query('DELETE FROM spaces WHERE id = $1', [foreignSpace]);
     await client.query('DELETE FROM orgs WHERE id = $1', [otherOrg]);
   }
+});
+
+test('R3-1: a native remove_dependency proposal from chat is stored at tier full and is reviewable', { skip: !canRun }, async () => {
+  const taskA = randomUUID();
+  const taskB = randomUUID();
+  await client.query(
+    `INSERT INTO tasks (id, org_id, project_id, number, title, status, created_by)
+     VALUES ($1, $3, $4, 101, 'Dep A', 'todo', $5), ($2, $3, $4, 102, 'Dep B', 'todo', $5)`,
+    [taskA, taskB, orgId, projectId, requesterId],
+  );
+  const persisted = await persistAgentReplyWithActions({
+    orgId,
+    spaceId: sharedSpaceId,
+    userId: requesterId,
+    agentUserId: adminId,
+    content: 'I can remove that dependency once you approve.',
+    metadata: {},
+    pendingActions: [{
+      action: 'remove_dependency',
+      params: { source_task_identifier: taskA, target_task_identifier: taskB, type: 'blocks' },
+      approval_tier: 'quick',
+    }],
+  });
+  const rows = await client.query(
+    "SELECT id, approval_tier, approval_status FROM agent_actions WHERE message_id = $1 AND action = 'remove_dependency'",
+    [persisted.message.id],
+  );
+  assert.equal(rows.rows.length, 1, JSON.stringify(persisted));
+  assert.equal(rows.rows[0]?.approval_status, 'pending');
+  assert.equal(rows.rows[0]?.approval_tier, 'full');
+  const actionId = rows.rows[0]!.id as string;
+  const pending = await (await as(requesterId, '/api/agent/actions/pending')).json() as any;
+  assert.ok(pending.actions.some((a: any) => a.id === actionId), 'pending approvals list the proposal');
+  const inbox = await (await as(requesterId, '/api/inbox?kind=pending_approval')).text();
+  assert.ok(inbox.includes(actionId), 'the inbox lists the proposal');
+});
+
+test('R3-2: approved canvas, knowledge and space-note writes reach an archived space the actor belongs to; posts do not', { skip: !canRun }, async () => {
+  const archivedId = randomUUID();
+  const archivedName = `w2a1-archived-${suffix}`;
+  await client.query(
+    "INSERT INTO spaces (id, org_id, name, type, created_by, is_archived) VALUES ($1, $2, $3, 'private', $4, true)",
+    [archivedId, orgId, archivedName, requesterId],
+  );
+  await client.query('INSERT INTO space_members (id, space_id, user_id) VALUES ($1, $2, $3)', [randomUUID(), archivedId, requesterId]);
+  const writes: Array<[string, Record<string, unknown>]> = [
+    ['write_canvas', { space_name: archivedName, content: 'archived canvas' }],
+    ['add_knowledge', { space_name: archivedName, title: `archived knowledge ${suffix}`, content: 'k' }],
+    ['create_note', { title: `archived note ${suffix}`, visibility: 'space', visibility_space_id: archivedId }],
+  ];
+  for (const [action, params] of writes) {
+    const actionId = await insertAction({ userId: requesterId, action, params, status: 'pending', executed: false });
+    const result = await executeAction(actionId, action, params, orgId, requesterId);
+    assert.equal(result.success, true, `${action}: ${result.error}`);
+  }
+  const canvas = await client.query('SELECT count(*)::int AS n FROM canvases WHERE space_id = $1', [archivedId]);
+  assert.equal(canvas.rows[0]?.n, 1);
+  const knowledge = await client.query('SELECT space_id FROM wiki_pages WHERE org_id = $1 AND title = $2', [orgId, `archived knowledge ${suffix}`]);
+  assert.deepEqual(knowledge.rows.map((r) => r.space_id), [archivedId]);
+  const note = await client.query('SELECT count(*)::int AS n FROM notes WHERE visibility_space_id = $1', [archivedId]);
+  assert.equal(note.rows[0]?.n, 1);
+  for (const params of [{ space_id: archivedId, content: 'x' }, { space_name: archivedName, content: 'x' }]) {
+    const actionId = await insertAction({ userId: requesterId, action: 'post_message', params, status: 'pending', executed: false });
+    const post = await executeAction(actionId, 'post_message', params, orgId, requesterId);
+    assert.equal(post.success, false, JSON.stringify(params));
+  }
+  // A non-member still gets the not-found answer for the archived space.
+  const outsider = await insertAction({ userId: otherMemberId, action: 'write_canvas', params: { space_name: archivedName, content: 'x' }, status: 'pending', executed: false });
+  const refused = await executeAction(outsider, 'write_canvas', { space_name: archivedName, content: 'x' }, orgId, otherMemberId);
+  assert.equal(refused.error, `Space "${archivedName}" not found`);
 });
 
 // ─── Plan approval ───────────────────────────────────────────────────────────

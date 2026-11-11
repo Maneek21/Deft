@@ -276,6 +276,21 @@ export function shouldAutoExecute(
   return false;
 }
 
+/**
+ * Tier a held-for-review call is stored at. A destructive call always needs a
+ * full review, whatever tier its tool, connection or proposal carries, so it
+ * is listed with the other full-review approvals. Apply it after every other
+ * tier adjustment, with the live tool annotations when known.
+ */
+export function mandatoryApprovalTier(
+  action: string,
+  tier: ApprovalTier,
+  params?: unknown,
+  toolAnnotations?: ToolAnnotations,
+): ApprovalTier {
+  return isDestructiveAction(action, params, toolAnnotations) ? 'full' : tier;
+}
+
 /** Returns the approval tier for an action tool. */
 export function getApprovalTier(action: string, approvalTierOverride?: ApprovalTier): ApprovalTier {
   return approvalTierOverride ?? TOOL_APPROVAL_TIERS[action] ?? 'full';
