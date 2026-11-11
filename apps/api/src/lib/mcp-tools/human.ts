@@ -49,6 +49,7 @@ import { toPlainText } from '../plain-text.js';
 import {
   ensureAttentionBackfillForUser,
   filterVisibleAttentionItems,
+  projectAttentionItem,
   visibleAttentionCondition,
   transitionAttentionItem,
   type AttentionLane,
@@ -3458,7 +3459,7 @@ export async function humanAttentionList(args: { lane?: string; state?: string; 
     ))
     .groupBy(attentionItems.lane);
   return textResult({
-    items: visibleRows.map((row) => ({ ...row, url: row.link ?? `/inbox?lane=${row.lane}` })),
+    items: visibleRows.map((row) => ({ ...projectAttentionItem(row), url: row.link ?? `/inbox?lane=${row.lane}` })),
     counts: Object.fromEntries(counts.map((row) => [row.lane, { count: Number(row.count), unseen: Number(row.unseen) }])),
   });
 }
@@ -3481,7 +3482,7 @@ export async function humanAttentionGet(args: { attention_id?: string }, ctx: Hu
   if (!row) return errorResult('Attention item not found');
   const visible = await filterVisibleAttentionItems(ctx.user_id, [row]);
   return visible[0]
-    ? textResult({ ...visible[0], url: visible[0].link ?? `/inbox?lane=${visible[0].lane}` })
+    ? textResult({ ...projectAttentionItem(visible[0]), url: visible[0].link ?? `/inbox?lane=${visible[0].lane}` })
     : errorResult('Attention item not found');
 }
 
@@ -3519,7 +3520,7 @@ async function transitionHumanAttention(
       resolution: action === 'resolve' && typeof args.resolution === 'string' ? args.resolution.slice(0, 120) : action,
       actorUserId: ctx.user_id,
     });
-    return row ? textResult({ updated: true, item: row }) : errorResult('Attention item not found');
+    return row ? textResult({ updated: true, item: projectAttentionItem(row) }) : errorResult('Attention item not found');
   });
 }
 

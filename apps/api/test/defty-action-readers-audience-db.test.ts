@@ -164,3 +164,50 @@ test('W2a3-2e: the legacy inbox approval filter lists approvals for their assign
   assert.equal(has(await read(ids.peer), actionId), false);
   assert.equal(has(await read(ids.guestApprover), actionId), false);
 });
+
+const itemOf = async (viewer: string) => (await client!.query(
+  `SELECT id FROM attention_items WHERE org_id=$1 AND user_id=$2 AND source_id=$3 LIMIT 1`, [orgId, viewer, actionId])).rows[0]?.id as string;
+const mcpCtx = (viewer: string) => ({ org_id: orgId, user_id: viewer, role: roles[viewer]!, scopes: ['read:workspace', 'write:workspace'] });
+
+test('W2a3-R5: attention mutations, counts and MCP attention tools follow the current action audience', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  for (const viewer of [ids.peer, ids.guestApprover]) {
+    const item = await itemOf(viewer);
+    for (const step of ['seen', 'acknowledge', 'resolve']) {
+      const response = await request(viewer, '/api/attention', `/${item}/${step}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+      assert.equal(response.status, 404, `${step} for an item outside the audience`);
+    }
+    const list = await (await request(viewer, '/api/attention', '?lane=needs_you')).json() as { counts: { needs_you: { count: number } } };
+    assert.equal(list.counts.needs_you.count, 0, 'lane counts exclude items the viewer cannot open');
+    const { humanAttentionList, humanAttentionGet, humanAttentionAcknowledge } = await import('../src/lib/mcp-tools/human.js');
+    assert.equal(has(JSON.stringify(await humanAttentionList({ lane: 'all' } as any, mcpCtx(viewer))), 'CANARY-PLAIN'), false);
+    assert.equal((await humanAttentionGet({ attention_id: item }, mcpCtx(viewer))).isError, true);
+    assert.equal((await humanAttentionAcknowledge({ attention_id: item, idempotency_key: randomUUID() }, mcpCtx(viewer))).isError, true);
+  }
+  // The audience keeps working with its items, and responses carry no action params.
+  const own = await itemOf(ids.approver);
+  const seen = await request(ids.approver, '/api/attention', `/${own}/seen`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+  assert.equal(seen.status, 200);
+  assert.equal(((await seen.json()) as any).item.metadata.params, undefined);
+});
+
+test('W2a3-R5: approval attention items store no action params', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const { approvalToAttentionDraft } = await import('../src/lib/attention.js');
+  const [row] = (await client!.query('SELECT * FROM agent_actions WHERE id=$1', [actionId])).rows;
+  const draft = approvalToAttentionDraft(row, ids.approver);
+  assert.equal(Object.hasOwn(draft.metadata, 'params'), false);
+  assert.equal(draft.metadata.action, 'create_task');
+});
+
+test('W2a3-R5: backfill does not create approval items outside the viewer\'s current audience', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const guestOnly = randomUUID();
+  await client!.query(`INSERT INTO agent_actions(id,org_id,user_id,action,params,approval_tier,approval_status,source)
+    VALUES($1,$2,$3,'create_task',$4,'quick','pending','mention')`, [guestOnly, orgId, ids.requester, JSON.stringify({ title: 'CANARY-BACKFILL' })]);
+  await client!.query('INSERT INTO agent_action_approvers(id,org_id,action_id,user_id) VALUES($1,$2,$3,$4)', [randomUUID(), orgId, guestOnly, ids.guestApprover]);
+  const { ensureAttentionBackfillForUser } = await import('../src/lib/attention.js');
+  await ensureAttentionBackfillForUser({ orgId, userId: ids.guestApprover, role: 'guest' });
+  const rows = (await client!.query('SELECT count(*)::int AS n FROM attention_items WHERE org_id=$1 AND source_id=$2', [orgId, guestOnly])).rows;
+  assert.equal(rows[0].n, 0);
+});

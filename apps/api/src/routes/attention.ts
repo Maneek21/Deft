@@ -12,6 +12,7 @@ import { visibleModuleActionSql } from '../lib/module-action-visibility.js';
 import {
   ensureAttentionBackfillForUser,
   filterVisibleAttentionItems,
+  projectAttentionItem,
   recordAttentionFeedback,
   transitionAttentionItem,
   visibleAttentionCondition,
@@ -115,7 +116,7 @@ async function hydrateApprovals(
     ));
   const byId = new Map(actions.map((action) => [action.id, {...action,proposer:attentionActionProposer(action)}]));
   return rows.filter((item) => item.source_type !== 'agent_action' || byId.has(item.source_id)).map((item) => ({
-    ...item,
+    ...projectAttentionItem(item),
     approval: item.source_type === 'agent_action' ? byId.get(item.source_id) ?? null : null,
   }));
 }
@@ -216,7 +217,7 @@ attentionRoutes.post('/:id/seen', async (c) => {
     actorUserId: user.id,
   });
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-  return c.json({ item });
+  return c.json({ item: projectAttentionItem(item) });
 });
 
 attentionRoutes.post('/:id/acknowledge', async (c) => {
@@ -232,7 +233,7 @@ attentionRoutes.post('/:id/acknowledge', async (c) => {
     actorUserId: user.id,
   });
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-  return c.json({ item });
+  return c.json({ item: projectAttentionItem(item) });
 });
 
 attentionRoutes.post('/:id/snooze', async (c) => {
@@ -254,7 +255,7 @@ attentionRoutes.post('/:id/snooze', async (c) => {
     actorUserId: user.id,
   });
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-  return c.json({ item });
+  return c.json({ item: projectAttentionItem(item) });
 });
 
 attentionRoutes.post('/:id/resolve', async (c) => {
@@ -272,7 +273,7 @@ attentionRoutes.post('/:id/resolve', async (c) => {
     actorUserId: user.id,
   });
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-  return c.json({ item });
+  return c.json({ item: projectAttentionItem(item) });
 });
 
 attentionRoutes.post('/:id/feedback', async (c) => {
@@ -291,7 +292,7 @@ attentionRoutes.post('/:id/feedback', async (c) => {
     feedback: body.feedback,
   });
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-  return c.json({ item });
+  return c.json({ item: projectAttentionItem(item) });
 });
 
 attentionRoutes.post('/mark-all-seen', async (c) => {
