@@ -536,6 +536,26 @@ function getTierLabel(tier?: string | null) {
   return null;
 }
 
+/**
+ * Local card state on top of the server's. An in-flight approve/reject is
+ * always shown; an outcome the card learned from its own request is shown
+ * only while the server still reports the state it had when the request
+ * started. Once refreshed server props differ, they win and the local
+ * outcome is dropped, so a 202 'executing' answer cannot pin the card.
+ */
+function useAgentActionLocalStatus(serverStatus: string) {
+  const [local, setLocal] = useState<{ status: Exclude<LocalStatus, null>; base: string } | null>(null);
+  const inFlight = local?.status === 'approving' || local?.status === 'rejecting';
+  const stale = local !== null && !inFlight && local.base !== serverStatus;
+  useEffect(() => {
+    if (stale) setLocal(null);
+  }, [stale]);
+  const set = useCallback((next: LocalStatus) => {
+    setLocal(next ? { status: next, base: serverStatus } : null);
+  }, [serverStatus]);
+  return [local && !stale ? local.status : null, set] as const;
+}
+
 export function AgentActionCard({
   action,
   onApprove,
@@ -549,7 +569,8 @@ export function AgentActionCard({
   onUndo?: () => void;
   variant?: AgentActionCardVariant;
 }) {
-  const [localStatus, setLocalStatus] = useState<LocalStatus>(null);
+  const serverStatus = getAgentActionDisplayStatus(action);
+  const [localStatus, setLocalStatus] = useAgentActionLocalStatus(serverStatus);
   const [localError, setLocalError] = useState<string | null>(null);
   const [localResult, setLocalResult] = useState<unknown>(null);
   const [taskLinkReview, setTaskLinkReview] = useState<{ actionId: string; record: { label: string; href: string }; task: { identifier: string; title: string; project_name: string; href: string } } | null>(null);
@@ -627,7 +648,6 @@ export function AgentActionCard({
     : typeof action.params.space_id === 'string'
       ? action.params.space_id
       : null;
-  const serverStatus = getAgentActionDisplayStatus(action);
   const resolvedStatus = localStatus ?? serverStatus;
   const isBusy = resolvedStatus === 'approving' || resolvedStatus === 'rejecting' || resolvedStatus === 'executing';
   const hasReceipt = action.has_receipt === true;
