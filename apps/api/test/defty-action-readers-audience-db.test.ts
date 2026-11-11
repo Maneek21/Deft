@@ -211,3 +211,54 @@ test('W2a3-R5: backfill does not create approval items outside the viewer\'s cur
   const rows = (await client!.query('SELECT count(*)::int AS n FROM attention_items WHERE org_id=$1 AND source_id=$2', [orgId, guestOnly])).rows;
   assert.equal(rows[0].n, 0);
 });
+
+test('W2a3-R8: MCP approval tools mark approvals the caller cannot act on as view only and do not act on them', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const { humanApprovalList, humanApprovalGet, humanApprovalApprove, humanApprovalReject } = await import('../src/lib/mcp-tools/human.js');
+  const payload = (result: { content: Array<{ text: string }> }) => JSON.parse(result.content[0]!.text);
+  const listed = (payload(await humanApprovalList({ status: 'pending' }, mcpCtx(ids.approver)) as any) as Array<{ id: string; actionable: boolean }>).find((row) => row.id === actionId)!;
+  assert.equal(listed.actionable, false);
+  assert.equal((payload(await humanApprovalGet({ action_id: actionId }, mcpCtx(ids.approver)) as any) as { actionable: boolean }).actionable, false);
+  for (const act of [humanApprovalApprove, humanApprovalReject]) {
+    const result = await act({ action_id: actionId, idempotency_key: randomUUID() }, mcpCtx(ids.approver));
+    assert.equal(result.isError, true);
+    assert.match(JSON.stringify(result), /view only/i);
+  }
+  const [row] = (await client!.query('SELECT approval_status FROM agent_actions WHERE id=$1', [actionId])).rows;
+  assert.equal(row.approval_status, 'pending');
+  assert.equal((payload(await humanApprovalGet({ action_id: actionId }, mcpCtx(ids.requester)) as any) as { actionable: boolean }).actionable, true);
+  assert.equal((payload(await humanApprovalGet({ action_id: actionId }, mcpCtx(ids.admin)) as any) as { actionable: boolean }).actionable, true);
+});
+
+test('W2a3-R8: inbox approvals say whether the web approval route lets the caller act', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const resolverAction = randomUUID();
+  await client!.query(`INSERT INTO agent_actions(id,org_id,user_id,action,params,approval_tier,approval_status,source)
+    VALUES($1,$2,$3,'task_create',$4,'quick','pending','mcp')`, [resolverAction, orgId, ids.requester, JSON.stringify({ title: 'Resolver-owned' })]);
+  await client!.query('INSERT INTO agent_action_approvers(id,org_id,action_id,user_id) VALUES($1,$2,$3,$4)', [randomUUID(), orgId, resolverAction, ids.approver]);
+  const items = async (viewer: string) => ((await (await request(viewer, '/api/inbox', '?kind=pending_approval')).json()) as { items: Array<{ approval?: { action_id: string; actionable: boolean } }> })
+    .items.flatMap((item) => item.approval ? [item.approval] : []);
+  const approverItems = await items(ids.approver);
+  assert.equal(approverItems.find((item) => item.action_id === actionId)?.actionable, true, 'an assigned approver acts on a Defty action through the web route');
+  assert.equal(approverItems.find((item) => item.action_id === resolverAction)?.actionable, false, 'resolver-owned approvals accept only the requester or an owner/admin');
+  const requesterItems = await items(ids.requester);
+  assert.equal(requesterItems.find((item) => item.action_id === actionId)?.actionable, false, 'assigned approvers, not the requester, review an action that has them');
+});
+
+test('W2a3-R8: web approval route facts — an assigned approver passes the route gate, the resolver accepts only requester or owner/admin', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  routes['/api/agent'] ??= (await import('../src/routes/agent.js')).agentRoutes;
+  const make = async (action: string) => {
+    const id = randomUUID();
+    await client!.query(`INSERT INTO agent_actions(id,org_id,user_id,action,params,approval_tier,approval_status,source)
+      VALUES($1,$2,$3,$4,$5,'quick','pending','mention')`, [id, orgId, ids.requester, action, JSON.stringify({ title: 'Fact check', content: 'Fact check' })]);
+    await client!.query('INSERT INTO agent_action_approvers(id,org_id,action_id,user_id) VALUES($1,$2,$3,$4)', [randomUUID(), orgId, id, ids.approver]);
+    return id;
+  };
+  const approve = (id: string) => request(ids.approver, '/api/agent', `/actions/${id}/approve`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+  const legacy = await approve(await make('create_reminder'));
+  assert.ok(![403, 404].includes(legacy.status), `assigned approver passes the web gate for a Defty action (got ${legacy.status})`);
+  const resolver = await approve(await make('task_create'));
+  assert.equal(resolver.status, 403);
+  assert.equal(((await resolver.json()) as { code: string }).code, 'FORBIDDEN');
+});
