@@ -953,6 +953,22 @@ export function SpaceChat({
     void retry().finally(() => setCatchUpRetrying(false));
   }, []);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
+  // True while a load, retry or catch-up read is in flight. The reads object is
+  // a ref, so the Load earlier button follows this state instead.
+  const [replacingBusy, setReplacingBusy] = useState(false);
+  const replacingCountRef = useRef(0);
+  const trackReplacingRead = useCallback((reads: ConversationReads<MessageEvent<Message>>) => {
+    replacingCountRef.current += 1;
+    setReplacingBusy(true);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      if (reads !== historyReadsRef.current) return;
+      replacingCountRef.current = Math.max(0, replacingCountRef.current - 1);
+      if (replacingCountRef.current === 0) setReplacingBusy(false);
+    };
+  }, []);
   const loadEarlierHistory = useCallback(async () => {
     const visit = messageEventScopeRef.current.capture(spaceId, sessionCacheScope);
     const reads = historyReadsRef.current;
@@ -989,11 +1005,14 @@ export function SpaceChat({
     historyReadsRef.current.dispose();
     const reads = new ConversationReads<MessageEvent<Message>>();
     historyReadsRef.current = reads;
+    replacingCountRef.current = 0;
+    setReplacingBusy(false);
     if (!visit.isCurrent()) return () => visit.dispose();
     let cancelled = false;
     // The ticket stays in scope so every outcome of this read, including a
     // rejection, is ignored once a catch-up or retry has superseded it.
     const ticket = reads.begin();
+    const releaseLoad = trackReplacingRead(reads);
     async function load() {
       const res = await api.get(`/api/messages/${spaceId}`);
       if (cancelled || !visit.isCurrent() || !reads.isLatest(ticket)) return;
@@ -1033,9 +1052,9 @@ export function SpaceChat({
     }
     void load().catch(() => {
       if (!cancelled && visit.isCurrent() && reads.isLatest(ticket)) setHistoryStatus('error');
-    }).finally(() => { reads.settle(ticket); });
+    }).finally(() => { reads.settle(ticket); releaseLoad(); });
     return () => { cancelled = true; visit.dispose(); };
-  }, [spaceId, sessionCacheScope, scrollToBottom, highlightMessageId]);
+  }, [spaceId, sessionCacheScope, scrollToBottom, highlightMessageId, trackReplacingRead]);
 
   // Retry a failed history read without resetting the conversation: shown
   // messages (for example ones the socket delivered) and the draft stay, and
@@ -1044,6 +1063,7 @@ export function SpaceChat({
     const visit = messageEventScopeRef.current.capture(spaceId, sessionCacheScope);
     const reads = historyReadsRef.current;
     const ticket = reads.begin();
+    const releaseRetry = trackReplacingRead(reads);
     setHistoryRetrying(true);
     try {
       const res = await api.get(`/api/messages/${spaceId}`);
@@ -1062,9 +1082,10 @@ export function SpaceChat({
       if (visit.isCurrent() && reads.isLatest(ticket)) setHistoryStatus('error');
     } finally {
       reads.settle(ticket);
+      releaseRetry();
       setHistoryRetrying(false);
     }
-  }, [spaceId, sessionCacheScope]);
+  }, [spaceId, sessionCacheScope, trackReplacingRead]);
 
   useEffect(() => {
     if (!sessionCacheScope) return;
@@ -1169,6 +1190,7 @@ export function SpaceChat({
     const catchUp = async (): Promise<CatchUpResult> => {
       const reads = historyReadsRef.current;
       const ticket = reads.begin();
+      const releaseCatchUp = trackReplacingRead(reads);
       void swrMutate(`/api/agent/actions/pending-by-space?space_id=${spaceId}`).catch(() => undefined);
       try {
         // Page back until the read reaches the oldest shown message (bounded by
@@ -1193,6 +1215,8 @@ export function SpaceChat({
         if (historyStatusRef.current === 'loading') setHistoryStatus('error');
         else setCatchUpError(true);
         return 'failed';
+      } finally {
+        releaseCatchUp();
       }
     };
     // The socket may have been down before this space opened, so the watcher
@@ -1219,7 +1243,7 @@ export function SpaceChat({
       socket.off('message:pinned', onMessagePinned);
       socket.off('message:unpinned', onMessageUnpinned);
     };
-  }, [spaceId, sessionCacheScope, user?.id, scrollToBottom]);
+  }, [spaceId, sessionCacheScope, user?.id, scrollToBottom, trackReplacingRead]);
 
   const serializeMentions = (html: string) => html.replace(
     /<span[^>]*data-mention-uuid="([^"]+)"[^>]*data-mention-name="([^"]+)"[^>]*>[^<]*<\/span>/g,
@@ -1615,7 +1639,7 @@ export function SpaceChat({
               <button
                 type="button"
                 onClick={() => { void loadEarlierHistory(); }}
-                disabled={loadingEarlier}
+                disabled={loadingEarlier || replacingBusy}
                 className="rounded-md px-3 py-1 text-[12px] font-semibold disabled:opacity-60"
                 style={{ border: '1px solid var(--border)', color: 'var(--on-surface)' }}
               >
