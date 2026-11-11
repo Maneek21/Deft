@@ -158,7 +158,7 @@ into `apps/web/src/components/ai-badge.tsx` and reused by both
 - Quick-approve: create task, schedule meeting (one-click card)
 - Full-review: multi-step plans and external writes (preview + edit)
 
-**Trust levels:** Conservative → Standard → Autonomous. The workspace (org) trust level applies only to Defty's approved plans: whether a step that later steps depend on needs its own approval, and what Defty may run on its own when it retries a failed step (`agent-plans.ts` executePlan, `agent-runner.ts` background mode). Each agent employee has its own trust level, which governs its non-chat writes. An employee's own chat messages (MCP `send_message` / `message_post`) post without approval at every level while it is healthy. Defty in chat proposes its writes for approval (a few housekeeping actions such as saving a memory or drafting a plan excepted).
+**Trust levels:** Conservative → Standard → Autonomous. The workspace (org) trust level applies only to Defty's approved plans: whether a step that later steps depend on needs its own approval, and what Defty may run on its own when it retries a failed step (`agent-plans.ts` executePlan, `agent-runner.ts` background mode). Each agent employee has its own trust level, which governs its non-chat writes. An employee's own chat messages (MCP `send_message` / `message_post`) post without approval at every level, within the guard rails in `lib/employee-chat-post-guard.ts` (active employee, reply-storm detector, daily action cap, not `unhealthy`; an unhealthy employee's message waits for approval). Defty in chat proposes its writes for approval (a few housekeeping actions such as saving a memory or drafting a plan excepted).
 
 **Native actions (direct SQL):** Create/update/assign tasks, post messages, set reminders
 **Connected actions (API):** Create calendar events and read connected work events
@@ -198,7 +198,7 @@ Tasks 8.1–8.6 shipped on the heartbeat worker:
 
 - **Heartbeat lifecycle** (Task 8.1) — PostgreSQL scheduled jobs dispatch due employees based on `heartbeat_interval_min`. Post-Phase-9, all employees are BYOA; heartbeat ticks queue pending work for MCP polling.
 - **Per-tick logging** (Task 8.4) — every tick writes to `agent_heartbeat_turns` (fired_at, prompt_sha, action_count, tokens_in/out, cost_cents, outcome, summary) and broadcasts `agent:heartbeat:turn` via Socket.io.
-- **Cost guardrails** (Task 8.5) — `daily_budget_cents` per employee (default $100/day), reset at UTC midnight. Circuit breaker: `unhealthy` flag tripped after 3 consecutive errors, blocks all autonomous dispatch until manually cleared via `PATCH /api/agent-employees/:id { mark_healthy: true }`.
+- **Cost guardrails** (Task 8.5) — `daily_budget_cents` per employee (default $100/day); `daily_cost_cents` is reset at UTC midnight and the heartbeat and trigger dispatch skip an employee at or over budget, but nothing increments `daily_cost_cents`, so the budget is NOT enforced today. Circuit breaker: the `unhealthy` flag is tripped by the heartbeat loop detector (the last five actions repeat the same target) and blocks autonomous dispatch until manually cleared via `PATCH /api/agent-employees/:id { mark_healthy: true }`.
 - **Loop detection** (Task 8.6) — prompt_sha idempotency skips re-dispatch when nothing changed since last no_op tick. Consecutive identical action detector trips the circuit breaker.
 
 **Not yet shipped:** skill-defined trigger dispatcher (arbitrary triggers from skill manifests, not just the hardcoded set of `cron:standup`, `member.joined`, `webhook`, `task.status_changed`).
@@ -222,7 +222,7 @@ and added invisible-today primitives. See
 `docs/superpowers/plans/2026-04-19-openclaw-unlock.md` for the full plan.
 
 **Shipped:**
-- **Trust levels enforce per-tier.** Conservative auto-execs only `auto`; Standard adds `quick`; Autonomous adds `full` EXCEPT destructive admin tools (`manage_agent_employee`, `manage_mcp_connection`, `remove_member`, any `delete_*`, or any call with `params.mode: delete|pause|revoke`). 35-case matrix test in `apps/api/test/agent-approval-matrix.test.ts`.
+- **Trust levels enforce per-tier.** Conservative auto-execs only `auto`; Standard adds `quick`; Autonomous adds `full`. No level auto-runs a call classed destructive by `isDestructiveAction` (`manage_agent_employee`, `manage_mcp_connection`, `remove_member`, any `delete_*`, module archive/unlink/bulk create, or any call with `params.mode: delete|pause|revoke`); those always queue. 35-case matrix test in `apps/api/test/agent-approval-matrix.test.ts`.
 - **Reminders durable.** Moved from in-process `setTimeout` to the Postgres-backed `scheduled-jobs` queue. Boot rehydrates pending reminders from `reminders.is_sent=false`. New `create_reminder` native agent tool.
 - **Wiki search semantic.** `wiki_search` tool routes through `retrieveContext` which blends FTS + pgvector cosine (0.4 / 0.6 weight × confidence). Falls back to FTS-only when embeddings API is unavailable.
 - **Wizards unified.** Old 7-step `/settings/agent/deploy` deleted; `NEXT_PUBLIC_FEATURE_OPENCLAW_EMPLOYEES` flag removed; canonical flow is the 3-step `/settings/agent-employees/create`.

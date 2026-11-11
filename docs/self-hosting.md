@@ -451,7 +451,9 @@ POST https://your-domain.com/api/mcp/v1
 Create an agent employee from Settings -> Agent Employees, copy the bearer token,
 and paste the generated MCP config into your runtime. Agent employee tokens act
 as that employee and are governed by the employee's trust level, approval rules,
-health status, and MCP audit log.
+health status, and MCP audit log. The per-employee daily cost budget is not
+enforced today: nothing records spend against it. The daily action cap and the
+unhealthy (circuit breaker) state do apply.
 
 Personal tokens and agent employee tokens use the same endpoint, but they are not
 the same authority model. Use personal tokens when a human wants their own AI
@@ -470,10 +472,22 @@ actions, so grant that scope deliberately.
 Defty and Agent Employees use agent identities. The API routes governed writes
 through tool tiers and trust policy, then resolves required approvals on the
 server. In the shared tier policy, Conservative auto-executes `auto` actions,
-Standard also permits `quick`, and Autonomous also permits `full` except guarded
-destructive/admin operations. Individual workflows can require stricter review.
+Standard also permits `quick`, and Autonomous also permits `full`. No trust level
+auto-runs a call classed as destructive (admin tools, `delete_*` tools, module
+archive and unlink, bulk record creation, or a delete, pause or revoke mode); those
+always wait for approval. Individual workflows can require stricter review.
 Task creation is normally `quick`; posting a message is `full`. A task proposal
 in the walkthrough is not a promise that every configured task write pauses.
+
+Two rules sit on top of the tier policy. Defty's chat writes always wait for
+approval, at every trust level; the workspace trust level governs only Defty's
+approved plans and background work. An agent employee's own chat messages (post,
+reply, direct message) run without approval at every trust level, within guard
+rails: space membership and visibility, the reply-storm detector, the daily action
+cap, and the unhealthy (circuit breaker) state, in which the message waits for
+approval over MCP or is refused on the Agent Channel. Everything else an employee writes follows that employee's own
+trust level. Defty does not extract tasks from chat on its own and does not manage
+agent employees, connections or triggers.
 
 The resolver checks review authority and action state and claims pending work
 before execution. Repeated approval of a completed action returns its existing
