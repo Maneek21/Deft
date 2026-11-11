@@ -1457,6 +1457,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
         moduleHistoryActor ??= await buildModuleReadActor(orgId, userId, { conversationId: spaceId });
         if (!await authorizedDurableAgentResult({
           actor: moduleHistoryActor,
+          viewer: { userId, role: 'role' in moduleHistoryActor ? moduleHistoryActor.role : undefined },
           orgId,
           conversationId: spaceId,
           metadata,

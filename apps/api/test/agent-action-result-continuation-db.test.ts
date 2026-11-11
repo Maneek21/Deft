@@ -210,6 +210,7 @@ test(
     const compilerMetadata = compilerHistory.rows[0]!.metadata;
     const authorizedCompilerResult = await authorizedDurableAgentResult({
       actor: ownerActor,
+      viewer: { userId: OWNER_ID, role: 'owner' },
       orgId: ORG_ID,
       conversationId: SPACE_ID,
       metadata: compilerMetadata,
@@ -223,6 +224,7 @@ test(
 
     assert.equal(await authorizedDurableAgentResult({
       actor: ownerActor,
+      viewer: { userId: OWNER_ID, role: 'owner' },
       orgId: ORG_ID,
       conversationId: SPACE_ID,
       metadata: {
@@ -249,6 +251,7 @@ test(
     assert.equal(linkedRows.rowCount, 1);
     const authorizedLinkedResult = await authorizedDurableAgentResult({
       actor: ownerActor,
+      viewer: { userId: OWNER_ID, role: 'owner' },
       orgId: ORG_ID,
       conversationId: SPACE_ID,
       metadata: linkedRows.rows[0]!.result_metadata,
@@ -278,6 +281,7 @@ test(
     await updateModuleInstallation(ownerActor, 'contacts', { enabled: false });
     assert.equal(await authorizedDurableAgentResult({
       actor: ownerActor,
+      viewer: { userId: OWNER_ID, role: 'owner' },
       orgId: ORG_ID,
       conversationId: SPACE_ID,
       metadata: compilerMetadata,
