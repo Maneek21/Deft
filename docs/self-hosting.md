@@ -39,14 +39,13 @@ Commands below use Bash; Windows users can use Git Bash with Docker Desktop.
 
 ### Recommended: prebuilt release
 
-For the independently sideloaded Email developer preview, use Host
-`v0.3.0-preview.123` and the **apps-developer-preview** browser profile listed
-in its `browser-feature-evidence.json`. Follow the independent
+For the independently sideloaded Email developer preview, use a Host
+built with the **apps-developer-preview** browser profile, such as
+`v0.3.0-preview.141`; its `browser-feature-evidence.json` lists the profile. Follow the independent
 [Email setup guide](https://github.com/Maneek21/deft-email/blob/main/docs/setup.md)
-and its [compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.17/compatibility.json)
-for the exact image digest, schema 120, sealed Kit downloads, HTTPS/OAuth and
-Runtime configuration. Host preview 122 includes the session-refresh pool fix
-and production JWT-secret validation, retaining schema 120 without a new migration.
+and the `compatibility.json` attached to the Email release being installed
+for the exact Host version and image digest, schema version, sealed Kit downloads, HTTPS/OAuth and
+Runtime configuration.
 This path requires an operator; it is not the stable
 core quick start below. Feature flags beginning `NEXT_PUBLIC_` are compiled
 into the browser bundle. Setting them only when a container starts does not
@@ -56,7 +55,7 @@ required. Keep only one active Host when operating the small demo database;
 overlapping Host processes consume separate connection pools.
 
 For a fresh evaluation, follow the [README quick start](../README.md#quick-start-with-docker),
-which pins `v0.3.0-preview.15` and its image digest. Use that release's own Compose
+which pins `v0.3.0-preview.141` and its image digest. Use that release's own Compose
 files and environment template together; this source checkout can differ from
 the published image. The source-build instructions below are for contributors.
 Tagged preview releases publish an amd64 image to
@@ -76,7 +75,7 @@ and surrounding whitespace, and preserves accepted key bytes exactly. Docker
 runs in production mode even on localhost. Set the image in `.env` (the tag has no leading `v`):
 
 ```bash
-DEFT_IMAGE=ghcr.io/maneek21/deft:0.3.0-preview.15
+DEFT_IMAGE=ghcr.io/maneek21/deft:0.3.0-preview.141
 ```
 
 For another host or port, set `NEXT_PUBLIC_APP_URL`, `NEXT_PUBLIC_API_URL`,

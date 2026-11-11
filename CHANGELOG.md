@@ -68,9 +68,9 @@ Agents and approvals:
 - A retried meeting-prep run does not notify twice. A new socket for an idle user
   broadcasts that user as online.
 - Chat (web): Enter sends after Escape closes the @ or # popup. A failed history,
-  thread or approval read shows an error with Retry. After a reconnect the channel
-  and the open thread fetch what they missed (up to 500 messages, then a "Load
-  earlier messages" control). "Ask Defty" reports a failure instead of doing
+  thread or approval read shows an error with Retry. After a reconnect a channel
+  catches up through at most 500 messages before offering a "Load earlier
+  messages" control, and an open thread rereads and merges its replies. "Ask Defty" reports a failure instead of doing
   nothing. Presence snapshots replace the online list. Members see an employee's
   trust level read-only; owners and admins can lower it.
 - Apps developer preview: the runtime authority check for a resource observation
@@ -95,14 +95,14 @@ Operator tooling:
   writes. See "Checking For Rows Stamped With The Wrong Org" in
   `docs/self-hosting.md`.
 
-### 0.3.0-preview.141 - published 2026-11-10 (prerelease)
+## [0.3.0-preview.141] — 2026-11-10 (prerelease)
 
 Agents and chat:
 
 - An agent employee's own chat messages (MCP `send_message` to a space, thread
   or DM, and `message_post`) post without approval at every trust level, within
-  the guard rails of space membership and visibility, the reply-storm detector,
-  the daily action cap and the unhealthy state. Everything else an employee
+  the guard rails of space membership and visibility and the daily action cap;
+  `message_post` thread replies pass the reply-storm detector. Everything else an employee
   writes follows that employee's trust level. Defty's chat writes always wait for
   approval; the workspace trust level applies to Defty's approved plans and
   background work. A direct message from an employee needs an active workspace
@@ -141,7 +141,7 @@ The Email-ready release (#424) also shipped in this version:
 
 Operator notes:
 
-- Schema head moves to `0.3.0-preview.135`; the upgrade runs on deploy (migrations
+- Schema head moves to `0.3.0-preview.135`; existing installations must run the documented upgrade service during deployment (migrations
   `.132` integration capture retirement, `.133` runtime grace resume, `.134`
   restore-access reviews, `.135` connection restore marker).
 - Author Kit `0.1.0-alpha.43`. The Experience Worker source cap is raised from
@@ -190,7 +190,7 @@ Fixes:
   pills no longer stretch the compose form; the compose From popover restores
   focus.
 
-### 0.3.0-preview.136 candidate - publication pending
+## [0.3.0-preview.136] — 2026-10-22 (prerelease)
 
 - Scope compact private-record access prompts to write controls on the current
   screen; retain feature-specific guidance and existing authority checks.
@@ -203,7 +203,7 @@ Fixes:
 Schema stays131. Author Kit alpha.42 remains immutable. Email28 requires this
 Host support and is released and deployed after Host136.
 
-### 0.3.0-preview.135 candidate - publication pending
+## [0.3.0-preview.135] — 2026-10-21 (prerelease)
 
 - Prevent read-only account-target and background authority checks from
   contending on exclusive organization-membership locks; keep current identity,
@@ -216,7 +216,7 @@ Host support and is released and deployed after Host136.
 Schema stays131. Author Kit alpha.42, Email App and Runtime artifacts are
 unchanged. Visible-tab acceptance is verified separately from API health.
 
-### 0.3.0-preview.134 candidate - publication pending
+## [0.3.0-preview.134] — 2026-10-21 (prerelease)
 
 - Isolate app-owned Kit domain modules behind clean core and explicit optional
   compatibility/example entries; preserve Host133 transport and authority fixes.
@@ -226,14 +226,14 @@ unchanged. Visible-tab acceptance is verified separately from API health.
 
 Schema stays131. Historical Host133 and Kit41 artifacts remain immutable.
 
-### 0.3.0-preview.133 candidate â€” publication pending
+## [0.3.0-preview.133] — 2026-10-21 (prerelease)
 
 - Allow the three retained-account review, activation and status UI requests150seconds of transport time for the bounded120-second server phase and its fresh surrounding checks. Ordinary requests retain35seconds. Server authorization, consent lifetimes and revocation checks remain unchanged.
 - Correct the live follow-up failure paired with the separately released Runtime socket-budget correction. Add a client regression that waits past35seconds across all three retained operations while ordinary context still aborts.
 
 Schema remains131, with no migrations or sealed Author Kit changes. Includes the intervening release roadmap documentation update.
 
-### 0.3.0-preview.132 candidate — publication pending
+## [0.3.0-preview.132] — 2026-10-21 (prerelease)
 
 Corrects the live connect-once acceptance failure found after preview.131. Revalidating multiple declared purposes can exhaust a thirty-second reattachment phase even when every authority check succeeds.
 
@@ -245,7 +245,7 @@ Corrects the live connect-once acceptance failure found after preview.131. Reval
 Schema remains131 with no new migration; historical migration bytes and sealed Author Kit alpha.41 are unchanged.
 
 
-### 0.3.0-preview.131 candidate — publication pending
+## [0.3.0-preview.131] — 2026-10-21 (prerelease)
 
 Connect-once platform integration. Schema advances directly from128 to131; Author Kit remains the immutable alpha.41, and Runtime wire contracts remain unchanged.
 
@@ -264,7 +264,7 @@ Connect-once platform integration. Schema advances directly from128 to131; Autho
 - Apply only the final schema131 persistent-upgrade guard directly from the published schema128 function. Remove the unpublished intermediate130 replacement; preserve all historical migration bytes and the frozen128 manifest. Fresh bootstrap, exact lineage and no-op upgrade checks remain required.
 
 
-### 0.3.0-preview.130 candidate — publication pending
+## [0.3.0-preview.130] — 2026-10-20 (prerelease)
 
 Restores account-permission renewal after a successful connection upgrade retains its historical source. Schema remains128, Author Kit remains alpha.41, and Runtime protocols are unchanged.
 
@@ -274,7 +274,7 @@ Restores account-permission renewal after a successful connection upgrade retain
 - Match both nullable permission expiry and explicit lifetime mode. Rebuild a proposed scope without retaining its previous lifetime mode, so an account with until-revoked permission remains manageable.
 
 
-### 0.3.0-preview.129 candidate — publication pending
+## [0.3.0-preview.129] — 2026-10-20 (prerelease)
 
 Completes preview.128 account-update recovery at the Runtime authority boundary. Schema remains 128 and the Runtime protocol is unchanged. Author Kit alpha.41 packages the additive source-capture contract merged after alpha.40, retaining alpha.40 compatibility.
 
@@ -290,7 +290,7 @@ Completes preview.128 account-update recovery at the Runtime authority boundary.
 
 
 
-### 0.3.0-preview.128 candidate — publication pending
+## [0.3.0-preview.128] — 2026-10-20 (prerelease)
 
 Recovers account updates when Host accepted a callback but the Runtime never started its provider exchange. Schema advances to 128 through a tracked guard-only upgrade; no historical rows, custody, consent deadlines, or existing migration checksums are rewritten. Author Kit alpha.40 packages the additive app-source nomination contract while preserving alpha.39 compatibility; the existing Runtime protocol is unchanged.
 
@@ -308,7 +308,7 @@ Recovers account updates when Host accepted a callback but the Runtime never sta
 - Add the generic trusted Host custody-inventory contract (#381).
 - Add native app-source Knowledge audience, versioned capture provenance, and domain-neutral nomination v3 contracts; prior nomination versions remain supported (#383).
 
-### 0.3.0-preview.127 candidate — publication pending
+## [0.3.0-preview.127] — 2026-10-20 (prerelease)
 
 Lets each App supply its own background-refresh explanation through the optional experience-bundle field `background_refresh_description`. Schema stays 120; no migration.
 
@@ -317,7 +317,7 @@ Lets each App supply its own background-refresh explanation through the optional
 - Background-refresh reviews use the App's description when present and a neutral Host default otherwise. The generic bundle contract validates 1–500 characters and rejects control characters and angle brackets.
 - Author Kit alpha.39 packages the updated contract under a new version, preserving support for alpha.38 and older supported Kits.
 
-### 0.3.0-preview.126 candidate — publication pending
+## [0.3.0-preview.126] — 2026-10-20 (prerelease)
 
 Restores background resource observation after replacing its consent before the first Runtime claim. Schema stays 120; no migration or App Kit protocol change.
 
@@ -325,7 +325,7 @@ Restores background resource observation after replacing its consent before the 
 
 - The generic observation scheduler now retires a superseded, never-claimed pending read only after validating current consent and the existing recovery identity. Its pending attempt is cancelled and its Run expires without provider work. Existing observation recovery then creates a new Run using the current consent; checkpoint data and historical authority are preserved. Claimed, started, uncertain, and unrelated work remain governed by their existing recovery rules.
 
-### 0.3.0-preview.125 candidate — publication pending
+## [0.3.0-preview.125] — 2026-10-20 (prerelease)
 
 Lets an owner restore an App Runtime's background work after an App upgrade without anyone copying session tokens. Schema stays 120; no migration. Pairs with Email bundle 1.9.0-preview.18 (App 1.9.0-preview.14, Runtime 0.4.0-preview.18).
 
@@ -333,7 +333,7 @@ Lets an owner restore an App Runtime's background work after an App upgrade with
 
 - Email settings → Accounts has **Re-establish background access**. After an App upgrade the reviewed bindings move to the new version while the Runtime still holds sessions for the old ones, which stopped drafts, sends, organizing and background refresh. The Host now issues sessions for the current reviewed bindings through the ordinary operator checks and delivers them to the Runtime over its authenticated connection transport. Background refresh is included when the account permission lasts until revoked. Tokens never reach the browser, an agent or an operator file.
 
-### 0.3.0-preview.124 candidate — publication pending
+## [0.3.0-preview.124] — 2026-10-20 (prerelease)
 
 Email connection fixes found while running the live Email journey on preview.123. Schema stays 120; no migration. Pairs with Email bundle 1.9.0-preview.17.
 
@@ -345,7 +345,7 @@ Email connection fixes found while running the live Email journey on preview.123
 - Background refresh explains that it is required to create Tasks or Knowledge from mail.
 - Recovery guidance points to Settings → People → Recovery link, and the People page title no longer says Members.
 
-### 0.3.0-preview.123 candidate — publication pending
+## [0.3.0-preview.123] — 2026-10-19 (prerelease)
 
 Fixes from the 18 October live release rehearsal on Host preview.122. Schema stays 120; no migration. Pairs with Email bundle 1.9.0-preview.17 (App 1.9.0-preview.14, Runtime 0.4.0-preview.17).
 
@@ -829,7 +829,7 @@ The `0.1.0-alpha` tag was originally published under BSL 1.1. The current
 codebase has since been relicensed under [GNU AGPL v3.0 only](LICENSE); consult
 the license file present in the exact revision you use.
 
-[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.15...HEAD
+[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.141...HEAD
 [0.3.0-preview.15]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.15
 [0.3.0-preview.14]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.14
 [0.3.0-preview.13]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.13

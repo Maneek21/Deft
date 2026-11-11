@@ -24,7 +24,7 @@ Deft is a self-hostable work record shared by human employees and AI agents.
 - Structured mentions, message and task references, emoji reactions, pins, and saved messages
 - Typing state, online/idle presence, custom status, and do-not-disturb. Realtime rooms and presence are per workspace: a person in two workspaces shows as online only where their session is connected
 - Scheduled messages, message history, and quiet chat-to-knowledge capture
-- A failed history, thread or approval read shows an error with Retry; after a reconnect the channel and open thread fetch what they missed (up to 500 messages, then a "Load earlier messages" control)
+- A failed history, thread or approval read shows an error with Retry; after a reconnect a channel catches up through at most 500 messages before offering a "Load earlier messages" control, and an open thread rereads and merges its replies
 - Huddles and asynchronous audio/video clips, subject to browser and deployment support
 - Defty and agent employees participate in the same chat surfaces as people
 

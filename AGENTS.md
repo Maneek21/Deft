@@ -119,9 +119,9 @@ Phase 8 has NOT shipped yet. Flagged here so future edits don't claim it:
 
 - OpenClaw autonomous heartbeat lifecycle (long-running employees with scheduled self-wake).
 - Skill-defined trigger dispatcher (arbitrary triggers from skill manifests, not just `cron:standup`).
-- Heartbeat cost guardrails (per-turn + per-day caps, circuit-breakers). `daily_budget_cents` is not enforced today: nothing increments `daily_cost_cents`.
+- Per-employee cost-budget enforcement. BYOA heartbeat dispatch and the unhealthy circuit breaker are implemented; `daily_budget_cents` is not enforced today because nothing increments `daily_cost_cents`.
 
-The current `agent-employee-heartbeat` worker is a scaffold; the autonomous loop ships in Phase 8.
+The `agent-employee-heartbeat` worker queues BYOA heartbeat work and applies the unhealthy guard; the rest of the autonomous loop ships in Phase 8.
 
 ## Key Design Decisions
 
@@ -140,7 +140,7 @@ and added invisible-today primitives. See
 `docs/superpowers/plans/2026-04-19-openclaw-unlock.md` for the full plan.
 
 **Shipped:**
-- **Trust levels enforce per-tier.** Conservative auto-execs only `auto`; Standard adds `quick`; Autonomous adds `full`. No level auto-runs a call classed destructive by `isDestructiveAction` (`manage_agent_employee`, `manage_mcp_connection`, `remove_member`, any `delete_*`, module archive/unlink/bulk create, or any call with `params.mode: delete|pause|revoke`); those always queue. 35-case matrix test in `apps/api/test/agent-approval-matrix.test.ts`.
+- **Trust levels enforce per-tier.** Conservative auto-execs only `auto`; Standard adds `quick`; Autonomous adds `full`. No level auto-runs a call classed destructive by `isDestructiveAction` (`manage_agent_employee`, `manage_mcp_connection`, `remove_member`, any `delete_*`, module archive/unlink/bulk create, or any call with `params.mode: delete|pause|revoke`); those always queue. The approval policy is covered by `apps/api/test/agent-approval-matrix.test.ts`.
 - **Reminders durable.** Moved from in-process `setTimeout` to the Postgres-backed `scheduled-jobs` queue. Boot rehydrates pending reminders from `reminders.is_sent=false`. New `create_reminder` native agent tool.
 - **Wiki search semantic.** `wiki_search` tool routes through `retrieveContext` which blends FTS + pgvector cosine (0.4 / 0.6 weight × confidence). Falls back to FTS-only when embeddings API is unavailable.
 - **Wizards unified.** Old 7-step `/settings/agent/deploy` deleted; `NEXT_PUBLIC_FEATURE_OPENCLAW_EMPLOYEES` flag removed; canonical flow is the 3-step `/settings/agent-employees/create`.

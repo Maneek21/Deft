@@ -1,6 +1,6 @@
 # Getting started
 
-Choose the journey that matches what you want to evaluate. The general workspace/Module examples below preserve the `v0.3.0-preview.15` baseline. For the current connected-App developer preview, obtain an Apps-enabled Host (the latest, `v0.3.0-preview.141`, is) and the public Kit/Email artifacts from the `compatibility.json` attached to the Email release you install, then follow the [Email setup](https://github.com/Maneek21/deft-email/blob/main/docs/setup.md) and [current author guide](connected-app-author-guide.md). Email builds independently; the historical alpha.2 CLI recipe below is not its Protocol7 installation path.
+Choose the journey that matches what you want to evaluate. These examples target `v0.3.0-preview.141`. For the current connected-App developer preview, obtain an Apps-enabled Host (the latest, `v0.3.0-preview.141`, is) and the public Kit/Email artifacts from the `compatibility.json` attached to the Email release you install, then follow the [Email setup](https://github.com/Maneek21/deft-email/blob/main/docs/setup.md) and [current author guide](connected-app-author-guide.md). Email builds independently; the CLI recipe below (Protocol v0) is not its Protocol7 installation path.
 
 ## Start a team workspace
 
@@ -35,7 +35,7 @@ An App package has a `deft.app.json` manifest and referenced Module files. Choos
 This source/tarball path avoids assuming that `@deft/app-kit` is available from a public registry. Use a checkout matching the host release and Node.js 22.13+ with pnpm 11.10.0.
 
 ```bash
-git clone --branch v0.3.0-preview.15 --depth 1 https://github.com/Maneek21/Deft.git deft-app-source
+git clone --branch v0.3.0-preview.141 --depth 1 https://github.com/Maneek21/Deft.git deft-app-source
 cd deft-app-source
 pnpm install
 mkdir -p "$HOME/deft-artifacts"
@@ -43,7 +43,7 @@ pnpm --dir packages/app-kit pack --pack-destination "$HOME/deft-artifacts"
 mkdir -p "$HOME/deft-apps/hello-workspace"
 cd "$HOME/deft-apps/hello-workspace"
 pnpm init
-pnpm add --save-dev "$HOME/deft-artifacts/deft-app-kit-0.1.0-alpha.2.tgz"
+pnpm add --save-dev "$HOME/deft-artifacts/deft-app-kit-0.1.0-alpha.43.tgz"
 pnpm exec deft app init
 pnpm exec deft app check
 pnpm exec deft app build
@@ -51,8 +51,8 @@ pnpm exec deft app doctor --url http://localhost:3001
 pnpm exec deft app install-local --url http://localhost:3001
 ```
 
-These commands use the published preview.15 and its App Kit `0.1.0-alpha.2`. Use the guide from the same release as your host.
+These commands use the published preview.141 and its App Kit `0.1.0-alpha.43`. Use the guide from the same release as your host.
 
 The host API must have `DEFT_APPS_ENABLED=true` and `DEFT_APP_DEVELOPER_PAIRING_ENABLED=true`; the web build needs `NEXT_PUBLIC_FEATURE_APPS=true`. In **Settings → Apps**, an owner or admin creates the one-time developer pairing code; enter it when `install-local` prompts. For Protocol v0, a successful install stages and activates a Deft-rendered internal App. Open **Apps** and confirm its native navigation and Module view.
 
-Connected Apps and bounded daily actions are an experimental path in preview.15. They require separate review, grants, bindings, activation, and additional operator flags. Follow the [connected App author guide](connected-app-author-guide.md) and [App Run operator guide](app-run-operations.md). Current protocols do not provide arbitrary custom UI or public portals.
+Connected Apps and bounded daily actions are an experimental path in preview.141. They require separate review, grants, bindings, activation, and additional operator flags. Follow the [connected App author guide](connected-app-author-guide.md) and [App Run operator guide](app-run-operations.md). Current protocols do not provide arbitrary custom UI or public portals.
