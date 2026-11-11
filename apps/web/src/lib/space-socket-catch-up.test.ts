@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { watchCatchUp, type CatchUpResult } from './space-socket';
+import { pendingCatchUpCount, watchCatchUp, type CatchUpResult } from './space-socket';
 
 function socketHarness(connected: boolean) {
   const listeners = new Map<string, Set<() => void>>();
@@ -46,8 +46,9 @@ test('R2-3: the need to catch up survives the watcher being recreated', async ()
   a.dispose();
   first.socket.connected = true; // reconnected before the new watcher starts
   let runs = 0;
+  // R3-b: created while connected, the new watcher runs the pending catch-up at once.
   const b = watchCatchUp(first.socket, 'space:recreated', async () => { runs++; return 'ok'; });
-  await b.retry();
+  await flush();
   assert.equal(runs, 1);
   b.dispose();
 });
@@ -68,4 +69,11 @@ test('R2-4: a failed catch-up keeps the flag until one succeeds', async () => {
   await flush();
   assert.equal(runs, 2);
   watch.dispose();
+});
+
+test('R3-a: the set of conversations waiting to catch up is bounded', () => {
+  const { socket } = socketHarness(false);
+  const watches = Array.from({ length: 80 }, (_, i) => watchCatchUp(socket, `space:bounded-${i}`, async () => 'ok'));
+  assert.ok(pendingCatchUpCount() <= 50, `kept ${pendingCatchUpCount()}`);
+  for (const watch of watches) watch.dispose();
 });

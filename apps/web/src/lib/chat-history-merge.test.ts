@@ -128,3 +128,14 @@ test('R3-2: a live edit keeps the shown text but takes a fetched deletion', () =
   assert.equal(merged!.content, 'live edit');
   assert.equal(merged!.is_deleted, true);
 });
+
+test('R3-a: recorded live changes are dropped when a new read starts', () => {
+  const reads = new ConversationReads();
+  reads.noteChange('a', 'content');
+  reads.noteChange('b', 'reactions');
+  assert.equal(reads.trackedChanges, 2);
+  const ticket = reads.begin();
+  assert.equal(reads.trackedChanges, 0);
+  reads.noteChange('a', 'pin');
+  assert.deepEqual([...reads.changedSince(ticket, 'a')], ['pin']);
+});

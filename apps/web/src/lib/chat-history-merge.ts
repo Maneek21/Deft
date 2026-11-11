@@ -75,10 +75,20 @@ export class ConversationReads {
   private readonly changedAt = new Map<string, Map<ChangeGroup, number>>();
   private disposed = false;
 
-  /** Start a read that supersedes every earlier one. */
+  /**
+   * Start a read that supersedes every earlier one. Every read applies only
+   * while its ticket is latest, so changes recorded before this point can no
+   * longer matter and are dropped (bounded retention).
+   */
   begin(): ReadTicket {
     this.generation += 1;
+    this.changedAt.clear();
     return { generation: this.generation, startSeq: this.seq };
+  }
+
+  /** How many messages have recorded live changes (for tests). */
+  get trackedChanges(): number {
+    return this.changedAt.size;
   }
 
   /** A ticket that does not supersede other reads (for example loading older pages). */
