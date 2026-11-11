@@ -322,7 +322,7 @@ test('E15: after a reconnect the channel and the open thread fetch what they mis
 // Channel reads honour `limit` and `cursor` like the API.
 
 const FAKE_SERVER = `(() => {
-  const S = window.__srv = { channel: null, thread: null, fail: { channel: false, thread: false }, hold: false, held: [], threadReads: 0, failThreadFromRead: Infinity };
+  const S = window.__srv = { channel: null, thread: null, fail: { channel: false, thread: false }, netFail: { channel: false, thread: false }, netFailWhen: null, hold: false, holdWhen: null, held: [], channelReads: 0, threadReads: 0, failThreadFromRead: Infinity };
   const page = (all, full) => {
     const q = new URL(full, 'http://x').searchParams;
     const limit = Math.min(Number(q.get('limit') || 50), 100);
@@ -335,15 +335,19 @@ const FAKE_SERVER = `(() => {
     if (method !== 'GET') return undefined;
     let res;
     if (path === '/api/messages/s1') {
-      if (S.fail.channel) res = failure;
+      S.channelReads += 1;
+      if (S.netFail.channel || (S.netFailWhen && S.netFailWhen(path))) res = 'network-error';
+      else if (S.fail.channel) res = failure;
       else if (S.channel) res = { body: { messages: page(S.channel, full), next_cursor: null } };
     } else if (path === '/api/messages/t1/thread') {
       S.threadReads += 1;
-      if (S.fail.thread || S.threadReads >= S.failThreadFromRead) res = failure;
+      if (S.netFail.thread || (S.netFailWhen && S.netFailWhen(path))) res = 'network-error';
+      else if (S.fail.thread || S.threadReads >= S.failThreadFromRead) res = failure;
       else if (S.thread) res = { body: { replies: S.thread } };
     }
     if (!res) return undefined;
-    if (!S.hold) return res;
+    // holdWhen(path, fullPath) holds chosen reads only.
+    if (!S.hold && !(S.holdWhen && S.holdWhen(path, full))) return res;
     const snapshot = JSON.parse(JSON.stringify(res));
     return new Promise((resolve) => S.held.push({ path, release: () => resolve(snapshot) }));
   };
@@ -417,10 +421,10 @@ test('R2-1: an older reconnect read that resolves last is ignored, in the channe
   }
 });
 
-const many = (count, prefix = 'x') => Array.from({ length: count }, (_, i) => ({
+const many = (count, prefix = 'x', base = '2026-10-22T11:00:00.000Z') => Array.from({ length: count }, (_, i) => ({
   ...BASE, id: `${prefix}-${String(i + 1).padStart(3, '0')}`, parent_id: null, user_id: 'u-rahul', user_name: 'Rahul Mehta',
   content: `Missed ${prefix} ${String(i + 1).padStart(3, '0')}`,
-  created_at: new Date(Date.parse('2026-10-22T11:00:00.000Z') + i * 1000).toISOString(),
+  created_at: new Date(Date.parse(base) + i * 1000).toISOString(),
 }));
 
 test('R2-2: a reconnect follows pages back to what was shown, so 150 missed messages leave no gap and older ones refresh', async () => {
@@ -552,3 +556,37 @@ test('R2-5: Retry keeps what is shown and the draft, and merges the result (chan
     await close(page);
   }
 });
+
+// ── Round 3 ────────────────────────────────────────────────────────────────
+
+test('R3-1: a Load earlier read superseded by a catch-up does not bring back an older segment', async () => {
+  const page = await open(browser, { harness: 'defty-chat-harness.tsx', url: '/chat?space=s1', override: FAKE_SERVER });
+  try {
+    await page.getByText('Destination message from Priya').waitFor();
+    await drop(page);
+    await srv(page, (data) => { window.__srv.channel = data; }, [ROOT, DEST, ...many(600)]);
+    await reconnect(page);
+    const earlier = page.getByRole('button', { name: 'Load earlier messages' });
+    await earlier.waitFor();
+    // Load earlier is held (it would add x-001…x-100).
+    await srv(page, () => { window.__srv.hold = true; });
+    await earlier.click();
+    await waitHeld(page, 1);
+    await srv(page, () => { window.__srv.hold = false; });
+    // Another long outage: the catch-up replaces the view with y-101…y-600.
+    await drop(page);
+    await srv(page, (data) => { window.__srv.channel = [...window.__srv.channel, ...data]; }, many(600, 'y', '2026-10-22T13:00:00.000Z'));
+    await reconnect(page);
+    await page.getByText('Missed y 600', { exact: true }).waitFor();
+    await page.getByText('Missed y 101', { exact: true }).waitFor();
+    await release(page, 0);
+    // A fresh Load earlier proves the stale page has been processed first.
+    await page.getByRole('button', { name: 'Load earlier messages' }).click();
+    await page.getByText('Missed y 001', { exact: true }).waitFor();
+    assert.equal(await page.getByText('Missed x 001', { exact: true }).count(), 0, 'stale older page must not apply');
+    assert.equal(await page.getByText('Missed x 100', { exact: true }).count(), 0);
+  } finally {
+    await close(page);
+  }
+});
+

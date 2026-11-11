@@ -958,11 +958,13 @@ export function SpaceChat({
     try {
       const before = oldestCreatedAt(messagesRef.current) ?? undefined;
       const page = await readHistoryPage<Message>((path: string) => api.get(path), `/api/messages/${spaceId}`, before);
-      if (!visit.isCurrent() || reads !== historyReadsRef.current) return;
+      // A catch-up or retry that started meanwhile may have replaced the
+      // view; this older page would then sit beside it as a stray segment.
+      if (!visit.isCurrent() || reads !== historyReadsRef.current || !reads.isLatest(ticket)) return;
       setMessages((prev) => mergeMessagesById(prev, page, (id) => reads.changedSince(ticket, id)));
       setHasEarlierHistory(page.length === HISTORY_PAGE_SIZE);
     } catch {
-      if (visit.isCurrent()) setCmdToast('Could not load earlier messages. Try again.');
+      if (visit.isCurrent() && reads.isLatest(ticket)) setCmdToast('Could not load earlier messages. Try again.');
     } finally {
       setLoadingEarlier(false);
     }
