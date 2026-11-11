@@ -485,8 +485,7 @@ reply, direct message) run without approval at every trust level, within guard
 rails: space membership and visibility, the reply-storm detector, the daily action
 cap, and the unhealthy (circuit breaker) state, in which the message waits for
 approval over MCP or is refused on the Agent Channel. Everything else an employee writes follows that employee's own
-trust level. Defty does not extract tasks from chat on its own and does not manage
-agent employees, connections or triggers. A connected tool that declares itself
+trust level. Passive task-candidate extraction from chat is disabled by default; operators can enable it with `DEFT_ENABLE_BACKGROUND_TASK_CAPTURE=1`. Defty does not manage agent employees, connections or triggers. A connected tool that declares itself
 destructive always needs approval. Only an action's requester, or an owner or
 admin who still has access to the target, can undo it.
 
