@@ -128,6 +128,45 @@ export function getAppRunInspectorLabel(approvalStatus: string, runState: string
   return 'Inspect App Run receipts';
 }
 
+export type AgentActionDisplayStatus = 'pending' | 'approved' | 'rejected' | 'expired' | 'undone' | 'failed' | 'executing' | string;
+
+/**
+ * The state an approval surface shows for an action row. An approved
+ * action whose execution failed (`error` set) is failed, never done; an
+ * approval still being carried out is executing. App Run actions keep their
+ * own run-state presentation.
+ */
+export function getAgentActionDisplayStatus(action: {
+  action: string;
+  source?: string | null;
+  status?: string;
+  approval_status?: string;
+  error?: string | null;
+  result?: unknown;
+}): AgentActionDisplayStatus {
+  const status = action.status ?? action.approval_status ?? 'pending';
+  if (status !== 'approved') return status;
+  if (action.action === 'app_run_invoke' || action.source === 'app_run') return status;
+  if (typeof action.error === 'string' && action.error.trim()) return 'failed';
+  if (objectValue(action.result)?.lifecycle_state === 'executing') return 'executing';
+  return status;
+}
+
+/**
+ * The state to show after an approve or reject call returns. `fallback` is
+ * the decision that was requested.
+ */
+export function getApprovalMutationStatus(
+  result: unknown,
+  fallback: 'approved' | 'rejected',
+): 'approved' | 'rejected' | 'failed' | 'executing' {
+  const body = objectValue(result);
+  const status = body?.status ?? body?.approval_status;
+  if (status === 'rejected' || status === 'failed' || status === 'executing') return status;
+  if (status === 'approved') return body?.success === false ? 'failed' : 'approved';
+  return fallback;
+}
+
 export type TaskLinkReview = {
   record: { label: string; href: string };
   task: { identifier: string; title: string; project_name: string; href: string };

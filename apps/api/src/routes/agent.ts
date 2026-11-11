@@ -1337,6 +1337,12 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
       resolution: result.status,
       actorUserId: user.id,
     });
+    // An action approved earlier whose execution failed is reported as
+    // failed, not as a fresh success.
+    if (result.status === 'approved' && !action.app_run_id && action.approval_status === 'approved'
+      && action.error && result.message?.startsWith('already approved')) {
+      return c.json(approvedButFailedBody(action.error));
+    }
     return c.json({
       status: result.status,
       message: 'message' in result ? result.message : undefined,
@@ -1361,6 +1367,7 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
     if ((action.result as any)?.lifecycle_state === 'executing') {
       return c.json({ status: 'executing', message: 'execution is already in progress' }, 202);
     }
+    if (action.error) return c.json(approvedButFailedBody(action.error));
     return c.json({ status: 'approved', message: 'already approved', result: action.result ?? undefined });
   }
   if (action.approval_status === 'rejected') {
@@ -1397,6 +1404,7 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
       .select({
         approval_status: agentActions.approval_status,
         result: agentActions.result,
+        error: agentActions.error,
       })
       .from(agentActions)
       .where(and(
@@ -1408,6 +1416,7 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
       if ((winner.result as any)?.lifecycle_state === 'executing') {
         return c.json({ status: 'executing', message: 'execution is already in progress' }, 202);
       }
+      if (winner.error) return c.json(approvedButFailedBody(winner.error));
       return c.json({ status: 'approved', message: 'already approved', result: winner.result ?? undefined });
     }
     if (winner?.approval_status === 'rejected') {
@@ -1853,6 +1862,11 @@ class UndoRefusal extends Error {
   constructor(readonly status: 400 | 409, readonly code: string, message: string) {
     super(message);
   }
+}
+
+/** Answer for an action that was approved earlier but did not complete. */
+function approvedButFailedBody(error: string) {
+  return { status: 'failed' as const, message: 'approved, but it did not complete', error };
 }
 
 function nothingRecorded() {

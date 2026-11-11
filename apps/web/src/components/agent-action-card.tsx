@@ -36,7 +36,9 @@ import { loadTaskReviewLabels, taskReviewAssignmentLines, taskReviewDisplayParam
 import { humanizeToolName } from '@/lib/tool-display';
 import { stripHtml } from '@/lib/strip-html';
 import {
+  getAgentActionDisplayStatus,
   getAgentActionPresentation,
+  getApprovalMutationStatus,
   getAppRunApprovalCompletionLabel,
   getAppRunInspectorLabel,
   getAppRunReference,
@@ -63,13 +65,14 @@ export type AgentAction = {
   proposer?: 'employee' | 'defty' | string | null;
 };
 
-type LocalStatus = 'approving' | 'rejecting' | 'approved' | 'rejected' | null;
+type LocalStatus = 'approving' | 'rejecting' | 'approved' | 'rejected' | 'failed' | 'executing' | null;
 type AgentActionCardVariant = 'review' | 'compact';
 export type AgentActionMutationResult = {
   status?: string;
   approval_status?: string;
   success?: boolean;
   result?: unknown;
+  error?: string;
 } | void;
 
 const ACTION_LABELS: Record<string, string> = {
@@ -610,7 +613,7 @@ export function AgentActionCard({
     : typeof action.params.space_id === 'string'
       ? action.params.space_id
       : null;
-  const serverStatus = action.status ?? action.approval_status ?? 'pending';
+  const serverStatus = getAgentActionDisplayStatus(action);
   const resolvedStatus = localStatus ?? serverStatus;
   const isBusy = resolvedStatus === 'approving' || resolvedStatus === 'rejecting' || resolvedStatus === 'executing';
   const hasReceipt = action.has_receipt === true;
@@ -728,9 +731,12 @@ export function AgentActionCard({
     setLocalStatus('approving');
     try {
       const result = await onApprove();
-      const status = normalizeReturnedStatus(result, 'approved');
+      const status = getApprovalMutationStatus(result, 'approved');
       if (result && typeof result === 'object' && 'result' in result) {
         setLocalResult(result.result);
+      }
+      if (status === 'failed') {
+        setLocalError(result && typeof result.error === 'string' ? result.error : 'The approved action did not complete.');
       }
       setLocalStatus(status);
     } catch (err) {
@@ -745,7 +751,7 @@ export function AgentActionCard({
     setLocalStatus('rejecting');
     try {
       const result = await onReject();
-      const status = normalizeReturnedStatus(result, 'rejected');
+      const status = getApprovalMutationStatus(result, 'rejected');
       setLocalStatus(status);
     } catch (err) {
       setLocalStatus(null);
@@ -841,14 +847,20 @@ export function AgentActionCard({
           <div className="flex items-start gap-2">
             <AlertTriangle size={15} strokeWidth={1.8} className="mt-0.5 flex-shrink-0" />
             <div className="min-w-0">
-              <p className="font-medium break-words">{isAppRunAction ? 'App action could not run.' : `${captureHeadline} could not run.`}</p>
-              <p className="mt-0.5 break-words" style={{ color: 'var(--muted)' }}>
-                {action.error ? truncate(stripHtml(action.error), 160) : 'The proposal is preserved for review.'}
+              <p className="font-medium break-words">
+                {isAppRunAction
+                  ? 'App action could not run.'
+                  : isCapture
+                    ? `${captureHeadline} could not run.`
+                    : `Approved, but ${displayLabel.toLowerCase()} did not complete.`}
               </p>
-              {isAppRunAction ? appRunInspectorButton : <a href="/inbox?tab=captures" className="inline-flex items-center gap-1 mt-1.5 underline underline-offset-2" style={{ color: 'var(--primary)' }}>
+              <p className="mt-0.5 break-words" style={{ color: 'var(--muted)' }}>
+                {(action.error ?? localError) ? truncate(stripHtml((action.error ?? localError)!), 160) : 'The proposal is preserved for review.'}
+              </p>
+              {isAppRunAction ? appRunInspectorButton : isCapture ? <a href="/inbox?tab=captures" className="inline-flex items-center gap-1 mt-1.5 underline underline-offset-2" style={{ color: 'var(--primary)' }}>
                 Open Captures for retry
                 <ExternalLink size={12} strokeWidth={1.7} />
-              </a>}
+              </a> : null}
             </div>
           </div>
         </div>
@@ -1362,15 +1374,4 @@ export function AgentActionCard({
       {appRunInspector}
     </div>
   );
-}
-
-function normalizeReturnedStatus(
-  result: AgentActionMutationResult,
-  fallback: 'approved' | 'rejected',
-): 'approved' | 'rejected' {
-  if (result && typeof result === 'object') {
-    const status = result.status ?? result.approval_status;
-    if (status === 'approved' || status === 'rejected') return status;
-  }
-  return fallback;
 }
