@@ -454,3 +454,40 @@ test('W2a3-R7: when delivery cannot be resolved, the space still receives the me
     assert.deepEqual(canaries(JSON.stringify(newMessages(socket.events, message.id))), []);
   }
 });
+
+test('W2a3-R4-A: approval result rows follow the audience of their action, not their author', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  realtime ??= await startRealtime();
+  const room = randomUUID();
+  await client!.query('INSERT INTO spaces(id,org_id,name,type,created_by) VALUES($1,$2,$3,\'public\',$4)', [room, orgId, `results-${room}`, ids.requester]);
+  for (const id of Object.values(ids)) await client!.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), room, id]);
+  const resultAction = randomUUID();
+  await client!.query(`INSERT INTO agent_actions(id,org_id,user_id,conversation_id,action,params,approval_tier,approval_status,source)
+    VALUES($1,$2,$3,$4,'create_task',$5,'quick','approved','mention')`, [resultAction, orgId, ids.requester, room, JSON.stringify({ title: 'Result check' })]);
+  for (const user of [ids.approver, ids.guestApprover]) {
+    await client!.query('INSERT INTO agent_action_approvers(id,org_id,action_id,user_id) VALUES($1,$2,$3,$4)', [randomUUID(), orgId, resultAction, user]);
+  }
+  const insert = async (author: string, metadata: Record<string, unknown>) => {
+    const id = randomUUID();
+    await client!.query('INSERT INTO messages(id,org_id,space_id,user_id,content,metadata) VALUES($1,$2,$3,$4,\'\',$5)', [id, orgId, room, author, JSON.stringify(metadata)]);
+    return id;
+  };
+  // Approved by an admin; and approved/rejected by a user who is now a guest.
+  await insert(ids.admin, { kind: 'tool_result', hidden: true, approval_execution_result_for_action_id: resultAction, approval_execution_result: { changed_fields: ['CANARY-BYADMIN'] } });
+  const byGuest = await insert(ids.guestApprover, { kind: 'tool_result', hidden: true, approval_execution_result_for_action_id: resultAction, approval_execution_result: { changed_fields: ['CANARY-BYGUEST'] } });
+  await insert(ids.guestApprover, { kind: 'tool_result', hidden: true, approval_rejection_result_for_action_id: resultAction, agent_blocks: [{ type: 'tool_result', tool_use_id: 'toolu_r', content: 'CANARY-REJECTED' }] });
+  const all = ['CANARY-BYADMIN', 'CANARY-BYGUEST', 'CANARY-REJECTED'];
+  const path = `/api/messages/${room}`;
+  for (const viewer of [ids.requester, ids.admin, ids.approver]) assert.deepEqual(canaries(await request(viewer, path)), all, `${roles[viewer]} ${viewer === ids.approver ? 'approver' : ''}`);
+  for (const viewer of [ids.peer, ids.guestApprover, ids.guestRequester]) assert.deepEqual(canaries(await request(viewer, path)), [], viewer);
+  // The same rule on the live socket path.
+  const guest = await realtime.open(ids.guestApprover, room);
+  const requester = await realtime.open(ids.requester, room);
+  const { emitMessageToSpaceViewers } = await import('../src/lib/agent-message-run-details.js');
+  const [row] = (await client!.query('SELECT * FROM messages WHERE id=$1', [byGuest])).rows;
+  const message = { ...row, id: `${byGuest}-live` };
+  await emitMessageToSpaceViewers(realtime.io as any, { orgId, spaceId: room, event: 'message:new', message });
+  await settle();
+  assert.deepEqual(canaries(JSON.stringify(newMessages(guest.events, message.id))), []);
+  assert.deepEqual(canaries(JSON.stringify(newMessages(requester.events, message.id))), ['CANARY-BYGUEST']);
+});

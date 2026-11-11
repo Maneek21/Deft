@@ -138,18 +138,53 @@ export function projectAgentMessageMetadata<T>(metadata: T, withDetails: boolean
   return (withDetails || !hasAgentRunDetails(base) ? base : withoutRunDetails(base)) as T;
 }
 
+const RESULT_ACTION_KEYS = ['approval_execution_result_for_action_id', 'approval_rejection_result_for_action_id', 'agent_action_id'] as const;
+
+/** The action a result row reports on, when it names exactly one. */
+function resultActionId(metadata: unknown): string | null {
+  if (!isRecord(metadata)) return null;
+  for (const key of RESULT_ACTION_KEYS) {
+    const value = metadata[key];
+    if (typeof value === 'string' && value.length > 0 && value.length <= 255) return value;
+  }
+  return null;
+}
+
 /** Ids of the given messages whose run details this viewer may receive. */
 export async function agentRunDetailAudience(viewer: MessageDetailViewer, rows: readonly DetailMessage[]): Promise<Set<string>> {
   const candidates = rows.filter((row) => hasAgentRunDetails(row.metadata));
   if (candidates.length === 0) return new Set();
   if (viewer.role === 'owner' || viewer.role === 'admin') return new Set(candidates.map((row) => row.id));
-  const granted = new Set(candidates.filter((row) => row.user_id === viewer.id).map((row) => row.id));
+  const granted = new Set<string>();
+
+  // A row that records the outcome of one action (an approval execution or
+  // rejection result, an agent document) has exactly that action's audience
+  // under the shared rule. Its author (for example the approver) gets nothing
+  // from authorship.
+  const resultRows = new Map<string, string>();
+  for (const row of candidates) {
+    const actionId = resultActionId(row.metadata);
+    if (actionId) resultRows.set(row.id, actionId);
+  }
+  if (resultRows.size > 0) {
+    const visible = await db.select({ id: agentActions.id }).from(agentActions).where(and(
+      eq(agentActions.org_id, viewer.org_id),
+      inArray(agentActions.id, [...new Set(resultRows.values())]),
+      visibleModuleActionSql(viewer.role ?? undefined, { userId: viewer.id, orgId: viewer.org_id }),
+    ));
+    const visibleIds = new Set(visible.map((row) => row.id));
+    for (const [messageId, actionId] of resultRows) if (visibleIds.has(actionId)) granted.add(messageId);
+  }
+  const resolved = (row: DetailMessage) => resultRows.has(row.id) || granted.has(row.id);
+
+  // Any other run row: its author (a requester's own tool-result row).
+  for (const row of candidates) if (!resolved(row) && row.user_id === viewer.id) granted.add(row.id);
 
   // The requester: the author of the message this reply answers (or whose
   // clarification draft it holds), in the same space.
   const replyTargets = new Map<string, DetailMessage[]>();
   for (const row of candidates) {
-    if (granted.has(row.id) || !isRecord(row.metadata)) continue;
+    if (resolved(row) || !isRecord(row.metadata)) continue;
     const pending = isRecord(row.metadata.defty_pending) ? row.metadata.defty_pending.request_message_id : undefined;
     for (const target of new Set([row.metadata.reply_to_message_id, pending])) {
       if (typeof target === 'string') replyTargets.set(target, [...(replyTargets.get(target) ?? []), row]);
@@ -169,7 +204,7 @@ export async function agentRunDetailAudience(viewer: MessageDetailViewer, rows: 
   }
 
   // The audience of a Defty action anchored to the message, under the shared rule.
-  const remaining = candidates.filter((row) => !granted.has(row.id)).map((row) => row.id);
+  const remaining = candidates.filter((row) => !resolved(row)).map((row) => row.id);
   if (remaining.length > 0) {
     const anchored = await db.selectDistinct({ message_id: agentActions.message_id }).from(agentActions).where(and(
       eq(agentActions.org_id, viewer.org_id),
