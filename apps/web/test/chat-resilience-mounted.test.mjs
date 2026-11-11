@@ -50,7 +50,8 @@ function bundle(harnessFile) {
 const pageErrors = new WeakMap();
 
 /** `override` runs in the page before the app mounts: (method, path) => route | 'network-error' | undefined. */
-async function open(browser, { harness, url, width = 1280, override }) {
+/** `setup` (with `setupArg`) runs in the page after `override` is installed, to configure the fake server. */
+async function open(browser, { harness, url, width = 1280, override, setup, setupArg, pageData }) {
   const page = await browser.newPage({ viewport: { width, height: 844 } });
   page.setDefaultTimeout(8000);
   const errors = [];
@@ -60,7 +61,10 @@ async function open(browser, { harness, url, width = 1280, override }) {
     ? route.fulfill({ contentType: 'text/html', body: PAGE_HTML })
     : route.abort());
   await page.goto(`http://127.0.0.1${url}`);
+  // Test data reaches the page as an argument, never spliced into code.
+  await page.evaluate((data) => { window.__deftTestData = data; }, { root: ROOT, ...(pageData ?? {}) });
   if (override) await page.evaluate(`window.__deftApiOverride = ${override}`);
+  if (setup) await page.evaluate(setup, setupArg);
   await page.addScriptTag({ content: await bundle(harness) });
   return page;
 }
@@ -262,8 +266,9 @@ test('E15: after a reconnect the channel and the open thread fetch what they mis
   const page = await open(browser, {
     harness: 'defty-chat-harness.tsx',
     url: '/chat?space=s1&thread=t1',
+    pageData: { serverAfter },
     override: `(() => { let after = false; window.__deftServerMoved = () => { after = true; };
-      const data = ${JSON.stringify(serverAfter)};
+      const data = window.__deftTestData.serverAfter;
       window.__deftServerMovedAgain = (channel, reply) => { data.channel.messages.push(channel); data.thread.replies.push(reply); };
       return (method, path) => {
         if (!after || method !== 'GET') return undefined;
@@ -343,7 +348,7 @@ const FAKE_SERVER = `(() => {
       S.threadReads += 1;
       if (S.netFail.thread || (S.netFailWhen && S.netFailWhen(path))) res = 'network-error';
       else if (S.fail.thread || S.threadReads >= S.failThreadFromRead) res = failure;
-      else if (S.thread) res = { body: { parent: ${JSON.stringify(ROOT)}, replies: S.thread } };
+      else if (S.thread) res = { body: { parent: window.__deftTestData.root, replies: S.thread } };
     }
     if (!res) return undefined;
     // holdWhen(path, fullPath) holds chosen reads only.
@@ -512,7 +517,8 @@ test('R2-5: Retry keeps what is shown and the draft, and merges the result (chan
   const page = await open(browser, {
     harness: 'defty-chat-harness.tsx', url: '/chat?space=s1&thread=t1',
     // Channel history fails from the start; the panel's own thread read (the second) fails.
-    override: `(() => { const handler = ${FAKE_SERVER}; window.__srv.fail.channel = true; window.__srv.failThreadFromRead = 2; return handler; })()`,
+    override: FAKE_SERVER,
+    setup: () => { window.__srv.fail.channel = true; window.__srv.failThreadFromRead = 2; },
   });
   try {
     const panel = page.locator('.w-\\[400px\\]');
@@ -615,12 +621,13 @@ test('R3-3: an initial read that fails after a successful catch-up does not brin
     harness: 'defty-chat-harness.tsx', url: '/chat?space=s1&thread=t1',
     // Hold the channel's first read and the panel's own thread read (the
     // second); both fail with a network error when released.
-    override: `(() => { const handler = ${FAKE_SERVER};
+    override: FAKE_SERVER,
+    setup: () => {
       const first = (path) => (path === '/api/messages/s1' && window.__srv.channelReads === 1)
         || (path === '/api/messages/t1/thread' && window.__srv.threadReads === 2);
       window.__srv.netFailWhen = first;
       window.__srv.holdWhen = first;
-      return handler; })()`,
+    },
   });
   try {
     await page.getByRole('heading', { name: 'Thread' }).waitFor();
@@ -662,14 +669,16 @@ test('R4-1: a failed catch-up that superseded the initial read ends the loading 
     harness: 'defty-chat-harness.tsx', url: '/chat?space=s1&thread=t1',
     // Hold the initial reads (channel #1, panel's thread read #2); fail the
     // catch-up reads that follow (channel #2, thread #3).
-    override: `(() => { const handler = ${FAKE_SERVER};
-      window.__srv.channel = ${JSON.stringify([ROOT, DEST])};
-      window.__srv.thread = ${JSON.stringify([REPLY])};
+    override: FAKE_SERVER,
+    setupArg: { channel: [ROOT, DEST], thread: [REPLY] },
+    setup: ({ channel, thread }) => {
+      window.__srv.channel = channel;
+      window.__srv.thread = thread;
       window.__srv.holdWhen = (path) => (path === '/api/messages/s1' && window.__srv.channelReads === 1)
         || (path === '/api/messages/t1/thread' && window.__srv.threadReads === 2);
       window.__srv.netFailWhen = (path) => (path === '/api/messages/s1' && window.__srv.channelReads === 2)
         || (path === '/api/messages/t1/thread' && window.__srv.threadReads === 3);
-      return handler; })()`,
+    },
   });
   try {
     await page.getByRole('heading', { name: 'Thread' }).waitFor();
@@ -748,10 +757,12 @@ test('R4-3: a live delete or reaction for a row the read introduces is applied w
 test('R4-3: a live reaction on a thread reply that is not shown yet is applied when the reply arrives', async () => {
   const page = await open(browser, {
     harness: 'defty-chat-harness.tsx', url: '/chat?space=s1&thread=t1',
-    override: `(() => { const handler = ${FAKE_SERVER};
-      window.__srv.thread = ${JSON.stringify([REPLY])};
+    override: FAKE_SERVER,
+    setupArg: { thread: [REPLY] },
+    setup: ({ thread }) => {
+      window.__srv.thread = thread;
       window.__srv.holdWhen = (path) => path === '/api/messages/t1/thread' && window.__srv.threadReads === 2;
-      return handler; })()`,
+    },
   });
   try {
     await page.getByRole('heading', { name: 'Thread' }).waitFor();

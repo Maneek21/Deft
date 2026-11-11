@@ -124,7 +124,7 @@ test('R3-2: a live edit is replayed onto a fetched deletion: the text updates an
   const ticket = reads.begin();
   reads.record({ type: 'edited', id: 'a', content: 'live edit', edited_at: '2026-11-10T11:00:00.000Z' });
   const [merged] = replayMessageEvents(
-    mergeMessagesById([{ ...msg('a', 1, 'live edit'), is_deleted: false }], [{ ...msg('a', 1, 'stale'), is_deleted: true }]),
+    mergeMessagesById<Row>([{ ...msg('a', 1, 'live edit'), is_deleted: false }], [{ ...msg('a', 1, 'stale'), is_deleted: true }]),
     reads.settle(ticket),
   );
   assert.equal(merged!.content, 'live edit');
