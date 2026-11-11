@@ -13,6 +13,7 @@ import { api } from '@/lib/api';
 import { createNativeCreateIntent } from '@/lib/native-create-intent';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { getSocket } from '@/lib/socket';
+import { watchCatchUp, type CatchUpResult } from '@/lib/space-socket';
 import { useAuth } from '@/lib/auth-context';
 import { X, Smile, ArrowLeft, FileText } from 'lucide-react';
 import { formatMessageTime } from '@/lib/time';
@@ -24,7 +25,10 @@ import { AgentActionCard, type AgentAction } from './agent-action-card';
 import { AgentMessageBlocks, type AgentMessageBlocksProps } from './agent-message-blocks';
 import { resolveAgentCitationLink } from '@/lib/agent-citations';
 import useSWR, { mutate as swrMutate } from 'swr';
-import { normalizeInlineApprovalCopy } from '@/lib/agent-approval-copy';
+import { inlineApprovalDisplayContent } from '@/lib/agent-approval-copy';
+import { ConversationReads, mergeMessagesById } from '@/lib/chat-history-merge';
+import { applyMessageEvent, replayMessageEvents, type MessageEvent } from '@/lib/chat-message-events';
+import { ChatLoadError } from './chat-load-error';
 
 type Reaction = {
   emoji: string;
@@ -255,11 +259,11 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     ? `/api/agent/actions/pending-by-space?space_id=${spaceId}`
     : null;
 
-  const { data: pendingByMessage } = useSWR(
+  const { data: pendingByMessage, error: pendingActionsError } = useSWR(
     pendingBySpaceKey,
     async (url: string) => {
       const res = await api.get(url);
-      if (!res.ok) return {} as Record<string, AgentAction[]>;
+      if (!res.ok) throw new Error(`Unable to load pending actions (${res.status})`);
       const list: Array<AgentAction & { message_id: string }> = await res.json();
       const map: Record<string, AgentAction[]> = {};
       for (const action of list) {
@@ -296,40 +300,113 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     repliesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, []);
 
+  const [loadError, setLoadError] = useState(false);
+  const [loadRetrying, setLoadRetrying] = useState(false);
+  // Orders this thread's reads and buffers live socket events received while
+  // a read is in flight, to replay them onto its result. Disposed when the
+  // thread changes or the panel closes.
+  const threadReadsRef = useRef(new ConversationReads<MessageEvent<Message>>());
+  const loadingRef = useRef(loading);
+  useEffect(() => { loadingRef.current = loading; }, [loading]);
+  // Every outcome of the latest read ends the loading state it may have
+  // superseded; a failure while nothing has loaded shows the load error.
+  const failLatestRead = useCallback((scope: 'load' | 'catch-up') => {
+    // Always end loading: the ref can lag a just-queued load, and a spinner
+    // left on would hide the error and its Retry. The ref only picks the copy.
+    setLoading(false);
+    if (scope === 'load' || loadingRef.current) setLoadError(true);
+    else setCatchUpError(true);
+  }, []);
+  // A catch-up read after a reconnect failed: shown replies stay, and the
+  // catch-up stays pending until a read succeeds.
+  const [catchUpError, setCatchUpError] = useState(false);
+  const [catchUpRetrying, setCatchUpRetrying] = useState(false);
+  const catchUpRetryRef = useRef<(() => Promise<CatchUpResult>) | null>(null);
+  const retryCatchUp = useCallback(() => {
+    const retry = catchUpRetryRef.current;
+    if (!retry) return;
+    setCatchUpRetrying(true);
+    void retry().finally(() => setCatchUpRetrying(false));
+  }, []);
+
   // Load thread replies only (parent message is passed as a prop)
   useEffect(() => {
     setLoading(true);
+    setLoadError(false);
+    setCatchUpError(false);
     setReplies([]);
     setPendingFiles([]);
     let cancelled = false;
+    threadReadsRef.current.dispose();
+    const reads = new ConversationReads<MessageEvent<Message>>();
+    threadReadsRef.current = reads;
 
+    // The ticket stays in scope so every outcome of this read (error,
+    // completion, scroll) is ignored once a catch-up has superseded it.
+    const ticket = reads.begin();
     async function load() {
       try {
         const threadRes = await api.get(`/api/messages/${messageId}/thread`);
-
-        if (threadRes.ok && !cancelled && activeMessageIdRef.current === messageId) {
-          const data = await threadRes.json();
-          if (cancelled || activeMessageIdRef.current !== messageId) return;
-          setReplies(data.replies || data.messages || []);
+        if (cancelled || activeMessageIdRef.current !== messageId || !reads.isLatest(ticket)) return;
+        if (!threadRes.ok) {
+          setLoadError(true);
+          return;
         }
+        const data = await threadRes.json();
+        const events = reads.settle(ticket);
+        if (cancelled || activeMessageIdRef.current !== messageId || !reads.isLatest(ticket)) return;
+        const loaded: Message[] = data.replies || data.messages || [];
+        // Fetched rows are authoritative; live events received during the
+        // read are replayed on top.
+        setReplies((previous) => replayMessageEvents(mergeMessagesById(previous, loaded), events));
         // Mark thread as read
-        if (!cancelled && activeMessageIdRef.current === messageId) {
-          void api.post(`/api/messages/${messageId}/thread-read`).catch(() => {});
-        }
+        void api.post(`/api/messages/${messageId}/thread-read`).catch(() => {});
       } catch {
-        // ignore
+        if (!cancelled && activeMessageIdRef.current === messageId && reads.isLatest(ticket)) setLoadError(true);
       } finally {
-        if (!cancelled && activeMessageIdRef.current === messageId) {
+        reads.settle(ticket);
+        if (!cancelled && activeMessageIdRef.current === messageId && reads.isLatest(ticket)) {
           setLoading(false);
           setTimeout(() => {
-            if (!cancelled && activeMessageIdRef.current === messageId) scrollToBottom();
+            if (!cancelled && activeMessageIdRef.current === messageId && reads.isLatest(ticket)) scrollToBottom();
           }, 100);
         }
       }
     }
     void load();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; reads.dispose(); };
   }, [messageId, scrollToBottom]);
+
+  // Retry a failed replies read without resetting the thread: shown replies,
+  // the draft and pending attachments stay, and a successful read is merged in.
+  const retryLoad = useCallback(async () => {
+    const requestMessageId = messageId;
+    const reads = threadReadsRef.current;
+    const ticket = reads.begin();
+    setLoadRetrying(true);
+    try {
+      const res = await api.get(`/api/messages/${requestMessageId}/thread`);
+      if (activeMessageIdRef.current !== requestMessageId || !reads.isLatest(ticket)) return;
+      if (!res.ok) {
+        failLatestRead('load');
+        return;
+      }
+      const data = await res.json();
+      const events = reads.settle(ticket);
+      if (activeMessageIdRef.current !== requestMessageId || !reads.isLatest(ticket)) return;
+      const loaded: Message[] = data.replies || data.messages || [];
+      setReplies((prev) => replayMessageEvents(mergeMessagesById(prev, loaded), events));
+      setLoadError(false);
+      setCatchUpError(false);
+      setLoading(false);
+      void api.post(`/api/messages/${requestMessageId}/thread-read`).catch(() => {});
+    } catch {
+      if (activeMessageIdRef.current === requestMessageId && reads.isLatest(ticket)) failLatestRead('load');
+    } finally {
+      reads.settle(ticket);
+      setLoadRetrying(false);
+    }
+  }, [messageId, failLatestRead]);
 
   // Socket listeners
   useEffect(() => {
@@ -337,65 +414,78 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     if (!token) return;
     const socket = getSocket(token);
 
+    // Every live change goes through the same pure reducer that replays it
+    // onto a read that was in flight when it arrived.
+    const live = (event: MessageEvent<Message>) => {
+      threadReadsRef.current.record(event);
+      setReplies((prev) => applyMessageEvent(prev, event));
+    };
     const onNewMessage = (msg: Message & { parent_id?: string }) => {
       if (msg.parent_id === messageId) {
-        setReplies((prev) => (
-          prev.some((reply) => reply.id === msg.id) ? prev : [...prev, msg]
-        ));
+        live({ type: 'new', message: msg });
         if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
         setTimeout(scrollToBottom, 50);
       }
     };
 
     const onReactionAdded = (data: { message_id: string; emoji: string; user_id: string }) => {
-      const updateReactions = (msgs: Message[]) =>
-        msgs.map((m) => {
-          if (m.id !== data.message_id) return m;
-          const reactions = [...(m.reactions || [])];
-          const existing = reactions.find((r) => r.emoji === data.emoji);
-          if (existing) {
-            if (!existing.users.includes(data.user_id)) {
-              existing.count++;
-              existing.users.push(data.user_id);
-            }
-          } else {
-            reactions.push({ emoji: data.emoji, count: 1, users: [data.user_id] });
-          }
-          return { ...m, reactions };
-        });
-
-      setReplies(updateReactions);
+      live({ type: 'reaction_added', message_id: data.message_id, emoji: data.emoji, user_id: data.user_id });
     };
 
     const onReactionRemoved = (data: { message_id: string; emoji: string; user_id: string }) => {
-      const updateReactions = (msgs: Message[]) =>
-        msgs.map((m) => {
-          if (m.id !== data.message_id) return m;
-          let reactions = [...(m.reactions || [])];
-          const existing = reactions.find((r) => r.emoji === data.emoji);
-          if (existing) {
-            existing.count--;
-            existing.users = existing.users.filter((u) => u !== data.user_id);
-            if (existing.count <= 0) {
-              reactions = reactions.filter((r) => r.emoji !== data.emoji);
-            }
-          }
-          return { ...m, reactions };
-        });
-
-      setReplies(updateReactions);
+      live({ type: 'reaction_removed', message_id: data.message_id, emoji: data.emoji, user_id: data.user_id });
     };
 
     socket.on('message:new', onNewMessage);
     socket.on('reaction:added', onReactionAdded);
     socket.on('reaction:removed', onReactionRemoved);
 
+    // Replies sent while the socket was down never arrive as events. After a
+    // reconnect, read the thread again and merge by id without touching the
+    // draft or the scroll position.
+    const catchUp = async (): Promise<CatchUpResult> => {
+      const reads = threadReadsRef.current;
+      const ticket = reads.begin();
+      if (pendingBySpaceKey) void swrMutate(pendingBySpaceKey).catch(() => undefined);
+      try {
+        const res = await api.get(`/api/messages/${messageId}/thread`);
+        if (activeMessageIdRef.current !== messageId || !reads.isLatest(ticket)) return 'superseded';
+        if (!res.ok) {
+          failLatestRead('catch-up');
+          return 'failed';
+        }
+        const data = await res.json();
+        const events = reads.settle(ticket);
+        if (activeMessageIdRef.current !== messageId || !reads.isLatest(ticket)) return 'superseded';
+        const fetched: Message[] = data.replies || data.messages || [];
+        setReplies((prev) => replayMessageEvents(mergeMessagesById(prev, fetched), events));
+        setLoadError(false);
+        setCatchUpError(false);
+        // It may have superseded the initial read, which then never ends loading.
+        setLoading(false);
+        return 'ok';
+      } catch {
+        if (activeMessageIdRef.current !== messageId || !reads.isLatest(ticket)) return 'superseded';
+        // Network or JSON failure: also ends the loading state it superseded.
+        failLatestRead('catch-up');
+        return 'failed';
+      } finally {
+        reads.settle(ticket);
+      }
+    };
+    // Starts from the socket's real connection state, so a thread opened
+    // while offline also catches up on the next connect.
+    const catchUpWatch = watchCatchUp(socket, `thread:${messageId}`, catchUp);
+    catchUpRetryRef.current = catchUpWatch.retry;
+
     return () => {
+      catchUpWatch.dispose();
+      if (catchUpRetryRef.current === catchUpWatch.retry) catchUpRetryRef.current = null;
       socket.off('message:new', onNewMessage);
       socket.off('reaction:added', onReactionAdded);
       socket.off('reaction:removed', onReactionRemoved);
     };
-  }, [messageId, pendingBySpaceKey, scrollToBottom]);
+  }, [messageId, pendingBySpaceKey, scrollToBottom, failLatestRead]);
 
   // Escape to close
   useEffect(() => {
@@ -504,10 +594,8 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
 
   const renderMessage = (msg: Message, isParent = false) => {
     const color = avatarColor(msg.user_name || '');
-    const inlineActions = pendingByMessage?.[msg.id] ?? [];
-    const hasApprovalContext = inlineActions.length > 0 || Object.keys(pendingByMessage ?? {}).length > 0;
     const legacyContent = parseLegacyFileMarkers(msg.content);
-    const displayContent = normalizeInlineApprovalCopy(legacyContent.text, hasApprovalContext);
+    const displayContent = inlineApprovalDisplayContent(msg, legacyContent.text, pendingByMessage);
     const messageFiles = [...(msg.files ?? []), ...legacyContent.files];
     return (
       <div className={`flex gap-3 ${isParent ? 'py-3' : 'py-2'}`}>
@@ -680,6 +768,19 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
                   {replies.length} {replies.length === 1 ? 'reply' : 'replies'}
                 </span>
               </div>
+            )}
+
+            {loadError && (
+              <ChatLoadError message="Could not load replies." onRetry={() => { void retryLoad(); }} retrying={loadRetrying} />
+            )}
+            {catchUpError && (
+              <ChatLoadError message="Could not load new replies." onRetry={retryCatchUp} retrying={catchUpRetrying} />
+            )}
+            {pendingActionsError && (
+              <ChatLoadError
+                message="Could not load approvals."
+                onRetry={() => { if (pendingBySpaceKey) void swrMutate(pendingBySpaceKey).catch(() => undefined); }}
+              />
             )}
 
             {/* Replies */}

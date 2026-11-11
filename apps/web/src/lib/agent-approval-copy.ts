@@ -26,3 +26,23 @@ export function normalizeInlineApprovalCopy(content: string, hasInlineApproval: 
 
   return normalized.replace(/\n{3,}/g, '\n\n').trim();
 }
+
+type ApprovalCopyMessage = {
+  id: string;
+  metadata?: { is_agent_reply?: unknown } | Record<string, unknown> | null;
+};
+
+/**
+ * Text to show for a chat message, given the pending approvals in its space.
+ * Only an agent reply that carries its own inline approval card is rewritten;
+ * every other message, including any human message, is shown as written.
+ */
+export function inlineApprovalDisplayContent(
+  message: ApprovalCopyMessage,
+  content: string,
+  pendingByMessage: Record<string, readonly unknown[]> | null | undefined,
+) {
+  const isAgentReply = (message.metadata as { is_agent_reply?: unknown } | null | undefined)?.is_agent_reply === true;
+  const hasInlineApproval = Boolean(pendingByMessage?.[message.id]?.length);
+  return normalizeInlineApprovalCopy(content, isAgentReply && hasInlineApproval);
+}

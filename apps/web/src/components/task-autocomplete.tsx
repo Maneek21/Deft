@@ -26,9 +26,11 @@ type Props = {
   onSelect: (task: TaskResult) => void;
   onClose: () => void;
   anchorRef?: React.RefObject<HTMLElement | null>;
+  /** Reports how many tasks are listed, so the composer knows whether Enter belongs to the popup. */
+  onResultCountChange?: (count: number) => void;
 };
 
-export function TaskAutocomplete({ query, onSelect, onClose, anchorRef }: Props) {
+export function TaskAutocomplete({ query, onSelect, onClose, anchorRef, onResultCountChange }: Props) {
   const [results, setResults] = useState<TaskResult[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const ref = useRef<HTMLDivElement>(null);
@@ -45,6 +47,11 @@ export function TaskAutocomplete({ query, onSelect, onClose, anchorRef }: Props)
     }, 150); // debounce
     return () => clearTimeout(timer);
   }, [query]);
+
+  useEffect(() => {
+    onResultCountChange?.(results.length);
+  }, [results.length, onResultCountChange]);
+  useEffect(() => () => onResultCountChange?.(0), [onResultCountChange]);
 
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {

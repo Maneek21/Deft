@@ -5,7 +5,8 @@
  *
  * Renders three CTAs (ask Defty, invite team, create first project) above
  * the bento grid on a brand-new workspace. Each card is independently
- * dismissible via × or via clicking through the CTA; dismissals persist in
+ * dismissible via × or via clicking through the CTA (the Defty card only once
+ * its DM has actually opened); dismissals persist in
  * localStorage. When the onboarding flow has been completed
  * (onboarding_state.completed === true) the component renders nothing — even
  * if dismissals haven't been written yet.
@@ -81,6 +82,26 @@ function writeDismissed(id: CardId) {
   }
 }
 
+export const DEFTY_OPEN_ERROR = 'Could not open a chat with Defty. Try again.';
+
+/**
+ * Open Defty's DM, then dismiss the card. The card stays when the DM did not
+ * open, so the person can try again. Never throws.
+ */
+export async function runDeftyStarterCta(
+  open: () => Promise<boolean>,
+  dismiss: () => void,
+): Promise<boolean> {
+  let opened = false;
+  try {
+    opened = (await open()) === true;
+  } catch {
+    opened = false;
+  }
+  if (opened) dismiss();
+  return opened;
+}
+
 export function StarterCards() {
   const router = useRouter();
   const { openDmWith } = useChatContext();
@@ -88,6 +109,8 @@ export function StarterCards() {
   // `false` = should not render at all (onboarding completed or fetch failed).
   // `true` = render based on per-card dismissal state.
   const [shouldRender, setShouldRender] = useState<boolean | null>(null);
+  const [deftyOpening, setDeftyOpening] = useState(false);
+  const [deftyError, setDeftyError] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState<Record<CardId, boolean>>({
     defty: false,
     invite: false,
@@ -139,12 +162,17 @@ export function StarterCards() {
 
   const handleCta = (card: CardDef) => {
     if (dismissed[card.id]) return;
-    writeDismissed(card.id);
-    setDismissed((prev) => ({ ...prev, [card.id]: true }));
     if (card.id === 'defty') {
-      void openDeftyDm(api, openDmWith);
+      if (deftyOpening) return;
+      setDeftyOpening(true);
+      setDeftyError(null);
+      void runDeftyStarterCta(() => openDeftyDm(api, openDmWith), () => dismiss('defty'))
+        .then((opened) => { if (!opened) setDeftyError(DEFTY_OPEN_ERROR); })
+        .finally(() => setDeftyOpening(false));
       return;
     }
+    writeDismissed(card.id);
+    setDismissed((prev) => ({ ...prev, [card.id]: true }));
     router.push(card.href);
   };
 
@@ -260,6 +288,7 @@ export function StarterCards() {
                 <button
                   type="button"
                   onClick={() => handleCta(card)}
+                  disabled={card.id === 'defty' && deftyOpening}
                   style={{
                     display: 'inline-flex',
                     alignItems: 'center',
@@ -277,8 +306,13 @@ export function StarterCards() {
                   }}
                   className="fc-btn"
                 >
-                  {card.cta} →
+                  {card.id === 'defty' && deftyOpening ? 'Opening…' : `${card.cta} →`}
                 </button>
+                {card.id === 'defty' && deftyError && (
+                  <p role="alert" className="mt-2 text-[11px]" style={{ color: 'var(--danger, #ef4444)' }}>
+                    {deftyError}
+                  </p>
+                )}
               </div>
             </div>
           );
