@@ -4,7 +4,8 @@ import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { api } from '@/lib/api';
-import { ArrowLeft, Activity, DollarSign, ChevronDown, ChevronRight } from 'lucide-react';
+import { ArrowLeft, Activity, ChevronDown, ChevronRight } from 'lucide-react';
+import { fmtCost, HeartbeatSummaryTiles, type HeartbeatCostSummary } from './heartbeat-summary-tiles';
 
 type HeartbeatTurn = {
   id: string;
@@ -20,11 +21,7 @@ type HeartbeatTurn = {
   summary: string | null;
 };
 
-type CostSummary = {
-  total_cents: number;
-  total_actions: number;
-  turn_count: number;
-};
+type CostSummary = HeartbeatCostSummary;
 
 type EmployeeSummary = {
   id: string;
@@ -44,11 +41,6 @@ const OUTCOME_LABELS: Record<string, { label: string; tone: string }> = {
   skipped_disconnected: { label: 'Skipped (disconnected)', tone: 'text-red-600 bg-red-50 border-red-200' },
   error: { label: 'Error', tone: 'text-red-700 bg-red-50 border-red-200' },
 };
-
-function fmtCost(cents: number | null): string {
-  if (cents == null) return '—';
-  return `$${(cents / 100).toFixed(2)}`;
-}
 
 function fmtWhen(iso: string): string {
   try {
@@ -232,29 +224,7 @@ export default function HeartbeatsPage() {
         </div>
       )}
 
-      {summary && (
-        <div className="grid grid-cols-3 gap-4 mb-6">
-          <div className="border border-slate-200 rounded-lg p-4 bg-white">
-            <div className="text-xs text-slate-500 uppercase tracking-wide">
-              24h actions
-            </div>
-            <div className="text-2xl font-semibold mt-1">{summary.total_actions}</div>
-          </div>
-          <div className="border border-slate-200 rounded-lg p-4 bg-white">
-            <div className="text-xs text-slate-500 uppercase tracking-wide flex items-center">
-              <DollarSign size={12} className="mr-1" />
-              24h cost
-            </div>
-            <div className="text-2xl font-semibold mt-1">{fmtCost(summary.total_cents)}</div>
-          </div>
-          <div className="border border-slate-200 rounded-lg p-4 bg-white">
-            <div className="text-xs text-slate-500 uppercase tracking-wide">
-              24h turns
-            </div>
-            <div className="text-2xl font-semibold mt-1">{summary.turn_count}</div>
-          </div>
-        </div>
-      )}
+      {summary && <HeartbeatSummaryTiles summary={summary} />}
 
       {loading && <div className="text-sm text-slate-500">Loading heartbeats...</div>}
       {error && (
