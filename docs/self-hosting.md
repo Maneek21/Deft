@@ -568,8 +568,8 @@ rebuild. With Compose, set the three variables in `.env` and run
 `docker compose build`. Compose passes only these three to the build
 (`Dockerfile` has no build argument for the other `NEXT_PUBLIC_FEATURE_APP_*`
 flags). `NEXT_PUBLIC_FEATURE_APP_PRIVATE_SHARING` and
-`NEXT_PUBLIC_FEATURE_APP_PRIVATE_MCP` are read by the web app but need a custom
-build argument. `NEXT_PUBLIC_FEATURE_APP_PRIVATE_DEFTY` has no effect in this
+`NEXT_PUBLIC_FEATURE_APP_PRIVATE_MCP` are read by the web app, but the
+`Dockerfile` does not declare them: a Docker build needs them added there first. `NEXT_PUBLIC_FEATURE_APP_PRIVATE_DEFTY` has no effect in this
 release.
 
 **2. The server flags.** The repository does not define one complete server
@@ -581,8 +581,9 @@ Compose gives `.env` to the `deft`, `init`, `upgrade`, `doctor` and `smoke`
 services (`env_file: .env`). Every variable below can therefore be set in `.env`
 and reaches the API container. `docker-compose.yml` also lists a few of them under
 `environment:` for the `deft` service (`DEFT_APPS_ENABLED` and
-`DEFT_APP_DEVELOPER_PAIRING_ENABLED`); those read the same `.env` value. After a
-change, recreate the container.
+`DEFT_APP_DEVELOPER_PAIRING_ENABLED`). Those two entries use Compose
+interpolation, so a value exported in your shell overrides the one in `.env`.
+Make sure both agree. After a change, recreate the container.
 
 | Step | Server flag | Must already be on | Notes |
 |---|---|---|---|
@@ -607,10 +608,11 @@ change, recreate the container.
 | 19 | `DEFT_APP_PUBLIC_INGRESS_ENABLED` | step 1 | Mounts `/api/public/apps` |
 
 Only the combinations marked "startup fails" stop the API. For every other
-flag, a missing requirement leaves the feature off. It does not report an error.
+flag, a missing requirement leaves the feature off without stopping startup.
+Requests to a route whose feature is off can answer `503`.
 
-Several owner-connection routes answer `503` until the whole chain up to step 15
-is on: `/api/app-connection-sessions`, `/api/app-connection-forms`,
+Several owner-connection routes answer `503` until steps 1, 3, 4, 10, 14 and 15
+are on, with valid Run keyrings: `/api/app-connection-sessions`, `/api/app-connection-forms`,
 `/api/app-data`, the App data actions, App integration tools, App local jobs and
 App resource observations. Resource observations also need step 14.
 
