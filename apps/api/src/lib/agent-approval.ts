@@ -14,11 +14,14 @@
  *   full          |    queue     |   queue  |    exec
  *
  * Destructive guard (queues at every trust level, native and MCP tools,
- * after stripping any mcp__<connection>__ prefix from the name):
+ * names compared case-insensitively after stripping any mcp__<connection>__
+ * prefix):
  *   - admin tool set: manage_agent_employee, manage_mcp_connection, remove_member
  *   - module operations classed destructive (unlink, archive) + bulk create
+ *   - remove_dependency
  *   - tool name starts with "delete_" (future-proof for delete_task, delete_project, etc.)
- *   - params.mode matches /^(delete|pause|revoke)$/i (only when params are passed)
+ *   - params.mode or params.action matches /^(delete|pause|revoke)$/i (only when params are passed)
+ *   - connected tool annotations.destructiveHint === true (only when annotations are passed)
  *
  * Matrix update (task #58 / Option 2 — 2026-04-14):
  *   Previously `standard` was near-identical to `conservative` — it only
@@ -178,38 +181,64 @@ const DESTRUCTIVE_MODULE_TOOLS: ReadonlySet<string> = new Set(
 );
 
 /**
+ * Native tools that physically remove data without a delete_ prefix.
+ * remove_dependency deletes a task relationship row.
+ */
+const DESTRUCTIVE_NATIVE_TOOLS: ReadonlySet<string> = new Set(['remove_dependency']);
+
+/**
+ * Parameter keys whose value selects a destructive operation. `mode` is the
+ * historical key; `action` is the operation selector used by the native
+ * manage_* tools (manage_triggers, manage_agent_employee).
+ */
+const DESTRUCTIVE_PARAM_KEYS = ['mode', 'action'] as const;
+
+/** MCP tool annotations as advertised by the provider. */
+export type ToolAnnotations = { destructiveHint?: unknown } | null | undefined;
+
+/**
  * Returns true if the tool call should be treated as a destructive action
  * and therefore queued for human review even under Autonomous trust.
  *
- * Three conditions (any one is sufficient):
+ * Any one condition is sufficient. Names are compared case-insensitively,
+ * with and without the mcp__<connection>__ prefix:
  *   1. Tool name is in the hardcoded admin set.
- *   2. Tool name starts with "delete_" (future-proof for delete_task, delete_project, etc.).
- *   3. params is an object with a `mode` string key matching delete|pause|revoke.
+ *   2. Tool name is a destructive module operation or remove_dependency.
+ *   3. Tool name starts with "delete_" (future-proof for delete_task, delete_project, etc.).
+ *   4. params is an object whose `mode` or `action` string matches delete|pause|revoke.
+ *   5. The connected tool declares annotations.destructiveHint === true. Deft
+ *      believes the hint when present; its absence changes nothing.
  */
-export function isDestructiveAction(toolName: string, params?: unknown): boolean {
+export function isDestructiveAction(
+  toolName: string,
+  params?: unknown,
+  toolAnnotations?: ToolAnnotations,
+): boolean {
+  if (toolAnnotations && toolAnnotations.destructiveHint === true) return true;
   // MCP tools are exposed to the model as mcp__<connection>__<tool>. Strip the
   // connection prefix BEFORE every name-based check so a connected tool named
   // like an admin tool, a delete_* tool or a module operation is classed
   // exactly like its native namesake. The unprefixed name is still checked
-  // too, so nothing classed destructive today is narrowed.
-  const effectiveToolName = toolName.startsWith('mcp__')
-    ? toolName.split('__').slice(2).join('__')
-    : toolName;
-  for (const name of [toolName, effectiveToolName]) {
+  // too, so nothing classed destructive today is narrowed. Comparison is
+  // case-insensitive so a connected tool named Delete_contact or
+  // REMOVE_MEMBER is classed like delete_contact or remove_member.
+  const lowerToolName = toolName.toLowerCase();
+  const effectiveToolName = lowerToolName.startsWith('mcp__')
+    ? lowerToolName.split('__').slice(2).join('__')
+    : lowerToolName;
+  for (const name of [lowerToolName, effectiveToolName]) {
     if (DESTRUCTIVE_ADMIN_TOOLS.has(name)) return true;
     // Archive/unlink/bulk-create do not use the legacy `delete_` prefix, so
     // their classification comes from the shared module operation definition.
     if (DESTRUCTIVE_MODULE_TOOLS.has(name)) return true;
+    if (DESTRUCTIVE_NATIVE_TOOLS.has(name)) return true;
     if (name.startsWith('delete_')) return true;
   }
-  if (
-    params !== null &&
-    typeof params === 'object' &&
-    !Array.isArray(params) &&
-    typeof (params as Record<string, unknown>).mode === 'string' &&
-    /^(delete|pause|revoke)$/i.test((params as Record<string, unknown>).mode as string)
-  ) {
-    return true;
+  if (params !== null && typeof params === 'object' && !Array.isArray(params)) {
+    for (const key of DESTRUCTIVE_PARAM_KEYS) {
+      const value = (params as Record<string, unknown>)[key];
+      if (typeof value === 'string' && /^(delete|pause|revoke)$/i.test(value)) return true;
+    }
   }
   return false;
 }
@@ -222,16 +251,19 @@ export function isDestructiveAction(toolName: string, params?: unknown): boolean
  * connected (MCP) tools alike, whatever tier it carries — including an
  * `auto`/`quick` tier taken from a connection or tool override. Destructive
  * tool names are caught without params; a params-dependent destructive call
- * (params.mode = delete|pause|revoke) is caught only when the caller passes
- * the invocation params, so callers that have them must pass them.
+ * (params.mode / params.action = delete|pause|revoke) is caught only when the
+ * caller passes the invocation params, and a connected tool's destructiveHint
+ * only when the caller passes its annotations, so callers that have them must
+ * pass them.
  */
 export function shouldAutoExecute(
   action: string,
   trustLevel: TrustLevel,
   params?: unknown,
   approvalTierOverride?: ApprovalTier,
+  toolAnnotations?: ToolAnnotations,
 ): boolean {
-  if (isDestructiveAction(action, params)) return false;
+  if (isDestructiveAction(action, params, toolAnnotations)) return false;
 
   const tier = getApprovalTier(action, approvalTierOverride);
 
@@ -242,6 +274,21 @@ export function shouldAutoExecute(
   }
 
   return false;
+}
+
+/**
+ * Tier a held-for-review call is stored at. A destructive call always needs a
+ * full review, whatever tier its tool, connection or proposal carries, so it
+ * is listed with the other full-review approvals. Apply it after every other
+ * tier adjustment, with the live tool annotations when known.
+ */
+export function mandatoryApprovalTier(
+  action: string,
+  tier: ApprovalTier,
+  params?: unknown,
+  toolAnnotations?: ToolAnnotations,
+): ApprovalTier {
+  return isDestructiveAction(action, params, toolAnnotations) ? 'full' : tier;
 }
 
 /** Returns the approval tier for an action tool. */

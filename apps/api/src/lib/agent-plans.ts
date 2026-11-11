@@ -547,7 +547,7 @@ async function executePlanUnlocked(
         || Boolean(mcpToolPolicy && (
           mcpToolPolicy.isWrite
           || mcpToolPolicy.approvalTierMapped !== 'auto'
-          || isDestructiveAction(mcpToolPolicy.name)
+          || isDestructiveAction(mcpToolPolicy.name, resolvedParams, mcpToolPolicy.annotations)
         ));
       const approvalTierOverride = mcpToolPolicy?.approvalTierMapped;
 
@@ -582,10 +582,13 @@ async function executePlanUnlocked(
         const isDependency = steps.some(
           (s, idx) => idx > i && s.depends_on?.includes(step.id),
         );
-        const autoExec = shouldAutoExecute(step.tool, trustLevel, resolvedParams, approvalTierOverride);
+        const autoExec = shouldAutoExecute(step.tool, trustLevel, resolvedParams, approvalTierOverride, mcpToolPolicy?.annotations);
+        // A destructive step always needs its own approval, even as a leaf
+        // step of an approved plan; it goes through the reviewed path.
+        const destructiveStep = isDestructiveAction(step.tool, resolvedParams, mcpToolPolicy?.annotations);
 
         const tier = getApprovalTier(step.tool, approvalTierOverride);
-        const execResult = autoExec || !isDependency
+        const execResult = autoExec || (!isDependency && !destructiveStep)
           ? await executeActionDirect(
             step.tool,
             resolvedParams,

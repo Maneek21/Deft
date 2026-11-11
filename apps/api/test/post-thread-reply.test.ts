@@ -6,13 +6,14 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { eq, inArray } from 'drizzle-orm';
-import { db, messages, spaces, orgs, users, orgMembers } from '@deft/db';
+import { db, messages, spaces, spaceMembers, orgs, users, orgMembers } from '@deft/db';
 import { executeActionDirect } from '../src/lib/agent-actions.js';
 
 let testOrgId: string;
 let testUserId: string;
 let testSpaceId: string;
 let parentMsgId: string;
+let addedMembershipId: string | null = null;
 const replyIds: string[] = [];
 
 before(async () => {
@@ -48,6 +49,14 @@ before(async () => {
     });
   }
 
+  // The acting user must belong to the parent's space (lane W2-a1, C03:
+  // native writes check space membership at execution time).
+  const inserted = await db.insert(spaceMembers)
+    .values({ id: crypto.randomUUID(), space_id: testSpaceId, user_id: testUserId })
+    .onConflictDoNothing()
+    .returning({ id: spaceMembers.id });
+  addedMembershipId = inserted[0]?.id ?? null;
+
   // Seed a parent message.
   parentMsgId = crypto.randomUUID();
   await db.insert(messages).values({
@@ -64,6 +73,7 @@ after(async () => {
     await db.delete(messages).where(inArray(messages.id, replyIds));
   }
   await db.delete(messages).where(eq(messages.id, parentMsgId));
+  if (addedMembershipId) await db.delete(spaceMembers).where(eq(spaceMembers.id, addedMembershipId));
 });
 
 test('post_thread_reply inserts a message with parent_id + space_id', async () => {

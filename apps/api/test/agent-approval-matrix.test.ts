@@ -10,6 +10,7 @@
  *   4. Destructive guard under Standard (destructive auto/quick-tier queues)
  *   5. isDestructiveAction standalone
  *   6. Lane S2: destructive never auto-executes at any level, native + MCP
+ *   7. Lane W2-a1: case-insensitive names, destructiveHint, action=delete, remove_dependency
  *
  * Pure unit tests — no DB required.
  */
@@ -279,9 +280,66 @@ test('S2-c: delete_* and module operations are destructive with and without the 
 test('S2: every quick/auto-tier native tool classed destructive by name waits under Conservative and Standard', () => {
   const lowTierDestructive = Object.keys(TOOL_APPROVAL_TIERS)
     .filter((tool) => TOOL_APPROVAL_TIERS[tool] !== 'full' && isDestructiveAction(tool));
-  // Enumerated today: only module_record_task_unlink (quick).
-  assert.deepEqual(lowTierDestructive, ['module_record_task_unlink']);
+  // Enumerated today: remove_dependency (quick, lane W2-a1) and
+  // module_record_task_unlink (quick).
+  assert.deepEqual(lowTierDestructive, ['remove_dependency', 'module_record_task_unlink']);
   for (const tool of lowTierDestructive) {
     for (const trust of TRUST_LEVELS) assert.equal(shouldAutoExecute(tool, trust), false, `${trust} ${tool}`);
   }
+});
+
+// ─── 7. Wave 2 lane W2-a1 — approval classification gaps ────────────────────
+
+test('W2a1-a: destructive names match case-insensitively, with and without the MCP prefix', () => {
+  for (const name of ['Delete_contact', 'DELETE_CONTACT', 'REMOVE_MEMBER', 'Manage_Agent_Employee', 'Module_Record_Archive']) {
+    assert.equal(isDestructiveAction(name), true, name);
+    assert.equal(isDestructiveAction(`mcp__crm__${name}`), true, `mcp__crm__${name}`);
+    assert.equal(isDestructiveAction(`MCP__crm__${name}`), true, `MCP__crm__${name}`);
+    for (const trust of TRUST_LEVELS) {
+      assert.equal(shouldAutoExecute(`mcp__crm__${name}`, trust, {}, 'auto'), false, `${trust} ${name}`);
+    }
+  }
+  assert.equal(isDestructiveAction('mcp__crm__Update_Contact'), false);
+});
+
+test('W2a1-b: a connected tool that declares destructiveHint is destructive at every trust level', () => {
+  const hinted = { destructiveHint: true };
+  assert.equal(isDestructiveAction('mcp__crm__purge_contacts', {}, hinted), true);
+  for (const trust of TRUST_LEVELS) {
+    for (const tier of ['auto', 'quick', 'full'] as const) {
+      assert.equal(shouldAutoExecute('mcp__crm__purge_contacts', trust, {}, tier, hinted), false, `${trust} ${tier}`);
+    }
+  }
+  // Absence of a hint, or a false hint, changes nothing.
+  for (const annotations of [undefined, null, {}, { destructiveHint: false }, { destructiveHint: 'true' }]) {
+    assert.equal(isDestructiveAction('mcp__crm__purge_contacts', {}, annotations as any), false, JSON.stringify(annotations));
+    assert.equal(shouldAutoExecute('mcp__crm__purge_contacts', 'autonomous', {}, 'full', annotations as any), true, JSON.stringify(annotations));
+  }
+});
+
+test('W2a1-c: action: delete|pause|revoke is recognised like mode', () => {
+  for (const value of ['delete', 'pause', 'revoke', 'DELETE']) {
+    assert.equal(isDestructiveAction('mcp__crm__manage_contact', { action: value }), true, value);
+    for (const trust of TRUST_LEVELS) {
+      assert.equal(shouldAutoExecute('mcp__crm__manage_contact', trust, { action: value }, 'auto'), false, `${trust} ${value}`);
+    }
+  }
+  for (const value of ['create', 'update', 'list', 'enable', 'disable', 'resume']) {
+    assert.equal(isDestructiveAction('mcp__crm__manage_contact', { action: value }), false, value);
+  }
+  // Shapes no tool in this codebase uses are not recognised.
+  assert.equal(isDestructiveAction('post_message', { operation: 'delete' }), false);
+  assert.equal(isDestructiveAction('post_message', { options: { mode: 'delete' } }), false);
+});
+
+test('W2a1-d: remove_dependency and manage_triggers with action=delete are destructive', () => {
+  assert.equal(isDestructiveAction('remove_dependency'), true);
+  assert.equal(isDestructiveAction('manage_triggers', { action: 'delete', trigger_id: 't' }), true);
+  assert.equal(isDestructiveAction('manage_triggers', { action: 'create' }), false);
+  for (const trust of TRUST_LEVELS) {
+    assert.equal(shouldAutoExecute('remove_dependency', trust), false, trust);
+    assert.equal(shouldAutoExecute('manage_triggers', trust, { action: 'delete' }), false, trust);
+  }
+  // add_dependency keeps its quick tier.
+  assert.equal(shouldAutoExecute('add_dependency', 'standard'), true);
 });

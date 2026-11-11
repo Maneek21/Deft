@@ -209,6 +209,7 @@ test('E08-R3: copy makes no universal approval promise', () => {
 test('E08-R3: plan dependency direction', () => {
   assert.match(TRUST_SCOPE_NOTE, /a change that later steps depend on can run on its own or needs its own approval/);
   assert.match(TRUST_SCOPE_NOTE, /Steps of a plan you approved run under that approval/);
+  assert.match(TRUST_SCOPE_NOTE, /except a step classed as destructive, which always needs its own approval/);
   assert.match(TRUST_SCOPE_NOTE, /when it retries a failed step/);
   assert.doesNotMatch(TRUST_SCOPE_NOTE, /uses an earlier step's result/);
   assert.ok(render().includes(escapeHtml(TRUST_SCOPE_NOTE)));

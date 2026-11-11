@@ -1,4 +1,4 @@
-import {visibleCaptureActionSql} from '../lib/agent-action-visibility.js';
+import {canUndoAgentAction, visibleCaptureActionSql} from '../lib/agent-action-visibility.js';
 import type { AppRunTransaction } from '../lib/app-run-repository.js';
 import { reconcileApprovalReplyText } from '../lib/agent-approval-copy.js';
 import { Hono, type Context } from 'hono';
@@ -1809,7 +1809,11 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
       visibleActionSql(user),
     ))
     .limit(1);
-  if (!action) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+  // Only the requester or an owner/admin who can still see the target may
+  // undo; anyone else gets the same answer as for a missing action.
+  if (!action || !(await canUndoAgentAction(user, action))) {
+    return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+  }
   if (action.undone_at) {
     return c.json({ error: 'Already undone', code: 'ALREADY_UNDONE' }, 400);
   }
@@ -1823,7 +1827,7 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
       case 'create_task': {
         const taskId = result?.task_id;
         if (taskId) {
-          await db.update(tasks).set({ is_deleted: true }).where(eq(tasks.id, taskId));
+          await db.update(tasks).set({ is_deleted: true }).where(and(eq(tasks.id, taskId), eq(tasks.org_id, user.org_id)));
           await db.insert(taskActivity).values({
             org_id: user.org_id,
             task_id: taskId,
@@ -1849,7 +1853,7 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
         const taskId = beforeState?.task_id || result?.task_id;
         const oldStatus = beforeState?.status;
         if (taskId && oldStatus) {
-          await db.update(tasks).set({ status: oldStatus }).where(eq(tasks.id, taskId));
+          await db.update(tasks).set({ status: oldStatus }).where(and(eq(tasks.id, taskId), eq(tasks.org_id, user.org_id)));
           await db.insert(taskActivity).values({
             org_id: user.org_id,
             task_id: taskId,
@@ -1878,7 +1882,7 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
         const taskId = beforeState?.task_id || result?.task_id;
         const oldAssigneeId = beforeState?.assignee_id ?? null;
         if (taskId) {
-          await db.update(tasks).set({ assignee_id: oldAssigneeId }).where(eq(tasks.id, taskId));
+          await db.update(tasks).set({ assignee_id: oldAssigneeId }).where(and(eq(tasks.id, taskId), eq(tasks.org_id, user.org_id)));
           await db.insert(taskActivity).values({
             org_id: user.org_id,
             task_id: taskId,
@@ -1906,7 +1910,7 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
       case 'post_message': {
         const messageId = result?.message_id;
         if (messageId) {
-          await db.update(messages).set({ is_deleted: true }).where(eq(messages.id, messageId));
+          await db.update(messages).set({ is_deleted: true }).where(and(eq(messages.id, messageId), eq(messages.org_id, user.org_id)));
           await logAuditEvent({
             orgId: user.org_id,
             actorType: 'user',
@@ -1934,7 +1938,7 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
   await db
     .update(agentActions)
     .set({ undone_at: new Date() })
-    .where(eq(agentActions.id, actionId));
+    .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, user.org_id)));
   return c.json({ success: true });
 });
 
