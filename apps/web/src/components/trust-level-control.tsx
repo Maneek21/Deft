@@ -77,7 +77,7 @@ export const AUTONOMOUS_EMPLOYEE_CONFIRM: ReadonlyArray<string> = [
   "Autonomous also lets most of this employee's other writes through Deft run without approval.",
   'Some requests still need approval, including actions classed as destructive (such as deleting, archiving, unlinking, or creating records in bulk), sending documents, importing workspace plans, and apps that require their own review.',
   'Most of its writes are recorded in the Action Log, with a signed receipt attached when one is recorded.',
-  'Only workspace owners and admins can make this change, and Settings has no control to lower the level again afterwards.',
+  'Only workspace owners and admins can make this change, and they can lower the level again from the employee panel in Settings.',
 ];
 
 export const TRUST_READ_ONLY_NOTE ='Only workspace owners and admins can change the trust level.';

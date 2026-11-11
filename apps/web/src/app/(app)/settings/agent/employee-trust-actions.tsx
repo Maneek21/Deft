@@ -1,7 +1,6 @@
 'use client';
 
 import {
-  AUTONOMOUS_EMPLOYEE_CONFIRM,
   TRUST_READ_ONLY_NOTE,
   isTrustLevel,
   trustLevelLabel,
@@ -14,20 +13,6 @@ const TRUST_ORDER: readonly TrustLevel[] = ['conservative', 'standard', 'autonom
 export function lowerTrustLevels(current: string): TrustLevel[] {
   if (!isTrustLevel(current)) return [];
   return TRUST_ORDER.slice(0, TRUST_ORDER.indexOf(current)).reverse();
-}
-
-const NO_LOWER_CONTROL = /,? and Settings has no control to lower the level again afterwards\.$/;
-
-/**
- * The shared Autonomous confirmation says Settings cannot lower the level.
- * This drawer can, so its last sentence is replaced with one that is true here.
- */
-export function employeeAutonomousConfirmLines(): string[] {
-  return AUTONOMOUS_EMPLOYEE_CONFIRM.map((line) => (
-    NO_LOWER_CONTROL.test(line)
-      ? 'Only workspace owners and admins can make this change. They can lower it again from this panel.'
-      : line
-  ));
 }
 
 export function EmployeeTrustActions({
