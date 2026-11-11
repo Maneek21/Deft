@@ -394,3 +394,47 @@ test('W2a3-R4: editing a message delivers its metadata to each viewer by the aud
   assert.deepEqual(canaries(JSON.stringify(edited(peer.events))), []);
   assert.deepEqual(canaries(JSON.stringify(edited(requester.events))), ['CANARY-RESULT']);
 });
+
+async function storedReply() {
+  const [row] = (await client!.query('SELECT * FROM messages WHERE id=$1', [replyId])).rows;
+  return row as { id: string; user_id: string; space_id: string; metadata: unknown };
+}
+const newMessages = (events: Array<{ event: string; data: any }>, id: string) => events.filter((entry) => entry.event === 'message:new' && entry.data?.id === id);
+
+test('W2a3-R6: a viewer removed from the space while delivery is resolved receives no run details', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  realtime ??= await startRealtime();
+  const room = randomUUID();
+  await client!.query('INSERT INTO spaces(id,org_id,name,type,created_by) VALUES($1,$2,$3,\'public\',$4)', [room, orgId, `revoke-${room}`, ids.requester]);
+  for (const id of [ids.requester, ids.peer]) await client!.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), room, id]);
+  const requester = await realtime.open(ids.requester, room);
+  const peer = await realtime.open(ids.peer, room);
+  const { emitMessageToSpaceViewers } = await import('../src/lib/agent-message-run-details.js');
+  const { revokeRealtimeAccess } = await import('../src/socket.js');
+  const io = realtime.io;
+  const racing = {
+    to: (name: string) => io.to(name),
+    in: (name: string) => ({
+      fetchSockets: async () => {
+        const sockets = await io.in(name).fetchSockets();
+        // The requester is removed from the space after the sockets were listed.
+        revokeRealtimeAccess({ orgId, spaceId: room, userId: ids.requester, reason: 'space_membership_revoked' }, io);
+        return sockets;
+      },
+    }),
+  };
+  const ask = randomUUID();
+  await client!.query('INSERT INTO messages(id,org_id,space_id,user_id,content) VALUES($1,$2,$3,$4,$5)', [ask, orgId, room, ids.requester, '@Defty draft it']);
+  const stored = await storedReply();
+  const message = { ...stored, id: randomUUID(), space_id: room, metadata: { ...(stored.metadata as object), reply_to_message_id: ask } };
+  // Control: delivered normally, the requester receives the details.
+  await emitMessageToSpaceViewers(io as any, { orgId, spaceId: room, event: 'message:new', message: { ...message, id: `${message.id}-control` } });
+  await settle();
+  assert.deepEqual(canaries(JSON.stringify(newMessages(requester.events, `${message.id}-control`))), ['CANARY-A-GRAPH', 'CANARY-A-TOOL-ARG']);
+  await emitMessageToSpaceViewers(racing as any, { orgId, spaceId: room, event: 'message:new', message });
+  await settle();
+  assert.deepEqual(canaries(JSON.stringify(newMessages(requester.events, message.id))), []);
+  assert.equal(newMessages(peer.events, message.id).length, 1);
+  assert.deepEqual(canaries(JSON.stringify(newMessages(peer.events, message.id))), []);
+});
+
