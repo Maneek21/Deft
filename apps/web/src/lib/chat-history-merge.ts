@@ -6,29 +6,27 @@ function timeOf(message: { created_at: string }): number {
 }
 
 /**
- * Display order: created_at, then id on a tie, matching the API's
- * (created_at, id) history order, so an earlier page that shares the
- * boundary timestamp lands before the messages already shown.
- */
-function compareHistory(a: { id?: string; created_at: string }, b: { id?: string; created_at: string }): number {
-  const aId = a.id ?? '';
-  const bId = b.id ?? '';
-  return timeOf(a) - timeOf(b) || (aId < bId ? -1 : aId > bId ? 1 : 0);
-}
-
-/**
  * Merge a fresh history read into what is on screen. Fetched rows are
  * authoritative for every field; the caller then replays the live events
  * buffered during the read (see ConversationReads). Messages already shown
  * keep their position, and a message shown as deleted stays deleted (the
- * API has no undelete). Messages the client missed are inserted by
- * (`created_at`, id). Nothing is dropped and no id appears twice.
+ * API has no undelete). Nothing is dropped and no id appears twice.
+ *
+ * Messages the client missed are inserted by `created_at`, after shown
+ * messages with the same timestamp, except that two messages of the same
+ * read with the same (millisecond) timestamp keep the read's order: the
+ * server orders by its stored, finer timestamp, which the client cannot see.
+ * With `{ earlier: true }` (a page from before everything shown) a missed
+ * message goes before shown messages with the same timestamp.
  */
 export function mergeMessagesById<T extends HistoryMessage>(
   current: readonly T[],
   fetched: readonly T[],
+  options: { earlier?: boolean } = {},
 ): T[] {
   if (fetched.length === 0) return current as T[];
+  const readIndex = new Map<string, number>();
+  fetched.forEach((message, index) => { if (!readIndex.has(message.id)) readIndex.set(message.id, index); });
   const fetchedById = new Map(fetched.map((message) => [message.id, message]));
   const shown = new Set<string>();
   const merged: T[] = current.map((message) => {
@@ -40,11 +38,20 @@ export function mergeMessagesById<T extends HistoryMessage>(
   });
 
   const missing = fetched
-    .filter((message, index) => !shown.has(message.id) && fetched.findIndex((m) => m.id === message.id) === index)
-    .sort(compareHistory);
+    .filter((message, index) => !shown.has(message.id) && readIndex.get(message.id) === index)
+    .sort((a, b) => timeOf(a) - timeOf(b));
   for (const message of missing) {
+    const time = timeOf(message);
+    const index = readIndex.get(message.id)!;
+    // Whether a row already in the list belongs after this message.
+    const follows = (row: T) => {
+      const rowTime = timeOf(row);
+      if (rowTime !== time) return rowTime > time;
+      const rowIndex = readIndex.get(row.id);
+      return rowIndex !== undefined ? rowIndex > index : options.earlier === true;
+    };
     let at = merged.length;
-    while (at > 0 && compareHistory(merged[at - 1]!, message) > 0) at--;
+    while (at > 0 && follows(merged[at - 1]!)) at--;
     merged.splice(at, 0, message);
   }
   return merged;
@@ -190,7 +197,7 @@ export async function readHistoryPage<T extends HistoryMessage>(get: Get, basePa
   const data = await res.json() as { messages?: T[]; next_cursor?: unknown } | T[] | null;
   const list = Array.isArray(data) ? data : data?.messages;
   const nextCursor = !Array.isArray(data) && typeof data?.next_cursor === 'string' && data.next_cursor ? data.next_cursor : null;
-  return { messages: Array.isArray(list) ? [...list].sort(compareHistory) : [], nextCursor };
+  return { messages: Array.isArray(list) ? [...list] : [], nextCursor };
 }
 
 /**
@@ -238,7 +245,7 @@ export function applyHistoryRead<T extends HistoryMessage>(
 
 function oldestOf<T extends { created_at: string }>(list: ReadonlyArray<T>): T | null {
   let oldest: T | null = null;
-  for (const message of list) if (!oldest || compareHistory(message, oldest) < 0) oldest = message;
+  for (const message of list) if (!oldest || timeOf(message) < timeOf(oldest)) oldest = message;
   return oldest;
 }
 
@@ -256,3 +263,4 @@ export function oldestHistoryCursor(list: ReadonlyArray<{ id: string; created_at
   const oldest = oldestOf(list);
   return oldest ? historyCursorOf(oldest) : null;
 }
+

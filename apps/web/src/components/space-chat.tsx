@@ -989,7 +989,7 @@ export function SpaceChat({
       // A catch-up or retry that started meanwhile may have replaced the
       // view; this older page would then sit beside it as a stray segment.
       if (!visit.isCurrent() || reads !== historyReadsRef.current || !reads.isLatest(ticket)) return;
-      setMessages((prev) => replayMessageEvents(mergeMessagesById(prev, page.messages), events));
+      setMessages((prev) => replayMessageEvents(mergeMessagesById(prev, page.messages, { earlier: true }), events));
       earlierCursorRef.current = page.nextCursor;
       setHasEarlierHistory(page.nextCursor !== null);
     } catch {

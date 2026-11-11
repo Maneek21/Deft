@@ -10,7 +10,7 @@ import {
   readHistoryBackTo,
   readHistoryPage,
 } from './chat-history-merge';
-import { replayMessageEvents, type ChatReaction, type MessageEvent } from './chat-message-events';
+import { applyMessageEvent, replayMessageEvents, type ChatReaction, type MessageEvent } from './chat-message-events';
 
 type Row = { id: string; content: string; created_at: string; edited_at?: string | null; is_deleted?: boolean; reactions?: ChatReaction[]; reply_count?: number };
 
@@ -126,7 +126,7 @@ test('W2R2-1: an earlier page that shares the boundary timestamp lands before wh
   const row = (i: number) => ({ id: `t-${String(i).padStart(3, '0')}`, content: `t-${i}`, created_at: same });
   const shown = Array.from({ length: 3 }, (_, i) => row(i + 3));
   const earlier = Array.from({ length: 3 }, (_, i) => row(i));
-  assert.deepEqual(mergeMessagesById(shown, earlier).map((m) => m.id), ['t-000', 't-001', 't-002', 't-003', 't-004', 't-005']);
+  assert.deepEqual(mergeMessagesById(shown, earlier, { earlier: true }).map((m) => m.id), ['t-000', 't-001', 't-002', 't-003', 't-004', 't-005']);
 });
 
 test('W2R2-1: Load earlier follows the server cursor across three pages that share one timestamp, then stops', async () => {
@@ -138,7 +138,7 @@ test('W2R2-1: Load earlier follows the server cursor across three pages that sha
   let cursor: string | undefined;
   for (let guard = 0; guard < 10; guard++) {
     const page = await readHistoryPage<(typeof all)[number]>(get, '/api/messages/s1', cursor);
-    shown = mergeMessagesById(shown, page.messages);
+    shown = mergeMessagesById(shown, page.messages, { earlier: cursor !== undefined });
     if (!page.nextCursor) break;
     cursor = page.nextCursor;
   }
@@ -242,4 +242,70 @@ test('R5-2: a side read may not start while a load, retry or catch-up is in flig
   reads.dispose();
   assert.equal(reads.replacingReadInFlight, false);
   void later;
+});
+
+// ── W2R3-1: the server's order within a millisecond is kept ────────────────
+//
+// Like the API, this fake orders by a stored microsecond timestamp, then id,
+// and serializes created_at to the millisecond. Within one millisecond the
+// stored order here is the opposite of id order.
+type Stored = { id: string; content: string; created_at: string; stored: number };
+const MS = '2026-11-10T00:00:05.000Z';
+const stored = (id: string, micros: number, ms = MS): Stored => ({ id, content: id, created_at: ms, stored: Date.parse(ms) * 1000 + micros });
+const serverOrder = (rows: Stored[]) => [...rows].sort((a, b) => a.stored - b.stored || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+function storedGet(rows: Stored[], calls: string[] = []) {
+  return async (path: string) => {
+    calls.push(path);
+    const all = serverOrder(rows);
+    const q = new URL(path, 'http://x').searchParams;
+    const limit = Number(q.get('limit') || 50);
+    const cursor = q.get('cursor');
+    const anchor = cursor ? all.find((m) => m.id === cursor.split('|')[1]) : undefined;
+    const list = anchor ? all.slice(0, all.indexOf(anchor)) : all;
+    const page = list.slice(-limit).map(({ stored: _stored, ...row }) => row);
+    const next_cursor = page.length === limit ? `${page[0]!.created_at}|${page[0]!.id}` : null;
+    return { ok: true, status: 200, json: async () => ({ messages: page, next_cursor }) } as Response;
+  };
+}
+const ids = (list: ReadonlyArray<{ id: string }>) => list.map((m) => m.id);
+
+test('W2R3-1: an initial load shows the server order within a millisecond', async () => {
+  const rows = [stored('z', 100), stored('a', 900)];
+  const page = await readHistoryPage(storedGet(rows), '/api/messages/s1');
+  assert.deepEqual(ids(mergeMessagesById([], page.messages)), ['z', 'a']);
+});
+
+test('W2R3-1: an earlier page goes before what is shown, each in the server order', async () => {
+  const rows = [stored('d', 100), stored('c', 200), stored('b', 300), stored('a', 400)];
+  const get = storedGet(rows);
+  const newest = await readHistoryPage(get, '/api/messages/s1');
+  // Two rows per page.
+  const two = async (path: string) => get(path.replace('limit=100', 'limit=2'));
+  const latest = await readHistoryPage(two, '/api/messages/s1');
+  const earlier = await readHistoryPage(two, '/api/messages/s1', latest.nextCursor!);
+  const shown = mergeMessagesById([], latest.messages);
+  assert.deepEqual(ids(shown), ['b', 'a']);
+  assert.deepEqual(ids(mergeMessagesById(shown, earlier.messages, { earlier: true })), ['d', 'c', 'b', 'a']);
+  assert.deepEqual(ids(newest.messages), ['d', 'c', 'b', 'a']);
+});
+
+test('W2R3-1: a catch-up places a missed message in the server order', async () => {
+  const shown = [stored('z', 100), stored('a', 900)].map(({ stored: _s, ...row }) => row);
+  const rows = [stored('z', 100), stored('m', 500), stored('a', 900)];
+  const read = await readHistoryBackTo<(typeof shown)[number]>(storedGet(rows), '/api/messages/s1', MS);
+  assert.deepEqual(ids(applyHistoryRead(shown, read)), ['z', 'm', 'a']);
+});
+
+test('W2R3-1: thread replies keep the server order within a millisecond', () => {
+  const replies = serverOrder([stored('y', 700), stored('b', 50), stored('q', 300)]).map(({ stored: _s, ...row }) => row);
+  assert.deepEqual(ids(mergeMessagesById([], replies)), ['b', 'q', 'y']);
+  assert.deepEqual(ids(mergeMessagesById([], [stored('z', 100), stored('a', 900)])), ['z', 'a']);
+});
+
+test('W2R3-1: a live message after the load is appended at the end', () => {
+  const loaded = mergeMessagesById([], [stored('z', 100), stored('a', 900)]);
+  const live = applyMessageEvent(loaded, { type: 'new', message: stored('n', 0, '2026-11-10T00:00:06.000Z') });
+  assert.deepEqual(ids(live), ['z', 'a', 'n']);
+  const tie = applyMessageEvent(loaded, { type: 'new', message: stored('b', 950) });
+  assert.deepEqual(ids(tie), ['z', 'a', 'b'], 'a live message in the same millisecond also goes last');
 });
