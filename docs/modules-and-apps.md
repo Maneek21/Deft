@@ -1,6 +1,6 @@
 # Modules and Apps: choose a starting point
 
-The Module and legacy App examples below describe Deft `v0.3.0-preview.15`. For the current independently deployed connected-App path, use the Apps-enabled Host `v0.3.0-preview.120`/schema120 and the [Email reference implementation](https://github.com/Maneek21/deft-email), with exact versions/downloads in its [compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.13/compatibility.json). The [current author guide](connected-app-author-guide.md) describes Protocol7 sideload and reviewed external Runtime setup.
+The Module and legacy App examples below describe Deft `v0.3.0-preview.15`. For the current independently deployed connected-App path, use the Apps-enabled Host `v0.3.0-preview.123`/schema120 and the [Email reference implementation](https://github.com/Maneek21/deft-email), with exact versions/downloads in its [compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.17/compatibility.json). The [current author guide](connected-app-author-guide.md) describes Protocol7 sideload and reviewed external Runtime setup.
 
 A **Module** defines records, relationships, and native views. An **App** packages Module resources for installation and may request supported connected actions. They use different manifests and installation flows.
 
@@ -12,7 +12,7 @@ A **Module** defines records, relationships, and native views. An **App** packag
 | Package declarative resources as an App | An internal App: `deft.app.json` with referenced Module files, built with App Kit | Developer pairing, then **Settings → Apps** |
 | Add a supported provider action | A connected App with declared resources and capability requests | App Kit staging, then operator review and activation |
 
-For a small tracker, follow [Build your first Module](tutorials/first-module.md). It uses the Module CLI and does not need App Kit or the experimental Apps flags.
+For a small tracker, follow [Build your first Module](tutorials/first-module.md). It uses the Module CLI and does not need App Kit or the experimental Apps flags. The [Module manifest reference](module-reference.md) lists every accepted field type, view, filter operator, and validation rule.
 
 For an App package, follow [Build an internal App](getting-started.md#build-an-internal-app). Protocol v0 packages declarative resources. Protocol v1 adds the supported connected-action contract; Protocol v2 adds bounded scheduling requests. App Protocol numbers and Module schema versions describe different contracts.
 
