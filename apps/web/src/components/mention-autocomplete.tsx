@@ -19,6 +19,8 @@ type Props = {
   query: string;
   onSelect: (selection: MentionSelection) => void;
   onClose: () => void;
+  /** Reports how many options are listed, so the composer knows whether Enter/Tab belong to the popup. */
+  onOptionCountChange?: (count: number) => void;
 };
 
 function normalizeMembers(list: ApiMember[]): Member[] {
@@ -30,7 +32,7 @@ function normalizeMembers(list: ApiMember[]): Member[] {
   }));
 }
 
-export function MentionAutocomplete({ query, onSelect, onClose }: Props) {
+export function MentionAutocomplete({ query, onSelect, onClose, onOptionCountChange }: Props) {
   const [members, setMembers] = useState<Member[]>([]);
   const [groups, setGroups] = useState<MentionGroup[]>([]);
   const sessionRef = useRef(api.getAccessToken());
@@ -115,14 +117,22 @@ export function MentionAutocomplete({ query, onSelect, onClose }: Props) {
         setSelectedIndex((prev) => Math.max(prev - 1, 0));
       }
       if (e.key === 'Enter' || e.key === 'Tab') {
-        e.preventDefault();
-        if (allOptions[selectedIndex]) {
-          select(allOptions[selectedIndex]);
+        // With nothing to pick, leave the key alone: Enter sends, Tab moves focus.
+        const option = allOptions[selectedIndex];
+        if (option) {
+          e.preventDefault();
+          select(option);
         }
       }
     },
     [allOptions, selectedIndex, select, onClose]
   );
+
+  const optionCount = allOptions.length;
+  useEffect(() => {
+    onOptionCountChange?.(optionCount);
+  }, [optionCount, onOptionCountChange]);
+  useEffect(() => () => onOptionCountChange?.(0), [onOptionCountChange]);
 
   useEffect(() => {
     document.addEventListener('keydown', handleKeyDown);

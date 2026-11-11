@@ -13,6 +13,8 @@ import { AppHeaderProvider, useAppHeaderContext } from '@/components/app-header-
 import { ExperienceNavigationProvider } from '@/components/apps/experience-navigation-context';
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
+import { applyPresenceSnapshot, applyPresenceUpdate } from '@/lib/presence-state';
+import { openDirectMessage } from '@/lib/quick-actions';
 import { useHuddle } from '@/hooks/use-huddle';
 import { useAudioLevels } from '@/hooks/use-audio-levels';
 import { HuddleOverlay } from '@/components/huddle-overlay';
@@ -106,15 +108,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     }
   }, [user]);
 
-  const loadSpaces = useCallback(async () => {
-    if (!user) return;
+  // Resolves to the spaces it loaded (and stored), or null when it did not.
+  const loadSpaces = useCallback(async (): Promise<Space[] | null> => {
+    if (!user) return null;
     const loadGeneration = ++spacesLoadGeneration.current;
     const unreadVersionsAtStart = new Map(unreadMutationVersions.current);
     const pendingReadsAtStart = new Map(pendingReadRequests.current);
     const res = await api.get('/api/spaces');
-    if (!res.ok || loadGeneration !== spacesLoadGeneration.current) return;
+    if (!res.ok || loadGeneration !== spacesLoadGeneration.current) return null;
     const loadedSpaces: Space[] = await res.json();
-    if (loadGeneration !== spacesLoadGeneration.current) return;
+    if (loadGeneration !== spacesLoadGeneration.current) return null;
 
     const loadedSpaceIds = new Set(loadedSpaces.map((space) => space.id));
     setSpaces(loadedSpaces);
@@ -134,7 +137,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     const unreadRes = await api.get('/api/spaces/unread');
     if (unreadRes.ok && loadGeneration === spacesLoadGeneration.current) {
       const counts: { space_id: string; unread: number }[] = await unreadRes.json();
-      if (loadGeneration !== spacesLoadGeneration.current) return;
+      if (loadGeneration !== spacesLoadGeneration.current) return loadedSpaces;
       const serverCounts = new Map(counts.map((count) => [count.space_id, count.unread]));
       setUnreadCounts((previous) => {
         const next = new Map<string, number>();
@@ -154,6 +157,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         return next;
       });
     }
+    return loadedSpaces;
   }, [user]);
 
   // Load org members
@@ -213,26 +217,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
     // Initial presence snapshot from server
     const handlePresenceInit = (list: { user_id: string; status: 'online' | 'idle' }[]) => {
-      setPresence((prev) => {
-        const next = new Map(prev);
-        for (const entry of list) {
-          next.set(entry.user_id, entry.status);
-        }
-        return next;
-      });
+      setPresence((prev) => applyPresenceSnapshot(prev, Array.isArray(list) ? list : [], user?.id));
     };
 
     // Live presence updates
     const handlePresence = (data: { user_id: string; status: 'online' | 'idle' | 'offline' }) => {
-      setPresence((prev) => {
-        const next = new Map(prev);
-        if (data.status === 'offline') {
-          next.delete(data.user_id);
-        } else {
-          next.set(data.user_id, data.status);
-        }
-        return next;
-      });
+      setPresence((prev) => applyPresenceUpdate(prev, data));
     };
 
     const handleNewMessage = (data: { space_id?: string; user_id?: string; parent_id?: string | null; has_mention?: boolean }) => {
@@ -430,21 +420,17 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }, []);
 
   const openDmWith = useCallback(
-    async (memberId: string) => {
-      const member = orgMembers.find((m) => m.id === memberId);
-      if (!member || !user) return;
-      // POST /api/spaces with type dm — backend deduplicates
-      const res = await api.post('/api/spaces', {
-        name: `${user.name}, ${member.name}`,
-        type: 'dm',
-        user_ids: [memberId],
+    async (memberId: string, memberName?: string): Promise<boolean> => {
+      if (!user) return false;
+      return openDirectMessage({
+        api,
+        currentUserName: user.name,
+        memberId,
+        memberName,
+        cachedMembers: orgMembers,
+        reloadSpaces: loadSpaces,
+        selectSpace: handleSelectSpace,
       });
-      if (res.ok) {
-        const space = await res.json();
-        // Refresh spaces to include the new/existing DM
-        await loadSpaces();
-        handleSelectSpace(space.id);
-      }
     },
     [orgMembers, user, loadSpaces, handleSelectSpace],
   );
