@@ -398,6 +398,10 @@ messageRoutes.post('/:spaceId', async (c) => {
     if (!isMember) {
       return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
     }
+    // An archived space is read-only, as for Defty and MCP posts.
+    const [targetSpace] = await db.select({ is_archived: spaces.is_archived }).from(spaces)
+      .where(and(eq(spaces.id, spaceId), eq(spaces.org_id, user.org_id))).limit(1);
+    if (!targetSpace || targetSpace.is_archived) return c.json({ error: 'This space is archived', code: 'SPACE_ARCHIVED' }, 409);
 
     if (await isPrivateDeftySpace(user.org_id, spaceId)) return c.json({ error: 'Use the reviewed private context turn', code: 'PRIVATE_CONTEXT_REQUIRED' }, 409);
 
