@@ -1218,10 +1218,14 @@ async function approveActionLocked(
   // returns zero rows, we lost the race and return the idempotent result.
   if (!resumesApprovedModule) {
     const claimed = await db.execute(
+      // The executing marker is the one the ordinary approval claim writes:
+      // approval surfaces show the row as executing until an outcome write
+      // (or recovery) replaces `result`.
       sql`UPDATE agent_actions
              SET approval_status = 'approved',
                  approved_at = clock_timestamp(),
-                 approved_by_user_id = ${approverUserId}
+                 approved_by_user_id = ${approverUserId},
+                 result = jsonb_build_object('lifecycle_state', 'executing', 'started_at', ${new Date().toISOString()}::text)
            WHERE id = ${actionId} AND approval_status = 'pending'
              AND ${actionSourceAuthoritySql(sourceReaderId)}
            RETURNING approved_at::text AS token`,

@@ -604,6 +604,10 @@ test('C07-m: a resolver approval whose lease dropped answers 202 and leaves the 
   const row = await actionRow(actionId);
   assert.equal(row.approval_status, 'approved');
   assert.equal(row.executed_at, null);
+  // Approval surfaces show an approved row as executing while
+  // result.lifecycle_state is 'executing' (web agent-action-presentation.ts).
+  assert.equal(row.error, null);
+  assert.equal(row.result?.lifecycle_state, 'executing');
   assert.equal((await f.client.query('SELECT count(*)::int AS n FROM action_receipts WHERE action_id = $1', [actionId])).rows[0].n, 0);
 });
 

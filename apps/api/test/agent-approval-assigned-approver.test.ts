@@ -93,6 +93,11 @@ test('B-a: an assigned member can approve a resolver-owned action', { skip: !can
   assert.equal(response.status, 200, await response.clone().text());
   assert.equal((await response.json() as { status: string }).status, 'approved');
   assert.equal(await status(actionId), 'approved');
+  const [stored] = (await f.client.query(
+    'SELECT approved_by_user_id, result, error FROM agent_actions WHERE id = $1', [actionId])).rows;
+  assert.equal(stored.approved_by_user_id, f.otherId);
+  // The settled row carries its outcome, not the executing marker.
+  assert.notEqual(stored.result?.lifecycle_state, 'executing');
 });
 
 test('B-b: an assigned member can reject a resolver-owned action', { skip: !canRun }, async () => {
