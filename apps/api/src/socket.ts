@@ -102,6 +102,29 @@ export function bumpRealtimeAccessGeneration(_scope: HuddleEvictionScope): numbe
   return realtimeAccessGeneration;
 }
 
+/**
+ * Delivery-audience generation, separate from the access generation above so
+ * that bumping it never disconnects sockets or rejects packets. Call
+ * invalidateRealtimeAudiences right after a committed change that can remove
+ * someone from a per-viewer delivery audience (task assignment, watching or
+ * visibility, task or project deletion, an employee's pause, deletion or
+ * project scope, a source message's deletion). A per-viewer delivery resolved
+ * before the change then sends its neutral payload instead of the details.
+ */
+let realtimeAudienceGeneration = 0;
+
+export function captureRealtimeAudienceGeneration(): number {
+  return realtimeAudienceGeneration;
+}
+
+export function isRealtimeAudienceGenerationCurrent(generation: number): boolean {
+  return generation === realtimeAudienceGeneration;
+}
+
+export function invalidateRealtimeAudiences(): void {
+  realtimeAudienceGeneration += 1;
+}
+
 export type HuddleEvictionReason = 'space_membership_revoked' | 'org_membership_revoked' | 'space_archived';
 
 export type HuddleEvictionScope =

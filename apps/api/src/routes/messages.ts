@@ -6,7 +6,7 @@ import { eq, and, desc, lt, lte, gt, sql, isNull, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { nativeCreate, nativeCreateKey, NativeCreateError } from '../lib/native-create.js';
 import { messages, users, reactions, spaces, spaceMembers, threadReads, messageVersions, files, messageAttachments as messageAttachmentLinks } from '@deft/db/schema';
-import { getIO, emitToUser } from '../socket.js';
+import { getIO, emitToUser, invalidateRealtimeAudiences } from '../socket.js';
 import { extractNativeMentions, NativeMentionLimitError } from '@deft/shared';
 import { nativeMentionsEnabled, enqueueNativeMentionPublication } from '../lib/native-mentions.js';
 import { fetchLinkPreview, extractUrls, type LinkPreview } from '../lib/link-preview.js';
@@ -779,6 +779,7 @@ messageRoutes.delete('/:id', async (c) => {
     .set({ is_deleted: true })
     .where(eq(messages.id, messageId))
     .returning();
+  invalidateRealtimeAudiences();
 
   const io = getIO();
   if (io) {

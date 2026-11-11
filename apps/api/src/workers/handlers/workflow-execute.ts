@@ -15,7 +15,7 @@ import {
   taskRelationships,
 } from '@deft/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { emitToUser } from '../../socket.js';
+import { emitToUser, invalidateRealtimeAudiences } from '../../socket.js';
 import { createNotificationIfAllowed } from '../../lib/notification-policy.js';
 
 interface WorkflowExecuteJobData {
@@ -78,6 +78,7 @@ export async function handleWorkflowExecute(job: JobData): Promise<void> {
           await db.update(tasks)
             .set({ assignee_id: action.user_id, updated_at: new Date() })
             .where(eq(tasks.id, task.id));
+          invalidateRealtimeAudiences();
           results.push({ kind: 'assign_to', ok: true });
           break;
         }

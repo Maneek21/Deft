@@ -15,7 +15,13 @@ import {
 } from '@deft/db/schema';
 import { McpAuthError } from './mcp-token.js';
 import { currentAgentChannelEventAuthoritySql } from './agent-channel-authority.js';
-import { captureRealtimeAccessGeneration, getIO, isRealtimeAccessGenerationCurrent } from '../socket.js';
+import {
+  captureRealtimeAccessGeneration,
+  captureRealtimeAudienceGeneration,
+  getIO,
+  isRealtimeAccessGenerationCurrent,
+  isRealtimeAudienceGenerationCurrent,
+} from '../socket.js';
 import {
   employeeCanAccessProject,
   employeeProjectAccessAllows,
@@ -493,18 +499,27 @@ export async function ownersAdminsOrListed(orgId: string, userIds: readonly stri
   return new Set(rows.map((row) => row.user_id));
 }
 
-type AudienceSocket ={ rooms: Set<string>; emit(event: string, payload: unknown): unknown };
+type AudienceSocket = { rooms: Set<string>; emit(event: string, payload: unknown): unknown };
 type OrgEmitter = {
   to(room: string): { emit(event: string, payload: unknown): unknown };
   in?(room: string): { fetchSockets(): Promise<AudienceSocket[]> };
 };
 
+/** Test seam: a step run after the audience is resolved and before delivery. */
+let beforeAudienceDelivery: (() => Promise<void>) | null = null;
+export function setBeforeAudienceDeliveryForTest(step: (() => Promise<void>) | null): void {
+  beforeAudienceDelivery = step;
+}
+
 /**
  * Emit an org-wide event whose `neutral` payload every org socket may receive;
  * sockets of users in `audience` receive `detailed` instead. Same delivery
  * approach as chat run details (agent-message-run-details.ts): sockets are
- * listed again after the audience query, and an access change during
- * resolution, or any failure, sends the neutral payload to everyone.
+ * listed again after the audience query. An access change (org/space) or an
+ * audience change (task, employee or source authority; socket.ts
+ * invalidateRealtimeAudiences) during resolution sends the neutral payload to
+ * everyone. Any failure sends the neutral payload to every socket that has not
+ * received one; nothing propagates to the caller.
  */
 export async function emitOrgEventByAudience(io: OrgEmitter | null | undefined, input: {
   orgId: string;
@@ -515,31 +530,46 @@ export async function emitOrgEventByAudience(io: OrgEmitter | null | undefined, 
 }): Promise<void> {
   if (!io) return;
   const room = `org:${input.orgId}`;
+  const broadcastNeutral = () => {
+    try { io.to(room).emit(input.event, input.neutral); } catch (error) {
+      console.warn('[agent-channel] neutral delivery failed', error instanceof Error ? error.message : String(error));
+    }
+  };
   if (!io.in) {
-    io.to(room).emit(input.event, input.neutral);
+    broadcastNeutral();
     return;
   }
   const prefix = `org-user:${input.orgId}:`;
   const socketUser = (socket: AudienceSocket) => [...socket.rooms].find((name) => name.startsWith(prefix))?.slice(prefix.length);
-  const generation = captureRealtimeAccessGeneration();
-  let resolved: { allowed: Set<string>; current: AudienceSocket[] };
+  const accessGeneration = captureRealtimeAccessGeneration();
+  const audienceGeneration = captureRealtimeAudienceGeneration();
+  let current: AudienceSocket[] = [];
+  const sent = new Set<AudienceSocket>();
   try {
     const sockets = await io.in(room).fetchSockets();
     const userIds = [...new Set(sockets.map(socketUser).filter((id): id is string => Boolean(id)))];
     const allowed = userIds.length > 0 ? await input.audience(userIds) : new Set<string>();
-    resolved = { allowed, current: await io.in(room).fetchSockets() };
+    current = await io.in(room).fetchSockets();
+    if (beforeAudienceDelivery) await beforeAudienceDelivery();
+    if (!isRealtimeAccessGenerationCurrent(accessGeneration) || !isRealtimeAudienceGenerationCurrent(audienceGeneration)) {
+      broadcastNeutral();
+      return;
+    }
+    for (const socket of current) {
+      const userId = socketUser(socket);
+      socket.emit(input.event, userId && allowed.has(userId) ? input.detailed : input.neutral);
+      sent.add(socket);
+    }
   } catch (error) {
     console.warn('[agent-channel] per-viewer delivery unavailable; sending neutral status', error instanceof Error ? error.message : String(error));
-    io.to(room).emit(input.event, input.neutral);
-    return;
-  }
-  if (!isRealtimeAccessGenerationCurrent(generation)) {
-    io.to(room).emit(input.event, input.neutral);
-    return;
-  }
-  for (const socket of resolved.current) {
-    const userId = socketUser(socket);
-    socket.emit(input.event, userId && resolved.allowed.has(userId) ? input.detailed : input.neutral);
+    if (sent.size === 0) {
+      broadcastNeutral();
+      return;
+    }
+    for (const socket of current) {
+      if (sent.has(socket)) continue;
+      try { socket.emit(input.event, input.neutral); } catch { /* the socket is gone */ }
+    }
   }
 }
 

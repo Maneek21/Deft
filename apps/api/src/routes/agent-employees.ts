@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { eq, and, desc, sql, or, isNull, asc, gte, lt, inArray, notInArray } from 'drizzle-orm';
 import crypto from 'node:crypto';
 import { db } from '../lib/db.js';
+import { invalidateRealtimeAudiences } from '../socket.js';
 import { hermesBundleAvailability, type HermesBundleAvailability } from '../lib/hermes-release.js';
 import {
   EMPLOYEE_MCP_APP_SCOPES,
@@ -1948,6 +1949,7 @@ agentEmployeeRoutes.put('/:id', async (c) => {
       .where(eq(agentEmployees.id, id))
       .returning();
     if (data.project_ids !== undefined) {
+      invalidateRealtimeAudiences();
       invalidatePlatformContextCacheFor(id);
     }
 
@@ -2486,6 +2488,7 @@ agentEmployeeRoutes.delete('/:id', async (c) => {
       .update(agentEmployees)
       .set({ is_active: false, is_deleted: true, deleted_at: new Date() })
       .where(eq(agentEmployees.id, id));
+    invalidateRealtimeAudiences();
     await db.update(users).set({ is_agent: false }).where(eq(users.id, existing.user_id));
     await db
       .update(orgMembers)
@@ -2555,6 +2558,7 @@ agentEmployeeRoutes.post('/:id/pause', async (c) => {
     }
 
     await db.update(agentEmployees).set({ is_active: false }).where(eq(agentEmployees.id, id));
+    invalidateRealtimeAudiences();
 
     return c.json({ success: true, is_active: false });
   } catch (err) {

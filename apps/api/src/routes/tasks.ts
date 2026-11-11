@@ -7,7 +7,7 @@ import { eq, and, desc, asc, sql, inArray, ilike, or, isNull, type SQL } from 'd
 import { db } from '../lib/db.js';
 import { nativeCreate, nativeCreateKey, NativeCreateError } from '../lib/native-create.js';
 import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, taskRelationships, files, taskAttachments, savedViews, taskWatchers, taskAssignees, taskReactions, wikiPages, wikiCitations, orgMembers, workflowRules, agentEmployees, agentActions, agentChannelDeliveryAttempts, agentChannelEvents, agentCooperativeLog, spaces, spaceMembers } from '@deft/db/schema';
-import { getIO, emitToUser } from '../socket.js';
+import { getIO, emitToUser, invalidateRealtimeAudiences } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { canDeleteTask } from '../lib/task-permissions.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
@@ -523,6 +523,7 @@ taskRoutes.post('/bulk-delete', async (c) => {
         org_id: user.org_id, task_id: taskId, user_id: user.id, action: 'deleted',
       })));
     });
+    invalidateRealtimeAudiences();
 
     const io = getIO();
     if (io) {
@@ -927,6 +928,7 @@ taskRoutes.delete('/:id/watch', async (c) => {
     const taskId = c.req.param('id');
     await db.delete(taskWatchers)
       .where(and(eq(taskWatchers.task_id, taskId), eq(taskWatchers.user_id, user.id)));
+    invalidateRealtimeAudiences();
     return c.json({ success: true });
   } catch (err) {
     console.error('Failed to unwatch task:', err);
@@ -986,6 +988,7 @@ taskRoutes.delete('/:id/assignees/:userId', async (c) => {
     if (deleted.length === 0) {
       return c.json({ error: 'Assignee not found', code: 'NOT_FOUND' }, 404);
     }
+    invalidateRealtimeAudiences();
     return c.json({ success: true });
   } catch (err) {
     console.error('Failed to remove assignee:', err);
@@ -2152,6 +2155,7 @@ taskRoutes.patch('/:id', async (c) => {
         .returning();
       updatedTask = updated ?? null;
     }
+    if (updatedTask && ('assignee_id' in updateData || 'metadata' in updateData)) invalidateRealtimeAudiences();
 
     // The row lock makes the version check and update one atomic operation.
     // A concurrent writer cannot slip between them and be overwritten.
@@ -2481,6 +2485,7 @@ taskRoutes.delete('/:id', async (c) => {
     await db.update(tasks)
       .set({ is_deleted: true })
       .where(eq(tasks.id, taskId));
+    invalidateRealtimeAudiences();
 
     // Create activity log entry
     await db.insert(taskActivity).values({
