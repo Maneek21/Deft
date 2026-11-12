@@ -11,13 +11,13 @@ import {
   spaceMembers,
   spaces,
   tasks,
-  users,
 } from '@deft/db/schema';
 import { db } from './db.js';
 import { emitToUser } from '../socket.js';
 import { isModuleGovernedWriteActionName, visibleModuleActionSql } from './module-action-visibility.js';
 import { scheduleAttentionDeliveries, scheduleAttentionDelivery } from './web-push.js';
 import { nativeDeliveryAccessSql } from './native-mention-visibility.js';
+import { actionReviewAssignmentSql, actionReviewerSql, loadActionReviewers } from './agent-action-requester.js';
 
 export type AttentionLane = 'needs_you' | 'updates';
 export type AttentionPriority = 'critical' | 'high' | 'normal' | 'low';
@@ -89,7 +89,7 @@ export function visibleAttentionCondition(userId: string) {
         FROM ${agentActions}
         WHERE ${agentActions.id} = ${attentionItems.source_id}
           AND ${agentActions.org_id} = ${attentionItems.org_id}
-          AND ${currentActionAudienceSql(userId)}
+          AND ${currentApprovalRecipientSql(userId)}
       )
     )
   )`;
@@ -114,6 +114,14 @@ function currentActionAudienceSql(userId: string): SQL {
     OR (${hasRole(['member'])} AND ${visibleModuleActionSql('member', { userId })})
     OR (${hasRole(['guest'])} AND ${visibleModuleActionSql('guest', { userId })})
   )`;
+}
+
+/**
+ * An approval item is served to its owner while the owner is in the action's
+ * audience and is one of the action's reviewers (agent-action-requester.ts).
+ */
+function currentApprovalRecipientSql(userId: string): SQL {
+  return sql`(${currentActionAudienceSql(userId)} AND ${actionReviewerSql(sql`${userId}`)})`;
 }
 
 /** Outbound attention item: approval items never carry action params. */
@@ -276,11 +284,6 @@ export function notificationToAttentionDraft(notification: LegacyNotification): 
   };
 }
 
-function actionRequesterId(action: AgentAction): string {
-  const params = objectMetadata(action.params);
-  return metadataString(params, 'source_user_id', 'origin_user_id') ?? action.user_id;
-}
-
 function approvalActionLabel(action: AgentAction): string {
   if (isModuleGovernedWriteActionName(action.action)) return action.action.replaceAll('_', ' ');
   const params = objectMetadata(action.params);
@@ -327,7 +330,7 @@ async function emitAttention(event: 'attention:new' | 'attention:updated', item:
   try {
     if (item.source_type === 'agent_action') {
       const [visible] = await db.select({ id: agentActions.id }).from(agentActions).where(and(
-        eq(agentActions.id, item.source_id), eq(agentActions.org_id, item.org_id), currentActionAudienceSql(item.user_id),
+        eq(agentActions.id, item.source_id), eq(agentActions.org_id, item.org_id), currentApprovalRecipientSql(item.user_id),
       )).limit(1);
       if (!visible) return;
     }
@@ -623,7 +626,7 @@ export async function filterVisibleAttentionItems<T extends typeof attentionItem
       .from(agentActions)
       .where(and(
         inArray(agentActions.id, actionIds),
-        currentActionAudienceSql(userId),
+        currentApprovalRecipientSql(userId),
       ))
     : [];
   const allowedMessages = new Set(visibleMessages.filter((row) => row.type === 'public' || row.member_id).map((row) => row.id));
@@ -649,8 +652,14 @@ export async function filterVisibleAttentionItems<T extends typeof attentionItem
   return rows.filter((item) => !hidden.has(item.id));
 }
 
-export async function ensureActionApprovers(action: AgentAction): Promise<string[]> {
-  const explicit = await db
+/**
+ * The users who review a pending action, as approver assignments. Existing
+ * assignments count when they name one of the action's reviewers; without
+ * one, the reviewers are assigned.
+ */
+export async function ensureActionApprovers(action: AgentAction, knownReviewers?: string[]): Promise<string[]> {
+  const reviewers = knownReviewers ?? (await loadActionReviewers([action])).get(action.id) ?? [];
+  const explicit = (await db
     .select({
       user_id: agentActionApprovers.user_id,
       decision: agentActionApprovers.decision,
@@ -659,47 +668,21 @@ export async function ensureActionApprovers(action: AgentAction): Promise<string
     .where(and(
       eq(agentActionApprovers.org_id, action.org_id),
       eq(agentActionApprovers.action_id, action.id),
-    ));
+    ))).filter((row) => reviewers.includes(row.user_id));
   if (explicit.length > 0) {
     return Array.from(new Set(
       explicit.filter((row) => row.decision === 'pending').map((row) => row.user_id),
     ));
   }
 
-  const requesterId = actionRequesterId(action);
-  const [requester] = await db
-    .select({ id: users.id })
-    .from(users)
-    .innerJoin(orgMembers, and(
-      eq(orgMembers.user_id, users.id),
-      eq(orgMembers.org_id, action.org_id),
-      eq(orgMembers.is_active, true),
-    ))
-    .where(and(
-      eq(users.id, requesterId),
-      eq(users.is_agent, false),
-      eq(users.kind, 'human'),
-    ))
-    .limit(1);
-  const userIds = requester
-    ? [requester.id]
-    : Array.from(new Set((await db
-      .select({ user_id: orgMembers.user_id })
-      .from(orgMembers)
-      .where(and(
-        eq(orgMembers.org_id, action.org_id),
-        eq(orgMembers.is_active, true),
-        inArray(orgMembers.role, ['owner', 'admin']),
-      ))).map((row) => row.user_id)));
-
-  if (userIds.length > 0) {
-    await db.insert(agentActionApprovers).values(userIds.map((userId) => ({
+  if (reviewers.length > 0) {
+    await db.insert(agentActionApprovers).values(reviewers.map((userId) => ({
       org_id: action.org_id,
       action_id: action.id,
       user_id: userId,
     }))).onConflictDoNothing();
   }
-  return userIds;
+  return reviewers;
 }
 
 export async function recordActionApproverDecision(params: {
@@ -736,9 +719,12 @@ export async function recordActionApproverDecision(params: {
   });
 }
 
-export async function syncApprovalToAttention(action: AgentAction, options?: { deliver?: boolean }) {
+export async function syncApprovalToAttention(
+  action: AgentAction,
+  options?: { deliver?: boolean; reviewers?: string[] },
+) {
   if (action.approval_status !== 'pending' || action.approval_tier === 'auto') return [];
-  const userIds = await ensureActionApprovers(action);
+  const userIds = await ensureActionApprovers(action, options?.reviewers);
   return Promise.all(userIds.map((userId) => upsertAttentionItem(approvalToAttentionDraft(action, userId), options)));
 }
 
@@ -766,50 +752,14 @@ export async function ensureAttentionBackfillForUser(params: { orgId: string; us
       inArray(agentActions.approval_tier, ['quick', 'full']),
       // Only actions in the user's current audience (shared rule).
       visibleModuleActionSql(params.role, { userId: params.userId, orgId: params.orgId }),
-      sql`(
-        EXISTS (
-          SELECT 1 FROM ${agentActionApprovers}
-          WHERE ${agentActionApprovers.action_id} = ${agentActions.id}
-            AND ${agentActionApprovers.org_id} = ${params.orgId}
-            AND ${agentActionApprovers.user_id} = ${params.userId}
-            AND ${agentActionApprovers.decision} = 'pending'
-        )
-        OR (
-          NOT EXISTS (
-            SELECT 1 FROM ${agentActionApprovers}
-            WHERE ${agentActionApprovers.action_id} = ${agentActions.id}
-          )
-          AND (
-            COALESCE(
-              ${agentActions.params}->>'source_user_id',
-              ${agentActions.params}->>'origin_user_id',
-              ${agentActions.user_id}
-            ) = ${params.userId}
-            OR (
-              ${params.role === 'owner' || params.role === 'admin'}
-              AND NOT EXISTS (
-                SELECT 1
-                FROM ${users}
-                INNER JOIN ${orgMembers}
-                  ON ${orgMembers.user_id} = ${users.id}
-                  AND ${orgMembers.org_id} = ${agentActions.org_id}
-                  AND ${orgMembers.is_active} = true
-                WHERE ${users.id} = COALESCE(
-                  ${agentActions.params}->>'source_user_id',
-                  ${agentActions.params}->>'origin_user_id',
-                  ${agentActions.user_id}
-                )
-                  AND ${users.is_agent} = false
-                  AND ${users.kind} = 'human'
-              )
-            )
-          )
-        )
-      )`,
+      actionReviewAssignmentSql(params.userId, { pendingOnly: true }),
     ))
     .orderBy(desc(agentActions.created_at))
     .limit(100);
-  for (const action of pendingActions) await syncApprovalToAttention(action, { deliver: false });
+  const reviewers = await loadActionReviewers(pendingActions);
+  for (const action of pendingActions) {
+    await syncApprovalToAttention(action, { deliver: false, reviewers: reviewers.get(action.id) ?? [] });
+  }
 }
 
 export async function transitionAttentionItem(params: {

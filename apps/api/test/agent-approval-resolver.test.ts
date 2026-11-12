@@ -421,6 +421,7 @@ async function teardownFixtures() {
 async function insertPendingTaskCreate(
   title: string,
   extraParams: Record<string, unknown> = {},
+  userId: string = SHADOW_USER_ID,
 ): Promise<string> {
   return withClient(async (c) => {
     const r = await c.query(
@@ -431,7 +432,7 @@ async function insertPendingTaskCreate(
        RETURNING id`,
       [
         ORG_ID,
-        SHADOW_USER_ID,
+        userId,
         EMP_ID,
         JSON.stringify({
           caller_employee_slug: EMP_SLUG,
@@ -1358,11 +1359,23 @@ test('4a. an ordinary member cannot approve another requester\'s action', async 
   assert.equal(row.rows[0].approval_status, 'pending');
 });
 
-test('4aa. the effective requester can approve their own action', async () => {
+test("4aa. an external agent's params do not make a member the requester", async () => {
   const title = `resolver-test-4aa-${Date.now()}`;
   const actionId = await insertPendingTaskCreate(title, {
     source_user_id: REVIEWER_USER_ID,
   });
+
+  const { approveAction } = await import('../src/lib/agent-approval-resolver.js');
+  const result = await approveAction(actionId, REVIEWER_USER_ID);
+
+  assert.equal(result.status, 'error');
+  // @ts-expect-error narrowed by status above
+  assert.equal(result.code, 'FORBIDDEN');
+});
+
+test("4ab. the action's own user can approve their own action", async () => {
+  const title = `resolver-test-4ab-${Date.now()}`;
+  const actionId = await insertPendingTaskCreate(title, {}, REVIEWER_USER_ID);
 
   const { approveAction } = await import('../src/lib/agent-approval-resolver.js');
   const result = await approveAction(actionId, REVIEWER_USER_ID);
