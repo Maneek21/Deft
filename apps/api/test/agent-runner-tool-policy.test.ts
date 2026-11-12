@@ -141,3 +141,87 @@ test('W2-a6-Y: the default policy still advertises the native tool list and disp
   assert.equal(counters.execute, 2, 'the Module discovery prefetch and the read tool call are dispatched');
   assert.equal(providerCalls.length, 2);
 });
+
+const groundedBrief = '{"agenda":[{"text":"Review the open login fix","source_ids":["task:1"]}],"decisions":[],"updates":[]}';
+const meetingLikeContent = 'Return JSON only with keys agenda, decisions, updates.\n\nEvidence:\n[{"source_id":"event:1","text":"Meeting: Existing tasks review"},{"source_id":"task:1","text":"Ship the login fix"}]';
+
+test('toolPolicy none returns an evidence-grounded draft without a tool-grounding retry', async () => {
+  nextResponses = [{ content: [{ type: 'text', text: groundedBrief }], stop_reason: 'end_turn' }];
+  const response = await runAgentQuery({ ...standupLikeCall, content: meetingLikeContent, toolPolicy: 'none' } as any);
+  assert.equal(providerCalls.length, 1, 'one model call: no retry asking for tool reads');
+  assert.equal(response.text, groundedBrief);
+  assert.equal(response.tokensIn, 11);
+  assert.equal(response.tokensOut, 7);
+  assert.deepEqual(counters, { installed: 0, mcp: 0, execute: 0, retrieve: 0 });
+});
+
+test('toolPolicy none sends a prompt without tool-use instructions', async () => {
+  nextResponses = [{ content: [{ type: 'text', text: groundedBrief }], stop_reason: 'end_turn' }];
+  await runAgentQuery({ ...standupLikeCall, content: meetingLikeContent, toolPolicy: 'none' } as any);
+  const system = providerCalls[0]!.system;
+  for (const toolInstruction of ['use the search/list tools', 'check_calendar', 'Tool responses include', 'native_mentions_search', 'Use wiki_search']) {
+    assert.ok(!system.includes(toolInstruction), `no-tools prompt omits: ${toolInstruction}`);
+  }
+  assert.match(system, /Immutable Deft platform policy/, 'the platform policy is still present');
+  assert.match(system, /Use only the supplied evidence/, 'the caller instructions are still present');
+  assert.match(system, /untrusted data/, 'the untrusted-data rule is still present');
+  assert.match(system, /No tools are available in this run, including any named above/);
+});
+
+test('toolPolicy none returns a draft for runtime-discovery-like evidence in one call', async () => {
+  const content = 'Return JSON only.\n\nEvidence:\n[{"source_id":"msg:1","text":"Which App actions are available in the CRM app?"}]';
+  nextResponses = [{ content: [{ type: 'text', text: groundedBrief }], stop_reason: 'end_turn' }];
+  const response = await runAgentQuery({ ...standupLikeCall, content, toolPolicy: 'none' } as any);
+  assert.equal(providerCalls.length, 1);
+  assert.equal(response.text, groundedBrief);
+});
+
+test('toolPolicy none returns an empty reply as empty, without runtime-discovery text', async () => {
+  const content = 'Return JSON only.\n\nEvidence:\n[{"source_id":"msg:1","text":"Which App actions are available in the CRM app?"}]';
+  nextResponses = [{ content: [{ type: 'text', text: '  ' }], stop_reason: 'end_turn' }];
+  const response = await runAgentQuery({ ...standupLikeCall, content, toolPolicy: 'none' } as any);
+  assert.equal(providerCalls.length, 1);
+  assert.equal(response.text, '');
+  assert.equal(counters.execute, 0);
+});
+
+test('toolPolicy none rejects an invented approval role on a read-only request in one call', async () => {
+  const content = 'Read-only. Return JSON only.\n\nEvidence:\n[{"source_id":"task:1","text":"Ship the login fix"}]';
+  nextResponses = [{ content: [{ type: 'text', text: 'Project lead approval is required before shipping.' }], stop_reason: 'end_turn' }];
+  await assert.rejects(runAgentQuery({ ...standupLikeCall, content, toolPolicy: 'none' } as any), /could not be verified/i);
+  assert.equal(providerCalls.length, 1);
+  assert.equal(counters.execute, 0);
+});
+
+test('toolPolicy none without a prompt override runs no module prefetch and keeps the followed-turn rule', async () => {
+  nextResponses = [{ content: [{ type: 'text', text: 'NO_REPLY' }], stop_reason: 'end_turn' }];
+  const response = await runAgentQuery({
+    content: 'Find the existing task for the login fix', orgId, userId, orgName: 'Tool policy org',
+    maxIterations: 2, followed: true, toolPolicy: 'none',
+  } as any);
+  assert.equal(response.text, 'NO_REPLY');
+  assert.deepEqual(counters, { installed: 0, mcp: 0, execute: 0, retrieve: 0 });
+  assert.deepEqual(providerCalls[0]!.tools, []);
+  assert.match(providerCalls[0]!.system, /answer exactly NO_REPLY/);
+  assert.ok(!providerCalls[0]!.system.includes('before using tools'));
+});
+
+test('toolPolicy none still rejects an unverified native link instead of retrying for tools', async () => {
+  nextResponses = [{ content: [{ type: 'text', text: 'See [task](/tasks?task=invented)' }], stop_reason: 'end_turn' }];
+  await assert.rejects(runAgentQuery({ ...standupLikeCall, content: meetingLikeContent, toolPolicy: 'none' } as any), /could not be verified/i);
+  assert.equal(providerCalls.length, 1);
+  assert.equal(counters.execute, 0);
+});
+
+test('the default policy keeps the tool-use prompt and the grounding retry for workspace requests', async () => {
+  nextResponses = [
+    { content: [{ type: 'text', text: groundedBrief }], stop_reason: 'end_turn' },
+    { content: [{ type: 'text', text: groundedBrief }], stop_reason: 'end_turn' },
+  ];
+  const response = await runAgentQuery({ ...standupLikeCall, content: meetingLikeContent });
+  assert.match(providerCalls[0]!.system, /ALWAYS use the search\/list tools/);
+  assert.match(providerCalls[0]!.system, /Tool responses include result and sources/);
+  assert.equal(providerCalls.length, 2, 'the grounding retry still runs');
+  assert.match(JSON.stringify(providerCalls[1]!.messages), /Verify this reply before returning it/);
+  assert.match(response.text, /could not verify the workspace facts/);
+});
