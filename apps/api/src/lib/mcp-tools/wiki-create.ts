@@ -515,7 +515,7 @@ export const WIKI_TARGET_UNAVAILABLE_ERROR =
   'WIKI_TARGET_UNAVAILABLE: wiki_update: page not found or not available to this employee';
 /** The one answer for a space this employee cannot create a page in, whatever the reason. */
 export const WIKI_CREATE_TARGET_UNAVAILABLE_ERROR =
-  'WIKI_TARGET_UNAVAILABLE: wiki_create: space not found or not available to this employee';
+  'WIKI_TARGET_UNAVAILABLE: wiki_create: the target space is not available to this employee';
 
 export function wikiTargetUnavailableResult(action: 'wiki_update' | 'wiki_create' = 'wiki_update'): ToolResult {
   const error = action === 'wiki_create' ? WIKI_CREATE_TARGET_UNAVAILABLE_ERROR : WIKI_TARGET_UNAVAILABLE_ERROR;

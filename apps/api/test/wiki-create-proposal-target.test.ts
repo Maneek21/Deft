@@ -168,9 +168,13 @@ for (const [name, creator] of Object.entries(CREATORS)) {
 }
 
 test('an unreachable target space is refused when proposed, with one answer for every case', { skip: !canRun }, async () => {
+  const archived = randomUUID();
+  await f.client.query("INSERT INTO spaces (id, org_id, name, type, created_by, is_archived) VALUES ($1, $2, $3, 'public', $4, true)",
+    [archived, f.orgId, `wc-archived-${archived.slice(0, 8)}`, f.adminId]);
   const before = await count('SELECT count(*)::int AS n FROM agent_actions WHERE org_id = $1', [f.orgId]);
   const answers = new Set<string>();
-  for (const spaceId of [hiddenSpace, randomUUID(), otherOrgSpace]) {
+  // Not a member, missing, archived, in another org.
+  for (const spaceId of [hiddenSpace, randomUUID(), archived, otherOrgSpace]) {
     for (const where of [{ space_id: spaceId }, { source_space_id: spaceId }]) {
       const args = { title: uniqueTitle(), content: 'Hidden', ...where };
       for (const result of [
@@ -180,12 +184,14 @@ test('an unreachable target space is refused when proposed, with one answer for 
       ]) {
         assert.equal(textOf(result), WIKI_CREATE_TARGET_UNAVAILABLE_ERROR);
         assert.equal(result.structuredContent?.code, 'WIKI_TARGET_UNAVAILABLE');
+        assert.ok(!JSON.stringify(result).includes(spaceId), 'the answer names no space');
         answers.add(JSON.stringify(result));
       }
     }
   }
   assert.equal(answers.size, 1);
   assert.equal(await count('SELECT count(*)::int AS n FROM agent_actions WHERE org_id = $1', [f.orgId]), before);
+  await f.client.query('DELETE FROM spaces WHERE id = $1', [archived]);
 });
 
 test('a pending create without a recorded slug is refused', { skip: !canRun }, async () => {
