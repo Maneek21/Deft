@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { eq, and, between, desc, inArray, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { tasks, events, notes, projects, meetingBriefs, reminders, automationRuns } from '@deft/db/schema';
+import { tasks, events, notes, projects, meetingBriefs, reminders, automationRuns, orgMembers } from '@deft/db/schema';
 import { getOrgTimezone, getDayBoundaries } from '../lib/task-dates.js';
 import {readEmailCalendarOccurrences} from '../lib/email-calendar-projection.js';
 
@@ -139,10 +139,21 @@ calendarRoutes.get('/briefs', async (c) => {
     event_id: meetingBriefs.event_id,
     brief_text: meetingBriefs.brief_text,
     created_at: meetingBriefs.created_at,
-    generator: automationRuns.generator,
+    generator: sql<string | null>`(
+      SELECT ${automationRuns.generator} FROM ${automationRuns}
+      WHERE ${automationRuns.result_entity_id} = ${meetingBriefs.id}
+        AND ${automationRuns.org_id} = ${meetingBriefs.org_id}
+      ORDER BY ${automationRuns.updated_at} DESC LIMIT 1
+    )`,
   }).from(meetingBriefs)
-    .leftJoin(automationRuns, eq(automationRuns.result_entity_id, meetingBriefs.id))
+    .innerJoin(events, and(eq(events.id, meetingBriefs.event_id), eq(events.org_id, user.org_id)))
+    .innerJoin(orgMembers, and(
+      eq(orgMembers.org_id, user.org_id),
+      eq(orgMembers.user_id, user.id),
+      eq(orgMembers.is_active, true),
+    ))
     .where(and(
+      eq(meetingBriefs.org_id, user.org_id),
       eq(meetingBriefs.user_id, user.id),
       inArray(meetingBriefs.event_id, eventIds),
     ))
