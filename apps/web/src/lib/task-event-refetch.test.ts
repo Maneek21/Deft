@@ -38,3 +38,27 @@ test('a burst of events triggers a single reload', async () => {
   await new Promise((resolve) => setTimeout(resolve, 40));
   assert.equal(runs, 1, 'a cancelled reload does not run');
 });
+
+test('events that keep arriving past the first deadline still cause one reload', async () => {
+  let runs = 0;
+  const refetch = createCoalescedRefetch(() => { runs += 1; }, 40, 5000);
+  for (let i = 0; i < 6; i += 1) {
+    refetch.schedule();
+    await new Promise((resolve) => setTimeout(resolve, 15));
+  }
+  assert.equal(runs, 0, 'nothing runs while events keep arriving');
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  assert.equal(runs, 1);
+});
+
+test('a burst that never pauses still reloads once the maximum wait has passed', async () => {
+  let runs = 0;
+  const refetch = createCoalescedRefetch(() => { runs += 1; }, 40, 60);
+  const until = Date.now() + 220;
+  while (Date.now() < until) {
+    refetch.schedule();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(runs >= 1, 'the reload is not postponed for ever');
+  refetch.cancel();
+});

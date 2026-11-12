@@ -43,12 +43,23 @@ export function taskEventConcernsList(payload: TaskEventPayload | null | undefin
   return projectId === null || projectId === scope.projectId;
 }
 
-/** Trailing-edge coalescer: many `schedule()` calls within `delayMs` run `run` once. */
-export function createCoalescedRefetch(run: () => void, delayMs = 250) {
+/**
+ * Trailing-edge coalescer: `run` fires once, `delayMs` after the last
+ * `schedule()` of a burst. A burst that never pauses still runs every
+ * `maxWaitMs`, so a steady stream of events cannot postpone it for ever.
+ */
+export function createCoalescedRefetch(run: () => void, delayMs = 250, maxWaitMs = 2000) {
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let burstStartedAt = 0;
   return {
     schedule() {
-      if (timer !== null) return;
+      const now = Date.now();
+      if (timer !== null) {
+        if (now - burstStartedAt >= maxWaitMs) return;
+        clearTimeout(timer);
+      } else {
+        burstStartedAt = now;
+      }
       timer = setTimeout(() => {
         timer = null;
         run();

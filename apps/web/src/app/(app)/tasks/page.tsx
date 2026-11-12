@@ -276,12 +276,17 @@ export default function TasksPage() {
   }, [currentProjectId, projects, searchParams, isMyTasksView, selectedProject?.id, setQuery]);
 
   // Load tasks when project changes (or for My Tasks view)
+  const taskLoadSeqRef = useRef(0);
   const loadTasks = useCallback(async (cursor: string | null = null) => {
     const requestedRoute = routeRef.current;
     const session = api.getAccessToken();
-    const current = () => isCurrentTaskRoute(requestedRoute, routeRef.current)
-      && isSameWebSession(session, api.getAccessToken());
     if (!isMyTasksView && currentProjectId !== selectedProject?.id) return;
+    // Only the latest list read may apply, so an earlier response that
+    // arrives late cannot replace newer task data.
+    const request = ++taskLoadSeqRef.current;
+    const current = () => request === taskLoadSeqRef.current
+      && isCurrentTaskRoute(requestedRoute, routeRef.current)
+      && isSameWebSession(session, api.getAccessToken());
     if (view === 'table') {
       const params = new URLSearchParams();
       if (isMyTasksView) params.set('mine', 'true');
