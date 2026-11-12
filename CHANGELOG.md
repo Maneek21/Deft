@@ -100,8 +100,34 @@ Agents and approvals:
   job fails for good.
 - Web: the Autonomous confirmation for an agent employee says owners and admins
   can lower the level again from the employee panel. The heartbeats page does not
-  show a cost-against-budget figure. "Load earlier messages" is disabled while a
-  load or catch-up is in flight.
+  show a cost-against-budget figure, and shows the 24h cost tile only when a cost
+  is recorded. "Load earlier messages" is disabled while a load or catch-up is in
+  flight.
+- Approvals: an approval whose request ended after it was claimed is settled
+  instead of staying claimed. The request that executes an approval holds a
+  database lock for as long as it runs; a later approve attempt or the maintenance
+  job acts only when that lock is free. A task creation is run again safely
+  (it is idempotent per action); any other action is closed as failed with a
+  message and is not run twice. Every outcome shares one finishing step that
+  records the approver decision, resolves the Attention item, issues the receipt
+  and posts the completion message, and running it twice changes nothing. A
+  reviewer assigned to an action can approve or reject it when they are an active,
+  non-guest member of the workspace; stricter rules for specific action kinds are
+  unchanged. A native write executed through web approval gets a signed receipt.
+- Run text goes to the audience of its source. Employee activity entries, employee
+  diagnostics and task progress updates show their text to the people who can read
+  the source; other members see the entry or status without the text. Presence
+  reports whether an employee has an error as a flag. A later Defty reply reads
+  earlier replies as the current requester may receive them. Plan step text goes to
+  the plan's requester and to owners and admins, and live plan progress carries the
+  step position and status only. Heartbeat summaries and reasons are returned to
+  owners and admins.
+- Chat: message history pages by creation time and message id, so messages that
+  share a timestamp are each returned once (a plain timestamp cursor is still
+  accepted). An open thread shows reply edits and deletes live. Posting to an
+  archived space through the web route answers `409` `SPACE_ARCHIVED`, as the
+  other posting paths do. The @ and # popups ignore keys pressed during IME
+  composition, and Enter without Shift or Tab selects while Escape closes.
 - Docs: the Apps flags section of `docs/self-hosting.md` documents flag
   dependencies and the developer preview profile.
 
@@ -114,6 +140,29 @@ Workspace isolation:
   workspace. Note shares are limited to active members of the workspace. Guests
   do not receive the workspace standup, recent activity follows task
   visibility, and the unread notification count is per workspace.
+
+- Task events sent to the whole workspace (`task:created`, `task:updated`,
+  `task:deleted`, `task:bulk_updated`, `task:reaction_changed`) carry identifiers
+  and the names of changed fields. The task list, calendar and module views read
+  the task through the access-checked endpoints when an event arrives, with
+  reloads coalesced. The shared daily standup is returned to members when it was
+  built for all members; owners and admins can always read it.
+
+CI and security checks:
+
+- The API tests run as four parallel shards (`Test API (shard n/4)`), each on its
+  own runner and database. `DEFT_API_TEST_SHARD=i/n` selects a shard in
+  `scripts/email-preview-api-tests.mjs` and defaults to `1/1`, which runs the whole
+  suite. A `Test API` job passes only when every shard passed, so the required
+  check name and Build's dependency are unchanged. The shards start alongside Type
+  Check once the release-scope and app-boundary jobs finish; Build still needs Type
+  Check and every shard.
+- CodeQL reviewed findings use manifest v2 (`deft.codeql_false_positives.v2` in
+  `.github/codeql-reviewed-false-positives.json`). An entry matches on rule, path
+  and a fingerprint of the code on the flagged path, so edits that only move the
+  finding no longer need a new review, while a change to a line on the path, a new
+  finding, a duplicate or an unused entry fails the check. See
+  `docs/security/codeql-reviewed-findings.md`.
 
 Operator tooling:
 
