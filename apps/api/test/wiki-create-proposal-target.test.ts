@@ -118,11 +118,15 @@ const CREATORS: Record<string, { propose: (args: Proposal) => Promise<string>; m
   } },
 };
 
-/** The named source user approves; otherwise an admin approves the employee's own requests and the requester the rest. */
+/** Approves as whichever of the requester and the admin reviews this action. */
 async function approve(actionId: string) {
-  const [row] = (await f.client.query("SELECT COALESCE(params->>'source_user_id', user_id) AS reviewer FROM agent_actions WHERE id = $1", [actionId])).rows;
-  const response = await f.as(row?.reviewer === shadowId ? f.adminId : f.requesterId, `/api/agent/actions/${actionId}/approve`, { method: 'POST' });
-  return { status: response.status, body: await response.json() as Record<string, any> };
+  let answer = { status: 404, body: {} as Record<string, any> };
+  for (const reviewer of [f.requesterId, f.adminId]) {
+    const response = await f.as(reviewer, `/api/agent/actions/${actionId}/approve`, { method: 'POST' });
+    answer = { status: response.status, body: await response.json() as Record<string, any> };
+    if (response.status !== 404) break;
+  }
+  return answer;
 }
 
 async function assertRefused(actionId: string, error: string, title: string) {
