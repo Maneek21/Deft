@@ -1,410 +1,241 @@
 {
-  "schema_version": "deft.codeql_false_positives.v1",
-  "review_source_commit": "f3f897514a5ee6a25b956f0f953c894c8fd275c2",
-  "review_original_sarif_sha256": "74fca9d731caa803a9b62d44951053656b5eb7a9202823acbd908dea9a09f6ea",
-  "sources": {
-    "examples/apps/email/fixtures/launch-stage0/verify.test.mjs": "134b1e413cdfade7efbc67e9c246f916c28a0e525ae8a199fba263ed0f8c7322",
-    "apps/api/src/lib/agent-actions.ts": "3e7715c1f9aec38de343fb67d3e1c9fc5cbc439bca5c4f7d72186bb57d2c5e27",
-    "apps/api/src/lib/app-installed-tool-discovery.ts": "47e783f1423f04df862aaea444198cb512f5bccf8ba5e17ea2d99745ed906639",
-    "apps/api/src/lib/app-integration-tool-runtime.ts": "7e36690c6527e1c190d2c9410986293422a55f9f750f0e89a4bf5a09ec03af80",
-    "apps/api/src/lib/document-send.ts": "eed5824a4f4b82e08da04ef787e13454e462a6a00af02e0683a16798d8727668",
-    "apps/api/src/lib/oauth-mcp.ts": "79019274595ac322b86aa2d6492b1b42e0434d8c8a962cdd049d4ff7600baaed",
-    "apps/api/src/lib/receipts.ts": "3665073c46fb1fda85db9454b06b42d3145d94e6c61c62f0082ec0da6e99e85a",
-    "apps/api/src/lib/workspace-plan-import.ts": "17c724e72e03f5558929d71e613a3a764c59b2d6cf3729f01306b5dc13f48f6b",
-    "examples/apps/email/providers/native-connection-retained.mjs": "cf64c2a178f6589b9760f3055f14d0d51e9bbee6e81524a5971182e09b50773a",
-    "examples/apps/email/providers/oauth-contract.mjs": "c5b15eaf82a258f6ea13d78d03a0debb7bd21e66341bf3bd8e96db53b3e37192",
-    "examples/apps/email/providers/oauth-provider.mjs": "8144e4db2cf56f9ff2ffa41efcb2a811497778db8d30354ae9c148cc092e85b7",
-    "apps/web/src/components/apps/installed-app-experience.tsx": "30c7e9bdbe74d47d388301d6ed8dccb082e38d0434cc7f224b5acc3e37a36c2d",
-    "apps/web/src/lib/app-experience-bridge.ts": "4c1d4f0164948006313c1b408679b9b56acc25952c7de1f671011514c5229729",
-    "apps/web/src/lib/app-experience-lease.ts": "1fd793057125771dc4b5efc311e26287f38935e301af689a090bc922706ee7d0",
-    "apps/web/src/lib/app-experience-connection.ts": "63d49bfcaefc2ec7bfc6c8a59c5a3f106dfb742f4377c69c03fb5842589b22d2",
-    "apps/web/src/app/app-experience-bootstrap/route.ts": "dbc44b388b0078e9c312d5adc92f5861fac4e10b7ca381e5b5257b1bc4f23077",
-    "scripts/gate-g/experiences/rich-host.html": "fb6efd3f136a31a0690bed098f5454276bda38dfe39afae7c61eb997a609eadf",
-    "examples/apps/email/providers/connection-http.test.mjs": "fcae5cafa21621b082b508e7249c34cdb384b408db6bdbf48653cd58f3944ae7",
-    "examples/apps/email/providers/incoming-source-files.test.mjs": "860c50fb2ae16642b4fdccbea33bbd60a097f6245ba4abea8ea0db6d474d8afa",
-    "examples/apps/email/providers/oauth-account.mjs": "8ed6862ce390d87145803fe7614b9f7d97907144d53d5b51675ca3f397577ae7",
-    "examples/apps/email/providers/native-mailbox.test.mjs": "c2421c21aac4deef750bac339ce4996ae4623c8e8b25e3709dcd097417d192b2",
-    "examples/apps/email/providers/oauth-account.test.mjs": "86144284254bcaa3cd29afe68fac215178f9aa5c9ad641213791340c31e00562",
-    "examples/apps/email/providers/triage-contract.mjs": "962318ba7eebcb6329a470a265e244077c41624f88d55920edac0296eb3b6afe",
-    "apps/web/src/lib/app-connection-reattachment.test.ts": "2176f1b5ee3e60fc5a4cb6260cf6816cc194e9cffe039db360466bf9f15451db",
-    "apps/web/src/lib/app-connection-session-flow.ts": "264a86be6df351ba3c90ad95e0bd4416e6ef8191f98ee80258156fe3b39b7231",
-    "apps/web/src/lib/app-experience-startup.ts": "e1d723244278e150192310c104102823842c6da76b1ff27c65356397963d1b7d",
-    "apps/web/src/lib/app-experience-bootstrap-script.ts": "36ee80209351ed37044605e27571083aec7403012fbd4bd826dd6e4084fd5bb6",
-    "apps/web/src/lib/app-experience-bootstrap-srcdoc.ts": "715f49184bf2468416e409256c7a9d525405f846ed96fcd04ee8ba791b4f7520",
-    "apps/web/src/app/app-experience-bootstrap.js/route.ts": "7a78c864a3566f2580a7fab697b1cd56df037376500dacb2d9dbe4f571608e9a",
-    "apps/web/next.config.ts": "985b5af80e9b30cdbaf097b95a1c18f4c56a1470febdb7b4dbb2fea79c470a8a",
-    "apps/web/src/lib/app-experience-suspension.ts": "6a87734cfb4b19f5abe63b713794df70226aeb33916de2c3a17d72380aa53a4f"
-  },
+  "schema_version": "deft.codeql_false_positives.v2",
+  "review_source_commit": "058994265d3bd0d76bde71867acd2b3e19d7d0c2",
+  "review_original_sarif_sha256": "c433240720c7dfffa8971c4d23d04c0ba0a1604b3c81caf4c9aaf2a209fc37cd",
   "findings": [
     {
       "id": "FP-001",
-      "disposition": "false_positive",
       "rule": "js/bad-tag-filter",
       "path": "examples/apps/email/fixtures/launch-stage0/verify.test.mjs",
       "line": 135,
-      "fingerprint": "a9fc009601c0f1514e8085e220128a242f27ff12e7e93d963df3fa2aaf029eb4",
-      "sources": [
-        "examples/apps/email/fixtures/launch-stage0/verify.test.mjs"
-      ],
+      "fingerprint_v2": "42473a47c671df6628286205ba7e4f3bf6aa734a32d2a7f766ee4789d887d211",
+      "disposition": "false_positive",
       "justification": "This regex is a test assertion over a fixed malicious MIME fixture, not an HTML sanitizer or security allowlist. It verifies that untrusted source remains available or that collected plain text lacks the known fixture tag; production rich-text sanitation is not implemented by this assertion."
     },
     {
       "id": "FP-002",
-      "disposition": "false_positive",
       "rule": "js/bad-tag-filter",
       "path": "examples/apps/email/fixtures/launch-stage0/verify.test.mjs",
       "line": 142,
-      "fingerprint": "673bfa3fb0828edce7a52a9f44d58cd63da776fb34792476d7499ec1c2585830",
-      "sources": [
-        "examples/apps/email/fixtures/launch-stage0/verify.test.mjs"
-      ],
+      "fingerprint_v2": "32a17e0c37eaf79bc724b0d9b34a62031fa1aeac989da82f3bf22eb7adcab714",
+      "disposition": "false_positive",
       "justification": "This regex is a test assertion over a fixed malicious MIME fixture, not an HTML sanitizer or security allowlist. It verifies that untrusted source remains available or that collected plain text lacks the known fixture tag; production rich-text sanitation is not implemented by this assertion."
     },
     {
       "id": "FP-003",
-      "disposition": "false_positive",
       "rule": "js/insufficient-password-hash",
       "path": "apps/api/src/lib/agent-actions.ts",
       "line": 343,
-      "fingerprint": "971312b76e0d84ca58a1a5ee5d155becf0149f6125d5837559cd7eff12d29748",
-      "sources": [
-        "apps/api/src/lib/agent-actions.ts"
-      ],
+      "fingerprint_v2": "9ae0895299ad1a322b36c1ef16f119e0295fe2f3bbf54b96a809de3d5bfd8451",
+      "disposition": "false_positive",
       "justification": "This SHA-256 is the retry-domain digest of org, actor/client identifiers and an idempotency key. Authenticator return-object taint is propagated into public identity fields; no password verifier is derived or stored. Existing persisted idempotency identities must remain unchanged. Re-reviewed for PR #428 (Defty W1-b read authorization) against raw CodeQL run 42791251995 on commit 555f7c5b. The sink is textually identical and moves one line because agent-actions.ts imports spaceMembers; read_canvas now also requires room membership and an org-scoped canvas lookup. Mapping every location and flow step back through the branch diff reproduces the prior exact fingerprint, no flow step touches a changed line, and the hashed inputs remain org, actor/client identifiers and the idempotency key. Re-reviewed again for PR #428 against raw CodeQL run 42798401766 on commit 92e5af1f (after 1ff20dcf and 92e5af1f). The sink is textually identical and moves from line 341 to 342 because of the new resolveReadableRoom import. Mapping every location and flow step back through git diff 555f7c5b..92e5af1f reproduces the previously reviewed fingerprint; no flow step touches a changed line. agent-actions.ts gains one import (resolveReadableRoom), shifting flow steps one line, and the read_canvas block grows five lines, shifting later flow steps six lines; the canvas room resolver is not on the flow. The hashed inputs remain org, actor/client identifiers and the idempotency key. Re-reviewed for PR #443 (employee chat-post guards) against raw CodeQL run 42892448438 on commit 8fa6bddb. The sink location and pinned sources are unchanged; only the fingerprint changed because the mcp-server.ts flow steps (the /call handler and its ACTION_TOOLS executeActionDirect branch) shift down: the PR adds five imports, the 72-line legacyEmployeePostMessage helper above the endpoints, and an 8-line post_message pre-branch in /call. Mapping every location and flow step back through git diff ebcb1f50..8fa6bddb reproduces the fingerprint matched by passing master run 42889858280; no flow step lands on a line the PR added or changed, the new legacy post_message branch, employee-chat-post-guard.ts, mcp-tools/writes.ts and agent-channel.ts appear in no finding, and the raw rule/sink set (26 findings) is identical to that run. Re-reviewed again for PR #443 (round 2) against raw CodeQL run 42914537185 on commit 97233983. Sink location and pinned sources are unchanged; only the fingerprint moved because the mcp-server.ts flow steps (the /call handler and its ACTION_TOOLS executeActionDirect branch) shift down further: the PR now adds 87 lines above /call (five imports and the 82-line legacyEmployeePostMessage helper) and a net 8 lines for the post_message pre-branch in /call. Mapping every location and flow step back through git diff 4e746adc..97233983 reproduces the fingerprint matched by passing master run 42909275884 (commit 4e746adc); no flow step lands on a line the PR added or changed, employee-chat-post-guard.ts, mcp-tools/writes.ts and agent-channel.ts appear in no finding, and the raw rule/sink set (26 findings) is identical to that run. Re-reviewed for PR #447 against raw CodeQL run 42933703125 on commit f4a2edd8 (analysed merge 70414ac1, whose tree equals f4a2edd8). The PR edits agent-actions.ts (net +5 lines: one import line at the top, the authorizeNativeActionTarget guard line in executeAction, and the liveAnnotations declaration, the live destructive-annotation check and the mandatory-tier line in executeActionDirectLocked; the first import line is edited in place, as are the two canvas/knowledge space lookups and the note_to_wiki predicate). Mapping every location and flow step back through git diff fc6c004e..f4a2edd8 reproduces the fingerprint matched by passing master run 42926813879 (commit fc6c004e); no flow step lands on a line the PR added or changed, and the raw rule/sink/message set (26 findings) is identical to that run. The pinned agent-actions.ts source hash moved with the PR edits and the sink moved from line 342 to 343 because of the added import line; the sink statement (the createHash('sha256').update([...]) call in the idempotency-key hasher) is byte-identical apart from its line number. Re-reviewed for PR #453 against raw CodeQL run 42966042505 on commit 694b25ff (analysed merge 4cea8ff9, whose tree equals 694b25ff). The PR changes exactly one line of agent-actions.ts in place (line 1913, the task-creation dispatch call in executeAction, which gains a dedupeKey argument after assignedBy: userId); line count is unchanged. Only the pinned agent-actions.ts source hash moved. The finding's fingerprint (971312b7...) and sink line 343 are identical to passing master run 42960569037 (commit 96166c39), no location or flow step lands on line 1913 or on any other line the PR added or changed, and the raw rule/sink/message set (26 findings, all 26 fingerprints) is identical to that run. The sink statement (the createHash('sha256').update([...]) call in the idempotency-key hasher) is byte-identical."
     },
     {
       "id": "FP-004",
-      "disposition": "false_positive",
       "rule": "js/insufficient-password-hash",
       "path": "apps/api/src/lib/app-installed-tool-discovery.ts",
       "line": 30,
-      "fingerprint": "d966dd0a6d7b32634c4052d999eafef501fc6b4487e9f3b128b66a2cd6b06d9a",
-      "sources": [
-        "apps/api/src/lib/app-installed-tool-discovery.ts",
-        "apps/api/src/lib/app-integration-tool-runtime.ts"
-      ],
+      "fingerprint_v2": "77f3349304bf7e6512a55b30c5b54edb2be2af6d9ddb8a970b78c8974a90d78e",
+      "disposition": "false_positive",
       "justification": "This SHA-256 creates a deterministic write request UUID from actor identity, declared tool key and canonical input, not a password verifier. Duplicate recovery separately checks org/user/principal, complete input/declaration digests and immutable target; reads use randomUUID. The full target fence is pinned below. Re-reviewed 2026-10-28: only the CodeQL flow fingerprint changed because Defty agent-context.ts (an unrelated workspace search caller) now appears in the authenticator-object taint path; the hashed inputs and sink are unchanged. Re-reviewed for PR #424 against raw CodeQL run 41879227567: the fingerprint and location are unchanged. app-installed-tool-discovery.ts adds prepare_record_mirror to the write-operation set, and app-integration-tool-runtime.ts wraps authority checks in a registry scope and adds Host-side record-mirror nomination under the already-validated integration grant principal. The hashed inputs (actor identity, tool key, canonical input) and the request-UUID sink are unchanged; this is still not a password verifier. Re-reviewed for PR #428 (Defty W1-b read authorization) against raw CodeQL run 42791251995 on commit 555f7c5b. The sink location is unchanged; only the fingerprint changed because the agent-context.ts workspace search caller in the authenticator-object taint path moves five lines (new imports). Mapping every flow step back through the branch diff reproduces the prior exact fingerprint and no flow step touches a changed line; the hashed inputs and request-UUID sink are unchanged. Re-reviewed again for PR #428 against raw CodeQL run 42798401766 on commit 92e5af1f (after 1ff20dcf and 92e5af1f). The sink location is unchanged; only the fingerprint changed because the agent-context.ts flow steps (workspace search caller) move one line for a new import. Mapping every location and flow step back through git diff 555f7c5b..92e5af1f reproduces the previously reviewed fingerprint and no flow step touches a changed line; the hashed inputs and request-UUID sink are unchanged. Re-reviewed again for PR #428 against raw CodeQL run 42817152371 on commit e803ca1f (after 8f42400e, which moved the MCP read preflight into capability-service.ts and capability-providers/mcp.ts). The sink location is unchanged; only the fingerprint changed because the agent-context.ts flow steps (the installed-app tool caller in executeToolCall, lines 111-125) move up one line: 8f42400e removed the mcp-runtime.js import. Mapping every location and flow step back through git diff 8c971188..e803ca1f reproduces the fingerprint matched by passing run 42808400085; no flow step touches a changed line, the rewritten MCP read path (agent-context.ts lines 237-283) is not on the flow, and capability-service.ts and capability-providers/mcp.ts appear in no finding. The new fingerprint equals the one reviewed before 92e5af1f because that commit added one agent-context.ts import and 8f42400e removed one. The hashed inputs and request-UUID sink are unchanged. Re-reviewed for PR #443 (employee chat-post guards) against raw CodeQL run 42892448438 on commit 8fa6bddb. The sink location and pinned sources are unchanged; only the fingerprint changed because the mcp-server.ts flow steps (the /call handler and its ACTION_TOOLS executeActionDirect branch) shift down: the PR adds five imports, the 72-line legacyEmployeePostMessage helper above the endpoints, and an 8-line post_message pre-branch in /call. Mapping every location and flow step back through git diff ebcb1f50..8fa6bddb reproduces the fingerprint matched by passing master run 42889858280; no flow step lands on a line the PR added or changed, the new legacy post_message branch, employee-chat-post-guard.ts, mcp-tools/writes.ts and agent-channel.ts appear in no finding, and the raw rule/sink set (26 findings) is identical to that run. Re-reviewed again for PR #443 (round 2) against raw CodeQL run 42914537185 on commit 97233983. Sink location and pinned sources are unchanged; only the fingerprint moved because the mcp-server.ts flow steps (the /call handler and its ACTION_TOOLS executeActionDirect branch) shift down further: the PR now adds 87 lines above /call (five imports and the 82-line legacyEmployeePostMessage helper) and a net 8 lines for the post_message pre-branch in /call. Mapping every location and flow step back through git diff 4e746adc..97233983 reproduces the fingerprint matched by passing master run 42909275884 (commit 4e746adc); no flow step lands on a line the PR added or changed, employee-chat-post-guard.ts, mcp-tools/writes.ts and agent-channel.ts appear in no finding, and the raw rule/sink set (26 findings) is identical to that run."
     },
     {
       "id": "FP-005",
-      "disposition": "false_positive",
       "rule": "js/insufficient-password-hash",
       "path": "apps/api/src/lib/document-send.ts",
       "line": 74,
-      "fingerprint": "044e7882a96b8dbb2c95b9abce15eab00f1a3d4dec5bc07d558fd39ba55719fb",
-      "sources": [
-        "apps/api/src/lib/document-send.ts"
-      ],
+      "fingerprint_v2": "7cbbeccf357346f1909e0abf059351278a7061d74ed57293af354d11f1937b8c",
+      "disposition": "false_positive",
       "justification": "This hash derives document-action identity/preview idempotency from actor identifiers and exact document preview data. It does not store or authenticate a user password; broad authenticator-object taint reaches actor IDs. Changing it would change persisted retry identities rather than improve password storage. Re-reviewed for PR #428 (Defty W1-b read authorization) against raw CodeQL run 42791251995 on commit 555f7c5b. document-send.ts is unchanged; only the fingerprint changed because agent-actions.ts flow steps move three lines (spaceMembers import and the read_canvas room-membership join). Mapping every flow step back through the branch diff reproduces the prior exact fingerprint and no flow step touches a changed line. Re-reviewed again for PR #428 against raw CodeQL run 42798401766 on commit 92e5af1f (after 1ff20dcf and 92e5af1f). document-send.ts is unchanged; only the fingerprint changed. Mapping every location and flow step back through git diff 555f7c5b..92e5af1f reproduces the previously reviewed fingerprint; no flow step touches a changed line. agent-actions.ts gains one import (resolveReadableRoom), shifting flow steps one line, and the read_canvas block grows five lines, shifting later flow steps six lines; the canvas room resolver is not on the flow. Re-reviewed for PR #443 (employee chat-post guards) against raw CodeQL run 42892448438 on commit 8fa6bddb. The sink location and pinned sources are unchanged; only the fingerprint changed because the mcp-server.ts flow steps (the /call handler and its ACTION_TOOLS executeActionDirect branch) shift down: the PR adds five imports, the 72-line legacyEmployeePostMessage helper above the endpoints, and an 8-line post_message pre-branch in /call. Mapping every location and flow step back through git diff ebcb1f50..8fa6bddb reproduces the fingerprint matched by passing master run 42889858280; no flow step lands on a line the PR added or changed, the new legacy post_message branch, employee-chat-post-guard.ts, mcp-tools/writes.ts and agent-channel.ts appear in no finding, and the raw rule/sink set (26 findings) is identical to that run. Re-reviewed again for PR #443 (round 2) against raw CodeQL run 42914537185 on commit 97233983. Sink location and pinned sources are unchanged; only the fingerprint moved because the mcp-server.ts flow steps (the /call handler and its ACTION_TOOLS executeActionDirect branch) shift down further: the PR now adds 87 lines above /call (five imports and the 82-line legacyEmployeePostMessage helper) and a net 8 lines for the post_message pre-branch in /call. Mapping every location and flow step back through git diff 4e746adc..97233983 reproduces the fingerprint matched by passing master run 42909275884 (commit 4e746adc); no flow step lands on a line the PR added or changed, employee-chat-post-guard.ts, mcp-tools/writes.ts and agent-channel.ts appear in no finding, and the raw rule/sink set (26 findings) is identical to that run. Re-reviewed for PR #447 against raw CodeQL run 42933703125 on commit f4a2edd8 (analysed merge 70414ac1, whose tree equals f4a2edd8). The PR edits agent-actions.ts (net +5 lines: one import line at the top, the authorizeNativeActionTarget guard line in executeAction, and the liveAnnotations declaration, the live destructive-annotation check and the mandatory-tier line in executeActionDirectLocked; the first import line is edited in place, as are the two canvas/knowledge space lookups and the note_to_wiki predicate). Mapping every location and flow step back through git diff fc6c004e..f4a2edd8 reproduces the fingerprint matched by passing master run 42926813879 (commit fc6c004e); no flow step lands on a line the PR added or changed, and the raw rule/sink/message set (26 findings) is identical to that run. Only the fingerprint moved, because the agent-actions.ts flow steps shift down by one to five lines; the sink statement and this entry's pinned sources are unchanged."
     },
     {
       "id": "FP-006",
-      "disposition": "false_positive",
       "rule": "js/insufficient-password-hash",
       "path": "apps/api/src/lib/document-send.ts",
       "line": 308,
-      "fingerprint": "0020ad5b60028976129607f95571e5ca7ecba7e5bdbdc76e2583b2261e6bfe44",
-      "sources": [
-        "apps/api/src/lib/document-send.ts"
-      ],
+      "fingerprint_v2": "ed410a2cf721cf7eb0fc856db4aef0d4d53f9adbc67c182a2d637ebe7beff2c3",
+      "disposition": "false_positive",
       "justification": "This hash derives document-action identity/preview idempotency from actor identifiers and exact document preview data. It does not store or authenticate a user password; broad authenticator-object taint reaches actor IDs. Changing it would change persisted retry identities rather than improve password storage. Re-reviewed for PR #428 (Defty W1-b read authorization) against raw CodeQL run 42791251995 on commit 555f7c5b. document-send.ts is unchanged; only the fingerprint changed because agent-actions.ts flow steps move three lines (spaceMembers import and the read_canvas room-membership join). Mapping every flow step back through the branch diff reproduces the prior exact fingerprint and no flow step touches a changed line. Re-reviewed again for PR #428 against raw CodeQL run 42798401766 on commit 92e5af1f (after 1ff20dcf and 92e5af1f). document-send.ts is unchanged; only the fingerprint changed. Mapping every location and flow step back through git diff 555f7c5b..92e5af1f reproduces the previously reviewed fingerprint; no flow step touches a changed line. agent-actions.ts gains one import (resolveReadableRoom), shifting flow steps one line, and the read_canvas block grows five lines, shifting later flow steps six lines; the canvas room resolver is not on the flow. Re-reviewed for PR #443 (employee chat-post guards) against raw CodeQL run 42892448438 on commit 8fa6bddb. The sink location and pinned sources are unchanged; only the fingerprint changed because the mcp-server.ts flow steps (the /call handler and its ACTION_TOOLS executeActionDirect branch) shift down: the PR adds five imports, the 72-line legacyEmployeePostMessage helper above the endpoints, and an 8-line post_message pre-branch in /call. Mapping every location and flow step back through git diff ebcb1f50..8fa6bddb reproduces the fingerprint matched by passing master run 42889858280; no flow step lands on a line the PR added or changed, the new legacy post_message branch, employee-chat-post-guard.ts, mcp-tools/writes.ts and agent-channel.ts appear in no finding, and the raw rule/sink set (26 findings) is identical to that run. Re-reviewed again for PR #443 (round 2) against raw CodeQL run 42914537185 on commit 97233983. Sink location and pinned sources are unchanged; only the fingerprint moved because the mcp-server.ts flow steps (the /call handler and its ACTION_TOOLS executeActionDirect branch) shift down further: the PR now adds 87 lines above /call (five imports and the 82-line legacyEmployeePostMessage helper) and a net 8 lines for the post_message pre-branch in /call. Mapping every location and flow step back through git diff 4e746adc..97233983 reproduces the fingerprint matched by passing master run 42909275884 (commit 4e746adc); no flow step lands on a line the PR added or changed, employee-chat-post-guard.ts, mcp-tools/writes.ts and agent-channel.ts appear in no finding, and the raw rule/sink set (26 findings) is identical to that run. Re-reviewed for PR #447 against raw CodeQL run 42933703125 on commit f4a2edd8 (analysed merge 70414ac1, whose tree equals f4a2edd8). The PR edits agent-actions.ts (net +5 lines: one import line at the top, the authorizeNativeActionTarget guard line in executeAction, and the liveAnnotations declaration, the live destructive-annotation check and the mandatory-tier line in executeActionDirectLocked; the first import line is edited in place, as are the two canvas/knowledge space lookups and the note_to_wiki predicate). Mapping every location and flow step back through git diff fc6c004e..f4a2edd8 reproduces the fingerprint matched by passing master run 42926813879 (commit fc6c004e); no flow step lands on a line the PR added or changed, and the raw rule/sink/message set (26 findings) is identical to that run. Only the fingerprint moved, because the agent-actions.ts flow steps shift down by one to five lines; the sink statement and this entry's pinned sources are unchanged."
     },
     {
       "id": "FP-007",
-      "disposition": "false_positive",
       "rule": "js/insufficient-password-hash",
       "path": "apps/api/src/lib/oauth-mcp.ts",
       "line": 95,
-      "fingerprint": "86b71b87270b411f8c05dde0f5f9b15c08c7593603864ca821d2a4da9e7249c4",
-      "sources": [
-        "apps/api/src/lib/oauth-mcp.ts"
-      ],
+      "fingerprint_v2": "cc2d27a05860de859dc166a7101c2ff2a2e247777d6c15e12db7d72b15c954ef",
+      "disposition": "false_positive",
       "justification": "These hashes index server-generated OAuth codes/access/refresh tokens created by randomToken using randomBytes(32), not low-entropy user passwords. Token lookup still checks authorization scope, expiry and revocation. SHA-256 for uniformly random 256-bit bearer tokens does not require a password KDF."
     },
     {
       "id": "FP-008",
-      "disposition": "false_positive",
       "rule": "js/insufficient-password-hash",
       "path": "apps/api/src/lib/receipts.ts",
       "line": 165,
-      "fingerprint": "c7ab3986568074987b77c781f8b5ff8283e3f522b808854c103821f2a2e678c4",
-      "sources": [
-        "apps/api/src/lib/receipts.ts"
-      ],
+      "fingerprint_v2": "5c3b4dfe069b3bb6c693ebc15af583b4a06940f9ef79802b629c511a16c1f93c",
+      "disposition": "false_positive",
       "justification": "This is HMAC-SHA256 with the receipt signing key over a canonical audit payload, not password storage. Actor metadata from authentication is receipt data. Slow/salted password hashing would destroy deterministic receipt verification; the signing domain and keyed construction remain unchanged. Re-reviewed for PR #428 (Defty W1-b read authorization) against raw CodeQL run 42791251995 on commit 555f7c5b. receipts.ts is unchanged; only the fingerprint changed because agent-actions.ts flow steps move three lines (spaceMembers import and the read_canvas room-membership join). Mapping every flow step back through the branch diff reproduces the prior exact fingerprint and no flow step touches a changed line; the keyed HMAC receipt construction is unchanged. Re-reviewed again for PR #428 against raw CodeQL run 42798401766 on commit 92e5af1f (after 1ff20dcf and 92e5af1f). receipts.ts is unchanged; only the fingerprint changed. Mapping every location and flow step back through git diff 555f7c5b..92e5af1f reproduces the previously reviewed fingerprint; no flow step touches a changed line. agent-actions.ts gains one import (resolveReadableRoom), shifting flow steps one line, and the read_canvas block grows five lines, shifting later flow steps six lines; the canvas room resolver is not on the flow. The keyed HMAC receipt construction is unchanged. Re-reviewed for PR #443 (employee chat-post guards) against raw CodeQL run 42892448438 on commit 8fa6bddb. The sink location and pinned sources are unchanged; only the fingerprint changed because the mcp-server.ts flow steps (the /call handler and its ACTION_TOOLS executeActionDirect branch) shift down: the PR adds five imports, the 72-line legacyEmployeePostMessage helper above the endpoints, and an 8-line post_message pre-branch in /call. Mapping every location and flow step back through git diff ebcb1f50..8fa6bddb reproduces the fingerprint matched by passing master run 42889858280; no flow step lands on a line the PR added or changed, the new legacy post_message branch, employee-chat-post-guard.ts, mcp-tools/writes.ts and agent-channel.ts appear in no finding, and the raw rule/sink set (26 findings) is identical to that run. Re-reviewed again for PR #443 (round 2) against raw CodeQL run 42914537185 on commit 97233983. Sink location and pinned sources are unchanged; only the fingerprint moved because the mcp-server.ts flow steps (the /call handler and its ACTION_TOOLS executeActionDirect branch) shift down further: the PR now adds 87 lines above /call (five imports and the 82-line legacyEmployeePostMessage helper) and a net 8 lines for the post_message pre-branch in /call. Mapping every location and flow step back through git diff 4e746adc..97233983 reproduces the fingerprint matched by passing master run 42909275884 (commit 4e746adc); no flow step lands on a line the PR added or changed, employee-chat-post-guard.ts, mcp-tools/writes.ts and agent-channel.ts appear in no finding, and the raw rule/sink set (26 findings) is identical to that run. Re-reviewed for PR #447 against raw CodeQL run 42933703125 on commit f4a2edd8 (analysed merge 70414ac1, whose tree equals f4a2edd8). The PR edits agent-actions.ts (net +5 lines: one import line at the top, the authorizeNativeActionTarget guard line in executeAction, and the liveAnnotations declaration, the live destructive-annotation check and the mandatory-tier line in executeActionDirectLocked; the first import line is edited in place, as are the two canvas/knowledge space lookups and the note_to_wiki predicate). Mapping every location and flow step back through git diff fc6c004e..f4a2edd8 reproduces the fingerprint matched by passing master run 42926813879 (commit fc6c004e); no flow step lands on a line the PR added or changed, and the raw rule/sink/message set (26 findings) is identical to that run. Only the fingerprint moved, because the agent-actions.ts flow steps shift down by one to five lines; the sink statement and this entry's pinned sources are unchanged."
     },
     {
       "id": "FP-009",
-      "disposition": "false_positive",
       "rule": "js/insufficient-password-hash",
       "path": "apps/api/src/lib/workspace-plan-import.ts",
       "line": 149,
-      "fingerprint": "109a5828962941367e167c4dc5fc62ca04e3d042b8a85f1d2c4ef9087a8e1015",
-      "sources": [
-        "apps/api/src/lib/workspace-plan-import.ts"
-      ],
+      "fingerprint_v2": "ffefd377868d02e461a6ae91ca4579112f71562214515a62c4824603da1a61db",
+      "disposition": "false_positive",
       "justification": "This SHA-256 fingerprints canonical import/preview JSON, including actor identifiers, rather than deriving a password verifier. Authentication-return taint reaches identity fields, but the digest is used for exact review/idempotency matching and grants no authority. Re-reviewed for PR #428 (Defty W1-b read authorization) against raw CodeQL run 42791251995 on commit 555f7c5b. workspace-plan-import.ts is unchanged; only the fingerprint changed because agent-actions.ts flow steps move three lines (spaceMembers import and the read_canvas room-membership join). Mapping every flow step back through the branch diff reproduces the prior exact fingerprint and no flow step touches a changed line. Re-reviewed again for PR #428 against raw CodeQL run 42798401766 on commit 92e5af1f (after 1ff20dcf and 92e5af1f). workspace-plan-import.ts is unchanged; only the fingerprint changed. Mapping every location and flow step back through git diff 555f7c5b..92e5af1f reproduces the previously reviewed fingerprint; no flow step touches a changed line. agent-actions.ts gains one import (resolveReadableRoom), shifting flow steps one line, and the read_canvas block grows five lines, shifting later flow steps six lines; the canvas room resolver is not on the flow. Re-reviewed for PR #443 (employee chat-post guards) against raw CodeQL run 42892448438 on commit 8fa6bddb. The sink location and pinned sources are unchanged; only the fingerprint changed because the mcp-server.ts flow steps (the /call handler and its ACTION_TOOLS executeActionDirect branch) shift down: the PR adds five imports, the 72-line legacyEmployeePostMessage helper above the endpoints, and an 8-line post_message pre-branch in /call. Mapping every location and flow step back through git diff ebcb1f50..8fa6bddb reproduces the fingerprint matched by passing master run 42889858280; no flow step lands on a line the PR added or changed, the new legacy post_message branch, employee-chat-post-guard.ts, mcp-tools/writes.ts and agent-channel.ts appear in no finding, and the raw rule/sink set (26 findings) is identical to that run. Re-reviewed again for PR #443 (round 2) against raw CodeQL run 42914537185 on commit 97233983. Sink location and pinned sources are unchanged; only the fingerprint moved because the mcp-server.ts flow steps (the /call handler and its ACTION_TOOLS executeActionDirect branch) shift down further: the PR now adds 87 lines above /call (five imports and the 82-line legacyEmployeePostMessage helper) and a net 8 lines for the post_message pre-branch in /call. Mapping every location and flow step back through git diff 4e746adc..97233983 reproduces the fingerprint matched by passing master run 42909275884 (commit 4e746adc); no flow step lands on a line the PR added or changed, employee-chat-post-guard.ts, mcp-tools/writes.ts and agent-channel.ts appear in no finding, and the raw rule/sink set (26 findings) is identical to that run. Re-reviewed for PR #447 against raw CodeQL run 42933703125 on commit f4a2edd8 (analysed merge 70414ac1, whose tree equals f4a2edd8). The PR edits agent-actions.ts (net +5 lines: one import line at the top, the authorizeNativeActionTarget guard line in executeAction, and the liveAnnotations declaration, the live destructive-annotation check and the mandatory-tier line in executeActionDirectLocked; the first import line is edited in place, as are the two canvas/knowledge space lookups and the note_to_wiki predicate). Mapping every location and flow step back through git diff fc6c004e..f4a2edd8 reproduces the fingerprint matched by passing master run 42926813879 (commit fc6c004e); no flow step lands on a line the PR added or changed, and the raw rule/sink/message set (26 findings) is identical to that run. Only the fingerprint moved, because the agent-actions.ts flow steps shift down by one to five lines; the sink statement and this entry's pinned sources are unchanged."
     },
     {
       "id": "FP-010",
-      "disposition": "false_positive",
       "rule": "js/insufficient-password-hash",
       "path": "examples/apps/email/providers/native-connection-retained.mjs",
       "line": 17,
-      "fingerprint": "8b897cf607ccca5d86c6ac21a820156fdc2c2728eb7d593fed89c55564d202d0",
-      "sources": [
-        "examples/apps/email/providers/native-connection-retained.mjs"
-      ],
+      "fingerprint_v2": "962a26bc615538378b2e314d0dc750665232803cbb15d2c28f8ae96a55c95d4e",
+      "disposition": "false_positive",
       "justification": "Only org ID, owner ID, provider and provider-subject identity are hashed into the retained principal digest. OAuth binding validation taints the whole record; actual access/refresh credentials are not hash inputs. The digest is an immutable account-identity fence, not password storage."
     },
     {
       "id": "FP-011",
-      "disposition": "false_positive",
       "rule": "js/insufficient-password-hash",
       "path": "examples/apps/email/providers/oauth-contract.mjs",
       "line": 12,
-      "fingerprint": "9f1c0f96e8fe66d2e5067a4a7aae7eaf5a1a6f16cf7f19ca7aa0798a1e873c4b",
-      "sources": [
-        "examples/apps/email/providers/oauth-contract.mjs",
-        "examples/apps/email/providers/oauth-provider.mjs"
-      ],
+      "fingerprint_v2": "f6a6704f0528109af6af72caff057a0e084f923de62a418c1384bdd53e9d6263",
+      "disposition": "false_positive",
       "justification": "oauthDigest derives scoped account/storage identity and client-policy fingerprints. validateOAuthBinding contains only public binding metadata; oauthClientFingerprint explicitly omits client_secret. This is not a password verifier and cannot be changed without breaking retained account keys; caller inputs are pinned below."
     },
     {
       "id": "FP-012",
-      "disposition": "false_positive",
       "rule": "js/cross-window-information-leak",
       "path": "apps/web/src/components/apps/installed-app-experience.tsx",
       "line": 1107,
-      "fingerprint": "4ddeb6b5170ed8fb0a8c7db661ba287e212f38f8837675bfef085d9afd16f3c7",
-      "sources": [
-        "apps/web/src/components/apps/installed-app-experience.tsx",
-        "apps/web/src/lib/app-experience-bridge.ts",
-        "apps/web/src/lib/app-experience-lease.ts",
-        "apps/web/src/lib/app-experience-connection.ts",
-        "apps/web/src/app/app-experience-bootstrap/route.ts",
-        "apps/web/src/lib/app-experience-bootstrap-script.ts",
-        "apps/web/src/lib/app-experience-startup.ts",
-        "apps/web/src/lib/app-experience-bootstrap-srcdoc.ts",
-        "apps/web/src/app/app-experience-bootstrap.js/route.ts",
-        "apps/web/next.config.ts",
-        "apps/web/src/lib/app-experience-suspension.ts"
-      ],
+      "fingerprint_v2": "211eeb2126bf86e1d797128e000c4c0c8bb524d004d90d63917521daada9f6c6",
+      "disposition": "false_positive",
       "justification": "The target is the exact Host-created opaque srcdoc iframe (allow-scripts without allow-same-origin), fixed canonical trusted script and escaped Host-origin metadata. Exact contentWindow/null-origin readiness plus current identity/authority gate one scoped MessagePort; stop revokes/removes only that frame. Global parent worker-src self/blob is explicit for SPA inheritance; child hash-only script CSP and connect-none confine the inherited Blob Worker. Author bytes never execute in the parent or document. Wildcard targets the opaque frame, not an arbitrary window; all supporting source is pinned. Persistent consent parsing changes only explicitly reviewed grant deadlines: null requires the literal until_revoked mode. Frame identity, opaque origin, finite Experience lease, one-port transfer and revocation gates remain unchanged. The 2026-10-17 renewal adds only a schema-validated target key for the read-only resource_refresh operation and a typed visibility-ended error; it neither changes frame creation, readiness, source, origin, port transfer or revocation nor permits target nomination for record writes. The 2026-10-20 re-review against run 39400742666 confirms this stop message carries only the existing session ID to the same Host-created opaque frame; teardown marks the lifetime stopped, revokes the bridge, closes the port and removes the frame. The source change only passes background_refresh_description into ExperienceConnectionSettings; it does not alter this sink or its frame confinement. The 2026-10-20 re-review for PR #389 (run 39467581550) confirms the sink only moved three lines: that change adds byte-formatting helpers above the component and rewords the private-access review copy and footer; it does not alter this sink, frame creation, readiness, origin, port transfer or revocation. Re-reviewed for Kit42 using raw CodeQL run 39562029913: all three sink fingerprints, locations and code flows are unchanged. The only mismatched supporting source is next.config.ts, where trusted build aliases move from mail helpers to Host-owned structured-address/safe-rich-text/safe-uri/safe-raster. CSP, worker-src, child confinement, origin/identity readiness, one-port transfer and revocation are unchanged. Explicit Host135 F1 re-review against raw CodeQL run 39665272733 confirms the three fingerprints, locations and code flows are unchanged. The changed component now reports bounded structured errors and retries ordinary app opening without a reconnect or permission endpoint. The changed startup helper pauses only the thirty-second visible rendering budget while hidden; it does not pause or extend finite session, exposure or consent deadlines. Visibility restoration still awaits suspension.live and current-authority checks before the unchanged locallyCurrent and one-start gates may transfer a port. Error notices remain Host text and cannot alter the target frame, Worker payload or scoped MessagePort. The exact Host-created allow-scripts-only opaque frame, trusted hash-constrained bootstrap, exact contentWindow/null-origin readiness, origin checks, lease identity and teardown revocation remain the security boundary. Re-reviewed for FX-A PR #410 against fresh raw CodeQL run 39689516157 on commit f4c17114708faeef49600158c0a269df45aa1786. The three existing frame sinks move exactly three lines; normalizing those location and flow line offsets reproduces each prior exact fingerprint. Query, message, columns, partial fingerprints and every inner flow step are unchanged. Current-screen access state and feature-local read-error reporting do not change the Host-created allow-scripts-only opaque iframe, exact contentWindow/null-origin readiness, current identity/lease/visibility checks, one-port transfer or teardown revocation. No grant or finite authority deadline is extended. Re-reviewed for the Email-ready release PR #424 against raw CodeQL run 41879227567. The three frame sinks are textually identical and move exactly 43 lines because the component now dispatches validated Kit connection_action buttons (Reconnect navigates the top-level page to the Host begin URL returned by the existing exact-origin connection flow; restore_access opens the Host Restore access review dialog) and passes per-account health into settings. The bridge only accepts the schema-validated connection_action field, and the bootstrap script raises the worker_source size bound from 98304 to 114688 bytes to match the 112 KiB Kit cap. Frame creation, the allow-scripts-only opaque srcdoc, exact contentWindow/null-origin readiness, identity/lease/visibility checks, one-port transfer and teardown revocation are unchanged, and no grant or finite authority deadline is extended. Re-reviewed for PR #424 against raw CodeQL run 42174633201 on commit 00afb2306a. The three frame sinks are textually identical and move exactly 14 lines. The component now delegates connection-action handling to the Host app-experience-connection-action library, parses catalog targets before use, and adds Host-side background-access recovery. None of that touches the opaque srcdoc frame, exact contentWindow/null-origin readiness, identity/lease/visibility checks, one-port transfer or teardown revocation, and no other pinned source for these findings changed."
     },
     {
       "id": "FP-013",
-      "disposition": "false_positive",
       "rule": "js/cross-window-information-leak",
       "path": "apps/web/src/components/apps/installed-app-experience.tsx",
       "line": 1122,
-      "fingerprint": "1376eef6017d2ce498679c703001619d8119e46d9870c46f6db99ad9baa8879a",
-      "sources": [
-        "apps/web/src/components/apps/installed-app-experience.tsx",
-        "apps/web/src/lib/app-experience-bridge.ts",
-        "apps/web/src/lib/app-experience-lease.ts",
-        "apps/web/src/lib/app-experience-connection.ts",
-        "apps/web/src/app/app-experience-bootstrap/route.ts",
-        "apps/web/src/lib/app-experience-bootstrap-script.ts",
-        "apps/web/src/lib/app-experience-startup.ts",
-        "apps/web/src/lib/app-experience-bootstrap-srcdoc.ts",
-        "apps/web/src/app/app-experience-bootstrap.js/route.ts",
-        "apps/web/next.config.ts",
-        "apps/web/src/lib/app-experience-suspension.ts"
-      ],
+      "fingerprint_v2": "10dfc0c7a16e032d3146414311812d3d242fee87d18267fb5219687d6fa16ebf",
+      "disposition": "false_positive",
       "justification": "The target is the exact Host-created opaque srcdoc iframe (allow-scripts without allow-same-origin), fixed canonical trusted script and escaped Host-origin metadata. Exact contentWindow/null-origin readiness plus current identity/authority gate one scoped MessagePort; stop revokes/removes only that frame. Global parent worker-src self/blob is explicit for SPA inheritance; child hash-only script CSP and connect-none confine the inherited Blob Worker. Author bytes never execute in the parent or document. Wildcard targets the opaque frame, not an arbitrary window; all supporting source is pinned. Persistent consent parsing changes only explicitly reviewed grant deadlines: null requires the literal until_revoked mode. Frame identity, opaque origin, finite Experience lease, one-port transfer and revocation gates remain unchanged. The 2026-10-17 renewal adds only a schema-validated target key for the read-only resource_refresh operation and a typed visibility-ended error; it neither changes frame creation, readiness, source, origin, port transfer or revocation nor permits target nomination for record writes. The 2026-10-20 re-review against run 39400742666 confirms this start message transfers the worker source and exactly one port only after exact contentWindow/null-origin readiness, current identity and lease authority, visibility and the one-start guard. The source change only passes background_refresh_description into ExperienceConnectionSettings; it does not alter the trusted bootstrap, sandbox, transfer payload or authority checks. The 2026-10-20 re-review for PR #389 (run 39467581550) confirms the sink only moved three lines: that change adds byte-formatting helpers above the component and rewords the private-access review copy and footer; it does not alter this sink, frame creation, readiness, origin, port transfer or revocation. Re-reviewed for Kit42 using raw CodeQL run 39562029913: all three sink fingerprints, locations and code flows are unchanged. The only mismatched supporting source is next.config.ts, where trusted build aliases move from mail helpers to Host-owned structured-address/safe-rich-text/safe-uri/safe-raster. CSP, worker-src, child confinement, origin/identity readiness, one-port transfer and revocation are unchanged. Explicit Host135 F1 re-review against raw CodeQL run 39665272733 confirms the three fingerprints, locations and code flows are unchanged. The changed component now reports bounded structured errors and retries ordinary app opening without a reconnect or permission endpoint. The changed startup helper pauses only the thirty-second visible rendering budget while hidden; it does not pause or extend finite session, exposure or consent deadlines. Visibility restoration still awaits suspension.live and current-authority checks before the unchanged locallyCurrent and one-start gates may transfer a port. Error notices remain Host text and cannot alter the target frame, Worker payload or scoped MessagePort. The exact Host-created allow-scripts-only opaque frame, trusted hash-constrained bootstrap, exact contentWindow/null-origin readiness, origin checks, lease identity and teardown revocation remain the security boundary. Re-reviewed for FX-A PR #410 against fresh raw CodeQL run 39689516157 on commit f4c17114708faeef49600158c0a269df45aa1786. The three existing frame sinks move exactly three lines; normalizing those location and flow line offsets reproduces each prior exact fingerprint. Query, message, columns, partial fingerprints and every inner flow step are unchanged. Current-screen access state and feature-local read-error reporting do not change the Host-created allow-scripts-only opaque iframe, exact contentWindow/null-origin readiness, current identity/lease/visibility checks, one-port transfer or teardown revocation. No grant or finite authority deadline is extended. Re-reviewed for the Email-ready release PR #424 against raw CodeQL run 41879227567. The three frame sinks are textually identical and move exactly 43 lines because the component now dispatches validated Kit connection_action buttons (Reconnect navigates the top-level page to the Host begin URL returned by the existing exact-origin connection flow; restore_access opens the Host Restore access review dialog) and passes per-account health into settings. The bridge only accepts the schema-validated connection_action field, and the bootstrap script raises the worker_source size bound from 98304 to 114688 bytes to match the 112 KiB Kit cap. Frame creation, the allow-scripts-only opaque srcdoc, exact contentWindow/null-origin readiness, identity/lease/visibility checks, one-port transfer and teardown revocation are unchanged, and no grant or finite authority deadline is extended. Re-reviewed for PR #424 against raw CodeQL run 42174633201 on commit 00afb2306a. The three frame sinks are textually identical and move exactly 14 lines. The component now delegates connection-action handling to the Host app-experience-connection-action library, parses catalog targets before use, and adds Host-side background-access recovery. None of that touches the opaque srcdoc frame, exact contentWindow/null-origin readiness, identity/lease/visibility checks, one-port transfer or teardown revocation, and no other pinned source for these findings changed."
     },
     {
       "id": "FP-014",
-      "disposition": "false_positive",
       "rule": "js/cross-window-information-leak",
       "path": "apps/web/src/components/apps/installed-app-experience.tsx",
       "line": 1202,
-      "fingerprint": "50f51faa496be25ffb091c888fde2d44687cddfad1046c34210898253f08adce",
-      "sources": [
-        "apps/web/src/components/apps/installed-app-experience.tsx",
-        "apps/web/src/lib/app-experience-bridge.ts",
-        "apps/web/src/lib/app-experience-lease.ts",
-        "apps/web/src/lib/app-experience-connection.ts",
-        "apps/web/src/app/app-experience-bootstrap/route.ts",
-        "apps/web/src/lib/app-experience-bootstrap-script.ts",
-        "apps/web/src/lib/app-experience-startup.ts",
-        "apps/web/src/lib/app-experience-bootstrap-srcdoc.ts",
-        "apps/web/src/app/app-experience-bootstrap.js/route.ts",
-        "apps/web/next.config.ts",
-        "apps/web/src/lib/app-experience-suspension.ts"
-      ],
+      "fingerprint_v2": "bf2b5194a20cdf88abcd7231c8716a32412c4aac69cfd8a70b68f21be00f5b47",
+      "disposition": "false_positive",
       "justification": "The target is the exact Host-created opaque srcdoc iframe (allow-scripts without allow-same-origin), fixed canonical trusted script and escaped Host-origin metadata. Exact contentWindow/null-origin readiness plus current identity/authority gate one scoped MessagePort; stop revokes/removes only that frame. Global parent worker-src self/blob is explicit for SPA inheritance; child hash-only script CSP and connect-none confine the inherited Blob Worker. Author bytes never execute in the parent or document. Wildcard targets the opaque frame, not an arbitrary window; all supporting source is pinned. Persistent consent parsing changes only explicitly reviewed grant deadlines: null requires the literal until_revoked mode. Frame identity, opaque origin, finite Experience lease, one-port transfer and revocation gates remain unchanged. The 2026-10-17 renewal adds only a schema-validated target key for the read-only resource_refresh operation and a typed visibility-ended error; it neither changes frame creation, readiness, source, origin, port transfer or revocation nor permits target nomination for record writes. The 2026-10-20 re-review against run 39400742666 confirms this effect-cleanup stop message targets the same Host-created opaque frame after marking the lifetime stopped and disposing connection and lease state, then revokes the bridge, closes the port and removes the frame. The source change only passes background_refresh_description into ExperienceConnectionSettings; it does not alter cleanup, frame identity or confinement. The 2026-10-20 re-review for PR #389 (run 39467581550) confirms the sink only moved three lines: that change adds byte-formatting helpers above the component and rewords the private-access review copy and footer; it does not alter this sink, frame creation, readiness, origin, port transfer or revocation. Re-reviewed for Kit42 using raw CodeQL run 39562029913: all three sink fingerprints, locations and code flows are unchanged. The only mismatched supporting source is next.config.ts, where trusted build aliases move from mail helpers to Host-owned structured-address/safe-rich-text/safe-uri/safe-raster. CSP, worker-src, child confinement, origin/identity readiness, one-port transfer and revocation are unchanged. Explicit Host135 F1 re-review against raw CodeQL run 39665272733 confirms the three fingerprints, locations and code flows are unchanged. The changed component now reports bounded structured errors and retries ordinary app opening without a reconnect or permission endpoint. The changed startup helper pauses only the thirty-second visible rendering budget while hidden; it does not pause or extend finite session, exposure or consent deadlines. Visibility restoration still awaits suspension.live and current-authority checks before the unchanged locallyCurrent and one-start gates may transfer a port. Error notices remain Host text and cannot alter the target frame, Worker payload or scoped MessagePort. The exact Host-created allow-scripts-only opaque frame, trusted hash-constrained bootstrap, exact contentWindow/null-origin readiness, origin checks, lease identity and teardown revocation remain the security boundary. Re-reviewed for FX-A PR #410 against fresh raw CodeQL run 39689516157 on commit f4c17114708faeef49600158c0a269df45aa1786. The three existing frame sinks move exactly three lines; normalizing those location and flow line offsets reproduces each prior exact fingerprint. Query, message, columns, partial fingerprints and every inner flow step are unchanged. Current-screen access state and feature-local read-error reporting do not change the Host-created allow-scripts-only opaque iframe, exact contentWindow/null-origin readiness, current identity/lease/visibility checks, one-port transfer or teardown revocation. No grant or finite authority deadline is extended. Re-reviewed for the Email-ready release PR #424 against raw CodeQL run 41879227567. The three frame sinks are textually identical and move exactly 43 lines because the component now dispatches validated Kit connection_action buttons (Reconnect navigates the top-level page to the Host begin URL returned by the existing exact-origin connection flow; restore_access opens the Host Restore access review dialog) and passes per-account health into settings. The bridge only accepts the schema-validated connection_action field, and the bootstrap script raises the worker_source size bound from 98304 to 114688 bytes to match the 112 KiB Kit cap. Frame creation, the allow-scripts-only opaque srcdoc, exact contentWindow/null-origin readiness, identity/lease/visibility checks, one-port transfer and teardown revocation are unchanged, and no grant or finite authority deadline is extended. Re-reviewed for PR #424 against raw CodeQL run 42174633201 on commit 00afb2306a. The three frame sinks are textually identical and move exactly 14 lines. The component now delegates connection-action handling to the Host app-experience-connection-action library, parses catalog targets before use, and adds Host-side background-access recovery. None of that touches the opaque srcdoc frame, exact contentWindow/null-origin readiness, identity/lease/visibility checks, one-port transfer or teardown revocation, and no other pinned source for these findings changed."
     },
     {
       "id": "FP-015",
-      "disposition": "false_positive",
       "rule": "js/cross-window-information-leak",
       "path": "scripts/gate-g/experiences/rich-host.html",
       "line": 62,
-      "fingerprint": "adbd20f4473221df718cfe28a8052f169d58426f070e7de6a3ae6f6d68fbc708",
-      "sources": [
-        "scripts/gate-g/experiences/rich-host.html"
-      ],
+      "fingerprint_v2": "d5e2a8686aca4dff24200c37a67930675926bad480a4af45fd88910865bc2939",
+      "disposition": "false_positive",
       "justification": "This is an isolated loopback evidence fixture, sending public synthetic session/version metadata and a fixture MessagePort to its explicitly created sandbox frame. It does not transmit real mailbox data, tokens or application credentials and is not a deployed Host messaging policy."
     },
     {
       "id": "FP-017",
-      "disposition": "false_positive",
       "rule": "js/incomplete-url-substring-sanitization",
       "path": "examples/apps/email/providers/connection-http.test.mjs",
       "line": 305,
-      "fingerprint": "49020d832afc0f2f6be5ae1524a3505837af5a96e3769d0c1860e2d4fc5f169b",
-      "sources": [
-        "examples/apps/email/providers/connection-http.test.mjs"
-      ],
+      "fingerprint_v2": "53bf1aa714e6f57263a6974f4a320b2c75c8c61cb91a17e6174c57d56ab0e36f",
+      "disposition": "false_positive",
       "justification": "This expression is a positive/negative assertion over synthetic fixture output or captured mock calls, not a URL allowlist or fetch/navigation decision. Actual scope/URL authority is validated in the tested production code. No external destination is authorized by this assertion."
     },
     {
       "id": "FP-018",
-      "disposition": "false_positive",
       "rule": "js/incomplete-url-substring-sanitization",
       "path": "examples/apps/email/providers/connection-http.test.mjs",
       "line": 307,
-      "fingerprint": "7205b867524522448e8baf5f1c8080415a0872649cf8741f17dadf9be0ffec72",
-      "sources": [
-        "examples/apps/email/providers/connection-http.test.mjs"
-      ],
+      "fingerprint_v2": "4be25f44e75f75da05e163358ae4c940652c788f1a0cab57bf1f724ce13462d3",
+      "disposition": "false_positive",
       "justification": "This expression is a positive/negative assertion over synthetic fixture output or captured mock calls, not a URL allowlist or fetch/navigation decision. Actual scope/URL authority is validated in the tested production code. No external destination is authorized by this assertion."
     },
     {
       "id": "FP-019",
-      "disposition": "false_positive",
       "rule": "js/incomplete-url-substring-sanitization",
       "path": "examples/apps/email/providers/incoming-source-files.test.mjs",
       "line": 11,
-      "fingerprint": "fbce4dbb6cace1946200d6097beaea21cea0ad75d16300790bfdb0f7b1649756",
-      "sources": [
-        "examples/apps/email/providers/incoming-source-files.test.mjs"
-      ],
+      "fingerprint_v2": "c0e522377c46d859ccd02b8d363d678eedc6e766e387187f9725e8b2b24f791a",
+      "disposition": "false_positive",
       "justification": "This expression is a positive/negative assertion over synthetic fixture output or captured mock calls, not a URL allowlist or fetch/navigation decision. Actual scope/URL authority is validated in the tested production code. No external destination is authorized by this assertion."
     },
     {
       "id": "FP-020",
-      "disposition": "false_positive",
       "rule": "js/incomplete-url-substring-sanitization",
       "path": "examples/apps/email/providers/connection-http.test.mjs",
       "line": 613,
-      "fingerprint": "32cbb4630a1708e20bd0644f6148e6c3606d2c6338af46ad60b127dac4f5089a",
-      "sources": [
-        "examples/apps/email/providers/connection-http.test.mjs"
-      ],
+      "fingerprint_v2": "53850c594f41f9b1e14008c77b898d13baf725b969177dc4dd492862f5c231a1",
+      "disposition": "false_positive",
       "justification": "This expression is a positive/negative assertion over synthetic fixture output or captured mock calls, not a URL allowlist or fetch/navigation decision. Actual scope/URL authority is validated in the tested production code. No external destination is authorized by this assertion."
     },
     {
       "id": "FP-021",
-      "disposition": "false_positive",
       "rule": "js/incomplete-url-substring-sanitization",
       "path": "examples/apps/email/providers/oauth-provider.mjs",
       "line": 32,
-      "fingerprint": "d60e4d2bc50db6817fc35eed2a66e53c8fa48f89624a887c0ea6f8ecd13e6769",
-      "sources": [
-        "examples/apps/email/providers/oauth-provider.mjs",
-        "examples/apps/email/providers/oauth-account.mjs"
-      ],
+      "fingerprint_v2": "da9935247d48f26e7136fe883a06cd245404736b50682a141f21b89cc10292b3",
+      "disposition": "false_positive",
       "justification": "The flagged includes call compares complete elements of a normalized scope array, not substrings of a URL. Scope values are tokenized/allowlisted by normalizeOAuthScopes and persisted scope arrays are checked by oauth-account. A foreign URL containing the literal does not equal an array element."
     },
     {
       "id": "FP-022",
-      "disposition": "false_positive",
       "rule": "js/incomplete-url-substring-sanitization",
       "path": "examples/apps/email/providers/native-mailbox.test.mjs",
       "line": 187,
-      "fingerprint": "01613450c0995b76f54bb422194813724bbd9ec487108c0194d64af0127193dd",
-      "sources": [
-        "examples/apps/email/providers/native-mailbox.test.mjs"
-      ],
+      "fingerprint_v2": "a6cb5f82b8aebd462c2e17f951c6727d9f722e17fefe19f99a6c6ba8a2ba56f1",
+      "disposition": "false_positive",
       "justification": "This expression is a positive/negative assertion over synthetic fixture output or captured mock calls, not a URL allowlist or fetch/navigation decision. Actual scope/URL authority is validated in the tested production code. No external destination is authorized by this assertion."
     },
     {
       "id": "FP-023",
-      "disposition": "false_positive",
       "rule": "js/incomplete-url-substring-sanitization",
       "path": "examples/apps/email/providers/oauth-account.test.mjs",
       "line": 63,
-      "fingerprint": "f028e2af24686e5e1d6cb86b91ee24007f91afb90115389d18e5bdfca9c8ee95",
-      "sources": [
-        "examples/apps/email/providers/oauth-account.test.mjs"
-      ],
+      "fingerprint_v2": "81e378a14465572aba133375b38a6c8a100cb9bb467ee95507666e19f7f26324",
+      "disposition": "false_positive",
       "justification": "This expression is a positive/negative assertion over synthetic fixture output or captured mock calls, not a URL allowlist or fetch/navigation decision. Actual scope/URL authority is validated in the tested production code. No external destination is authorized by this assertion."
     },
     {
       "id": "FP-024",
-      "disposition": "false_positive",
       "rule": "js/incomplete-url-substring-sanitization",
       "path": "examples/apps/email/providers/oauth-account.test.mjs",
       "line": 65,
-      "fingerprint": "1d83e4440d830f7d318491ac48e64df5e09879e62a0d2118ee54ab649c41162b",
-      "sources": [
-        "examples/apps/email/providers/oauth-account.test.mjs"
-      ],
+      "fingerprint_v2": "f5f509fadce44dff89df1bb85fc0f132d1ecd599ad9b488e555d4d8f0bfdd32b",
+      "disposition": "false_positive",
       "justification": "This expression is a positive/negative assertion over synthetic fixture output or captured mock calls, not a URL allowlist or fetch/navigation decision. Actual scope/URL authority is validated in the tested production code. No external destination is authorized by this assertion."
     },
     {
       "id": "FP-025",
-      "disposition": "false_positive",
       "rule": "js/incomplete-url-substring-sanitization",
       "path": "examples/apps/email/providers/oauth-account.test.mjs",
       "line": 76,
-      "fingerprint": "6bfccb4cc4991facc615a6a0fa7ee8255dbed81d9c31599fb6bcf67b377af1e6",
-      "sources": [
-        "examples/apps/email/providers/oauth-account.test.mjs"
-      ],
+      "fingerprint_v2": "2c1a7a51a70c013df09cdd6714e874d20b0cdcbb11db3230593c741e684aca68",
+      "disposition": "false_positive",
       "justification": "This expression is a positive/negative assertion over synthetic fixture output or captured mock calls, not a URL allowlist or fetch/navigation decision. Actual scope/URL authority is validated in the tested production code. No external destination is authorized by this assertion."
     },
     {
       "id": "FP-026",
-      "disposition": "false_positive",
       "rule": "js/incomplete-url-substring-sanitization",
       "path": "examples/apps/email/providers/triage-contract.mjs",
       "line": 38,
-      "fingerprint": "bf395e118877f36ce7783a750ded59b7e280cb1ac2d4b15ee532e8f08b1e5de2",
-      "sources": [
-        "examples/apps/email/providers/triage-contract.mjs"
-      ],
+      "fingerprint_v2": "504be96c79bfce2526894093396352f669f7410f8585f6a22e3e5f06e7d41122",
+      "disposition": "false_positive",
       "justification": "The flagged includes call compares exact scope-array elements. The preceding guard rejects non-arrays and invalid elements. It is not URL substring sanitization; prefixed/suffixed URLs do not authorize an operation. The existing reduced-scope contract remains enforced."
     },
     {
       "id": "FP-027",
-      "disposition": "false_positive",
       "rule": "js/incomplete-hostname-regexp",
       "path": "apps/web/src/lib/app-connection-reattachment.test.ts",
       "line": 95,
-      "fingerprint": "8201a70907661974699acd44b129c8999d53729fa6baaf736b1faeaa5ec02e6e",
-      "sources": [
-        "apps/web/src/lib/app-connection-reattachment.test.ts",
-        "apps/web/src/lib/app-connection-session-flow.ts"
-      ],
+      "fingerprint_v2": "55eb7ed8d1ce21cfe432cca5906022d2d1b521cb28deb61f40d55fe06bb2e6b7",
+      "disposition": "false_positive",
       "justification": "This regex is an assertion over a fixed returned OAuth fixture URL, not the authorization-origin allowlist. Production connection begin parses URL and requires exact reviewed origin and callback state; the current production flow source is pinned below. Persistent durable scope parsing does not loosen OAuth navigation: Begin and callback deadlines remain finite, and exact parsed authorization origin plus a single exact callback-state parameter are still required. Re-reviewed for PR #424 against raw CodeQL run 41879227567: the fingerprint and location are unchanged. app-connection-session-flow.ts adds beginAppConnection, a thin wrapper that loads the flow and returns flow.begin(targetKey); begin still parses the URL and requires the exact reviewed authorization origin and a single exact callback-state parameter. The test regex remains an assertion over a fixed fixture URL."
-    }
-  ],
-  "source_updates": [
-    {
-      "path": "apps/api/src/lib/app-installed-tool-discovery.ts",
-      "previous_sha256": "93b3d4f08c6cddab370110785f454090e46e4f88587da1c9e92db0220f8a8bb6",
-      "sha256": "26fbe1a9e9b3775cc2d24c31e01b7ed99435291204c8f1f124e39f9e2e2c38f2",
-      "reason": "FP-004 re-reviewed: only the trusted Kit import changes to /core. The SHA-256 request UUID, canonical input, org/user/principal fences and immutable target checks are byte-identical; no finding fingerprint, query, location or disposition is broadened."
-    },
-    {
-      "path": "apps/web/next.config.ts",
-      "previous_sha256": "5a4383a0b1a22ed19600df3bc34de5fecc690afb6dbf6e63388473ac6897b049",
-      "sha256": "985b5af80e9b30cdbaf097b95a1c18f4c56a1470febdb7b4dbb2fea79c470a8a",
-      "reason": "Re-reviewed for Kit42 using raw CodeQL run 39562029913: all three sink fingerprints, locations and code flows are unchanged. The only mismatched supporting source is next.config.ts, where trusted build aliases move from mail helpers to Host-owned structured-address/safe-rich-text/safe-uri/safe-raster. CSP, worker-src, child confinement, origin/identity readiness, one-port transfer and revocation are unchanged.",
-      "raw_sarif_sha256": "c55559612be8bd70a0c613d97e4fff1b451a0383db9da8a929fb0f8915329d34"
-    },
-    {
-      "path": "apps/web/src/components/apps/installed-app-experience.tsx",
-      "previous_sha256": "30a49eea1aad83bb40527027bcde1837fa8fa0906e62da7feae11911f45b463c",
-      "sha256": "9a096d791fd9d1f305f4fc2412e19863a918e09b26a8917d5e45deb1c000c691",
-      "reason": "Re-reviewed for FX-A PR #410 against fresh raw CodeQL run 39689516157 on commit f4c17114708faeef49600158c0a269df45aa1786. The three existing frame sinks move exactly three lines; normalizing those location and flow line offsets reproduces each prior exact fingerprint. Query, message, columns, partial fingerprints and every inner flow step are unchanged. Current-screen access state and feature-local read-error reporting do not change the Host-created allow-scripts-only opaque iframe, exact contentWindow/null-origin readiness, current identity/lease/visibility checks, one-port transfer or teardown revocation. No grant or finite authority deadline is extended.",
-      "source_commit": "f4c17114708faeef49600158c0a269df45aa1786",
-      "run_url": "https://github.com/Maneek21/Deft/actions/runs/39689516157",
-      "raw_sarif_sha256": "afebaad11408dc67df2be0d2b327c7bd381f119e08f63c5aabbfdb5cb3ed0f11"
     }
   ]
 }

@@ -28,6 +28,20 @@ const isolated=isolation.isolated.filter(name=>!dedicated.includes(name)&&name!=
 const ordinary=all.filter(name=>!dedicated.includes(name)&&!isolated.includes(name)&&name!==automation);
 assert.equal(new Set([...ordinary,...isolated,...dedicated,automation]).size,all.length,'Every API test must run exactly once');
 assert.equal(ordinary.length+isolated.length+dedicated.length+1,all.length);
+// CI runs the suite as parallel shards, each on its own runner and database.
+// Files are dealt round-robin from the sorted lists, so every shard computes
+// the same partition and the shards together still run every file once.
+// Shard 1 also owns the dedicated automation and mailbox-predecessor runs.
+const shard=/^([1-9]\d*)\/([1-9]\d*)$/.exec(process.env.DEFT_API_TEST_SHARD??'1/1');
+assert.ok(shard,'DEFT_API_TEST_SHARD must look like 2/4');
+const shardIndex=Number(shard[1]),shardCount=Number(shard[2]);
+assert.ok(shardIndex<=shardCount&&shardCount<=16,'DEFT_API_TEST_SHARD index must be within 1..count<=16');
+const inShard=list=>list.filter((_,position)=>position%shardCount===shardIndex-1);
+const shardIsolated=inShard(isolated),shardOrdinary=inShard(ordinary),ownsDedicated=shardIndex===1;
+// An empty file list would make the API test script fall back to every test.
+assert.ok(shardOrdinary.length>0,'Every shard must own at least one ordinary file');
+console.log(`[API shard] ${shardIndex}/${shardCount}: ${shardIsolated.length} isolated, ${shardOrdinary.length} ordinary`+
+ (ownsDedicated?`, ${dedicated.length+1} dedicated`:''));
 const main='postgres://postgres:postgres@localhost:5432/deft_test';
 assert.equal(process.env.CI,'true');
 assert.equal(process.env.DATABASE_URL,main);
@@ -102,18 +116,18 @@ assert.ok(run('seed canonical test fixtures',['exec','tsx','src/scripts/seed-tes
 assert.ok(run('seed canonical platform bundles',['exec','tsx','src/scripts/seed-platform-bundles.ts'],{},0));
 database.createTemplate();
 database.prepareAutomation();
-for(const name of isolated){
+for(const name of shardIsolated){
  database.restoreMain(name,'before');
  run(`isolated ${name}`,['exec','tsx','--experimental-test-module-mocks','--test',
   '--test-concurrency=1','--test-force-exit','test/'+name],{},1);
  database.restoreMain(name,'after');
 }
-run('ordinary',['test',...ordinary.map(name=>'test/'+name)],{},ordinary.length);
+run('ordinary',['test',...shardOrdinary.map(name=>'test/'+name)],{},shardOrdinary.length);
 const automationTarget='postgresql://gate_g_test@127.0.0.1:55435/gate_g_20260926_automation_renewal';
-run('dedicated automation renewal',['exec','tsx','--experimental-test-module-mocks','--test',
+if(ownsDedicated)run('dedicated automation renewal',['exec','tsx','--experimental-test-module-mocks','--test',
  '--test-concurrency=1','--test-force-exit','test/'+automation],
  {DATABASE_URL:automationTarget,DEFT_TEST_DATABASE_URL:automationTarget},1);
-for(const name of dedicated){
+for(const name of ownsDedicated?dedicated:[]){
  resetPredecessor();
  run(`mailbox predecessor ${name}`,['exec','tsx','--tsconfig','../../tsconfig.email-stage34.json','--test',
   '--experimental-test-module-mocks','--test-concurrency=1','--test-force-exit','test/'+name],

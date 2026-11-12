@@ -131,11 +131,18 @@ jobs:
       - name: Type check Web
         run: pnpm --filter @deft/web typecheck
 
-  test:
-    name: Test API
+  test-shard:
+    name: Test API (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
-    needs: typecheck
-    timeout-minutes: 45
+    # Start alongside Type Check rather than after it. Only the cheap gates
+    # block the shards; Build still requires Type Check and every shard.
+    needs: [release-scope, check-app-boundary]
+    timeout-minutes: 30
+    strategy:
+      # Let every shard finish so one failure does not hide another.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     services:
       postgres:
         image: pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
@@ -221,6 +228,7 @@ jobs:
       - name: Run tests
         env:
           DEFT_PREVIEW_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+          DEFT_API_TEST_SHARD: ${{ matrix.shard }}/4
         run: pnpm run test:email-preview-api
       - name: Preserve dedicated database logs and stop this runner fixture
         if: always()
@@ -235,10 +243,25 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: platform-api-isolation-${{ github.run_id }}
+          name: platform-api-isolation-${{ github.run_id }}-shard-${{ matrix.shard }}
           path: .ci-api-diagnostics/
           include-hidden-files: true
           if-no-files-found: warn
+
+  # The required "Test API" check and Build's `needs.test` both point here, so
+  # they pass only when every shard passed.
+  test:
+    name: Test API
+    runs-on: ubuntu-latest
+    needs: test-shard
+    if: ${{ !cancelled() }}
+    steps:
+      - name: Require every API test shard
+        if: needs.test-shard.result != 'success'
+        run: |
+          echo "API test shards finished with: ${{ needs.test-shard.result }}" >&2
+          exit 1
+      - run: echo "All API test shards passed"
 
   hermes-release-gate:
     name: Hermes Employee Release Gate
