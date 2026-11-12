@@ -6,6 +6,7 @@ import useSWRInfinite from 'swr/infinite';
 import { ModuleRelatedLatestResponseSchema } from '@deft/shared/modules';
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
+import { createCoalescedRefetch } from '@/lib/task-event-refetch';
 import { useAuth } from '@/lib/auth-context';
 import {
   getActiveSessionCacheScope,
@@ -426,13 +427,16 @@ export function useModuleRealtime(slug?: string) {
       'module:record_updated',
       'module:record_deleted',
     ] as const;
-    const invalidateTasks = () => {
+    // Task events carry ids only; revalidate the task caches once per burst.
+    const taskRefetch = createCoalescedRefetch(() => {
       void invalidateModuleTaskRealtimeCaches(sessionCacheScope, slug);
-    };
+    });
+    const invalidateTasks = () => taskRefetch.schedule();
     const taskEvents = ['task:created', 'task:updated', 'task:bulk_updated', 'task:deleted'] as const;
     taskEvents.forEach((event) => socket.on(event, invalidateTasks));
     events.forEach((event) => socket.on(event, invalidate));
     return () => {
+      taskRefetch.cancel();
       events.forEach((event) => socket.off(event, invalidate));
       taskEvents.forEach((event) => socket.off(event, invalidateTasks));
     };

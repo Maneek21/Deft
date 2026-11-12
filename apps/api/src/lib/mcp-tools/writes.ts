@@ -505,16 +505,9 @@ export async function executeTaskCreate(
     const task = bundle.parent;
 
     try {
-      const { getIO } = await import('../../socket.js');
-      const io = getIO();
-      if (io) {
-        for (const createdTask of bundle.allTasks) {
-          io.to(`org:${ctx.org_id}`).emit('task:created', {
-            ...createdTask,
-            project_prefix: project.prefix,
-            project_name: project.name,
-          });
-        }
+      const { emitOrgTaskEvent } = await import('../../socket.js');
+      for (const createdTask of bundle.allTasks) {
+        emitOrgTaskEvent(ctx.org_id, 'task:created', { id: createdTask.id, project_id: createdTask.project_id });
       }
     } catch {
       // Socket broadcast is best-effort in tests and headless workers.
@@ -847,20 +840,12 @@ export async function executeTaskUpdate(
       }
 
       try {
-        const { getIO } = await import('../../socket.js');
-        const [project] = await db
-          .select({ prefix: projects.prefix, name: projects.name })
-          .from(projects)
-          .where(eq(projects.id, row.project_id))
-          .limit(1);
-        const io = getIO();
-        if (io) {
-          io.to(`org:${ctx.org_id}`).emit('task:updated', {
-            ...row,
-            project_prefix: project?.prefix,
-            project_name: project?.name,
-          });
-        }
+        const { emitOrgTaskEvent } = await import('../../socket.js');
+        emitOrgTaskEvent(ctx.org_id, 'task:updated', {
+          id: row.id,
+          project_id: row.project_id,
+          changed_fields: Object.keys(update).filter((field) => field !== 'updated_at'),
+        });
       } catch {
         // Socket broadcast is best-effort in tests and headless workers.
       }
