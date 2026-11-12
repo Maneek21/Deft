@@ -174,6 +174,27 @@ test('TTL terminalizes module actions with one verified receipt and closes linke
     },
   });
 
+  // A non-capture module action naming another intent is terminalized too,
+  // but that intent stays as it was.
+  const untouchedIntentId = await insertWorkIntent(TTL_EMPLOYEE_ID, 'ttl-untouched');
+  await insertPendingAction({
+    employeeId: TTL_EMPLOYEE_ID,
+    shadowUserId: TTL_SHADOW_ID,
+    action: 'module_record_update',
+    stale: true,
+    params: {
+      module_id: 'com.deft.contacts',
+      collection_key: 'contacts',
+      record_id: `ttl-untouched-record-${suffix}`,
+      expected_manifest_digest: `sha256:${'a'.repeat(64)}`,
+      expected_revision: 1,
+      patch: { notes: 'untouched' },
+      unset_fields: [],
+      idempotency_key: `ttl-untouched-key-${suffix}`,
+      work_intent_id: untouchedIntentId,
+    },
+  });
+
   const first = await maintainAttentionSystem(new Date());
   assert.ok(first.expired >= 1);
   await maintainAttentionSystem(new Date());
@@ -216,6 +237,11 @@ test('TTL terminalizes module actions with one verified receipt and closes linke
   );
   assert.equal(intent.rows[0].status, 'expired');
   assert.equal(intent.rows[0].failure_reason, 'Approval expired');
+  const untouched = await client.query(
+    'SELECT status, converted_action_id, failure_reason FROM work_intents WHERE id = $1',
+    [untouchedIntentId],
+  );
+  assert.deepEqual(untouched.rows[0], { status: 'proposed', converted_action_id: null, failure_reason: null });
 });
 
 test('employee DELETE uses module terminalization while preserving generic expiry behavior', { skip: !canRun }, async () => {

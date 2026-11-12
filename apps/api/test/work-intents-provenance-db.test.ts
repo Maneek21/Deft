@@ -42,6 +42,7 @@ async function insertAction(input: {
   source: string;
   workIntentId: string;
   orgId?: string;
+  storedParams?: Record<string, unknown>;
 }): Promise<{ id: string; params: Record<string, unknown> }> {
   assert.ok(client);
   const params = { title: 'Provenance task', work_intent_id: input.workIntentId };
@@ -50,7 +51,7 @@ async function insertAction(input: {
        (id, org_id, user_id, source, action, params, approval_tier, approval_status)
      VALUES (gen_random_uuid()::text, $1, $2, $3, 'task_create', $4::jsonb, 'quick', 'pending')
      RETURNING id`,
-    [input.orgId ?? ORG_ID, AGENT_USER_ID, input.source, JSON.stringify(params)],
+    [input.orgId ?? ORG_ID, AGENT_USER_ID, input.source, JSON.stringify(input.storedParams ?? params)],
   );
   return { id: result.rows[0].id as string, params };
 }
@@ -58,11 +59,18 @@ async function insertAction(input: {
 async function intentRow(id: string) {
   assert.ok(client);
   const result = await client.query(
-    `SELECT status, converted_action_id, converted_by, dismissed_by, failure_reason
+    `SELECT status, converted_action_id, converted_task_id, converted_by, converted_at,
+            dismissed_by, dismissed_at, failure_reason, metadata
        FROM work_intents WHERE id = $1`,
     [id],
   );
   return result.rows[0];
+}
+
+/** Every intent field the lifecycle helpers can write must stay as it was. */
+async function assertIntentUnchanged(id: string, before: Record<string, unknown>) {
+  assert.deepEqual(await intentRow(id), before);
+  assert.equal(before.status, 'proposed');
 }
 
 type Helper = (action: { id: string; params: unknown }, orgId: string) => Promise<unknown>;
@@ -75,7 +83,7 @@ const helpers: Array<{ name: string; status: string; apply: Helper }> = [
       actionId: action.id,
       orgId,
       actionParams: action.params,
-      result: { task_id: null },
+      result: { task_id: null, slug: 'provenance-page', title: 'Provenance page', type: 'doc' },
       convertedBy: OWNER_ID,
     }),
   },
@@ -149,28 +157,37 @@ for (const helper of helpers) {
 
   test(`work-intent ${helper.name} leaves the intent unchanged for a non-capture action`, { skip: !canRun }, async () => {
     const intentId = await insertIntent();
+    const before = await intentRow(intentId);
     for (const source of ['mcp', 'mcp_api', 'defty', 'agent_chat']) {
       const action = await insertAction({ source, workIntentId: intentId });
       await helper.apply(action, ORG_ID);
     }
-    const row = await intentRow(intentId);
-    assert.equal(row.status, 'proposed');
-    assert.equal(row.converted_action_id, null);
+    await assertIntentUnchanged(intentId, before);
+  });
+
+  test(`work-intent ${helper.name} leaves the intent unchanged for a non-capture action with scrubbed params`, { skip: !canRun }, async () => {
+    const intentId = await insertIntent();
+    const before = await intentRow(intentId);
+    for (const storedParams of [{}, { changed_fields: ['email'] }]) {
+      const action = await insertAction({ source: 'mcp', workIntentId: intentId, storedParams });
+      await helper.apply(action, ORG_ID);
+    }
+    await assertIntentUnchanged(intentId, before);
   });
 
   test(`work-intent ${helper.name} leaves the intent unchanged for another intent's capture action`, { skip: !canRun }, async () => {
     const intentId = await insertIntent();
+    const before = await intentRow(intentId);
     const otherIntentId = await insertIntent();
     const otherCapture = await insertAction({ source: 'defty_capture', workIntentId: otherIntentId });
     await helper.apply({ id: otherCapture.id, params: { work_intent_id: intentId } }, ORG_ID);
-    const row = await intentRow(intentId);
-    assert.equal(row.status, 'proposed');
-    assert.equal(row.converted_action_id, null);
+    await assertIntentUnchanged(intentId, before);
     assert.equal((await intentRow(otherIntentId)).status, 'proposed');
   });
 
   test(`work-intent ${helper.name} leaves the intent unchanged for a capture action in another org`, { skip: !canRun }, async () => {
     const intentId = await insertIntent();
+    const before = await intentRow(intentId);
     const foreign = await insertAction({
       source: 'defty_capture',
       workIntentId: intentId,
@@ -178,9 +195,7 @@ for (const helper of helpers) {
     });
     await helper.apply(foreign, ORG_ID);
     await helper.apply(foreign, OTHER_ORG_ID);
-    const row = await intentRow(intentId);
-    assert.equal(row.status, 'proposed');
-    assert.equal(row.converted_action_id, null);
+    await assertIntentUnchanged(intentId, before);
   });
 }
 
