@@ -1,47 +1,74 @@
-/** Exact reviewed false positives; preserve raw SARIF and fail unknown/changed findings. */
+/** Content-pinned reviewed false positives; preserve raw SARIF and fail unknown/changed paths. */
 import {createHash} from 'node:crypto';
 import {readFileSync,readdirSync,writeFileSync,mkdirSync,lstatSync,realpathSync} from 'node:fs';
-import {resolve,relative,join} from 'node:path';
+import {resolve,relative,join,isAbsolute,sep} from 'node:path';
 import {pathToFileURL} from 'node:url';
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const need=(value,reason)=>{if(!value)throw Error(reason);};
 const safePath=value=>typeof value==='string'&&/^[A-Za-z0-9_.\/-]+$/u.test(value)&&!value.startsWith('/')&&!value.includes(String.fromCharCode(92))&&value.split('/').every(part=>part&&part!=='.'&&part!=='..');
 function canonical(value){
  if(Array.isArray(value))return value.map(canonical);
- if(value&&typeof value==='object')return Object.fromEntries(Object.keys(value).sort().filter(key=>!(key==='index'&&('uri' in value||'uriBaseId' in value))).map(key=>[key,canonical(value[key])]));
+ if(value&&typeof value==='object')return Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])]));
  return value;
 }
-export function findingFingerprint(result){
+function sourceReader(repositoryRoot){
+ const root=realpathSync(repositoryRoot),files=new Map();
+ return (uri,region)=>{
+  need(safePath(uri),'INVALID_SOURCE_PATH');
+  if(!files.has(uri)){
+   // Reject directory symlinks/junctions as well as symlink files, even inside root.
+   let path=root;
+   for(const part of uri.split('/')){path=join(path,part);need(!lstatSync(path).isSymbolicLink(),'SYMLINK_SOURCE');}
+   const rel=relative(root,realpathSync(path));
+   need(rel!== '..'&&!rel.startsWith(`..${sep}`)&&!isAbsolute(rel)&&lstatSync(path).isFile(),'OUTSIDE_OR_INVALID_SOURCE');
+   const text=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(readFileSync(path));
+   const lines=text===''?[]:text.split(/\r\n|\n|\r/u);
+   if(text.endsWith('\n')||text.endsWith('\r'))lines.pop();
+   files.set(uri,lines);
+  }
+  const lines=files.get(uri),start=region?.startLine,end=region?.endLine??start;
+  need(Number.isSafeInteger(start)&&Number.isSafeInteger(end)&&start>0&&end>=start&&end<=lines.length,'INVALID_SOURCE_REGION');
+  return lines.slice(start-1,end).map(line=>line.trimEnd()).join('\n');
+ };
+}
+function fingerprintV2(result,readSource){
+ need(typeof result.ruleId==='string'&&typeof result.message?.text==='string'&&(result.level===undefined||typeof result.level==='string'),'INVALID_RESULT');
+ const location=loc=>{
+  const physical=loc?.physicalLocation,uri=physical?.artifactLocation?.uri;
+  need(loc?.message===undefined||typeof loc.message.text==='string','INVALID_LOCATION_MESSAGE');
+  return {uri,...(loc.message===undefined?{}:{message:loc.message.text}),code:readSource(uri,physical?.region)};
+ };
+ const primary=location(result.locations?.[0]);
+ const lineHash=result.partialFingerprints?.primaryLocationLineHash;
+ need(lineHash===undefined||typeof lineHash==='string','INVALID_LINE_HASH');
  // Only independent outer flows are unordered; retain every inner path, step and duplicate.
- const codeFlows=(result.codeFlows??[]).map(canonical).sort((a,b)=>{const x=JSON.stringify(a),y=JSON.stringify(b);return x<y?-1:x>y?1:0;});
- return hash(JSON.stringify(canonical({rule:result.ruleId,level:result.level??'warning',message:result.message,locations:result.locations,partialFingerprints:result.partialFingerprints??{},codeFlows})));
+ const codeFlows=(result.codeFlows??[]).map(flow=>({threadFlows:flow.threadFlows.map(thread=>({locations:thread.locations.map(step=>location(step.location))}))})).map(canonical).sort((a,b)=>{const x=JSON.stringify(a),y=JSON.stringify(b);return x<y?-1:x>y?1:0;});
+ return hash(JSON.stringify(canonical({rule:result.ruleId,level:result.level??'warning',message:result.message.text,uri:primary.uri,...(lineHash===undefined?{}:{primaryLocationLineHash:lineHash}),primary,codeFlows})));
+}
+export function findingFingerprint(result,repositoryRoot=process.cwd()){
+ return fingerprintV2(result,sourceReader(repositoryRoot));
 }
 export function reviewSarif(original,review,repositoryRoot){
- need(original.version==='2.1.0'&&Array.isArray(original.runs)&&original.runs.length>0,'INVALID_SARIF');
- need(review.schema_version==='deft.codeql_false_positives.v1'&&Array.isArray(review.findings)&&review.sources&&typeof review.sources==='object','INVALID_REVIEW');
- const root=realpathSync(repositoryRoot),ids=new Set(),fingerprints=new Set();
+ need(original?.version==='2.1.0'&&Array.isArray(original.runs)&&original.runs.length>0,'INVALID_SARIF');
+ need(review?.schema_version==='deft.codeql_false_positives.v2'&&Array.isArray(review.findings)&&typeof review.review_source_commit==='string'&&typeof review.review_original_sarif_sha256==='string'&&/^[a-f0-9]{40}$/u.test(review.review_source_commit)&&/^[a-f0-9]{64}$/u.test(review.review_original_sarif_sha256)&&Object.keys(review).every(key=>['schema_version','review_source_commit','review_original_sarif_sha256','findings'].includes(key)),'INVALID_REVIEW');
+ const readSource=sourceReader(repositoryRoot),ids=new Set(),fingerprints=new Set();
  for(const entry of review.findings){
-  need(typeof entry.id==='string'&&!ids.has(entry.id)&&!fingerprints.has(entry.fingerprint),'DUPLICATE_REVIEW');ids.add(entry.id);fingerprints.add(entry.fingerprint);
-  need(entry.disposition==='false_positive'&&typeof entry.rule==='string'&&safePath(entry.path)&&Number.isSafeInteger(entry.line)&&entry.line>0&&/^[a-f0-9]{64}$/u.test(entry.fingerprint)&&typeof entry.justification==='string'&&entry.justification.length>=80&&Array.isArray(entry.sources)&&entry.sources.includes(entry.path),'INVALID_REVIEW');
-  for(const source of entry.sources)need(safePath(source)&&/^[a-f0-9]{64}$/u.test(review.sources[source]??''),'INVALID_REVIEW_SOURCE');
+  need(entry&&typeof entry.id==='string'&&entry.id.length>0&&entry.disposition==='false_positive'&&typeof entry.rule==='string'&&entry.rule.length>0&&safePath(entry.path)&&Number.isSafeInteger(entry.line)&&entry.line>0&&typeof entry.fingerprint_v2==='string'&&/^[a-f0-9]{64}$/u.test(entry.fingerprint_v2)&&typeof entry.justification==='string'&&entry.justification.length>=80&&Object.keys(entry).every(key=>['id','rule','path','line','fingerprint_v2','disposition','justification'].includes(key)),'INVALID_REVIEW');
+  need(!ids.has(entry.id)&&!fingerprints.has(entry.fingerprint_v2),'DUPLICATE_REVIEW');ids.add(entry.id);fingerprints.add(entry.fingerprint_v2);
  }
- const sourceHashes=new Map(),sourceMatches=source=>{
-  if(!sourceHashes.has(source)){
-   let digest=null;try{const path=join(root,source);if(lstatSync(path).isFile()&&!lstatSync(path).isSymbolicLink()&&!relative(root,realpathSync(path)).startsWith('..'))digest=hash(readFileSync(path));}catch{/* Missing source cannot carry an accepted disposition. */}
-   sourceHashes.set(source,digest);
-  }return sourceHashes.get(source)===review.sources[source];
- };
  const sarif=structuredClone(original),used=new Set(),findings=[];
  for(const run of sarif.runs){
   need(run.tool?.driver?.name==='CodeQL'&&Array.isArray(run.results),'CODEQL_RESULTS_REQUIRED');
   for(const result of run.results){
-   const location=result.locations?.[0]?.physicalLocation,path=location?.artifactLocation?.uri,line=location?.region?.startLine,fingerprint=findingFingerprint(result);
-   const entry=review.findings.find(row=>row.rule===result.ruleId&&row.path===path&&row.line===line&&row.fingerprint===fingerprint);
-   // Incoming suppressions never authorize a disposition. Only this exact source review does.
+   const path=result.locations?.[0]?.physicalLocation?.artifactLocation?.uri;
+   let fingerprint=null;
+   try{fingerprint=fingerprintV2(result,readSource);}catch{/* Invalid/missing source or region cannot inherit a review. */}
+   const entry=review.findings.find(row=>row.rule===result.ruleId&&row.path===path&&row.fingerprint_v2===fingerprint);
+   // Incoming suppressions never authorize a disposition. Only this content review does.
    result.suppressions=[];
-   let reason=entry?'reviewed_source_changed':'unreviewed_finding';
+   let reason=fingerprint===null?'reviewed_source_changed':'unreviewed_finding';
    if(entry&&used.has(entry.id))reason='duplicate_finding';
-   else if(entry&&entry.sources.every(sourceMatches)){
+   else if(entry){
     used.add(entry.id);reason='reviewed_false_positive';
     result.suppressions=[{kind:'external',status:'accepted',justification:entry.justification,location:{physicalLocation:{artifactLocation:{uri:'.github/codeql-reviewed-false-positives.json'}}},properties:{review_id:entry.id}}];
    }
