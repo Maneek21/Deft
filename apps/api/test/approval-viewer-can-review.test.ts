@@ -213,8 +213,8 @@ for (const kind of ['defty', 'employee', 'employee_for_requester', 'record_mirro
   }
 }
 
-test('B-review: App Run approval rows keep their review controls', { skip: !canRun, timeout: 900_000 }, async (t) => {
-  const { viewerReviewAuthority } = await import('../src/lib/agent-approval-resolver.js');
+/** A pending App Run approval requested by the fixture requester, optionally run by the employee. */
+async function appRunApproval(t: { after: (fn: () => Promise<void>) => void }, agentEmployeeId: string | null = null): Promise<string> {
   const actionId = randomUUID();
   const runId = randomUUID();
   const snapshotId = randomUUID();
@@ -222,7 +222,7 @@ test('B-review: App Run approval rows keep their review controls', { skip: !canR
     `INSERT INTO capability_provider_snapshots (id, org_id, provider_kind, provider_instance_id, adapter_contract_version,
        snapshot_digest, safe_snapshot, captured_at)
      VALUES ($1, $2, 'mcp', 'review-flag-connection', 'deft.capability.v1', $3, '{}'::jsonb, now())`,
-    [snapshotId, f.orgId, `sha256:${'3'.repeat(64)}`],
+    [snapshotId, f.orgId, `sha256:${randomUUID().replace(/-/g, '').padEnd(64, '0')}`],
   );
   await f.client.query(
     `INSERT INTO app_runs (id, org_id, contract_version, origin_kind, initiating_actor_type, initiating_actor_id,
@@ -237,9 +237,9 @@ test('B-review: App Run approval rows keep their review controls', { skip: !canR
     [runId, f.orgId, f.requesterId, `hmac-sha256:${'1'.repeat(64)}`, `hmac-sha256:${'2'.repeat(64)}`, snapshotId],
   );
   await f.client.query(
-    `INSERT INTO agent_actions (id, org_id, user_id, source, app_run_id, action, params, approval_tier, approval_status)
-     VALUES ($1, $2, $3, 'app_run', $4, 'app_run_invoke', $5::jsonb, 'full', 'pending')`,
-    [actionId, f.orgId, f.requesterId, runId, JSON.stringify({ run_id: runId })],
+    `INSERT INTO agent_actions (id, org_id, user_id, agent_employee_id, source, app_run_id, action, params, approval_tier, approval_status)
+     VALUES ($1, $2, $3, $6, 'app_run', $4, 'app_run_invoke', $5::jsonb, 'full', 'pending')`,
+    [actionId, f.orgId, f.requesterId, runId, JSON.stringify({ run_id: runId }), agentEmployeeId],
   );
   t.after(async () => {
     await f.client.query('DELETE FROM attention_items WHERE org_id = $1', [f.orgId]).catch(() => undefined);
@@ -247,6 +247,12 @@ test('B-review: App Run approval rows keep their review controls', { skip: !canR
     await f.client.query('DELETE FROM app_runs WHERE id = $1', [runId]).catch(() => undefined);
     await f.client.query('DELETE FROM capability_provider_snapshots WHERE id = $1', [snapshotId]).catch(() => undefined);
   });
+  return actionId;
+}
+
+test('B-review: App Run approval rows keep their review controls', { skip: !canRun, timeout: 900_000 }, async (t) => {
+  const { viewerReviewAuthority } = await import('../src/lib/agent-approval-resolver.js');
+  const actionId = await appRunApproval(t);
   // The App Run path decides who may release a run, with checks that need the
   // live web session; the rows carry no flags, so the card keeps its controls.
   assert.equal((await viewerReviewAuthority({ id: f.requesterId, org_id: f.orgId, role: 'member' }, [actionId])).has(actionId), false);
@@ -262,4 +268,26 @@ test('B-review: App Run approval rows keep their review controls', { skip: !canR
   assert.notEqual(response.status, 404, await response.clone().text());
   const body = await response.json() as { error?: string };
   assert.equal(REVIEWER_REFUSALS.has(body.error ?? ''), false, JSON.stringify(body));
+});
+
+test('B-review: an App Run approval answers false to a guest who did not request it', { skip: !canRun, timeout: 900_000 }, async (t) => {
+  const { viewerReviewAuthority } = await import('../src/lib/agent-approval-resolver.js');
+  const actionId = await appRunApproval(t, employeeId);
+  // An assigned guest passes the review gate for an employee's App Run, but no reviewer rule admits a
+  // guest who did not request the action, on approval or rejection.
+  await f.client.query("INSERT INTO agent_action_approvers (id, org_id, action_id, user_id, decision) VALUES ($1, $2, $3, $4, 'pending')",
+    [randomUUID(), f.orgId, actionId, assignedGuestId]);
+  const guest = { id: assignedGuestId, org_id: f.orgId, role: 'guest' };
+  const { reviewableActionSql } = await import('../src/lib/agent-action-review-gate.js');
+  const { db } = await import('../src/lib/db.js');
+  const { agentActions } = await import('@deft/db/schema');
+  const { and, eq } = await import('drizzle-orm');
+  const admitted = await db.select({ id: agentActions.id }).from(agentActions)
+    .where(and(eq(agentActions.id, actionId), reviewableActionSql(guest)));
+  assert.equal(admitted.length, 1, 'the review gate admits the assigned guest');
+  assert.deepEqual((await viewerReviewAuthority(guest, [actionId])).get(actionId), { viewer_can_approve: false, viewer_can_reject: false });
+  for (const decision of ['reject', 'approve'] as const) {
+    assert.equal(await routeAccepts(assignedGuestId, actionId, decision), false, decision);
+  }
+  assert.equal((await f.client.query('SELECT approval_status FROM agent_actions WHERE id = $1', [actionId])).rows[0].approval_status, 'pending');
 });
