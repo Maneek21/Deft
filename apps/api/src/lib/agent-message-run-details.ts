@@ -140,14 +140,26 @@ export function projectAgentMessageMetadata<T>(metadata: T, withDetails: boolean
 
 const RESULT_ACTION_KEYS = ['approval_execution_result_for_action_id', 'approval_rejection_result_for_action_id', 'agent_action_id'] as const;
 
-/** The action a result row reports on, when it names exactly one. */
-function resultActionId(metadata: unknown): string | null {
+/** Stands for a result row whose markers name no single resolvable action. */
+const UNRESOLVABLE_ACTION = Symbol('unresolvable-action');
+
+/**
+ * The action a result row reports on. Null when the row carries no result
+ * marker. A marker that is not a valid id, or markers that name different
+ * actions, resolve to no action: such a row's details go to owners/admins only
+ * and never fall through to authorship.
+ */
+function resultActionId(metadata: unknown): string | typeof UNRESOLVABLE_ACTION | null {
   if (!isRecord(metadata)) return null;
+  const named = new Set<string>();
   for (const key of RESULT_ACTION_KEYS) {
+    if (!Object.hasOwn(metadata, key)) continue;
     const value = metadata[key];
-    if (typeof value === 'string' && value.length > 0 && value.length <= 255) return value;
+    if (typeof value !== 'string' || value.length === 0 || value.length > 255) return UNRESOLVABLE_ACTION;
+    named.add(value);
   }
-  return null;
+  if (named.size > 1) return UNRESOLVABLE_ACTION;
+  return named.values().next().value ?? null;
 }
 
 /** Ids of the given messages whose run details this viewer may receive. */
@@ -161,19 +173,20 @@ export async function agentRunDetailAudience(viewer: MessageDetailViewer, rows: 
   // rejection result, an agent document) has exactly that action's audience
   // under the shared rule. Its author (for example the approver) gets nothing
   // from authorship.
-  const resultRows = new Map<string, string>();
+  const resultRows = new Map<string, string | typeof UNRESOLVABLE_ACTION>();
   for (const row of candidates) {
     const actionId = resultActionId(row.metadata);
     if (actionId) resultRows.set(row.id, actionId);
   }
-  if (resultRows.size > 0) {
+  const namedActions = [...new Set(resultRows.values())].filter((id): id is string => typeof id === 'string');
+  if (namedActions.length > 0) {
     const visible = await db.select({ id: agentActions.id }).from(agentActions).where(and(
       eq(agentActions.org_id, viewer.org_id),
-      inArray(agentActions.id, [...new Set(resultRows.values())]),
+      inArray(agentActions.id, namedActions),
       visibleModuleActionSql(viewer.role ?? undefined, { userId: viewer.id, orgId: viewer.org_id }),
     ));
     const visibleIds = new Set(visible.map((row) => row.id));
-    for (const [messageId, actionId] of resultRows) if (visibleIds.has(actionId)) granted.add(messageId);
+    for (const [messageId, actionId] of resultRows) if (typeof actionId === 'string' && visibleIds.has(actionId)) granted.add(messageId);
   }
   const resolved = (row: DetailMessage) => resultRows.has(row.id) || granted.has(row.id);
 

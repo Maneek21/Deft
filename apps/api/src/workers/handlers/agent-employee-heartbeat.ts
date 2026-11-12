@@ -66,12 +66,13 @@ async function logHeartbeatTurn(params: {
       .returning();
     const io = getIO();
     if (io && row) {
+      // Org-wide: the tick and its outcome. The summary (a slice of the
+      // heartbeat prompt) stays in the owner/admin heartbeat feed.
       io.to(`org:${params.orgId}`).emit('agent:heartbeat:turn', {
         id: row.id,
         agent_employee_id: row.agent_employee_id,
         fired_at: row.fired_at,
         outcome: row.outcome,
-        summary: row.summary,
         cadence_minutes: row.cadence_minutes,
       });
     }
@@ -141,9 +142,11 @@ async function detectActionLoop(
 
     const unique = new Set(signals);
     if (unique.size === 1) {
+      // The reason is shown to every org member with the employee's health:
+      // it names the action kind, never the repeated title or message text.
       return {
         loop: true,
-        reason: `loop detected: 5 consecutive identical actions (${[...unique][0]})`,
+        reason: `loop detected: 5 consecutive identical ${rows[0]!.action} actions`,
       };
     }
     return { loop: false };

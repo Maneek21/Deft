@@ -3,7 +3,7 @@ import { NativeMentionContent } from '@/components/native-mention-content';
 import { NativeMentionPublish } from '@/components/native-mention-publish';
 import { NativeMentionBacklinks } from '@/components/native-mention-backlinks';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { appIntegrationTaskSourceHref } from '@/lib/app-integration-task-source';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
@@ -52,6 +52,7 @@ import {
   Repeat,
 } from 'lucide-react';
 import { statusLabel } from '@/lib/task-status-labels';
+import { createCoalescedRefresh, createSnapshotGuard, progressAfterRead, progressFromEvent, TERMINAL_AGENT_PROGRESS_STATUSES, type TaskAgentProgressEvent } from '@/lib/task-agent-progress';
 import { useProjectResolvedConfig, priorityLabel, priorityFullLabel, type CanonicalPriority } from '@/hooks/use-project-resolved-config';
 
 // Register built-in slash menu commands (idempotent).
@@ -882,6 +883,21 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
     loadTask();
   }, [loadTask]);
 
+  // Step text comes from the task read, which only readers of the task get;
+  // progress events carry state only. A burst of events refreshes it once at a time.
+  // A terminal event reloads the whole task; a progress read that started
+  // before it must not be applied afterwards.
+  const progressSnapshots = useMemo(() => createSnapshotGuard(), [taskId]);
+  const refreshAgentProgress = useMemo(() => createCoalescedRefresh(async () => {
+    const isCurrent = progressSnapshots.capture();
+    const res = await api.get(`/api/tasks/${taskId}`);
+    if (activeTaskId.current !== taskId || !res.ok || !isCurrent()) return;
+    const data = await res.json();
+    if (activeTaskId.current !== taskId || !isCurrent()) return;
+    setAgentOutcome(data.agent_outcome || null);
+    setAgentProgress((current) => progressAfterRead(current, data));
+  }), [taskId, progressSnapshots]);
+
   // Socket: live updates for the currently-open task
   useEffect(() => {
     const token = typeof window !== 'undefined' ? localStorage.getItem('deft-access-token') : null;
@@ -899,27 +915,16 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
     };
 
     // Task 3.10 — live agent progress. The server emits to `org:${orgId}`,
-    // so we filter by task_id here.
-    const onAgentProgress = (payload: {
-      task_id: string;
-      agent_employee_id: string | null;
-      step_index: number;
-      step_description: string;
-      status: 'queued' | 'pending' | 'delivered' | 'acknowledged' | 'started' | 'approval_pending' | 'needs_human' | 'blocked' | 'completed' | 'failed' | 'cancelled';
-      total_steps: number;
-      error?: string;
-    }) => {
+    // so we filter by task_id here. The event's neutral state shows until the
+    // task read returns the step text.
+    const onAgentProgress = (payload: TaskAgentProgressEvent) => {
       if (payload.task_id !== taskId) return;
-      setAgentProgress({
-        agent_employee_id: payload.agent_employee_id,
-        step_index: payload.step_index,
-        step_description: payload.step_description,
-        status: payload.status,
-        total_steps: payload.total_steps,
-        error: payload.error,
-      });
-      if (['completed', 'failed', 'cancelled', 'needs_human', 'blocked'].includes(payload.status)) {
+      setAgentProgress(progressFromEvent(payload));
+      if (TERMINAL_AGENT_PROGRESS_STATUSES.includes(payload.status)) {
+        progressSnapshots.invalidate();
         void loadTask();
+      } else {
+        void refreshAgentProgress();
       }
     };
 
@@ -931,7 +936,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
       socket.off('task:deleted', onDeleted);
       socket.off('task:agent_progress', onAgentProgress);
     };
-  }, [taskId, loadTask, onClose]);
+  }, [taskId, loadTask, onClose, refreshAgentProgress, progressSnapshots]);
 
   // Task 3.10 — auto-dismiss the agent progress strip once the agent has
   // finished. Completed steps clear after 5s; failed steps linger 30s so the

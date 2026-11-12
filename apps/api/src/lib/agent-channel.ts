@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import bcrypt from 'bcryptjs';
-import { and, desc, eq, gt, inArray, isNotNull, isNull, notInArray, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNotNull, isNull, notInArray, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { db } from './db.js';
 import {
   agentChannelConnections,
@@ -439,15 +439,31 @@ export async function touchAgentChannelConnection(
     .returning();
 
   if (connection) {
+    // Every org socket receives presence: neutral status only. The error text
+    // stays in the owner/admin diagnostics reads.
     getIO()?.to(`org:${principal.org_id}`).emit('agent:presence', {
       employee_id: principal.employee_id,
       status: connection.status,
       runtime_kind: connection.runtime_kind,
       last_seen_at: connection.last_seen_at?.toISOString() ?? now.toISOString(),
-      last_error: connection.last_error ?? null,
+      has_error: Boolean(connection.last_error),
     });
   }
   return connection ?? null;
+}
+
+/**
+ * Free text an employee run produced for one channel event (outcome detail,
+ * error) is for readers of the event's source under the
+ * employee source rule: the employee's current access to the source and the
+ * reader's own access to it. An event without a space or task source has no
+ * reader audience; its text stays with owners/admins.
+ */
+export function channelEventTextAudienceSql(eventId: SQLWrapper, readerUserId: SQLWrapper): SQL {
+  return sql`exists (select 1 from agent_channel_events text_event
+    where text_event.id = ${eventId}
+      and (text_event.space_id is not null or (text_event.source_kind = 'task' and text_event.source_id is not null))
+      and ${currentAgentChannelEventAuthoritySql(sql`text_event.id`, readerUserId)})`;
 }
 
 export async function updateAgentChannelCursor(params: {
