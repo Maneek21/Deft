@@ -9,7 +9,7 @@ import { after, beforeEach, mock, test } from 'node:test';
 
 type Call = { tools: Array<{ name: string }>; messages: unknown[]; system: string };
 const providerCalls: Call[] = [];
-let nextResponses: Array<{ content: any[]; stop_reason: string }> = [];
+let nextResponses: Array<{ content: any[]; stop_reason: string } | Error> = [];
 const counters = { installed: 0, mcp: 0, execute: 0, retrieve: 0 };
 
 const actualLlm = await import('../src/lib/agent-llm.js');
@@ -18,6 +18,7 @@ mock.module(new URL('../src/lib/agent-llm.ts', import.meta.url).href, { namedExp
   createAgentMessage: async (p: any) => {
     providerCalls.push({ tools: p.tools.map((t: any) => ({ name: t.name })), messages: p.messages, system: p.system });
     const next = nextResponses.shift() ?? { content: [{ type: 'text', text: 'done' }], stop_reason: 'end_turn' };
+    if (next instanceof Error) throw next;
     return { ...next, usage: { input_tokens: 11, output_tokens: 7 } };
   },
 } });
@@ -113,6 +114,18 @@ test('W2-a6-Y: toolPolicy none rejects a tool call even when the model marks the
   nextResponses = [{ content: [{ type: 'text', text: 'draft' }, { type: 'tool_use', id: 'tu-1', name: 'search_messages', input: {} }], stop_reason: 'end_turn' }];
   await assert.rejects(runAgentQuery({ ...standupLikeCall, toolPolicy: 'none' } as any), /no tools/i);
   assert.equal(counters.execute, 0);
+});
+
+test('W2-a6-Y: toolPolicy none passes a provider failure (e.g. a malformed tool call) to the caller', async () => {
+  nextResponses = [new Error('OpenAI Responses function_call arguments are not valid JSON')];
+  await assert.rejects(runAgentQuery({ ...standupLikeCall, toolPolicy: 'none' } as any), /not valid JSON/);
+  assert.equal(counters.execute, 0);
+});
+
+test('W2-a6-Y: the default policy still answers a provider failure with the retry text', async () => {
+  nextResponses = [new Error('provider down')];
+  const response = await runAgentQuery({ ...standupLikeCall });
+  assert.match(response.text, /did not return a usable response/);
 });
 
 test('W2-a6-Y: the default policy still advertises the native tool list and dispatches reads', async () => {

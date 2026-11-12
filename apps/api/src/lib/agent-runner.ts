@@ -634,7 +634,9 @@ export async function runAgentQuery(params: {
       maxTokens: 4096,
       abortSignal: params.abortSignal,
       });
-    } catch {
+    } catch (err) {
+      // A no-tools caller owns its fallback, so the failure reaches it.
+      if (noTools) throw err;
       finalText = 'I could not complete this lookup because the AI provider did not return a usable response. Please retry. This failure does not mean the requested records are missing.';
       break;
     }

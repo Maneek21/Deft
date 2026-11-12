@@ -124,9 +124,14 @@ async function callSpaces(actorId: string, method: string, path: string, body?: 
 }
 
 test('W2-a6-X: space:created carries only the space id for private, DM and public spaces', async () => {
-  const harness = await socketHarness({ other: { id: OTHER, org_id: ORG, email: `${OTHER}@test.local`, sid: `w2a6x-ws-${stamp}`, exp } });
+  const harness = await socketHarness({
+    other: { id: OTHER, org_id: ORG, email: `${OTHER}@test.local`, sid: `w2a6x-ws-${stamp}`, exp },
+    // A principal of a different org: receives no space:created at all.
+    foreign: { id: `w2a6x-foreign-${stamp}`, org_id: `w2a6x-foreign-org-${stamp}`, email: `w2a6x-foreign-${stamp}@test.local`, sid: `w2a6x-ws-foreign-${stamp}`, exp },
+  });
   try {
     const other = await harness.open('other');
+    const foreign = await harness.open('foreign');
     const cases = [
       { label: 'private', body: { name: `w2a6x secret private ${stamp}`, type: 'private', description: `w2a6x secret desc ${stamp}` } },
       { label: 'dm', body: { name: `w2a6x secret dm ${stamp}`, type: 'dm', user_ids: [OTHER] } },
@@ -146,6 +151,8 @@ test('W2-a6-X: space:created carries only the space id for private, DM and publi
         assert.ok(!serialized.includes(secret), `${label}: payload must not contain "${secret}"`);
       }
     }
+
+    assert.equal(foreign.events.filter((e) => e.event === 'space:created').length, 0, 'another org receives no space:created');
 
     const listed = await callSpaces(OTHER, 'GET', '/api/spaces');
     assert.equal(listed.status, 200, listed.text);
