@@ -209,6 +209,7 @@ export type ApprovalConfirmationPoster = (params: {
   orgId: string;
   actionMessageId: string | null;
   actorUserId: string;
+  action?: string;
 }) => Promise<void>;
 
 export type ApprovalFinaliserHooks = {
@@ -321,6 +322,7 @@ export async function finalizeApprovalOutcome(params: {
         orgId: row.org_id,
         actionMessageId: row.message_id,
         actorUserId: row.user_id,
+        action: row.action,
       });
     } catch (err) {
       console.warn('[agent-approval] Failed to post approval confirmation', {

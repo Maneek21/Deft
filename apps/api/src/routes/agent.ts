@@ -96,8 +96,12 @@ async function maybePostApprovalConfirmation(params: {
   orgId: string;
   actionMessageId: string | null;
   actorUserId: string;
+  action?: string;
 }) {
   if (!params.actionMessageId) return;
+  // Document sends and plan imports report through their own delivered
+  // message; their source message is not an approval group.
+  if (params.action === DOCUMENT_SEND_ACTION || params.action === WORKSPACE_PLAN_IMPORT_ACTION) return;
   const actionMessageId = params.actionMessageId;
   const posted = await db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(
@@ -138,8 +142,6 @@ async function maybePostApprovalConfirmation(params: {
       .where(and(
         eq(agentActions.org_id, params.orgId),
         eq(agentActions.message_id, actionMessageId),
-        // Document sends and plan imports report through their own delivered
-        // message; their source message is not an approval group.
         notInArray(agentActions.action, [DOCUMENT_SEND_ACTION, WORKSPACE_PLAN_IMPORT_ACTION]),
       ))
       .orderBy(asc(agentActions.created_at));
@@ -1449,7 +1451,7 @@ async function approveOrdinaryActionLeased(
   if (current.approval_status === 'approved') {
     // Holding the lease proves no executor is running this approval.
     const recovery = await recoverInterruptedApproval(current, approvalFinaliserHooks, 'legacy', lease);
-    if (recovery.kind === 'reexecuted') return ownedApprovalResponse(c, current, user.id, recovery.outcome);
+    if (recovery.kind === 'reexecuted') return ownedApprovalResponse(c, current, user, recovery.outcome);
     if (recovery.kind === 'lease_lost' || lease.lost) {
       // Claimed and not settled: recovery settles it later. Answer before any
       // settled-state response or bookkeeping.
@@ -1481,15 +1483,16 @@ async function approveOrdinaryActionLeased(
     approvalFinaliserHooks,
     lease,
   );
-  return ownedApprovalResponse(c, current, user.id, outcome);
+  return ownedApprovalResponse(c, current, user, outcome);
 }
 
 async function ownedApprovalResponse(
   c: Context,
   action: typeof agentActions.$inferSelect,
-  actorUserId: string,
+  reviewer: { id: string; org_id: string },
   outcome: OwnedExecutionOutcome,
 ): Promise<Response> {
+  const actorUserId = reviewer.id;
   if (outcome.kind === 'lease_lost') {
     // Nothing was recorded; recovery settles the action once it can tell
     // this request is gone.
@@ -1552,6 +1555,11 @@ async function ownedApprovalResponse(
         ).agent_blocks,
       } as any,
     });
+  }
+
+  // The outcome is returned only to a caller who may still review the action.
+  if (!await loadReviewableAction(action.id, reviewer)) {
+    return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
   }
 
   const legacyResultBody = {
@@ -1741,6 +1749,7 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
       orgId: user.org_id,
       actionMessageId: action.message_id,
       actorUserId: action.user_id,
+      action: action.action,
     });
   } catch (err) {
     console.warn('[agent-routes] Failed to post approval confirmation', {

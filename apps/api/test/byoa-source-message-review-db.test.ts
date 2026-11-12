@@ -30,6 +30,8 @@ const users: Record<string, { id: string; org_id: string; role: string }> = {
 };
 let currentUser = users.bob!;
 let beforeLease: (() => Promise<void>) | null = null;
+let beforeClaim: (() => Promise<void>) | null = null;
+let afterExecute: (() => Promise<void>) | null = null;
 
 async function withClient<T>(fn: (client: pg.Client) => Promise<T>): Promise<T> {
   const client = new pg.Client({ connectionString: DATABASE_URL });
@@ -66,6 +68,15 @@ before(async () => {
       tryWithApprovalLease: async (...args: Parameters<typeof lease.tryWithApprovalLease>) => {
         if (beforeLease) await beforeLease();
         return lease.tryWithApprovalLease(...args);
+      },
+      claimPendingApproval: async (...args: Parameters<typeof lease.claimPendingApproval>) => {
+        if (beforeClaim) await beforeClaim();
+        return lease.claimPendingApproval(...args);
+      },
+      executeClaimedApproval: async (...args: Parameters<typeof lease.executeClaimedApproval>) => {
+        const outcome = await lease.executeClaimedApproval(...args);
+        if (afterExecute) await afterExecute();
+        return outcome;
       },
     },
   });
@@ -153,7 +164,7 @@ after(async () => {
   await withClient(async (client) => {
     for (const org of [orgId, otherOrgId]) {
       for (const table of [
-        'action_receipts', 'agent_action_approvers', 'agent_plans', 'attention_items', 'audit_log', 'task_activity', 'tasks',
+        'action_receipts', 'agent_action_approvers', 'agent_plans', 'agent_memory', 'notifications', 'attention_items', 'audit_log', 'task_activity', 'tasks',
         'agent_actions', 'attachment_derivatives', 'message_attachments', 'files', 'messages', 'agent_employees',
       ]) {
         await client.query(`DELETE FROM ${table} WHERE org_id = $1`, [org]);
@@ -454,8 +465,54 @@ test('an employee-bound plan does not queue document sends or plan imports as pl
   await withClient((client) => client.query(`UPDATE agent_plans SET status = 'approved' WHERE id = $1`, [plan_id]));
   await executePlan(plan_id, orgId, bob).catch(() => undefined);
   const queued = await withClient(async (client) => (await client.query(
-    `SELECT count(*)::int AS n FROM agent_actions WHERE org_id = $1 AND source = 'plan'`, [orgId],
+    `SELECT count(*)::int AS n FROM agent_actions
+      WHERE org_id = $1 AND (source = 'plan' OR (action = 'document_send' AND source <> 'mcp'))`, [orgId],
   )).rows[0]!.n as number);
   assert.equal(queued, 0);
+  const plan = await withClient(async (client) => (await client.query(
+    'SELECT status FROM agent_plans WHERE id = $1', [plan_id],
+  )).rows[0]!);
+  assert.notEqual(plan.status, 'completed');
   await withClient((client) => client.query('DELETE FROM agent_plans WHERE id = $1', [plan_id]));
+});
+
+test('the claim itself re-checks the reviewer, and outcomes go only to a current reviewer', async () => {
+  const removeBob = async () => {
+    await withClient((client) => client.query(
+      'DELETE FROM space_members WHERE space_id = $1 AND user_id = $2', [roomId, bob],
+    ));
+  };
+  const restoreBob = async () => {
+    await withClient((client) => client.query(
+      'INSERT INTO space_members (id, space_id, user_id) VALUES (gen_random_uuid()::text, $1, $2)', [roomId, bob],
+    ));
+  };
+
+  const claimId = await proposeDocument('claim-guard');
+  beforeClaim = removeBob;
+  try {
+    await as('bob', async () => {
+      const res = await app.request(`/api/agent/actions/${claimId}/approve`, { method: 'POST' });
+      assert.equal(res.status, 404);
+    });
+  } finally {
+    beforeClaim = null;
+    await restoreBob();
+  }
+  const unclaimed = await actionRow(claimId);
+  assert.equal(unclaimed.approval_status, 'pending');
+  assert.equal(unclaimed.executed_at, null);
+
+  const executedId = await proposeDocument('outcome-guard');
+  afterExecute = removeBob;
+  try {
+    await as('bob', async () => {
+      const res = await app.request(`/api/agent/actions/${executedId}/approve`, { method: 'POST' });
+      assert.equal(res.status, 404);
+    });
+  } finally {
+    afterExecute = null;
+    await restoreBob();
+  }
+  assert.equal((await actionRow(executedId)).approval_status, 'approved');
 });
