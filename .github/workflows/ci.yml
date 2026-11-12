@@ -134,7 +134,9 @@ jobs:
   test-shard:
     name: Test API (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
-    needs: typecheck
+    # Start alongside Type Check rather than after it. Only the cheap gates
+    # block the shards; Build still requires Type Check and every shard.
+    needs: [release-scope, check-app-boundary]
     timeout-minutes: 30
     strategy:
       # Let every shard finish so one failure does not hide another.
