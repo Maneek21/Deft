@@ -34,13 +34,22 @@ mock.module(new URL('../src/lib/org-ai-config.ts', import.meta.url).href, { name
   resolveReasonProvider: async () => ({ provider: 'anthropic', model: 'test-model', apiKey: 'test-key' }),
 } });
 
+const emitted: Array<{ orgId: string; userId: string; event: string; data: string }> = [];
+const actualSocket = await import('../src/socket.js');
+mock.module(new URL('../src/socket.ts', import.meta.url).href, { namedExports: {
+  ...actualSocket,
+  emitToUser: (orgId: string, userId: string, event: string, data: unknown) => {
+    emitted.push({ orgId, userId, event, data: JSON.stringify(data) });
+  },
+} });
+
 const { generateMeetingPrep } = await import('../src/lib/meeting-prep-automation.js');
 const { closeDb } = await import('../src/lib/db.js');
 
 after(closeDb);
 
 type Fixture = {
-  org: string; recipient: string; users: string[]; event: string;
+  org: string; otherOrg: string; recipient: string; users: string[]; event: string;
   attendeeTask: string; keywordTask: string; publicNote: string; readableNote: string; marker: string;
 };
 
@@ -90,7 +99,24 @@ async function seed(c: pg.Client): Promise<Fixture> {
      VALUES($1,$2,$3,'ics','calendar_event',$4,'Roadmap sync',$5,$6::jsonb)`,
     [event, org, recipient, `mprep-${event}`, new Date(Date.now() + 20 * 60_000), JSON.stringify({ attendees: [{ email: attendeeEmail }] })],
   );
-  return { org, recipient, users: [recipient, attendee, other], event, attendeeTask, keywordTask, publicNote, readableNote, marker };
+  // Another workspace both people belong to, with matching open work.
+  const otherOrg = randomUUID(), otherProject = randomUUID(), otherSpace = randomUUID();
+  await c.query('INSERT INTO orgs(id,name,slug) VALUES($1,$1,$1)', [otherOrg]);
+  for (const user of [recipient, attendee]) {
+    await c.query(`INSERT INTO org_members(id,org_id,user_id,role) VALUES($1,$2,$3,'member')`, [randomUUID(), otherOrg, user]);
+  }
+  await c.query(`INSERT INTO spaces(id,org_id,name,type,is_default,created_by) VALUES($1,$2,'general','public',true,$3)`, [otherSpace, otherOrg, recipient]);
+  for (const user of [recipient, attendee]) {
+    await c.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), otherSpace, user]);
+  }
+  await c.query('INSERT INTO messages(id,org_id,space_id,user_id,content) VALUES($1,$2,$3,$4,$5)', [randomUUID(), otherOrg, otherSpace, attendee, `${marker} other workspace note`]);
+  await c.query(`INSERT INTO projects(id,org_id,name,prefix) VALUES($1,$2,'Other workspace',$3)`, [otherProject, otherOrg, `O${tag.toUpperCase()}`]);
+  await c.query(
+    `INSERT INTO tasks(id,org_id,project_id,number,title,status,assignee_id,created_by,metadata)
+     VALUES($1,$2,$3,1,$4,'in_progress',$5,$5,'{}'::jsonb)`,
+    [randomUUID(), otherOrg, otherProject, `${marker} roadmap other workspace`, attendee],
+  );
+  return { org, otherOrg, recipient, users: [recipient, attendee, other], event, attendeeTask, keywordTask, publicNote, readableNote, marker };
 }
 
 async function cleanup(c: pg.Client, f: Fixture) {
@@ -110,7 +136,7 @@ async function cleanup(c: pg.Client, f: Fixture) {
     'DELETE FROM org_members WHERE org_id=$1',
     'DELETE FROM orgs WHERE id=$1',
   ]) {
-    await c.query(sql, [f.org]).catch(() => undefined);
+    for (const org of [f.org, f.otherOrg]) await c.query(sql, [org]).catch(() => undefined);
   }
   await c.query('DELETE FROM users WHERE id = ANY($1)', [f.users]).catch(() => undefined);
 }
@@ -130,6 +156,7 @@ function toolCalls(f: Fixture) {
 
 const toolCallResponses: Array<[string, (f: Fixture, call: ProviderCall) => { content: any[]; stop_reason: string }]> = [
   ['a tool_use turn', (f) => ({ content: toolCalls(f), stop_reason: 'tool_use' })],
+  ['a read-only tool_use turn', (f) => ({ content: toolCalls(f).slice(1), stop_reason: 'tool_use' })],
   ['a draft with tool calls at end_turn', (f, call) => ({
     content: [
       { type: 'text', text: JSON.stringify({ agenda: [{ text: 'Draft item', source_ids: [firstSourceId(call.serialized)] }], decisions: [], updates: [] }) },
@@ -143,7 +170,7 @@ for (const [label, firstResponse] of toolCallResponses) {
   test(`a meeting-prep run offers no tools and ${label} falls back without dispatch`, async () => {
     const c = new pg.Client({ connectionString: process.env.DATABASE_URL }); await c.connect();
     const f = await seed(c);
-    providerCalls.length = 0;
+    providerCalls.length = 0; emitted.length = 0;
     respond = (call, index) => index === 0 ? firstResponse(f, call) : {
       content: [{ type: 'text', text: JSON.stringify({ agenda: [{ text: 'Follow-up item', source_ids: [firstSourceId(call.serialized)] }], decisions: [], updates: [] }) }],
       stop_reason: 'end_turn',
@@ -154,17 +181,17 @@ for (const [label, firstResponse] of toolCallResponses) {
       assert.ok(providerCalls.length >= 1);
       assert.deepEqual(providerCalls[0]!.tools, [], 'the meeting-prep run offers the model no tools');
       assert.equal(providerCalls.length, 1, 'the returned tool call is not followed up');
-      // The write comes first, so an empty memory table means no call was dispatched.
+      // Where a write is returned it comes first, so an empty memory table means no call was dispatched.
       assert.equal((await c.query('SELECT 1 FROM agent_memory WHERE org_id=$1', [f.org])).rowCount, 0, 'no tool runs on the recipient\'s behalf');
 
       const input = providerCalls[0]!.serialized;
-      assert.ok(!input.includes(f.marker), 'no private message or restricted task reaches the model');
+      assert.ok(!input.includes(f.marker), 'no private, restricted or other-workspace content reaches the model');
       for (const visible of [f.attendeeTask, f.keywordTask, f.publicNote, f.readableNote]) {
         assert.ok(input.includes(visible), `recipient-visible evidence reaches the model: ${visible}`);
       }
       const brief = result.brief!;
       assert.equal(brief.user_id, f.recipient);
-      assert.ok(!brief.brief_text.includes(f.marker), 'no private message or restricted task reaches the delivered brief');
+      assert.ok(!brief.brief_text.includes(f.marker), 'no private, restricted or other-workspace content reaches the delivered brief');
       assert.ok(!brief.brief_text.includes('Draft item'), 'a draft that came with tool calls is not used');
       assert.ok(brief.brief_text.includes(f.attendeeTask), 'the evidence-only fallback still reports recipient-visible work');
       assert.equal(result.run?.generator, 'fallback');
@@ -174,6 +201,11 @@ for (const [label, firstResponse] of toolCallResponses) {
       assert.equal(notes.length, 1, 'one notification');
       assert.equal(notes[0].user_id, f.recipient, 'the brief is delivered to the recipient only');
       assert.ok(!String(notes[0].body).includes(f.marker));
+      assert.ok(emitted.length > 0, 'the brief is pushed in real time');
+      for (const push of emitted) {
+        assert.deepEqual([push.orgId, push.userId], [f.org, f.recipient], 'real-time pushes go to the recipient only');
+        assert.ok(!push.data.includes(f.marker));
+      }
     } finally {
       await cleanup(c, f); await c.end();
     }
@@ -183,7 +215,7 @@ for (const [label, firstResponse] of toolCallResponses) {
 test('a grounded meeting-prep draft without tool calls is still used', async () => {
   const c = new pg.Client({ connectionString: process.env.DATABASE_URL }); await c.connect();
   const f = await seed(c);
-  providerCalls.length = 0;
+  providerCalls.length = 0; emitted.length = 0;
   respond = (call) => ({
     content: [{ type: 'text', text: JSON.stringify({ agenda: [{ text: 'Grounded agenda item', source_ids: [firstSourceId(call.serialized)] }], decisions: [], updates: [] }) }],
     stop_reason: 'end_turn',
