@@ -3,16 +3,24 @@ import { agentEmployees, spaceMembers, spaces } from '@deft/db/schema';
 import { db } from '../db.js';
 import { canonicalDeftyEmployeeCondition } from '../defty-identity.js';
 
+type Executor = Pick<typeof db, 'select'>;
+
 /**
  * Public spaces are visible across the org. Private and DM spaces require the
  * employee's shadow user to be an explicit member.
+ *
+ * Pass a transaction as `executor` to read inside it. With `lock`, the space
+ * row and the membership row are read FOR SHARE, so archiving the space or
+ * removing the membership waits until that transaction ends.
  */
 export async function employeeCanAccessSpace(
   employeeId: string,
   orgId: string,
   spaceId: string,
+  options: { executor?: Executor; lock?: boolean } = {},
 ): Promise<boolean> {
-  const [space] = await db
+  const executor = options.executor ?? db;
+  const spaceQuery = executor
     .select({ type: spaces.type })
     .from(spaces)
     .where(
@@ -23,11 +31,12 @@ export async function employeeCanAccessSpace(
       ),
     )
     .limit(1);
+  const [space] = options.lock ? await spaceQuery.for('share') : await spaceQuery;
 
   if (!space) return false;
   if (space.type === 'public') return true;
 
-  const [employee] = await db
+  const [employee] = await executor
     .select({ user_id: agentEmployees.user_id })
     .from(agentEmployees)
     .where(
@@ -44,7 +53,7 @@ export async function employeeCanAccessSpace(
     .limit(1);
   if (!employee) return false;
 
-  const [membership] = await db
+  const membershipQuery = executor
     .select({ id: spaceMembers.id })
     .from(spaceMembers)
     .where(
@@ -54,6 +63,7 @@ export async function employeeCanAccessSpace(
       ),
     )
     .limit(1);
+  const [membership] = options.lock ? await membershipQuery.for('share') : await membershipQuery;
 
   return Boolean(membership);
 }

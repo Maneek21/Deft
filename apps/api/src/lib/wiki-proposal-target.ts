@@ -32,9 +32,9 @@ type Executor = Pick<typeof db, 'select'>;
 type Params = Record<string, any>;
 
 /** The key under `agent_actions.before_state` that holds the frozen target. */
-const TARGET_KEY = 'wiki_proposal_target';
+export const TARGET_KEY = 'wiki_proposal_target';
 
-type FrozenWikiTarget =
+export type FrozenWikiTarget =
   | { v: 1; mode: 'update'; slug: string; page_id: string | null; revision: string | null }
   | { v: 1; mode: 'create'; slug: string };
 
@@ -73,6 +73,11 @@ function writesRelatedLinks(params: Params): boolean {
   return Array.isArray(params.related_slugs) && params.related_slugs.length > 0;
 }
 
+/** sha256 digest over a page's field values, as frozen in a proposal target. */
+export function revisionDigest(fields: Record<string, unknown>): string {
+  return `sha256:${createHash('sha256').update(JSON.stringify(fields)).digest('hex')}`;
+}
+
 /**
  * Digest over the current values of the fields this action writes. Fields
  * the action leaves alone (confidence, tags, embeddings, timestamps) do not
@@ -95,7 +100,7 @@ async function writtenFieldsRevision(
       .where(eq(wikiLinks.source_page_id, page.id))
       .orderBy(asc(wikiLinks.target_page_id))).map((link) => link.target);
   }
-  return `sha256:${createHash('sha256').update(JSON.stringify(fields)).digest('hex')}`;
+  return revisionDigest(fields);
 }
 
 /**
@@ -139,7 +144,7 @@ export async function wikiProposalTargetValues(
   };
 }
 
-function readFrozenTarget(beforeState: unknown): FrozenWikiTarget | null {
+export function readFrozenTarget(beforeState: unknown): FrozenWikiTarget | null {
   if (!beforeState || typeof beforeState !== 'object' || Array.isArray(beforeState)) return null;
   const target = (beforeState as Record<string, unknown>)[TARGET_KEY];
   if (!target || typeof target !== 'object' || Array.isArray(target)) return null;

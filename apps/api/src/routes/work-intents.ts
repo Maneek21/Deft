@@ -4,6 +4,7 @@ import { db } from '../lib/db.js';
 import { agentActions, agentEmployees, messageObservations, messages, spaces, users, workIntents } from '@deft/db/schema';
 import { getApprovalTier } from '../lib/agent-approval.js';
 import { ensureDeftyEmployee } from '../lib/ensure-defty-membership.js';
+import { readFrozenTarget, TARGET_KEY } from '../lib/wiki-proposal-target.js';
 
 export const workIntentRoutes = new Hono();
 
@@ -342,6 +343,42 @@ workIntentRoutes.post('/:id/retry', async (c) => {
   const employeeUserId = row.agent_user_id ?? fallbackDefty!.userId;
   const employeeSlug = row.agent_slug ?? fallbackDefty!.slug;
 
+  // A knowledge-update retry repeats the original proposal against the page
+  // revision it was built on. The original is the capture action this
+  // employee queued for this intent with the same page and patch.
+  let frozenWikiTarget: Record<string, unknown> | null = null;
+  if (row.proposed_action === 'wiki_update') {
+    const proposed = asRecord(row.proposed_params);
+    const jsonParam = (key: string) => JSON.stringify(proposed[key] ?? null);
+    const [original] = await db
+      .select({ before_state: agentActions.before_state })
+      .from(agentActions)
+      .where(and(
+        eq(agentActions.org_id, user.org_id),
+        eq(agentActions.source, 'defty_capture'),
+        eq(agentActions.action, 'wiki_update'),
+        eq(agentActions.agent_employee_id, employeeId),
+        sql`${agentActions.params}->>'work_intent_id' = ${row.id}`,
+        sql`coalesce(${agentActions.params}->'page_id', 'null'::jsonb) = ${jsonParam('page_id')}::jsonb`,
+        sql`coalesce(${agentActions.params}->'slug', 'null'::jsonb) = ${jsonParam('slug')}::jsonb`,
+        sql`coalesce(${agentActions.params}->'patch', 'null'::jsonb) = ${jsonParam('patch')}::jsonb`,
+        sql`coalesce(${agentActions.params}->'expected_version', 'null'::jsonb) = ${jsonParam('expected_version')}::jsonb`,
+      ))
+      .orderBy(desc(agentActions.created_at))
+      .limit(1);
+    const target = readFrozenTarget(original?.before_state);
+    if (!target || target.mode !== 'update' || !target.page_id || !target.revision) {
+      return c.json(
+        {
+          error: 'This knowledge update cannot be retried. Capture it again against the current page.',
+          code: 'RETRY_UNAVAILABLE',
+        },
+        409,
+      );
+    }
+    frozenWikiTarget = { [TARGET_KEY]: target };
+  }
+
   const retry = await db.transaction(async (tx) => {
     await tx.execute(sql`
       SELECT id
@@ -468,6 +505,7 @@ workIntentRoutes.post('/:id/retry', async (c) => {
         action: row.proposed_action,
         message_id: row.source_message_id,
         params,
+        ...(frozenWikiTarget ? { before_state: frozenWikiTarget } : {}),
         approval_tier: getApprovalTier(row.proposed_action),
         approval_status: 'pending',
         source: 'defty_capture',
