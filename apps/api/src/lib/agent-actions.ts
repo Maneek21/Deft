@@ -2355,7 +2355,7 @@ export async function executeAction(
 
       case 'wiki_write':
         // A wiki write applies only to the page revision it was proposed against.
-        return executeWikiWriteAction({ actionId, params, orgId, userId });
+        return await executeWikiWriteAction({ actionId, params, orgId, userId });
 
       case 'comment_on_task': {
         // Task 3.4 — add a comment to a task.

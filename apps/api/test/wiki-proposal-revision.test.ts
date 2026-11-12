@@ -301,6 +301,26 @@ test('C05-h: a pending wiki update without a recorded revision is refused, not r
   await assertRefused(actionId, UNVERIFIABLE, page.id, await pageState(page.id));
 });
 
+test('C05-k: an approved update whose write transaction throws is reopened, not left claimed', { skip: !canRun }, async () => {
+  const page = await createPage();
+  const actionId = await chatProposal(updateParams(page));
+  const before = await pageState(page.id);
+  _setWikiWriteRevisionCheckedHookForTest(async () => { throw new Error('simulated lock timeout'); });
+  try {
+    await approve(actionId);
+  } finally {
+    _setWikiWriteRevisionCheckedHookForTest(null);
+  }
+  const row = await actionRow(actionId);
+  assert.equal(row.approval_status, 'pending', JSON.stringify(row));
+  assert.equal(row.executed_at, null);
+  assert.deepEqual(await pageState(page.id), before);
+
+  const retried = await approve(actionId);
+  assert.equal(retried.status, 200, JSON.stringify(retried.body));
+  assert.equal((await pageState(page.id)).title, 'Proposed title');
+});
+
 test('C05-i: a person changing the links while an approved update runs is not overwritten', { skip: !canRun, timeout: 600_000 }, async () => {
   const first = await createPage();
   const second = await createPage();
