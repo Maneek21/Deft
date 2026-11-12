@@ -739,10 +739,12 @@ export type ViewerReviewAuthority = { viewer_can_approve: boolean; viewer_can_re
  * Whether a web viewer may approve and reject each of the given actions,
  * answered as the approve and reject routes would: the routes' reviewable
  * gate, then, for actions the resolver owns, its reviewer rule and a current
- * action source. App Run releases are answered false: their approval also
- * depends on the viewer's live web session and run participants, which only
- * the approve route itself checks. Actions outside the viewer's workspace are
- * absent from the result. Three queries, whatever the number of actions.
+ * action source. An App Run release the gate admits is absent from the
+ * result: its approval and rejection also depend on the run's own release
+ * rules and the viewer's live web session, which only the App Run path checks,
+ * so callers send no flags and the card keeps its controls. Actions outside
+ * the viewer's workspace are absent too. Three queries, whatever the number
+ * of actions.
  */
 export async function viewerReviewAuthority(
   viewer: { id: string; org_id: string; role?: string },
@@ -773,8 +775,10 @@ export async function viewerReviewAuthority(
       eq(agentActionApprovers.user_id, viewer.id),
     ))).map((row) => row.action_id));
   for (const row of rows) {
-    if (!row.reviewable || row.action === APP_RUN_APPROVAL_ACTION) {
+    if (!row.reviewable) {
       authority.set(row.id, { viewer_can_approve: false, viewer_can_reject: false });
+    } else if (row.action === APP_RUN_APPROVAL_ACTION) {
+      continue;
     } else if (!isApprovalResolverAction(row.action)) {
       // The routes' gate is the whole reviewer rule for ordinary actions.
       authority.set(row.id, { viewer_can_approve: true, viewer_can_reject: true });

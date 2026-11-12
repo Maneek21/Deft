@@ -114,11 +114,11 @@ async function hydrateApprovals(
       eq(agentActions.org_id, viewer.org_id),
       visibleModuleActionSql(viewer.role, { userId: viewer.id, orgId: viewer.org_id }),
     ));
-  // Whether this viewer may approve or reject, as the approve and reject routes answer.
+  // Whether this viewer may approve or reject, as the approve and reject routes
+  // answer; absent when only the action's own path can tell (App Run releases).
   const reviewAuthority = await viewerReviewAuthority(viewer, actions.map((action) => action.id));
   const byId = new Map(actions.map((action) => [action.id, {...action,proposer:attentionActionProposer(action),
-    viewer_can_approve: reviewAuthority.get(action.id)?.viewer_can_approve ?? false,
-    viewer_can_reject: reviewAuthority.get(action.id)?.viewer_can_reject ?? false,
+    ...reviewAuthority.get(action.id),
   }]));
   return rows.filter((item) => item.source_type !== 'agent_action' || byId.has(item.source_id)).map((item) => ({
     ...projectAttentionItem(item),

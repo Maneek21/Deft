@@ -212,3 +212,54 @@ for (const kind of ['defty', 'employee', 'employee_for_requester', 'record_mirro
     });
   }
 }
+
+test('B-review: App Run approval rows keep their review controls', { skip: !canRun, timeout: 900_000 }, async (t) => {
+  const { viewerReviewAuthority } = await import('../src/lib/agent-approval-resolver.js');
+  const actionId = randomUUID();
+  const runId = randomUUID();
+  const snapshotId = randomUUID();
+  await f.client.query(
+    `INSERT INTO capability_provider_snapshots (id, org_id, provider_kind, provider_instance_id, adapter_contract_version,
+       snapshot_digest, safe_snapshot, captured_at)
+     VALUES ($1, $2, 'mcp', 'review-flag-connection', 'deft.capability.v1', $3, '{}'::jsonb, now())`,
+    [snapshotId, f.orgId, `sha256:${'3'.repeat(64)}`],
+  );
+  await f.client.query(
+    `INSERT INTO app_runs (id, org_id, contract_version, origin_kind, initiating_actor_type, initiating_actor_id,
+       execution_actor_type, execution_actor_id, provider_kind, provider_instance_id, operation_name, provider_snapshot_id,
+       state, risk_class, review_requirement, review_scope, retry_class, retention_class, idempotency_key_version,
+       idempotency_fingerprint, input_fingerprint_key_version, input_fingerprint, authorization_snapshot, safe_preview,
+       root_run_id, parent_run_id, depth, input_expires_at, result_expires_at, idempotency_expires_at, attempt_limit)
+     VALUES ($1, $2, 'deft.app_run.v1', 'core', 'human', $3, 'human', $3, 'mcp', 'review-flag-connection', 'review.flag.v1',
+       $6, 'pending_approval', 'external_write', 'always', 'per_invocation', 'idempotent_with_key',
+       'standard', 'v1', $4, 'v1', $5, '{}'::jsonb, '{}'::jsonb, $1, NULL, 0, now() + interval '5 minutes',
+       now() + interval '10 minutes', now() + interval '1 day', 1)`,
+    [runId, f.orgId, f.requesterId, `hmac-sha256:${'1'.repeat(64)}`, `hmac-sha256:${'2'.repeat(64)}`, snapshotId],
+  );
+  await f.client.query(
+    `INSERT INTO agent_actions (id, org_id, user_id, source, app_run_id, action, params, approval_tier, approval_status)
+     VALUES ($1, $2, $3, 'app_run', $4, 'app_run_invoke', $5::jsonb, 'full', 'pending')`,
+    [actionId, f.orgId, f.requesterId, runId, JSON.stringify({ run_id: runId })],
+  );
+  t.after(async () => {
+    await f.client.query('DELETE FROM attention_items WHERE org_id = $1', [f.orgId]).catch(() => undefined);
+    await f.client.query('DELETE FROM agent_actions WHERE id = $1', [actionId]).catch(() => undefined);
+    await f.client.query('DELETE FROM app_runs WHERE id = $1', [runId]).catch(() => undefined);
+    await f.client.query('DELETE FROM capability_provider_snapshots WHERE id = $1', [snapshotId]).catch(() => undefined);
+  });
+  // The App Run path decides who may release a run, with checks that need the
+  // live web session; the rows carry no flags, so the card keeps its controls.
+  assert.equal((await viewerReviewAuthority({ id: f.requesterId, org_id: f.orgId, role: 'member' }, [actionId])).has(actionId), false);
+  const inbox = await inboxFlags(f.requesterId, actionId);
+  const attention = await attentionFlags(f.requesterId, actionId);
+  assert.ok(inbox, 'the requester sees the App Run approval in the Inbox');
+  for (const row of [inbox, attention].filter(Boolean) as Flags[]) {
+    assert.equal('viewer_can_approve' in row, false);
+    assert.equal('viewer_can_reject' in row, false);
+  }
+  // The approve route still takes the App Run path for this reviewer.
+  const response = await as(f.requesterId, `/api/agent/actions/${actionId}/approve`, { method: 'POST', body: '{}' });
+  assert.notEqual(response.status, 404, await response.clone().text());
+  const body = await response.json() as { error?: string };
+  assert.equal(REVIEWER_REFUSALS.has(body.error ?? ''), false, JSON.stringify(body));
+});
