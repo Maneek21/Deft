@@ -290,8 +290,10 @@ export async function generateMeetingPrep(eventId: string, now = new Date()) {
     const synthesis = await synthesizeMeetingPrep(meeting.org_id, meeting.org_name, meeting.user_id, evidence);
     const briefText = renderMeetingPrepDraft(meeting.title || 'Upcoming meeting', synthesis.draft);
     // The brief is stored only while the recipient's active membership row is
-    // held, so a removal cannot commit between the check and the write.
+    // held, so a removal cannot commit between the check and the write. Rows
+    // are locked user first, then membership, the same order member removal uses.
     const brief = await db.transaction(async (tx) => {
+      await tx.select({ id: users.id }).from(users).where(eq(users.id, recipientId)).for('key share');
       const [membership] = await tx.select({ id: orgMembers.id }).from(orgMembers).where(and(
         eq(orgMembers.org_id, meeting.org_id),
         eq(orgMembers.user_id, recipientId),
@@ -306,8 +308,9 @@ export async function generateMeetingPrep(eventId: string, now = new Date()) {
       }).onConflictDoUpdate({
         target: [meetingBriefs.event_id, meetingBriefs.user_id],
         set: { brief_text: briefText, updated_at: new Date() },
+        setWhere: eq(meetingBriefs.org_id, meeting.org_id),
       }).returning();
-      if (!row) throw new Error('Meeting brief insert returned no row');
+      if (!row) throw new Error('Meeting brief for this event belongs to another workspace');
       return row;
     });
     if (!brief || !await getActiveOrgMembership(meeting.org_id, recipientId)) {

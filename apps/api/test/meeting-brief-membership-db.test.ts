@@ -273,3 +273,16 @@ test('a rescheduled meeting\'s brief is returned once', () => withFixture(async 
   assert.equal(Number((await c.query('SELECT count(*) AS n FROM automation_runs WHERE result_entity_id=$1', [first.brief!.id])).rows[0].n), 2);
   assert.deepEqual((await readBriefs(f.orgB, f.person, [f.eventB])).map((row) => row.id), [first.brief!.id]);
 }));
+
+test('a stored brief from another workspace for the same meeting is left untouched', () => withFixture(async (c, f) => {
+  const foreign = randomUUID();
+  await c.query(
+    'INSERT INTO meeting_briefs(id,org_id,user_id,event_id,brief_text) VALUES($1,$2,$3,$4,$5)',
+    [foreign, f.orgB, f.person, f.eventA, 'other workspace brief'],
+  );
+  await assert.rejects(generateMeetingPrep(f.eventA));
+  const row = (await c.query('SELECT org_id, brief_text FROM meeting_briefs WHERE id=$1', [foreign])).rows[0];
+  assert.deepEqual(row, { org_id: f.orgB, brief_text: 'other workspace brief' });
+  assert.equal((await onlyRun(c, f.orgA, f.person)).status, 'failed');
+  assert.deepEqual({ ...(await counts(c, f.orgA, f.person)), runs: 0 }, nothing);
+}));
