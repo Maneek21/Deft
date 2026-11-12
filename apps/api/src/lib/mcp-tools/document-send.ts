@@ -54,6 +54,7 @@ export async function documentSend(args: DocumentSendArgs, ctx: ToolContext): Pr
         eq(agentActions.agent_employee_id, ctx.employee_id),
         eq(agentActions.action, DOCUMENT_SEND_ACTION),
         inArray(agentActions.approval_status, ['pending', 'approved']),
+        sql`(${agentActions.message_id} IS NOT NULL OR ${agentActions.approval_status} = 'approved')`,
         sql`${agentActions.params}->>'idempotency_key' = ${prepared.idempotency_key}`,
       )).limit(1);
       if (existing) {
@@ -73,6 +74,9 @@ export async function documentSend(args: DocumentSendArgs, ctx: ToolContext): Pr
         channel_event_id: ctx.channel_event_id,
         runtime_request_key: ctx.runtime_request_key,
         conversation_id: prepared.source_space_id,
+        // The source message prepareDocumentSend read and checked: review
+        // follows that message's audience.
+        message_id: prepared.source_message_id,
         source: 'mcp',
         action: DOCUMENT_SEND_ACTION,
         params: prepared,

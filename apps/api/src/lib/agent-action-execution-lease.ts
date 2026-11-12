@@ -28,7 +28,7 @@
  * that outcome gets, and runs sibling confirmation. Calling it again changes
  * nothing.
  */
-import { and, eq, isNull, ne, sql } from 'drizzle-orm';
+import { and, eq, isNull, ne, sql, type SQL } from 'drizzle-orm';
 import { actionReceipts, agentActionApprovers, agentActions, attentionItems } from '@deft/db/schema';
 import { db, withDbAdvisoryLease, type DbAdvisoryLease } from './db.js';
 import {
@@ -209,6 +209,7 @@ export type ApprovalConfirmationPoster = (params: {
   orgId: string;
   actionMessageId: string | null;
   actorUserId: string;
+  action?: string;
 }) => Promise<void>;
 
 export type ApprovalFinaliserHooks = {
@@ -321,6 +322,7 @@ export async function finalizeApprovalOutcome(params: {
         orgId: row.org_id,
         actionMessageId: row.message_id,
         actorUserId: row.user_id,
+        action: row.action,
       });
     } catch (err) {
       console.warn('[agent-approval] Failed to post approval confirmation', {
@@ -456,8 +458,16 @@ export async function executeClaimedApproval(
   return { kind: 'reopened', error, result: execResult.result };
 }
 
-/** Claim a pending ordinary approval for `approverUserId`. */
-export async function claimPendingApproval(row: AgentActionRow, approverUserId: string): Promise<ClaimToken | null> {
+/**
+ * Claim a pending ordinary approval for `approverUserId`. `reviewerGuard`, when
+ * given, is evaluated in the same statement, so the claim succeeds only while
+ * the approver still holds the review right it describes.
+ */
+export async function claimPendingApproval(
+  row: AgentActionRow,
+  approverUserId: string,
+  reviewerGuard?: SQL,
+): Promise<ClaimToken | null> {
   const [claimed] = await db
     .update(agentActions)
     .set({
@@ -471,6 +481,7 @@ export async function claimPendingApproval(row: AgentActionRow, approverUserId: 
       eq(agentActions.id, row.id),
       eq(agentActions.org_id, row.org_id),
       eq(agentActions.approval_status, 'pending'),
+      reviewerGuard,
     ))
     .returning({ token: claimTokenSql });
   return claimed?.token ?? null;

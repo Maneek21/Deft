@@ -537,6 +537,11 @@ async function executePlanUnlocked(
 
     try {
       const resolvedParams = resolveStepReferences(step.params, context);
+      if (plan.agent_employee_id && (step.tool === 'document_send' || step.tool === 'workspace_plan_import')) {
+        // These proposals are reviewed against their source message, which an
+        // employee records through its own document_send / workspace_plan_import tools.
+        throw new PlanApprovalBoundaryError(`'${step.tool}' is proposed by the employee's own tool with its source message, not as a plan step`);
+      }
       const mcpToolPolicy = step.tool.startsWith('mcp__')
         ? (await getMCPToolsForAgent(orgId, plan.agent_employee_id ?? undefined))
           .find((tool) => tool.name === step.tool)
