@@ -8,21 +8,24 @@
  *   contributes `+3 × label_weight` (label_weight defaults to 1) to the
  *   assignee's `expertise_score` on the topic derived from the task's label.
  *
- * Uses the real local Postgres DB. All inserted rows are cleaned up in
- * finally blocks so the test is idempotent across runs.
+ * Uses the real local Postgres DB. The file creates its own org, user and
+ * project, so it neither reads nor depends on rows other test files create.
+ * Per-test rows are cleaned up in finally blocks; the org, user and project
+ * in `after`.
  */
 
-import { test, before } from 'node:test';
+import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 
 const DATABASE_URL =
   process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 
-const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';
-
-// Real user IDs from the test org — must exist in users table (FK constraint)
-const USER_A = '329fe0f6-39b3-4f66-8e6d-539ad7f4906a'; // Alex PM
+// Fresh ids per run: this file owns its org, user and project outright.
+const ORG_ID = randomUUID();
+const USER_A = randomUUID();
+const PROJECT_ID = randomUUID();
 
 async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
   const c = new pg.Client({ connectionString: DATABASE_URL });
@@ -37,18 +40,21 @@ async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
 let extractExpertise: (orgId: string) => Promise<void>;
 
 before(async () => {
-  // FK cluster fix: ensure org + USER_A exist before tasks (assignee_id FK)
-  // and projects (lead_id FK) inserts.
+  // Create the org, the assignee and the project the task lives in. Nothing
+  // is borrowed from fixtures or other test files.
   await withClient(async (c) => {
     await c.query(
-      `INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $1) ON CONFLICT (id) DO NOTHING`,
-      [ORG_ID, 'Task Completion Test Org'],
+      `INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)`,
+      [ORG_ID, 'Task Completion Test Org', `task-completion-${ORG_ID}`],
     );
     await c.query(
-      `INSERT INTO users (id, email, name, is_agent)
-       VALUES ($1, $2, $3, false)
-       ON CONFLICT (id) DO NOTHING`,
+      `INSERT INTO users (id, email, name, is_agent) VALUES ($1, $2, $3, false)`,
       [USER_A, `tc-${USER_A}@test.local`, 'Alex PM'],
+    );
+    await c.query(
+      `INSERT INTO projects (id, org_id, name, prefix, lead_id, task_counter)
+       VALUES ($1, $2, 'Test Project (task-completion)', 'TTC', $3, 0)`,
+      [PROJECT_ID, ORG_ID, USER_A],
     );
   });
 
@@ -56,29 +62,20 @@ before(async () => {
   extractExpertise = mod.extractExpertise;
 });
 
+after(async () => {
+  await withClient(async (c) => {
+    await c.query(`DELETE FROM people_expertise WHERE org_id = $1`, [ORG_ID]);
+    await c.query(`DELETE FROM projects WHERE id = $1`, [PROJECT_ID]);
+    await c.query(`DELETE FROM users WHERE id = $1`, [USER_A]);
+    await c.query(`DELETE FROM orgs WHERE id = $1`, [ORG_ID]);
+  });
+});
+
 test('task completion with a label contributes +3 to assignee expertise on that topic', async () => {
   const TOPIC = `tc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const taskIds: string[] = [];
   const labelIds: string[] = [];
-  let projectId = '';
-  let createdProject = false;
-
-  // Resolve (or create) a project for the org
-  projectId = await withClient(async (c) => {
-    const r = await c.query(
-      `SELECT id FROM projects WHERE org_id = $1 ORDER BY created_at ASC LIMIT 1`,
-      [ORG_ID],
-    );
-    if (r.rows.length > 0) return r.rows[0].id as string;
-    const ins = await c.query(
-      `INSERT INTO projects (id, org_id, name, prefix, lead_id, task_counter)
-       VALUES (gen_random_uuid()::text, $1, 'Test Project (task-completion)', 'TTC', $2, 0)
-       RETURNING id`,
-      [ORG_ID, USER_A],
-    );
-    createdProject = true;
-    return ins.rows[0].id as string;
-  });
+  const projectId = PROJECT_ID;
 
   // Snapshot any prior expertise_score on (USER_A, TOPIC) — should be 0/absent
   // since TOPIC is uniquely randomised, but we read it just to be safe.
@@ -137,13 +134,14 @@ test('task completion with a label contributes +3 to assignee expertise on that 
     });
 
     assert.ok(row, `expected people_expertise row for (user=${USER_A}, topic=${TOPIC})`);
-    // Expected delta: +3 × 1 (default label_weight). Score should be
-    // at least priorScore + 3. (The wiki-authorship pass and message
-    // pass cannot touch this synthetic topic.)
-    const expectedMin = Number(priorScore) + 3;
-    assert.ok(
-      row.expertise_score >= expectedMin,
-      `expected expertise_score >= ${expectedMin} (prior ${priorScore} + 3), got ${row.expertise_score}`,
+    // Expected delta: +3 × 1 (default label_weight). The org is private to
+    // this file and TOPIC is unique, so the score is exactly prior + 3.
+    // (The wiki-authorship pass and message pass cannot touch this topic.)
+    const expected = Number(priorScore) + 3;
+    assert.equal(
+      Number(row.expertise_score),
+      expected,
+      `expected expertise_score ${expected} (prior ${priorScore} + 3), got ${row.expertise_score}`,
     );
   } finally {
     await withClient(async (c) => {
@@ -160,12 +158,6 @@ test('task completion with a label contributes +3 to assignee expertise on that 
          WHERE org_id = $1 AND user_id = $2 AND topic = $3`,
         [ORG_ID, USER_A, TOPIC],
       );
-      if (createdProject) {
-        await c.query(
-          `DELETE FROM projects WHERE id = $1 AND slug = 'test-task-completion-proj'`,
-          [projectId],
-        );
-      }
     });
   }
 });

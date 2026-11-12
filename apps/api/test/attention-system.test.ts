@@ -83,6 +83,7 @@ test('approval ownership is persisted and the winning decision supersedes altern
   const [requesterAction] = await db.insert(agentActions).values({
     org_id: orgId,
     user_id: authorId,
+    source: 'defty_capture',
     action: 'task_create',
     params: { source_user_id: recipientId, title: 'Requester-owned approval' },
     approval_tier: 'quick',
@@ -105,6 +106,7 @@ test('approval ownership is persisted and the winning decision supersedes altern
   const [delegatedAction] = await db.insert(agentActions).values({
     org_id: orgId,
     user_id: authorId,
+    source: 'defty_capture',
     action: 'task_update',
     params: { source_user_id: recipientId, task_id: 'delegated-task' },
     approval_tier: 'quick',
@@ -115,11 +117,21 @@ test('approval ownership is persisted and the winning decision supersedes altern
     { org_id: orgId, action_id: delegatedAction.id, user_id: recipientId },
   ]);
 
+  // Only the assignment naming the action's reviewer (its requester) counts.
   const delegatedItems = await syncApprovalToAttention(delegatedAction, { deliver: false });
-  assert.deepEqual(
-    delegatedItems.map((item) => item?.user_id).sort(),
-    [authorId, recipientId].sort(),
-  );
+  assert.deepEqual(delegatedItems.map((item) => item?.user_id), [recipientId]);
+
+  // Outside a Defty capture, params do not choose the requester: the action's own user does.
+  const [ownAction] = await db.insert(agentActions).values({
+    org_id: orgId,
+    user_id: authorId,
+    source: 'mcp',
+    action: 'task_create',
+    params: { source_user_id: recipientId, title: 'Own-user approval' },
+    approval_tier: 'quick',
+  }).returning();
+  const ownItems = await syncApprovalToAttention(ownAction!, { deliver: false });
+  assert.deepEqual(ownItems.map((item) => item?.user_id), [authorId]);
 
   await recordActionApproverDecision({
     orgId,

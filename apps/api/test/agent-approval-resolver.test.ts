@@ -421,6 +421,7 @@ async function teardownFixtures() {
 async function insertPendingTaskCreate(
   title: string,
   extraParams: Record<string, unknown> = {},
+  userId: string = SHADOW_USER_ID,
 ): Promise<string> {
   return withClient(async (c) => {
     const r = await c.query(
@@ -431,7 +432,7 @@ async function insertPendingTaskCreate(
        RETURNING id`,
       [
         ORG_ID,
-        SHADOW_USER_ID,
+        userId,
         EMP_ID,
         JSON.stringify({
           caller_employee_slug: EMP_SLUG,
@@ -721,35 +722,40 @@ async function insertPendingDeftyWikiUpdate(
   sourceMessageId: string,
   extraParams: Record<string, unknown> = {},
 ): Promise<string> {
+  const params = {
+    caller_employee_slug: DEFTY_SLUG,
+    page_id: pageId,
+    patch: {
+      content: 'Decision: ship chef sample boxes after the Monday QA check.',
+      summary: 'Chef sample boxes ship after Monday QA.',
+    },
+    source_message_id: sourceMessageId,
+    source_space_id: TEST_SPACE_ID,
+    source_user_id: APPROVER_USER_ID,
+    capture_reason: 'Test governed wiki update.',
+    proposed_by: 'defty',
+    dedupe_key: `defty_capture:test:wiki_update:${sourceMessageId}`,
+    ...extraParams,
+  };
+  // The row records the page revision it was proposed against. A page Defty
+  // cannot reach is recorded by id only, as a proposal raced by an access change.
+  const { wikiUpdateProposalTarget } = await import('../src/lib/mcp-tools/wiki-create.js');
+  const frozen = await wikiUpdateProposalTarget(params, ORG_ID, DEFTY_EMP_ID);
   return withClient(async (c) => {
+    const beforeState = frozen?.values.before_state ?? {
+      wiki_proposal_target: {
+        v: 1, mode: 'update', page_id: pageId, revision: 'sha256:0',
+        slug: (await c.query('SELECT slug FROM wiki_pages WHERE id = $1', [pageId])).rows[0].slug,
+      },
+    };
     const r = await c.query(
       `INSERT INTO agent_actions
         (id, org_id, user_id, agent_employee_id, source, action, message_id,
-         params, approval_tier, approval_status)
+         params, approval_tier, approval_status, before_state)
        VALUES (gen_random_uuid()::text, $1, $2, $3, 'defty_capture', 'wiki_update',
-         $4, $5::jsonb, 'quick', 'pending')
+         $4, $5::jsonb, 'quick', 'pending', $6::jsonb)
        RETURNING id`,
-      [
-        ORG_ID,
-        DEFTY_USER_ID,
-        DEFTY_EMP_ID,
-        sourceMessageId,
-        JSON.stringify({
-          caller_employee_slug: DEFTY_SLUG,
-          page_id: pageId,
-          patch: {
-            content: 'Decision: ship chef sample boxes after the Monday QA check.',
-            summary: 'Chef sample boxes ship after Monday QA.',
-          },
-          source_message_id: sourceMessageId,
-          source_space_id: TEST_SPACE_ID,
-          source_user_id: APPROVER_USER_ID,
-          capture_reason: 'Test governed wiki update.',
-          proposed_by: 'defty',
-          dedupe_key: `defty_capture:test:wiki_update:${sourceMessageId}`,
-          ...extraParams,
-        }),
-      ],
+      [ORG_ID, DEFTY_USER_ID, DEFTY_EMP_ID, sourceMessageId, JSON.stringify(params), JSON.stringify(beforeState)],
     );
     return r.rows[0].id as string;
   });
@@ -1235,7 +1241,7 @@ test('1h. approving Defty wiki_update rejects another user-scoped page', async (
   // @ts-expect-error narrow
   assert.equal(result.code, 'EXECUTE_FAILED');
   // @ts-expect-error narrow
-  assert.match(result.message, /another user-scoped page/i);
+  assert.match(result.message, /no longer available to the requester/i);
 
   await withClient(async (c) => {
     const page = await c.query(
@@ -1353,11 +1359,23 @@ test('4a. an ordinary member cannot approve another requester\'s action', async 
   assert.equal(row.rows[0].approval_status, 'pending');
 });
 
-test('4aa. the effective requester can approve their own action', async () => {
+test("4aa. an external agent's params do not make a member the requester", async () => {
   const title = `resolver-test-4aa-${Date.now()}`;
   const actionId = await insertPendingTaskCreate(title, {
     source_user_id: REVIEWER_USER_ID,
   });
+
+  const { approveAction } = await import('../src/lib/agent-approval-resolver.js');
+  const result = await approveAction(actionId, REVIEWER_USER_ID);
+
+  assert.equal(result.status, 'error');
+  // @ts-expect-error narrowed by status above
+  assert.equal(result.code, 'FORBIDDEN');
+});
+
+test("4ab. the action's own user can approve their own action", async () => {
+  const title = `resolver-test-4ab-${Date.now()}`;
+  const actionId = await insertPendingTaskCreate(title, {}, REVIEWER_USER_ID);
 
   const { approveAction } = await import('../src/lib/agent-approval-resolver.js');
   const result = await approveAction(actionId, REVIEWER_USER_ID);

@@ -15,9 +15,6 @@ import {
   taskRelationships,
   users,
   wikiPages,
-  wikiPageVersions,
-  wikiLinks,
-  wikiOpsLog,
   reminders,
   notes,
   canvases,
@@ -52,6 +49,7 @@ import {
 import { getApprovalTier, isDestructiveAction, mandatoryApprovalTier, shouldAutoExecute, type ToolAnnotations } from './agent-approval.js';
 import { validateNativeAgentMentionWrite } from './native-mention-agent-writes.js';
 import { authorizeNativeActionTarget, promotableNoteSql } from './agent-action-visibility.js';
+import { executeWikiWriteAction, TERMINAL_REFUSAL_RESULT, wikiProposalTargetValues } from './wiki-proposal-target.js';
 import {
   MODULE_OPERATION_REQUEST_SCHEMAS,
   ModuleIdSchema,
@@ -1472,7 +1470,7 @@ export async function executeAction(
       const referenceError = await validateNativeAgentMentionWrite(action, params, orgId, userId, agentEmployeeId ?? undefined);
       if (referenceError) return { success: false, result: null, error: referenceError };
     }
-    const target = await authorizeNativeActionTarget(action, params, orgId, userId); if ('error' in target) return { success: false, result: null, error: target.error }; params = target.params;
+    const target = await authorizeNativeActionTarget(action, params, orgId, userId); if ('error' in target) return { success: false, result: action === 'wiki_write' ? { ...TERMINAL_REFUSAL_RESULT } : null, error: target.error }; params = target.params;
     const taskScopeError = await employeeTaskWriteScopeError(
       action,
       params,
@@ -2355,144 +2353,9 @@ export async function executeAction(
         return { success: true, result: { knowledge_id: entry!.id, title, space: space.name } };
       }
 
-      case 'wiki_write': {
-        const { slug: existingSlug, title, content, type: pageType, summary, related_slugs } = params;
-
-        if (existingSlug) {
-          const [existing] = await db
-            .select()
-            .from(wikiPages)
-            .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.slug, existingSlug), eq(wikiPages.is_deleted, false)))
-            .limit(1);
-          if (!existing) return { success: false, result: null, error: `Wiki page "${existingSlug}" not found` };
-
-          const updates: Record<string, any> = {};
-          if (title) updates.title = title;
-          if (summary) updates.summary = summary;
-          if (pageType) updates.type = pageType;
-          if (content && content !== existing.content) {
-            updates.content = content;
-            updates.previous_content = existing.content;
-            updates.version = existing.version + 1;
-          }
-
-          if (Object.keys(updates).length > 0) {
-            await db.transaction(async (tx) => {
-              if (updates.version !== undefined) {
-                await tx.insert(wikiPageVersions).values({
-                  page_id: existing.id,
-                  version: existing.version,
-                  title: existing.title,
-                  content: existing.content,
-                  summary: existing.summary,
-                  edited_by: userId,
-                }).onConflictDoNothing({
-                  target: [wikiPageVersions.page_id, wikiPageVersions.version],
-                });
-              }
-              await tx.update(wikiPages).set(updates).where(eq(wikiPages.id, existing.id));
-            });
-          }
-
-          if (related_slugs && related_slugs.length > 0) {
-            await db.delete(wikiLinks).where(eq(wikiLinks.source_page_id, existing.id));
-            const targets = await db
-              .select({ id: wikiPages.id })
-              .from(wikiPages)
-              .where(and(eq(wikiPages.org_id, orgId), inArray(wikiPages.slug, related_slugs)));
-            for (const t of targets) {
-              if (t.id !== existing.id) {
-                await db.insert(wikiLinks).values({ org_id: orgId, source_page_id: existing.id, target_page_id: t.id }).onConflictDoNothing();
-              }
-            }
-          }
-
-          await db.insert(wikiOpsLog).values({
-            org_id: orgId,
-            operation: 'update',
-            page_id: existing.id,
-            details: { updated_fields: Object.keys(updates), by_agent: true },
-            performed_by: userId,
-          });
-
-          await db
-            .update(agentActions)
-            .set({
-              result: { slug: existingSlug, action: 'updated' },
-              before_state: { content: existing.content, version: existing.version },
-              after_state: { content: content || existing.content, version: (existing.version || 0) + 1 },
-              executed_at: new Date(),
-            })
-            .where(eq(agentActions.id, actionId));
-
-          await logAuditEvent({
-            orgId,
-            actorType: 'agent',
-            actorId: userId,
-            action: 'wiki_write',
-            entityType: 'wiki_page',
-            entityId: existing.id,
-            beforeState: { content: existing.content },
-            afterState: { content: content || existing.content },
-            metadata: { action_id: actionId, slug: existingSlug },
-          });
-
-          return { success: true, result: { slug: existingSlug, action: 'updated' } };
-        } else {
-          if (!title || !content || !pageType) {
-            return { success: false, result: null, error: 'title, content, and type are required for new wiki pages' };
-          }
-
-          const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-
-          const [page] = await db
-            .insert(wikiPages)
-            .values({
-              org_id: orgId,
-              scope: 'org',
-              type: pageType,
-              title,
-              slug,
-              summary: summary || null,
-              content,
-              confidence: 0.7,
-              version: 1,
-            })
-            .returning();
-
-          await db.insert(wikiOpsLog).values({
-            org_id: orgId,
-            operation: 'create',
-            page_id: page!.id,
-            details: { type: pageType, by_agent: true },
-            performed_by: userId,
-          });
-
-          await db
-            .update(agentActions)
-            .set({
-              result: { slug, page_id: page!.id, action: 'created' },
-              before_state: null,
-              after_state: { id: page!.id, title, slug, type: pageType },
-              executed_at: new Date(),
-            })
-            .where(eq(agentActions.id, actionId));
-
-          await logAuditEvent({
-            orgId,
-            actorType: 'agent',
-            actorId: userId,
-            action: 'wiki_write',
-            entityType: 'wiki_page',
-            entityId: page!.id,
-            beforeState: null,
-            afterState: { title, slug, type: pageType },
-            metadata: { action_id: actionId },
-          });
-
-          return { success: true, result: { slug, page_id: page!.id, action: 'created' } };
-        }
-      }
+      case 'wiki_write':
+        // A wiki write applies only to the page revision it was proposed against.
+        return await executeWikiWriteAction({ actionId, params, orgId, userId });
 
       case 'comment_on_task': {
         // Task 3.4 — add a comment to a task.
@@ -3816,7 +3679,7 @@ async function executeActionDirectLocked(
     reusedModuleBulkCreateAction = claimed.reused;
     retryModuleBulkCreateAction = claimed.retry === true;
   } else {
-    const [inserted] = await db.insert(agentActions).values(actionValues).returning();
+    const [inserted] = await db.insert(agentActions).values({ ...actionValues, ...await wikiProposalTargetValues(action, params, orgId, userId) }).returning();
     if (!inserted) throw new Error('Failed to create action log');
     actionRecord = inserted;
   }

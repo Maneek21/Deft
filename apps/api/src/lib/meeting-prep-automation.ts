@@ -213,6 +213,9 @@ async function synthesizeMeetingPrep(
       mode: 'chat_mention',
       skipVerification: true,
       maxIterations: 2,
+      // The brief is written from the prepared, recipient-filtered evidence
+      // alone: the unattended run reads and writes nothing on its own.
+      toolPolicy: 'none',
       systemPromptOverride: 'You are Defty preparing a meeting brief for this user. Use only the supplied, permission-filtered evidence. Do not infer private context, invent decisions, or call tools. Return JSON only.',
       content: `Return JSON only with keys agenda, decisions, updates. Each value is an array of {"text": string, "source_ids": string[]}. Return at most 4 items per key, keep each text under 180 characters, and cite at least one supplied source per item. Leave decisions empty when evidence does not show one is needed.\n\nEvidence:\n${JSON.stringify(evidence)}`,
     });

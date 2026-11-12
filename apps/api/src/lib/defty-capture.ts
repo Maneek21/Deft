@@ -6,6 +6,7 @@ import { approveAction } from './agent-approval-resolver.js';
 import { ensureDeftyEmployee } from './ensure-defty-membership.js';
 import { toPlainText, truncatePlainText } from './plain-text.js';
 import { resolveAssigneeWithMatches } from './resolve-assignee.js';
+import { wikiUpdateProposalTarget } from './mcp-tools/wiki-create.js';
 
 type ResolvedProject = { id: string; name: string };
 type TaskStatus = 'backlog' | 'todo' | 'in_progress' | 'in_review' | 'done' | 'cancelled';
@@ -662,6 +663,9 @@ function buildKnowledgeTitle(content: string, type: DeftyKnowledgeWikiType): str
   return truncatePlainText(candidate || plainContent || fallback, 90) || fallback;
 }
 
+/** Ends a knowledge-update capture without queueing; nothing it wrote is kept. */
+class KnowledgeUpdateSkipped extends Error {}
+
 async function queueDeftyKnowledgeUpdateCapture(params: {
   orgId: string;
   sourceUserId: string;
@@ -710,7 +714,7 @@ async function queueDeftyKnowledgeUpdateCapture(params: {
   const title = `Update knowledge: ${targetPage.title}`;
   const summary = truncatePlainText(updateText, 240);
 
-  const queued = await db.transaction(async (tx) => {
+  const queued: { queued: boolean; actionId?: string; skippedReason?: string } = await db.transaction(async (tx) => {
     const proposedParams = {
       caller_employee_slug: defty.slug,
       page_id: targetPage.id,
@@ -793,9 +797,18 @@ async function queueDeftyKnowledgeUpdateCapture(params: {
       return { queued: false, actionId: existingAction.id, skippedReason: 'duplicate' };
     }
 
+    // Freeze the page revision this proposal was built on. An append is built
+    // on the snapshot read earlier, so the page must still match it.
+    const frozen = await wikiUpdateProposalTarget(proposedParams, orgId, defty.employeeId, tx);
+    if (!frozen) throw new KnowledgeUpdateSkipped('knowledge_update_target_unavailable');
+    if (preferUpdate && (frozen.page.content !== targetPage.content || frozen.page.version !== targetPage.version)) {
+      throw new KnowledgeUpdateSkipped('knowledge_update_target_changed');
+    }
+
     const [queuedAction] = await tx
       .insert(agentActions)
       .values({
+        ...frozen.values,
         org_id: orgId,
         user_id: defty.userId,
         agent_employee_id: defty.employeeId,
@@ -815,6 +828,9 @@ async function queueDeftyKnowledgeUpdateCapture(params: {
 
     if (!queuedAction) throw new Error('Failed to create Defty knowledge-update approval');
     return { queued: true, actionId: queuedAction.id };
+  }).catch((error: unknown) => {
+    if (error instanceof KnowledgeUpdateSkipped) return { queued: false, skippedReason: error.message };
+    throw error;
   });
 
   if (queued.queued && autoApprove) {

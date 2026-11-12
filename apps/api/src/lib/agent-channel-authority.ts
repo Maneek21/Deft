@@ -100,6 +100,7 @@ export function currentAgentChannelEventAuthoritySql(eventId: SQLWrapper, reader
               and action.org_id = chain.org_id and action.agent_employee_id = chain.agent_employee_id
               and action.approval_status in ('approved', 'rejected')
               and (action.action <> 'chat_mention' or action.message_id is not null)
+              and (action.action not in ('document_send', 'workspace_plan_import') or action.message_id is not null)
               and (action.action <> 'task_assigned' or action.channel_event_id is not null)
               and (action.message_id is null or ${currentEmployeeMessageAuthoritySql(sql`chain.org_id`, sql`chain.agent_employee_id`, sql`action.message_id`)})
               and (action.message_id is null or ${readerMessageAuthoritySql(sql`chain.org_id`, readerUserId, sql`action.message_id`)})
@@ -165,6 +166,7 @@ function sourcelessActionAudienceSql(actionAlias: string, readerUserId?: SQLWrap
 export function currentAgentActionSourceAuthoritySql(actionAlias = 'agent_actions', readerUserId?: SQLWrapper): SQL {
   const field = (name: string) => sql`${sql.identifier(actionAlias)}.${sql.identifier(name)}`;
   return sql`(${field('action')} <> 'chat_mention' or ${field('message_id')} is not null)
+    and (${field('action')} not in ('document_send', 'workspace_plan_import') or ${field('message_id')} is not null)
     and (${field('action')} <> 'task_assigned' or ${field('channel_event_id')} is not null)
     and (${field('message_id')} is not null or ${field('channel_event_id')} is not null or ${sourcelessActionAudienceSql(actionAlias, readerUserId)})
     and (${field('message_id')} is null or ${currentEmployeeMessageAuthoritySql(field('org_id'), field('agent_employee_id'), field('message_id'))})

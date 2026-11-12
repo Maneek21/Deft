@@ -14,10 +14,10 @@ import type { AppRunTransaction } from './app-run-repository.js';
  * from the UI and race conditions between the approve button and an
  * eventual expiry cron.
  *
- * Permission model: the effective requester may approve or reject their own
- * proposed write. Org owners and admins may review any proposal. An assigned
- * reviewer (an `agent_action_approvers` row in the action's workspace, held
- * by an active, non-guest member) may review that action. Action-specific
+ * Permission model: the requester (see agent-action-requester.ts) may approve
+ * or reject their own proposed write. Org owners and admins may review any
+ * proposal. An approver assignment counts when it names one of these
+ * reviewers, so it never admits anyone else. Action-specific
  * rules stay stricter: record-mirror nominations are owner-only and App Run
  * releases keep their owner and web-session rules. Internal
  * system flows must opt into the explicit `internal` bypass instead of
@@ -34,7 +34,9 @@ import type { AppRunTransaction } from './app-run-repository.js';
  * happened when the row was queued, and re-gating here would bounce
  * every conservative-trust employee's approved writes.
  */
-import { eq, and, or, sql, isNull } from 'drizzle-orm';
+import { eq, and, or, sql, isNull, inArray } from 'drizzle-orm';
+import { reviewableActionSql } from './agent-action-review-gate.js';
+import { actionRequesterId, captureSourceUserId } from './agent-action-requester.js';
 import { db, type DbAdvisoryLease } from './db.js';
 import {
   APPROVAL_INTERRUPTED_ERROR,
@@ -48,7 +50,6 @@ import {
 } from './agent-action-execution-lease.js';
 import { AppError } from './app-errors.js';
 import {
-  agentActionApprovers,
   agentActions,
   agentChannelEvents,
   agentEmployees,
@@ -634,15 +635,6 @@ const sourceUnavailable = (): ApprovalResolverError => ({
   status: 'error', code: 'FORBIDDEN', message: 'The action source is no longer available',
 });
 
-function actionRequesterId(row: { user_id: string; params: unknown }): string {
-  if (row.params && typeof row.params === 'object' && !Array.isArray(row.params)) {
-    const params = row.params as Record<string, unknown>;
-    const sourceUserId = params.source_user_id ?? params.origin_user_id;
-    if (typeof sourceUserId === 'string' && sourceUserId.trim()) return sourceUserId;
-  }
-  return row.user_id;
-}
-
 /**
  * Returns the active org membership used by the reviewer policy.
  */
@@ -664,31 +656,96 @@ async function loadReviewMembership(
   return row ?? null;
 }
 
+type ReviewedActionRow = { id: string; org_id: string; action: string; user_id: string; source: string | null; params: unknown };
+
 /**
- * True when the user is an assigned reviewer of the action: an approver row
- * in the action's own workspace, held by an active member who is not a
- * guest. `membership` must be the user's active membership in that
- * workspace (see loadReviewMembership).
+ * The reviewer rule of the approval resolver: who may approve or reject an
+ * action it owns. Returns null when `userId` may take the decision, or the
+ * refusal message. Approve and reject differ: a record-mirror nomination is
+ * approved only by its owning user, and an App Run release is never approved
+ * on the internal path. `membership` is the user's active membership in the
+ * action's workspace (see loadReviewMembership).
  */
-async function isAssignedReviewer(
-  row: { id: string; org_id: string; action: string },
+export async function reviewerRefusal(
+  decision: 'approve' | 'reject',
+  row: ReviewedActionRow,
   userId: string,
   membership: { role: string } | null,
-): Promise<boolean> {
-  // A record-mirror nomination concerns its owner's private mirror consent:
-  // reviewer assignment never widens who may approve or reject it.
-  if (row.action === 'app_record_mirror_nominate') return false;
-  if (!membership || membership.role === 'guest') return false;
-  const [assigned] = await db
-    .select({ id: agentActionApprovers.id })
-    .from(agentActionApprovers)
-    .where(and(
-      eq(agentActionApprovers.action_id, row.id),
-      eq(agentActionApprovers.org_id, row.org_id),
-      eq(agentActionApprovers.user_id, userId),
-    ))
-    .limit(1);
-  return Boolean(assigned);
+  options: { internal?: boolean } = {},
+): Promise<string | null> {
+  // Record-mirror nominations are owner-only: an org admin or another member
+  // must never approve a write against the owner's private mirror consent, and
+  // the internal system path never stands in for the owning human.
+  if (decision === 'approve' && row.action === 'app_record_mirror_nominate' && userId !== row.user_id) {
+    return 'only the owning user may approve a record-mirror nomination';
+  }
+  const humanCanReview = membership !== null && (
+    actionRequesterId(row) === userId
+    || membership.role === 'owner'
+    || membership.role === 'admin'
+  );
+  if (decision === 'reject') {
+    return humanCanReview ? null : 'only the requester or an org owner/admin may reject this action';
+  }
+  const canReview = row.action === APP_RUN_APPROVAL_ACTION
+    ? !options.internal && humanCanReview
+    : options.internal || humanCanReview;
+  return canReview ? null : 'only the requester or an org owner/admin may approve this action';
+}
+
+export type ViewerReviewAuthority = { viewer_can_approve: boolean; viewer_can_reject: boolean };
+
+/**
+ * Whether a web viewer may approve and reject each of the given actions,
+ * answered as the approve and reject routes would: the routes' reviewable
+ * gate, then, for actions the resolver owns, its reviewer rule and a current
+ * action source. Actions outside the viewer's workspace are absent from the
+ * result. Two queries, whatever the number of actions.
+ */
+export async function viewerReviewAuthority(
+  viewer: { id: string; org_id: string; role?: string },
+  actionIds: readonly string[],
+): Promise<Map<string, ViewerReviewAuthority>> {
+  const authority = new Map<string, ViewerReviewAuthority>();
+  const ids = [...new Set(actionIds)];
+  if (ids.length === 0) return authority;
+  const rows = await db
+    .select({
+      id: agentActions.id,
+      org_id: agentActions.org_id,
+      action: agentActions.action,
+      user_id: agentActions.user_id,
+      source: agentActions.source,
+      params: agentActions.params,
+      reviewable: sql<boolean>`coalesce((${reviewableActionSql(viewer)}), false)`,
+      source_current: sql<boolean>`coalesce((${actionSourceAuthoritySql(viewer.id)}), false)`,
+    })
+    .from(agentActions)
+    .where(and(inArray(agentActions.id, ids), eq(agentActions.org_id, viewer.org_id)));
+  const membership = await loadReviewMembership(viewer.id, viewer.org_id);
+  for (const row of rows) {
+    if (!row.reviewable) {
+      authority.set(row.id, { viewer_can_approve: false, viewer_can_reject: false });
+    } else if (row.action === APP_RUN_APPROVAL_ACTION) {
+      // For an App Run release the flags mean only a certain refusal: false
+      // for a guest who did not request it, whom the resolver's reviewer rule
+      // refuses on approval and rejection alike, and absent otherwise, since
+      // the run's own release rules and the viewer's live web session are
+      // checked only on the App Run path; without flags the card keeps its
+      // controls.
+      if (actionRequesterId(row) !== viewer.id && membership?.role === 'guest') {
+        authority.set(row.id, { viewer_can_approve: false, viewer_can_reject: false });
+      }
+    } else if (!isApprovalResolverAction(row.action)) {
+      // The routes' gate is the whole reviewer rule for ordinary actions.
+      authority.set(row.id, { viewer_can_approve: true, viewer_can_reject: true });
+    } else {
+      const decide = async (decision: 'approve' | 'reject') => row.source_current
+        && await reviewerRefusal(decision, row, viewer.id, membership) === null;
+      authority.set(row.id, { viewer_can_approve: await decide('approve'), viewer_can_reject: await decide('reject') });
+    }
+  }
+  return authority;
 }
 
 /** Look up the employee row for a queued action so we can rebuild ctx. */
@@ -948,30 +1005,12 @@ async function approveActionLocked(
   // terminal retry may create missing receipts/attention artifacts, so it is
   // not a side-effect-free read and must not be reachable cross-org.
   const membership = await loadReviewMembership(approverUserId, row.org_id);
-  // Record-mirror nominations are owner-only: an org admin or another member
-  // must never approve a write against the owner's private mirror consent, and
-  // the internal system path never stands in for the owning human.
-  if (row.action === 'app_record_mirror_nominate' && approverUserId !== row.user_id) {
+  const refusal = await reviewerRefusal('approve', row, approverUserId, membership, { internal: options.internal });
+  if (refusal) {
     return {
       status: 'error',
       code: 'FORBIDDEN',
-      message: 'only the owning user may approve a record-mirror nomination',
-    };
-  }
-  const humanCanReview = membership !== null && (
-    actionRequesterId(row) === approverUserId
-    || membership.role === 'owner'
-    || membership.role === 'admin'
-    || await isAssignedReviewer(row, approverUserId, membership)
-  );
-  const canReview = row.action === APP_RUN_APPROVAL_ACTION
-    ? !options.internal && humanCanReview
-    : options.internal || humanCanReview;
-  if (!canReview) {
-    return {
-      status: 'error',
-      code: 'FORBIDDEN',
-      message: 'only the requester or an org owner/admin may approve this action',
+      message: refusal,
     };
   }
 
@@ -1279,14 +1318,7 @@ async function approveActionLocked(
   let caughtError: Error | null = null;
   try {
     const actionParams = (row.params ?? {}) as Record<string, unknown>;
-    const sourceReaderUserId =
-      row.source === 'defty_capture'
-        ? typeof actionParams.source_user_id === 'string'
-          ? actionParams.source_user_id
-          : typeof actionParams.origin_user_id === 'string'
-            ? actionParams.origin_user_id
-            : null
-        : null;
+    const sourceReaderUserId = captureSourceUserId(row);
     if (!await actionSourceIsCurrent(actionId, sourceReaderId)) {
       toolResult = { content: [{ type: 'text', text: sourceUnavailable().message }], isError: true };
     } else if (
@@ -1672,17 +1704,12 @@ async function rejectActionOnce(
   // Terminal-state repair can write receipts and attention state. Apply the
   // same reviewer boundary before any early return or repair side effect.
   const membership = await loadReviewMembership(rejecterUserId, row.org_id);
-  const canReview = membership !== null && (
-    actionRequesterId(row) === rejecterUserId ||
-    membership.role === 'owner' ||
-    membership.role === 'admin' ||
-    await isAssignedReviewer(row, rejecterUserId, membership)
-  );
-  if (!canReview) {
+  const refusal = await reviewerRefusal('reject', row, rejecterUserId, membership);
+  if (refusal) {
     return {
       status: 'error',
       code: 'FORBIDDEN',
-      message: 'only the requester or an org owner/admin may reject this action',
+      message: refusal,
     };
   }
 

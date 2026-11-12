@@ -309,7 +309,7 @@ test('C07-e: a retry repairs the approver decision left pending by a crash, with
   await f.client.query(
     `UPDATE agent_actions SET approved_by_user_id = $2, approved_at = TIMESTAMP '2026-11-01 09:30:00.123456'
       WHERE id = $1`,
-    [actionId, f.requesterId],
+    [actionId, f.adminId],
   );
   for (const userId of [f.requesterId, f.adminId]) {
     await f.client.query(
@@ -323,16 +323,16 @@ test('C07-e: a retry repairs the approver decision left pending by a crash, with
     [actionId],
   )).rows as Array<{ user_id: string; decision: string; decided_at: string | null; updated_at: string }>;
 
-  // The admin is an assigned reviewer retrying the card.
-  const response = await approve(actionId, f.adminId);
+  // An admin approved it; the requester, its assigned reviewer, retries the card.
+  const response = await approve(actionId, f.requesterId);
   assert.equal(response.status, 200, await response.clone().text());
   const repaired = await approvers();
   const byUser = new Map(repaired.map((row) => [row.user_id, row]));
-  assert.equal(byUser.get(f.requesterId)?.decision, 'approved');
-  assert.equal(byUser.get(f.requesterId)?.decided_at, '2026-11-01 09:30:00.123456');
-  assert.equal(byUser.get(f.adminId)?.decision, 'superseded');
+  assert.equal(byUser.get(f.adminId)?.decision, 'approved');
+  assert.equal(byUser.get(f.adminId)?.decided_at, '2026-11-01 09:30:00.123456');
+  assert.equal(byUser.get(f.requesterId)?.decision, 'superseded');
 
-  const second = await approve(actionId, f.adminId);
+  const second = await approve(actionId, f.requesterId);
   assert.equal(second.status, 200, await second.clone().text());
   assert.deepEqual(await approvers(), repaired);
 });
@@ -497,13 +497,13 @@ test('C07-k: a retry of a settled resolver approval resolves Attention as the st
   }
   const [pending] = (await f.client.query('SELECT * FROM agent_actions WHERE id = $1', [actionId])).rows;
   await syncApprovalToAttention(pending, { deliver: false });
-  // Approved and executed by the requester; the request stopped before its bookkeeping.
+  // Approved and executed by an admin; the request stopped before its bookkeeping.
   await f.client.query(
     `UPDATE agent_actions SET approval_status = 'approved', approved_by_user_id = $2, approved_at = now(),
             executed_at = now(), result = '{"ok":true}'::jsonb WHERE id = $1`,
-    [actionId, f.requesterId],
+    [actionId, f.adminId],
   );
-  const response = await approve(actionId, f.adminId);
+  const response = await approve(actionId, f.requesterId);
   assert.equal(response.status, 200, await response.clone().text());
   const events = await f.client.query(
     `SELECT DISTINCT e.actor_user_id FROM attention_events e
@@ -512,7 +512,7 @@ test('C07-k: a retry of a settled resolver approval resolves Attention as the st
     [actionId],
   );
   assert.ok(events.rows.length > 0);
-  assert.deepEqual(events.rows.map((row) => row.actor_user_id), [f.requesterId]);
+  assert.deepEqual(events.rows.map((row) => row.actor_user_id), [f.adminId]);
 });
 
 test('C07-l: a request whose lease dropped records no outcome and leaves the action for recovery', { skip: !canRun }, async () => {
@@ -580,7 +580,7 @@ test('C07-m: a resolver approval whose lease dropped answers 202 and leaves the 
   );
   await f.client.query(
     `INSERT INTO agent_action_approvers (id, org_id, action_id, user_id, decision) VALUES ($1, $2, $3, $4, 'pending')`,
-    [randomUUID(), f.orgId, actionId, f.requesterId],
+    [randomUUID(), f.orgId, actionId, f.adminId],
   );
 
   // Block task inserts so the executor waits mid-execution.
@@ -590,7 +590,7 @@ test('C07-m: a resolver approval whose lease dropped answers 202 and leaves the 
   await locker.query('LOCK TABLE tasks IN SHARE MODE');
   let first: Promise<Response> | null = null;
   try {
-    first = Promise.resolve(approve(actionId));
+    first = Promise.resolve(approve(actionId, f.adminId));
     const pid = await waitFor(() => leaseHolderPid(actionId), 'the resolver to hold the execution lease');
     await waitFor(async () => (await actionRow(actionId)).approval_status === 'approved', 'the claim');
     await f.client.query('SELECT pg_terminate_backend($1)', [pid]);

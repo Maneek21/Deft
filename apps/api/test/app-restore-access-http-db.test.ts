@@ -217,17 +217,20 @@ test('restore access review re-issues prior grants at the same lifetime, never w
     const foreign = consentRow({ storeKey: 'foreign_store', state: 'active', createdAt: at(-30 * 86400_000), expiresAt: at(60 * 86400_000),
       sessionId: foreignSessionId, orgId: orgA, owner: ownerA, installationId: foreignInstallation });
     const observationConsentId = randomUUID();
+    // Computed once: the column and the snapshot copy must be the same instant.
+    const observationExpiresAt = at(60 * 86400_000);
+    const observationCreatedAt = at(-30 * 86400_000);
     const observationRow = {
       org_id: orgA, owner_user_id: ownerA, consent_id: observationConsentId, resource_binding_id: binding,
-      connection_session_id: priorSession, state: 'active', consent_digest: sha('1'), expires_at: new Date(at(60 * 86400_000)),
+      connection_session_id: priorSession, state: 'active', consent_digest: sha('1'), expires_at: new Date(observationExpiresAt),
       snapshot: {
         schema_version: 'deft.app_resource_observation_consent.v1', consent_id: observationConsentId,
         scope: scope(priorSession),
         connection: { session_id: priorSession, runtime_session_ref: 'runtime_' + priorSession.replaceAll('-', ''),
           account_ref: accountRef, expected_custody_generation: null, receipt_digest: null },
-        resource_policy_digest: sha('2'), interval_seconds: 300, expires_at: at(60 * 86400_000),
+        resource_policy_digest: sha('2'), interval_seconds: 300, expires_at: observationExpiresAt,
       },
-      created_at: new Date(at(-30 * 86400_000)), updated_at: new Date(at(-30 * 86400_000)),
+      created_at: new Date(observationCreatedAt), updated_at: new Date(observationCreatedAt),
     };
     const foreignRecord = { ...recordFor(foreignSessionId, 'connected', at(-30 * 86400_000)),
       scope: { ...scope(foreignSessionId), installation_id: foreignInstallation } };
