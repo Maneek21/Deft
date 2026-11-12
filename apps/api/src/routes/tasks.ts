@@ -7,7 +7,7 @@ import { eq, and, desc, asc, sql, inArray, ilike, or, isNull, type SQL } from 'd
 import { db } from '../lib/db.js';
 import { nativeCreate, nativeCreateKey, NativeCreateError } from '../lib/native-create.js';
 import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, taskRelationships, files, taskAttachments, savedViews, taskWatchers, taskAssignees, taskReactions, wikiPages, wikiCitations, orgMembers, workflowRules, agentEmployees, agentActions, agentChannelDeliveryAttempts, agentChannelEvents, agentCooperativeLog, spaces, spaceMembers } from '@deft/db/schema';
-import { getIO, emitToUser } from '../socket.js';
+import { getIO, emitToUser, emitOrgTaskEvent } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { canDeleteTask } from '../lib/task-permissions.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
@@ -524,11 +524,8 @@ taskRoutes.post('/bulk-delete', async (c) => {
       })));
     });
 
-    const io = getIO();
-    if (io) {
-      for (const taskId of taskIds) {
-        io.to(`org:${user.org_id}`).emit('task:deleted', { id: taskId });
-      }
+    for (const taskId of taskIds) {
+      emitOrgTaskEvent(user.org_id, 'task:deleted', { id: taskId });
     }
 
     return c.json({ success: true, deleted: taskIds.length, deleted_ids: taskIds });
@@ -1812,15 +1809,8 @@ async function createTaskForProject(
   if (replayed) return { task, project };
   const taskNumber = task.number;
 
-  // Broadcast task:created via socket to org
-  const io = getIO();
-  if (io) {
-    io.to(`org:${orgId}`).emit('task:created', {
-      ...task,
-      project_prefix: project.prefix,
-      project_name: project.name,
-    });
-  }
+  // Members reload task content through the audience-checked reads.
+  emitOrgTaskEvent(orgId, 'task:created', { id: task.id, project_id: task.project_id });
 
   // Notify assignee if different from creator
   if (task!.assignee_id && task!.assignee_id !== userId) {
@@ -2375,13 +2365,7 @@ taskRoutes.patch('/:id', async (c) => {
 
     // If status changed: broadcast and post system message in linked spaces
     if (parsed.data.status !== undefined && parsed.data.status !== existingTask.status) {
-      if (io) {
-        io.to(`org:${user.org_id}`).emit('task:updated', {
-          ...updatedTask,
-          project_prefix: project?.prefix,
-          project_name: project?.name,
-        });
-      }
+      emitOrgTaskEvent(user.org_id, 'task:updated', { id: taskId, project_id: existingTask.project_id, changed_fields: ['status'] });
 
       // Task 5.7 — enqueue workflow-execute for rules matching this
       // status change (trigger_type='task.status_changed' +
@@ -2490,10 +2474,7 @@ taskRoutes.delete('/:id', async (c) => {
       action: 'deleted',
     });
 
-    const io = getIO();
-    if (io) {
-      io.to(`org:${user.org_id}`).emit('task:deleted', { id: taskId });
-    }
+    emitOrgTaskEvent(user.org_id, 'task:deleted', { id: taskId });
 
     return c.json({ success: true });
   } catch (err) {
@@ -2998,7 +2979,7 @@ taskRoutes.post('/:id/reactions', async (c) => {
     `);
 
     try {
-      getIO()?.to(`org:${user.org_id}`).emit('task:reaction_changed', { task_id: taskId });
+      emitOrgTaskEvent(user.org_id, 'task:reaction_changed', { task_id: taskId });
     } catch { /* ignore */ }
 
     return c.json({ ok: true }, 201);
@@ -3025,7 +3006,7 @@ taskRoutes.delete('/:id/reactions/:emoji', async (c) => {
     ));
 
     try {
-      getIO()?.to(`org:${user.org_id}`).emit('task:reaction_changed', { task_id: taskId });
+      emitOrgTaskEvent(user.org_id, 'task:reaction_changed', { task_id: taskId });
     } catch { /* ignore */ }
 
     return c.json({ ok: true });

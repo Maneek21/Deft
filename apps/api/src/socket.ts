@@ -7,6 +7,7 @@ import { eq, and, ne } from 'drizzle-orm';
 import * as huddle from './huddle-rooms.js';
 import { requireActiveOrgMembership } from './lib/org-membership.js';
 import { createNotificationIfAllowed } from './lib/notification-policy.js';
+import { isOrgTaskEvent, orgTaskEventPayload, type OrgTaskEvent, type OrgTaskEventPayload } from './lib/task-realtime.js';
 
 export type SocketUser = {
   id: string;
@@ -260,6 +261,44 @@ export function getIO(): SocketIOServer | null {
   return io;
 }
 
+/** Emit an identifier-only task event to every member of `orgId`. */
+export function emitOrgTaskEvent(orgId: string, event: OrgTaskEvent, payload: OrgTaskEventPayload): void {
+  try {
+    io?.to(`org:${orgId}`).emit(event, orgTaskEventPayload(event, payload));
+  } catch {
+    // Realtime delivery is best-effort; clients also reload on navigation.
+  }
+}
+
+type BroadcastPacket = { data?: unknown[] };
+type BroadcastOptions = { rooms?: Set<string> };
+type BroadcastingAdapter = {
+  broadcast(packet: BroadcastPacket, opts: BroadcastOptions): void;
+  broadcastWithAck(packet: BroadcastPacket, opts: BroadcastOptions, ...rest: unknown[]): void;
+};
+
+/**
+ * Task events addressed to an org room (or to every socket) reach every
+ * member, so whatever an emitter passes is reduced to the identifier-only
+ * payload before delivery.
+ */
+function reduceOrgTaskPacket(packet: BroadcastPacket, opts: BroadcastOptions): BroadcastPacket {
+  const data = packet?.data;
+  if (!Array.isArray(data) || !isOrgTaskEvent(data[0])) return packet;
+  const rooms = opts?.rooms;
+  const reachesOrg = !rooms || rooms.size === 0 || [...rooms].some((room) => room.startsWith('org:'));
+  if (!reachesOrg) return packet;
+  return { ...packet, data: [data[0], orgTaskEventPayload(data[0], data[1])] };
+}
+
+function installOrgTaskEventGuard(server: SocketIOServer) {
+  const adapter = server.of('/').adapter as unknown as BroadcastingAdapter;
+  const broadcast = adapter.broadcast.bind(adapter);
+  const broadcastWithAck = adapter.broadcastWithAck.bind(adapter);
+  adapter.broadcast = (packet, opts) => broadcast(reduceOrgTaskPacket(packet, opts), opts);
+  adapter.broadcastWithAck = (packet, opts, ...rest) => broadcastWithAck(reduceOrgTaskPacket(packet, opts), opts, ...rest);
+}
+
 /**
  * Emit a per-user event to that user's sockets authenticated for `orgId` only.
  * `orgId` must be the org the event's data belongs to (for a notification, its
@@ -302,6 +341,7 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
     pingInterval: 10000,
     pingTimeout: 5000,
   });
+  installOrgTaskEventGuard(io);
 
   // Auth middleware
   const disconnectSession = (sid: string) => io?.in(`web-session:${sid}`).disconnectSockets(true);

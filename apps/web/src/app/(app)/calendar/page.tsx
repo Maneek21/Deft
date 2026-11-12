@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
+import { createCoalescedRefetch } from '@/lib/task-event-refetch';
 import {
   CalendarView, CalendarData, CalBrief, CalEvent, DayBucket,
   bucketByDay, getDateRangeForView, toDateKey,
@@ -134,13 +135,14 @@ export default function CalendarPage() {
     const token = typeof window !== 'undefined' ? localStorage.getItem('deft-access-token') : null;
     if (!token) return;
     const socket = getSocket(token);
-    const onTaskChange = () => {
-      refetchCalData();
-    };
+    // Task events carry ids only; reload once per burst of events.
+    const refetch = createCoalescedRefetch(() => { refetchCalData(); });
+    const onTaskChange = () => refetch.schedule();
     socket.on('task:created', onTaskChange);
     socket.on('task:updated', onTaskChange);
     socket.on('task:deleted', onTaskChange);
     return () => {
+      refetch.cancel();
       socket.off('task:created', onTaskChange);
       socket.off('task:updated', onTaskChange);
       socket.off('task:deleted', onTaskChange);

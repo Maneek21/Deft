@@ -7,6 +7,7 @@ import { isCurrentTaskRoute, taskFiltersFromSearch, taskProjectHref, taskSurface
 import { createNativeCreateIntent } from '@/lib/native-create-intent';
 import { moduleRecordReturnHrefFromTask } from '@/lib/module-list-context';
 import { getSocket } from '@/lib/socket';
+import { createCoalescedRefetch, taskEventConcernsList, taskEventIds, type TaskEventPayload } from '@/lib/task-event-refetch';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { TaskBoard } from '@/components/task-board';
@@ -347,102 +348,51 @@ export default function TasksPage() {
     loadTasks();
   }, [loadTasks]);
 
-  // Socket: live updates for task list (task:created / task:updated / task:deleted)
+  // Socket: live updates for the task list. Task events carry ids only; the
+  // list reloads through the audience-checked list endpoint, coalesced so a
+  // burst of events (bulk edits, agent writes) causes a single request.
+  const shownTaskIdsRef = useRef<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    shownTaskIdsRef.current = new Set(tasks.map((task) => task.id));
+  }, [tasks]);
+
   useEffect(() => {
     const token = typeof window !== 'undefined' ? localStorage.getItem('deft-access-token') : null;
     if (!token) return;
     const socket = getSocket(token);
 
-    const isInScope = (t: Partial<Task>): boolean => {
-      if (isMyTasksView) {
-        return !!t.assignee_id && t.assignee_id === user?.id;
-      }
-      if (selectedProject) {
-        return t.project_id === selectedProject.id;
-      }
-      return false;
+    const refetch = createCoalescedRefetch(() => {
+      void loadTasks(view === 'table' ? tablePage.cursor : undefined);
+    });
+    const scope = () => ({
+      projectId: selectedProject?.id ?? null,
+      dependsOnTaskFields: isMyTasksView || view === 'table',
+      shownIds: shownTaskIdsRef.current,
+    });
+    const onTaskEvent = (payload: TaskEventPayload) => {
+      if (taskEventConcernsList(payload, scope())) refetch.schedule();
+    };
+    const onDeleted = (payload: TaskEventPayload) => {
+      const ids = new Set(taskEventIds(payload));
+      if (ids.size === 0) return;
+      setTasks((prev) => (prev.some((t) => ids.has(t.id)) ? prev.filter((t) => !ids.has(t.id)) : prev));
+      setSelectedTask((prev) => (prev && ids.has(prev.id) ? null : prev));
+      if (view === 'table') refetch.schedule();
     };
 
-    const onCreated = (payload: Task) => {
-      if (!isInScope(payload)) return;
-      if (view === 'table') {
-        void loadTasks(tablePage.cursor);
-        return;
-      }
-      setTasks((prev) => (prev.some((t) => t.id === payload.id) ? prev : [...prev, payload]));
-    };
-
-    const onUpdated = (payload: Partial<Task> & { id: string }) => {
-      if (view === 'table') {
-        void loadTasks(tablePage.cursor);
-        return;
-      }
-      setTasks((prev) => {
-        const idx = prev.findIndex((t) => t.id === payload.id);
-        if (idx === -1) {
-          // Not in list — if it became in-scope, refetch to pick up full shape
-          if (isInScope(payload)) {
-            loadTasks();
-          }
-          return prev;
-        }
-        const next = [...prev];
-        next[idx] = { ...next[idx], ...payload } as Task;
-        return next;
-      });
-    };
-
-    const onDeleted = (payload: { id: string }) => {
-      if (view === 'table') {
-        void loadTasks(tablePage.cursor);
-        setSelectedTask((prev) => (prev && prev.id === payload.id ? null : prev));
-        return;
-      }
-      setTasks((prev) => prev.filter((t) => t.id !== payload.id));
-      setSelectedTask((prev) => (prev && prev.id === payload.id ? null : prev));
-    };
-
-    // Task 5.5 — batched updates from PATCH /bulk. Apply the shared `changes`
-    // to every task in scope and refetch if the target list may now have
-    // shifted (new in-scope items after bulk assign).
-    const onBulkUpdated = (payload: { task_ids: string[]; changes: Partial<Task> }) => {
-      if (!payload || !Array.isArray(payload.task_ids)) return;
-      if (view === 'table') {
-        void loadTasks(tablePage.cursor);
-        return;
-      }
-      const ids = new Set(payload.task_ids);
-      setTasks((prev) => {
-        let touched = false;
-        const next = prev.map((t) => {
-          if (!ids.has(t.id)) return t;
-          touched = true;
-          return { ...t, ...payload.changes } as Task;
-        });
-        return touched ? next : prev;
-      });
-      // If the bulk change may have pulled tasks in/out of scope
-      // (e.g. reassign to current user on my-tasks view), refresh.
-      if (
-        (isMyTasksView && 'assignee_id' in payload.changes) ||
-        ('status' in payload.changes)
-      ) {
-        loadTasks();
-      }
-    };
-
-    socket.on('task:created', onCreated);
-    socket.on('task:updated', onUpdated);
-    socket.on('task:bulk_updated', onBulkUpdated);
+    socket.on('task:created', onTaskEvent);
+    socket.on('task:updated', onTaskEvent);
+    socket.on('task:bulk_updated', onTaskEvent);
     socket.on('task:deleted', onDeleted);
 
     return () => {
-      socket.off('task:created', onCreated);
-      socket.off('task:updated', onUpdated);
-      socket.off('task:bulk_updated', onBulkUpdated);
+      refetch.cancel();
+      socket.off('task:created', onTaskEvent);
+      socket.off('task:updated', onTaskEvent);
+      socket.off('task:bulk_updated', onTaskEvent);
       socket.off('task:deleted', onDeleted);
     };
-  }, [selectedProject, isMyTasksView, user?.id, loadTasks, view, tablePage.cursor]);
+  }, [selectedProject, isMyTasksView, loadTasks, view, tablePage.cursor]);
 
   // Load org members for assignee dropdown in bulk actions
   useEffect(() => {
