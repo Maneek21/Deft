@@ -115,10 +115,7 @@ async function routeAccepts(userId: string, actionId: string, decision: 'approve
   const text = await response.text();
   if (response.status === 404) return false;
   if (response.status === 403 && REVIEWER_REFUSALS.has((JSON.parse(text) as { error?: string }).error ?? '')) return false;
-  // Rejection settles the action; approval may stop after authorization on
-  // the fixture's execution preconditions.
-  if (decision === 'reject') assert.equal(response.status, 200, text);
-  else assert.ok(response.status < 500, text);
+  assert.equal(response.status, 200, text);
   return true;
 }
 
