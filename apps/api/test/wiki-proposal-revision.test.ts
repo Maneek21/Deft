@@ -10,9 +10,12 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test, { after, before } from 'node:test';
+import { Hono } from 'hono';
 
 import { persistAgentReplyWithActions } from '../src/lib/agent-action-proposals.js';
 import { executeActionDirect } from '../src/lib/agent-actions.js';
+import { _setWikiWriteRevisionCheckedHookForTest } from '../src/lib/wiki-proposal-target.js';
+import { wikiRoutes } from '../src/routes/wiki.js';
 import {
   durabilityDatabaseUrl,
   setupDurabilityFixture,
@@ -292,4 +295,54 @@ test('C05-h: a pending wiki update without a recorded revision is refused, not r
     [actionId, f.orgId, f.requesterId, JSON.stringify(updateParams(page))],
   );
   await assertRefused(actionId, UNVERIFIABLE, page.id, await pageState(page.id));
+});
+
+test('C05-i: a person changing the links while an approved update runs is not overwritten', { skip: !canRun, timeout: 600_000 }, async () => {
+  const first = await createPage();
+  const second = await createPage();
+  const page = await createPage({ related: [first.id] });
+  // The page already has its history snapshot, so the person's request writes
+  // nothing else to the page before it replaces the links.
+  await f.client.query(
+    "INSERT INTO wiki_page_versions (id, page_id, version, title, content, summary) SELECT gen_random_uuid()::text, id, version, title, content, summary FROM wiki_pages WHERE id = $1",
+    [page.id],
+  );
+  const actionId = await chatProposal({ slug: page.slug, related_slugs: [first.slug], wiki_write_mode: 'update' });
+  const wikiApp = new Hono();
+  wikiApp.use('*', async (c, next) => {
+    c.set('user', { id: f.requesterId, org_id: f.orgId, email: 'requester@example.test', role: 'member' } as any);
+    await next();
+  });
+  wikiApp.route('/api/wiki', wikiRoutes);
+
+  let personEdit: Promise<Response> | null = null;
+  let personDone = false;
+  // Once the update has checked the revision, the person replaces the links.
+  // The update continues only when that request has finished or is waiting
+  // for the page, so the two writes interleave the same way on every run.
+  _setWikiWriteRevisionCheckedHookForTest(async () => {
+    personEdit = Promise.resolve(wikiApp.request(`/api/wiki/${page.slug}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ related_slugs: [second.slug] }),
+    }));
+    void personEdit.finally(() => { personDone = true; });
+    for (;;) {
+      if (personDone) return;
+      const waiting = await f.client.query(
+        "SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'");
+      if (waiting.rows[0].n > 0) return;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  });
+  try {
+    const approved = await approve(actionId);
+    assert.equal(approved.status, 200, JSON.stringify(approved.body));
+    const edited = await personEdit!;
+    assert.equal(edited.status, 200, await edited.clone().text());
+  } finally {
+    _setWikiWriteRevisionCheckedHookForTest(null);
+  }
+  // The later write is the person's, and it stands.
+  assert.deepEqual((await pageState(page.id)).links, [second.id]);
 });

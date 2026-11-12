@@ -2,6 +2,7 @@
 // and stores them as wiki pages (LLM Wiki pattern).
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
+import { lockWikiPageForLinkWrite } from '../../lib/wiki-page-link-lock.js';
 import { wikiPages, wikiLinks, wikiCitations, wikiOpsLog, wikiPageVersions } from '@deft/db/schema';
 import { eq, and, desc, sql, inArray } from 'drizzle-orm';
 import { llm } from '../../lib/llm.js';
@@ -490,14 +491,17 @@ async function createLinksForPage(pageId: string, orgId: string, slugs: string[]
       inArray(wikiPages.slug, slugs),
     ));
 
-  for (const target of targetPages) {
-    if (target.id === pageId) continue; // no self-links
-    await db.insert(wikiLinks).values({
-      org_id: orgId,
-      source_page_id: pageId,
-      target_page_id: target.id,
-    }).onConflictDoNothing();
-  }
+  await db.transaction(async (tx) => {
+    if (!await lockWikiPageForLinkWrite(tx, orgId, pageId)) return;
+    for (const target of targetPages) {
+      if (target.id === pageId) continue; // no self-links
+      await tx.insert(wikiLinks).values({
+        org_id: orgId,
+        source_page_id: pageId,
+        target_page_id: target.id,
+      }).onConflictDoNothing();
+    }
+  });
 }
 
 /**

@@ -154,6 +154,13 @@ function readFrozenTarget(beforeState: unknown): FrozenWikiTarget | null {
 
 class WikiWriteRefusal extends Error {}
 
+let revisionCheckedHook: (() => Promise<void>) | null = null;
+
+/** Test seam: runs inside the write, after the revision check and before any change. */
+export function _setWikiWriteRevisionCheckedHookForTest(hook: (() => Promise<void>) | null): void {
+  revisionCheckedHook = hook;
+}
+
 /** Executes an approved or automatic `wiki_write` action against its frozen target. */
 export async function executeWikiWriteAction(input: {
   actionId: string;
@@ -205,6 +212,7 @@ export async function executeWikiWriteAction(input: {
         if (await writtenFieldsRevision(tx, locked, params) !== expectedRevision) {
           throw new WikiWriteRefusal(WIKI_PAGE_CHANGED_ERROR);
         }
+        if (revisionCheckedHook) await revisionCheckedHook();
 
         const updates: Record<string, any> = {};
         if (title) updates.title = title;
