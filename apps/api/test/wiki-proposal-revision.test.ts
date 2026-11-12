@@ -11,10 +11,14 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test, { after, before } from 'node:test';
 import { Hono } from 'hono';
+import { sql } from 'drizzle-orm';
+import { wikiLinks } from '@deft/db/schema';
 
 import { persistAgentReplyWithActions } from '../src/lib/agent-action-proposals.js';
 import { executeActionDirect } from '../src/lib/agent-actions.js';
 import { _setWikiWriteRevisionCheckedHookForTest } from '../src/lib/wiki-proposal-target.js';
+import { db } from '../src/lib/db.js';
+import { lockWikiPageForLinkWrite } from '../src/lib/wiki-page-link-lock.js';
 import { wikiRoutes } from '../src/routes/wiki.js';
 import {
   durabilityDatabaseUrl,
@@ -320,7 +324,9 @@ test('C05-i: a person changing the links while an approved update runs is not ov
   // Once the update has checked the revision, the person replaces the links.
   // The update continues only when that request has finished or is waiting
   // for the page, so the two writes interleave the same way on every run.
-  _setWikiWriteRevisionCheckedHookForTest(async () => {
+  _setWikiWriteRevisionCheckedHookForTest(async (tx) => {
+    const writer = await tx.execute(sql`SELECT pg_backend_pid() AS pid`);
+    const writerPid = Number((writer as unknown as { rows: Array<{ pid: number }> }).rows[0]!.pid);
     personEdit = Promise.resolve(wikiApp.request(`/api/wiki/${page.slug}`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
@@ -329,8 +335,9 @@ test('C05-i: a person changing the links while an approved update runs is not ov
     void personEdit.finally(() => { personDone = true; });
     for (;;) {
       if (personDone) return;
+      // The person's request is blocked by this write's backend, not by anything else.
       const waiting = await f.client.query(
-        "SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'");
+        'SELECT count(*)::int AS n FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))', [writerPid]);
       if (waiting.rows[0].n > 0) return;
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
@@ -345,4 +352,25 @@ test('C05-i: a person changing the links while an approved update runs is not ov
   }
   // The later write is the person's, and it stands.
   assert.deepEqual((await pageState(page.id)).links, [second.id]);
+});
+
+test('C05-j: two pages linking to each other at the same time both commit', { skip: !canRun, timeout: 600_000 }, async () => {
+  const left = await createPage();
+  const right = await createPage();
+  // Each writer holds its own page lock before either inserts its link, so
+  // the two link inserts each check the page the other one holds.
+  let lockedCount = 0;
+  let release!: () => void;
+  const bothLocked = new Promise<void>((resolve) => { release = resolve; });
+  const write = (source: string, target: string) => db.transaction(async (tx) => {
+    assert.equal(await lockWikiPageForLinkWrite(tx, f.orgId, source), true);
+    lockedCount += 1;
+    if (lockedCount === 2) release();
+    await bothLocked;
+    await tx.insert(wikiLinks).values({ org_id: f.orgId, source_page_id: source, target_page_id: target }).onConflictDoNothing();
+  });
+  const results = await Promise.allSettled([write(left.id, right.id), write(right.id, left.id)]);
+  assert.deepEqual(results.map((result) => result.status), ['fulfilled', 'fulfilled'], JSON.stringify(results.map((result) => result.status === 'rejected' ? String(result.reason) : 'ok')));
+  assert.deepEqual((await pageState(left.id)).links, [right.id]);
+  assert.deepEqual((await pageState(right.id)).links, [left.id]);
 });

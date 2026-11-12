@@ -154,10 +154,11 @@ function readFrozenTarget(beforeState: unknown): FrozenWikiTarget | null {
 
 class WikiWriteRefusal extends Error {}
 
-let revisionCheckedHook: (() => Promise<void>) | null = null;
+type WriteTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+let revisionCheckedHook: ((tx: WriteTransaction) => Promise<void>) | null = null;
 
 /** Test seam: runs inside the write, after the revision check and before any change. */
-export function _setWikiWriteRevisionCheckedHookForTest(hook: (() => Promise<void>) | null): void {
+export function _setWikiWriteRevisionCheckedHookForTest(hook: ((tx: WriteTransaction) => Promise<void>) | null): void {
   revisionCheckedHook = hook;
 }
 
@@ -194,12 +195,13 @@ export async function executeWikiWriteAction(input: {
     };
     try {
       outcome = await db.transaction(async (tx) => {
+        // The same page lock as every outgoing-link writer (wiki-page-link-lock.ts).
         const [locked] = await tx
           .select()
           .from(wikiPages)
           .where(and(eq(wikiPages.id, pageId), eq(wikiPages.org_id, orgId)))
           .limit(1)
-          .for('update');
+          .for('no key update');
         if (!locked || locked.is_deleted || locked.slug !== target.slug) {
           throw new WikiWriteRefusal(WIKI_PAGE_UNAVAILABLE_ERROR);
         }
@@ -212,7 +214,7 @@ export async function executeWikiWriteAction(input: {
         if (await writtenFieldsRevision(tx, locked, params) !== expectedRevision) {
           throw new WikiWriteRefusal(WIKI_PAGE_CHANGED_ERROR);
         }
-        if (revisionCheckedHook) await revisionCheckedHook();
+        if (revisionCheckedHook) await revisionCheckedHook(tx);
 
         const updates: Record<string, any> = {};
         if (title) updates.title = title;
