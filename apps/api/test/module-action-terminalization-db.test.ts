@@ -177,7 +177,7 @@ test('TTL terminalizes module actions with one verified receipt and closes linke
   // A non-capture module action naming another intent is terminalized too,
   // but that intent stays as it was.
   const untouchedIntentId = await insertWorkIntent(TTL_EMPLOYEE_ID, 'ttl-untouched');
-  await insertPendingAction({
+  const untouchedAction = await insertPendingAction({
     employeeId: TTL_EMPLOYEE_ID,
     shadowUserId: TTL_SHADOW_ID,
     action: 'module_record_update',
@@ -237,6 +237,13 @@ test('TTL terminalizes module actions with one verified receipt and closes linke
   );
   assert.equal(intent.rows[0].status, 'expired');
   assert.equal(intent.rows[0].failure_reason, 'Approval expired');
+  const untouchedTerminal = await client.query(
+    'SELECT approval_status, params, executed_at FROM agent_actions WHERE id = $1',
+    [untouchedAction.id],
+  );
+  assert.equal(untouchedTerminal.rows[0].approval_status, 'expired');
+  assert.ok(untouchedTerminal.rows[0].executed_at);
+  assert.equal('work_intent_id' in untouchedTerminal.rows[0].params, false);
   const untouched = await client.query(
     'SELECT status, converted_action_id, failure_reason FROM work_intents WHERE id = $1',
     [untouchedIntentId],
