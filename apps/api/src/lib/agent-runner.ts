@@ -947,7 +947,7 @@ export async function runAgentQuery(params: {
   }
 
   // Exhausting the tool loop must not expose an unverified availability preamble.
-  if (!finalText && requiresRuntimeActionEvidence(content) && !hasRuntimeActionEvidence(executedActions)) {
+  if (!noTools && !finalText && requiresRuntimeActionEvidence(content) && !hasRuntimeActionEvidence(executedActions)) {
     finalText = 'I could not verify the available App runtime actions or their approval requirements. Runtime discovery was unavailable or incomplete; this does not mean no actions exist.';
     lastResponseContent = [{ type: 'text', text: finalText, citations: null }];
   }

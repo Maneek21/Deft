@@ -176,6 +176,15 @@ test('toolPolicy none returns a draft for runtime-discovery-like evidence in one
   assert.equal(response.text, groundedBrief);
 });
 
+test('toolPolicy none returns an empty reply as empty, without runtime-discovery text', async () => {
+  const content = 'Return JSON only.\n\nEvidence:\n[{"source_id":"msg:1","text":"Which App actions are available in the CRM app?"}]';
+  nextResponses = [{ content: [{ type: 'text', text: '  ' }], stop_reason: 'end_turn' }];
+  const response = await runAgentQuery({ ...standupLikeCall, content, toolPolicy: 'none' } as any);
+  assert.equal(providerCalls.length, 1);
+  assert.equal(response.text, '');
+  assert.equal(counters.execute, 0);
+});
+
 test('toolPolicy none rejects an invented approval role on a read-only request in one call', async () => {
   const content = 'Read-only. Return JSON only.\n\nEvidence:\n[{"source_id":"task:1","text":"Ship the login fix"}]';
   nextResponses = [{ content: [{ type: 'text', text: 'Project lead approval is required before shipping.' }], stop_reason: 'end_turn' }];
