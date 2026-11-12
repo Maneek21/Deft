@@ -112,10 +112,52 @@ export function currentAgentChannelEventAuthoritySql(eventId: SQLWrapper, reader
   )`;
 }
 
+/**
+ * The one effective requester of an action, with the approval resolver's precedence:
+ * a present params.source_user_id (else params.origin_user_id) when it is a non-blank string, else user_id.
+ */
+export function agentActionRequesterIdSql(actionAlias = 'agent_actions'): SQL {
+  const field = (name: string) => sql`${sql.identifier(actionAlias)}.${sql.identifier(name)}`;
+  const sourceUser = sql`${field('params')}->'source_user_id'`;
+  const originUser = sql`${field('params')}->'origin_user_id'`;
+  return sql`(case
+    when coalesce(jsonb_typeof(${sourceUser}), 'null') <> 'null' then (case
+      when jsonb_typeof(${sourceUser}) = 'string' and (${field('params')}->>'source_user_id') ~ '[^[:space:]]'
+        then ${field('params')}->>'source_user_id'
+      else ${field('user_id')} end)
+    when jsonb_typeof(${originUser}) = 'string' and (${field('params')}->>'origin_user_id') ~ '[^[:space:]]'
+      then ${field('params')}->>'origin_user_id'
+    else ${field('user_id')} end)`;
+}
+
+/** Source-less work is private to its human requester, an assigned non-guest reviewer and current org owners/admins; employee reads retain their source authority. */
 export function currentAgentActionSourceAuthoritySql(actionAlias = 'agent_actions', readerUserId?: SQLWrapper): SQL {
   const field = (name: string) => sql`${sql.identifier(actionAlias)}.${sql.identifier(name)}`;
   return sql`(${field('action')} <> 'chat_mention' or ${field('message_id')} is not null)
     and (${field('action')} <> 'task_assigned' or ${field('channel_event_id')} is not null)
+    and (${field('message_id')} is not null or ${field('channel_event_id')} is not null or ${readerUserId ? sql`exists (
+      select 1 from users action_reader where action_reader.id = ${readerUserId}
+        and (
+          (action_reader.kind <> 'human' or action_reader.is_agent = true)
+          or (action_reader.kind = 'human' and action_reader.is_agent = false and (
+            ${agentActionRequesterIdSql(actionAlias)} = action_reader.id
+            or exists (select 1 from org_members action_reader_membership
+              where action_reader_membership.org_id = ${field('org_id')}
+                and action_reader_membership.user_id = action_reader.id
+                and action_reader_membership.is_active = true
+                and action_reader_membership.role in ('owner', 'admin'))
+            or exists (select 1 from agent_action_approvers action_reviewer
+              join org_members action_reviewer_membership
+                on action_reviewer_membership.org_id = action_reviewer.org_id
+                and action_reviewer_membership.user_id = action_reviewer.user_id
+                and action_reviewer_membership.is_active = true
+                and action_reviewer_membership.role <> 'guest'
+              where action_reviewer.action_id = ${field('id')}
+                and action_reviewer.org_id = ${field('org_id')}
+                and action_reviewer.user_id = action_reader.id)
+          ))
+        )
+    )` : sql`true`})
     and (${field('message_id')} is null or ${currentEmployeeMessageAuthoritySql(field('org_id'), field('agent_employee_id'), field('message_id'))})
     and (${field('message_id')} is null or ${readerMessageAuthoritySql(field('org_id'), readerUserId, field('message_id'))})
     and (${field('channel_event_id')} is null or exists (

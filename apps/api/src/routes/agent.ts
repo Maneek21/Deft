@@ -2,6 +2,7 @@ import {canUndoAgentAction, visibleCaptureActionSql} from '../lib/agent-action-v
 import type { AppRunTransaction } from '../lib/app-run-repository.js';
 import { reconcileApprovalReplyText } from '../lib/agent-approval-copy.js';
 import { emitMessageToSpaceViewers, projectMessagesForViewer } from '../lib/agent-message-run-details.js';
+import { agentActionRequesterIdSql } from '../lib/agent-channel-authority.js';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { AppRunError } from '../lib/app-run-errors.js';
@@ -955,6 +956,13 @@ agentRoutes.get('/actions/pending-by-space', async (c) => {
       AND a.approval_status = 'pending'
       AND a.approval_tier IN ('quick', 'full')
       AND a.source IS DISTINCT FROM 'defty_capture'
+      AND EXISTS (
+        SELECT 1 FROM agent_actions
+        WHERE agent_actions.id = a.id
+          AND agent_actions.org_id = a.org_id
+          AND ${visibleActionSql(user)}
+      )
+      AND (${user.role !== 'guest'} OR ${agentActionRequesterIdSql('a')} = ${user.id})
       AND (${user.role !== 'guest'} OR a.action NOT IN (
         'module_record_create',
         'module_record_bulk_create',
