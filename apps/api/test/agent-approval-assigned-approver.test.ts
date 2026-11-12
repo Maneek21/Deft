@@ -2,10 +2,10 @@
  * Lane W2 approval recovery — assigned approvers.
  *
  * An `agent_action_approvers` row assigns a reviewer to a pending action.
- * An assigned reviewer who is an active, non-guest member of the action's
- * workspace may approve or reject actions resolved by the approval resolver,
- * exactly as they already can for ordinary agent actions. Action-specific
- * rules that are stricter still apply, and nobody else gains access.
+ * An assignment counts only when it names one of the action's reviewers (its
+ * requester when an active human member, otherwise an owner/admin), so it
+ * never admits anyone else, on the routes or in the approval resolver.
+ * Action-specific rules that are stricter still apply.
  *
  * Run only against a disposable DB:
  *   pnpm --filter @deft/api test test/agent-approval-assigned-approver.test.ts
@@ -86,28 +86,28 @@ async function status(actionId: string): Promise<string> {
   return (await f.client.query('SELECT approval_status FROM agent_actions WHERE id = $1', [actionId])).rows[0].approval_status;
 }
 
-test('B-a: an assigned member can approve a resolver-owned action', { skip: !canRun }, async () => {
+test('B-a: an assignment naming a member who is not a reviewer does not let them approve', { skip: !canRun }, async () => {
   const actionId = await employeeProposal();
   await assign(actionId, f.otherId);
   const response = await f.as(f.otherId, `/api/agent/actions/${actionId}/approve`, { method: 'POST' });
-  assert.equal(response.status, 200, await response.clone().text());
-  assert.equal((await response.json() as { status: string }).status, 'approved');
+  assert.equal(response.status, 404, await response.clone().text());
+  assert.equal(((await approveAction(actionId, f.otherId)) as { code?: string }).code, 'FORBIDDEN');
+  assert.equal(await status(actionId), 'pending');
+  // The action's reviewers (owners/admins, as its own user is an agent) still decide it.
+  const admin = await f.as(f.adminId, `/api/agent/actions/${actionId}/approve`, { method: 'POST' });
+  assert.equal(admin.status, 200, await admin.clone().text());
   assert.equal(await status(actionId), 'approved');
-  const [stored] = (await f.client.query(
-    'SELECT approved_by_user_id, result, error FROM agent_actions WHERE id = $1', [actionId])).rows;
-  assert.equal(stored.approved_by_user_id, f.otherId);
-  // The settled row carries its outcome, not the executing marker.
-  assert.notEqual(stored.result?.lifecycle_state, 'executing');
 });
 
-test('B-b: an assigned member can reject a resolver-owned action', { skip: !canRun }, async () => {
+test('B-b: an assignment naming a member who is not a reviewer does not let them reject', { skip: !canRun }, async () => {
   const actionId = await employeeProposal();
   await assign(actionId, f.otherId);
   const response = await f.as(f.otherId, `/api/agent/actions/${actionId}/reject`, {
     method: 'POST', body: JSON.stringify({ reason: 'not now' }), headers: { 'content-type': 'application/json' },
   });
-  assert.equal(response.status, 200, await response.clone().text());
-  assert.equal(await status(actionId), 'rejected');
+  assert.equal(response.status, 404, await response.clone().text());
+  assert.equal(((await rejectAction(actionId, f.otherId)) as { code?: string }).code, 'FORBIDDEN');
+  assert.equal(await status(actionId), 'pending');
 });
 
 test('B-c: a member who is not assigned is still refused', { skip: !canRun }, async () => {
@@ -125,9 +125,9 @@ test('B-d: an assigned guest is refused', { skip: !canRun }, async () => {
   const actionId = await employeeProposal();
   await assign(actionId, guestId);
   const approve = await f.as(guestId, `/api/agent/actions/${actionId}/approve`, { method: 'POST' });
-  assert.equal(approve.status, 403, await approve.clone().text());
+  assert.equal(approve.status, 404, await approve.clone().text());
   const reject = await f.as(guestId, `/api/agent/actions/${actionId}/reject`, { method: 'POST' });
-  assert.equal(reject.status, 403, await reject.clone().text());
+  assert.equal(reject.status, 404, await reject.clone().text());
   assert.equal(await status(actionId), 'pending');
 });
 

@@ -43,6 +43,7 @@ import { bulkUpdateTasks, BulkTaskUpdateError, bulkTaskUpdateSchema } from '../t
 import { queryCompactTasks, type CompactTaskQuery } from '../task-compact-query.js';
 import { visibleNoteCondition } from '../note-visibility.js';
 import { approveAction, rejectAction } from '../agent-approval-resolver.js';
+import { actionRequesterIdSql } from '../agent-action-requester.js';
 import { resolveProjectTargetFromRows } from '../resolve-project-target.js';
 import { toPlainText } from '../plain-text.js';
 import {
@@ -3581,11 +3582,7 @@ async function ownApproval(
 ) {
   const canReview = ctx.role === 'owner' || ctx.role === 'admin'
     ? sql`true`
-    : sql`COALESCE(
-        ${agentActions.params}->>'source_user_id',
-        ${agentActions.params}->>'origin_user_id',
-        ${agentActions.user_id}
-      ) = ${ctx.user_id}`;
+    : sql`${actionRequesterIdSql()} = ${ctx.user_id}`;
   const [row] = await db.select().from(agentActions).where(and(
     eq(agentActions.id, actionId),
     eq(agentActions.org_id, ctx.org_id),
@@ -3602,7 +3599,7 @@ export async function humanApprovalList(args: { status?: string; limit?: number 
   if (!['pending', 'approved', 'rejected', 'expired', 'all'].includes(status)) return errorResult('status must be pending, approved, rejected, expired, or all');
   const canReview = ctx.role === 'owner' || ctx.role === 'admin'
     ? sql`true`
-    : sql`COALESCE(${agentActions.params}->>'source_user_id', ${agentActions.params}->>'origin_user_id', ${agentActions.user_id}) = ${ctx.user_id}`;
+    : sql`${actionRequesterIdSql()} = ${ctx.user_id}`;
   const rows = await db.select().from(agentActions).where(and(eq(agentActions.org_id, ctx.org_id), visibleModuleActionSql(ctx.role, { userId: ctx.user_id, orgId: ctx.org_id }), visibleModuleActionScopeSql(ctx.scopes, 'read'), canReview, status === 'all' ? sql`true` : eq(agentActions.approval_status, status as any))).orderBy(desc(agentActions.created_at)).limit(Math.min(Math.max(1, args.limit ?? 50), 100));
   return textResult(rows.map((row) => ({ ...row, url: '/inbox?lane=needs_you' })));
 }

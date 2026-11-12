@@ -13,6 +13,7 @@ import {
 } from '@deft/db/schema';
 import { visibleModuleActionSql } from '../lib/module-action-visibility.js';
 import { viewerReviewAuthority } from '../lib/agent-approval-resolver.js';
+import { actionRequesterIdSql } from '../lib/agent-action-requester.js';
 
 export const inboxRoutes = new Hono();
 
@@ -184,11 +185,7 @@ function reviewableActionSql(user: { id: string; org_id: string; role?: string }
   return and(
     visibleCaptureActionSql(user),
     visibleModuleActionSql(user.role, { userId: user.id, orgId: user.org_id }),
-    sql`COALESCE(
-      ${agentActions.params}->>'source_user_id',
-      ${agentActions.params}->>'origin_user_id',
-      ${agentActions.user_id}
-    ) = ${user.id}`,
+    sql`${actionRequesterIdSql()} = ${user.id}`,
   );
 }
 
