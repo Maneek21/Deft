@@ -71,7 +71,7 @@ after(async () => {
     'DELETE FROM agent_actions WHERE org_id = $1',
     'DELETE FROM work_intents WHERE org_id = $1',
   ]) await f.client.query(statement, [f.orgId]).catch(() => undefined);
-  await f.client.query('DELETE FROM space_members WHERE user_id = $1', [defty.userId]).catch(() => undefined);
+  await f.client.query('DELETE FROM space_members WHERE space_id = $1 AND user_id = $2', [f.spaceId, defty.userId]).catch(() => undefined);
   await f.client.query('DELETE FROM wiki_pages WHERE org_id = $1', [otherOrgId]).catch(() => undefined);
   await f.client.query('DELETE FROM orgs WHERE id = $1', [otherOrgId]).catch(() => undefined);
   await f.teardown();
@@ -269,13 +269,17 @@ test('a membership removal during an approved update waits until the update comm
     const { default: pg } = await import('pg');
     const other = new pg.Client({ connectionString: durabilityDatabaseUrl });
     await other.connect();
+    let removed = false;
     removal = other.query('DELETE FROM space_members WHERE space_id = $1 AND user_id = $2', [f.spaceId, shadowId])
-      .finally(() => other.end());
-    for (;;) {
+      .finally(() => { removed = true; return other.end(); });
+    for (const deadline = Date.now() + 30_000; Date.now() < deadline;) {
       const waiting = await f.client.query('SELECT count(*)::int AS n FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))', [writerPid]);
       if (waiting.rows[0].n > 0) return;
+      // The removal must wait for this update; finishing first is the failure.
+      if (removed) throw new Error('the membership removal did not wait for the update');
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
+    throw new Error('the membership removal was not seen waiting for the update');
   });
   try {
     const answer = await approve(actionId);
