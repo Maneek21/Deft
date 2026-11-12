@@ -29,6 +29,7 @@ import {
   revisionDigest,
   TARGET_KEY,
   WIKI_PAGE_CHANGED_ERROR,
+  WIKI_PAGE_NOT_CREATED_ERROR,
   WIKI_PAGE_UNAVAILABLE_ERROR,
   WIKI_PROPOSAL_UNVERIFIABLE_ERROR,
   type FrozenWikiTarget,
@@ -117,9 +118,9 @@ function slugify(title: string): string {
     .slice(0, 80);
 }
 
-async function uniqueSlug(orgId: string, title: string): Promise<string> {
+async function uniqueSlug(orgId: string, title: string, executor: Executor = db): Promise<string> {
   const base = slugify(title) || `knowledge-${Date.now().toString(36)}`;
-  const [existing] = await db
+  const [existing] = await executor
     .select({ id: wikiPages.id })
     .from(wikiPages)
     .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.slug, base)))
@@ -195,74 +196,87 @@ export async function executeWikiCreate(
       return errorResult(`wiki_create: no shadow user for employee ${ctx.employee_id}`);
     }
 
+    // An approved proposal creates the page at the slug fixed when it was
+    // proposed, or not at all.
+    let frozenSlug: string | null = null;
+    if (opts?.actionId) {
+      const [row] = await db
+        .select({ action: agentActions.action, before_state: agentActions.before_state })
+        .from(agentActions)
+        .where(and(eq(agentActions.id, opts.actionId), eq(agentActions.org_id, ctx.org_id)))
+        .limit(1);
+      const target = row?.action === 'wiki_create' ? readFrozenTarget(row.before_state) : null;
+      if (!target || target.mode !== 'create' || !target.slug) return errorResult(WIKI_PROPOSAL_UNVERIFIABLE_ERROR);
+      frozenSlug = target.slug;
+    }
+
     const wikiType = VALID_WIKI_TYPES.has(args.type ?? '')
       ? args.type as 'concept' | 'entity' | 'decision' | 'resource' | 'procedure' | 'preference' | 'fact'
       : 'fact';
     const scope = VALID_SCOPES.has(args.scope ?? '')
       ? args.scope as 'org' | 'space' | 'user'
       : 'org';
-
-    let sourceMessageExcerpt: string | null = null;
-    let sourceSpaceId = args.source_space_id ?? args.space_id ?? null;
-    let sourceUserId: string | null = null;
-    if (
-      sourceSpaceId &&
-      !(await employeeCanAccessSpace(ctx.employee_id, ctx.org_id, sourceSpaceId))
-    ) {
-      return errorResult(`wiki_create: source space ${sourceSpaceId} is not accessible to this employee`);
-    }
-    if (scope === 'space' && !sourceSpaceId) {
-      return errorResult('wiki_create: space_id or source_space_id is required when scope is space');
-    }
-    if (args.source_message_id?.trim()) {
-      const readerIds = [
-        shadowUserId,
-        opts?.sourceReaderUserId ?? null,
-        args.source_user_id ?? null,
-      ].filter((value, index, values): value is string =>
-        typeof value === 'string' && value.length > 0 && values.indexOf(value) === index,
-      );
-      let source: { id: string; space_id: string; user_id: string; content: string } | null = null;
-      for (const readerId of readerIds) {
-        source = await verifyMessageVisibleToUser(
-          args.source_message_id,
-          readerId,
-          ctx.org_id,
-          sourceSpaceId,
-        );
-        if (source) break;
-      }
-      if (!source) {
-        return errorResult(
-          `wiki_create: source_message_id ${args.source_message_id} is not readable in caller's org`,
-        );
-      }
-      sourceSpaceId = source.space_id;
-      if (!(await employeeCanAccessSpace(ctx.employee_id, ctx.org_id, sourceSpaceId))) {
-        return errorResult(
-          `wiki_create: source message space ${sourceSpaceId} is not accessible to this employee`,
-        );
-      }
-      sourceUserId = source.user_id;
-      sourceMessageExcerpt = toPlainText(source.content).slice(0, 200);
-    }
-    sourceUserId = sourceUserId ?? shadowUserId;
-
-    const slug = await uniqueSlug(ctx.org_id, title);
     const tags = Array.isArray(args.tags)
       ? args.tags.filter((tag): tag is string => typeof tag === 'string' && tag.trim().length > 0).slice(0, 10)
       : [];
-    const metadata = {
-      ...(args.metadata && typeof args.metadata === 'object' ? args.metadata : {}),
-      created_via: 'wiki_create',
-      source_message_id: args.source_message_id ?? null,
-      source_space_id: sourceSpaceId,
-      source_user_id: sourceUserId,
-      capture_kind: args.capture_kind ?? null,
-      capture_reason: args.capture_reason ?? null,
-    };
 
-    const page = await db.transaction(async (tx) => {
+    // Access checks and the insert share one transaction. Lock order: the
+    // spaces and memberships that grant access (FOR SHARE), then the new rows.
+    const { page, sourceSpaceId } = await db.transaction(async (tx) => {
+      const canAccessSpace = (spaceId: string) =>
+        employeeCanAccessSpace(ctx.employee_id, ctx.org_id, spaceId, { executor: tx, lock: true });
+
+      let sourceMessageExcerpt: string | null = null;
+      let sourceSpaceId = args.source_space_id ?? args.space_id ?? null;
+      let sourceUserId: string | null = null;
+      if (sourceSpaceId && !(await canAccessSpace(sourceSpaceId))) {
+        throw new WikiUpdateRefusal(frozenSlug ? errorResult(WIKI_PAGE_NOT_CREATED_ERROR) : wikiTargetUnavailableResult('wiki_create'));
+      }
+      if (scope === 'space' && !sourceSpaceId) {
+        refuse('wiki_create: space_id or source_space_id is required when scope is space');
+      }
+      if (args.source_message_id?.trim()) {
+        const readerIds = [
+          shadowUserId,
+          opts?.sourceReaderUserId ?? null,
+          args.source_user_id ?? null,
+        ].filter((value, index, values): value is string =>
+          typeof value === 'string' && value.length > 0 && values.indexOf(value) === index,
+        );
+        let source: { id: string; space_id: string; user_id: string; content: string } | null = null;
+        for (const readerId of readerIds) {
+          source = await verifyMessageVisibleToUser(
+            args.source_message_id,
+            readerId,
+            ctx.org_id,
+            sourceSpaceId,
+            tx,
+          );
+          if (source) break;
+        }
+        if (!source) {
+          refuse(`wiki_create: source_message_id ${args.source_message_id} is not readable in caller's org`);
+        }
+        sourceSpaceId = source.space_id;
+        if (!(await canAccessSpace(sourceSpaceId))) {
+          refuse(`wiki_create: source message space ${sourceSpaceId} is not accessible to this employee`);
+        }
+        sourceUserId = source.user_id;
+        sourceMessageExcerpt = toPlainText(source.content).slice(0, 200);
+      }
+      sourceUserId = sourceUserId ?? shadowUserId;
+
+      const metadata = {
+        ...(args.metadata && typeof args.metadata === 'object' ? args.metadata : {}),
+        created_via: 'wiki_create',
+        source_message_id: args.source_message_id ?? null,
+        source_space_id: sourceSpaceId,
+        source_user_id: sourceUserId,
+        capture_kind: args.capture_kind ?? null,
+        capture_reason: args.capture_reason ?? null,
+      };
+
+      // A slug held by any page in this org, deleted ones included, creates nothing.
       const [insertedPage] = await tx
         .insert(wikiPages)
         .values({
@@ -277,16 +291,17 @@ export async function executeWikiCreate(
           agent_employee_id: ctx.employee_id,
           type: wikiType,
           title,
-          slug,
+          slug: frozenSlug ?? await uniqueSlug(ctx.org_id, title, tx),
           summary: args.summary?.trim() || toPlainText(content).slice(0, 240),
           content,
           metadata,
           confidence: 0.9,
           tags,
         })
+        .onConflictDoNothing({ target: [wikiPages.org_id, wikiPages.slug] })
         .returning();
 
-      if (!insertedPage) throw new Error('wiki_create: insert returned no row');
+      if (!insertedPage) refuse(WIKI_PAGE_NOT_CREATED_ERROR);
 
       if (args.source_message_id) {
         await tx.insert(wikiCitations).values({
@@ -321,7 +336,7 @@ export async function executeWikiCreate(
         WHERE id = ${insertedPage.id}
       `);
 
-      return insertedPage;
+      return { page: insertedPage, sourceSpaceId };
     });
 
     try {
@@ -396,16 +411,40 @@ export async function executeWikiCreate(
 
     return textResult(resultPayload);
   } catch (err) {
+    if (err instanceof WikiUpdateRefusal) return err.result;
     const msg = err instanceof Error ? err.message : String(err);
     return errorResult(`wiki_create failed: ${msg}`);
   }
+}
+
+/**
+ * The target to freeze into a new pending `wiki_create` row: the slug the page
+ * will be created at, chosen once here and never recomputed. Null when the
+ * employee cannot reach the space the page would be created in; the proposal
+ * is then refused with `wikiTargetUnavailableResult('wiki_create')`.
+ */
+export async function wikiCreateProposalTarget(
+  args: { title?: unknown; space_id?: unknown; source_space_id?: unknown },
+  orgId: string,
+  employeeId: string,
+  executor: Executor = db,
+): Promise<{ values: { before_state: { [TARGET_KEY]: FrozenWikiTarget } } } | null> {
+  if (!(await getShadowUserId(employeeId, executor))) return null;
+  const spaceId = args.source_space_id ?? args.space_id ?? null;
+  if (spaceId && (typeof spaceId !== 'string'
+    || !(await employeeCanAccessSpace(employeeId, orgId, spaceId, { executor })))) {
+    return null;
+  }
+  const title = toPlainText(typeof args.title === 'string' ? args.title : '').slice(0, 160);
+  const slug = await uniqueSlug(orgId, title, executor);
+  return { values: { before_state: { [TARGET_KEY]: { v: 1, mode: 'create', slug } } } };
 }
 
 async function queueAction(
   actionName: 'wiki_create' | 'wiki_update',
   args: Record<string, unknown>,
   ctx: ToolContext,
-  frozen: Awaited<ReturnType<typeof wikiUpdateProposalTarget>> = null,
+  frozen: { values: { before_state: { [TARGET_KEY]: FrozenWikiTarget } } } | null = null,
 ): Promise<ToolResult> {
   const shadowUserId = await getShadowUserId(ctx.employee_id);
   if (!shadowUserId) {
@@ -439,7 +478,9 @@ export async function wikiCreate(args: WikiCreateArgs, ctx: ToolContext): Promis
   if (!args.content?.trim()) return errorResult('wiki_create requires content');
 
   if (!shouldAutoExecute('wiki_create', ctx.trust_level, args)) {
-    return queueAction('wiki_create', args as unknown as Record<string, unknown>, ctx);
+    const frozen = await wikiCreateProposalTarget(args, ctx.org_id, ctx.employee_id);
+    if (!frozen) return wikiTargetUnavailableResult('wiki_create');
+    return queueAction('wiki_create', args as unknown as Record<string, unknown>, ctx, frozen);
   }
 
   return executeWikiCreate(args, ctx);
@@ -472,11 +513,15 @@ export const WIKI_TARGET_UNAVAILABLE_CODE = 'WIKI_TARGET_UNAVAILABLE';
 /** The one answer for a page this employee cannot update, whatever the reason. */
 export const WIKI_TARGET_UNAVAILABLE_ERROR =
   'WIKI_TARGET_UNAVAILABLE: wiki_update: page not found or not available to this employee';
+/** The one answer for a space this employee cannot create a page in, whatever the reason. */
+export const WIKI_CREATE_TARGET_UNAVAILABLE_ERROR =
+  'WIKI_TARGET_UNAVAILABLE: wiki_create: space not found or not available to this employee';
 
-export function wikiTargetUnavailableResult(): ToolResult {
+export function wikiTargetUnavailableResult(action: 'wiki_update' | 'wiki_create' = 'wiki_update'): ToolResult {
+  const error = action === 'wiki_create' ? WIKI_CREATE_TARGET_UNAVAILABLE_ERROR : WIKI_TARGET_UNAVAILABLE_ERROR;
   return {
-    ...errorResult(WIKI_TARGET_UNAVAILABLE_ERROR),
-    structuredContent: { code: WIKI_TARGET_UNAVAILABLE_CODE, error: WIKI_TARGET_UNAVAILABLE_ERROR },
+    ...errorResult(error),
+    structuredContent: { code: WIKI_TARGET_UNAVAILABLE_CODE, error },
   };
 }
 

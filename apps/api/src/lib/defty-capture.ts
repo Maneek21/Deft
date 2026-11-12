@@ -6,7 +6,7 @@ import { approveAction } from './agent-approval-resolver.js';
 import { ensureDeftyEmployee } from './ensure-defty-membership.js';
 import { toPlainText, truncatePlainText } from './plain-text.js';
 import { resolveAssigneeWithMatches } from './resolve-assignee.js';
-import { wikiUpdateProposalTarget } from './mcp-tools/wiki-create.js';
+import { wikiCreateProposalTarget, wikiUpdateProposalTarget } from './mcp-tools/wiki-create.js';
 
 type ResolvedProject = { id: string; name: string };
 type TaskStatus = 'backlog' | 'todo' | 'in_progress' | 'in_review' | 'done' | 'cancelled';
@@ -1128,9 +1128,14 @@ export async function queueDeftyKnowledgeCapture(params: {
       return { queued: false, actionId: existingAction.id, skippedReason: 'duplicate' };
     }
 
+    // Freeze the slug the page will be created at.
+    const frozen = await wikiCreateProposalTarget(proposedParams, orgId, defty.employeeId, tx);
+    if (!frozen) throw new KnowledgeUpdateSkipped('knowledge_create_target_unavailable');
+
     const [queuedAction] = await tx
       .insert(agentActions)
       .values({
+        ...frozen.values,
         org_id: orgId,
         user_id: defty.userId,
         agent_employee_id: defty.employeeId,
@@ -1157,6 +1162,9 @@ export async function queueDeftyKnowledgeCapture(params: {
     }
 
     return { queued: true, actionId: queuedAction.id };
+  }).catch((error: unknown) => {
+    if (error instanceof KnowledgeUpdateSkipped) return { queued: false as const, skippedReason: error.message };
+    throw error;
   });
 
   if (queued.queued && autoApprove) {

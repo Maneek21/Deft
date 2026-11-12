@@ -356,12 +356,12 @@ test('a retry without a trusted original proposal is refused', { skip: !canRun }
   assert.equal(answer.body.code, 'RETRY_UNAVAILABLE');
 });
 
-test('a wiki_create proposal is queued and applied as before', { skip: !canRun }, async () => {
+test('a wiki_create proposal is queued with its slug and applied', { skip: !canRun }, async () => {
   const title = `Wu created ${randomUUID().slice(0, 8)}`;
   const result = await wikiCreate({ caller_employee_slug: ctx.employee_slug, title, content: 'Created content' }, ctx);
   const actionId = JSON.parse(textOf(result)).approval_id;
   const [row] = (await f.client.query('SELECT before_state FROM agent_actions WHERE id = $1', [actionId])).rows;
-  assert.equal(row.before_state, null);
+  assert.equal(row.before_state.wiki_proposal_target.mode, 'create');
   assert.equal((await approve(actionId)).status, 200);
   assert.equal(Number((await f.client.query('SELECT count(*)::int AS n FROM wiki_pages WHERE org_id = $1 AND title = $2', [f.orgId, title])).rows[0].n), 1);
 });
