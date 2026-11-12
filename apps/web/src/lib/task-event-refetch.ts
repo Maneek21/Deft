@@ -54,16 +54,14 @@ export function createCoalescedRefetch(run: () => void, delayMs = 250, maxWaitMs
   return {
     schedule() {
       const now = Date.now();
-      if (timer !== null) {
-        if (now - burstStartedAt >= maxWaitMs) return;
-        clearTimeout(timer);
-      } else {
-        burstStartedAt = now;
-      }
+      if (timer !== null) clearTimeout(timer);
+      else burstStartedAt = now;
+      // Wait `delayMs` after this event, but never past the burst's deadline.
+      const wait = Math.min(delayMs, Math.max(0, burstStartedAt + maxWaitMs - now));
       timer = setTimeout(() => {
         timer = null;
         run();
-      }, delayMs);
+      }, wait);
     },
     cancel() {
       if (timer !== null) clearTimeout(timer);

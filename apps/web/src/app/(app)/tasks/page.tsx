@@ -277,6 +277,9 @@ export default function TasksPage() {
 
   // Load tasks when project changes (or for My Tasks view)
   const taskLoadSeqRef = useRef(0);
+  // The table page being read or shown, so an event reload asks for the
+  // page the user navigated to, not the one shown before it.
+  const requestedTableCursorRef = useRef<string | null>(null);
   const loadTasks = useCallback(async (cursor: string | null = null) => {
     const requestedRoute = routeRef.current;
     const session = api.getAccessToken();
@@ -284,6 +287,7 @@ export default function TasksPage() {
     // Only the latest list read may apply, so an earlier response that
     // arrives late cannot replace newer task data.
     const request = ++taskLoadSeqRef.current;
+    requestedTableCursorRef.current = cursor;
     const current = () => request === taskLoadSeqRef.current
       && isCurrentTaskRoute(requestedRoute, routeRef.current)
       && isSameWebSession(session, api.getAccessToken());
@@ -367,7 +371,7 @@ export default function TasksPage() {
     const socket = getSocket(token);
 
     const refetch = createCoalescedRefetch(() => {
-      void loadTasks(view === 'table' ? tablePage.cursor : undefined);
+      void loadTasks(view === 'table' ? requestedTableCursorRef.current : undefined);
     });
     const scope = () => ({
       projectId: selectedProject?.id ?? null,
@@ -397,7 +401,7 @@ export default function TasksPage() {
       socket.off('task:bulk_updated', onTaskEvent);
       socket.off('task:deleted', onDeleted);
     };
-  }, [selectedProject, isMyTasksView, loadTasks, view, tablePage.cursor]);
+  }, [selectedProject, isMyTasksView, loadTasks, view]);
 
   // Load org members for assignee dropdown in bulk actions
   useEffect(() => {
