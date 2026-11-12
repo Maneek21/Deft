@@ -20,7 +20,7 @@ const agentUserId = randomUUID();
 const employeeId = randomUUID();
 let deftyEmployeeId = '';
 let client: pg.Client | undefined;
-let unavailable = url ? '' : 'Set DEFT_TEST_DATABASE_URL to a disposable test database';
+const unavailable = url ? '' : 'Set DEFT_TEST_DATABASE_URL to a disposable test database';
 let seeded = false;
 let routes: Hono;
 
@@ -37,7 +37,8 @@ async function request(viewerId: string, path: string, tenantId = orgId) {
 before(async () => {
   if (unavailable) return;
   client = new pg.Client({ connectionString: url, connectionTimeoutMillis: 3000 });
-  try { await client.connect(); } catch (error) { unavailable = String(error); return; }
+  // A configured test database that cannot be reached fails the suite instead of skipping it.
+  await client.connect();
   await client.query('INSERT INTO orgs(id,name,slug) VALUES($1,$2,$3)', [orgId, 'Intent audience', 'intent-audience-' + orgId]);
   for (const [name, id] of Object.entries(ids)) {
     await client.query("INSERT INTO users(id,email,name,kind,is_agent) VALUES($1,$2,$3,'human',false)", [id, id + '@example.test', name]);
@@ -151,6 +152,24 @@ test('intent action fields come only from the Defty capture action the intent li
   await client!.query('UPDATE work_intents SET converted_action_id=$1 WHERE id=$2 AND org_id=$3', [claimId, id, orgId]);
   await fieldsFor(ids.peer);
   await fieldsFor(ids.owner);
+});
+
+test('the intent own action link takes precedence over a capture action that names the intent', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const id = await insertIntent({ noAction: true });
+  const linked = randomUUID();
+  const naming = randomUUID();
+  // The linked capture action is the requester's private Defty action; another capture action names the intent for the peer.
+  await client!.query(`INSERT INTO agent_actions(id,org_id,user_id,agent_employee_id,message_id,action,params,approval_tier,approval_status,source)
+    VALUES($1,$2,$3,$4,$5,'create_task',$6,'quick','approved','defty_capture'),
+          ($7,$2,$3,$4,$5,'create_task',$8,'quick','pending','defty_capture')`,
+  [linked, orgId, ids.source, deftyEmployeeId, messageId, JSON.stringify({ work_intent_id: id, source_user_id: ids.source }),
+    naming, JSON.stringify({ work_intent_id: id, source_user_id: ids.peer })]);
+  await client!.query('UPDATE work_intents SET converted_action_id=$1 WHERE id=$2 AND org_id=$3', [linked, id, orgId]);
+  for (const detail of [false, true]) {
+    assert.equal(JSON.stringify(await readIntent(ids.peer, id, true, detail)).includes('CANARY'), false, 'peer');
+    assert.equal(JSON.stringify(await readIntent(ids.source, id, true, detail)).includes('CANARY-PARAMS'), true, 'requester');
+  }
 });
 
 test('source-less intents belong to the recorded requester and owners or admins', async (t) => {

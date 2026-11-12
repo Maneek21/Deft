@@ -17,7 +17,7 @@ const projectId = randomUUID();
 const taskId = randomUUID();
 const ruleId = randomUUID();
 let client: pg.Client | undefined;
-let unavailable = url ? '' : 'Set DEFT_TEST_DATABASE_URL to a disposable test database';
+const unavailable = url ? '' : 'Set DEFT_TEST_DATABASE_URL to a disposable test database';
 let seeded = false;
 let routes: Hono;
 
@@ -34,7 +34,8 @@ async function request(viewerId: string, id = ruleId, tenantId = orgId) {
 before(async () => {
   if (unavailable) return;
   client = new pg.Client({ connectionString: url, connectionTimeoutMillis: 3000 });
-  try { await client.connect(); } catch (error) { unavailable = String(error); return; }
+  // A configured test database that cannot be reached fails the suite instead of skipping it.
+  await client.connect();
   await client.query('INSERT INTO orgs(id,name,slug) VALUES($1,$2,$3)', [orgId, 'Workflow audience', `workflow-audience-${orgId}`]);
   for (const [name, id] of Object.entries(ids)) {
     await client.query('INSERT INTO users(id,email,name,kind,is_agent) VALUES($1,$2,$3,\'human\',false)', [id, `${id}@example.test`, name]);
