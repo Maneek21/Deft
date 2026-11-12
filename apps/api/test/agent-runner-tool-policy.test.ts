@@ -10,7 +10,7 @@ import { after, beforeEach, mock, test } from 'node:test';
 type Call = { tools: Array<{ name: string }>; messages: unknown[]; system: string };
 const providerCalls: Call[] = [];
 let nextResponses: Array<{ content: any[]; stop_reason: string }> = [];
-const counters = { installed: 0, mcp: 0, execute: 0, action: 0, retrieve: 0 };
+const counters = { installed: 0, mcp: 0, execute: 0, retrieve: 0 };
 
 const actualLlm = await import('../src/lib/agent-llm.js');
 mock.module(new URL('../src/lib/agent-llm.ts', import.meta.url).href, { namedExports: {
@@ -35,16 +35,8 @@ const actualPolicy = await import('../src/lib/agent-tool-policy.js');
 mock.module(new URL('../src/lib/agent-tool-policy.ts', import.meta.url).href, { namedExports: {
   ...actualPolicy,
   getActiveAgentToolPolicy: async () => ({ disabledTools: [] }),
-} });
-const actualContext = await import('../src/lib/agent-context.js');
-mock.module(new URL('../src/lib/agent-context.ts', import.meta.url).href, { namedExports: {
-  ...actualContext,
-  executeToolCall: async () => { counters.execute++; return { result: [{ id: 'x', content: 'tool result' }], citations: [] }; },
-} });
-const actualActions = await import('../src/lib/agent-actions.js');
-mock.module(new URL('../src/lib/agent-actions.ts', import.meta.url).href, { namedExports: {
-  ...actualActions,
-  executeActionDirect: async () => { counters.action++; return { actionId: null, success: true, result: {} }; },
+  // First step of executeToolCall for every tool: counts executor entries.
+  agentToolPolicyError: async () => { counters.execute++; return 'tool executor reached in test'; },
 } });
 const actualRetrieve = await import('../src/lib/retrieve-context.js');
 mock.module(new URL('../src/lib/retrieve-context.ts', import.meta.url).href, { namedExports: {
@@ -57,9 +49,7 @@ mock.module(new URL('../src/lib/org-ai-config.ts', import.meta.url).href, { name
   resolveReasonProvider: async () => ({ provider: 'anthropic', model: 'test-model', apiKey: 'test-key' }),
 } });
 
-// agent-context reaches agent-runner through agent-plans, so the runner was
-// already linked to the real modules above. A fresh instance links to the mocks.
-const { runAgentQuery, isDeftyChatReadAllowed } = await import('../src/lib/agent-runner.js?tool-policy');
+const { runAgentQuery, isDeftyChatReadAllowed } = await import('../src/lib/agent-runner.js');
 const { AGENT_TOOLS, CALENDAR_READ_TOOLS } = await import('../src/lib/agent-tools.js');
 const { nativeMentionsEnabled } = await import('../src/lib/native-mentions.js');
 const { closeDb } = await import('../src/lib/db.js');
@@ -95,7 +85,7 @@ test('W2-a6-Y: toolPolicy none sends zero tools and runs no discovery, retrieval
   const response = await runAgentQuery({ ...standupLikeCall, agentEmployeeId: randomUUID(), toolPolicy: 'none' } as any);
   assert.equal(providerCalls.length, 1);
   assert.deepEqual(providerCalls[0]!.tools, [], 'the provider receives an empty tool list');
-  assert.deepEqual(counters, { installed: 0, mcp: 0, execute: 0, action: 0, retrieve: 0 });
+  assert.deepEqual(counters, { installed: 0, mcp: 0, execute: 0, retrieve: 0 });
   assert.equal(response.text, '{"done":[],"in_progress":[],"blocked":[]}');
   assert.equal(response.model, 'test-model', 'provider/model resolution is unchanged');
   assert.equal(response.tokensIn, 11);
@@ -115,8 +105,7 @@ for (const [label, name, input] of [
       /no tools/i,
     );
     assert.equal(providerCalls.length, 1, 'no follow-up model call after a rejected tool call');
-    assert.equal(counters.execute, 0, 'no read executor call');
-    assert.equal(counters.action, 0, 'no action executor call');
+    assert.equal(counters.execute, 0, 'no tool executor call');
   });
 }
 
