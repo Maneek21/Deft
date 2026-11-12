@@ -11,23 +11,25 @@
  *   3. detectTaskOverload counts tasks where the user is an additional
  *      assignee (via task_assignees) in addition to the primary assignee
  *
- * Uses the real local Postgres DB. All inserted rows are cleaned up in
- * finally blocks.
+ * Uses the real local Postgres DB. The file creates its own org, users and
+ * project, so it neither reads nor depends on rows other test files create.
+ * Tasks are cleaned up per test; the org, users and project in `after`.
  */
 
-import { test, before } from 'node:test';
+import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 
 const DATABASE_URL =
   process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 
-const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';
-
-// Real user IDs from the test org — must exist in users table (FK constraints)
-const USER_A = '329fe0f6-39b3-4f66-8e6d-539ad7f4906a'; // Alex PM — primary assignee
-const USER_B = '07308d0d-199a-479d-a2e3-fefdf7cdbac9'; // Priya — under-threshold
-const USER_C = 'd3e6d84d-f5da-4172-825a-964d951bb649'; // Rahul — additional-assignee test
+// Fresh ids per run: this file owns its org, users and project outright.
+const ORG_ID = randomUUID();
+const USER_A = randomUUID(); // primary assignee
+const USER_B = randomUUID(); // under-threshold
+const USER_C = randomUUID(); // additional-assignee test
+const PROJECT_ID = randomUUID();
 
 async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
   const c = new pg.Client({ connectionString: DATABASE_URL });
@@ -37,20 +39,6 @@ async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
   } finally {
     await c.end();
   }
-}
-
-/**
- * Pick (or require) a project in the test org to anchor the seeded tasks.
- */
-async function getProjectId(c: pg.Client): Promise<string> {
-  const r = await c.query(
-    `SELECT id FROM projects WHERE org_id = $1 AND is_archived = false ORDER BY created_at ASC LIMIT 1`,
-    [ORG_ID],
-  );
-  if (r.rows.length === 0) {
-    throw new Error(`No project found in test org ${ORG_ID} — cannot seed tasks.`);
-  }
-  return r.rows[0].id as string;
 }
 
 /**
@@ -134,8 +122,45 @@ let detectTaskOverload: (userId: string, orgId: string) => Promise<{
 }>;
 
 before(async () => {
+  // Create everything the tests need here: an org of its own, three users
+  // and one project. Nothing is borrowed from fixtures or other test files.
+  await withClient(async (c) => {
+    await c.query(
+      `INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)`,
+      [ORG_ID, 'Burnout Task Overload Test Org', `burnout-overload-${ORG_ID}`],
+    );
+    for (const [uid, name] of [
+      [USER_A, 'Alex PM'],
+      [USER_B, 'Priya'],
+      [USER_C, 'Rahul'],
+    ] as const) {
+      await c.query(
+        `INSERT INTO users (id, email, name, is_agent) VALUES ($1, $2, $3, false)`,
+        [uid, `burnout-${uid}@test.local`, name],
+      );
+    }
+    await c.query(
+      `INSERT INTO projects (id, org_id, name, prefix, lead_id, task_counter)
+       VALUES ($1, $2, 'Burnout Task Overload Test Project', 'BTO', $3, 0)`,
+      [PROJECT_ID, ORG_ID, USER_A],
+    );
+  });
+
   const mod = await import('../src/services/burnout-detector.js');
   detectTaskOverload = mod.detectTaskOverload;
+});
+
+after(async () => {
+  await withClient(async (c) => {
+    await c.query(
+      `DELETE FROM task_assignees WHERE task_id IN (SELECT id FROM tasks WHERE org_id = $1)`,
+      [ORG_ID],
+    );
+    await c.query(`DELETE FROM tasks WHERE org_id = $1`, [ORG_ID]);
+    await c.query(`DELETE FROM projects WHERE id = $1`, [PROJECT_ID]);
+    await c.query(`DELETE FROM users WHERE id = ANY($1)`, [[USER_A, USER_B, USER_C]]);
+    await c.query(`DELETE FROM orgs WHERE id = $1`, [ORG_ID]);
+  });
 });
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -144,7 +169,7 @@ test('1. detectTaskOverload: detected:true when user has 16 active tasks due wit
   const ids: string[] = [];
 
   await withClient(async (c) => {
-    const projectId = await getProjectId(c);
+    const projectId = PROJECT_ID;
     const baseNumber = await allocateTaskNumbers(c, projectId, 16);
 
     const statuses: Array<'todo' | 'in_progress' | 'in_review'> = ['todo', 'in_progress', 'in_review'];
@@ -160,10 +185,8 @@ test('1. detectTaskOverload: detected:true when user has 16 active tasks due wit
     assert.equal(signal.name, 'task_overload', 'signal name should be task_overload');
     assert.equal(signal.weight, 0.10, 'signal weight should be 0.10');
     assert.equal(signal.detected, true, 'should be detected: 16 active-due-soon tasks > threshold 15');
-    assert.ok(
-      signal.detail.active_due_soon_count >= 16,
-      `active_due_soon_count should be >= 16, got ${signal.detail.active_due_soon_count}`,
-    );
+    // The org is private to this file, so the count is exact.
+    assert.equal(signal.detail.active_due_soon_count, 16, 'active_due_soon_count should be 16');
     assert.equal(signal.detail.threshold, 15, 'threshold should be 15');
   } finally {
     await withClient(async (c) => {
@@ -179,7 +202,7 @@ test('2. detectTaskOverload: detected:false when user has 10 active-due-soon tas
   const ids: string[] = [];
 
   await withClient(async (c) => {
-    const projectId = await getProjectId(c);
+    const projectId = PROJECT_ID;
     const baseNumber = await allocateTaskNumbers(c, projectId, 10);
 
     for (let i = 0; i < 10; i++) {
@@ -197,6 +220,7 @@ test('2. detectTaskOverload: detected:false when user has 10 active-due-soon tas
       false,
       `should not be detected: 10 tasks is below the > 15 threshold (got count=${signal.detail.active_due_soon_count})`,
     );
+    assert.equal(signal.detail.active_due_soon_count, 10, 'active_due_soon_count should be 10');
     assert.equal(signal.detail.threshold, 15);
   } finally {
     await withClient(async (c) => {
@@ -212,7 +236,7 @@ test('3. detectTaskOverload: counts tasks where user is an additional assignee (
   const ids: string[] = [];
 
   await withClient(async (c) => {
-    const projectId = await getProjectId(c);
+    const projectId = PROJECT_ID;
     // 16 tasks where USER_A is primary and USER_C is added via task_assignees.
     const baseNumber = await allocateTaskNumbers(c, projectId, 16);
     for (let i = 0; i < 16; i++) {
@@ -231,10 +255,8 @@ test('3. detectTaskOverload: counts tasks where user is an additional assignee (
       true,
       `should be detected via additional-assignee join (got count=${signal.detail.active_due_soon_count})`,
     );
-    assert.ok(
-      signal.detail.active_due_soon_count >= 16,
-      `active_due_soon_count should be >= 16, got ${signal.detail.active_due_soon_count}`,
-    );
+    // The org is private to this file, so the count is exact.
+    assert.equal(signal.detail.active_due_soon_count, 16, 'active_due_soon_count should be 16');
   } finally {
     await withClient(async (c) => {
       for (const id of ids) {
