@@ -33,7 +33,7 @@ import { compileMessageModuleCsvImport } from '../../lib/module-csv-import.js';
 import { compileMessageWorkspacePlanImport } from '../../lib/workspace-plan-import.js';
 import { buildRoomContextPackWithSources } from '../../lib/defty-room-context.js';
 import { loadPendingDeftyDraft, pendingDeftyDraftContext, type PendingDeftyDraft } from '../../lib/defty-pending-action.js';
-import { emitMessageToSpaceViewers } from '../../lib/agent-message-run-details.js';
+import { emitMessageToSpaceViewers, projectMessagesForViewer } from '../../lib/agent-message-run-details.js';
 import { promotableNoteSql } from '../../lib/agent-action-visibility.js';
 import { visibleTaskCondition } from '../../lib/task-visibility.js';
 import { assertDeliveryOwnedBeforeCommit, claimDeftyReplySlot, DeftyDeliveryLostError, findExistingDeftyReply, isDatabaseWaitTimeout, throwIfDeliveryLost, type DeftyReplyDelivery } from '../../lib/defty-reply-guard.js';
@@ -846,46 +846,60 @@ export function buildReferentialStatusUpdateActions(
   }));
 }
 
-async function buildReferentialStatusUpdateFallback(options: {
+type PriorReplyScope = {
   orgId: string;
   spaceId: string;
   agentUserId: string;
   messageId: string;
   parentId?: string | null;
-  content: string;
-}) {
-  if (!extractReferentialStatusUpdateRequest(options.content)) return null;
+  /** The person this reply is for: earlier replies are read as they may receive them. */
+  requesterId: string;
+};
 
+/**
+ * The agent's last five replies before the triggering message, in the same
+ * room or thread, with metadata projected for the current requester by the
+ * shared run-detail audience (agent-message-run-details.ts). References in a
+ * reply's visible body serve everyone; references in its audience-only
+ * metadata (citations) serve only that reply's audience. Null when the
+ * triggering message is missing.
+ */
+async function priorAgentRepliesForRequester(options: PriorReplyScope) {
   const [trigger] = await db
     .select({ created_at: messages.created_at })
     .from(messages)
-    .where(and(
-      eq(messages.id, options.messageId),
-      eq(messages.org_id, options.orgId),
-    ))
+    .where(and(eq(messages.id, options.messageId), eq(messages.org_id, options.orgId)))
     .limit(1);
   if (!trigger) return null;
-
-  const parentScope = options.parentId
-    ? eq(messages.parent_id, options.parentId)
-    : sql`${messages.parent_id} IS NULL`;
-
-  const priorAgentReplies = await db
-    .select({
-      content: messages.content,
-      metadata: messages.metadata,
-    })
+  const rows = await db
+    .select({ id: messages.id, user_id: messages.user_id, space_id: messages.space_id, content: messages.content, metadata: messages.metadata })
     .from(messages)
     .where(and(
       eq(messages.org_id, options.orgId),
       eq(messages.space_id, options.spaceId),
       eq(messages.user_id, options.agentUserId),
       eq(messages.is_deleted, false),
-      parentScope,
+      options.parentId ? eq(messages.parent_id, options.parentId) : sql`${messages.parent_id} IS NULL`,
       lt(messages.created_at, trigger.created_at),
     ))
     .orderBy(desc(messages.created_at))
     .limit(5);
+  if (rows.length === 0) return rows;
+  const [member] = await db
+    .select({ role: orgMembers.role })
+    .from(orgMembers)
+    .where(and(eq(orgMembers.org_id, options.orgId), eq(orgMembers.user_id, options.requesterId), eq(orgMembers.is_active, true)))
+    .limit(1);
+  return projectMessagesForViewer({ id: options.requesterId, org_id: options.orgId, role: member?.role ?? null }, rows);
+}
+
+export async function buildReferentialStatusUpdateFallback(options: PriorReplyScope & {
+  content: string;
+}) {
+  if (!extractReferentialStatusUpdateRequest(options.content)) return null;
+
+  const priorAgentReplies = await priorAgentRepliesForRequester(options);
+  if (!priorAgentReplies) return null;
 
   for (const reply of priorAgentReplies) {
     const references = extractTaskReferencesFromAgentReply(reply.content, reply.metadata);
@@ -896,44 +910,11 @@ async function buildReferentialStatusUpdateFallback(options: {
   return null;
 }
 
-async function collectRecentAgentTaskReferences(options: {
-  orgId: string;
-  spaceId: string;
-  agentUserId: string;
-  messageId: string;
-  parentId?: string | null;
+export async function collectRecentAgentTaskReferences(options: PriorReplyScope & {
   promptContent: string;
 }) {
-  const [trigger] = await db
-    .select({ created_at: messages.created_at })
-    .from(messages)
-    .where(and(
-      eq(messages.id, options.messageId),
-      eq(messages.org_id, options.orgId),
-    ))
-    .limit(1);
-  if (!trigger) return [];
-
-  const parentScope = options.parentId
-    ? eq(messages.parent_id, options.parentId)
-    : sql`${messages.parent_id} IS NULL`;
-
-  const priorAgentReplies = await db
-    .select({
-      content: messages.content,
-      metadata: messages.metadata,
-    })
-    .from(messages)
-    .where(and(
-      eq(messages.org_id, options.orgId),
-      eq(messages.space_id, options.spaceId),
-      eq(messages.user_id, options.agentUserId),
-      eq(messages.is_deleted, false),
-      parentScope,
-      lt(messages.created_at, trigger.created_at),
-    ))
-    .orderBy(desc(messages.created_at))
-    .limit(5);
+  const priorAgentReplies = await priorAgentRepliesForRequester(options);
+  if (!priorAgentReplies) return [];
 
   const references = uniqueTaskReferences(
     priorAgentReplies.flatMap((reply) => extractTaskReferencesFromAgentReply(reply.content, reply.metadata)),
@@ -1733,7 +1714,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
         spaceId,
         agentUserId,
         messageId,
-        parentId: threadParentId,
+        parentId: threadParentId, requesterId: userId,
         promptContent,
       });
     }
@@ -1944,7 +1925,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
           spaceId,
           agentUserId,
           messageId,
-          parentId: threadParentId,
+          parentId: threadParentId, requesterId: userId,
           promptContent,
         });
         compiledActionDraft = await compileDraft({
@@ -1976,7 +1957,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
         spaceId,
         agentUserId,
         messageId,
-        parentId: threadParentId,
+        parentId: threadParentId, requesterId: userId,
         content: promptContent,
       })
       : null;
