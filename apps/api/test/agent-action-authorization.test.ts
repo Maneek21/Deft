@@ -288,13 +288,14 @@ test('C02/E01: private Defty action payloads reach only requester, assigned appr
   const requesterPending = await (await as(requesterId, '/api/agent/actions/pending')).text();
   assert.ok(requesterPending.includes(pending), 'requester still sees the pending approval');
 
-  // An assigned approver keeps what they approve.
+  // An assignment counts for review only when it names one of the action's
+  // reviewers (here its requester, an active human member).
   await client.query(
     'INSERT INTO agent_action_approvers (id, org_id, action_id, user_id) VALUES ($1, $2, $3, $4)',
     [randomUUID(), orgId, pending, otherMemberId],
   );
   const approverPending = await (await as(otherMemberId, '/api/agent/actions/pending')).text();
-  assert.ok(approverPending.includes(pending), 'assigned approver sees the pending action');
+  assert.equal(approverPending.includes(pending), false, 'an assignment of a non-reviewer does not open the pending review');
   const approverHistory = await (await as(otherMemberId, '/api/agent/actions')).text();
   assert.ok(approverHistory.includes(pending), 'assigned approver sees the action in history');
   assert.equal(approverHistory.includes(executed), false, 'approval on one action does not open another');

@@ -104,6 +104,7 @@ async function pendingAction(kind: Kind, assigned: boolean): Promise<string> {
     );
   } else if (kind === 'employee' || kind === 'employee_for_requester') {
     const params: Record<string, unknown> = { title, project_id: f.projectId };
+    // An external agent's params do not choose its requester: owners/admins review it.
     if (kind === 'employee_for_requester') params.source_user_id = f.requesterId;
     await f.client.query(
       `INSERT INTO agent_actions (id, org_id, user_id, agent_employee_id, source, action, params, approval_tier, approval_status)
@@ -204,11 +205,10 @@ for (const kind of ['defty', 'employee', 'employee_for_requester', 'record_mirro
       }
       // The inbox shows each action to at least the requester or an owner/admin.
       assert.ok(shown > 0);
-      // Every case has viewers the routes refuse, and viewers they accept,
-      // except a record-mirror nomination with assigned reviewers: the routes
-      // admit only assigned reviewers, and assignment never lets anyone
-      // review a record-mirror nomination.
-      assert.deepEqual([...answers].sort(), kind === 'record_mirror' && assigned ? [false] : [false, true]);
+      // Every case has viewers the routes refuse, and viewers they accept: an
+      // assignment counts only when it names one of the action's reviewers,
+      // so assignments of other users leave the reviewers in place.
+      assert.deepEqual([...answers].sort(), [false, true]);
     });
   }
 }
@@ -273,8 +273,8 @@ test('B-review: App Run approval rows keep their review controls', { skip: !canR
 test('B-review: an App Run approval answers false to a guest who did not request it', { skip: !canRun, timeout: 900_000 }, async (t) => {
   const { viewerReviewAuthority } = await import('../src/lib/agent-approval-resolver.js');
   const actionId = await appRunApproval(t, employeeId);
-  // An assigned guest passes the review gate for an employee's App Run, but no reviewer rule admits a
-  // guest who did not request the action, on approval or rejection.
+  // An assignment naming a guest who did not request the action does not count: neither the review
+  // gate nor any reviewer rule admits that guest, on approval or rejection.
   await f.client.query("INSERT INTO agent_action_approvers (id, org_id, action_id, user_id, decision) VALUES ($1, $2, $3, $4, 'pending')",
     [randomUUID(), f.orgId, actionId, assignedGuestId]);
   const guest = { id: assignedGuestId, org_id: f.orgId, role: 'guest' };
@@ -284,7 +284,7 @@ test('B-review: an App Run approval answers false to a guest who did not request
   const { and, eq } = await import('drizzle-orm');
   const admitted = await db.select({ id: agentActions.id }).from(agentActions)
     .where(and(eq(agentActions.id, actionId), reviewableActionSql(guest)));
-  assert.equal(admitted.length, 1, 'the review gate admits the assigned guest');
+  assert.equal(admitted.length, 0, 'the review gate refuses the assigned guest');
   assert.deepEqual((await viewerReviewAuthority(guest, [actionId])).get(actionId), { viewer_can_approve: false, viewer_can_reject: false });
   for (const decision of ['reject', 'approve'] as const) {
     assert.equal(await routeAccepts(assignedGuestId, actionId, decision), false, decision);
