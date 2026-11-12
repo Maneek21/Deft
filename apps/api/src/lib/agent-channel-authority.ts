@@ -103,6 +103,8 @@ export function currentAgentChannelEventAuthoritySql(eventId: SQLWrapper, reader
               and (action.action <> 'task_assigned' or action.channel_event_id is not null)
               and (action.message_id is null or ${currentEmployeeMessageAuthoritySql(sql`chain.org_id`, sql`chain.agent_employee_id`, sql`action.message_id`)})
               and (action.message_id is null or ${readerMessageAuthoritySql(sql`chain.org_id`, readerUserId, sql`action.message_id`)})
+              and (action.message_id is not null or action.channel_event_id is not null
+                or ${sourcelessActionAudienceSql('action', readerUserId)})
               and (action.channel_event_id is null or (chain.authority_depth < 16 and not action.channel_event_id = any(chain.authority_path)
                 and exists (select 1 from agent_channel_events origin where origin.id = action.channel_event_id
                   and origin.org_id = chain.org_id and origin.agent_employee_id = chain.agent_employee_id)))
@@ -130,12 +132,11 @@ export function agentActionRequesterIdSql(actionAlias = 'agent_actions'): SQL {
     else ${field('user_id')} end)`;
 }
 
-/** Source-less work is private to its human requester, an assigned non-guest reviewer and current org owners/admins; employee reads retain their source authority. */
-export function currentAgentActionSourceAuthoritySql(actionAlias = 'agent_actions', readerUserId?: SQLWrapper): SQL {
+/** The human audience of an action with no source: its requester, an assigned non-guest reviewer and current org owners/admins. Agent and system readers pass; their source authority is checked separately. */
+function sourcelessActionAudienceSql(actionAlias: string, readerUserId?: SQLWrapper): SQL {
+  if (!readerUserId) return sql`true`;
   const field = (name: string) => sql`${sql.identifier(actionAlias)}.${sql.identifier(name)}`;
-  return sql`(${field('action')} <> 'chat_mention' or ${field('message_id')} is not null)
-    and (${field('action')} <> 'task_assigned' or ${field('channel_event_id')} is not null)
-    and (${field('message_id')} is not null or ${field('channel_event_id')} is not null or ${readerUserId ? sql`exists (
+  return sql`exists (
       select 1 from users action_reader where action_reader.id = ${readerUserId}
         and (
           (action_reader.kind <> 'human' or action_reader.is_agent = true)
@@ -157,7 +158,15 @@ export function currentAgentActionSourceAuthoritySql(actionAlias = 'agent_action
                 and action_reviewer.user_id = action_reader.id)
           ))
         )
-    )` : sql`true`})
+    )`;
+}
+
+/** Source-less work is private to its human requester, an assigned non-guest reviewer and current org owners/admins; employee reads retain their source authority. */
+export function currentAgentActionSourceAuthoritySql(actionAlias = 'agent_actions', readerUserId?: SQLWrapper): SQL {
+  const field = (name: string) => sql`${sql.identifier(actionAlias)}.${sql.identifier(name)}`;
+  return sql`(${field('action')} <> 'chat_mention' or ${field('message_id')} is not null)
+    and (${field('action')} <> 'task_assigned' or ${field('channel_event_id')} is not null)
+    and (${field('message_id')} is not null or ${field('channel_event_id')} is not null or ${sourcelessActionAudienceSql(actionAlias, readerUserId)})
     and (${field('message_id')} is null or ${currentEmployeeMessageAuthoritySql(field('org_id'), field('agent_employee_id'), field('message_id'))})
     and (${field('message_id')} is null or ${readerMessageAuthoritySql(field('org_id'), readerUserId, field('message_id'))})
     and (${field('channel_event_id')} is null or exists (

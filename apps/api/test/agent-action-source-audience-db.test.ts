@@ -32,7 +32,9 @@ const actions = {
   defty: randomUUID(), deftyEnvelope: randomUUID(), message: randomUUID(), event: randomUUID(), task: randomUUID(),
   pendingDefty: randomUUID(), pendingByoa: randomUUID(), pendingRequester: randomUUID(),
   pendingGuest: randomUUID(), pendingGuestModule: randomUUID(),
+  chainParent: randomUUID(), chainChild: randomUUID(), chainGrandchild: randomUUID(),
 };
+const chainEvents = { first: randomUUID(), second: randomUUID() };
 const tokens: Record<string, string> = {};
 const unavailable = url ? '' : 'Set DEFT_TEST_DATABASE_URL to a disposable test database';
 let client: pg.Client | undefined;
@@ -126,6 +128,17 @@ before(async () => {
   await insertAction(actions.pendingRequester, 'create_task', ids.requester, { title: 'Requester review' }, { employee: null, message: sourceMessageId, tier: 'quick' });
   await insertAction(actions.pendingGuest, 'create_task', ids.guest, { title: 'Guest request' }, { employee: null, message: sourceMessageId, tier: 'quick' });
   await insertAction(actions.pendingGuestModule, 'module_record_create', ids.guest, { data: {} }, { employee: null, message: sourceMessageId, tier: 'quick' });
+
+  // A source-less proposal by the requester, approved, then continued twice through approval.resolved events.
+  await insertAction(actions.chainParent, 'create_task', ids.requester, { title: 'CANARY-CHAIN-PARENT' });
+  await client.query(`INSERT INTO agent_channel_events(id,org_id,agent_employee_id,kind,idempotency_key)
+    VALUES($1,$2,$3,'approval.resolved',$4)`, [chainEvents.first, orgId, employeeId, `approval.resolved:${actions.chainParent}:approved`]);
+  await insertAction(actions.chainChild, 'create_task', employeeUserId, { title: 'CANARY-CHAIN-CHILD' }, { event: chainEvents.first });
+  await client.query(`INSERT INTO agent_channel_events(id,org_id,agent_employee_id,kind,idempotency_key)
+    VALUES($1,$2,$3,'approval.resolved',$4)`, [chainEvents.second, orgId, employeeId, `approval.resolved:${actions.chainChild}:approved`]);
+  await insertAction(actions.chainGrandchild, 'create_task', employeeUserId, { title: 'CANARY-CHAIN-GRANDCHILD' }, { event: chainEvents.second });
+  await client.query("UPDATE agent_actions SET approval_status='approved' WHERE id=ANY($1::text[])", [[actions.chainParent, actions.chainChild]]);
+  await client.query('INSERT INTO agent_action_approvers(id,org_id,action_id,user_id) VALUES($1,$2,$3,$4)', [randomUUID(), orgId, actions.chainParent, ids.approver]);
 
   for (const action of [actions.heartbeat, actions.trigger, actions.defty, actions.deftyEnvelope]) {
     for (const user of [ids.approver, ids.guest]) {
@@ -339,5 +352,23 @@ test('W2a5b-2: pending-by-space requires the reader space membership', async (t)
     assert.deepEqual(await read(ids.approver, pendingPath), []);
   } finally {
     await client!.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), spaceId, ids.approver]);
+  }
+});
+
+test('W2a5b-3: approval continuations keep the audience of a source-less parent', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const continuations: string[] = [actions.chainChild, actions.chainGrandchild];
+  for (const path of ['/actions', '/actions/recent?limit=50']) {
+    for (const viewer of [ids.requester, ids.approver, ids.owner, ids.admin]) {
+      const rows = await read(viewer, path);
+      for (const id of continuations) assert.equal(rows.some((row) => row.id === id), true, `${viewer} ${path} ${id}`);
+    }
+    for (const viewer of [ids.peer, ids.guest]) {
+      const rows = await read(viewer, path);
+      for (const id of continuations) assert.equal(rows.some((row) => row.id === id), false, `${viewer} ${path} ${id}`);
+      for (const canary of ['CANARY-CHAIN-PARENT', 'CANARY-CHAIN-CHILD', 'CANARY-CHAIN-GRANDCHILD']) {
+        assert.equal(JSON.stringify(rows).includes(canary), false, `${viewer} ${path} ${canary}`);
+      }
+    }
   }
 });
