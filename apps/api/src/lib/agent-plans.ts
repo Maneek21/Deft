@@ -467,11 +467,13 @@ async function executePlanUnlocked(
   const planTaskId =
     typeof (context as any)?.task_id === 'string' ? ((context as any).task_id as string) : null;
   const totalSteps = steps.length;
+  // Every org socket receives the step position and status only; step text
+  // and errors stay with the plan (its requester reads them from the plan).
   const emitTaskProgress = (
     stepIndex: number,
-    stepDescription: string,
+    _stepDescription: string,
     status: 'started' | 'completed' | 'failed',
-    error?: string,
+    _error?: string,
   ) => {
     if (!planTaskId) return;
     const io = getIO();
@@ -480,10 +482,9 @@ async function executePlanUnlocked(
       task_id: planTaskId,
       agent_employee_id: plan.agent_employee_id ?? null,
       step_index: stepIndex,
-      step_description: stepDescription,
+      step_description: `Step ${stepIndex + 1} of ${totalSteps}`,
       status,
       total_steps: totalSteps,
-      ...(error ? { error } : {}),
     });
   };
 

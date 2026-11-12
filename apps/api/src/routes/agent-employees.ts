@@ -39,7 +39,6 @@ import {
   wikiPages,
 } from '@deft/db/schema';
 import { visibleModuleActionSql } from '../lib/module-action-visibility.js';
-import { currentEmployeeMessageAuthoritySql, currentEmployeeSpaceAuthoritySql, currentUserSpaceAuthoritySql } from '../lib/agent-channel-authority.js';
 import type { SkillAgentConfig } from '../lib/skill-config.js';
 import {
   AGENT_CHANNEL_PROTOCOL_VERSION,
@@ -53,7 +52,7 @@ import { markWorkIntentsExpiredForActions } from '../lib/work-intents.js';
 import { terminalizePendingModuleActions } from '../lib/module-action-terminalization.js';
 import { MODULE_WRITE_ACTION_NAMES } from '../lib/module-action-visibility.js';
 import { summarizeAgentChannelLifecycle, summarizeAgentChannelMetrics } from '../lib/agent-channel-lifecycle.js';
-import { loadAgentActivity } from '../lib/agent-activity.js';
+import { loadAgentActivity, sessionTurnContentAudienceSql } from '../lib/agent-activity.js';
 import { describeAgentRuntimeRecovery } from '../lib/agent-runtime-recovery.js';
 import { ensureAgentConversationSpace } from '../lib/ensure-agent-conversation-space.js';
 import { evaluateAgentOnboardingPreflight } from '../lib/agent-onboarding-preflight.js';
@@ -209,6 +208,10 @@ agentEmployeeRoutes.get('/', async (c) => {
       });
     }
 
+    // Runtime error text is an operator diagnostic: owners/admins receive it;
+    // every other member receives the neutral channel state and whether an
+    // error is recorded.
+    const canSeeDiagnostics = user.role === 'owner' || user.role === 'admin';
     const enriched = employees.map((emp) => {
       const turn = turnMap.get(emp.id);
       const channel = channelMap.get(emp.id);
@@ -221,7 +224,8 @@ agentEmployeeRoutes.get('/', async (c) => {
         avg_latency_ms_24h: turn?.avg_latency ?? null,
         channel_status: channel?.status ?? null,
         channel_last_seen_at: channel?.last_seen_at ?? null,
-        channel_last_error: channel?.last_error ?? null,
+        channel_last_error: canSeeDiagnostics ? channel?.last_error ?? null : null,
+        channel_has_error: Boolean(channel?.last_error),
         installed_skill_count: skill?.count ?? 0,
         required_workspace_skill_installed: skill?.hasWorkspaceSkill ?? false,
       };
@@ -318,26 +322,12 @@ agentEmployeeRoutes.get('/:id/turns', async (c) => {
     const canSeeAll = user.role === 'owner' || user.role === 'admin';
     let contentIds = new Set<string>();
     if (!canSeeAll && turns.length > 0) {
-      const org = sql`${user.org_id}`;
-      const reader = sql`${user.id}`;
-      const trigger = sql`${agentSessionTurns.triggering_message_id}`;
-      const turnSpace = sql`${agentSessionTurns.space_id}`;
-      const audience = isCanonicalDeftyEmployee(existing)
-        ? sql`${agentSessionTurns.triggering_message_id} IS NOT NULL AND (
-            EXISTS (SELECT 1 FROM messages turn_request
-              WHERE turn_request.id = ${trigger} AND turn_request.org_id = ${org}
-                AND turn_request.user_id = ${reader} AND turn_request.is_deleted = false
-                AND (${turnSpace} IS NULL OR turn_request.space_id = ${turnSpace})))`
-        : sql`CASE
-            WHEN ${agentSessionTurns.triggering_message_id} IS NOT NULL THEN
-              ${currentEmployeeMessageAuthoritySql(org, sql`${id}`, trigger)}
-              AND EXISTS (SELECT 1 FROM messages turn_source
-                WHERE turn_source.id = ${trigger} AND turn_source.org_id = ${org} AND turn_source.is_deleted = false
-                  AND ${currentUserSpaceAuthoritySql(org, reader, sql`turn_source.space_id`)})
-            WHEN ${agentSessionTurns.space_id} IS NOT NULL THEN
-              ${currentEmployeeSpaceAuthoritySql(org, sql`${id}`, turnSpace)}
-              AND ${currentUserSpaceAuthoritySql(org, reader, turnSpace)}
-            ELSE false END`;
+      const audience = sessionTurnContentAudienceSql({
+        orgId: user.org_id,
+        employeeId: id,
+        readerId: user.id,
+        defty: isCanonicalDeftyEmployee(existing),
+      });
       contentIds = new Set((await db.select({ id: agentSessionTurns.id }).from(agentSessionTurns).where(and(
         inArray(agentSessionTurns.id, turns.map((turn) => turn.id)),
         eq(agentSessionTurns.org_id, user.org_id),
@@ -423,8 +413,12 @@ agentEmployeeRoutes.get('/:id/heartbeats', async (c) => {
         ),
       );
 
+    // The summary (a slice of the heartbeat prompt, which carries the
+    // employee's tasks and room messages) and the outcome reason (dispatcher
+    // errors, health reasons) are operator diagnostics for owners/admins.
+    const canSeeDiagnostics = user.role === 'owner' || user.role === 'admin';
     return c.json({
-      turns,
+      turns: canSeeDiagnostics ? turns : turns.map((turn) => ({ ...turn, summary: null, outcome_reason: null })),
       limit,
       cost_summary_24h: costSummary ?? { total_cents: 0, total_actions: 0, turn_count: 0 },
     });

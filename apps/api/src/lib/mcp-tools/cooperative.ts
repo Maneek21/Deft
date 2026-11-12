@@ -305,18 +305,24 @@ export async function recordProgress(args: ProgressArgs, ctx: ToolContext): Prom
     }
   }
   if (!recorded.replayed) {
-    getIO()?.to(`org:${ctx.org_id}`).emit('task:agent_progress', {
-      task_id: recorded.task_id,
-      agent_employee_id: ctx.employee_id,
-      step_index: 0,
-      total_steps: 1,
-      step_description: summary,
-      status: status === 'working' || status === 'retrying'
-        ? 'started'
-        : status === 'waiting_human'
-          ? 'needs_human'
-          : status,
-    });
+    // Neutral progress to the org; readers of the task get the milestone
+    // summary from the audience-checked task read.
+    try {
+      getIO()?.to(`org:${ctx.org_id}`).emit('task:agent_progress', {
+        task_id: recorded.task_id,
+        agent_employee_id: ctx.employee_id,
+        step_index: 0,
+        total_steps: 1,
+        step_description: 'Agent employee activity updated',
+        status: status === 'working' || status === 'retrying'
+          ? 'started'
+          : status === 'waiting_human'
+            ? 'needs_human'
+            : status,
+      });
+    } catch (error) {
+      console.warn('[record_progress] progress broadcast failed', error instanceof Error ? error.message : String(error));
+    }
   }
 
   const { assistance_draft: _assistanceDraft, ...result } = recorded;

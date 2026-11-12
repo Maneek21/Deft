@@ -99,20 +99,28 @@ function channelContract() {
   };
 }
 
-function emitTaskProgress(event: typeof agentChannelEvents.$inferSelect, employeeId: string, status: string, detail?: string | null) {
+/**
+ * Task progress goes to every org socket as a neutral update: ids, position
+ * and state, never the runtime's own text. Readers of the task get that text
+ * from the audience-checked task read (GET /api/tasks/:id agent_progress).
+ */
+function emitTaskProgress(event: typeof agentChannelEvents.$inferSelect, employeeId: string, status: string) {
   if (event.source_kind !== 'task' || !event.source_id) return;
   const normalized = status === 'running' || status === 'working' || status === 'typing'
     ? 'started'
     : status;
-  getIO()?.to(`org:${event.org_id}`).emit('task:agent_progress', {
-    task_id: event.source_id,
-    agent_employee_id: employeeId,
-    step_index: 0,
-    total_steps: 1,
-    step_description: detail || 'Agent employee activity updated',
-    status: normalized,
-    error: normalized === 'failed' ? detail ?? undefined : undefined,
-  });
+  try {
+    getIO()?.to(`org:${event.org_id}`).emit('task:agent_progress', {
+      task_id: event.source_id,
+      agent_employee_id: employeeId,
+      step_index: 0,
+      total_steps: 1,
+      step_description: 'Agent employee activity updated',
+      status: normalized,
+    });
+  } catch (error) {
+    console.warn('[agent-channel] task progress broadcast failed', error instanceof Error ? error.message : String(error));
+  }
 }
 
 const ackSchema = z.object({
@@ -810,7 +818,7 @@ agentChannelRoutes.post('/ack', async (c) => {
       detail: parsed.data.detail ?? null,
       outcome: reportedOutcome,
     });
-    emitTaskProgress(event, principal.employee_id, reportedOutcome, parsed.data.detail ?? parsed.data.error);
+    emitTaskProgress(event, principal.employee_id, reportedOutcome);
   }
 
   return c.json({ ok: true, event: updated });
@@ -990,7 +998,7 @@ agentChannelRoutes.post('/reply', async (c) => {
         : null,
       error: reportedOutcome === 'failed' ? summary : null,
     });
-    emitTaskProgress(settledEvent, principal.employee_id, reportedOutcome, summary);
+    emitTaskProgress(settledEvent, principal.employee_id, reportedOutcome);
     await touchAgentChannelConnection(principal, {
       status: reportedOutcome === 'failed' ? 'degraded' : 'connected',
       lastEventId: event.id,
@@ -1840,7 +1848,7 @@ agentChannelRoutes.post('/reply', async (c) => {
     error: replyFailed ? text : null,
   });
 
-  emitTaskProgress(event, principal.employee_id, reportedOutcome, parsed.data.summary ?? (replyFailed ? text : null));
+  emitTaskProgress(event, principal.employee_id, reportedOutcome);
 
   await touchAgentChannelConnection(principal, {
     status: replyFailed ? 'degraded' : 'connected',
@@ -1918,7 +1926,7 @@ agentChannelRoutes.post('/status', async (c) => {
           ));
       }
       if (parsed.data.detail) {
-        emitTaskProgress(event, principal.employee_id, signal, parsed.data.detail);
+        emitTaskProgress(event, principal.employee_id, signal);
       }
     }
   }
