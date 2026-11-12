@@ -10,7 +10,7 @@ import { getModuleInstallation, getModuleRecord, humanModuleActor, listModuleRec
 import { parseModuleRecordResourceId } from '@deft/shared/modules';
 import { appHttpFailure } from './app-http-errors.js';
 import { randomUUID } from 'node:crypto';
-import { eq, and, asc, desc, sql, inArray, isNull } from 'drizzle-orm';
+import { eq, and, asc, desc, sql, inArray, isNull, notInArray } from 'drizzle-orm';
 import { ADVISORY_LEASE_ACQUIRE_TIMEOUT_MS, db, type DbAdvisoryLease } from '../lib/db.js';
 import {
   agentActions,
@@ -68,6 +68,7 @@ import {
 } from '../lib/agent-action-execution-lease.js';
 import {
   isModuleWriteActionName,
+  visibleAgentActionSourceSql,
   visibleModuleActionSql,
 } from '../lib/module-action-visibility.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
@@ -137,6 +138,9 @@ async function maybePostApprovalConfirmation(params: {
       .where(and(
         eq(agentActions.org_id, params.orgId),
         eq(agentActions.message_id, actionMessageId),
+        // Document sends and plan imports report through their own delivered
+        // message; their source message is not an approval group.
+        notInArray(agentActions.action, [DOCUMENT_SEND_ACTION, WORKSPACE_PLAN_IMPORT_ACTION]),
       ))
       .orderBy(asc(agentActions.created_at));
     if (siblingActions.length === 0) return null;
@@ -909,6 +913,10 @@ agentRoutes.get('/actions/pending-by-space', async (c) => {
       AND a.approval_status = 'pending'
       AND a.approval_tier IN ('quick', 'full')
       AND a.source IS DISTINCT FROM 'defty_capture'
+      AND EXISTS (
+        SELECT 1 FROM agent_actions WHERE agent_actions.id = a.id
+          AND ${visibleAgentActionSourceSql({ userId: user.id, orgId: user.org_id })}
+      )
       AND (${user.role !== 'guest'} OR a.action NOT IN (
         'module_record_create',
         'module_record_bulk_create',
@@ -1344,7 +1352,7 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
       c.header('Retry-After', String(APPROVAL_BUSY_RETRY_AFTER_SECONDS));
       return c.json({ error: 'Approvals are busy right now. Try again in a moment.', code: 'APPROVAL_BUSY' }, 503);
     }
-    const current = await loadOrgAction(actionId, user.org_id);
+    const current = await loadReviewableAction(actionId, user);
     if (!current) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
     if (current.approval_status === 'pending'
       || (current.approval_status === 'approved' && current.executed_at === null)) {
@@ -1393,6 +1401,40 @@ function settledApprovalResponse(c: Context, row: typeof agentActions.$inferSele
   return c.json({ error: 'Action is no longer pending', code: 'INVALID_STATE' }, 409);
 }
 
+/**
+ * The caller's review right as it stands now: their current active role,
+ * checked by the same predicate as the first read. Null when they are no
+ * longer an active member of the org.
+ */
+async function currentReviewerSql(user: { id: string; org_id: string }) {
+  const [membership] = await db.select({ role: orgMembers.role }).from(orgMembers).where(and(
+    eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, user.id), eq(orgMembers.is_active, true),
+  )).limit(1);
+  if (!membership) return null;
+  // The role is re-read inside the statement that uses it, so a change after
+  // the read above fails the decision instead of applying the older role.
+  return and(
+    reviewableActionSql({ ...user, role: membership.role }),
+    sql`EXISTS (
+      SELECT 1 FROM ${orgMembers} reviewer_membership
+      WHERE reviewer_membership.org_id = ${user.org_id}
+        AND reviewer_membership.user_id = ${user.id}
+        AND reviewer_membership.is_active = true
+        AND reviewer_membership.role = ${membership.role}
+    )`,
+  )!;
+}
+
+/** The action as the caller may currently review it, or null. */
+async function loadReviewableAction(actionId: string, user: { id: string; org_id: string }) {
+  const reviewer = await currentReviewerSql(user);
+  if (!reviewer) return null;
+  const [row] = await db.select().from(agentActions)
+    .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, user.org_id), reviewer))
+    .limit(1);
+  return row ?? null;
+}
+
 /** Ordinary (non-resolver) approval, run while holding the action's lease. */
 async function approveOrdinaryActionLeased(
   c: Context,
@@ -1400,7 +1442,8 @@ async function approveOrdinaryActionLeased(
   actionId: string,
   lease: DbAdvisoryLease,
 ): Promise<Response> {
-  const current = await loadOrgAction(actionId, user.org_id);
+  // Review rights are checked again now that the lease is held.
+  const current = await loadReviewableAction(actionId, user);
   if (!current) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
 
   if (current.approval_status === 'approved') {
@@ -1416,16 +1459,20 @@ async function approveOrdinaryActionLeased(
       // Repairs bookkeeping that a crash after the outcome write left undone.
       await finalizeApprovalOutcome({ actionId, orgId: user.org_id, receipt: 'legacy', hooks: approvalFinaliserHooks });
     }
-    const settled = await loadOrgAction(actionId, user.org_id);
+    const settled = await loadReviewableAction(actionId, user);
     if (!settled) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
     return settledApprovalResponse(c, settled);
   }
   if (current.approval_status !== 'pending') return settledApprovalResponse(c, current);
 
-  const token = await claimPendingApproval(current, user.id);
+  // The claim itself carries the review check, so a reviewer who loses the
+  // right before it runs leaves the action pending.
+  const reviewer = await currentReviewerSql(user);
+  if (!reviewer) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+  const token = await claimPendingApproval(current, user.id, reviewer);
   if (!token) {
-    const winner = await loadOrgAction(actionId, user.org_id);
-    if (!winner) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+    const winner = await loadReviewableAction(actionId, user);
+    if (!winner || winner.approval_status === 'pending') return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
     return settledApprovalResponse(c, winner);
   }
   const outcome = await executeClaimedApproval(
@@ -1615,6 +1662,9 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
           : action.action === DOCUMENT_SEND_ACTION
             ? sanitizeDocumentSendParams(action.params)
       : action.params;
+  // The rejection applies only while the caller still holds the review right.
+  const reviewer = await currentReviewerSql(user);
+  if (!reviewer) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
   const [updatedAction] = await db
     .update(agentActions)
     .set({
@@ -1632,9 +1682,12 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
       eq(agentActions.id, actionId),
       eq(agentActions.org_id, user.org_id),
       eq(agentActions.approval_status, 'pending'),
+      reviewer,
     ))
     .returning({ id: agentActions.id });
   if (!updatedAction) {
+    const latest = await loadReviewableAction(actionId, user);
+    if (!latest || latest.approval_status === 'pending') return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
     return c.json({ error: 'Action is no longer pending', code: 'INVALID_STATE' }, 409);
   }
   await recordActionApproverDecision({

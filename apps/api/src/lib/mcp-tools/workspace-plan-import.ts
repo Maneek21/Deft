@@ -44,6 +44,12 @@ export async function workspacePlanImport(
     return errorResult(`workspace_plan_import: ${draft?.clarification ?? 'could not prepare a reviewed plan'}`);
   }
   const proposal = draft.actions[0]!;
+  // A proposal exists only after the compiler read this message in this org
+  // with the employee's access. Review follows that message's audience.
+  const sourceMessageId = proposal.params.source_message_id;
+  if (typeof sourceMessageId !== 'string' || sourceMessageId !== args.message_id.trim()) {
+    return errorResult('workspace_plan_import: source message is unavailable');
+  }
   const idempotencyKey = String(proposal.params.idempotency_key ?? '');
   if (!idempotencyKey) return errorResult('workspace_plan_import: preview idempotency key is unavailable');
 
@@ -57,6 +63,7 @@ export async function workspacePlanImport(
       eq(agentActions.agent_employee_id, ctx.employee_id),
       eq(agentActions.action, WORKSPACE_PLAN_IMPORT_ACTION),
       inArray(agentActions.approval_status, ['pending', 'approved']),
+      sql`(${agentActions.message_id} IS NOT NULL OR ${agentActions.approval_status} = 'approved')`,
       sql`${agentActions.params}->>'idempotency_key' = ${idempotencyKey}`,
     )).limit(1);
     if (existing) return { ...existing, idempotent: true };
@@ -67,6 +74,7 @@ export async function workspacePlanImport(
       agent_employee_id: ctx.employee_id,
       channel_event_id: ctx.channel_event_id,
       runtime_request_key: ctx.runtime_request_key,
+      message_id: sourceMessageId,
       source: 'mcp',
       action: WORKSPACE_PLAN_IMPORT_ACTION,
       params: proposal.params,
