@@ -137,7 +137,7 @@ jobs:
           NODE
       - name: Preserve diagnostics on success or failure
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: email-preview-stack-${{ github.run_id }}
           path: .ci-diagnostics/
@@ -286,7 +286,7 @@ jobs:
           fi
       - name: Preserve API diagnostics
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: email-preview-api-${{ github.run_id }}
           path: .ci-api-diagnostics/
@@ -318,7 +318,7 @@ jobs:
           node scripts/codeql-reviewed-findings.mjs .ci-security-diagnostics
       - name: Preserve original SARIF and separately reviewed dispositions
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: email-preview-security-${{ github.run_id }}
           path: .ci-security-diagnostics/
