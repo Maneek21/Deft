@@ -682,13 +682,16 @@ async function insertPendingDeftyWikiCreate(
   sourceMessageId: string,
   extraParams: Record<string, unknown> = {},
 ): Promise<string> {
+  // The row records the slug the page will be created at.
+  const { wikiCreateProposalTarget } = await import('../src/lib/mcp-tools/wiki-create.js');
+  const frozen = await wikiCreateProposalTarget({ title }, ORG_ID, DEFTY_EMP_ID);
   return withClient(async (c) => {
     const r = await c.query(
       `INSERT INTO agent_actions
         (id, org_id, user_id, agent_employee_id, source, action, message_id,
-         params, approval_tier, approval_status)
+         params, approval_tier, approval_status, before_state)
        VALUES (gen_random_uuid()::text, $1, $2, $3, 'defty_capture', 'wiki_create',
-         $4, $5::jsonb, 'quick', 'pending')
+         $4, $5::jsonb, 'quick', 'pending', $6::jsonb)
        RETURNING id`,
       [
         ORG_ID,
@@ -711,6 +714,7 @@ async function insertPendingDeftyWikiCreate(
           dedupe_key: `defty_capture:test:wiki_create:${sourceMessageId}`,
           ...extraParams,
         }),
+        JSON.stringify(frozen?.values.before_state ?? null),
       ],
     );
     return r.rows[0].id as string;

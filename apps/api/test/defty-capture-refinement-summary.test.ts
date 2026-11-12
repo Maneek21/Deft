@@ -44,6 +44,7 @@ mock.module(new URL('../src/lib/resolve-assignee.ts', import.meta.url).href, { n
 } });
 mock.module(new URL('../src/lib/mcp-tools/wiki-create.ts', import.meta.url).href, { namedExports: {
   wikiUpdateProposalTarget: async () => ({ page, values: { before_state: {} } }),
+  wikiCreateProposalTarget: async () => ({ values: { before_state: {} } }),
 } });
 const { queueDeftyKnowledgeCapture } = await import('../src/lib/defty-capture.js');
 

@@ -5,7 +5,12 @@ import { agentActions, agentEmployees, messageObservations, messages, spaces, us
 import { getApprovalTier } from '../lib/agent-approval.js';
 import { ensureDeftyEmployee } from '../lib/ensure-defty-membership.js';
 import { readFrozenTarget, TARGET_KEY } from '../lib/wiki-proposal-target.js';
-import { WIKI_TARGET_UNAVAILABLE_ERROR, wikiUpdateProposalTarget } from '../lib/mcp-tools/wiki-create.js';
+import {
+  WIKI_CREATE_TARGET_UNAVAILABLE_ERROR,
+  WIKI_TARGET_UNAVAILABLE_ERROR,
+  wikiCreateProposalTarget,
+  wikiUpdateProposalTarget,
+} from '../lib/mcp-tools/wiki-create.js';
 
 export const workIntentRoutes = new Hono();
 
@@ -382,6 +387,15 @@ workIntentRoutes.post('/:id/retry', async (c) => {
       return c.json({ error: WIKI_TARGET_UNAVAILABLE_ERROR, code: 'WIKI_TARGET_UNAVAILABLE' }, 409);
     }
     frozenWikiTarget = { [TARGET_KEY]: target };
+  }
+  // A knowledge-create retry is a new proposal with its own frozen slug; it
+  // takes nothing from earlier action rows.
+  if (row.proposed_action === 'wiki_create') {
+    const frozen = await wikiCreateProposalTarget(asRecord(row.proposed_params), user.org_id, employeeId);
+    if (!frozen) {
+      return c.json({ error: WIKI_CREATE_TARGET_UNAVAILABLE_ERROR, code: 'WIKI_TARGET_UNAVAILABLE' }, 409);
+    }
+    frozenWikiTarget = frozen.values.before_state;
   }
 
   const retry = await db.transaction(async (tx) => {

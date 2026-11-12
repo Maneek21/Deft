@@ -53,6 +53,7 @@ test(`${explicitUpdate ? 'update-prefixed capture' : 'capture matching an existi
     './resolve-assignee.js': {},
     './mcp-tools/wiki-create.js': {
       wikiUpdateProposalTarget: async () => ({ page, values: { before_state: {} } }),
+      wikiCreateProposalTarget: async () => ({ values: { before_state: {} } }),
     },
   };
   const module = { exports: {} as Record<string, any> };
