@@ -640,6 +640,12 @@ export async function executeWikiUpdate(
 
     // Lock order: the page row, then the spaces and memberships that grant
     // access (FOR SHARE), then the rows this write inserts.
+    // A page the employee cannot reach is refused before any lock is taken,
+    // so the answer never waits on activity on that page.
+    if (!frozen && !(await wikiUpdateProposalTarget(args, ctx.org_id, ctx.employee_id))) {
+      return wikiTargetUnavailableResult();
+    }
+
     const { page, changedFields } = await db.transaction(async (tx) => {
       const existingPage = await findWikiUpdateTarget(tx, ctx.org_id, frozen ?? args, true);
       if (!existingPage || !(await employeeCanWriteWikiPage(tx, existingPage, ctx, shadowUserId, true))) {

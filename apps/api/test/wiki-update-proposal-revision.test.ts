@@ -361,3 +361,14 @@ test('a wiki_create proposal is queued and applied as before', { skip: !canRun }
   assert.equal((await approve(actionId)).status, 200);
   assert.equal(Number((await f.client.query('SELECT count(*)::int AS n FROM wiki_pages WHERE org_id = $1 AND title = $2', [f.orgId, title])).rows[0].n), 1);
 });
+
+test('a retry for a page the employee can no longer reach is refused', { skip: !canRun }, async () => {
+  const page = await createPage({ scope: 'space', spaceId: f.spaceId });
+  const capture = await captureProposal(page);
+  await f.client.query('UPDATE wiki_pages SET is_deleted = true WHERE id = $1', [page.id]);
+  await assertRefused(capture.actionId, UNAVAILABLE, page.id);
+  const answer = await retry(capture.intentId);
+  assert.equal(answer.status, 409, JSON.stringify(answer.body));
+  assert.equal(answer.body.code, 'WIKI_TARGET_UNAVAILABLE');
+  assert.equal(answer.body.error, WIKI_TARGET_UNAVAILABLE_ERROR);
+});

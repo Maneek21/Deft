@@ -5,6 +5,7 @@ import { agentActions, agentEmployees, messageObservations, messages, spaces, us
 import { getApprovalTier } from '../lib/agent-approval.js';
 import { ensureDeftyEmployee } from '../lib/ensure-defty-membership.js';
 import { readFrozenTarget, TARGET_KEY } from '../lib/wiki-proposal-target.js';
+import { WIKI_TARGET_UNAVAILABLE_ERROR, wikiUpdateProposalTarget } from '../lib/mcp-tools/wiki-create.js';
 
 export const workIntentRoutes = new Hono();
 
@@ -375,6 +376,10 @@ workIntentRoutes.post('/:id/retry', async (c) => {
         },
         409,
       );
+    }
+    // The employee must still reach the page; the original revision is kept.
+    if (!(await wikiUpdateProposalTarget(proposed, user.org_id, employeeId))) {
+      return c.json({ error: WIKI_TARGET_UNAVAILABLE_ERROR, code: 'WIKI_TARGET_UNAVAILABLE' }, 409);
     }
     frozenWikiTarget = { [TARGET_KEY]: target };
   }
