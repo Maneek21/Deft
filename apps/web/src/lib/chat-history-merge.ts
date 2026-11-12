@@ -225,18 +225,30 @@ export async function readHistoryPage<T extends HistoryMessage>(get: Get, basePa
 }
 
 /**
- * Read history from the newest message back until the read reaches
- * `oldestShownAt` (the oldest message on screen), for at most `maxPages`
- * pages. Each next page follows the server's next_cursor; a page without one
- * is the oldest. Throws on any failed page.
+ * Read history from the newest message back until the read covers what is
+ * shown, for at most `maxPages` pages. Each next page follows the server's
+ * next_cursor; a page without one is the oldest. Throws on any failed page.
+ *
+ * `shown` is the list on screen (or just its oldest created_at). The read
+ * covers it once a page starts in an older millisecond than the oldest shown
+ * message, or starts in that same millisecond and the read holds every shown
+ * message of that millisecond: the server orders by a finer timestamp, so a
+ * page starting at a shown row of that millisecond may still sit above a
+ * missed one.
  */
 export async function readHistoryBackTo<T extends HistoryMessage>(
   get: Get,
   basePath: string,
-  oldestShownAt: string | null,
+  shown: string | null | ReadonlyArray<{ id: string; created_at: string }>,
   maxPages = CATCH_UP_MAX_PAGES,
 ): Promise<HistoryRead<T>> {
-  const target = oldestShownAt === null ? Number.NaN : Date.parse(oldestShownAt);
+  let target = Number.NaN;
+  let required: string[] = [];
+  if (typeof shown === 'string') target = Date.parse(shown);
+  else if (shown && shown.length > 0) {
+    target = Math.min(...shown.map(timeOf));
+    required = shown.filter((message) => timeOf(message) === target).map((message) => message.id);
+  }
   let collected: T[] = [];
   let before: string | undefined;
   for (let pageIndex = 0; pageIndex < maxPages; pageIndex++) {
@@ -244,9 +256,11 @@ export async function readHistoryBackTo<T extends HistoryMessage>(
     const pageIds = new Set(page.messages.map((m) => m.id));
     collected = [...page.messages, ...collected.filter((m) => !pageIds.has(m.id))];
     if (!page.nextCursor) return { messages: collected, coversShown: true, hasEarlier: false, nextCursor: null };
-    if (Number.isNaN(target) || timeOf(page.messages[0]!) <= target) {
-      return { messages: collected, coversShown: true, hasEarlier: true, nextCursor: page.nextCursor };
-    }
+    const startsAt = timeOf(page.messages[0]!);
+    const covered = Number.isNaN(target)
+      || startsAt < target
+      || (startsAt === target && required.every((id) => collected.some((m) => m.id === id)));
+    if (covered) return { messages: collected, coversShown: true, hasEarlier: true, nextCursor: page.nextCursor };
     before = page.nextCursor;
   }
   return { messages: collected, coversShown: false, hasEarlier: true, nextCursor: before ?? null };

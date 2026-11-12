@@ -349,3 +349,18 @@ test('W2R4-1: a missed row goes after its shown neighbour from the read, with a 
   const fetched = [stored('A', 500), stored('B', 900)];
   assert.deepEqual(ids(mergeMessagesById(shown, fetched)), ['X', 'A', 'B']);
 });
+
+test('W2R4-2: a full catch-up page that starts at a shown row in the oldest millisecond keeps paging to the missed row behind it', async () => {
+  // Server order in one millisecond: A, C, B. A and B are shown; C was missed.
+  const newer = Array.from({ length: 99 }, (_, i) => stored(`n-${String(i).padStart(2, '0')}`, 0, new Date(Date.parse(MS) + (i + 1) * 1000).toISOString()));
+  const rows = [stored('A', 100), stored('C', 500), stored('B', 900), ...newer];
+  const strip = (row: Stored) => ({ id: row.id, content: row.content, created_at: row.created_at });
+  const shown = [stored('A', 100), stored('B', 900), ...newer].map(strip);
+  const calls: string[] = [];
+  const get = storedGet(rows, calls);
+  const read = await readHistoryBackTo<(typeof shown)[number]>(async (path) => get(path), '/api/messages/s1', shown);
+  const applied = applyHistoryRead(shown, read);
+  assert.ok(ids(applied).includes('C'), 'the missed row is fetched');
+  assert.deepEqual(ids(applied).slice(0, 3), ['A', 'C', 'B']);
+  assert.equal(calls.length, 2);
+});

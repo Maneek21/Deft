@@ -79,7 +79,6 @@ import {
   cursorAfterMergingRead,
   mergeMessagesById,
   serverNextCursor,
-  oldestCreatedAt,
   oldestHistoryCursor,
   readHistoryBackTo,
   readHistoryPage,
@@ -1218,7 +1217,7 @@ export function SpaceChat({
         // CATCH_UP_MAX_PAGES), so a long outage leaves no hole and older shown
         // messages get their current content, deletion and thread counts.
         const shownBefore = messagesRef.current;
-        const read = await readHistoryBackTo<Message>((path: string) => api.get(path), `/api/messages/${spaceId}`, oldestCreatedAt(shownBefore));
+        const read = await readHistoryBackTo<Message>((path: string) => api.get(path), `/api/messages/${spaceId}`, shownBefore);
         const events = reads.settle(ticket);
         if (!visit.isCurrent() || !reads.isLatest(ticket)) return 'superseded';
         setMessages((prev) => visit.isCurrent()
