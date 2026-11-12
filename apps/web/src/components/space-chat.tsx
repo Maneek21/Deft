@@ -1006,8 +1006,12 @@ export function SpaceChat({
       if (visit.isCurrent() && reads.isLatest(ticket)) setCmdToast('Could not load earlier messages. Try again.');
     } finally {
       reads.settle(ticket);
-      loadingEarlierRef.current = false;
-      setLoadingEarlier(false);
+      // A read from a space the view has since left does not touch the new
+      // space's loading state (the switch already reset it).
+      if (reads === historyReadsRef.current) {
+        loadingEarlierRef.current = false;
+        setLoadingEarlier(false);
+      }
     }
   }, [spaceId, sessionCacheScope, setEarlierCursor]);
 
@@ -1019,6 +1023,7 @@ export function SpaceChat({
     earlierCursorRef.current = null;
     earlierKnownRef.current = false;
     loadingEarlierRef.current = false;
+    setLoadingEarlier(false);
     setCatchUpError(false);
     historyReadsRef.current.dispose();
     const reads = new ConversationReads<MessageEvent<Message>>();
