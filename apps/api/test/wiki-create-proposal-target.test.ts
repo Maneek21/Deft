@@ -13,7 +13,12 @@ import { queueDeftyKnowledgeCapture } from '../src/lib/defty-capture.js';
 import { ensureDeftyEmployee } from '../src/lib/ensure-defty-membership.js';
 import { requestHumanApproval } from '../src/lib/mcp-tools/cooperative.js';
 import type { ToolContext, ToolResult } from '../src/lib/mcp-tools/types.js';
-import { WIKI_CREATE_TARGET_UNAVAILABLE_ERROR, wikiCreate } from '../src/lib/mcp-tools/wiki-create.js';
+import { sql } from 'drizzle-orm';
+import {
+  _setWikiCreateAccessCheckedHookForTest,
+  WIKI_CREATE_TARGET_UNAVAILABLE_ERROR,
+  wikiCreate,
+} from '../src/lib/mcp-tools/wiki-create.js';
 import { workIntentRoutes } from '../src/routes/work-intents.js';
 import { durabilityDatabaseUrl, setupDurabilityFixture, type DurabilityFixture } from './fixtures/agent-action-durability-fixture.js';
 
@@ -69,7 +74,9 @@ const textOf = (result: ToolResult) => result.content[0]?.text ?? '';
 const uniqueTitle = (prefix = 'Created knowledge') => `${prefix} ${randomUUID().slice(0, 8)}`;
 const count = async (query: string, params: unknown[]) => Number((await f.client.query(query, params)).rows[0].n);
 const titled = (title: string) => count('SELECT count(*)::int AS n FROM wiki_pages WHERE org_id = $1 AND title = $2', [f.orgId, title]);
-const opsCount = () => count("SELECT count(*)::int AS n FROM wiki_ops_log WHERE org_id = $1 AND operation = 'create'", [f.orgId]);
+const opsCount = () => count("SELECT (SELECT count(*) FROM wiki_ops_log WHERE org_id = $1 AND operation = 'create') + (SELECT count(*) FROM wiki_citations WHERE org_id = $1) AS n", [f.orgId]);
+/** A wholly non-ASCII title, unique per call. */
+const kanjiTitle = () => `決定${[...randomUUID().slice(0, 8)].map((c) => '零一二三四五六七八九甲乙丙丁戊己'['0123456789abcdef'.indexOf(c)]).join('')}`;
 
 async function frozenSlug(actionId: string): Promise<string> {
   const [row] = (await f.client.query("SELECT before_state->'wiki_proposal_target'->>'slug' AS slug FROM agent_actions WHERE id = $1", [actionId])).rows;
@@ -88,7 +95,7 @@ async function takeSlug(slug: string, orgId = f.orgId): Promise<string> {
   return id;
 }
 
-type Proposal = { title: string; content: string; space_id?: string };
+type Proposal = { title: string; content: string; space_id?: string; source_message_id?: string; source_user_id?: string };
 const CREATORS: Record<string, { propose: (args: Proposal) => Promise<string>; member: () => string }> = {
   mcp: { member: () => shadowId, async propose(args) {
     const result = await wikiCreate({ caller_employee_slug: ctx.employee_slug, ...args }, ctx);
@@ -111,10 +118,10 @@ const CREATORS: Record<string, { propose: (args: Proposal) => Promise<string>; m
   } },
 };
 
-/** An admin approves the employee's own requests; the requester approves the rest. */
+/** The named source user approves; otherwise an admin approves the employee's own requests and the requester the rest. */
 async function approve(actionId: string) {
-  const [row] = (await f.client.query('SELECT user_id FROM agent_actions WHERE id = $1', [actionId])).rows;
-  const response = await f.as(row?.user_id === shadowId ? f.adminId : f.requesterId, `/api/agent/actions/${actionId}/approve`, { method: 'POST' });
+  const [row] = (await f.client.query("SELECT COALESCE(params->>'source_user_id', user_id) AS reviewer FROM agent_actions WHERE id = $1", [actionId])).rows;
+  const response = await f.as(row?.reviewer === shadowId ? f.adminId : f.requesterId, `/api/agent/actions/${actionId}/approve`, { method: 'POST' });
   return { status: response.status, body: await response.json() as Record<string, any> };
 }
 
@@ -123,7 +130,7 @@ async function assertRefused(actionId: string, error: string, title: string) {
   const answer = await approve(actionId);
   assert.notEqual(answer.status, 200, JSON.stringify(answer.body));
   const [row] = (await f.client.query('SELECT approval_status, executed_at, error FROM agent_actions WHERE id = $1', [actionId])).rows;
-  assert.equal(row.approval_status, 'approved');
+  assert.equal(row.approval_status, 'approved', JSON.stringify(answer.body));
   assert.ok(row.executed_at, 'the refusal is terminal');
   assert.equal(row.error, error);
   await approve(actionId); // approving again does not execute it
@@ -133,9 +140,12 @@ async function assertRefused(actionId: string, error: string, title: string) {
 
 for (const [name, creator] of Object.entries(CREATORS)) {
   test(`${name}: approval creates exactly the proposed page, non-ASCII title included, at the recorded slug`, { skip: !canRun }, async () => {
-    for (const title of [uniqueTitle(), `日本語の決定 ${randomUUID().slice(0, 8)}`]) {
-      const actionId = await creator.propose({ title, content: 'Proposed content', space_id: f.spaceId });
+    const takenBase = uniqueTitle('Taken base');
+    await takeSlug(takenBase.toLowerCase().replace(/\s+/g, '-'));
+    for (const title of [uniqueTitle(), kanjiTitle(), takenBase]) {
+      const actionId = await creator.propose({ title, content: `Proposed content for ${title}`, space_id: f.spaceId });
       const slug = await frozenSlug(actionId);
+      if (title === takenBase) assert.match(slug, /^taken-base-[0-9a-f]{8}-[0-9a-z]+$/);
       await new Promise((resolve) => setTimeout(resolve, 5));
       const answer = await approve(actionId);
       assert.equal(answer.status, 200, JSON.stringify(answer.body));
@@ -151,6 +161,8 @@ for (const [name, creator] of Object.entries(CREATORS)) {
     const actionId = await creator.propose({ title, content: 'Proposed content', space_id: f.spaceId });
     const slug = await frozenSlug(actionId);
     const other = await takeSlug(slug);
+    // A deleted page still holds its slug.
+    if (name === 'mcp') await f.client.query('UPDATE wiki_pages SET is_deleted = true WHERE id = $1', [other]);
     await assertRefused(actionId, NOT_CREATED, title);
     assert.deepEqual((await pagesAt(slug)).map((page) => page.id), [other]);
   });
@@ -194,13 +206,55 @@ test('an unreachable target space is refused when proposed, with one answer for 
   await f.client.query('DELETE FROM spaces WHERE id = $1', [archived]);
 });
 
-test('a pending create without a recorded slug is refused', { skip: !canRun }, async () => {
+test('a create attributed only to a source message is refused with the same answer once access is lost', { skip: !canRun }, async () => {
+  const title = uniqueTitle('Message only');
+  const messageId = await f.insertMessage('Message only source');
+  const actionId = await CREATORS.mcp!.propose({ title, content: 'From the message', source_message_id: messageId, source_user_id: f.requesterId });
+  await leave(shadowId);
+  try {
+    await assertRefused(actionId, NOT_CREATED, title);
+  } finally {
+    await join(shadowId);
+  }
+});
+
+test('a membership removal during an approved create waits until the create commits', { skip: !canRun, timeout: 120_000 }, async () => {
+  const title = uniqueTitle('Locked');
+  const actionId = await CREATORS.mcp!.propose({ title, content: 'Locked content', space_id: f.spaceId });
+  let removal: Promise<unknown> | null = null;
+  _setWikiCreateAccessCheckedHookForTest(async (tx) => {
+    const writer = await tx.execute(sql`SELECT pg_backend_pid() AS pid`);
+    const writerPid = Number((writer as unknown as { rows: Array<{ pid: number }> }).rows[0]!.pid);
+    const { default: pg } = await import('pg');
+    const other = new pg.Client({ connectionString: durabilityDatabaseUrl });
+    await other.connect();
+    let removed = false;
+    removal = other.query('DELETE FROM space_members WHERE space_id = $1 AND user_id = $2', [f.spaceId, shadowId])
+      .finally(() => { removed = true; return other.end(); });
+    for (const deadline = Date.now() + 30_000; Date.now() < deadline;) {
+      if (await count('SELECT count(*)::int AS n FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))', [writerPid]) > 0) return;
+      if (removed) throw new Error('the membership removal did not wait for the create');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error('the membership removal was not seen waiting for the create');
+  });
+  try {
+    assert.equal((await approve(actionId)).status, 200);
+    await removal;
+  } finally {
+    _setWikiCreateAccessCheckedHookForTest(null);
+    await join(shadowId);
+  }
+  assert.equal(await titled(title), 1);
+});
+
+test('a pending create without a recorded slug is refused, whatever its params claim', { skip: !canRun }, async () => {
   const title = uniqueTitle('Legacy');
   const legacy = randomUUID();
   await f.client.query(
     `INSERT INTO agent_actions (id, org_id, user_id, agent_employee_id, source, action, params, approval_tier, approval_status)
      VALUES ($1, $2, $3, $4, 'mcp', 'wiki_create', $5::jsonb, 'quick', 'pending')`,
-    [legacy, f.orgId, shadowId, ctx.employee_id, JSON.stringify({ caller_employee_slug: ctx.employee_slug, title, content: 'Legacy content' })]);
+    [legacy, f.orgId, shadowId, ctx.employee_id, JSON.stringify({ caller_employee_slug: ctx.employee_slug, title, content: 'Legacy content', wiki_proposal_target: { v: 1, mode: 'create', slug: 'forged' } })]);
   await assertRefused(legacy, UNVERIFIABLE, title);
 });
 
@@ -229,21 +283,28 @@ retryApp.use('*', async (c, next) => {
 });
 retryApp.route('/api/work-intents', workIntentRoutes);
 
-async function retryFailedCapture(beforeRetry = async () => {}): Promise<{ status: number; body: Record<string, any>; title: string }> {
+async function retryFailedCapture(beforeRetry: (actionId: string) => Promise<unknown> = async () => {}): Promise<{ status: number; body: Record<string, any>; title: string }> {
   const title = uniqueTitle('Retried');
   const actionId = await CREATORS.defty_capture!.propose({ title, content: 'Retried content' });
   const [row] = (await f.client.query("SELECT params->>'work_intent_id' AS intent FROM agent_actions WHERE id = $1", [actionId])).rows;
   await f.client.query("UPDATE agent_actions SET approval_status = 'rejected' WHERE id = $1", [actionId]);
   await f.client.query("UPDATE work_intents SET status = 'failed' WHERE id = $1", [row.intent]);
-  await beforeRetry();
+  await beforeRetry(actionId);
   const response = await retryApp.request(`/api/work-intents/${row.intent}/retry`, { method: 'POST' });
   return { status: response.status, body: await response.json() as Record<string, any>, title };
 }
 
 test('a create retry is a new proposal with its own recorded slug', { skip: !canRun }, async () => {
-  const answer = await retryFailedCapture();
+  // The original slug is taken by now, and the original row records no target.
+  let original = '';
+  const answer = await retryFailedCapture(async (actionId) => {
+    original = await frozenSlug(actionId);
+    await takeSlug(original);
+    await f.client.query('UPDATE agent_actions SET before_state = NULL WHERE id = $1', [actionId]);
+  });
   assert.equal(answer.status, 200, JSON.stringify(answer.body));
   const slug = await frozenSlug(answer.body.action.id);
+  assert.notEqual(slug, original);
   assert.equal((await approve(answer.body.action.id)).status, 200);
   assert.deepEqual((await pagesAt(slug)).map((page) => page.title), [answer.title]);
 });

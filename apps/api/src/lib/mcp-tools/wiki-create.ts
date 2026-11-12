@@ -225,6 +225,8 @@ export async function executeWikiCreate(
     const { page, sourceSpaceId } = await db.transaction(async (tx) => {
       const canAccessSpace = (spaceId: string) =>
         employeeCanAccessSpace(ctx.employee_id, ctx.org_id, spaceId, { executor: tx, lock: true });
+      // An approved proposal gets one refusal for every reason it cannot be created.
+      const deny: (message: string) => never = (message) => refuse(frozenSlug ? WIKI_PAGE_NOT_CREATED_ERROR : message);
 
       let sourceMessageExcerpt: string | null = null;
       let sourceSpaceId = args.source_space_id ?? args.space_id ?? null;
@@ -233,7 +235,7 @@ export async function executeWikiCreate(
         throw new WikiUpdateRefusal(frozenSlug ? errorResult(WIKI_PAGE_NOT_CREATED_ERROR) : wikiTargetUnavailableResult('wiki_create'));
       }
       if (scope === 'space' && !sourceSpaceId) {
-        refuse('wiki_create: space_id or source_space_id is required when scope is space');
+        deny('wiki_create: space_id or source_space_id is required when scope is space');
       }
       if (args.source_message_id?.trim()) {
         const readerIds = [
@@ -255,16 +257,17 @@ export async function executeWikiCreate(
           if (source) break;
         }
         if (!source) {
-          refuse(`wiki_create: source_message_id ${args.source_message_id} is not readable in caller's org`);
+          deny(`wiki_create: source_message_id ${args.source_message_id} is not readable in caller's org`);
         }
         sourceSpaceId = source.space_id;
         if (!(await canAccessSpace(sourceSpaceId))) {
-          refuse(`wiki_create: source message space ${sourceSpaceId} is not accessible to this employee`);
+          deny(`wiki_create: source message space ${sourceSpaceId} is not accessible to this employee`);
         }
         sourceUserId = source.user_id;
         sourceMessageExcerpt = toPlainText(source.content).slice(0, 200);
       }
       sourceUserId = sourceUserId ?? shadowUserId;
+      if (createAccessCheckedHook) await createAccessCheckedHook(tx);
 
       const metadata = {
         ...(args.metadata && typeof args.metadata === 'object' ? args.metadata : {}),
@@ -415,6 +418,13 @@ export async function executeWikiCreate(
     const msg = err instanceof Error ? err.message : String(err);
     return errorResult(`wiki_create failed: ${msg}`);
   }
+}
+
+let createAccessCheckedHook: ((tx: UpdateTransaction) => Promise<void>) | null = null;
+
+/** Test seam: runs inside the create, after the access checks and before any insert. */
+export function _setWikiCreateAccessCheckedHookForTest(hook: ((tx: UpdateTransaction) => Promise<void>) | null): void {
+  createAccessCheckedHook = hook;
 }
 
 /**
