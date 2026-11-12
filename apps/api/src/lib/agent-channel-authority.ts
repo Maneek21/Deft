@@ -1,4 +1,5 @@
 import { sql, type SQL, type SQLWrapper } from 'drizzle-orm';
+import { actionRequesterIdSql } from './agent-action-requester.js';
 
 /** Current room authority, resolved from canonical rows rather than event payloads. */
 export function currentEmployeeSpaceAuthoritySql(orgId: SQLWrapper, employeeId: SQLWrapper, spaceId: SQLWrapper): SQL {
@@ -116,24 +117,9 @@ export function currentAgentChannelEventAuthoritySql(eventId: SQLWrapper, reader
 }
 
 /**
- * The one effective requester of an action, with the approval resolver's precedence:
- * a present params.source_user_id (else params.origin_user_id) when it is a non-blank string, else user_id.
+ * The human audience of an action with no source: its requester (lib/agent-action-requester.ts) and
+ * current org owners/admins. Agent and system readers pass; their source authority is checked separately.
  */
-export function agentActionRequesterIdSql(actionAlias = 'agent_actions'): SQL {
-  const field = (name: string) => sql`${sql.identifier(actionAlias)}.${sql.identifier(name)}`;
-  const sourceUser = sql`${field('params')}->'source_user_id'`;
-  const originUser = sql`${field('params')}->'origin_user_id'`;
-  return sql`(case
-    when coalesce(jsonb_typeof(${sourceUser}), 'null') <> 'null' then (case
-      when jsonb_typeof(${sourceUser}) = 'string' and (${field('params')}->>'source_user_id') ~ '[^[:space:]]'
-        then ${field('params')}->>'source_user_id'
-      else ${field('user_id')} end)
-    when jsonb_typeof(${originUser}) = 'string' and (${field('params')}->>'origin_user_id') ~ '[^[:space:]]'
-      then ${field('params')}->>'origin_user_id'
-    else ${field('user_id')} end)`;
-}
-
-/** The human audience of an action with no source: its requester, an assigned non-guest reviewer and current org owners/admins. Agent and system readers pass; their source authority is checked separately. */
 function sourcelessActionAudienceSql(actionAlias: string, readerUserId?: SQLWrapper): SQL {
   if (!readerUserId) return sql`true`;
   const field = (name: string) => sql`${sql.identifier(actionAlias)}.${sql.identifier(name)}`;
@@ -142,27 +128,18 @@ function sourcelessActionAudienceSql(actionAlias: string, readerUserId?: SQLWrap
         and (
           (action_reader.kind <> 'human' or action_reader.is_agent = true)
           or (action_reader.kind = 'human' and action_reader.is_agent = false and (
-            ${agentActionRequesterIdSql(actionAlias)} = action_reader.id
+            ${actionRequesterIdSql(actionAlias)} = action_reader.id
             or exists (select 1 from org_members action_reader_membership
               where action_reader_membership.org_id = ${field('org_id')}
                 and action_reader_membership.user_id = action_reader.id
                 and action_reader_membership.is_active = true
                 and action_reader_membership.role in ('owner', 'admin'))
-            or exists (select 1 from agent_action_approvers action_reviewer
-              join org_members action_reviewer_membership
-                on action_reviewer_membership.org_id = action_reviewer.org_id
-                and action_reviewer_membership.user_id = action_reviewer.user_id
-                and action_reviewer_membership.is_active = true
-                and action_reviewer_membership.role <> 'guest'
-              where action_reviewer.action_id = ${field('id')}
-                and action_reviewer.org_id = ${field('org_id')}
-                and action_reviewer.user_id = action_reader.id)
           ))
         )
     )`;
 }
 
-/** Source-less work is private to its human requester, an assigned non-guest reviewer and current org owners/admins; employee reads retain their source authority. */
+/** Source-less work is private to its human requester and current org owners/admins; employee reads retain their source authority. */
 export function currentAgentActionSourceAuthoritySql(actionAlias = 'agent_actions', readerUserId?: SQLWrapper): SQL {
   const field = (name: string) => sql`${sql.identifier(actionAlias)}.${sql.identifier(name)}`;
   return sql`(${field('action')} <> 'chat_mention' or ${field('message_id')} is not null)

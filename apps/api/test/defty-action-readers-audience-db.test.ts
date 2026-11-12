@@ -110,7 +110,8 @@ test('W2a3-2a: employee activity for the Defty envelope lists its actions only t
   };
   assert.equal(has(await read(ids.peer), employeeActionId), false, 'a member outside the audience does not receive the action');
   assert.equal(has(await read(ids.guestApprover), employeeActionId), false, 'a guest approver does not receive the action');
-  for (const viewer of [ids.requester, ids.approver, ids.admin]) {
+  assert.equal(has(await read(ids.approver), employeeActionId), false, 'an assigned member who is not a reviewer does not receive the action');
+  for (const viewer of [ids.requester, ids.admin]) {
     assert.equal(has(await read(viewer), employeeActionId), true, `${roles[viewer]} audience member keeps the action`);
   }
 });

@@ -107,7 +107,7 @@ async function readIntent(viewer: string, id: string, visible: boolean, detail: 
   return row;
 }
 
-test('intent action fields follow the Defty requester and assigned approver audience', async (t) => {
+test('intent action fields follow the Defty requester and owner/admin audience', async (t) => {
   if (unavailable) return t.skip(unavailable);
   for (const options of [{}, { employee: null }, { terminal: true }]) {
     const id = await insertIntent(options);
@@ -115,7 +115,8 @@ test('intent action fields follow the Defty requester and assigned approver audi
       for (const detail of [false, true]) {
         const row = await readIntent(viewer, id, viewer !== ids.other, detail);
         if (!row) continue;
-        const privileged = [ids.owner, ids.admin, ids.source, ids.approver].includes(viewer);
+        // An approver assignment naming a member who is not a reviewer of the action opens nothing.
+        const privileged = [ids.owner, ids.admin, ids.source].includes(viewer);
         for (const canary of ['CANARY-TITLE', 'CANARY-SUMMARY', 'CANARY-PARAMS', 'CANARY-FAILURE', 'CANARY-RESULT']) {
           assert.equal(JSON.stringify(row).includes(canary), privileged, roles[viewer] + ' ' + canary);
         }

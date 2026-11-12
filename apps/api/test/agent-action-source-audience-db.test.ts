@@ -184,22 +184,19 @@ after(async () => {
 });
 
 for (const path of ['/actions', '/actions/recent?limit=50']) {
-  test(`W2a5b-1: ${path} limits source-less employee work to human requesters, assigned reviewers and current owners/admins`, async (t) => {
+  test(`W2a5b-1: ${path} limits source-less employee work to its requester and current owners/admins`, async (t) => {
     if (unavailable) return t.skip(unavailable);
-    // An assigned member reviews the work, so it reads it; an assigned guest does not.
-    const reviewerRows = await read(ids.approver, path);
-    for (const action of [actions.heartbeat, actions.trigger]) {
-      assert.equal(reviewerRows.some((row) => row.id === action), true);
+    // An approver assignment naming a member who is not a reviewer of the action opens nothing.
+    const assignedRows = await read(ids.approver, path);
+    for (const action of [actions.heartbeat, actions.trigger, actions.requested]) {
+      assert.equal(assignedRows.some((row) => row.id === action), false);
     }
-    assert.equal(reviewerRows.some((row) => row.id === actions.requested), false, 'work it is not assigned to stays with its requester');
-    // The heartbeat row names the peer as source_user_id, so the peer is its one requester;
-    // origin_user_id (the guest) does not count once source_user_id is present.
+    // The heartbeat params name the peer and the guest, but a non-capture action's requester is its own user.
     const peerRows = await read(ids.peer, path);
-    assert.equal(peerRows.find((row) => row.id === actions.heartbeat)?.params.heartbeat_prompt, 'CANARY-HEARTBEAT-PROMPT');
-    for (const action of [actions.trigger, actions.requested]) {
+    for (const action of [actions.heartbeat, actions.trigger, actions.requested]) {
       assert.equal(peerRows.some((row) => row.id === action), false);
     }
-    for (const canary of ['CANARY-TRIGGER-EVENT', 'CANARY-TRIGGER-PROMPT', 'CANARY-REQUESTED-PROMPT']) {
+    for (const canary of ['CANARY-HEARTBEAT-PROMPT', 'CANARY-TRIGGER-EVENT', 'CANARY-TRIGGER-PROMPT', 'CANARY-REQUESTED-PROMPT']) {
       assert.equal(JSON.stringify(peerRows).includes(canary), false, `member: ${canary}`);
     }
     const guestSourceRows = await read(ids.guest, path);
@@ -239,13 +236,13 @@ for (const path of ['/actions', '/actions/recent?limit=50']) {
     assert.equal((await visible()).length, 2);
   });
 
-  test(`W2a5b-1: ${path} retains the Defty requester and reviewer audience`, async (t) => {
+  test(`W2a5b-1: ${path} retains the Defty requester and owner/admin audience`, async (t) => {
     if (unavailable) return t.skip(unavailable);
-    for (const viewer of [ids.requester, ids.approver, ids.owner, ids.admin]) {
+    for (const viewer of [ids.requester, ids.owner, ids.admin]) {
       const rows = await read(viewer, path);
       for (const id of [actions.defty, actions.deftyEnvelope]) assert.equal(rows.some((row) => row.id === id), true);
     }
-    for (const viewer of [ids.peer, ids.guest]) {
+    for (const viewer of [ids.approver, ids.peer, ids.guest]) {
       const rows = await read(viewer, path);
       for (const id of [actions.defty, actions.deftyEnvelope]) assert.equal(rows.some((row) => row.id === id), false);
     }
@@ -311,18 +308,17 @@ test('W2a5b-1: legacy MCP status supports employee work and the human requester'
   assert.equal((await status(ids.peer, actions.requested)).status, 404);
 });
 
-test('W2a5b-2: pending-by-space intersects the shared audience with assigned review authority', async (t) => {
+test('W2a5b-2: pending-by-space intersects the shared audience with the action reviewers', async (t) => {
   if (unavailable) return t.skip(unavailable);
-  for (const viewer of [ids.peer, ids.guest]) {
+  // The requester is an active member, so it is the one reviewer; assignments naming others open nothing.
+  for (const viewer of [ids.peer, ids.guest, ids.approver, ids.owner, ids.admin]) {
     const rows = await read(viewer, pendingPath);
     assert.equal(rows.some((row) => row.id === actions.pendingDefty), false);
     assert.equal(rows.some((row) => row.id === actions.pendingByoa), false);
   }
-  for (const viewer of [ids.requester, ids.approver, ids.owner, ids.admin]) {
-    const rows = await read(viewer, pendingPath);
-    assert.equal(rows.some((row) => row.id === actions.pendingDefty), true);
-    assert.equal(rows.some((row) => row.id === actions.pendingByoa), true);
-  }
+  const requesterRows = await read(ids.requester, pendingPath);
+  assert.equal(requesterRows.some((row) => row.id === actions.pendingDefty), true);
+  assert.equal(requesterRows.some((row) => row.id === actions.pendingByoa), true);
   assert.equal((await read(ids.guest, pendingPath)).some((row) => row.id === actions.pendingGuest), true);
   assert.equal((await read(ids.guest, pendingPath)).some((row) => row.id === actions.pendingGuestModule), false);
   for (const viewer of [ids.owner, ids.admin]) {
@@ -333,10 +329,10 @@ test('W2a5b-2: pending-by-space intersects the shared audience with assigned rev
 
 test('W2a5b-2: pending-by-space requires current employee source access', async (t) => {
   if (unavailable) return t.skip(unavailable);
-  assert.equal((await read(ids.approver, pendingPath)).some((row) => row.id === actions.pendingByoa), true);
+  assert.equal((await read(ids.requester, pendingPath)).some((row) => row.id === actions.pendingByoa), true);
   await client!.query('DELETE FROM space_members WHERE space_id=$1 AND user_id=$2', [spaceId, employeeUserId]);
   try {
-    const rows = await read(ids.approver, pendingPath);
+    const rows = await read(ids.requester, pendingPath);
     assert.equal(rows.some((row) => row.id === actions.pendingByoa), false);
     assert.equal(JSON.stringify(rows).includes('CANARY-PENDING-BYOA'), false);
     assert.equal(rows.some((row) => row.id === actions.pendingDefty), true);
@@ -347,11 +343,11 @@ test('W2a5b-2: pending-by-space requires current employee source access', async 
 
 test('W2a5b-2: pending-by-space requires the reader space membership', async (t) => {
   if (unavailable) return t.skip(unavailable);
-  await client!.query('DELETE FROM space_members WHERE space_id=$1 AND user_id=$2', [spaceId, ids.approver]);
+  await client!.query('DELETE FROM space_members WHERE space_id=$1 AND user_id=$2', [spaceId, ids.requester]);
   try {
-    assert.deepEqual(await read(ids.approver, pendingPath), []);
+    assert.deepEqual(await read(ids.requester, pendingPath), []);
   } finally {
-    await client!.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), spaceId, ids.approver]);
+    await client!.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), spaceId, ids.requester]);
   }
 });
 
@@ -359,11 +355,11 @@ test('W2a5b-3: approval continuations keep the audience of a source-less parent'
   if (unavailable) return t.skip(unavailable);
   const continuations: string[] = [actions.chainChild, actions.chainGrandchild];
   for (const path of ['/actions', '/actions/recent?limit=50']) {
-    for (const viewer of [ids.requester, ids.approver, ids.owner, ids.admin]) {
+    for (const viewer of [ids.requester, ids.owner, ids.admin]) {
       const rows = await read(viewer, path);
       for (const id of continuations) assert.equal(rows.some((row) => row.id === id), true, `${viewer} ${path} ${id}`);
     }
-    for (const viewer of [ids.peer, ids.guest]) {
+    for (const viewer of [ids.approver, ids.peer, ids.guest]) {
       const rows = await read(viewer, path);
       for (const id of continuations) assert.equal(rows.some((row) => row.id === id), false, `${viewer} ${path} ${id}`);
       for (const canary of ['CANARY-CHAIN-PARENT', 'CANARY-CHAIN-CHILD', 'CANARY-CHAIN-GRANDCHILD']) {
