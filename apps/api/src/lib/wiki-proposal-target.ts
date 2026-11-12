@@ -50,8 +50,8 @@ export const WIKI_PAGE_CHANGED_ERROR =
   'The wiki page changed after this update was proposed, so it was not applied. Review the current page and propose the update again.';
 export const WIKI_PAGE_UNAVAILABLE_ERROR =
   'The wiki page this update was proposed for is no longer available to the requester, so it was not applied.';
-export const WIKI_PAGE_EXISTS_ERROR =
-  'A wiki page with this name was created after this page was proposed, so it was not created. Review that page and propose the change again.';
+export const WIKI_PAGE_NOT_CREATED_ERROR =
+  'This page could not be created as proposed. Ask for the proposal again.';
 export const WIKI_PROPOSAL_UNVERIFIABLE_ERROR =
   'This wiki proposal does not record the page revision it was made against, so it was not applied. Ask for the update again.';
 
@@ -300,8 +300,8 @@ export async function executeWikiWriteAction(input: {
   if (slug !== target.slug) return refused(WIKI_PROPOSAL_UNVERIFIABLE_ERROR);
 
   const page = await db.transaction(async (tx) => {
-    // The slug is unique per workspace, deleted pages included: a page that
-    // took this slug after the proposal leaves nothing inserted here.
+    // The slug is unique per workspace, deleted pages included: when it is
+    // no longer free, nothing is inserted and the proposal is refused.
     const [inserted] = await tx
       .insert(wikiPages)
       .values({
@@ -327,7 +327,7 @@ export async function executeWikiWriteAction(input: {
     });
     return inserted;
   });
-  if (!page) return refused(WIKI_PAGE_EXISTS_ERROR);
+  if (!page) return refused(WIKI_PAGE_NOT_CREATED_ERROR);
 
   await db
     .update(agentActions)

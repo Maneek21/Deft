@@ -28,7 +28,7 @@ let agentUserId: string;
 
 const CHANGED = 'The wiki page changed after this update was proposed, so it was not applied. Review the current page and propose the update again.';
 const UNAVAILABLE = 'The wiki page this update was proposed for is no longer available to the requester, so it was not applied.';
-const EXISTS = 'A wiki page with this name was created after this page was proposed, so it was not created. Review that page and propose the change again.';
+const EXISTS = 'This page could not be created as proposed. Ask for the proposal again.';
 const UNVERIFIABLE = 'This wiki proposal does not record the page revision it was made against, so it was not applied. Ask for the update again.';
 
 before(async () => {
@@ -265,7 +265,7 @@ test('C05-f: plan-created proposals apply when the page is unchanged and are ref
   await assertRefused(stale, CHANGED, page.id, await pageState(page.id));
 });
 
-test('C05-g: a new page is refused when a page took its name after the proposal', { skip: !canRun }, async () => {
+test('C05-g: a new page whose name is no longer free is refused', { skip: !canRun }, async () => {
   const title = `C05 new page ${randomUUID().slice(0, 8)}`;
   const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
   const actionId = await chatProposal({ title, content: 'New page content', type: 'fact', wiki_write_mode: 'create' });
