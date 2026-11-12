@@ -1,4 +1,4 @@
-import webpush from 'web-push';
+import * as webpush from 'web-push';
 import {appIntegrationNotificationDeliveryCurrent} from './app-integration-notification-delivery.js';
 import type {JobData} from '../workers/types.js';
 import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
