@@ -446,34 +446,39 @@ test('retrying a proposal whose pending row has no recorded source creates a rev
   assert.equal((await actionRow(retried.action_id)).message_id, sourceMessageId);
 });
 
-test('an employee-bound plan does not queue document sends or plan imports as plan steps', async () => {
+test('an employee-bound plan stops at document-send and plan-import steps without recovery', async () => {
   const { createPlanRow, executePlan } = await import('../src/lib/agent-plans.js');
-  const { plan_id } = await createPlanRow({
-    org_id: orgId,
-    user_id: bob,
-    agent_employee_id: employeeId,
-    conversation_id: null,
-    title: 'Plan step document',
-    description: null,
-    steps: [{
-      id: 'send',
-      description: 'Send a document',
-      tool: 'document_send',
-      params: { source_message_id: sourceMessageId, filename: 'plan.md', mime_type: 'text/markdown', content: '# Plan' },
-    }],
-  } as any);
-  await withClient((client) => client.query(`UPDATE agent_plans SET status = 'approved' WHERE id = $1`, [plan_id]));
-  await executePlan(plan_id, orgId, bob).catch(() => undefined);
+  for (const tool of ['document_send', 'workspace_plan_import']) {
+    const { plan_id } = await createPlanRow({
+      org_id: orgId,
+      user_id: bob,
+      agent_employee_id: employeeId,
+      conversation_id: null,
+      title: `Plan step ${tool}`,
+      description: null,
+      steps: [{
+        id: 'step',
+        description: `Run ${tool}`,
+        tool,
+        params: { source_message_id: sourceMessageId, message_id: sourceMessageId, filename: 'plan.md', mime_type: 'text/markdown', content: '# Plan' },
+      }],
+    } as any);
+    await withClient((client) => client.query(`UPDATE agent_plans SET status = 'approved' WHERE id = $1`, [plan_id]));
+    const events: Array<{ type: string; data?: any }> = [];
+    await executePlan(plan_id, orgId, bob, (event: any) => { events.push(event); });
+    const pause = events.find((event) => event.type === 'plan:pause');
+    assert.equal(pause?.data?.reason, 'approval_boundary_failed', `${tool}: ${JSON.stringify(events)}`);
+    const plan = await withClient(async (client) => (await client.query(
+      'SELECT status FROM agent_plans WHERE id = $1', [plan_id],
+    )).rows[0]!);
+    assert.equal(plan.status, 'paused');
+    await withClient((client) => client.query('DELETE FROM agent_plans WHERE id = $1', [plan_id]));
+  }
   const queued = await withClient(async (client) => (await client.query(
     `SELECT count(*)::int AS n FROM agent_actions
-      WHERE org_id = $1 AND (source = 'plan' OR (action = 'document_send' AND source <> 'mcp'))`, [orgId],
+      WHERE org_id = $1 AND (source = 'plan' OR (action IN ('document_send', 'workspace_plan_import') AND source <> 'mcp'))`, [orgId],
   )).rows[0]!.n as number);
   assert.equal(queued, 0);
-  const plan = await withClient(async (client) => (await client.query(
-    'SELECT status FROM agent_plans WHERE id = $1', [plan_id],
-  )).rows[0]!);
-  assert.notEqual(plan.status, 'completed');
-  await withClient((client) => client.query('DELETE FROM agent_plans WHERE id = $1', [plan_id]));
 });
 
 test('the claim itself re-checks the reviewer, and outcomes go only to a current reviewer', async () => {
