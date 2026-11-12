@@ -58,19 +58,25 @@ export function mergeMessagesById<T extends HistoryMessage>(
     // Bounds from the nearest rows of this read already in the list.
     let low = 0;
     let high = merged.length;
+    // `shown` holds every id in the list, so only rows that are there are looked up.
     for (let i = index - 1; i >= 0; i--) {
-      const at = merged.findIndex((row) => row.id === fetched[i]!.id);
-      if (at >= 0) { low = at + 1; break; }
+      const id = fetched[i]!.id;
+      if (!shown.has(id)) continue;
+      low = merged.findIndex((row) => row.id === id) + 1;
+      break;
     }
     for (let i = index + 1; i < fetched.length; i++) {
-      const at = merged.findIndex((row) => row.id === fetched[i]!.id);
-      if (at >= 0) { high = at; break; }
+      const id = fetched[i]!.id;
+      if (!shown.has(id)) continue;
+      high = merged.findIndex((row) => row.id === id);
+      break;
     }
     // Anchors that disagree with the list's order give no bound.
     if (low > high) { low = 0; high = merged.length; }
     let at = high;
     while (at > low && follows(merged[at - 1]!)) at--;
     merged.splice(at, 0, message);
+    shown.add(message.id);
   }
   return merged;
 }
