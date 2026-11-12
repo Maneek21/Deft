@@ -286,3 +286,14 @@ test('a stored brief from another workspace for the same meeting is left untouch
   assert.equal((await onlyRun(c, f.orgA, f.person)).status, 'failed');
   assert.deepEqual({ ...(await counts(c, f.orgA, f.person)), runs: 0 }, nothing);
 }));
+
+test('a removal that lands after the brief is stored stops delivery', () => withFixture(async (c, f) => {
+  membershipAnswers.push(true, true, false);
+  const result = await generateMeetingPrep(f.eventA);
+  assert.equal(result.brief, null);
+  assert.equal((await onlyRun(c, f.orgA, f.person)).status, 'failed');
+  const left = await counts(c, f.orgA, f.person);
+  assert.equal(left.briefs, 1, 'the stored brief is kept');
+  assert.deepEqual([left.notifications, left.attention], [0, 0]);
+  assert.equal(emitted.length, 0);
+}));
