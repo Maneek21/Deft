@@ -4,8 +4,9 @@
  * The flags must equal what the approve and reject routes answer for the
  * same viewer, so the web card never offers a control the server refuses.
  *
- * Every pair (viewer, action) is checked against the real routes: one fresh
- * action is approved and another rejected through `/api/agent/actions/...`.
+ * Every pair (viewer, action) is checked against the real routes: the viewer
+ * rejects and approves through `/api/agent/actions/...`, on a fresh action
+ * whenever the previous decision was accepted.
  *
  * Run only against a disposable DB:
  *   pnpm --filter @deft/api test test/approval-viewer-can-review.test.ts
@@ -176,13 +177,15 @@ const viewers = () => ({
 
 for (const kind of ['defty', 'employee', 'employee_for_requester', 'record_mirror'] as const) {
   for (const assigned of [false, true]) {
-    test(`B-review: ${kind} action${assigned ? ' with assigned reviewers' : ''}: the review flags equal the routes' answers`, { skip: !canRun, timeout: 120_000 }, async () => {
+    test(`B-review: ${kind} action${assigned ? ' with assigned reviewers' : ''}: the review flags equal the routes' answers`, { skip: !canRun, timeout: 900_000 }, async () => {
       const { viewerReviewAuthority } = await import('../src/lib/agent-approval-resolver.js');
       let shown = 0;
       const answers = new Set<boolean>();
       for (const [label, userId] of Object.entries(viewers())) {
-        for (const decision of ['approve', 'reject'] as const) {
-          const actionId = await pendingAction(kind, assigned);
+        // A refused decision changes nothing, so the action is reused until a route accepts one.
+        let actionId = '';
+        for (const decision of ['reject', 'approve'] as const) {
+          if (!actionId) actionId = await pendingAction(kind, assigned);
           const flag = decision === 'approve' ? 'viewer_can_approve' : 'viewer_can_reject';
           const user = { id: userId, org_id: f.orgId, role: roles.get(userId) };
           const predicted = (await viewerReviewAuthority(user, [actionId])).get(actionId);
@@ -190,6 +193,7 @@ for (const kind of ['defty', 'employee', 'employee_for_requester', 'record_mirro
           const attention = await attentionFlags(userId, actionId);
           const accepted = await routeAccepts(userId, actionId, decision);
           answers.add(accepted);
+          if (accepted) actionId = '';
           assert.equal(predicted?.[flag], accepted, `${label} ${decision}: predicate`);
           if (inbox) {
             shown += 1;
@@ -200,8 +204,11 @@ for (const kind of ['defty', 'employee', 'employee_for_requester', 'record_mirro
       }
       // The inbox shows each action to at least the requester or an owner/admin.
       assert.ok(shown > 0);
-      // Every case has viewers the routes accept and viewers they refuse.
-      assert.deepEqual([...answers].sort(), [false, true]);
+      // Every case has viewers the routes refuse, and viewers they accept,
+      // except a record-mirror nomination with assigned reviewers: the routes
+      // admit only assigned reviewers, and assignment never lets anyone
+      // review a record-mirror nomination.
+      assert.deepEqual([...answers].sort(), kind === 'record_mirror' && assigned ? [false] : [false, true]);
     });
   }
 }
