@@ -107,13 +107,18 @@ const REVIEWER_REFUSALS = new Set([
   'only the requester or an org owner/admin may reject this action',
 ]);
 
-/** Whether the web route takes this user's decision as a reviewer's. */
+/** Whether the web route takes this user's decision; any other answer fails the test. */
 async function routeAccepts(userId: string, actionId: string, decision: 'approve' | 'reject'): Promise<boolean> {
   const response = await app.request(`/api/agent/actions/${actionId}/${decision}`, {
     method: 'POST', body: '{}', headers: { 'x-test-user': userId, 'content-type': 'application/json' },
   });
+  const text = await response.text();
   if (response.status === 404) return false;
-  if (response.status === 403) return !REVIEWER_REFUSALS.has(((await response.json()) as { error?: string }).error ?? '');
+  if (response.status === 403 && REVIEWER_REFUSALS.has((JSON.parse(text) as { error?: string }).error ?? '')) return false;
+  // Rejection settles the action; approval may stop after authorization on
+  // the fixture's execution preconditions.
+  if (decision === 'reject') assert.equal(response.status, 200, text);
+  else assert.ok(response.status < 500, text);
   return true;
 }
 
@@ -252,6 +257,8 @@ test('the TypeScript and SQL requester rules agree', { skip: !canRun, timeout: 1
     ['null source', { source_user_id: null, origin_user_id: 'u-origin' }],
     ['empty', { source_user_id: '' }], ['blank', { source_user_id: '  ', origin_user_id: 'u-origin' }],
     ['number', { source_user_id: 7, origin_user_id: 'u-origin' }], ['object', { source_user_id: { id: 'u-src' } }],
+    ['tabs', { source_user_id: '\t\n\r\f\v ' }], ['no-break space', { source_user_id: '\u00a0' }],
+    ['byte order mark', { source_user_id: '\ufeff' }],
     ['array params', ['u-src']], ['scalar params', 'u-src'],
   ];
   for (const source of ['defty_capture', 'mcp', null]) {

@@ -657,8 +657,8 @@ export async function filterVisibleAttentionItems<T extends typeof attentionItem
  * assignments count when they name one of the action's reviewers; without
  * one, the reviewers are assigned.
  */
-export async function ensureActionApprovers(action: AgentAction): Promise<string[]> {
-  const reviewers = (await loadActionReviewers([action])).get(action.id) ?? [];
+export async function ensureActionApprovers(action: AgentAction, knownReviewers?: string[]): Promise<string[]> {
+  const reviewers = knownReviewers ?? (await loadActionReviewers([action])).get(action.id) ?? [];
   const explicit = (await db
     .select({
       user_id: agentActionApprovers.user_id,
@@ -719,9 +719,12 @@ export async function recordActionApproverDecision(params: {
   });
 }
 
-export async function syncApprovalToAttention(action: AgentAction, options?: { deliver?: boolean }) {
+export async function syncApprovalToAttention(
+  action: AgentAction,
+  options?: { deliver?: boolean; reviewers?: string[] },
+) {
   if (action.approval_status !== 'pending' || action.approval_tier === 'auto') return [];
-  const userIds = await ensureActionApprovers(action);
+  const userIds = await ensureActionApprovers(action, options?.reviewers);
   return Promise.all(userIds.map((userId) => upsertAttentionItem(approvalToAttentionDraft(action, userId), options)));
 }
 
@@ -753,7 +756,10 @@ export async function ensureAttentionBackfillForUser(params: { orgId: string; us
     ))
     .orderBy(desc(agentActions.created_at))
     .limit(100);
-  for (const action of pendingActions) await syncApprovalToAttention(action, { deliver: false });
+  const reviewers = await loadActionReviewers(pendingActions);
+  for (const action of pendingActions) {
+    await syncApprovalToAttention(action, { deliver: false, reviewers: reviewers.get(action.id) ?? [] });
+  }
 }
 
 export async function transitionAttentionItem(params: {

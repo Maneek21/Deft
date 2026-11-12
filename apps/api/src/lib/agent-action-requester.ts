@@ -20,6 +20,9 @@ import { db } from './db.js';
 /** The only action source whose params name the requester. */
 export const CAPTURE_ACTION_SOURCE = 'defty_capture';
 
+/** A user id counts when it has a character other than ASCII whitespace (same set in SQL below). */
+const HAS_NON_SPACE = /[^ \t\n\v\f\r]/;
+
 export type RequesterActionRow = { user_id: string; source: string | null; params: unknown };
 
 /** The source message author of a capture action, or null for any other action. */
@@ -28,7 +31,7 @@ export function captureSourceUserId(row: RequesterActionRow): string | null {
   if (!row.params || typeof row.params !== 'object' || Array.isArray(row.params)) return null;
   const params = row.params as Record<string, unknown>;
   const claimed = params.source_user_id ?? params.origin_user_id;
-  return typeof claimed === 'string' && claimed.trim() ? claimed : null;
+  return typeof claimed === 'string' && HAS_NON_SPACE.test(claimed) ? claimed : null;
 }
 
 /** The requester of an action: the capture source author, or the action's own user. */
@@ -63,7 +66,7 @@ export function actionRequesterIdSql(alias?: string): SQL<string> {
   return sql<string>`(CASE
     WHEN ${c.source} = ${CAPTURE_ACTION_SOURCE}
       AND jsonb_typeof(${claimed}) = 'string'
-      AND (${claimed} #>> '{}') ~ '[^[:space:]]'
+      AND btrim(${claimed} #>> '{}', ' ' || chr(9) || chr(10) || chr(11) || chr(12) || chr(13)) <> ''
     THEN ${claimed} #>> '{}'
     ELSE ${c.user_id}
   END)`;
