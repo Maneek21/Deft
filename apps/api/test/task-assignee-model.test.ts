@@ -26,15 +26,16 @@ const DATABASE_URL =
 // neither borrows nor leaves behind rows other test files look at.
 const ORG_ID = randomUUID();
 const PROJECT_ID = randomUUID();
+const RUN = randomUUID().slice(0, 8);
 
-const MEMBER_USER_ID = 'test-assignee-model-member';
-const MEMBER_EMAIL = 'assignee-model-member@test.local';
-const PRIMARY_USER_ID = 'test-assignee-model-primary';
-const PRIMARY_EMAIL = 'assignee-model-primary@test.local';
-const EXTRA_USER_ID = 'test-assignee-model-extra';
-const EXTRA_EMAIL = 'assignee-model-extra@test.local';
-const PROMOTE_USER_ID = 'test-assignee-model-promote';
-const PROMOTE_EMAIL = 'assignee-model-promote@test.local';
+const MEMBER_USER_ID = `test-assignee-model-member-${RUN}`;
+const MEMBER_EMAIL = `assignee-model-member-${RUN}@test.local`;
+const PRIMARY_USER_ID = `test-assignee-model-primary-${RUN}`;
+const PRIMARY_EMAIL = `assignee-model-primary-${RUN}@test.local`;
+const EXTRA_USER_ID = `test-assignee-model-extra-${RUN}`;
+const EXTRA_EMAIL = `assignee-model-extra-${RUN}@test.local`;
+const PROMOTE_USER_ID = `test-assignee-model-promote-${RUN}`;
+const PROMOTE_EMAIL = `assignee-model-promote-${RUN}@test.local`;
 
 let testApp: Hono | null = null;
 let projectId: string | null = null;
@@ -112,8 +113,8 @@ async function teardownFixtures() {
       [MEMBER_USER_ID, PRIMARY_USER_ID, EXTRA_USER_ID, PROMOTE_USER_ID],
     );
     await c.query(
-      `DELETE FROM org_members WHERE user_id IN ($1, $2, $3, $4)`,
-      [MEMBER_USER_ID, PRIMARY_USER_ID, EXTRA_USER_ID, PROMOTE_USER_ID],
+      `DELETE FROM org_members WHERE org_id = $5 AND user_id IN ($1, $2, $3, $4)`,
+      [MEMBER_USER_ID, PRIMARY_USER_ID, EXTRA_USER_ID, PROMOTE_USER_ID, ORG_ID],
     );
     await c.query(
       `DELETE FROM users WHERE id IN ($1, $2, $3, $4)`,

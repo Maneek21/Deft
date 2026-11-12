@@ -134,13 +134,14 @@ test('task completion with a label contributes +3 to assignee expertise on that 
     });
 
     assert.ok(row, `expected people_expertise row for (user=${USER_A}, topic=${TOPIC})`);
-    // Expected delta: +3 × 1 (default label_weight). Score should be
-    // at least priorScore + 3. (The wiki-authorship pass and message
-    // pass cannot touch this synthetic topic.)
-    const expectedMin = Number(priorScore) + 3;
-    assert.ok(
-      row.expertise_score >= expectedMin,
-      `expected expertise_score >= ${expectedMin} (prior ${priorScore} + 3), got ${row.expertise_score}`,
+    // Expected delta: +3 × 1 (default label_weight). The org is private to
+    // this file and TOPIC is unique, so the score is exactly prior + 3.
+    // (The wiki-authorship pass and message pass cannot touch this topic.)
+    const expected = Number(priorScore) + 3;
+    assert.equal(
+      Number(row.expertise_score),
+      expected,
+      `expected expertise_score ${expected} (prior ${priorScore} + 3), got ${row.expertise_score}`,
     );
   } finally {
     await withClient(async (c) => {

@@ -21,16 +21,17 @@ const DATABASE_URL =
 // neither borrows nor leaves behind rows other test files look at.
 const ORG_ID = randomUUID();
 const PROJECT_ID = randomUUID();
+const RUN = randomUUID().slice(0, 8);
 const OTHER_ORG_ID = '00000000-0000-0000-0000-000000000bbb';
 
-const MEMBER_USER_ID = 'test-watchers-auth-member';
-const MEMBER_EMAIL = 'watchers-auth-member@test.local';
-const OUTSIDER_USER_ID = 'test-watchers-auth-outsider';
-const OUTSIDER_EMAIL = 'watchers-auth-outsider@test.local';
-const WATCHER_USER_ID = 'test-watchers-auth-watcher';
-const WATCHER_EMAIL = 'watchers-auth-watcher@test.local';
-const ASSIGNEE_USER_ID = 'test-watchers-auth-assignee';
-const ASSIGNEE_EMAIL = 'watchers-auth-assignee@test.local';
+const MEMBER_USER_ID = `test-watchers-auth-member-${RUN}`;
+const MEMBER_EMAIL = `watchers-auth-member-${RUN}@test.local`;
+const OUTSIDER_USER_ID = `test-watchers-auth-outsider-${RUN}`;
+const OUTSIDER_EMAIL = `watchers-auth-outsider-${RUN}@test.local`;
+const WATCHER_USER_ID = `test-watchers-auth-watcher-${RUN}`;
+const WATCHER_EMAIL = `watchers-auth-watcher-${RUN}@test.local`;
+const ASSIGNEE_USER_ID = `test-watchers-auth-assignee-${RUN}`;
+const ASSIGNEE_EMAIL = `watchers-auth-assignee-${RUN}@test.local`;
 
 let testApp: Hono | null = null;
 let projectId: string | null = null;
@@ -129,8 +130,8 @@ async function teardownFixtures() {
     // The project is led by MEMBER_USER_ID, so it goes before the users.
     await c.query(`DELETE FROM projects WHERE id = $1`, [PROJECT_ID]);
     await c.query(
-      `DELETE FROM org_members WHERE user_id IN ($1, $2, $3, $4)`,
-      [MEMBER_USER_ID, OUTSIDER_USER_ID, WATCHER_USER_ID, ASSIGNEE_USER_ID],
+      `DELETE FROM org_members WHERE org_id = $5 AND user_id IN ($1, $2, $3, $4)`,
+      [MEMBER_USER_ID, OUTSIDER_USER_ID, WATCHER_USER_ID, ASSIGNEE_USER_ID, ORG_ID],
     );
     await c.query(
       `DELETE FROM users WHERE id IN ($1, $2, $3, $4)`,
