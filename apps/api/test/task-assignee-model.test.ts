@@ -16,12 +16,16 @@
  */
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { Hono } from 'hono';
 
 const DATABASE_URL =
   process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
-const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';
+// Fresh ids per run: this file owns its org and project outright, so it
+// neither borrows nor leaves behind rows other test files look at.
+const ORG_ID = randomUUID();
+const PROJECT_ID = randomUUID();
 
 const MEMBER_USER_ID = 'test-assignee-model-member';
 const MEMBER_EMAIL = 'assignee-model-member@test.local';
@@ -48,6 +52,10 @@ async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
 
 async function seedFixtures() {
   await withClient(async (c) => {
+    await c.query(
+      `INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)`,
+      [ORG_ID, 'Assignee Model Test Org', `assignee-model-${ORG_ID}`],
+    );
     for (const [id, email, name] of [
       [MEMBER_USER_ID, MEMBER_EMAIL, 'Assignee Member'],
       [PRIMARY_USER_ID, PRIMARY_EMAIL, 'Assignee Primary'],
@@ -70,21 +78,12 @@ async function seedFixtures() {
       );
     }
 
-    const proj = await c.query(
-      `SELECT id FROM projects WHERE org_id = $1 ORDER BY created_at ASC LIMIT 1`,
-      [ORG_ID],
+    await c.query(
+      `INSERT INTO projects (id, org_id, name, prefix, lead_id, task_counter)
+       VALUES ($1, $2, 'Assignee Model Test Project', 'AMT', $3, 0)`,
+      [PROJECT_ID, ORG_ID, MEMBER_USER_ID],
     );
-    if (proj.rows.length > 0) {
-      projectId = proj.rows[0].id as string;
-    } else {
-      const r = await c.query(
-        `INSERT INTO projects (id, org_id, name, prefix, lead_id, task_counter)
-         VALUES (gen_random_uuid()::text, $1, 'Assignee Model Test Project', 'AMT', $2, 0)
-         RETURNING id`,
-        [ORG_ID, MEMBER_USER_ID],
-      );
-      projectId = r.rows[0].id as string;
-    }
+    projectId = PROJECT_ID;
 
     const t = await c.query(
       `INSERT INTO tasks
@@ -106,6 +105,8 @@ async function teardownFixtures() {
       await c.query(`DELETE FROM task_activity WHERE task_id = $1`, [taskId]);
       await c.query(`DELETE FROM tasks WHERE id = $1`, [taskId]);
     }
+    // The project is led by MEMBER_USER_ID, so it goes before the users.
+    await c.query(`DELETE FROM projects WHERE id = $1`, [PROJECT_ID]);
     await c.query(
       `DELETE FROM notifications WHERE user_id IN ($1, $2, $3, $4)`,
       [MEMBER_USER_ID, PRIMARY_USER_ID, EXTRA_USER_ID, PROMOTE_USER_ID],
@@ -118,6 +119,7 @@ async function teardownFixtures() {
       `DELETE FROM users WHERE id IN ($1, $2, $3, $4)`,
       [MEMBER_USER_ID, PRIMARY_USER_ID, EXTRA_USER_ID, PROMOTE_USER_ID],
     );
+    await c.query(`DELETE FROM orgs WHERE id = $1`, [ORG_ID]);
   });
 }
 
