@@ -312,6 +312,12 @@ export async function runAgentQuery(params: {
   maxIterations?: number;
   /** Conversation provenance for native Module reads. */
   conversationId?: string;
+  /**
+   * Trusted caller setting. 'none': the model is offered no tools, no tool
+   * discovery or workspace retrieval runs, and a returned tool call fails the
+   * run before any dispatch. Defaults to 'default'.
+   */
+  toolPolicy?: 'default' | 'none';
 }): Promise<{
   text: string;
   citations: any[];
@@ -341,11 +347,13 @@ export async function runAgentQuery(params: {
     throw new Error(`${reasonProvider.provider} API key not configured (org or env)`);
   }
 
+  const noTools = params.toolPolicy === 'none';
+
   // Build dynamic tool list (read-only tools only — no write actions in chat mentions)
-  let tools: Anthropic.Tool[] = [...AGENT_TOOLS, ...CALENDAR_READ_TOOLS];
+  let tools: Anthropic.Tool[] = noTools ? [] : [...AGENT_TOOLS, ...CALENDAR_READ_TOOLS];
   if (!nativeMentionsEnabled()) tools = tools.filter(tool => tool.name !== 'native_mentions_search');
   const {installedToolSchemas}=await import('./app-installed-tool-discovery.js');
-  const installedSchemas=await installedToolSchemas({kind:'defty',org_id:orgId,user_id:userId,conversation_id:params.conversationId,employee_id:agentEmployeeId},tools.map(tool=>tool.name)).catch(()=>[]);
+  const installedSchemas: Awaited<ReturnType<typeof installedToolSchemas>>=noTools?[]:await installedToolSchemas({kind:'defty',org_id:orgId,user_id:userId,conversation_id:params.conversationId,employee_id:agentEmployeeId},tools.map(tool=>tool.name)).catch(()=>[]);
   const installedWrites=new Set(installedSchemas.filter(tool=>!tool.annotations.readOnlyHint).map(tool=>tool.name));
   tools=[...tools,...installedSchemas.map(tool=>({name:tool.name,description:tool.description,input_schema:tool.inputSchema as Anthropic.Tool['input_schema']}))];
   const readOnlyRequest = isReadOnlyAgentRequest(content);
@@ -366,7 +374,7 @@ export async function runAgentQuery(params: {
   // Outbound MCP connectors are employee capabilities. A generic Defty chat
   // mention has no employee assignment/trust identity to bind an eventual
   // approval to, so it must not advertise org-wide connectors.
-  if (agentEmployeeId) try {
+  if (agentEmployeeId && !noTools) try {
     const mcpTools = await getMCPToolsForAgent(orgId, agentEmployeeId);
     const mcpAnthropicTools = mcpTools.map(mcpToolToAnthropicFormat);
     tools = [...tools, ...mcpAnthropicTools];
@@ -419,7 +427,8 @@ export async function runAgentQuery(params: {
   const retrievalStartedAt = Date.now();
   try {
     const searchQuery = content.replace(/[^a-zA-Z0-9\s]/g, '').trim();
-    if (searchQuery.length > 2) {
+    // A no-tools run reasons over the caller's prepared evidence only.
+    if (!noTools && searchQuery.length > 2) {
       const terms = searchQuery
         .toLowerCase()
         .split(/\s+/)
@@ -542,7 +551,7 @@ export async function runAgentQuery(params: {
     conversationId: params.conversationId,
     agentEmployeeId,
     untrustedContextSections,
-    prefetchModuleDiscovery: !systemPromptOverride,
+    prefetchModuleDiscovery: !systemPromptOverride && !noTools,
   });
 
   let allCitations: any[] = [];
@@ -646,6 +655,10 @@ export async function runAgentQuery(params: {
     const toolUseBlocks = response.content.filter(
       (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',
     );
+    // No path below may dispatch a call from a run that was offered no tools.
+    if (noTools && toolUseBlocks.length > 0) {
+      throw new Error('The model returned a tool call in a run that permits no tools');
+    }
     const textBlocks = response.content.filter(
       (b): b is Anthropic.TextBlock => b.type === 'text',
     );
