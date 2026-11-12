@@ -3,6 +3,7 @@ import { reviewableActionSql } from '../lib/agent-action-review-gate.js';
 import type { AppRunTransaction } from '../lib/app-run-repository.js';
 import { reconcileApprovalReplyText } from '../lib/agent-approval-copy.js';
 import { emitMessageToSpaceViewers, projectMessagesForViewer } from '../lib/agent-message-run-details.js';
+import { actionReviewAssignmentSql } from '../lib/agent-action-requester.js';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { AppRunError } from '../lib/app-run-errors.js';
@@ -927,44 +928,9 @@ agentRoutes.get('/actions/pending-by-space', async (c) => {
         'module_record_task_link',
         'module_record_task_unlink'
       ))
-      AND (
-        EXISTS (
-          SELECT 1 FROM agent_action_approvers action_approver
-          WHERE action_approver.action_id = a.id
-            AND action_approver.org_id = ${user.org_id}
-            AND action_approver.user_id = ${user.id}
-        )
-        OR (
-          NOT EXISTS (
-            SELECT 1 FROM agent_action_approvers existing_approver
-            WHERE existing_approver.action_id = a.id
-          )
-          AND (
-            COALESCE(
-              a.params->>'source_user_id',
-              a.params->>'origin_user_id',
-              a.user_id
-            ) = ${user.id}
-            OR (
-              ${user.role === 'owner' || user.role === 'admin'}
-              AND NOT EXISTS (
-                SELECT 1
-                FROM users requester
-                INNER JOIN org_members requester_membership
-                  ON requester_membership.user_id = requester.id
-                  AND requester_membership.org_id = a.org_id
-                  AND requester_membership.is_active = true
-                WHERE requester.id = COALESCE(
-                  a.params->>'source_user_id',
-                  a.params->>'origin_user_id',
-                  a.user_id
-                )
-                  AND requester.is_agent = false
-                  AND requester.kind = 'human'
-              )
-            )
-          )
-        )
+      AND EXISTS (
+        SELECT 1 FROM agent_actions WHERE agent_actions.id = a.id
+          AND ${actionReviewAssignmentSql(user.id)}
       )
     ORDER BY a.created_at DESC
     LIMIT 100

@@ -124,6 +124,7 @@ test('B-c: a member who is not assigned is still refused', { skip: !canRun }, as
 test('B-d: an assigned guest is refused', { skip: !canRun }, async () => {
   const actionId = await employeeProposal();
   await assign(actionId, guestId);
+  // A guest is outside the audience of a proposal it did not request, so the route does not find it.
   const approve = await f.as(guestId, `/api/agent/actions/${actionId}/approve`, { method: 'POST' });
   assert.equal(approve.status, 404, await approve.clone().text());
   const reject = await f.as(guestId, `/api/agent/actions/${actionId}/reject`, { method: 'POST' });

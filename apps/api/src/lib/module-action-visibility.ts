@@ -1,12 +1,16 @@
-import { inArray, notInArray, sql, type SQL } from 'drizzle-orm';
+import { inArray, notInArray, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { agentActionApprovers, agentActions, attentionItems } from '@deft/db/schema';
 import { currentAgentActionSourceAuthoritySql } from './agent-channel-authority.js';
+import { actionRequesterIdSql, actionReviewerSql } from './agent-action-requester.js';
 import { DEFTY_SYSTEM_EMPLOYEE_SLUG, DEFTY_SYSTEM_RUNTIME_KIND } from './defty-identity.js';
 
 /** The internal Defty action envelope has a different, established source contract. */
-export function canonicalDeftyActionSql(): SQL {
+export function canonicalDeftyActionSql(
+  employeeId: SQLWrapper = agentActions.agent_employee_id,
+  orgId: SQLWrapper = agentActions.org_id,
+): SQL {
   return sql`exists (select 1 from agent_employees internal_employee
-    where internal_employee.id = ${agentActions.agent_employee_id} and internal_employee.org_id = ${agentActions.org_id}
+    where internal_employee.id = ${employeeId} and internal_employee.org_id = ${orgId}
       and internal_employee.runtime_kind = ${DEFTY_SYSTEM_RUNTIME_KIND} and internal_employee.slug = ${DEFTY_SYSTEM_EMPLOYEE_SLUG}
       and internal_employee.is_byoa = false and internal_employee.is_active = true)`;
 }
@@ -85,7 +89,8 @@ export function visibleModuleActionSql(
  * content from private spaces, notes and wiki pages, so for every reader of
  * this predicate (action history, recent, pending, dashboard feeds, inbox,
  * MCP approval reads) the row is visible only to its requester, an assigned
- * approver, and org owners/admins; a guest only ever sees rows it requested.
+ * approver who is a reviewer of it (lib/agent-action-requester.ts), and org
+ * owners/admins; a guest only ever sees rows it requested.
  * Every other member and guest does not receive the row. BYOA employee actions keep their source-audience rule.
  */
 function privateDeftyActionAudienceSql(
@@ -106,34 +111,29 @@ function privateDeftyActionAudienceSql(
 
 function requesterSql(options?: { userId?: string }): SQL {
   return options?.userId
-    ? sql`(
-        ${agentActions.user_id} = ${options.userId}
-        OR COALESCE(
-          ${agentActions.params}->>'source_user_id',
-          ${agentActions.params}->>'origin_user_id'
-        ) = ${options.userId}
-      )`
+    ? sql`(${actionRequesterIdSql()} = ${options.userId})`
     : sql`false`;
 }
 
+/** The requester, or a user whose approver assignment names a reviewer of the action. */
 function requesterOrReviewerSql(
   options?: { userId?: string; orgId?: string; agentEmployeeId?: string },
 ): SQL {
   return options?.userId
     ? sql`(
-        ${agentActions.user_id} = ${options.userId}
-        OR COALESCE(
-          ${agentActions.params}->>'source_user_id',
-          ${agentActions.params}->>'origin_user_id'
-        ) = ${options.userId}
-        OR EXISTS (
-          SELECT 1
-          FROM ${agentActionApprovers}
-          WHERE ${agentActionApprovers.action_id} = ${agentActions.id}
-            ${options.orgId
-              ? sql`AND ${agentActionApprovers.org_id} = ${options.orgId}`
-              : sql``}
-            AND ${agentActionApprovers.user_id} = ${options.userId}
+        ${actionRequesterIdSql()} = ${options.userId}
+        OR (
+          EXISTS (
+            SELECT 1
+            FROM ${agentActionApprovers}
+            WHERE ${agentActionApprovers.action_id} = ${agentActions.id}
+              AND ${agentActionApprovers.org_id} = ${agentActions.org_id}
+              ${options.orgId
+                ? sql`AND ${agentActionApprovers.org_id} = ${options.orgId}`
+                : sql``}
+              AND ${agentActionApprovers.user_id} = ${options.userId}
+          )
+          AND ${actionReviewerSql(sql`${options.userId}`)}
         )
       )`
     : options?.agentEmployeeId

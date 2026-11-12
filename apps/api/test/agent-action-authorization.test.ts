@@ -242,7 +242,7 @@ test('R2-U: undo honours params requester ids only on server-stamped capture act
 
 // ─── C02 / E01 ───────────────────────────────────────────────────────────────
 
-test('C02/E01: private Defty action payloads reach only requester, assigned approver and owner/admin', { skip: !canRun }, async () => {
+test('C02/E01: private Defty action payloads reach only requester, a reviewing approver and owner/admin', { skip: !canRun }, async () => {
   const marker = `c02-secret-${suffix}`;
   const executed = await insertAction({
     userId: requesterId,
@@ -297,7 +297,7 @@ test('C02/E01: private Defty action payloads reach only requester, assigned appr
   const approverPending = await (await as(otherMemberId, '/api/agent/actions/pending')).text();
   assert.equal(approverPending.includes(pending), false, 'an assignment of a non-reviewer does not open the pending review');
   const approverHistory = await (await as(otherMemberId, '/api/agent/actions')).text();
-  assert.ok(approverHistory.includes(pending), 'assigned approver sees the action in history');
+  assert.equal(approverHistory.includes(pending), false, 'an assignment of a non-reviewer does not open the action history');
   assert.equal(approverHistory.includes(executed), false, 'approval on one action does not open another');
 });
 

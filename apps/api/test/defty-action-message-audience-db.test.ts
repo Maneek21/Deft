@@ -167,9 +167,9 @@ test('W2a3-1: the requester keeps every run detail except pending-action params,
   assert.deepEqual(canaries(await request(ids.requester, listPath)), ['CANARY-A-GRAPH', 'CANARY-A-TOOL-ARG', 'CANARY-DRAFT', 'CANARY-RESULT']);
 });
 
-test('W2a3-1: an assigned approver sees the details of the reply that anchors the action', async (t) => {
+test('W2a3-1: an assigned member who is not a reviewer of the action does not see the details of the reply that anchors it', async (t) => {
   if (unavailable) return t.skip(unavailable);
-  assert.deepEqual(canaries(await request(ids.approver, listPath)), ['CANARY-A-GRAPH', 'CANARY-A-TOOL-ARG']);
+  assert.deepEqual(canaries(await request(ids.approver, listPath)), []);
 });
 
 test('W2a3-1: owners and admins see every run detail, including replies with no known requester', async (t) => {
@@ -478,8 +478,9 @@ test('W2a3-R4-A: approval result rows follow the audience of their action, not t
   await insert(ids.guestApprover, { kind: 'tool_result', hidden: true, approval_rejection_result_for_action_id: resultAction, agent_blocks: [{ type: 'tool_result', tool_use_id: 'toolu_r', content: 'CANARY-REJECTED' }] });
   const all = ['CANARY-BYADMIN', 'CANARY-BYGUEST', 'CANARY-REJECTED'];
   const path = `/api/messages/${room}`;
-  for (const viewer of [ids.requester, ids.admin, ids.approver]) assert.deepEqual(canaries(await request(viewer, path)), all, `${roles[viewer]} ${viewer === ids.approver ? 'approver' : ''}`);
-  for (const viewer of [ids.peer, ids.guestApprover, ids.guestRequester]) assert.deepEqual(canaries(await request(viewer, path)), [], viewer);
+  for (const viewer of [ids.requester, ids.admin]) assert.deepEqual(canaries(await request(viewer, path)), all, roles[viewer]);
+  // An assigned member who is not a reviewer of the action reads none of its results.
+  for (const viewer of [ids.approver, ids.peer, ids.guestApprover, ids.guestRequester]) assert.deepEqual(canaries(await request(viewer, path)), [], viewer);
   // The same rule on the live socket path.
   const guest = await realtime.open(ids.guestApprover, room);
   const requester = await realtime.open(ids.requester, room);

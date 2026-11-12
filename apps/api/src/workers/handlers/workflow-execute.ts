@@ -56,7 +56,7 @@ export async function handleWorkflowExecute(job: JobData): Promise<void> {
     actions = [{ kind: rule.action_type as any, ...(cfg as any) }];
   }
 
-  const results: Array<{ kind: string; ok: boolean; error?: string }> = [];
+  const results: Array<{ kind: string; ok: boolean; error?: string; code?: string }> = [];
 
   for (const action of actions) {
     try {
@@ -166,7 +166,8 @@ export async function handleWorkflowExecute(job: JobData): Promise<void> {
           results.push({ kind: (action as any).kind, ok: false, error: 'unknown action kind' });
       }
     } catch (err) {
-      results.push({ kind: (action as any).kind, ok: false, error: (err as Error).message });
+      const message = err instanceof Error ? err.message : String(err);
+      results.push({ kind: action.kind, ok: false, error: message.slice(0, 300), code: 'WORKFLOW_ACTION_FAILED' });
     }
   }
 
