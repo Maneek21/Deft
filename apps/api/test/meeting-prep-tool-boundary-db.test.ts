@@ -201,7 +201,10 @@ for (const [label, firstResponse] of toolCallResponses) {
       assert.equal(notes.length, 1, 'one notification');
       assert.equal(notes[0].user_id, f.recipient, 'the brief is delivered to the recipient only');
       assert.ok(!String(notes[0].body).includes(f.marker));
-      assert.ok(emitted.length > 0, 'the brief is pushed in real time');
+      const briefPush = emitted.find((push) => push.event === 'meeting-brief:new');
+      assert.ok(briefPush, 'the brief is pushed in real time');
+      assert.equal(JSON.parse(briefPush.data).event_id, f.event);
+      assert.equal(JSON.parse(briefPush.data).brief_text, brief.brief_text);
       for (const push of emitted) {
         assert.deepEqual([push.orgId, push.userId], [f.org, f.recipient], 'real-time pushes go to the recipient only');
         assert.ok(!push.data.includes(f.marker));
