@@ -50,6 +50,7 @@ import {
 } from './workspace-plan-import.js';
 import { DOCUMENT_SEND_ACTION, sanitizeDocumentSendParams } from './document-send.js';
 import { markWorkIntentConvertedForAction, markWorkIntentFailedForAction } from './work-intents.js';
+import { isTerminalRefusalResult } from './wiki-proposal-target.js';
 import { MODULE_OPERATION_DEFINITIONS, MODULE_OPERATION_NAMES } from '@deft/shared/modules';
 
 export type AgentActionRow = typeof agentActions.$inferSelect;
@@ -399,7 +400,9 @@ export async function executeClaimedApproval(
   }
 
   const error = execResult.error ?? 'Action failed';
-  if (isModuleTaskLinkWriteAction(row.action) || isModuleWriteActionName(row.action)) {
+  if (isModuleTaskLinkWriteAction(row.action) || isModuleWriteActionName(row.action)
+    // A refusal such as a wiki page that changed since the proposal is final.
+    || isTerminalRefusalResult(execResult.result)) {
     // Idempotency keys are single-use terminal claims. A failed approved edge
     // mutation is never reopened after the executor scrubbed its raw key.
     const [written] = await db

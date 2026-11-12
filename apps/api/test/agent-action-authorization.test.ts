@@ -20,6 +20,7 @@ import pg from 'pg';
 
 import { closeDb } from '../src/lib/db.js';
 import { executeAction } from '../src/lib/agent-actions.js';
+import { wikiProposalTargetValues } from '../src/lib/wiki-proposal-target.js';
 import { createPlanRow } from '../src/lib/agent-plans.js';
 import { persistAgentReplyWithActions } from '../src/lib/agent-action-proposals.js';
 import { agentRoutes } from '../src/routes/agent.js';
@@ -336,7 +337,11 @@ test('C03: wiki_write cannot update a space wiki page the acting user cannot see
   const page = await client.query('SELECT content FROM wiki_pages WHERE slug = $1 AND org_id = $2', [slug, orgId]);
   assert.equal(page.rows[0]?.content, 'original');
 
-  const own = await executeAction(actionId, 'wiki_write', params, orgId, requesterId);
+  // The requester's own proposal records the page revision it was made against.
+  const ownActionId = await insertAction({ userId: requesterId, action: 'wiki_write', params, status: 'pending', executed: false });
+  const frozen = await wikiProposalTargetValues('wiki_write', params, orgId, requesterId);
+  await client.query('UPDATE agent_actions SET before_state = $2::jsonb WHERE id = $1', [ownActionId, JSON.stringify(frozen.before_state)]);
+  const own = await executeAction(ownActionId, 'wiki_write', params, orgId, requesterId);
   assert.equal(own.success, true, own.error);
 });
 

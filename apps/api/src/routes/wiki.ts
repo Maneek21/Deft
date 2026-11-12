@@ -6,6 +6,7 @@ import { wikiPages, wikiLinks, wikiCitations, wikiOpsLog, wikiPageVersions, spac
 import { ne } from 'drizzle-orm';
 import { requireSpaceMembership } from '../lib/space-membership.js';
 import { visibleWikiPageCondition, wikiPageRelevantToSpaceCondition } from '../lib/wiki-visibility.js';
+import { lockWikiPageForLinkWrite } from '../lib/wiki-page-link-lock.js';
 import { retrieveContext } from '../lib/retrieve-context.js';
 import { llm } from '../lib/llm.js';
 import { getOrgAIConfig, hasUsableReasonProvider } from '../lib/org-ai-config.js';
@@ -927,13 +928,16 @@ wikiRoutes.post('/', async (c) => {
           inArray(wikiPages.slug, related_slugs),
         ));
 
-      for (const related of relatedPages) {
-        await db.insert(wikiLinks).values({
-          org_id: user.org_id,
-          source_page_id: page!.id,
-          target_page_id: related.id,
-        }).onConflictDoNothing();
-      }
+      await db.transaction(async (tx) => {
+        await lockWikiPageForLinkWrite(tx, user.org_id, page!.id);
+        for (const related of relatedPages) {
+          await tx.insert(wikiLinks).values({
+            org_id: user.org_id,
+            source_page_id: page!.id,
+            target_page_id: related.id,
+          }).onConflictDoNothing();
+        }
+      });
     }
 
     // Log operation
@@ -1013,33 +1017,39 @@ wikiRoutes.patch('/:slug', async (c) => {
       return c.json({ error: 'No fields to update', code: 'EMPTY_UPDATE' }, 400);
     }
 
-    if (Object.keys(updates).length > 0) {
-      await db.update(wikiPages).set(updates).where(eq(wikiPages.id, existing.id));
-    }
+    const relatedSlugs = parsed.data.related_slugs;
+    await db.transaction(async (tx) => {
+      // The page row lock covers the field update and the link replacement.
+      if (relatedSlugs) await lockWikiPageForLinkWrite(tx, user.org_id, existing.id);
 
-    // Update links if provided
-    if (parsed.data.related_slugs) {
-      // Remove old outbound links
-      await db.delete(wikiLinks).where(eq(wikiLinks.source_page_id, existing.id));
-
-      // Add new links
-      const relatedPages = await db.select({ id: wikiPages.id })
-        .from(wikiPages)
-        .where(and(
-          eq(wikiPages.org_id, user.org_id),
-          eq(wikiPages.is_deleted, false),
-          visibleWikiPageCondition(user.id),
-          inArray(wikiPages.slug, parsed.data.related_slugs),
-        ));
-
-      for (const related of relatedPages) {
-        await db.insert(wikiLinks).values({
-          org_id: user.org_id,
-          source_page_id: existing.id,
-          target_page_id: related.id,
-        }).onConflictDoNothing();
+      if (Object.keys(updates).length > 0) {
+        await tx.update(wikiPages).set(updates).where(eq(wikiPages.id, existing.id));
       }
-    }
+
+      // Update links if provided
+      if (relatedSlugs) {
+        // Remove old outbound links
+        await tx.delete(wikiLinks).where(eq(wikiLinks.source_page_id, existing.id));
+
+        // Add new links
+        const relatedPages = await tx.select({ id: wikiPages.id })
+          .from(wikiPages)
+          .where(and(
+            eq(wikiPages.org_id, user.org_id),
+            eq(wikiPages.is_deleted, false),
+            visibleWikiPageCondition(user.id),
+            inArray(wikiPages.slug, relatedSlugs),
+          ));
+
+        for (const related of relatedPages) {
+          await tx.insert(wikiLinks).values({
+            org_id: user.org_id,
+            source_page_id: existing.id,
+            target_page_id: related.id,
+          }).onConflictDoNothing();
+        }
+      }
+    });
 
     // Log operation
     await db.insert(wikiOpsLog).values({

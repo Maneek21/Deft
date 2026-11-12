@@ -12,6 +12,7 @@ import {
   agentEmployees,
 } from '@deft/db/schema';
 import { visibleModuleActionSql } from '../lib/module-action-visibility.js';
+import { viewerReviewAuthority } from '../lib/agent-approval-resolver.js';
 
 export const inboxRoutes = new Hono();
 
@@ -46,6 +47,12 @@ export type InboxItem = {
     employee_slug: string | null;
     employee_avatar: string | null;
     proposer: 'employee' | 'defty';
+    /**
+     * Whether this viewer may approve or reject it, as the approve and reject
+     * routes answer. Absent when only the action's own path can tell.
+     */
+    viewer_can_approve?: boolean;
+    viewer_can_reject?: boolean;
   };
   dm?: { space_id: string; unread_count: number; last_message_preview: string | null };
 };
@@ -321,8 +328,12 @@ inboxRoutes.get('/', async (c) => {
       ))
       .orderBy(desc(agentActions.created_at));
 
+    const reviewAuthority = countOnly
+      ? new Map<string, never>()
+      : await viewerReviewAuthority(user, approvalRows.map((r) => r.id));
     const approvalItems: InboxItem[] = approvalRows.map((r) => {
       const isCapture = r.action_source === 'defty_capture';
+      const authority = reviewAuthority.get(r.id);
       return {
         id: `approval:${r.id}`,
         kind: isCapture ? 'work_capture' : 'pending_approval',
@@ -344,6 +355,8 @@ inboxRoutes.get('/', async (c) => {
           employee_slug: r.employee_slug,
           employee_avatar: r.employee_avatar,
           proposer: isCapture || !r.agent_employee_id ? 'defty' : 'employee',
+          // Absent when only the action's own path can tell (App Run releases).
+          ...authority,
         },
       };
     });

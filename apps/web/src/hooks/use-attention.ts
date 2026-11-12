@@ -32,6 +32,9 @@ export type AttentionApproval = {
   employee_name: string | null;
   employee_slug: string | null;
   employee_avatar: string | null;
+  /** Absent from servers that predate it: the card then keeps its controls. */
+  viewer_can_approve?: boolean;
+  viewer_can_reject?: boolean;
 };
 
 export type AttentionItem = {

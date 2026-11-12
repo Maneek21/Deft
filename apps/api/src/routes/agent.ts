@@ -1,4 +1,5 @@
 import {canUndoAgentAction, visibleCaptureActionSql} from '../lib/agent-action-visibility.js';
+import { reviewableActionSql } from '../lib/agent-action-review-gate.js';
 import type { AppRunTransaction } from '../lib/app-run-repository.js';
 import { reconcileApprovalReplyText } from '../lib/agent-approval-copy.js';
 import { emitMessageToSpaceViewers, projectMessagesForViewer } from '../lib/agent-message-run-details.js';
@@ -303,53 +304,6 @@ function visibleActionSql(user: { id: string; org_id: string; role?: string }) {
   return and(
     visibleCaptureActionSql(user),
     visibleModuleActionSql(user.role, { userId: user.id, orgId: user.org_id }),
-  );
-}
-
-function reviewableActionSql(user: { id: string; org_id: string; role?: string }) {
-  const canReviewOrgActions = user.role === 'owner' || user.role === 'admin';
-  return and(
-    visibleCaptureActionSql(user),
-    visibleModuleActionSql(user.role, { userId: user.id, orgId: user.org_id }),
-    sql`(
-      EXISTS (
-        SELECT 1 FROM ${agentActionApprovers}
-        WHERE ${agentActionApprovers.action_id} = ${agentActions.id}
-          AND ${agentActionApprovers.org_id} = ${user.org_id}
-          AND ${agentActionApprovers.user_id} = ${user.id}
-      )
-      OR (
-        NOT EXISTS (
-          SELECT 1 FROM ${agentActionApprovers}
-          WHERE ${agentActionApprovers.action_id} = ${agentActions.id}
-        )
-        AND (
-          COALESCE(
-            ${agentActions.params}->>'source_user_id',
-            ${agentActions.params}->>'origin_user_id',
-            ${agentActions.user_id}
-          ) = ${user.id}
-          OR (
-            ${canReviewOrgActions}
-            AND NOT EXISTS (
-              SELECT 1
-              FROM ${users}
-              INNER JOIN org_members review_om
-                ON review_om.user_id = ${users.id}
-                AND review_om.org_id = ${agentActions.org_id}
-                AND review_om.is_active = true
-              WHERE ${users.id} = COALESCE(
-                ${agentActions.params}->>'source_user_id',
-                ${agentActions.params}->>'origin_user_id',
-                ${agentActions.user_id}
-              )
-                AND ${users.is_agent} = false
-                AND ${users.kind} = 'human'
-            )
-          )
-        )
-      )
-    )`,
   );
 }
 
