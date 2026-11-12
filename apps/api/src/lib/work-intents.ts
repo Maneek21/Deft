@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { workIntents } from '@deft/db/schema';
 import { db } from './db.js';
 
@@ -8,6 +8,25 @@ function getWorkIntentIdFromParams(params: unknown): string | null {
   if (!params || typeof params !== 'object') return null;
   const value = (params as Record<string, unknown>).work_intent_id;
   return typeof value === 'string' && value.trim() ? value : null;
+}
+
+/**
+ * An action changes a WorkIntent only when it is that intent's own capture
+ * action: the row exists in the same org, carries the server-written
+ * `defty_capture` source, and its stored params name this intent. Some action
+ * kinds scrub their params in the same transaction that closes the intent; for
+ * those the caller-supplied (pre-scrub) intent id, already part of the WHERE,
+ * is the only binding left.
+ */
+function isCaptureActionForIntent(actionId: string, orgId: string): SQL {
+  return sql`EXISTS (
+    SELECT 1
+    FROM agent_actions capture_action
+    WHERE capture_action.id = ${actionId}
+      AND capture_action.org_id = ${orgId}
+      AND capture_action.source = 'defty_capture'
+      AND COALESCE(capture_action.params->>'work_intent_id', ${workIntents.id}) = ${workIntents.id}
+  )`;
 }
 
 function getTaskIdFromResult(result: unknown): string | null {
@@ -58,6 +77,7 @@ export async function markWorkIntentConvertedForAction(params: {
     .where(and(
       eq(workIntents.id, workIntentId),
       eq(workIntents.org_id, params.orgId),
+      isCaptureActionForIntent(params.actionId, params.orgId),
     ));
 }
 
@@ -83,6 +103,7 @@ export async function markWorkIntentDismissedForAction(params: {
     .where(and(
       eq(workIntents.id, workIntentId),
       eq(workIntents.org_id, params.orgId),
+      isCaptureActionForIntent(params.actionId, params.orgId),
     ));
 }
 
@@ -105,6 +126,7 @@ export async function markWorkIntentFailedForAction(params: {
     .where(and(
       eq(workIntents.id, workIntentId),
       eq(workIntents.org_id, params.orgId),
+      isCaptureActionForIntent(params.actionId, params.orgId),
     ));
 }
 
@@ -113,29 +135,33 @@ export async function markWorkIntentsExpiredForActions(params: {
   actions: Array<{ id?: string | null; params: unknown }>;
   reason?: string | null;
 }, executor: WorkIntentExecutor = db): Promise<number> {
-  const actionByIntentId = new Map<string, string | null>();
+  // Every (intent, action) candidate is checked on its own, before any
+  // collapsing by intent, so only an intent's own capture action expires it.
+  const candidates = new Map<string, { workIntentId: string; actionId: string }>();
   for (const action of params.actions) {
     const workIntentId = getWorkIntentIdFromParams(action.params);
-    if (workIntentId) actionByIntentId.set(workIntentId, action.id ?? null);
+    const actionId = typeof action.id === 'string' && action.id ? action.id : null;
+    if (!workIntentId || !actionId) continue;
+    candidates.set(JSON.stringify([workIntentId, actionId]), { workIntentId, actionId });
   }
-  const workIntentIds = [...actionByIntentId.keys()];
 
-  if (workIntentIds.length === 0) return 0;
+  if (candidates.size === 0) return 0;
 
   const reason = params.reason?.slice(0, 2000) ?? 'Approval expired';
   let count = 0;
-  for (const workIntentId of workIntentIds) {
+  for (const { workIntentId, actionId } of candidates.values()) {
     const updated = await executor
       .update(workIntents)
       .set({
         status: 'expired',
-        converted_action_id: actionByIntentId.get(workIntentId) ?? null,
+        converted_action_id: actionId,
         failure_reason: reason,
       })
       .where(and(
         eq(workIntents.org_id, params.orgId),
         eq(workIntents.status, 'proposed'),
         eq(workIntents.id, workIntentId),
+        isCaptureActionForIntent(actionId, params.orgId),
       ))
       .returning({ id: workIntents.id });
     count += updated.length;
