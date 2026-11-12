@@ -18,6 +18,11 @@ function timeOf(message: { created_at: string }): number {
  * server orders by its stored, finer timestamp, which the client cannot see.
  * With `{ earlier: true }` (a page from before everything shown) a missed
  * message goes before shown messages with the same timestamp.
+ *
+ * Rows of the same read that are already in the list anchor a missed
+ * message: it goes after the nearest earlier one and before the nearest
+ * later one, even when rows that are not in the read (live or optimistic
+ * ones) sit next to them. The timestamp rule applies within those bounds.
  */
 export function mergeMessagesById<T extends HistoryMessage>(
   current: readonly T[],
@@ -50,8 +55,21 @@ export function mergeMessagesById<T extends HistoryMessage>(
       const rowIndex = readIndex.get(row.id);
       return rowIndex !== undefined ? rowIndex > index : options.earlier === true;
     };
-    let at = merged.length;
-    while (at > 0 && follows(merged[at - 1]!)) at--;
+    // Bounds from the nearest rows of this read already in the list.
+    let low = 0;
+    let high = merged.length;
+    for (let i = index - 1; i >= 0; i--) {
+      const at = merged.findIndex((row) => row.id === fetched[i]!.id);
+      if (at >= 0) { low = at + 1; break; }
+    }
+    for (let i = index + 1; i < fetched.length; i++) {
+      const at = merged.findIndex((row) => row.id === fetched[i]!.id);
+      if (at >= 0) { high = at; break; }
+    }
+    // Anchors that disagree with the list's order give no bound.
+    if (low > high) { low = 0; high = merged.length; }
+    let at = high;
+    while (at > low && follows(merged[at - 1]!)) at--;
     merged.splice(at, 0, message);
   }
   return merged;

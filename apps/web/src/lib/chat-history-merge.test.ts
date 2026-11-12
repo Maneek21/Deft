@@ -334,3 +334,18 @@ test('W2R3-2: with no older history known, a catch-up that does not reach past i
   const shown = [msg('a', 1), msg('b', 2)];
   assert.equal(cursorAfterMergingRead(true, null, shown, { messages: [msg('b', 2), msg('c', 3)], nextCursor: 'cursor-before-b' }), null);
 });
+
+// ── W2R4: ties at an overlap and at a catch-up boundary ────────────────────
+
+test('W2R4-1: a missed row goes before its shown neighbour from the read, past a live row not in the read', () => {
+  // X arrived live while the read was pending; the server orders B before A.
+  const shown = [stored('A', 500), stored('X', 950)];
+  const fetched = [stored('B', 100), stored('A', 500)];
+  assert.deepEqual(ids(mergeMessagesById(shown, fetched)), ['B', 'A', 'X']);
+});
+
+test('W2R4-1: a missed row goes after its shown neighbour from the read, with a live row before it', () => {
+  const shown = [stored('X', 50), stored('A', 500)];
+  const fetched = [stored('A', 500), stored('B', 900)];
+  assert.deepEqual(ids(mergeMessagesById(shown, fetched)), ['X', 'A', 'B']);
+});
