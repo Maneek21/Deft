@@ -132,6 +132,26 @@ test('intent action fields follow the Defty requester and assigned approver audi
   assert.equal(JSON.stringify(await readIntent(ids.source, noAction, true, true)).includes('CANARY'), false);
 });
 
+test('intent action fields come only from the Defty capture action the intent links to', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const id = await insertIntent({ noAction: true });
+  const claimId = randomUUID();
+  // An employee action that names the intent and the reader in its own params.
+  await client!.query(`INSERT INTO agent_actions(id,org_id,user_id,agent_employee_id,action,params,approval_tier,approval_status,source)
+    VALUES($1,$2,$3,$4,'task_create',$5,'quick','pending','mcp')`,
+  [claimId, orgId, agentUserId, employeeId, JSON.stringify({ work_intent_id: id, source_user_id: ids.peer })]);
+  const fieldsFor = async (viewer: string) => {
+    for (const detail of [false, true]) {
+      const row = await readIntent(viewer, id, true, detail);
+      assert.equal(JSON.stringify(row).includes('CANARY'), false, `${roles[viewer]} ${detail ? 'detail' : 'list'}`);
+    }
+  };
+  await fieldsFor(ids.peer);
+  await client!.query('UPDATE work_intents SET converted_action_id=$1 WHERE id=$2 AND org_id=$3', [claimId, id, orgId]);
+  await fieldsFor(ids.peer);
+  await fieldsFor(ids.owner);
+});
+
 test('source-less intents belong to the recorded requester and owners or admins', async (t) => {
   if (unavailable) return t.skip(unavailable);
   for (const requester of [ids.source, ids.guest]) {

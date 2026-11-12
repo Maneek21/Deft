@@ -22,9 +22,12 @@ const VALID_KINDS = [
 type AuthedUser = { id: string; org_id: string; role?: string };
 
 function visibleWorkIntentActionSql(user: AuthedUser) {
+  // Work intents come from Defty capture, and only the server writes that action source,
+  // so an action's own work_intent_id claim links it to an intent only when it is a capture action.
   const actionExists = sql`exists (
     select 1 from ${agentActions}
     where ${agentActions.org_id} = ${workIntents.org_id}
+      and ${agentActions.source} = 'defty_capture'
       and (
         ${agentActions.id} = ${workIntents.converted_action_id}
         or (${workIntents.converted_action_id} is null
