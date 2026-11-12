@@ -97,7 +97,7 @@ Current capabilities include:
 - Create or update wiki pages and notes
 - Read and write space canvases
 - Link decisions to tasks and mark decisions implemented
-- Produce approval cards in chat and mirror pending approvals in the inbox. Tool inputs and results, proposed parameters and drafts on a Defty message are delivered only to the person who asked, an assigned approver, and owners and admins; other members see the reply text and tool names
+- Produce approval cards in chat and mirror pending approvals in the inbox. Tool inputs and results, proposed parameters and drafts on a Defty message are delivered only to the person who asked, an assigned approver, and owners and admins; other members see the reply text and tool names. Employee activity entries, diagnostics and plan step text follow the same audience
 - Post completion confirmations with result details for supported actions
 
 Defty's chat writes always wait for approval, at every trust level, and native write executors check wiki visibility or space membership when they run. The action lists, receipts, dashboard activity and inbox show a Defty action only to its requester, an assigned approver and owners and admins; only the requester or an owner or admin with access to the target can undo it. Defty posts one reply per trigger message, and a message posted through a human MCP tool wakes Defty under the same conditions as the web app. The workspace trust level governs only Defty's approved plans and background work. Defty does not extract tasks from chat on its own (passive extraction is off by default), and it does not manage agent employees, connections or triggers.
@@ -152,7 +152,7 @@ Client availability and connector UI vary by vendor and account tier. Deft canno
 - User and agent identity preserved on native actions
 - Pending approval cards in the source conversation where supported
 - Inbox mirror for centralized approval review
-- Execution receipts, recent agent actions, and audit history. Task-update approval cards list the patched fields, including cleared values, and undo applies only while the task still has the value the action set
+- Execution receipts, recent agent actions, and audit history. An approval whose request ended after it was claimed is settled rather than left claimed, and an assigned reviewer who is an active, non-guest member can approve or reject it. Task-update approval cards list the patched fields, including cleared values, and undo applies only while the task still has the value the action set
 - Token scopes, revocation, daily action limits, and circuit breakers. The per-employee daily cost budget is not enforced today
 - Space membership checks on REST and WebSocket access
 - Org ownership checks on task, wiki, workflow, message, and agent operations
