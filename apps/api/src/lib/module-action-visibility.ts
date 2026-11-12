@@ -1,12 +1,15 @@
-import { inArray, notInArray, sql, type SQL } from 'drizzle-orm';
+import { inArray, notInArray, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { agentActionApprovers, agentActions, attentionItems } from '@deft/db/schema';
 import { currentAgentActionSourceAuthoritySql } from './agent-channel-authority.js';
 import { DEFTY_SYSTEM_EMPLOYEE_SLUG, DEFTY_SYSTEM_RUNTIME_KIND } from './defty-identity.js';
 
 /** The internal Defty action envelope has a different, established source contract. */
-export function canonicalDeftyActionSql(): SQL {
+export function canonicalDeftyActionSql(
+  employeeId: SQLWrapper = agentActions.agent_employee_id,
+  orgId: SQLWrapper = agentActions.org_id,
+): SQL {
   return sql`exists (select 1 from agent_employees internal_employee
-    where internal_employee.id = ${agentActions.agent_employee_id} and internal_employee.org_id = ${agentActions.org_id}
+    where internal_employee.id = ${employeeId} and internal_employee.org_id = ${orgId}
       and internal_employee.runtime_kind = ${DEFTY_SYSTEM_RUNTIME_KIND} and internal_employee.slug = ${DEFTY_SYSTEM_EMPLOYEE_SLUG}
       and internal_employee.is_byoa = false and internal_employee.is_active = true)`;
 }

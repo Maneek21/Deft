@@ -88,9 +88,10 @@ async function seedFixtures() {
     );
     await c.query(
       `INSERT INTO space_members (id, space_id, user_id)
-       VALUES (gen_random_uuid()::text, $1, $2)
+       VALUES (gen_random_uuid()::text, $1, $2),
+              (gen_random_uuid()::text, $1, $3)
        ON CONFLICT (space_id, user_id) DO NOTHING`,
-      [VISIBLE_SPACE_ID, APPROVER_USER_ID],
+      [VISIBLE_SPACE_ID, APPROVER_USER_ID, SHADOW_USER_ID],
     );
 
     await c.query(

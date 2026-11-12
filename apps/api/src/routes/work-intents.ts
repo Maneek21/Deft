@@ -1,9 +1,11 @@
 import { Hono } from 'hono';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, getTableColumns, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { agentActions, agentEmployees, messageObservations, messages, spaces, users, workIntents } from '@deft/db/schema';
 import { getApprovalTier } from '../lib/agent-approval.js';
 import { ensureDeftyEmployee } from '../lib/ensure-defty-membership.js';
+import { canonicalDeftyActionSql, visibleModuleActionSql } from '../lib/module-action-visibility.js';
+import { currentEmployeeMessageAuthoritySql, currentEmployeeSpaceAuthoritySql } from '../lib/agent-channel-authority.js';
 
 export const workIntentRoutes = new Hono();
 
@@ -17,7 +19,53 @@ const VALID_KINDS = [
   'question_candidate',
 ] as const;
 
-type AuthedUser = { id: string; org_id: string };
+type AuthedUser = { id: string; org_id: string; role?: string };
+
+function visibleWorkIntentActionSql(user: AuthedUser) {
+  const actionExists = sql`exists (
+    select 1 from ${agentActions}
+    where ${agentActions.org_id} = ${workIntents.org_id}
+      and (
+        ${agentActions.id} = ${workIntents.converted_action_id}
+        or (${workIntents.converted_action_id} is null
+          and ${agentActions.params}->>'work_intent_id' = ${workIntents.id})
+      )
+      and ${visibleModuleActionSql(user.role, { userId: user.id, orgId: user.org_id })}
+  )`;
+  // Nested so a single-table select keeps the table-qualified column names inside the subquery.
+  return sql<boolean>`(${actionExists})`;
+}
+
+function projectWorkIntent<T extends {
+  id: string;
+  kind: string;
+  status: string;
+  created_at: Date;
+  updated_at: Date;
+  can_read_action: boolean;
+  source_message_id: string | null;
+  space_id: string | null;
+  source_user_id: string | null;
+  source_message_content?: string | null;
+  space_name?: string | null;
+  source_user_name?: string | null;
+}>(row: T) {
+  const { can_read_action, ...intent } = row;
+  if (can_read_action) return intent;
+  return {
+    id: row.id,
+    kind: row.kind,
+    status: row.status,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    source_message_id: row.source_message_id,
+    space_id: row.space_id,
+    source_user_id: row.source_user_id,
+    source_message_content: row.source_message_content,
+    space_name: row.space_name,
+    source_user_name: row.source_user_name,
+  };
+}
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
@@ -26,7 +74,21 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function visibleWorkIntentSourceSql(user: AuthedUser) {
   return sql`(
-    (${workIntents.space_id} IS NULL AND ${workIntents.source_message_id} IS NULL)
+    ${workIntents.agent_employee_id} is null
+    or ${canonicalDeftyActionSql(workIntents.agent_employee_id, workIntents.org_id)}
+    or (
+      exists (
+        select 1 from agent_employees wi_employee
+        where wi_employee.id = ${workIntents.agent_employee_id}
+          and wi_employee.org_id = ${workIntents.org_id}
+          and wi_employee.is_active = true and wi_employee.is_deleted = false
+      )
+      and (${workIntents.source_message_id} is null or ${currentEmployeeMessageAuthoritySql(workIntents.org_id, workIntents.agent_employee_id, workIntents.source_message_id)})
+      and (${workIntents.space_id} is null or ${currentEmployeeSpaceAuthoritySql(workIntents.org_id, workIntents.agent_employee_id, workIntents.space_id)})
+    )
+  ) and (
+    (${workIntents.space_id} IS NULL AND ${workIntents.source_message_id} IS NULL
+      and (${workIntents.source_user_id} = ${user.id} or ${user.role === 'owner' || user.role === 'admin'}))
     OR (
       ${workIntents.source_message_id} IS NULL
       AND ${workIntents.space_id} IS NOT NULL
@@ -160,6 +222,7 @@ workIntentRoutes.get('/', async (c) => {
       metadata: workIntents.metadata,
       created_at: workIntents.created_at,
       updated_at: workIntents.updated_at,
+      can_read_action: visibleWorkIntentActionSql(user),
     })
     .from(workIntents)
     .leftJoin(messages, visibleSourceMessageJoinSql(user))
@@ -176,7 +239,7 @@ workIntentRoutes.get('/', async (c) => {
     .orderBy(desc(workIntents.created_at))
     .limit(limit);
 
-  return c.json({ intents: rows });
+  return c.json({ intents: rows.map(projectWorkIntent) });
 });
 
 workIntentRoutes.get('/observations', async (c) => {
@@ -209,7 +272,8 @@ workIntentRoutes.get('/observations', async (c) => {
       classifier_result: messageObservations.classifier_result,
       downstream_jobs: messageObservations.downstream_jobs,
       capture_count: messageObservations.capture_count,
-      last_error: messageObservations.last_error,
+      last_error: user.role === 'owner' || user.role === 'admin'
+        ? messageObservations.last_error : sql<null>`null`,
       started_at: messageObservations.started_at,
       completed_at: messageObservations.completed_at,
       created_at: messageObservations.created_at,
@@ -250,7 +314,7 @@ workIntentRoutes.get('/:id', async (c) => {
   const id = c.req.param('id');
 
   const [row] = await db
-    .select()
+    .select({ ...getTableColumns(workIntents), can_read_action: visibleWorkIntentActionSql(user) })
     .from(workIntents)
     .where(and(
       eq(workIntents.org_id, user.org_id),
@@ -263,7 +327,7 @@ workIntentRoutes.get('/:id', async (c) => {
     return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
   }
 
-  return c.json({ intent: row });
+  return c.json({ intent: projectWorkIntent(row) });
 });
 
 workIntentRoutes.post('/:id/retry', async (c) => {

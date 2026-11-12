@@ -1,7 +1,9 @@
 import { Hono } from 'hono';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, getTableColumns, sql } from 'drizzle-orm';
+import { z } from 'zod';
 import { db } from '../lib/db.js';
-import { workflowRules, workflowRuns } from '@deft/db/schema';
+import { projects, tasks, workflowRules, workflowRuns } from '@deft/db/schema';
+import { visibleTaskCondition } from '../lib/task-visibility.js';
 
 export const workflowRoutes = new Hono();
 
@@ -9,6 +11,13 @@ export const workflowRoutes = new Hono();
 // against these so the executor never has to defend against unknown shapes.
 const SUPPORTED_TRIGGER_TYPES = new Set(['task.status_changed']);
 const SUPPORTED_ACTION_KINDS = new Set(['add_comment', 'assign_to', 'add_label', 'notify']);
+
+const runEnvelopeSchema = z.object({
+  actions: z.array(z.object({
+    kind: z.enum(['add_comment', 'assign_to', 'add_label', 'notify', 'unblock_dependents', 'unknown']).catch('unknown'),
+    ok: z.boolean(),
+  })),
+});
 
 function validateActionConfig(actionType: string, actionConfig: unknown): string | null {
   const cfg = (actionConfig ?? {}) as Record<string, unknown>;
@@ -146,11 +155,26 @@ workflowRoutes.get('/:id/runs', async (c) => {
     return c.json({ error: 'Workflow rule not found', code: 'NOT_FOUND' }, 404);
   }
 
-  const runs = await db.select()
+  const canReadDetail = user.role === 'owner' || user.role === 'admin'
+    ? sql<boolean>`true`
+    : sql<boolean>`exists (${db.select({ id: tasks.id }).from(tasks)
+      .innerJoin(projects, and(eq(projects.id, tasks.project_id), eq(projects.org_id, tasks.org_id)))
+      .where(and(
+        eq(tasks.id, sql`${workflowRuns.result}->>'task_id'`),
+        eq(tasks.org_id, user.org_id),
+        eq(tasks.is_deleted, false),
+        eq(projects.is_deleted, false),
+        visibleTaskCondition(user.id),
+      ))})`;
+  const runs = await db.select({ ...getTableColumns(workflowRuns), can_read_detail: canReadDetail })
     .from(workflowRuns)
     .where(eq(workflowRuns.rule_id, id))
     .orderBy(desc(workflowRuns.executed_at))
     .limit(50);
 
-  return c.json(runs);
+  return c.json(runs.map(({ can_read_detail, ...run }) => {
+    if (can_read_detail) return run;
+    const envelope = runEnvelopeSchema.safeParse(run.result);
+    return { ...run, result: envelope.success ? envelope.data : { actions: [] } };
+  }));
 });
