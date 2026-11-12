@@ -134,6 +134,23 @@ let detectTaskOverload: (userId: string, orgId: string) => Promise<{
 }>;
 
 before(async () => {
+  // Make the hardcoded users exist here instead of relying on another test
+  // file (burnout-detector.test.ts) having created them earlier in the run.
+  await withClient(async (c) => {
+    for (const [uid, name] of [
+      [USER_A, 'Alex PM'],
+      [USER_B, 'Priya'],
+      [USER_C, 'Rahul'],
+    ] as const) {
+      await c.query(
+        `INSERT INTO users (id, email, name, is_agent)
+         VALUES ($1, $2, $3, false)
+         ON CONFLICT (id) DO NOTHING`,
+        [uid, `burnout-${uid}@test.local`, name],
+      );
+    }
+  });
+
   const mod = await import('../src/services/burnout-detector.js');
   detectTaskOverload = mod.detectTaskOverload;
 });

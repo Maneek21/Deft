@@ -4,7 +4,7 @@ import { eq, and, desc, gt, sql, inArray, isNull } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { nativeCreate, nativeCreateKey, NativeCreateError } from '../lib/native-create.js';
 import { projects, tasks, taskLabels, labels, users, taskActivity } from '@deft/db/schema';
-import { getIO, emitToUser } from '../socket.js';
+import { emitToUser, emitOrgTaskEvent } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
 import {
@@ -654,15 +654,8 @@ projectRoutes.post('/:id/tasks', async (c) => {
     if (replayed) return c.json({ ...task, project_prefix: project.prefix, project_name: project.name }, 201);
     const taskNumber = task.number;
 
-    // Broadcast task:created via socket to org
-    const io = getIO();
-    if (io) {
-      io.to(`org:${user.org_id}`).emit('task:created', {
-        ...task,
-        project_prefix: project.prefix,
-        project_name: project.name,
-      });
-    }
+    // Members reload task content through the audience-checked reads.
+    emitOrgTaskEvent(user.org_id, 'task:created', { id: task.id, project_id: task.project_id });
 
     // Notify assignee if different from creator
     if (task!.assignee_id && task!.assignee_id !== user.id) {

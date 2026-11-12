@@ -26,6 +26,28 @@ import { resolveReasonProvider } from './org-ai-config.js';
 import { getIO } from '../socket.js';
 import { unrestrictedTaskCondition } from './task-visibility.js';
 
+/**
+ * Recorded on every standup built only from content every workspace member
+ * may read (unrestricted tasks in live projects, public spaces).
+ */
+export const STANDUP_MEMBERS_AUDIENCE = 'workspace_members';
+
+/**
+ * Workspace members read standups recorded for the members audience. Any
+ * other stored standup is readable by owners/admins and by its recorded
+ * author only.
+ */
+export function standupReadableBy(
+  standup: { generated_by: string; raw_data: unknown },
+  viewer: { id: string; role?: string | null },
+): boolean {
+  if (viewer.role === 'owner' || viewer.role === 'admin') return true;
+  if (viewer.role !== 'member') return false;
+  const raw = standup.raw_data;
+  if (raw && typeof raw === 'object' && (raw as Record<string, unknown>).audience === STANDUP_MEMBERS_AUDIENCE) return true;
+  return standup.generated_by === viewer.id;
+}
+
 type StandupEvidence = {
   source_id: string;
   kind: 'completed_task' | 'active_task' | 'overdue_task' | 'chat_activity';
@@ -281,6 +303,7 @@ export async function generateDailyStandup(input: {
         generated_by: deftyUserId,
         summary,
         raw_data: {
+          audience: STANDUP_MEMBERS_AUDIENCE,
           date_key: local.dateKey,
           generator: synthesis.generator,
           model: synthesis.model,

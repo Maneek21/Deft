@@ -2392,6 +2392,7 @@ async function seedOperatingDay(params: {
     summary:
       'Sun Gold launch day is active: Diego is confirming route capacity, Tom is drafting buyer copy, Maya is preparing the communications pulse, and Lina/Sage are guarding claims before anything leaves the farm.',
     raw_data: {
+      audience: 'workspace_members',
       source: 'pilot-polish',
       highlights: [
         'Two buyer conversations today',

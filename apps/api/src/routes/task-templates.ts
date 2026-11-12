@@ -16,7 +16,7 @@ import { z } from 'zod';
 import { and, eq, or, isNull } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { projects, tasks, taskActivity, taskTemplates } from '@deft/db/schema';
-import { getIO } from '../socket.js';
+import { emitOrgTaskEvent } from '../socket.js';
 import { reserveTaskNumberRange } from '../lib/task-numbering.js';
 
 export const taskTemplateRoutes = new Hono();
@@ -181,15 +181,8 @@ taskTemplateRoutes.post('/:id/apply-template', async (c) => {
       return inserted;
     });
 
-    const io = getIO();
-    if (io) {
-      for (const task of createdTasks) {
-        io.to(`org:${user.org_id}`).emit('task:created', {
-          ...task,
-          project_prefix: project.prefix,
-          project_name: project.name,
-        });
-      }
+    for (const task of createdTasks) {
+      emitOrgTaskEvent(user.org_id, 'task:created', { id: task.id, project_id: task.project_id });
     }
 
     return c.json(

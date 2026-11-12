@@ -104,6 +104,8 @@ export function MentionAutocomplete({ query, onSelect, onClose, onOptionCountCha
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
+      // A key that confirms an IME composition is not a pick.
+      if (e.isComposing || e.keyCode === 229) return;
       if (e.key === 'Escape') {
         onClose();
         return;
@@ -116,8 +118,9 @@ export function MentionAutocomplete({ query, onSelect, onClose, onOptionCountCha
         e.preventDefault();
         setSelectedIndex((prev) => Math.max(prev - 1, 0));
       }
-      if (e.key === 'Enter' || e.key === 'Tab') {
-        // With nothing to pick, leave the key alone: Enter sends, Tab moves focus.
+      if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') {
+        // With nothing to pick, leave the key alone: Enter sends, Tab moves
+        // focus. Shift+Enter is a newline.
         const option = allOptions[selectedIndex];
         if (option) {
           e.preventDefault();

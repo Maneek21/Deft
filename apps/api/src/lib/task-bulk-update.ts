@@ -14,7 +14,7 @@ import { getProjectResolvedConfig } from './project-resolved-config.js';
 import { resolveAssignableAssigneeId } from './resolve-assignee.js';
 import { isValidTransition } from './task-status-machine.js';
 import { visibleTaskCondition } from './task-visibility.js';
-import { emitToUser, getIO } from '../socket.js';
+import { emitToUser, emitOrgTaskEvent } from '../socket.js';
 
 export const bulkTaskUpdateSchema = z.object({
   task_ids: z.array(z.string().min(1)).min(1).max(50),
@@ -224,7 +224,7 @@ export async function bulkUpdateTasks(input: BulkTaskUpdateInput, actor: BulkTas
     }
   }
 
-  getIO()?.to(`org:${actor.orgId}`).emit('task:bulk_updated', { task_ids: updatedIds, changes: updateData });
+  emitOrgTaskEvent(actor.orgId, 'task:bulk_updated', { task_ids: updatedIds, changed_fields: Object.entries(updates).filter(([, value]) => value !== undefined).map(([field]) => field) });
   return {
     success: true,
     requested: taskIds.length,

@@ -2,10 +2,8 @@ import {visibleCaptureActionSql} from '../lib/agent-action-visibility.js';
 import { Hono } from 'hono';
 import { eq, and, desc, sql, lt, gte, inArray, count } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { tasks, taskAssignees, projects, users, spaces, spaceMembers, messages, taskActivity, notifications, events, standups, orgs, peopleExpertise, peopleInteractions, peoplePatterns, agentActions, agentEmployees, wikiPages } from '@deft/db/schema';
-import { getIO } from '../socket.js';
-import { DEFTY_NAME } from '../lib/ensure-defty-membership.js';
-import { generateDailyStandup } from '../lib/standup-automation.js';
+import { tasks, taskAssignees, projects, users, spaces, spaceMembers, messages, taskActivity, notifications, events, standups, peopleExpertise, peopleInteractions, peoplePatterns, agentActions, agentEmployees, wikiPages } from '@deft/db/schema';
+import { generateDailyStandup, standupReadableBy } from '../lib/standup-automation.js';
 import { visibleModuleActionSql } from '../lib/module-action-visibility.js';
 import {readEmailCalendarOccurrences} from '../lib/email-calendar-projection.js';
 import { getDayBoundaries, resolveViewerTimezone } from '../lib/task-dates.js';
@@ -327,7 +325,7 @@ dashboardRoutes.get('/', async (c) => {
     if (isWorkspaceMember(user.role)) {
       try {
         const [todayStandup] = await db
-          .select({ summary: standups.summary, date: standups.date, raw_data: standups.raw_data })
+          .select({ summary: standups.summary, date: standups.date, raw_data: standups.raw_data, generated_by: standups.generated_by })
           .from(standups)
           .where(
             and(
@@ -339,7 +337,7 @@ dashboardRoutes.get('/', async (c) => {
           .orderBy(desc(standups.created_at))
           .limit(1);
 
-        if (todayStandup) {
+        if (todayStandup && standupReadableBy(todayStandup, user)) {
           const rawData = todayStandup.raw_data as Record<string, unknown> | null;
           standup = {
             summary: todayStandup.summary,
@@ -465,6 +463,11 @@ dashboardRoutes.post('/standup', async (c) => {
         code: 'AUTOMATION_IN_PROGRESS',
       }, 409);
     }
+    // A standup stored without a workspace-members audience is handed only to
+    // owners/admins and to the user recorded as its author.
+    if (!standupReadableBy(result.standup, user)) {
+      return c.json({ standup: null, already_existed: true });
+    }
     const runRawData = result.standup.raw_data as Record<string, unknown> | null;
     return c.json({
       standup: {
@@ -475,292 +478,11 @@ dashboardRoutes.post('/standup', async (c) => {
       },
       already_existed: result.alreadyExisted,
     });
-
-    // Kept in a local function for one compatibility cycle while the shared
-    // automation service is certified. It is deliberately not invoked.
-    async function legacyStandupImplementation() {
-    const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const todayEnd = new Date(todayStart.getTime() + 86400000);
-
-    // Check if standup already exists for today
-    const [existing] = await db
-      .select({ id: standups.id })
-      .from(standups)
-      .where(
-        and(
-          eq(standups.org_id, user.org_id),
-          gte(standups.date, todayStart),
-          lt(standups.date, todayEnd),
-        ),
-      )
-      .limit(1);
-
-    if (existing) {
-      // Return existing standup
-      const [todayStandup] = await db
-        .select({ summary: standups.summary, date: standups.date })
-        .from(standups)
-        .where(eq(standups.id, existing.id));
-
-      return c.json({
-        standup: {
-          summary: todayStandup?.summary ?? '',
-          date: todayStandup?.date?.toISOString() ?? new Date().toISOString(),
-        },
-        already_existed: true,
-      });
-    }
-
-    // Get org info
-    const [org] = await db
-      .select()
-      .from(orgs)
-      .where(eq(orgs.id, user.org_id))
-      .limit(1);
-
-    if (!org) {
-      return c.json({ error: 'Org not found', code: 'NOT_FOUND' }, 404);
-    }
-
-    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-
-    // Gather activity data (same logic as standup-generate handler)
-    const statusChanges = await db
-      .select({
-        action: taskActivity.action,
-        field: taskActivity.field,
-        old_value: taskActivity.old_value,
-        new_value: taskActivity.new_value,
-        task_title: tasks.title,
-        task_number: tasks.number,
-      })
-      .from(taskActivity)
-      .innerJoin(tasks, eq(taskActivity.task_id, tasks.id))
-      .where(
-        and(
-          eq(tasks.org_id, user.org_id),
-          gte(taskActivity.created_at, yesterday),
-        ),
-      );
-
-    const newTasks = await db
-      .select({
-        id: tasks.id,
-        title: tasks.title,
-        number: tasks.number,
-        status: tasks.status,
-        priority: tasks.priority,
-      })
-      .from(tasks)
-      .where(
-        and(
-          eq(tasks.org_id, user.org_id),
-          eq(tasks.is_deleted, false),
-          gte(tasks.created_at, yesterday),
-        ),
-      );
-
-    const messagesBySpace = await db
-      .select({
-        space_name: spaces.name,
-        msg_count: sql<number>`count(*)`,
-      })
-      .from(messages)
-      .innerJoin(spaces, eq(messages.space_id, spaces.id))
-      .where(
-        and(
-          eq(messages.org_id, user.org_id),
-          eq(messages.is_deleted, false),
-          gte(messages.created_at, yesterday),
-        ),
-      )
-      .groupBy(spaces.name);
-
-    const [activeUsersRow] = await db
-      .select({
-        count: sql<number>`count(distinct ${messages.user_id})`,
-      })
-      .from(messages)
-      .where(
-        and(
-          eq(messages.org_id, user.org_id),
-          eq(messages.is_deleted, false),
-          gte(messages.created_at, yesterday),
-        ),
-      );
-    const activeUsers = Number(activeUsersRow?.count ?? 0);
-
-    const completedCount = statusChanges.filter(
-      (sc) => sc.field === 'status' && sc.new_value === 'done',
-    ).length;
-
-    const [overdueRow] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(tasks)
-      .where(
-        and(
-          eq(tasks.org_id, user.org_id),
-          eq(tasks.is_deleted, false),
-          sql`${tasks.due_date} < now()`,
-          sql`${tasks.status} NOT IN ('done', 'cancelled')`,
-        ),
-      );
-    const overdueCount = Number(overdueRow?.count ?? 0);
-
-    const rawData = {
-      status_changes: statusChanges,
-      new_tasks: newTasks,
-      messages_by_space: messagesBySpace,
-      active_users: activeUsers,
-      completed_count: completedCount,
-      overdue_count: overdueCount,
-    };
-
-    // Generate summary
-    let summary: string;
-    let model: string | undefined;
-
-    const { hasAnyAIProvider, getOrgAIConfig } = await import('../lib/org-ai-config.js');
-    if (await hasAnyAIProvider(user.org_id)) {
-      try {
-        const { llm } = await import('../lib/llm.js');
-        const orgConfig = await getOrgAIConfig(user.org_id);
-
-        const dataForPrompt = JSON.stringify(rawData, null, 2);
-        const response = await llm({
-          task: 'summarize',
-          messages: [
-            {
-              role: 'user',
-              content: `Generate a brief daily standup. Use this format exactly:\n\n**Done:** 2-3 bullet points of completed work\n**In Progress:** 2-3 bullet points of active work with owner names\n**Blocked/Overdue:** only if any exist, 1-2 bullets\n\nKeep it under 100 words. No headers, no emojis, no filler. Just the bullets.\n\nData:\n${dataForPrompt}`,
-            },
-          ],
-          maxTokens: 400,
-          orgConfig,
-        });
-
-        summary = response.text || generateFallbackStandupSummary(rawData);
-        model = response.model;
-      } catch (err) {
-        console.error(`[dashboard/standup] LLM API error:`, err);
-        summary = generateFallbackStandupSummary(rawData);
-      }
-    } else {
-      summary = generateFallbackStandupSummary(rawData);
-    }
-
-    // Insert standup
-    console.log('[standup] stage=insert');
-    await db.insert(standups).values({
-      org_id: user.org_id,
-      date: now,
-      generated_by: user.id,
-      summary,
-      raw_data: rawData,
-    });
-
-    // Post to default space — wrap in its own try/catch so a message-insert
-    // failure (e.g. FK constraint on user_id) never kills the standup response.
-    console.log('[standup] stage=post-to-space');
-    try {
-      const [defaultSpace] = await db
-        .select({ id: spaces.id })
-        .from(spaces)
-        .where(
-          and(
-            eq(spaces.org_id, user.org_id),
-            eq(spaces.is_default, true),
-          ),
-        )
-        .limit(1);
-
-      if (defaultSpace) {
-        const [msg] = await db
-          .insert(messages)
-          .values({
-            org_id: user.org_id,
-            space_id: defaultSpace.id,
-            user_id: user.id, // must be a valid FK to users.id; 'system' is not
-            content: `**Daily Standup Summary**\n\n${summary}`,
-          })
-          .returning();
-
-        if (msg) {
-          const io = getIO();
-          if (io) {
-            io.to(`org:${user.org_id}`).emit('message:new', {
-              ...msg,
-              user_name: DEFTY_NAME,
-              user_avatar: null,
-            });
-          }
-        }
-      }
-    } catch (msgErr) {
-      // Non-fatal: standup was already persisted; just log and continue.
-      console.error('[standup] Failed to post standup message to space:', msgErr);
-    }
-
-    console.log('[standup] stage=done');
-    return c.json({
-      standup: { summary, date: now.toISOString(), model: model || null },
-      already_existed: false,
-    });
-    }
-    void legacyStandupImplementation;
   } catch (err) {
     console.error('[standup] unexpected error:', err);
     return c.json({ error: 'Failed to generate standup', code: 'INTERNAL_ERROR' }, 500);
   }
 });
-
-function generateFallbackStandupSummary(rawData: {
-  status_changes: any[];
-  new_tasks: any[];
-  messages_by_space: any[];
-  active_users: number;
-  completed_count: number;
-  overdue_count: number;
-}): string {
-  const lines: string[] = [];
-
-  lines.push(`**Activity in the last 24 hours:**`);
-  lines.push('');
-
-  if (rawData.completed_count > 0) {
-    lines.push(`- ${rawData.completed_count} task(s) completed`);
-  }
-
-  if (rawData.new_tasks.length > 0) {
-    lines.push(`- ${rawData.new_tasks.length} new task(s) created`);
-  }
-
-  if (rawData.status_changes.length > 0) {
-    lines.push(`- ${rawData.status_changes.length} task update(s)`);
-  }
-
-  const totalMessages = rawData.messages_by_space.reduce(
-    (sum: number, s: any) => sum + Number(s.msg_count),
-    0,
-  );
-  if (totalMessages > 0) {
-    lines.push(`- ${totalMessages} message(s) across ${rawData.messages_by_space.length} space(s)`);
-  }
-
-  lines.push(`- ${rawData.active_users} active contributor(s)`);
-
-  if (rawData.overdue_count > 0) {
-    lines.push('');
-    lines.push(`**Attention:** ${rawData.overdue_count} task(s) are overdue.`);
-  }
-
-  if (lines.length <= 2) {
-    lines.push('- No significant activity recorded.');
-  }
-
-  return lines.join('\n');
-}
 
 // GET /api/dashboard/my-insights — personal insights for the current user
 dashboardRoutes.get('/my-insights', async (c) => {

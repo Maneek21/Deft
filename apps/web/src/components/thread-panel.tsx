@@ -436,7 +436,18 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
       live({ type: 'reaction_removed', message_id: data.message_id, emoji: data.emoji, user_id: data.user_id });
     };
 
+    // Edits and deletes of replies show live; events for messages not in
+    // this thread change nothing.
+    const onEdited = (msg: { id: string; content: string; edited_at: string | null; metadata?: unknown }) => {
+      live({ type: 'edited', id: msg.id, content: msg.content, edited_at: msg.edited_at, metadata: msg.metadata });
+    };
+    const onDeleted = (data: { id: string }) => {
+      live({ type: 'deleted', id: data.id });
+    };
+
     socket.on('message:new', onNewMessage);
+    socket.on('message:edited', onEdited);
+    socket.on('message:deleted', onDeleted);
     socket.on('reaction:added', onReactionAdded);
     socket.on('reaction:removed', onReactionRemoved);
 
@@ -482,6 +493,8 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
       catchUpWatch.dispose();
       if (catchUpRetryRef.current === catchUpWatch.retry) catchUpRetryRef.current = null;
       socket.off('message:new', onNewMessage);
+      socket.off('message:edited', onEdited);
+      socket.off('message:deleted', onDeleted);
       socket.off('reaction:added', onReactionAdded);
       socket.off('reaction:removed', onReactionRemoved);
     };

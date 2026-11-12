@@ -3,7 +3,7 @@ import {orgMembers,projects} from '@deft/db/schema';
 import type {AppRunTransaction as Tx} from './app-run-repository.js';
 import type {AppIntegrationDestinationPorts} from './app-integration-destination.js';
 import {createNativeTask} from './native-task-create.js';
-import {getIO} from '../socket.js';
+import {emitOrgTaskEvent} from '../socket.js';
 import {enqueue,QUEUE_NAMES} from './queues.js';
 /** Reviewed Tasks are ordinary org-visible tasks. Source IDs stay in governed
  * citations; source_message_id remains a Chat-message foreign key. */
@@ -22,6 +22,6 @@ export const appIntegrationTaskAdapter:Pick<AppIntegrationDestinationPorts<Tx>,'
  },
 };
 export async function afterAppIntegrationTaskCommit(input:{id:string;org_id:string;project_id:string;title:string}){
- getIO()?.to('org:'+input.org_id).emit('task:created',input);
+ emitOrgTaskEvent(input.org_id,'task:created',{id:input.id,project_id:input.project_id});
  await enqueue(QUEUE_NAMES.AGENT_JOBS,'duplicate-detect',{taskId:input.id,title:input.title,projectId:input.project_id,orgId:input.org_id});
 }

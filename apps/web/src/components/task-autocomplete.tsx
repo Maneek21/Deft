@@ -55,9 +55,15 @@ export function TaskAutocomplete({ query, onSelect, onClose, anchorRef, onResult
 
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
+      // A key that confirms an IME composition is not a pick.
+      if (e.isComposing || e.keyCode === 229) return;
       if (e.key === 'ArrowDown') { e.preventDefault(); setSelectedIndex(i => Math.min(i + 1, results.length - 1)); }
       if (e.key === 'ArrowUp') { e.preventDefault(); setSelectedIndex(i => Math.max(i - 1, 0)); }
-      if (e.key === 'Enter' && results.length > 0) { e.preventDefault(); onSelect(results[selectedIndex]!); }
+      // Enter or Tab picks, like the @ popup; Shift+Enter is a newline.
+      if (((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') && results.length > 0) {
+        e.preventDefault();
+        onSelect(results[selectedIndex]!);
+      }
       if (e.key === 'Escape') onClose();
     }
     document.addEventListener('keydown', handleKey);

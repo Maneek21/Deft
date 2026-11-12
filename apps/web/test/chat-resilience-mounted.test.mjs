@@ -332,8 +332,15 @@ const FAKE_SERVER = `(() => {
     const q = new URL(full, 'http://x').searchParams;
     const limit = Math.min(Number(q.get('limit') || 50), 100);
     const cursor = q.get('cursor');
-    const list = cursor ? all.filter((m) => m.created_at < cursor) : all;
+    // Like the API: '<created_at>|<id>' pages before that row in (created_at, id) order.
+    const [time, id] = (cursor || '').split('|');
+    const list = cursor ? all.filter((m) => m.created_at < time || (m.created_at === time && id !== undefined && m.id < id)) : all;
     return list.slice(-limit);
+  };
+  // Like the API: a full page names its oldest row as the next cursor.
+  const nextCursor = (rows, full) => {
+    const limit = Math.min(Number(new URL(full, 'http://x').searchParams.get('limit') || 50), 100);
+    return rows.length === limit ? rows[0].created_at + '|' + rows[0].id : null;
   };
   const failure = { status: 500, body: { error: 'boom', code: 'X' } };
   return (method, path, full) => {
@@ -343,7 +350,7 @@ const FAKE_SERVER = `(() => {
       S.channelReads += 1;
       if (S.netFail.channel || (S.netFailWhen && S.netFailWhen(path))) res = 'network-error';
       else if (S.fail.channel) res = failure;
-      else if (S.channel) res = { body: { messages: page(S.channel, full), next_cursor: null } };
+      else if (S.channel) { const rows = page(S.channel, full); res = { body: { messages: rows, next_cursor: nextCursor(rows, full) } }; }
     } else if (path === '/api/messages/t1/thread') {
       S.threadReads += 1;
       if (S.netFail.thread || (S.netFailWhen && S.netFailWhen(path))) res = 'network-error';
@@ -467,6 +474,33 @@ test('R2-2: past the page bound the view is replaced by the latest pages with a 
     assert.equal(await page.getByText('Destination message from Priya').count(), 0, 'no gap: older messages are not kept beside it');
     await earlier.click();
     await page.getByText('Missed x 001', { exact: true }).waitFor();
+  } finally {
+    await close(page);
+  }
+});
+
+test('W2R2-1: two Load earlier clicks across messages that share one timestamp reach the oldest page, each message once', async () => {
+  const page = await open(browser, { harness: 'defty-chat-harness.tsx', url: '/chat?space=s1', override: FAKE_SERVER });
+  try {
+    await page.getByText('Destination message from Priya').waitFor();
+    await drop(page);
+    // 700 messages at one instant: the catch-up shows the newest 500.
+    const tied = Array.from({ length: 700 }, (_, i) => ({
+      ...BASE, id: `t-${String(i + 1).padStart(3, '0')}`, parent_id: null, user_id: 'u-rahul', user_name: 'Rahul Mehta',
+      content: `Tied t ${String(i + 1).padStart(3, '0')}`, created_at: '2026-10-22T11:00:00.000Z',
+    }));
+    await srv(page, (data) => { window.__srv.channel = data; }, [ROOT, DEST, ...tied]);
+    await reconnect(page);
+    await page.getByText('Tied t 700', { exact: true }).waitFor();
+    const earlier = page.getByRole('button', { name: 'Load earlier messages' });
+    await earlier.waitFor();
+    assert.equal(await page.getByText('Tied t 200', { exact: true }).count(), 0);
+    await earlier.click();
+    await page.getByText('Tied t 101', { exact: true }).waitFor();
+    await page.waitForFunction(() => !document.querySelector('button[disabled]')?.textContent?.includes('Load earlier'), null, { timeout: 4000 });
+    await earlier.click();
+    await page.getByText('Tied t 001', { exact: true }).waitFor();
+    assert.equal(await page.locator('[data-message-id^="t-"]').count(), 700, 'each tied message shown once');
   } finally {
     await close(page);
   }
@@ -806,6 +840,293 @@ test('R4-3: a live reaction on a thread reply that is not shown yet is applied w
     await panel.getByText('for the detail.', { exact: false }).waitFor();
     await panel.locator('button', { hasText: '🚀' }).first().waitFor({ timeout: 3000 });
     assert.equal(await reactionCount(panel, '🚀'), 1);
+  } finally {
+    await close(page);
+  }
+});
+
+// ── W2-6: the open thread shows edits and deletes of its replies live ──────
+
+test('W2-6: an edit and a delete of a reply show in the open thread panel without a reload', async () => {
+  const page = await open(browser, { harness: 'defty-chat-harness.tsx', url: '/chat?space=s1&thread=t1' });
+  try {
+    await page.getByRole('heading', { name: 'Thread' }).waitFor();
+    const panel = page.locator('.w-\\[400px\\]');
+    await panel.getByText('for the detail.', { exact: false }).waitFor();
+    await page.evaluate((edit) => window.__deftDeliver('message:edited', edit),
+      { id: 'r1', content: 'Reply edited by Rahul.', edited_at: '2026-10-22T10:30:00.000Z' });
+    await panel.getByText('Reply edited by Rahul.').waitFor({ timeout: 3000 });
+    await page.evaluate((id) => window.__deftDeliver('message:deleted', { id }), 'r1');
+    await panel.getByText('This message was deleted').waitFor({ timeout: 3000 });
+    assert.equal(await panel.getByText('Reply edited by Rahul.').count(), 0);
+  } finally {
+    await close(page);
+  }
+});
+
+// ── W2-5: composer and popup keys (IME, Shift+Enter, Tab, Escape) ──────────
+
+const TASK_HIT = { id: 'task-12', number: 12, title: 'Ship the launch checklist', status: 'todo', priority: 'p1', project_prefix: 'LAUNCH' };
+// The # popup lists the tasks passed in as page data.
+const TASK_SEARCH = `(method, path) => (method === 'GET' && path === '/api/tasks/search') ? { body: window.__deftTestData.tasks } : undefined`;
+// An IME session: the composition starts, then Enter confirms the candidate.
+const composingEnter = (page) => page.evaluate(() => {
+  const target = document.querySelector('.deft-editor');
+  target.dispatchEvent(new CompositionEvent('compositionstart', { data: '', bubbles: true }));
+  target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', isComposing: true, bubbles: true, cancelable: true }));
+});
+
+test('W2-5: Enter that confirms an IME composition does not pick from the @ popup', async () => {
+  const { page, editor } = await openComposer();
+  try {
+    await page.keyboard.type('Hi @Rah');
+    await page.getByRole('button', { name: 'Rahul Mehta' }).waitFor();
+    await composingEnter(page);
+    await page.waitForTimeout(200);
+    assert.equal(await page.getByRole('button', { name: 'Rahul Mehta' }).count(), 1, 'the popup stays open');
+    assert.doesNotMatch(await editor.innerText(), /Rahul Mehta/);
+    assert.deepEqual(await sent(page), []);
+  } finally {
+    await close(page);
+  }
+});
+
+test('W2-5: Enter that confirms an IME composition does not send', async () => {
+  const { page } = await openComposer();
+  try {
+    await page.keyboard.type('Hello');
+    await composingEnter(page);
+    await page.waitForTimeout(200);
+    assert.deepEqual(await sent(page), []);
+  } finally {
+    await close(page);
+  }
+});
+
+test('W2-5: Shift+Enter with the @ popup open inserts a newline instead of picking', async () => {
+  const { page, editor } = await openComposer();
+  try {
+    await page.keyboard.type('Hi @Rah');
+    await page.getByRole('button', { name: 'Rahul Mehta' }).waitFor();
+    await page.keyboard.press('Shift+Enter');
+    await page.waitForTimeout(200);
+    assert.doesNotMatch(await editor.innerText(), /Rahul Mehta/);
+    assert.equal(await editor.locator('br').count() >= 1, true, 'a line break was inserted');
+    assert.deepEqual(await sent(page), []);
+  } finally {
+    await close(page);
+  }
+});
+
+test('W2-5: Tab picks the highlighted task in the # popup', async () => {
+  const page = await open(browser, { harness: 'composer-harness.tsx', url: '/chat?space=s1', override: TASK_SEARCH, pageData: { tasks: [TASK_HIT] } });
+  try {
+    const editor = page.locator('.deft-editor');
+    await editor.waitFor();
+    await editor.click();
+    await page.keyboard.type('See #lau');
+    await page.getByRole('button', { name: /Ship the launch checklist/ }).waitFor();
+    await page.keyboard.press('Tab');
+    await page.getByRole('button', { name: /Ship the launch checklist/ }).waitFor({ state: 'detached' });
+    assert.match(await editor.innerText(), /LAUNCH-12/);
+    assert.deepEqual(await sent(page), []);
+  } finally {
+    await close(page);
+  }
+});
+
+test('W2-5: Escape with a popup open in the thread composer closes the popup, not the thread', async () => {
+  const page = await open(browser, {
+    harness: 'defty-chat-harness.tsx', url: '/chat?space=s1&thread=t1', override: TASK_SEARCH, pageData: { tasks: [TASK_HIT] },
+  });
+  try {
+    await page.getByRole('heading', { name: 'Thread' }).waitFor();
+    const panel = page.locator('.w-\\[400px\\]');
+    await panel.locator('.deft-editor').click();
+    await page.keyboard.type('#lau');
+    await page.getByRole('button', { name: /Ship the launch checklist/ }).waitFor();
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: /Ship the launch checklist/ }).waitFor({ state: 'detached' });
+    await page.waitForTimeout(200);
+    assert.equal(await page.getByRole('heading', { name: 'Thread' }).count(), 1, 'the thread stays open');
+    // With no popup open, Escape closes the thread as before.
+    await page.keyboard.press('Escape');
+    await page.getByRole('heading', { name: 'Thread' }).waitFor({ state: 'detached' });
+  } finally {
+    await close(page);
+  }
+});
+
+// ── W2R2-2: Tab picks from a popup without also running list indentation ───
+
+// Pastes a two-item bullet list; the cursor ends in the second item.
+const pasteList = (page) => page.evaluate(() => {
+  const data = new DataTransfer();
+  data.setData('text/html', '<ul><li><p>first</p></li><li><p>second</p></li></ul>');
+  data.setData('text/plain', 'first\nsecond');
+  document.querySelector('.deft-editor').dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+});
+
+async function openListComposer() {
+  const page = await open(browser, { harness: 'composer-harness.tsx', url: '/chat?space=s1', override: TASK_SEARCH, pageData: { tasks: [TASK_HIT] } });
+  const editor = page.locator('.deft-editor');
+  await editor.waitFor();
+  await editor.click();
+  await pasteList(page);
+  await editor.locator('li', { hasText: 'second' }).waitFor();
+  return { page, editor };
+}
+
+test('W2R2-2: Tab in a list item picks the # task and leaves the list depth unchanged', async () => {
+  const { page, editor } = await openListComposer();
+  try {
+    await page.keyboard.type(' #lau');
+    await page.getByRole('button', { name: /Ship the launch checklist/ }).waitFor();
+    await page.keyboard.press('Tab');
+    await page.getByRole('button', { name: /Ship the launch checklist/ }).waitFor({ state: 'detached' });
+    assert.match(await editor.innerText(), /LAUNCH-12/);
+    assert.equal(await editor.locator('ul ul').count(), 0, 'the item was not indented');
+    assert.deepEqual(await sent(page), []);
+  } finally {
+    await close(page);
+  }
+});
+
+test('W2R2-2: Tab in a list item picks the @ mention and leaves the list depth unchanged', async () => {
+  const { page, editor } = await openListComposer();
+  try {
+    await page.keyboard.type(' @Rah');
+    await page.getByRole('button', { name: 'Rahul Mehta' }).waitFor();
+    await page.keyboard.press('Tab');
+    await page.getByRole('button', { name: 'Rahul Mehta' }).waitFor({ state: 'detached' });
+    assert.match(await editor.innerText(), /Rahul Mehta/);
+    assert.equal(await editor.locator('ul ul').count(), 0, 'the item was not indented');
+  } finally {
+    await close(page);
+  }
+});
+
+test('W2R2-2: with no popup, Tab in a list item still indents it', async () => {
+  const { page, editor } = await openListComposer();
+  try {
+    await page.keyboard.press('Tab');
+    await editor.locator('ul ul').waitFor({ timeout: 3000 });
+    assert.equal(await editor.locator('ul ul li', { hasText: 'second' }).count(), 1);
+  } finally {
+    await close(page);
+  }
+});
+
+// ── W2R3-2: earlier history is reachable from a fresh open and after Retry ──
+
+const loadEarlier = (page) => page.getByRole('button', { name: 'Load earlier messages' });
+// Clicks Load earlier until it is gone (bounded), waiting out each read.
+async function loadAllEarlier(page, maxClicks = 10) {
+  let clicks = 0;
+  for (; clicks < maxClicks; clicks++) {
+    const button = loadEarlier(page);
+    if (await button.count() === 0) break;
+    await page.waitForFunction(() => {
+      const b = [...document.querySelectorAll('button')].find((x) => x.textContent.includes('Load earlier'));
+      return !b || !b.disabled;
+    }, null, { timeout: 4000 });
+    if (await button.count() === 0) break;
+    await button.click();
+    await page.waitForFunction(() => !document.body.textContent.includes('Loading earlier messages'), null, { timeout: 4000 });
+  }
+  return clicks;
+}
+const shownIds = (page) => page.evaluate(() => [...document.querySelectorAll('[data-message-id]')].map((el) => el.getAttribute('data-message-id')));
+
+test('W2R3-2: opening a space with more than one page reaches the very first message, each once', async () => {
+  const page = await open(browser, {
+    harness: 'defty-chat-harness.tsx', url: '/chat?space=s1', override: FAKE_SERVER,
+    setupArg: many(130), setup: (rows) => { window.__srv.channel = rows; },
+  });
+  try {
+    await page.getByText('Missed x 130', { exact: true }).waitFor();
+    assert.equal(await page.getByText('Missed x 080', { exact: true }).count(), 0, 'the first read shows the newest 50');
+    await loadEarlier(page).waitFor();
+    await loadAllEarlier(page);
+    await page.getByText('Missed x 001', { exact: true }).waitFor();
+    const ids = (await shownIds(page)).filter((id) => id.startsWith('x-'));
+    assert.equal(ids.length, 130);
+    assert.equal(new Set(ids).size, 130);
+    assert.equal(await loadEarlier(page).count(), 0, 'no more history: the control is gone');
+  } finally {
+    await close(page);
+  }
+});
+
+test('W2R3-2: after Retry following a failed first read, earlier history is reachable', async () => {
+  const page = await open(browser, {
+    harness: 'defty-chat-harness.tsx', url: '/chat?space=s1', override: FAKE_SERVER,
+    setupArg: many(130), setup: (rows) => { window.__srv.channel = rows; window.__srv.fail.channel = true; },
+  });
+  try {
+    await page.getByText('Could not load messages.').waitFor();
+    await srv(page, () => { window.__srv.fail.channel = false; });
+    await page.getByRole('button', { name: 'Retry' }).first().click();
+    await page.getByText('Missed x 130', { exact: true }).waitFor();
+    await loadEarlier(page).waitFor();
+    await loadAllEarlier(page);
+    await page.getByText('Missed x 001', { exact: true }).waitFor();
+    const ids = (await shownIds(page)).filter((id) => id.startsWith('x-'));
+    assert.equal(new Set(ids).size, 130);
+    assert.equal(ids.length, 130);
+  } finally {
+    await close(page);
+  }
+});
+
+test('W2R3-2: an exact multiple of the page size ends on an empty page and the control disappears', async () => {
+  // 50 on open, then a full page of 100: its cursor is not null, so one more
+  // (empty) read is needed, after which the control goes away.
+  const page = await open(browser, {
+    harness: 'defty-chat-harness.tsx', url: '/chat?space=s1', override: FAKE_SERVER,
+    setupArg: many(150), setup: (rows) => { window.__srv.channel = rows; },
+  });
+  try {
+    await page.getByText('Missed x 150', { exact: true }).waitFor();
+    await loadEarlier(page).click();
+    await page.getByText('Missed x 001', { exact: true }).waitFor();
+    await loadEarlier(page).waitFor();
+    await page.waitForFunction(() => {
+      const b = [...document.querySelectorAll('button')].find((x) => x.textContent.includes('Load earlier'));
+      return b && !b.disabled;
+    }, null, { timeout: 4000 });
+    await loadEarlier(page).click();
+    await loadEarlier(page).waitFor({ state: 'detached' });
+    const cursorReads = await page.evaluate(() => window.__deftApiCalls.filter((c) => c.path.startsWith('/api/messages/s1?') && c.path.includes('cursor=')).length);
+    assert.equal(cursorReads, 2);
+    const ids = (await shownIds(page)).filter((id) => id.startsWith('x-'));
+    assert.equal(ids.length, 150);
+  } finally {
+    await close(page);
+  }
+});
+
+test('W2R3-2: a double click while the earlier page is held fetches one page', async () => {
+  const page = await open(browser, {
+    harness: 'defty-chat-harness.tsx', url: '/chat?space=s1', override: FAKE_SERVER,
+    setupArg: many(130), setup: (rows) => {
+      window.__srv.channel = rows;
+      window.__srv.holdWhen = (path, full) => path === '/api/messages/s1' && full.includes('cursor=');
+    },
+  });
+  try {
+    await page.getByText('Missed x 130', { exact: true }).waitFor();
+    await loadEarlier(page).waitFor();
+    await page.evaluate(() => {
+      const b = [...document.querySelectorAll('button')].find((x) => x.textContent.includes('Load earlier'));
+      b.click();
+      b.click();
+    });
+    await waitHeld(page, 1);
+    await page.waitForTimeout(300);
+    assert.equal(await page.evaluate(() => window.__srv.held.length), 1, 'one earlier read');
+    await release(page, 0);
+    await page.getByText('Missed x 080', { exact: true }).waitFor();
   } finally {
     await close(page);
   }
