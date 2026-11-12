@@ -365,7 +365,7 @@ mcpServerRoutes.post('/call', async (c) => {
           user_id: userId,
           conversation_id: null,
           action: internalToolName,
-          params,
+          params, ...await (await import('../lib/wiki-proposal-target.js')).wikiProposalTargetValues(internalToolName, params, orgId, userId),
           approval_tier: tier,
           approval_status: 'pending',
           ...(agentEmployeeId ? { agent_employee_id: agentEmployeeId } : {}),
