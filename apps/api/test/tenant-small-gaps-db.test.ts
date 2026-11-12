@@ -120,7 +120,7 @@ before(async () => {
     // task with activity, and an org-B notification for the caller.
     await c.query(
       `INSERT INTO standups (id, org_id, date, generated_by, summary, raw_data, created_at, updated_at)
-       VALUES (gen_random_uuid()::text, $1, NOW(), 'system', $2, '{}'::jsonb, NOW(), NOW())`,
+       VALUES (gen_random_uuid()::text, $1, NOW(), 'system', $2, '{"audience":"workspace_members"}'::jsonb, NOW(), NOW())`,
       [ORG_A, `${SECRET} standup summary`],
     );
     await c.query(
