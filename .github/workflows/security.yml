@@ -37,7 +37,7 @@ jobs:
   codeql:
     name: CodeQL
     runs-on: ubuntu-latest
-    # The exact disposition gate compares the complete repository finding set.
+    # Content-pinned dispositions compare the complete repository finding set.
     # PR diff filtering omits unchanged reviewed paths and creates stale reviews.
     env:
       CODEQL_ACTION_DIFF_INFORMED_QUERIES: 'false'
@@ -55,6 +55,7 @@ jobs:
         with:
           output: .ci-codeql-diagnostics
           upload: never
+      # Line drift is allowed; changes to flagged source/flow lines require review.
       - name: Verify exact reviewed dispositions; reject new or changed findings
         id: dispositions
         run: |
