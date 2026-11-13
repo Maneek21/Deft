@@ -49,7 +49,7 @@ Agents and approvals:
   delivery is attempted.
 - A thread reply must name a parent message in the target space.
 - Only the requester of an action, or an owner or admin who can still see its
-  target, can undo it. The action lists, receipts, dashboard activity and inbox show a Defty action only to its requester, an assigned approver and owners and admins; guests see only their own.
+  target, can undo it. The action lists, receipts, dashboard activity and inbox show a Defty action only to its requester and to owners and admins; guests see only their own.
 - Native writes (wiki, canvas, knowledge, thread reply, space notes, posting a
   message) check wiki visibility or space membership when they run.
 - A connected tool that declares itself destructive always needs approval, and
@@ -89,10 +89,10 @@ Agents and approvals:
   review.
 - Defty chat messages: tool inputs and results, proposed action parameters and
   drafts attached to a Defty message are delivered only to the person who asked,
-  an assigned approver, and owners and admins, in the message list, threads, live
+  and owners and admins, in the message list, threads, live
   updates, the agent conversation endpoints, the trace export and the MCP read
   tools. Other members of the space see the reply text and tool names. Attention
-  items for approvals follow the same audience. The employee turn list shows
+  approval items go to the action's reviewers. The employee turn list shows
   the input, tool calls, reply text and error of a Defty turn to the person who
   triggered it and to owners and admins; other members see that the turn
   happened. The space message list pages
@@ -100,10 +100,89 @@ Agents and approvals:
   job fails for good.
 - Web: the Autonomous confirmation for an agent employee says owners and admins
   can lower the level again from the employee panel. The heartbeats page does not
-  show a cost-against-budget figure. "Load earlier messages" is disabled while a
-  load or catch-up is in flight.
+  show a cost-against-budget figure, and shows the 24h cost tile only when a cost
+  is recorded. "Load earlier messages" is disabled while a load or catch-up is in
+  flight.
+- Approvals: an approval whose request ended after it was claimed is settled. The request that executes an approval holds a
+  database lock for as long as it runs; a later approve attempt or the maintenance
+  job acts only when that lock is free. A task creation is run again safely
+  (it is idempotent per action), and a retried action is not run twice. An approved
+  action with a recorded outcome goes through one finishing step that records
+  the approver decision, resolves the Attention item, issues the receipt and
+  posts the completion message, and running it twice changes nothing. A native write executed through web approval gets a signed receipt.
+- Run text goes to the people who may read it. Employee activity entries, employee
+  diagnostics and task progress updates show their text to those people; other
+  members see the entry or status without the text. Presence
+  reports whether an employee has an error as a flag. A later Defty reply reads
+  earlier replies as the current requester may receive them. Plan step text goes to
+  the plan's requester and to owners and admins, and live plan progress carries the
+  step position and status only. Heartbeat summaries and reasons are returned to
+  owners and admins.
+- Chat: message history pages by creation time and message id, so messages that
+  share a timestamp are each returned once (a plain timestamp cursor is still
+  accepted). An open thread shows reply edits and deletes live. Posting to an
+  archived space through the web route answers `409` `SPACE_ARCHIVED`, as the
+  other posting paths do. The @ and # popups ignore keys pressed during IME
+  composition, and Enter without Shift or Tab selects while Escape closes.
 - Docs: the Apps flags section of `docs/self-hosting.md` documents flag
   dependencies and the developer preview profile.
+
+- An agent action is reviewed by the member who requested it. Owners and admins
+  review when there is no active human requester; they read another active
+  member's request in activity and history. An approver assignment makes a member
+  a reviewer only when this rule does. The approve and reject
+  routes, the approval resolver, the personal MCP approval tools (`approval_list`,
+  `approval_get`, `approval_approve`, `approval_reject`), Attention approval items
+  and push delivery use this rule, and the reviewer also needs to see the
+  action's room. A reviewer whose role or room access has changed is refused when
+  the decision is applied.
+- Approval cards and Inbox and Attention approval rows carry `viewer_can_approve`
+  and `viewer_can_reject`. The card shows its buttons according to those flags and
+  "Waiting for review" when neither applies. The Inbox approval list and its
+  counts, the team dashboard "Approvals" count, an agent employee's pending
+  count and the task handoff count cover approvals the viewer can review. The dashboard
+  Agent widget shows "Review in Inbox" only on rows the viewer can review. The
+  activity feeds keep their read audience.
+- A stored approval result is tied to its action, so reusing an idempotency key on
+  another action runs that action afresh.
+- Document sends and plan imports proposed by an employee record the source
+  message they were checked against, and their review follows that message's
+  audience. Ordinary approve and reject check the reviewer's current role again
+  when the decision is applied.
+- Approved agent employee actions on tasks, task links and decisions run only when the action's
+  requester can see every task they name and the decision page. A missing, deleted,
+  other-workspace or hidden target gives one "not found" answer. Defty capture
+  actions act for the author of the source message, who must still be able to read
+  that message and see the target.
+- Wiki proposals: a proposed page update is applied only while the fields it writes are
+  unchanged since it was proposed and the employee can still reach the page; otherwise
+  the approval ends with a message and the page is left as it is. A proposed page
+  creation is made at the slug fixed when it was proposed, or not at all. A
+  proposal for a space or page the employee cannot reach is refused with
+  `WIKI_TARGET_UNAVAILABLE`. A failed knowledge-update capture can be retried
+  only when its original proposal can be found (`409 RETRY_UNAVAILABLE`
+  otherwise).
+- A plan created with an agent employee id (`POST /api/agent-plans`) binds only to an active agent employee of the
+  caller's workspace (`400 INVALID_AGENT_EMPLOYEE` otherwise). Approve, execute,
+  resume and abort are available to the plan's creator and to owners and admins;
+  a plan runs for its creator. Connected (`mcp__*`) tools are available to
+  workspace members, admins and owners, not to guests; a refused call makes no
+  provider call and settles its action as failed.
+- The daily standup and the meeting-prep brief are written from prepared evidence
+  with no tools offered to the model. A draft that contains a link, approval or
+  sign-off wording, or a task key or `[[deft:...]]` reference that is not in the
+  evidence uses the evidence-only form, and items without `source_ids` are
+  dropped. The brief is still delivered. In those cases the standup or brief appears in its evidence-only form.
+- Meeting briefs are generated for, delivered to and listed for active members of
+  the workspace the meeting belongs to; no brief is created for a person who is not
+  active, and a stored brief is shown again if the person is reactivated.
+  `GET /api/calendar/briefs` lists briefs of the session's workspace only.
+- Action and work-intent reads follow their audience: an action with no source
+  message or channel event is readable by its requester and by owners and admins. A workflow run
+  stores a bounded error message with the code `WORKFLOW_ACTION_FAILED`. A work
+  intent's status changes only through its own capture action.
+- The `space:created` event carries only the space id; clients load the space
+  through `GET /api/spaces`.
 
 Workspace isolation:
 
@@ -114,6 +193,38 @@ Workspace isolation:
   workspace. Note shares are limited to active members of the workspace. Guests
   do not receive the workspace standup, recent activity follows task
   visibility, and the unread notification count is per workspace.
+
+- Task events sent to the whole workspace (`task:created`, `task:updated`,
+  `task:deleted`, `task:bulk_updated`, `task:reaction_changed`) carry identifiers
+  and the names of changed fields. The task list, calendar and module views read
+  the task through the access-checked endpoints when an event arrives, with
+  reloads coalesced. The shared daily standup is returned to members when it was
+  built for all members; owners and admins can always read it.
+
+CI and security checks:
+
+- The API tests run as four parallel shards (`Test API (shard n/4)`), each on its
+  own runner and database. `DEFT_API_TEST_SHARD=i/n` selects a shard in
+  `scripts/email-preview-api-tests.mjs` and defaults to `1/1`, which runs the whole
+  suite. A `Test API` job passes only when every shard passed, so the required
+  check name and Build's dependency are unchanged. The shards start alongside Type
+  Check once the release-scope and app-boundary jobs finish; Build still needs Type
+  Check and every shard.
+- CodeQL reviewed findings use manifest v2 (`deft.codeql_false_positives.v2` in
+  `.github/codeql-reviewed-false-positives.json`). An entry matches on rule, path
+  and a fingerprint of the code on the flagged path, so edits that only move the
+  finding no longer need a new review, while a change to the code on the path, a new
+  finding, a duplicate or an unused entry fails the check. See
+  `docs/security/codeql-reviewed-findings.md`.
+
+- API tests: tests that shared fixture rows now create their own, the recovery
+  sweep tests wait out a busy advisory pool, and the restore-access fixture
+  computes its timestamps once, so the sharded run does not depend on file order.
+
+Dependencies:
+
+- `@hono/node-server` 2.1.5 to 2.1.7 (GHSA-qv5m-9pm6-hqp3, GHSA-jpvv-r467-5p4w).
+- `hono` 4.13.18 (GHSA-4m76-xfj5-7975, GHSA-h7mg-cq63-vhpq, GHSA-3gg2-335m-rxc6).
 
 Operator tooling:
 

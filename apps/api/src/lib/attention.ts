@@ -14,10 +14,11 @@ import {
 } from '@deft/db/schema';
 import { db } from './db.js';
 import { emitToUser } from '../socket.js';
-import { isModuleGovernedWriteActionName, visibleModuleActionSql } from './module-action-visibility.js';
+import { isModuleGovernedWriteActionName } from './module-action-visibility.js';
 import { scheduleAttentionDeliveries, scheduleAttentionDelivery } from './web-push.js';
 import { nativeDeliveryAccessSql } from './native-mention-visibility.js';
-import { actionReviewAssignmentSql, actionReviewerSql, loadActionReviewers } from './agent-action-requester.js';
+import { loadActionReviewers } from './agent-action-requester.js';
+import { currentRoleReviewableActionSql } from './agent-action-review-gate.js';
 
 export type AttentionLane = 'needs_you' | 'updates';
 export type AttentionPriority = 'critical' | 'high' | 'normal' | 'low';
@@ -96,32 +97,13 @@ export function visibleAttentionCondition(userId: string) {
 }
 
 /**
- * The shared action audience (visibleModuleActionSql) for `userId` under the
- * user's current active role in the action's org. Every attention read, count,
- * mutation, emission and backfill of an approval item goes through it, so an
- * item stops being served once its owner leaves the action's audience.
+ * An approval item is served to its owner while the owner may review the
+ * action through the approve and reject routes (agent-action-review-gate.ts),
+ * under the owner's current role. Every read, count, mutation, emission,
+ * delivery and backfill of an approval item goes through it.
  */
-function currentActionAudienceSql(userId: string): SQL {
-  const hasRole = (roles: string[]) => sql`EXISTS (
-    SELECT 1 FROM ${orgMembers} audience_member
-    WHERE audience_member.org_id = ${agentActions.org_id}
-      AND audience_member.user_id = ${userId}
-      AND audience_member.is_active = true
-      AND audience_member.role IN (${sql.join(roles.map((role) => sql`${role}`), sql`, `)})
-  )`;
-  return sql`(
-    (${hasRole(['owner', 'admin'])} AND ${visibleModuleActionSql('owner', { userId })})
-    OR (${hasRole(['member'])} AND ${visibleModuleActionSql('member', { userId })})
-    OR (${hasRole(['guest'])} AND ${visibleModuleActionSql('guest', { userId })})
-  )`;
-}
-
-/**
- * An approval item is served to its owner while the owner is in the action's
- * audience and is one of the action's reviewers (agent-action-requester.ts).
- */
-function currentApprovalRecipientSql(userId: string): SQL {
-  return sql`(${currentActionAudienceSql(userId)} AND ${actionReviewerSql(sql`${userId}`)})`;
+export function currentApprovalRecipientSql(userId: string | SQL): SQL {
+  return currentRoleReviewableActionSql(userId);
 }
 
 /** Outbound attention item: approval items never carry action params. */
@@ -620,15 +602,14 @@ export async function filterVisibleAttentionItems<T extends typeof attentionItem
       .leftJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, userId)))
       .where(inArray(spaces.id, spaceIds))
     : [];
-  const visibleActions = actionIds.length > 0
+  const knownActions = actionIds.length > 0
     ? await db
-      .select({ id: agentActions.id })
+      .select({ id: agentActions.id, allowed: sql<boolean>`coalesce((${currentApprovalRecipientSql(userId)}), false)` })
       .from(agentActions)
-      .where(and(
-        inArray(agentActions.id, actionIds),
-        currentApprovalRecipientSql(userId),
-      ))
+      .where(inArray(agentActions.id, actionIds))
     : [];
+  const existingActions = new Set(knownActions.map((row) => row.id));
+  const visibleActions = knownActions.filter((row) => row.allowed);
   const allowedMessages = new Set(visibleMessages.filter((row) => row.type === 'public' || row.member_id).map((row) => row.id));
   const allowedSpaces = new Set(visibleSpaces.filter((row) => row.type === 'public' || row.member_id).map((row) => row.id));
   const allowedActions = new Set(visibleActions.map((row) => row.id));
@@ -637,7 +618,11 @@ export async function filterVisibleAttentionItems<T extends typeof attentionItem
     ||
     (item.source_type === 'message' && !allowedMessages.has(item.source_id))
     || (item.source_type === 'space' && !allowedSpaces.has(item.source_id))
-    || (item.source_type === 'agent_action' && !allowedActions.has(item.source_id)));
+    || (item.source_type === 'agent_action' && !existingActions.has(item.source_id)));
+  // Approval items are held back, not closed, while their owner cannot review
+  // the action; attention maintenance resolves those that stay that way.
+  const heldBack = rows.filter((item) => item.source_type === 'agent_action'
+    && existingActions.has(item.source_id) && !allowedActions.has(item.source_id));
   for (const item of inaccessible) {
     await transitionAttentionItem({
       orgId: item.org_id,
@@ -648,8 +633,67 @@ export async function filterVisibleAttentionItems<T extends typeof attentionItem
       actorUserId: userId,
     });
   }
-  const hidden = new Set(inaccessible.map((item) => item.id));
+  const hidden = new Set([...inaccessible, ...heldBack].map((item) => item.id));
   return rows.filter((item) => !hidden.has(item.id));
+}
+
+/** Whether the item's owner may still open it (checked again right before a push is sent). */
+export async function attentionItemStillVisible(item: { id: string; org_id: string; user_id: string }) {
+  const [row] = await db.select({ id: attentionItems.id }).from(attentionItems).where(and(
+    eq(attentionItems.id, item.id), eq(attentionItems.org_id, item.org_id), eq(attentionItems.user_id, item.user_id),
+    visibleAttentionCondition(item.user_id),
+  )).limit(1);
+  return Boolean(row);
+}
+
+let approvalSweepCursor = '';
+
+/**
+ * Resolves, in one bounded statement, open approval items whose owner can no
+ * longer review the action, re-checking that inside the update.
+ */
+export async function resolveApprovalItemsWithoutReviewer(limit = 500) {
+  const openStates: AttentionState[] = ['open_unseen', 'open_seen', 'acknowledged', 'snoozed'];
+  const withoutReviewer = and(
+    eq(attentionItems.source_type, 'agent_action'),
+    inArray(attentionItems.state, openStates),
+    sql`NOT EXISTS (SELECT 1 FROM ${agentActions} WHERE ${agentActions.id} = ${attentionItems.source_id}
+      AND ${agentActions.org_id} = ${attentionItems.org_id}
+      AND ${currentApprovalRecipientSql(sql`${attentionItems.user_id}`)})`,
+  );
+  const now = new Date();
+  // Each pass checks the next `limit` open approval items by id, so the work
+  // per pass is bounded and every item is reached across passes.
+  const batch = db.select({ id: attentionItems.id }).from(attentionItems).where(and(
+    eq(attentionItems.source_type, 'agent_action'),
+    inArray(attentionItems.state, openStates),
+    sql`${attentionItems.id} > ${approvalSweepCursor}`,
+  )).orderBy(attentionItems.id).limit(limit);
+  const scanned = await batch;
+  approvalSweepCursor = scanned.length === limit ? scanned[scanned.length - 1]!.id : '';
+  if (scanned.length === 0) return 0;
+  const resolved = await db.update(attentionItems).set({
+    state: 'resolved',
+    seen_at: sql`COALESCE(${attentionItems.seen_at}, ${now})`,
+    snoozed_until: null,
+    resolved_at: now,
+    resolution: 'source_access_removed',
+    version: sql`${attentionItems.version} + 1`,
+    updated_at: now,
+  }).where(and(inArray(attentionItems.id, scanned.map((row) => row.id)), withoutReviewer))
+    .returning({ id: attentionItems.id, org_id: attentionItems.org_id, user_id: attentionItems.user_id, version: attentionItems.version });
+  if (resolved.length > 0) {
+    await db.insert(attentionEvents).values(resolved.map((item) => ({
+      org_id: item.org_id,
+      attention_item_id: item.id,
+      user_id: item.user_id,
+      event_type: 'resolved',
+      source_event_id: `transition:${item.id}:${item.version}:resolved:${now.getTime()}`,
+      actor_user_id: item.user_id,
+      payload: { resolution: 'source_access_removed', snoozed_until: null },
+    })));
+  }
+  return resolved.length;
 }
 
 /**
@@ -669,20 +713,25 @@ export async function ensureActionApprovers(action: AgentAction, knownReviewers?
       eq(agentActionApprovers.org_id, action.org_id),
       eq(agentActionApprovers.action_id, action.id),
     ))).filter((row) => reviewers.includes(row.user_id));
-  if (explicit.length > 0) {
-    return Array.from(new Set(
-      explicit.filter((row) => row.decision === 'pending').map((row) => row.user_id),
-    ));
-  }
-
-  if (reviewers.length > 0) {
+  if (explicit.length === 0 && reviewers.length > 0) {
     await db.insert(agentActionApprovers).values(reviewers.map((userId) => ({
       org_id: action.org_id,
       action_id: action.id,
       user_id: userId,
     }))).onConflictDoNothing();
   }
-  return reviewers;
+  // Recipients are the candidates the review gate accepts: assignees who
+  // still pass the room and source checks, or the reviewers when none do.
+  const candidates = [...new Set([...reviewers, ...explicit.map((row) => row.user_id)])];
+  if (candidates.length === 0) return [];
+  const accepted = await db.selectDistinct({ user_id: orgMembers.user_id }).from(orgMembers).where(and(
+    eq(orgMembers.org_id, action.org_id),
+    inArray(orgMembers.user_id, candidates),
+    sql`EXISTS (SELECT 1 FROM ${agentActions} WHERE ${agentActions.id} = ${action.id}
+      AND ${agentActions.org_id} = ${action.org_id}
+      AND ${currentApprovalRecipientSql(sql`${orgMembers.user_id}`)})`,
+  ));
+  return accepted.map((row) => row.user_id);
 }
 
 export async function recordActionApproverDecision(params: {
@@ -743,6 +792,23 @@ export async function ensureAttentionBackfillForUser(params: { orgId: string; us
     await syncNotificationToAttention(notification, { deliver: false });
   }
 
+  // Approval items closed because the user lost access open again once the
+  // user reviews the action again; items the user closed stay closed.
+  const reopenedAt = new Date();
+  await db.update(attentionItems).set({
+    state: 'open_unseen', resolved_at: null, resolution: null,
+    version: sql`${attentionItems.version} + 1`, updated_at: reopenedAt,
+  }).where(and(
+    eq(attentionItems.org_id, params.orgId),
+    eq(attentionItems.user_id, params.userId),
+    eq(attentionItems.source_type, 'agent_action'),
+    eq(attentionItems.state, 'resolved'),
+    eq(attentionItems.resolution, 'source_access_removed'),
+    sql`EXISTS (SELECT 1 FROM ${agentActions} WHERE ${agentActions.id} = ${attentionItems.source_id}
+      AND ${agentActions.org_id} = ${attentionItems.org_id} AND ${agentActions.approval_status} = 'pending'
+      AND ${currentApprovalRecipientSql(params.userId)})`,
+  ));
+
   const pendingActions = await db
     .select()
     .from(agentActions)
@@ -750,9 +816,13 @@ export async function ensureAttentionBackfillForUser(params: { orgId: string; us
       eq(agentActions.org_id, params.orgId),
       eq(agentActions.approval_status, 'pending'),
       inArray(agentActions.approval_tier, ['quick', 'full']),
-      // Only actions in the user's current audience (shared rule).
-      visibleModuleActionSql(params.role, { userId: params.userId, orgId: params.orgId }),
-      actionReviewAssignmentSql(params.userId, { pendingOnly: true }),
+      // Actions the user reviews now that have no item for the user yet, so
+      // the window moves past approvals already raised.
+      currentApprovalRecipientSql(params.userId),
+      sql`NOT EXISTS (SELECT 1 FROM ${attentionEvents} raised
+        WHERE raised.org_id = ${agentActions.org_id} AND raised.user_id = ${params.userId}
+          AND raised.event_type = 'source_event'
+          AND raised.source_event_id = 'approval-requested:' || ${agentActions.id})`,
     ))
     .orderBy(desc(agentActions.created_at))
     .limit(100);
@@ -770,6 +840,8 @@ export async function transitionAttentionItem(params: {
   resolution?: string | null;
   snoozedUntil?: Date | null;
   actorUserId?: string;
+  /** A user acting on their own item: it changes only while they may still open it. */
+  viewerId?: string;
 }) {
   const now = new Date();
   const allowedFrom: Record<AttentionState, AttentionState[]> = {
@@ -802,6 +874,7 @@ export async function transitionAttentionItem(params: {
       eq(attentionItems.org_id, params.orgId),
       eq(attentionItems.user_id, params.userId),
       inArray(attentionItems.state, allowedFrom[params.state]),
+      params.viewerId ? visibleAttentionCondition(params.viewerId) : sql`true`,
     ))
     .returning();
   if (!item) return null;
@@ -832,6 +905,7 @@ export async function recordAttentionFeedback(params: {
       state: 'resolved',
       resolution: 'not_for_me',
       actorUserId: params.userId,
+      viewerId: params.userId,
     });
   }
 
@@ -843,6 +917,7 @@ export async function recordAttentionFeedback(params: {
       eq(attentionItems.org_id, params.orgId),
       eq(attentionItems.user_id, params.userId),
       inArray(attentionItems.state, ['open_unseen', 'open_seen', 'acknowledged']),
+      visibleAttentionCondition(params.userId),
     ))
     .limit(1);
   if (!current) return null;
@@ -860,7 +935,7 @@ export async function recordAttentionFeedback(params: {
       version: sql`${attentionItems.version} + 1`,
       updated_at: now,
     })
-    .where(eq(attentionItems.id, current.id))
+    .where(and(eq(attentionItems.id, current.id), visibleAttentionCondition(params.userId)))
     .returning();
   if (!item) return null;
   await db.insert(attentionEvents).values({

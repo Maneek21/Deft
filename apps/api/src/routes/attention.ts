@@ -8,8 +8,8 @@ import {
   attentionItems,
 } from '@deft/db/schema';
 import { db } from '../lib/db.js';
-import { visibleModuleActionSql } from '../lib/module-action-visibility.js';
 import {
+  currentApprovalRecipientSql,
   ensureAttentionBackfillForUser,
   filterVisibleAttentionItems,
   projectAttentionItem,
@@ -79,8 +79,7 @@ async function hasVisibleItem(orgId: string, userId: string, itemId: string) {
 
 /**
  * Attach each agent-action item's approval for the viewer. An item whose
- * action is outside the viewer's current action audience (for example after
- * a role change) is dropped, so neither its params nor its summary are served.
+ * action the viewer cannot review now (under the current role) is dropped, so neither its params nor its summary are served.
  */
 async function hydrateApprovals(
   viewer: { id: string; org_id: string; role?: string },
@@ -112,7 +111,7 @@ async function hydrateApprovals(
     .where(and(
       inArray(agentActions.id, actionIds),
       eq(agentActions.org_id, viewer.org_id),
-      visibleModuleActionSql(viewer.role, { userId: viewer.id, orgId: viewer.org_id }),
+      currentApprovalRecipientSql(viewer.id),
     ));
   // Whether this viewer may approve or reject, as the approve and reject routes
   // answer; absent when only the action's own path can tell (App Run releases).
@@ -220,6 +219,7 @@ attentionRoutes.post('/:id/seen', async (c) => {
     itemId: c.req.param('id'),
     state: 'open_seen',
     actorUserId: user.id,
+    viewerId: user.id,
   });
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
   return c.json({ item: projectAttentionItem(item) });
@@ -236,6 +236,7 @@ attentionRoutes.post('/:id/acknowledge', async (c) => {
     itemId: c.req.param('id'),
     state: 'acknowledged',
     actorUserId: user.id,
+    viewerId: user.id,
   });
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
   return c.json({ item: projectAttentionItem(item) });
@@ -258,6 +259,7 @@ attentionRoutes.post('/:id/snooze', async (c) => {
     state: 'snoozed',
     snoozedUntil: until,
     actorUserId: user.id,
+    viewerId: user.id,
   });
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
   return c.json({ item: projectAttentionItem(item) });
@@ -276,6 +278,7 @@ attentionRoutes.post('/:id/resolve', async (c) => {
     state: 'resolved',
     resolution: typeof body?.resolution === 'string' ? body.resolution.slice(0, 120) : 'dismissed',
     actorUserId: user.id,
+    viewerId: user.id,
   });
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
   return c.json({ item: projectAttentionItem(item) });
