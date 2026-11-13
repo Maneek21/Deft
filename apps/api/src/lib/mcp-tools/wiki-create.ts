@@ -24,6 +24,7 @@ import { employeeCanAccessSpace } from './employee-space-access.js';
 import { generateReceipt } from '../receipts.js';
 import { enqueue, QUEUE_NAMES } from '../queues.js';
 import { toPlainText } from '../plain-text.js';
+import { visibleWikiPageCondition } from '../wiki-visibility.js';
 import {
   readFrozenTarget,
   revisionDigest,
@@ -238,11 +239,11 @@ export async function executeWikiCreate(
         deny('wiki_create: space_id or source_space_id is required when scope is space');
       }
       if (args.source_message_id?.trim()) {
-        const readerIds = [
+        // A capture action reads its source message as the message author only.
+        const readerIds = (opts?.sourceReaderUserId ? [opts.sourceReaderUserId] : [
           shadowUserId,
-          opts?.sourceReaderUserId ?? null,
           args.source_user_id ?? null,
-        ].filter((value, index, values): value is string =>
+        ]).filter((value, index, values): value is string =>
           typeof value === 'string' && value.length > 0 && values.indexOf(value) === index,
         );
         let source: { id: string; space_id: string; user_id: string; content: string } | null = null;
@@ -579,6 +580,15 @@ async function employeeCanWriteWikiPage(
   return true;
 }
 
+async function wikiPageVisibleToUser(executor: Executor, pageId: string, userId: string, orgId: string): Promise<boolean> {
+  const [row] = await executor
+    .select({ id: wikiPages.id })
+    .from(wikiPages)
+    .where(and(eq(wikiPages.id, pageId), eq(wikiPages.org_id, orgId), visibleWikiPageCondition(userId, orgId)))
+    .limit(1);
+  return Boolean(row);
+}
+
 /**
  * Digest over the current values of every column this patch writes, plus the
  * columns a write is derived from (the page's space and origin columns supply
@@ -703,7 +713,9 @@ export async function executeWikiUpdate(
 
     const { page, changedFields } = await db.transaction(async (tx) => {
       const existingPage = await findWikiUpdateTarget(tx, ctx.org_id, frozen ?? args, true);
-      if (!existingPage || !(await employeeCanWriteWikiPage(tx, existingPage, ctx, shadowUserId, true))) {
+      // A capture action changes only a page its source message author can see.
+      if (!existingPage || !(await employeeCanWriteWikiPage(tx, existingPage, ctx, shadowUserId, true))
+        || (opts?.sourceReaderUserId && !(await wikiPageVisibleToUser(tx, existingPage.id, opts.sourceReaderUserId, ctx.org_id)))) {
         throw new WikiUpdateRefusal(frozen ? errorResult(WIKI_PAGE_UNAVAILABLE_ERROR) : wikiTargetUnavailableResult());
       }
       if (frozen && wikiUpdateRevision(existingPage, args.patch) !== frozen.revision) {
@@ -806,11 +818,11 @@ export async function executeWikiUpdate(
         refuse(`wiki_update: source space ${sourceSpaceId} is not accessible to this employee`);
       }
       if (args.source_message_id?.trim()) {
-        const readerIds = [
+        // A capture action reads its source message as the message author only.
+        const readerIds = (opts?.sourceReaderUserId ? [opts.sourceReaderUserId] : [
           shadowUserId,
-          opts?.sourceReaderUserId ?? null,
           args.source_user_id ?? null,
-        ].filter((value, index, values): value is string =>
+        ]).filter((value, index, values): value is string =>
           typeof value === 'string' && value.length > 0 && values.indexOf(value) === index,
         );
         let source: { id: string; space_id: string; user_id: string; content: string } | null = null;
