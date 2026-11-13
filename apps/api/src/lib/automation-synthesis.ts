@@ -23,7 +23,7 @@ export type MeetingPrepDraft = z.infer<typeof meetingPrepDraftSchema>;
 
 /**
  * Parse a model draft against the supplied evidence. Checks run on the decoded
- * item text: an item that cites no evidence is dropped; an unknown source, a
+ * item text: an item that cites no evidence is dropped first; in a cited item an unknown source, a
  * native link, or an approval role the cited evidence does not state rejects
  * the whole draft. `evidence` maps source ids to their text (a Set of ids
  * supplies no text, so no approval claim can be supported).
@@ -45,7 +45,8 @@ export function parseGroundedDraft<T>(
   for (const [key, section] of Object.entries(parsed)) {
     if (!Array.isArray(section)) continue;
     const items = section as Array<{ text: string; source_ids?: string[] }>;
-    for (const item of items) {
+    const citedItems = items.filter((item) => (item.source_ids ?? []).length > 0);
+    for (const item of citedItems) {
       for (const sourceId of item.source_ids ?? []) {
         if (!evidence.has(sourceId)) {
           throw new Error(`Draft cited unknown source: ${sourceId}`);
@@ -59,7 +60,6 @@ export function parseGroundedDraft<T>(
         throw new Error('Draft states an approval requirement the cited evidence does not');
       }
     }
-    const citedItems = items.filter((item) => (item.source_ids ?? []).length > 0);
     dropped += items.length - citedItems.length;
     kept += citedItems.length;
     parsed[key] = citedItems;

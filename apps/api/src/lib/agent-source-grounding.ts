@@ -80,16 +80,52 @@ export function hasUnverifiedApprovalRoles(text: string): boolean {
 }
 
 const APPROVAL_ROLES = [/\binternal\s+stakeholders?\b/iu, /\bproject[ -]leads?\b/iu, /\baccount\s+managers?\b/iu];
+const APPROVAL_TERM = /\b(?:approv\w*|sign[ -]?offs?|signs?\s+off)\b/iu;
+const APPROVAL_NEED = /\b(?:require[sd]?|requiring|needs?|needed|must|mandatory|necessary|pending|awaiting|waiting)\b/iu;
+const NEGATION = /\b(?:no|not|never|without)\b|n't\b/iu;
+const HOLDER_STOPWORDS = new Set(['the', 'a', 'an', 'their', 'his', 'her', 'our', 'your', 'its', 'this', 'that', 'from', 'by', 'of', 'for', 'is', 'are', 'was', 'be', 'and', 'or']);
 
-/** An approval-role claim must name a role that the evidence itself ties to approval or sign-off. */
-export function hasUnsupportedApprovalRoles(text: string, evidence: string): boolean {
-  const evidenceSentences = evidence.split(/(?<=[.!?])\s+|\n+|"\s*[,}\]]\s*/u)
-    .filter(sentence => /\b(?:approv\w*|sign[ -]?off|sign\s+off)\b/iu.test(sentence));
-  return text.split(/(?<=[.!?])\s+|\n+/u).some(sentence => hasUnverifiedApprovalRoles(sentence)
-    && APPROVAL_ROLES.some(role => role.test(sentence) && !evidenceSentences.some(source => role.test(source))));
+/** Words naming who approves: the word before the approval term and up to three after "from"/"by". */
+function approvalHolders(sentence: string): string[] {
+  const before = sentence.match(/([A-Za-z][\w'-]*)\s+(?:approv\w*|sign[ -]?offs?)\b/iu)?.[1];
+  const after = sentence.match(/\b(?:approv\w*|sign[ -]?offs?|signs?\s+off)\b[^.!?\n]{0,40}?\b(?:from|by)\s+((?:[A-Za-z][\w'-]*\s*){1,3})/iu)?.[1];
+  return [before ?? '', ...(after ?? '').split(/\s+/)]
+    .map(word => word.toLowerCase().replace(/'s$/u, ''))
+    .filter(word => word && !HOLDER_STOPWORDS.has(word) && !NEGATION.test(word) && !APPROVAL_NEED.test(word));
 }
 
-/** Any Markdown link or reference definition whose destination is a native Deft path. */
+/**
+ * An approval or sign-off requirement (or its denial) must be stated by an
+ * evidence sentence with the same polarity, the same named roles and the same
+ * approver. Text and evidence are plain decoded prose.
+ */
+export function hasUnsupportedApprovalRoles(text: string, evidence: string): boolean {
+  const evidenceSentences = evidence.split(/(?<=[.!?])\s+|\n+/u).filter(sentence => APPROVAL_TERM.test(sentence));
+  return text.split(/(?<=[.!?])\s+|\n+/u).some((sentence) => {
+    const roles = APPROVAL_ROLES.filter(role => role.test(sentence));
+    if (!APPROVAL_TERM.test(sentence) || (roles.length === 0 && !APPROVAL_NEED.test(sentence))) return false;
+    const negated = NEGATION.test(sentence);
+    const holders = approvalHolders(sentence);
+    return !evidenceSentences.some(source => NEGATION.test(source) === negated
+      && roles.every(role => role.test(source))
+      && holders.every(word => new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'iu').test(source)));
+  });
+}
+
+/** Split serialized JSON into its string values so each one reads as separate prose. */
+export function jsonStringsAsLines(text: string): string {
+  return text.replace(/"\s*[,:}\]]\s*"?|[{[]\s*"/gu, '\n');
+}
+
+function decodeMarkdownDestination(destination: string): string {
+  return destination
+    .replace(/&#x([0-9a-f]+);?/giu, (_, hex: string) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);?/gu, (_, dec: string) => String.fromCodePoint(Number(dec)))
+    .replace(/&(sol|quest|num|amp|period);/giu, (_, name: string) => ({ sol: '/', quest: '?', num: '#', amp: '&', period: '.' })[name.toLowerCase()]!)
+    .replace(/\\([!-/:-@[-`{-~])/gu, '$1');
+}
+
+/** Any Markdown link or reference definition whose (decoded) destination is a native Deft path. */
 export function hasNativeLinkDestination(text: string): boolean {
   const destinations = [
     ...[...text.matchAll(/\]\(\s*<([^>\n]*)>/gu)].map(match => match[1]!),
@@ -98,7 +134,7 @@ export function hasNativeLinkDestination(text: string): boolean {
   ];
   return destinations.some((destination) => {
     try {
-      const url = new URL(destination.trim(), 'https://deft.invalid');
+      const url = new URL(decodeMarkdownDestination(destination).trim(), 'https://deft.invalid');
       return /^\/(modules|tasks|knowledge|calendar|chat|notes)(\/|\?|#|$)/u.test(`${url.pathname}${url.search}${url.hash}`);
     } catch { return false; }
   });

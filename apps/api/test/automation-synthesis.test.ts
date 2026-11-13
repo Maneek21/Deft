@@ -168,3 +168,43 @@ test('grounded parser with minItems rejects an empty draft; without it an empty 
   assert.throws(() => parseGroundedDraft('{}', standupDraftSchema, evidenceText, { minItems: 1 }), /cites/i);
   assert.deepEqual(parseGroundedDraft('{}', meetingPrepDraftSchema, evidenceText).agenda, []);
 });
+
+const backslash = String.fromCharCode(92);
+for (const link of ['[task](&#47;tasks?task=invented)', '[task](&#x2F;tasks?task=invented)', `[task](${backslash}/tasks?task=invented)`]) {
+  test(`grounded parser rejects a Markdown-escaped native link ${JSON.stringify(link)}`, () => {
+    assert.throws(() => parseGroundedDraft(
+      JSON.stringify({ done: [], in_progress: [{ text: link, source_ids: ['task:1'] }], blocked: [] }),
+      standupDraftSchema,
+      evidenceText,
+    ), /link/i);
+  });
+}
+
+const approvalCases: Array<[string, string, string, boolean]> = [
+  ['an approval need with no approval evidence', 'We need project lead approval before launch.', 'Launch is tomorrow.', false],
+  ['an unlisted approver the evidence does not name', 'Approval from the engineering manager is needed before launch.', 'Ana approved the launch plan.', false],
+  ['a requirement the evidence denies', 'Project lead approval is required before launch.', 'Project lead approval is not required for this launch.', false],
+  ['a requirement stated with quoted wording', 'Project lead approval is required before launch.', 'The project lead\'s "OK", or approval, is required before launch.', true],
+  ['a named approver the evidence states', 'MKT-1 is awaiting approval from Lina.', 'MKT-1 is waiting on Lina\'s approval.', true],
+];
+for (const [label, claim, source, accepted] of approvalCases) {
+  test(`grounded parser ${accepted ? 'accepts' : 'rejects'} ${label}`, () => {
+    const parse = () => parseGroundedDraft(
+      JSON.stringify({ agenda: [{ text: claim, source_ids: ['message:9'] }], decisions: [], updates: [] }),
+      meetingPrepDraftSchema,
+      new Map([['message:9', source]]),
+    );
+    if (accepted) assert.equal(parse().agenda.length, 1);
+    else assert.throws(parse, /approval/i);
+  });
+}
+
+test('grounded parser drops an uncited item without checking it, keeping cited siblings', () => {
+  const draft = parseGroundedDraft(
+    JSON.stringify({ done: [{ text: 'See [task](/tasks?task=invented). Project lead approval is required.', source_ids: [] }], in_progress: [{ text: 'MKT-1 is in progress.', source_ids: ['task:1'] }], blocked: [] }),
+    standupDraftSchema,
+    evidenceText,
+  );
+  assert.deepEqual(draft.done, []);
+  assert.equal(draft.in_progress.length, 1);
+});

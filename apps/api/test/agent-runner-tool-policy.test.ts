@@ -270,3 +270,14 @@ test('the default policy prompt keeps the full immutable platform policy', async
   await runAgentQuery({ ...standupLikeCall, content: 'Hello there' });
   assert.ok(providerCalls[0]!.system.includes(IMMUTABLE_DEFT_PLATFORM_POLICY));
 });
+
+test('toolPolicy none checks approval claims per JSON item, not across items', async () => {
+  const content = 'Return JSON only.\n\nEvidence:\n[{"source_id":"msg:1","text":"Project lead approval is required before launch."},{"source_id":"msg:2","text":"The account manager is preparing notes."}]';
+  const draft = JSON.stringify({ agenda: [
+    { text: 'Project lead approval is required before launch.', source_ids: ['msg:1'] },
+    { text: 'The account manager is preparing notes.', source_ids: ['msg:2'] },
+  ], decisions: [], updates: [] });
+  nextResponses = [{ content: [{ type: 'text', text: draft }], stop_reason: 'end_turn' }];
+  const response = await runAgentQuery({ ...standupLikeCall, content, toolPolicy: 'none' } as any);
+  assert.equal(response.text, draft);
+});
