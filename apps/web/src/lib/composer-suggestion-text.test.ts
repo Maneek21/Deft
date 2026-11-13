@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { Schema } from '@tiptap/pm/model';
-import { mentionQueryAtCursor, suggestionTextBefore, taskQueryAtCursor } from './mention-suggestions';
+import { mentionQueryAtCursor, suggestionTextBefore, taskQueryAtCursor, taskSelectionText } from './mention-suggestions';
 
 const schema = new Schema({
   nodes: {
@@ -38,4 +38,8 @@ test('a query never spans a line break', () => {
 
 test('a mention chip before the cursor adds no text', () => {
   assert.equal(textAtEnd(paragraph('hi ', 'CHIP', ' @RC')), 'hi  @RC');
+});
+
+test('a picked task is inserted as its readable identifier', () => {
+  assert.equal(taskSelectionText({ id: 'b5d2c3e4-0000-4000-8000-000000000000', project_prefix: 'RC', number: 1001 }), 'RC-1001 ');
 });

@@ -82,7 +82,7 @@ import { EmojiPicker } from './emoji-picker';
 import { TaskAutocomplete } from './task-autocomplete';
 import { MentionAutocomplete } from './mention-autocomplete';
 import {
-  mentionQueryAtCursor, mentionSelectionContent, suggestionTextBefore, taskQueryAtCursor, type MentionSelection,
+  mentionQueryAtCursor, mentionSelectionContent, suggestionTextBefore, taskQueryAtCursor, taskSelectionText, type MentionSelection,
 } from '@/lib/mention-suggestions';
 import { nativeMentionsAvailable } from '@/lib/native-mentions';
 import { MobileActionSheet } from './mobile-action-sheet';
@@ -496,7 +496,7 @@ export function RichComposer({
       const deleteFrom = from - hashMatch.length;
       editor.chain().focus()
         .deleteRange({ from: deleteFrom, to: from })
-        .insertContent(`<task|${task.project_prefix}-${task.number}|${task.id}>`)
+        .insertContent(taskSelectionText(task))
         .run();
     }
     setTaskAutocompleteOpen(false);
