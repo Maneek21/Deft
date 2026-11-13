@@ -1145,6 +1145,15 @@ agentRoutes.get('/actions/:id/task-link-review', async (c) => {
  */
 export type ActionReviewer = { id: string; org_id: string; role?: string; sid?: string };
 
+/**
+ * Kinds whose decisions run through the approval resolver. Bulk creates are
+ * among them: the resolver keeps a failed batch's retry identity, its
+ * proposer and its rejection digest.
+ */
+function decidesThroughResolver(action: string): boolean {
+  return isApprovalResolverAction(action) || isModuleRecordBulkCreateAction(action);
+}
+
 agentRoutes.post('/actions/:id/approve', (c) => approveActionAsReviewer(c, c.get('user'), c.req.param('id')));
 
 /** Approve an action for `user`: the web approve route and the personal MCP tool. */
@@ -1163,7 +1172,7 @@ export async function approveActionAsReviewer(c: Context, user: ActionReviewer, 
   // Resolver-owned MCP writes and App Run releases enter the shared approval
   // boundary. Legacy Defty actions (create_task/update_task_status/…) still
   // use the original executeAction path.
-  if (isApprovalResolverAction(action.action)) {
+  if (decidesThroughResolver(action.action)) {
     let nativeGuard: ((tx: AppRunTransaction) => Promise<void>) | undefined;
     if (action.app_run_id) {
       // Native proposal participant IDs are immutable. Approval authorization
@@ -1477,6 +1486,8 @@ async function ownedApprovalResponse(
       code: 'APPROVAL_SUPERSEDED',
     }, 409);
   }
+  // The proposing employee hears the settled decision, as on the resolver's path.
+  if (outcome.kind !== 'reopened') await publishSettledApprovalResolution(action.id, actorUserId);
   const execResult = outcome.kind === 'succeeded'
     ? { success: true as const, result: outcome.result }
     : { success: false as const, result: outcome.result, error: outcome.error };
@@ -1583,7 +1594,7 @@ export async function rejectActionAsReviewer(
 
   // Resolver-owned MCP writes and App Run releases use the same idempotent,
   // permission-checked rejection boundary.
-  if (isApprovalResolverAction(action.action)) {
+  if (decidesThroughResolver(action.action)) {
     const result = await resolveRejectAction(actionId, user.id, reason);
     if (result.status === 'error') {
       const statusCode =
@@ -1692,6 +1703,7 @@ export async function rejectActionAsReviewer(
     resolution: 'rejected',
     actorUserId: user.id,
   });
+  await publishSettledApprovalResolution(actionId, user.id);
 
   if (
     action.source === 'defty_capture'

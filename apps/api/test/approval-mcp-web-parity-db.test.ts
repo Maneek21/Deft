@@ -102,7 +102,7 @@ before(async () => {
 after(async () => {
   if (!client) return;
   for (const org of [orgId, otherOrgId]) {
-    for (const table of ['oauth_audit_events', 'action_receipts', 'agent_action_approvers', 'attention_items', 'notifications', 'audit_log',
+    for (const table of ['agent_channel_events', 'oauth_audit_events', 'action_receipts', 'agent_action_approvers', 'attention_items', 'notifications', 'audit_log',
       'task_activity', 'tasks', 'agent_actions', 'attachment_derivatives', 'message_attachments', 'files', 'messages']) {
       await q(`DELETE FROM ${table} WHERE org_id = $1`, [org]).catch(() => undefined);
     }
@@ -174,6 +174,37 @@ test('P2: a document-send rejected over MCP leaves the same row, decision and re
   assert.deepEqual(await decisions(viaMcp), [{ user_id: bob, decision: 'rejected' }]);
   const receipts = async (id: string) => (await q('SELECT decision FROM action_receipts WHERE action_id = $1', [id])).rows;
   assert.deepEqual(await receipts(viaMcp), await receipts(viaWeb));
+  // The proposing employee hears both rejections.
+  for (const id of [viaWeb, viaMcp]) {
+    const events = await q(`SELECT 1 FROM agent_channel_events WHERE org_id = $1 AND kind = 'approval.resolved' AND payload->>'action_id' = $2`, [orgId, id]);
+    assert.equal(events.rowCount, 1);
+  }
+});
+
+test('P2b: a bulk create a person proposed over MCP keeps its retry identity and proposer when rejected, on web and MCP', { skip: !url }, async () => {
+  const bulk = async () => {
+    const id = randomUUID();
+    await q(`INSERT INTO agent_actions (id, org_id, user_id, source, action, params, approval_tier, approval_status)
+       VALUES ($1, $2, $3, 'mcp', 'module_record_bulk_create', $4::jsonb, 'full', 'pending')`, [id, orgId, bob, JSON.stringify({
+      module_id: 'test.parity-equipment', collection_key: 'assets', expected_manifest_digest: `sha256:${'a'.repeat(64)}`,
+      rows: [{ data: { serial: `PARITY-${id.slice(0, 6)}` } }], idempotency_key: `parity-bulk-${id}`,
+      __deft_human_mcp_principal: { kind: 'human_mcp_v1', client_id: `parity-${s}` },
+    })]);
+    return id;
+  };
+  const viaWeb = await bulk();
+  const viaMcp = await bulk();
+  assert.equal((await web(bob, viaWeb, 'reject')).status, 200);
+  const r = await human.humanApprovalReject({ action_id: viaMcp },
+    { ...ctx(bob), scopes: ['read:workspace', 'write:workspace', 'read:modules', 'write:modules'] });
+  assert.notEqual(r.isError, true, text(r));
+  for (const id of [viaWeb, viaMcp]) {
+    const rejected = await row(id);
+    assert.equal(rejected.approval_status, 'rejected');
+    assert.equal(typeof rejected.params.idempotency_digest, 'string');
+    const receipt = await q('SELECT proposer FROM action_receipts WHERE action_id = $1 AND decision = $2', [id, 'rejected']);
+    assert.deepEqual(receipt.rows, [{ proposer: 'user' }]);
+  }
 });
 
 test('P3: a resolver-owned employee action approved over MCP records the decision and the confirmation as on the web', { skip: !url }, async () => {
@@ -308,4 +339,16 @@ test('D2: an attention idempotency key reused on another item returns nothing fr
   const again = await human.humanAttentionAcknowledge({ attention_id: first, idempotency_key: key }, ctx(bob));
   assert.equal(again.isError, true);
   assert.equal(text(again).includes('PARITY-FIRST-ITEM'), false);
+  // Resolving without a resolution records the web's default.
+  const resolved = await human.humanAttentionResolve({ attention_id: second }, ctx(bob));
+  assert.notEqual(resolved.isError, true, text(resolved));
+  assert.equal((await q('SELECT resolution FROM attention_items WHERE id = $1', [second])).rows[0].resolution, 'dismissed');
+});
+
+test('P4b: with no active human requester, an admin decides over MCP and a member cannot', { skip: !url }, async () => {
+  const fallback = await employeeTask(agentUser, null);
+  assert.equal((await human.humanApprovalApprove({ action_id: fallback }, ctx(mallory))).isError, true);
+  const r = await human.humanApprovalApprove({ action_id: fallback }, ctx(carol));
+  assert.notEqual(r.isError, true, text(r));
+  assert.deepEqual(await decisions(fallback), [{ user_id: carol, decision: 'approved' }]);
 });
