@@ -144,6 +144,11 @@ test('a wiki proposal citing a message from the page\'s room, or citing none, st
   const approved = await approveAction(JSON.parse(text(moved)).approval_id, f.adminId);
   assert.equal(approved.status, 'ok', JSON.stringify(approved));
   assert.equal((await f.client.query('SELECT content FROM wiki_pages WHERE id = $1', [movedPage])).rows[0].content, 'Moved again');
+  // An empty source room is no room, as when the write runs.
+  const emptyRoom = await wikiUpdate({
+    caller_employee_slug: SLUG, page_id: pageB, patch: { content: 'x' }, source_space_id: '', source_message_id: await messageIn(roomA),
+  } as any, ctx('conservative'));
+  assert.equal(JSON.parse(text(emptyRoom)).status, 'queued_for_approval', text(emptyRoom));
   // A citation of a message from another room is still fine when the page has no room.
   const fromA = await messageIn(roomA);
   const orgPage = await wikiCreate({

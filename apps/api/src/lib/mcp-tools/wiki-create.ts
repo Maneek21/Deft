@@ -143,8 +143,6 @@ function wikiSourceReaderIds(readers: Array<string | null | undefined>): string[
 
 export const WIKI_SOURCE_MESSAGE_ROOM_CODE = 'WIKI_SOURCE_MESSAGE_ROOM';
 
-const optionalText = (value: unknown): string | null => (typeof value === 'string' && value ? value : null);
-
 /**
  * Refuses a wiki proposal by an employee whose cited source message the write
  * itself could not use (the executor's rule, for the same room). `page` is
@@ -157,13 +155,15 @@ export async function citedWikiSourceRefusal(
   ctx: ToolContext,
 ): Promise<ToolResult | null> {
   if (typeof args.source_message_id !== 'string' || !args.source_message_id.trim()) return null;
+  // The executors' own nullish fallbacks, so both read the same room.
+  const sourceSpaceId = args.source_space_id as string | null | undefined;
   const expectedSpaceId = actionName === 'wiki_update'
-    ? (page ? wikiUpdateSourceSpaceId({ source_space_id: optionalText(args.source_space_id) }, page) : null)
-    : optionalText(args.source_space_id) ?? optionalText(args.space_id);
+    ? (page ? wikiUpdateSourceSpaceId({ source_space_id: sourceSpaceId }, page) : null)
+    : sourceSpaceId ?? (args.space_id as string | null | undefined) ?? null;
   const shadowUserId = await getShadowUserId(ctx.employee_id);
   const resolved = await resolveWikiSourceMessage({
     messageId: args.source_message_id,
-    readerIds: wikiSourceReaderIds([shadowUserId, optionalText(args.source_user_id)]),
+    readerIds: wikiSourceReaderIds([shadowUserId, args.source_user_id as string | null | undefined]),
     orgId: ctx.org_id,
     expectedSpaceId,
     canAccessSpace: (spaceId) => employeeCanAccessSpace(ctx.employee_id, ctx.org_id, spaceId),
