@@ -180,8 +180,6 @@ const SYNC_LEASE_MS = 5 * 60_000;
 const SYNC_DEADLINE_MS = 4 * 60_000;
 /** Consecutive failures double the wait, up to 2^4 = 16 intervals. */
 const MAX_BACKOFF_EXPONENT = 4;
-/** A rate-limit reset further away than this is treated as this far away. */
-const MAX_RATE_LIMIT_WAIT_MS = 24 * 60 * 60_000;
 export const SYNC_ALREADY_RUNNING_ERROR = 'A sync of this connection is already running';
 
 export interface GitHubSyncOptions {
@@ -241,10 +239,10 @@ async function claimSyncLease(accountId: string, orgId: string, turn?: string): 
     SET metadata = coalesce(metadata, '{}'::jsonb) || jsonb_build_object('github_sync',
       coalesce(metadata->'github_sync', '{}'::jsonb) || jsonb_build_object('lease', jsonb_build_object(
         'id', ${leaseId}::text,
-        'until', now() + (${SYNC_LEASE_MS} * interval '1 millisecond'))))
+        'until', clock_timestamp() + (${SYNC_LEASE_MS} * interval '1 millisecond'))))
     WHERE id = ${accountId} AND org_id = ${orgId}
       AND (metadata->'github_sync'->'lease'->>'until' IS NULL
-        OR (metadata->'github_sync'->'lease'->>'until')::timestamptz <= now())
+        OR (metadata->'github_sync'->'lease'->>'until')::timestamptz <= clock_timestamp())
       ${turn ? sql`AND metadata->'github_sync'->>'next_at' = ${turn}::text` : sql``}
     RETURNING id`);
   return (claimed as unknown as { rows: unknown[] }).rows.length === 1 ? leaseId : null;
@@ -266,8 +264,8 @@ async function finishSync(accountId: string, orgId: string, leaseId: string, out
     const nextAt = outcome.kind === 'ok' ? jitteredFromNow(intervalMs)
       : outcome.kind === 'failed'
         ? jitteredFromNow(sql`${intervalMs}::float8 * power(2, least(${failures}, ${MAX_BACKOFF_EXPONENT}))`)
-        : sql`to_jsonb(now() + (${Math.round(Math.max(intervalMs, Math.min(MAX_RATE_LIMIT_WAIT_MS,
-          outcome.resetAt.getTime() - Date.now())))} * interval '1 millisecond'))`;
+        : sql`to_jsonb(now() + (${Math.round(Math.max(intervalMs,
+          outcome.resetAt.getTime() - Date.now()))} * interval '1 millisecond'))`;
     schedule = sql`jsonb_build_object('failures', ${failures}, 'next_at', ${nextAt})`;
   }
   await db.execute(sql`
@@ -412,6 +410,7 @@ async function runGitHubSync(
         // A merged event is final: it is never rewritten, so a stale poll
         // cannot move it back and the merge transition is claimed by exactly
         // one write (the insert, or the update that leaves a non-merged row).
+        signal.throwIfAborted();
         let claimedWrite = false;
         if (existing.length > 0) {
           const updated = await db.update(events)
