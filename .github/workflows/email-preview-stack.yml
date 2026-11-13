@@ -304,10 +304,10 @@ jobs:
         with:
           ref: ${{ inputs.source_commit || github.sha }}
           persist-credentials: false
-      - uses: github/codeql-action/init@v4.38.1
+      - uses: github/codeql-action/init@v4.39.0
         with:
           languages: javascript-typescript
-      - uses: github/codeql-action/analyze@v4.38.1
+      - uses: github/codeql-action/analyze@v4.39.0
         with:
           output: .ci-security-diagnostics
           upload: never
