@@ -44,9 +44,16 @@ function route(req: IncomingMessage, res: ServerResponse): void {
     '/to-port': 'http://pub.test:8080/feed',
     '/to-http': 'http://pub.test/feed',
     '/to-rebind': 'http://rebind.test/feed',
+    '/to-userinfo': 'http://user:pw@pub.test/feed',
+    '/to-relative-host': '//internal.test/feed',
   };
   if (redirectTo[path]) {
     res.writeHead(301, { location: redirectTo[path] });
+    return void res.end();
+  }
+  const status = /^\/status\/(30[378])$/.exec(path);
+  if (status) {
+    res.writeHead(Number(status[1]), { location: '//pub.test/feed' });
     return void res.end();
   }
   switch (path) {
@@ -59,7 +66,7 @@ function route(req: IncomingMessage, res: ServerResponse): void {
       const chunk = Buffer.alloc(64 * 1024, 0x41);
       let sent = 0;
       const pump = (): void => {
-        while (sent < BIG) {
+        while (sent < 64 * BIG) {
           sent += chunk.length;
           if (!res.write(chunk)) return void res.once('drain', pump);
         }
@@ -79,6 +86,16 @@ function route(req: IncomingMessage, res: ServerResponse): void {
     case '/gzip-ok':
       res.writeHead(200, { 'content-encoding': 'gzip' });
       return void res.end(gzipSync(Buffer.from(ICS)));
+    case '/no-location':
+      res.writeHead(302);
+      return void res.end();
+    case '/bad-gzip':
+      res.writeHead(200, { 'content-encoding': 'gzip' });
+      return void res.end('not gzip at all');
+    case '/truncated':
+      res.writeHead(200, { 'content-length': '1000' });
+      res.write('BEGIN:VCALENDAR');
+      return void setTimeout(() => res.destroy(), 20);
     case '/double-gzip':
       res.writeHead(200, { 'content-encoding': 'gzip, gzip' });
       return void res.end(gzipSync(gzipSync(Buffer.from(ICS))));
@@ -228,6 +245,15 @@ test('redirects re-check every hop and are bounded to three', async () => {
   }
   await refused(fetchText('https://pub.test/to-http'));
   assert.equal((await fetchText('http://pub.test/to-http')).text, ICS);
+  for (const path of ['/status/303', '/status/307', '/status/308']) {
+    assert.equal((await fetchText(`http://pub.test${path}`)).text, ICS);
+  }
+  for (const path of ['/no-location', '/to-userinfo', '/to-relative-host']) {
+    await refused(fetchText(`http://pub.test${path}`));
+  }
+  requests = [];
+  await refused(fetchText('http://rebind.test/to-rebind'));
+  assert.deepEqual(requests.map((r) => r.hostname), [PUBLIC_A]);
   dns['rebind.test'] = [[{ address: '127.0.0.1', family: 4 }]];
   requests = [];
   await refused(fetchText('http://pub.test/to-rebind'));
@@ -240,6 +266,8 @@ test('bodies over the cap are aborted while streaming', async () => {
   await refused(fetchText('http://pub.test/big-length'), 'too_large');
   await refused(fetchText('http://pub.test/gzip-bomb'), 'too_large');
   await refused(fetchText('http://pub.test/double-gzip'), 'bad_encoding');
+  await refused(fetchText('http://pub.test/bad-gzip'), 'bad_encoding');
+  await refused(fetchText('http://pub.test/truncated'));
   assert.equal((await fetchText('http://pub.test/gzip-ok')).text, ICS);
   const exact = Buffer.byteLength(ICS);
   assert.equal((await fetchText('http://pub.test/feed', { maxBytes: exact })).text, ICS);
