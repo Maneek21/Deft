@@ -28,7 +28,7 @@ function route(req: IncomingMessage, res: ServerResponse): void {
   }
   if (path === '/to-private') return void res.writeHead(302, { location: 'http://internal.test/page' }).end();
   if (path === '/to-metadata') return void res.writeHead(302, { location: 'http://169.254.169.254/latest/' }).end();
-  if (path === '/json') return void res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+  if (path === '/json') return void res.writeHead(200, { 'content-type': 'application/json' }).end(PAGE);
   return void res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(pageBody);
 }
 
