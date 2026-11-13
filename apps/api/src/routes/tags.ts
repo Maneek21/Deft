@@ -92,9 +92,8 @@ async function resolveVisibleTagEntities(
   if (clipIds.length > 0) {
     const clipRows = await db.select().from(clips)
       .where(and(inArray(clips.id, clipIds), eq(clips.org_id, user.org_id)));
-    for (const clip of clipRows) {
-      if (await canAccessClip(clip, user.org_id, user.id)) clipSet.add(clip.id);
-    }
+    const allowed = await Promise.all(clipRows.map(clip => canAccessClip(clip, user.org_id, user.id)));
+    clipRows.forEach((clip, i) => { if (allowed[i]) clipSet.add(clip.id); });
   }
 
   const isVisible = (type: string, id: string) => {
@@ -269,23 +268,30 @@ tagRoutes.get('/:id/entities', async (c) => {
   const entityType = c.req.query('type'); // optional filter
 
   // Only entities the caller can see are listed; the rest are omitted. Rows
-  // are scanned newest first in pages until 100 visible entities are found.
+  // are scanned newest first with a (created_at, id) cursor until 100 visible
+  // entities are found or MAX_SCAN rows have been examined.
   const LIST_LIMIT = 100;
   const PAGE_SIZE = 200;
+  const MAX_SCAN = 2000;
+  let cursorId: string | null = null;
   const visibleRows: Array<typeof entityTags.$inferSelect> = [];
   const taskMap = new Map<string, { title: string; number: number; prefix: string; status: string }>();
   const messageMap = new Map<string, { content: string; user_name: string; space_id: string }>();
   const noteMap = new Map<string, { title: string }>();
-  for (let offset = 0; visibleRows.length < LIST_LIMIT; offset += PAGE_SIZE) {
-    const page = await db.select().from(entityTags)
+  for (let scanned = 0; visibleRows.length < LIST_LIMIT && scanned < MAX_SCAN; scanned += PAGE_SIZE) {
+    const after: string | null = cursorId;
+    const page: Array<typeof entityTags.$inferSelect> = await db.select().from(entityTags)
       .where(and(
         eq(entityTags.tag_id, tagId),
         eq(entityTags.org_id, user.org_id),
         ...(entityType ? [eq(entityTags.entity_type, entityType as any)] : []),
+        // Cursor read from the row itself so timestamp precision is preserved.
+        ...(after ? [sql`(${entityTags.created_at}, ${entityTags.id}) < (select et_cursor.created_at, et_cursor.id from entity_tags et_cursor where et_cursor.id = ${after})`] : []),
       ))
       .orderBy(desc(entityTags.created_at), desc(entityTags.id))
-      .limit(PAGE_SIZE)
-      .offset(offset);
+      .limit(PAGE_SIZE);
+    if (page.length === 0) break;
+    cursorId = page[page.length - 1]!.id;
     const resolved = await resolveVisibleTagEntities(page, user);
     for (const [id, v] of resolved.taskMap) taskMap.set(id, v);
     for (const [id, v] of resolved.messageMap) messageMap.set(id, v);

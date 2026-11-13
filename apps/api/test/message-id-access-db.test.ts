@@ -10,6 +10,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { Hono } from 'hono';
 import pg from 'pg';
+import { randomUUID } from 'node:crypto';
 
 const DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 const stamp = Date.now();
@@ -31,6 +32,9 @@ const TAG_A = p('tag-a');
 const TAG_B = p('tag-b');
 const PROJECT_A = p('project-a');
 const PROJECT_B = p('project-b');
+const UUID_PROJECT_A = randomUUID();
+const UUID_PROJECT_B = randomUUID();
+const MIXED_MESSAGE = p('mixed-message');
 const RESTRICTED_TASK = p('task-restricted');
 const TASK_B = p('task-b');
 const PRIVATE_NOTE = p('note-private');
@@ -96,6 +100,16 @@ before(async () => {
     await c.query(
       `INSERT INTO projects (id, org_id, name, prefix, lead_id) VALUES ($1, $2, $1, 'WMA', $3), ($4, $5, $4, 'WMB', $6)`,
       [PROJECT_A, ORG_A, MEMBER, PROJECT_B, ORG_B, FOREIGN],
+    );
+    await c.query(
+      `INSERT INTO projects (id, org_id, name, prefix, lead_id) VALUES ($1, $2, $1, 'WMC', $3), ($4, $5, $4, 'WMD', $6)`,
+      [UUID_PROJECT_A, ORG_A, MEMBER, UUID_PROJECT_B, ORG_B, FOREIGN],
+    );
+    // A message row whose org differs from its space's org.
+    await c.query(
+      `INSERT INTO messages (id, org_id, space_id, user_id, content, is_pinned, is_deleted, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, false, false, NOW(), NOW())`,
+      [MIXED_MESSAGE, ORG_A, SPACE_B, MEMBER, `${SECRET} mixed`],
     );
     await c.query(
       `INSERT INTO tasks (id, org_id, project_id, number, title, status, created_by, metadata)
@@ -190,6 +204,8 @@ for (const [label, userId, orgId, tagId] of [
     await assertLikeMissing(userId, orgId, 'DELETE', (id) => `/api/messages/${id}`);
     await assertLikeMissing(userId, orgId, 'GET', (id) => `/api/messages/${id}/thread`);
     await assertLikeMissing(userId, orgId, 'GET', (id) => `/api/messages/${id}/history`);
+    await assertLikeMissing(userId, orgId, 'DELETE', (id) => `/api/messages/${id}/reactions/thumbsup`);
+    await assertLikeMissing(userId, orgId, 'POST', (id) => `/api/messages/${id}/thread-read`);
     const project = orgId === ORG_A ? PROJECT_A : PROJECT_B;
     const sourced = await call(userId, orgId, 'POST', `/api/projects/${project}/tasks`, { title: 'w2m sourced', source_message_id: MESSAGE });
     const sourcedMissing = await call(userId, orgId, 'POST', `/api/projects/${project}/tasks`, { title: 'w2m sourced', source_message_id: MISSING });
@@ -197,6 +213,12 @@ for (const [label, userId, orgId, tagId] of [
     assert.equal(sourced.status, sourcedMissing.status);
     assert.deepEqual(sourced.json, sourcedMissing.json);
     assert.equal(await count(`SELECT count(*)::int AS n FROM tasks WHERE source_message_id = $1`, [MESSAGE]), 0);
+
+    const uuidProject = orgId === ORG_A ? UUID_PROJECT_A : UUID_PROJECT_B;
+    const viaRoot = await call(userId, orgId, 'POST', '/api/tasks', { project_id: uuidProject, title: 'w2m sourced', source_message_id: MESSAGE });
+    const viaRootMissing = await call(userId, orgId, 'POST', '/api/tasks', { project_id: uuidProject, title: 'w2m sourced', source_message_id: MISSING });
+    assert.equal(viaRoot.status, 400, viaRoot.text);
+    assert.deepEqual(viaRoot.json, viaRootMissing.json);
 
     const viaTasks = await call(userId, orgId, 'POST', `/api/tasks/project/${project}`, { title: 'w2m sourced', source_message_id: MESSAGE });
     const viaTasksMissing = await call(userId, orgId, 'POST', `/api/tasks/project/${project}`, { title: 'w2m sourced', source_message_id: MISSING });
@@ -233,7 +255,18 @@ test('a member can create a task from a message they can read', async () => {
   assert.equal(created.status, 201, created.text);
   const viaTasks = await call(MEMBER, ORG_A, 'POST', `/api/tasks/project/${PROJECT_A}`, { title: 'w2m from message 2', source_message_id: MESSAGE });
   assert.equal(viaTasks.status, 201, viaTasks.text);
-  assert.equal(await count(`SELECT count(*)::int AS n FROM tasks WHERE source_message_id = $1 AND org_id = $2`, [MESSAGE, ORG_A]), 2);
+  const viaRoot = await call(MEMBER, ORG_A, 'POST', '/api/tasks', { project_id: UUID_PROJECT_A, title: 'w2m from message 3', source_message_id: MESSAGE });
+  assert.equal(viaRoot.status, 201, viaRoot.text);
+  assert.equal(await count(`SELECT count(*)::int AS n FROM tasks WHERE source_message_id = $1 AND org_id = $2`, [MESSAGE, ORG_A]), 3);
+});
+
+test('a message is not reachable through a workspace other than the workspace of its space', async () => {
+  const history = await call(MEMBER, ORG_A, 'GET', `/api/messages/${MIXED_MESSAGE}/history`);
+  const missing = await call(MEMBER, ORG_A, 'GET', `/api/messages/${MISSING}/history`);
+  assert.equal(history.status, 404, history.text);
+  assert.deepEqual(history.json, missing.json);
+  const saved = await call(MEMBER, ORG_A, 'POST', '/api/bookmarks', { message_id: MIXED_MESSAGE, space_id: SPACE_B });
+  assert.equal(saved.status, 404, saved.text);
 });
 
 test('a thread lists only replies in the space of its root', async () => {
