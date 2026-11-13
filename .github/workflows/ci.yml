@@ -595,6 +595,17 @@ jobs:
               ) THEN
                 RAISE EXCEPTION 'pending agent actions index missing or different after upgrade';
               END IF;
+              -- Same definitions as apps/api/test/ics-feed-workspace-db.test.ts (fresh install).
+              IF (SELECT string_agg(column_name || ':' || data_type || ':' || is_nullable, ',' ORDER BY ordinal_position)
+                  FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'ics_publish_tokens')
+                IS DISTINCT FROM 'id:text:NO,org_id:text:NO,user_id:text:NO,token:text:NO,revoked_at:timestamp without time zone:YES,created_at:timestamp without time zone:NO,updated_at:timestamp without time zone:NO'
+                OR (SELECT string_agg(pg_get_indexdef(i.indexrelid), ' | ' ORDER BY c.relname)
+                  FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+                  WHERE i.indrelid = 'public.ics_publish_tokens'::regclass AND NOT i.indisprimary)
+                IS DISTINCT FROM 'CREATE UNIQUE INDEX ics_publish_tokens_live_uidx ON public.ics_publish_tokens USING btree (org_id, user_id) WHERE (revoked_at IS NULL) | CREATE UNIQUE INDEX ics_publish_tokens_token_uidx ON public.ics_publish_tokens USING btree (token)'
+              THEN
+                RAISE EXCEPTION 'published calendar feed table missing or different after upgrade';
+              END IF;
             END \$\$;
           "
           bash scripts/ci/snapshot-upgrade-data.sh "$RUNNER_TEMP/upgrade-after"

@@ -26,7 +26,7 @@ async function isReviewedHead(client: pg.Client) {
 }
 
 /** Resets a `.131`-head database to exactly the pre-tail state, reverting the
- * `.133` and `.135` function/constraint changes and the `.136` index in place so it again matches a
+ * `.133` and `.135` function/constraint changes, the `.136` index and the `.137` table in place so it again matches a
  * reviewed head variant. A fresh (push-full) database already carries the
  * `.132` columns and `.134` table in its reviewed bootstrap; an upgraded clone
  * does not, so those are dropped only when the clone needs it. Runs in one
@@ -51,6 +51,8 @@ async function resetToHead(client: pg.Client) {
     await client.query(persistent.slice(repairFnStart, repairFnEnd));
     // Revert the .136 pending agent actions index.
     await client.query('DROP INDEX IF EXISTS public.agent_action_pending_org_created_idx');
+    // Revert the .137 published calendar feed table.
+    await client.query('DROP TABLE IF EXISTS public.ics_publish_tokens');
     await client.query(`DELETE FROM deft_schema_migrations WHERE version = ANY($1::text[])`,
       [tailMigrations().map((migration) => migration.version)]);
     const head = await client.query('SELECT 1 FROM deft_schema_migrations WHERE version = $1', [CONVERGE_HEAD_VERSION]);

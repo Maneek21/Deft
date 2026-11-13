@@ -10,6 +10,16 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### Changed: a published calendar feed belongs to one workspace
+
+The calendar feed link from Settings -> Calendar -> Share Deft calendar belongs to
+one workspace, and people in several workspaces have one feed link per workspace.
+Schema `0.3.0-preview.137` (`ics_publish_tokens`).
+
+**Upgrade note:** after upgrading, people who belong to more than one workspace need
+to create their feed link again from the workspace they want. People in one
+workspace keep their link.
+
 ### Notice: Kit `0.1.0-alpha.44` removes deprecated Email compatibility
 
 Not before 2026-11-25, and never fewer than 14 days after this notice merged.
