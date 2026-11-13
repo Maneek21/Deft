@@ -36,12 +36,16 @@ type WorkflowAction =
   // that this one was blocking and notify that task's assignee.
   | { kind: 'unblock_dependents' };
 
-/** Workflow actions only address active members of the rule's org. */
-async function assertActiveMember(orgId: string, userId: string): Promise<void> {
+/** Workflow jobs only act as, and address, active members of the rule's org. */
+async function isActiveMember(orgId: string, userId: string): Promise<boolean> {
   const [member] = await db.select({ id: orgMembers.id }).from(orgMembers)
     .where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, userId), eq(orgMembers.is_active, true)))
     .limit(1);
-  if (!member) throw new Error('user is not an active member of this workspace');
+  return Boolean(member);
+}
+
+async function assertActiveMember(orgId: string, userId: string): Promise<void> {
+  if (!(await isActiveMember(orgId, userId))) throw new Error('user is not an active member of this workspace');
 }
 
 export async function handleWorkflowExecute(job: JobData): Promise<void> {
@@ -57,6 +61,11 @@ export async function handleWorkflowExecute(job: JobData): Promise<void> {
   const [task] = await db.select().from(tasks)
     .where(and(eq(tasks.id, task_id), eq(tasks.org_id, rule.org_id))).limit(1);
   if (!task) return;
+
+  if (!actor_user_id || !(await isActiveMember(rule.org_id, actor_user_id))) {
+    console.warn(`[workflow-execute] actor for rule ${rule.id} is not an active member; not run`);
+    return;
+  }
 
   // Actions are stored either as an array on action_config.actions OR as a
   // single action via action_type + action_config for legacy shape.
@@ -154,6 +163,7 @@ export async function handleWorkflowExecute(job: JobData): Promise<void> {
               .limit(1);
             if (!dep || !dep.assignee_id) continue;
             if (dep.status === 'done' || dep.status === 'cancelled') continue;
+            if (!(await isActiveMember(rule.org_id, dep.assignee_id))) continue;
             const notif = await createNotificationIfAllowed({
               org_id: rule.org_id,
               user_id: dep.assignee_id,

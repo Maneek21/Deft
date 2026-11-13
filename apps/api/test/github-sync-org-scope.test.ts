@@ -22,6 +22,8 @@ const userA = crypto.randomUUID();
 const userB = crypto.randomUUID();
 const accountA = crypto.randomUUID();
 const accountB = crypto.randomUUID();
+const userA2 = crypto.randomUUID();
+const accountA2 = crypto.randomUUID();
 const taskIds = { a: crypto.randomUUID(), b: crypto.randomUUID() };
 const projectIds = { a: crypto.randomUUID(), b: crypto.randomUUID() };
 
@@ -35,14 +37,17 @@ before(async () => {
   await db.insert(users).values([
     { id: userA, email: `${stamp}-a@t.local`, name: 'a' },
     { id: userB, email: `${stamp}-b@t.local`, name: 'b' },
+    { id: userA2, email: `${stamp}-a2@t.local`, name: 'a2' },
   ]);
   await db.insert(orgMembers).values([
     { id: crypto.randomUUID(), org_id: orgA, user_id: userA, role: 'owner' },
     { id: crypto.randomUUID(), org_id: orgB, user_id: userB, role: 'owner' },
+    { id: crypto.randomUUID(), org_id: orgA, user_id: userA2, role: 'member' },
   ] as any);
   await db.insert(connectedAccounts).values([
     { id: accountA, org_id: orgA, user_id: userA, provider: 'github', access_token_encrypted: encrypt('token-a') },
     { id: accountB, org_id: orgB, user_id: userB, provider: 'github', access_token_encrypted: encrypt('token-b') },
+    { id: accountA2, org_id: orgA, user_id: userA2, provider: 'github', access_token_encrypted: encrypt('token-a2') },
   ] as any);
   // The same project prefix and task number exist in both workspaces.
   for (const [key, org, user] of [['a', orgA, userA], ['b', orgB, userB]] as const) {
@@ -73,24 +78,32 @@ after(async () => {
   await db.delete(events).where(inArray(events.org_id, [orgA, orgB]));
   await db.delete(tasks).where(inArray(tasks.id, [taskIds.a, taskIds.b]));
   await db.delete(projects).where(inArray(projects.id, [projectIds.a, projectIds.b]));
-  await db.delete(connectedAccounts).where(inArray(connectedAccounts.id, [accountA, accountB]));
+  await db.delete(connectedAccounts).where(inArray(connectedAccounts.id, [accountA, accountB, accountA2]));
   await db.delete(orgMembers).where(inArray(orgMembers.org_id, [orgA, orgB]));
-  await db.delete(users).where(inArray(users.id, [userA, userB]));
+  await db.delete(users).where(inArray(users.id, [userA, userB, userA2]));
   await db.delete(orgs).where(inArray(orgs.id, [orgA, orgB]));
 });
 
 async function prEvents(org: string) {
-  return db.select({ id: events.id, event_type: events.event_type }).from(events)
+  return db.select({ id: events.id, event_type: events.event_type, external_id: events.external_id }).from(events)
     .where(and(eq(events.org_id, org), eq(events.source, 'github')));
 }
 
 test('each workspace syncing the same repository keeps its own pull-request event', async () => {
-  await syncGitHubForUser(accountA);
-  await syncGitHubForUser(accountB);
+  // Workspace B already holds this PR under the older external id.
+  const legacy = `pr-${REPO}-7`;
+  await db.insert(events).values({
+    org_id: orgB, source: 'github', event_type: 'pr_opened', external_id: legacy, title: 'old', timestamp: new Date(), metadata: {},
+  } as any);
+  for (const account of [accountA, accountB, accountA2]) {
+    assert.equal((await syncGitHubForUser(account) as any).error, undefined);
+  }
   const [a, b] = [await prEvents(orgA), await prEvents(orgB)];
   assert.equal(a.length, 1);
   assert.equal(b.length, 1);
-  assert.notEqual(a[0]!.id, b[0]!.id);
+  assert.equal(a[0]!.external_id, `gh-pr:${orgA}:${REPO}#7`);
+  assert.equal(b[0]!.external_id, legacy);
+  assert.equal(b[0]!.event_type, 'pr_opened');
 });
 
 test('a merged pull request closes the referenced task in each syncing workspace', async () => {
@@ -101,4 +114,18 @@ test('a merged pull request closes the referenced task in each syncing workspace
   assert.deepEqual(rows.map((r) => r.status).sort(), ['done', 'done']);
   assert.equal((await prEvents(orgA))[0]!.event_type, 'pr_merged');
   assert.equal((await prEvents(orgB))[0]!.event_type, 'pr_merged');
+});
+
+test('later syncs of a merged pull request leave the event and its tasks alone', async () => {
+  await db.update(tasks).set({ status: 'in_progress' } as any).where(eq(tasks.id, taskIds.a));
+  const comments = async () => (await db.select({ id: taskComments.id }).from(taskComments).where(eq(taskComments.task_id, taskIds.a))).length;
+  const before = await comments();
+  await syncGitHubForUser(accountA);
+  await syncGitHubForUser(accountA2);
+  prState = 'open';
+  await syncGitHubForUser(accountA);
+  const [task] = await db.select({ status: tasks.status }).from(tasks).where(eq(tasks.id, taskIds.a));
+  assert.equal(task!.status, 'in_progress');
+  assert.equal(await comments(), before);
+  assert.equal((await prEvents(orgA))[0]!.event_type, 'pr_merged');
 });
