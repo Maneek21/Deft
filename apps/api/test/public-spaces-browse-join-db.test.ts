@@ -27,7 +27,7 @@ const ORG_B = `pubsp-org-b-${stamp}`;
 const id = (s: string) => `pubsp-${s}-${stamp}`;
 const U = {
   owner: id('owner'), admin: id('admin'), member: id('member'), peer: id('peer'),
-  guest: id('guest'), agent: id('agent'), inactive: id('inactive'), outsider: id('outsider'),
+  guest: id('guest'), agent: id('agent'), system: id('system'), inactive: id('inactive'), outsider: id('outsider'),
 };
 const S = {
   joined: id('s-joined'), open: id('s-open'), other: id('s-other'), priv: id('s-priv'), dm: id('s-dm'),
@@ -46,10 +46,10 @@ async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
 before(async () => {
   await withClient(async (c) => {
     for (const org of [ORG, ORG_B]) await c.query(`INSERT INTO orgs (id, name, slug) VALUES ($1, $1, $1)`, [org]);
-    const people: Array<[string, string, string, 'human' | 'agent', boolean]> = [
+    const people: Array<[string, string, string, 'human' | 'agent' | 'system', boolean]> = [
       [U.owner, ORG, 'owner', 'human', true], [U.admin, ORG, 'admin', 'human', true],
       [U.member, ORG, 'member', 'human', true], [U.peer, ORG, 'member', 'human', true],
-      [U.guest, ORG, 'guest', 'human', true], [U.agent, ORG, 'member', 'agent', true],
+      [U.guest, ORG, 'guest', 'human', true], [U.agent, ORG, 'member', 'agent', true], [U.system, ORG, 'member', 'system', true],
       [U.inactive, ORG, 'member', 'human', false], [U.outsider, ORG_B, 'member', 'human', true],
     ];
     for (const [uid, org, role, kind, active] of people) {
@@ -58,7 +58,7 @@ before(async () => {
     }
     const spaces: Array<[string, string, string, boolean, string[]]> = [
       [S.joined, ORG, 'public', false, [U.member, U.peer]],
-      [S.open, ORG, 'public', false, [U.peer, U.inactive]],
+      [S.open, ORG, 'public', false, [U.peer, U.inactive, U.outsider]],
       [S.other, ORG, 'public', false, []],
       [S.priv, ORG, 'private', false, [U.peer]],
       [S.dm, ORG, 'dm', false, [U.peer, U.owner]],
@@ -94,24 +94,24 @@ after(async () => {
   });
 });
 
-async function call(actor: string, method: string, path: string, opts: { org?: string; route?: 'spaces' | 'messages' } = {}) {
+async function call(actor: string, method: string, path: string, opts: { org?: string; route?: 'spaces' | 'messages'; role?: 'owner' | 'member'; body?: unknown } = {}) {
   const app = new Hono();
   app.use('*', async (c, next) => {
-    // The token's role is deliberately 'member' for everyone: eligibility must come from the database.
-    c.set('user', { id: actor, org_id: opts.org ?? ORG, email: `${actor}@test.local`, sid: `pubsp-sid-${stamp}`, role: 'member' });
+    // The session role is never trusted: eligibility must come from the database.
+    c.set('user', { id: actor, org_id: opts.org ?? ORG, email: `${actor}@test.local`, sid: `pubsp-sid-${stamp}`, role: opts.role ?? 'member' });
     await next();
   });
   if ((opts.route ?? 'spaces') === 'spaces') app.route('/api/spaces', (await import('../src/routes/spaces.js')).spaceRoutes);
   else app.route('/api/messages', (await import('../src/routes/messages.js')).messageRoutes);
-  const res = await app.request(path, { method });
+  const res = await app.request(path, opts.body === undefined ? { method } : { method, body: JSON.stringify(opts.body), headers: { 'content-type': 'application/json' } });
   const text = await res.text();
   let json: any = text;
   try { json = JSON.parse(text); } catch { /* keep text */ }
   return { status: res.status, json, text };
 }
 
-const browse = (actor: string, qs = '', org?: string) => call(actor, 'GET', `/api/spaces/browse${qs}`, { org });
-const join = (actor: string, space: string, org?: string) => call(actor, 'POST', `/api/spaces/${space}/join`, { org });
+const browse = (actor: string, qs = '', org?: string, role?: 'owner') => call(actor, 'GET', `/api/spaces/browse${qs}`, { org, role });
+const join = (actor: string, space: string, org?: string, role?: 'owner') => call(actor, 'POST', `/api/spaces/${space}/join`, { org, role });
 const leave = (actor: string, space: string) => call(actor, 'DELETE', `/api/spaces/${space}/members/me`);
 const readMessages = (actor: string, space: string) => call(actor, 'GET', `/api/messages/${space}`, { route: 'messages' });
 const memberRows = (space: string, user: string) =>
@@ -132,7 +132,7 @@ test('a member browses only the unjoined public spaces of their own org, with co
   assert.deepEqual(res.json.spaces.map((s: any) => s.id).filter((x: string) => x.includes(String(stamp))), [S.open, S.other]);
   const open = res.json.spaces.find((s: any) => s.id === S.open);
   assert.deepEqual(Object.keys(open).sort(), ['created_at', 'description', 'id', 'is_member', 'member_count', 'name', 'topic']);
-  assert.equal(open.member_count, 1, 'a deactivated member is not counted');
+  assert.equal(open.member_count, 1, 'deactivated members and members of other orgs are not counted');
   assert.equal(open.is_member, false);
   assert.equal(res.json.spaces.find((s: any) => s.id === S.other).member_count, 0);
 
@@ -143,22 +143,33 @@ test('a member browses only the unjoined public spaces of their own org, with co
 
   const searched = await browse(U.member, `?q=${encodeURIComponent('alpha')}`);
   assert.deepEqual(searched.json.spaces.map((s: any) => s.id).filter((x: string) => x.includes(String(stamp))), [S.open]);
-  const wildcard = await browse(U.member, `?q=${encodeURIComponent('%')}`);
-  assert.equal(wildcard.json.spaces.filter((s: any) => s.id.includes(String(stamp))).length, 0, 'q wildcards are literal');
+  for (const literal of ['%', '_', '\\', 'Alpha_']) {
+    const wildcard = await browse(U.member, `?q=${encodeURIComponent(literal)}`);
+    assert.equal(wildcard.status, 200, wildcard.text);
+    assert.equal(wildcard.json.spaces.filter((s: any) => s.id.includes(String(stamp))).length, 0, `q ${literal} is literal`);
+  }
   assert.equal((await browse(U.member, '?limit=1')).json.spaces.length, 1);
   assert.equal((await browse(U.member, '?limit=0')).status, 400);
 });
 
 test('guests, agents, deactivated users and other orgs cannot browse or join', async () => {
-  for (const actor of [U.guest, U.agent, U.inactive]) {
-    const res = await browse(actor);
+  const denied: Array<[string, string?, 'owner'?]> = [
+    [U.guest], [U.guest, undefined, 'owner'], [U.agent], [U.system], [U.inactive], [U.outsider, ORG],
+  ];
+  for (const [actor, org, role] of denied) {
+    const res = await browse(actor, '', org, role);
     assert.equal(res.status, 403, `${actor} browse: ${res.text}`);
     assert.ok(!res.text.includes(String(stamp)), res.text);
-    const j = await join(actor, S.other);
+    const j = await join(actor, S.other, org, role);
     assert.equal(j.status, 403, `${actor} join: ${j.text}`);
     assert.deepEqual(j.json, NOT_A_MEMBER);
     assert.equal(await memberRows(S.other, actor), 0);
   }
+  // Join adds only the caller, whatever the body says.
+  const self = await call(U.admin, 'POST', `/api/spaces/${S.other}/join`, { body: { user_id: U.guest } });
+  assert.equal(self.status, 200, self.text);
+  assert.equal(await memberRows(S.other, U.guest), 0);
+  assert.equal((await leave(U.admin, S.other)).status, 200);
   // A member of org B browsing from org B never sees org A spaces.
   const foreign = await browse(U.outsider, '', ORG_B);
   assert.equal(foreign.status, 200, foreign.text);
@@ -184,7 +195,10 @@ test('an unjoined member cannot read; after joining reads work; join is idempote
 
   const server = createServer();
   const sockets = setupSocket(server, {
-    verifyAccess: async (token: string) => ({ ...socketUser(token), exp: Math.floor(Date.now() / 1000) + 600 }) as any,
+    verifyAccess: async (token: string) => {
+      const [uid, org] = token.split('|');
+      return { ...socketUser(uid!, org || ORG), exp: Math.floor(Date.now() / 1000) + 600 } as any;
+    },
     requireMembership: async () => ({ role: 'member' }) as any,
     recordLastSeen: () => {},
   });
@@ -200,6 +214,8 @@ test('an unjoined member cannot read; after joining reads work; join is idempote
   const peer = await open(U.peer);
   const self = await open(U.member);
   const outsider = await open(U.admin);
+  const guest = await open(U.guest);
+  const otherOrgSelf = await open(`${U.member}|${ORG_B}`);
   try {
     peer.client.emit('space:join', S.open);
     const deadline = Date.now() + 5_000;
@@ -219,8 +235,10 @@ test('an unjoined member cannot read; after joining reads work; join is idempote
     assert.deepEqual(peer.events, [{ space_id: S.open, user_id: U.member }]);
     assert.deepEqual(self.events, [{ space_id: S.open, user_id: U.member }]);
     assert.deepEqual(outsider.events, [], 'a non-member of the space receives no join event');
+    assert.deepEqual(guest.events, [], 'a guest receives no join event');
+    assert.deepEqual(otherOrgSelf.events, [], 'the joiner session in another org receives no join event');
   } finally {
-    for (const s of [peer, self, outsider]) s.client.close();
+    for (const s of [peer, self, outsider, guest, otherOrgSelf]) s.client.close();
     await new Promise<void>((resolve) => sockets.close(() => resolve()));
   }
 
@@ -240,6 +258,7 @@ test('leave works for public and private spaces; a second leave changes nothing'
   assert.equal(left.status, 200, left.text);
   assert.equal(await memberRows(S.other, U.admin), 0);
   assert.equal((await readMessages(U.admin, S.other)).status, 403);
+  assert.equal(await getHuddleSpaceAccess(S.other, socketUser(U.admin)), undefined, 'leave closes the realtime join gate');
   const again = await leave(U.admin, S.other);
   assert.notEqual(again.status, 200, again.text);
   assert.equal(await memberRows(S.other, U.admin), 0);

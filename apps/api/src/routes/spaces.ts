@@ -343,23 +343,30 @@ spaceRoutes.post('/:id/join', async (c) => {
   try {
     const user = c.get('user');
     const spaceId = c.req.param('id');
-    if (!(await canSelfJoinPublicSpaces(user.id, user.org_id))) return c.json(NOT_A_MEMBER, 403);
-
-    const [space] = await db.select({ id: spaces.id })
-      .from(spaces)
-      .where(and(
-        eq(spaces.id, spaceId),
-        eq(spaces.org_id, user.org_id),
-        eq(spaces.type, 'public'),
-        eq(spaces.is_archived, false),
-      ))
-      .limit(1);
-    if (!space) return c.json(NOT_A_MEMBER, 403);
-
-    const inserted = await db.insert(spaceMembers)
-      .values({ space_id: space.id, user_id: user.id })
-      .onConflictDoNothing()
-      .returning({ id: spaceMembers.id });
+    // The eligibility and space rows are share-locked until the membership row
+    // is written, so a concurrent archive, type or role change is either seen
+    // here or waits for this join to finish.
+    const result = await db.transaction(async (tx) => {
+      if (!(await canSelfJoinPublicSpaces(user.id, user.org_id, tx))) return null;
+      const [space] = await tx.select({ id: spaces.id })
+        .from(spaces)
+        .where(and(
+          eq(spaces.id, spaceId),
+          eq(spaces.org_id, user.org_id),
+          eq(spaces.type, 'public'),
+          eq(spaces.is_archived, false),
+        ))
+        .limit(1)
+        .for('share');
+      if (!space) return null;
+      const inserted = await tx.insert(spaceMembers)
+        .values({ space_id: space.id, user_id: user.id })
+        .onConflictDoNothing()
+        .returning({ id: spaceMembers.id });
+      return { space, inserted };
+    });
+    if (!result) return c.json(NOT_A_MEMBER, 403);
+    const { space, inserted } = result;
 
     if (inserted.length > 0) {
       const io = getIO();

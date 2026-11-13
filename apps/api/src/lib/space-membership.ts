@@ -1,6 +1,7 @@
 import { db } from './db.js';
 import { orgMembers, spaceMembers, spaces, users } from '@deft/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
+import type { CoreDatabaseTransaction } from './database-transaction.js';
 
 /**
  * True when `userId` may find and join the public spaces of `orgId`: an active
@@ -8,8 +9,12 @@ import { and, eq, inArray } from 'drizzle-orm';
  * Guests and agent users are added to spaces by a member instead. The role is
  * read from the database, not from the session.
  */
-export async function canSelfJoinPublicSpaces(userId: string, orgId: string): Promise<boolean> {
-  const [row] = await db.select({ id: orgMembers.id })
+export async function canSelfJoinPublicSpaces(
+  userId: string,
+  orgId: string,
+  tx?: CoreDatabaseTransaction,
+): Promise<boolean> {
+  const query = (tx ?? db).select({ id: orgMembers.id })
     .from(orgMembers)
     .innerJoin(users, eq(users.id, orgMembers.user_id))
     .where(and(
@@ -20,6 +25,8 @@ export async function canSelfJoinPublicSpaces(userId: string, orgId: string): Pr
       eq(users.kind, 'human'),
     ))
     .limit(1);
+  // Inside a join transaction the membership row is share-locked until commit.
+  const [row] = tx ? await query.for('share', { of: orgMembers }) : await query;
   return !!row;
 }
 
