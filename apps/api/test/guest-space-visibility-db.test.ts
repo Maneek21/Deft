@@ -13,6 +13,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import pg from 'pg';
+import { Hono } from 'hono';
 import { sql } from 'drizzle-orm';
 import { closeDb, db } from '../src/lib/db.js';
 import {
@@ -126,6 +127,17 @@ after(async () => {
 const ctx = (user: string, org = ORG): HumanToolContext => ({ org_id: org, user_id: user, role: 'member', scopes: ALL_SCOPES, principal_kind: 'human' });
 const text = (r: { content: Array<{ text: string }> }) => r.content.map((c) => c.text).join('\n');
 
+async function restTeam(user: string, org: string): Promise<string> {
+  const app = new Hono();
+  app.use('*', async (c, next) => {
+    c.set('user', { id: user, org_id: org, email: `${user}@test.local`, role: 'member' } as any);
+    await next();
+  });
+  app.route('/api/teams', (await import('../src/routes/teams.js')).teamRoutes);
+  const res = await app.request(`/api/teams/${TEAM}`);
+  return `${res.status} ${await res.text()}`;
+}
+
 /** Every read surface for one viewer, as text. */
 async function readAll(user: string, org = ORG): Promise<Record<string, string>> {
   const c = ctx(user, org);
@@ -147,6 +159,7 @@ async function readAll(user: string, org = ORG): Promise<Record<string, string>>
   out.attention_digest = text(await humanAttentionDigest({ since: SINCE, include_recent: true, include_calendar: false }, c))
     .replace(/"generated_at":"[^"]+"/, '"generated_at":"<now>"');
   out.assistant_search_blockers = JSON.stringify((await executeToolCall('search_blockers', { query: TOKEN, days: 3650 }, org, user)).result);
+  out.rest_team = await restTeam(user, org);
   out.team_context = JSON.stringify(await getTeamContext({ org_id: org, user_id: user, role: 'member', can_read_messages: true }, { team_id: TEAM }));
   out.assistant_list_spaces = JSON.stringify((await executeToolCall('list_spaces', {}, org, user)).result);
   out.assistant_search_messages = JSON.stringify((await executeToolCall('search_messages', { query: TOKEN }, org, user)).result);
@@ -173,7 +186,7 @@ test('a guest sees nothing of a public space they have not joined, on any surfac
   const out = await readAll(U.guest);
   for (const [surface, value] of Object.entries(out)) {
     if (surface.startsWith('reader_authority_') || surface.startsWith('native_source_')) continue;
-    assert.deepEqual(contains(value, PUB_MARKERS.filter((m) => !(surface === 'team_context' && m === S.pub)), surface), [], `${surface} shows the unjoined public space: ${value}`);
+    assert.deepEqual(contains(value, PUB_MARKERS.filter((m) => !((surface === 'team_context' || surface === 'rest_team') && m === S.pub)), surface), [], `${surface} shows the unjoined public space: ${value}`);
     assert.deepEqual(contains(value, [NAMES[S.foreign]!, M.foreign, S.foreign], surface), [], `${surface} shows another workspace's space`);
     assert.ok(!value.includes(M.priv), `${surface} shows a private space`);
   }
@@ -182,6 +195,8 @@ test('a guest sees nothing of a public space they have not joined, on any surfac
   const pubResource = team.resources.find((r: any) => r.resource_id === S.pub);
   assert.equal(pubResource.access, 'restricted');
   assert.equal(pubResource.metadata?.name, undefined);
+  const restPub = JSON.parse(out.rest_team!.slice(4)).resources.find((r: any) => r.resource_id === S.pub);
+  assert.equal(restPub.access, 'restricted');
   assert.equal(out[`reader_authority_${S.pub}`], 'false');
   assert.equal(out[`reader_authority_${S.foreign}`], 'false');
   assert.equal(out[`native_source_${M.pub}`], 'false');
