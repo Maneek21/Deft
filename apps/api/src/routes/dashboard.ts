@@ -5,6 +5,7 @@ import { db } from '../lib/db.js';
 import { tasks, taskAssignees, projects, users, spaces, spaceMembers, messages, taskActivity, notifications, events, standups, peopleExpertise, peopleInteractions, peoplePatterns, agentActions, agentEmployees, wikiPages } from '@deft/db/schema';
 import { generateDailyStandup, standupReadableBy } from '../lib/standup-automation.js';
 import { visibleModuleActionSql } from '../lib/module-action-visibility.js';
+import { viewerReviewAuthority } from '../lib/agent-approval-resolver.js';
 import {readEmailCalendarOccurrences} from '../lib/email-calendar-projection.js';
 import { getDayBoundaries, resolveViewerTimezone } from '../lib/task-dates.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
@@ -301,7 +302,8 @@ dashboardRoutes.get('/', async (c) => {
         visibleModuleActionSql(user.role, { userId: user.id, orgId: user.org_id }),
       ))
       .orderBy(desc(agentActions.created_at))
-      .limit(12);
+      .limit(12)
+      .then((rows) => withViewerCanReview(user, rows));
 
     const recentDecisions = await db.select({
       id: wikiPages.id,
@@ -373,7 +375,7 @@ dashboardRoutes.get('/', async (c) => {
       calendarEvents=[...calendarEvents,...invitationOccurrences].sort((a,b)=>new Date(a.timestamp).getTime()-new Date(b.timestamp).getTime()).slice(0,10);
     } catch {}
 
-    const pendingAgentActions = recentAgentActivity.filter((a) => a.approval_status === 'pending');
+    const pendingAgentActions = recentAgentActivity.filter((a) => a.viewer_can_review);
     // Rejection and expiry reasons share error; only executed approved actions can fail execution.
     const failedAgentActions = recentAgentActivity.filter((a) => a.approval_status === 'approved' && a.executed_at !== null && a.error);
     const attention = [
@@ -659,14 +661,33 @@ dashboardRoutes.get('/agent-activity', async (c) => {
       and(
         eq(agentActions.org_id, user.org_id),
         inArray(agentActions.approval_status, ['approved', 'pending']),
+        visibleCaptureActionSql(user),
         visibleModuleActionSql(user.role, { userId: user.id, orgId: user.org_id }),
       ),
     )
     .orderBy(desc(agentActions.created_at))
     .limit(20);
 
-  return c.json(recentActions);
+  return c.json(await withViewerCanReview(user, recentActions));
 });
+
+/**
+ * Marks each feed row with whether the viewer can review it in the Inbox: a
+ * pending approval the approve or reject route would accept from the viewer.
+ */
+async function withViewerCanReview<T extends { id: string; approval_status: string; approval_tier: string }>(
+  user: { id: string; org_id: string; role?: string },
+  rows: T[],
+): Promise<Array<T & { viewer_can_review: boolean }>> {
+  const awaiting = (row: T) => row.approval_status === 'pending' && row.approval_tier !== 'auto';
+  const authority = await viewerReviewAuthority(user, rows.filter(awaiting).map((row) => row.id));
+  return rows.map((row) => {
+    const flags = authority.get(row.id);
+    // Without flags only the action's own path can tell; the Inbox keeps its controls.
+    const canReview = awaiting(row) && (!flags || flags.viewer_can_approve || flags.viewer_can_reject);
+    return { ...row, viewer_can_review: canReview };
+  });
+}
 
 function getGreeting(): string {
   const hour = new Date().getHours();

@@ -58,9 +58,10 @@ function AgentWidget(_props: WidgetProps) {
                     {a.approval_status === 'pending' ? 'Awaiting approval · ' : ''}
                     {formatRelativeCompact(a.executed_at || a.created_at)}
                   </p>
-                  {a.approval_status === 'pending' && (
+                  {a.approval_status === 'pending' && a.viewer_can_review && (
                     // The one-line summary does not show the full write, so
-                    // the decision is made on the full card in the inbox.
+                    // the decision is made on the full card in the inbox,
+                    // which lists the approvals this viewer can review.
                     <a href="/inbox" onClick={e => e.stopPropagation()}
                       style={{
                         display: 'inline-block', marginTop: 6, fontSize: 10, fontWeight: 600,

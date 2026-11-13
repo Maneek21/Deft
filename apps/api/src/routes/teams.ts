@@ -21,6 +21,7 @@ import {
   wikiPages,
 } from '@deft/db/schema';
 import { db } from '../lib/db.js';
+import { ordinaryPendingApprovalSql, specialApprovalActionSql } from '../lib/pending-approval-audience.js';
 import { OrgMembershipError, requireOrgAdminOrOwner } from '../lib/org-membership.js';
 import type { AuthUser } from '../middleware/auth.js';
 
@@ -308,7 +309,8 @@ async function buildTeamSummary(orgId: string, teamId: string) {
   };
 }
 
-async function buildTeamDashboard(orgId: string, teamId: string) {
+async function buildTeamDashboard(viewer: AuthUser, teamId: string) {
+  const orgId = viewer.org_id;
   const now = new Date();
   const weekAhead = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
@@ -408,7 +410,12 @@ async function buildTeamDashboard(orgId: string, teamId: string) {
       ? db
           .select({ count: count(agentActions.id) })
           .from(agentActions)
-          .where(and(eq(agentActions.org_id, orgId), eq(agentActions.approval_status, 'pending'), inArray(agentActions.user_id, memberIds)))
+          .where(and(
+            eq(agentActions.org_id, orgId),
+            inArray(agentActions.user_id, memberIds),
+            sql`((${specialApprovalActionSql()} AND ${agentActions.approval_status} = 'pending')
+              OR ${ordinaryPendingApprovalSql(viewer)})`,
+          ))
       : Promise.resolve([{ count: 0 }]),
   ]);
 
@@ -422,7 +429,7 @@ async function buildTeamDashboard(orgId: string, teamId: string) {
       notes: [
         'Open task counts are computed live from linked projects.',
         'Context counts are computed from linked team resources.',
-        'Pending approvals are counted for team members across the workspace.',
+        'Approvals are those requested by team members that you can review.',
         summary.latest_snapshot
           ? 'A dashboard snapshot is available, but trend rendering is still intentionally limited.'
           : 'No historical dashboard snapshot exists yet; treat this as a current-state summary, not trend analytics.',
@@ -574,7 +581,7 @@ teamRoutes.get('/:id/dashboard', async (c) => {
   const user = c.get('user');
   const visible = await requireVisibleTeam(c, user, c.req.param('id'));
   if ('response' in visible) return visible.response;
-  return c.json(await buildTeamDashboard(user.org_id, visible.team.id));
+  return c.json(await buildTeamDashboard(user, visible.team.id));
 });
 
 teamRoutes.get('/:id/summary', async (c) => {
