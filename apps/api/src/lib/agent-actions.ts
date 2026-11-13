@@ -85,6 +85,7 @@ import {
 import { requireActiveOrgMembership } from './org-membership.js';
 import { generateReceipt } from './receipts.js';
 import { visibleTaskCondition } from './task-visibility.js';
+import { visibleWikiPageCondition } from './wiki-visibility.js';
 import { resolveReadableRoom } from './retrieve-context.js';
 import {
   employeeProjectAccessAllows,
@@ -1334,6 +1335,78 @@ async function employeeTaskWriteScopeError(
   return scopedTasks.length === taskIds.length ? null : 'Task not found';
 }
 
+/** Native kinds whose task and decision targets the requester must see when they execute. */
+const REQUESTER_TASK_WRITE_ACTIONS = new Set(
+  [...EMPLOYEE_TASK_WRITE_ACTIONS].filter((action) => action !== 'create_task'),
+);
+
+/**
+ * The acting user (the action's requester) must see every task the action
+ * names, and the decision page of `link_decision_to_tasks`. A task that is
+ * missing, deleted, in another organization or not visible gets one answer.
+ * For update_task_status the checked id is pinned for the executor.
+ */
+async function requesterTaskWriteScopeError(
+  action: string,
+  params: Record<string, any>,
+  orgId: string,
+  userId: string,
+): Promise<string | null> {
+  if (action === 'mark_decision_implemented') return requesterDecisionError(params, orgId, userId);
+  if (!REQUESTER_TASK_WRITE_ACTIONS.has(action)) return null;
+  const identifiers = [...new Set(
+    taskIdentifiersForEmployeeWrite(action, params)
+      .map((identifier) => identifier.trim())
+      .filter(Boolean),
+  )];
+  if (identifiers.length === 0) return 'Task not found';
+  const resolvedTaskIds = await Promise.all(
+    identifiers.map((identifier) => resolveTaskIdentifier(identifier, orgId)),
+  );
+  if (resolvedTaskIds.some((taskId) => !taskId)) return 'Task not found';
+  const taskIds = [...new Set(resolvedTaskIds as string[])];
+  const visibleTasks = await db
+    .select({ id: tasks.id })
+    .from(tasks)
+    .innerJoin(projects, and(eq(projects.id, tasks.project_id), eq(projects.org_id, orgId)))
+    .where(and(
+      eq(tasks.org_id, orgId),
+      eq(tasks.is_deleted, false),
+      eq(projects.is_deleted, false),
+      inArray(tasks.id, taskIds),
+      visibleTaskCondition(userId),
+    ));
+  if (visibleTasks.length !== taskIds.length) return 'Task not found';
+  if (['update_task_status', 'close_task', 'reopen_task', 'assign_task'].includes(action) && taskIds.length === 1) {
+    params.resolved_task_id = taskIds[0];
+  }
+  if (action === 'link_decision_to_tasks') {
+    params.task_ids = taskIds;
+    return requesterDecisionError(params, orgId, userId);
+  }
+  return null;
+}
+
+async function requesterDecisionError(
+  params: Record<string, any>,
+  orgId: string,
+  userId: string,
+): Promise<string | null> {
+  const decisionId = typeof params.decision_id === 'string' ? params.decision_id : '';
+  if (!decisionId) return null;
+  const [decision] = await db
+    .select({ id: wikiPages.id })
+    .from(wikiPages)
+    .where(and(
+      eq(wikiPages.id, decisionId),
+      eq(wikiPages.org_id, orgId),
+      eq(wikiPages.is_deleted, false),
+      visibleWikiPageCondition(userId, orgId),
+    ))
+    .limit(1);
+  return decision ? null : 'Decision not found';
+}
+
 /**
  * Rebuild the current authorization boundary before a paused plan creates or
  * reuses a reviewed action. This returns the canonical input used by both the
@@ -1478,6 +1551,15 @@ export async function executeAction(
       agentEmployeeId,
     );
     if (taskScopeError) return { success: false, result: null, error: taskScopeError };
+    const requesterTaskError = await requesterTaskWriteScopeError(action, params, orgId, userId);
+    if (requesterTaskError) {
+      if (isModuleTaskLinkWriteAction(action)) {
+        await terminalizeModuleTaskLinkActionFailure(
+          actionId, action, params, orgId, userId, agentEmployeeId ?? undefined, requesterTaskError,
+        );
+      }
+      return { success: false, result: null, error: requesterTaskError };
+    }
 
     const policyError = await agentToolPolicyError(orgId, agentEmployeeId, action);
     if (policyError) {
@@ -1589,10 +1671,10 @@ export async function executeAction(
     // and chat broadcast without duplication.
     if (action === 'close_task') {
       action = 'update_task_status';
-      params = { task_identifier: params.task_identifier, new_status: 'done' };
+      params = { task_identifier: params.task_identifier, resolved_task_id: params.resolved_task_id, new_status: 'done' };
     } else if (action === 'reopen_task') {
       action = 'update_task_status';
-      params = { task_identifier: params.task_identifier, new_status: 'todo' };
+      params = { task_identifier: params.task_identifier, resolved_task_id: params.resolved_task_id, new_status: 'todo' };
     }
 
     switch (action) {
@@ -2109,8 +2191,11 @@ export async function executeAction(
       }
 
       case 'assign_task': {
-        let taskId = params.task_identifier as string;
-        const m = taskId.match(/^([A-Z]+)-(\d+)$/);
+        const pinnedTaskId = typeof params.resolved_task_id === 'string' && params.resolved_task_id.trim()
+          ? params.resolved_task_id
+          : null;
+        let taskId = pinnedTaskId ?? params.task_identifier as string;
+        const m = pinnedTaskId ? null : taskId.match(/^([A-Z]+)-(\d+)$/);
         if (m) {
           const [proj] = await db
             .select({ id: projects.id })

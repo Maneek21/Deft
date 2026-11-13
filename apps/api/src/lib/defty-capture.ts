@@ -6,6 +6,8 @@ import { approveAction } from './agent-approval-resolver.js';
 import { ensureDeftyEmployee } from './ensure-defty-membership.js';
 import { toPlainText, truncatePlainText } from './plain-text.js';
 import { resolveAssigneeWithMatches } from './resolve-assignee.js';
+import { visibleTaskCondition } from './task-visibility.js';
+import { visibleWikiPageCondition } from './wiki-visibility.js';
 import { wikiCreateProposalTarget, wikiUpdateProposalTarget } from './mcp-tools/wiki-create.js';
 
 type ResolvedProject = { id: string; name: string };
@@ -253,6 +255,7 @@ function extractKnowledgeUpdateTarget(content: string): string {
 
 async function findWikiPageForExplicitUpdate(params: {
   orgId: string;
+  sourceUserId: string;
   spaceId: string;
   title: string;
   content: string;
@@ -275,6 +278,7 @@ async function findWikiPageForExplicitUpdate(params: {
       eq(wikiPages.type, params.wikiType),
       eq(wikiPages.scope, params.scope),
       params.scope === 'space' ? eq(wikiPages.space_id, params.spaceId) : sql`TRUE`,
+      visibleWikiPageCondition(params.sourceUserId, params.orgId),
     ))
     .limit(250);
 
@@ -384,6 +388,7 @@ function contentMentionsTask(content: string, task: ExistingTaskMatch): boolean 
 async function findReferencedTaskUpdate(
   orgId: string,
   content: string,
+  sourceUserId: string,
 ): Promise<{
   task: ExistingTaskMatch;
   patch: TaskUpdatePatch;
@@ -412,6 +417,7 @@ async function findReferencedTaskUpdate(
       eq(tasks.is_deleted, false),
       eq(projects.is_deleted, false),
       eq(projects.is_archived, false),
+      visibleTaskCondition(sourceUserId),
     ))
     .limit(250);
 
@@ -503,6 +509,7 @@ async function findReferencedTaskUpdate(
 
 async function findSimilarActiveTask(params: {
   orgId: string;
+  sourceUserId: string;
   projectId: string | null;
   title: string;
   content: string;
@@ -531,6 +538,7 @@ async function findSimilarActiveTask(params: {
       eq(projects.is_deleted, false),
       eq(projects.is_archived, false),
       sql`${tasks.status} NOT IN ('done', 'cancelled')`,
+      visibleTaskCondition(params.sourceUserId),
     ))
     .limit(250);
 
@@ -555,6 +563,7 @@ async function findSimilarActiveTask(params: {
 
 async function findSimilarWikiPage(params: {
   orgId: string;
+  sourceUserId: string;
   spaceId: string;
   title: string;
   content: string;
@@ -576,6 +585,7 @@ async function findSimilarWikiPage(params: {
       eq(wikiPages.type, params.wikiType),
       eq(wikiPages.scope, params.scope),
       params.scope === 'space' ? eq(wikiPages.space_id, params.spaceId) : sql`TRUE`,
+      visibleWikiPageCondition(params.sourceUserId, params.orgId),
     ))
     .limit(250);
 
@@ -595,6 +605,7 @@ async function findSimilarWikiPage(params: {
 
 async function findRelatedWikiPage(params: {
   orgId: string;
+  sourceUserId: string;
   spaceId: string;
   title: string;
   content: string;
@@ -617,6 +628,7 @@ async function findRelatedWikiPage(params: {
       eq(wikiPages.type, params.wikiType),
       eq(wikiPages.scope, params.scope),
       params.scope === 'space' ? eq(wikiPages.space_id, params.spaceId) : sql`TRUE`,
+      visibleWikiPageCondition(params.sourceUserId, params.orgId),
     ))
     .limit(250);
 
@@ -922,6 +934,7 @@ export async function queueDeftyKnowledgeCapture(params: {
   if (explicitKnowledgeUpdate) {
     const targetPage = await findWikiPageForExplicitUpdate({
       orgId,
+      sourceUserId,
       spaceId,
       title: finalTitle,
       content: rawPlainContent,
@@ -957,6 +970,7 @@ export async function queueDeftyKnowledgeCapture(params: {
 
   const similarPage = await findSimilarWikiPage({
     orgId,
+    sourceUserId,
     spaceId,
     title: finalTitle,
     content: plainContent,
@@ -970,6 +984,7 @@ export async function queueDeftyKnowledgeCapture(params: {
   if (preferUpdate) {
     const relatedPage = await findRelatedWikiPage({
       orgId,
+      sourceUserId,
       spaceId,
       title: finalTitle,
       content: plainContent,
@@ -1433,7 +1448,7 @@ export async function queueDeftyCreateTaskCapture(params: {
     .limit(1);
   if (existing) return { queued: false, actionId: existing.id, skippedReason: 'duplicate' };
 
-  const taskUpdate = await findReferencedTaskUpdate(orgId, plainContent);
+  const taskUpdate = await findReferencedTaskUpdate(orgId, plainContent, sourceUserId);
   if (taskUpdate) {
     if (taskUpdate.noChangeReason) {
       return { queued: false, skippedReason: taskUpdate.noChangeReason };
@@ -1463,6 +1478,7 @@ export async function queueDeftyCreateTaskCapture(params: {
   if (captureKind === 'task_candidate') {
     const similarTask = await findSimilarActiveTask({
       orgId,
+      sourceUserId,
       projectId: project.id,
       title: finalTitle,
       content: description || plainContent,

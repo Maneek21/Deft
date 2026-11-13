@@ -294,6 +294,16 @@ async function loadAccessibleTaskForEmployee(
   return task ? { task, userId: access.userId } : null;
 }
 
+async function taskVisibleToUser(taskId: string, userId: string, orgId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: tasks.id })
+    .from(tasks)
+    .innerJoin(projects, and(eq(tasks.project_id, projects.id), eq(projects.org_id, orgId)))
+    .where(and(eq(tasks.id, taskId), eq(tasks.org_id, orgId), visibleTaskCondition(userId)))
+    .limit(1);
+  return Boolean(row);
+}
+
 /** Verifies a parent message exists, is in the caller's org, and is in
  * the same space as the proposed reply (prevents cross-space thread hijack). */
 export async function verifyParentMessageMatches(
@@ -428,12 +438,9 @@ export async function executeTaskCreate(
         : ('p2' as const);
 
     if (args.source_message_id?.trim()) {
-      const sourceReaderIds = [
-        shadowUserId,
-        opts?.sourceReaderUserId ?? null,
-      ].filter((value, index, values): value is string =>
-        typeof value === 'string' && value.length > 0 && values.indexOf(value) === index,
-      );
+      // A capture action reads its source message as the message author only.
+      const sourceReaderIds = [opts?.sourceReaderUserId || shadowUserId]
+        .filter((value): value is string => typeof value === 'string' && value.length > 0);
       let canReadSource = false;
       for (const readerUserId of sourceReaderIds) {
         canReadSource = await verifyMessageVisibleToUser(
@@ -635,7 +642,7 @@ function parseDueDate(value: string | null | undefined): Date | null | undefined
 export async function executeTaskUpdate(
   args: TaskUpdateArgs,
   ctx: ToolContext,
-  opts?: { skipReceipt?: boolean; actionId?: string | null; commentId?: string },
+  opts?: { skipReceipt?: boolean; actionId?: string | null; commentId?: string; sourceReaderUserId?: string | null },
 ): Promise<ToolResult> {
   if (!args.task_id) return errorResult('task_update requires task_id');
   if (!args.patch || Object.keys(args.patch).length === 0) {
@@ -656,8 +663,15 @@ export async function executeTaskUpdate(
     }[] = [];
 
     const accessible = await loadAccessibleTaskForEmployee(args.task_id, ctx);
-    if (!accessible) {
+    // A capture action changes only a task its source message author can see.
+    if (!accessible || (opts?.sourceReaderUserId
+      && !(await taskVisibleToUser(accessible.task.id, opts.sourceReaderUserId, ctx.org_id)))) {
       return errorResult(`task_update: task ${args.task_id} not found`);
+    }
+    const sourceMessageId = (args as { source_message_id?: unknown }).source_message_id;
+    if (opts?.sourceReaderUserId && typeof sourceMessageId === 'string' && sourceMessageId.trim()
+      && !(await verifyMessageVisibleToUser(sourceMessageId, opts.sourceReaderUserId, ctx.org_id))) {
+      return errorResult(`task_update: source_message_id ${sourceMessageId} is not readable in caller's org`);
     }
     const { task: existingTask, userId: shadowUserId } = accessible;
 
