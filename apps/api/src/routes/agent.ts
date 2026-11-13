@@ -1249,7 +1249,7 @@ export async function approveActionAsReviewer(c: Context, user: ActionReviewer, 
       if (result.code === 'EXECUTE_FAILED') {
         await finalizeApprovalOutcome({ actionId, orgId: user.org_id, receipt: 'resolver', hooks: approvalFinaliserHooks });
         // A typed refusal ended the approval: answer with the failed result a replay gives.
-        if (result.refusalCode) return c.json(approvedButFailedBody(result.message, wikiProposalRefusal(result.refusalCode)));
+        if (result.refusalCode) return c.json(approvedButFailedBody(result.message, action.action, wikiProposalRefusal(result.refusalCode)));
       }
       const statusCode =
         result.code === 'NOT_FOUND' ? 404
@@ -1306,10 +1306,13 @@ export async function approveActionAsReviewer(c: Context, user: ActionReviewer, 
       await finalizeApprovalOutcome({ actionId, orgId: user.org_id, receipt: 'resolver' });
     }
     // An action approved earlier whose execution failed is reported as
-    // failed, not as a fresh success.
-    if (result.status === 'approved' && !action.app_run_id && action.approval_status === 'approved'
-      && action.error && result.decidedElsewhere === true) {
-      return c.json(approvedButFailedBody(action.error, action.result));
+    // failed, not as a fresh success. A request that first read the action
+    // while it was still pending reads the settled row again.
+    if (result.status === 'approved' && !action.app_run_id && result.decidedElsewhere === true) {
+      const settled = action.approval_status === 'approved' ? action : await loadOrgAction(actionId, user.org_id);
+      if (settled?.approval_status === 'approved' && settled.error) {
+        return c.json(approvedButFailedBody(settled.error, settled.action, settled.result));
+      }
     }
     return c.json({
       status: result.status,
@@ -1372,7 +1375,7 @@ async function loadOrgAction(actionId: string, orgId: string) {
 
 function settledApprovalResponse(c: Context, row: typeof agentActions.$inferSelect) {
   if (row.approval_status === 'approved') {
-    if (row.error) return c.json(approvedButFailedBody(row.error, row.result));
+    if (row.error) return c.json(approvedButFailedBody(row.error, row.action, row.result));
     return c.json({ status: 'approved', message: 'already approved', result: row.result ?? undefined });
   }
   if (row.approval_status === 'rejected') return c.json({ status: 'rejected', message: 'already rejected' });
@@ -1546,9 +1549,9 @@ async function ownedApprovalResponse(
 
   if (!execResult.success) {
     // A typed refusal ended the approval: answer with the failed result a replay gives.
-    const refusal = outcome.kind === 'failed_terminal' ? wikiProposalRefusalCode(execResult.result) : null;
-    if (refusal && execResult.error === WIKI_PROPOSAL_REFUSALS[refusal]) {
-      return c.json(approvedButFailedBody(execResult.error, execResult.result));
+    const refusal = outcome.kind === 'failed_terminal' ? wikiProposalRefusalCode(action.action, execResult.result, execResult.error) : null;
+    if (refusal) {
+      return c.json(approvedButFailedBody(WIKI_PROPOSAL_REFUSALS[refusal], action.action, execResult.result));
     }
     return c.json(
       {
@@ -1759,13 +1762,13 @@ class UndoRefusal extends Error {
  * Answer for an approved action that did not complete. A typed wiki proposal
  * refusal recorded in `result` adds its code.
  */
-function approvedButFailedBody(error: string, result?: unknown) {
-  const refusal = wikiProposalRefusalCode(result);
+function approvedButFailedBody(error: string, actionName: string, result?: unknown) {
+  const refusal = wikiProposalRefusalCode(actionName, result, error);
   return {
     status: 'failed' as const,
     message: 'approved, but it did not complete',
     error,
-    ...(refusal && error === WIKI_PROPOSAL_REFUSALS[refusal] ? { code: refusal } : {}),
+    ...(refusal ? { code: refusal } : {}),
   };
 }
 

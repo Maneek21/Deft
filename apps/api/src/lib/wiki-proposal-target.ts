@@ -74,13 +74,19 @@ export function wikiProposalRefusal(code: WikiProposalRefusalCode) {
   return { ...TERMINAL_REFUSAL_RESULT, refusal_code: code };
 }
 
-/** The code of a typed wiki proposal refusal result, or null for anything else. */
-export function wikiProposalRefusalCode(value: unknown): WikiProposalRefusalCode | null {
-  if (!isTerminalRefusalResult(value)) return null;
-  const code = (value as Record<string, unknown>).refusal_code;
-  return typeof code === 'string' && Object.prototype.hasOwnProperty.call(WIKI_PROPOSAL_REFUSALS, code)
-    ? code as WikiProposalRefusalCode
-    : null;
+/** The actions whose execution records typed wiki proposal refusals. */
+const WIKI_PROPOSAL_ACTIONS: ReadonlySet<string> = new Set(['wiki_write', 'wiki_create', 'wiki_update']);
+
+/**
+ * The code of a typed wiki proposal refusal, or null for anything else: the
+ * action is a wiki proposal, the result carries one of the codes above, and
+ * the error is exactly that code's message.
+ */
+export function wikiProposalRefusalCode(action: string, result: unknown, error: unknown): WikiProposalRefusalCode | null {
+  if (!WIKI_PROPOSAL_ACTIONS.has(action) || !isTerminalRefusalResult(result)) return null;
+  const code = (result as Record<string, unknown>).refusal_code;
+  if (typeof code !== 'string' || !Object.prototype.hasOwnProperty.call(WIKI_PROPOSAL_REFUSALS, code)) return null;
+  return error === WIKI_PROPOSAL_REFUSALS[code as WikiProposalRefusalCode] ? code as WikiProposalRefusalCode : null;
 }
 
 function refused(error: string) {

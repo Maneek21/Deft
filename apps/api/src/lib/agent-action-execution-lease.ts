@@ -410,7 +410,7 @@ export async function executeClaimedApproval(
     // Idempotency keys are single-use terminal claims. A failed approved edge
     // mutation is never reopened after the executor scrubbed its raw key.
     // A typed wiki proposal refusal keeps its code, so a replay can name it.
-    const refusal = wikiProposalRefusalCode(execResult.result);
+    const refusal = wikiProposalRefusalCode(row.action, execResult.result, error);
     const [written] = await db
       .update(agentActions)
       .set({ result: refusal ? wikiProposalRefusal(refusal) : null, error, executed_at: new Date() })

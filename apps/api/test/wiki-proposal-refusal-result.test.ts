@@ -14,7 +14,8 @@ import test, { after, before } from 'node:test';
 import { persistAgentReplyWithActions } from '../src/lib/agent-action-proposals.js';
 import type { ToolContext, ToolResult } from '../src/lib/mcp-tools/types.js';
 import { _setWikiUpdateRevisionCheckedHookForTest, wikiCreate, wikiUpdate } from '../src/lib/mcp-tools/wiki-create.js';
-import { _setWikiWriteRevisionCheckedHookForTest } from '../src/lib/wiki-proposal-target.js';
+import { humanApprovalApprove } from '../src/lib/mcp-tools/human.js';
+import { _setWikiWriteRevisionCheckedHookForTest, wikiProposalRefusal, wikiProposalRefusalCode } from '../src/lib/wiki-proposal-target.js';
 import { durabilityDatabaseUrl, setupDurabilityFixture, type DurabilityFixture } from './fixtures/agent-action-durability-fixture.js';
 
 const canRun = Boolean(durabilityDatabaseUrl);
@@ -26,11 +27,12 @@ const UNVERIFIABLE = 'This wiki proposal does not record the page revision it wa
 let f: DurabilityFixture;
 let ctx: ToolContext;
 let agentUserId: string;
+let shadowId: string;
 
 before(async () => {
   if (!canRun) return;
   f = await setupDurabilityFixture('WR');
-  const shadowId = randomUUID();
+  shadowId = randomUUID();
   const employeeId = randomUUID();
   const slug = `wiki-refusal-${employeeId.slice(0, 8)}`;
   await f.client.query(`INSERT INTO users (id, email, name, kind, is_agent, email_verified) VALUES ($1, $2, 'Wiki employee', 'agent', true, true)`,
@@ -211,3 +213,60 @@ test('an unexpected execution error keeps its error response', { skip: !canRun }
   assert.equal((await pageState(updatePage.id)).content, 'Original content');
   assert.equal((await pageState(writePage.id)).content, 'Original content');
 });
+
+test('only a wiki proposal action with a known code and its exact message is a typed refusal', () => {
+  const typed = wikiProposalRefusal('WIKI_PAGE_CHANGED');
+  assert.equal(wikiProposalRefusalCode('wiki_update', typed, CHANGED), 'WIKI_PAGE_CHANGED');
+  assert.equal(wikiProposalRefusalCode('wiki_write', typed, CHANGED), 'WIKI_PAGE_CHANGED');
+  assert.equal(wikiProposalRefusalCode('create_task', typed, CHANGED), null);
+  assert.equal(wikiProposalRefusalCode('mcp__tools__write', typed, CHANGED), null);
+  assert.equal(wikiProposalRefusalCode('wiki_update', typed, UNAVAILABLE), null);
+  assert.equal(wikiProposalRefusalCode('wiki_update', null, CHANGED), null);
+  assert.equal(wikiProposalRefusalCode('wiki_update', { refusal_code: 'WIKI_PAGE_CHANGED' }, CHANGED), null);
+  assert.equal(wikiProposalRefusalCode('wiki_update', { terminal_refusal: true, refusal_code: 'WIKI_OTHER' }, CHANGED), null);
+  assert.equal(wikiProposalRefusalCode('wiki_update', { terminal_refusal: true, refusal_code: 'toString' }, CHANGED), null);
+});
+
+test('concurrent approves of a refused proposal both answer with the failed result', { skip: !canRun }, async () => {
+  const page = await createPage();
+  const actionId = await mcpUpdate(page);
+  await f.client.query("UPDATE wiki_pages SET content = 'Edited by a person' WHERE id = $1", [page.id]);
+  const reviewer = await reviewerFor(actionId);
+  const answers = await Promise.all([0, 1].map(async () => {
+    const response = await f.as(reviewer, `/api/agent/actions/${actionId}/approve`, { method: 'POST' });
+    return { status: response.status, body: await response.json() as Record<string, unknown> };
+  }));
+  const expected = { status: 'failed', message: 'approved, but it did not complete', error: CHANGED, code: 'WIKI_PAGE_CHANGED' };
+  for (const answer of answers) {
+    assert.equal(answer.status, 200, JSON.stringify(answer.body));
+    assert.deepEqual(answer.body, expected);
+  }
+  assert.equal((await pageState(page.id)).content, 'Edited by a person');
+});
+
+test('personal MCP approval_approve returns the same failed result on the first call and on replay', { skip: !canRun }, async () => {
+  const page = await createPage();
+  const actionId = await mcpUpdate(page);
+  await f.client.query('UPDATE wiki_pages SET is_deleted = true WHERE id = $1', [page.id]);
+  const reviewer = await reviewerFor(actionId);
+  const humanCtx = { org_id: f.orgId, user_id: reviewer, role: (reviewer === f.adminId ? 'admin' : 'member') as 'admin' | 'member',
+    scopes: ['read:workspace', 'write:workspace'], token_id: `refusal-${actionId.slice(0, 8)}` };
+  const answers = [];
+  for (let i = 0; i < 2; i += 1) {
+    const result = await humanApprovalApprove({ action_id: actionId }, humanCtx);
+    assert.notEqual(result.isError, true, textOf(result));
+    answers.push(JSON.parse(textOf(result)));
+  }
+  for (const answer of answers) {
+    assert.equal(answer.status, 'failed');
+    assert.equal(answer.error, UNAVAILABLE);
+    assert.equal(answer.code, 'WIKI_PAGE_UNAVAILABLE');
+  }
+  assert.equal((await pageState(page.id)).content, 'Original content');
+});
+
+/** An admin reviews the employee's own requests; the requester reviews the rest. */
+async function reviewerFor(actionId: string): Promise<string> {
+  const [row] = (await f.client.query('SELECT user_id FROM agent_actions WHERE id = $1', [actionId])).rows;
+  return row?.user_id === shadowId ? f.adminId : f.requesterId;
+}

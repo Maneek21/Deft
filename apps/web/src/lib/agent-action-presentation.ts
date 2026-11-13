@@ -167,6 +167,21 @@ export function getApprovalMutationStatus(
   return fallback;
 }
 
+/**
+ * The action to keep on screen after its approve answered "failed": approved,
+ * with the reason from the answer. Null for any other answer.
+ */
+export function failedApprovalSnapshot<T extends { id: string }>(action: T, result: unknown) {
+  if (getApprovalMutationStatus(result, 'approved') !== 'failed') return null;
+  const error = objectValue(result)?.error;
+  return {
+    ...action,
+    status: 'approved',
+    approval_status: 'approved',
+    error: typeof error === 'string' && error.trim() ? error : 'The approved action did not complete.',
+  };
+}
+
 export type TaskLinkReview = {
   record: { label: string; href: string };
   task: { identifier: string; title: string; project_name: string; href: string };

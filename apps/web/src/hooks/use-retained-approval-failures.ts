@@ -2,7 +2,7 @@
 
 import { useCallback, useState } from 'react';
 import type { AgentAction } from '@/components/agent-action-card';
-import { getApprovalMutationStatus } from '@/lib/agent-action-presentation';
+import { failedApprovalSnapshot } from '@/lib/agent-action-presentation';
 
 type Retained = { group: string; action: AgentAction };
 
@@ -15,14 +15,10 @@ type Retained = { group: string; action: AgentAction };
 export function useRetainedApprovalFailures() {
   const [retained, setRetained] = useState<Retained[]>([]);
 
-  const retain = useCallback((group: string, action: AgentAction, body: unknown) => {
-    if (getApprovalMutationStatus(body, 'approved') !== 'failed') return;
-    const reply = body as { error?: unknown };
-    const error = typeof reply.error === 'string' && reply.error ? reply.error : 'The approved action did not complete.';
-    setRetained((current) => [
-      ...current.filter((entry) => entry.action.id !== action.id),
-      { group, action: { ...action, status: 'approved', approval_status: 'approved', error } },
-    ]);
+  const retain = useCallback((group: string, action: AgentAction, result: unknown) => {
+    const failed = failedApprovalSnapshot(action, result);
+    if (!failed) return;
+    setRetained((current) => [...current.filter((entry) => entry.action.id !== action.id), { group, action: failed }]);
   }, []);
 
   /** The retained failures for `group` that `live` no longer lists. */

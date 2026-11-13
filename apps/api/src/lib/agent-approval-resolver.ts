@@ -164,7 +164,6 @@ import { publishAgentChannelEvent } from './agent-channel.js';
 import { currentAgentActionSourceAuthoritySql } from './agent-channel-authority.js';
 import { canonicalDeftyActionSql } from './module-action-visibility.js';
 import {
-  WIKI_PROPOSAL_REFUSALS,
   wikiProposalRefusal,
   wikiProposalRefusalCode,
   type WikiProposalRefusalCode,
@@ -1509,8 +1508,7 @@ async function approveActionLocked(
   const resultText = toolResult.content?.[0]?.text ?? '';
   // A typed wiki proposal refusal is recorded with its code, so every answer
   // for this action can name it.
-  const typedCode = isError && !caughtError ? wikiProposalRefusalCode(toolResult.structuredContent) : null;
-  const wikiRefusal = typedCode && resultText === WIKI_PROPOSAL_REFUSALS[typedCode] ? typedCode : null;
+  const wikiRefusal = isError && !caughtError ? wikiProposalRefusalCode(row.action, toolResult.structuredContent, resultText) : null;
   let parsedResult: unknown = resultText;
   try {
     parsedResult = JSON.parse(resultText);
