@@ -4,7 +4,7 @@ import { eq, and, asc, desc, sql, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { spaces, spaceMembers, users, messages, agentEmployees, orgMembers } from '@deft/db/schema';
 import { evictActiveHuddleParticipants, getIO } from '../socket.js';
-import { requireSpaceMembership } from '../lib/space-membership.js';
+import { canSelfJoinPublicSpaces, requireSpaceMembership } from '../lib/space-membership.js';
 import { DEFTY_EMAIL } from '../lib/ensure-defty-membership.js';
 
 export const spaceRoutes = new Hono();
@@ -283,6 +283,112 @@ spaceRoutes.get('/unread', async (c) => {
   }
 });
 
+const browseQuerySchema = z.object({
+  q: z.string().trim().max(100).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  include_joined: z.enum(['1', 'true', '0', 'false']).optional(),
+});
+
+// GET /api/spaces/browse — public spaces of the caller's org (must be before /:id).
+// Returns only directory fields; messages, members and pins stay membership-gated.
+spaceRoutes.get('/browse', async (c) => {
+  try {
+    const user = c.get('user');
+    const parsed = browseQuerySchema.safeParse(c.req.query());
+    if (!parsed.success) return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
+    if (!(await canSelfJoinPublicSpaces(user.id, user.org_id))) {
+      return c.json({ error: 'Browsing spaces is not available', code: 'FORBIDDEN' }, 403);
+    }
+    const { q, limit } = parsed.data;
+    const includeJoined = parsed.data.include_joined === '1' || parsed.data.include_joined === 'true';
+    const isMember = sql<boolean>`(${spaceMembers.id} IS NOT NULL)`;
+    const memberCount = sql<number>`(
+      SELECT count(*)::int FROM ${spaceMembers} sm
+      INNER JOIN ${orgMembers} om ON om.user_id = sm.user_id AND om.org_id = ${user.org_id} AND om.is_active = true
+      WHERE sm.space_id = ${spaces.id}
+    )`;
+    const conditions = [
+      eq(spaces.org_id, user.org_id),
+      eq(spaces.type, 'public'),
+      eq(spaces.is_archived, false),
+    ];
+    if (!includeJoined) conditions.push(sql`${spaceMembers.id} IS NULL`);
+    if (q) conditions.push(sql`${spaces.name} ILIKE ${`%${q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`}`);
+
+    const rows = await db.select({
+      id: spaces.id,
+      name: spaces.name,
+      description: spaces.description,
+      topic: spaces.topic,
+      created_at: spaces.created_at,
+      member_count: memberCount,
+      is_member: isMember,
+    })
+      .from(spaces)
+      .leftJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, user.id)))
+      .where(and(...conditions))
+      .orderBy(sql`lower(${spaces.name})`, asc(spaces.id))
+      .limit(limit);
+
+    return c.json({ spaces: rows });
+  } catch (err) {
+    console.error('Failed to browse spaces:', err);
+    return c.json({ error: 'Failed to browse spaces', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// POST /api/spaces/:id/join — the caller adds themselves to a public space of their org.
+// Any space they may not join gets the same denial as a space they cannot see.
+spaceRoutes.post('/:id/join', async (c) => {
+  try {
+    const user = c.get('user');
+    const spaceId = c.req.param('id');
+    // The caller's user and org membership rows stay share-locked until the
+    // membership row is written. A new membership locks the space row FOR
+    // UPDATE first, the lock the space_members trigger takes, so concurrent
+    // joins queue on it and a concurrent archive is seen or waits. An existing
+    // member returns before taking the space lock.
+    const joinableSpace = and(
+      eq(spaces.id, spaceId),
+      eq(spaces.org_id, user.org_id),
+      eq(spaces.type, 'public'),
+      eq(spaces.is_archived, false),
+    );
+    const result = await db.transaction(async (tx) => {
+      if (!(await canSelfJoinPublicSpaces(user.id, user.org_id, tx))) return null;
+      const [space] = await tx.select({ id: spaces.id }).from(spaces).where(joinableSpace).limit(1);
+      if (!space) return null;
+      const [existing] = await tx.select({ id: spaceMembers.id })
+        .from(spaceMembers)
+        .where(and(eq(spaceMembers.space_id, space.id), eq(spaceMembers.user_id, user.id)))
+        .limit(1);
+      if (existing) return { space, inserted: [] };
+      const [locked] = await tx.select({ id: spaces.id }).from(spaces).where(joinableSpace).limit(1).for('update');
+      if (!locked) return null;
+      const inserted = await tx.insert(spaceMembers)
+        .values({ space_id: space.id, user_id: user.id })
+        .onConflictDoNothing()
+        .returning({ id: spaceMembers.id });
+      return { space, inserted };
+    });
+    if (!result) return c.json(NOT_A_MEMBER, 403);
+    const { space, inserted } = result;
+
+    if (inserted.length > 0) {
+      const io = getIO();
+      if (io) {
+        io.to([`space:${space.id}`, `org-user:${user.org_id}:${user.id}`])
+          .emit('space:member_joined', { space_id: space.id, user_id: user.id });
+      }
+    }
+
+    return c.json({ space_id: space.id, already_member: inserted.length === 0 });
+  } catch (err) {
+    console.error('Failed to join space:', err);
+    return c.json({ error: 'Failed to join space', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
 // GET /api/spaces/:id — get single space
 spaceRoutes.get('/:id', async (c) => {
   try {
@@ -514,17 +620,49 @@ spaceRoutes.post('/:id/read', async (c) => {
   }
 });
 
+// DELETE /api/spaces/:id/members/me — leave space (registered before
+// /:id/members/:userId so the literal path wins)
+spaceRoutes.delete('/:id/members/me', async (c) => {
+  try {
+    const user = c.get('user');
+    const spaceId = c.req.param('id');
+
+    // A missing space, a space in another org and a space the caller is not in
+    // all get the one W1-g denial (S4-d).
+    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
+    if (!isMember) return c.json(NOT_A_MEMBER, 403);
+
+    const deleted = await db.delete(spaceMembers)
+      .where(
+        and(
+          eq(spaceMembers.space_id, spaceId),
+          eq(spaceMembers.user_id, user.id),
+        )
+      )
+      .returning();
+
+    if (deleted.length === 0) return c.json(NOT_A_MEMBER, 403);
+
+    await evictActiveHuddleParticipants({
+      orgId: user.org_id,
+      spaceId,
+      userId: user.id,
+      reason: 'space_membership_revoked',
+    });
+
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('Failed to leave space:', err);
+    return c.json({ error: 'Failed to leave space', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
 // DELETE /api/spaces/:id/members/:userId — remove member from space
 spaceRoutes.delete('/:id/members/:userId', async (c) => {
   try {
     const user = c.get('user');
     const spaceId = c.req.param('id');
     const userId = c.req.param('userId');
-
-    // Don't match the "me" route
-    if (userId === 'me') {
-      return c.notFound();
-    }
 
     // Verify space belongs to user's org
     const [space] = await db.select()
@@ -563,42 +701,6 @@ spaceRoutes.delete('/:id/members/:userId', async (c) => {
   } catch (err) {
     console.error('Failed to remove space member:', err);
     return c.json({ error: 'Failed to remove member', code: 'INTERNAL_ERROR' }, 500);
-  }
-});
-
-// DELETE /api/spaces/:id/members/me — leave space
-spaceRoutes.delete('/:id/members/me', async (c) => {
-  try {
-    const user = c.get('user');
-    const spaceId = c.req.param('id');
-
-    // A missing space, a space in another org and a space the caller is not in
-    // all get the one W1-g denial (S4-d).
-    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
-    if (!isMember) return c.json(NOT_A_MEMBER, 403);
-
-    const deleted = await db.delete(spaceMembers)
-      .where(
-        and(
-          eq(spaceMembers.space_id, spaceId),
-          eq(spaceMembers.user_id, user.id),
-        )
-      )
-      .returning();
-
-    if (deleted.length === 0) return c.json(NOT_A_MEMBER, 403);
-
-    await evictActiveHuddleParticipants({
-      orgId: user.org_id,
-      spaceId,
-      userId: user.id,
-      reason: 'space_membership_revoked',
-    });
-
-    return c.json({ success: true });
-  } catch (err) {
-    console.error('Failed to leave space:', err);
-    return c.json({ error: 'Failed to leave space', code: 'INTERNAL_ERROR' }, 500);
   }
 });
 

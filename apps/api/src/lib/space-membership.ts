@@ -1,6 +1,37 @@
 import { db } from './db.js';
-import { spaceMembers, spaces } from '@deft/db/schema';
-import { and, eq } from 'drizzle-orm';
+import { orgMembers, spaceMembers, spaces, users } from '@deft/db/schema';
+import { and, eq, inArray } from 'drizzle-orm';
+import type { CoreDatabaseTransaction } from './database-transaction.js';
+
+/**
+ * True when `userId` may find and join the public spaces of `orgId`: an active
+ * member of that org with role owner, admin or member, and a human user.
+ * Guests and agent users are added to spaces by a member instead. The role is
+ * read from the database, not from the session.
+ */
+export async function canSelfJoinPublicSpaces(
+  userId: string,
+  orgId: string,
+  tx?: CoreDatabaseTransaction,
+): Promise<boolean> {
+  const query = (tx ?? db).select({ id: orgMembers.id })
+    .from(orgMembers)
+    .innerJoin(users, eq(users.id, orgMembers.user_id))
+    .where(and(
+      eq(orgMembers.org_id, orgId),
+      eq(orgMembers.user_id, userId),
+      eq(orgMembers.is_active, true),
+      inArray(orgMembers.role, ['owner', 'admin', 'member']),
+      eq(users.kind, 'human'),
+    ))
+    .limit(1);
+  // Inside a join transaction the user and membership rows are share-locked
+  // until commit, in the same order (users, then org_members) that member
+  // removal locks them, so the two cannot deadlock.
+  if (tx) await tx.select({ id: users.id }).from(users).where(eq(users.id, userId)).for('share');
+  const [row] = tx ? await query.for('share', { of: orgMembers }) : await query;
+  return !!row;
+}
 
 /**
  * True when `userId` is a member of `spaceId` AND that space belongs to
