@@ -22,6 +22,7 @@ import {
 } from '@deft/db/schema';
 import { db } from '../lib/db.js';
 import { ordinaryPendingApprovalSql, specialApprovalActionSql } from '../lib/pending-approval-audience.js';
+import { actionRequesterIdSql } from '../lib/agent-action-requester.js';
 import { OrgMembershipError, requireOrgAdminOrOwner } from '../lib/org-membership.js';
 import type { AuthUser } from '../middleware/auth.js';
 
@@ -412,9 +413,9 @@ async function buildTeamDashboard(viewer: AuthUser, teamId: string) {
           .from(agentActions)
           .where(and(
             eq(agentActions.org_id, orgId),
-            inArray(agentActions.user_id, memberIds),
-            sql`((${specialApprovalActionSql()} AND ${agentActions.approval_status} = 'pending')
-              OR ${ordinaryPendingApprovalSql(viewer)})`,
+            sql`((${specialApprovalActionSql()} AND ${agentActions.approval_status} = 'pending'
+                AND ${inArray(agentActions.user_id, memberIds)})
+              OR (${ordinaryPendingApprovalSql(viewer)} AND ${inArray(actionRequesterIdSql(), memberIds)}))`,
           ))
       : Promise.resolve([{ count: 0 }]),
   ]);

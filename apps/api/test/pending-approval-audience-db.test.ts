@@ -86,7 +86,9 @@ before(async () => {
     [id, org, user, employee, action, JSON.stringify(params), tier, source, new Date(base + offsetSec * 1000), status]);
   await insert(a.ord, orgId, ids.requester, employeeId, 'create_task', 'quick', 'mention', { title: 'ORD' }, 5);
   await insert(a.ordAuto, orgId, ids.requester, employeeId, 'create_task', 'auto', 'mention', { title: 'AUTO' }, 4);
-  await insert(a.fallback, orgId, ids.departed, deftyEmployeeId, 'create_task', 'quick', 'defty_capture',
+  // As written by Defty: stored under Defty's user, requested by the message author.
+  const deftyUserId = (await q('SELECT user_id FROM agent_employees WHERE id=$1', [deftyEmployeeId])).rows[0].user_id as string;
+  await insert(a.fallback, orgId, deftyUserId, deftyEmployeeId, 'create_task', 'quick', 'defty_capture',
     { title: 'FALLBACK', source_user_id: ids.departed, source_space_id: room }, 3);
   // App Run releases share this branch (same action list); a record-mirror nomination stands for both.
   await insert(a.mirror, orgId, ids.requester, employeeId, 'app_record_mirror_nominate', 'full', 'app_record_mirror', {}, 1);
