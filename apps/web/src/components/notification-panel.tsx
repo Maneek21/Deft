@@ -6,6 +6,7 @@ import { Bell, ChevronRight } from 'lucide-react';
 import { AgentActionCard, type AgentAction } from '@/components/agent-action-card';
 import { AttentionRow } from '@/components/attention-row';
 import { useAttention } from '@/hooks/use-attention';
+import { useRetainedApprovalFailures } from '@/hooks/use-retained-approval-failures';
 import { api } from '@/lib/api';
 
 export function NotificationPanel({ onClose }: { onClose: () => void }) {
@@ -37,13 +38,18 @@ export function NotificationPanel({ onClose }: { onClose: () => void }) {
     };
   }, [onClose]);
 
-  const mutateApproval = async (actionId: string, action: 'approve' | 'reject') => {
-    const response = await api.post(`/api/agent/actions/${actionId}/${action}`, {});
+  const { retain, retainedFor } = useRetainedApprovalFailures();
+  const failedApprovals = retainedFor('needs_you', items.flatMap((item) => (item.approval ? [item.approval] : [])));
+
+  const mutateApproval = async (card: AgentAction, action: 'approve' | 'reject') => {
+    const response = await api.post(`/api/agent/actions/${card.id}/${action}`, {});
     if (!response.ok) {
       const body = await response.json().catch(() => null) as { error?: string } | null;
       throw new Error(body?.error ?? `${action} failed`);
     }
     const result = await response.json().catch(() => ({ status: action === 'approve' ? 'approved' : 'rejected' }));
+    // A failed approval stays on screen with its reason after the refresh drops it.
+    if (action === 'approve') retain('needs_you', card, result);
     await refresh();
     return result;
   };
@@ -69,12 +75,16 @@ export function NotificationPanel({ onClose }: { onClose: () => void }) {
       <div className="flex-1 overflow-y-auto px-3">
         {isLoading ? (
           <p className="py-10 text-center text-[12px]" style={{ color: 'var(--muted)' }}>Loading...</p>
-        ) : items.length === 0 ? (
+        ) : items.length === 0 && failedApprovals.length === 0 ? (
           <div className="flex flex-col items-center gap-2 py-12" style={{ color: 'var(--muted)' }}>
             <Bell size={22} strokeWidth={1.5} />
             <span className="text-[13px]">Nothing is waiting on you.</span>
           </div>
-        ) : items.map((item) => {
+        ) : <>{failedApprovals.map((action) => (
+          <div key={action.id} className="py-2">
+            <AgentActionCard action={action} variant="compact" onApprove={() => undefined} onReject={() => undefined} />
+          </div>
+        ))}{items.map((item) => {
           if (item.kind === 'approval' && item.approval) {
             const action: AgentAction = {
               id: item.approval.id,
@@ -95,8 +105,8 @@ export function NotificationPanel({ onClose }: { onClose: () => void }) {
                 <AgentActionCard
                   action={action}
                   variant="compact"
-                  onApprove={() => mutateApproval(action.id, 'approve')}
-                  onReject={() => mutateApproval(action.id, 'reject')}
+                  onApprove={() => mutateApproval(action, 'approve')}
+                  onReject={() => mutateApproval(action, 'reject')}
                 />
               </div>
             );
@@ -111,7 +121,7 @@ export function NotificationPanel({ onClose }: { onClose: () => void }) {
               onSnooze={() => { void snooze(item.id, new Date(Date.now() + 60 * 60 * 1000)); }}
             />
           );
-        })}
+        })}</>}
       </div>
 
       <Link href="/inbox" onClick={onClose} className="flex shrink-0 items-center justify-center gap-1 border-t px-4 py-2.5 text-[12px] font-medium" style={{ borderColor: 'var(--border)', color: 'var(--accent)' }}>

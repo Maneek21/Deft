@@ -163,6 +163,11 @@ import { resolveAttentionBySource } from './attention.js';
 import { publishAgentChannelEvent } from './agent-channel.js';
 import { currentAgentActionSourceAuthoritySql } from './agent-channel-authority.js';
 import { canonicalDeftyActionSql } from './module-action-visibility.js';
+import {
+  wikiProposalRefusal,
+  wikiProposalRefusalCode,
+  type WikiProposalRefusalCode,
+} from './wiki-proposal-target.js';
 export { MCP_ACTION_KINDS } from './mcp-approval-actions.js';
 export { sanitizeModuleActionParamsForReceipt };
 
@@ -617,7 +622,8 @@ export type ApprovalResolverError =
   | { status: 'error'; code: 'INVALID_STATE'; message: string }
   | { status: 'error'; code: 'UNSUPPORTED_ACTION'; message: string }
   | { status: 'error'; code: 'EMPLOYEE_MISSING'; message: string }
-  | { status: 'error'; code: 'EXECUTE_FAILED'; message: string }
+  /** `refusalCode`: execution refused the write for a typed wiki proposal reason; the row is terminal. */
+  | { status: 'error'; code: 'EXECUTE_FAILED'; message: string; refusalCode?: WikiProposalRefusalCode }
   /** This request's execution lease dropped: nothing was recorded and the
    *  approved action is left for recovery to settle. */
   | { status: 'error'; code: 'LEASE_LOST'; message: string };
@@ -1500,6 +1506,9 @@ async function approveActionLocked(
 
   const isError = toolResult.isError === true;
   const resultText = toolResult.content?.[0]?.text ?? '';
+  // A typed wiki proposal refusal is recorded with its code, so every answer
+  // for this action can name it.
+  const wikiRefusal = isError && !caughtError ? wikiProposalRefusalCode(row.action, toolResult.structuredContent, resultText) : null;
   let parsedResult: unknown = resultText;
   try {
     parsedResult = JSON.parse(resultText);
@@ -1530,7 +1539,7 @@ async function approveActionLocked(
       .update(agentActions)
       .set({
         executed_at: now,
-        result: (partialBulkResult ?? (isError ? null : parsedResult)) as any,
+        result: (partialBulkResult ?? (wikiRefusal ? wikiProposalRefusal(wikiRefusal) : isError ? null : parsedResult)) as any,
         error: isError ? String(resultText).slice(0, 2000) : null,
         ...(terminalParams ? { params: terminalParams } : {}),
       })
@@ -1621,6 +1630,7 @@ async function approveActionLocked(
       status: 'error',
       code: 'EXECUTE_FAILED',
       message: resultText || caughtError?.message || 'execution failed',
+      ...(wikiRefusal ? { refusalCode: wikiRefusal } : {}),
     };
   }
 

@@ -50,7 +50,7 @@ import {
 } from './workspace-plan-import.js';
 import { DOCUMENT_SEND_ACTION, sanitizeDocumentSendParams } from './document-send.js';
 import { markWorkIntentConvertedForAction, markWorkIntentFailedForAction } from './work-intents.js';
-import { isTerminalRefusalResult } from './wiki-proposal-target.js';
+import { isTerminalRefusalResult, wikiProposalRefusal, wikiProposalRefusalCode } from './wiki-proposal-target.js';
 import { CONNECTED_TOOL_UNAVAILABLE_ERROR } from './connected-tool-access.js';
 import { MODULE_OPERATION_DEFINITIONS, MODULE_OPERATION_NAMES } from '@deft/shared/modules';
 
@@ -409,9 +409,11 @@ export async function executeClaimedApproval(
     || error === CONNECTED_TOOL_UNAVAILABLE_ERROR) {
     // Idempotency keys are single-use terminal claims. A failed approved edge
     // mutation is never reopened after the executor scrubbed its raw key.
+    // A typed wiki proposal refusal keeps its code, so a replay can name it.
+    const refusal = wikiProposalRefusalCode(row.action, execResult.result, error);
     const [written] = await db
       .update(agentActions)
-      .set({ result: null, error, executed_at: new Date() })
+      .set({ result: refusal ? wikiProposalRefusal(refusal) : null, error, executed_at: new Date() })
       .where(owned)
       .returning({ id: agentActions.id });
     if (!written) return { kind: 'superseded' };

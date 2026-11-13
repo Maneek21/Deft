@@ -7,6 +7,7 @@ import { CheckCircle2, History, Inbox as InboxIcon } from 'lucide-react';
 import { AgentActionCard, type AgentAction } from '@/components/agent-action-card';
 import { AttentionRow } from '@/components/attention-row';
 import { useAttention, type AttentionLane } from '@/hooks/use-attention';
+import { useRetainedApprovalFailures } from '@/hooks/use-retained-approval-failures';
 import { api } from '@/lib/api';
 import { stripHtml } from '@/lib/strip-html';
 import { formatRelative } from '@/lib/time';
@@ -88,13 +89,17 @@ export default function InboxPage() {
     router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
   }, [params, pathname, router]);
 
-  const handleApprove = useCallback(async (actionId: string) => {
-    const response = await api.post(`/api/agent/actions/${actionId}/approve`, {});
+  const { retain, retainedFor } = useRetainedApprovalFailures();
+
+  const handleApprove = useCallback(async (action: AgentAction) => {
+    const response = await api.post(`/api/agent/actions/${action.id}/approve`, {});
     if (!response.ok) throw new Error(await readApiError(response, 'Approve failed'));
     const result = await response.json().catch(() => ({ status: 'approved' }));
+    // A failed approval stays on screen with its reason after the refresh drops it.
+    retain(tab, action, result);
     await refresh();
     return result;
-  }, [refresh]);
+  }, [refresh, retain, tab]);
 
   const handleReject = useCallback(async (actionId: string) => {
     const response = await api.post(`/api/agent/actions/${actionId}/reject`, {});
@@ -108,6 +113,7 @@ export default function InboxPage() {
     () => (activityData?.intents ?? []).filter((intent) => intent.status !== 'proposed').slice(0, 30),
     [activityData?.intents],
   );
+  const failedApprovals = retainedFor(tab, items.flatMap((item) => (item.approval ? [item.approval] : [])));
   const totalOpen = counts.needs_you.count + counts.updates.count;
   const loading = isLoading || (tab === 'activity' && activityLoading);
   const loadError = error ?? (tab === 'activity' ? activityError : null);
@@ -158,13 +164,18 @@ export default function InboxPage() {
           <div className="rounded-lg border border-dashed px-4 py-8 text-center text-[13px]" style={{ borderColor: 'var(--border)', color: 'var(--status-red)' }}>
             {loadError instanceof Error ? loadError.message : 'Could not load Inbox.'}
           </div>
-        ) : items.length === 0 && (tab !== 'activity' || historicIntents.length === 0) ? (
+        ) : items.length === 0 && failedApprovals.length === 0 && (tab !== 'activity' || historicIntents.length === 0) ? (
           <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed py-12 text-center" style={{ borderColor: 'var(--border)', color: 'var(--muted)' }}>
             {tab === 'needs_you' ? <CheckCircle2 size={22} strokeWidth={1.5} /> : <InboxIcon size={22} strokeWidth={1.5} />}
             <p className="text-[13px]">{tab === 'needs_you' ? "Nothing is waiting on you." : tab === 'updates' ? "You're caught up." : 'No activity receipts yet.'}</p>
           </div>
         ) : (
           <div className="min-w-0">
+            {failedApprovals.map((action) => (
+              <div key={action.id} className="mb-3">
+                <AgentActionCard action={action} onApprove={() => undefined} onReject={() => undefined} />
+              </div>
+            ))}
             {items.map((item) => {
               if (item.kind === 'approval' && item.approval) {
                 const action: AgentAction = {
@@ -187,7 +198,7 @@ export default function InboxPage() {
                   <div key={item.id} className="mb-3">
                     <AgentActionCard
                       action={action}
-                      onApprove={() => handleApprove(action.id)}
+                      onApprove={() => handleApprove(action)}
                       onReject={() => handleReject(action.id)}
                     />
                   </div>

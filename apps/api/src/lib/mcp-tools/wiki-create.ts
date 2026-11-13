@@ -30,11 +30,10 @@ import {
   readFrozenTarget,
   revisionDigest,
   TARGET_KEY,
-  WIKI_PAGE_CHANGED_ERROR,
-  WIKI_PAGE_NOT_CREATED_ERROR,
-  WIKI_PAGE_UNAVAILABLE_ERROR,
-  WIKI_PROPOSAL_UNVERIFIABLE_ERROR,
+  WIKI_PROPOSAL_REFUSALS,
+  wikiProposalRefusal,
   type FrozenWikiTarget,
+  type WikiProposalRefusalCode,
 } from '../wiki-proposal-target.js';
 
 const VALID_WIKI_TYPES = new Set([
@@ -273,7 +272,7 @@ export async function executeWikiCreate(
         .where(and(eq(agentActions.id, opts.actionId), eq(agentActions.org_id, ctx.org_id)))
         .limit(1);
       const target = row?.action === 'wiki_create' ? readFrozenTarget(row.before_state) : null;
-      if (!target || target.mode !== 'create' || !target.slug) return errorResult(WIKI_PROPOSAL_UNVERIFIABLE_ERROR);
+      if (!target || target.mode !== 'create' || !target.slug) return refusalResult('WIKI_PROPOSAL_UNVERIFIABLE');
       frozenSlug = target.slug;
     }
 
@@ -293,13 +292,13 @@ export async function executeWikiCreate(
       const canAccessSpace = (spaceId: string) =>
         employeeCanAccessSpace(ctx.employee_id, ctx.org_id, spaceId, { executor: tx, lock: true });
       // An approved proposal gets one refusal for every reason it cannot be created.
-      const deny: (message: string) => never = (message) => refuse(frozenSlug ? WIKI_PAGE_NOT_CREATED_ERROR : message);
+      const deny: (message: string) => never = (message) => frozenSlug ? refuseWith('WIKI_PAGE_NOT_CREATED') : refuse(message);
 
       let sourceMessageExcerpt: string | null = null;
       let sourceSpaceId = args.source_space_id ?? args.space_id ?? null;
       let sourceUserId: string | null = null;
       if (sourceSpaceId && !(await canAccessSpace(sourceSpaceId))) {
-        throw new WikiUpdateRefusal(frozenSlug ? errorResult(WIKI_PAGE_NOT_CREATED_ERROR) : wikiTargetUnavailableResult('wiki_create'));
+        throw new WikiUpdateRefusal(frozenSlug ? refusalResult('WIKI_PAGE_NOT_CREATED') : wikiTargetUnavailableResult('wiki_create'));
       }
       if (scope === 'space' && !sourceSpaceId) {
         deny('wiki_create: space_id or source_space_id is required when scope is space');
@@ -362,7 +361,7 @@ export async function executeWikiCreate(
         .onConflictDoNothing({ target: [wikiPages.org_id, wikiPages.slug] })
         .returning();
 
-      if (!insertedPage) refuse(WIKI_PAGE_NOT_CREATED_ERROR);
+      if (!insertedPage) refuseWith('WIKI_PAGE_NOT_CREATED');
 
       if (args.source_message_id) {
         await tx.insert(wikiCitations).values({
@@ -726,6 +725,15 @@ function refuse(message: string): never {
   throw new WikiUpdateRefusal(errorResult(message));
 }
 
+/** A typed refusal of an approved wiki proposal: its message, with the code in `structuredContent`. */
+function refusalResult(code: WikiProposalRefusalCode): ToolResult {
+  return { ...errorResult(WIKI_PROPOSAL_REFUSALS[code]), structuredContent: wikiProposalRefusal(code) };
+}
+
+function refuseWith(code: WikiProposalRefusalCode): never {
+  throw new WikiUpdateRefusal(refusalResult(code));
+}
+
 type UpdateTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 let updateRevisionCheckedHook: ((tx: UpdateTransaction) => Promise<void>) | null = null;
 
@@ -763,10 +771,10 @@ export async function executeWikiUpdate(
         .where(and(eq(agentActions.id, opts.actionId), eq(agentActions.org_id, ctx.org_id)))
         .limit(1);
       const target = row?.action === 'wiki_update' ? readFrozenTarget(row.before_state) : null;
-      if (!target || target.mode !== 'update') return errorResult(WIKI_PROPOSAL_UNVERIFIABLE_ERROR);
-      if (!target.page_id || !target.revision) return errorResult(WIKI_PAGE_UNAVAILABLE_ERROR);
+      if (!target || target.mode !== 'update') return refusalResult('WIKI_PROPOSAL_UNVERIFIABLE');
+      if (!target.page_id || !target.revision) return refusalResult('WIKI_PAGE_UNAVAILABLE');
       if ((args.page_id && args.page_id !== target.page_id) || (args.slug?.trim() && args.slug.trim() !== target.slug)) {
-        return errorResult(WIKI_PROPOSAL_UNVERIFIABLE_ERROR);
+        return refusalResult('WIKI_PROPOSAL_UNVERIFIABLE');
       }
       frozen = { page_id: target.page_id, slug: target.slug, revision: target.revision };
     }
@@ -789,10 +797,10 @@ export async function executeWikiUpdate(
       // A capture action changes only a page its source message author can see.
       if (!existingPage || !(await employeeCanWriteWikiPage(tx, existingPage, ctx, shadowUserId, true))
         || (opts?.sourceReaderUserId && !(await wikiPageVisibleToUser(tx, existingPage.id, opts.sourceReaderUserId, ctx.org_id)))) {
-        throw new WikiUpdateRefusal(frozen ? errorResult(WIKI_PAGE_UNAVAILABLE_ERROR) : wikiTargetUnavailableResult());
+        throw new WikiUpdateRefusal(frozen ? refusalResult('WIKI_PAGE_UNAVAILABLE') : wikiTargetUnavailableResult());
       }
       if (frozen && wikiUpdateRevision(existingPage, args.patch) !== frozen.revision) {
-        refuse(WIKI_PAGE_CHANGED_ERROR);
+        refuseWith('WIKI_PAGE_CHANGED');
       }
       if (updateRevisionCheckedHook) await updateRevisionCheckedHook(tx);
       const expectedVersion = typeof args.expected_version === 'number' ? args.expected_version : null;

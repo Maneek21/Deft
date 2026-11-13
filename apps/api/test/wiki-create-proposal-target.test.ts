@@ -132,7 +132,8 @@ async function approve(actionId: string) {
 async function assertRefused(actionId: string, error: string, title: string) {
   const ops = await opsCount();
   const answer = await approve(actionId);
-  assert.notEqual(answer.status, 200, JSON.stringify(answer.body));
+  assert.equal(answer.status, 200, JSON.stringify(answer.body));
+  assert.equal(answer.body.status, 'failed');
   const [row] = (await f.client.query('SELECT approval_status, executed_at, error FROM agent_actions WHERE id = $1', [actionId])).rows;
   assert.equal(row.approval_status, 'approved', JSON.stringify(answer.body));
   assert.ok(row.executed_at, 'the refusal is terminal');
