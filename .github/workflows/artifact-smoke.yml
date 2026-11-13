@@ -28,9 +28,9 @@ permissions:
 concurrency:
   # A new push to the same pull request cancels that pull request's superseded run of this workflow.
   # Every other event (master push, tag, schedule, manual dispatch) gets a
-  # unique group per run, so it is never cancelled and never queued behind another.
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # unique group per run (as is any manual re-run, so an old re-run cannot cancel a newer push), so it is never cancelled and never queued behind another.
+  group: ${{ github.workflow }}-${{ (github.event_name == 'pull_request' && github.run_attempt == 1) && format('pr-{0}', github.event.pull_request.number) || format('run-{0}-{1}', github.run_id, github.run_attempt) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
 
 jobs:
   round-trip:
