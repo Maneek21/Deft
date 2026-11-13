@@ -250,24 +250,25 @@ async function appRunApproval(t: { after: (fn: () => Promise<void>) => void }, a
   return actionId;
 }
 
-test('B-review: App Run approval rows keep their review controls', { skip: !canRun, timeout: 900_000 }, async (t) => {
+test('B-review: App Run approval flags equal a fresh decision by the endpoint', { skip: !canRun, timeout: 900_000 }, async (t) => {
   const { viewerReviewAuthority } = await import('../src/lib/agent-approval-resolver.js');
-  const actionId = await appRunApproval(t);
-  // The App Run path decides who may release a run, with checks that need the
-  // live web session; the rows carry no flags, so the card keeps its controls.
-  assert.equal((await viewerReviewAuthority({ id: f.requesterId, org_id: f.orgId, role: 'member' }, [actionId])).has(actionId), false);
-  const inbox = await inboxFlags(f.requesterId, actionId);
-  const attention = await attentionFlags(f.requesterId, actionId);
-  assert.ok(inbox, 'the requester sees the App Run approval in the Inbox');
-  for (const row of [inbox, attention].filter(Boolean) as Flags[]) {
-    assert.equal('viewer_can_approve' in row, false);
-    assert.equal('viewer_can_reject' in row, false);
+  for (const decision of ['approve', 'reject'] as const) {
+    const actionId = await appRunApproval(t);
+    const flag = decision === 'approve' ? 'viewer_can_approve' : 'viewer_can_reject';
+    const predicted = (await viewerReviewAuthority({ id: f.requesterId, org_id: f.orgId, role: 'member' }, [actionId])).get(actionId);
+    assert.equal(typeof predicted?.viewer_can_reject, 'boolean', 'App Run rows carry their flags');
+    const inbox = await inboxFlags(f.requesterId, actionId);
+    const attention = await attentionFlags(f.requesterId, actionId);
+    assert.ok(inbox, 'the requester sees the App Run approval in the Inbox');
+    for (const row of [inbox, attention].filter(Boolean) as Flags[]) assert.equal(row[flag], predicted?.[flag]);
+    // A fresh decision: the run is released, or cancelled.
+    await as(f.requesterId, `/api/agent/actions/${actionId}/${decision}`, { method: 'POST', body: '{}' });
+    const { rows } = await f.client.query<{ state: string; release: string | null }>(
+      'SELECT r.state, r.execution_release_kind AS release FROM app_runs r JOIN agent_actions a ON a.app_run_id = r.id WHERE a.id = $1',
+      [actionId]);
+    const decided = decision === 'approve' ? rows[0]?.release === 'approved' : rows[0]?.state === 'cancelled';
+    assert.equal(predicted?.[flag], decided, `${decision} flag equals the endpoint`);
   }
-  // The approve route still takes the App Run path for this reviewer.
-  const response = await as(f.requesterId, `/api/agent/actions/${actionId}/approve`, { method: 'POST', body: '{}' });
-  assert.notEqual(response.status, 404, await response.clone().text());
-  const body = await response.json() as { error?: string };
-  assert.equal(REVIEWER_REFUSALS.has(body.error ?? ''), false, JSON.stringify(body));
 });
 
 test('B-review: an App Run approval answers false to a guest who did not request it', { skip: !canRun, timeout: 900_000 }, async (t) => {
