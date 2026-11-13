@@ -282,6 +282,20 @@ export async function syncGitHubForUser(accountId: string) {
             .onConflictDoNothing()
             .returning({ id: events.id });
           claimedWrite = inserted.length > 0;
+          if (!claimedWrite) {
+            // Another sync of this workspace inserted it first; apply this
+            // snapshot to that row unless it already records the merge.
+            const updated = await db.update(events)
+              .set(eventData)
+              .where(and(
+                eq(events.org_id, account.org_id),
+                eq(events.source, 'github'),
+                eq(events.external_id, externalId),
+                ne(events.event_type, 'pr_merged'),
+              ))
+              .returning({ id: events.id });
+            claimedWrite = updated.length > 0;
+          }
         }
         synced++;
 

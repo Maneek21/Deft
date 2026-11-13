@@ -26,8 +26,10 @@ const userA2 = crypto.randomUUID();
 const accountA2 = crypto.randomUUID();
 const taskIds = { a: crypto.randomUUID(), b: crypto.randomUUID() };
 const projectIds = { a: crypto.randomUUID(), b: crypto.randomUUID() };
+const lateTaskId = crypto.randomUUID();
 
 let prState: 'open' | 'merged' = 'open';
+let includeLatePr = false;
 
 before(async () => {
   await db.insert(orgs).values([
@@ -56,16 +58,25 @@ before(async () => {
       id: taskIds[key], org_id: org, project_id: projectIds[key], number: 1, title: `${stamp} ${key}`, status: 'todo', created_by: user,
     } as any);
   }
+  await db.insert(tasks).values({
+    id: lateTaskId, org_id: orgA, project_id: projectIds.a, number: 2, title: `${stamp} late`, status: 'todo', created_by: userA,
+  } as any);
 
   mock.method(globalThis, 'fetch', async (url: string | URL) => {
     const href = String(url);
     if (href.includes('/user/repos')) return new Response(JSON.stringify([{ full_name: REPO }]));
     if (href.includes(`/repos/${REPO}/pulls`)) {
-      return new Response(JSON.stringify([{
+      const now = new Date().toISOString();
+      const prs = [{
         number: 7, title: `Fix ${PREFIX}-1`, body: null, html_url: 'https://example.invalid/pr/7',
-        state: prState === 'merged' ? 'closed' : 'open', merged_at: prState === 'merged' ? new Date().toISOString() : null,
-        user: { login: 'dev' }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-      }]));
+        state: prState === 'merged' ? 'closed' : 'open', merged_at: prState === 'merged' ? now : null,
+        user: { login: 'dev' }, created_at: now, updated_at: now,
+      }];
+      if (includeLatePr) {
+        prs.push({ number: 9, title: `Fix ${PREFIX}-2`, body: null, html_url: 'https://example.invalid/pr/9',
+          state: 'closed', merged_at: now, user: { login: 'dev' }, created_at: now, updated_at: now });
+      }
+      return new Response(JSON.stringify(prs));
     }
     return new Response('[]', { status: 404 });
   });
@@ -74,9 +85,9 @@ before(async () => {
 after(async () => {
   mock.restoreAll();
   await db.delete(taskComments).where(inArray(taskComments.org_id, [orgA, orgB]));
-  await db.delete(taskActivity).where(inArray(taskActivity.task_id, [taskIds.a, taskIds.b]));
+  await db.delete(taskActivity).where(inArray(taskActivity.task_id, [taskIds.a, taskIds.b, lateTaskId]));
   await db.delete(events).where(inArray(events.org_id, [orgA, orgB]));
-  await db.delete(tasks).where(inArray(tasks.id, [taskIds.a, taskIds.b]));
+  await db.delete(tasks).where(inArray(tasks.id, [taskIds.a, taskIds.b, lateTaskId]));
   await db.delete(projects).where(inArray(projects.id, [projectIds.a, projectIds.b]));
   await db.delete(connectedAccounts).where(inArray(connectedAccounts.id, [accountA, accountB, accountA2]));
   await db.delete(orgMembers).where(inArray(orgMembers.org_id, [orgA, orgB]));
@@ -128,4 +139,17 @@ test('later syncs of a merged pull request leave the event and its tasks alone',
   assert.equal(task!.status, 'in_progress');
   assert.equal(await comments(), before);
   assert.equal((await prEvents(orgA))[0]!.event_type, 'pr_merged');
+});
+
+test('a pull request first seen merged, by two concurrent syncs of one workspace, closes its task once', async () => {
+  includeLatePr = true;
+  const results = await Promise.all([syncGitHubForUser(accountA), syncGitHubForUser(accountA2)]);
+  for (const r of results) assert.equal((r as any).error, undefined);
+  const late = (await prEvents(orgA)).filter((e) => e.external_id === `gh-pr:${orgA}:${REPO}#9`);
+  assert.equal(late.length, 1);
+  assert.equal(late[0]!.event_type, 'pr_merged');
+  const [task] = await db.select({ status: tasks.status }).from(tasks).where(eq(tasks.id, lateTaskId));
+  assert.equal(task!.status, 'done');
+  const closeComments = await db.select({ id: taskComments.id }).from(taskComments).where(eq(taskComments.task_id, lateTaskId));
+  assert.equal(closeComments.length, 1);
 });
