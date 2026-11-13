@@ -42,7 +42,7 @@ import { createTaskBundle, type TaskBundleSubtaskInput } from '../task-bundle.js
 import { bulkUpdateTasks, BulkTaskUpdateError, bulkTaskUpdateSchema } from '../task-bulk-update.js';
 import { queryCompactTasks, type CompactTaskQuery } from '../task-compact-query.js';
 import { visibleNoteCondition } from '../note-visibility.js';
-import { approveAction, rejectAction } from '../agent-approval-resolver.js';
+import { Context } from 'hono';
 import { currentActionReviewerSql } from '../agent-action-review-gate.js';
 import { resolveProjectTargetFromRows } from '../resolve-project-target.js';
 import { toPlainText } from '../plain-text.js';
@@ -69,7 +69,6 @@ import { isModuleRecordBulkCreateAction } from '../module-record-bulk-create.js'
 import { searchAuthorizedModuleResources as searchModuleRecords } from '../resource-search-service.js';
 import {
   visibleModuleActionScopeSql,
-  visibleModuleActionSql,
   visibleModuleAttentionScopeSql,
 } from '../module-action-visibility.js';
 import {
@@ -554,9 +553,10 @@ async function withIdempotency(
   args: { idempotency_key?: unknown } & Record<string, unknown>,
   ctx: HumanToolContext,
   execute: () => Promise<ToolResult>,
-  options: { bind?: string } = {},
+  options: { bind?: string; store?: (result: ToolResult) => Promise<boolean> } = {},
 ): Promise<ToolResult> {
-  // A bound result answers only a call for the same target (`bind`).
+  // A bound result answers only a call for the same target (`bind`); `store`
+  // keeps an unsettled answer from being stored for replay.
   const bind = options.bind ?? null;
   const idempotencyKey = normalizeIdempotencyKey(args.idempotency_key);
   const fallbackSignature = idempotencyKey ? null : fallbackDedupeSignature(toolName, args);
@@ -584,7 +584,7 @@ async function withIdempotency(
   }
 
   const result = await execute();
-  if (!result.isError && (idempotencyKey || fallbackSignature)) {
+  if (!result.isError && (idempotencyKey || fallbackSignature) && (await options.store?.(result) ?? true)) {
     await db.insert(oauthAuditEvents).values({
       org_id: ctx.org_id,
       user_id: ctx.user_id,
@@ -2812,18 +2812,21 @@ export async function humanAttentionDigest(args: HumanAttentionDigestArgs, ctx: 
     const [me] = await db.select({ id: users.id, name: users.name, email: users.email }).from(users).where(eq(users.id, ctx.user_id)).limit(1);
     digest.workspace = { org, user: me };
 
-    const approvals = await db.execute(sql`
-      SELECT id, action, params, approval_tier, approval_status, created_at
-      FROM agent_actions
-      WHERE org_id = ${ctx.org_id}
-        AND user_id = ${ctx.user_id}
-        AND approval_status = 'pending'
-        AND ${visibleModuleActionSql(ctx.role, { userId: ctx.user_id, orgId: ctx.org_id })}
-        AND ${visibleModuleActionScopeSql(ctx.scopes, 'read')}
-      ORDER BY created_at DESC
-      LIMIT ${limit}
-    `);
-    digest.pending_approvals = (approvals as any).rows ?? [];
+    // The approvals the user reviews now, by the web's gate (as approval_list).
+    const reviewer = await approvalReviewerSql(ctx, 'read');
+    digest.pending_approvals = !reviewer ? [] : await db.select({
+      id: agentActions.id,
+      action: agentActions.action,
+      params: agentActions.params,
+      approval_tier: agentActions.approval_tier,
+      approval_status: agentActions.approval_status,
+      created_at: agentActions.created_at,
+    }).from(agentActions).where(and(
+      eq(agentActions.org_id, ctx.org_id),
+      eq(agentActions.approval_status, 'pending'),
+      inArray(agentActions.approval_tier, ['quick', 'full']),
+      reviewer,
+    )).orderBy(desc(agentActions.created_at)).limit(limit);
   }
 
   if (hasScope(ctx, 'read:messages')) {
@@ -3503,30 +3506,34 @@ async function transitionHumanAttention(
   if (action === 'snooze' && (!until || Number.isNaN(until.getTime()) || until <= new Date())) {
     return errorResult('until must be a future ISO timestamp');
   }
-  const [visible] = await db
+  const itemId = args.attention_id;
+  const visible = async () => (await db
     .select({ id: attentionItems.id })
     .from(attentionItems)
     .where(and(
-      eq(attentionItems.id, args.attention_id as string),
+      eq(attentionItems.id, itemId),
       eq(attentionItems.org_id, ctx.org_id),
       eq(attentionItems.user_id, ctx.user_id),
       visibleAttentionCondition(ctx.user_id),
       visibleModuleAttentionScopeSql(ctx.scopes, 'write'),
     ))
-    .limit(1);
-  if (!visible) return errorResult('Attention item not found');
-  return withIdempotency(`attention_${action}`, args, ctx, async () => {
+    .limit(1)).length > 0;
+  if (!await visible()) return errorResult('Attention item not found');
+  // A stored result answers only a call for the same item, and the item is
+  // checked again before anything is returned.
+  const result = await withIdempotency(`attention_${action}`, args, ctx, async () => {
     const row = await transitionAttentionItem({
       orgId: ctx.org_id,
       userId: ctx.user_id,
       itemId: args.attention_id as string,
       state: action === 'acknowledge' ? 'acknowledged' : action === 'snooze' ? 'snoozed' : 'resolved',
       snoozedUntil: until,
-      resolution: action === 'resolve' && typeof args.resolution === 'string' ? args.resolution.slice(0, 120) : action,
+      resolution: action !== 'resolve' ? action : typeof args.resolution === 'string' ? args.resolution.slice(0, 120) : 'dismissed',
       actorUserId: ctx.user_id,
     });
     return row ? textResult({ updated: true, item: projectAttentionItem(row) }) : errorResult('Attention item not found');
-  });
+  }, { bind: itemId });
+  return await visible() ? result : errorResult('Attention item not found');
 }
 
 export function humanAttentionAcknowledge(args: Record<string, unknown>, ctx: HumanToolContext) {
@@ -3606,6 +3613,59 @@ async function ownApproval(
 }
 
 /**
+ * Decides the action through the web's approve or reject function, as the
+ * connected user with their current role. MCP carries no web session, so the
+ * approvals that need one are refused as they would be without it on the web.
+ */
+async function decideAsWebReviewer(
+  decision: 'approve' | 'reject',
+  ctx: HumanToolContext,
+  actionId: string,
+  reason?: string,
+): Promise<ToolResult> {
+  const [membership] = await db.select({ role: orgMembers.role }).from(orgMembers).where(and(
+    eq(orgMembers.org_id, ctx.org_id), eq(orgMembers.user_id, ctx.user_id), eq(orgMembers.is_active, true),
+  )).limit(1);
+  if (!membership) return errorResult('Approval not found');
+  const { approveActionAsReviewer, rejectActionAsReviewer } = await import('../../routes/agent.js');
+  const c = new Context(new Request(`http://deft.mcp/actions/${encodeURIComponent(actionId)}/${decision}`, { method: 'POST' }));
+  const reviewer = { id: ctx.user_id, org_id: ctx.org_id, role: membership.role };
+  let response: Response;
+  try {
+    response = decision === 'approve'
+      ? await approveActionAsReviewer(c, reviewer, actionId)
+      : await rejectActionAsReviewer(c, reviewer, actionId, reason);
+  } catch (error) {
+    // As the web's error boundary: the failure is logged, never returned.
+    console.error('[mcp-human] approval decision failed', { actionId, error: error instanceof Error ? error.message : String(error) });
+    return errorResult('INTERNAL_ERROR: The approval request failed');
+  }
+  const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+  if (!response.ok) {
+    const { code, error, ...rest } = body;
+    const retryAfter = response.headers.get('Retry-After');
+    const details = { ...rest, ...(retryAfter ? { retry_after_seconds: Number(retryAfter) } : {}) };
+    return errorResult(`${typeof code === 'string' ? code : 'ERROR'}: ${typeof error === 'string' ? error : 'Approval failed'}${
+      Object.keys(details).length > 0 ? ` ${JSON.stringify(details)}` : ''}`);
+  }
+  // The web's ordinary path answers without a status; MCP callers always get one.
+  return textResult({ status: decision === 'approve' ? 'approved' : 'rejected', ...body });
+}
+
+/**
+ * An answer is stored for replay only once the action itself is settled:
+ * rejected, expired, or approved with its execution recorded. An answer given
+ * while the action still runs (or may reopen) is never stored.
+ */
+async function isSettledDecision(orgId: string, actionId: string): Promise<boolean> {
+  const [row] = await db.select({ approval_status: agentActions.approval_status, executed_at: agentActions.executed_at })
+    .from(agentActions).where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, orgId))).limit(1);
+  if (!row) return false;
+  return row.approval_status === 'rejected' || row.approval_status === 'expired'
+    || (row.approval_status === 'approved' && row.executed_at !== null);
+}
+
+/**
  * Runs an approval decision for the connected user: checked before any stored
  * result is replayed, a stored result answers only the same action, and the
  * check runs again before anything is returned.
@@ -3617,10 +3677,31 @@ async function decideApproval(
   decide: (actionId: string) => Promise<ToolResult>,
 ): Promise<ToolResult> {
   const actionId = args.action_id as string;
-  if (!(await ownApproval(ctx, actionId, 'write'))) return errorResult('Approval not found');
-  const result = await withIdempotency(toolName, args, ctx, () => decide(actionId), { bind: actionId });
-  if (!(await ownApproval(ctx, actionId, 'write'))) return errorResult('Approval not found');
-  return result;
+  try {
+    if (!(await ownApproval(ctx, actionId, 'write'))) return errorResult('Approval not found');
+    // Results are stored under the web-decision binding only; earlier stored
+    // answers for the action are not replayed. An answer that says the
+    // decision is still running is never stored, whatever the action's state.
+    const result = await withIdempotency(toolName, args, ctx, () => decide(actionId), {
+      bind: `web-decision:${actionId}`,
+      store: async (answer) => !isExecutingAnswer(answer) && await isSettledDecision(ctx.org_id, actionId),
+    });
+    if (!(await ownApproval(ctx, actionId, 'write'))) return errorResult('Approval not found');
+    return result;
+  } catch (error) {
+    // As the web's error boundary: the failure is logged, never returned.
+    console.error('[mcp-human] approval decision failed', { actionId, error: error instanceof Error ? error.message : String(error) });
+    return errorResult('INTERNAL_ERROR: The approval request failed');
+  }
+}
+
+/** True for an answer that only says the decision is still running. */
+export function isExecutingAnswer(answer: ToolResult): boolean {
+  try {
+    return (JSON.parse(answer.content[0]?.text ?? '{}') as { status?: unknown }).status === 'executing';
+  } catch {
+    return false;
+  }
 }
 
 export async function humanApprovalList(args: { status?: string; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
@@ -3629,7 +3710,9 @@ export async function humanApprovalList(args: { status?: string; limit?: number 
   if (!['pending', 'approved', 'rejected', 'expired', 'all'].includes(status)) return errorResult('status must be pending, approved, rejected, expired, or all');
   const reviewer = await approvalReviewerSql(ctx, 'read');
   if (!reviewer) return textResult([]);
-  const rows = await db.select().from(agentActions).where(and(eq(agentActions.org_id, ctx.org_id), reviewer, status === 'all' ? sql`true` : eq(agentActions.approval_status, status as any))).orderBy(desc(agentActions.created_at)).limit(Math.min(Math.max(1, args.limit ?? 50), 100));
+  const rows = await db.select().from(agentActions).where(and(eq(agentActions.org_id, ctx.org_id), reviewer, status === 'all' ? sql`true` : eq(agentActions.approval_status, status as any),
+    // Pending approvals are the ones awaiting a person, as on the web.
+    status === 'pending' ? inArray(agentActions.approval_tier, ['quick', 'full']) : undefined)).orderBy(desc(agentActions.created_at)).limit(Math.min(Math.max(1, args.limit ?? 50), 100));
   return textResult(rows.map((row) => ({ ...row, url: '/inbox?lane=needs_you' })));
 }
 
@@ -3643,19 +3726,15 @@ export async function humanApprovalGet(args: { action_id?: string }, ctx: HumanT
 export async function humanApprovalApprove(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'write:workspace'); if (scopeError) return scopeError;
   if (typeof args.action_id !== 'string') return errorResult('action_id is required');
-  return decideApproval('approval_approve', args, ctx, async (actionId) => {
-    const result = await approveAction(actionId, ctx.user_id);
-    return result.status === 'error' ? errorResult(`${result.code}: ${result.message}`) : textResult(result);
-  });
+  return decideApproval('approval_approve', args, ctx, (actionId) => decideAsWebReviewer('approve', ctx, actionId));
 }
 
 export async function humanApprovalReject(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'write:workspace'); if (scopeError) return scopeError;
   if (typeof args.action_id !== 'string') return errorResult('action_id is required');
-  return decideApproval('approval_reject', args, ctx, async (actionId) => {
-    const result = await rejectAction(actionId, ctx.user_id, typeof args.reason === 'string' ? args.reason : undefined);
-    return result.status === 'error' ? errorResult(`${result.code}: ${result.message}`) : textResult(result);
-  });
+  return decideApproval('approval_reject', args, ctx, (actionId) => decideAsWebReviewer(
+    'reject', ctx, actionId, typeof args.reason === 'string' ? args.reason : undefined,
+  ));
 }
 
 function canManageWorkspace(ctx: HumanToolContext) { return ctx.role === 'owner' || ctx.role === 'admin'; }

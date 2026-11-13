@@ -120,6 +120,7 @@ import {
 } from './app-run-approval-adapter.js';
 import { getAppRunRuntime } from './app-run-runtime.js';
 import type { PostgresAppRunApprovalResolver } from './app-run-approval-adapter.js';
+import type { AppRunReviewRow } from './app-run-approval-review.js';
 
 let appRunApprovalResolverForTest: PostgresAppRunApprovalResolver | null = null;
 
@@ -785,14 +786,16 @@ export async function reviewerRefusal(
   return canReview ? null : 'only the requester or an org owner/admin may approve this action';
 }
 
-export type ViewerReviewAuthority = { viewer_can_approve: boolean; viewer_can_reject: boolean };
+/** `viewer_can_approve` is absent when only the App Run approval path can tell (see `appRunReviewAuthority`). */
+export type ViewerReviewAuthority = { viewer_can_approve?: boolean; viewer_can_reject: boolean };
 
 /**
  * Whether a web viewer may approve and reject each of the given actions,
  * answered as the approve and reject routes would: the routes' reviewable
  * gate, then, for actions the resolver owns, its reviewer rule and a current
- * action source. Actions outside the viewer's workspace are absent from the
- * result. Two queries, whatever the number of actions.
+ * action source, and for App Run approvals the App Run release rules (one
+ * more query and a bounded number of live checks, see `appRunReviewAuthority`).
+ * Actions outside the viewer's workspace are absent from the result.
  */
 export async function viewerReviewAuthority(
   viewer: { id: string; org_id: string; role?: string },
@@ -812,20 +815,17 @@ export async function viewerReviewAuthority(
     .where(and(inArray(agentActions.id, ids), eq(agentActions.org_id, viewer.org_id)));
   const membership = await loadReviewMembership(viewer.id, viewer.org_id);
   const requesters = await loadActionRequesterIds(rows);
+  const appRunRows: AppRunReviewRow[] = [];
   for (const row of rows) {
     const requesterId = requesters.get(row.id) ?? row.user_id;
     if (!row.reviewable) {
       authority.set(row.id, { viewer_can_approve: false, viewer_can_reject: false });
     } else if (row.action === APP_RUN_APPROVAL_ACTION) {
-      // For an App Run release the flags mean only a certain refusal: false
-      // for a guest who did not request it, whom the resolver's reviewer rule
-      // refuses on approval and rejection alike, and absent otherwise, since
-      // the run's own release rules and the viewer's live web session are
-      // checked only on the App Run path; without flags the card keeps its
-      // controls.
-      if (requesterId !== viewer.id && membership?.role === 'guest') {
-        authority.set(row.id, { viewer_can_approve: false, viewer_can_reject: false });
-      }
+      // The resolver's reviewer rule and source, then the App Run release
+      // rules (appRunRows, below).
+      const general = async (decision: 'approve' | 'reject') => row.source_current
+        && await reviewerRefusal(decision, row, viewer.id, membership, { requesterId }) === null;
+      appRunRows.push({ ...row, approve: await general('approve'), reject: await general('reject') });
     } else if (!isApprovalResolverAction(row.action)) {
       // The routes' gate is the whole reviewer rule for ordinary actions.
       authority.set(row.id, { viewer_can_approve: true, viewer_can_reject: true });
@@ -833,6 +833,16 @@ export async function viewerReviewAuthority(
       const decide = async (decision: 'approve' | 'reject') => row.source_current
         && await reviewerRefusal(decision, row, viewer.id, membership, { requesterId }) === null;
       authority.set(row.id, { viewer_can_approve: await decide('approve'), viewer_can_reject: await decide('reject') });
+    }
+  }
+  if (appRunRows.length > 0) {
+    // Rows keep the caller's order, which decides which ones get the live approve check.
+    appRunRows.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
+    let resolver: PostgresAppRunApprovalResolver | null = null;
+    try { resolver = await appRunApprovalResolver(); } catch { /* App Runs unavailable: the endpoint refuses too */ }
+    const flags = resolver ? await resolver.reviewAuthority(viewer.org_id, viewer.id, appRunRows) : new Map();
+    for (const row of appRunRows) {
+      authority.set(row.id, flags.get(row.id) ?? { viewer_can_approve: false, viewer_can_reject: false });
     }
   }
   return authority;

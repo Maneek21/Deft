@@ -6,6 +6,7 @@ import {
   sanitizeWorkspacePlanImportParams,
   WORKSPACE_PLAN_IMPORT_ACTION,
 } from '../workspace-plan-import.js';
+import { citedMessageRefusal } from './cited-message.js';
 import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
 
@@ -30,6 +31,8 @@ export async function workspacePlanImport(
     ))
     .limit(1);
   if (!employee) return errorResult('workspace_plan_import: employee is inactive or unavailable');
+  const refusal = await citedMessageRefusal(ctx, args.message_id.trim());
+  if (refusal) return errorResult(`workspace_plan_import: ${refusal}`);
 
   const draft = await compileMessageWorkspacePlanImport({
     orgId: ctx.org_id,

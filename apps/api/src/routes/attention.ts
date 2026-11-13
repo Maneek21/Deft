@@ -114,8 +114,10 @@ async function hydrateApprovals(
       currentApprovalRecipientSql(viewer.id),
     ));
   // Whether this viewer may approve or reject, as the approve and reject routes
-  // answer; absent when only the action's own path can tell (App Run releases).
-  const reviewAuthority = await viewerReviewAuthority(viewer, actions.map((action) => action.id));
+  // answer; `viewer_can_approve` is absent when only the App Run approval path
+  // can tell. The ids keep the page's order.
+  const visible = new Set(actions.map((action) => action.id));
+  const reviewAuthority = await viewerReviewAuthority(viewer, actionIds.filter((id) => visible.has(id)));
   const byId = new Map(actions.map((action) => [action.id, {...action,proposer:attentionActionProposer(action),
     ...reviewAuthority.get(action.id),
   }]));

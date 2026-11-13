@@ -5,6 +5,7 @@ import bcrypt from 'bcryptjs';
 import { db } from '../lib/db.js';
 import { apiKeys } from '@deft/db/schema';
 import { OrgMembershipError, requireOrgAdminOrOwner } from '../lib/org-membership.js';
+import { requireOrgAdmin } from '../lib/org-admin-guard.js';
 
 export const apiKeyRoutes = new Hono();
 
@@ -41,6 +42,8 @@ apiKeyRoutes.use('*', async (c, next) => {
 
 // GET / — List org's API keys (excluding key_hash)
 apiKeyRoutes.get('/', async (c) => {
+  const denied = requireOrgAdmin(c);
+  if (denied) return denied;
   const user = c.get('user');
   const keys = await db
     .select({
@@ -68,6 +71,8 @@ apiKeyRoutes.get('/', async (c) => {
 
 // POST / — Create a new API key
 apiKeyRoutes.post('/', async (c) => {
+  const denied = requireOrgAdmin(c);
+  if (denied) return denied;
   const user = c.get('user');
   const body = createKeySchema.parse(await c.req.json());
 
@@ -101,6 +106,8 @@ apiKeyRoutes.post('/', async (c) => {
 
 // PUT /:id — Update an API key
 apiKeyRoutes.put('/:id', async (c) => {
+  const denied = requireOrgAdmin(c);
+  if (denied) return denied;
   const user = c.get('user');
   const keyId = c.req.param('id');
   const body = updateKeySchema.parse(await c.req.json());
@@ -143,6 +150,8 @@ apiKeyRoutes.put('/:id', async (c) => {
 
 // DELETE /:id — Delete an API key
 apiKeyRoutes.delete('/:id', async (c) => {
+  const denied = requireOrgAdmin(c);
+  if (denied) return denied;
   const user = c.get('user');
   const keyId = c.req.param('id');
 

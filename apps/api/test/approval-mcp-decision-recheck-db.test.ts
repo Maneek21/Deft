@@ -94,7 +94,8 @@ test('AL1-R1: a caller who leaves the room while approving or rejecting gets not
 test('AL1-R2: a caller who keeps the right gets the decision', { skip: !url }, async () => {
   duringDecision = async () => {};
   const actionId = await capture();
-  const result = await human.humanApprovalReject({ action_id: actionId }, ctx());
+  // Approval returns the decision's result (rejection answers with its status only, as on the web).
+  const result = await human.humanApprovalApprove({ action_id: actionId }, ctx());
   assert.notEqual(result.isError, true, text(result));
   assert.equal(text(result).includes('AL1-DECIDED-CANARY'), true);
 });

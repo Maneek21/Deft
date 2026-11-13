@@ -23,6 +23,9 @@ export const fileServingRoutes = new Hono();
 uploadRoutes.post('/', async (c) => {
   try {
     const user = c.get('user');
+    if (!user?.id || !user.org_id) {
+      return c.json({ error: 'Authentication required', code: 'NO_TOKEN' }, 401);
+    }
     const body = await c.req.parseBody();
     const file = body['file'];
 

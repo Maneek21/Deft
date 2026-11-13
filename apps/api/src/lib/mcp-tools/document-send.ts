@@ -6,6 +6,7 @@ import {
   prepareDocumentSend,
   sanitizeDocumentSendParams,
 } from '../document-send.js';
+import { citedMessageRefusal } from './cited-message.js';
 import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
 
@@ -35,6 +36,10 @@ export async function documentSend(args: DocumentSendArgs, ctx: ToolContext): Pr
       ))
       .limit(1);
     if (!employee) return errorResult('document_send: employee is inactive or unavailable');
+    if (typeof args.source_message_id === 'string' && args.source_message_id.trim()) {
+      const refusal = await citedMessageRefusal(ctx, args.source_message_id.trim());
+      if (refusal) return errorResult(`document_send: ${refusal}`);
+    }
 
     const prepared = await prepareDocumentSend({
       input: args,

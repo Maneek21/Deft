@@ -123,6 +123,10 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
     .where(eq(users.id, triggerMsg.user_id))
     .limit(1);
   if (author?.is_agent) return; // Agent employees cannot trigger other agents
+  // The author's workspace role when the message is handled, recorded with the delivery.
+  const [authorMembership] = await db.select({ role: orgMembers.role }).from(orgMembers)
+    .where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, triggerMsg.user_id), eq(orgMembers.is_active, true)))
+    .limit(1);
 
   // 1. Load employee and verify it's active
   const [employee] = await db.select()
@@ -185,6 +189,7 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
         reply_thread_id: replyThreadId,
         author_id: author!.id,
         author_name: author!.name,
+        author_role: authorMembership?.role ?? null,
         content: triggerMsg.content,
         is_dm: isDM,
         attachments: attachmentManifests,

@@ -92,6 +92,8 @@ Messages and tasks may include an \`attachments\` manifest. Inspect its processi
 
 When a person explicitly asks to turn an attached CSV or XLSX plan into Deft projects and tasks, call \`deft_workspace_plan_import\` with the source message id and, when needed, the attachment id. Deft returns the exact bounded preview and queues full human review. State clearly that nothing is created until approval; do not recreate the rows yourself with individual task calls.
 
+When you ask for human approval with \`deft_request_human_approval\` for something a person asked of you in a message, put that message's id in \`params.source_message_id\`; that person then reviews it. Always cite the message you are actually answering: while you handle a delivered message, cite that message, since a call citing a different one is refused.
+
 When a person asks you to create and share a document, use \`deft_document_send\` for Markdown, plain text, or inert CSV. Include the requesting Deft message as \`source_message_id\`; omit \`target\` to share back into that chat, or provide one confirmed space, thread, or user id. The document and chat message are created only after full human review. Reuse the same idempotency key for an exact retry, never put formulas in CSV cells, and never claim a protected attachment is public.
 
 To send a message, use \`deft_send_message\`. The \`target\` field tells it where to go:
