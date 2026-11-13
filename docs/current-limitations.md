@@ -45,6 +45,7 @@ Deft is an alpha. It is suitable for technical evaluation, internal use, and con
 - Deft does not record what an employee's own runtime spends, so the per-employee daily cost budget (`daily_budget_cents`) never triggers. The daily action cap (`max_daily_actions`) is enforced; use it and your runtime's own limits to bound cost.
 - Defty does not turn chat messages into tasks on its own (passive extraction is off unless an operator sets `DEFT_ENABLE_BACKGROUND_TASK_CAPTURE=1`). Defty does not manage agent employees, connections or triggers.
 - Realtime rooms and presence are per workspace: a person who belongs to two workspaces shows as online only in the workspace where their session is connected.
+- A public space can be browsed and joined by members (not guests), but its messages cannot be previewed before joining. Leaving a space does not hand it to anyone: a private space whose last member leaves has no reader until its creator archives it.
 - Self-hosted Deft sends no email. Invites and password recovery are links an admin generates and shares.
 
 ## MCP and external tools
