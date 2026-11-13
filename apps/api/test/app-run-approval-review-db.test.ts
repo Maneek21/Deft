@@ -12,7 +12,7 @@ import { APP_RUN_CONTRACT_VERSIONS, createCapabilityProviderDiscoverySnapshot } 
 import { agentRoutes } from '../src/routes/agent.js';
 import { _setAppRunApprovalResolverForTest, viewerReviewAuthority } from '../src/lib/agent-approval-resolver.js';
 import { PostgresAppRunApprovalResolver } from '../src/lib/app-run-approval-adapter.js';
-import { appRunReviewSteps } from '../src/lib/app-run-approval-review.js';
+import { appRunApproveStep, appRunReviewSteps } from '../src/lib/app-run-approval-review.js';
 import { PostgresAppRunLiveAuthorization } from '../src/lib/app-run-live-authorization.js';
 import { PostgresAppRunRepository } from '../src/lib/app-run-repository.js';
 import { AppRunSecretRepository } from '../src/lib/app-run-secret-repository.js';
@@ -102,13 +102,10 @@ before(async () => {
 after(async () => {
   _setAppRunApprovalResolverForTest(null);
   if (!f) return;
-  for (const table of ['app_run_receipts', 'app_run_events', 'app_run_attempts', 'app_run_secret_payloads']) {
+  for (const table of ['app_run_receipts', 'app_run_events', 'app_run_attempts', 'app_run_secret_payloads', 'agent_actions',
+    'app_runs', 'capability_provider_snapshots', 'mcp_connections']) {
     await f.client.query(`DELETE FROM ${table} WHERE org_id = $1`, [f.orgId]).catch(() => undefined);
   }
-  await f.client.query('DELETE FROM agent_actions WHERE org_id = $1', [f.orgId]).catch(() => undefined);
-  await f.client.query('DELETE FROM app_runs WHERE org_id = $1', [f.orgId]).catch(() => undefined);
-  await f.client.query('DELETE FROM capability_provider_snapshots WHERE org_id = $1', [f.orgId]).catch(() => undefined);
-  await f.client.query('DELETE FROM mcp_connections WHERE org_id = $1', [f.orgId]).catch(() => undefined);
   await f.teardown();
   keys.destroy();
 });
@@ -260,19 +257,45 @@ test('App Run approve checks stop at 10 per response and run 2 at once', { skip:
   let running = 0;
   let mostAtOnce = 0;
   let reads = 0;
+  let onRead = async (_runId: string): Promise<boolean | undefined> => true;
   _setAppRunApprovalResolverForTest(new PostgresAppRunApprovalResolver(new PostgresAppRunRepository(), {
     authorizeApprovalInTransaction: (tx, run, now) => live.authorizeApprovalInTransaction(tx, run, now),
-    async authorizeApprovalRead() {
+    async authorizeApprovalRead(run) {
       running += 1; reads += 1; mostAtOnce = Math.max(mostAtOnce, running);
       await new Promise((resolve) => setTimeout(resolve, 25));
       running -= 1;
-      return true;
+      return onRead(run.id);
     },
   }));
   t.after(() => _setAppRunApprovalResolverForTest(resolver));
   await Promise.all([viewerReviewAuthority(viewer(f.requesterId), actionIds), viewerReviewAuthority(viewer(f.requesterId), actionIds)]);
   assert.equal(reads, 20);
   assert.equal(mostAtOnce, 2, 'two checks at once across requests in this process');
+
+  // A run rejected while its check waits for a slot is read again; a check that could not run leaves approve out.
+  let rejected!: () => void;
+  const rejection = new Promise<void>((resolve) => { rejected = resolve; });
+  onRead = async (runId) => {
+    // The first check rejects run 5; the other checks hold their slots until it has.
+    if (runId === runs[0]!.runId) {
+      assert.equal(await endpointDecides(f.requesterId, runs[5]!, 'reject'), true);
+      rejected();
+    } else await rejection;
+    return runId === runs[6]!.runId ? undefined : true;
+  };
+  const later = await viewerReviewAuthority(viewer(f.requesterId), actionIds);
+  assert.deepEqual(later.get(runs[5]!.actionId), { viewer_can_approve: false, viewer_can_reject: false });
+  assert.deepEqual(later.get(runs[6]!.actionId), { viewer_can_reject: true });
+});
+
+test('an approval replay reads the resolver clock no more often than before', () => {
+  let reads = 0;
+  const clock = () => { reads += 1; return new Date(); };
+  const pending = { state: 'pending_approval', input_expires_at: new Date(Date.now() + 60_000) } as const;
+  const action = { user_id: 'owner', approval_status: 'pending' };
+  assert.equal(appRunApproveStep({ ...pending, execution_release_kind: 'approved' } as Parameters<typeof appRunApproveStep>[0], action, clock), 'replay_approved');
+  assert.equal(appRunApproveStep({ ...pending, state: 'cancelled', execution_release_kind: null } as Parameters<typeof appRunApproveStep>[0], action, clock), 'replay_rejected');
+  assert.equal(reads, 0);
 });
 
 test('App Run flags stay in the viewer workspace', { skip: !canRun, timeout: 900_000 }, async () => {
@@ -286,7 +309,7 @@ test('native and protocol-7 approve is left out unless a common rule refuses; ow
   const open = { state: 'pending_approval', execution_release_kind: null, input_expires_at: new Date(now.getTime() + 60_000) } as const;
   const row = { user_id: 'owner', approval_status: 'pending', approve: true, reject: true };
   const steps = (run: object, protocol: string | null, viewerId = 'owner') =>
-    appRunReviewSteps({ ...open, ...run } as Parameters<typeof appRunReviewSteps>[0], protocol, row, viewerId, now);
+    appRunReviewSteps({ ...open, ...run } as Parameters<typeof appRunReviewSteps>[0], protocol, row, viewerId, () => now);
   assert.deepEqual(steps({ provider_kind: 'native', initiating_actor_type: 'human' }, null), { approve: 'unknown', reject: true });
   assert.deepEqual(steps({ provider_kind: 'app_runtime', initiating_actor_type: 'human' }, '7'), { approve: 'unknown', reject: true });
   assert.deepEqual(steps({ provider_kind: 'app_runtime', initiating_actor_type: 'human' }, '6'), { approve: 'live', reject: true });

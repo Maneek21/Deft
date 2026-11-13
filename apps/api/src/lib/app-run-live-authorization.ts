@@ -778,17 +778,18 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
   /**
    * What `authorizeApprovalInTransaction` would answer for this run now,
    * without reserving budget: the same live state and budget conditions, read
-   * in a transaction that is always rolled back.
+   * in a transaction that is always rolled back. Undefined when the read
+   * itself could not run.
    */
-  async authorizeApprovalRead(run: AppRunSafeView): Promise<boolean> {
-    let authorized = false;
+  async authorizeApprovalRead(run: AppRunSafeView): Promise<boolean | undefined> {
+    let authorized: boolean | undefined;
     try {
       await db.transaction(async (tx) => {
         authorized = await this.#authorizeRelease(tx, run, 'prepare', 'read');
         tx.rollback();
       });
     } catch {
-      // The rollback above always lands here; any other failure answers false.
+      // The rollback above always lands here.
     }
     return authorized;
   }
@@ -808,7 +809,7 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
   }
 
   async authorizeExecution(input: Parameters<AppRunExecutionAuthorizer['authorizeExecution']>[0]): Promise<boolean> {
-    if (input.org_id !== input.run.org_id) return false;
+    if (input.org_id !== input.run?.org_id) return false;
     return this.#authorizeRelease(input.tx, input.run, input.stage, 'reserve', input.now);
   }
 

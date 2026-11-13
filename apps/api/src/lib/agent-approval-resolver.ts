@@ -808,8 +808,6 @@ export async function viewerReviewAuthority(
     .select({
       ...requesterActionColumns,
       action: agentActions.action,
-      app_run_id: agentActions.app_run_id,
-      approval_status: agentActions.approval_status,
       reviewable: sql<boolean>`coalesce((${reviewableActionSql(viewer)}), false)`,
       source_current: sql<boolean>`coalesce((${actionSourceAuthoritySql(viewer.id)}), false)`,
     })

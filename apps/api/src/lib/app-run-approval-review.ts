@@ -1,14 +1,9 @@
-import { appRuns, appVersions } from '@deft/db/schema';
+import { agentActions, appRuns, appVersions } from '@deft/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db } from './db.js';
 import { safeRunSelection, type AppRunSafeView } from './app-run-repository.js';
 
-/**
- * The App Run release rules shared by the approval endpoint (the App Run
- * approval resolver) and the review flags of approval rows: who may decide an
- * App Run approval, and whether a decision taken now would be a fresh one.
- */
-
+// App Run release rules shared by the App Run approval resolver and the review flags of approval rows.
 type ApprovalFacts = Readonly<{ user_id: string; approval_status: string }>;
 type RunFacts = Pick<AppRunSafeView,
   'provider_kind' | 'initiating_actor_type' | 'state' | 'execution_release_kind' | 'input_expires_at'>;
@@ -37,13 +32,13 @@ export function appRunOwnerRefuses(
 export type AppRunApproveStep =
   'replay_approved' | 'replay_rejected' | 'terminal' | 'rejected' | 'expired' | 'stale' | 'live';
 
-export function appRunApproveStep(run: RunFacts, action: ApprovalFacts, now: Date): AppRunApproveStep {
+export function appRunApproveStep(run: RunFacts, action: ApprovalFacts, now: () => Date): AppRunApproveStep {
   if (run.execution_release_kind === 'approved') return 'replay_approved';
   if (run.state === 'cancelled') return 'replay_rejected';
   if (run.state === 'expired' || run.state === 'failed') return 'terminal';
   if (action.approval_status === 'rejected') return 'rejected';
   if (action.approval_status === 'expired') return 'expired';
-  if (run.state !== 'pending_approval' || run.input_expires_at <= now) return 'stale';
+  if (run.state !== 'pending_approval' || run.input_expires_at <= now()) return 'stale';
   return 'live';
 }
 
@@ -67,9 +62,9 @@ export function appRunRejectStep(run: RunFacts, action: ApprovalFacts): AppRunRe
 export function appRunReviewSteps(
   run: RunFacts,
   protocolVersion: string | null,
-  row: Pick<AppRunReviewRow, 'user_id' | 'approval_status' | 'approve' | 'reject'>,
+  row: Pick<AppRunReviewRow, 'user_id' | 'approve' | 'reject'> & ApprovalFacts,
   viewerId: string,
-  now: Date,
+  now: () => Date,
 ): { approve: false | 'live' | 'unknown'; reject: boolean } {
   const reject = row.reject && !appRunOwnerRefuses('reject', run, row.user_id, viewerId)
     && appRunRejectStep(run, row) === 'open';
@@ -104,8 +99,6 @@ async function withCheckSlot<T>(check: () => Promise<T>): Promise<T> {
 export type AppRunReviewRow = Readonly<{
   id: string;
   user_id: string;
-  app_run_id: string | null;
-  approval_status: string;
   /** Whether the resolver's general rule (gate, reviewer, source) admits each decision. */
   approve: boolean;
   reject: boolean;
@@ -114,36 +107,49 @@ export type AppRunReviewRow = Readonly<{
 export type AppRunReviewFlags = { viewer_can_approve?: boolean; viewer_can_reject: boolean };
 
 /**
+ * The run of each App Run approval with the approval's current status, in
+ * the viewer's workspace. A run without an App version keeps a null protocol.
+ */
+async function loadReviewFacts(orgId: string, actionIds: readonly string[]) {
+  const rows = actionIds.length === 0 ? [] : await db
+    .select({ ...safeRunSelection, protocol_version: appVersions.protocol_version,
+      action_id: agentActions.id, approval_status: agentActions.approval_status })
+    .from(agentActions)
+    .innerJoin(appRuns, and(eq(appRuns.org_id, agentActions.org_id), eq(appRuns.id, agentActions.app_run_id)))
+    .leftJoin(appVersions, and(eq(appVersions.org_id, appRuns.org_id), eq(appVersions.id, appRuns.origin_app_version_id)))
+    .where(and(eq(agentActions.org_id, orgId), inArray(agentActions.id, [...actionIds])));
+  return new Map(rows.map(({ protocol_version, action_id, approval_status, ...run }) =>
+    [action_id, { run: run as AppRunSafeView, protocol_version, approval_status }]));
+}
+
+/**
  * The review flags of App Run approvals for one viewer: true exactly when the
  * App Run approval resolver would take that decision freshly now. Approvals
  * that also need the approver's web session leave approve out. At most
  * `APP_RUN_APPROVE_CHECKS_PER_RESPONSE` rows, in the given order, get the
- * live approve check; later rows leave `viewer_can_approve` out.
+ * live approve check; later rows leave `viewer_can_approve` out, as does a
+ * live check that could not run. A live check re-reads the run and approval
+ * once it has its slot, so a decision taken meanwhile is not missed.
  */
 export async function appRunReviewAuthority(
   orgId: string,
   viewerId: string,
   rows: readonly AppRunReviewRow[],
-  approvalRead: ((run: AppRunSafeView) => Promise<boolean>) | undefined,
-  now: Date = new Date(),
+  approvalRead: ((run: AppRunSafeView) => Promise<boolean | undefined>) | undefined,
+  clock: () => Date = () => new Date(),
 ): Promise<Map<string, AppRunReviewFlags>> {
   const flags = new Map<string, AppRunReviewFlags>();
-  const runIds = [...new Set(rows.flatMap((row) => row.app_run_id ? [row.app_run_id] : []))];
-  const runs = runIds.length === 0 ? [] : await db
-    .select({ ...safeRunSelection, protocol_version: appVersions.protocol_version })
-    .from(appRuns)
-    .leftJoin(appVersions, and(eq(appVersions.org_id, appRuns.org_id), eq(appVersions.id, appRuns.origin_app_version_id)))
-    .where(and(eq(appRuns.org_id, orgId), inArray(appRuns.id, runIds)));
-  const runById = new Map(runs.map(({ protocol_version, ...run }) => [run.id, { run, protocol_version }]));
+  const facts = await loadReviewFacts(orgId, rows.map((row) => row.id));
+  const now = clock();
   const checks: Promise<void>[] = [];
   for (const row of rows) {
-    const found = row.app_run_id ? runById.get(row.app_run_id) : undefined;
+    const found = facts.get(row.id);
     if (!found) {
       flags.set(row.id, { viewer_can_approve: false, viewer_can_reject: false });
       continue;
     }
-    const { run, protocol_version } = found;
-    const steps = appRunReviewSteps(run, protocol_version, row, viewerId, now);
+    const steps = appRunReviewSteps(found.run, found.protocol_version, { ...row, approval_status: found.approval_status },
+      viewerId, () => now);
     const entry: AppRunReviewFlags = { viewer_can_reject: steps.reject };
     flags.set(row.id, entry);
     if (steps.approve === 'unknown') continue;
@@ -151,10 +157,17 @@ export async function appRunReviewAuthority(
       entry.viewer_can_approve = false;
     } else if (checks.length < APP_RUN_APPROVE_CHECKS_PER_RESPONSE) {
       const read = approvalRead;
-      checks.push(withCheckSlot(() => read(run)).then(
-        (authorized) => { entry.viewer_can_approve = authorized; },
-        () => { entry.viewer_can_approve = false; },
-      ));
+      checks.push(withCheckSlot(async () => {
+        const fresh = (await loadReviewFacts(orgId, [row.id])).get(row.id);
+        if (!fresh) return false;
+        const again = appRunReviewSteps(fresh.run, fresh.protocol_version, { ...row, approval_status: fresh.approval_status },
+          viewerId, clock);
+        entry.viewer_can_reject = again.reject;
+        if (again.approve !== 'live') return again.approve === 'unknown' ? undefined : false;
+        return read(fresh.run);
+      }).then((authorized) => {
+        if (authorized !== undefined) entry.viewer_can_approve = authorized;
+      }, () => undefined));
     }
   }
   await Promise.all(checks);

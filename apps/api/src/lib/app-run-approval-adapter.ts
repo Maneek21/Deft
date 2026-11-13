@@ -161,8 +161,9 @@ export class PostgresAppRunApprovalResolver {
         && !await this.liveAuthorization.authorizeApprovalInTransaction(tx, run, this.now())) {
         return { status: 'error', code: 'INVALID_STATE', message: 'App Run approval is no longer valid' };
       }
-      const approvalNow = this.now();
-      const step = appRunApproveStep(run, action, approvalNow);
+      let approvalTime: Date | undefined;
+      const approvalClock = () => approvalTime ??= this.now();
+      const step = appRunApproveStep(run, action, approvalClock);
       if (step === 'replay_approved') {
         // A replay keeps the original approver and approval time.
         await this.#markApproved(tx, action.id, action.approved_by_user_id ?? approverUserId, run, action.approved_at ?? undefined);
@@ -191,6 +192,7 @@ export class PostgresAppRunApprovalResolver {
       if (step === 'expired') {
         return { status: 'error', code: 'INVALID_STATE', message: 'App Run approval is no longer valid' };
       }
+      const approvalNow = approvalClock();
       if (
         step === 'stale'
         || !await this.liveAuthorization.authorizeApprovalInTransaction(tx, run, approvalNow)
@@ -312,7 +314,7 @@ export class PostgresAppRunApprovalResolver {
    */
   async reviewAuthority(orgId: string, viewerId: string, rows: readonly AppRunReviewRow[]) {
     const read = this.liveAuthorization.authorizeApprovalRead?.bind(this.liveAuthorization);
-    return appRunReviewAuthority(orgId, viewerId, rows, read, this.now());
+    return appRunReviewAuthority(orgId, viewerId, rows, read, this.now);
   }
 
   async #lockAction(tx: AppRunTransaction, actionId: string) {
