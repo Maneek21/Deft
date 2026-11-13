@@ -8,6 +8,7 @@
 // agent_actions row carrying the event payload + the trigger's prompt
 // (if any) so the agent has full context.
 import type { JobData } from '../types.js';
+import { jobOrgId } from '../job-org.js';
 import { db } from '../../lib/db.js';
 import { triggers, agentEmployees, agentActions } from '@deft/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
@@ -20,14 +21,19 @@ interface AgentEmployeeTriggerData {
 }
 
 export async function handleAgentEmployeeTrigger(job: JobData): Promise<void> {
-  const { triggerId, orgId, eventType, eventData } = job.data as AgentEmployeeTriggerData;
+  const { triggerId, eventType, eventData } = job.data as AgentEmployeeTriggerData;
+  const orgId = jobOrgId(job);
+  if (!orgId || !triggerId) {
+    console.warn('[agent-employee-trigger] job without a workspace; not delivered');
+    return;
+  }
 
   console.log(`[agent-employee-trigger] Processing trigger ${triggerId} for event ${eventType}`);
 
-  // 1. Load trigger and verify it's active
+  // 1. Load the job org's trigger and verify it's active
   const [trigger] = await db.select()
     .from(triggers)
-    .where(and(eq(triggers.id, triggerId), eq(triggers.is_active, true)))
+    .where(and(eq(triggers.id, triggerId), eq(triggers.org_id, orgId), eq(triggers.is_active, true)))
     .limit(1);
 
   if (!trigger || !trigger.agent_employee_id) {
@@ -38,7 +44,11 @@ export async function handleAgentEmployeeTrigger(job: JobData): Promise<void> {
   // 2. Load agent employee and verify it's active
   const [employee] = await db.select()
     .from(agentEmployees)
-    .where(and(eq(agentEmployees.id, trigger.agent_employee_id), eq(agentEmployees.is_active, true)))
+    .where(and(
+      eq(agentEmployees.id, trigger.agent_employee_id),
+      eq(agentEmployees.org_id, orgId),
+      eq(agentEmployees.is_active, true),
+    ))
     .limit(1);
 
   if (!employee) {

@@ -30,7 +30,7 @@ let testEmployeeId: string;
 
 const authedApp = new Hono();
 authedApp.use('*', async (c, next) => {
-  c.set('user', { id: testUserId, org_id: testOrgId, email: 'hmac-t@t.local' });
+  c.set('user', { id: testUserId, org_id: testOrgId, email: 'hmac-t@t.local', role: 'admin' });
   await next();
 });
 authedApp.route('/api/agent-webhooks', agentWebhookRoutes);
