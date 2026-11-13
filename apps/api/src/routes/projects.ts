@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, gt, sql, inArray, isNull } from 'drizzle-orm';
+import { loadMessageForMember } from '../lib/space-membership.js';
 import { db } from '../lib/db.js';
 import { nativeCreate, nativeCreateKey, NativeCreateError } from '../lib/native-create.js';
 import { projects, tasks, taskLabels, labels, users, taskActivity } from '@deft/db/schema';
@@ -611,6 +612,10 @@ projectRoutes.post('/:id/tasks', async (c) => {
     const assigneeId = await validateAssignableAssigneeId(parsed.data.assignee_id, user.org_id);
     if (parsed.data.assignee_id !== undefined && assigneeId === undefined) {
       return c.json({ error: 'Assignee must be an active user or healthy agent in this organization', code: 'INVALID_ASSIGNEE' }, 400);
+    }
+
+    if (parsed.data.source_message_id && !await loadMessageForMember(parsed.data.source_message_id, user.id, user.org_id)) {
+      return c.json({ error: 'source_message_id must reference a visible message', code: 'VALIDATION_ERROR' }, 400);
     }
 
     const { value: task, replayed } = await nativeCreate({
