@@ -4,7 +4,7 @@ import { logger } from 'hono/logger';
 // request-log lines show a fixed placeholder instead of the requested path.
 // Every other request is logged unchanged.
 const REDACTED_FEED_PATH = '/api/ics/feed/<redacted>';
-const FEED_PATH = /\/ics\/feed(?:\/|$)/;
+const FEED_PATH = /^\/api\/ics\/feed(?:\/|$)/;
 
 /** Decodes each valid %XX escape and leaves malformed ones in place, so a bad
  * escape anywhere in the target cannot hide the feed path from the check. */
