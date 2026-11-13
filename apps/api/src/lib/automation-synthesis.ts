@@ -54,7 +54,8 @@ export function parseGroundedDraft<T>(
     for (const item of value) {
       const itemText = (item as { text?: unknown } | null)?.text;
       if (typeof itemText !== 'string') continue;
-      const shown = decodeHtmlEntities(itemText);
+      // As rendered: entities decoded and Markdown backslash escapes removed.
+      const shown = decodeHtmlEntities(itemText).replace(/\\([!-/:-@[-`{-~])/g, '$1');
       if (containsLinkConstruct(shown)) throw new Error('Draft contains a link');
       if (mentionsApproval(shown)) throw new Error('Draft mentions an approval');
       if ([...shown.matchAll(TASK_KEY)].some((match) => !knownKeys.has(match[0]))

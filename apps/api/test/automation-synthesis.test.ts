@@ -199,3 +199,12 @@ for (const [text, delivered] of [
 test('grounded parser treats every task key as unknown when no evidence text is supplied', () => {
   assert.throws(() => parseGroundedDraft(standupDraft([{ text: 'MKT-1 is in progress.', source_ids: ['task:1'] }]), standupDraftSchema, sourceIds), /outside the supplied evidence/);
 });
+
+test('grounded parser checks a Markdown-escaped task key as rendered', () => {
+  assert.throws(() => parseGroundedDraft(
+    standupDraft([{ text: `FAKE${backslash}-999 is done.`, source_ids: ['task:1'] }]),
+    standupDraftSchema,
+    sourceIds,
+    keyEvidence,
+  ), /outside the supplied evidence/);
+});
