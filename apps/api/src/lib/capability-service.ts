@@ -18,6 +18,11 @@ import {
 } from './capability-providers/mcp.js';
 import type { GovernedCapabilityInvocationOptions } from './app-run-capability-bridge.js';
 import { APP_RUN_LEGACY_MCP_CUTOVER_ENABLED } from './env.js';
+import {
+  CONNECTED_TOOL_UNAVAILABLE_ERROR,
+  workspaceConnectedCallAccess,
+  type ConnectedCallAccess,
+} from './connected-tool-access.js';
 
 export type CapabilityDiscoveryRequest = McpCapabilityDiscoveryRequest;
 export type CapabilityDiscoveryResult = McpCapabilityDiscoveryResult;
@@ -92,6 +97,7 @@ export class CapabilityService {
     private readonly governed: GovernedCapabilityInvocationPort = lazyGovernedCapabilityPort,
     private readonly legacyMcpCutoverEnabled: () => boolean =
       () => APP_RUN_LEGACY_MCP_CUTOVER_ENABLED,
+    private readonly connectedCallAccess: ConnectedCallAccess = workspaceConnectedCallAccess,
   ) {}
 
   async discover(request: CapabilityDiscoveryRequest): Promise<CapabilityDiscoveryResult> {
@@ -163,6 +169,26 @@ export class CapabilityService {
     let adapterResult: McpCapabilityInvocationAdapterResult;
     switch (request.provider.provider_kind) {
       case 'mcp':
+        // Connected tools run for workspace members, admins and owners. This
+        // is checked before either execution mode, so nothing reaches a
+        // provider or a Run for anyone else.
+        if (!(await this.connectedCallAccess.allows(
+          request.org_id,
+          request.actor.user_id,
+          options.legacy_action_id,
+        ))) {
+          adapterResult = {
+            provider: { provider_kind: 'mcp', requested_provider_key: request.provider.connection_slug },
+            operation_name: request.provider.operation_name,
+            provider_call_attempted: false,
+            provider_succeeded: false,
+            legacy_output: { error: CONNECTED_TOOL_UNAVAILABLE_ERROR },
+            error: CONNECTED_TOOL_UNAVAILABLE_ERROR,
+            error_code: 'CAPABILITY_OPERATION_UNAVAILABLE',
+            duration_ms: 0,
+          };
+          break;
+        }
         adapterResult = this.legacyMcpCutoverEnabled()
           ? await this.governed.invoke(request, options)
           : await this.mcpProvider.invoke(request);
