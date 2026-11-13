@@ -1145,14 +1145,6 @@ agentRoutes.get('/actions/:id/task-link-review', async (c) => {
  */
 export type ActionReviewer = { id: string; org_id: string; role?: string; sid?: string };
 
-/**
- * Kinds whose decisions run through the approval resolver. Bulk creates are
- * among them: the resolver keeps a failed batch's retry identity, its
- * proposer and its rejection digest.
- */
-function decidesThroughResolver(action: string): boolean {
-  return isApprovalResolverAction(action) || isModuleRecordBulkCreateAction(action);
-}
 
 agentRoutes.post('/actions/:id/approve', (c) => approveActionAsReviewer(c, c.get('user'), c.req.param('id')));
 
@@ -1172,7 +1164,7 @@ export async function approveActionAsReviewer(c: Context, user: ActionReviewer, 
   // Resolver-owned MCP writes and App Run releases enter the shared approval
   // boundary. Legacy Defty actions (create_task/update_task_status/…) still
   // use the original executeAction path.
-  if (decidesThroughResolver(action.action)) {
+  if (isApprovalResolverAction(action.action)) {
     let nativeGuard: ((tx: AppRunTransaction) => Promise<void>) | undefined;
     if (action.app_run_id) {
       // Native proposal participant IDs are immutable. Approval authorization
@@ -1592,7 +1584,7 @@ export async function rejectActionAsReviewer(
 
   // Resolver-owned MCP writes and App Run releases use the same idempotent,
   // permission-checked rejection boundary.
-  if (decidesThroughResolver(action.action)) {
+  if (isApprovalResolverAction(action.action)) {
     const result = await resolveRejectAction(actionId, user.id, reason);
     if (result.status === 'error') {
       const statusCode =

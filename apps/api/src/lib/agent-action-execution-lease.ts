@@ -360,19 +360,13 @@ export async function executeClaimedApproval(
   lease: DbAdvisoryLease = HELD_LEASE,
 ): Promise<OwnedExecutionOutcome> {
   // The executor receives the ORIGINAL proposer's user id, never the approver's.
-  // A bulk create a person proposed over MCP runs as that person's MCP
-  // principal, as the approval resolver runs it.
-  const { hasHumanMcpBulkProvenance } = await import('./agent-approval-resolver.js');
   const execResult = await executeAction(
     row.id,
     row.action,
     row.params as any,
     row.org_id,
     row.user_id,
-    {
-      agentEmployeeId: row.agent_employee_id ?? undefined,
-      trustedHumanMcpPrincipal: hasHumanMcpBulkProvenance(row),
-    },
+    { agentEmployeeId: row.agent_employee_id ?? undefined },
   );
   const owned = and(
     eq(agentActions.id, row.id),

@@ -181,7 +181,7 @@ test('P2: a document-send rejected over MCP leaves the same row, decision and re
   }
 });
 
-test('P2b: a bulk create a person proposed over MCP keeps its retry identity and proposer when rejected, on web and MCP', { skip: !url }, async () => {
+test('P2b: a bulk create rejected over MCP leaves the same row, decision and receipt as a web rejection', { skip: !url }, async () => {
   const bulk = async () => {
     const id = randomUUID();
     await q(`INSERT INTO agent_actions (id, org_id, user_id, source, action, params, approval_tier, approval_status)
@@ -198,13 +198,16 @@ test('P2b: a bulk create a person proposed over MCP keeps its retry identity and
   const r = await human.humanApprovalReject({ action_id: viaMcp },
     { ...ctx(bob), scopes: ['read:workspace', 'write:workspace', 'read:modules', 'write:modules'] });
   assert.notEqual(r.isError, true, text(r));
-  for (const id of [viaWeb, viaMcp]) {
-    const rejected = await row(id);
-    assert.equal(rejected.approval_status, 'rejected');
-    assert.equal(typeof rejected.params.idempotency_digest, 'string');
-    const receipt = await q('SELECT proposer FROM action_receipts WHERE action_id = $1 AND decision = $2', [id, 'rejected']);
-    assert.deepEqual(receipt.rows, [{ proposer: 'user' }]);
-  }
+  const [w, m] = [await row(viaWeb), await row(viaMcp)];
+  assert.equal(w.approval_status, 'rejected');
+  assert.equal(m.approval_status, 'rejected');
+  assert.deepEqual(Object.keys(m.params).sort(), Object.keys(w.params).sort());
+  assert.equal(Boolean(m.executed_at), Boolean(w.executed_at));
+  assert.deepEqual(await decisions(viaMcp), [{ user_id: bob, decision: 'rejected' }]);
+  assert.deepEqual(await decisions(viaWeb), [{ user_id: bob, decision: 'rejected' }]);
+  const receipt = async (id: string) =>
+    (await q('SELECT proposer, decision FROM action_receipts WHERE action_id = $1', [id])).rows;
+  assert.deepEqual(await receipt(viaMcp), await receipt(viaWeb));
 });
 
 test('P3: a resolver-owned employee action approved over MCP records the decision and the confirmation as on the web', { skip: !url }, async () => {
@@ -275,10 +278,15 @@ test('P5b: an answer stored before the shared decision functions is not replayed
 
 test('P6: a record-mirror nomination cannot be approved over MCP', { skip: !url }, async () => {
   const id = randomUUID();
-  await q(`INSERT INTO agent_actions (id, org_id, user_id, agent_employee_id, source, action, params, approval_tier, approval_status)
-     VALUES ($1, $2, $3, $4, 'mcp', 'app_record_mirror_nominate', '{}'::jsonb, 'full', 'pending')`, [id, orgId, bob, employeeId]);
+  const params = { connection_session_id: randomUUID(), store_key: 'drafts', mirror_key: 'saved_drafts', record_id: randomUUID(),
+    request_id: randomUUID(), expected_revision: 0, expires_at: new Date(Date.now() + 3600_000).toISOString(), max_attempts_per_day: 1,
+    account_ref: 'account_1', installation_id: randomUUID(), policy_digest: `sha256:${'b'.repeat(64)}` };
+  await q(`INSERT INTO agent_actions (id, org_id, user_id, source, action, params, approval_tier, approval_status)
+     VALUES ($1, $2, $3, 'app_record_mirror', 'app_record_mirror_nominate', $4::jsonb, 'full', 'pending')`, [id, orgId, bob, JSON.stringify(params)]);
   const r = await human.humanApprovalApprove({ action_id: id }, ctx(bob));
   assert.equal(r.isError, true);
+  // Refused for want of a web session, before anything else is checked.
+  assert.match(text(r), /FORBIDDEN: Approve this request in Deft/);
   assert.equal((await row(id)).approval_status, 'pending');
 });
 
