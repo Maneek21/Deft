@@ -320,6 +320,40 @@ test('a guest\'s message never binds, and the author must still qualify now', { 
   await flip('UPDATE messages SET is_deleted = true WHERE id = $1', [fromAlice.messageId], 'message deleted');
 });
 
+test('an archived room, a non-human author, a mismatched event and Defty never bind', { skip: !canRun, timeout: 900_000 }, async () => {
+  const archivedRoom = await addSpace('private', [bob, shadowE]);
+  const inArchived = await addressed(bob, archivedRoom, employeeE);
+  const archivedAction = await propose({ messageId: inArchived.messageId });
+  await assertBoundTo(archivedAction, bob, 'before archiving');
+  await f.client.query('UPDATE spaces SET is_archived = true WHERE id = $1', [archivedRoom]);
+  await assertUnbound(archivedAction, 'archived room');
+
+  const fromAlice = await addressed(alice, room, employeeE);
+  const actionId = await propose({ messageId: fromAlice.messageId });
+  await f.client.query(`UPDATE users SET kind = 'agent' WHERE id = $1`, [alice]);
+  await assertUnbound(actionId, 'author no longer human');
+  await f.client.query(`UPDATE users SET kind = 'human' WHERE id = $1`, [alice]);
+  await assertBoundTo(actionId, alice, 'author human again');
+  await f.client.query('UPDATE agent_channel_events SET actor_user_id = $2 WHERE id = $1', [fromAlice.eventId, bob]);
+  await assertUnbound(actionId, 'event actor is not the author');
+  await f.client.query('UPDATE agent_channel_events SET actor_user_id = $2, kind = $3 WHERE id = $1', [fromAlice.eventId, alice, 'task.assigned']);
+  await assertUnbound(actionId, 'event of another kind');
+
+  const deftyShadow = await addUser('defty', 'member', 'agent');
+  const defty = await addEmployee('defty', deftyShadow);
+  await f.client.query('INSERT INTO space_members (id, space_id, user_id) VALUES ($1, $2, $3)', [randomUUID(), room, deftyShadow]);
+  const toDefty = await addressed(bob, room, defty);
+  const deftyAction = randomUUID();
+  await f.client.query(
+    `INSERT INTO agent_actions (id, org_id, user_id, agent_employee_id, source, action, params, approval_tier, approval_status, message_id)
+     VALUES ($1, $2, $3, $4, 'mcp', 'task_create', $5::jsonb, 'full', 'pending', $6)`,
+    [deftyAction, f.orgId, deftyShadow, defty, JSON.stringify({ title: 'r4 defty', project_id: f.projectId }), toDefty.messageId],
+  );
+  assert.equal(await requesterOf(deftyAction), bob, 'an ordinary employee binds');
+  await f.client.query(`UPDATE agent_employees SET runtime_kind = 'defty_system', slug = 'defty-system', is_byoa = false WHERE id = $1`, [defty]);
+  assert.equal(await requesterOf(deftyAction), deftyShadow, 'Defty does not bind');
+});
+
 test('a public room binds only while the employee is a member of it', { skip: !canRun, timeout: 900_000 }, async () => {
   const publicRoom = await addSpace('public', [bob]);
   const mention = await addressed(bob, publicRoom, employeeE);
