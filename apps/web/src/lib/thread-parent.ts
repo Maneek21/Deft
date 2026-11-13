@@ -37,13 +37,13 @@ function editedAt(message: { edited_at?: string | null }): number {
 }
 
 /**
- * A newer copy of the shown parent (from the caller or a read). Another
- * message replaces it; the same message is merged, keeping a newer shown edit
- * and a shown delete.
+ * A new copy of the shown parent from the caller. Another message replaces
+ * it; the same message is merged, keeping the live reactions, a newer shown
+ * edit and a shown delete.
  */
 export function refreshThreadParent<T extends EventMessage>(current: T, incoming: T): T {
   if (incoming.id !== current.id) return incoming;
-  let next: T = { ...current, ...incoming };
+  let next: T = { ...current, ...incoming, reactions: current.reactions ?? incoming.reactions };
   if (editedAt(current) > editedAt(incoming)) {
     next = { ...next, content: current.content, edited_at: current.edited_at, metadata: current.metadata };
   }
@@ -55,5 +55,7 @@ export function adoptFetchedThreadParent<T extends EventMessage>(
   current: T, fetched: T | null | undefined, events: readonly ScopedMessageEvent<T>[], spaceId: string,
 ): T {
   if (!fetched || fetched.id !== current.id) return current;
-  return events.reduce((next, event) => applyThreadParentEvent(next, event, spaceId), refreshThreadParent(current, fetched));
+  // A read's reactions are authoritative; reactions received during it are replayed.
+  const merged: T = { ...refreshThreadParent(current, fetched), reactions: fetched.reactions ?? current.reactions };
+  return events.reduce((next, event) => applyThreadParentEvent(next, event, spaceId), merged);
 }

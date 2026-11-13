@@ -41,5 +41,5 @@ test('a mention chip before the cursor adds no text', () => {
 });
 
 test('a picked task is inserted as its readable identifier', () => {
-  assert.equal(taskSelectionText({ id: 'b5d2c3e4-0000-4000-8000-000000000000', project_prefix: 'RC', number: 1001 }), 'RC-1001 ');
+  assert.equal(taskSelectionText({ project_prefix: 'RC', number: 1001 }), 'RC-1001 ');
 });

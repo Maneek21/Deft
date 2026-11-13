@@ -56,8 +56,19 @@ test('a fresher copy of the same parent is adopted without undoing a newer live 
   const liveNewer = { ...parent, content: 'live newer', edited_at: '2026-11-13T10:09:00.000Z' };
   const kept = refreshThreadParent(liveNewer, refreshed);
   assert.equal(kept.content, 'live newer');
-  assert.deepEqual(kept.reactions, refreshed.reactions);
   assert.equal(refreshThreadParent({ ...parent, is_deleted: true }, refreshed).is_deleted, true);
   const other = { ...parent, id: 'parent-2', content: 'another thread' };
   assert.equal(refreshThreadParent(parent, other), other);
+});
+
+test('a caller copy keeps the live reactions; a thread read brings its own with in-flight reactions replayed', () => {
+  const live = { ...parent, reactions: [{ emoji: '👍', count: 1, users: ['u1'] }] };
+  const staleCopy = { ...parent, reactions: [] };
+  assert.deepEqual(refreshThreadParent(live, staleCopy).reactions, live.reactions);
+  const fetched = { ...parent, reactions: [{ emoji: '🎉', count: 1, users: ['u2'] }] };
+  const during = [{ type: 'reaction_removed' as const, message_id: 'parent-1', emoji: '🎉', user_id: 'u2' }];
+  assert.deepEqual(adoptFetchedThreadParent(live, fetched, [], SPACE).reactions, fetched.reactions);
+  assert.deepEqual(adoptFetchedThreadParent(live, fetched, during, SPACE).reactions, []);
+  const otherSpace = { type: 'reaction_added' as const, message_id: 'parent-1', emoji: '👀', user_id: 'u3', space_id: 'space-2' };
+  assert.equal(applyThreadParentEvent(parent, otherSpace, SPACE), parent);
 });

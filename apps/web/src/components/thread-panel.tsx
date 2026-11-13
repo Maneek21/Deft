@@ -369,7 +369,8 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
         // Fetched rows are authoritative; live events received during the
         // read are replayed on top.
         setReplies((previous) => replayMessageEvents(mergeMessagesById(previous, loaded), events));
-        setParent((current) => adoptFetchedThreadParent(current, data.parent, events, spaceIdRef.current));
+        const readSpaceId = spaceIdRef.current;
+        setParent((current) => adoptFetchedThreadParent(current, data.parent, events, readSpaceId));
         // Mark thread as read
         void api.post(`/api/messages/${messageId}/thread-read`).catch(() => {});
       } catch {
@@ -407,7 +408,8 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
       if (activeMessageIdRef.current !== requestMessageId || !reads.isLatest(ticket)) return;
       const loaded: Message[] = data.replies || data.messages || [];
       setReplies((prev) => replayMessageEvents(mergeMessagesById(prev, loaded), events));
-      setParent((current) => adoptFetchedThreadParent(current, data.parent, events, spaceIdRef.current));
+      const readSpaceId = spaceIdRef.current;
+      setParent((current) => adoptFetchedThreadParent(current, data.parent, events, readSpaceId));
       setLoadError(false);
       setCatchUpError(false);
       setLoading(false);
@@ -431,7 +433,8 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     const live = (event: ScopedMessageEvent<Message>) => {
       threadReadsRef.current.record(event);
       setReplies((prev) => applyMessageEvent(prev, event));
-      setParent((current) => applyThreadParentEvent(current, event, spaceIdRef.current));
+      const eventSpaceId = spaceIdRef.current;
+      setParent((current) => applyThreadParentEvent(current, event, eventSpaceId));
     };
     const onNewMessage = (msg: Message & { parent_id?: string }) => {
       if (msg.parent_id === messageId) {
@@ -441,12 +444,12 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
       }
     };
 
-    const onReactionAdded = (data: { message_id: string; emoji: string; user_id: string }) => {
-      live({ type: 'reaction_added', message_id: data.message_id, emoji: data.emoji, user_id: data.user_id });
+    const onReactionAdded = (data: { message_id: string; emoji: string; user_id: string; space_id?: string | null }) => {
+      live({ type: 'reaction_added', message_id: data.message_id, emoji: data.emoji, user_id: data.user_id, space_id: data.space_id });
     };
 
-    const onReactionRemoved = (data: { message_id: string; emoji: string; user_id: string }) => {
-      live({ type: 'reaction_removed', message_id: data.message_id, emoji: data.emoji, user_id: data.user_id });
+    const onReactionRemoved = (data: { message_id: string; emoji: string; user_id: string; space_id?: string | null }) => {
+      live({ type: 'reaction_removed', message_id: data.message_id, emoji: data.emoji, user_id: data.user_id, space_id: data.space_id });
     };
 
     // Edits and deletes of the parent and its replies show live; events for
@@ -483,7 +486,8 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
         if (activeMessageIdRef.current !== messageId || !reads.isLatest(ticket)) return 'superseded';
         const fetched: Message[] = data.replies || data.messages || [];
         setReplies((prev) => replayMessageEvents(mergeMessagesById(prev, fetched), events));
-        setParent((current) => adoptFetchedThreadParent(current, data.parent, events, spaceIdRef.current));
+        const readSpaceId = spaceIdRef.current;
+        setParent((current) => adoptFetchedThreadParent(current, data.parent, events, readSpaceId));
         setLoadError(false);
         setCatchUpError(false);
         // It may have superseded the initial read, which then never ends loading.
