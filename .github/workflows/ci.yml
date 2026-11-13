@@ -51,16 +51,86 @@ jobs:
         id: scope
         run: node scripts/resolve-release-scope.mjs --github-output
 
+  # Classifies a pull request as docs-only so the heavy jobs can be skipped.
+  # Skipping is done with job- and step-level `if` (never workflow `paths:`
+  # filters), so every required check name still reports on every pull request.
+  # Anything that is not provably docs-only runs everything. Only pull requests
+  # can be docs-only; pushes, tags and manual runs always run everything.
+  changes:
+    name: Changed Paths
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The merge commit this run is pinned to plus its two parents, so the
+          # classification is bound to the exact revision CI tests and cannot
+          # change if the pull request is edited or retargeted later.
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Classify changed paths
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Docs-only means EVERY path changed by the pull request (additions,
+          # modifications, deletions and both sides of a rename) is a Markdown
+          # file under docs/superpowers/ (plans, specs, audits, notes), none of
+          # which any build, test or check reads. Markdown elsewhere is not
+          # listed: application code, seeds, the public-docs check and the
+          # release workflow read it. A file named by the Hermes integration
+          # manifest is read by the bundle test and is never docs-only.
+          # File names are NUL-separated by git and only ever flow into jq as
+          # data; they are never expanded in a shell command.
+          if [ "$(git rev-list --parents -n 1 HEAD | wc -w)" != 3 ]; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          excluded="$(jq -c '[.. | strings | select(startswith("docs/"))]' integrations/hermes/integration-manifest.json)"
+          # git emits NUL-separated names; NUL becomes newline, so a name that
+          # itself contains a newline splits into fragments that must each pass.
+          git diff --name-only --no-renames -z HEAD^1 HEAD | tr '\0' '\n' \
+            | jq -Rn --argjson excluded "$excluded" '
+                [inputs] as $paths
+                | ($paths | length) > 0 and all($paths[];
+                    startswith("docs/superpowers/") and endswith(".md")
+                    and (. as $f | $excluded | any(. == $f) | not)
+                  )' > "$RUNNER_TEMP/docs-only.json"
+          result="$(cat "$RUNNER_TEMP/docs-only.json")"
+          case "$result" in
+            true|false) ;;
+            *) echo "unexpected classifier output" >&2; exit 1 ;;
+          esac
+          echo "docs_only=$result" >> "$GITHUB_OUTPUT"
+
   typecheck:
     name: Type Check
     runs-on: ubuntu-latest
-    needs: [release-scope, check-app-boundary]
+    needs: [release-scope, check-app-boundary, changes]
     # Forward a failed prerequisite into this existing required check instead
-    # of leaving all protected downstream checks merely skipped.
-    if: ${{ !cancelled() }}
+    # of leaving all protected downstream checks merely skipped. A docs-only
+    # pull request skips this job (a skipped job satisfies the required check)
+    # and with it every job that needs it: Build, Versioned Upgrade, the
+    # production image smoke and the Hermes gate. If the classifier failed,
+    # docs_only is empty, so this job still runs and fails on the next step.
+    # A failed cheap prerequisite (boundary check, release scope) is forwarded
+    # here even for a docs-only pull request.
+    if: >-
+      ${{ !cancelled() && (
+        needs.changes.outputs.docs_only != 'true' ||
+        needs.release-scope.result != 'success' ||
+        needs.check-app-boundary.result != 'success') }}
     steps:
       - name: Require cheap CI gates
-        if: needs.release-scope.result != 'success' || needs.check-app-boundary.result != 'success'
+        if: needs.release-scope.result != 'success' || needs.check-app-boundary.result != 'success' || needs.changes.result != 'success'
         run: exit 1
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6.1.0
@@ -146,7 +216,9 @@ jobs:
     runs-on: ubuntu-latest
     # Start alongside Type Check rather than after it. Only the cheap gates
     # block the shards; Build still requires Type Check and every shard.
-    needs: [release-scope, check-app-boundary]
+    # Skipped for docs-only pull requests; the Test API roll-up accepts that.
+    needs: [release-scope, check-app-boundary, changes]
+    if: needs.changes.outputs.docs_only != 'true'
     timeout-minutes: 30
     strategy:
       # Let every shard finish so one failure does not hide another.
@@ -263,11 +335,17 @@ jobs:
   test:
     name: Test API
     runs-on: ubuntu-latest
-    needs: test-shard
+    needs: [test-shard, changes]
     if: ${{ !cancelled() }}
     steps:
       - name: Require every API test shard
-        if: needs.test-shard.result != 'success'
+        # Shards may be skipped only when the classifier succeeded and found a
+        # docs-only pull request; in every other case they must all pass.
+        if: >-
+          needs.test-shard.result != 'success' &&
+          !(needs.test-shard.result == 'skipped' &&
+            needs.changes.result == 'success' &&
+            needs.changes.outputs.docs_only == 'true')
         run: |
           echo "API test shards finished with: ${{ needs.test-shard.result }}" >&2
           exit 1
