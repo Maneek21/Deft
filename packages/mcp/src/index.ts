@@ -8,6 +8,7 @@ export { createTransport } from "./transports.js";
 export {
   isPublicNetworkAddress,
   isNeverAllowedMetadataAddress,
+  normalizeMappedIPv4,
   isAllowedSelfHostedPrivateAddress,
   isStdioCommandAllowed,
   createSecureMcpFetch,

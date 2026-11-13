@@ -75,8 +75,20 @@ function ipv6Bytes(address: string): number[] | null {
   return words.flatMap((word) => [word >> 8, word & 0xff]);
 }
 
+/** An IPv4-mapped IPv6 address (::ffff:a.b.c.d or ::ffff:xxxx:xxxx) is
+ * classified by its IPv4 address; any other input, including a scoped
+ * address, is returned unchanged. */
+export function normalizeMappedIPv4(address: string): string {
+  if (address.includes("%") || isIP(address) !== 6) return address;
+  const bytes = ipv6Bytes(address);
+  if (!bytes || !bytes.slice(0, 10).every((byte) => byte === 0) || bytes[10] !== 0xff || bytes[11] !== 0xff) {
+    return address;
+  }
+  return bytes.slice(12).join(".");
+}
+
 export function isNeverAllowedMetadataAddress(address: string): boolean {
-  const normalized = normalizeHostname(address);
+  const normalized = normalizeMappedIPv4(normalizeHostname(address));
   if (NEVER_ALLOWED_METADATA_ADDRESSES.has(normalized)) return true;
   const candidate = ipv6Bytes(normalized);
   if (!candidate) return false;
@@ -87,7 +99,8 @@ export function isNeverAllowedMetadataAddress(address: string): boolean {
 }
 
 /** Return true only for globally routable unicast addresses. */
-export function isPublicNetworkAddress(address: string): boolean {
+export function isPublicNetworkAddress(rawAddress: string): boolean {
+  const address = normalizeMappedIPv4(rawAddress);
   const family = isIP(address);
   if (family === 4) {
     const bytes = ipv4Bytes(address)!;
@@ -136,7 +149,8 @@ export function isPublicNetworkAddress(address: string): boolean {
 /** Exact host-operator exceptions may reach ordinary loopback/RFC1918/ULA
  * services, but never link-local, metadata, CGNAT, multicast, or reserved
  * destinations. */
-export function isAllowedSelfHostedPrivateAddress(address: string): boolean {
+export function isAllowedSelfHostedPrivateAddress(rawAddress: string): boolean {
+  const address = normalizeMappedIPv4(rawAddress);
   const family = isIP(address);
   if (family === 4) {
     const [a, b] = ipv4Bytes(address)!;

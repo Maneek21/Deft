@@ -12,7 +12,7 @@ import { request as httpsRequest } from 'node:https';
 import { BlockList, isIP } from 'node:net';
 import type { Transform } from 'node:stream';
 import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib';
-import { isNeverAllowedMetadataAddress, isPublicNetworkAddress } from '@deft/mcp';
+import { isNeverAllowedMetadataAddress, isPublicNetworkAddress, normalizeMappedIPv4 } from '@deft/mcp';
 
 export const PUBLIC_FETCH_MAX_REDIRECTS = 3;
 const ALLOWED_PORTS = new Set([80, 443]);
@@ -58,7 +58,8 @@ export const publicFetchDeps: PublicFetchDeps = {
 
 export type PublicFetchOptions = { maxBytes: number; timeoutMs: number; accept: string; userAgent: string };
 
-export function isPublicFetchAddress(address: string): boolean {
+export function isPublicFetchAddress(rawAddress: string): boolean {
+  const address = normalizeMappedIPv4(rawAddress);
   const family = isIP(address);
   if (family === 0 || address.includes('%')) return false;
   if (isNeverAllowedMetadataAddress(address)) return false;
