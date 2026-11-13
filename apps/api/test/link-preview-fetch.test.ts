@@ -104,7 +104,29 @@ test('a public page still previews through a pinned connection', async () => {
   assert.equal(await fetchLinkPreview('http://pub.test/json'), null);
 });
 
+test('metadata parsing respects quoting and attribute names', () => {
+  const parse = (head: string) => extractLinkMetadata(`<html><head>${head}</head></html>`, 'http://pub.test/a/b');
+  assert.equal(parse('<meta property="og:title" content="A > B < C">')?.title, 'A > B < C');
+  assert.equal(parse(`<meta data-v1="content='Wrong'" property="og:title" content="Right">`)?.title, 'Right');
+  assert.equal(parse('<meta x1property="other" property="og:title" content="Right">')?.title, 'Right');
+  assert.equal(parse(`<meta data-x="${'z'.repeat(5000)}" property="og:title" content="Long">`)?.title, 'Long');
+  assert.equal(parse(`<title>${'t'.repeat(5000)}</title>`)?.title, 't'.repeat(5000));
+  assert.equal(parse("<META CONTENT='D' NAME='Description'>")?.description, 'D');
+  assert.equal(parse('<link href="/i.png" rel="shortcut icon"><title>T</title>')?.favicon, 'http://pub.test/i.png');
+});
+
 test('metadata parsing stays fast on pathological markup', () => {
+  const tags = `<meta ${'a'.repeat(4080)}>`.repeat(64) + `<meta ${'a1 '.repeat(1360)}>`.repeat(64);
+  const quotes = '<meta a="'.repeat(20_000);
+  for (let warm = 0; warm < 3; warm += 1) extractLinkMetadata(tags.slice(0, 50_000), 'http://pub.test/page');
+  for (const html of [tags, quotes]) {
+    const started = Date.now();
+    extractLinkMetadata(html, 'http://pub.test/page');
+    assert.ok(Date.now() - started < 100, `took ${Date.now() - started} ms`);
+  }
+});
+
+test('metadata parsing stays linear on unterminated tags', () => {
   const html = '<title>T</title>' + '<meta a'.repeat(10_000) + '<link href'.repeat(10_000);
   const started = Date.now();
   assert.equal(extractLinkMetadata(html, 'http://pub.test/page')?.title, 'T');

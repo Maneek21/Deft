@@ -11,34 +11,77 @@ export type LinkPreview = {
 
 const LINK_PREVIEW_MAX_BYTES = 512 * 1024;
 
-// Tag scanners stop at the next '<' or '>' and attribute values are bounded,
-// so parsing work stays linear in the (capped) document size.
-const TAG_PATTERN = /<(meta|link)\b([^<>]{0,4096})>/gi;
-const ATTR_PATTERN = /([a-z:_-]{1,64})\s*=\s*(?:"([^"]{0,4096})"|'([^']{0,4096})')/gi;
+type Tag = { tag: string; attrs: Record<string, string> };
 
-function tagAttributes(html: string): Array<{ tag: string; attrs: Record<string, string> }> {
-  const tags: Array<{ tag: string; attrs: Record<string, string> }> = [];
-  for (const match of html.matchAll(TAG_PATTERN)) {
-    const attrs: Record<string, string> = {};
-    for (const attr of match[2]!.matchAll(ATTR_PATTERN)) {
-      const name = attr[1]!.toLowerCase();
-      if (!(name in attrs)) attrs[name] = attr[2] ?? attr[3] ?? '';
+const isSpace = (code: number) => code === 32 || (code >= 9 && code <= 13);
+
+// Single-pass tokenizer for <meta> and <link> tags: quoted values may contain
+// '<' or '>', every character is visited a bounded number of times, and
+// parsing time stays linear in the (capped) document size.
+function scanTags(html: string, lower: string): Tag[] {
+  const tags: Tag[] = [];
+  const len = html.length;
+  let i = lower.indexOf('<');
+  while (i !== -1) {
+    const name = lower.startsWith('meta', i + 1) ? 'meta' : lower.startsWith('link', i + 1) ? 'link' : null;
+    const after = i + 1 + (name?.length ?? 0);
+    if (!name || !(after >= len || isSpace(html.charCodeAt(after)) || html[after] === '/' || html[after] === '>')) {
+      i = lower.indexOf('<', i + 1);
+      continue;
     }
-    tags.push({ tag: match[1]!.toLowerCase(), attrs });
+    const attrs: Record<string, string> = {};
+    let j = after;
+    while (j < len && html[j] !== '>') {
+      if (isSpace(html.charCodeAt(j)) || html[j] === '/') { j += 1; continue; }
+      let k = j;
+      while (k < len && !isSpace(html.charCodeAt(k)) && html[k] !== '/' && html[k] !== '>' && (html[k] !== '=' || k === j)) k += 1;
+      const attrName = lower.slice(j, k);
+      j = k;
+      while (j < len && isSpace(html.charCodeAt(j))) j += 1;
+      let value = '';
+      if (html[j] === '=') {
+        j += 1;
+        while (j < len && isSpace(html.charCodeAt(j))) j += 1;
+        const quote = html[j];
+        if (quote === '"' || quote === "'") {
+          const close = html.indexOf(quote, j + 1);
+          const stop = close === -1 ? len : close;
+          value = html.slice(j + 1, stop);
+          j = stop + 1;
+        } else {
+          k = j;
+          while (k < len && !isSpace(html.charCodeAt(k)) && html[k] !== '>') k += 1;
+          value = html.slice(j, k);
+          j = k;
+        }
+      }
+      if (attrName && !(attrName in attrs)) attrs[attrName] = value;
+    }
+    tags.push({ tag: name, attrs });
+    i = j >= len ? -1 : lower.indexOf('<', j + 1);
   }
   return tags;
 }
 
+function titleText(html: string, lower: string): string | null {
+  const open = lower.indexOf('<title');
+  if (open === -1) return null;
+  const start = html.indexOf('>', open);
+  const end = start === -1 ? -1 : lower.indexOf('</title', start);
+  return end === -1 ? null : html.slice(start + 1, end).trim() || null;
+}
+
 /** Parse preview metadata from an HTML document. */
 export function extractLinkMetadata(html: string, url: string): LinkPreview | null {
-  const tags = tagAttributes(html);
+  const lower = html.toLowerCase();
+  const tags = scanTags(html, lower);
   const metaContent = (key: 'property' | 'name', value: string): string | null => {
     const found = tags.find((t) => t.tag === 'meta' && t.attrs[key]?.toLowerCase() === value && t.attrs.content);
     return found?.attrs.content || null;
   };
   const getOg = (property: string) => metaContent('property', `og:${property}`);
 
-  const titleTag = html.match(/<title[^<>]{0,1024}>([^<]{0,4096})<\/title>/i)?.[1] || null;
+  const titleTag = titleText(html, lower);
 
   const iconTag = tags.find((t) => t.tag === 'link' && /^(?:shortcut )?icon$/i.test(t.attrs.rel ?? '') && t.attrs.href);
   let favicon = iconTag?.attrs.href || null;
