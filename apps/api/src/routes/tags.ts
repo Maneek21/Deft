@@ -273,13 +273,13 @@ tagRoutes.get('/:id/entities', async (c) => {
   const LIST_LIMIT = 100;
   const PAGE_SIZE = 200;
   const MAX_SCAN = 2000;
-  let cursor: { ts: string; id: string } | null = null;
+  const cursor: { current: { ts: string; id: string } | null } = { current: null };
   const visibleRows: Array<typeof entityTags.$inferSelect> = [];
   const taskMap = new Map<string, { title: string; number: number; prefix: string; status: string }>();
   const messageMap = new Map<string, { content: string; user_name: string; space_id: string }>();
   const noteMap = new Map<string, { title: string }>();
   for (let scanned = 0; visibleRows.length < LIST_LIMIT && scanned < MAX_SCAN; scanned += PAGE_SIZE) {
-    const after: { ts: string; id: string } | null = cursor;
+    const after = cursor.current;
     const page = await db.select({ ...getTableColumns(entityTags), cursor_ts: sql<string>`${entityTags.created_at}::text` }).from(entityTags)
       .where(and(
         eq(entityTags.tag_id, tagId),
@@ -291,7 +291,7 @@ tagRoutes.get('/:id/entities', async (c) => {
       .orderBy(desc(entityTags.created_at), desc(entityTags.id))
       .limit(PAGE_SIZE);
     if (page.length === 0) break;
-    cursor = { ts: page[page.length - 1]!.cursor_ts, id: page[page.length - 1]!.id };
+    cursor.current = { ts: page[page.length - 1]!.cursor_ts, id: page[page.length - 1]!.id };
     const resolved = await resolveVisibleTagEntities(page, user);
     for (const [id, v] of resolved.taskMap) taskMap.set(id, v);
     for (const [id, v] of resolved.messageMap) messageMap.set(id, v);
