@@ -96,24 +96,32 @@ const backslash = String.fromCharCode(92);
 const newline = String.fromCharCode(10);
 const standupDraft = (items: Array<{ text: string; source_ids?: string[] }>) => JSON.stringify({ done: [], in_progress: items, blocked: [] });
 
-const nativeLinks = [
+const linkConstructs = [
   '[task](/tasks?task=invented "details")',
   '[task](</tasks?task=invented>)',
+  '[spec](https://example.com/spec)',
   `See [task][1]${newline}[1]: /tasks?task=invented`,
+  `See [task][r]${newline}${newline}> [r]: &#47;tasks?task=invented`,
+  `- [r]: /tasks`,
   '[task](&#47;tasks?task=invented)',
-  '[task](&#x2F;tasks?task=invented)',
-  '[task](&sol;tasks?task=invented)',
-  '[task](https&colon;//workspace.test/tasks?task=invented)',
-  '[task](&unknownentity;tasks)',
+  '&lsqb;task&rsqb;&lpar;/tasks&rpar;',
+  '&#91;task&#93;&#40;/tasks&#41;',
+  '<https://workspace.example/tasks?task=invented>',
+  '&lt;https://workspace.example/tasks&gt;',
+  '<www.example.com>',
+  'Open https://workspace.example/tasks?task=invented',
+  '<a href="/tasks">task</a>',
+  '<img src="https://example.com/x.png">',
+  '[task](https://workspace.example/a(b)/../tasks?task=invented)',
   `[task](${backslash}/tasks?task=invented)`,
 ];
-for (const link of nativeLinks) {
-  test(`grounded parser rejects the native link ${JSON.stringify(link)}`, () => {
+for (const link of linkConstructs) {
+  test(`grounded parser rejects the link construct ${JSON.stringify(link)}`, () => {
     assert.throws(() => parseGroundedDraft(standupDraft([{ text: link, source_ids: ['task:1'] }]), standupDraftSchema, sourceIds), /link/i);
   });
 }
 
-test('grounded parser rejects a native link that appears only after JSON decoding', () => {
+test('grounded parser rejects a link that appears only after JSON decoding', () => {
   const raw = `{"in_progress":[{"text":"Review [task](${backslash}u002ftasks?task=invented)","source_ids":["task:1"]}]}`;
   assert.ok(!raw.includes('](/tasks'), 'the serialized reply carries no plain link');
   assert.throws(() => parseGroundedDraft(raw, standupDraftSchema, sourceIds), /link/i);
@@ -121,23 +129,25 @@ test('grounded parser rejects a native link that appears only after JSON decodin
 
 for (const claim of [
   'Project lead approval is required before shipping MKT-1.',
-  'We need sign-off from Lina before launch.',
-  'MKT-1 is awaiting approval.',
-  'The account manager must approve the agenda.',
+  'Approval from Dr. Smith is required.',
+  `Approval:${newline}Required before launch.`,
+  'The release must be signed off by Lina.',
+  'Lina will sign off on the release.',
+  'Appr&#111;val is required before launch.',
+  'Ana approved the launch plan.',
   'No approval is required for MKT-1.',
 ]) {
-  test(`grounded parser rejects any stated approval requirement: ${claim}`, () => {
+  test(`grounded parser rejects an item that mentions approval: ${JSON.stringify(claim)}`, () => {
     assert.throws(() => parseGroundedDraft(standupDraft([{ text: claim, source_ids: ['task:1'] }]), standupDraftSchema, sourceIds), /approval/i);
   });
 }
 
-test('grounded parser keeps plain progress, an approval mentioned without a requirement, and an external link', () => {
+test('grounded parser keeps plain cited progress, including brackets and entities that form no link', () => {
   const draft = parseGroundedDraft(standupDraft([
     { text: 'MKT-1 is in progress with Lina.', source_ids: ['task:1'] },
-    { text: 'Ana approved the launch plan.', source_ids: ['message:2'] },
-    { text: 'MKT-1 spec: [doc](https://example.com/spec)', source_ids: ['task:1'] },
+    { text: '[Draft] launch notes &amp; checklist are 80% done (2 of 3).', source_ids: ['message:2'] },
   ]), standupDraftSchema, sourceIds);
-  assert.equal(draft.in_progress.length, 3);
+  assert.equal(draft.in_progress.length, 2);
 });
 
 test('grounded parser drops uncited items before the section caps', () => {

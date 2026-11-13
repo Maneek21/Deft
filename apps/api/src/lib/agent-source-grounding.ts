@@ -79,12 +79,18 @@ export function hasUnverifiedApprovalRoles(text: string): boolean {
   ));
 }
 
-const APPROVAL_TERM = /\b(?:approve[sd]?|approving|approvals?|approvers?|sign[ -]?offs?|signs?\s+off)\b/iu;
-const REQUIREMENT_TERM = /\b(?:require[sd]?|requiring|requirements?|needs?|needed|must|mandatory|necessary|pending|awaiting|waiting)\b/iu;
+/**
+ * A conservative check: drafts that mention approvals or sign-off use the
+ * evidence-only form. It matches the listed words only (approv*, sign-off,
+ * sign off, signed off); it is not a guarantee against paraphrase.
+ */
+export function mentionsApproval(text: string): boolean {
+  return /\b(?:approv\w*|sign[ -]?offs?|signs?\s+off|signed\s+off|signing\s+off)\b/iu.test(text);
+}
 
-/** Any sentence that pairs an approval or sign-off word with a requirement word (whole words). */
-export function statesApprovalRequirement(text: string): boolean {
-  return text.split(/(?<=[.!?])\s+|\n+/u).some(sentence => APPROVAL_TERM.test(sentence) && REQUIREMENT_TERM.test(sentence));
+/** Any link construct a Markdown or HTML renderer could turn into a link, whatever its target. */
+export function containsLinkConstruct(text: string): boolean {
+  return /\]\s*[([]|\[[^\]\n]*\]\s*:|<\s*(?:[a-z][a-z0-9+.-]*:|www\.|a\b|img\b)|\b(?:https?|ftp|mailto):|\bwww\./iu.test(text);
 }
 
 /** The string values of a (possibly fenced) JSON reply, one per line; the text itself if it is not JSON. */
@@ -104,35 +110,20 @@ export function decodedJsonText(text: string): string {
   }
 }
 
-const NAMED_URL_ENTITIES: Record<string, string> = {
-  amp: '&', sol: '/', bsol: '\\', colon: ':', quest: '?', num: '#', period: '.', percnt: '%', equals: '=',
-  commat: '@', lowbar: '_', hyphen: '-', dash: '-', excl: '!', plus: '+', comma: ',', semi: ';',
-  lpar: '(', rpar: ')', lsqb: '[', rsqb: ']', lbrack: '[', rbrack: ']', tilde: '~', apos: "'", quot: '"',
+// Every HTML5 name for the characters that form links, plus common URL punctuation.
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: '&', lt: '<', gt: '>', lsqb: '[', lbrack: '[', rsqb: ']', rbrack: ']', lpar: '(', rpar: ')',
+  colon: ':', sol: '/', bsol: '\\', quest: '?', num: '#', period: '.', percnt: '%', equals: '=',
+  commat: '@', excl: '!', apos: "'", quot: '"', nbsp: ' ',
 };
 
-/** Markdown's reading of a link destination; null when an entity is left that this cannot decode. */
-function decodeMarkdownDestination(destination: string): string | null {
-  const decoded = destination
-    .replace(/&#x([0-9a-f]{1,6});/giu, (_, hex: string) => String.fromCodePoint(Math.min(parseInt(hex, 16), 0x10ffff)))
-    .replace(/&#(\d{1,7});/gu, (_, dec: string) => String.fromCodePoint(Math.min(Number(dec), 0x10ffff)))
-    .replace(/&([a-z][a-z0-9]*);/giu, (entity, name: string) => NAMED_URL_ENTITIES[name.toLowerCase()] ?? entity)
-    .replace(/\\([!-/:-@[-`{-~])/gu, '$1');
-  return /&[a-z][a-z0-9]*;/iu.test(decoded) ? null : decoded;
-}
-
-/** Any Markdown link or reference definition whose decoded destination is (or may be) a native Deft path. */
-export function hasNativeLinkDestination(text: string): boolean {
-  const destinations = [
-    ...[...text.matchAll(/\]\(\s*<([^>\n]*)>/gu)].map(match => match[1]!),
-    ...[...text.matchAll(/\]\(\s*([^\s)<]+)/gu)].map(match => match[1]!),
-    ...[...text.matchAll(/^\s*\[[^\]\n]+\]:\s*<?([^\s>]+)/gmu)].map(match => match[1]!),
-  ];
-  return destinations.some((destination) => {
-    try {
-      const decoded = decodeMarkdownDestination(destination);
-      if (decoded === null) return true;
-      const url = new URL(decoded.trim(), 'https://deft.invalid');
-      return /^\/(modules|tasks|knowledge|calendar|chat|notes)(\/|\?|#|$)/u.test(`${url.pathname}${url.search}${url.hash}`);
-    } catch { return false; }
+/** Decode HTML character references once, as a renderer would; unknown names stay as written. */
+export function decodeHtmlEntities(text: string): string {
+  return text.replace(/&(#x[0-9a-f]{1,6}|#\d{1,7}|[a-z][a-z0-9]*);/giu, (entity, body: string) => {
+    if (body[0] === '#') {
+      const code = body[1] === 'x' || body[1] === 'X' ? parseInt(body.slice(2), 16) : Number(body.slice(1));
+      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : entity;
+    }
+    return NAMED_ENTITIES[body.toLowerCase()] ?? entity;
   });
 }

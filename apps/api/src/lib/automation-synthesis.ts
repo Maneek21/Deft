@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { hasNativeLinkDestination, statesApprovalRequirement } from './agent-source-grounding.js';
+import { containsLinkConstruct, decodeHtmlEntities, mentionsApproval } from './agent-source-grounding.js';
 
 const evidenceItemSchema = z.object({
   text: z.string().trim().min(1).max(500),
@@ -23,7 +23,7 @@ export type MeetingPrepDraft = z.infer<typeof meetingPrepDraftSchema>;
 
 /**
  * Parse a model draft against the supplied evidence ids. On the decoded item
- * text, a native link or a stated approval or sign-off requirement in any item
+ * text, any link construct or any mention of approval or sign-off in any item
  * rejects the whole draft, so the caller uses its evidence-only form. Items
  * that cite no evidence are dropped before the section caps apply; an unknown
  * source id rejects the draft.
@@ -42,8 +42,9 @@ export function parseGroundedDraft<T>(
     for (const item of value) {
       const itemText = (item as { text?: unknown } | null)?.text;
       if (typeof itemText !== 'string') continue;
-      if (hasNativeLinkDestination(itemText)) throw new Error('Draft contains an unverified native link');
-      if (statesApprovalRequirement(itemText)) throw new Error('Draft states an approval requirement');
+      const shown = decodeHtmlEntities(itemText);
+      if (containsLinkConstruct(shown)) throw new Error('Draft contains a link');
+      if (mentionsApproval(shown)) throw new Error('Draft mentions an approval');
     }
     const cited = value.filter((item) => {
       const ids = (item as { source_ids?: unknown } | null)?.source_ids;

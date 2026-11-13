@@ -21,7 +21,7 @@ import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_READ_TOOLS } from './agent-tools.js
 import { executeToolCall } from './agent-context.js';
 import { isReadOnlyAgentRequest } from './agent-request-policy.js';
 import { agentToolFailure } from './agent-tool-result.js';
-import { hasUnverifiedNativeLinks, hasUnresolvedRecipient, requiresWorkspaceEvidence, hasUnverifiedApprovalRoles, statesApprovalRequirement, decodedJsonText, requiresRuntimeActionEvidence, hasRuntimeActionEvidence } from './agent-source-grounding.js';
+import { hasUnverifiedNativeLinks, hasUnresolvedRecipient, requiresWorkspaceEvidence, hasUnverifiedApprovalRoles, containsLinkConstruct, decodedJsonText, decodeHtmlEntities, mentionsApproval, requiresRuntimeActionEvidence, hasRuntimeActionEvidence } from './agent-source-grounding.js';
 import {
   createModuleNextReadsResolver,
   nativeAgentToolResult,
@@ -708,10 +708,11 @@ export async function runAgentQuery(params: {
 
     // A no-tools run cannot read records, so only its content is checked;
     // a failed check goes to the caller's fallback, not a tool retry.
-    // Evidence-only drafts do not restate approval requirements: the caller's
-    // evidence-only form quotes them instead.
+    // Links and approval mentions go to the caller's evidence-only form,
+    // which quotes the evidence instead.
+    const shownText = noTools ? decodeHtmlEntities(decodedJsonText(newText)) : '';
     if (noTools && (hasUnverifiedNativeLinks(newText, allCitations)
-      || statesApprovalRequirement(decodedJsonText(newText)))) {
+      || containsLinkConstruct(shownText) || mentionsApproval(shownText))) {
       throw new Error('The no-tools reply could not be verified against the supplied evidence');
     }
 
