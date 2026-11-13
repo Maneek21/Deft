@@ -16,7 +16,13 @@ test('IPv4-mapped IPv6 addresses are classified by their IPv4 address', () => {
     assert.equal(isPublicFetchAddress(address), false, address);
     assert.notEqual(validateMcpHttpUrl(new URL(`https://[${address}]/mcp`)), null, address);
   }
-  for (const [mapped, v4] of [['::ffff:8.8.8.8', '8.8.8.8'], ['::ffff:808:808', '8.8.8.8'], ['::ffff:10.0.0.1', '10.0.0.1']]) {
+  assert.equal(isPublicFetchAddress('::ffff:8.8.8.8%1'), false);
+  assert.equal(isPublicFetchAddress('::ffff:808:808%eth0'), false);
+  const pairs = [
+    ['::ffff:8.8.8.8', '8.8.8.8'], ['::ffff:808:808', '8.8.8.8'], ['::ffff:10.0.0.1', '10.0.0.1'],
+    ['0:0:0:0:0:FFFF:0808:0808', '8.8.8.8'], ['0000:0000:0000:0000:0000:ffff:a9fe:a9fe', '169.254.169.254'],
+  ];
+  for (const [mapped, v4] of pairs) {
     assert.equal(isPublicNetworkAddress(mapped!), isPublicNetworkAddress(v4!), mapped);
     assert.equal(isPublicFetchAddress(mapped!), isPublicFetchAddress(v4!), mapped);
     assert.equal(isAllowedSelfHostedPrivateAddress(mapped!), isAllowedSelfHostedPrivateAddress(v4!), mapped);

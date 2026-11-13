@@ -76,9 +76,10 @@ function ipv6Bytes(address: string): number[] | null {
 }
 
 /** An IPv4-mapped IPv6 address (::ffff:a.b.c.d or ::ffff:xxxx:xxxx) is
- * classified by its IPv4 address; any other input is returned unchanged. */
+ * classified by its IPv4 address; any other input, including a scoped
+ * address, is returned unchanged. */
 export function normalizeMappedIPv4(address: string): string {
-  if (isIP(address) !== 6) return address;
+  if (address.includes("%") || isIP(address) !== 6) return address;
   const bytes = ipv6Bytes(address);
   if (!bytes || !bytes.slice(0, 10).every((byte) => byte === 0) || bytes[10] !== 0xff || bytes[11] !== 0xff) {
     return address;
