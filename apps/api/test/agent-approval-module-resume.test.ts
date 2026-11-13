@@ -27,6 +27,7 @@ const canRun = Boolean(TEST_DATABASE_URL);
 const suffix = randomUUID().replaceAll('-', '').slice(0, 12);
 const ORG_ID = `module-resume-org-${suffix}`;
 const OWNER_ID = `module-resume-owner-${suffix}`;
+const MEMBER_ID = `module-resume-member-${suffix}`;
 
 let client: pg.Client | null = null;
 let manifestDigest = '';
@@ -45,6 +46,14 @@ before(async () => {
     `INSERT INTO org_members (id, org_id, user_id, role, is_active) VALUES ($1, $2, $3, 'owner', true)`,
     [`module-resume-member-${suffix}`, ORG_ID, OWNER_ID],
   );
+  await client.query(
+    `INSERT INTO users (id, email, name, kind, is_agent, email_verified) VALUES ($1, $2, 'Module Resume Member', 'human', false, true)`,
+    [MEMBER_ID, `module-resume-member-${suffix}@test.local`],
+  );
+  await client.query(
+    `INSERT INTO org_members (id, org_id, user_id, role, is_active) VALUES ($1, $2, $3, 'member', true)`,
+    [`module-resume-membership-${suffix}`, ORG_ID, MEMBER_ID],
+  );
   const actor = humanModuleActor({ orgId: ORG_ID, userId: OWNER_ID, role: 'owner' });
   const installed = await installBundledModule(actor, 'contacts');
   manifestDigest = installed.manifest_digest;
@@ -59,7 +68,7 @@ after(async () => {
       'module_installations', 'audit_log', 'job_queue', 'org_members']) {
       await client.query(`DELETE FROM ${table} WHERE org_id = $1`, [ORG_ID]).catch(() => undefined);
     }
-    await client.query('DELETE FROM users WHERE id = $1', [OWNER_ID]).catch(() => undefined);
+    await client.query('DELETE FROM users WHERE id = ANY($1::text[])', [[OWNER_ID, MEMBER_ID]]).catch(() => undefined);
     await client.query('DELETE FROM orgs WHERE id = $1', [ORG_ID]).catch(() => undefined);
     await client.end();
   }
@@ -78,12 +87,12 @@ function createParams(name: string) {
 }
 
 /** A pending Defty module proposal with its approval Attention item. */
-async function pendingCreate(name: string): Promise<string> {
+async function pendingCreate(name: string, requesterId = OWNER_ID): Promise<string> {
   const [row] = (await client!.query(
     `INSERT INTO agent_actions (id, org_id, user_id, source, action, params, approval_tier, approval_status)
      VALUES (gen_random_uuid()::text, $1, $2, 'mention', 'module_record_create', $3::jsonb, 'quick', 'pending')
      RETURNING *`,
-    [ORG_ID, OWNER_ID, JSON.stringify(createParams(name))],
+    [ORG_ID, requesterId, JSON.stringify(createParams(name))],
   )).rows;
   await syncApprovalToAttention(row, { deliver: false });
   return row.id as string;
@@ -192,5 +201,26 @@ test('module-resume: a row whose executor still holds its lease is skipped', { s
     assert.equal(await recordsNamed(name), 0);
   } finally {
     await holder.end();
+  }
+});
+
+test('module-resume: a decision recorded by an approver who no longer reviews the action still completes once', { skip: !canRun }, async () => {
+  // The member is now the action's only reviewer; the owner's recorded
+  // approval is carried out, whether or not the mutation had committed.
+  for (const committed of [false, true]) {
+    const name = `Recorded ${committed ? 'committed' : 'pending'} ${suffix}`;
+    const actionId = await pendingCreate(name, MEMBER_ID);
+    if (committed) {
+      const executed = await executeAction(actionId, 'module_record_create', createParams(name), ORG_ID, MEMBER_ID);
+      assert.equal(executed.success, true, executed.error);
+    }
+    await leaveClaimed(actionId, name);
+    await recoverNow();
+    const state = await settledState(actionId);
+    assert.equal(state.action.approval_status, 'approved');
+    assert.equal(state.action.executed, true);
+    assert.equal(state.action.error, null);
+    assert.equal(state.action.approved_by_user_id, OWNER_ID);
+    assert.equal(await recordsNamed(name), 1);
   }
 });

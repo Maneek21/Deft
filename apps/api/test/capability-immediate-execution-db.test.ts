@@ -59,7 +59,7 @@ before(async () => {
   await client.query(
     `INSERT INTO users (id, email, name, kind, is_agent, email_verified)
      VALUES
-       ($1, $2, 'Capability Immediate User', 'human', false, true),
+       ($1, $2, 'Capability Immediate User', 'agent', true, true),
        ($3, $4, 'Capability Immediate Approver', 'human', false, true)`,
     [
       USER_ID,

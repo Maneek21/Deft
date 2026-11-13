@@ -143,17 +143,15 @@ test('W2a3-2c: legacy MCP action status answers only the key owner\'s own action
   assert.equal((await own.json() as { id: string }).id, actionId);
 });
 
-test('W2a3-2d: human MCP approval tools list and open approvals for the requester and owners/admins only', async (t) => {
+test('W2a3-2d: human MCP approval tools list and open an active member\'s approval for that member only', async (t) => {
   if (unavailable) return t.skip(unavailable);
   const { humanApprovalList, humanApprovalGet } = await import('../src/lib/mcp-tools/human.js');
   const ctx = (viewer: string) => ({ org_id: orgId, user_id: viewer, role: roles[viewer]!, scopes: ['read:workspace', 'write:workspace'] });
   const listed = async (viewer: string) => JSON.stringify(await humanApprovalList({ status: 'pending' }, ctx(viewer)));
   const got = async (viewer: string) => (await humanApprovalGet({ action_id: actionId }, ctx(viewer))).isError !== true;
-  for (const viewer of [ids.requester, ids.admin]) {
-    assert.equal(has(await listed(viewer), actionId), true);
-    assert.equal(await got(viewer), true);
-  }
-  for (const viewer of [ids.approver, ids.peer, ids.guestApprover]) {
+  assert.equal(has(await listed(ids.requester), actionId), true);
+  assert.equal(await got(ids.requester), true);
+  for (const viewer of [ids.admin, ids.approver, ids.peer, ids.guestApprover]) {
     assert.equal(has(await listed(viewer), actionId), false);
     assert.equal(await got(viewer), false);
   }
