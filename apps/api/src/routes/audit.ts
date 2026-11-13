@@ -5,10 +5,38 @@ import { eq, and, desc, inArray, notInArray } from 'drizzle-orm';
 import type { AuthUser } from '../middleware/auth.js';
 import { assertModuleAuditReadAccess, humanModuleActor } from '../lib/module-service.js';
 import { isModuleError } from '../lib/module-errors.js';
+import { OrgMembershipError, requireOrgAdminOrOwner } from '../lib/org-membership.js';
+import { loadMessagesForMember } from '../lib/space-membership.js';
 
 export const auditRoutes = new Hono();
 
 const MODULE_AUDIT_ENTITY_TYPES = ['module_installation', 'module_record'] as const;
+
+function pickFields(value: unknown, keys: readonly string[]): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  return Object.fromEntries(keys.filter((key) => Object.hasOwn(record, key)).map((key) => [key, record[key]]));
+}
+
+/**
+ * A message entry keeps its text only when the viewer can read the message's
+ * space. Otherwise the entry keeps who, when, the action, the message id and
+ * space id, and drops everything else from its states and metadata.
+ */
+async function projectMessageEntries<T extends typeof auditLog.$inferSelect>(events: T[], user: AuthUser) {
+  const messageIds = events.filter((event) => event.entity_type === 'message').map((event) => event.entity_id);
+  const readable = await loadMessagesForMember(messageIds, user.id, user.org_id);
+  return events.map((event) => {
+    if (event.entity_type !== 'message' || readable.has(event.entity_id)) return event;
+    return {
+      ...event,
+      before_state: pickFields(event.before_state, ['message_id', 'space_id']),
+      after_state: pickFields(event.after_state, ['message_id', 'space_id']),
+      metadata: pickFields(event.metadata, ['action_id']),
+      content_omitted: true,
+    };
+  });
+}
 
 function safeModuleRecordMetadata(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
@@ -50,6 +78,19 @@ auditRoutes.get('/', async (c) => {
     } catch (error) {
       if (isModuleError(error)) {
         return c.json({ error: error.message, code: error.code }, error.status);
+      }
+      throw error;
+    }
+  }
+
+  // Browsing the workspace log is for active owners and admins. The targeted
+  // module path above carries its own access rule.
+  if (!isModuleEntity) {
+    try {
+      await requireOrgAdminOrOwner(user.org_id, user.id);
+    } catch (error) {
+      if (error instanceof OrgMembershipError) {
+        return c.json({ error: error.message, code: error.code }, error.status as 403);
       }
       throw error;
     }
@@ -121,5 +162,5 @@ auditRoutes.get('/', async (c) => {
     })));
   }
 
-  return c.json(events);
+  return c.json(await projectMessageEntries(events, user));
 });
