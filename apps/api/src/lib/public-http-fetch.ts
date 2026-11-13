@@ -107,12 +107,15 @@ function untilDeadline<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> 
   });
 }
 
-async function resolvePinned(url: URL, signal: AbortSignal): Promise<{ address: string; family: 4 | 6; literal: boolean }> {
+type Pinned = { address: string; family: 4 | 6; literal: boolean };
+
+/** Every validated address, in resolver order (at most four are tried). */
+async function resolvePinned(url: URL, signal: AbortSignal): Promise<Pinned[]> {
   const hostname = bareHostname(url);
   const literalFamily = isIP(hostname);
   if (literalFamily) {
     if (!isPublicFetchAddress(hostname)) throw unreachable();
-    return { address: hostname, family: literalFamily as 4 | 6, literal: true };
+    return [{ address: hostname, family: literalFamily as 4 | 6, literal: true }];
   }
   if (pendingLookups >= MAX_PENDING_LOOKUPS) throw unreachable();
   pendingLookups += 1;
@@ -127,13 +130,12 @@ async function resolvePinned(url: URL, signal: AbortSignal): Promise<{ address: 
     throw err instanceof PublicFetchError ? err : unreachable();
   }
   if (!answers.length || !answers.every((entry) => isPublicFetchAddress(entry.address))) throw unreachable();
-  const first = answers[0]!;
-  return { address: first.address, family: isIP(first.address) as 4 | 6, literal: false };
+  return answers.slice(0, 4).map((entry) => ({ address: entry.address, family: isIP(entry.address) as 4 | 6, literal: false }));
 }
 
 function requestOnce(
   url: URL,
-  pinned: { address: string; family: 4 | 6; literal: boolean },
+  pinned: Pinned,
   options: PublicFetchOptions,
   signal: AbortSignal,
 ): Promise<IncomingMessage> {
@@ -204,9 +206,11 @@ function readBody(res: IncomingMessage, maxBytes: number, signal: AbortSignal): 
       if (settled) return;
       settled = true;
       signal.removeEventListener('abort', onAbort);
+      // Close the connection in every case: a decoder can end before the
+      // HTTP body does, and nothing after this point is read or counted.
+      res.destroy();
+      decoder?.destroy();
       if (err) {
-        res.destroy();
-        decoder?.destroy();
         reject(err);
       } else {
         resolve(Buffer.concat(chunks).toString('utf8'));
@@ -251,8 +255,16 @@ export async function fetchPublicHttpText(
   const signal = AbortSignal.timeout(options.timeoutMs);
   let url = parseTarget(rawUrl);
   for (let hop = 0; ; hop += 1) {
-    const pinned = await resolvePinned(url, signal);
-    const res = await requestOnce(url, pinned, options, signal);
+    let res: IncomingMessage | undefined;
+    for (const pinned of await resolvePinned(url, signal)) {
+      try {
+        res = await requestOnce(url, pinned, options, signal);
+        break;
+      } catch (err) {
+        if (!(err instanceof PublicFetchError) || err.kind !== 'unreachable') throw err;
+      }
+    }
+    if (!res) throw unreachable();
     const status = res.statusCode ?? 0;
     if (REDIRECT_STATUSES.has(status)) {
       const location = res.headers.location;

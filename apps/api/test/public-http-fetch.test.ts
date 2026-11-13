@@ -61,9 +61,14 @@ function route(req: IncomingMessage, res: ServerResponse): void {
       res.setHeader('x-path', path);
       return void res.end(ICS);
     case '/feed': return void res.end(ICS);
+    case '/gzip-then-more':
     case '/big': {
       bigClosedEarly = new Promise((resolve) => res.once('close', () => resolve(!res.writableFinished)));
-      const chunk = Buffer.alloc(64 * 1024, 0x41);
+      if (path === '/gzip-then-more') {
+        res.writeHead(200, { 'content-encoding': 'gzip' });
+        res.write(gzipSync(Buffer.from(ICS)));
+      }
+      const chunk = Buffer.alloc(64 * 1024);
       let sent = 0;
       const pump = (): void => {
         while (sent < 64 * BIG) {
@@ -135,6 +140,7 @@ beforeEach(() => {
     'empty.test': [[]],
     'hang.test': ['hang'],
     'rebind.test': [[{ address: PUBLIC_A, family: 4 }], [{ address: '127.0.0.1', family: 4 }]],
+    'multi.test': [[{ address: PUBLIC_DOWN, family: 4 }, { address: PUBLIC_A, family: 4 }]],
   };
   publicFetchDeps.lookup = async (hostname: string) => {
     lookups.push(hostname);
@@ -229,6 +235,12 @@ test('the connection is pinned to the validated address with the original Host a
   assert.equal(headers.authorization, undefined);
 });
 
+test('validated addresses are tried in order without another lookup', async () => {
+  assert.equal((await fetchText('https://multi.test/feed')).text, ICS);
+  assert.deepEqual(lookups, ['multi.test']);
+  assert.deepEqual(requests.map((r) => r.hostname), [PUBLIC_DOWN, PUBLIC_A]);
+});
+
 test('path and query are sent unchanged and the fragment is dropped', async () => {
   await fetchText('http://pub.test/feed?key=a%0D%0Ab#frag');
   assert.equal(requests[0]!.path, '/feed?key=a%0D%0Ab');
@@ -268,6 +280,8 @@ test('bodies over the cap are aborted while streaming', async () => {
   await refused(fetchText('http://pub.test/double-gzip'), 'bad_encoding');
   await refused(fetchText('http://pub.test/bad-gzip'), 'bad_encoding');
   await refused(fetchText('http://pub.test/truncated'));
+  assert.equal((await fetchText('http://pub.test/gzip-then-more')).text, ICS);
+  assert.equal(await bigClosedEarly, true);
   assert.equal((await fetchText('http://pub.test/gzip-ok')).text, ICS);
   const exact = Buffer.byteLength(ICS);
   assert.equal((await fetchText('http://pub.test/feed', { maxBytes: exact })).text, ICS);
