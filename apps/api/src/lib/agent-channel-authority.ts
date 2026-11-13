@@ -1,5 +1,6 @@
 import { sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { actionRequesterIdSql } from './agent-action-requester.js';
+import { publicSpaceVisibleSql } from './space-visibility.js';
 
 /** Current room authority, resolved from canonical rows rather than event payloads. */
 export function currentEmployeeSpaceAuthoritySql(orgId: SQLWrapper, employeeId: SQLWrapper, spaceId: SQLWrapper): SQL {
@@ -37,7 +38,7 @@ export function currentEmployeeMessageAuthoritySql(orgId: SQLWrapper, employeeId
 export function currentUserSpaceAuthoritySql(orgId: SQLWrapper, userId: SQLWrapper, spaceId: SQLWrapper): SQL {
   return sql`exists (select 1 from spaces reader_space
     where reader_space.id = ${spaceId} and reader_space.org_id = ${orgId} and reader_space.is_archived = false
-      and (reader_space.type = 'public' or exists (select 1 from space_members reader_member
+      and (${publicSpaceVisibleSql(sql`reader_space.type`, sql`reader_space.org_id`, userId)} or exists (select 1 from space_members reader_member
         where reader_member.space_id = reader_space.id and reader_member.user_id = ${userId})))`;
 }
 

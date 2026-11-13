@@ -42,6 +42,7 @@ import { createTaskBundle, type TaskBundleSubtaskInput } from '../task-bundle.js
 import { bulkUpdateTasks, BulkTaskUpdateError, bulkTaskUpdateSchema } from '../task-bulk-update.js';
 import { queryCompactTasks, type CompactTaskQuery } from '../task-compact-query.js';
 import { visibleNoteCondition } from '../note-visibility.js';
+import { publicSpaceVisibleSql } from '../space-visibility.js';
 import { Context } from 'hono';
 import { currentActionReviewerSql } from '../agent-action-review-gate.js';
 import { resolveProjectTargetFromRows } from '../resolve-project-target.js';
@@ -115,18 +116,16 @@ function requireScope(ctx: HumanToolContext, scope: string): ToolResult | null {
 
 async function userCanSeeSpace(ctx: HumanToolContext, spaceId: string): Promise<boolean> {
   const [space] = await db
-    .select({ id: spaces.id, type: spaces.type })
+    .select({ id: spaces.id })
     .from(spaces)
-    .where(and(eq(spaces.id, spaceId), eq(spaces.org_id, ctx.org_id)))
+    .leftJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, ctx.user_id)))
+    .where(and(
+      eq(spaces.id, spaceId),
+      eq(spaces.org_id, ctx.org_id),
+      or(publicSpaceVisibleSql(spaces.type, spaces.org_id, ctx.user_id), sql`${spaceMembers.id} IS NOT NULL`),
+    ))
     .limit(1);
-  if (!space) return false;
-  if (space.type === 'public') return true;
-  const [member] = await db
-    .select({ id: spaceMembers.id })
-    .from(spaceMembers)
-    .where(and(eq(spaceMembers.space_id, spaceId), eq(spaceMembers.user_id, ctx.user_id)))
-    .limit(1);
-  return Boolean(member);
+  return Boolean(space);
 }
 
 async function userIsSpaceMember(ctx: HumanToolContext, spaceId: string): Promise<boolean> {
@@ -899,7 +898,7 @@ async function resolveVisibleSpace(
     LEFT JOIN space_members sm ON sm.space_id = s.id AND sm.user_id = ${ctx.user_id}
     WHERE s.org_id = ${ctx.org_id}
       AND s.is_archived = false
-      AND (s.type = 'public' OR sm.id IS NOT NULL)
+      AND (${publicSpaceVisibleSql(sql`s.type`, sql`s.org_id`, ctx.user_id)} OR sm.id IS NOT NULL)
     ORDER BY s.is_default DESC, s.name ASC
     LIMIT 200
   `);
@@ -1425,7 +1424,7 @@ export async function humanSearch(args: { query?: string; limit?: number }, ctx:
       LEFT JOIN space_members sm ON sm.space_id = s.id AND sm.user_id = ${ctx.user_id}
       WHERE m.org_id = ${ctx.org_id}
         AND m.is_deleted = false
-        AND (s.type = 'public' OR sm.id IS NOT NULL)
+        AND (${publicSpaceVisibleSql(sql`s.type`, sql`s.org_id`, ctx.user_id)} OR sm.id IS NOT NULL)
         AND lower(m.content) LIKE ${pattern}
       ORDER BY m.created_at DESC
       LIMIT ${limit}
@@ -2050,7 +2049,7 @@ export async function humanProjectGet(args: { project_id?: string }, ctx: HumanT
     JOIN spaces s ON s.id = ps.space_id AND s.org_id = ${ctx.org_id}
     LEFT JOIN space_members sm ON sm.space_id = s.id AND sm.user_id = ${ctx.user_id}
     WHERE ps.project_id = ${args.project_id}
-      AND (s.type = 'public' OR sm.id IS NOT NULL)
+      AND (${publicSpaceVisibleSql(sql`s.type`, sql`s.org_id`, ctx.user_id)} OR sm.id IS NOT NULL)
       AND s.is_archived = false
     ORDER BY s.name ASC
   `);
@@ -2070,7 +2069,7 @@ export async function humanSpaceList(args: { query?: string; type?: string; limi
     LEFT JOIN space_members sm_all ON sm_all.space_id = s.id
     WHERE s.org_id = ${ctx.org_id}
       AND s.is_archived = false
-      AND (s.type = 'public' OR sm.id IS NOT NULL)
+      AND (${publicSpaceVisibleSql(sql`s.type`, sql`s.org_id`, ctx.user_id)} OR sm.id IS NOT NULL)
       AND (${args.type ? sql`s.type = ${args.type}` : sql`true`})
       AND (${query ? sql`lower(s.name) LIKE ${`%${query}%`} OR lower(coalesce(s.description, '')) LIKE ${`%${query}%`}` : sql`true`})
     GROUP BY s.id, s.name, s.type, s.description, s.is_default, s.created_at, s.updated_at
@@ -2091,7 +2090,7 @@ export async function humanResolveSpace(args: { query?: string; limit?: number }
     LEFT JOIN space_members sm ON sm.space_id = s.id AND sm.user_id = ${ctx.user_id}
     WHERE s.org_id = ${ctx.org_id}
       AND s.is_archived = false
-      AND (s.type = 'public' OR sm.id IS NOT NULL)
+      AND (${publicSpaceVisibleSql(sql`s.type`, sql`s.org_id`, ctx.user_id)} OR sm.id IS NOT NULL)
     ORDER BY s.is_default DESC, s.name ASC
     LIMIT 200
   `);
@@ -2752,7 +2751,7 @@ export async function humanMessagesRecent(args: HumanMessagesRecentArgs, ctx: Hu
     WHERE m.org_id = ${ctx.org_id}
       AND m.is_deleted = false
       AND s.is_archived = false
-      AND (s.type = 'public' OR sm.id IS NOT NULL)
+      AND (${publicSpaceVisibleSql(sql`s.type`, sql`s.org_id`, ctx.user_id)} OR sm.id IS NOT NULL)
       AND (${spaceResult.space ? sql`m.space_id = ${spaceResult.space.id}` : sql`true`})
       AND (${authorResult.user ? sql`m.user_id = ${authorResult.user.id}` : sql`true`})
       AND (${since instanceof Date ? sql`m.created_at >= ${since}` : sql`true`})
@@ -2881,7 +2880,7 @@ export async function humanAttentionDigest(args: HumanAttentionDigestArgs, ctx: 
       WHERE m.org_id = ${ctx.org_id}
         AND m.is_deleted = false
         AND s.is_archived = false
-        AND (s.type = 'public' OR sm.id IS NOT NULL)
+        AND (${publicSpaceVisibleSql(sql`s.type`, sql`s.org_id`, ctx.user_id)} OR sm.id IS NOT NULL)
         AND m.user_id != ${ctx.user_id}
         AND (m.content ILIKE ${`%${ctx.user_id}%`} OR lower(m.content) LIKE ${mentionPattern})
         AND (${spaceResult.space ? sql`m.space_id = ${spaceResult.space.id}` : sql`true`})
@@ -2979,7 +2978,7 @@ export async function humanMessagesSearch(args: { query?: string; limit?: number
     WHERE m.org_id = ${ctx.org_id}
       AND m.is_deleted = false
       AND lower(m.content) LIKE ${pattern}
-      AND (s.type = 'public' OR sm.id IS NOT NULL)
+      AND (${publicSpaceVisibleSql(sql`s.type`, sql`s.org_id`, ctx.user_id)} OR sm.id IS NOT NULL)
     ORDER BY m.created_at DESC
     LIMIT ${Math.min(Math.max(1, args.limit ?? 20), 50)}
   `);

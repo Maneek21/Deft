@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { z } from 'zod';
 import { and, count, desc, eq, gte, inArray, isNull, lt, or, sql } from 'drizzle-orm';
+import { publicSpaceVisibleSql } from '../lib/space-visibility.js';
 import {
   agentActions,
   agentEmployees,
@@ -243,7 +244,7 @@ async function decorateResourcesForUser(
       and(
         eq(spaces.org_id, orgId),
         inArray(spaces.id, Array.from(new Set(spaceIds))),
-        or(eq(spaces.type, 'public'), sql`${spaceMembers.id} is not null`),
+        or(publicSpaceVisibleSql(spaces.type, spaces.org_id, userId), sql`${spaceMembers.id} is not null`),
       ),
     );
   const visibleSpaceIds = new Set(visibleSpaces.map((space) => space.id));
