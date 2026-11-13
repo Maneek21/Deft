@@ -45,8 +45,8 @@ test('does not resolve email fragments or fuzzy names', () => {
 
 test('flags ambiguous aliases instead of choosing an employee', () => {
   const result = normalizePlainAgentMentions('@Rita take this', [
-    { userId: 'rita-one', name: 'Rita Singh', slug: 'rita-ops' },
-    { userId: 'rita-two', name: 'Rita Shah', slug: 'rita-sales' },
+    { userId: 'rita-one', name: 'Rita', slug: 'rita-ops' },
+    { userId: 'rita-two', name: 'Rita', slug: 'rita-sales' },
   ]);
 
   assert.equal(result.content, '@Rita take this');

@@ -11,69 +11,62 @@ export type PlainAgentMentionResolution = {
   ambiguousAliases: string[];
 };
 
-function escapeRegex(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
+/** A plain mention token: `@` plus a maximal run of these characters. */
+const TOKEN = /^[a-z0-9_-]+$/;
 
+/** The exact handles an agent answers to: its slug, and its display name
+ * when the whole name is one token. */
 function aliasesForAgent(agent: AgentMentionIdentity) {
-  const fullName = agent.name.trim().toLowerCase();
-  const firstName = fullName.split(/\s+/)[0] ?? '';
-  return Array.from(new Set([
-    fullName,
-    firstName,
-    agent.slug.trim().toLowerCase(),
-  ].filter(Boolean)));
+  return Array.from(new Set(
+    [agent.slug, agent.name].map((value) => value.trim().toLowerCase()).filter((value) => TOKEN.test(value)),
+  ));
 }
 
 /**
  * Turn exact, unambiguous plain-text agent handles into the canonical mention
- * marker used by chat. This keeps pasted/typed `@Rita` messages on the same
- * dispatch path as autocomplete selections without introducing fuzzy routing.
+ * marker used by chat. A token resolves only when, case-insensitively, it
+ * equals one agent's slug or one-token display name and no other participant
+ * (another agent, or a `competingTokens` entry) owns the same token; anything
+ * else stays plain text. Explicit mention markers and spans are left as-is.
  */
 export function normalizePlainAgentMentions(
   content: string,
   agents: AgentMentionIdentity[],
+  competingTokens: string[] = [],
 ): PlainAgentMentionResolution {
-  const ownersByAlias = new Map<string, AgentMentionIdentity[]>();
+  const ownersByAlias = new Map<string, Set<string>>();
+  const agentByUserId = new Map<string, AgentMentionIdentity>();
+  const addOwner = (alias: string, owner: string) => {
+    const owners = ownersByAlias.get(alias) ?? new Set<string>();
+    owners.add(owner);
+    ownersByAlias.set(alias, owners);
+  };
   for (const agent of agents) {
-    for (const alias of aliasesForAgent(agent)) {
-      const owners = ownersByAlias.get(alias) ?? [];
-      if (!owners.some((owner) => owner.userId === agent.userId)) owners.push(agent);
-      ownersByAlias.set(alias, owners);
-    }
+    agentByUserId.set(agent.userId, agent);
+    for (const alias of aliasesForAgent(agent)) addOwner(alias, agent.userId);
+  }
+  for (const token of competingTokens) {
+    const alias = token.trim().toLowerCase();
+    if (ownersByAlias.has(alias)) addOwner(alias, `competitor:${alias}`);
   }
 
-  const segments = content.split(/(<span\b[^>]*data-deft-ref-kind[^>]*>[\s\S]*?<\/span>|\[\[deft:(?:person|task|wiki_page):[^\]]+\]\])/gi);
-  let normalized = segments;
+  const segments = content.split(/(<span\b[^>]*(?:data-deft-ref-kind|data-mention-uuid)[^>]*>[\s\S]*?<\/span>|\[\[deft:(?:person|task|wiki_page):[^\]]+\]\]|<@[^>]+>)/gi);
   const resolvedUserIds = new Set<string>();
   const ambiguousAliases = new Set<string>();
-  const aliases = Array.from(ownersByAlias.keys()).sort((a, b) => b.length - a.length);
-
-  for (const alias of aliases) {
-    const aliasPattern = escapeRegex(alias).replace(/\\ /g, '\\s+');
-    const pattern = new RegExp(`(^|[^a-z0-9_])@(${aliasPattern})(?=$|[^a-z0-9_-])`, 'gi');
-    if (!normalized.some(segment => {
-      pattern.lastIndex = 0;
-      return stripNativeMentionAtoms(segment) !== '' && pattern.test(segment);
-    })) continue;
-    pattern.lastIndex = 0;
-
-    const owners = ownersByAlias.get(alias) ?? [];
-    if (owners.length !== 1) {
-      ambiguousAliases.add(alias);
-      continue;
-    }
-
-    const agent = owners[0]!;
-    normalized = normalized.map(segment => {
-      if (stripNativeMentionAtoms(segment) === '') return segment;
-      pattern.lastIndex = 0;
-      return segment.replace(pattern, (_match, prefix) => {
-        resolvedUserIds.add(agent.userId);
-        return `${prefix}<@${agent.userId}|${agent.name}>`;
-      });
+  const normalized = segments.map((segment, index) => {
+    if (index % 2 === 1 || stripNativeMentionAtoms(segment) === '') return segment;
+    return segment.replace(/(^|[^a-z0-9_])@([a-z0-9_-]+)/gi, (match, prefix: string, token: string) => {
+      const owners = ownersByAlias.get(token.toLowerCase());
+      if (!owners) return match;
+      if (owners.size !== 1) {
+        ambiguousAliases.add(token.toLowerCase());
+        return match;
+      }
+      const agent = agentByUserId.get(Array.from(owners)[0]!)!;
+      resolvedUserIds.add(agent.userId);
+      return `${prefix}<@${agent.userId}|${agent.name}>`;
     });
-  }
+  });
 
   return {
     content: normalized.join(''),
