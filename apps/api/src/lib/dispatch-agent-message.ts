@@ -1,7 +1,6 @@
 import { and, eq, inArray, ne } from 'drizzle-orm';
 import { agentEmployees, spaceMembers, spaces } from '@deft/db/schema';
 import { db } from './db.js';
-import { normalizePlainAgentMentions } from './agent-mention-normalization.js';
 import { parseMentions } from './mentions.js';
 import { enqueue, QUEUE_NAMES, type QueueExecutor } from './queues.js';
 
@@ -26,8 +25,8 @@ type TargetParams = {
 };
 
 /**
- * Resolve which active BYOA employees a post wakes: explicit or plain-text
- * mentions of an employee who can see the space, plus every non-author
+ * Resolve which active BYOA employees a post wakes: structured mentions (the
+ * caller has already run normalizeChatMentions) of an employee who can see the space, plus every non-author
  * employee member of a dm / agent_conversation. Throws on database errors.
  */
 export async function resolveAgentEmployeeMessageTargets(params: TargetParams): Promise<AgentEmployeeMessageTargets> {
@@ -42,8 +41,6 @@ export async function resolveAgentEmployeeMessageTargets(params: TargetParams): 
     .select({
       id: agentEmployees.id,
       user_id: agentEmployees.user_id,
-      name: agentEmployees.name,
-      slug: agentEmployees.slug,
     })
     .from(agentEmployees)
     .where(and(
@@ -56,14 +53,6 @@ export async function resolveAgentEmployeeMessageTargets(params: TargetParams): 
   const targetUserIds = new Set<string>([
     ...(params.mentionedUserIds ?? []),
     ...parseMentions(params.content).userIds,
-    ...normalizePlainAgentMentions(
-      params.content,
-      employees.map((employee) => ({
-        userId: employee.user_id,
-        name: employee.name,
-        slug: employee.slug,
-      })),
-    ).resolvedUserIds,
   ]);
   const isDirect = space.type === 'dm' || space.type === 'agent_conversation';
   let accessibleUserIds: Set<string> | null = null;

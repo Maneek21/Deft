@@ -91,15 +91,13 @@ test('W2a3-3a: a space note proposal may target an archived space the requester 
   assert.equal(foreign.actions.length, 0);
 });
 
-test('W2a3-3b: send_message refuses an ambiguous alias before creating a DM space', async (t) => {
+test('W2a3-3b: send_message keeps an ambiguous alias as plain text', async (t) => {
   if (unavailable) return t.skip(unavailable);
   const { humanSendMessage } = await import('../src/lib/mcp-tools/human.js');
-  const dms = async () => (await client!.query(`SELECT count(*)::int AS n FROM spaces WHERE org_id=$1 AND type IN ('dm','group_dm')`, [orgId])).rows[0].n as number;
-  const before = await dms();
   const result = await humanSendMessage({ target: { user_id: ids.peer }, content: '@twin can you take this', idempotency_key: randomUUID() } as any,
     { org_id: orgId, user_id: ids.human, role: 'member', scopes: ['read:workspace', 'read:messages', 'write:messages'] });
-  assert.equal(result.isError, true);
-  assert.equal(await dms(), before, 'no DM space is created for a refused message');
+  assert.equal(Boolean(result.isError), false, String((result as any).content?.[0]?.text));
+  assert.equal(JSON.parse(String((result as any).content[0].text)).content, '@twin can you take this');
 });
 
 test('W2a3-3c: following next_cursor pages to older top-level messages without overlap', async (t) => {

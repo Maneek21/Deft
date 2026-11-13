@@ -81,9 +81,10 @@ export type NormalizedChatContent =
 /**
  * Normalise a human's chat post before it is stored and before any wake
  * decision: plain `@defty` / `@deft` / `@agent` become a structured Defty
- * mention, and plain aliases of active agent employees become structured
- * mentions of that employee. An alias owned by more than one active agent is
- * refused. Used by the web route and the human MCP post tools.
+ * mention, and a plain `@token` that exactly and uniquely matches an active
+ * agent employee's slug or one-token name becomes a structured mention of that
+ * employee. Any other token stays plain text. Used by the web route and the
+ * human MCP post tools.
  */
 export async function normalizeChatMentions(orgId: string, content: string): Promise<NormalizedChatContent> {
   let normalizedContent = content;
@@ -98,8 +99,8 @@ export async function normalizeChatMentions(orgId: string, content: string): Pro
     }
   }
 
-  const plainMentionScan = normalizedContent.replace(/<@[^>]+>/g, '');
-  if (/(^|[^a-z0-9_])@[a-z0-9]/i.test(plainMentionScan)) {
+  const plainMentionScan = normalizedContent.replace(/<@[^|>]+\|[^>]+>/g, '');
+  if (/(^|[^a-z0-9_])@[a-z0-9_-]/i.test(plainMentionScan)) {
     const agentIdentities = await db
       .select({
         userId: agentEmployees.user_id,
@@ -112,6 +113,17 @@ export async function normalizeChatMentions(orgId: string, content: string): Pro
         eq(agentEmployees.org_id, orgId),
         eq(agentEmployees.is_active, true),
       ));
+    // Active human members of this org compete for the same token: a human
+    // whose whole name is the token makes it ambiguous, so it stays plain.
+    const humanNames = await db
+      .select({ name: users.name })
+      .from(orgMembers)
+      .innerJoin(users, eq(users.id, orgMembers.user_id))
+      .where(and(
+        eq(orgMembers.org_id, orgId),
+        eq(orgMembers.is_active, true),
+        eq(users.kind, 'human'),
+      ));
     const plainAgentMentions = normalizePlainAgentMentions(
       normalizedContent,
       agentIdentities.flatMap((agent) => agent.userId ? [{
@@ -119,15 +131,8 @@ export async function normalizeChatMentions(orgId: string, content: string): Pro
         name: agent.name,
         slug: agent.slug,
       }] : []),
+      humanNames.map((human) => human.name),
     );
-    if (plainAgentMentions.ambiguousAliases.length > 0) {
-      const handles = plainAgentMentions.ambiguousAliases.map((alias) => `@${alias}`).join(', ');
-      return {
-        ok: false,
-        error: `${handles} matches more than one active agent. Choose the intended agent from the mention menu.`,
-        code: 'AMBIGUOUS_AGENT_MENTION',
-      };
-    }
     normalizedContent = plainAgentMentions.content;
   }
   return { ok: true, content: normalizedContent };

@@ -2,7 +2,7 @@
  * Round 2 / P2 — human MCP posts must normalise plain employee aliases exactly
  * like the web route before the Defty wake decision. In an engaged Defty
  * thread, `@rita …` is addressed to Rita, so Defty must not follow it on
- * either path; an ambiguous alias is refused on both; plain `@defty` wakes
+ * either path; an ambiguous alias stays plain text on both; plain `@defty` wakes
  * Defty on both.
  */
 import assert from 'node:assert/strict';
@@ -122,19 +122,22 @@ test('P2 parity: a plain employee alias in an engaged Defty thread does not wake
   assert.equal((await deftyJobs(JSON.parse(send.text).id)).length, 0, 'send_message must not wake Defty');
 });
 
-test('P2 parity: an ambiguous employee alias is refused on both paths', async () => {
+test('P2 parity: an ambiguous employee alias stays plain text and wakes nobody on both paths', async () => {
   const content = `@twin can you take this ${randomUUID()}`;
+  const employeeJobs = (messageId: string) => db.select({ id: jobQueue.id }).from(jobQueue).where(and(
+    eq(jobQueue.org_id, orgId), eq(jobQueue.name, 'agent-employee-message'), sql`${jobQueue.data}->>'messageId' = ${messageId}`));
   const web = await webPost(content);
-  assert.equal(web.status, 409);
-  assert.equal(web.body.code, 'AMBIGUOUS_AGENT_MENTION');
+  assert.equal(web.status, 201);
+  assert.equal(web.body.content, content);
+  assert.equal((await employeeJobs(web.body.id!)).length, 0);
   const post = tool(await humanMessagePost({ space_id: spaceId, content, idempotency_key: randomUUID() }, ctx()));
-  assert.equal(post.isError, true);
-  assert.match(post.text, /@twin matches more than one active agent/);
+  assert.equal(post.isError, false, post.text);
+  assert.equal(JSON.parse(post.text).content, content);
+  assert.equal((await employeeJobs(JSON.parse(post.text).id)).length, 0);
   const send = tool(await humanSendMessage({ target: { space_id: spaceId }, content, idempotency_key: randomUUID() }, ctx()));
-  assert.equal(send.isError, true);
-  assert.match(send.text, /@twin matches more than one active agent/);
-  const stored = await db.select({ id: messages.id }).from(messages).where(and(eq(messages.space_id, spaceId), sql`${messages.content} LIKE ${'%' + content.slice(-36) + '%'}`));
-  assert.equal(stored.length, 0, 'no path stores the ambiguous message');
+  assert.equal(send.isError, false, send.text);
+  assert.equal(JSON.parse(send.text).content, content);
+  assert.equal((await employeeJobs(JSON.parse(send.text).id)).length, 0);
 });
 
 test('P2 parity: plain @defty wakes Defty on both paths and is stored as a structured mention', async () => {
