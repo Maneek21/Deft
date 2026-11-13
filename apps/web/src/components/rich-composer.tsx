@@ -81,7 +81,9 @@ import {
 import { EmojiPicker } from './emoji-picker';
 import { TaskAutocomplete } from './task-autocomplete';
 import { MentionAutocomplete } from './mention-autocomplete';
-import { mentionQueryAtCursor, mentionSelectionContent, type MentionSelection } from '@/lib/mention-suggestions';
+import {
+  mentionQueryAtCursor, mentionSelectionContent, suggestionTextBefore, taskQueryAtCursor, taskSelectionContent, type MentionSelection,
+} from '@/lib/mention-suggestions';
 import { nativeMentionsAvailable } from '@/lib/native-mentions';
 import { MobileActionSheet } from './mobile-action-sheet';
 
@@ -302,7 +304,7 @@ export function RichComposer({
         if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && !event.shiftKey) {
           if (slashMenuOpenRef.current) return false;
           const { from } = view.state.selection;
-          const textBefore = view.state.doc.textBetween(Math.max(0, from - 20), from);
+          const textBefore = suggestionTextBefore(view.state.doc, from, Math.max(0, from - 20));
           if (textBefore.match(/#(\w*)$/) || textBefore.match(/@(\w*)$/)) {
             return false;
           }
@@ -315,13 +317,14 @@ export function RichComposer({
     onUpdate: ({ editor }) => {
       setContentVersion((v) => v + 1);
       const { from } = editor.state.selection;
-      const textBefore = editor.state.doc.textBetween(Math.max(0, from - 20), from);
+      // A line break ends a query, so Shift+Enter closes an open popup.
+      const textBefore = suggestionTextBefore(editor.state.doc, from, Math.max(0, from - 20));
 
       // Task autocomplete (#)
-      const hashMatch = textBefore.match(/#(\w*)$/);
+      const hashMatch = taskQueryAtCursor(textBefore);
       if (hashMatch) {
         setTaskAutocompleteOpen(true);
-        setTaskQuery(hashMatch[1]);
+        setTaskQuery(hashMatch.query);
       } else {
         setTaskAutocompleteOpen(false);
         setTaskQuery('');
@@ -332,7 +335,7 @@ export function RichComposer({
       // of text that should be replaced when a suggestion is accepted,
       // so handleMentionSelect works even after the editor loses focus
       // on click.
-      const atMatch = nativeMentionsAvailable() ? null : mentionQueryAtCursor(editor.state.doc.textBetween(0, from, '\n'));
+      const atMatch = nativeMentionsAvailable() ? null : mentionQueryAtCursor(suggestionTextBefore(editor.state.doc, from));
       if (atMatch) {
         setMentionsOpen(true);
         setMentionQuery(atMatch.query);
@@ -488,13 +491,12 @@ export function RichComposer({
   const handleTaskSelect = (task: TaskResult) => {
     if (!editor) return;
     const { from } = editor.state.selection;
-    const textBefore = editor.state.doc.textBetween(Math.max(0, from - 20), from);
-    const hashMatch = textBefore.match(/#(\w*)$/);
+    const hashMatch = taskQueryAtCursor(suggestionTextBefore(editor.state.doc, from, Math.max(0, from - 20)));
     if (hashMatch) {
-      const deleteFrom = from - hashMatch[0].length;
+      const deleteFrom = from - hashMatch.length;
       editor.chain().focus()
         .deleteRange({ from: deleteFrom, to: from })
-        .insertContent(`<task|${task.project_prefix}-${task.number}|${task.id}>`)
+        .insertContent(taskSelectionContent(task))
         .run();
     }
     setTaskAutocompleteOpen(false);
