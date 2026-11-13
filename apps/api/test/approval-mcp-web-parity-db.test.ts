@@ -290,6 +290,18 @@ test('P6: a record-mirror nomination cannot be approved over MCP', { skip: !url 
   assert.equal((await row(id)).approval_status, 'pending');
 });
 
+test('P7: a failing decision returns no internal detail, and a still-running answer is never stored', { skip: !url }, async () => {
+  // A NUL byte makes every database statement fail.
+  for (const tool of [human.humanApprovalApprove, human.humanApprovalReject]) {
+    const r = await tool({ action_id: `bad\u0000id` }, ctx(bob));
+    assert.equal(r.isError, true);
+    assert.equal(text(r), 'INTERNAL_ERROR: The approval request failed');
+  }
+  const answer = (body: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(body) }] });
+  assert.equal(human.isExecutingAnswer(answer({ status: 'executing', message: 'execution is already in progress' })), true);
+  assert.equal(human.isExecutingAnswer(answer({ status: 'approved', result: {} })), false);
+});
+
 /** A pending Defty capture of `authorId`'s message in `spaceId`, stored under `storedUserId`. */
 async function capture(storedUserId: string, authorId: string, spaceId: string): Promise<string> {
   const id = randomUUID();

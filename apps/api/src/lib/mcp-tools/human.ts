@@ -3677,14 +3677,31 @@ async function decideApproval(
   decide: (actionId: string) => Promise<ToolResult>,
 ): Promise<ToolResult> {
   const actionId = args.action_id as string;
-  if (!(await ownApproval(ctx, actionId, 'write'))) return errorResult('Approval not found');
-  // Results are stored under the web-decision binding only; earlier stored
-  // answers for the action are not replayed.
-  const result = await withIdempotency(toolName, args, ctx, () => decide(actionId), {
-    bind: `web-decision:${actionId}`, store: () => isSettledDecision(ctx.org_id, actionId),
-  });
-  if (!(await ownApproval(ctx, actionId, 'write'))) return errorResult('Approval not found');
-  return result;
+  try {
+    if (!(await ownApproval(ctx, actionId, 'write'))) return errorResult('Approval not found');
+    // Results are stored under the web-decision binding only; earlier stored
+    // answers for the action are not replayed. An answer that says the
+    // decision is still running is never stored, whatever the action's state.
+    const result = await withIdempotency(toolName, args, ctx, () => decide(actionId), {
+      bind: `web-decision:${actionId}`,
+      store: async (answer) => !isExecutingAnswer(answer) && await isSettledDecision(ctx.org_id, actionId),
+    });
+    if (!(await ownApproval(ctx, actionId, 'write'))) return errorResult('Approval not found');
+    return result;
+  } catch (error) {
+    // As the web's error boundary: the failure is logged, never returned.
+    console.error('[mcp-human] approval decision failed', { actionId, error: error instanceof Error ? error.message : String(error) });
+    return errorResult('INTERNAL_ERROR: The approval request failed');
+  }
+}
+
+/** True for an answer that only says the decision is still running. */
+export function isExecutingAnswer(answer: ToolResult): boolean {
+  try {
+    return (JSON.parse(answer.content[0]?.text ?? '{}') as { status?: unknown }).status === 'executing';
+  } catch {
+    return false;
+  }
 }
 
 export async function humanApprovalList(args: { status?: string; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
