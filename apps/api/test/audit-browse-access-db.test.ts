@@ -22,6 +22,7 @@ const ADMIN = p('admin');       // admin of org A, in the private space
 const MEMBER = p('member');     // member of org A, in the private space
 const GUEST = p('guest');       // guest of org A
 const OWNER_B = p('owner-b');   // owner of org B
+const FORMER_OWNER = p('former-owner'); // inactive owner of org A
 const PRIVATE_SPACE = p('space');
 const MESSAGE = p('message');
 const SECRET = `w2asecret${stamp}`;
@@ -39,9 +40,9 @@ async function q(sql: string, params: unknown[] = []) {
 
 before(async () => {
   for (const org of [ORG_A, ORG_B]) await q(`INSERT INTO orgs (id, name, slug) VALUES ($1, $1, $1)`, [org]);
-  for (const [user, org, role] of [[OWNER, ORG_A, 'owner'], [ADMIN, ORG_A, 'admin'], [MEMBER, ORG_A, 'member'], [GUEST, ORG_A, 'guest'], [OWNER_B, ORG_B, 'owner']]) {
+  for (const [user, org, role] of [[OWNER, ORG_A, 'owner'], [ADMIN, ORG_A, 'admin'], [MEMBER, ORG_A, 'member'], [GUEST, ORG_A, 'guest'], [OWNER_B, ORG_B, 'owner'], [FORMER_OWNER, ORG_A, 'owner']]) {
     await q(`INSERT INTO users (id, email, name, is_agent) VALUES ($1, $2, $1, false)`, [user, `${user}@test.local`]);
-    await q(`INSERT INTO org_members (id, org_id, user_id, role, is_active) VALUES (gen_random_uuid()::text, $1, $2, $3, true)`, [org, user, role]);
+    await q(`INSERT INTO org_members (id, org_id, user_id, role, is_active) VALUES (gen_random_uuid()::text, $1, $2, $3, $4)`, [org, user, role, user !== FORMER_OWNER]);
   }
   await q(
     `INSERT INTO spaces (id, org_id, name, type, is_default, is_archived, agent_enabled, created_by, created_at, updated_at)
@@ -62,12 +63,12 @@ before(async () => {
   );
   await q(
     `INSERT INTO audit_log (id, org_id, actor_type, actor_id, action, entity_type, entity_id, before_state, after_state, metadata)
-     VALUES ($1, $2, 'agent', $3, 'post_message', 'message', $4, NULL, $5::jsonb, $6::jsonb),
+     VALUES ($1, $2, 'agent', $3, 'post_message', 'message', $4, $5::jsonb, $5::jsonb, $6::jsonb),
             ($7, $8, 'user', $9, 'post_message', 'message', $10, NULL, $11::jsonb, '{}'::jsonb)`,
     [
       p('audit-a'), ORG_A, ADMIN, MESSAGE,
       JSON.stringify({ message_id: MESSAGE, space_id: PRIVATE_SPACE, content: `${SECRET} message` }),
-      JSON.stringify({ action_id: p('action'), space_name: `${SECRET} space` }),
+      JSON.stringify({ action_id: p('action'), space_name: `${SECRET} space`, filename: `${SECRET}.pdf` }),
       p('audit-b'), ORG_B, OWNER_B, p('message-b'), JSON.stringify({ content: SECRET_B }),
     ],
   );
@@ -80,7 +81,7 @@ after(async () => {
   await q(`DELETE FROM space_members WHERE space_id = $1`, [PRIVATE_SPACE]);
   await q(`DELETE FROM spaces WHERE org_id = ANY($1)`, [orgs]);
   await q(`DELETE FROM org_members WHERE org_id = ANY($1)`, [orgs]);
-  await q(`DELETE FROM users WHERE id = ANY($1)`, [[OWNER, ADMIN, MEMBER, GUEST, OWNER_B]]).catch(() => undefined);
+  await q(`DELETE FROM users WHERE id = ANY($1)`, [[OWNER, ADMIN, MEMBER, GUEST, OWNER_B, FORMER_OWNER]]).catch(() => undefined);
   await q(`DELETE FROM orgs WHERE id = ANY($1)`, [orgs]).catch(() => undefined);
 });
 
@@ -96,12 +97,12 @@ async function browse(userId: string, orgId: string, role: string, query = '') {
   return { status: res.status, text, json: JSON.parse(text) as unknown };
 }
 
-test('members and guests cannot browse the workspace audit log', async () => {
-  for (const user of [MEMBER, GUEST]) {
+test('members, guests and inactive owners cannot browse the workspace audit log', async () => {
+  for (const user of [MEMBER, GUEST, FORMER_OWNER]) {
     // The session role is not trusted; the live membership role decides.
     const res = await browse(user, ORG_A, 'admin');
     assert.equal(res.status, 403, res.text);
-    assert.equal((res.json as { code: string }).code, 'FORBIDDEN');
+    assert.ok(['FORBIDDEN', 'ORG_MEMBERSHIP_INACTIVE'].includes((res.json as { code: string }).code), res.text);
     assert.ok(!res.text.includes(SECRET));
   }
 });
@@ -123,8 +124,14 @@ test('an owner outside a private space sees the entry without the message text',
   assert.equal(rows[0]!.actor_id, ADMIN);
   assert.equal(rows[0]!.action, 'post_message');
   assert.deepEqual(rows[0]!.after_state, { message_id: MESSAGE, space_id: PRIVATE_SPACE });
+  assert.deepEqual(rows[0]!.before_state, { message_id: MESSAGE, space_id: PRIVATE_SPACE });
+  assert.deepEqual(rows[0]!.metadata, { action_id: p('action') });
   assert.equal(rows[0]!.content_omitted, true);
   assert.ok(!res.text.includes(SECRET), res.text);
+  const unfiltered = await browse(OWNER, ORG_A, 'owner');
+  assert.equal(unfiltered.status, 200, unfiltered.text);
+  assert.ok(unfiltered.text.includes(MESSAGE), unfiltered.text);
+  assert.ok(!unfiltered.text.includes(SECRET), unfiltered.text);
 });
 
 test('another workspace never sees these entries', async () => {
