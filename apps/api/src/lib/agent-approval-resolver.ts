@@ -36,7 +36,14 @@ import type { AppRunTransaction } from './app-run-repository.js';
  */
 import { eq, and, or, sql, isNull, inArray, type SQL } from 'drizzle-orm';
 import { currentActionReviewerSql, reviewableActionSql } from './agent-action-review-gate.js';
-import { actionRequesterId, CAPTURE_ACTION_SOURCE, captureSourceUserId } from './agent-action-requester.js';
+import {
+  CAPTURE_ACTION_SOURCE,
+  captureSourceUserId,
+  loadActionRequesterId,
+  loadActionRequesterIds,
+  requesterActionColumns,
+  type RequesterActionRow,
+} from './agent-action-requester.js';
 import { visibleCaptureActionSql } from './agent-action-visibility.js';
 import { db, type DbAdvisoryLease } from './db.js';
 import {
@@ -647,7 +654,7 @@ function decisionSourceSql(row: ReviewedActionRow, readerUserId: string | undefi
   if (!internal || row.source !== CAPTURE_ACTION_SOURCE) return actionSourceAuthoritySql(readerUserId);
   return and(
     actionSourceAuthoritySql(readerUserId),
-    visibleCaptureActionSql({ id: actionRequesterId(row), org_id: row.org_id }),
+    visibleCaptureActionSql({ id: captureSourceUserId(row) ?? row.user_id, org_id: row.org_id }),
   )!;
 }
 
@@ -734,7 +741,7 @@ async function loadReviewMembership(
   return row ?? null;
 }
 
-type ReviewedActionRow = { id: string; org_id: string; action: string; user_id: string; source: string | null; params: unknown };
+type ReviewedActionRow = RequesterActionRow & { action: string };
 
 /**
  * The reviewer rule of the approval resolver: who may approve or reject an
@@ -742,14 +749,15 @@ type ReviewedActionRow = { id: string; org_id: string; action: string; user_id: 
  * refusal message. Approve and reject differ: a record-mirror nomination is
  * approved only by its owning user, and an App Run release is never approved
  * on the internal path. `membership` is the user's active membership in the
- * action's workspace (see loadReviewMembership).
+ * action's workspace (see loadReviewMembership). `requesterId` is the
+ * action's requester when the caller has already loaded it.
  */
 export async function reviewerRefusal(
   decision: 'approve' | 'reject',
   row: ReviewedActionRow,
   userId: string,
   membership: { role: string } | null,
-  options: { internal?: boolean } = {},
+  options: { internal?: boolean; requesterId?: string } = {},
 ): Promise<string | null> {
   // Record-mirror nominations are owner-only: an org admin or another member
   // must never approve a write against the owner's private mirror consent, and
@@ -758,7 +766,7 @@ export async function reviewerRefusal(
     return 'only the owning user may approve a record-mirror nomination';
   }
   const humanCanReview = membership !== null && (
-    actionRequesterId(row) === userId
+    (options.requesterId ?? await loadActionRequesterId(row)) === userId
     || membership.role === 'owner'
     || membership.role === 'admin'
   );
@@ -789,19 +797,17 @@ export async function viewerReviewAuthority(
   if (ids.length === 0) return authority;
   const rows = await db
     .select({
-      id: agentActions.id,
-      org_id: agentActions.org_id,
+      ...requesterActionColumns,
       action: agentActions.action,
-      user_id: agentActions.user_id,
-      source: agentActions.source,
-      params: agentActions.params,
       reviewable: sql<boolean>`coalesce((${reviewableActionSql(viewer)}), false)`,
       source_current: sql<boolean>`coalesce((${actionSourceAuthoritySql(viewer.id)}), false)`,
     })
     .from(agentActions)
     .where(and(inArray(agentActions.id, ids), eq(agentActions.org_id, viewer.org_id)));
   const membership = await loadReviewMembership(viewer.id, viewer.org_id);
+  const requesters = await loadActionRequesterIds(rows);
   for (const row of rows) {
+    const requesterId = requesters.get(row.id) ?? row.user_id;
     if (!row.reviewable) {
       authority.set(row.id, { viewer_can_approve: false, viewer_can_reject: false });
     } else if (row.action === APP_RUN_APPROVAL_ACTION) {
@@ -811,7 +817,7 @@ export async function viewerReviewAuthority(
       // the run's own release rules and the viewer's live web session are
       // checked only on the App Run path; without flags the card keeps its
       // controls.
-      if (actionRequesterId(row) !== viewer.id && membership?.role === 'guest') {
+      if (requesterId !== viewer.id && membership?.role === 'guest') {
         authority.set(row.id, { viewer_can_approve: false, viewer_can_reject: false });
       }
     } else if (!isApprovalResolverAction(row.action)) {
@@ -819,7 +825,7 @@ export async function viewerReviewAuthority(
       authority.set(row.id, { viewer_can_approve: true, viewer_can_reject: true });
     } else {
       const decide = async (decision: 'approve' | 'reject') => row.source_current
-        && await reviewerRefusal(decision, row, viewer.id, membership) === null;
+        && await reviewerRefusal(decision, row, viewer.id, membership, { requesterId }) === null;
       authority.set(row.id, { viewer_can_approve: await decide('approve'), viewer_can_reject: await decide('reject') });
     }
   }

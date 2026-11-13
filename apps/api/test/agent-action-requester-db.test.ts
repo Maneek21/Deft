@@ -245,9 +245,16 @@ test('each legitimate requester keeps review of their action', { skip: !canRun, 
   assert.equal(await routeAccepts(guestId, guestOwn, 'reject'), true, 'guest own reply');
 });
 
-test('the TypeScript and SQL requester rules agree', { skip: !canRun, timeout: 120_000 }, async () => {
-  const { db } = await import('../src/lib/db.js');
-  const { actionRequesterId, actionRequesterIdSql } = await import('../src/lib/agent-action-requester.js');
+/** The capture rule as written before it moved into SQL alone: the expected answers below. */
+function expectedRequester(row: { user_id: string; source: string | null; params: unknown }): string {
+  if (row.source !== 'defty_capture' || !row.params || typeof row.params !== 'object' || Array.isArray(row.params)) return row.user_id;
+  const params = row.params as Record<string, unknown>;
+  const claimed = params.source_user_id ?? params.origin_user_id;
+  return typeof claimed === 'string' && /[^ \t\n\v\f\r]/.test(claimed) ? claimed : row.user_id;
+}
+
+test('the batch requester loader answers the SQL rule for each row', { skip: !canRun, timeout: 120_000 }, async () => {
+  const { loadActionRequesterIds, loadActionReviewers } = await import('../src/lib/agent-action-requester.js');
   const cases: Array<[string, unknown]> = [
     ['absent', {}], ['source', { source_user_id: 'u-src' }], ['origin', { origin_user_id: 'u-origin' }],
     ['precedence', { source_user_id: 'u-src', origin_user_id: 'u-origin' }],
@@ -258,14 +265,51 @@ test('the TypeScript and SQL requester rules agree', { skip: !canRun, timeout: 1
     ['byte order mark', { source_user_id: '\ufeff' }],
     ['array params', ['u-src']], ['scalar params', 'u-src'],
   ];
+  const rows = [];
   for (const source of ['defty_capture', 'mcp', null]) {
     for (const [label, params] of cases) {
-      const row = { user_id: 'u-own', source, params };
-      const [answer] = (await db.execute(sql`SELECT ${actionRequesterIdSql('t')} AS requester
-        FROM (SELECT 'u-own'::text AS user_id, ${source}::text AS source, ${JSON.stringify(params)}::jsonb AS params, 'o'::text AS org_id) t`)).rows;
-      assert.equal(answer?.requester, actionRequesterId(row), `${source} ${label}`);
+      rows.push({
+        id: `${source} ${label}`, org_id: 'o', user_id: 'u-own', source, params,
+        message_id: null, agent_employee_id: null, conversation_id: null, created_at: new Date(),
+      });
     }
   }
-  assert.equal(actionRequesterId({ user_id: 'u-own', source: 'defty_capture', params: { source_user_id: 'u-src' } }), 'u-src');
-  assert.equal(actionRequesterId({ user_id: 'u-own', source: 'mcp', params: { source_user_id: 'u-src' } }), 'u-own');
+  const requesters = await loadActionRequesterIds(rows);
+  assert.equal(requesters.size, rows.length);
+  for (const row of rows) assert.equal(requesters.get(row.id), expectedRequester(row), row.id);
+  assert.equal(requesters.get('defty_capture precedence'), 'u-src');
+  assert.equal(requesters.get('mcp source'), 'u-own');
+
+  // Reviewers of committed rows come from the same loader.
+  const capture = await pendingAction({ source: 'defty_capture', userId: shadowId, params: { source_user_id: f.requesterId } });
+  const own = await pendingAction({ source: 'mcp', userId: shadowId, employee: true, params: { source_user_id: f.requesterId } });
+  const reviewers = await loadActionReviewers([await loadAction(capture), await loadAction(own)]);
+  assert.deepEqual(reviewers.get(capture), [f.requesterId]);
+  assert.deepEqual(reviewers.get(own), [f.adminId]);
+});
+
+test('requester readers outside the helper load the requester rather than derive it', { timeout: 60_000 }, async () => {
+  const { readFile, readdir } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const root = fileURLToPath(new URL('../src/', import.meta.url));
+  const files: string[] = [];
+  const walk = async (dir: string) => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) await walk(path);
+      else if (entry.name.endsWith('.ts')) files.push(path);
+    }
+  };
+  await walk(root);
+  const helper = await readFile(join(root, 'lib/agent-action-requester.ts'), 'utf8');
+  // The rule is stated once, in SQL; the only synchronous export reads a capture's author.
+  assert.doesNotMatch(helper, /export function actionRequesterId\b/);
+  for (const path of files) {
+    const source = await readFile(path, 'utf8');
+    assert.doesNotMatch(source, /\bactionRequesterId\s*\(/, path);
+  }
+  for (const file of ['lib/agent-approval-resolver.ts', 'lib/agent-action-visibility.ts', 'lib/connected-tool-access.ts']) {
+    assert.match(await readFile(join(root, file), 'utf8'), /loadActionRequesterIds?\(/, file);
+  }
 });
