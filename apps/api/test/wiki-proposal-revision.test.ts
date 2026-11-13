@@ -31,7 +31,6 @@ let f: DurabilityFixture;
 let agentUserId: string;
 
 const CHANGED = 'The wiki page changed after this update was proposed, so it was not applied. Review the current page and propose the update again.';
-const UNAVAILABLE = 'The wiki page this update was proposed for is no longer available to the requester, so it was not applied.';
 const EXISTS = 'This page could not be created as proposed. Ask for the proposal again.';
 const UNVERIFIABLE = 'This wiki proposal does not record the page revision it was made against, so it was not applied. Ask for the update again.';
 
@@ -214,11 +213,13 @@ test('C05-d: a requester who lost access to the page between proposal and approv
     const first = await approve(actionId);
     assert.notEqual(first.status, 200, JSON.stringify(first.body));
     assert.deepEqual(await pageState(page.id), before);
+    // Outside the room of the message it was proposed in, the requester no
+    // longer reviews the action: it is refused before any decision.
+    assert.equal(first.status, 404, JSON.stringify(first.body));
     const row = await actionRow(actionId);
-    assert.equal(row.approval_status, 'approved');
-    assert.ok(row.executed_at, 'the refusal is terminal');
-    assert.ok(row.error === UNAVAILABLE || /not found/.test(row.error), row.error);
-    assert.equal(await receiptCount(actionId), 1);
+    assert.equal(row.approval_status, 'pending');
+    assert.equal(row.executed_at, null);
+    assert.equal(await receiptCount(actionId), 0);
   } finally {
     await f.client.query('INSERT INTO space_members (id, space_id, user_id) VALUES ($1, $2, $3)', [randomUUID(), f.spaceId, f.requesterId]);
   }
