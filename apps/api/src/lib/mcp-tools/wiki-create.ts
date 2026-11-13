@@ -110,6 +110,71 @@ async function verifyMessageVisibleToUser(
   return row ?? null;
 }
 
+type WikiSourceMessage = { id: string; space_id: string; user_id: string; content: string };
+
+/**
+ * The source message a wiki write may use: readable by one of the readers,
+ * in the page's room when one is expected, in a room the employee can access.
+ * The executors and the proposal check share this rule.
+ */
+async function resolveWikiSourceMessage(params: {
+  messageId: string;
+  readerIds: string[];
+  orgId: string;
+  expectedSpaceId: string | null;
+  canAccessSpace: (spaceId: string) => Promise<boolean>;
+  executor?: Executor;
+}): Promise<{ source: WikiSourceMessage } | { refusal: 'unreadable' | 'inaccessible'; spaceId?: string }> {
+  let source: WikiSourceMessage | null = null;
+  for (const readerId of params.readerIds) {
+    source = await verifyMessageVisibleToUser(params.messageId, readerId, params.orgId, params.expectedSpaceId, params.executor);
+    if (source) break;
+  }
+  if (!source) return { refusal: 'unreadable' };
+  if (!(await params.canAccessSpace(source.space_id))) return { refusal: 'inaccessible', spaceId: source.space_id };
+  return { source };
+}
+
+function wikiSourceReaderIds(readers: Array<string | null | undefined>): string[] {
+  return readers.filter((value, index, values): value is string =>
+    typeof value === 'string' && value.length > 0 && values.indexOf(value) === index,
+  );
+}
+
+export const WIKI_SOURCE_MESSAGE_ROOM_CODE = 'WIKI_SOURCE_MESSAGE_ROOM';
+
+/**
+ * Refuses a wiki proposal by an employee whose cited source message the write
+ * itself could not use (the executor's rule, for the same room). `page` is
+ * the authorized update target; a create takes its room from its arguments.
+ */
+export async function citedWikiSourceRefusal(
+  actionName: 'wiki_create' | 'wiki_update',
+  args: { source_message_id?: unknown; source_user_id?: unknown; source_space_id?: unknown; space_id?: unknown },
+  page: Pick<WikiPageRow, 'origin_space_id' | 'space_id'> | null,
+  ctx: ToolContext,
+): Promise<ToolResult | null> {
+  if (typeof args.source_message_id !== 'string' || !args.source_message_id.trim()) return null;
+  // The executors' own nullish fallbacks, so both read the same room.
+  const sourceSpaceId = args.source_space_id as string | null | undefined;
+  const expectedSpaceId = actionName === 'wiki_update'
+    ? (page ? wikiUpdateSourceSpaceId({ source_space_id: sourceSpaceId }, page) : null)
+    : sourceSpaceId ?? (args.space_id as string | null | undefined) ?? null;
+  const shadowUserId = await getShadowUserId(ctx.employee_id);
+  const resolved = await resolveWikiSourceMessage({
+    messageId: args.source_message_id,
+    readerIds: wikiSourceReaderIds([shadowUserId, args.source_user_id as string | null | undefined]),
+    orgId: ctx.org_id,
+    expectedSpaceId,
+    canAccessSpace: (spaceId) => employeeCanAccessSpace(ctx.employee_id, ctx.org_id, spaceId),
+  });
+  if ('source' in resolved) return null;
+  return errorResult(JSON.stringify({
+    error: `${actionName}: the cited message cannot be this page's source; cite an available message from the room the page takes its sources from, or omit source_message_id`,
+    code: WIKI_SOURCE_MESSAGE_ROOM_CODE,
+  }));
+}
+
 function slugify(title: string): string {
   return title
     .toLowerCase()
@@ -241,30 +306,21 @@ export async function executeWikiCreate(
       }
       if (args.source_message_id?.trim()) {
         // A capture action reads its source message as the message author only.
-        const readerIds = (opts?.sourceReaderUserId ? [opts.sourceReaderUserId] : [
-          shadowUserId,
-          args.source_user_id ?? null,
-        ]).filter((value, index, values): value is string =>
-          typeof value === 'string' && value.length > 0 && values.indexOf(value) === index,
-        );
-        let source: { id: string; space_id: string; user_id: string; content: string } | null = null;
-        for (const readerId of readerIds) {
-          source = await verifyMessageVisibleToUser(
-            args.source_message_id,
-            readerId,
-            ctx.org_id,
-            sourceSpaceId,
-            tx,
-          );
-          if (source) break;
+        const resolved = await resolveWikiSourceMessage({
+          messageId: args.source_message_id,
+          readerIds: opts?.sourceReaderUserId ? [opts.sourceReaderUserId] : wikiSourceReaderIds([shadowUserId, args.source_user_id]),
+          orgId: ctx.org_id,
+          expectedSpaceId: sourceSpaceId,
+          canAccessSpace,
+          executor: tx,
+        });
+        if ('refusal' in resolved) {
+          deny(resolved.refusal === 'unreadable'
+            ? `wiki_create: source_message_id ${args.source_message_id} is not readable in caller's org`
+            : `wiki_create: source message space ${resolved.spaceId} is not accessible to this employee`);
         }
-        if (!source) {
-          deny(`wiki_create: source_message_id ${args.source_message_id} is not readable in caller's org`);
-        }
+        const source = resolved.source;
         sourceSpaceId = source.space_id;
-        if (!(await canAccessSpace(sourceSpaceId))) {
-          deny(`wiki_create: source message space ${sourceSpaceId} is not accessible to this employee`);
-        }
         sourceUserId = source.user_id;
         sourceMessageExcerpt = toPlainText(source.content).slice(0, 200);
       }
@@ -496,8 +552,12 @@ export async function wikiCreate(args: WikiCreateArgs, ctx: ToolContext): Promis
   if (!shouldAutoExecute('wiki_create', ctx.trust_level, args)) {
     const frozen = await wikiCreateProposalTarget(args, ctx.org_id, ctx.employee_id);
     if (!frozen) return wikiTargetUnavailableResult('wiki_create');
+    const roomRefusal = await citedWikiSourceRefusal('wiki_create', args, null, ctx);
+    if (roomRefusal) return roomRefusal;
     return queueAction('wiki_create', args as unknown as Record<string, unknown>, ctx, frozen, cited.messageId);
   }
+  const roomRefusal = await citedWikiSourceRefusal('wiki_create', args, null, ctx);
+  if (roomRefusal) return roomRefusal;
 
   return executeWikiCreate(args, ctx);
 }
@@ -548,6 +608,14 @@ type WikiPageRow = typeof wikiPages.$inferSelect;
  * When both are given they must name the same page. With `lock`, the row is
  * read FOR NO KEY UPDATE, the lock every wiki page writer takes.
  */
+/** The room an update's source message must come from: the same at proposal and at execution. */
+function wikiUpdateSourceSpaceId(
+  args: { source_space_id?: string | null },
+  page: Pick<WikiPageRow, 'origin_space_id' | 'space_id'>,
+): string | null {
+  return args.source_space_id ?? page.origin_space_id ?? page.space_id ?? null;
+}
+
 async function findWikiUpdateTarget(
   executor: Executor,
   orgId: string,
@@ -817,37 +885,28 @@ export async function executeWikiUpdate(
       }
 
       let sourceMessageExcerpt: string | null = null;
-      let sourceSpaceId = args.source_space_id ?? existingPage.origin_space_id ?? existingPage.space_id ?? null;
+      let sourceSpaceId = wikiUpdateSourceSpaceId(args, existingPage);
       let sourceUserId: string | null = null;
       if (sourceSpaceId && !(await canAccessSpace(sourceSpaceId))) {
         refuse(`wiki_update: source space ${sourceSpaceId} is not accessible to this employee`);
       }
       if (args.source_message_id?.trim()) {
         // A capture action reads its source message as the message author only.
-        const readerIds = (opts?.sourceReaderUserId ? [opts.sourceReaderUserId] : [
-          shadowUserId,
-          args.source_user_id ?? null,
-        ]).filter((value, index, values): value is string =>
-          typeof value === 'string' && value.length > 0 && values.indexOf(value) === index,
-        );
-        let source: { id: string; space_id: string; user_id: string; content: string } | null = null;
-        for (const readerId of readerIds) {
-          source = await verifyMessageVisibleToUser(
-            args.source_message_id,
-            readerId,
-            ctx.org_id,
-            sourceSpaceId,
-            tx,
-          );
-          if (source) break;
+        const resolved = await resolveWikiSourceMessage({
+          messageId: args.source_message_id,
+          readerIds: opts?.sourceReaderUserId ? [opts.sourceReaderUserId] : wikiSourceReaderIds([shadowUserId, args.source_user_id]),
+          orgId: ctx.org_id,
+          expectedSpaceId: sourceSpaceId,
+          canAccessSpace,
+          executor: tx,
+        });
+        if ('refusal' in resolved) {
+          refuse(resolved.refusal === 'unreadable'
+            ? `wiki_update: source_message_id ${args.source_message_id} is not readable in caller's org`
+            : `wiki_update: source message space ${resolved.spaceId} is not accessible to this employee`);
         }
-        if (!source) {
-          refuse(`wiki_update: source_message_id ${args.source_message_id} is not readable in caller's org`);
-        }
+        const source = resolved.source;
         sourceSpaceId = source.space_id;
-        if (!(await canAccessSpace(sourceSpaceId))) {
-          refuse(`wiki_update: source message space ${sourceSpaceId} is not accessible to this employee`);
-        }
         sourceUserId = source.user_id;
         sourceMessageExcerpt = toPlainText(source.content).slice(0, 200);
       }
@@ -990,8 +1049,14 @@ export async function wikiUpdate(args: WikiUpdateArgs, ctx: ToolContext): Promis
   if (!shouldAutoExecute('wiki_update', ctx.trust_level, args)) {
     const frozen = await wikiUpdateProposalTarget(args, ctx.org_id, ctx.employee_id);
     if (!frozen) return wikiTargetUnavailableResult();
+    const roomRefusal = await citedWikiSourceRefusal('wiki_update', args, frozen.page, ctx);
+    if (roomRefusal) return roomRefusal;
     return queueAction('wiki_update', args as unknown as Record<string, unknown>, ctx, frozen, cited.messageId);
   }
+  // Only a target this employee may update is checked; any other is refused by the executor as unavailable.
+  const target = cited.messageId ? await wikiUpdateProposalTarget(args, ctx.org_id, ctx.employee_id) : null;
+  const roomRefusal = target ? await citedWikiSourceRefusal('wiki_update', args, target.page, ctx) : null;
+  if (roomRefusal) return roomRefusal;
 
   return executeWikiUpdate(args, ctx);
 }
