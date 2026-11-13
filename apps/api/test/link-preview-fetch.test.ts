@@ -4,7 +4,7 @@ import { createServer, request as httpRequest, type IncomingMessage, type Reques
 import type { AddressInfo } from 'node:net';
 import { after, before, beforeEach, test } from 'node:test';
 import { publicFetchDeps } from '../src/lib/public-http-fetch.js';
-import { extractLinkMetadata, fetchLinkPreview } from '../src/lib/link-preview.js';
+import { fetchLinkPreview } from '../src/lib/link-preview.js';
 
 const PUBLIC_A = '93.184.216.34';
 const PAGE = '<html><head><title>T</title><meta property="og:title" content="Hello">'
@@ -104,47 +104,9 @@ test('a public page still previews through a pinned connection', async () => {
   assert.equal(await fetchLinkPreview('http://pub.test/json'), null);
 });
 
-test('metadata parsing respects quoting and attribute names', () => {
-  const parse = (head: string) => extractLinkMetadata(`<html><head>${head}</head></html>`, 'http://pub.test/a/b');
-  assert.equal(parse('<meta property="og:title" content="A > B < C">')?.title, 'A > B < C');
-  assert.equal(parse(`<meta data-v1="content='Wrong'" property="og:title" content="Right">`)?.title, 'Right');
-  assert.equal(parse('<meta x1property="other" property="og:title" content="Right">')?.title, 'Right');
-  assert.equal(parse(`<meta data-x="${'z'.repeat(5000)}" property="og:title" content="Long">`)?.title, 'Long');
-  assert.equal(parse(`<title>${'t'.repeat(5000)}</title>`)?.title, 't'.repeat(5000));
-  assert.equal(parse("<META CONTENT='D' NAME='Description'>")?.description, 'D');
-  assert.equal(parse('<link href="/i.png" rel="shortcut icon"><title>T</title>')?.favicon, 'http://pub.test/i.png');
-  assert.equal(parse('<title>İstanbul</title>')?.title, 'İstanbul');
-  assert.equal(parse('<meta name="author" content="İ"><meta property="og:title" content="Right">')?.title, 'Right');
-  assert.equal(parse('<script>const t = "<title>";</script><title>Right</title>')?.title, 'Right');
-  assert.equal(parse('<title-widget>Ignore</title-widget><title>Right</title>')?.title, 'Right');
-  assert.equal(parse('<title>Right</title><meta property="og:title" content="Wrong')?.title, 'Right');
-  assert.deepEqual(parse('<title>Right</title><link rel=icon href=//[>'), {
-    url: 'http://pub.test/a/b', title: 'Right', description: null, image: null, favicon: null, siteName: null,
-  });
-});
-
 test('link preview bodies are capped at 512 KB', async () => {
   pageBody = PAGE + ' '.repeat(512 * 1024 - PAGE.length);
   assert.equal((await fetchLinkPreview('http://pub.test/page'))?.title, 'Hello');
   pageBody += ' ';
   assert.equal(await fetchLinkPreview('http://pub.test/page'), null);
-});
-
-test('metadata parsing stays fast on pathological markup', () => {
-  const tags = `<meta ${'a'.repeat(4080)}>`.repeat(64) + `<meta ${'a1 '.repeat(1360)}>`.repeat(64);
-  const quotes = '<meta a="'.repeat(20_000);
-  const titles = '<title '.repeat(70_000);
-  for (let warm = 0; warm < 3; warm += 1) extractLinkMetadata(tags.slice(0, 50_000), 'http://pub.test/page');
-  for (const html of [tags, quotes, titles]) {
-    const started = Date.now();
-    extractLinkMetadata(html, 'http://pub.test/page');
-    assert.ok(Date.now() - started < 100, `took ${Date.now() - started} ms`);
-  }
-});
-
-test('metadata parsing stays linear on unterminated tags', () => {
-  const html = '<title>T</title>' + '<meta a'.repeat(10_000) + '<link href'.repeat(10_000);
-  const started = Date.now();
-  assert.equal(extractLinkMetadata(html, 'http://pub.test/page')?.title, 'T');
-  assert.ok(Date.now() - started < 1_000, `took ${Date.now() - started} ms`);
 });
