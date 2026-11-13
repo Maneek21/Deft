@@ -247,8 +247,9 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
   const [parent, setParent] = useState(parentMessage);
   const shownParent = parent.id === messageId ? parent : parentMessage;
   useEffect(() => { setParent((current) => refreshThreadParent(current, parentMessage)); }, [parentMessage]);
+  // Committed space only: events and reads use it, never a render not yet committed.
   const spaceIdRef = useRef(spaceId);
-  spaceIdRef.current = spaceId;
+  useEffect(() => { spaceIdRef.current = spaceId; }, [spaceId]);
   const { user, sessionCacheScope } = useAuth();
   const deftyWork = useDeftyWorking(spaceId, sessionCacheScope);
   const router = useRouter();

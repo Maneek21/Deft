@@ -19,9 +19,9 @@ export function taskQueryAtCursor(text: string) {
   return match ? { query: match[1]!, length: match[0].length } : null;
 }
 
-/** A picked task is inserted as its readable identifier, for example `RC-1001 `. */
-export function taskSelectionText(task: { project_prefix: string; number: number }): string {
-  return `${task.project_prefix}-${task.number} `;
+/** A picked task is inserted as a text node with its readable identifier, for example `RC-1001 `. */
+export function taskSelectionContent(task: { project_prefix: string; number: number }) {
+  return [{ type: 'text', text: `${task.project_prefix}-${task.number} ` }];
 }
 
 export function mentionQueryAtCursor(text: string) {

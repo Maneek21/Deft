@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { Schema } from '@tiptap/pm/model';
-import { mentionQueryAtCursor, suggestionTextBefore, taskQueryAtCursor, taskSelectionText } from './mention-suggestions';
+import { mentionQueryAtCursor, suggestionTextBefore, taskQueryAtCursor, taskSelectionContent } from './mention-suggestions';
 
 const schema = new Schema({
   nodes: {
@@ -41,5 +41,7 @@ test('a mention chip before the cursor adds no text', () => {
 });
 
 test('a picked task is inserted as its readable identifier', () => {
-  assert.equal(taskSelectionText({ project_prefix: 'RC', number: 1001 }), 'RC-1001 ');
+  assert.deepEqual(taskSelectionContent({ project_prefix: 'RC', number: 1001 }), [{ type: 'text', text: 'RC-1001 ' }]);
+  // Inserted as text, so markup-like prefixes stay literal.
+  assert.deepEqual(taskSelectionContent({ project_prefix: '<B>', number: 1 }), [{ type: 'text', text: '<B>-1 ' }]);
 });
