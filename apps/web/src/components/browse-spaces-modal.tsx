@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Hash, Search } from 'lucide-react';
+import { Hash, Search, X } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useChatContext } from '@/lib/chat-context';
 import { browsePublicSpacesPath, joinPublicSpacePath, type BrowsableSpace } from '@/lib/public-spaces';
@@ -78,6 +78,11 @@ export function BrowseSpacesModal({ onClose, onOpenSpace }: Props) {
       description="Public spaces in this workspace. Join one to read and post."
       width={480}
       initialFocusRef={searchRef}
+      headerActions={(
+        <button type="button" onClick={onClose} className="p-1 rounded-md" style={{ color: 'var(--muted)' }} aria-label="Close">
+          <X size={16} strokeWidth={1.5} />
+        </button>
+      )}
     >
       <div
         className="flex items-center gap-2 px-3 py-2 rounded-lg"
