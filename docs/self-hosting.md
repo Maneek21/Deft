@@ -569,7 +569,8 @@ can supply its own AI independently of Deft's provider configuration.
 | `OPENROUTER_API_KEY` | No | Optional AI provider fallback | none |
 | `OLLAMA_URL` | No | Optional local Ollama endpoint; set only when running | none |
 | `R2_ENDPOINT` / `R2_ACCESS_KEY` / `R2_SECRET_KEY` / `R2_BUCKET` | No | Cloudflare R2 uploads | local uploads volume |
-| `GITHUB_WEBHOOK_SECRET` | No | Secret for `POST /api/webhooks/github`; unset disables that endpoint (503). GitHub PR-to-Done runs through the per-workspace GitHub sync and does not use it | none |
+| `GITHUB_WEBHOOK_SECRET` | No | Secret for `POST /api/webhooks/github`; unset disables that endpoint (503). GitHub PR-to-Done runs through the scheduled per-workspace GitHub sync and does not use it | none |
+| `DEFT_GITHUB_SYNC_INTERVAL_MIN` | No | Minutes between scheduled syncs of each connected GitHub account (at most 10 connections queued per minute; failures back off, rate limits wait for GitHub's reset). `0` or `off` disables the schedule; manual sync still works | `10` |
 | `METRICS_SCRAPE_TOKEN` | No | Bearer token for `/api/metrics` and `/health/queue`; unset disables detailed telemetry | none |
 
 ### Apps feature flags
