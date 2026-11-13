@@ -493,14 +493,16 @@ An agent action is reviewed by the member who requested it. Owners and admins re
 
 An agent employee can cite the chat message it answers in a proposal
 (`source_message_id`, or `params.source_message_id` for `request_human_approval`);
-when the server recorded that the message's author addressed the employee, the
-proposal is made within 24 hours, and the author is an active human member who
-can read the room, the author reviews it. Personal MCP approval tools follow the same rule as the web.
+when the server recorded that the message's author, then a non-guest member,
+addressed the employee with it, the proposal is not tied to another delivery or
+room and is made within 24 hours, and the author is now an active human member,
+not a guest, who can read the room, the author reviews it. Personal MCP approval tools follow the same rule as the web.
 A wiki proposal that cites a message from a room the page does not take its
 sources from is refused when proposed (`WIKI_SOURCE_MESSAGE_ROOM`). Agent
 webhooks are managed by owners and admins.
 
-Requests under `/api` need a web session unless the path is one of the
+Requests under `/api` need a web session (CORS preflight is answered by the CORS
+policy) unless the path is one of the
 routes that use their own authentication or are intentionally public (auth, MCP,
 Agent Channel, webhooks, invites, metrics, App developer pairing, App runtime and
 public App routes, `POST /api/agent-webhooks/:slug` and ICS feed URLs). Calendar feeds and link previews are fetched only from

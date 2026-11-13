@@ -234,9 +234,10 @@ Requests, triggers and outbound fetches:
   While the employee is handling the delivery of a message, a call citing a
   different message is refused (`cited message is not the delivery being
   handled`). A citation does not change whether a call needs approval. When the
-  server recorded that the message's author addressed that employee, the
-  proposal was made within 24 hours, and the author is an active human member
-  who is not a guest and can read the room, the author reviews the proposal; the proposal is also
+  server recorded that the message's author, then a non-guest member, addressed
+  that employee with it, the proposal is not tied to another delivery or room and
+  was made within 24 hours, and the author is now an active human member, not a
+  guest, who can read the room, the author reviews the proposal; the proposal is also
   reviewed only by people who can read that room. A wiki proposal whose cited
   message the write could not use as its source is refused with
   `WIKI_SOURCE_MESSAGE_ROOM`. The bundled `deft-mcp-client` skill and the Hermes
