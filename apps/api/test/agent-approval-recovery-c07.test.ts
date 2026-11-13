@@ -27,6 +27,7 @@ import {
 } from '../src/lib/agent-action-execution-lease.js';
 import { APPROVAL_RESOLVER_ACTION_NAMES, isApprovalResolverAction } from '../src/lib/agent-approval-resolver.js';
 import { syncApprovalToAttention } from '../src/lib/attention.js';
+import { sweepUntilNotBusy } from './fixtures/approval-sweep.js';
 import {
   durabilityDatabaseUrl,
   setupDurabilityFixture,
@@ -434,7 +435,7 @@ test('C07-i: the maintenance sweep recovers only approvals whose executor is gon
   const holder = await holdLease(live);
   try {
     const before = await actionRow(live);
-    const result = await recoverInterruptedApprovals({ isResolverAction: isApprovalResolverAction, resolverActionNames: APPROVAL_RESOLVER_ACTION_NAMES, batchSize: 100 });
+    const result = await sweepUntilNotBusy(() => recoverInterruptedApprovals({ isResolverAction: isApprovalResolverAction, resolverActionNames: APPROVAL_RESOLVER_ACTION_NAMES, batchSize: 100 }));
     assert.ok(result.live >= 1);
     assert.deepEqual(await actionRow(live), before);
   } finally {
@@ -623,12 +624,12 @@ test('C07-n: recovery that finds its lease lost reports it and changes nothing',
   assert.deepEqual(await actionRow(actionId), before);
 });
 
-const sweepOnce = () => recoverInterruptedApprovals({
+const sweepOnce = () => sweepUntilNotBusy(() => recoverInterruptedApprovals({
   isResolverAction: isApprovalResolverAction,
   resolverActionNames: APPROVAL_RESOLVER_ACTION_NAMES,
   batchSize: 100,
   minimumAgeMs: 0,
-});
+}));
 
 test('C07-o: maintenance finishes the bookkeeping of a write whose request lost its lease, once', { skip: !canRun }, async () => {
   const taskId = await insertTask(`c07o ${randomUUID()}`);

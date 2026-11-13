@@ -21,6 +21,7 @@ import { executeAction } from '../src/lib/agent-actions.js';
 import { syncApprovalToAttention } from '../src/lib/attention.js';
 import { humanModuleActor, installBundledModule, updateModuleInstallation } from '../src/lib/module-service.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
+import { sweepUntilNotBusy } from './fixtures/approval-sweep.js';
 
 const TEST_DATABASE_URL = safeTestDatabaseUrl();
 const canRun = Boolean(TEST_DATABASE_URL);
@@ -49,7 +50,8 @@ before(async () => {
   const installed = await installBundledModule(actor, 'contacts');
   manifestDigest = installed.manifest_digest;
   await updateModuleInstallation(actor, 'contacts', { agent_access: 'write' });
-  recoverNow = (await import('../src/routes/agent.js')).recoverInterruptedApprovalsNow;
+  const recoverOnce = (await import('../src/routes/agent.js')).recoverInterruptedApprovalsNow;
+  recoverNow = () => sweepUntilNotBusy(recoverOnce);
 });
 
 after(async () => {
