@@ -18,6 +18,8 @@ import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 
 const url = safeTestDatabaseUrl();
 const orgId = randomUUID();
+/** A second workspace where the departed member is still active. */
+const otherOrgId = randomUUID();
 const people = ['owner', 'admin', 'member', 'peer', 'guest', 'departed'] as const;
 type Person = (typeof people)[number];
 const ids = Object.fromEntries(people.map((p) => [p, randomUUID()])) as Record<Person, string>;
@@ -63,6 +65,8 @@ before(async () => {
     await q('INSERT INTO org_members(id,org_id,user_id,role,is_active) VALUES($1,$2,$3,$4,$5)',
       [randomUUID(), orgId, ids[person], roles[person], person !== 'departed']);
   }
+  await q('INSERT INTO orgs(id,name,slug) VALUES($1,$2,$3)', [otherOrgId, 'Other', `queue-other-${otherOrgId}`]);
+  await q("INSERT INTO org_members(id,org_id,user_id,role,is_active) VALUES($1,$2,$3,'member',true)", [randomUUID(), otherOrgId, ids.departed]);
   const { ensureDeftyEmployee } = await import('../src/lib/ensure-defty-membership.js');
   const defty = await ensureDeftyEmployee(orgId);
   deftyEmployeeId = defty.employeeId;
@@ -92,7 +96,14 @@ before(async () => {
     room: await msg(roomIds.room, ids.member), peerRoom: await msg(roomIds.peerRoom, ids.peer),
     pub: await msg(roomIds.pub, ids.guest), archived: await msg(roomIds.archived, ids.member),
     departedRoom: await msg(roomIds.room, ids.departed),
+    pubByMember: await msg(roomIds.pub, ids.member),
   };
+  // The server recorded that the member addressed the employee with that message,
+  // so the employee's proposal citing it is requested by the member.
+  await q(`INSERT INTO agent_channel_events(id,org_id,agent_employee_id,kind,source_kind,source_id,space_id,actor_user_id,payload,idempotency_key,created_at)
+    VALUES($1,$2,$3,'message.created','message',$4,$5,$6,'{"author_role":"member"}',$7,$8)`,
+    [randomUUID(), orgId, employeeId, m.pubByMember, roomIds.pub, ids.member, `message:${m.pubByMember}:employee:${employeeId}`,
+      new Date(Date.now() - 900_000)]);
 
   let offset = 0;
   const action = async (label: string, row: {
@@ -132,6 +143,8 @@ before(async () => {
   await action('capture-blank-user', { user: ids.peer, source: 'defty_capture', params: { title: 'cap', source_user_id: '  ', source_space_id: roomIds.pub } });
   await action('employee-sourceless', { user: agentUserId, employee: employeeId, source: 'mcp' });
   await action('employee-msg-pub', { user: agentUserId, employee: employeeId, source: 'mcp', message: m.pub });
+  await action('employee-bound-member', { user: agentUserId, employee: employeeId, source: 'mcp', message: m.pubByMember });
+  await action('capture-origin-member', { user: deftyUserId, source: 'defty_capture', params: { title: 'cap', source_user_id: null, origin_user_id: ids.member } });
   await action('employee-for-member', { user: ids.member, employee: employeeId, source: 'mcp' });
   await action('employee-chat-mention-nomsg', { user: ids.member, employee: employeeId, source: 'mcp', action: 'chat_mention' });
   await action('module-member', { user: ids.member, employee: employeeId, source: 'mcp', action: 'module_record_create' });
@@ -169,7 +182,9 @@ after(async () => {
       'agent_actions', 'messages', 'notifications', 'agent_employees', 'spaces', 'org_members']) {
       await q(`DELETE FROM ${table} WHERE org_id=$1`, [orgId]);
     }
-    await q('DELETE FROM orgs WHERE id=$1', [orgId]);
+    await q('DELETE FROM agent_channel_events WHERE org_id=$1', [orgId]);
+    await q('DELETE FROM org_members WHERE org_id=$1', [otherOrgId]);
+    await q('DELETE FROM orgs WHERE id=ANY($1::text[])', [[orgId, otherOrgId]]);
     await q('DELETE FROM users WHERE id=ANY($1::text[])', [[...Object.values(ids), agentUserId]]);
   }
   await client?.end().catch(() => undefined);
@@ -215,9 +230,12 @@ async function observeAll() {
   return out;
 }
 
+/** Enough maintenance passes to cover every open approval item of the database once. */
 async function sweep() {
   const { resolveApprovalItemsWithoutReviewer } = await import('../src/lib/attention.js');
-  for (let pass = 0; pass < 5; pass += 1) await resolveApprovalItemsWithoutReviewer(500);
+  const open = Number((await q(`SELECT count(*) FROM attention_items WHERE source_type='agent_action'
+    AND state IN ('open_unseen','open_seen','acknowledged','snoozed')`)).rows[0].count);
+  for (let pass = 0; pass < Math.ceil(open / 500) + 2; pass += 1) await resolveApprovalItemsWithoutReviewer(500);
 }
 
 /** Recorded on the review rule as it stands; every change to these queries must keep it. */
@@ -243,14 +261,14 @@ const INITIAL: Record<string, unknown> = {
     stored: ['agent-requester-defty:open_unseen', 'assign-admin-on-departed:open_unseen', 'assign-decided-admin:open_unseen', 'assign-guest-on-departed:open_unseen', 'assign-owner-outside-room:open_unseen', 'capture-departed-room:open_unseen', 'defty-msg-departed-room:open_unseen', 'defty-plain-departed:open_unseen', 'employee-msg-pub:open_unseen', 'employee-sourceless:open_unseen', 'module-agent:open_unseen'],
   },
   member: {
-    attention: ['assign-member-self', 'assign-peer-on-member', 'capture-member-room', 'capture-no-room', 'defty-envelope-msg', 'defty-msg-member', 'defty-plain-member', 'employee-for-member', 'full-member', 'mirror-member', 'module-member'],
-    attentionAll: ['assign-member-self', 'assign-peer-on-member', 'capture-member-room', 'capture-no-room', 'defty-envelope-msg', 'defty-msg-member', 'defty-plain-member', 'employee-for-member', 'full-member', 'mirror-member', 'module-member'],
-    counts: [11, 11, 11],
-    inbox: ['assign-member-self', 'assign-peer-on-member', 'defty-envelope-msg', 'defty-msg-member', 'defty-plain-member', 'employee-for-member', 'full-member', 'mirror-member', 'module-member'],
-    inboxCount: [9, 9],
-    employees: [4, 1],
-    team: 12,
-    stored: ['assign-member-self:open_unseen', 'assign-peer-on-member:open_unseen', 'capture-member-room:open_unseen', 'capture-no-room:open_unseen', 'defty-envelope-msg:open_unseen', 'defty-msg-member:open_unseen', 'defty-plain-member:open_unseen', 'employee-for-member:open_unseen', 'full-member:open_unseen', 'mirror-member:open_unseen', 'module-member:open_unseen'],
+    attention: ['assign-member-self', 'assign-peer-on-member', 'capture-member-room', 'capture-no-room', 'capture-origin-member', 'defty-envelope-msg', 'defty-msg-member', 'defty-plain-member', 'employee-bound-member', 'employee-for-member', 'full-member', 'mirror-member', 'module-member'],
+    attentionAll: ['assign-member-self', 'assign-peer-on-member', 'capture-member-room', 'capture-no-room', 'capture-origin-member', 'defty-envelope-msg', 'defty-msg-member', 'defty-plain-member', 'employee-bound-member', 'employee-for-member', 'full-member', 'mirror-member', 'module-member'],
+    counts: [13, 13, 13],
+    inbox: ['assign-member-self', 'assign-peer-on-member', 'defty-envelope-msg', 'defty-msg-member', 'defty-plain-member', 'employee-bound-member', 'employee-for-member', 'full-member', 'mirror-member', 'module-member'],
+    inboxCount: [10, 10],
+    employees: [5, 1],
+    team: 14,
+    stored: ['assign-member-self:open_unseen', 'assign-peer-on-member:open_unseen', 'capture-member-room:open_unseen', 'capture-no-room:open_unseen', 'capture-origin-member:open_unseen', 'defty-envelope-msg:open_unseen', 'defty-msg-member:open_unseen', 'defty-plain-member:open_unseen', 'employee-bound-member:open_unseen', 'employee-for-member:open_unseen', 'full-member:open_unseen', 'mirror-member:open_unseen', 'module-member:open_unseen'],
   },
   peer: {
     attention: ['capture-peer-room', 'mirror-peer'],
@@ -275,14 +293,14 @@ const INITIAL: Record<string, unknown> = {
 };
 /** The member after leaving the private room and the maintenance sweep. */
 const MEMBER_AFTER_LEAVE = {
-    attention: ['assign-member-self', 'assign-peer-on-member', 'capture-no-room', 'defty-plain-member', 'employee-for-member', 'full-member', 'mirror-member', 'module-member'],
-    attentionAll: ['assign-member-self', 'assign-peer-on-member', 'capture-no-room', 'defty-plain-member', 'employee-for-member', 'full-member', 'mirror-member', 'module-member'],
-    counts: [8, 8, 8],
-    inbox: ['assign-member-self', 'assign-peer-on-member', 'defty-plain-member', 'employee-for-member', 'full-member', 'mirror-member', 'module-member'],
-    inboxCount: [7, 7],
-    employees: [4, 0],
-    team: 9,
-    stored: ['assign-member-self:open_unseen', 'assign-peer-on-member:open_unseen', 'capture-member-room:resolved', 'capture-no-room:open_unseen', 'defty-envelope-msg:resolved', 'defty-msg-member:resolved', 'defty-plain-member:open_unseen', 'employee-for-member:open_unseen', 'full-member:open_unseen', 'mirror-member:open_unseen', 'module-member:open_unseen'],
+    attention: ['assign-member-self', 'assign-peer-on-member', 'capture-no-room', 'capture-origin-member', 'defty-plain-member', 'employee-bound-member', 'employee-for-member', 'full-member', 'mirror-member', 'module-member'],
+    attentionAll: ['assign-member-self', 'assign-peer-on-member', 'capture-no-room', 'capture-origin-member', 'defty-plain-member', 'employee-bound-member', 'employee-for-member', 'full-member', 'mirror-member', 'module-member'],
+    counts: [10, 10, 10],
+    inbox: ['assign-member-self', 'assign-peer-on-member', 'defty-plain-member', 'employee-bound-member', 'employee-for-member', 'full-member', 'mirror-member', 'module-member'],
+    inboxCount: [8, 8],
+    employees: [5, 0],
+    team: 11,
+    stored: ['assign-member-self:open_unseen', 'assign-peer-on-member:open_unseen', 'capture-member-room:resolved', 'capture-no-room:open_unseen', 'capture-origin-member:open_unseen', 'defty-envelope-msg:resolved', 'defty-msg-member:resolved', 'defty-plain-member:open_unseen', 'employee-bound-member:open_unseen', 'employee-for-member:open_unseen', 'full-member:open_unseen', 'mirror-member:open_unseen', 'module-member:open_unseen'],
 };
 
 test('PERF-A: every polled approval queue serves each viewer the same approvals through room changes and maintenance', async (t) => {
@@ -338,19 +356,28 @@ test('PERF-B: a steady Attention poll runs the review check for the backfill onl
   const memberPoll = backfill(await statementsOf(() => poll('member')));
   assert.equal(memberPoll.length, 1, 'one backfill statement with the review check');
   const plan = (await q(`EXPLAIN (ANALYZE, FORMAT JSON) ${memberPoll[0]!.text}`, memberPoll[0]!.values)).rows[0]['QUERY PLAN'][0];
-  const subplanLoops: number[] = [];
+  // Every review check reads the member's current role (alias review_role) first.
+  const reviewLoops: number[] = [];
   const walk = (node: any) => {
-    if (node['Parent Relationship'] === 'SubPlan') subplanLoops.push(node['Actual Loops'] ?? 0);
+    if (node.Alias === REVIEW_CHECK) reviewLoops.push(node['Actual Loops'] ?? 0);
     for (const child of node.Plans ?? []) walk(child);
   };
   walk(plan.Plan);
-  const count = async (where: string) => Number((await q(`SELECT count(*) FROM agent_actions a WHERE a.org_id=$1
-    AND a.approval_status='pending' AND a.approval_tier IN ('quick','full') AND ${where}`, [orgId, ids.member])).rows[0].count);
-  const pending = await count('$2::text IS NOT NULL');
-  const own = await count(`(a.user_id=$2 AND a.source IS DISTINCT FROM 'defty_capture' OR a.params->>'source_user_id'=$2)`);
-  assert.ok(own > 0 && own < pending / 2, `${own} own of ${pending} pending`);
-  assert.ok(Math.max(...subplanLoops) <= own,
-    `checks run only on the member's own ${own} pending actions, not all ${pending} (loops: ${subplanLoops.join(',')})`);
+  const { actionRequesterIdSql } = await import('../src/lib/agent-action-requester.js');
+  const { db } = await import('../src/lib/db.js');
+  const { sql } = await import('drizzle-orm');
+  const count = async (unraisedOnly: boolean) => Number(((await db.execute(sql`SELECT count(*) FROM agent_actions
+    WHERE org_id = ${orgId} AND approval_status = 'pending' AND approval_tier IN ('quick', 'full')
+      AND (${!unraisedOnly} OR ${actionRequesterIdSql()} = ${ids.member})
+      AND (${!unraisedOnly} OR NOT EXISTS (SELECT 1 FROM attention_events e WHERE e.org_id = agent_actions.org_id
+        AND e.user_id = ${ids.member} AND e.event_type = 'source_event'
+        AND e.source_event_id = 'approval-requested:' || agent_actions.id))`)).rows[0] as { count: string }).count);
+  const pending = await count(false);
+  const candidates = await count(true);
+  assert.ok(reviewLoops.length > 0, 'the plan reads the role');
+  assert.ok(candidates > 0 && candidates < pending / 4, `${candidates} candidates of ${pending} pending`);
+  assert.ok(Math.max(...reviewLoops) <= candidates,
+    `the review check runs on the member's ${candidates} candidates, not all ${pending} (loops: ${reviewLoops.join(',')})`);
   // A new approval is still raised on the next poll.
   const fresh = randomUUID();
   labelOf.set(fresh, 'fresh-member');
