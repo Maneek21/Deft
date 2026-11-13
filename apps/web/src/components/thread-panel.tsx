@@ -30,6 +30,7 @@ import { inlineApprovalDisplayContent } from '@/lib/agent-approval-copy';
 import { ConversationReads, mergeMessagesById } from '@/lib/chat-history-merge';
 import { applyMessageEvent, replayMessageEvents, type MessageEvent } from '@/lib/chat-message-events';
 import { ChatLoadError } from './chat-load-error';
+import { adoptFetchedThreadParent, applyThreadParentEvent, type ScopedMessageEvent } from '@/lib/thread-parent';
 
 type Reaction = {
   emoji: string;
@@ -241,6 +242,14 @@ type Props = {
 
 export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
   const messageId = parentMessage.id;
+  // The shown parent follows live edits, deletes and reactions, and each
+  // thread read; it restarts from the prop when another thread opens.
+  const [parent, setParent] = useState(parentMessage);
+  const shownParent = parent.id === messageId ? parent : parentMessage;
+  const parentPropRef = useRef(parentMessage);
+  parentPropRef.current = parentMessage;
+  const spaceIdRef = useRef(spaceId);
+  spaceIdRef.current = spaceId;
   const { user, sessionCacheScope } = useAuth();
   const deftyWork = useDeftyWorking(spaceId, sessionCacheScope);
   const router = useRouter();
@@ -338,6 +347,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     setCatchUpError(false);
     setReplies([]);
     setPendingFiles([]);
+    setParent(parentPropRef.current);
     let cancelled = false;
     threadReadsRef.current.dispose();
     const reads = new ConversationReads<MessageEvent<Message>>();
@@ -361,6 +371,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
         // Fetched rows are authoritative; live events received during the
         // read are replayed on top.
         setReplies((previous) => replayMessageEvents(mergeMessagesById(previous, loaded), events));
+        setParent((current) => adoptFetchedThreadParent(current, data.parent, events, spaceIdRef.current));
         // Mark thread as read
         void api.post(`/api/messages/${messageId}/thread-read`).catch(() => {});
       } catch {
@@ -398,6 +409,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
       if (activeMessageIdRef.current !== requestMessageId || !reads.isLatest(ticket)) return;
       const loaded: Message[] = data.replies || data.messages || [];
       setReplies((prev) => replayMessageEvents(mergeMessagesById(prev, loaded), events));
+      setParent((current) => adoptFetchedThreadParent(current, data.parent, events, spaceIdRef.current));
       setLoadError(false);
       setCatchUpError(false);
       setLoading(false);
@@ -418,9 +430,10 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
 
     // Every live change goes through the same pure reducer that replays it
     // onto a read that was in flight when it arrived.
-    const live = (event: MessageEvent<Message>) => {
+    const live = (event: ScopedMessageEvent<Message>) => {
       threadReadsRef.current.record(event);
       setReplies((prev) => applyMessageEvent(prev, event));
+      setParent((current) => applyThreadParentEvent(current, event, spaceIdRef.current));
     };
     const onNewMessage = (msg: Message & { parent_id?: string }) => {
       if (msg.parent_id === messageId) {
@@ -438,13 +451,13 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
       live({ type: 'reaction_removed', message_id: data.message_id, emoji: data.emoji, user_id: data.user_id });
     };
 
-    // Edits and deletes of replies show live; events for messages not in
-    // this thread change nothing.
-    const onEdited = (msg: { id: string; content: string; edited_at: string | null; metadata?: unknown }) => {
-      live({ type: 'edited', id: msg.id, content: msg.content, edited_at: msg.edited_at, metadata: msg.metadata });
+    // Edits and deletes of the parent and its replies show live; events for
+    // messages not in this thread change nothing.
+    const onEdited = (msg: { id: string; content: string; edited_at: string | null; metadata?: unknown; space_id?: string | null }) => {
+      live({ type: 'edited', id: msg.id, content: msg.content, edited_at: msg.edited_at, metadata: msg.metadata, space_id: msg.space_id });
     };
-    const onDeleted = (data: { id: string }) => {
-      live({ type: 'deleted', id: data.id });
+    const onDeleted = (data: { id: string; space_id?: string | null }) => {
+      live({ type: 'deleted', id: data.id, space_id: data.space_id });
     };
 
     socket.on('message:new', onNewMessage);
@@ -472,6 +485,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
         if (activeMessageIdRef.current !== messageId || !reads.isLatest(ticket)) return 'superseded';
         const fetched: Message[] = data.replies || data.messages || [];
         setReplies((prev) => replayMessageEvents(mergeMessagesById(prev, fetched), events));
+        setParent((current) => adoptFetchedThreadParent(current, data.parent, events, spaceIdRef.current));
         setLoadError(false);
         setCatchUpError(false);
         // It may have superseded the initial read, which then never ends loading.
@@ -567,7 +581,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
   };
 
   const toggleReaction = async (msgId: string, emoji: string) => {
-    const msg = msgId === messageId ? parentMessage : replies.find((r) => r.id === msgId);
+    const msg = msgId === messageId ? shownParent : replies.find((r) => r.id === msgId);
     if (!msg) return;
     const reaction = msg.reactions?.find((r) => r.emoji === emoji);
     if (reaction && user && reaction.users.includes(user.id)) {
@@ -769,9 +783,9 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
         ) : (
           <>
             {/* Parent message */}
-            {parentMessage && (
+            {shownParent && (
               <div style={{ paddingBottom: '12px', marginBottom: '4px', background: 'var(--surface-container-low)', borderRadius: 'var(--radius-lg)', padding: '12px' }}>
-                {renderMessage(parentMessage, true)}
+                {renderMessage(shownParent, true)}
               </div>
             )}
 
