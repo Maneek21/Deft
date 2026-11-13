@@ -204,10 +204,11 @@ Workspace isolation:
 Requests, triggers and outbound fetches:
 
 - Every request under `/api` needs a valid web session unless its path is
-  exempt: auth, MCP, Agent Channel, metrics, webhooks, invites, App developer
-  pairing, App Runtime channels, public App ingress, the App runtime operator
-  routes, `POST /api/agent-webhooks/:slug` and `GET /api/ics/feed/:token`, which
-  carry their own credentials. A path containing a control character, DEL or a
+  exempt (CORS preflight is answered by the CORS policy): auth, MCP, Agent
+  Channel, metrics, webhooks, invites, App developer pairing, App Runtime
+  channels, public App ingress, the App runtime operator routes,
+  `POST /api/agent-webhooks/:slug` and `GET`/`HEAD /api/ics/feed/:token`, which
+  use their own authentication or are intentionally public. A path containing a control character, DEL or a
   backslash, literal or percent-encoded, is refused with `400 INVALID_PATH`.
 - API key and MCP connection management check the caller's owner or admin role in
   each handler (`403 FORBIDDEN` for members and guests). `POST /api/upload`
@@ -216,24 +217,26 @@ Requests, triggers and outbound fetches:
   endpoint answers `503 GITHUB_WEBHOOK_NOT_CONFIGURED`. With it, requests need a
   matching `x-hub-signature-256`. A signed merged-PR delivery is acknowledged and
   dispatches nothing; merged PRs close their `PREFIX-N` tasks through the
-  per-workspace polling sync, which stores and updates its events within the
+  per-workspace GitHub sync, which stores and updates its events within the
   syncing workspace.
-- Trigger jobs (`trigger-dispatch`, `employee-trigger`, `agent-employee-trigger`)
-  and `workflow-execute` jobs carry their workspace and reach only that workspace's
+- Trigger jobs for an event (`trigger-dispatch`, `employee-trigger`,
+  `agent-employee-trigger`) and `workflow-execute` jobs carry their workspace and
+  reach only that workspace's
   employees, stored triggers, spaces and workflow rules. Workflow `assign_to` and
   `notify` actions address only active members of the rule's workspace, and
   `unblock_dependents` notifies only active members. Agent webhooks are managed
-  (`POST/GET/DELETE /api/agent-webhooks`) by owners and admins.
+  (`POST` and `GET /api/agent-webhooks`, `DELETE /api/agent-webhooks/:id`) by owners and admins.
 - An agent employee's queued proposals can cite the chat message they answer:
   `task_create`, `task_update`, `send_message`, `message_post`, `wiki_create`,
   `wiki_update` and the module record write tools take an optional
   `source_message_id`, and `request_human_approval` takes it in `params`. The
-  message must be live, in the workspace and in a room the employee belongs to
-  (`source message is unavailable` otherwise), and it must be the message the
-  employee is currently handling (`cited message is not the delivery being
-  handled` otherwise). A citation does not change whether a call needs approval.
-  When the message's author addressed that employee, is an active human member and
-  can read the room, the author reviews the proposal; the proposal is also
+  message must be live, in the workspace and in a room the employee belongs to.
+  While the employee is handling the delivery of a message, a call citing a
+  different message is refused (`cited message is not the delivery being
+  handled`). A citation does not change whether a call needs approval. When the
+  server recorded that the message's author addressed that employee, the
+  proposal was made within 24 hours, and the author is an active human member
+  who is not a guest and can read the room, the author reviews the proposal; the proposal is also
   reviewed only by people who can read that room. A wiki proposal whose cited
   message the write could not use as its source is refused with
   `WIKI_SOURCE_MESSAGE_ROOM`. The bundled `deft-mcp-client` skill and the Hermes
@@ -243,9 +246,9 @@ Requests, triggers and outbound fetches:
 - Approval rows in the Inbox, Attention and the dashboard carry
   `viewer_can_approve` and `viewer_can_reject` for App Run approvals that follow
   the App Run release rules; at most 10 rows per response get the live approve
-  check, and later rows leave `viewer_can_approve` out so the control stays.
+  check, and later rows leave `viewer_can_approve` out.
 - Calendar feeds (preview, create and sync) and link previews fetch only from
-  public internet addresses: `http`, `https` or `webcal` URLs on ports 80 and 443
+  public internet addresses: `http` or `https` URLs (`webcal` for feeds) on ports 80 and 443
   without userinfo, every DNS answer public, the connection pinned to the
   validated address, at most three redirects each re-checked, and a body size and
   time limit (5 MB and 20 seconds for feeds, 512 KB and 5 seconds for previews).
