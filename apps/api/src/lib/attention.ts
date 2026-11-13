@@ -602,15 +602,14 @@ export async function filterVisibleAttentionItems<T extends typeof attentionItem
       .leftJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, userId)))
       .where(inArray(spaces.id, spaceIds))
     : [];
-  const visibleActions = actionIds.length > 0
+  const knownActions = actionIds.length > 0
     ? await db
-      .select({ id: agentActions.id })
+      .select({ id: agentActions.id, allowed: sql<boolean>`coalesce((${currentApprovalRecipientSql(userId)}), false)` })
       .from(agentActions)
-      .where(and(
-        inArray(agentActions.id, actionIds),
-        currentApprovalRecipientSql(userId),
-      ))
+      .where(inArray(agentActions.id, actionIds))
     : [];
+  const existingActions = new Set(knownActions.map((row) => row.id));
+  const visibleActions = knownActions.filter((row) => row.allowed);
   const allowedMessages = new Set(visibleMessages.filter((row) => row.type === 'public' || row.member_id).map((row) => row.id));
   const allowedSpaces = new Set(visibleSpaces.filter((row) => row.type === 'public' || row.member_id).map((row) => row.id));
   const allowedActions = new Set(visibleActions.map((row) => row.id));
@@ -618,10 +617,12 @@ export async function filterVisibleAttentionItems<T extends typeof attentionItem
     (item.source_type === 'native_mention' && !allowedNative.has(item.id))
     ||
     (item.source_type === 'message' && !allowedMessages.has(item.source_id))
-    || (item.source_type === 'space' && !allowedSpaces.has(item.source_id)));
+    || (item.source_type === 'space' && !allowedSpaces.has(item.source_id))
+    || (item.source_type === 'agent_action' && !existingActions.has(item.source_id)));
   // Approval items are held back, not closed, while their owner cannot review
   // the action; attention maintenance resolves those that stay that way.
-  const heldBack = rows.filter((item) => item.source_type === 'agent_action' && !allowedActions.has(item.source_id));
+  const heldBack = rows.filter((item) => item.source_type === 'agent_action'
+    && existingActions.has(item.source_id) && !allowedActions.has(item.source_id));
   for (const item of inaccessible) {
     await transitionAttentionItem({
       orgId: item.org_id,
@@ -645,21 +646,43 @@ export async function attentionItemStillVisible(item: { id: string; org_id: stri
   return Boolean(row);
 }
 
-/** Resolves open approval items whose owner can no longer review the action. */
-export async function resolveApprovalItemsWithoutReviewer() {
-  const rows = await db.select().from(attentionItems).where(and(
+/**
+ * Resolves, in one bounded statement, open approval items whose owner can no
+ * longer review the action, re-checking that inside the update.
+ */
+export async function resolveApprovalItemsWithoutReviewer(limit = 500) {
+  const openStates: AttentionState[] = ['open_unseen', 'open_seen', 'acknowledged', 'snoozed'];
+  const withoutReviewer = and(
     eq(attentionItems.source_type, 'agent_action'),
-    inArray(attentionItems.state, ['open_unseen', 'open_seen', 'acknowledged', 'snoozed']),
+    inArray(attentionItems.state, openStates),
     sql`NOT EXISTS (SELECT 1 FROM ${agentActions} WHERE ${agentActions.id} = ${attentionItems.source_id}
       AND ${agentActions.org_id} = ${attentionItems.org_id}
       AND ${currentApprovalRecipientSql(sql`${attentionItems.user_id}`)})`,
-  ));
-  for (const item of rows) {
-    await transitionAttentionItem({
-      orgId: item.org_id, userId: item.user_id, itemId: item.id, state: 'resolved', resolution: 'source_access_removed',
-    });
+  );
+  const now = new Date();
+  const batch = db.select({ id: attentionItems.id }).from(attentionItems).where(withoutReviewer).limit(limit);
+  const resolved = await db.update(attentionItems).set({
+    state: 'resolved',
+    seen_at: sql`COALESCE(${attentionItems.seen_at}, ${now})`,
+    snoozed_until: null,
+    resolved_at: now,
+    resolution: 'source_access_removed',
+    version: sql`${attentionItems.version} + 1`,
+    updated_at: now,
+  }).where(and(inArray(attentionItems.id, batch), withoutReviewer))
+    .returning({ id: attentionItems.id, org_id: attentionItems.org_id, user_id: attentionItems.user_id, version: attentionItems.version });
+  if (resolved.length > 0) {
+    await db.insert(attentionEvents).values(resolved.map((item) => ({
+      org_id: item.org_id,
+      attention_item_id: item.id,
+      user_id: item.user_id,
+      event_type: 'resolved',
+      source_event_id: `transition:${item.id}:${item.version}:resolved:${now.getTime()}`,
+      actor_user_id: item.user_id,
+      payload: { resolution: 'source_access_removed', snoozed_until: null },
+    })));
   }
-  return rows.length;
+  return resolved.length;
 }
 
 /**

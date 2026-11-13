@@ -27,21 +27,20 @@ export function reviewableActionSql(user: { id: UserRef; org_id: UserRef; role?:
 }
 
 /**
- * A Defty action (no employee, or the Defty envelope) that names the chat
- * message it came from is reviewed only by a user who can still read that
- * message in its room. Captures carry their room in params
+ * A Defty action (no employee, or the Defty envelope) that names a chat
+ * message of the workspace is reviewed only by a user who can still read
+ * that message's room. Captures carry their room in params
  * (`visibleCaptureActionSql`); employee actions follow their own source rule.
  */
 export function sourceMessageRoomSql(userId: UserRef): SQL {
   return sql`(${agentActions.message_id} IS NULL
     OR COALESCE(${agentActions.source} = 'defty_capture', false)
     OR NOT (${agentActions.agent_employee_id} IS NULL OR ${canonicalDeftyActionSql()})
-    OR EXISTS (
+    OR NOT EXISTS (
       SELECT 1 FROM messages review_source
       WHERE review_source.id = ${agentActions.message_id}
         AND review_source.org_id = ${agentActions.org_id}
-        AND review_source.is_deleted = false
-        AND ${currentUserSpaceAuthoritySql(sql`review_source.org_id`, sql`${userId}`, sql`review_source.space_id`)}
+        AND NOT ${currentUserSpaceAuthoritySql(sql`review_source.org_id`, sql`${userId}`, sql`review_source.space_id`)}
     ))`;
 }
 
