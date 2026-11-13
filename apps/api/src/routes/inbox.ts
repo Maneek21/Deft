@@ -312,7 +312,7 @@ inboxRoutes.get('/', async (c) => {
 
     const items = all.slice(0, limit);
     // Review flags only for the approvals in this page; `viewer_can_approve`
-    // is absent for an App Run approval past the per-response check limit.
+    // is absent when only the App Run approval path can tell.
     const pageApprovals = items.flatMap((item) => item.approval ? [item.approval] : []);
     const reviewAuthority = await viewerReviewAuthority(user, pageApprovals.map((approval) => approval.action_id));
     for (const approval of pageApprovals) Object.assign(approval, reviewAuthority.get(approval.action_id));

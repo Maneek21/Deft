@@ -281,17 +281,22 @@ test('App Run flags stay in the viewer workspace', { skip: !canRun, timeout: 900
   assert.equal((await viewerReviewAuthority(outsider, [ids.actionId])).has(ids.actionId), false);
 });
 
-test('native and protocol-7 releases answer approve false; owner-only releases refuse others', () => {
+test('native and protocol-7 approve is left out unless a common rule refuses; owner-only releases refuse others', () => {
   const now = new Date();
   const open = { state: 'pending_approval', execution_release_kind: null, input_expires_at: new Date(now.getTime() + 60_000) } as const;
   const row = { user_id: 'owner', approval_status: 'pending', approve: true, reject: true };
   const steps = (run: object, protocol: string | null, viewerId = 'owner') =>
     appRunReviewSteps({ ...open, ...run } as Parameters<typeof appRunReviewSteps>[0], protocol, row, viewerId, now);
-  assert.deepEqual(steps({ provider_kind: 'native', initiating_actor_type: 'human' }, null), { approve: false, reject: true });
-  assert.deepEqual(steps({ provider_kind: 'app_runtime', initiating_actor_type: 'human' }, '7'), { approve: false, reject: true });
+  assert.deepEqual(steps({ provider_kind: 'native', initiating_actor_type: 'human' }, null), { approve: 'unknown', reject: true });
+  assert.deepEqual(steps({ provider_kind: 'app_runtime', initiating_actor_type: 'human' }, '7'), { approve: 'unknown', reject: true });
   assert.deepEqual(steps({ provider_kind: 'app_runtime', initiating_actor_type: 'human' }, '6'), { approve: 'live', reject: true });
   assert.deepEqual(steps({ provider_kind: 'app_runtime', initiating_actor_type: 'agent_employee' }, '6', 'admin'), { approve: false, reject: true });
   assert.deepEqual(steps({ provider_kind: 'app_runtime', initiating_actor_type: 'app_public' }, '6', 'admin'), { approve: false, reject: false });
   assert.deepEqual(steps({ provider_kind: 'native', initiating_actor_type: 'human' }, null, 'admin'), { approve: false, reject: true });
   assert.deepEqual(steps({ provider_kind: 'mcp', initiating_actor_type: 'human' }, null, 'admin'), { approve: 'live', reject: true });
+  // A settled native or protocol-7 approval is refused by the common rules.
+  assert.deepEqual(steps({ provider_kind: 'native', initiating_actor_type: 'human', execution_release_kind: 'approved' }, null),
+    { approve: false, reject: false });
+  assert.deepEqual(steps({ provider_kind: 'app_runtime', initiating_actor_type: 'human', state: 'expired' }, '7'),
+    { approve: false, reject: false });
 });

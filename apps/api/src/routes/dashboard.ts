@@ -683,8 +683,8 @@ async function withViewerCanReview<T extends { id: string; approval_status: stri
   const authority = await viewerReviewAuthority(user, rows.filter(awaiting).map((row) => row.id));
   return rows.map((row) => {
     const flags = authority.get(row.id);
-    // Without flags only the action's own path can tell; the Inbox keeps its controls.
-    const canReview = awaiting(row) && (!flags || flags.viewer_can_approve || flags.viewer_can_reject);
+    // A flag that is absent leaves its control in place, as on the Inbox card.
+    const canReview = awaiting(row) && (!flags || flags.viewer_can_approve !== false || flags.viewer_can_reject);
     return { ...row, viewer_can_review: canReview };
   });
 }

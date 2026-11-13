@@ -780,7 +780,7 @@ export async function reviewerRefusal(
   return canReview ? null : 'only the requester or an org owner/admin may approve this action';
 }
 
-/** `viewer_can_approve` is absent for an App Run approval past the per-response check limit. */
+/** `viewer_can_approve` is absent when only the App Run approval path can tell (see `appRunReviewAuthority`). */
 export type ViewerReviewAuthority = { viewer_can_approve?: boolean; viewer_can_reject: boolean };
 
 /**

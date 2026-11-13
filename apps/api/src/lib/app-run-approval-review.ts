@@ -61,7 +61,8 @@ export function appRunRejectStep(run: RunFacts, action: ApprovalFacts): AppRunRe
  * The review flags of one App Run approval before any live check: reject is
  * final; approve is false or `live` (true only if the live check passes).
  * Native and protocol-7 Runtime releases also need the approver's live web
- * session, which this read does not hold, so their approve answers false.
+ * session, which this read does not hold: their approve is `unknown` (left
+ * out of the row) unless a rule above already refuses it.
  */
 export function appRunReviewSteps(
   run: RunFacts,
@@ -69,13 +70,14 @@ export function appRunReviewSteps(
   row: Pick<AppRunReviewRow, 'user_id' | 'approval_status' | 'approve' | 'reject'>,
   viewerId: string,
   now: Date,
-): { approve: false | 'live'; reject: boolean } {
+): { approve: false | 'live' | 'unknown'; reject: boolean } {
   const reject = row.reject && !appRunOwnerRefuses('reject', run, row.user_id, viewerId)
     && appRunRejectStep(run, row) === 'open';
-  const needsWebSession = run.provider_kind === 'native' || (run.provider_kind === 'app_runtime' && protocolVersion === '7');
-  const approve = row.approve && !needsWebSession && !appRunOwnerRefuses('approve', run, row.user_id, viewerId)
+  const open = row.approve && !appRunOwnerRefuses('approve', run, row.user_id, viewerId)
     && appRunApproveStep(run, row, now) === 'live';
-  return { approve: approve ? 'live' : false, reject };
+  if (!open) return { approve: false, reject };
+  const needsWebSession = run.provider_kind === 'native' || (run.provider_kind === 'app_runtime' && protocolVersion === '7');
+  return { approve: needsWebSession ? 'unknown' : 'live', reject };
 }
 
 /** Exact approve checks per response; rows beyond it carry no approve flag. */
@@ -114,7 +116,7 @@ export type AppRunReviewFlags = { viewer_can_approve?: boolean; viewer_can_rejec
 /**
  * The review flags of App Run approvals for one viewer: true exactly when the
  * App Run approval resolver would take that decision freshly now. Approvals
- * that also need the approver's web session answer approve false. At most
+ * that also need the approver's web session leave approve out. At most
  * `APP_RUN_APPROVE_CHECKS_PER_RESPONSE` rows, in the given order, get the
  * live approve check; later rows leave `viewer_can_approve` out.
  */
@@ -144,6 +146,7 @@ export async function appRunReviewAuthority(
     const steps = appRunReviewSteps(run, protocol_version, row, viewerId, now);
     const entry: AppRunReviewFlags = { viewer_can_reject: steps.reject };
     flags.set(row.id, entry);
+    if (steps.approve === 'unknown') continue;
     if (steps.approve !== 'live' || !approvalRead) {
       entry.viewer_can_approve = false;
     } else if (checks.length < APP_RUN_APPROVE_CHECKS_PER_RESPONSE) {

@@ -115,8 +115,8 @@ async function hydrateApprovals(
       visibleModuleActionSql(viewer.role, { userId: viewer.id, orgId: viewer.org_id }),
     ));
   // Whether this viewer may approve or reject, as the approve and reject routes
-  // answer; `viewer_can_approve` is absent for an App Run approval past the
-  // per-response check limit. The ids keep the page's order.
+  // answer; `viewer_can_approve` is absent when only the App Run approval path
+  // can tell. The ids keep the page's order.
   const visible = new Set(actions.map((action) => action.id));
   const reviewAuthority = await viewerReviewAuthority(viewer, actionIds.filter((id) => visible.has(id)));
   const byId = new Map(actions.map((action) => [action.id, {...action,proposer:attentionActionProposer(action),
