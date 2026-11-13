@@ -1,7 +1,7 @@
 import { and, eq, isNull } from 'drizzle-orm';
 import { agentActions, orgMembers } from '@deft/db/schema';
 import { db } from './db.js';
-import { actionRequesterId } from './agent-action-requester.js';
+import { loadActionRequesterId, requesterActionColumns } from './agent-action-requester.js';
 
 /**
  * Connected (MCP) tools are available to workspace members, admins and
@@ -32,11 +32,11 @@ export async function connectedCallRequesterId(
 ): Promise<string> {
   if (!actionId) return actorUserId;
   const [row] = await db
-    .select({ user_id: agentActions.user_id, source: agentActions.source, params: agentActions.params })
+    .select(requesterActionColumns)
     .from(agentActions)
     .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, orgId)))
     .limit(1);
-  return row ? actionRequesterId(row) : actorUserId;
+  return row ? loadActionRequesterId(row) : actorUserId;
 }
 
 /** Settle an action whose connected call was refused before any provider call. */

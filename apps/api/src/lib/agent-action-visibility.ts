@@ -1,7 +1,7 @@
 import {and, eq, sql, type SQL} from 'drizzle-orm';
 import {agentActions, messages, notes, projects, spaceMembers, spaces, tasks, wikiPages} from '@deft/db/schema';
 import {db} from './db.js';
-import {actionRequesterId} from './agent-action-requester.js';
+import {loadActionRequesterId, type RequesterActionRow} from './agent-action-requester.js';
 import {resolveSpaceTargetFromRows} from './resolve-space-target.js';
 import {requireSpaceMembership} from './space-membership.js';
 import {visibleTaskCondition} from './task-visibility.js';
@@ -78,9 +78,9 @@ function stringField(value: unknown, key: string): string | null {
  */
 export async function canUndoAgentAction(
   user: { id: string; org_id: string; role?: string },
-  action: { user_id: string; source?: string | null; action: string; params: unknown; result: unknown; before_state: unknown },
+  action: RequesterActionRow & { action: string; result: unknown; before_state: unknown },
 ): Promise<boolean> {
-  const requester = actionRequesterId({ ...action, source: action.source ?? null }) === user.id;
+  const requester = await loadActionRequesterId(action) === user.id;
   if (!requester && user.role !== 'owner' && user.role !== 'admin') return false;
 
   switch (action.action) {
