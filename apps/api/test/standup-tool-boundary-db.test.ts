@@ -222,25 +222,27 @@ test('a standup item that cites no evidence is dropped while cited items are del
   }
 });
 
-test('a standup item restating an approval requirement from its cited evidence is delivered', async () => {
+test('a standup draft restating an approval requirement from its evidence uses the evidence-only form', async () => {
   const c = new pg.Client({ connectionString: process.env.DATABASE_URL }); await c.connect();
   const f = await seed(c);
   const taskId = randomUUID();
+  const title = 'Read-only rollout needs project lead approval';
   await c.query(
     `INSERT INTO tasks(id,org_id,project_id,number,title,status,assignee_id,created_by,metadata)
-     VALUES($1,$2,$3,3,'Read-only rollout needs project lead approval','in_progress',$4,$4,'{}'::jsonb)`,
-    [taskId, f.org, f.project, f.owner],
+     VALUES($1,$2,$3,3,$4,'in_progress',$5,$5,'{}'::jsonb)`,
+    [taskId, f.org, f.project, title, f.owner],
   );
   providerCalls.length = 0;
   respond = () => ({
-    content: [{ type: 'text', text: JSON.stringify({ done: [], in_progress: [{ text: 'Project lead approval is required for the read-only rollout.', source_ids: [`task:${taskId}`] }], blocked: [] }) }],
+    content: [{ type: 'text', text: JSON.stringify({ done: [], in_progress: [{ text: 'MODEL-PHRASING: project lead approval is required for the rollout.', source_ids: [`task:${taskId}`] }], blocked: [] }) }],
     stop_reason: 'end_turn',
   });
   try {
     const result = await generateDailyStandup({ orgId: f.org });
     const text = await published(c, f, result.standup!);
-    assert.ok(text.includes('Project lead approval is required for the read-only rollout.'));
-    assert.equal((result.standup!.raw_data as { generator?: string }).generator, 'agent');
+    assert.ok(!text.includes('MODEL-PHRASING'), 'the model phrasing is not published');
+    assert.ok(text.includes(title), 'the evidence is quoted verbatim instead');
+    assert.equal((result.standup!.raw_data as { generator?: string }).generator, 'fallback');
   } finally {
     await cleanup(c, f); await c.end();
   }

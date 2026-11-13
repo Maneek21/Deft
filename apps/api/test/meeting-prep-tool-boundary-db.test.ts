@@ -255,7 +255,7 @@ test('a meeting-prep draft with an approval requirement the evidence does not st
   }
 });
 
-test('a meeting-prep item restating an approval requirement from its cited evidence is delivered', async () => {
+test('a meeting-prep draft restating an approval requirement from its evidence uses the evidence-only form', async () => {
   const c = new pg.Client({ connectionString: process.env.DATABASE_URL }); await c.connect();
   const f = await seed(c);
   const [space] = (await c.query(`SELECT id FROM spaces WHERE org_id=$1 AND name='general'`, [f.org])).rows;
@@ -266,13 +266,14 @@ test('a meeting-prep item restating an approval requirement from its cited evide
   );
   providerCalls.length = 0; emitted.length = 0;
   respond = () => ({
-    content: [{ type: 'text', text: JSON.stringify({ agenda: [{ text: 'Account manager sign-off is required before launch.', source_ids: [`message:${messageId}`] }], decisions: [], updates: [] }) }],
+    content: [{ type: 'text', text: JSON.stringify({ agenda: [{ text: 'MODEL-PHRASING: account manager sign-off is required.', source_ids: [`message:${messageId}`] }], decisions: [], updates: [] }) }],
     stop_reason: 'end_turn',
   });
   try {
     const result = await generateMeetingPrep(f.event);
-    assert.ok(result.brief!.brief_text.includes('Account manager sign-off is required before launch.'));
-    assert.equal(result.run?.generator, 'agent');
+    assert.ok(!result.brief!.brief_text.includes('MODEL-PHRASING'));
+    assert.ok(result.brief!.brief_text.includes(f.attendeeTask), 'the evidence-only form is delivered');
+    assert.equal(result.run?.generator, 'fallback');
   } finally {
     await cleanup(c, f); await c.end();
   }

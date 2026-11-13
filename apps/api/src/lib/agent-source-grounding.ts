@@ -79,53 +79,48 @@ export function hasUnverifiedApprovalRoles(text: string): boolean {
   ));
 }
 
-const APPROVAL_ROLES = [/\binternal\s+stakeholders?\b/iu, /\bproject[ -]leads?\b/iu, /\baccount\s+managers?\b/iu];
-const APPROVAL_TERM = /\b(?:approv\w*|sign[ -]?offs?|signs?\s+off)\b/iu;
-const APPROVAL_NEED = /\b(?:require[sd]?|requiring|needs?|needed|must|mandatory|necessary|pending|awaiting|waiting)\b/iu;
-const NEGATION = /\b(?:no|not|never|without)\b|n't\b/iu;
-const HOLDER_STOPWORDS = new Set(['the', 'a', 'an', 'their', 'his', 'her', 'our', 'your', 'its', 'this', 'that', 'from', 'by', 'of', 'for', 'is', 'are', 'was', 'be', 'and', 'or']);
+const APPROVAL_TERM = /\b(?:approve[sd]?|approving|approvals?|approvers?|sign[ -]?offs?|signs?\s+off)\b/iu;
+const REQUIREMENT_TERM = /\b(?:require[sd]?|requiring|requirements?|needs?|needed|must|mandatory|necessary|pending|awaiting|waiting)\b/iu;
 
-/** Words naming who approves: the word before the approval term and up to three after "from"/"by". */
-function approvalHolders(sentence: string): string[] {
-  const before = sentence.match(/([A-Za-z][\w'-]*)\s+(?:approv\w*|sign[ -]?offs?)\b/iu)?.[1];
-  const after = sentence.match(/\b(?:approv\w*|sign[ -]?offs?|signs?\s+off)\b[^.!?\n]{0,40}?\b(?:from|by)\s+((?:[A-Za-z][\w'-]*\s*){1,3})/iu)?.[1];
-  return [before ?? '', ...(after ?? '').split(/\s+/)]
-    .map(word => word.toLowerCase().replace(/'s$/u, ''))
-    .filter(word => word && !HOLDER_STOPWORDS.has(word) && !NEGATION.test(word) && !APPROVAL_NEED.test(word));
+/** Any sentence that pairs an approval or sign-off word with a requirement word (whole words). */
+export function statesApprovalRequirement(text: string): boolean {
+  return text.split(/(?<=[.!?])\s+|\n+/u).some(sentence => APPROVAL_TERM.test(sentence) && REQUIREMENT_TERM.test(sentence));
 }
 
-/**
- * An approval or sign-off requirement (or its denial) must be stated by an
- * evidence sentence with the same polarity, the same named roles and the same
- * approver. Text and evidence are plain decoded prose.
- */
-export function hasUnsupportedApprovalRoles(text: string, evidence: string): boolean {
-  const evidenceSentences = evidence.split(/(?<=[.!?])\s+|\n+/u).filter(sentence => APPROVAL_TERM.test(sentence));
-  return text.split(/(?<=[.!?])\s+|\n+/u).some((sentence) => {
-    const roles = APPROVAL_ROLES.filter(role => role.test(sentence));
-    if (!APPROVAL_TERM.test(sentence) || (roles.length === 0 && !APPROVAL_NEED.test(sentence))) return false;
-    const negated = NEGATION.test(sentence);
-    const holders = approvalHolders(sentence);
-    return !evidenceSentences.some(source => NEGATION.test(source) === negated
-      && roles.every(role => role.test(source))
-      && holders.every(word => new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'iu').test(source)));
-  });
+/** The string values of a (possibly fenced) JSON reply, one per line; the text itself if it is not JSON. */
+export function decodedJsonText(text: string): string {
+  try {
+    const value: unknown = JSON.parse(text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, ''));
+    const strings: string[] = [];
+    const collect = (node: unknown): void => {
+      if (typeof node === 'string') strings.push(node);
+      else if (Array.isArray(node)) node.forEach(collect);
+      else if (node && typeof node === 'object') Object.values(node).forEach(collect);
+    };
+    collect(value);
+    return strings.join('\n');
+  } catch {
+    return text;
+  }
 }
 
-/** Split serialized JSON into its string values so each one reads as separate prose. */
-export function jsonStringsAsLines(text: string): string {
-  return text.replace(/"\s*[,:}\]]\s*"?|[{[]\s*"/gu, '\n');
-}
+const NAMED_URL_ENTITIES: Record<string, string> = {
+  amp: '&', sol: '/', bsol: '\\', colon: ':', quest: '?', num: '#', period: '.', percnt: '%', equals: '=',
+  commat: '@', lowbar: '_', hyphen: '-', dash: '-', excl: '!', plus: '+', comma: ',', semi: ';',
+  lpar: '(', rpar: ')', lsqb: '[', rsqb: ']', lbrack: '[', rbrack: ']', tilde: '~', apos: "'", quot: '"',
+};
 
-function decodeMarkdownDestination(destination: string): string {
-  return destination
-    .replace(/&#x([0-9a-f]+);?/giu, (_, hex: string) => String.fromCodePoint(parseInt(hex, 16)))
-    .replace(/&#(\d+);?/gu, (_, dec: string) => String.fromCodePoint(Number(dec)))
-    .replace(/&(sol|quest|num|amp|period);/giu, (_, name: string) => ({ sol: '/', quest: '?', num: '#', amp: '&', period: '.' })[name.toLowerCase()]!)
+/** Markdown's reading of a link destination; null when an entity is left that this cannot decode. */
+function decodeMarkdownDestination(destination: string): string | null {
+  const decoded = destination
+    .replace(/&#x([0-9a-f]{1,6});/giu, (_, hex: string) => String.fromCodePoint(Math.min(parseInt(hex, 16), 0x10ffff)))
+    .replace(/&#(\d{1,7});/gu, (_, dec: string) => String.fromCodePoint(Math.min(Number(dec), 0x10ffff)))
+    .replace(/&([a-z][a-z0-9]*);/giu, (entity, name: string) => NAMED_URL_ENTITIES[name.toLowerCase()] ?? entity)
     .replace(/\\([!-/:-@[-`{-~])/gu, '$1');
+  return /&[a-z][a-z0-9]*;/iu.test(decoded) ? null : decoded;
 }
 
-/** Any Markdown link or reference definition whose (decoded) destination is a native Deft path. */
+/** Any Markdown link or reference definition whose decoded destination is (or may be) a native Deft path. */
 export function hasNativeLinkDestination(text: string): boolean {
   const destinations = [
     ...[...text.matchAll(/\]\(\s*<([^>\n]*)>/gu)].map(match => match[1]!),
@@ -134,7 +129,9 @@ export function hasNativeLinkDestination(text: string): boolean {
   ];
   return destinations.some((destination) => {
     try {
-      const url = new URL(decodeMarkdownDestination(destination).trim(), 'https://deft.invalid');
+      const decoded = decodeMarkdownDestination(destination);
+      if (decoded === null) return true;
+      const url = new URL(decoded.trim(), 'https://deft.invalid');
       return /^\/(modules|tasks|knowledge|calendar|chat|notes)(\/|\?|#|$)/u.test(`${url.pathname}${url.search}${url.hash}`);
     } catch { return false; }
   });

@@ -224,7 +224,7 @@ async function synthesizeMeetingPrep(
       draft: parseGroundedDraft(
         response.text,
         meetingPrepDraftSchema,
-        new Map(evidence.map((item) => [item.source_id, item.text])),
+        new Set(evidence.map((item) => item.source_id)),
         { sectionLimits: { agenda: 4, decisions: 4, updates: 4 } },
       ),
       generator: 'agent' as const,

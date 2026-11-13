@@ -271,13 +271,35 @@ test('the default policy prompt keeps the full immutable platform policy', async
   assert.ok(providerCalls[0]!.system.includes(IMMUTABLE_DEFT_PLATFORM_POLICY));
 });
 
-test('toolPolicy none checks approval claims per JSON item, not across items', async () => {
-  const content = 'Return JSON only.\n\nEvidence:\n[{"source_id":"msg:1","text":"Project lead approval is required before launch."},{"source_id":"msg:2","text":"The account manager is preparing notes."}]';
-  const draft = JSON.stringify({ agenda: [
-    { text: 'Project lead approval is required before launch.', source_ids: ['msg:1'] },
-    { text: 'The account manager is preparing notes.', source_ids: ['msg:2'] },
-  ], decisions: [], updates: [] });
+// The request exactly as the daily standup sends it (standup-automation.ts).
+const standupEvidence = [
+  { source_id: 'task:1', kind: 'active_task', text: 'MKT-1 Read-only rollout is in progress with Lina.' },
+  { source_id: 'space:1', kind: 'chat_activity', text: '3 messages were posted in #launch.' },
+];
+const realStandupCall = {
+  orgId, userId, orgName: 'Tool policy org', mode: 'chat_mention' as const, skipVerification: true, maxIterations: 2, toolPolicy: 'none' as const,
+  systemPromptOverride: 'You are Defty preparing the daily standup. Use only the supplied evidence. Do not invent people, work, blockers, or source IDs. Do not call tools. Return JSON only.',
+  content: `Return JSON only with keys done, in_progress, blocked. Each value is an array of {"text": string, "source_ids": string[]}. Keep each text under 180 characters and cite at least one supplied source per item.${String.fromCharCode(10).repeat(2)}Evidence:${String.fromCharCode(10)}${JSON.stringify(standupEvidence)}`,
+};
+
+test('toolPolicy none rejects a stated approval requirement on the real standup request, even JSON-escaped', async () => {
+  const escapedA = `${String.fromCharCode(92)}u0061`;
+  for (const text of [
+    JSON.stringify({ done: [], in_progress: [{ text: 'Project lead approval is required for MKT-1.', source_ids: ['task:1'] }], blocked: [] }),
+    `{"done":[],"in_progress":[{"text":"MKT-1 needs ${escapedA}pproval from Lina.","source_ids":["task:1"]}],"blocked":[]}`,
+  ]) {
+    providerCalls.length = 0;
+    nextResponses = [{ content: [{ type: 'text', text }], stop_reason: 'end_turn' }];
+    await assert.rejects(runAgentQuery(realStandupCall as any), /could not be verified/i);
+    assert.equal(providerCalls.length, 1);
+    assert.equal(counters.execute, 0);
+  }
+});
+
+test('toolPolicy none returns a grounded draft on the real standup request', async () => {
+  const draft = JSON.stringify({ done: [], in_progress: [{ text: 'MKT-1 Read-only rollout is in progress with Lina.', source_ids: ['task:1'] }], blocked: [] });
   nextResponses = [{ content: [{ type: 'text', text: draft }], stop_reason: 'end_turn' }];
-  const response = await runAgentQuery({ ...standupLikeCall, content, toolPolicy: 'none' } as any);
+  const response = await runAgentQuery(realStandupCall as any);
   assert.equal(response.text, draft);
+  assert.deepEqual(counters, { installed: 0, mcp: 0, execute: 0, retrieve: 0 });
 });
