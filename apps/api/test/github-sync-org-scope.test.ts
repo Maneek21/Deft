@@ -11,6 +11,7 @@ import crypto from 'node:crypto';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db, orgs, users, orgMembers, connectedAccounts, events, projects, tasks, taskComments, taskActivity } from '@deft/db';
 import { encrypt } from '../src/lib/encryption.js';
+import { db as apiDb } from '../src/lib/db.js';
 import { syncGitHubForUser } from '../src/workers/github-sync.js';
 
 const stamp = `gs${Date.now().toString(36)}`;
@@ -27,9 +28,11 @@ const accountA2 = crypto.randomUUID();
 const taskIds = { a: crypto.randomUUID(), b: crypto.randomUUID() };
 const projectIds = { a: crypto.randomUUID(), b: crypto.randomUUID() };
 const lateTaskId = crypto.randomUUID();
+const racedTaskId = crypto.randomUUID();
 
 let prState: 'open' | 'merged' = 'open';
 let includeLatePr = false;
+let includeRacedPr = false;
 
 before(async () => {
   await db.insert(orgs).values([
@@ -58,9 +61,10 @@ before(async () => {
       id: taskIds[key], org_id: org, project_id: projectIds[key], number: 1, title: `${stamp} ${key}`, status: 'todo', created_by: user,
     } as any);
   }
-  await db.insert(tasks).values({
-    id: lateTaskId, org_id: orgA, project_id: projectIds.a, number: 2, title: `${stamp} late`, status: 'todo', created_by: userA,
-  } as any);
+  await db.insert(tasks).values([
+    { id: lateTaskId, org_id: orgA, project_id: projectIds.a, number: 2, title: `${stamp} late`, status: 'todo', created_by: userA },
+    { id: racedTaskId, org_id: orgA, project_id: projectIds.a, number: 3, title: `${stamp} raced`, status: 'todo', created_by: userA },
+  ] as any);
 
   mock.method(globalThis, 'fetch', async (url: string | URL) => {
     const href = String(url);
@@ -76,6 +80,10 @@ before(async () => {
         prs.push({ number: 9, title: `Fix ${PREFIX}-2`, body: null, html_url: 'https://example.invalid/pr/9',
           state: 'closed', merged_at: now, user: { login: 'dev' }, created_at: now, updated_at: now });
       }
+      if (includeRacedPr) {
+        prs.push({ number: 11, title: `Fix ${PREFIX}-3`, body: null, html_url: 'https://example.invalid/pr/11',
+          state: 'closed', merged_at: now, user: { login: 'dev' }, created_at: now, updated_at: now });
+      }
       return new Response(JSON.stringify(prs));
     }
     return new Response('[]', { status: 404 });
@@ -85,9 +93,9 @@ before(async () => {
 after(async () => {
   mock.restoreAll();
   await db.delete(taskComments).where(inArray(taskComments.org_id, [orgA, orgB]));
-  await db.delete(taskActivity).where(inArray(taskActivity.task_id, [taskIds.a, taskIds.b, lateTaskId]));
+  await db.delete(taskActivity).where(inArray(taskActivity.task_id, [taskIds.a, taskIds.b, lateTaskId, racedTaskId]));
   await db.delete(events).where(inArray(events.org_id, [orgA, orgB]));
-  await db.delete(tasks).where(inArray(tasks.id, [taskIds.a, taskIds.b, lateTaskId]));
+  await db.delete(tasks).where(inArray(tasks.id, [taskIds.a, taskIds.b, lateTaskId, racedTaskId]));
   await db.delete(projects).where(inArray(projects.id, [projectIds.a, projectIds.b]));
   await db.delete(connectedAccounts).where(inArray(connectedAccounts.id, [accountA, accountB, accountA2]));
   await db.delete(orgMembers).where(inArray(orgMembers.org_id, [orgA, orgB]));
@@ -152,4 +160,36 @@ test('a pull request first seen merged, by two concurrent syncs of one workspace
   assert.equal(task!.status, 'done');
   const closeComments = await db.select({ id: taskComments.id }).from(taskComments).where(eq(taskComments.task_id, lateTaskId));
   assert.equal(closeComments.length, 1);
+});
+
+test('a merged snapshot whose insert loses to an open snapshot of the same workspace still records the merge', async (t) => {
+  includeRacedPr = true;
+  const racedId = `gh-pr:${orgA}:${REPO}#11`;
+  const realInsert = apiDb.insert.bind(apiDb);
+  // Another sync of workspace A inserts the PR as open between this sync's
+  // existence check and its insert.
+  t.mock.method(apiDb, 'insert', ((table: unknown) => {
+    const builder = realInsert(table as any);
+    if (table !== events) return builder;
+    return {
+      values: (row: any) => {
+        const insert = builder.values(row);
+        if (row.external_id !== racedId) return insert;
+        return {
+          onConflictDoNothing: () => ({
+            returning: async (cols: any) => {
+              await realInsert(events).values({ ...row, event_type: 'pr_opened' });
+              return insert.onConflictDoNothing().returning(cols);
+            },
+          }),
+        };
+      },
+    };
+  }) as any);
+  assert.equal((await syncGitHubForUser(accountA) as any).error, undefined);
+  t.mock.restoreAll();
+  const raced = (await prEvents(orgA)).filter((e) => e.external_id === racedId);
+  assert.deepEqual(raced.map((e) => e.event_type), ['pr_merged']);
+  const [task] = await db.select({ status: tasks.status }).from(tasks).where(eq(tasks.id, racedTaskId));
+  assert.equal(task!.status, 'done');
 });
