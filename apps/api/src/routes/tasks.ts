@@ -2381,6 +2381,7 @@ taskRoutes.patch('/:id', async (c) => {
             workflow_id: rule.id,
             task_id: taskId,
             actor_user_id: user.id,
+            org_id: user.org_id,
           });
         }
       } catch (err) {

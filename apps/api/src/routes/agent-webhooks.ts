@@ -1,7 +1,8 @@
 /**
  * Block 3.3 — webhook-callable agents.
  *
- * Surface A (authenticated, inside the app):
+ * Surface A (authenticated, inside the app; owner/admin only, scoped to
+ * the caller's org):
  *   POST   /api/agent-webhooks        — create a webhook for an employee
  *   GET    /api/agent-webhooks?employee_id=… — list
  *   DELETE /api/agent-webhooks/:id    — revoke
@@ -25,6 +26,7 @@ import { db } from '../lib/db.js';
 import { agentWebhooks, agentEmployees } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { encrypt, decrypt } from '../lib/encryption.js';
+import { requireOrgAdmin } from '../lib/org-admin-guard.js';
 
 export const agentWebhookRoutes = new Hono();
 
@@ -59,6 +61,8 @@ const createSchema = z.object({
 });
 
 agentWebhookRoutes.post('/', async (c) => {
+  const denied = requireOrgAdmin(c);
+  if (denied) return denied;
   try {
     const user = c.get('user');
     const body = await c.req.json().catch(() => ({}));
@@ -124,6 +128,8 @@ agentWebhookRoutes.post('/', async (c) => {
 });
 
 agentWebhookRoutes.get('/', async (c) => {
+  const denied = requireOrgAdmin(c);
+  if (denied) return denied;
   try {
     const user = c.get('user');
     const employeeId = c.req.query('employee_id');
@@ -153,6 +159,8 @@ agentWebhookRoutes.get('/', async (c) => {
 });
 
 agentWebhookRoutes.delete('/:id', async (c) => {
+  const denied = requireOrgAdmin(c);
+  if (denied) return denied;
   try {
     const user = c.get('user');
     const id = c.req.param('id');
@@ -257,6 +265,7 @@ publicAgentWebhookRoutes.post('/:slug', async (c) => {
 
     await enqueue(QUEUE_NAMES.AGENT_JOBS, 'employee-trigger', {
       employee_id: hook.agent_employee_id,
+      org_id: hook.org_id,
       trigger_kind: 'webhook',
       context: {
         webhook_slug: slug,

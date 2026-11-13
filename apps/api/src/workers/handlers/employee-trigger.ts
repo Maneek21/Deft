@@ -13,7 +13,7 @@
 import { eq, and } from 'drizzle-orm';
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
-import { agentActions, agentEmployees } from '@deft/db/schema';
+import { agentActions, agentEmployees, spaces } from '@deft/db/schema';
 
 /**
  * Shape sent to `enqueue('agent-jobs', 'employee-trigger', invocation)`.
@@ -25,6 +25,8 @@ import { agentActions, agentEmployees } from '@deft/db/schema';
  */
 export type TriggerInvocation = {
   employee_id: string;
+  /** Org the trigger belongs to; the employee and target space must be in it. */
+  org_id: string;
   trigger_kind: string;
   /** Machine-readable context for the agent to reason over. */
   context: Record<string, unknown>;
@@ -34,19 +36,40 @@ export type TriggerInvocation = {
   target_space_id?: string;
 };
 
+/**
+ * The one org id a trigger job names, or null when it names none or two
+ * different ones (`org_id` and the queue's `orgId` alias must agree).
+ */
+export function triggerJobOrgId(data: Record<string, unknown> | null | undefined): string | null {
+  if (!data) return null;
+  const snake = typeof data.org_id === 'string' && data.org_id ? data.org_id : null;
+  const camel = typeof data.orgId === 'string' && data.orgId ? data.orgId : null;
+  if (snake && camel && snake !== camel) return null;
+  return snake ?? camel;
+}
+
 export async function handleEmployeeTrigger(job: JobData): Promise<void> {
   const invocation = job.data as TriggerInvocation;
   const { employee_id, trigger_kind, context, goal, target_space_id } = invocation;
+  const orgId = triggerJobOrgId(job.data);
+  if (!orgId || !employee_id) {
+    console.warn(`[employee-trigger] ${trigger_kind} job without a workspace; not delivered`);
+    return;
+  }
 
   console.log(
     `[employee-trigger] Queueing ${trigger_kind} for employee ${employee_id}`,
   );
 
-  // 1. Load the employee and verify it is active.
+  // 1. Load the employee from the job's org and verify it is active.
   const [employee] = await db
     .select()
     .from(agentEmployees)
-    .where(and(eq(agentEmployees.id, employee_id), eq(agentEmployees.is_active, true)))
+    .where(and(
+      eq(agentEmployees.id, employee_id),
+      eq(agentEmployees.org_id, orgId),
+      eq(agentEmployees.is_active, true),
+    ))
     .limit(1);
 
   if (!employee) {
@@ -54,6 +77,18 @@ export async function handleEmployeeTrigger(job: JobData): Promise<void> {
       `[employee-trigger] Employee ${employee_id} not found or inactive, skipping`,
     );
     return;
+  }
+
+  if (target_space_id) {
+    const [space] = await db
+      .select({ id: spaces.id })
+      .from(spaces)
+      .where(and(eq(spaces.id, target_space_id), eq(spaces.org_id, orgId)))
+      .limit(1);
+    if (!space) {
+      console.warn(`[employee-trigger] target space for ${trigger_kind} not found; skipping`);
+      return;
+    }
   }
 
   // 2. Action budget gate — matches the existing chat-mention behavior.

@@ -129,7 +129,7 @@ test('workflow worker records a bounded classified execution error', async (t) =
   const missingAssignee = randomUUID();
   await client!.query('UPDATE workflow_rules SET action_type=\'assign_to\',action_config=$1 WHERE id=$2', [JSON.stringify({ user_id: missingAssignee }), ruleId]);
   await handleWorkflowExecute({ id: randomUUID(), name: 'workflow-execute', attempts: 1,
-    data: { workflow_id: ruleId, task_id: taskId, actor_user_id: ids.source } });
+    data: { workflow_id: ruleId, task_id: taskId, actor_user_id: ids.source, org_id: orgId } });
   const { rows } = await client!.query("SELECT result FROM workflow_runs WHERE rule_id=$1 AND result->'actions'->0->>'code'='WORKFLOW_ACTION_FAILED'", [ruleId]);
   assert.equal(rows.length, 1);
   const action = rows[0].result.actions[0];

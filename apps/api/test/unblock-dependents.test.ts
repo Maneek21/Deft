@@ -122,6 +122,7 @@ test('unblock_dependents notifies only open, assigned dependents', async () => {
       workflow_id: ruleId,
       task_id: blockerId,
       actor_user_id: testUserId,
+      org_id: testOrgId,
     },
   } as any);
 

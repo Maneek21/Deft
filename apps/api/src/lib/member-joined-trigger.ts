@@ -51,6 +51,7 @@ export async function emitMemberJoinedTrigger(event: MemberJoinedEvent): Promise
     try {
       await enqueue(QUEUE_NAMES.AGENT_JOBS, 'employee-trigger', {
         employee_id: emp.id,
+        org_id: event.org_id,
         trigger_kind: 'member.joined',
         context: {
           new_user_id: event.new_user_id,

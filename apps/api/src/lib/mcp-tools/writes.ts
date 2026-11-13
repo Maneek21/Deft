@@ -847,6 +847,7 @@ export async function executeTaskUpdate(
             workflow_id: rule.id,
             task_id: args.task_id,
             actor_user_id: shadowUserId,
+            org_id: ctx.org_id,
           });
         }
       } catch (err) {

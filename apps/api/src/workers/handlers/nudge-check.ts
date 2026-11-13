@@ -192,6 +192,7 @@ export async function handleNudgeCheck(_job: JobData): Promise<void> {
       if (subscribed) {
         const invocation: TriggerInvocation = {
           employee_id: subscribed.id,
+          org_id: task.org_id,
           trigger_kind: NUDGE_STALLED_KIND,
           context: {
             task_id: task.id,
@@ -243,6 +244,7 @@ export async function handleNudgeCheck(_job: JobData): Promise<void> {
       if (subscribed) {
         const invocation: TriggerInvocation = {
           employee_id: subscribed.id,
+          org_id: task.org_id,
           trigger_kind: NUDGE_OVERDUE_KIND,
           context: {
             task_id: task.id,

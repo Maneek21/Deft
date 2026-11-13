@@ -147,6 +147,7 @@ test('1. trigger queues agent_actions row tagged source=trigger action=trigger_d
     name: 'employee-trigger',
     data: {
       employee_id: EMP_ID,
+      org_id: ORG_ID,
       trigger_kind: 'cron:standup',
       context: { when: 'test' },
       goal: 'generate a test standup reply',
@@ -183,6 +184,7 @@ test('2. distinct trigger_kind values are persisted verbatim per invocation', as
     name: 'employee-trigger',
     data: {
       employee_id: EMP_ID,
+      org_id: ORG_ID,
       trigger_kind: 'webhook:pr-merged',
       context: { pr_url: 'https://example.com/pr/42' },
       goal: 'acknowledge the merged PR',
@@ -222,6 +224,7 @@ test('3. employees at the daily action cap are skipped (no row queued)', async (
     name: 'employee-trigger',
     data: {
       employee_id: BUDGET_EMP_ID,
+      org_id: ORG_ID,
       trigger_kind: 'cron:standup',
       context: {},
       goal: 'should be skipped',

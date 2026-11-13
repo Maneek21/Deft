@@ -12,7 +12,6 @@
  * Trigger kinds supported in v1:
  *   cron:standup               — 9am org-tz (approximated as 9am UTC for v1)
  *   cron:nightly-review        — 9pm org-tz
- *   webhook:github-pr-merged   — fan-out from the GitHub webhook route
  *   event:task-extracted       — fan-out from the task-extract worker
  *   event:task-overdue         — fan-out from the overdue sweep
  *   event:task-stalled-48h     — fan-out from the stalled sweep
@@ -22,7 +21,7 @@
  * a separate cron per kind. Webhook/event kinds are enqueued with a
  * payload and the handler dispatches immediately.
  */
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
 import {
@@ -32,10 +31,10 @@ import {
 } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
 import type { SkillAgentConfig } from '../../lib/skill-config.js';
-import type { TriggerInvocation } from './employee-trigger.js';
+import { triggerJobOrgId, type TriggerInvocation } from './employee-trigger.js';
 
 type DispatchJobData =
-  | { trigger_kind?: string; context?: Record<string, unknown>; goal?: string }
+  | { trigger_kind?: string; org_id?: string; orgId?: string; context?: Record<string, unknown>; goal?: string }
   | undefined;
 
 /**
@@ -65,10 +64,18 @@ export async function handleTriggerDispatch(job: JobData): Promise<void> {
   // Two invocation paths share this handler:
   //   (a) cron: invoked with empty `data` — we scan CRON_HOUR_UTC and fire
   //       every cron kind whose hour matches.
-  //   (b) webhook / event: invoked with `{ trigger_kind, context, goal }`
-  //       and we fan out directly to subscribed employees.
-  if (data && typeof data === 'object' && data.trigger_kind) {
+  //   (b) webhook / event: invoked with `{ trigger_kind, org_id, context, goal }`
+  //       and we fan out to subscribed employees of that org only. A job
+  //       that names a trigger kind or an org is always an event job; it
+  //       runs only with both a trigger kind and one org id.
+  if (data && typeof data === 'object' && ('trigger_kind' in data || 'org_id' in data || 'orgId' in data)) {
+    const orgId = triggerJobOrgId(data);
+    if (!orgId || typeof data.trigger_kind !== 'string' || !data.trigger_kind) {
+      console.warn('[trigger-dispatch] event job without a trigger kind and workspace; not dispatched');
+      return;
+    }
     await fanOutTrigger({
+      orgId,
       triggerKind: data.trigger_kind,
       context: data.context ?? {},
       goal: data.goal ?? `Handle trigger ${data.trigger_kind}`,
@@ -93,6 +100,7 @@ export async function handleTriggerDispatch(job: JobData): Promise<void> {
       for (const k of keep) recentCronFirings.add(k);
     }
     await fanOutTrigger({
+      orgId: null,
       triggerKind: kind,
       context: { fired_at: now.toISOString() },
       goal: 'Compose a nightly review of today\'s activity and post it in your default space.',
@@ -106,13 +114,18 @@ export async function handleTriggerDispatch(job: JobData): Promise<void> {
  * job per match. The `employee-trigger` handler queues a pending
  * `agent_actions` row that the BYOA agent picks up via
  * `poll_pending_work`, and enforces the per-employee budget gate.
+ *
+ * `orgId` limits the fan-out to one org (event jobs). `null` is used only by
+ * the scheduler's cron path, whose context carries no org data; each
+ * resulting job is tagged with its own employee's org.
  */
 async function fanOutTrigger(params: {
+  orgId: string | null;
   triggerKind: string;
   context: Record<string, unknown>;
   goal: string;
 }): Promise<void> {
-  const { triggerKind, context, goal } = params;
+  const { orgId, triggerKind, context, goal } = params;
 
   // Pull every active employee + their installed skills. Two queries so
   // the joins stay readable; the employee count per org is small.
@@ -130,7 +143,9 @@ async function fanOutTrigger(params: {
       trigger_subscriptions: agentEmployees.trigger_subscriptions,
     })
     .from(agentEmployees)
-    .where(and(eq(agentEmployees.is_active, true)));
+    .where(orgId
+      ? and(eq(agentEmployees.is_active, true), eq(agentEmployees.org_id, orgId))
+      : eq(agentEmployees.is_active, true));
 
   if (employees.length === 0) return;
 
@@ -141,11 +156,11 @@ async function fanOutTrigger(params: {
       agent_config: skills.agent_config,
     })
     .from(agentEmployeeSkills)
-    .innerJoin(skills, eq(skills.id, agentEmployeeSkills.skill_id));
+    .innerJoin(skills, eq(skills.id, agentEmployeeSkills.skill_id))
+    .where(inArray(agentEmployeeSkills.agent_employee_id, employeeIds));
 
   const skillTriggersByEmp = new Map<string, Set<string>>();
   for (const row of skillRows) {
-    if (!employeeIds.includes(row.agent_employee_id)) continue;
     const cfg = (row.agent_config ?? {}) as SkillAgentConfig;
     let set = skillTriggersByEmp.get(row.agent_employee_id);
     if (!set) {
@@ -183,6 +198,7 @@ async function fanOutTrigger(params: {
 
     const invocation: TriggerInvocation = {
       employee_id: emp.id,
+      org_id: emp.org_id,
       trigger_kind: triggerKind,
       context,
       goal,

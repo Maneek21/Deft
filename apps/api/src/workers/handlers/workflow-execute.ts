@@ -22,6 +22,8 @@ interface WorkflowExecuteJobData {
   workflow_id: string;
   task_id: string;
   actor_user_id: string;
+  /** Org of the rule and task; the job runs only when the rule is in it. */
+  org_id: string;
 }
 
 type WorkflowAction =
@@ -34,12 +36,12 @@ type WorkflowAction =
   | { kind: 'unblock_dependents' };
 
 export async function handleWorkflowExecute(job: JobData): Promise<void> {
-  const { workflow_id, task_id, actor_user_id } =
+  const { workflow_id, task_id, actor_user_id, org_id } =
     job.data as WorkflowExecuteJobData;
-  if (!workflow_id || !task_id) return;
+  if (!workflow_id || !task_id || typeof org_id !== 'string' || !org_id) return;
 
   const [rule] = await db.select().from(workflowRules)
-    .where(eq(workflowRules.id, workflow_id)).limit(1);
+    .where(and(eq(workflowRules.id, workflow_id), eq(workflowRules.org_id, org_id))).limit(1);
   if (!rule || !rule.is_active) return;
 
   const [task] = await db.select().from(tasks)

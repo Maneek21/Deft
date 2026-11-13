@@ -220,6 +220,7 @@ export async function handleTaskExtract(job: JobData): Promise<void> {
   if (subscribed) {
     const invocation: TriggerInvocation = {
       employee_id: subscribed.id,
+      org_id: orgId,
       trigger_kind: TASK_EXTRACT_TRIGGER_KIND,
       context: {
         message_id: messageId,

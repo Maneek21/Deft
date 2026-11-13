@@ -15,10 +15,11 @@
  *
  * Required env:
  *   DATABASE_URL — Postgres connection string
+ *   SMOKE_ORG_ID — org whose Alex PM employee is exercised
  *
  * Exit codes:
  *   0 — agent_actions row found, params printed
- *   1 — Alex PM not found or inactive
+ *   1 — SMOKE_ORG_ID unset, or Alex PM not found or inactive in it
  *   2 — no default space resolved
  *   3 — no agent_actions row within 60s timeout
  *   4 — unexpected error
@@ -33,11 +34,21 @@ const POLL_INTERVAL_MS = 3_000;
 const POLL_TIMEOUT_MS = 60_000;
 
 async function main() {
-  // 1. Locate Alex PM. The seed uses slug 'alex-pm'.
+  const orgId = process.env.SMOKE_ORG_ID;
+  if (!orgId) {
+    console.error('[smoke-trigger] SMOKE_ORG_ID is required');
+    process.exit(1);
+  }
+
+  // 1. Locate Alex PM in that org. The seed uses slug 'alex-pm'.
   const [alex] = await db
     .select()
     .from(agentEmployees)
-    .where(and(eq(agentEmployees.slug, 'alex-pm'), eq(agentEmployees.is_active, true)))
+    .where(and(
+      eq(agentEmployees.slug, 'alex-pm'),
+      eq(agentEmployees.org_id, orgId),
+      eq(agentEmployees.is_active, true),
+    ))
     .limit(1);
 
   if (!alex) {
@@ -70,6 +81,7 @@ async function main() {
   // agent_actions row.
   const invocation: TriggerInvocation = {
     employee_id: alex.id,
+    org_id: alex.org_id,
     trigger_kind: 'cron:standup',
     context: { smoke_test: true, generated_at: startTime.toISOString() },
     goal: 'Generate today\'s standup in a single sentence for testing. Keep it under 30 words.',
