@@ -51,12 +51,12 @@ test('a fetched parent is adopted and live events from during the read are repla
 });
 
 test('a fresher copy of the same parent is adopted without undoing a newer live edit or a delete', () => {
-  const refreshed = { ...parent, content: 'refreshed', edited_at: '2026-11-13T10:03:00.000Z', reactions: [{ emoji: '🎉', count: 1, users: ['u2'] }] };
+  const refreshed: typeof parent = { ...parent, content: 'refreshed', edited_at: '2026-11-13T10:03:00.000Z', reactions: [{ emoji: '🎉', count: 1, users: ['u2'] }] };
   assert.equal(refreshThreadParent(parent, refreshed).content, 'refreshed');
-  const liveNewer = { ...parent, content: 'live newer', edited_at: '2026-11-13T10:09:00.000Z' };
+  const liveNewer: typeof parent = { ...parent, content: 'live newer', edited_at: '2026-11-13T10:09:00.000Z' };
   const kept = refreshThreadParent(liveNewer, refreshed);
   assert.equal(kept.content, 'live newer');
-  assert.equal(refreshThreadParent({ ...parent, is_deleted: true }, refreshed).is_deleted, true);
+  assert.equal(refreshThreadParent<typeof parent>({ ...parent, is_deleted: true }, refreshed).is_deleted, true);
   const other = { ...parent, id: 'parent-2', content: 'another thread' };
   assert.equal(refreshThreadParent(parent, other), other);
 });
