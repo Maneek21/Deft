@@ -27,6 +27,7 @@ const roles: Record<string, string> = {
 };
 const a = {
   ord: randomUUID(), ordAuto: randomUUID(), fallback: randomUUID(), mirror: randomUUID(), otherOrg: randomUUID(),
+  full: randomUUID(), decided: randomUUID(), otherOrgMirror: randomUUID(),
 };
 const viewers = ['owner', 'admin', 'requester', 'peer', 'guest'] as const;
 let client: pg.Client | undefined;
@@ -79,16 +80,19 @@ before(async () => {
   for (const user of [ids.admin, ids.departed]) await q('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), room, user]);
   const base = Date.now() - 60_000;
   const insert = (id: string, org: string, user: string, employee: string | null, action: string, tier: string,
-    source: string, params: Record<string, unknown>, offsetSec: number) => q(
+    source: string, params: Record<string, unknown>, offsetSec: number, status = 'pending') => q(
     `INSERT INTO agent_actions(id,org_id,user_id,agent_employee_id,action,params,approval_tier,approval_status,source,created_at)
-     VALUES($1,$2,$3,$4,$5,$6,$7,'pending',$8,$9)`,
-    [id, org, user, employee, action, JSON.stringify(params), tier, source, new Date(base + offsetSec * 1000)]);
+     VALUES($1,$2,$3,$4,$5,$6,$7,$10,$8,$9)`,
+    [id, org, user, employee, action, JSON.stringify(params), tier, source, new Date(base + offsetSec * 1000), status]);
   await insert(a.ord, orgId, ids.requester, employeeId, 'create_task', 'quick', 'mention', { title: 'ORD' }, 5);
   await insert(a.ordAuto, orgId, ids.requester, employeeId, 'create_task', 'auto', 'mention', { title: 'AUTO' }, 4);
   await insert(a.fallback, orgId, ids.departed, deftyEmployeeId, 'create_task', 'quick', 'defty_capture',
     { title: 'FALLBACK', source_user_id: ids.departed, source_space_id: room }, 3);
   // App Run releases share this branch (same action list); a record-mirror nomination stands for both.
   await insert(a.mirror, orgId, ids.requester, employeeId, 'app_record_mirror_nominate', 'full', 'app_record_mirror', {}, 1);
+  await insert(a.full, orgId, ids.requester, employeeId, 'create_task', 'full', 'mention', { title: 'FULL' }, 4.5);
+  await insert(a.decided, orgId, ids.requester, employeeId, 'create_task', 'quick', 'mention', { title: 'DECIDED' }, 4.2, 'approved');
+  await insert(a.otherOrgMirror, otherOrgId, ids.requester, null, 'app_record_mirror_nominate', 'full', 'app_record_mirror', {}, 7);
   await insert(a.otherOrg, otherOrgId, ids.requester, null, 'create_task', 'quick', 'mention', { title: 'OTHER' }, 6);
   teamId = randomUUID();
   await q('INSERT INTO teams(id,org_id,name,handle,created_by) VALUES($1,$2,\'Review team\',$3,$4)', [teamId, orgId, `rt-${teamId.slice(0, 8)}`, ids.owner]);
@@ -141,7 +145,7 @@ async function inboxApprovals(viewer: string, limit = 100) {
 }
 
 const expected: Record<(typeof viewers)[number], string[]> = {
-  requester: [a.ord, a.mirror],
+  requester: [a.ord, a.full, a.mirror],
   owner: [a.mirror],
   admin: [a.fallback, a.mirror],
   peer: [],
@@ -155,7 +159,8 @@ test('AL2-1: the Inbox approval list and its count hold the approvals each viewe
     assert.deepEqual([...got.ids].sort(), [...expected[viewer]].sort(), `${viewer} list`);
     assert.deepEqual(got.counts, [expected[viewer].length], `${viewer} count`);
     assert.equal(got.countOnly, expected[viewer].length, `${viewer} count_only`);
-    assert.equal(got.ids.includes(a.otherOrg), false, `${viewer} never gets another workspace's action`);
+    for (const foreign of [a.otherOrg, a.otherOrgMirror]) assert.equal(got.ids.includes(foreign), false, `${viewer} never gets another workspace's action`);
+    assert.equal(got.ids.includes(a.decided), false, `${viewer} does not get a decided action`);
   }
 });
 
@@ -167,14 +172,14 @@ test('AL2-2: Inbox approvals page through the cursor to the last one, with the f
     assert.deepEqual(got.counts, [expected[viewer].length]);
   }
   const ordinaryOnly = await json<InboxBody>(ids.requester, '/api/inbox', '?kind=pending_approval&limit=100');
-  assert.deepEqual(ordinaryOnly.items.map((item) => item.approval?.action_id), [a.ord, a.mirror]);
+  assert.deepEqual(ordinaryOnly.items.map((item) => item.approval?.action_id), [a.ord, a.full, a.mirror]);
   const capturesOnly = await json<InboxBody>(ids.admin, '/api/inbox', '?kind=work_capture&count_only=1');
   assert.equal(capturesOnly.unread_count, 1);
 });
 
 test('AL2-3: employee and task pending counts hold the approvals the viewer can review', async (t) => {
   if (unavailable) return t.skip(unavailable);
-  const want = { requester: 2, owner: 1, admin: 1, peer: 1, guest: 1 } as const;
+  const want = { requester: 3, owner: 1, admin: 1, peer: 1, guest: 1 } as const;
   const wantDefty = { requester: 0, owner: 0, admin: 1, peer: 0, guest: 0 } as const;
   const { reviewableApprovalCountsByEmployee } = await import('../src/lib/pending-approval-audience.js');
   for (const viewer of viewers) {
@@ -188,7 +193,7 @@ test('AL2-3: employee and task pending counts hold the approvals the viewer can 
 
 test('AL2-4: the team Approvals count holds team members\' approvals the viewer can review', async (t) => {
   if (unavailable) return t.skip(unavailable);
-  const want = { requester: 2, owner: 1, admin: 2, peer: 1 } as const;
+  const want = { requester: 3, owner: 1, admin: 2, peer: 1 } as const;
   for (const viewer of ['requester', 'owner', 'admin', 'peer'] as const) {
     const body = await json<{ attention: { pending_agent_actions: number } }>(ids[viewer], '/api/teams', `/${teamId}/dashboard`);
     assert.equal(body.attention.pending_agent_actions, want[viewer], `${viewer} team approvals`);
@@ -209,6 +214,8 @@ test('AL2-5: activity feeds keep the read audience, check the capture room and s
   assert.equal(admin.get(a.fallback), true, 'the in-room admin reviews the capture with no active requester');
   const requester = await feed(ids.requester);
   assert.equal(requester.get(a.ord), true);
+  assert.equal(requester.get(a.full), true);
+  assert.equal(requester.get(a.decided), false, 'a decided action has no review link');
   assert.equal(requester.has(a.ordAuto), true, 'queue rows stay in the feed');
   assert.equal(requester.get(a.ordAuto), false, 'a queue row has no review link');
 
