@@ -232,7 +232,7 @@ export function rateLimitResetAt(res: Response, bodyText: string, now = Date.now
  * there. The lease outlives the sync's own deadline, and the outcome is
  * written only while the lease still holds that id.
  */
-async function claimSyncLease(accountId: string, orgId: string, turn?: string): Promise<string | null> {
+async function claimSyncLease(accountId: string, orgId: string, turn?: string): Promise<{ id: string; leftMs: number } | null> {
   const leaseId = crypto.randomUUID();
   const claimed = await db.execute(sql`
     UPDATE connected_accounts
@@ -244,8 +244,10 @@ async function claimSyncLease(accountId: string, orgId: string, turn?: string): 
       AND (metadata->'github_sync'->'lease'->>'until' IS NULL
         OR (metadata->'github_sync'->'lease'->>'until')::timestamptz <= clock_timestamp())
       ${turn ? sql`AND metadata->'github_sync'->>'next_at' = ${turn}::text` : sql``}
-    RETURNING id`);
-  return (claimed as unknown as { rows: unknown[] }).rows.length === 1 ? leaseId : null;
+    RETURNING extract(epoch FROM (metadata->'github_sync'->'lease'->>'until')::timestamptz - clock_timestamp()) * 1000 AS left_ms`);
+  // The lease time still left once the row was taken (the claim may have waited for it).
+  const [row] = (claimed as unknown as { rows: Array<{ left_ms: string | number }> }).rows;
+  return row ? { id: leaseId, leftMs: Number(row.left_ms) } : null;
 }
 
 /**
@@ -288,13 +290,14 @@ export async function syncGitHubForUser(accountId: string, options: GitHubSyncOp
   // One sync per connection at a time, manual or scheduled.
   const lease = await claimSyncLease(account.id, account.org_id, options.turn);
   if (!lease) return { error: SYNC_ALREADY_RUNNING_ERROR };
-  const deadline = AbortSignal.timeout(SYNC_DEADLINE_MS);
+  // Stop at least a minute before the lease runs out.
+  const deadline = AbortSignal.timeout(Math.max(0, Math.floor(Math.min(SYNC_DEADLINE_MS, lease.leftMs - 60_000)) || 0));
   const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
   const run = { outcome: { kind: 'failed' } as SyncOutcome };
   try {
-    return await runGitHubSync(account, lease, signal, run);
+    return await runGitHubSync(account, lease.id, signal, run);
   } finally {
-    await finishSync(account.id, account.org_id, lease, run.outcome).catch((err) => {
+    await finishSync(account.id, account.org_id, lease.id, run.outcome).catch((err) => {
       console.warn('[github-sync] could not record the sync outcome of', account.id, (err as Error).name);
     });
   }
