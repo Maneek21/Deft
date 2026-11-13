@@ -212,7 +212,11 @@ export async function syncGitHubForUser(accountId: string) {
       const prs = await prRes.json() as any[];
 
       for (const pr of prs) {
-        const externalId = `pr-${repoFullName}-${pr.number}`;
+        // `events.external_id` is unique per source across all workspaces, so
+        // new rows carry the workspace id; rows written with the older
+        // unprefixed id stay addressable by their own workspace.
+        const legacyExternalId = `pr-${repoFullName}-${pr.number}`;
+        const externalId = `pr-${account.org_id}-${repoFullName}-${pr.number}`;
         let eventType: string;
         if (pr.merged_at) {
           eventType = 'pr_merged';
@@ -248,15 +252,22 @@ export async function syncGitHubForUser(accountId: string) {
           connected_account_id: account.id,
         };
 
-        // Upsert by source + external_id
-        const existing = await db.select({ id: events.id, event_type: events.event_type }).from(events)
-          .where(and(eq(events.source, 'github'), eq(events.external_id, externalId)))
+        // Upsert within this workspace by source + external_id
+        const existing = await db.select({ id: events.id, event_type: events.event_type, external_id: events.external_id })
+          .from(events)
+          .where(and(
+            eq(events.org_id, account.org_id),
+            eq(events.source, 'github'),
+            inArray(events.external_id, [externalId, legacyExternalId]),
+          ))
           .limit(1);
 
         const wasAlreadyMerged = existing.length > 0 && existing[0]!.event_type === 'pr_merged';
 
         if (existing.length > 0) {
-          await db.update(events).set(eventData).where(eq(events.id, existing[0]!.id));
+          await db.update(events)
+            .set({ ...eventData, external_id: existing[0]!.external_id })
+            .where(and(eq(events.id, existing[0]!.id), eq(events.org_id, account.org_id)));
         } else {
           await db.insert(events).values(eventData);
         }
