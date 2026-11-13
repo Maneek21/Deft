@@ -5,7 +5,7 @@ import {appLocalJobRoutes} from './routes/app-local-jobs.js';
 import 'dotenv/config';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { logger } from 'hono/logger';
+import { requestLogger } from './lib/request-logger.js';
 import { secureHeaders } from 'hono/secure-headers';
 import { sql } from 'drizzle-orm';
 import { db } from './lib/db.js';
@@ -134,7 +134,6 @@ import { githubWebhookRoutes } from './routes/webhooks/github.js';
 
 const app = new Hono();
 
-const requestLogger = logger();
 const corsPolicy = cors({
   origin: [
     process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
