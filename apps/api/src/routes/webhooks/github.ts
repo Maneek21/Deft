@@ -7,11 +7,9 @@
  * job with the trigger kind + payload context. The `trigger-dispatch`
  * handler then fans out to every subscribed employee.
  *
- * Signature verification is optional in v1 — the route accepts
- * `x-hub-signature-256` when `GITHUB_WEBHOOK_SECRET` is set and rejects
- * mismatched payloads, but falls through for dev environments that
- * haven't wired a secret yet. Production deploys should always set the
- * secret.
+ * The route requires `GITHUB_WEBHOOK_SECRET`. Without it the endpoint is
+ * disabled and answers every request with 503. With it, each request must
+ * carry a matching `x-hub-signature-256` HMAC-SHA256 signature.
  */
 import { Hono } from 'hono';
 import crypto from 'node:crypto';
@@ -19,9 +17,11 @@ import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
 
 export const githubWebhookRoutes = new Hono();
 
-function verifySignature(body: string, signatureHeader: string | undefined): boolean {
-  const secret = process.env.GITHUB_WEBHOOK_SECRET;
-  if (!secret) return true; // skip verification when unconfigured
+if (!process.env.GITHUB_WEBHOOK_SECRET) {
+  console.warn('[webhooks] GITHUB_WEBHOOK_SECRET is not set; the GitHub webhook endpoint is disabled.');
+}
+
+function verifySignature(body: string, signatureHeader: string | undefined, secret: string): boolean {
   if (!signatureHeader) return false;
   const expected =
     'sha256=' +
@@ -37,9 +37,13 @@ function verifySignature(body: string, signatureHeader: string | undefined): boo
 }
 
 githubWebhookRoutes.post('/github', async (c) => {
+  const secret = process.env.GITHUB_WEBHOOK_SECRET;
+  if (!secret) {
+    return c.json({ error: 'GitHub webhook is not configured', code: 'GITHUB_WEBHOOK_NOT_CONFIGURED' }, 503);
+  }
   const rawBody = await c.req.text();
   const signature = c.req.header('x-hub-signature-256');
-  if (!verifySignature(rawBody, signature)) {
+  if (!verifySignature(rawBody, signature, secret)) {
     return c.json({ error: 'signature mismatch', code: 'UNAUTHORIZED' }, 401);
   }
 
