@@ -191,15 +191,12 @@ test('only active humans of the same org compete; an agent whose name is its own
   await expectResolved(`@nova-${sfx} take this ${randomUUID()}`, nova, `nova-${sfx}`);
 });
 
-test('explicit markers are never rewritten and still dispatch beside unresolved plain tokens', async () => {
+test('an explicit marker still dispatches beside an unresolved plain token', async () => {
   const res = await webPost(`<@${rcRunner}|RC Runner> and @twin ${randomUUID()}`);
   assert.equal(res.status, 201);
   assert.ok(res.body.content!.startsWith(`<@${rcRunner}|RC Runner> and @twin `), res.body.content);
   assert.deepEqual(await wokenAgents(res.body.id!), [rcRunner]);
 
-  const agents = [{ userId: 'rita-user', name: 'Rita', slug: 'rita' }];
-  const marker = '<@old-user|@Rita> and <span data-mention-uuid="old-user">@Rita</span>';
-  assert.equal(normalizePlainAgentMentions(`${marker} @RC`, agents).content, `${marker} @RC`);
 });
 
 test('token boundaries and look-alike markup do not hide an exact handle', () => {

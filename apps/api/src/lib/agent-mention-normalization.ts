@@ -27,7 +27,7 @@ function aliasesForAgent(agent: AgentMentionIdentity) {
  * marker used by chat. A token resolves only when, case-insensitively, it
  * equals one agent's slug or one-token display name and no other participant
  * (another agent, or a `competingTokens` entry) owns the same token; anything
- * else stays plain text. Explicit mention markers and spans are left as-is.
+ * else stays plain text. Native identity atoms are left as-is.
  */
 export function normalizePlainAgentMentions(
   content: string,
@@ -50,9 +50,8 @@ export function normalizePlainAgentMentions(
     if (ownersByAlias.has(alias)) addOwner(alias, `competitor:${alias}`);
   }
 
-  // Odd segments are explicit mentions and are never rewritten: native spans,
-  // `data-mention-uuid` spans, `[[deft:...]]` tokens and `<@id|label>` markers.
-  const segments = content.split(/(<span\b[^>]*data-deft-ref-kind[^>]*>[\s\S]*?<\/span>|<span\b[^>]*\sdata-mention-uuid=[^>]*>[\s\S]*?<\/span>|\[\[deft:(?:person|task|wiki_page):[^\]]+\]\]|<@[^|>]+\|[^>]+>)/gi);
+  // Odd segments are native identity atoms and are never rewritten.
+  const segments = content.split(/(<span\b[^>]*data-deft-ref-kind[^>]*>[\s\S]*?<\/span>|\[\[deft:(?:person|task|wiki_page):[^\]]+\]\])/gi);
   const resolvedUserIds = new Set<string>();
   const ambiguousAliases = new Set<string>();
   const normalized = segments.map((segment, index) => {
