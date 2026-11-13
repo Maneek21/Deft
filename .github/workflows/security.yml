@@ -10,6 +10,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # A new push to the same pull request cancels that PR's superseded run.
+  # Every other event (master push, tag, schedule, manual dispatch) gets a
+  # unique group per run, so it is never cancelled and never queued behind another.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   dependency-audit:
     name: Dependency Audit

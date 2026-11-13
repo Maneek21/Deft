@@ -25,6 +25,13 @@ permissions:
   contents: read
   actions: read
 
+concurrency:
+  # A new push to the same pull request cancels that PR's superseded run.
+  # Every other event (master push, tag, schedule, manual dispatch) gets a
+  # unique group per run, so it is never cancelled and never queued behind another.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   round-trip:
     name: Artifact upload and download
