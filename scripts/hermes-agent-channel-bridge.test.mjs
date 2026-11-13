@@ -75,6 +75,7 @@ test('buildEventPrompt preserves the event and pins the employee identity', () =
   assert.match(prompt, /different named destination/);
   assert.match(prompt, /call record_progress once when you begin/);
   assert.match(prompt, /Do not mirror raw tool calls/);
+  assert.match(prompt, /pass its triggering_message_id as source_message_id \(params\.source_message_id for request_human_approval, message_id for workspace_plan_import\)/);
   assert.doesNotMatch(prompt, /channel-secret/);
 });
 
