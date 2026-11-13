@@ -92,7 +92,7 @@ Agents and approvals:
   and owners and admins, in the message list, threads, live
   updates, the agent conversation endpoints, the trace export and the MCP read
   tools. Other members of the space see the reply text and tool names. Attention
-  items for approvals follow the same audience. The employee turn list shows
+  approval items go to the action's reviewers. The employee turn list shows
   the input, tool calls, reply text and error of a Defty turn to the person who
   triggered it and to owners and admins; other members see that the turn
   happened. The space message list pages
@@ -103,17 +103,16 @@ Agents and approvals:
   show a cost-against-budget figure, and shows the 24h cost tile only when a cost
   is recorded. "Load earlier messages" is disabled while a load or catch-up is in
   flight.
-- Approvals: an approval whose request ended after it was claimed is settled
-  instead of staying claimed. The request that executes an approval holds a
+- Approvals: an approval whose request ended after it was claimed is settled. The request that executes an approval holds a
   database lock for as long as it runs; a later approve attempt or the maintenance
   job acts only when that lock is free. A task creation is run again safely
-  (it is idempotent per action); any other action is closed as failed with a
-  message and is not run twice. Every outcome shares one finishing step that
-  records the approver decision, resolves the Attention item, issues the receipt
-  and posts the completion message, and running it twice changes nothing. A native write executed through web approval gets a signed receipt.
-- Run text goes to the audience of its source. Employee activity entries, employee
-  diagnostics and task progress updates show their text to the people who can read
-  the source; other members see the entry or status without the text. Presence
+  (it is idempotent per action), and a retried action is not run twice. An approved
+  action with a recorded outcome goes through one finishing step that records
+  the approver decision, resolves the Attention item, issues the receipt and
+  posts the completion message, and running it twice changes nothing. A native write executed through web approval gets a signed receipt.
+- Run text goes to the people who may read it. Employee activity entries, employee
+  diagnostics and task progress updates show their text to those people; other
+  members see the entry or status without the text. Presence
   reports whether an employee has an error as a flag. A later Defty reply reads
   earlier replies as the current requester may receive them. Plan step text goes to
   the plan's requester and to owners and admins, and live plan progress carries the
@@ -129,20 +128,19 @@ Agents and approvals:
   dependencies and the developer preview profile.
 
 - An agent action is reviewed by the member who requested it. Owners and admins
-  review when there is no active human requester; they no longer approve another
-  active member's request, and they still read it in activity and history. An
-  approver assignment that names anyone else is ignored. The approve and reject
+  review when there is no active human requester; they read another active
+  member's request in activity and history. An approver assignment makes a member
+  a reviewer only when this rule does. The approve and reject
   routes, the approval resolver, the personal MCP approval tools (`approval_list`,
-  `approval_get`, `approval_approve`, `approval_reject`), Attention approval items,
-  push delivery follow this one rule, and the reviewer also needs to see
-  the action's room. A reviewer whose role or room access changes while a decision
-  is being applied is refused and the action stays pending.
+  `approval_get`, `approval_approve`, `approval_reject`), Attention approval items
+  and push delivery use this rule, and the reviewer also needs to see the
+  action's room. A reviewer whose role or room access has changed is refused when
+  the decision is applied.
 - Approval cards and Inbox and Attention approval rows carry `viewer_can_approve`
-  and `viewer_can_reject`. The card shows its buttons to someone who may use them
-  and "Waiting for review" to everyone else. The Inbox approval list and its
+  and `viewer_can_reject`. The card shows its buttons according to those flags and
+  "Waiting for review" when neither applies. The Inbox approval list and its
   counts, the team dashboard "Approvals" count, an agent employee's pending
-  count and the task handoff count include only approvals the viewer can review;
-  Inbox paging follows `next_cursor` through every approval. The dashboard
+  count and the task handoff count cover approvals the viewer can review. The dashboard
   Agent widget shows "Review in Inbox" only on rows the viewer can review. The
   activity feeds keep their read audience.
 - A stored approval result is tied to its action, so reusing an idempotency key on
@@ -151,20 +149,20 @@ Agents and approvals:
   message they were checked against, and their review follows that message's
   audience. Ordinary approve and reject check the reviewer's current role again
   when the decision is applied.
-- Approved actions on tasks, task links and decisions run only when the action's
+- Approved agent employee actions on tasks, task links and decisions run only when the action's
   requester can see every task they name and the decision page. A missing, deleted,
   other-workspace or hidden target gives one "not found" answer. Defty capture
   actions act for the author of the source message, who must still be able to read
   that message and see the target.
-- Wiki proposals: a proposed page update is applied only if the page is still at the
-  revision it was proposed against and the employee can still reach it; otherwise
+- Wiki proposals: a proposed page update is applied only while the fields it writes are
+  unchanged since it was proposed and the employee can still reach the page; otherwise
   the approval ends with a message and the page is left as it is. A proposed page
   creation is made at the slug fixed when it was proposed, or not at all. A
   proposal for a space or page the employee cannot reach is refused with
   `WIKI_TARGET_UNAVAILABLE`. A failed knowledge-update capture can be retried
   only when its original proposal can be found (`409 RETRY_UNAVAILABLE`
   otherwise).
-- A plan (`POST /api/agent-plans`) binds only to an active agent employee of the
+- A plan created with an agent employee id (`POST /api/agent-plans`) binds only to an active agent employee of the
   caller's workspace (`400 INVALID_AGENT_EMPLOYEE` otherwise). Approve, execute,
   resume and abort are available to the plan's creator and to owners and admins;
   a plan runs for its creator. Connected (`mcp__*`) tools are available to
@@ -174,14 +172,13 @@ Agents and approvals:
   with no tools offered to the model. A draft that contains a link, approval or
   sign-off wording, or a task key or `[[deft:...]]` reference that is not in the
   evidence uses the evidence-only form, and items without `source_ids` are
-  dropped. The brief is still delivered. The standup or brief therefore appears in
-  its evidence-only form in more cases than before.
+  dropped. The brief is still delivered. In those cases the standup or brief appears in its evidence-only form.
 - Meeting briefs are generated for, delivered to and listed for active members of
   the workspace the meeting belongs to; no brief is created for a person who is not
   active, and a stored brief is shown again if the person is reactivated.
   `GET /api/calendar/briefs` lists briefs of the session's workspace only.
 - Action and work-intent reads follow their audience: an action with no source
-  message is readable by its requester and by owners and admins. A workflow run
+  message or channel event is readable by its requester and by owners and admins. A workflow run
   stores a bounded error message with the code `WORKFLOW_ACTION_FAILED`. A work
   intent's status changes only through its own capture action.
 - The `space:created` event carries only the space id; clients load the space
@@ -216,7 +213,7 @@ CI and security checks:
 - CodeQL reviewed findings use manifest v2 (`deft.codeql_false_positives.v2` in
   `.github/codeql-reviewed-false-positives.json`). An entry matches on rule, path
   and a fingerprint of the code on the flagged path, so edits that only move the
-  finding no longer need a new review, while a change to a line on the path, a new
+  finding no longer need a new review, while a change to the code on the path, a new
   finding, a duplicate or an unused entry fails the check. See
   `docs/security/codeql-reviewed-findings.md`.
 

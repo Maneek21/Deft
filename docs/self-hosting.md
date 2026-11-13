@@ -489,7 +489,7 @@ trust level. Passive task-candidate extraction from chat is disabled by default;
 destructive always needs approval. Only an action's requester, or an owner or
 admin who still has access to the target, can undo it.
 
-An agent action is reviewed by the member who requested it. Owners and admins review when there is no active human requester; they no longer approve another active member's request, and they still read it in activity and history. A plain member named as an approver does not review. The Inbox approval list and its counts, Attention and the personal MCP approval tools follow the same rule, so they show only approvals the viewer can review.
+An agent action is reviewed by the member who requested it. Owners and admins review when there is no active human requester; they read another active member's request in activity and history. An approver assignment makes a member a reviewer only when this rule does. The Inbox approval list and its counts, Attention and the personal MCP approval tools use this rule for the approvals they list and count.
 
 The resolver checks review authority and action state and claims pending work
 before execution. Repeated approval of a completed action returns its existing
