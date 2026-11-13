@@ -360,11 +360,17 @@ test('COUNT-B: the counts run the review gate only on the viewer\'s candidate ac
     }
   }
   assert.deepEqual(slow, []);
-  // Control: the same count with the gate as a plain condition runs it on every pending action.
-  const reference = await referenceOrdinary(viewerOf('member'));
+  // Control: the same count without the candidate test (the gate kept in one CASE, so the
+  // planner cannot reorder its parts) runs the gate on every pending action.
+  const { reviewableActionSql } = await import('../src/lib/agent-action-review-gate.js');
+  const reference = and(
+    eq(agentActions.org_id, orgId), eq(agentActions.approval_status, 'pending'),
+    inArray(agentActions.approval_tier, ['quick', 'full']), notInArray(agentActions.action, SPECIAL),
+    sql`(CASE WHEN ${agentActions.id} IS NOT NULL THEN ${reviewableActionSql(viewerOf('member'))} ELSE false END)`,
+  )!;
   const plain = db.select({ n: sql`count(*)` }).from(agentActions).where(reference).toSQL();
   const control = await reviewGateLoops({ text: plain.sql, values: plain.params });
-  assert.ok(control >= pending - 5, `control: the plain gate runs ${control} times of ${pending}`);
+  assert.ok(control >= BULK, `control: the gate without the candidate test runs ${control} times of ${pending}`);
   const plainEmployees = db.select({ n: sql`count(*)` }).from(agentActions)
     .where(and(reference, sql`${agentActions.agent_employee_id} IS NOT NULL`)).toSQL();
   const employeeControl = await reviewGateLoops({ text: plainEmployees.sql, values: plainEmployees.params });
