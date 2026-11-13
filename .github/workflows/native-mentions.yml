@@ -6,7 +6,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  # A new push to the same pull request cancels that PR's superseded run.
+  # A new push to the same pull request cancels that pull request's superseded run of this workflow.
   # Every other event (master push, tag, schedule, manual dispatch) gets a
   # unique group per run, so it is never cancelled and never queued behind another.
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
