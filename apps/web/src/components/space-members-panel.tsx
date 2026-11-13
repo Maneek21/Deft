@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import { useChatContext } from '@/lib/chat-context';
@@ -140,24 +140,39 @@ export function SpaceMembersPanel({ spaceId, spaceName, spaceType, onClose }: Pr
   const [reloadKey, setReloadKey] = useState(0);
   const [leaveError, setLeaveError] = useState<string | null>(null);
   const [leaving, setLeaving] = useState(false);
+  const mountedRef = useRef(true);
   const router = useRouter();
   const { refreshSpaces } = useChatContext();
 
   const isDmLike = spaceType === 'dm' || spaceType === 'group_dm';
 
   useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  useEffect(() => {
+    let current = true;
     async function load() {
       const [membersRes, allRes, agentRes] = await Promise.all([
         api.get(`/api/spaces/${spaceId}/members`),
         api.get('/api/members'),
         api.get('/api/agent-employees?expand=stats'),
       ]);
-      if (membersRes.ok) setMembers(await membersRes.json());
-      if (allRes.ok) setAllMembers(await allRes.json());
-      if (agentRes.ok) setAgentEmployees(await agentRes.json());
+      const [nextMembers, nextAll, nextAgents] = await Promise.all([
+        membersRes.ok ? membersRes.json() : null,
+        allRes.ok ? allRes.json() : null,
+        agentRes.ok ? agentRes.json() : null,
+      ]);
+      // A newer load (or a closed panel) wins over this one.
+      if (!current) return;
+      if (nextMembers) setMembers(nextMembers);
+      if (nextAll) setAllMembers(nextAll);
+      if (nextAgents) setAgentEmployees(nextAgents);
       setLoading(false);
     }
-    load();
+    load().catch(() => { if (current) setLoading(false); });
+    return () => { current = false; };
   }, [spaceId, reloadKey]);
 
   // Someone joined this space from Browse spaces: refresh the list.
@@ -174,14 +189,18 @@ export function SpaceMembersPanel({ spaceId, spaceName, spaceType, onClose }: Pr
       const res = await api.delete(leaveSpacePath(spaceId));
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setLeaveError(data.error || 'Could not leave this space.');
+        if (mountedRef.current) setLeaveError(data.error || 'Could not leave this space.');
         return;
       }
       refreshSpaces();
+      // A dismissed panel does not navigate later.
+      if (!mountedRef.current) return;
       onClose();
       router.push('/chat');
+    } catch {
+      if (mountedRef.current) setLeaveError('Could not leave this space. Check your connection and try again.');
     } finally {
-      setLeaving(false);
+      if (mountedRef.current) setLeaving(false);
     }
   };
 
@@ -465,7 +484,7 @@ export function SpaceMembersPanel({ spaceId, spaceName, spaceType, onClose }: Pr
               {(spaceType === 'public' || spaceType === 'private') && (
                 <div className="px-3 pb-3" style={{ borderTop: '1px solid var(--border)' }}>
                   {leaveError && (
-                    <p className="mt-2 text-[12px]" style={{ color: 'var(--danger)' }}>{leaveError}</p>
+                    <p role="alert" className="mt-2 text-[12px]" style={{ color: 'var(--danger)' }}>{leaveError}</p>
                   )}
                   <button
                     onClick={leaveSpace}

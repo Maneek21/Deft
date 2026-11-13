@@ -537,12 +537,11 @@ function ChatSidebarContent({
         <CreateDmModal onClose={() => setCreateDmOpen(false)} />,
         document.body
       )}
-      {browseSpacesOpen && typeof document !== 'undefined' && createPortal(
+      {browseSpacesOpen && (
         <BrowseSpacesModal
           onClose={() => setBrowseSpacesOpen(false)}
           onOpenSpace={(id) => { onSpaceClick(id); router.push(`/chat?space=${id}`); }}
-        />,
-        document.body
+        />
       )}
     </>
   );
