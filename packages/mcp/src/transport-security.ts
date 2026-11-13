@@ -75,7 +75,7 @@ function ipv6Bytes(address: string): number[] | null {
   return words.flatMap((word) => [word >> 8, word & 0xff]);
 }
 
-function isNeverAllowedMetadataAddress(address: string): boolean {
+export function isNeverAllowedMetadataAddress(address: string): boolean {
   const normalized = normalizeHostname(address);
   if (NEVER_ALLOWED_METADATA_ADDRESSES.has(normalized)) return true;
   const candidate = ipv6Bytes(normalized);
