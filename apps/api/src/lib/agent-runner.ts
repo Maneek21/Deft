@@ -21,7 +21,7 @@ import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_READ_TOOLS } from './agent-tools.js
 import { executeToolCall } from './agent-context.js';
 import { isReadOnlyAgentRequest } from './agent-request-policy.js';
 import { agentToolFailure } from './agent-tool-result.js';
-import { hasUnverifiedNativeLinks, hasUnresolvedRecipient, requiresWorkspaceEvidence, hasUnverifiedApprovalRoles, requiresRuntimeActionEvidence, hasRuntimeActionEvidence } from './agent-source-grounding.js';
+import { hasUnverifiedNativeLinks, hasUnresolvedRecipient, requiresWorkspaceEvidence, hasUnverifiedApprovalRoles, containsLinkConstruct, decodedJsonText, decodeHtmlEntities, mentionsApproval, requiresRuntimeActionEvidence, hasRuntimeActionEvidence } from './agent-source-grounding.js';
 import {
   createModuleNextReadsResolver,
   nativeAgentToolResult,
@@ -38,6 +38,8 @@ import {
 import {
   appendDelegatedSystemInstructions,
   ensureImmutablePlatformPolicy,
+  IMMUTABLE_DEFT_PLATFORM_POLICY,
+  NO_TOOLS_DEFT_PLATFORM_POLICY,
 } from './agent-system-prompt.js';
 
 const SYSTEM_PROMPT = `You are Deft, the AI assistant for this workspace. You have direct SQL access to the organization's data through tools.
@@ -439,7 +441,9 @@ export async function runAgentQuery(params: {
     : buildDeftySystemPrompt({ orgName, spaceType: params.spaceContext?.type, followed: params.followed }) + connectionInfo;
   systemPrompt += `\nCurrent time: ${nowIso}. User/workspace timezone: ${workspaceTimezone}. Resolve relative dates and times in this timezone unless the user explicitly supplies another one.`;
 
-  systemPrompt = ensureImmutablePlatformPolicy(systemPrompt);
+  // A no-tools run keeps the platform policy without its tool-call bullet.
+  const platformPolicy = noTools ? NO_TOOLS_DEFT_PLATFORM_POLICY : IMMUTABLE_DEFT_PLATFORM_POLICY;
+  systemPrompt = ensureImmutablePlatformPolicy(systemPrompt, platformPolicy);
   if (noTools) {
     systemPrompt += '\nNo tools are available in this run, including any named above. Answer from the supplied evidence and do not request a tool call.';
   } else {
@@ -549,6 +553,7 @@ export async function runAgentQuery(params: {
       systemPrompt,
       workflowInstructions,
       'first_party_workflow',
+      platformPolicy,
     );
   }
 
@@ -703,8 +708,11 @@ export async function runAgentQuery(params: {
 
     // A no-tools run cannot read records, so only its content is checked;
     // a failed check goes to the caller's fallback, not a tool retry.
+    // Links and approval mentions go to the caller's evidence-only form,
+    // which quotes the evidence instead.
+    const shownText = noTools ? decodeHtmlEntities(decodedJsonText(newText)) : '';
     if (noTools && (hasUnverifiedNativeLinks(newText, allCitations)
-      || (readOnlyRequest && hasUnverifiedApprovalRoles(newText)))) {
+      || containsLinkConstruct(shownText) || mentionsApproval(shownText))) {
       throw new Error('The no-tools reply could not be verified against the supplied evidence');
     }
 
@@ -983,7 +991,8 @@ export async function runAgentQuery(params: {
   const shouldVerify = params.skipVerification === undefined
     ? params.mode === 'background'
     : !params.skipVerification;
-  if (shouldVerify && responseText && responseText.length > 50) {
+  // A no-tools run returns only text that passed its content checks.
+  if (shouldVerify && !noTools && responseText && responseText.length > 50) {
     verifiedText = await verifyResponse(content, responseText, allCitations, orgName, orgId);
   }
 

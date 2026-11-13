@@ -48,6 +48,16 @@ const actualAiConfig = await import('../src/lib/org-ai-config.js');
 mock.module(new URL('../src/lib/org-ai-config.ts', import.meta.url).href, { namedExports: {
   ...actualAiConfig,
   resolveReasonProvider: async () => ({ provider: 'anthropic', model: 'test-model', apiKey: 'test-key' }),
+  getOrgAIConfig: async () => ({ api_keys: { anthropic: 'test-key' } }),
+} });
+const verifierCalls: string[] = [];
+const actualRouter = await import('../src/lib/llm.js');
+mock.module(new URL('../src/lib/llm.ts', import.meta.url).href, { namedExports: {
+  ...actualRouter,
+  llm: async (p: any) => {
+    verifierCalls.push(JSON.stringify(p.messages));
+    return { text: JSON.stringify({ verdict: 'corrected', response: 'Project lead approval is required. See [task](/tasks?task=invented).' }) };
+  },
 } });
 
 const { runAgentQuery, isDeftyChatReadAllowed } = await import('../src/lib/agent-runner.js');
@@ -63,6 +73,7 @@ const userId = randomUUID();
 beforeEach(() => {
   providerCalls.length = 0;
   nextResponses = [];
+  verifierCalls.length = 0;
   for (const key of Object.keys(counters) as Array<keyof typeof counters>) counters[key] = 0;
 });
 
@@ -224,4 +235,71 @@ test('the default policy keeps the tool-use prompt and the grounding retry for w
   assert.equal(providerCalls.length, 2, 'the grounding retry still runs');
   assert.match(JSON.stringify(providerCalls[1]!.messages), /Verify this reply before returning it/);
   assert.match(response.text, /could not verify the workspace facts/);
+});
+
+test('toolPolicy none never runs the verifier, even when the caller enables it', async () => {
+  nextResponses = [{ content: [{ type: 'text', text: groundedBrief }], stop_reason: 'end_turn' }];
+  const response = await runAgentQuery({ ...standupLikeCall, content: meetingLikeContent, skipVerification: false, toolPolicy: 'none' } as any);
+  assert.equal(verifierCalls.length, 0, 'no unchecked verifier rewrite');
+  assert.equal(response.text, groundedBrief);
+  assert.deepEqual(counters, { installed: 0, mcp: 0, execute: 0, retrieve: 0 });
+});
+
+test('the default policy still runs the verifier when the caller enables it', async () => {
+  nextResponses = [{ content: [{ type: 'text', text: 'Nothing is blocked on the login fix right now, per the board.' }], stop_reason: 'end_turn' }];
+  await runAgentQuery({ ...standupLikeCall, content: 'Hello there, how are you today?', skipVerification: false });
+  assert.equal(verifierCalls.length, 1);
+});
+
+test('toolPolicy none prompt names no runtime tool, with or without a prompt override', async () => {
+  for (const call of [{ ...standupLikeCall }, { ...standupLikeCall, systemPromptOverride: undefined }]) {
+    providerCalls.length = 0;
+    nextResponses = [{ content: [{ type: 'text', text: groundedBrief }], stop_reason: 'end_turn' }];
+    await runAgentQuery({ ...call, content: meetingLikeContent, toolPolicy: 'none' } as any);
+    const system = providerCalls[0]!.system;
+    assert.ok(!/app_runtime_action_(?:list|get)|capability_list/.test(system), 'no runtime tool named');
+    assert.match(system, /Immutable Deft platform policy/);
+    assert.match(system, /untrusted data/);
+    assert.match(system, /Never claim that an action or approval was created/);
+  }
+});
+
+test('the default policy prompt keeps the full immutable platform policy', async () => {
+  const { IMMUTABLE_DEFT_PLATFORM_POLICY } = await import('../src/lib/agent-system-prompt.js');
+  nextResponses = [{ content: [{ type: 'text', text: 'Hi.' }], stop_reason: 'end_turn' }];
+  await runAgentQuery({ ...standupLikeCall, content: 'Hello there' });
+  assert.ok(providerCalls[0]!.system.includes(IMMUTABLE_DEFT_PLATFORM_POLICY));
+});
+
+// The request exactly as the daily standup sends it (standup-automation.ts).
+const standupEvidence = [
+  { source_id: 'task:1', kind: 'active_task', text: 'MKT-1 Read-only rollout is in progress with Lina.' },
+  { source_id: 'space:1', kind: 'chat_activity', text: '3 messages were posted in #launch.' },
+];
+const realStandupCall = {
+  orgId, userId, orgName: 'Tool policy org', mode: 'chat_mention' as const, skipVerification: true, maxIterations: 2, toolPolicy: 'none' as const,
+  systemPromptOverride: 'You are Defty preparing the daily standup. Use only the supplied evidence. Do not invent people, work, blockers, or source IDs. Do not call tools. Return JSON only.',
+  content: `Return JSON only with keys done, in_progress, blocked. Each value is an array of {"text": string, "source_ids": string[]}. Keep each text under 180 characters and cite at least one supplied source per item.${String.fromCharCode(10).repeat(2)}Evidence:${String.fromCharCode(10)}${JSON.stringify(standupEvidence)}`,
+};
+
+test('toolPolicy none rejects a stated approval requirement on the real standup request, even JSON-escaped', async () => {
+  const escapedA = `${String.fromCharCode(92)}u0061`;
+  for (const text of [
+    JSON.stringify({ done: [], in_progress: [{ text: 'Project lead approval is required for MKT-1.', source_ids: ['task:1'] }], blocked: [] }),
+    `{"done":[],"in_progress":[{"text":"MKT-1 needs ${escapedA}pproval from Lina.","source_ids":["task:1"]}],"blocked":[]}`,
+  ]) {
+    providerCalls.length = 0;
+    nextResponses = [{ content: [{ type: 'text', text }], stop_reason: 'end_turn' }];
+    await assert.rejects(runAgentQuery(realStandupCall as any), /could not be verified/i);
+    assert.equal(providerCalls.length, 1);
+    assert.equal(counters.execute, 0);
+  }
+});
+
+test('toolPolicy none returns a grounded draft on the real standup request', async () => {
+  const draft = JSON.stringify({ done: [], in_progress: [{ text: 'MKT-1 Read-only rollout is in progress with Lina.', source_ids: ['task:1'] }], blocked: [] });
+  nextResponses = [{ content: [{ type: 'text', text: draft }], stop_reason: 'end_turn' }];
+  const response = await runAgentQuery(realStandupCall as any);
+  assert.equal(response.text, draft);
+  assert.deepEqual(counters, { installed: 0, mcp: 0, execute: 0, retrieve: 0 });
 });

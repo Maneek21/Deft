@@ -78,3 +78,52 @@ export function hasUnverifiedApprovalRoles(text: string): boolean {
     role.test(sentence) && approvalClaim.test(sentence) && !explicitDenial.test(sentence)
   ));
 }
+
+/**
+ * A conservative check: drafts that mention approvals or sign-off use the
+ * evidence-only form. It matches the listed words only (approv*, sign-off,
+ * sign off, signed off); it is not a guarantee against paraphrase.
+ */
+export function mentionsApproval(text: string): boolean {
+  return /\b(?:approv\w*|sign[ -]?offs?|signs?\s+off|signed\s+off|signing\s+off)\b/iu.test(text);
+}
+
+/** Any link construct a Markdown or HTML renderer could turn into a link, whatever its target. */
+export function containsLinkConstruct(text: string): boolean {
+  return /\][([]|\]:|<\s*(?:[a-z][a-z0-9+.-]*:|www\.|a\b|img\b)|<[^\s<>@]+@[^\s<>]+>|[\w.+-]+@[\w-]+\.[\w-]|\b(?:https?|ftp|mailto):|\bwww\./iu.test(text);
+}
+
+/** The string values of a (possibly fenced) JSON reply, one per line; the text itself if it is not JSON. */
+export function decodedJsonText(text: string): string {
+  try {
+    const value: unknown = JSON.parse(text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, ''));
+    const strings: string[] = [];
+    const collect = (node: unknown): void => {
+      if (typeof node === 'string') strings.push(node);
+      else if (Array.isArray(node)) node.forEach(collect);
+      else if (node && typeof node === 'object') Object.values(node).forEach(collect);
+    };
+    collect(value);
+    return strings.join('\n');
+  } catch {
+    return text;
+  }
+}
+
+// Every HTML5 name for the characters that form links, plus common URL punctuation.
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: '&', lt: '<', gt: '>', lsqb: '[', lbrack: '[', rsqb: ']', rbrack: ']', lpar: '(', rpar: ')',
+  colon: ':', sol: '/', bsol: '\\', quest: '?', num: '#', period: '.', percnt: '%', equals: '=',
+  commat: '@', excl: '!', apos: "'", quot: '"', nbsp: ' ',
+};
+
+/** Decode HTML character references once, as a renderer would; unknown names stay as written. */
+export function decodeHtmlEntities(text: string): string {
+  return text.replace(/&(#x[0-9a-f]{1,6}|#\d{1,7}|[a-z][a-z0-9]*);/giu, (entity, body: string) => {
+    if (body[0] === '#') {
+      const code = body[1] === 'x' || body[1] === 'X' ? parseInt(body.slice(2), 16) : Number(body.slice(1));
+      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : entity;
+    }
+    return NAMED_ENTITIES[body.toLowerCase()] ?? entity;
+  });
+}
