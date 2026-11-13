@@ -1138,10 +1138,17 @@ agentRoutes.get('/actions/:id/task-link-review', async (c) => {
   }
 });
 
-agentRoutes.post('/actions/:id/approve', async (c) => {
-  const user = c.get('user');
-  const actionId = c.req.param('id');
+/**
+ * The reviewer deciding an action: the web user, or the person a personal MCP
+ * token belongs to. Only a web request carries `sid`; the approvals that need
+ * a web session refuse a caller without one.
+ */
+export type ActionReviewer = { id: string; org_id: string; role?: string; sid?: string };
 
+agentRoutes.post('/actions/:id/approve', (c) => approveActionAsReviewer(c, c.get('user'), c.req.param('id')));
+
+/** Approve an action for `user`: the web approve route and the personal MCP tool. */
+export async function approveActionAsReviewer(c: Context, user: ActionReviewer, actionId: string): Promise<Response> {
   const [action] = await db
     .select()
     .from(agentActions)
@@ -1329,7 +1336,7 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
     return settledApprovalResponse(c, current);
   }
   return leased.value;
-});
+}
 
 /** Matches the lease's connection wait: a retry after this has a fair chance. */
 const APPROVAL_BUSY_RETRY_AFTER_SECONDS = Math.ceil(ADVISORY_LEASE_ACQUIRE_TIMEOUT_MS / 1000);
@@ -1548,11 +1555,18 @@ async function ownedApprovalResponse(
 }
 
 agentRoutes.post('/actions/:id/reject', async (c) => {
-  const user = c.get('user');
-  const actionId = c.req.param('id');
   const body = await c.req.json().catch(() => ({} as { reason?: string }));
   const reason = typeof body?.reason === 'string' ? body.reason : undefined;
+  return rejectActionAsReviewer(c, c.get('user'), c.req.param('id'), reason);
+});
 
+/** Reject an action for `user`: the web reject route and the personal MCP tool. */
+export async function rejectActionAsReviewer(
+  c: Context,
+  user: ActionReviewer,
+  actionId: string,
+  reason?: string,
+): Promise<Response> {
   const [action] = await db
     .select()
     .from(agentActions)
@@ -1724,7 +1738,7 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
     });
   }
   return c.json({ success: true });
-});
+}
 
 class UndoRefusal extends Error {
   constructor(readonly status: 400 | 409, readonly code: string, message: string) {
