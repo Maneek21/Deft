@@ -21,6 +21,8 @@ const MEMBER = p('member');       // org A (and org B), member of the private sp
 const OUTSIDER = p('outsider');   // org A, not in the private space
 const FOREIGN = p('foreign');     // org B only
 const PRIVATE_SPACE = p('space-private');
+const OTHER_SPACE = p('space-other');
+const STRAY_REPLY = p('stray-reply');
 const SPACE_B = p('space-b');
 const MESSAGE = p('message');
 const MESSAGE_B = p('message-b');
@@ -69,7 +71,7 @@ before(async () => {
         [org, user],
       );
     }
-    for (const [space, org, members] of [[PRIVATE_SPACE, ORG_A, [MEMBER]], [SPACE_B, ORG_B, [MEMBER, FOREIGN]]] as const) {
+    for (const [space, org, members] of [[PRIVATE_SPACE, ORG_A, [MEMBER]], [OTHER_SPACE, ORG_A, [OUTSIDER]], [SPACE_B, ORG_B, [MEMBER, FOREIGN]]] as const) {
       await c.query(
         `INSERT INTO spaces (id, org_id, name, type, is_default, is_archived, agent_enabled, created_by, created_at, updated_at)
          VALUES ($1, $2, $1, 'private', false, false, true, $3, NOW(), NOW())`,
@@ -128,7 +130,7 @@ after(async () => {
     await c.query(`DELETE FROM projects WHERE org_id = ANY($1)`, [orgs]);
     await c.query(`DELETE FROM job_queue WHERE payload::text LIKE $1`, [`%w2m-%${stamp}%`]).catch(() => undefined);
     await c.query(`DELETE FROM messages WHERE org_id = ANY($1)`, [orgs]);
-    await c.query(`DELETE FROM space_members WHERE space_id = ANY($1)`, [[PRIVATE_SPACE, SPACE_B]]);
+    await c.query(`DELETE FROM space_members WHERE space_id = ANY($1)`, [[PRIVATE_SPACE, OTHER_SPACE, SPACE_B]]);
     await c.query(`DELETE FROM spaces WHERE org_id = ANY($1)`, [orgs]);
     await c.query(`DELETE FROM org_members WHERE org_id = ANY($1)`, [orgs]);
     await c.query(`DELETE FROM users WHERE id = ANY($1)`, [users]).catch(() => undefined);
@@ -146,6 +148,7 @@ async function call(userId: string, orgId: string, method: string, path: string,
   app.route('/api/tags', (await import('../src/routes/tags.js')).tagRoutes);
   app.route('/api/messages', (await import('../src/routes/messages.js')).messageRoutes);
   app.route('/api/projects', (await import('../src/routes/projects.js')).projectRoutes);
+  app.route('/api/tasks', (await import('../src/routes/tasks.js')).taskRoutes);
   const init: RequestInit = { method };
   if (body !== undefined) {
     init.body = JSON.stringify(body);
@@ -195,6 +198,12 @@ for (const [label, userId, orgId, tagId] of [
     assert.deepEqual(sourced.json, sourcedMissing.json);
     assert.equal(await count(`SELECT count(*)::int AS n FROM tasks WHERE source_message_id = $1`, [MESSAGE]), 0);
 
+    const viaTasks = await call(userId, orgId, 'POST', `/api/tasks/project/${project}`, { title: 'w2m sourced', source_message_id: MESSAGE });
+    const viaTasksMissing = await call(userId, orgId, 'POST', `/api/tasks/project/${project}`, { title: 'w2m sourced', source_message_id: MISSING });
+    assert.equal(viaTasks.status, 400, viaTasks.text);
+    assert.deepEqual(viaTasks.json, viaTasksMissing.json);
+    assert.equal(await count(`SELECT count(*)::int AS n FROM tasks WHERE source_message_id = $1`, [MESSAGE]), 0);
+
     const message = await q(`SELECT content, is_deleted FROM messages WHERE id = $1`, [MESSAGE]);
     assert.equal(message.rows[0].is_deleted, false);
     assert.equal(message.rows[0].content, `${SECRET} message`);
@@ -222,7 +231,40 @@ test('a deleted note cannot be tagged under either note type', async () => {
 test('a member can create a task from a message they can read', async () => {
   const created = await call(MEMBER, ORG_A, 'POST', `/api/projects/${PROJECT_A}/tasks`, { title: 'w2m from message', source_message_id: MESSAGE });
   assert.equal(created.status, 201, created.text);
-  assert.equal(await count(`SELECT count(*)::int AS n FROM tasks WHERE source_message_id = $1 AND org_id = $2`, [MESSAGE, ORG_A]), 1);
+  const viaTasks = await call(MEMBER, ORG_A, 'POST', `/api/tasks/project/${PROJECT_A}`, { title: 'w2m from message 2', source_message_id: MESSAGE });
+  assert.equal(viaTasks.status, 201, viaTasks.text);
+  assert.equal(await count(`SELECT count(*)::int AS n FROM tasks WHERE source_message_id = $1 AND org_id = $2`, [MESSAGE, ORG_A]), 2);
+});
+
+test('a thread lists only replies in the space of its root', async () => {
+  await q(
+    `INSERT INTO messages (id, org_id, space_id, user_id, parent_id, content, is_pinned, is_deleted, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, false, false, NOW(), NOW())`,
+    [STRAY_REPLY, ORG_A, OTHER_SPACE, OUTSIDER, MESSAGE, `${SECRET} stray reply`],
+  );
+  try {
+    const thread = await call(MEMBER, ORG_A, 'GET', `/api/messages/${MESSAGE}/thread`);
+    assert.equal(thread.status, 200, thread.text);
+    assert.ok(!thread.text.includes(STRAY_REPLY), thread.text);
+  } finally {
+    await q(`DELETE FROM messages WHERE id = $1`, [STRAY_REPLY]);
+  }
+});
+
+test('the tag entity list reaches visible entities behind many entities the caller cannot see', async () => {
+  await q(`INSERT INTO entity_tags (id, org_id, tag_id, entity_type, entity_id, created_at) VALUES ($1, $2, $3, 'message', $4, NOW() - interval '1 day')`, [p('et-old'), ORG_A, TAG_A, MESSAGE]);
+  await q(
+    `INSERT INTO entity_tags (id, org_id, tag_id, entity_type, entity_id)
+     SELECT gen_random_uuid()::text, $1, $2, 'message', $3 || g FROM generate_series(1, 250) g`,
+    [ORG_A, TAG_A, p('ghost')],
+  );
+  try {
+    const listed = await call(MEMBER, ORG_A, 'GET', `/api/tags/${TAG_A}/entities`);
+    assert.equal(listed.status, 200, listed.text);
+    assert.deepEqual((listed.json as Array<{ entity_id: string }>).map((r) => r.entity_id), [MESSAGE]);
+  } finally {
+    await q(`DELETE FROM entity_tags WHERE tag_id = $1`, [TAG_A]);
+  }
 });
 
 test('a bookmark list reports the own space of the message; a bookmark held under another org is re-homed on save', async () => {

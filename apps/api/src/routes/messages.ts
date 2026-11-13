@@ -115,6 +115,7 @@ async function getVisibleMessage(messageId: string, orgId: string, userId: strin
       eq(messages.space_id, spaceMembers.space_id),
       eq(spaceMembers.user_id, userId),
     ))
+    .innerJoin(spaces, and(eq(spaces.id, messages.space_id), eq(spaces.org_id, orgId)))
     .innerJoin(users, eq(messages.user_id, users.id))
     .where(and(
       eq(messages.id, messageId),
@@ -950,6 +951,7 @@ messageRoutes.get('/:id/thread', async (c) => {
         and(
           eq(messages.parent_id, messageId),
           eq(messages.org_id, user.org_id),
+          eq(messages.space_id, parentMsg.space_id),
         )
       )
       .orderBy(messages.created_at, messages.id);

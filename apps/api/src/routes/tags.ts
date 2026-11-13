@@ -268,17 +268,32 @@ tagRoutes.get('/:id/entities', async (c) => {
   const tagId = c.req.param('id');
   const entityType = c.req.query('type'); // optional filter
 
-  const rows = await db.select().from(entityTags)
-    .where(and(
-      eq(entityTags.tag_id, tagId),
-      eq(entityTags.org_id, user.org_id),
-      ...(entityType ? [eq(entityTags.entity_type, entityType as any)] : []),
-    ))
-    .orderBy(desc(entityTags.created_at));
-
-  // Only entities the caller can see are listed; the rest are omitted.
-  const { taskMap, messageMap, noteMap, isVisible } = await resolveVisibleTagEntities(rows, user);
-  const visibleRows = rows.filter(row => isVisible(row.entity_type, row.entity_id)).slice(0, 100);
+  // Only entities the caller can see are listed; the rest are omitted. Rows
+  // are scanned newest first in pages until 100 visible entities are found.
+  const LIST_LIMIT = 100;
+  const PAGE_SIZE = 200;
+  const visibleRows: Array<typeof entityTags.$inferSelect> = [];
+  const taskMap = new Map<string, { title: string; number: number; prefix: string; status: string }>();
+  const messageMap = new Map<string, { content: string; user_name: string; space_id: string }>();
+  const noteMap = new Map<string, { title: string }>();
+  for (let offset = 0; visibleRows.length < LIST_LIMIT; offset += PAGE_SIZE) {
+    const page = await db.select().from(entityTags)
+      .where(and(
+        eq(entityTags.tag_id, tagId),
+        eq(entityTags.org_id, user.org_id),
+        ...(entityType ? [eq(entityTags.entity_type, entityType as any)] : []),
+      ))
+      .orderBy(desc(entityTags.created_at), desc(entityTags.id))
+      .limit(PAGE_SIZE)
+      .offset(offset);
+    const resolved = await resolveVisibleTagEntities(page, user);
+    for (const [id, v] of resolved.taskMap) taskMap.set(id, v);
+    for (const [id, v] of resolved.messageMap) messageMap.set(id, v);
+    for (const [id, v] of resolved.noteMap) noteMap.set(id, v);
+    visibleRows.push(...page.filter(row => resolved.isVisible(row.entity_type, row.entity_id)));
+    if (page.length < PAGE_SIZE) break;
+  }
+  visibleRows.splice(LIST_LIMIT);
 
   const results = visibleRows.map(row => {
     const base = { id: row.id, entity_type: row.entity_type, entity_id: row.entity_id, created_at: row.created_at };

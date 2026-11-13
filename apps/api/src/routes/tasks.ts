@@ -4,6 +4,7 @@ import { stripNativeMentionAtoms, NativeMentionLimitError } from '@deft/shared';
 import { enqueueNativeMentionPublication } from '../lib/native-mentions.js';
 import { z } from 'zod';
 import { eq, and, desc, asc, sql, inArray, ilike, or, isNull, type SQL } from 'drizzle-orm';
+import { loadMessageForMember } from '../lib/space-membership.js';
 import { db } from '../lib/db.js';
 import { reviewableApprovalCountsByEmployee } from '../lib/pending-approval-audience.js';
 import { nativeCreate, nativeCreateKey, NativeCreateError } from '../lib/native-create.js';
@@ -1766,6 +1767,8 @@ taskRoutes.get('/project/:projectId', async (c) => {
  * Shared task-creation logic used by both the root POST /api/tasks and the
  * path-param POST /api/tasks/project/:projectId routes.
  */
+const INVALID_SOURCE_MESSAGE = { error: 'source_message_id must reference a visible message', code: 'VALIDATION_ERROR' } as const;
+
 async function createTaskForProject(
   data: z.infer<typeof createTaskSchema>,
   projectId: string,
@@ -1791,6 +1794,10 @@ async function createTaskForProject(
   const assigneeId = await validateAssignableAssigneeId(data.assignee_id, orgId);
   if (data.assignee_id !== undefined && assigneeId === undefined) {
     throw Object.assign(new Error('Invalid assignee'), { code: 'INVALID_ASSIGNEE' });
+  }
+
+  if (data.source_message_id && !await loadMessageForMember(data.source_message_id, userId, orgId)) {
+    throw Object.assign(new Error('Invalid source message'), { code: 'INVALID_SOURCE_MESSAGE' });
   }
 
   const { value: task, replayed } = await nativeCreate({
@@ -1884,6 +1891,9 @@ taskRoutes.post('/', async (c) => {
       if (err?.code === 'NOT_FOUND') {
         return c.json({ error: 'Project not found', code: 'NOT_FOUND' }, 404);
       }
+      if (err?.code === 'INVALID_SOURCE_MESSAGE') {
+        return c.json(INVALID_SOURCE_MESSAGE, 400);
+      }
       if (err?.code === 'INVALID_ASSIGNEE') {
         return c.json({ error: 'Assignee must be an active user or healthy agent in this organization', code: 'INVALID_ASSIGNEE' }, 400);
       }
@@ -1915,6 +1925,9 @@ taskRoutes.post('/project/:projectId', async (c) => {
     } catch (err: any) {
       if (err?.code === 'NOT_FOUND') {
         return c.json({ error: 'Project not found', code: 'NOT_FOUND' }, 404);
+      }
+      if (err?.code === 'INVALID_SOURCE_MESSAGE') {
+        return c.json(INVALID_SOURCE_MESSAGE, 400);
       }
       throw err;
     }
