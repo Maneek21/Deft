@@ -229,6 +229,14 @@ dbTest('another member cannot approve, start, resume or cancel a plan; its creat
   // An owner of another workspace reaches nothing.
   const foreign = await insertPlanRow(CREATOR, [NATIVE_STEP]);
   assert.equal((await post(appAs(OTHER_OWNER, OTHER_ORG), `/api/agent-plans/${foreign}/approve`)).status, 404);
+
+  // An inactive admin reaches nothing.
+  await client.query('UPDATE org_members SET is_active = false WHERE org_id = $1 AND user_id = $2', [ORG, ADMIN]);
+  try {
+    assert.equal((await post(appAs(ADMIN), `/api/agent-plans/${foreign}/approve`)).status, 404);
+  } finally {
+    await client.query('UPDATE org_members SET is_active = true WHERE org_id = $1 AND user_id = $2', [ORG, ADMIN]);
+  }
 });
 
 dbTest('a plan run executes only for its own creator', async () => {
@@ -331,29 +339,26 @@ legacyTest('approving a pending guest-requested connected action settles it fail
   assert.deepEqual(calls, [WRITE_TOOL]);
 });
 
+function fakeCapabilityService(cutover: boolean) {
+  const counter = { calls: 0 };
+  const result = { provider: { provider_kind: 'mcp', requested_provider_key: SLUG }, operation_name: WRITE_TOOL, provider_call_attempted: true, provider_succeeded: true, legacy_output: {}, duration_ms: 1 } as any;
+  const count = async () => { counter.calls += 1; return result; };
+  const service = new CapabilityService({ discover: async () => { throw new Error('unused'); }, invoke: count }, { invoke: count }, () => cutover);
+  const invoke = (orgId: string, userId: string, legacyActionId?: string) => service.invoke({
+    org_id: orgId, actor: { user_id: userId }, provider: { provider_kind: 'mcp', connection_slug: SLUG, operation_name: WRITE_TOOL }, input: {},
+  }, legacyActionId ? { legacy_action_id: legacyActionId } : {});
+  return { counter, invoke };
+}
+
 dbTest('connected tools are available to workspace members in either execution mode', async () => {
   for (const cutover of [false, true]) {
-    let providerCalls = 0;
-    let governedCalls = 0;
-    const result = { provider: { provider_kind: 'mcp', requested_provider_key: SLUG }, operation_name: READ_TOOL, provider_call_attempted: true, provider_succeeded: true, legacy_output: {}, duration_ms: 1 };
-    const service = new CapabilityService(
-      { discover: async () => { throw new Error('unused'); }, invoke: async () => { providerCalls += 1; return result as any; } },
-      { invoke: async () => { governedCalls += 1; return result as any; } },
-      () => cutover,
-    );
-    const request = (orgId: string, userId: string) => ({
-      org_id: orgId,
-      actor: { user_id: userId },
-      provider: { provider_kind: 'mcp', connection_slug: SLUG, operation_name: READ_TOOL },
-      input: {},
-    });
-    const refused = await service.invoke(request(ORG, GUEST));
-    assert.equal(refused.provider_call_attempted, false);
-    assert.equal(providerCalls + governedCalls, 0, `guest refused (cutover=${cutover})`);
+    const { counter, invoke } = fakeCapabilityService(cutover);
+    assert.equal((await invoke(ORG, GUEST)).provider_call_attempted, false);
+    assert.equal(counter.calls, 0, `guest refused (cutover=${cutover})`);
     // The same person is a member of another workspace, where the call proceeds.
-    await service.invoke(request(OTHER_ORG, GUEST));
-    await service.invoke(request(ORG, MEMBER));
-    assert.equal(providerCalls + governedCalls, 2, `members proceed (cutover=${cutover})`);
+    await invoke(OTHER_ORG, GUEST);
+    await invoke(ORG, MEMBER);
+    assert.equal(counter.calls, 2, `members proceed (cutover=${cutover})`);
   }
 });
 
@@ -372,4 +377,22 @@ legacyTest('a connected plan step refused at execution fails the step instead of
   assert.equal(calls.length, 0);
   assert.equal(plan.rows[0].steps[0].status, 'failed', JSON.stringify(plan.rows[0]));
   assert.equal(plan.rows[0].status, 'paused');
+});
+
+dbTest('a connected call is made for the requester of its action row', async () => {
+  const { counter, invoke } = fakeCapabilityService(false);
+  const captureRow = async (userId: string, sourceUserId: string) => {
+    const id = randomUUID();
+    await client.query(`INSERT INTO agent_actions (id, org_id, user_id, action, params, approval_tier, approval_status, source)
+       VALUES ($1, $2, $3, $4, $5::jsonb, 'quick', 'approved', 'defty_capture')`,
+    [id, ORG, userId, MCP_WRITE, JSON.stringify({ source_user_id: sourceUserId })]);
+    return id;
+  };
+  const guestRequested = await captureRow(MEMBER, GUEST);
+  assert.equal((await invoke(ORG, MEMBER, guestRequested)).provider_call_attempted, false);
+  assert.equal(counter.calls, 0);
+  const row = await client.query('SELECT executed_at, error FROM agent_actions WHERE id = $1', [guestRequested]);
+  assert.ok(row.rows[0].executed_at && row.rows[0].error);
+  await invoke(ORG, GUEST, await captureRow(GUEST, MEMBER));
+  assert.equal(counter.calls, 1);
 });
