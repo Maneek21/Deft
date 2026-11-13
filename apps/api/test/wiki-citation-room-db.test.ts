@@ -142,7 +142,7 @@ test('a wiki proposal citing a message from the page\'s room, or citing none, st
   // An accepted cited proposal executes when approved.
   const { approveAction } = await import('../src/lib/agent-approval-resolver.js');
   const approved = await approveAction(JSON.parse(text(moved)).approval_id, f.adminId);
-  assert.equal(approved.status, 'ok', JSON.stringify(approved));
+  assert.equal(approved.status, 'approved', JSON.stringify(approved));
   assert.equal((await f.client.query('SELECT content FROM wiki_pages WHERE id = $1', [movedPage])).rows[0].content, 'Moved again');
   // An empty source room is no room, as when the write runs.
   const emptyRoom = await wikiUpdate({
