@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Hono } from 'hono';
 import { db } from '../src/lib/db.js';
-import { icsRoutes } from '../src/routes/ics.js';
+import { icsPublicRoutes, icsRoutes } from '../src/routes/ics.js';
 
 const FEED = 'https://calendar.example.test/private/SECRETTOKEN123/basic.ics?key=QUERYSECRET456';
 
@@ -13,6 +13,7 @@ function mount() {
     await next();
   });
   app.route('/', icsRoutes);
+  app.route('/pub', icsPublicRoutes);
   return app;
 }
 
@@ -42,18 +43,21 @@ test('calendar feed route failures return and log a neutral message', async () =
       ['PATCH', '/subscriptions/sub-1', JSON.stringify({ label: 'x' })],
       ['DELETE', '/subscriptions/sub-1', undefined],
       ['POST', '/subscriptions/sub-1/sync', undefined],
+      ['GET', '/subscriptions', undefined],
+      ['GET', '/my-feed-url', undefined],
+      ['POST', '/my-feed-url/regenerate', undefined],
+      ['GET', '/pub/feed/' + 'T'.repeat(20), undefined],
+      ['PATCH', '/subscriptions/' + encodeURIComponent(FEED), JSON.stringify({ label: 'x' })],
     ];
     for (const [method, path, body] of calls) {
       const res = await app.request(path, { method, headers: json, body });
       const text = await res.text();
       assert.equal(res.status, 500, `${method} ${path}`);
-      const parsed = JSON.parse(text);
-      assert.equal(typeof parsed.error, 'string');
-      assert.equal(typeof parsed.code, 'string');
+      assert.deepEqual(JSON.parse(text), { error: 'Calendar feed request failed', code: 'ICS_ROUTE_FAILED' });
       assert.doesNotMatch(text, /SECRETTOKEN123|QUERYSECRET456|calendar\.example\.test/);
     }
     const all = JSON.stringify(logged.map((l) => l.map((x) => (x instanceof Error ? `${x.message}${x.stack}` : x))));
-    assert.ok(logged.length >= 4, 'failures are logged');
+    assert.ok(logged.length >= calls.length, 'failures are logged');
     assert.doesNotMatch(all, /SECRETTOKEN123|QUERYSECRET456|calendar\.example\.test/);
     assert.match(all, /user-1/);
   } finally {
