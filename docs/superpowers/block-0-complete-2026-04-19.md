@@ -63,3 +63,5 @@ None of the deferrals block the exit gate. They're follow-ons, not foundations.
 ## Ready for Block 1
 
 Block 1 can start here. The Gateway RPC client (`apps/api/src/lib/openclaw-gateway.ts`) is the first task — it unlocks A+B skill install, exec-approval forwarding, reasoning-trace subscription, and live markdown file editing for agents.
+
+<!-- ci probe -->
