@@ -64,8 +64,9 @@ export async function verifiedCitedMessage(
   if (value === undefined || value === null || (typeof value === 'string' && !value.trim())) {
     return { messageId: null };
   }
-  if (typeof value !== 'string') return { refusal: CITED_MESSAGE_UNAVAILABLE_ERROR };
-  const messageId = value.trim();
+  // The id must be exact: tools keep the argument as given for execution.
+  if (typeof value !== 'string' || value !== value.trim()) return { refusal: CITED_MESSAGE_UNAVAILABLE_ERROR };
+  const messageId = value;
   const mismatch = await citedMessageRefusal(ctx, messageId);
   if (mismatch) return { refusal: mismatch };
   const [employee] = await db

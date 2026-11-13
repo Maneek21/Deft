@@ -347,14 +347,15 @@ test('the citation never changes whether a call needs approval', { skip: !canRun
   }
 });
 
-test('an unreadable, deleted or other-workspace citation is refused', { skip: !canRun, timeout: 900_000 }, async () => {
+test('an unreadable, deleted, other-workspace or padded citation is refused', { skip: !canRun, timeout: 900_000 }, async () => {
   const inLonelyRoom = randomUUID();
   await f.client.query('INSERT INTO messages (id, org_id, space_id, user_id, content) VALUES ($1, $2, $3, $4, $5)',
     [inLonelyRoom, f.orgId, lonelyRoom, alice, 'not for the employee']);
   const deleted = await addressed(bob, room);
   await f.client.query('UPDATE messages SET is_deleted = true WHERE id = $1', [deleted.messageId]);
+  const readable = await addressed(bob, room);
   const before = await counts();
-  for (const citation of [randomUUID(), inLonelyRoom, deleted.messageId, foreignMessage]) {
+  for (const citation of [randomUUID(), inLonelyRoom, deleted.messageId, foreignMessage, ` ${readable.messageId} `]) {
     for (const trust of ['conservative', 'autonomous']) {
       for (const [label, name, args] of [...calls(citation), ...chatCalls(citation)]) {
         const result = await tools[name]!(args, ctxFor(trust));
