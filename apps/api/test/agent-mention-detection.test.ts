@@ -275,8 +275,11 @@ test('structured mention of BYOA agent (kind=agent, not Defty) does NOT trigger 
   assert.ok(employeeQueued, 'BYOA agent mention should enqueue agent-employee-message');
 });
 
-test('plain-text BYOA agent name is normalized and dispatches to the employee', async () => {
-  const content = 'Hey @AMD BYOA Agent, can you help?';
+test('plain-text BYOA agent handle is normalized and dispatches to the employee', async () => {
+  // Multi-word names are reached by their handle (slug); `@AMD BYOA Agent` stays plain.
+  const [employee] = await db.select({ slug: agentEmployees.slug }).from(agentEmployees)
+    .where(eq(agentEmployees.user_id, byoaAgentUserId)).limit(1);
+  const content = `Hey @${employee!.slug}, can you help?`;
 
   const res = await app.request(`/api/messages/${spaceId}`, {
     method: 'POST',

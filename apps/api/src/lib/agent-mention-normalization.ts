@@ -3,7 +3,6 @@ export type AgentMentionIdentity = {
   name: string;
   slug: string;
 };
-import { stripNativeMentionAtoms } from '@deft/shared';
 
 export type PlainAgentMentionResolution = {
   content: string;
@@ -20,6 +19,30 @@ function aliasesForAgent(agent: AgentMentionIdentity) {
   return Array.from(new Set(
     [agent.slug, agent.name].map((value) => value.trim().toLowerCase()).filter((value) => TOKEN.test(value)),
   ));
+}
+
+/** Ranges of explicit mentions that are never rewritten: canonical
+ * `<@id|label>` markers, `[[deft:...]]` tokens, and whole (nested) spans that
+ * carry a native ref kind or a `data-mention-uuid` attribute. */
+function explicitMentionRanges(content: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  const stack: boolean[] = [];
+  let depth = 0;
+  let start = 0;
+  for (const tag of content.matchAll(/<(\/?)span\b[^>]*>/gi)) {
+    if (!tag[1]) {
+      const explicit = /data-deft-ref-kind/i.test(tag[0]) || /\sdata-mention-uuid\s*=/i.test(tag[0]);
+      stack.push(explicit);
+      if (explicit && depth++ === 0) start = tag.index!;
+    } else if (stack.pop() && --depth === 0) {
+      ranges.push([start, tag.index! + tag[0].length]);
+    }
+  }
+  if (depth > 0) ranges.push([start, content.length]);
+  for (const marker of content.matchAll(/<@[^|>]+\|[^>]+>|\[\[deft:(?:person|task|wiki_page):[^\]]*\]\]/gi)) {
+    ranges.push([marker.index!, marker.index! + marker[0].length]);
+  }
+  return ranges;
 }
 
 /**
@@ -50,26 +73,24 @@ export function normalizePlainAgentMentions(
     if (ownersByAlias.has(alias)) addOwner(alias, `competitor:${alias}`);
   }
 
-  const segments = content.split(/(<span\b[^>]*(?:data-deft-ref-kind|data-mention-uuid)[^>]*>[\s\S]*?<\/span>|\[\[deft:(?:person|task|wiki_page):[^\]]+\]\]|<@[^>]+>)/gi);
+  const protectedRanges = explicitMentionRanges(content);
   const resolvedUserIds = new Set<string>();
   const ambiguousAliases = new Set<string>();
-  const normalized = segments.map((segment, index) => {
-    if (index % 2 === 1 || stripNativeMentionAtoms(segment) === '') return segment;
-    return segment.replace(/(^|[^a-z0-9_])@([a-z0-9_-]+)/gi, (match, prefix: string, token: string) => {
-      const owners = ownersByAlias.get(token.toLowerCase());
-      if (!owners) return match;
-      if (owners.size !== 1) {
-        ambiguousAliases.add(token.toLowerCase());
-        return match;
-      }
-      const agent = agentByUserId.get(Array.from(owners)[0]!)!;
-      resolvedUserIds.add(agent.userId);
-      return `${prefix}<@${agent.userId}|${agent.name}>`;
-    });
+  const normalized = content.replace(/(?<![a-z0-9_])@([a-z0-9_-]+)/gi, (match, token: string, offset: number) => {
+    if (protectedRanges.some(([start, end]) => offset >= start && offset < end)) return match;
+    const owners = ownersByAlias.get(token.toLowerCase());
+    if (!owners) return match;
+    if (owners.size !== 1) {
+      ambiguousAliases.add(token.toLowerCase());
+      return match;
+    }
+    const agent = agentByUserId.get(Array.from(owners)[0]!)!;
+    resolvedUserIds.add(agent.userId);
+    return `<@${agent.userId}|${agent.name}>`;
   });
 
   return {
-    content: normalized.join(''),
+    content: normalized,
     resolvedUserIds: Array.from(resolvedUserIds),
     ambiguousAliases: Array.from(ambiguousAliases),
   };

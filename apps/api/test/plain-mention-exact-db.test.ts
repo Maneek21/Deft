@@ -194,6 +194,16 @@ test('explicit markers are never rewritten and still dispatch beside unresolved 
   const agents = [{ userId: 'rita-user', name: 'Rita', slug: 'rita' }];
   const marker = '<@old-user|@Rita> and <span data-mention-uuid="old-user">@Rita</span>';
   assert.equal(normalizePlainAgentMentions(`${marker} @RC`, agents).content, `${marker} @RC`);
+  const nested = '<span data-deft-ref-kind="task" data-deft-ref-id="t1"><span>Task:</span>@Rita</span>';
+  assert.equal(normalizePlainAgentMentions(`${nested} @RC`, agents).content, `${nested} @RC`);
+});
+
+test('token boundaries and look-alike markup do not hide an exact handle', () => {
+  const agents = [{ userId: 'rita-user', name: 'Rita', slug: 'rita' }];
+  const resolve = (content: string) => normalizePlainAgentMentions(content, agents).content;
+  assert.equal(resolve('@unknown-@Rita'), '@unknown-<@rita-user|Rita>');
+  assert.equal(resolve('<@Rita> @unknown'), '<<@rita-user|Rita>> @unknown');
+  assert.equal(resolve('<span title="data-mention-uuid">@Rita</span>'), '<span title="data-mention-uuid"><@rita-user|Rita></span>');
 });
 
 test('legacy @deft still reaches Defty', async () => {
