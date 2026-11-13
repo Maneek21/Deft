@@ -275,6 +275,8 @@ test('task_update enqueues workflow and records activity on valid status change'
     .limit(1);
 
   assert.ok(job, 'workflow-execute job should be enqueued for MCP status change');
+  assert.equal((job!.data as any).org_id, orgId, 'workflow-execute job carries the caller workspace');
+  assert.equal(job!.org_id, orgId, 'workflow-execute queue row belongs to the caller workspace');
 });
 
 test('task_update supports due date and comment patches', async () => {

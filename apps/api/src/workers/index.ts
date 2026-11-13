@@ -466,6 +466,8 @@ async function processDequeuedJob(
           lockToken: job.lockToken,
           leaseExpiresAt: job.lockExpiresAt,
           signal,
+          orgId: job.orgId,
+          cronKey: job.cronKey,
         };
         await handler(runtimeJob);
       },

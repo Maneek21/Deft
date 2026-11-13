@@ -1,11 +1,12 @@
 /**
  * Task 8.7 — GitHub webhook route.
  *
- * Phase 8's trigger dispatcher binds `webhook:github-pr-merged` to the
- * skill triggers that claim it. This route receives the GitHub webhook
- * POST, filters for PR-merged events, and enqueues a `trigger-dispatch`
- * job with the trigger kind + payload context. The `trigger-dispatch`
- * handler then fans out to every subscribed employee.
+ * Receives GitHub webhook POSTs signed with the deployment-wide
+ * `GITHUB_WEBHOOK_SECRET`. Trigger jobs are dispatched per workspace, and
+ * a delivery signed with that one secret does not identify a workspace
+ * (no repository-to-workspace mapping exists), so merged-PR deliveries are
+ * acknowledged with 200 and not dispatched. Merged PRs reach workspaces
+ * through the per-workspace GitHub polling sync (`workers/github-sync.ts`).
  *
  * The route requires `GITHUB_WEBHOOK_SECRET`. Without it the endpoint is
  * disabled and answers every request with 503. With it, each request must
@@ -13,7 +14,6 @@
  */
 import { Hono } from 'hono';
 import crypto from 'node:crypto';
-import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
 
 export const githubWebhookRoutes = new Hono();
 
@@ -64,19 +64,8 @@ githubWebhookRoutes.post('/github', async (c) => {
     return c.json({ ok: true, skipped: 'not-merged' });
   }
 
-  const pr = payload.pull_request;
-  await enqueue(QUEUE_NAMES.SCHEDULED_JOBS, 'trigger-dispatch', {
-    trigger_kind: 'webhook:github-pr-merged',
-    context: {
-      pr_number: pr.number,
-      pr_title: pr.title,
-      pr_url: pr.html_url,
-      pr_author: pr.user?.login,
-      merged_by: pr.merged_by?.login,
-      repo: payload.repository?.full_name,
-    },
-    goal: `A pull request was merged (${payload.repository?.full_name}#${pr.number}): "${pr.title}". Review whether any open tasks should be updated, closed, or kicked off because of this.`,
-  });
-
-  return c.json({ ok: true, dispatched: 'webhook:github-pr-merged' });
+  // Not attributable to a workspace: acknowledge so GitHub does not retry,
+  // and dispatch nothing.
+  console.info('[webhooks] GitHub merged-PR delivery acknowledged; not attributable to a workspace');
+  return c.json({ ok: true, skipped: 'unattributed' });
 });

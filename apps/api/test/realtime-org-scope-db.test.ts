@@ -267,7 +267,7 @@ test('S3-a: a notification for org B is not delivered to the same user\'s org A 
   await assertOrgBOnly('workflow', 'notification:new', async () => {
     await handleWorkflowExecute({
       id: `s3-wf-job-${stamp}`, name: 'workflow-execute', attempts: 1,
-      data: { workflow_id: RULE_B, task_id: TASK_B, actor_user_id: SENDER_B },
+      data: { workflow_id: RULE_B, task_id: TASK_B, actor_user_id: SENDER_B, org_id: ORG_B },
     } as any);
   }, (data) => data?.org_id === ORG_B && data?.title === 's3 workflow notify');
 });

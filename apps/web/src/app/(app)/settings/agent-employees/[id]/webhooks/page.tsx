@@ -33,12 +33,18 @@ export default function WebhooksPage() {
   const [creating, setCreating] = useState(false);
   const [createdSecret, setCreatedSecret] = useState<{ secret: string; slug: string; post_url: string } | null>(null);
   const [copyHint, setCopyHint] = useState<string | null>(null);
+  const [forbidden, setForbidden] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     setErr(null);
     try {
       const res = await api.fetch(`/api/agent-webhooks?employee_id=${employeeId}`);
+      if (res.status === 403) {
+        setForbidden(true);
+        setWebhooks([]);
+        return;
+      }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = await res.json();
       setWebhooks(body.webhooks ?? []);
@@ -116,6 +122,11 @@ export default function WebhooksPage() {
         </p>
       </div>
 
+      {forbidden && !loading ? (
+        <div className="rounded border border-dashed border-border p-5 text-center text-sm text-muted-foreground">
+          Only workspace owners and admins can manage webhooks.
+        </div>
+      ) : (<>
       {copyHint && <div className="mb-3 rounded bg-accent/60 px-3 py-1.5 text-xs">{copyHint}</div>}
       {err && (
         <div className="mb-3 flex items-start gap-2 rounded border border-destructive/30 bg-destructive/10 p-3 text-sm">
@@ -215,6 +226,7 @@ export default function WebhooksPage() {
           </div>
         )}
       </section>
+      </>)}
     </div>
     </div>
   );

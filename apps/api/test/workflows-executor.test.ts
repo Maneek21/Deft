@@ -125,6 +125,7 @@ test('executor applies add_label and writes a successful workflow_runs row', asy
       workflow_id: ruleId!,
       task_id: taskId!,
       actor_user_id: USER_ID,
+      org_id: ORG_ID,
     },
   });
 
@@ -159,6 +160,7 @@ test('executor is idempotent — second run does not duplicate the label', async
       workflow_id: ruleId!,
       task_id: taskId!,
       actor_user_id: USER_ID,
+      org_id: ORG_ID,
     },
   });
 
@@ -199,6 +201,7 @@ test('executor validates label org scope — cross-org label_id fails gracefully
       workflow_id: ruleId!,
       task_id: taskId!,
       actor_user_id: USER_ID,
+      org_id: ORG_ID,
     },
   });
 
