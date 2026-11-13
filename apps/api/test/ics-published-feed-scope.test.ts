@@ -3,6 +3,7 @@ import { after, before, test } from 'node:test';
 import { eq, inArray } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { db, events, orgMembers, orgs, projects, tasks, users } from '@deft/db';
+import { icsPublishTokens } from '@deft/db/ics-publish-tokens';
 import { icsPublicRoutes } from '../src/routes/ics.js';
 import { installRequestGate, isPublicApiRequest } from '../src/middleware/request-gate.js';
 
@@ -33,13 +34,14 @@ before(async () => {
     { id: foreignOrg, name: `Feed foreign ${s}`, slug: `feed-foreign-${s}` },
   ]);
   await db.insert(users).values([
-    { id: owner, email: `feed-owner-${s}@test.local`, name: 'Feed Owner', ics_publish_token: ownerToken },
+    { id: owner, email: `feed-owner-${s}@test.local`, name: 'Feed Owner' },
     { id: other, email: `feed-other-${s}@test.local`, name: 'Feed Other' },
   ]);
   await db.insert(orgMembers).values([
     { org_id: orgA, user_id: owner },
     { org_id: orgA, user_id: other },
   ]);
+  await db.insert(icsPublishTokens).values({ org_id: orgA, user_id: owner, token: ownerToken });
   await db.insert(projects).values([
     { id: projectIds.live, org_id: orgA, name: 'Live', prefix: `L${s.slice(0, 6)}` },
     { id: projectIds.archived, org_id: orgA, name: 'Archived', prefix: `R${s.slice(0, 6)}`, is_archived: true },
@@ -67,6 +69,7 @@ after(async () => {
   await db.delete(events).where(eq(events.org_id, orgA));
   await db.delete(tasks).where(inArray(tasks.org_id, [orgA, foreignOrg]));
   await db.delete(projects).where(inArray(projects.org_id, [orgA, foreignOrg]));
+  await db.delete(icsPublishTokens).where(eq(icsPublishTokens.org_id, orgA));
   await db.delete(orgMembers).where(eq(orgMembers.org_id, orgA));
   await db.delete(users).where(inArray(users.id, [owner, other]));
   await db.delete(orgs).where(inArray(orgs.id, [orgA, foreignOrg]));
@@ -77,8 +80,7 @@ test('unknown, malformed and rotated tokens get one answer', async () => {
   assert.equal(unknown.status, 404);
   assert.deepEqual(await fetchFeed('short'), unknown);
   const rotatedFrom = `rotated${s}`;
-  await db.update(users).set({ ics_publish_token: rotatedFrom }).where(eq(users.id, other));
-  await db.update(users).set({ ics_publish_token: `rotatedto${s}` }).where(eq(users.id, other));
+  await db.insert(icsPublishTokens).values({ org_id: orgA, user_id: other, token: rotatedFrom, revoked_at: new Date() });
   assert.deepEqual(await fetchFeed(rotatedFrom), unknown);
 });
 

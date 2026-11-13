@@ -35,7 +35,9 @@ Deft controls shared workspace state, access through supported Deft tools, appro
 
 ## Recommended integration story
 
-- Calendar: connect ICS feeds in Settings -> Calendar.
+- Calendar: connect ICS feeds in Settings -> Calendar. A published Deft calendar
+  feed belongs to one workspace; people in several workspaces have one feed per
+  workspace.
 - GitHub, Slack, Gmail, Linear, Notion, and other tools: connect them inside the
   user's own agent runtime or MCP server, then onboard that agent as a Deft employee.
 - Local/private AI: configure Ollama or an OpenAI-compatible local server where supported.

@@ -1,8 +1,9 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { eq, and, isNotNull, gte, lte, inArray } from 'drizzle-orm';
+import { eq, and, isNotNull, isNull, gte, lte, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { users, icsSubscriptions, tasks, events, projects } from '@deft/db/schema';
+import { users, icsSubscriptions, tasks, events, projects, orgMembers } from '@deft/db/schema';
+import { icsPublishTokens } from '@deft/db/ics-publish-tokens';
 import { generateICS, humanizeIcsError, newPublishToken, parseICS, extractICSCalendarName } from '../lib/ics.js';
 import { syncOne } from '../workers/handlers/ics-sync.js';
 import { env } from '../lib/env.js';
@@ -58,30 +59,22 @@ icsPublicRoutes.get('/feed/:token', guarded('GET /feed', async (c) => {
     return c.text('Not found', 404);
   }
 
-  const [user] = await db
-    .select({ id: users.id, name: users.name, org_id: users.id /* unused */ })
-    .from(users)
-    .where(eq(users.ics_publish_token, token))
+  // A token serves exactly the workspace it was issued in, and only while its
+  // owner is an active member there.
+  const [feed] = await db
+    .select({ id: users.id, name: users.name, org_id: icsPublishTokens.org_id })
+    .from(icsPublishTokens)
+    .innerJoin(users, eq(users.id, icsPublishTokens.user_id))
+    .innerJoin(orgMembers, and(
+      eq(orgMembers.org_id, icsPublishTokens.org_id),
+      eq(orgMembers.user_id, icsPublishTokens.user_id),
+      eq(orgMembers.is_active, true),
+    ))
+    .where(and(eq(icsPublishTokens.token, token), isNull(icsPublishTokens.revoked_at)))
     .limit(1);
-
-  if (!user) {
-    return c.text('Not found', 404);
-  }
-
-  // Resolve the user's org (single-org self-host: pick any active membership).
-  const orgRows = await db.execute(
-    // Drizzle doesn't expose the whole orgMembers selector here without an
-    // import cycle; raw SQL is fine.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    // @ts-ignore
-    (await import('drizzle-orm')).sql`
-      SELECT org_id FROM org_members WHERE user_id = ${user.id} AND is_active = true LIMIT 1
-    `,
-  );
-  const orgRow = ((orgRows as unknown as { rows?: Array<Record<string, unknown>> }).rows
-    ?? (orgRows as unknown as Array<Record<string, unknown>>))[0] as { org_id?: string } | undefined;
-  const orgId = orgRow?.org_id;
-  if (!orgId) return c.text('Not found', 404);
+  if (!feed) return c.text('Not found', 404);
+  const user = { id: feed.id, name: feed.name };
+  const orgId = feed.org_id;
 
   const horizonStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // 30 days back
   const horizonEnd = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000); // 1 year forward
@@ -376,30 +369,41 @@ icsRoutes.post('/subscriptions/:id/sync', guarded('POST /subscriptions/:id/sync'
   }
 }));
 
-// GET /api/ics/my-feed-url — returns the user's outbound feed URL.
-// Lazily generates the publish token on first call.
+type FeedDb = Pick<typeof db, 'select' | 'insert'>;
+
+// The caller's live feed token in their current workspace, created if missing.
+// The partial unique index keeps one live row per person per workspace, so
+// concurrent first loads converge on the same row.
+async function liveFeedToken(tx: FeedDb, user: { id: string; org_id: string }): Promise<string> {
+  const live = and(eq(icsPublishTokens.org_id, user.org_id), eq(icsPublishTokens.user_id, user.id), isNull(icsPublishTokens.revoked_at));
+  const read = async () => (await tx.select({ token: icsPublishTokens.token }).from(icsPublishTokens).where(live).limit(1))[0]?.token;
+  const existing = await read();
+  if (existing) return existing;
+  await tx.insert(icsPublishTokens).values({ org_id: user.org_id, user_id: user.id, token: newPublishToken() }).onConflictDoNothing();
+  const created = await read();
+  if (!created) throw new Error('Feed token could not be created');
+  return created;
+}
+
+// GET /api/ics/my-feed-url — the caller's feed URL for their current workspace.
 icsRoutes.get('/my-feed-url', guarded('GET /my-feed-url', async (c) => {
   const user = c.get('user') as { id: string; org_id: string };
-  const [row] = await db.select({ token: users.ics_publish_token }).from(users).where(eq(users.id, user.id)).limit(1);
-  let token = row?.token ?? null;
-  if (!token) {
-    token = newPublishToken();
-    await db.update(users).set({ ics_publish_token: token }).where(eq(users.id, user.id));
-  }
-  const apiBase = publicApiBase(c);
+  const token = await liveFeedToken(db, user);
   // Public feed URL — clients paste this into their calendar app.
-  const url = `${apiBase}/api/ics/feed/${token}`;
-  return c.json({ feed_url: url });
+  return c.json({ feed_url: `${publicApiBase(c)}/api/ics/feed/${token}` });
 }));
 
-// POST /api/ics/my-feed-url/regenerate — rotate the publish token.
-// Existing calendar subscribers will go 404 until they update the URL.
+// POST /api/ics/my-feed-url/regenerate — rotate the current workspace's feed
+// token. Subscribers of the old URL get 404 until they update it; feeds in
+// other workspaces are unchanged.
 icsRoutes.post('/my-feed-url/regenerate', guarded('POST /my-feed-url/regenerate', async (c) => {
   const user = c.get('user') as { id: string; org_id: string };
-  const token = newPublishToken();
-  await db.update(users).set({ ics_publish_token: token }).where(eq(users.id, user.id));
-  const apiBase = publicApiBase(c);
-  return c.json({ feed_url: `${apiBase}/api/ics/feed/${token}` });
+  const token = await db.transaction(async (tx) => {
+    await tx.update(icsPublishTokens).set({ revoked_at: new Date() }).where(and(
+      eq(icsPublishTokens.org_id, user.org_id), eq(icsPublishTokens.user_id, user.id), isNull(icsPublishTokens.revoked_at)));
+    return liveFeedToken(tx, user);
+  });
+  return c.json({ feed_url: `${publicApiBase(c)}/api/ics/feed/${token}` });
 }));
 
 async function fetchICSWithLimits(url: string): Promise<string> {
