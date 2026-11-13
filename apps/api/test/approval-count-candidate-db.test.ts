@@ -305,28 +305,35 @@ async function statementsOf(run: () => Promise<unknown>): Promise<Statement[]> {
   return seen;
 }
 
+/** The gate starting as the THEN arm of a CASE whose WHEN is a subquery (the candidate test). */
+const GUARDED_GATE = /CASE WHEN \(SubPlan \d+\) THEN \(\(agent_actions\.org_id = [^)]+\) AND \(\(agent_actions\.source IS DISTINCT FROM 'defty_capture'/g;
+
 /**
- * Largest number of times a subquery of the review gate ran: the subplans named
- * in the agent_actions filter after the gate's first test (its capture-room
- * check, the last one in the filter).
+ * Largest number of times a subquery of the review gate ran (the subplans named
+ * in the agent_actions filter after the gate's first test, its capture-room
+ * check, the last one in the filter), and whether the gate in the filter sits
+ * behind the candidate test.
  */
-async function reviewGateLoops(statement: Statement): Promise<number> {
+async function reviewGateLoops(statement: Statement): Promise<{ loops: number; guarded: boolean }> {
   const plan = (await q(`EXPLAIN (ANALYZE, VERBOSE, FORMAT JSON) ${statement.text}`, statement.values)).rows[0]['QUERY PLAN'][0];
   const named = new Set<string>();
   const loops = new Map<string, number>();
+  let guarded = false;
   const walk = (node: any, main: boolean) => {
     if (main && node.Alias === 'agent_actions' && typeof node.Filter === 'string') {
       const filter: string = node.Filter;
       const start = filter.lastIndexOf("IS DISTINCT FROM 'defty_capture'");
       assert.ok(start >= 0, 'the filter holds the review gate');
       for (const match of filter.slice(start).matchAll(/SubPlan (\d+)/g)) named.add(`SubPlan ${match[1]}`);
+      guarded = [...filter.matchAll(GUARDED_GATE)].some((match) => match.index! + match[0].length
+        === start + "IS DISTINCT FROM 'defty_capture'".length);
     }
     if (node['Subplan Name']) loops.set(node['Subplan Name'], Math.max(loops.get(node['Subplan Name']) ?? 0, node['Actual Loops'] ?? 0));
     for (const child of node.Plans ?? []) walk(child, main && !['SubPlan', 'InitPlan'].includes(child['Parent Relationship']));
   };
   walk(plan.Plan, true);
   assert.ok(named.size > 0, 'the filter names the review gate subplans');
-  return Math.max(...[...named].map((name) => loops.get(name) ?? 0));
+  return { loops: Math.max(...[...named].map((name) => loops.get(name) ?? 0)), guarded };
 }
 
 test('COUNT-B: the counts run the review gate only on the viewer\'s candidate actions', async (t) => {
@@ -355,24 +362,28 @@ test('COUNT-B: the counts run the review gate only on the viewer\'s candidate ac
     const employees = (await statementsOf(() => reviewableApprovalCountsByEmployee(viewer)));
     assert.equal(employees.length, 1);
     for (const [name, statement] of [['inbox count', inboxCount[0]!], ['employee counts', employees[0]!]] as const) {
-      const loops = await reviewGateLoops(statement);
+      const { loops, guarded } = await reviewGateLoops(statement);
       if (loops > candidates) slow.push(`${person} ${name}: the gate runs on ${loops} rows, not only the ${candidates} candidates`);
+      // Whatever order the planner picks, the gate stays behind the candidate test.
+      if (!guarded) slow.push(`${person} ${name}: the gate is not behind the candidate test`);
     }
   }
   assert.deepEqual(slow, []);
-  // Control: the same count without the candidate test (the gate kept in one CASE, so the
-  // planner cannot reorder its parts) runs the gate on every pending action.
+  // Control: the same count without the candidate test (the gate kept in one CASE whose WHEN
+  // the planner cannot fold, so it cannot reorder the gate's parts) runs the gate on every
+  // pending action and is not seen as guarded.
   const { reviewableActionSql } = await import('../src/lib/agent-action-review-gate.js');
   const reference = and(
     eq(agentActions.org_id, orgId), eq(agentActions.approval_status, 'pending'),
     inArray(agentActions.approval_tier, ['quick', 'full']), notInArray(agentActions.action, SPECIAL),
-    sql`(CASE WHEN ${agentActions.id} IS NOT NULL THEN ${reviewableActionSql(viewerOf('member'))} ELSE false END)`,
+    sql`(CASE WHEN length(${agentActions.id}) > 0 THEN ${reviewableActionSql(viewerOf('member'))} ELSE false END)`,
   )!;
   const plain = db.select({ n: sql`count(*)` }).from(agentActions).where(reference).toSQL();
-  const control = await reviewGateLoops({ text: plain.sql, values: plain.params });
+  const { loops: control, guarded: controlGuarded } = await reviewGateLoops({ text: plain.sql, values: plain.params });
+  assert.equal(controlGuarded, false, 'control: the gate is not behind a candidate test');
   assert.ok(control >= BULK, `control: the gate without the candidate test runs ${control} times of ${pending}`);
   const plainEmployees = db.select({ n: sql`count(*)` }).from(agentActions)
     .where(and(reference, sql`${agentActions.agent_employee_id} IS NOT NULL`)).toSQL();
-  const employeeControl = await reviewGateLoops({ text: plainEmployees.sql, values: plainEmployees.params });
+  const { loops: employeeControl } = await reviewGateLoops({ text: plainEmployees.sql, values: plainEmployees.params });
   assert.ok(employeeControl >= BULK, `control: the plain gate runs ${employeeControl} times on employee actions`);
 });
