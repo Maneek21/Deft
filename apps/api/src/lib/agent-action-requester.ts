@@ -145,8 +145,9 @@ function boundMessageAuthorSql(c: ReturnType<typeof actionColumns>): SQL {
       AND bound_event.payload->>'author_role' IN ('owner', 'admin', 'member')
       AND (${c.channel_event_id} IS NULL OR ${c.channel_event_id} = bound_event.id)
       AND (${c.conversation_id} IS NULL OR ${c.conversation_id} = bound_event.space_id)
-      AND bound_event.created_at <= ${c.created_at}
-      AND ${c.created_at} <= bound_event.created_at + ${MESSAGE_BINDING_WINDOW}::interval
+      AND date_trunc('milliseconds', bound_event.created_at) <= date_trunc('milliseconds', ${c.created_at})
+      AND date_trunc('milliseconds', ${c.created_at})
+        <= date_trunc('milliseconds', bound_event.created_at) + ${MESSAGE_BINDING_WINDOW}::interval
       AND (SELECT true FROM messages bound_message
         WHERE bound_message.id = bound_event.source_id
           AND bound_message.org_id = bound_event.org_id
@@ -223,7 +224,7 @@ export function actionReviewerSql(userId: SQL, alias?: string): SQL<boolean> {
         AND reviewer_m.is_active = true
         AND reviewer_m.role IN ('owner', 'admin')
     )
-  END FROM (SELECT ${actionRequesterIdSql(alias)} AS id) action_requester)`;
+  END FROM (SELECT ${actionRequesterIdSql(alias)} AS id OFFSET 0) action_requester)`;
 }
 
 /**

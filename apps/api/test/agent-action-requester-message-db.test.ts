@@ -281,6 +281,14 @@ test('the 24-hour window runs from the delivery event', { skip: !canRun, timeout
   await assertBoundTo(await propose({ messageId: mention.messageId, createdAt: at.edge }), bob, 'exactly 24h');
   await assertUnbound(await propose({ messageId: mention.messageId, createdAt: at.past }), 'past 24h');
   await assertUnbound(await propose({ messageId: mention.messageId, createdAt: at.early }), 'before the event');
+  // Times compare at millisecond precision, as rows loaded in TypeScript carry them.
+  const fine = (await f.client.query(
+    `SELECT (created_at + interval '1 microsecond')::text AS just_after,
+            (date_trunc('milliseconds', created_at) + interval '24 hours 999 microseconds')::text AS last_ms
+     FROM agent_channel_events WHERE id = $1`, [mention.eventId],
+  )).rows[0] as { just_after: string; last_ms: string };
+  await assertBoundTo(await propose({ messageId: mention.messageId, createdAt: fine.just_after }), bob, 'a microsecond after');
+  await assertBoundTo(await propose({ messageId: mention.messageId, createdAt: fine.last_ms }), bob, 'within the last millisecond');
 });
 
 test('a guest\'s message never binds, and the author must still qualify now', { skip: !canRun, timeout: 900_000 }, async () => {
