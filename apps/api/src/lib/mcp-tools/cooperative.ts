@@ -42,6 +42,7 @@ import {
 } from '@deft/db/schema';
 import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
+import { citedMessageRefusal } from './cited-message.js';
 import { normalizeMcpApprovalAction } from '../mcp-approval-actions.js';
 import { wikiCreateProposalTarget, wikiTargetUnavailableResult, wikiUpdateProposalTarget } from './wiki-create.js';
 import { getIO } from '../../socket.js';
@@ -485,6 +486,8 @@ export async function requestHumanApproval(
     : '';
   let sourceMessageId: string | null = null;
   if (requestedSourceMessageId) {
+    const refusal = await citedMessageRefusal(ctx, requestedSourceMessageId);
+    if (refusal) return errorResult(refusal);
     const [visibleSource] = await db
       .select({ id: messages.id })
       .from(messages)
