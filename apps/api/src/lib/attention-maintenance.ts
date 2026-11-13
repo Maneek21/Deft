@@ -2,7 +2,7 @@ import { and, eq, inArray, lt, notInArray, sql } from 'drizzle-orm';
 import { agentActions, attentionItems } from '@deft/db/schema';
 import { db } from './db.js';
 import { markWorkIntentsExpiredForActions } from './work-intents.js';
-import { resolveAttentionBySource, transitionAttentionItem } from './attention.js';
+import { resolveApprovalItemsWithoutReviewer, resolveAttentionBySource, transitionAttentionItem } from './attention.js';
 import {
   MODULE_WRITE_ACTION_NAMES,
 } from './module-action-visibility.js';
@@ -69,6 +69,9 @@ export async function maintainAttentionSystem(
       resolution: 'expired',
     });
   }
+
+  // Approval items whose owner can no longer review the action stop counting.
+  await resolveApprovalItemsWithoutReviewer();
 
   const dueSnoozes = await db
     .select()

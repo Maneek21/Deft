@@ -4,9 +4,9 @@
  * An action's requester is its own `user_id`, except for Defty capture
  * actions (`source = 'defty_capture'`): the server writes those for a chat
  * message and stores the message author as `params.source_user_id` (or
- * `origin_user_id`), so that author is the requester. Every reader of the
- * requester goes through this module, in its TypeScript or SQL form; both
- * give the same answer for the same row.
+ * `origin_user_id`), so that author is the requester. The rule is written
+ * once, in SQL (`actionRequesterIdSql`); readers in TypeScript load it for a
+ * batch of rows with `loadActionRequesterIds`, which runs that same SQL.
  *
  * An action's reviewers are its requester when the requester is an active
  * human member of the action's workspace, and otherwise the workspace's
@@ -16,6 +16,7 @@
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { agentActionApprovers, agentActions, orgMembers, users } from '@deft/db/schema';
 import { db } from './db.js';
+import { assigneeRoomSql } from './agent-action-review-gate.js';
 
 /** The only action source whose params name the requester. */
 export const CAPTURE_ACTION_SOURCE = 'defty_capture';
@@ -23,10 +24,34 @@ export const CAPTURE_ACTION_SOURCE = 'defty_capture';
 /** A user id counts when it has a character other than ASCII whitespace (same set in SQL below). */
 const HAS_NON_SPACE = /[^ \t\n\v\f\r]/;
 
-export type RequesterActionRow = { user_id: string; source: string | null; params: unknown };
+/** The columns of an `agent_actions` row the requester rule reads. */
+export type RequesterActionRow = {
+  id: string;
+  org_id: string;
+  user_id: string;
+  source: string | null;
+  params: unknown;
+  message_id: string | null;
+  agent_employee_id: string | null;
+  conversation_id: string | null;
+  created_at: Date | string;
+};
+
+/** A select of the columns in `RequesterActionRow`. */
+export const requesterActionColumns = {
+  id: agentActions.id,
+  org_id: agentActions.org_id,
+  user_id: agentActions.user_id,
+  source: agentActions.source,
+  params: agentActions.params,
+  message_id: agentActions.message_id,
+  agent_employee_id: agentActions.agent_employee_id,
+  conversation_id: agentActions.conversation_id,
+  created_at: agentActions.created_at,
+};
 
 /** The source message author of a capture action, or null for any other action. */
-export function captureSourceUserId(row: RequesterActionRow): string | null {
+export function captureSourceUserId(row: Pick<RequesterActionRow, 'source' | 'params'>): string | null {
   if (row.source !== CAPTURE_ACTION_SOURCE) return null;
   if (!row.params || typeof row.params !== 'object' || Array.isArray(row.params)) return null;
   const params = row.params as Record<string, unknown>;
@@ -34,9 +59,42 @@ export function captureSourceUserId(row: RequesterActionRow): string | null {
   return typeof claimed === 'string' && HAS_NON_SPACE.test(claimed) ? claimed : null;
 }
 
-/** The requester of an action: the capture source author, or the action's own user. */
-export function actionRequesterId(row: RequesterActionRow): string {
-  return captureSourceUserId(row) ?? row.user_id;
+function timestampText(value: Date | string): string {
+  return value instanceof Date ? value.toISOString() : value;
+}
+
+/**
+ * The requester of each row, by action id: `actionRequesterIdSql` evaluated
+ * over the given rows in one query, whatever their number. The rows need not
+ * be committed.
+ */
+export async function loadActionRequesterIds(rows: readonly RequesterActionRow[]): Promise<Map<string, string>> {
+  const requesters = new Map<string, string>();
+  if (rows.length === 0) return requesters;
+  const unique = [...new Map(rows.map((row) => [row.id, row])).values()];
+  const input = JSON.stringify(unique.map((row) => ({
+    id: row.id,
+    org_id: row.org_id,
+    user_id: row.user_id,
+    source: row.source,
+    params: row.params ?? null,
+    message_id: row.message_id,
+    agent_employee_id: row.agent_employee_id,
+    conversation_id: row.conversation_id,
+    created_at: timestampText(row.created_at),
+  })));
+  const result = await db.execute(sql`SELECT requester_row.id, ${actionRequesterIdSql('requester_row')} AS requester_id
+    FROM jsonb_to_recordset(${input}::jsonb) AS requester_row(
+      id text, org_id text, user_id text, source text, params jsonb,
+      message_id text, agent_employee_id text, conversation_id text, created_at timestamp
+    )`);
+  for (const row of result.rows as Array<{ id: string; requester_id: string }>) requesters.set(row.id, row.requester_id);
+  return requesters;
+}
+
+/** The requester of one row (see `loadActionRequesterIds`). */
+export async function loadActionRequesterId(row: RequesterActionRow): Promise<string> {
+  return (await loadActionRequesterIds([row])).get(row.id) ?? row.user_id;
 }
 
 function actionColumns(alias?: string) {
@@ -54,8 +112,8 @@ function actionColumns(alias?: string) {
 }
 
 /**
- * SQL form of `actionRequesterId` over `agent_actions` (or the given alias of
- * it in the surrounding query).
+ * The requester of an `agent_actions` row (or of the given alias of it in the
+ * surrounding query): the one statement of the rule.
  */
 export function actionRequesterIdSql(alias?: string): SQL<string> {
   const c = actionColumns(alias);
@@ -102,10 +160,11 @@ export function actionReviewerSql(userId: SQL, alias?: string): SQL<boolean> {
 
 /**
  * True when `userId` reviews the `agent_actions` row: a reviewer of it who,
- * when the action has assignments naming its reviewers, holds one of them.
+ * when the action has assignments naming its reviewers who still pass its
+ * room and source checks, holds one of them.
  * `pendingOnly` limits the user's own assignment to an undecided one.
  */
-export function actionReviewAssignmentSql(userId: string, options: { pendingOnly?: boolean } = {}): SQL<boolean> {
+export function actionReviewAssignmentSql(userId: string | SQL, options: { pendingOnly?: boolean } = {}): SQL<boolean> {
   return sql<boolean>`(${actionReviewerSql(sql`${userId}`)} AND (
     EXISTS (
       SELECT 1 FROM ${agentActionApprovers} own_ap
@@ -119,21 +178,22 @@ export function actionReviewAssignmentSql(userId: string, options: { pendingOnly
       WHERE any_ap.action_id = ${agentActions.id}
         AND any_ap.org_id = ${agentActions.org_id}
         AND ${actionReviewerSql(sql`any_ap.user_id`)}
+        AND ${assigneeRoomSql(sql`any_ap.user_id`)}
     )
   ))`;
 }
 
-export type ReviewerActionRow = RequesterActionRow & { id: string; org_id: string };
-
 /**
- * The reviewers of each action, by action id, in two queries whatever the
+ * The reviewers of each action, by action id, in three queries whatever the
  * number of actions.
  */
-export async function loadActionReviewers(actions: readonly ReviewerActionRow[]): Promise<Map<string, string[]>> {
+export async function loadActionReviewers(actions: readonly RequesterActionRow[]): Promise<Map<string, string[]>> {
   const reviewers = new Map<string, string[]>();
   if (actions.length === 0) return reviewers;
+  const requesterOf = await loadActionRequesterIds(actions);
+  const requesterId = (action: RequesterActionRow) => requesterOf.get(action.id) ?? action.user_id;
   const orgIds = [...new Set(actions.map((action) => action.org_id))];
-  const requesterIds = [...new Set(actions.map(actionRequesterId))];
+  const requesterIds = [...new Set(actions.map(requesterId))];
   const activeHumans = new Set((await db
     .select({ user_id: users.id, org_id: orgMembers.org_id })
     .from(users)
@@ -146,7 +206,7 @@ export async function loadActionReviewers(actions: readonly ReviewerActionRow[])
       eq(users.kind, 'human'),
     ))).map((row) => `${row.org_id}\u0000${row.user_id}`));
   const fallbackOrgIds = [...new Set(actions
-    .filter((action) => !activeHumans.has(`${action.org_id}\u0000${actionRequesterId(action)}`))
+    .filter((action) => !activeHumans.has(`${action.org_id}\u0000${requesterId(action)}`))
     .map((action) => action.org_id))];
   const adminsByOrg = new Map<string, string[]>();
   if (fallbackOrgIds.length > 0) {
@@ -164,9 +224,9 @@ export async function loadActionReviewers(actions: readonly ReviewerActionRow[])
     }
   }
   for (const action of actions) {
-    const requesterId = actionRequesterId(action);
-    reviewers.set(action.id, activeHumans.has(`${action.org_id}\u0000${requesterId}`)
-      ? [requesterId]
+    const requester = requesterId(action);
+    reviewers.set(action.id, activeHumans.has(`${action.org_id}\u0000${requester}`)
+      ? [requester]
       : [...(adminsByOrg.get(action.org_id) ?? [])]);
   }
   return reviewers;

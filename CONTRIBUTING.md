@@ -95,6 +95,8 @@ pnpm build
 
 If a broad command cannot run in your environment, say so in the pull request and include the focused evidence you did collect.
 
+In CI the API tests run as four parallel shards that start alongside Type Check; the `Test API` check passes only when all four pass. A failure in one shard can come from a test that relied on rows left by another file, so run the failing file on its own as well. CodeQL findings reviewed as false positives are pinned to the code on the flagged path in `.github/codeql-reviewed-false-positives.json`; see [CodeQL reviewed findings](docs/security/codeql-reviewed-findings.md) before changing that file.
+
 ### Two TypeScript compilers
 
 The repository uses two compilers on purpose. `typescript` (6.x) is the compiler for everything that emits or loads the compiler API: `build` scripts (`apps/api`, `@deft/app-kit`), `next build`, ESLint, `tsx`, and `drizzle-kit`. The `typecheck` scripts run the much faster native TypeScript 7 compiler, installed as the root alias `ts7` and invoked by explicit path (`node ../../node_modules/ts7/bin/tsc ...`). Do not call bare `tsc` for a typecheck, and do not add `ts7` to a package's own dependencies: both packages expose a `tsc` bin, and the root `node_modules/.bin/tsc` resolves to 7.x, so every workspace package that runs `tsc` declares its own `typescript` ^6 to keep `tsc` on 6.x there. To check a package against both, run `pnpm --filter <pkg> typecheck` (TS 7) and `pnpm --filter <pkg> exec tsc --noEmit` (TS 6).

@@ -17,6 +17,43 @@ declare module 'hono' {
   }
 }
 
+export type WebAuthResult =
+  | { ok: true; user: AuthUser }
+  | { ok: false; status: 401 | 403; error: string; code: string };
+
+// Holds a result only while one request is being answered (see
+// releaseWebRequest), and only for the Authorization value it was computed from.
+const authResults = new WeakMap<Request, { authorization: string | null; result: Promise<WebAuthResult> }>();
+
+async function verifyRequest(request: Request): Promise<WebAuthResult> {
+  const authHeader = request.headers.get('Authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    return { ok: false, status: 401, error: 'Unauthorized', code: 'NO_TOKEN' };
+  }
+  try {
+    return { ok: true, user: await verifyWebAccess(authHeader.slice(7)) };
+  } catch (err) {
+    if (err instanceof OrgMembershipError) {
+      return { ok: false, status: err.status as 403, error: err.message, code: err.code };
+    }
+    return { ok: false, status: 401, error: 'Invalid or expired token', code: 'INVALID_TOKEN' };
+  }
+}
+
+/** Verifies the request's web session; callers within the same request reuse the result. */
+export function authenticateWebRequest(request: Request, remember = true): Promise<WebAuthResult> {
+  const authorization = request.headers.get('Authorization');
+  const cached = authResults.get(request);
+  if (cached && cached.authorization === authorization) return cached.result;
+  const result = verifyRequest(request);
+  if (remember) authResults.set(request, { authorization, result });
+  return result;
+}
+
+export function releaseWebRequest(request: Request): void {
+  authResults.delete(request);
+}
+
 export const authMiddleware: MiddlewareHandler = createMiddleware(async (c, next) => {
   // Skip auth for auth routes (they're mounted before this middleware)
   const path = c.req.path;
@@ -24,20 +61,10 @@ export const authMiddleware: MiddlewareHandler = createMiddleware(async (c, next
     return next();
   }
 
-  const authHeader = c.req.header('Authorization');
-  if (!authHeader?.startsWith('Bearer ')) {
-    return c.json({ error: 'Unauthorized', code: 'NO_TOKEN' }, 401);
+  const result = await authenticateWebRequest(c.req.raw, false);
+  if (!result.ok) {
+    return c.json({ error: result.error, code: result.code }, result.status);
   }
-
-  const token = authHeader.slice(7);
-  try {
-    const payload = await verifyWebAccess(token);
-    c.set('user', payload);
-    return next();
-  } catch (err) {
-    if (err instanceof OrgMembershipError) {
-      return c.json({ error: err.message, code: err.code }, err.status as 403);
-    }
-    return c.json({ error: 'Invalid or expired token', code: 'INVALID_TOKEN' }, 401);
-  }
+  c.set('user', result.user);
+  return next();
 });

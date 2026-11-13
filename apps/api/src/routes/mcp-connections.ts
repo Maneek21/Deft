@@ -13,6 +13,7 @@ import {
   storeMcpCredential,
 } from '../lib/mcp-connection-auth.js';
 import { validateMcpConnectionTarget } from '../lib/mcp-connection-validation.js';
+import { requireOrgAdmin } from '../lib/org-admin-guard.js';
 
 export const mcpConnectionRoutes = new Hono();
 
@@ -64,6 +65,8 @@ const toolOverrideSchema = z.object({
 
 // GET / — List org's MCP connections
 mcpConnectionRoutes.get('/', async (c) => {
+  const denied = requireOrgAdmin(c);
+  if (denied) return denied;
   const user = c.get('user');
   const connections = await db
     .select()
@@ -75,6 +78,8 @@ mcpConnectionRoutes.get('/', async (c) => {
 
 // GET /:id — Get single connection with tool overrides
 mcpConnectionRoutes.get('/:id', async (c) => {
+  const denied = requireOrgAdmin(c);
+  if (denied) return denied;
   const user = c.get('user');
   const id = c.req.param('id');
 
@@ -101,6 +106,8 @@ mcpConnectionRoutes.get('/:id', async (c) => {
 
 // POST / — Create connection
 mcpConnectionRoutes.post('/', async (c) => {
+  const denied = requireOrgAdmin(c);
+  if (denied) return denied;
   const user = c.get('user');
   const body = await c.req.json();
   const parsed = createSchema.safeParse(body);
@@ -164,6 +171,8 @@ mcpConnectionRoutes.post('/', async (c) => {
 
 // PUT /:id — Update connection
 mcpConnectionRoutes.put('/:id', async (c) => {
+  const denied = requireOrgAdmin(c);
+  if (denied) return denied;
   const user = c.get('user');
   const id = c.req.param('id');
   const body = await c.req.json();
@@ -247,6 +256,8 @@ mcpConnectionRoutes.put('/:id', async (c) => {
 
 // DELETE /:id — Delete connection
 mcpConnectionRoutes.delete('/:id', async (c) => {
+  const denied = requireOrgAdmin(c);
+  if (denied) return denied;
   const user = c.get('user');
   const id = c.req.param('id');
 
@@ -306,6 +317,8 @@ mcpConnectionRoutes.delete('/:id', async (c) => {
 
 // POST /:id/test — Test connection
 mcpConnectionRoutes.post('/:id/test', async (c) => {
+  const denied = requireOrgAdmin(c);
+  if (denied) return denied;
   const user = c.get('user');
   const id = c.req.param('id');
 
@@ -352,6 +365,8 @@ mcpConnectionRoutes.post('/:id/test', async (c) => {
 
 // POST /:id/refresh-tools — Re-discover tools
 mcpConnectionRoutes.post('/:id/refresh-tools', async (c) => {
+  const denied = requireOrgAdmin(c);
+  if (denied) return denied;
   const user = c.get('user');
   const id = c.req.param('id');
 
@@ -416,6 +431,8 @@ mcpConnectionRoutes.post('/:id/refresh-tools', async (c) => {
 
 // PUT /:id/tools/:toolName — Create or update tool override
 mcpConnectionRoutes.put('/:id/tools/:toolName', async (c) => {
+  const denied = requireOrgAdmin(c);
+  if (denied) return denied;
   const user = c.get('user');
   const connectionId = c.req.param('id');
   const requestedToolName = c.req.param('toolName');
