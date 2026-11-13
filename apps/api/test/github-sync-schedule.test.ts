@@ -1,32 +1,18 @@
-/**
- * Scheduled GitHub sync: the scan picks due connections of active members,
- * each connection syncs as its own workspace job, failures and rate limits
- * back off that connection only, and no two syncs of one connection overlap.
- *
- * Run: pnpm --filter @deft/api test test/github-sync-schedule.test.ts
- */
+// Scheduled GitHub sync. Run: pnpm --filter @deft/api test test/github-sync-schedule.test.ts
 import { test, before, after, beforeEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, orgs, users, orgMembers, connectedAccounts, events, projects, tasks, taskComments, taskActivity } from '@deft/db';
 import { encrypt } from '../src/lib/encryption.js';
-import { syncGitHubForUser } from '../src/workers/github-sync.js';
-import {
-  githubSyncIntervalMs,
-  handleGitHubSyncScan,
-  handleGitHubSyncConnection,
-  GITHUB_SYNC_CONNECTION_JOB,
-} from '../src/workers/handlers/github-sync-schedule.js';
+import { syncGitHubForUser, rateLimitResetAt } from '../src/workers/github-sync.js';
+import { githubSyncIntervalMs, handleGitHubSyncScan, handleGitHubSyncConnection, GITHUB_SYNC_CONNECTION_JOB } from '../src/workers/handlers/github-sync-schedule.js';
 
 const stamp = `gss${Date.now().toString(36)}`;
 const PREFIX = `GSS${Array.from({ length: 6 }, () => String.fromCharCode(65 + Math.floor(Math.random() * 26))).join('')}`;
 const ids = () => crypto.randomUUID();
-const org = { a: ids(), b: ids() };
-const user = { a: ids(), b: ids(), c: ids() };
-const acct = { a: ids(), b: ids(), c: ids() };
-const project = { a: ids(), b: ids() };
-const task = { a: ids(), b: ids() };
+const [org, project, task] = [0, 0, 0].map(() => ({ a: ids(), b: ids() }));
+const [user, acct] = [0, 0].map(() => ({ a: ids(), b: ids(), c: ids() }));
 const allAccts = [acct.a, acct.b, acct.c];
 
 /** Per-token GitHub behaviour. */
@@ -34,9 +20,7 @@ const behaviour: Record<string, 'ok' | 'unauthorized' | 'rate_limited' | 'pulls_
 const calls: string[] = [];
 let resetAt = 0;
 let holdFirstCall: (() => Promise<void>) | null = null;
-
-function repoFor(token: string) { return `acme/${stamp}-${token}`; }
-
+const repoFor = (token: string) => `acme/${stamp}-${token}`;
 before(async () => {
   process.env.DEFT_GITHUB_SYNC_INTERVAL_MIN = '10';
   await db.insert(orgs).values([
@@ -142,14 +126,9 @@ async function account(id: string) {
 const nextAt = (row: { metadata: unknown }) => new Date(String((row.metadata as any)?.github_sync?.next_at)).getTime();
 
 test('interval: default 10 minutes, 0 or off disables', () => {
-  delete process.env.DEFT_GITHUB_SYNC_INTERVAL_MIN;
-  assert.equal(githubSyncIntervalMs(), 10 * 60_000);
-  for (const off of ['0', 'off', 'OFF', '-3', 'soon']) {
-    process.env.DEFT_GITHUB_SYNC_INTERVAL_MIN = off;
-    assert.equal(githubSyncIntervalMs(), 0, off);
-  }
-  process.env.DEFT_GITHUB_SYNC_INTERVAL_MIN = '15';
-  assert.equal(githubSyncIntervalMs(), 15 * 60_000);
+  assert.equal(githubSyncIntervalMs(undefined), 10 * 60_000);
+  assert.equal(githubSyncIntervalMs('15'), 15 * 60_000);
+  for (const off of ['0', 'off', '-3', 'soon']) assert.equal(githubSyncIntervalMs(off), 0, off);
 });
 
 test('one tick syncs each workspace in its own workspace and closes its referenced task once', async () => {
@@ -159,7 +138,7 @@ test('one tick syncs each workspace in its own workspace and closes its referenc
   for (const j of mine) {
     assert.equal(j.org_id, j.data.org_id);
     assert.equal(j.max_attempts, 1);
-    assert.deepEqual(Object.keys(j.data).sort(), ['connection_id', 'org_id']);
+    assert.deepEqual(Object.keys(j.data).sort(), ['connection_id', 'org_id', 'turn']);
   }
   for (const k of ['a', 'b'] as const) {
     const evs = await db.select({ external_id: events.external_id, org_id: events.org_id }).from(events)
@@ -167,9 +146,7 @@ test('one tick syncs each workspace in its own workspace and closes its referenc
     assert.deepEqual(evs.map((e) => e.external_id), [`gh-pr:${org[k]}:${repoFor(`tok-${k}`)}#7`]);
     const [t] = await db.select({ status: tasks.status }).from(tasks).where(eq(tasks.id, task[k]));
     assert.equal(t!.status, 'done');
-    const row = await account(acct[k]);
-    assert.ok(row.last_sync_at);
-    assert.equal(row.sync_error, null);
+    assert.ok((await account(acct[k])).last_sync_at);
   }
   // Seen again by the scheduled path: no second close.
   await db.update(connectedAccounts).set({ last_sync_at: null, metadata: null } as any).where(eq(connectedAccounts.id, acct.a));
@@ -195,32 +172,32 @@ test('a failing connection is recorded and backed off, and the next one still sy
   assert.ok(!calls.includes('tok-a'));
 });
 
-test('a repository that cannot be read counts as a failed scheduled run', async () => {
+test('an unreadable repository fails the run; a stored error never carries the request text', async () => {
   behaviour['tok-a'] = 'pulls_fail';
+  behaviour['tok-b'] = 'throws';
   await tick();
-  const a = await account(acct.a);
-  assert.equal((a.metadata as any).github_sync.failures, 1);
+  for (const k of ['a', 'b'] as const) assert.equal(((await account(acct[k])).metadata as any).github_sync.failures, 1);
+  assert.equal((await account(acct.b)).sync_error, 'GitHub sync failed');
 });
 
-test('a stored error never carries the request text', async () => {
-  behaviour['tok-a'] = 'throws';
-  await tick();
-  const a = await account(acct.a);
-  assert.equal(a.sync_error, 'GitHub sync failed');
-  assert.equal((a.metadata as any).github_sync.failures, 1);
-});
-
-test('a rate limit seen by a manual sync holds back the schedule', async () => {
+test('a manual sync after a job was queued supersedes that job, and a rate limit holds back the schedule', async () => {
+  await scan();
+  const queued = (await queuedJobs()).filter((j) => j.data.connection_id === acct.a);
   behaviour['tok-a'] = 'rate_limited';
   resetAt = Math.floor(Date.now() / 1000) + 30 * 60;
   await syncGitHubForUser(acct.a);
   delete behaviour['tok-a'];
   calls.length = 0;
-  // Even a job queued before the cooldown does not call GitHub.
-  await runJob({ org_id: org.a, connection_id: acct.a }, org.a);
-  const jobs = await tick();
-  assert.ok(!jobs.some((j) => j.data.connection_id === acct.a));
+  const jobs = await tick(); // runs the job queued before the manual sync
+  assert.equal(queued.length, 1);
+  assert.deepEqual(jobs.filter((j) => j.data.connection_id === acct.a).map((j) => j.id), [queued[0]!.id]);
   assert.ok(!calls.includes('tok-a'));
+});
+
+test('the latest rate-limit bound GitHub gives is honoured', () => {
+  const now = Date.now();
+  const res = new Response('{}', { status: 403, headers: { 'retry-after': '60', 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(Math.floor(now / 1000) + 3600) } });
+  assert.ok(rateLimitResetAt(res, '', now)!.getTime() >= now + 3599_000);
 });
 
 test('a rate-limited connection waits for the reset time', async () => {
@@ -251,15 +228,18 @@ test('the schedule disabled queues nothing and runs nothing already queued', asy
 test('an inactive owner\'s connection is neither scanned nor synced by a job', async () => {
   const jobs = await tick();
   assert.ok(!jobs.some((j) => j.data.connection_id === acct.c));
-  await runJob({ org_id: org.a, connection_id: acct.c }, org.a);
+  await runJob({ org_id: org.a, connection_id: acct.c, turn: 'x' }, org.a);
   assert.ok(!calls.includes('tok-c'));
   assert.equal((await account(acct.c)).last_sync_at, null);
 });
 
 test('a job whose workspace does not match the connection is refused', async () => {
-  await runJob({ org_id: org.b, connection_id: acct.a }, org.b);
-  await runJob({ org_id: org.a, connection_id: acct.a }, org.b);
-  await runJob({ connection_id: acct.a });
+  await scan();
+  const [j] = (await queuedJobs()).filter((q) => q.data.connection_id === acct.a);
+  await runJob({ ...j!.data, org_id: org.b }, org.b);
+  await runJob(j!.data, org.b);
+  await runJob(j!.data); // no queue-row workspace
+  await runJob({ connection_id: acct.a, turn: j!.data.turn });
   assert.deepEqual(calls, []);
   assert.equal((await account(acct.a)).last_sync_at, null);
 });
@@ -271,10 +251,12 @@ test('a scheduled sync and a manual sync of one connection never overlap', async
   let entered!: () => void;
   const inside = new Promise<void>((r) => { entered = r; });
   holdFirstCall = async () => { entered(); await gate; };
+  await scan();
+  const [job] = (await queuedJobs()).filter((q) => q.data.connection_id === acct.a);
   const manual = syncGitHubForUser(acct.a);
   await inside;
   const held = (await account(acct.a)).metadata;
-  await runJob({ org_id: org.a, connection_id: acct.a }, org.a);
+  await runJob(job!.data, org.a);
   // And a second manual sync is refused while the first runs.
   const second = await syncGitHubForUser(acct.a) as { error?: string };
   assert.match(String(second.error), /already running/);

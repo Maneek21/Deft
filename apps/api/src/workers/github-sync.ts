@@ -189,6 +189,8 @@ export interface GitHubSyncOptions {
   orgId?: string;
   /** Aborts every GitHub request of this sync. */
   signal?: AbortSignal;
+  /** A scheduled turn: run only while `next_at` still equals it. */
+  turn?: string;
 }
 
 type SyncOutcome = { kind: 'ok' } | { kind: 'failed' } | { kind: 'rate_limited'; resetAt: Date };
@@ -215,13 +217,15 @@ export function jitteredFromNow(delayMs: number | SQL): SQL {
  */
 export function rateLimitResetAt(res: Response, bodyText: string, now = Date.now()): Date | null {
   if (res.status !== 403 && res.status !== 429) return null;
+  // Wait for the latest bound GitHub gives.
   const retryAfter = res.headers.get('retry-after');
-  if (retryAfter && /^\d+$/.test(retryAfter)) return new Date(now + Number(retryAfter) * 1000);
-  if (res.headers.get('x-ratelimit-remaining') === '0') {
-    const reset = Number(res.headers.get('x-ratelimit-reset'));
-    return new Date(Number.isFinite(reset) && reset > 0 ? reset * 1000 : now + 60_000);
-  }
-  return res.status === 429 || /rate limit/i.test(bodyText) ? new Date(now + 60_000) : null;
+  const reset = Number(res.headers.get('x-ratelimit-reset'));
+  const bounds = [
+    retryAfter && /^\d+$/.test(retryAfter) ? now + Number(retryAfter) * 1000 : null,
+    res.headers.get('x-ratelimit-remaining') === '0' ? (reset > 0 ? reset * 1000 : now + 60_000) : null,
+    res.status === 429 || /rate limit/i.test(bodyText) ? now + 60_000 : null,
+  ].filter((b): b is number => b !== null);
+  return bounds.length > 0 ? new Date(Math.max(...bounds)) : null;
 }
 
 /**
@@ -230,7 +234,7 @@ export function rateLimitResetAt(res: Response, bodyText: string, now = Date.now
  * there. The lease outlives the sync's own deadline, and the outcome is
  * written only while the lease still holds that id.
  */
-async function claimSyncLease(accountId: string, orgId: string): Promise<string | null> {
+async function claimSyncLease(accountId: string, orgId: string, turn?: string): Promise<string | null> {
   const leaseId = crypto.randomUUID();
   const claimed = await db.execute(sql`
     UPDATE connected_accounts
@@ -241,6 +245,7 @@ async function claimSyncLease(accountId: string, orgId: string): Promise<string 
     WHERE id = ${accountId} AND org_id = ${orgId}
       AND (metadata->'github_sync'->'lease'->>'until' IS NULL
         OR (metadata->'github_sync'->'lease'->>'until')::timestamptz <= now())
+      ${turn ? sql`AND metadata->'github_sync'->>'next_at' = ${turn}::text` : sql``}
     RETURNING id`);
   return (claimed as unknown as { rows: unknown[] }).rows.length === 1 ? leaseId : null;
 }
@@ -264,7 +269,6 @@ async function finishSync(accountId: string, orgId: string, leaseId: string, out
         : sql`to_jsonb(now() + (${Math.round(Math.max(intervalMs, Math.min(MAX_RATE_LIMIT_WAIT_MS,
           outcome.resetAt.getTime() - Date.now())))} * interval '1 millisecond'))`;
     schedule = sql`jsonb_build_object('failures', ${failures}, 'next_at', ${nextAt})`;
-    if (outcome.kind === 'rate_limited') schedule = sql`${schedule} || jsonb_build_object('cooldown_until', ${nextAt})`;
   }
   await db.execute(sql`
     UPDATE connected_accounts
@@ -284,13 +288,13 @@ export async function syncGitHubForUser(accountId: string, options: GitHubSyncOp
   if (!account) return { error: 'Account not found' };
 
   // One sync per connection at a time, manual or scheduled.
-  const lease = await claimSyncLease(account.id, account.org_id);
+  const lease = await claimSyncLease(account.id, account.org_id, options.turn);
   if (!lease) return { error: SYNC_ALREADY_RUNNING_ERROR };
   const deadline = AbortSignal.timeout(SYNC_DEADLINE_MS);
   const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
   const run = { outcome: { kind: 'failed' } as SyncOutcome };
   try {
-    return await runGitHubSync(account, signal, run);
+    return await runGitHubSync(account, lease, signal, run);
   } finally {
     await finishSync(account.id, account.org_id, lease, run.outcome).catch((err) => {
       console.warn('[github-sync] could not record the sync outcome of', account.id, (err as Error).name);
@@ -300,10 +304,13 @@ export async function syncGitHubForUser(accountId: string, options: GitHubSyncOp
 
 async function runGitHubSync(
   account: typeof connectedAccounts.$inferSelect,
+  leaseId: string,
   signal: AbortSignal,
   run: { outcome: SyncOutcome },
 ) {
-  const accountId = account.id;
+  // Connection writes happen only while this sync holds the lease.
+  const owned = and(eq(connectedAccounts.id, account.id), eq(connectedAccounts.org_id, account.org_id),
+    sql`${connectedAccounts.metadata}->'github_sync'->'lease'->>'id' = ${leaseId}::text`);
   try {
     // 2. Decrypt access token
     const accessToken = decrypt(account.access_token_encrypted);
@@ -319,7 +326,7 @@ async function runGitHubSync(
       const resetAt = rateLimitResetAt(reposRes, errText);
       if (resetAt) run.outcome = { kind: 'rate_limited', resetAt };
       await db.update(connectedAccounts).set({ sync_error: `GitHub API error: ${reposRes.status}` })
-        .where(and(eq(connectedAccounts.id, accountId), eq(connectedAccounts.org_id, account.org_id)));
+        .where(owned);
       return { error: `GitHub API error: ${reposRes.status}` };
     }
 
@@ -350,6 +357,7 @@ async function runGitHubSync(
       const prs = await prRes.json() as any[];
 
       for (const pr of prs) {
+        signal.throwIfAborted();
         // `events.external_id` is unique per source across all workspaces, so
         // new rows carry the workspace id in a namespace (`gh-pr:`) distinct
         // from the older `pr-<repo>-<n>` ids, which stay addressable by their
@@ -459,7 +467,7 @@ async function runGitHubSync(
 
     // 5. Update last_sync_at
     await db.update(connectedAccounts).set({ last_sync_at: new Date(), sync_error: null })
-      .where(and(eq(connectedAccounts.id, accountId), eq(connectedAccounts.org_id, account.org_id)));
+      .where(owned);
 
     run.outcome = rateLimited ? { kind: 'rate_limited', resetAt: rateLimited }
       : repoFailed ? { kind: 'failed' } : { kind: 'ok' };
@@ -470,7 +478,7 @@ async function runGitHubSync(
     const name = err instanceof Error ? err.name : '';
     const msg = name === 'TimeoutError' || name === 'AbortError' ? 'GitHub sync timed out' : 'GitHub sync failed';
     await db.update(connectedAccounts).set({ sync_error: msg })
-      .where(and(eq(connectedAccounts.id, accountId), eq(connectedAccounts.org_id, account.org_id)));
+      .where(owned);
     return { error: msg };
   }
 }
