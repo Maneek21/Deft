@@ -49,7 +49,7 @@ Agents and approvals:
   delivery is attempted.
 - A thread reply must name a parent message in the target space.
 - Only the requester of an action, or an owner or admin who can still see its
-  target, can undo it. The action lists, receipts, dashboard activity and inbox show a Defty action only to its requester, an assigned approver and owners and admins; guests see only their own.
+  target, can undo it. The action lists, receipts, dashboard activity and inbox show a Defty action only to its requester and to owners and admins; guests see only their own.
 - Native writes (wiki, canvas, knowledge, thread reply, space notes, posting a
   message) check wiki visibility or space membership when they run.
 - A connected tool that declares itself destructive always needs approval, and
@@ -89,7 +89,7 @@ Agents and approvals:
   review.
 - Defty chat messages: tool inputs and results, proposed action parameters and
   drafts attached to a Defty message are delivered only to the person who asked,
-  an assigned approver, and owners and admins, in the message list, threads, live
+  and owners and admins, in the message list, threads, live
   updates, the agent conversation endpoints, the trace export and the MCP read
   tools. Other members of the space see the reply text and tool names. Attention
   items for approvals follow the same audience. The employee turn list shows
@@ -110,10 +110,7 @@ Agents and approvals:
   (it is idempotent per action); any other action is closed as failed with a
   message and is not run twice. Every outcome shares one finishing step that
   records the approver decision, resolves the Attention item, issues the receipt
-  and posts the completion message, and running it twice changes nothing. A
-  reviewer assigned to an action can approve or reject it when they are an active,
-  non-guest member of the workspace; stricter rules for specific action kinds are
-  unchanged. A native write executed through web approval gets a signed receipt.
+  and posts the completion message, and running it twice changes nothing. A native write executed through web approval gets a signed receipt.
 - Run text goes to the audience of its source. Employee activity entries, employee
   diagnostics and task progress updates show their text to the people who can read
   the source; other members see the entry or status without the text. Presence
@@ -130,6 +127,65 @@ Agents and approvals:
   composition, and Enter without Shift or Tab selects while Escape closes.
 - Docs: the Apps flags section of `docs/self-hosting.md` documents flag
   dependencies and the developer preview profile.
+
+- An agent action is reviewed by the member who requested it. Owners and admins
+  review when there is no active human requester; they no longer approve another
+  active member's request, and they still read it in activity and history. An
+  approver assignment that names anyone else is ignored. The approve and reject
+  routes, the approval resolver, the personal MCP approval tools (`approval_list`,
+  `approval_get`, `approval_approve`, `approval_reject`), Attention approval items,
+  push delivery follow this one rule, and the reviewer also needs to see
+  the action's room. A reviewer whose role or room access changes while a decision
+  is being applied is refused and the action stays pending.
+- Approval cards and Inbox and Attention approval rows carry `viewer_can_approve`
+  and `viewer_can_reject`. The card shows its buttons to someone who may use them
+  and "Waiting for review" to everyone else. The Inbox approval list and its
+  counts, the team dashboard "Approvals" count, an agent employee's pending
+  count and the task handoff count include only approvals the viewer can review;
+  Inbox paging follows `next_cursor` through every approval. The dashboard
+  Agent widget shows "Review in Inbox" only on rows the viewer can review. The
+  activity feeds keep their read audience.
+- A stored approval result is tied to its action, so reusing an idempotency key on
+  another action runs that action afresh.
+- Document sends and plan imports proposed by an employee record the source
+  message they were checked against, and their review follows that message's
+  audience. Ordinary approve and reject check the reviewer's current role again
+  when the decision is applied.
+- Approved actions on tasks, task links and decisions run only when the action's
+  requester can see every task they name and the decision page. A missing, deleted,
+  other-workspace or hidden target gives one "not found" answer. Defty capture
+  actions act for the author of the source message, who must still be able to read
+  that message and see the target.
+- Wiki proposals: a proposed page update is applied only if the page is still at the
+  revision it was proposed against and the employee can still reach it; otherwise
+  the approval ends with a message and the page is left as it is. A proposed page
+  creation is made at the slug fixed when it was proposed, or not at all. A
+  proposal for a space or page the employee cannot reach is refused with
+  `WIKI_TARGET_UNAVAILABLE`. A failed knowledge-update capture can be retried
+  only when its original proposal can be found (`409 RETRY_UNAVAILABLE`
+  otherwise).
+- A plan (`POST /api/agent-plans`) binds only to an active agent employee of the
+  caller's workspace (`400 INVALID_AGENT_EMPLOYEE` otherwise). Approve, execute,
+  resume and abort are available to the plan's creator and to owners and admins;
+  a plan runs for its creator. Connected (`mcp__*`) tools are available to
+  workspace members, admins and owners, not to guests; a refused call makes no
+  provider call and settles its action as failed.
+- The daily standup and the meeting-prep brief are written from prepared evidence
+  with no tools offered to the model. A draft that contains a link, approval or
+  sign-off wording, or a task key or `[[deft:...]]` reference that is not in the
+  evidence uses the evidence-only form, and items without `source_ids` are
+  dropped. The brief is still delivered. The standup or brief therefore appears in
+  its evidence-only form in more cases than before.
+- Meeting briefs are generated for, delivered to and listed for active members of
+  the workspace the meeting belongs to; no brief is created for a person who is not
+  active, and a stored brief is shown again if the person is reactivated.
+  `GET /api/calendar/briefs` lists briefs of the session's workspace only.
+- Action and work-intent reads follow their audience: an action with no source
+  message is readable by its requester and by owners and admins. A workflow run
+  stores a bounded error message with the code `WORKFLOW_ACTION_FAILED`. A work
+  intent's status changes only through its own capture action.
+- The `space:created` event carries only the space id; clients load the space
+  through `GET /api/spaces`.
 
 Workspace isolation:
 
@@ -163,6 +219,15 @@ CI and security checks:
   finding no longer need a new review, while a change to a line on the path, a new
   finding, a duplicate or an unused entry fails the check. See
   `docs/security/codeql-reviewed-findings.md`.
+
+- API tests: tests that shared fixture rows now create their own, the recovery
+  sweep tests wait out a busy advisory pool, and the restore-access fixture
+  computes its timestamps once, so the sharded run does not depend on file order.
+
+Dependencies:
+
+- `@hono/node-server` 2.1.5 to 2.1.7 (GHSA-qv5m-9pm6-hqp3, GHSA-jpvv-r467-5p4w).
+- `hono` 4.13.18 (GHSA-4m76-xfj5-7975, GHSA-h7mg-cq63-vhpq, GHSA-3gg2-335m-rxc6).
 
 Operator tooling:
 
