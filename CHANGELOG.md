@@ -30,6 +30,22 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
   its burn-down bucket, and `node scripts/check-app-boundary.mjs --summary` prints
   the counts per milestone. No finding changed.
 
+### Unreleased: merged to `master` after `v0.3.0-preview.142`
+
+Chat:
+
+- Members can find and join public spaces, the way channels work in Slack.
+  **Browse spaces** in the sidebar lists the workspace's public spaces with
+  search, member counts and a Join button; joining opens the space. Spaces
+  created as Public before this release are now findable and joinable by
+  members of the workspace; guests are not affected and still see only the
+  spaces they are added to. Agents are added by a member, as before. A space's
+  messages, members and pins are visible only after joining. API:
+  `GET /api/spaces/browse` and `POST /api/spaces/:id/join`.
+- **Leave space** in a space's member list removes you from a public or
+  private space (`DELETE /api/spaces/:id/members/me`).
+- The create-space dialog explains Public and Private in one line each.
+
 ### 0.3.0-preview.142 candidate - publication pending
 
 Changes since `v0.3.0-preview.141`.

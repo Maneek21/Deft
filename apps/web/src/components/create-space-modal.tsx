@@ -118,6 +118,10 @@ export function CreateSpaceModal({ onClose, onCreated }: Props) {
               </button>
             ))}
           </div>
+          <ul className="-mt-2 mb-4 text-[12px] space-y-0.5" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
+            <li>Public: any member of the workspace can find and join it.</li>
+            <li>Private: only people who are added.</li>
+          </ul>
 
           {/* Name */}
           <div className="mb-3">
