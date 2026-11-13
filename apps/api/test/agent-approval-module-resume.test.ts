@@ -226,3 +226,26 @@ test('module-resume: a decision recorded by an approver who no longer reviews th
     assert.equal(await recordsNamed(name), 1);
   }
 });
+
+test('module-resume: a reviewer retry stops when the caller loses the right before it runs', { skip: !canRun }, async () => {
+  const { approveAction, _setReviewerRecheckHookForTest } = await import('../src/lib/agent-approval-resolver.js');
+  const name = `Retry ${suffix}`;
+  const actionId = await pendingCreate(name, MEMBER_ID);
+  await leaveClaimed(actionId, name);
+  _setReviewerRecheckHookForTest(async (point, id) => {
+    if (point === 'before_decision' && id === actionId) {
+      await client!.query(`UPDATE org_members SET role = 'guest' WHERE org_id = $1 AND user_id = $2`, [ORG_ID, MEMBER_ID]);
+    }
+  });
+  try {
+    const refused = await approveAction(actionId, MEMBER_ID);
+    assert.equal((refused as { code?: string }).code, 'FORBIDDEN');
+  } finally {
+    _setReviewerRecheckHookForTest(null);
+    await client!.query(`UPDATE org_members SET role = 'member' WHERE org_id = $1 AND user_id = $2`, [ORG_ID, MEMBER_ID]);
+  }
+  assert.equal(await recordsNamed(name), 0);
+  assert.equal((await settledState(actionId)).action.executed, false);
+  assert.equal((await approveAction(actionId, MEMBER_ID)).status, 'approved');
+  assert.equal(await recordsNamed(name), 1);
+});

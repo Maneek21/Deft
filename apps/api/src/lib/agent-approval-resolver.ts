@@ -1417,6 +1417,13 @@ async function approveActionLocked(
         message: `action ${actionId} is no longer pending`,
       };
     }
+  } else if (reviewerGuard) {
+    // A reviewer's retry of an approved module write runs only while the
+    // caller still reviews the action, checked as late as the claim would be.
+    await reviewerRecheckPoint('before_decision', actionId);
+    const [stillReviewer] = await db.select({ id: agentActions.id }).from(agentActions)
+      .where(and(eq(agentActions.id, actionId), decisionSource)).limit(1);
+    if (!stillReviewer) return notReviewer();
   }
 
   let toolResult: ToolResult;
