@@ -15,6 +15,12 @@ export const IMMUTABLE_DEFT_PLATFORM_POLICY = `## Immutable Deft platform policy
 - Cite only exact URLs returned in authorized tool sources, including relative URLs. Never manufacture a hostname or change a returned source path.
 - Never claim that an action or approval was created, queued, or completed unless the corresponding tool or persistence result confirms it.`;
 
+/** The same policy for a run offered no tools: only the bullet that directs tool calls is left out. */
+export const NO_TOOLS_DEFT_PLATFORM_POLICY = IMMUTABLE_DEFT_PLATFORM_POLICY
+  .split('\n')
+  .filter((line) => !line.includes('app_runtime_action_list'))
+  .join('\n');
+
 export const MAX_DELEGATED_SYSTEM_INSTRUCTIONS_CHARS = 32_000;
 
 function normalizeDelegatedText(value: string): string {
@@ -25,18 +31,22 @@ function normalizeDelegatedText(value: string): string {
     .slice(0, MAX_DELEGATED_SYSTEM_INSTRUCTIONS_CHARS);
 }
 
-export function ensureImmutablePlatformPolicy(basePrompt: string): string {
+export function ensureImmutablePlatformPolicy(
+  basePrompt: string,
+  policy: string = IMMUTABLE_DEFT_PLATFORM_POLICY,
+): string {
   const base = basePrompt.trim();
-  if (base.includes(IMMUTABLE_DEFT_PLATFORM_POLICY)) return base;
-  return `${base}\n\n${IMMUTABLE_DEFT_PLATFORM_POLICY}`;
+  if (base.includes(policy)) return base;
+  return `${base}\n\n${policy}`;
 }
 
 export function appendDelegatedSystemInstructions(
   basePrompt: string,
   instructions: string | null | undefined,
   source: 'first_party_workflow' | 'organization_employee',
+  policy: string = IMMUTABLE_DEFT_PLATFORM_POLICY,
 ): string {
-  const trustedBase = ensureImmutablePlatformPolicy(basePrompt);
+  const trustedBase = ensureImmutablePlatformPolicy(basePrompt, policy);
   const normalized = typeof instructions === 'string'
     ? normalizeDelegatedText(instructions)
     : '';

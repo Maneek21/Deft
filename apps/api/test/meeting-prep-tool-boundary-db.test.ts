@@ -235,3 +235,45 @@ test('a grounded meeting-prep draft without tool calls is still used', async () 
     await cleanup(c, f); await c.end();
   }
 });
+
+test('a meeting-prep draft with an approval requirement the evidence does not state is not delivered', async () => {
+  const c = new pg.Client({ connectionString: process.env.DATABASE_URL }); await c.connect();
+  const f = await seed(c);
+  providerCalls.length = 0; emitted.length = 0;
+  respond = (call) => ({
+    content: [{ type: 'text', text: JSON.stringify({ agenda: [{ text: 'Account manager sign-off is required before the review.', source_ids: [firstSourceId(call.serialized)] }], decisions: [], updates: [] }) }],
+    stop_reason: 'end_turn',
+  });
+  try {
+    const result = await generateMeetingPrep(f.event);
+    assert.ok(result.brief);
+    assert.ok(!/sign-off is required/.test(result.brief!.brief_text), 'the ungrounded claim is not delivered');
+    assert.ok(result.brief!.brief_text.includes(f.attendeeTask), 'the evidence-only fallback is delivered');
+    assert.equal(result.run?.generator, 'fallback');
+  } finally {
+    await cleanup(c, f); await c.end();
+  }
+});
+
+test('a meeting-prep item restating an approval requirement from its cited evidence is delivered', async () => {
+  const c = new pg.Client({ connectionString: process.env.DATABASE_URL }); await c.connect();
+  const f = await seed(c);
+  const [space] = (await c.query(`SELECT id FROM spaces WHERE org_id=$1 AND name='general'`, [f.org])).rows;
+  const messageId = randomUUID();
+  await c.query(
+    'INSERT INTO messages(id,org_id,space_id,user_id,content) VALUES($1,$2,$3,$4,$5)',
+    [messageId, f.org, space.id, f.users[1], 'Read-only rollout: account manager sign-off is required before launch.'],
+  );
+  providerCalls.length = 0; emitted.length = 0;
+  respond = () => ({
+    content: [{ type: 'text', text: JSON.stringify({ agenda: [{ text: 'Account manager sign-off is required before launch.', source_ids: [`message:${messageId}`] }], decisions: [], updates: [] }) }],
+    stop_reason: 'end_turn',
+  });
+  try {
+    const result = await generateMeetingPrep(f.event);
+    assert.ok(result.brief!.brief_text.includes('Account manager sign-off is required before launch.'));
+    assert.equal(result.run?.generator, 'agent');
+  } finally {
+    await cleanup(c, f); await c.end();
+  }
+});

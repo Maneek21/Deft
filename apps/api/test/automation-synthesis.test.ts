@@ -90,3 +90,81 @@ test('native event contract preserves normalized attendees', () => {
   assert.equal(parsed.metadata?.attendees?.[0]?.email, 'lina@example.com');
   assert.equal(parsed.metadata?.attendees?.[0]?.name, 'Lina');
 });
+
+const evidenceText = new Map([
+  ['task:1', 'MKT-1 Ship the login fix is in progress.'],
+  ['message:2', 'Ana in #launch: Project lead approval is required before the launch post goes out.'],
+]);
+
+test('grounded parser rejects an approval requirement the cited evidence does not state', () => {
+  assert.throws(() => parseGroundedDraft(
+    JSON.stringify({ done: [], in_progress: [{ text: 'Project lead approval is required before shipping MKT-1.', source_ids: ['task:1'] }], blocked: [] }),
+    standupDraftSchema,
+    evidenceText,
+  ), /approval/i);
+});
+
+test('grounded parser keeps an approval requirement that a cited source states', () => {
+  const draft = parseGroundedDraft(
+    JSON.stringify({ agenda: [{ text: 'Project lead approval is required before the launch post.', source_ids: ['message:2'] }], decisions: [], updates: [] }),
+    meetingPrepDraftSchema,
+    evidenceText,
+  );
+  assert.equal(draft.agenda.length, 1);
+});
+
+test('grounded parser rejects a native link that appears only after JSON decoding', () => {
+  const raw = '{"done":[],"in_progress":[{"text":"Review [task](\\u002ftasks?task=invented)","source_ids":["task:1"]}],"blocked":[]}';
+  assert.ok(!raw.includes('](/tasks'), 'the serialized reply carries no plain link');
+  assert.throws(() => parseGroundedDraft(raw, standupDraftSchema, evidenceText), /link/i);
+});
+
+test('grounded parser drops items that cite no evidence and keeps cited ones', () => {
+  const draft = parseGroundedDraft(
+    JSON.stringify({ done: [{ text: 'Uncited claim', source_ids: [] }, { text: 'No ids key' }], in_progress: [{ text: 'MKT-1 is in progress.', source_ids: ['task:1'] }], blocked: [] }),
+    standupDraftSchema,
+    evidenceText,
+  );
+  assert.deepEqual(draft.done, []);
+  assert.equal(draft.in_progress.length, 1);
+});
+
+test('grounded parser rejects a draft whose items all cite no evidence', () => {
+  assert.throws(() => parseGroundedDraft(
+    JSON.stringify({ done: [{ text: 'Uncited claim', source_ids: [] }], in_progress: [], blocked: [] }),
+    standupDraftSchema,
+    evidenceText,
+  ), /cite/i);
+});
+
+for (const link of ['[task](/tasks?task=invented "details")', '[task](</tasks?task=invented>)', 'See [task][1]\n[1]: /tasks?task=invented']) {
+  test(`grounded parser rejects a native link written as ${JSON.stringify(link)}`, () => {
+    assert.throws(() => parseGroundedDraft(
+      JSON.stringify({ done: [], in_progress: [{ text: link, source_ids: ['task:1'] }], blocked: [] }),
+      standupDraftSchema,
+      evidenceText,
+    ), /link/i);
+  });
+}
+
+test('grounded parser keeps an external link and plain text', () => {
+  const draft = parseGroundedDraft(
+    JSON.stringify({ done: [], in_progress: [{ text: 'MKT-1 spec: [doc](https://example.com/spec)', source_ids: ['task:1'] }], blocked: [] }),
+    standupDraftSchema,
+    evidenceText,
+  );
+  assert.equal(draft.in_progress.length, 1);
+});
+
+test('grounded parser accepts a paraphrased approval only for the role the evidence names', () => {
+  const evidence = new Map([['message:3', 'Ana: The project lead must give approval before release.']]);
+  const item = (text: string) => JSON.stringify({ agenda: [{ text, source_ids: ['message:3'] }], decisions: [], updates: [] });
+  assert.equal(parseGroundedDraft(item('Project lead approval is required before release.'), meetingPrepDraftSchema, evidence).agenda.length, 1);
+  assert.throws(() => parseGroundedDraft(item('Account manager approval is required before release.'), meetingPrepDraftSchema, evidence), /approval/i);
+  assert.throws(() => parseGroundedDraft(item('Project lead approval is required before release.'), meetingPrepDraftSchema, new Set(['message:3'])), /approval/i);
+});
+
+test('grounded parser with minItems rejects an empty draft; without it an empty draft stays valid', () => {
+  assert.throws(() => parseGroundedDraft('{}', standupDraftSchema, evidenceText, { minItems: 1 }), /cites/i);
+  assert.deepEqual(parseGroundedDraft('{}', meetingPrepDraftSchema, evidenceText).agenda, []);
+});

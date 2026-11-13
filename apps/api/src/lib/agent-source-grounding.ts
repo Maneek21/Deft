@@ -78,3 +78,28 @@ export function hasUnverifiedApprovalRoles(text: string): boolean {
     role.test(sentence) && approvalClaim.test(sentence) && !explicitDenial.test(sentence)
   ));
 }
+
+const APPROVAL_ROLES = [/\binternal\s+stakeholders?\b/iu, /\bproject[ -]leads?\b/iu, /\baccount\s+managers?\b/iu];
+
+/** An approval-role claim must name a role that the evidence itself ties to approval or sign-off. */
+export function hasUnsupportedApprovalRoles(text: string, evidence: string): boolean {
+  const evidenceSentences = evidence.split(/(?<=[.!?])\s+|\n+|"\s*[,}\]]\s*/u)
+    .filter(sentence => /\b(?:approv\w*|sign[ -]?off|sign\s+off)\b/iu.test(sentence));
+  return text.split(/(?<=[.!?])\s+|\n+/u).some(sentence => hasUnverifiedApprovalRoles(sentence)
+    && APPROVAL_ROLES.some(role => role.test(sentence) && !evidenceSentences.some(source => role.test(source))));
+}
+
+/** Any Markdown link or reference definition whose destination is a native Deft path. */
+export function hasNativeLinkDestination(text: string): boolean {
+  const destinations = [
+    ...[...text.matchAll(/\]\(\s*<([^>\n]*)>/gu)].map(match => match[1]!),
+    ...[...text.matchAll(/\]\(\s*([^\s)<]+)/gu)].map(match => match[1]!),
+    ...[...text.matchAll(/^\s*\[[^\]\n]+\]:\s*<?([^\s>]+)/gmu)].map(match => match[1]!),
+  ];
+  return destinations.some((destination) => {
+    try {
+      const url = new URL(destination.trim(), 'https://deft.invalid');
+      return /^\/(modules|tasks|knowledge|calendar|chat|notes)(\/|\?|#|$)/u.test(`${url.pathname}${url.search}${url.hash}`);
+    } catch { return false; }
+  });
+}

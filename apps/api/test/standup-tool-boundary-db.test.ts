@@ -171,3 +171,77 @@ test('W2-a6-Y: a grounded standup draft without tool calls is still used', async
     await cleanup(c, f); await c.end();
   }
 });
+
+const ungroundedDrafts: Array<[string, (sourceId: string) => string]> = [
+  ['an approval requirement the evidence does not state', (sourceId) => JSON.stringify({
+    done: [], in_progress: [{ text: 'Project lead approval is required before shipping.', source_ids: [sourceId] }], blocked: [],
+  })],
+  ['a native link that appears only after JSON decoding', (sourceId) =>
+    `{"done":[],"in_progress":[{"text":"UNGROUNDED-LINK [task](\\u002ftasks?task=invented)","source_ids":["${sourceId}"]}],"blocked":[]}`],
+  ['no items', () => '{"done":[],"in_progress":[],"blocked":[]}'],
+];
+
+for (const [label, draft] of ungroundedDrafts) {
+  test(`a standup draft with ${label} is not delivered`, async () => {
+    const c = new pg.Client({ connectionString: process.env.DATABASE_URL }); await c.connect();
+    const f = await seed(c);
+    providerCalls.length = 0;
+    respond = (call) => ({ content: [{ type: 'text', text: draft(firstSourceId(call.serialized)) }], stop_reason: 'end_turn' });
+    try {
+      const result = await generateDailyStandup({ orgId: f.org });
+      const text = await published(c, f, result.standup!);
+      assert.ok(!/approval is required|UNGROUNDED-LINK|task=invented/.test(text), 'the ungrounded draft is not published');
+      assert.ok(text.includes(f.publicTitle), 'the evidence-only fallback is published');
+      assert.equal((result.standup!.raw_data as { generator?: string }).generator, 'fallback');
+    } finally {
+      await cleanup(c, f); await c.end();
+    }
+  });
+}
+
+test('a standup item that cites no evidence is dropped while cited items are delivered', async () => {
+  const c = new pg.Client({ connectionString: process.env.DATABASE_URL }); await c.connect();
+  const f = await seed(c);
+  providerCalls.length = 0;
+  respond = (call) => ({
+    content: [{ type: 'text', text: JSON.stringify({
+      done: [{ text: 'UNCITED-CLAIM shipped everything', source_ids: [] }],
+      in_progress: [{ text: 'Grounded progress item', source_ids: [firstSourceId(call.serialized)] }],
+      blocked: [],
+    }) }],
+    stop_reason: 'end_turn',
+  });
+  try {
+    const result = await generateDailyStandup({ orgId: f.org });
+    const text = await published(c, f, result.standup!);
+    assert.ok(!text.includes('UNCITED-CLAIM'), 'the uncited item is not published');
+    assert.ok(text.includes('Grounded progress item'));
+    assert.equal((result.standup!.raw_data as { generator?: string }).generator, 'agent');
+  } finally {
+    await cleanup(c, f); await c.end();
+  }
+});
+
+test('a standup item restating an approval requirement from its cited evidence is delivered', async () => {
+  const c = new pg.Client({ connectionString: process.env.DATABASE_URL }); await c.connect();
+  const f = await seed(c);
+  const taskId = randomUUID();
+  await c.query(
+    `INSERT INTO tasks(id,org_id,project_id,number,title,status,assignee_id,created_by,metadata)
+     VALUES($1,$2,$3,3,'Read-only rollout needs project lead approval','in_progress',$4,$4,'{}'::jsonb)`,
+    [taskId, f.org, f.project, f.owner],
+  );
+  providerCalls.length = 0;
+  respond = () => ({
+    content: [{ type: 'text', text: JSON.stringify({ done: [], in_progress: [{ text: 'Project lead approval is required for the read-only rollout.', source_ids: [`task:${taskId}`] }], blocked: [] }) }],
+    stop_reason: 'end_turn',
+  });
+  try {
+    const result = await generateDailyStandup({ orgId: f.org });
+    const text = await published(c, f, result.standup!);
+    assert.ok(text.includes('Project lead approval is required for the read-only rollout.'));
+    assert.equal((result.standup!.raw_data as { generator?: string }).generator, 'agent');
+  } finally {
+    await cleanup(c, f); await c.end();
+  }
+});
