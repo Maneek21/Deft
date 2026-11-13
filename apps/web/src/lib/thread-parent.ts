@@ -31,10 +31,29 @@ export function applyThreadParentEvent<T extends EventMessage>(parent: T, event:
   return applyMessageEvent([parent], event)[0] ?? parent;
 }
 
+function editedAt(message: { edited_at?: string | null }): number {
+  const parsed = message.edited_at ? Date.parse(message.edited_at) : Number.NaN;
+  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
+}
+
+/**
+ * A newer copy of the shown parent (from the caller or a read). Another
+ * message replaces it; the same message is merged, keeping a newer shown edit
+ * and a shown delete.
+ */
+export function refreshThreadParent<T extends EventMessage>(current: T, incoming: T): T {
+  if (incoming.id !== current.id) return incoming;
+  let next: T = { ...current, ...incoming };
+  if (editedAt(current) > editedAt(incoming)) {
+    next = { ...next, content: current.content, edited_at: current.edited_at, metadata: current.metadata };
+  }
+  return current.is_deleted ? { ...next, is_deleted: true } : next;
+}
+
 /** A parent from a thread read, with the live events received during that read replayed on it. */
 export function adoptFetchedThreadParent<T extends EventMessage>(
-  current: T, fetched: Partial<T> | null | undefined, events: readonly ScopedMessageEvent<T>[], spaceId: string,
+  current: T, fetched: T | null | undefined, events: readonly ScopedMessageEvent<T>[], spaceId: string,
 ): T {
   if (!fetched || fetched.id !== current.id) return current;
-  return events.reduce((next, event) => applyThreadParentEvent(next, event, spaceId), { ...current, ...fetched } as T);
+  return events.reduce((next, event) => applyThreadParentEvent(next, event, spaceId), refreshThreadParent(current, fetched));
 }

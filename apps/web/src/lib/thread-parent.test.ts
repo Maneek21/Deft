@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { adoptFetchedThreadParent, applyThreadParentEvent, eventTargetsThreadParent } from './thread-parent';
+import { adoptFetchedThreadParent, applyThreadParentEvent, eventTargetsThreadParent, refreshThreadParent } from './thread-parent';
 
 const SPACE = 'space-1';
 const parent = {
@@ -48,4 +48,16 @@ test('a fetched parent is adopted and live events from during the read are repla
   assert.equal(adoptFetchedThreadParent(parent, fetched, during, SPACE).content, 'edited during read');
   assert.equal(adoptFetchedThreadParent(parent, { ...fetched, id: 'other' }, [], SPACE), parent);
   assert.equal(adoptFetchedThreadParent(parent, undefined, [], SPACE), parent);
+});
+
+test('a fresher copy of the same parent is adopted without undoing a newer live edit or a delete', () => {
+  const refreshed = { ...parent, content: 'refreshed', edited_at: '2026-11-13T10:03:00.000Z', reactions: [{ emoji: '🎉', count: 1, users: ['u2'] }] };
+  assert.equal(refreshThreadParent(parent, refreshed).content, 'refreshed');
+  const liveNewer = { ...parent, content: 'live newer', edited_at: '2026-11-13T10:09:00.000Z' };
+  const kept = refreshThreadParent(liveNewer, refreshed);
+  assert.equal(kept.content, 'live newer');
+  assert.deepEqual(kept.reactions, refreshed.reactions);
+  assert.equal(refreshThreadParent({ ...parent, is_deleted: true }, refreshed).is_deleted, true);
+  const other = { ...parent, id: 'parent-2', content: 'another thread' };
+  assert.equal(refreshThreadParent(parent, other), other);
 });

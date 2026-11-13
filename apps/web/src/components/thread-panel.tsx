@@ -30,7 +30,7 @@ import { inlineApprovalDisplayContent } from '@/lib/agent-approval-copy';
 import { ConversationReads, mergeMessagesById } from '@/lib/chat-history-merge';
 import { applyMessageEvent, replayMessageEvents, type MessageEvent } from '@/lib/chat-message-events';
 import { ChatLoadError } from './chat-load-error';
-import { adoptFetchedThreadParent, applyThreadParentEvent, type ScopedMessageEvent } from '@/lib/thread-parent';
+import { adoptFetchedThreadParent, applyThreadParentEvent, refreshThreadParent, type ScopedMessageEvent } from '@/lib/thread-parent';
 
 type Reaction = {
   emoji: string;
@@ -242,12 +242,11 @@ type Props = {
 
 export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
   const messageId = parentMessage.id;
-  // The shown parent follows live edits, deletes and reactions, and each
-  // thread read; it restarts from the prop when another thread opens.
+  // The shown parent follows live edits, deletes and reactions, each thread
+  // read and each new copy the caller passes; another thread replaces it.
   const [parent, setParent] = useState(parentMessage);
   const shownParent = parent.id === messageId ? parent : parentMessage;
-  const parentPropRef = useRef(parentMessage);
-  parentPropRef.current = parentMessage;
+  useEffect(() => { setParent((current) => refreshThreadParent(current, parentMessage)); }, [parentMessage]);
   const spaceIdRef = useRef(spaceId);
   spaceIdRef.current = spaceId;
   const { user, sessionCacheScope } = useAuth();
@@ -347,7 +346,6 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     setCatchUpError(false);
     setReplies([]);
     setPendingFiles([]);
-    setParent(parentPropRef.current);
     let cancelled = false;
     threadReadsRef.current.dispose();
     const reads = new ConversationReads<MessageEvent<Message>>();
