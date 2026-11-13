@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { eq, and, isNotNull, gte, lte, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
@@ -15,6 +15,31 @@ import { PublicFetchError, fetchCalendarFeedText } from '../lib/public-http-fetc
 export const icsPublicRoutes = new Hono();
 export const icsRoutes = new Hono();
 
+// Any failure in these handlers is answered and logged without the error
+// object or request input: database errors can carry statement parameters
+// (the feed URL or publish token). Only the route and server-issued ids (the
+// user, and a subscription row already loaded or created) are logged; request
+// path input is never logged.
+const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+function logRouteFailure(c: Context, route: string, err: unknown, subscriptionId?: string): void {
+  const user = c.get('user') as { id?: string } | undefined;
+  const parts = [`[ics] ${route} failed`];
+  if (user?.id && SAFE_ID.test(user.id)) parts.push(`user=${user.id}`);
+  if (subscriptionId && SAFE_ID.test(subscriptionId)) parts.push(`subscription=${subscriptionId}`);
+  console.error(`${parts.join(' ')}: ${humanizeIcsError(err)}`);
+}
+
+function guarded(route: string, handler: (c: Context) => Promise<Response>) {
+  return async (c: Context): Promise<Response> => {
+    try {
+      return await handler(c);
+    } catch (err) {
+      logRouteFailure(c, route, err);
+      return c.json({ error: 'Calendar feed request failed', code: 'ICS_ROUTE_FAILED' }, 500);
+    }
+  };
+}
+
 function publicApiBase(c: { req: { url: string } }): string {
   const configured = process.env.NEXT_PUBLIC_API_URL || process.env.DEFT_API_URL;
   if (configured) return configured.replace(/\/$/, '');
@@ -26,7 +51,7 @@ function publicApiBase(c: { req: { url: string } }): string {
 // Returns a text/calendar VCALENDAR with the user's tasks-with-due-dates and
 // ICS-ingested events. Subscribed clients (Apple/Google/Outlook) re-fetch on
 // their own schedule; we never push.
-icsPublicRoutes.get('/feed/:token', async (c) => {
+icsPublicRoutes.get('/feed/:token', guarded('GET /feed', async (c) => {
   const token = c.req.param('token');
   if (!token || token.length < 16) {
     return c.text('Not found', 404);
@@ -142,19 +167,19 @@ icsPublicRoutes.get('/feed/:token', async (c) => {
       'Cache-Control': 'private, max-age=300',
     },
   });
-});
+}));
 
 // ─── Authenticated management ────────────────────────────────────────────────
 
 // GET /api/ics/subscriptions
-icsRoutes.get('/subscriptions', async (c) => {
+icsRoutes.get('/subscriptions', guarded('GET /subscriptions', async (c) => {
   const user = c.get('user') as { id: string; org_id: string };
   const subs = await db
     .select()
     .from(icsSubscriptions)
     .where(and(eq(icsSubscriptions.user_id, user.id), eq(icsSubscriptions.org_id, user.org_id)));
   return c.json(subs);
-});
+}));
 
 const icsUrlSchema = z.string().trim().min(1).max(2048).refine((value) => {
   try {
@@ -184,7 +209,7 @@ const updateSchema = z.object({
 });
 
 // POST /api/ics/preview
-icsRoutes.post('/preview', async (c) => {
+icsRoutes.post('/preview', guarded('POST /preview', async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const parsed = previewSchema.safeParse(body);
   if (!parsed.success) {
@@ -214,15 +239,16 @@ icsRoutes.post('/preview', async (c) => {
       upcoming,
     });
   } catch (err) {
+    logRouteFailure(c, 'POST /preview', err);
     return c.json({
       error: 'Preview failed',
       code: 'PREVIEW_FAILED',
       detail: humanizeIcsError(err),
     }, 502);
   }
-});
+}));
 
-icsRoutes.post('/subscriptions', async (c) => {
+icsRoutes.post('/subscriptions', guarded('POST /subscriptions', async (c) => {
   const user = c.get('user') as { id: string; org_id: string };
   const body = await c.req.json().catch(() => ({}));
   const parsed = createSchema.safeParse(body);
@@ -255,6 +281,7 @@ icsRoutes.post('/subscriptions', async (c) => {
       label: created.label,
     });
   } catch (err) {
+    logRouteFailure(c, 'POST /subscriptions (initial sync)', err, created.id);
     await db
       .update(icsSubscriptions)
       .set({ last_error: humanizeIcsError(err), last_synced_at: new Date() })
@@ -268,12 +295,12 @@ icsRoutes.post('/subscriptions', async (c) => {
     .limit(1);
 
   return c.json(refreshed ?? created, 201);
-});
+}));
 
 // PATCH /api/ics/subscriptions/:id
-icsRoutes.patch('/subscriptions/:id', async (c) => {
+icsRoutes.patch('/subscriptions/:id', guarded('PATCH /subscriptions/:id', async (c) => {
   const user = c.get('user') as { id: string; org_id: string };
-  const id = c.req.param('id');
+  const id = c.req.param('id') as string;
   const body = await c.req.json().catch(() => ({}));
   const parsed = updateSchema.safeParse(body);
   if (!parsed.success) {
@@ -292,24 +319,24 @@ icsRoutes.patch('/subscriptions/:id', async (c) => {
     .returning();
   if (!updated) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
   return c.json(updated);
-});
+}));
 
 // DELETE /api/ics/subscriptions/:id
-icsRoutes.delete('/subscriptions/:id', async (c) => {
+icsRoutes.delete('/subscriptions/:id', guarded('DELETE /subscriptions/:id', async (c) => {
   const user = c.get('user') as { id: string; org_id: string };
-  const id = c.req.param('id');
+  const id = c.req.param('id') as string;
   const [removed] = await db
     .delete(icsSubscriptions)
     .where(and(eq(icsSubscriptions.id, id), eq(icsSubscriptions.user_id, user.id), eq(icsSubscriptions.org_id, user.org_id)))
     .returning({ id: icsSubscriptions.id });
   if (!removed) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
   return c.json({ ok: true });
-});
+}));
 
 // POST /api/ics/subscriptions/:id/sync — force-sync a single subscription
-icsRoutes.post('/subscriptions/:id/sync', async (c) => {
+icsRoutes.post('/subscriptions/:id/sync', guarded('POST /subscriptions/:id/sync', async (c) => {
   const user = c.get('user') as { id: string; org_id: string };
-  const id = c.req.param('id');
+  const id = c.req.param('id') as string;
   const [sub] = await db
     .select()
     .from(icsSubscriptions)
@@ -332,6 +359,7 @@ icsRoutes.post('/subscriptions/:id/sync', async (c) => {
       .limit(1);
     return c.json({ ok: true, count, subscription: refreshed });
   } catch (err) {
+    logRouteFailure(c, 'POST /subscriptions/:id/sync', err, sub.id);
     const msg = humanizeIcsError(err);
     await db
       .update(icsSubscriptions)
@@ -339,11 +367,11 @@ icsRoutes.post('/subscriptions/:id/sync', async (c) => {
       .where(eq(icsSubscriptions.id, sub.id));
     return c.json({ error: 'Sync failed', code: 'SYNC_FAILED', detail: msg }, 502);
   }
-});
+}));
 
 // GET /api/ics/my-feed-url — returns the user's outbound feed URL.
 // Lazily generates the publish token on first call.
-icsRoutes.get('/my-feed-url', async (c) => {
+icsRoutes.get('/my-feed-url', guarded('GET /my-feed-url', async (c) => {
   const user = c.get('user') as { id: string; org_id: string };
   const [row] = await db.select({ token: users.ics_publish_token }).from(users).where(eq(users.id, user.id)).limit(1);
   let token = row?.token ?? null;
@@ -355,17 +383,17 @@ icsRoutes.get('/my-feed-url', async (c) => {
   // Public feed URL — clients paste this into their calendar app.
   const url = `${apiBase}/api/ics/feed/${token}`;
   return c.json({ feed_url: url });
-});
+}));
 
 // POST /api/ics/my-feed-url/regenerate — rotate the publish token.
 // Existing calendar subscribers will go 404 until they update the URL.
-icsRoutes.post('/my-feed-url/regenerate', async (c) => {
+icsRoutes.post('/my-feed-url/regenerate', guarded('POST /my-feed-url/regenerate', async (c) => {
   const user = c.get('user') as { id: string; org_id: string };
   const token = newPublishToken();
   await db.update(users).set({ ics_publish_token: token }).where(eq(users.id, user.id));
   const apiBase = publicApiBase(c);
   return c.json({ feed_url: `${apiBase}/api/ics/feed/${token}` });
-});
+}));
 
 async function fetchICSWithLimits(url: string): Promise<string> {
   const text = await fetchCalendarFeedText(url);
