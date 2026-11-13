@@ -126,10 +126,22 @@ test('the upload handler stores nothing when no user is set', async (t) => {
   app.route('/api/upload', uploadRoutes);
   const form = new FormData();
   form.append('file', new File(['hello'], 'hello.txt', { type: 'text/plain' }));
-  const res = await app.request('/api/upload', { method: 'POST', body: form });
+  const encoded = new Response(form);
+  const bytes = new Uint8Array(await encoded.arrayBuffer());
+  let bodyRead = false;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) { bodyRead = true; controller.enqueue(bytes); controller.close(); },
+  }, { highWaterMark: 0 });
+  const res = await app.request(new Request('http://localhost/api/upload', {
+    method: 'POST',
+    headers: { 'content-type': encoded.headers.get('content-type')! },
+    body,
+    duplex: 'half',
+  } as RequestInit));
   assert.equal(res.status, 401);
   assert.equal(((await res.json()) as { code: string }).code, 'NO_TOKEN');
   assert.equal(puts, 0);
+  assert.equal(bodyRead, false, 'the request body is not read before the caller is known');
 });
 
 function signed(body: string, secret: string) {
