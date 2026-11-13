@@ -51,16 +51,72 @@ jobs:
         id: scope
         run: node scripts/resolve-release-scope.mjs --github-output
 
+  # Classifies a pull request as docs-only so the heavy jobs can be skipped.
+  # Skipping is done with job- and step-level `if` (never workflow `paths:`
+  # filters), so every required check name still reports on every pull request.
+  # Anything that is not provably docs-only runs everything. Only pull requests
+  # can be docs-only; pushes, tags and manual runs always run everything.
+  changes:
+    name: Changed Paths
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Classify changed paths
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Docs-only means EVERY changed path (and every rename source) is a
+          # Markdown file under docs/superpowers/ (plans, specs, audits, notes),
+          # none of which any build, test or check reads. Markdown elsewhere is
+          # not listed: application code, seeds, the public-docs check and the
+          # release workflow read it. A file named by the Hermes integration
+          # manifest is read by the bundle test and is never docs-only.
+          # File names are only ever piped as JSON strings into jq; they are
+          # never expanded in a shell command.
+          excluded="$(jq -c '[.. | strings | select(startswith("docs/"))]' integrations/hermes/integration-manifest.json)"
+          gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files?per_page=100" \
+            --jq '.[] | [.filename, .previous_filename] | .[] | select(. != null) | @json' \
+            | jq -s --argjson excluded "$excluded" '
+                length > 0 and length < 3000 and all(.[];
+                  test("^docs/superpowers/[^\n]+[.]md$") and (. as $f | $excluded | any(. == $f) | not)
+                )' > docs-only.json
+          result="$(cat docs-only.json)"
+          case "$result" in
+            true|false) ;;
+            *) echo "unexpected classifier output" >&2; exit 1 ;;
+          esac
+          echo "docs_only=$result" >> "$GITHUB_OUTPUT"
+
   typecheck:
     name: Type Check
     runs-on: ubuntu-latest
-    needs: [release-scope, check-app-boundary]
+    needs: [release-scope, check-app-boundary, changes]
     # Forward a failed prerequisite into this existing required check instead
-    # of leaving all protected downstream checks merely skipped.
-    if: ${{ !cancelled() }}
+    # of leaving all protected downstream checks merely skipped. A docs-only
+    # pull request skips this job (a skipped job satisfies the required check)
+    # and with it every job that needs it: Build, Versioned Upgrade, the
+    # production image smoke and the Hermes gate. If the classifier failed,
+    # docs_only is empty, so this job still runs and fails on the next step.
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
     steps:
       - name: Require cheap CI gates
-        if: needs.release-scope.result != 'success' || needs.check-app-boundary.result != 'success'
+        if: needs.release-scope.result != 'success' || needs.check-app-boundary.result != 'success' || needs.changes.result != 'success'
         run: exit 1
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6.1.0
@@ -146,7 +202,9 @@ jobs:
     runs-on: ubuntu-latest
     # Start alongside Type Check rather than after it. Only the cheap gates
     # block the shards; Build still requires Type Check and every shard.
-    needs: [release-scope, check-app-boundary]
+    # Skipped for docs-only pull requests; the Test API roll-up accepts that.
+    needs: [release-scope, check-app-boundary, changes]
+    if: needs.changes.outputs.docs_only != 'true'
     timeout-minutes: 30
     strategy:
       # Let every shard finish so one failure does not hide another.
@@ -263,11 +321,17 @@ jobs:
   test:
     name: Test API
     runs-on: ubuntu-latest
-    needs: test-shard
+    needs: [test-shard, changes]
     if: ${{ !cancelled() }}
     steps:
       - name: Require every API test shard
-        if: needs.test-shard.result != 'success'
+        # Shards may be skipped only when the classifier succeeded and found a
+        # docs-only pull request; in every other case they must all pass.
+        if: >-
+          needs.test-shard.result != 'success' &&
+          !(needs.test-shard.result == 'skipped' &&
+            needs.changes.result == 'success' &&
+            needs.changes.outputs.docs_only == 'true')
         run: |
           echo "API test shards finished with: ${{ needs.test-shard.result }}" >&2
           exit 1
