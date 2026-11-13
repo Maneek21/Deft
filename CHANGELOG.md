@@ -30,7 +30,31 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
   its burn-down bucket, and `node scripts/check-app-boundary.mjs --summary` prints
   the counts per milestone. No finding changed.
 
-### Unreleased: merged to `master` after `v0.3.0-preview.141`
+### 0.3.0-preview.142 candidate - publication pending
+
+Changes since `v0.3.0-preview.141`.
+
+Upgrade notes:
+
+- Schema head moves to `0.3.0-preview.136`. `pnpm db:upgrade` applies five
+  migrations: `.132` integration capture retirement, `.133` runtime grace resume,
+  `.134` restore-access reviews, `.135` connection restore marker and `.136` an
+  index on pending agent actions per workspace. The `.136` index build briefly
+  holds writes to `agent_actions` while it runs.
+- Scheduled GitHub sync is on by default: each connected GitHub account is synced
+  every `DEFT_GITHUB_SYNC_INTERVAL_MIN` minutes (default `10`); `0` or `off` turns
+  the schedule off, and manual sync still works.
+- Calendar feeds and link previews are fetched only from public internet
+  addresses. A self-hosted install (`DEFT_SELF_HOSTED=true`) can list exact
+  internal feed URLs in `DEFT_CALENDAR_PRIVATE_URL_ALLOWLIST`.
+- Plain-text `@` mentions resolve only on an exact, unique handle or one-word
+  name.
+- `POST /api/webhooks/github` needs `GITHUB_WEBHOOK_SECRET` (see below).
+- Author Kit stays `0.1.0-alpha.43`. Its code is unchanged since
+  `v0.3.0-preview.141`; the archive attached to this release differs from the one
+  attached to `v0.3.0-preview.141` only in `README.md`, which carries the alpha.44
+  removal notice. Consumers that pin the `v0.3.0-preview.141` archive by checksum
+  keep it.
 
 Agents and approvals:
 
@@ -124,6 +148,14 @@ Agents and approvals:
   archived space through the web route answers `409` `SPACE_ARCHIVED`, as the
   other posting paths do. The @ and # popups ignore keys pressed during IME
   composition, and Enter without Shift or Tab selects while Escape closes.
+- Chat: an open thread shows live edits, deletes and reactions on its parent
+  message. Inserting a new line (Shift+Enter) closes an open @ or # popup, so a
+  popup query never spans lines.
+- Mentions: a plain `@token` becomes a mention of an agent employee only when the
+  whole token equals, ignoring case, that agent's slug or its one-word display
+  name, and no other agent or active human member of the workspace has that
+  token. Any other token stays plain text and the post is accepted. Explicit
+  mention markers and `@defty`, `@deft` and `@agent` still reach their target.
 - Docs: the Apps flags section of `docs/self-hosting.md` documents flag
   dependencies and the developer preview profile.
 
@@ -161,7 +193,16 @@ Agents and approvals:
   proposal for a space or page the employee cannot reach is refused with
   `WIKI_TARGET_UNAVAILABLE`. A failed knowledge-update capture can be retried
   only when its original proposal can be found (`409 RETRY_UNAVAILABLE`
-  otherwise).
+  otherwise). Approving a wiki proposal that can no longer be applied answers
+  `200` with `{ status: 'failed', message, error, code }` and one of
+  `WIKI_PAGE_CHANGED`, `WIKI_PAGE_UNAVAILABLE`, `WIKI_PAGE_NOT_CREATED` or
+  `WIKI_PROPOSAL_UNVERIFIABLE`, the same on every replay; the page is not written.
+- Approval counts (Inbox `count_only`, the dashboard "Approvals" count, an
+  employee's pending count) and the Attention approval backfill check review
+  access only for each viewer's candidate actions; the counted set is the same.
+  `GET /api/inbox?count_only=1` counts approvals in one aggregate query. Pending
+  approval reads use an index on pending agent actions per workspace (migration
+  `.136`).
 - A plan created with an agent employee id (`POST /api/agent-plans`) binds only to an active agent employee of the
   caller's workspace (`400 INVALID_AGENT_EMPLOYEE` otherwise). Approve, execute,
   resume and abort are available to the plan's creator and to owners and admins;
@@ -219,6 +260,11 @@ Requests, triggers and outbound fetches:
   dispatches nothing; merged PRs close their `PREFIX-N` tasks through the
   per-workspace GitHub sync, which stores and updates its events within the
   syncing workspace.
+- The per-workspace GitHub sync runs on a schedule: a `github-sync-scan` job every
+  minute queues connected GitHub accounts that are due (at most 10 per minute),
+  each synced every `DEFT_GITHUB_SYNC_INTERVAL_MIN` minutes (default `10`; `0` or
+  `off` disables the schedule). Failures back off and rate limits wait for
+  GitHub's reset. Manual sync is unchanged.
 - Trigger jobs for an event (`trigger-dispatch`, `employee-trigger`,
   `agent-employee-trigger`) and `workflow-execute` jobs carry their workspace and
   reach only that workspace's
@@ -254,6 +300,19 @@ Requests, triggers and outbound fetches:
   validated address, at most three redirects each re-checked, and a body size and
   time limit (5 MB and 20 seconds for feeds, 512 KB and 5 seconds for previews).
   A feed that cannot be reached answers `Could not reach the feed URL.`.
+- Self-hosted operators can list exact internal calendar feed URLs in
+  `DEFT_CALENDAR_PRIVATE_URL_ALLOWLIST` (a JSON array; honoured only when
+  `DEFT_SELF_HOSTED=true`). A listed URL may use its own port and resolve to
+  loopback, RFC 1918 or IPv6 unique-local addresses; cloud metadata addresses are
+  always refused. Matching is by the whole URL, redirects are followed only to
+  another listed URL, and a malformed value disables the list. See
+  "Internal calendar feeds" in `docs/self-hosting.md`.
+- IPv4-mapped IPv6 addresses (dotted or hex form) are classified by their IPv4
+  address in connector URL validation and the public-only fetch, so a mapped cloud
+  metadata address is always refused.
+- Link preview metadata is extracted on a worker thread, one page at a time with
+  at most 16 waiting; a page whose extraction does not finish within 2 seconds
+  gets no preview.
 
 CI and security checks:
 
@@ -270,6 +329,11 @@ CI and security checks:
   finding no longer need a new review, while a change to the code on the path, a new
   finding, a duplicate or an unused entry fails the check. See
   `docs/security/codeql-reviewed-findings.md`.
+- Pull requests that change only Markdown files under `docs/superpowers/` skip
+  Type Check, the API test shards, Build, Versioned Upgrade, Production Image +
+  Browser Smoke and the Hermes gate; every required check name still reports. A
+  `Changed Paths` job classifies the pull request, and any other change runs every
+  job.
 
 - API tests: tests that shared fixture rows now create their own, the recovery
   sweep tests wait out a busy advisory pool, and the restore-access fixture
