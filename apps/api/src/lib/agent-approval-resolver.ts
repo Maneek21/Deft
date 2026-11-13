@@ -34,7 +34,7 @@ import type { AppRunTransaction } from './app-run-repository.js';
  * happened when the row was queued, and re-gating here would bounce
  * every conservative-trust employee's approved writes.
  */
-import { eq, and, or, sql, isNull, inArray } from 'drizzle-orm';
+import { eq, and, or, sql, isNull, inArray, type SQL } from 'drizzle-orm';
 import { currentActionReviewerSql, reviewableActionSql } from './agent-action-review-gate.js';
 import { actionRequesterId, CAPTURE_ACTION_SOURCE, captureSourceUserId } from './agent-action-requester.js';
 import { visibleCaptureActionSql } from './agent-action-visibility.js';
@@ -120,6 +120,20 @@ export function _setAppRunApprovalResolverForTest(
   resolver: PostgresAppRunApprovalResolver | null,
 ): void {
   appRunApprovalResolverForTest = resolver;
+}
+
+type ReviewerRecheckPoint = 'before_decision' | 'before_return';
+let reviewerRecheckHookForTest: ((point: ReviewerRecheckPoint, actionId: string) => Promise<void>) | null = null;
+
+/** Test seam: runs before each guarded decision statement and before a result is re-authorized. */
+export function _setReviewerRecheckHookForTest(
+  hook: ((point: ReviewerRecheckPoint, actionId: string) => Promise<void>) | null,
+): void {
+  reviewerRecheckHookForTest = hook;
+}
+
+async function reviewerRecheckPoint(point: ReviewerRecheckPoint, actionId: string): Promise<void> {
+  if (reviewerRecheckHookForTest) await reviewerRecheckHookForTest(point, actionId);
 }
 
 async function appRunApprovalResolver(): Promise<PostgresAppRunApprovalResolver> {
@@ -655,6 +669,35 @@ async function reviewsActionNow(actionId: string, orgId: string, userId: string)
   return Boolean(row);
 }
 
+/**
+ * Whether the caller may still receive a result about the action: the same
+ * rule that let them decide it, applied again after the decision ran.
+ */
+async function callerMayReceiveResult(
+  actionId: string,
+  userId: string,
+  decision: 'approve' | 'reject',
+  internal: boolean | undefined,
+): Promise<boolean> {
+  await reviewerRecheckPoint('before_return', actionId);
+  if (internal) return actionSourceIsCurrent(actionId);
+  const [row] = await db.select().from(agentActions).where(eq(agentActions.id, actionId)).limit(1);
+  if (!row) return false;
+  if (hasOwnReviewerRule(row.action)) {
+    const membership = await loadReviewMembership(userId, row.org_id);
+    if (await reviewerRefusal(decision, row, userId, membership)) return false;
+  } else if (!await reviewsActionNow(actionId, row.org_id, userId)) {
+    return false;
+  }
+  return actionSourceIsCurrent(actionId, userId);
+}
+
+/** Results that say nothing about the action beyond its absence or a refusal. */
+function carriesNoActionContent(result: ApprovalResolverResult): boolean {
+  return result.status === 'error'
+    && (result.code === 'NOT_FOUND' || result.code === 'FORBIDDEN' || result.code === 'LEASE_LOST');
+}
+
 const notReviewer = (): ApprovalResolverError => ({
   status: 'error', code: 'FORBIDDEN', message: 'only the reviewer of this action may decide it',
 });
@@ -1005,8 +1048,9 @@ export async function approveAction(
   );
   if (result.status === 'approved' || result.status === 'rejected' || result.code === 'EXECUTE_FAILED') {
     await publishApprovalResolution(actionId, approverUserId);
-    if (!await actionSourceIsCurrent(actionId, options.internal ? undefined : approverUserId)) return sourceUnavailable();
   }
+  if (!carriesNoActionContent(result)
+    && !await callerMayReceiveResult(actionId, approverUserId, 'approve', options.internal)) return notReviewer();
   return result;
 }
 
@@ -1059,11 +1103,20 @@ async function approveActionLocked(
   // rule applies to new decisions and to every other read of the row.
   const resumesRecordedDecision = options.resume === true
     && row.approval_status === 'approved' && row.executed_at === null;
-  if (!options.internal && !hasOwnReviewerRule(row.action) && !resumesRecordedDecision
-    && !await reviewsActionNow(actionId, row.org_id, approverUserId)) return notReviewer();
+  // The reviewer rule is part of the predicate of the claim below, so a
+  // reviewer who loses the right after this read cannot claim the action.
+  let reviewerGuard: SQL | undefined;
+  if (!options.internal && !hasOwnReviewerRule(row.action) && !resumesRecordedDecision) {
+    const reviewer = await currentActionReviewerSql({ id: approverUserId, org_id: row.org_id });
+    if (!reviewer) return notReviewer();
+    reviewerGuard = and(eq(agentActions.org_id, row.org_id), reviewer)!;
+    const [reviewable] = await db.select({ id: agentActions.id }).from(agentActions)
+      .where(and(eq(agentActions.id, actionId), reviewerGuard)).limit(1);
+    if (!reviewable) return notReviewer();
+  }
 
   const sourceReaderId = options.internal ? undefined : approverUserId;
-  const decisionSource = decisionSourceSql(row, sourceReaderId, options.internal);
+  const decisionSource = and(decisionSourceSql(row, sourceReaderId, options.internal), reviewerGuard)!;
   const [sourceCurrent] = await db.select({ id: agentActions.id }).from(agentActions)
     .where(and(eq(agentActions.id, actionId), decisionSource)).limit(1);
   if (!sourceCurrent) return sourceUnavailable();
@@ -1308,6 +1361,7 @@ async function approveActionLocked(
   // approval_status = 'pending' only succeeds for one of them. If this
   // returns zero rows, we lost the race and return the idempotent result.
   if (!resumesApprovedModule) {
+    await reviewerRecheckPoint('before_decision', actionId);
     const claimed = await db.execute(
       // The executing marker is the one the ordinary approval claim writes:
       // approval surfaces show the row as executing until an outcome write
@@ -1725,8 +1779,9 @@ export async function rejectAction(
   const result = await rejectActionOnce(actionId, rejecterUserId, reason);
   if (result.status === 'approved' || result.status === 'rejected') {
     await publishApprovalResolution(actionId, rejecterUserId);
-    if (!await actionSourceIsCurrent(actionId, rejecterUserId)) return sourceUnavailable();
   }
+  if (!carriesNoActionContent(result)
+    && !await callerMayReceiveResult(actionId, rejecterUserId, 'reject', false)) return notReviewer();
   return result;
 }
 
@@ -1763,8 +1818,15 @@ async function rejectActionOnce(
       message: refusal,
     };
   }
-  if (!hasOwnReviewerRule(row.action) && !await reviewsActionNow(actionId, row.org_id, rejecterUserId)) {
-    return notReviewer();
+  // As on approval, the reviewer rule is also part of the rejection's predicate.
+  let reviewerGuard: SQL | undefined;
+  if (!hasOwnReviewerRule(row.action)) {
+    const reviewer = await currentActionReviewerSql({ id: rejecterUserId, org_id: row.org_id });
+    if (!reviewer) return notReviewer();
+    reviewerGuard = reviewer;
+    const [reviewable] = await db.select({ id: agentActions.id }).from(agentActions)
+      .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, row.org_id), reviewerGuard)).limit(1);
+    if (!reviewable) return notReviewer();
   }
 
   if (!await actionSourceIsCurrent(actionId, rejecterUserId)) return sourceUnavailable();
@@ -1818,6 +1880,7 @@ async function rejectActionOnce(
     : isModuleTaskLink
       ? sanitizeModuleTaskLinkActionParamsForHistory(row.params)
       : null;
+  await reviewerRecheckPoint('before_decision', actionId);
   const updated = await db.transaction(async (tx) => {
     const [claimed] = await tx
       .update(agentActions)
@@ -1828,7 +1891,9 @@ async function rejectActionOnce(
       })
       .where(and(
         eq(agentActions.id, actionId),
+        eq(agentActions.org_id, row.org_id),
         eq(agentActions.approval_status, 'pending'),
+        reviewerGuard,
       ))
       .returning();
     if (!claimed) return null;
