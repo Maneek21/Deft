@@ -1353,6 +1353,25 @@ async function requesterTaskWriteScopeError(
   userId: string,
 ): Promise<string | null> {
   if (action === 'mark_decision_implemented') return requesterDecisionError(params, orgId, userId);
+  if (action === 'link_decision_to_tasks') {
+    // Task ids the requester cannot see are skipped exactly like unknown ids.
+    const rawIds = Array.isArray(params.task_ids)
+      ? params.task_ids.filter((value: unknown): value is string => typeof value === 'string')
+      : [];
+    const visible = rawIds.length === 0 ? [] : await db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .innerJoin(projects, and(eq(projects.id, tasks.project_id), eq(projects.org_id, orgId)))
+      .where(and(
+        eq(tasks.org_id, orgId),
+        eq(tasks.is_deleted, false),
+        eq(projects.is_deleted, false),
+        inArray(tasks.id, rawIds),
+        visibleTaskCondition(userId),
+      ));
+    params.requester_visible_task_ids = visible.map((task) => task.id);
+    return requesterDecisionError(params, orgId, userId);
+  }
   if (!REQUESTER_TASK_WRITE_ACTIONS.has(action)) return null;
   const identifiers = [...new Set(
     taskIdentifiersForEmployeeWrite(action, params)
@@ -1379,10 +1398,6 @@ async function requesterTaskWriteScopeError(
   if (visibleTasks.length !== taskIds.length) return 'Task not found';
   if (['update_task_status', 'close_task', 'reopen_task', 'assign_task'].includes(action) && taskIds.length === 1) {
     params.resolved_task_id = taskIds[0];
-  }
-  if (action === 'link_decision_to_tasks') {
-    params.task_ids = taskIds;
-    return requesterDecisionError(params, orgId, userId);
   }
   return null;
 }
@@ -2981,7 +2996,10 @@ export async function executeAction(
           .select({ id: tasks.id })
           .from(tasks)
           .where(and(inArray(tasks.id, taskIds), eq(tasks.org_id, orgId)));
-        const validTaskIdSet = new Set(validTasks.map((t) => t.id));
+        const requesterVisible = new Set<string>(
+          Array.isArray(params.requester_visible_task_ids) ? params.requester_visible_task_ids : [],
+        );
+        const validTaskIdSet = new Set(validTasks.map((t) => t.id).filter((id) => requesterVisible.has(id)));
 
         const linked: string[] = [];
         for (const taskId of taskIds) {

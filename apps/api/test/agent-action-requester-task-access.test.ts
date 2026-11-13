@@ -226,7 +226,6 @@ test('every native task kind refuses a hidden task exactly as a missing one, and
     ['set_priority', (task) => ({ task_identifier: task, priority: 'p0' })],
     ['add_label', (task) => ({ task_identifier: task, label_name: `w2e-${suffix}` })],
     ['bulk_update_tasks', (task) => ({ task_identifiers: [open.id, task], updates: { priority: 'p0' } })],
-    ['link_decision_to_tasks', (task) => ({ decision_id: decision.id, task_ids: [task] })],
   ];
   for (const [kind, params] of kinds) {
     const hiddenResult = await run(memberId, kind, params(kind === 'update_task_status' || kind === 'close_task' ? hidden.ref : hidden.id));
@@ -244,6 +243,14 @@ test('every native task kind refuses a hidden task exactly as a missing one, and
   assert.equal(comments.rows.length, 0);
   const links = await client.query('SELECT 1 FROM cross_references WHERE org_id = $1 AND target_id = $2', [orgId, hidden.id]).catch(() => ({ rows: [] }));
   assert.equal(links.rows.length, 0);
+
+  const hiddenLink = await run(memberId, 'link_decision_to_tasks', { decision_id: decision.id, task_ids: [open.id, hidden.id] });
+  const missingId = randomUUID();
+  const missingLink = await run(memberId, 'link_decision_to_tasks', { decision_id: decision.id, task_ids: [open.id, missingId] });
+  assert.equal(hiddenLink.success, true, hiddenLink.error);
+  assert.deepEqual(hiddenLink.result.skipped, [hidden.id], 'a hidden task is skipped like an unknown one');
+  assert.deepEqual(missingLink.result.skipped, [missingId]);
+  assert.deepEqual(hiddenLink.result.linked_task_ids, [open.id]);
 
   const ok = await run(memberId, 'set_priority', { task_identifier: open.ref, priority: 'p1' });
   assert.equal(ok.success, true, ok.error);
