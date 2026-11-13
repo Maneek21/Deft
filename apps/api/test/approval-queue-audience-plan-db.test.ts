@@ -183,6 +183,7 @@ after(async () => {
       await q(`DELETE FROM ${table} WHERE org_id=$1`, [orgId]);
     }
     await q('DELETE FROM agent_channel_events WHERE org_id=$1', [orgId]);
+    await q('DELETE FROM agent_actions WHERE org_id=$1', [otherOrgId]);
     await q('DELETE FROM org_members WHERE org_id=$1', [otherOrgId]);
     await q('DELETE FROM orgs WHERE id=ANY($1::text[])', [[orgId, otherOrgId]]);
     await q('DELETE FROM users WHERE id=ANY($1::text[])', [[...Object.values(ids), agentUserId]]);
@@ -355,14 +356,33 @@ test('PERF-B: a steady Attention poll runs the review check for the backfill onl
   // not in): the backfill checks those candidates only, not every pending action of the workspace.
   const memberPoll = backfill(await statementsOf(() => poll('member')));
   assert.equal(memberPoll.length, 1, 'one backfill statement with the review check');
-  const plan = (await q(`EXPLAIN (ANALYZE, FORMAT JSON) ${memberPoll[0]!.text}`, memberPoll[0]!.values)).rows[0]['QUERY PLAN'][0];
-  // Every review check reads the member's current role (alias review_role) first.
-  const reviewLoops: number[] = [];
-  const walk = (node: any) => {
-    if (node.Alias === REVIEW_CHECK) reviewLoops.push(node['Actual Loops'] ?? 0);
-    for (const child of node.Plans ?? []) walk(child);
+  /**
+   * Largest number of times a subquery of the review check ran: the subplans the
+   * statement's agent_actions filter names, from where the review check starts
+   * (its capture-room test) when `fromCheck`, else anywhere in the filter.
+   */
+  const reviewCheckLoops = async (statement: { text: string; values: unknown[] }, fromCheck: boolean) => {
+    const plan = (await q(`EXPLAIN (ANALYZE, VERBOSE, FORMAT JSON) ${statement.text}`, statement.values)).rows[0]['QUERY PLAN'][0];
+    const named = new Set<string>();
+    const loops = new Map<string, number>();
+    const walk = (node: any, main: boolean) => {
+      // The statement's own scan of agent_actions, outside any subquery.
+      if (main && node.Alias === 'agent_actions' && typeof node.Filter === 'string') {
+        const filter: string = node.Filter;
+        const start = filter.indexOf("IS DISTINCT FROM 'defty_capture'");
+        assert.ok(start >= 0, 'the filter holds the review check');
+        const branch = fromCheck ? filter.slice(start) : filter;
+        for (const match of branch.matchAll(/SubPlan (\d+)/g)) named.add(`SubPlan ${match[1]}`);
+      }
+      if (node['Subplan Name']) loops.set(node['Subplan Name'], Math.max(loops.get(node['Subplan Name']) ?? 0, node['Actual Loops'] ?? 0));
+      for (const child of node.Plans ?? []) {
+        walk(child, main && !['SubPlan', 'InitPlan'].includes(child['Parent Relationship']));
+      }
+    };
+    walk(plan.Plan, true);
+    assert.ok(named.size > 0, 'the filter names the review check subplans');
+    return Math.max(...[...named].map((name) => loops.get(name) ?? 0));
   };
-  walk(plan.Plan);
   const { actionRequesterIdSql } = await import('../src/lib/agent-action-requester.js');
   const { db } = await import('../src/lib/db.js');
   const { sql } = await import('drizzle-orm');
@@ -374,10 +394,28 @@ test('PERF-B: a steady Attention poll runs the review check for the backfill onl
         AND e.source_event_id = 'approval-requested:' || agent_actions.id))`)).rows[0] as { count: string }).count);
   const pending = await count(false);
   const candidates = await count(true);
-  assert.ok(reviewLoops.length > 0, 'the plan reads the role');
   assert.ok(candidates > 0 && candidates < pending / 4, `${candidates} candidates of ${pending} pending`);
-  assert.ok(Math.max(...reviewLoops) <= candidates,
-    `the review check runs on the member's ${candidates} candidates, not all ${pending} (loops: ${reviewLoops.join(',')})`);
+  const loops = await reviewCheckLoops(memberPoll[0]!, true);
+  assert.ok(loops <= candidates, `the review check runs on the member's ${candidates} candidates, not all ${pending} (${loops})`);
+  // Control: the backfill statement as it was, with the check as a plain condition, runs it on far more actions.
+  const { agentActions } = await import('@deft/db/schema');
+  const { and, eq, inArray } = await import('drizzle-orm');
+  const { currentApprovalRecipientSql } = await import('../src/lib/attention.js');
+  const plain = db.select().from(agentActions).where(and(
+    eq(agentActions.org_id, orgId), eq(agentActions.approval_status, 'pending'), inArray(agentActions.approval_tier, ['quick', 'full']),
+    currentApprovalRecipientSql(ids.member),
+    sql`NOT EXISTS (SELECT 1 FROM attention_events raised WHERE raised.org_id = ${agentActions.org_id}
+      AND raised.user_id = ${ids.member} AND raised.event_type = 'source_event'
+      AND raised.source_event_id = 'approval-requested:' || ${agentActions.id})`)).toSQL();
+  const control = await reviewCheckLoops({ text: plain.sql, values: plain.params }, false);
+  assert.ok(control > candidates, `control: the plain check runs ${control} times`);
+  // Polling one workspace never raises another workspace's approvals, for a viewer active in both.
+  await q("INSERT INTO org_members(id,org_id,user_id,role,is_active) VALUES($1,$2,$3,'owner',true)", [randomUUID(), otherOrgId, ids.admin]);
+  const foreign = randomUUID();
+  await q(`INSERT INTO agent_actions(id,org_id,user_id,action,params,approval_tier,approval_status,source)
+    VALUES($1,$2,$3,'create_task','{"title":"foreign"}','quick','pending','native')`, [foreign, otherOrgId, ids.departed]);
+  await poll('admin');
+  assert.equal(Number((await q('SELECT count(*) FROM attention_items WHERE source_id=$1', [foreign])).rows[0].count), 0);
   // A new approval is still raised on the next poll.
   const fresh = randomUUID();
   labelOf.set(fresh, 'fresh-member');
