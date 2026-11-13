@@ -57,6 +57,7 @@ import { resolveAssigneeWithMatches } from '../resolve-assignee.js';
 import { createTaskBundle, type TaskBundleSubtaskInput } from '../task-bundle.js';
 import { visibleTaskCondition } from '../task-visibility.js';
 import { employeeCanAccessSpace } from './employee-space-access.js';
+import { verifiedCitedMessage } from './cited-message.js';
 import { currentAgentChannelEventAuthoritySql, currentEmployeeSpaceAuthoritySql } from '../agent-channel-authority.js';
 import { DEFTY_SYSTEM_EMPLOYEE_SLUG } from '../ensure-defty-membership.js';
 import {
@@ -153,8 +154,8 @@ const QUEUE_MESSAGE =
 // the execute* functions (employeeCanAccessSpace + the insert-time authority
 // SQL), which also write the auto-executed action-log row + receipt.
 const EMPLOYEE_OWN_CHAT_MESSAGE_ARG_KEYS: Readonly<Record<'send_message' | 'message_post', ReadonlySet<string>>> = {
-  send_message: new Set(['caller_employee_slug', 'target', 'space_id', 'thread_id', 'user_id', 'content']),
-  message_post: new Set(['caller_employee_slug', 'space_id', 'content', 'parent_id']),
+  send_message: new Set(['caller_employee_slug', 'target', 'space_id', 'thread_id', 'user_id', 'content', 'source_message_id']),
+  message_post: new Set(['caller_employee_slug', 'space_id', 'content', 'parent_id', 'source_message_id']),
 };
 
 function employeeOwnChatMessageAutoExecutes(
@@ -195,6 +196,7 @@ async function queueAction(
   toolName: string,
   args: Record<string, unknown>,
   ctx: ToolContext,
+  messageId: string | null = null,
 ): Promise<ToolResult> {
   const shadowUserId = await getShadowUserId(ctx.employee_id);
   if (!shadowUserId) {
@@ -208,6 +210,7 @@ async function queueAction(
       agent_employee_id: ctx.employee_id,
       channel_event_id: ctx.channel_event_id,
       runtime_request_key: ctx.runtime_request_key,
+      ...(messageId ? { message_id: messageId } : {}),
       source: 'mcp',
       action: toolName,
       params: args,
@@ -586,6 +589,8 @@ export async function taskCreate(
   ctx: ToolContext,
 ): Promise<ToolResult> {
   if (!args.title?.trim()) return errorResult('task_create requires title');
+  const cited = await verifiedCitedMessage(ctx, args.source_message_id);
+  if ('refusal' in cited) return errorResult(`task_create: ${cited.refusal}`);
 
   const projectAccess = await loadEmployeeProjectAccess(ctx);
   if (
@@ -599,7 +604,7 @@ export async function taskCreate(
   }
 
   if (!shouldAutoExecute('task_create', ctx.trust_level)) {
-    return queueAction('task_create', args as Record<string, unknown>, ctx);
+    return queueAction('task_create', args as Record<string, unknown>, ctx, cited.messageId);
   }
 
   return executeTaskCreate(args, ctx);
@@ -619,6 +624,7 @@ const VALID_STATUS = new Set([
 export type TaskUpdateArgs = {
   caller_employee_slug: string;
   task_id: string;
+  source_message_id?: string | null;
   patch: {
     title?: string;
     description?: string;
@@ -918,13 +924,15 @@ export async function taskUpdate(
   if (!args.patch || Object.keys(args.patch).length === 0) {
     return errorResult('task_update requires a non-empty patch');
   }
+  const cited = await verifiedCitedMessage(ctx, args.source_message_id);
+  if ('refusal' in cited) return errorResult(`task_update: ${cited.refusal}`);
 
   if (!(await loadAccessibleTaskForEmployee(args.task_id, ctx))) {
     return errorResult(`task_update: task ${args.task_id} not found`);
   }
 
   if (!shouldAutoExecute('task_update', ctx.trust_level)) {
-    return queueAction('task_update', args as Record<string, unknown>, ctx);
+    return queueAction('task_update', args as Record<string, unknown>, ctx, cited.messageId);
   }
 
   return executeTaskUpdate(args, ctx);
@@ -937,6 +945,7 @@ export type MessagePostArgs = {
   space_id: string;
   content: string;
   parent_id?: string;
+  source_message_id?: string | null;
 };
 
 /** Inner executor for message_post. No trust-gating. */
@@ -1046,6 +1055,8 @@ export async function messagePost(
   console.warn('[mcp] message_post is deprecated; use send_message');
   if (!args.space_id) return errorResult('message_post requires space_id');
   if (!args.content?.trim()) return errorResult('message_post requires content');
+  const cited = await verifiedCitedMessage(ctx, args.source_message_id);
+  if ('refusal' in cited) return errorResult(`message_post: ${cited.refusal}`);
 
   // Shared guard rails (storm detector for thread replies, active/deleted,
   // circuit breaker). The daily action cap was charged by dispatchTool.
@@ -1058,7 +1069,7 @@ export async function messagePost(
   if (!guard.ok) return errorResult(employeeChatPostToolError(guard));
 
   if (!employeeOwnChatMessageAutoExecutes('message_post', args as Record<string, unknown>, ctx, guard)) {
-    return queueAction('message_post', args as Record<string, unknown>, ctx);
+    return queueAction('message_post', args as Record<string, unknown>, ctx, cited.messageId);
   }
 
   return executeMessagePost(args, ctx);
@@ -1078,6 +1089,7 @@ export type SendMessageArgs = {
   thread_id?: string;
   user_id?: string;
   content: string;
+  source_message_id?: string | null;
 };
 
 /**
@@ -1105,6 +1117,8 @@ export async function sendMessage(
   if (!target) {
     return errorResult('send_message: target must include space_id, thread_id, or user_id');
   }
+  const cited = await verifiedCitedMessage(ctx, args.source_message_id);
+  if ('refusal' in cited) return errorResult(`send_message: ${cited.refusal}`);
 
   // Shared guard rails before any side effect (a DM space is created below):
   // storm detector for thread replies, active/deleted, circuit breaker. The
@@ -1159,6 +1173,7 @@ export async function sendMessage(
       'send_message',
       { ...args, resolved_space_id: spaceId, parent_id: parentId } as Record<string, unknown>,
       ctx,
+      cited.messageId,
     );
   }
 

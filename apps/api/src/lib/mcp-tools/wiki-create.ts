@@ -21,6 +21,7 @@ import {
 } from '../agent-approval.js';
 import { invalidatePlatformContextCacheFor } from './context.js';
 import { employeeCanAccessSpace } from './employee-space-access.js';
+import { verifiedCitedMessage } from './cited-message.js';
 import { generateReceipt } from '../receipts.js';
 import { enqueue, QUEUE_NAMES } from '../queues.js';
 import { toPlainText } from '../plain-text.js';
@@ -456,6 +457,7 @@ async function queueAction(
   args: Record<string, unknown>,
   ctx: ToolContext,
   frozen: { values: { before_state: { [TARGET_KEY]: FrozenWikiTarget } } } | null = null,
+  messageId: string | null = null,
 ): Promise<ToolResult> {
   const shadowUserId = await getShadowUserId(ctx.employee_id);
   if (!shadowUserId) {
@@ -470,6 +472,7 @@ async function queueAction(
       agent_employee_id: ctx.employee_id,
       channel_event_id: ctx.channel_event_id,
       runtime_request_key: ctx.runtime_request_key,
+      ...(messageId ? { message_id: messageId } : {}),
       source: 'mcp',
       action: actionName,
       params: args,
@@ -487,11 +490,13 @@ async function queueAction(
 export async function wikiCreate(args: WikiCreateArgs, ctx: ToolContext): Promise<ToolResult> {
   if (!args.title?.trim()) return errorResult('wiki_create requires title');
   if (!args.content?.trim()) return errorResult('wiki_create requires content');
+  const cited = await verifiedCitedMessage(ctx, args.source_message_id);
+  if ('refusal' in cited) return errorResult(`wiki_create: ${cited.refusal}`);
 
   if (!shouldAutoExecute('wiki_create', ctx.trust_level, args)) {
     const frozen = await wikiCreateProposalTarget(args, ctx.org_id, ctx.employee_id);
     if (!frozen) return wikiTargetUnavailableResult('wiki_create');
-    return queueAction('wiki_create', args as unknown as Record<string, unknown>, ctx, frozen);
+    return queueAction('wiki_create', args as unknown as Record<string, unknown>, ctx, frozen, cited.messageId);
   }
 
   return executeWikiCreate(args, ctx);
@@ -979,11 +984,13 @@ export async function wikiUpdate(args: WikiUpdateArgs, ctx: ToolContext): Promis
   if (!args.patch || Object.keys(args.patch).length === 0) {
     return errorResult('wiki_update requires a non-empty patch');
   }
+  const cited = await verifiedCitedMessage(ctx, args.source_message_id);
+  if ('refusal' in cited) return errorResult(`wiki_update: ${cited.refusal}`);
 
   if (!shouldAutoExecute('wiki_update', ctx.trust_level, args)) {
     const frozen = await wikiUpdateProposalTarget(args, ctx.org_id, ctx.employee_id);
     if (!frozen) return wikiTargetUnavailableResult();
-    return queueAction('wiki_update', args as unknown as Record<string, unknown>, ctx, frozen);
+    return queueAction('wiki_update', args as unknown as Record<string, unknown>, ctx, frozen, cited.messageId);
   }
 
   return executeWikiUpdate(args, ctx);
