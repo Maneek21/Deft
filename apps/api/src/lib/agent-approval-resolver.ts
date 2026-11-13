@@ -648,13 +648,19 @@ async function actionSourceIsCurrent(actionId: string, readerUserId?: string) {
 
 /**
  * The source boundary of a decision. On the internal path a Defty capture
- * also needs its author (the requester) to still see the captured room.
+ * also needs its requester (`requesterId`, its author) to still see the
+ * captured room.
  */
-function decisionSourceSql(row: ReviewedActionRow, readerUserId: string | undefined, internal: boolean | undefined) {
+function decisionSourceSql(
+  row: ReviewedActionRow,
+  requesterId: string,
+  readerUserId: string | undefined,
+  internal: boolean | undefined,
+) {
   if (!internal || row.source !== CAPTURE_ACTION_SOURCE) return actionSourceAuthoritySql(readerUserId);
   return and(
     actionSourceAuthoritySql(readerUserId),
-    visibleCaptureActionSql({ id: captureSourceUserId(row) ?? row.user_id, org_id: row.org_id }),
+    visibleCaptureActionSql({ id: requesterId, org_id: row.org_id }),
   )!;
 }
 
@@ -1096,7 +1102,8 @@ async function approveActionLocked(
   // terminal retry may create missing receipts/attention artifacts, so it is
   // not a side-effect-free read and must not be reachable cross-org.
   const membership = await loadReviewMembership(approverUserId, row.org_id);
-  const refusal = await reviewerRefusal('approve', row, approverUserId, membership, { internal: options.internal });
+  const requesterId = await loadActionRequesterId(row);
+  const refusal = await reviewerRefusal('approve', row, approverUserId, membership, { internal: options.internal, requesterId });
   if (refusal) {
     return {
       status: 'error',
@@ -1122,7 +1129,7 @@ async function approveActionLocked(
   }
 
   const sourceReaderId = options.internal ? undefined : approverUserId;
-  const decisionSource = and(decisionSourceSql(row, sourceReaderId, options.internal), reviewerGuard)!;
+  const decisionSource = and(decisionSourceSql(row, requesterId, sourceReaderId, options.internal), reviewerGuard)!;
   const [sourceCurrent] = await db.select({ id: agentActions.id }).from(agentActions)
     .where(and(eq(agentActions.id, actionId), decisionSource)).limit(1);
   if (!sourceCurrent) return sourceUnavailable();
