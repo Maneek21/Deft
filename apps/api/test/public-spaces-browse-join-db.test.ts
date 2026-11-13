@@ -68,7 +68,7 @@ before(async () => {
       [S.foreign, ORG_B, 'public', false, [U.outsider]],
     ];
     for (const [sid, org, type, archived, members] of spaces) {
-      const name = sid === S.open ? `Open Alpha ${stamp}` : sid === S.other ? `Other Beta ${stamp}` : sid === S.joined ? `Joined Gamma ${stamp}` : `${SECRET} ${sid}`;
+      const name = sid === S.open ? `Open Alpha ${stamp}` : sid === S.other ? `Other Beta 5%_x\\y ${stamp}` : sid === S.joined ? `Joined Gamma ${stamp}` : `${SECRET} ${sid}`;
       await c.query(
         `INSERT INTO spaces (id, org_id, name, description, topic, type, is_archived, created_by) VALUES ($1, $2, $3, $4, 'topic', $5, $6, $7)`,
         [sid, org, name, `desc ${sid}`, type, archived, org === ORG ? U.peer : U.outsider],
@@ -137,16 +137,23 @@ test('a member browses only the unjoined public spaces of their own org, with co
   assert.equal(res.json.spaces.find((s: any) => s.id === S.other).member_count, 0);
 
   const withJoined = await browse(U.member, '?include_joined=1');
+  assert.deepEqual(withJoined.json.spaces.map((s: any) => s.id).filter((x: string) => x.includes(String(stamp))), [S.joined, S.open, S.other]);
+  assert.ok(!withJoined.text.includes(SECRET), withJoined.text);
+  const secret = await browse(U.member, `?include_joined=1&q=${SECRET}`);
+  assert.deepEqual(secret.json.spaces, [], 'search never reaches non-public spaces');
   const joined = withJoined.json.spaces.find((s: any) => s.id === S.joined);
   assert.equal(joined?.is_member, true, withJoined.text);
   assert.equal(joined.member_count, 2);
 
   const searched = await browse(U.member, `?q=${encodeURIComponent('alpha')}`);
   assert.deepEqual(searched.json.spaces.map((s: any) => s.id).filter((x: string) => x.includes(String(stamp))), [S.open]);
-  for (const literal of ['%', '_', '\\', 'Alpha_']) {
+  const literals: Array<[string, string[]]> = [
+    ['%', [S.other]], ['_', [S.other]], ['\\', [S.other]], ['5%_x\\y', [S.other]], ['Alpha_', []], ['5%x', []],
+  ];
+  for (const [literal, expected] of literals) {
     const wildcard = await browse(U.member, `?q=${encodeURIComponent(literal)}`);
     assert.equal(wildcard.status, 200, wildcard.text);
-    assert.equal(wildcard.json.spaces.filter((s: any) => s.id.includes(String(stamp))).length, 0, `q ${literal} is literal`);
+    assert.deepEqual(wildcard.json.spaces.map((s: any) => s.id).filter((x: string) => x.includes(String(stamp))), expected, `q ${literal} is literal`);
   }
   assert.equal((await browse(U.member, '?limit=1')).json.spaces.length, 1);
   assert.equal((await browse(U.member, '?limit=0')).status, 400);
@@ -166,9 +173,10 @@ test('guests, agents, deactivated users and other orgs cannot browse or join', a
     assert.equal(await memberRows(S.other, actor), 0);
   }
   // Join adds only the caller, whatever the body says.
-  const self = await call(U.admin, 'POST', `/api/spaces/${S.other}/join`, { body: { user_id: U.guest } });
+  const self = await call(U.admin, 'POST', `/api/spaces/${S.other}/join`, { body: { user_id: U.owner } });
   assert.equal(self.status, 200, self.text);
-  assert.equal(await memberRows(S.other, U.guest), 0);
+  assert.equal(await memberRows(S.other, U.owner), 0);
+  assert.equal(await memberRows(S.other, U.admin), 1);
   assert.equal((await leave(U.admin, S.other)).status, 200);
   // A member of org B browsing from org B never sees org A spaces.
   const foreign = await browse(U.outsider, '', ORG_B);
@@ -217,9 +225,18 @@ test('an unjoined member cannot read; after joining reads work; join is idempote
   const guest = await open(U.guest);
   const otherOrgSelf = await open(`${U.member}|${ORG_B}`);
   try {
+    const roomSize = () => sockets.sockets.adapter.rooms.get(`space:${S.open}`)?.size ?? 0;
+    const waitRoom = async (n: number) => {
+      const deadline = Date.now() + 5_000;
+      while (roomSize() !== n && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+      assert.equal(roomSize(), n);
+    };
+    // Non-members try to subscribe first; the realtime gate refuses them.
+    for (const s of [outsider, guest, otherOrgSelf, self]) s.client.emit('space:join', S.open);
     peer.client.emit('space:join', S.open);
-    const deadline = Date.now() + 5_000;
-    while ((sockets.sockets.adapter.rooms.get(`space:${S.open}`)?.size ?? 0) < 1 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+    await waitRoom(1);
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(roomSize(), 1, 'only the existing member is subscribed');
 
     const first = await join(U.member, S.open);
     assert.equal(first.status, 200, first.text);
@@ -237,18 +254,31 @@ test('an unjoined member cannot read; after joining reads work; join is idempote
     assert.deepEqual(outsider.events, [], 'a non-member of the space receives no join event');
     assert.deepEqual(guest.events, [], 'a guest receives no join event');
     assert.deepEqual(otherOrgSelf.events, [], 'the joiner session in another org receives no join event');
+
+    const read = await readMessages(U.member, S.open);
+    assert.equal(read.status, 200, read.text);
+    assert.equal((await call(U.member, 'GET', `/api/spaces/${S.open}`)).status, 200);
+    assert.ok(await getHuddleSpaceAccess(S.open, socketUser(U.member)), 'socket space:join gate admits the joined member');
+    const listed = await call(U.member, 'GET', '/api/spaces');
+    assert.ok(listed.json.some((s: any) => s.id === S.open), 'joined space appears in the member space list');
+    assert.ok(!(await browse(U.member)).json.spaces.some((s: any) => s.id === S.open), 'joined space leaves the unjoined browse list');
+
+    // A subscribed member who leaves is removed from the room and gets no later events.
+    self.client.emit('space:join', S.open);
+    await waitRoom(2);
+    assert.equal((await leave(U.member, S.open)).status, 200);
+    await waitRoom(1);
+    assert.equal((await join(U.owner, S.open)).status, 200);
+    const later = Date.now() + 5_000;
+    while (peer.events.length < 2 && Date.now() < later) await new Promise((r) => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 100));
+    assert.deepEqual(peer.events.at(-1), { space_id: S.open, user_id: U.owner });
+    assert.equal(self.events.length, 1, 'a member who left receives no later join event');
+    assert.equal((await readMessages(U.member, S.open)).status, 403);
   } finally {
     for (const s of [peer, self, outsider, guest, otherOrgSelf]) s.client.close();
     await new Promise<void>((resolve) => sockets.close(() => resolve()));
   }
-
-  const read = await readMessages(U.member, S.open);
-  assert.equal(read.status, 200, read.text);
-  assert.equal((await call(U.member, 'GET', `/api/spaces/${S.open}`)).status, 200);
-  assert.ok(await getHuddleSpaceAccess(S.open, socketUser(U.member)), 'socket space:join gate admits the joined member');
-  const listed = await call(U.member, 'GET', '/api/spaces');
-  assert.ok(listed.json.some((s: any) => s.id === S.open), 'joined space appears in the member\'s space list');
-  assert.ok(!(await browse(U.member)).json.spaces.some((s: any) => s.id === S.open), 'joined space leaves the unjoined browse list');
 });
 
 test('leave works for public and private spaces; a second leave changes nothing', async () => {

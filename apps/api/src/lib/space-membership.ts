@@ -25,7 +25,10 @@ export async function canSelfJoinPublicSpaces(
       eq(users.kind, 'human'),
     ))
     .limit(1);
-  // Inside a join transaction the membership row is share-locked until commit.
+  // Inside a join transaction the user and membership rows are share-locked
+  // until commit, in the same order (users, then org_members) that member
+  // removal locks them, so the two cannot deadlock.
+  if (tx) await tx.select({ id: users.id }).from(users).where(eq(users.id, userId)).for('share');
   const [row] = tx ? await query.for('share', { of: orgMembers }) : await query;
   return !!row;
 }
