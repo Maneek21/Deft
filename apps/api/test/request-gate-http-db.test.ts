@@ -186,8 +186,9 @@ test('session-exempt routes are exactly the routes mounted ahead of the session 
   const apiRoute = (path: string) => path === '/api' || path.startsWith('/api/');
   routes.forEach((r, index) => {
     if (r.method === 'ALL' || !apiRoute(r.path)) return;
-    // Owner routes mounted early that verify the same web session themselves.
-    const sessionRequired = WEB_SESSION_ROUTERS.some((prefix) => r.path.startsWith(prefix));
+    // Owner routes mounted early that verify the same web session themselves;
+    // their /runtime/ routes take Runtime or operator credentials and must stay exempt.
+    const sessionRequired = !r.path.includes('/runtime/') && WEB_SESSION_ROUTERS.some((prefix) => r.path.startsWith(prefix));
     if (index < authIndex && !sessionRequired && !isPublicApiRequest(r.method, sample(r.path))) {
       mismatches.push(`pre-session route not exempt: ${r.method} ${r.path}`);
     }
