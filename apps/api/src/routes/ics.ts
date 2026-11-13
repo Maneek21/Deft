@@ -6,6 +6,7 @@ import { users, icsSubscriptions, tasks, events, projects } from '@deft/db/schem
 import { generateICS, humanizeIcsError, newPublishToken, parseICS, extractICSCalendarName } from '../lib/ics.js';
 import { syncOne } from '../workers/handlers/ics-sync.js';
 import { env } from '../lib/env.js';
+import { visibleTaskCondition } from '../lib/task-visibility.js';
 import { PublicFetchError, fetchCalendarFeedText } from '../lib/public-http-fetch.js';
 
 // Two routers: one public (the feed) mounted before authMiddleware, one
@@ -85,7 +86,8 @@ icsPublicRoutes.get('/feed/:token', guarded('GET /feed', async (c) => {
   const horizonStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // 30 days back
   const horizonEnd = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000); // 1 year forward
 
-  // 1. Tasks with due dates, where the user is the assignee.
+  // 1. Live tasks with due dates, where the user is the assignee: no deleted or
+  // template tasks, nothing from an archived or deleted project.
   const taskRows = await db
     .select({
       id: tasks.id,
@@ -96,11 +98,16 @@ icsPublicRoutes.get('/feed/:token', guarded('GET /feed', async (c) => {
       project_prefix: projects.prefix,
     })
     .from(tasks)
-    .innerJoin(projects, eq(tasks.project_id, projects.id))
+    .innerJoin(projects, and(eq(tasks.project_id, projects.id), eq(projects.org_id, orgId)))
     .where(
       and(
         eq(tasks.org_id, orgId),
         eq(tasks.assignee_id, user.id),
+        eq(tasks.is_deleted, false),
+        eq(tasks.is_template, false),
+        eq(projects.is_archived, false),
+        eq(projects.is_deleted, false),
+        visibleTaskCondition(user.id),
         isNotNull(tasks.due_date),
         gte(tasks.due_date, horizonStart),
         lte(tasks.due_date, horizonEnd),
