@@ -6,13 +6,25 @@
 // each re-checked, never https -> http; entity bodies are capped while
 // streaming (encoded and decoded); one deadline covers DNS, every hop and
 // the body. Failures before a response surface as one neutral error.
+//
+// Calendar feeds only: on a self-hosted install (DEFT_SELF_HOSTED exactly
+// "true") the operator may list exact feed URLs in
+// DEFT_CALENDAR_PRIVATE_URL_ALLOWLIST (a JSON array). A listed URL, and only
+// that URL, may use its own port and resolve to loopback, RFC 1918 or IPv6
+// unique-local addresses; metadata addresses stay refused, and its redirects
+// are followed only to other listed URLs. Link previews never use the list.
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { request as httpRequest, type ClientRequest, type IncomingMessage, type RequestOptions } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { BlockList, isIP } from 'node:net';
 import type { Transform } from 'node:stream';
 import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib';
-import { isNeverAllowedMetadataAddress, isPublicNetworkAddress, normalizeMappedIPv4 } from '@deft/mcp';
+import {
+  isAllowedSelfHostedPrivateAddress,
+  isNeverAllowedMetadataAddress,
+  isPublicNetworkAddress,
+  normalizeMappedIPv4,
+} from '@deft/mcp';
 
 export const PUBLIC_FETCH_MAX_REDIRECTS = 3;
 const ALLOWED_PORTS = new Set([80, 443]);
@@ -69,9 +81,63 @@ export function isPublicFetchAddress(rawAddress: string): boolean {
   return isPublicNetworkAddress(address);
 }
 
+/** Loopback, RFC 1918 or IPv6 unique-local; never metadata. Listed calendar feeds only. */
+function isListedFeedPrivateAddress(rawAddress: string): boolean {
+  const address = normalizeMappedIPv4(rawAddress);
+  if (isIP(address) === 0 || address.includes('%')) return false;
+  if (isNeverAllowedMetadataAddress(address)) return false;
+  return isAllowedSelfHostedPrivateAddress(address);
+}
+
 const unreachable = () => new PublicFetchError('unreachable');
 
-function parseTarget(input: string, base?: URL): URL {
+type FeedAllowlist = ReadonlySet<string>;
+const NO_ENTRIES: FeedAllowlist = new Set();
+
+/** Scheme, lower-cased host, explicit port, exact path and query; no fragment. */
+function feedUrlKey(url: URL): string {
+  return `${url.protocol}//${url.hostname}:${targetPort(url)}${url.pathname}${url.search}`;
+}
+
+function parseAllowlistEntry(entry: unknown): string | null {
+  if (typeof entry !== 'string') return null;
+  let url: URL;
+  try {
+    url = new URL(entry.trim().replace(/^webcal:\/\//i, 'https://'));
+  } catch {
+    return null;
+  }
+  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password) return null;
+  url.hash = '';
+  // Port 0 and an empty query delimiter would name a different request target than the one sent.
+  if (targetPort(url) === 0 || (!url.search && url.href.endsWith('?'))) return null;
+  return feedUrlKey(url);
+}
+
+let allowlistCache: { raw: string; entries: FeedAllowlist } | null = null;
+
+/** Operator-listed internal feed URLs; empty unless self-hosted. Any invalid entry disables the list. */
+export function calendarPrivateUrlAllowlist(): FeedAllowlist {
+  if (process.env.DEFT_SELF_HOSTED !== 'true') return NO_ENTRIES;
+  const raw = (process.env.DEFT_CALENDAR_PRIVATE_URL_ALLOWLIST ?? '').trim();
+  if (!raw) return NO_ENTRIES;
+  if (allowlistCache?.raw === raw) return allowlistCache.entries;
+  let entries: FeedAllowlist | null = null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    const keys = Array.isArray(parsed) ? parsed.map(parseAllowlistEntry) : [null];
+    if (keys.every((key): key is string => key !== null)) entries = new Set(keys);
+  } catch {
+    entries = null;
+  }
+  if (!entries) {
+    console.warn('[calendar-feeds] DEFT_CALENDAR_PRIVATE_URL_ALLOWLIST must be a JSON array of http(s) or webcal URLs without credentials; internal feed URLs are disabled');
+  }
+  allowlistCache = { raw, entries: entries ?? NO_ENTRIES };
+  return allowlistCache.entries;
+}
+
+function parseTarget(input: string, base: URL | undefined, allowlist: FeedAllowlist): { url: URL; listed: boolean } {
   let url: URL;
   try {
     url = base ? new URL(input, base) : new URL(input);
@@ -80,9 +146,10 @@ function parseTarget(input: string, base?: URL): URL {
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') throw unreachable();
   if (url.username || url.password) throw unreachable();
-  if (!ALLOWED_PORTS.has(targetPort(url))) throw unreachable();
   url.hash = '';
-  return url;
+  const listed = allowlist.has(feedUrlKey(url));
+  if (!listed && !ALLOWED_PORTS.has(targetPort(url))) throw unreachable();
+  return { url, listed };
 }
 
 function targetPort(url: URL): number {
@@ -111,11 +178,12 @@ function untilDeadline<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> 
 type Pinned = { address: string; family: 4 | 6; literal: boolean };
 
 /** Every validated address, in resolver order (at most four are tried). */
-async function resolvePinned(url: URL, signal: AbortSignal): Promise<Pinned[]> {
+async function resolvePinned(url: URL, signal: AbortSignal, listed: boolean): Promise<Pinned[]> {
+  const allowed = (address: string) => isPublicFetchAddress(address) || (listed && isListedFeedPrivateAddress(address));
   const hostname = bareHostname(url);
   const literalFamily = isIP(hostname);
   if (literalFamily) {
-    if (!isPublicFetchAddress(hostname)) throw unreachable();
+    if (!allowed(hostname)) throw unreachable();
     return [{ address: hostname, family: literalFamily as 4 | 6, literal: true }];
   }
   if (pendingLookups >= MAX_PENDING_LOOKUPS) throw unreachable();
@@ -130,7 +198,7 @@ async function resolvePinned(url: URL, signal: AbortSignal): Promise<Pinned[]> {
   } catch (err) {
     throw err instanceof PublicFetchError ? err : unreachable();
   }
-  if (!answers.length || !answers.every((entry) => isPublicFetchAddress(entry.address))) throw unreachable();
+  if (!answers.length || !answers.every((entry) => allowed(entry.address))) throw unreachable();
   return answers.slice(0, 4).map((entry) => ({ address: entry.address, family: isIP(entry.address) as 4 | 6, literal: false }));
 }
 
@@ -249,15 +317,26 @@ function readBody(res: IncomingMessage, maxBytes: number, signal: AbortSignal): 
 }
 
 /** Fetch a member-supplied URL under the closed public-only rule above. */
-export async function fetchPublicHttpText(
+export function fetchPublicHttpText(
   rawUrl: string,
   options: PublicFetchOptions,
 ): Promise<{ text: string; contentType: string; url: string }> {
+  return fetchHttpText(rawUrl, options, NO_ENTRIES);
+}
+
+async function fetchHttpText(
+  rawUrl: string,
+  options: PublicFetchOptions,
+  allowlist: FeedAllowlist,
+): Promise<{ text: string; contentType: string; url: string }> {
   const signal = AbortSignal.timeout(options.timeoutMs);
-  let url = parseTarget(rawUrl);
+  let { url, listed } = parseTarget(rawUrl, undefined, allowlist);
+  // A chain that starts at a listed URL may only continue to listed URLs; a
+  // chain that starts elsewhere keeps the public rule on every hop.
+  const listedChain = listed;
   for (let hop = 0; ; hop += 1) {
     let res: IncomingMessage | undefined;
-    for (const pinned of await resolvePinned(url, signal)) {
+    for (const pinned of await resolvePinned(url, signal, listed)) {
       try {
         res = await requestOnce(url, pinned, options, signal);
         break;
@@ -271,9 +350,10 @@ export async function fetchPublicHttpText(
       const location = res.headers.location;
       res.destroy();
       if (!location || hop >= PUBLIC_FETCH_MAX_REDIRECTS) throw unreachable();
-      const next = parseTarget(location, url);
-      if (url.protocol === 'https:' && next.protocol !== 'https:') throw unreachable();
-      url = next;
+      const next = parseTarget(location, url, listedChain ? allowlist : NO_ENTRIES);
+      if (listedChain && !next.listed) throw unreachable();
+      if (url.protocol === 'https:' && next.url.protocol !== 'https:') throw unreachable();
+      ({ url, listed } = next);
       continue;
     }
     if (status < 200 || status >= 300) {
@@ -288,11 +368,13 @@ export async function fetchPublicHttpText(
 /** Calendar feeds: `webcal://` is fetched as `https://`. */
 export async function fetchCalendarFeedText(rawUrl: string): Promise<string> {
   const url = rawUrl.trim().replace(/^webcal:\/\//i, 'https://');
-  const { text } = await fetchPublicHttpText(url, {
+  const { text } = await fetchHttpText(url, {
     maxBytes: CALENDAR_FEED_MAX_BYTES,
     timeoutMs: CALENDAR_FEED_TIMEOUT_MS,
     accept: 'text/calendar, text/plain, application/octet-stream, */*',
     userAgent: 'Deft-Calendar/1.0',
-  });
+  }, calendarPrivateUrlAllowlist());
   return text;
 }
+
+calendarPrivateUrlAllowlist();

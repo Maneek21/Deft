@@ -13,7 +13,7 @@
 import { eq, and, sql } from 'drizzle-orm';
 import { db } from '../../lib/db.js';
 import { icsSubscriptions, events } from '@deft/db/schema';
-import { parseICS } from '../../lib/ics.js';
+import { humanizeIcsError, parseICS } from '../../lib/ics.js';
 import { fetchCalendarFeedText } from '../../lib/public-http-fetch.js';
 import type { JobData } from '../types.js';
 
@@ -46,7 +46,7 @@ export async function handleIcsSync(_job: JobData): Promise<void> {
       sync_interval_min: number;
     };
     await syncOne(sub).catch(async (err) => {
-      const msg = (err as Error).message?.slice(0, 500) ?? 'unknown error';
+      const msg = humanizeIcsError(err);
       console.warn(`[ics-sync] sub ${sub.id} failed: ${msg}`);
       await db
         .update(icsSubscriptions)
@@ -127,10 +127,14 @@ export async function syncOne(sub: {
     .set({ last_synced_at: new Date(), last_error: null, last_event_count: count })
     .where(eq(icsSubscriptions.id, sub.id));
 
-  console.log(`[ics-sync] sub ${sub.id} synced ${count} event(s) from ${truncate(sub.ics_url, 80)}`);
+  console.log(`[ics-sync] sub ${sub.id} synced ${count} event(s) from host ${feedHost(sub.ics_url)}`);
   return { count };
 }
 
-function truncate(s: string, n: number): string {
-  return s.length <= n ? s : s.slice(0, n - 1) + '…';
+function feedHost(url: string): string {
+  try {
+    return new URL(url.trim().replace(/^webcal:\/\//i, 'https://')).hostname;
+  } catch {
+    return '(invalid)';
+  }
 }

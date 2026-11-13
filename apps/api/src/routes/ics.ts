@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { eq, and, isNotNull, gte, lte, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { users, icsSubscriptions, tasks, events, projects } from '@deft/db/schema';
-import { generateICS, newPublishToken, parseICS, extractICSCalendarName } from '../lib/ics.js';
+import { generateICS, humanizeIcsError, newPublishToken, parseICS, extractICSCalendarName } from '../lib/ics.js';
 import { syncOne } from '../workers/handlers/ics-sync.js';
 import { env } from '../lib/env.js';
 import { PublicFetchError, fetchCalendarFeedText } from '../lib/public-http-fetch.js';
@@ -373,19 +373,4 @@ async function fetchICSWithLimits(url: string): Promise<string> {
     throw new Error('The URL returned a web page, not an ICS feed');
   }
   return text;
-}
-
-function humanizeIcsError(err: unknown): string {
-  if (err instanceof PublicFetchError) {
-    if (err.kind === 'too_large') return 'Feed is too large to import.';
-    if (err.kind === 'timeout') return 'Feed request timed out.';
-    if (err.kind === 'unreachable') return 'Could not reach the feed URL.';
-    if (err.kind === 'bad_encoding') return 'Feed response could not be decoded.';
-  }
-  const message = (err as Error).message || 'unknown error';
-  if (/HTTP 401|HTTP 403/i.test(message)) return 'Feed requires login or is not public/secret-shareable.';
-  if (/HTTP 404/i.test(message)) return 'Feed URL was not found.';
-  if (/web page/i.test(message)) return 'The URL returned a web page, not a calendar feed. Use the secret/public ICS URL.';
-  if (/ICS parse failed/i.test(message)) return message;
-  return message.slice(0, 500);
 }
