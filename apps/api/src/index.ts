@@ -117,7 +117,8 @@ import { appPublicManagementRoutes } from './routes/app-public-management.js';
 import {createMountedAppIntegrationCaptureRoutes} from './routes/app-integration-capture-mounted.js';
 import { APPS_ENABLED, APP_DEVELOPER_PAIRING_ENABLED } from './lib/env.js';
 import { moduleTaskLinkRoutes } from './routes/module-task-links.js';
-import { authMiddleware } from './middleware/auth.js';
+import { authMiddleware, authenticateWebRequest } from './middleware/auth.js';
+import { installRequestGate, isPublicApiRequest } from './middleware/request-gate.js';
 import {
   authLimiter,
   appRuntimeLimiter,
@@ -413,6 +414,9 @@ app.get('/health/queue', async (c) => {
     return c.json({ error: 'Failed to query queue health', code: 'INTERNAL_ERROR' }, 500);
   }
 });
+
+// Path and session checks that run before routing, for every request.
+installRequestGate(app, { isPublic: isPublicApiRequest, authenticate: authenticateWebRequest });
 
 export { app };
 export default app;

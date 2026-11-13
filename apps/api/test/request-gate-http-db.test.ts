@@ -1,0 +1,134 @@
+import { test, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import pg from 'pg';
+
+const DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
+const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';
+const stamp = Date.now();
+const USER_ID = `gate-user-${stamp}`;
+const USER_EMAIL = `gate-user-${stamp}@test.local`;
+
+type App = typeof import('../src/index.js')['app'];
+let app: App;
+let authMiddleware: unknown;
+let isPublicApiRequest: (method: string, path: string) => boolean;
+let accessToken: string;
+
+async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
+  const c = new pg.Client({ connectionString: DATABASE_URL });
+  await c.connect();
+  try { return await fn(c); } finally { await c.end(); }
+}
+
+async function effectCounts() {
+  return withClient(async (c) => {
+    const { rows } = await c.query(`SELECT
+      (SELECT count(*) FROM tasks)::int AS tasks,
+      (SELECT count(*) FROM messages)::int AS messages,
+      (SELECT count(*) FROM spaces)::int AS spaces,
+      (SELECT count(*) FROM job_queue)::int AS jobs`);
+    return rows[0];
+  });
+}
+
+before(async () => {
+  await withClient(async (c) => {
+    await c.query(`INSERT INTO users (id, email, name, is_agent) VALUES ($1, $2, 'Gate User', false)
+      ON CONFLICT (id) DO NOTHING`, [USER_ID, USER_EMAIL]);
+    await c.query(`INSERT INTO org_members (id, org_id, user_id, role, is_active)
+      VALUES (gen_random_uuid()::text, $1, $2, 'member', true) ON CONFLICT (org_id, user_id) DO NOTHING`, [ORG_ID, USER_ID]);
+  });
+  ({ app } = await import('../src/index.js'));
+  ({ authMiddleware } = await import('../src/middleware/auth.js'));
+  ({ isPublicApiRequest } = await import('../src/middleware/request-gate.js'));
+  const { createWebSession } = await import('../src/lib/web-sessions.js');
+  ({ accessToken } = await createWebSession({ id: USER_ID, email: USER_EMAIL, org_id: ORG_ID }));
+});
+
+after(async () => {
+  await withClient(async (c) => {
+    await c.query('DELETE FROM web_sessions WHERE user_id = $1', [USER_ID]);
+    await c.query('DELETE FROM org_members WHERE user_id = $1', [USER_ID]);
+    await c.query('DELETE FROM users WHERE id = $1', [USER_ID]);
+  });
+});
+
+const ROUTES: Array<[string, string]> = [
+  ['GET', '/api/tasks/{x}'],
+  ['PATCH', '/api/tasks/{x}'],
+  ['POST', '/api/tasks'],
+  ['GET', '/api/spaces/{x}/messages'],
+  ['POST', '/api/spaces/{x}/messages'],
+  ['GET', '/api/spaces/{x}'],
+  ['GET', '/api/messages/{x}'],
+  ['GET', '/api/files/{x}'],
+  ['DELETE', '/api/files/{x}'],
+  ['GET', '/api/members/{x}'],
+  ['GET', '/api/agent/actions/{x}'],
+  ['GET', '/api/inbox/{x}'],
+  ['GET', '/api/modules/{x}'],
+];
+const SUFFIXES = ['abc', '%0A', '%0a', 'abc%0A', '%0D', '%0d%0a', '%09', '%00', '%5C', '%5c', '%252F', '%252f', '%250A', 'abc%0A%0A'];
+
+test('requests without a session are refused on every API route, whatever the path encoding', async () => {
+  const beforeCounts = await effectCounts();
+  for (const [method, template] of ROUTES) {
+    for (const suffix of SUFFIXES) {
+      const path = template.replace('{x}', suffix);
+      for (const headers of [{}, { authorization: 'Bearer not-a-token' }]) {
+        const res = await app.request(path, { method, headers: { ...headers, 'content-type': 'application/json' },
+          body: method === 'GET' || method === 'DELETE' ? undefined : '{"title":"gate","content":"gate"}' });
+        assert.ok(res.status === 400 || res.status === 401, `${method} ${path} -> ${res.status}`);
+      }
+    }
+  }
+  assert.deepEqual(await effectCounts(), beforeCounts);
+});
+
+test('control characters and backslashes in the path are refused with 400', async () => {
+  for (const path of ['/api/tasks/%0A', '/api/tasks/x%0d', '/api/inbox/%09', '/api/auth/me%0A', '/api/invites/preview/%5C', '/health%00']) {
+    const res = await app.request(path, { headers: { authorization: `Bearer ${accessToken}` } });
+    assert.equal(res.status, 400, path);
+  }
+});
+
+test('a valid session still reaches routes, and odd well-formed paths still pass the rate limiter', async () => {
+  const headers = { authorization: `Bearer ${accessToken}` };
+  const inbox = await app.request('/api/inbox?count_only=1', { headers });
+  assert.equal(inbox.status, 200);
+  const odd = await app.request('/api/tasks/a%252Fb', { headers });
+  assert.notEqual(odd.status, 401);
+  assert.ok(odd.status < 500, `status ${odd.status}`);
+  assert.ok(odd.headers.get('ratelimit') || odd.headers.get('ratelimit-policy'), 'rate limit headers present');
+});
+
+test('deliberately public routes still answer without a session', async () => {
+  assert.equal((await app.request('/health')).status, 200);
+  const hasWorkspace = await app.request('/api/auth/has-workspace');
+  assert.notEqual(hasWorkspace.status, 401);
+  for (const [method, path] of [
+    ['GET', '/api/invites/preview/not-a-token'],
+    ['GET', '/api/ics/feed/not-a-token'],
+    ['POST', '/api/agent-webhooks/no-such-hook'],
+  ] as const) {
+    const res = await app.request(path, { method, headers: { 'content-type': 'application/json' }, body: method === 'POST' ? '{}' : undefined });
+    const body = await res.text();
+    assert.ok(res.status < 500, `${method} ${path} -> ${res.status}`);
+    assert.doesNotMatch(body, /NO_TOKEN|INVALID_TOKEN/, `${method} ${path}`);
+  }
+});
+
+test('the public list matches exactly the routes mounted ahead of the session middleware', () => {
+  const routes = app.routes;
+  const authIndex = routes.findIndex((r) => r.handler === authMiddleware);
+  assert.ok(authIndex > 0, 'session middleware is registered');
+  const sample = (path: string) => path.replace(/:[^/{]+(\{[^}]*\})?\??/g, 'x').replace(/\*/g, 'x');
+  const mismatches: string[] = [];
+  routes.forEach((r, index) => {
+    if (r.method === 'ALL' || !(r.path === '/api' || r.path.startsWith('/api/'))) return;
+    const isPublic = isPublicApiRequest(r.method, sample(r.path));
+    if (index < authIndex && !isPublic) mismatches.push(`pre-auth route not public: ${r.method} ${r.path}`);
+    if (index > authIndex && isPublic) mismatches.push(`session route treated as public: ${r.method} ${r.path}`);
+  });
+  assert.deepEqual(mismatches, []);
+});
