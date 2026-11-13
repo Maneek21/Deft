@@ -166,7 +166,7 @@ into `apps/web/src/components/ai-badge.tsx` and reused by both
 **Event-driven triggers (PostgreSQL scheduled jobs):**
 - Task overdue → DM assignee + alert lead
 - Task stalled 48h → ask for update
-- PR merged → parse `PREFIX-N` refs in title/body, move each matched task (in `todo`, `in_progress`, or `in_review`) to `done` and leave an attribution comment linking the PR. Wired into the GitHub sync path (`apps/api/src/workers/github-sync.ts` → `closeTasksForMergedPR`); runs only on the `pr_opened|pr_closed → pr_merged` transition so re-syncs don't re-fire. Tasks already `done` or `cancelled` are never touched.
+- PR merged → parse `PREFIX-N` refs in title/body, move each matched task (in `todo`, `in_progress`, or `in_review`) to `done` and leave an attribution comment linking the PR. Wired into the GitHub sync path (`apps/api/src/workers/github-sync.ts` → `closeTasksForMergedPR`), which runs on a schedule (`github-sync-scan` job every 60s queues due connections; per-connection interval `DEFT_GITHUB_SYNC_INTERVAL_MIN`, default 10, `0`/`off` disables) and from the manual sync route; runs only on the `pr_opened|pr_closed → pr_merged` transition so re-syncs don't re-fire. Tasks already `done` or `cancelled` are never touched.
 - Meeting in 15min → generate prep briefing
 - 9am daily → auto-generate standup from activity
 
@@ -180,7 +180,7 @@ Tasks are the agent's primary output surface and the product's action surface. P
 - **Task reactions** (Task 6.3) — emoji reactions on task cards/detail (`task_reactions` table, upsert/delete endpoints).
 - **@mentions in description + comments** (Task 6.4) — autocomplete + notification dispatch mirrors chat mentions.
 - **Activity diff view** (Task 6.2) — inline old→new rendering in the task activity log, replacing flat "changed status" strings.
-- **GitHub PR→Done** (Task 5.6) — polling sync worker parses `PREFIX-N` in PR title/body on the `pr_opened|pr_closed → pr_merged` transition and closes each referenced task with an attribution comment. Polling only, no webhook yet.
+- **GitHub PR→Done** (Task 5.6) — polling sync worker parses `PREFIX-N` in PR title/body on the `pr_opened|pr_closed → pr_merged` transition and closes each referenced task with an attribution comment. Polling runs on a schedule (`apps/api/src/workers/handlers/github-sync-schedule.ts`: at most 10 connections queued per minute, one `github-sync-connection` job per connection carrying its `org_id`, a per-connection lease so manual and scheduled syncs never overlap, backoff on failure and rate limit). The webhook does not dispatch merged PRs.
 - **Project archive + soft-delete** (Task 5.8) — settings modal with 7-day recovery window. Soft-deleted projects hide from views but preserve tasks for audit.
 - **Task 0.1 security fix (resolved)** — watchers + assignees routes enforce `org_id` + auth.
 - **Task 0.4 dashboard fix (resolved)** — "My Work" filter on the bento dashboard now scopes to the current user.

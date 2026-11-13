@@ -6,7 +6,10 @@
  * a delivery signed with that one secret does not identify a workspace
  * (no repository-to-workspace mapping exists), so merged-PR deliveries are
  * acknowledged with 200 and not dispatched. Merged PRs reach workspaces
- * through the per-workspace GitHub polling sync (`workers/github-sync.ts`).
+ * through the per-workspace GitHub sync (`workers/github-sync.ts`), which
+ * the `github-sync-scan` scheduled job runs for every eligible connection
+ * every `DEFT_GITHUB_SYNC_INTERVAL_MIN` minutes (default 10), and which a
+ * member can also run by hand.
  *
  * The route requires `GITHUB_WEBHOOK_SECRET`. Without it the endpoint is
  * disabled and answers every request with 503. With it, each request must

@@ -17,6 +17,7 @@ import { sweepExpiredStagedAttachments } from '../lib/attachment-retention.js';
 import { APP_AUTOMATIONS_ENABLED, APP_RUNS_ENABLED, isAppAttachmentBrokerEnabled } from '../lib/env.js';
 import { APP_RESOURCE_SYNC_SCAN_JOB, ensureAppResourceSyncScan } from '../lib/app-resource-sync-scanner.js';
 import { APP_AUTOMATION_SCAN_CRON, ensureAppAutomationScan } from '../lib/app-automation-scan-progress.js';
+import { GITHUB_SYNC_SCAN_JOB, GITHUB_SYNC_SCAN_MS, githubSyncIntervalMs } from './handlers/github-sync-schedule.js';
 import type { JobHandler } from './types.js';
 
 // ─── Cron re-enqueue delays ───
@@ -48,6 +49,8 @@ const CRON_DELAYS: Record<string, number> = {
   'app-integration-knowledge-repair': 60_000,
   'attention-maintenance': 15 * 60_000,
   'app-automation-scan': 60_000,
+  // Scheduled GitHub sync scan; off when DEFT_GITHUB_SYNC_INTERVAL_MIN is 0/off.
+  ...(githubSyncIntervalMs() > 0 ? { [GITHUB_SYNC_SCAN_JOB]: GITHUB_SYNC_SCAN_MS } : {}),
 };
 
 const CRON_KEYS: Record<string, string> = {
@@ -69,6 +72,7 @@ const CRON_KEYS: Record<string, string> = {
   'app-integration-knowledge-repair': 'cron:app-integration-knowledge-repair',
   'attention-maintenance': 'cron:attention-maintenance',
   'app-automation-scan': 'cron:app-automation-scan',
+  ...(githubSyncIntervalMs() > 0 ? { [GITHUB_SYNC_SCAN_JOB]: 'cron:github-sync-scan' } : {}),
 };
 
 const JOB_TIMEOUT_MS = Number.parseInt(process.env.DEFT_JOB_TIMEOUT_MS ?? '120000', 10);
@@ -396,6 +400,14 @@ async function getScheduledJobHandler(jobName: string): Promise<JobHandler | nul
       // upsert events with source='ics'.
       const mod = await import('./handlers/ics-sync.js');
       return mod.handleIcsSync;
+    }
+    case 'github-sync-scan': {
+      const mod = await import('./handlers/github-sync-schedule.js');
+      return mod.handleGitHubSyncScan;
+    }
+    case 'github-sync-connection': {
+      const mod = await import('./handlers/github-sync-schedule.js');
+      return mod.handleGitHubSyncConnection;
     }
     case 'chat-observation-backfill': {
       const mod = await import('./handlers/chat-observation-backfill.js');
