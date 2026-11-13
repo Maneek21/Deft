@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { extname } from 'node:path';
 import { and, eq, sql } from 'drizzle-orm';
+import { publicSpaceVisibleSql } from './space-visibility.js';
 import { z } from 'zod';
 import {
   agentActions,
@@ -184,7 +185,7 @@ async function actorCanAccessSpace(executor: any, params: {
           AND om.is_active = true
       )
       AND (
-        s.type = 'public'
+        ${publicSpaceVisibleSql(sql`s.type`, sql`s.org_id`, params.actorUserId)}
         OR EXISTS (
           SELECT 1 FROM space_members sm
           WHERE sm.space_id = s.id AND sm.user_id = ${params.actorUserId}

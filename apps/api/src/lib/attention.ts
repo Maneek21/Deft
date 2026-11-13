@@ -17,6 +17,7 @@ import { emitToUser } from '../socket.js';
 import { isModuleGovernedWriteActionName } from './module-action-visibility.js';
 import { scheduleAttentionDeliveries, scheduleAttentionDelivery } from './web-push.js';
 import { nativeDeliveryAccessSql } from './native-mention-visibility.js';
+import { publicSpaceVisibleSql } from './space-visibility.js';
 import { actionReviewerCandidateSql, loadActionReviewers } from './agent-action-requester.js';
 import { currentRoleReviewableActionSql } from './agent-action-review-gate.js';
 
@@ -67,7 +68,7 @@ export function visibleAttentionCondition(userId: string) {
         WHERE ${messages.id} = ${attentionItems.source_id}
           AND ${messages.org_id} = ${attentionItems.org_id}
           AND ${messages.is_deleted} = false
-          AND (${spaces.type} = 'public' OR ${spaceMembers.id} IS NOT NULL)
+          AND (${publicSpaceVisibleSql(spaces.type, spaces.org_id, userId)} OR ${spaceMembers.id} IS NOT NULL)
       )
     )
     OR (
@@ -80,7 +81,7 @@ export function visibleAttentionCondition(userId: string) {
           AND ${spaceMembers.user_id} = ${userId}
         WHERE ${spaces.id} = ${attentionItems.source_id}
           AND ${spaces.org_id} = ${attentionItems.org_id}
-          AND (${spaces.type} = 'public' OR ${spaceMembers.id} IS NOT NULL)
+          AND (${publicSpaceVisibleSql(spaces.type, spaces.org_id, userId)} OR ${spaceMembers.id} IS NOT NULL)
       )
     )
     OR (
@@ -589,7 +590,7 @@ export async function filterVisibleAttentionItems<T extends typeof attentionItem
   const actionIds = rows.filter((item) => item.source_type === 'agent_action').map((item) => item.source_id);
   const visibleMessages = messageIds.length > 0
     ? await db
-      .select({ id: messages.id, type: spaces.type, member_id: spaceMembers.id })
+      .select({ id: messages.id, public_visible: sql<boolean>`${publicSpaceVisibleSql(spaces.type, spaces.org_id, userId)}`, member_id: spaceMembers.id })
       .from(messages)
       .innerJoin(spaces, eq(spaces.id, messages.space_id))
       .leftJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, userId)))
@@ -597,7 +598,7 @@ export async function filterVisibleAttentionItems<T extends typeof attentionItem
     : [];
   const visibleSpaces = spaceIds.length > 0
     ? await db
-      .select({ id: spaces.id, type: spaces.type, member_id: spaceMembers.id })
+      .select({ id: spaces.id, public_visible: sql<boolean>`${publicSpaceVisibleSql(spaces.type, spaces.org_id, userId)}`, member_id: spaceMembers.id })
       .from(spaces)
       .leftJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, userId)))
       .where(inArray(spaces.id, spaceIds))
@@ -610,8 +611,8 @@ export async function filterVisibleAttentionItems<T extends typeof attentionItem
     : [];
   const existingActions = new Set(knownActions.map((row) => row.id));
   const visibleActions = knownActions.filter((row) => row.allowed);
-  const allowedMessages = new Set(visibleMessages.filter((row) => row.type === 'public' || row.member_id).map((row) => row.id));
-  const allowedSpaces = new Set(visibleSpaces.filter((row) => row.type === 'public' || row.member_id).map((row) => row.id));
+  const allowedMessages = new Set(visibleMessages.filter((row) => row.public_visible || row.member_id).map((row) => row.id));
+  const allowedSpaces = new Set(visibleSpaces.filter((row) => row.public_visible || row.member_id).map((row) => row.id));
   const allowedActions = new Set(visibleActions.map((row) => row.id));
   const inaccessible = rows.filter((item) =>
     (item.source_type === 'native_mention' && !allowedNative.has(item.id))

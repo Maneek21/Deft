@@ -15,6 +15,7 @@ import { wikiPages, agentMemory, notes, tasks, spaceMembers, spaces, projects, a
 import { embedQuiet, EMBED_DIMS } from './embed.js';
 import { unrestrictedTaskCondition, visibleTaskCondition } from './task-visibility.js';
 import { visibleWikiPageCondition, wikiPageRelevantToSpaceCondition } from './wiki-visibility.js';
+import { publicSpaceVisibleSql } from './space-visibility.js';
 import {
   deftyModuleActor,
   employeeModuleActor,
@@ -1130,7 +1131,7 @@ export async function resolveReadableRoom(input: {
         eq(spaces.org_id, input.orgId),
         eq(spaces.is_archived, false),
         input.includePublic
-          ? or(eq(spaces.type, 'public'), sql`${spaceMembers.id} IS NOT NULL`)
+          ? or(publicSpaceVisibleSql(spaces.type, spaces.org_id, input.userId), sql`${spaceMembers.id} IS NOT NULL`)
           : sql`${spaceMembers.id} IS NOT NULL`,
         ilike(spaces.name, variant.replace(/[\\%_]/g, '\\$&')),
       ))

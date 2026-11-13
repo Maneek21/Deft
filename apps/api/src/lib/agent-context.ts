@@ -40,6 +40,7 @@ import { visibleNoteCondition } from './note-visibility.js';
 import { capabilityService } from './capability-service.js';
 import { eq, and, ilike, desc, sql, lt, gte, inArray, or } from 'drizzle-orm';
 import { resolveReadableRoom, retrieveContext, retrievedWikiAudienceCondition } from './retrieve-context.js';
+import { publicSpaceVisibleSql } from './space-visibility.js';
 import { isManager } from '../middleware/privacy-guard.js';
 import { velocityCalculator, workloadAnalyzer, skillsGapAnalyzer } from '../services/team-analytics.js';
 import { generateOneOnePrep } from '../services/oneone-prep.js';
@@ -344,7 +345,7 @@ export async function executeToolCall(
       const rows = await db.select({ id: spaces.id, name: spaces.name, type: spaces.type })
         .from(spaces).leftJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, _userId)))
         .where(and(eq(spaces.org_id, orgId), eq(spaces.is_archived, false),
-          or(eq(spaces.type, 'public'), sql`${spaceMembers.id} IS NOT NULL`),
+          or(publicSpaceVisibleSql(spaces.type, spaces.org_id, _userId), sql`${spaceMembers.id} IS NOT NULL`),
           typeof params.query === 'string' && params.query.trim() ? ilike(spaces.name, `%${escapeSearchLike(params.query.trim().slice(0, 120))}%`) : undefined))
         .orderBy(spaces.name, spaces.id).limit(limit).offset(offset);
       return { result: rows, citations: [] };
@@ -362,7 +363,7 @@ export async function executeToolCall(
         query ? ilike(messages.content, `%${escapeSearchLike(query)}%`) : undefined,
         eq(spaces.is_archived, false),
         or(
-          eq(spaces.type, 'public'),
+          publicSpaceVisibleSql(spaces.type, spaces.org_id, _userId),
           sql`${spaceMembers.id} IS NOT NULL`,
         ),
       ];
@@ -372,7 +373,7 @@ export async function executeToolCall(
         const rows = await db.select({ id: spaces.id, name: spaces.name }).from(spaces)
           .leftJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, _userId)))
           .where(and(eq(spaces.org_id, orgId), eq(spaces.is_archived, false),
-            or(eq(spaces.type, 'public'), sql`${spaceMembers.id} IS NOT NULL`),
+            or(publicSpaceVisibleSql(spaces.type, spaces.org_id, _userId), sql`${spaceMembers.id} IS NOT NULL`),
             params.space_id ? eq(spaces.id, String(params.space_id)) : ilike(spaces.name, `%${escapeSearchLike(String(params.space_name))}%`)))
           .orderBy(desc(sql`lower(${spaces.name}) = ${String(params.space_name).toLowerCase()}`), spaces.name, spaces.id).limit(51);
         const exact = rows.filter(r => r.name.toLowerCase() === String(params.space_name).toLowerCase());
@@ -1558,7 +1559,7 @@ export async function executeToolCall(
             eq(messages.org_id, orgId),
             eq(messages.is_deleted, false),
             eq(spaces.is_archived, false),
-            or(eq(spaces.type, 'public'), sql`${spaceMembers.id} IS NOT NULL`),
+            or(publicSpaceVisibleSql(spaces.type, spaces.org_id, _userId), sql`${spaceMembers.id} IS NOT NULL`),
             gte(messages.created_at, since),
             or(...searchConditions),
           ),

@@ -18,6 +18,7 @@ import {
 import { db } from '../db.js';
 import { visibleTaskCondition } from '../task-visibility.js';
 import { visibleWikiPageCondition } from '../wiki-visibility.js';
+import { publicSpaceVisibleSql } from '../space-visibility.js';
 import { errorResult, textResult, type ToolContext, type ToolResult } from './types.js';
 import {
   loadEmployeeProjectAccess,
@@ -363,6 +364,7 @@ async function enrichResources(access: TeamAccessContext, teamId: string) {
       type: spaces.type,
       is_archived: spaces.is_archived,
       membership_id: spaceMembers.id,
+      public_visible: sql<boolean>`${publicSpaceVisibleSql(spaces.type, spaces.org_id, access.user_id ?? '__no_user__')}`,
     })
       .from(spaces)
       .leftJoin(
@@ -371,7 +373,7 @@ async function enrichResources(access: TeamAccessContext, teamId: string) {
       )
       .where(and(eq(spaces.org_id, access.org_id), inArray(spaces.id, spaceIds)));
     rows.forEach((row) => {
-      const canRead = row.type === 'public' || Boolean(row.membership_id);
+      const canRead = Boolean(row.public_visible) || Boolean(row.membership_id);
       if (canRead) {
         put('space', row.id, {
           id: row.id,
@@ -507,7 +509,7 @@ async function allowedSpaceIds(access: TeamAccessContext, spaceIds: string[]): P
       eq(spaces.org_id, access.org_id),
       inArray(spaces.id, spaceIds),
       eq(spaces.is_archived, false),
-      or(eq(spaces.type, 'public'), sql`${spaceMembers.id} is not null`),
+      or(publicSpaceVisibleSql(spaces.type, spaces.org_id, access.user_id ?? '__no_user__'), sql`${spaceMembers.id} is not null`),
     ));
   return rows.map((row) => row.id);
 }
