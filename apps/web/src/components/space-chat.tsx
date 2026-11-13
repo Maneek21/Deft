@@ -67,6 +67,7 @@ import { ClipCard } from './clip-card';
 import { ProtectedDownload, ProtectedImage } from './protected-file';
 import { AgentMessageBlocks, type AgentBlock, type AgentCitation } from './agent-message-blocks';
 import { AgentActionCard, type AgentAction } from './agent-action-card';
+import { useRetainedApprovalFailures } from '@/hooks/use-retained-approval-failures';
 import useSWR, { mutate as swrMutate } from 'swr';
 import { ClipRecorder } from './clip-recorder';
 import { UserProfileCard } from './user-profile-card';
@@ -636,6 +637,7 @@ export function SpaceChat({
 
   // P4-4 — pending agent_actions keyed by message_id for this space.
   // Polled every 5s so inline approval cards appear promptly.
+  const { retain: retainFailure, retainedFor: retainedFailures } = useRetainedApprovalFailures();
   const pendingBySpaceKey = spaceId
     ? `/api/agent/actions/pending-by-space?space_id=${spaceId}`
     : null;
@@ -2153,7 +2155,7 @@ export function SpaceChat({
                               disabled={continuationGate.disabled}
                               onContinue={() => { void continueAfterApproval(msg.id); }}
                             />
-                            {pendingByMessage?.[msg.id]?.map((action) => (
+                            {[...(pendingByMessage?.[msg.id] ?? []), ...retainedFailures(msg.id, pendingByMessage?.[msg.id])].map((action) => (
                               <AgentActionCard
                                 key={action.id}
                                 action={action}
@@ -2162,6 +2164,7 @@ export function SpaceChat({
                                   const res = await api.post(`/api/agent/actions/${action.id}/approve`, {});
                                   if (!res.ok) throw new Error(await apiErrorMessage(res, `Approve failed (${res.status})`));
                                   const body = await res.json().catch(() => ({ status: 'approved' }));
+                                  retainFailure(msg.id, action, body);
                                   if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
                                   if (workIntentBySpaceKey) swrMutate(workIntentBySpaceKey);
                                   return body;
@@ -2315,7 +2318,7 @@ export function SpaceChat({
                               disabled={continuationGate.disabled}
                               onContinue={() => { void continueAfterApproval(msg.id); }}
                             />
-                            {pendingByMessage?.[msg.id]?.map((action) => (
+                            {[...(pendingByMessage?.[msg.id] ?? []), ...retainedFailures(msg.id, pendingByMessage?.[msg.id])].map((action) => (
                               <AgentActionCard
                                 key={action.id}
                                 action={action}
@@ -2324,6 +2327,7 @@ export function SpaceChat({
                                   const res = await api.post(`/api/agent/actions/${action.id}/approve`, {});
                                   if (!res.ok) throw new Error(await apiErrorMessage(res, `Approve failed (${res.status})`));
                                   const body = await res.json().catch(() => ({ status: 'approved' }));
+                                  retainFailure(msg.id, action, body);
                                   if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
                                   if (workIntentBySpaceKey) swrMutate(workIntentBySpaceKey);
                                   return body;

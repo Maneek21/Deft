@@ -22,6 +22,7 @@ import { RichComposer } from './rich-composer';
 import { useFileUpload } from './file-upload';
 import { ProtectedDownload } from './protected-file';
 import { AgentActionCard, type AgentAction } from './agent-action-card';
+import { useRetainedApprovalFailures } from '@/hooks/use-retained-approval-failures';
 import { AgentMessageBlocks, type AgentMessageBlocksProps } from './agent-message-blocks';
 import { resolveAgentCitationLink } from '@/lib/agent-citations';
 import useSWR, { mutate as swrMutate } from 'swr';
@@ -255,6 +256,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
   const replyIntentRef = useRef<{ scope: string; intent: ReturnType<typeof createNativeCreateIntent> } | null>(null);
   const { uploadFile, uploading, progress: uploadProgress } = useFileUpload();
 
+  const { retain: retainFailure, retainedFor: retainedFailures } = useRetainedApprovalFailures();
   const pendingBySpaceKey = spaceId
     ? `/api/agent/actions/pending-by-space?space_id=${spaceId}`
     : null;
@@ -576,7 +578,8 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
   };
 
   const renderPendingActions = (msgId: string) => {
-    const actions = pendingByMessage?.[msgId] ?? [];
+    const liveActions = pendingByMessage?.[msgId] ?? [];
+    const actions = [...liveActions, ...retainedFailures(msgId, liveActions)];
     if (actions.length === 0) return null;
     return (
       <div className="mt-3 space-y-2">
@@ -589,6 +592,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
               const res = await api.post(`/api/agent/actions/${action.id}/approve`, {});
               if (!res.ok) throw new Error(await apiErrorMessage(res, `Approve failed (${res.status})`));
               const body = await res.json().catch(() => ({ status: 'approved' }));
+              retainFailure(msgId, action, body);
               if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
               return body;
             }}

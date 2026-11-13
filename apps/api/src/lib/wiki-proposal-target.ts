@@ -55,8 +55,40 @@ export const WIKI_PAGE_NOT_CREATED_ERROR =
 export const WIKI_PROPOSAL_UNVERIFIABLE_ERROR =
   'This wiki proposal does not record the page revision it was made against, so it was not applied. Ask for the update again.';
 
+/**
+ * The typed refusals of an approved wiki proposal. Each code names exactly
+ * one of the messages above; an approve that ends in one of them answers
+ * with a failed result carrying the message and the code.
+ */
+export const WIKI_PROPOSAL_REFUSALS = {
+  WIKI_PAGE_CHANGED: WIKI_PAGE_CHANGED_ERROR,
+  WIKI_PAGE_UNAVAILABLE: WIKI_PAGE_UNAVAILABLE_ERROR,
+  WIKI_PAGE_NOT_CREATED: WIKI_PAGE_NOT_CREATED_ERROR,
+  WIKI_PROPOSAL_UNVERIFIABLE: WIKI_PROPOSAL_UNVERIFIABLE_ERROR,
+} as const;
+
+export type WikiProposalRefusalCode = keyof typeof WIKI_PROPOSAL_REFUSALS;
+
+/** The terminal result recorded for a typed wiki proposal refusal. */
+export function wikiProposalRefusal(code: WikiProposalRefusalCode) {
+  return { ...TERMINAL_REFUSAL_RESULT, refusal_code: code };
+}
+
+/** The code of a typed wiki proposal refusal result, or null for anything else. */
+export function wikiProposalRefusalCode(value: unknown): WikiProposalRefusalCode | null {
+  if (!isTerminalRefusalResult(value)) return null;
+  const code = (value as Record<string, unknown>).refusal_code;
+  return typeof code === 'string' && Object.prototype.hasOwnProperty.call(WIKI_PROPOSAL_REFUSALS, code)
+    ? code as WikiProposalRefusalCode
+    : null;
+}
+
 function refused(error: string) {
   return { success: false as const, result: { ...TERMINAL_REFUSAL_RESULT }, error };
+}
+
+function refusedWith(code: WikiProposalRefusalCode) {
+  return { success: false as const, result: wikiProposalRefusal(code), error: WIKI_PROPOSAL_REFUSALS[code] };
 }
 
 function slugFromTitle(title: unknown): string {
@@ -157,7 +189,11 @@ export function readFrozenTarget(beforeState: unknown): FrozenWikiTarget | null 
   return { v: 1, mode: 'update', slug: value.slug, page_id: pageId, revision };
 }
 
-class WikiWriteRefusal extends Error {}
+class WikiWriteRefusal extends Error {
+  constructor(readonly code: WikiProposalRefusalCode) {
+    super(WIKI_PROPOSAL_REFUSALS[code]);
+  }
+}
 
 type WriteTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 let revisionCheckedHook: ((tx: WriteTransaction) => Promise<void>) | null = null;
@@ -181,14 +217,14 @@ export async function executeWikiWriteAction(input: {
     .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, orgId)))
     .limit(1);
   const target = readFrozenTarget(row?.before_state);
-  if (!target) return refused(WIKI_PROPOSAL_UNVERIFIABLE_ERROR);
+  if (!target) return refusedWith('WIKI_PROPOSAL_UNVERIFIABLE');
   const existingSlug = existingSlugOf(params);
-  if ((target.mode === 'update') !== Boolean(existingSlug)) return refused(WIKI_PROPOSAL_UNVERIFIABLE_ERROR);
+  if ((target.mode === 'update') !== Boolean(existingSlug)) return refusedWith('WIKI_PROPOSAL_UNVERIFIABLE');
 
   const { title, content, type: pageType, summary, related_slugs } = params;
 
   if (target.mode === 'update') {
-    if (existingSlug !== target.slug) return refused(WIKI_PROPOSAL_UNVERIFIABLE_ERROR);
+    if (existingSlug !== target.slug) return refusedWith('WIKI_PROPOSAL_UNVERIFIABLE');
     if (!target.page_id || !target.revision) {
       return refused(`Wiki page "${existingSlug}" not found`);
     }
@@ -208,16 +244,16 @@ export async function executeWikiWriteAction(input: {
           .limit(1)
           .for('no key update');
         if (!locked || locked.is_deleted || locked.slug !== target.slug) {
-          throw new WikiWriteRefusal(WIKI_PAGE_UNAVAILABLE_ERROR);
+          throw new WikiWriteRefusal('WIKI_PAGE_UNAVAILABLE');
         }
         const [visible] = await tx
           .select({ id: wikiPages.id })
           .from(wikiPages)
           .where(and(eq(wikiPages.id, pageId), eq(wikiPages.org_id, orgId), visibleWikiPageCondition(userId, orgId)))
           .limit(1);
-        if (!visible) throw new WikiWriteRefusal(WIKI_PAGE_UNAVAILABLE_ERROR);
+        if (!visible) throw new WikiWriteRefusal('WIKI_PAGE_UNAVAILABLE');
         if (await writtenFieldsRevision(tx, locked, params) !== expectedRevision) {
-          throw new WikiWriteRefusal(WIKI_PAGE_CHANGED_ERROR);
+          throw new WikiWriteRefusal('WIKI_PAGE_CHANGED');
         }
         if (revisionCheckedHook) await revisionCheckedHook(tx);
 
@@ -269,7 +305,7 @@ export async function executeWikiWriteAction(input: {
         return { existing: locked, updates };
       });
     } catch (error) {
-      if (error instanceof WikiWriteRefusal) return refused(error.message);
+      if (error instanceof WikiWriteRefusal) return refusedWith(error.code);
       throw error;
     }
     const { existing } = outcome;
@@ -304,7 +340,7 @@ export async function executeWikiWriteAction(input: {
   }
 
   const slug = slugFromTitle(title);
-  if (slug !== target.slug) return refused(WIKI_PROPOSAL_UNVERIFIABLE_ERROR);
+  if (slug !== target.slug) return refusedWith('WIKI_PROPOSAL_UNVERIFIABLE');
 
   const page = await db.transaction(async (tx) => {
     // The slug is unique per workspace, deleted pages included: when it is
@@ -334,7 +370,7 @@ export async function executeWikiWriteAction(input: {
     });
     return inserted;
   });
-  if (!page) return refused(WIKI_PAGE_NOT_CREATED_ERROR);
+  if (!page) return refusedWith('WIKI_PAGE_NOT_CREATED');
 
   await db
     .update(agentActions)

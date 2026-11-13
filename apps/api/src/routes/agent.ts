@@ -67,6 +67,7 @@ import {
   type ApprovalFinaliserHooks,
   type OwnedExecutionOutcome,
 } from '../lib/agent-action-execution-lease.js';
+import { WIKI_PROPOSAL_REFUSALS, wikiProposalRefusal, wikiProposalRefusalCode } from '../lib/wiki-proposal-target.js';
 import {
   isModuleWriteActionName,
   visibleAgentActionSourceSql,
@@ -1247,6 +1248,8 @@ export async function approveActionAsReviewer(c: Context, user: ActionReviewer, 
       // sibling confirmation. A row that is not settled is left untouched.
       if (result.code === 'EXECUTE_FAILED') {
         await finalizeApprovalOutcome({ actionId, orgId: user.org_id, receipt: 'resolver', hooks: approvalFinaliserHooks });
+        // A typed refusal ended the approval: answer with the failed result a replay gives.
+        if (result.refusalCode) return c.json(approvedButFailedBody(result.message, wikiProposalRefusal(result.refusalCode)));
       }
       const statusCode =
         result.code === 'NOT_FOUND' ? 404
@@ -1306,7 +1309,7 @@ export async function approveActionAsReviewer(c: Context, user: ActionReviewer, 
     // failed, not as a fresh success.
     if (result.status === 'approved' && !action.app_run_id && action.approval_status === 'approved'
       && action.error && result.decidedElsewhere === true) {
-      return c.json(approvedButFailedBody(action.error));
+      return c.json(approvedButFailedBody(action.error, action.result));
     }
     return c.json({
       status: result.status,
@@ -1369,7 +1372,7 @@ async function loadOrgAction(actionId: string, orgId: string) {
 
 function settledApprovalResponse(c: Context, row: typeof agentActions.$inferSelect) {
   if (row.approval_status === 'approved') {
-    if (row.error) return c.json(approvedButFailedBody(row.error));
+    if (row.error) return c.json(approvedButFailedBody(row.error, row.result));
     return c.json({ status: 'approved', message: 'already approved', result: row.result ?? undefined });
   }
   if (row.approval_status === 'rejected') return c.json({ status: 'rejected', message: 'already rejected' });
@@ -1542,6 +1545,11 @@ async function ownedApprovalResponse(
   };
 
   if (!execResult.success) {
+    // A typed refusal ended the approval: answer with the failed result a replay gives.
+    const refusal = outcome.kind === 'failed_terminal' ? wikiProposalRefusalCode(execResult.result) : null;
+    if (refusal && execResult.error === WIKI_PROPOSAL_REFUSALS[refusal]) {
+      return c.json(approvedButFailedBody(execResult.error, execResult.result));
+    }
     return c.json(
       {
         ...legacyResultBody,
@@ -1747,9 +1755,18 @@ class UndoRefusal extends Error {
   }
 }
 
-/** Answer for an action that was approved earlier but did not complete. */
-function approvedButFailedBody(error: string) {
-  return { status: 'failed' as const, message: 'approved, but it did not complete', error };
+/**
+ * Answer for an approved action that did not complete. A typed wiki proposal
+ * refusal recorded in `result` adds its code.
+ */
+function approvedButFailedBody(error: string, result?: unknown) {
+  const refusal = wikiProposalRefusalCode(result);
+  return {
+    status: 'failed' as const,
+    message: 'approved, but it did not complete',
+    error,
+    ...(refusal && error === WIKI_PROPOSAL_REFUSALS[refusal] ? { code: refusal } : {}),
+  };
 }
 
 function nothingRecorded() {
