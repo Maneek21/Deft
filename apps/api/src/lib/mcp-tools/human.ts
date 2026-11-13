@@ -43,7 +43,7 @@ import { bulkUpdateTasks, BulkTaskUpdateError, bulkTaskUpdateSchema } from '../t
 import { queryCompactTasks, type CompactTaskQuery } from '../task-compact-query.js';
 import { visibleNoteCondition } from '../note-visibility.js';
 import { approveAction, rejectAction } from '../agent-approval-resolver.js';
-import { reviewableActionSql } from '../agent-action-review-gate.js';
+import { currentActionReviewerSql } from '../agent-action-review-gate.js';
 import { resolveProjectTargetFromRows } from '../resolve-project-target.js';
 import { toPlainText } from '../plain-text.js';
 import {
@@ -3580,12 +3580,14 @@ export async function humanInboxMarkAllRead(args: Record<string, unknown>, ctx: 
   });
 }
 
-/** The approvals the connected user reviews, by the same gate as the web. */
-function approvalReviewerSql(ctx: HumanToolContext, access: 'read' | 'write') {
-  return and(
-    reviewableActionSql({ id: ctx.user_id, org_id: ctx.org_id, role: ctx.role }),
-    visibleModuleActionScopeSql(ctx.scopes, access),
-  )!;
+/**
+ * The approvals the connected user reviews now, by the same gate as the web
+ * (their current role, re-checked in the statement), within the token's
+ * module scopes. Null when they are no longer an active member.
+ */
+async function approvalReviewerSql(ctx: HumanToolContext, access: 'read' | 'write') {
+  const reviewer = await currentActionReviewerSql({ id: ctx.user_id, org_id: ctx.org_id });
+  return reviewer ? and(reviewer, visibleModuleActionScopeSql(ctx.scopes, access))! : null;
 }
 
 async function ownApproval(
@@ -3593,15 +3595,12 @@ async function ownApproval(
   actionId: string,
   access: 'read' | 'write' = 'read',
 ) {
-  // The caller's role as it stands now, not as it was when the call began.
-  const [membership] = await db.select({ role: orgMembers.role }).from(orgMembers).where(and(
-    eq(orgMembers.org_id, ctx.org_id), eq(orgMembers.user_id, ctx.user_id), eq(orgMembers.is_active, true),
-  )).limit(1);
-  if (!membership) return null;
+  const reviewer = await approvalReviewerSql(ctx, access);
+  if (!reviewer) return null;
   const [row] = await db.select().from(agentActions).where(and(
     eq(agentActions.id, actionId),
     eq(agentActions.org_id, ctx.org_id),
-    approvalReviewerSql({ ...ctx, role: membership.role as HumanToolContext['role'] }, access),
+    reviewer,
   )).limit(1);
   return row ?? null;
 }
@@ -3628,7 +3627,9 @@ export async function humanApprovalList(args: { status?: string; limit?: number 
   const scopeError = requireScope(ctx, 'read:workspace'); if (scopeError) return scopeError;
   const status = args.status ?? 'pending';
   if (!['pending', 'approved', 'rejected', 'expired', 'all'].includes(status)) return errorResult('status must be pending, approved, rejected, expired, or all');
-  const rows = await db.select().from(agentActions).where(and(eq(agentActions.org_id, ctx.org_id), approvalReviewerSql(ctx, 'read'), status === 'all' ? sql`true` : eq(agentActions.approval_status, status as any))).orderBy(desc(agentActions.created_at)).limit(Math.min(Math.max(1, args.limit ?? 50), 100));
+  const reviewer = await approvalReviewerSql(ctx, 'read');
+  if (!reviewer) return textResult([]);
+  const rows = await db.select().from(agentActions).where(and(eq(agentActions.org_id, ctx.org_id), reviewer, status === 'all' ? sql`true` : eq(agentActions.approval_status, status as any))).orderBy(desc(agentActions.created_at)).limit(Math.min(Math.max(1, args.limit ?? 50), 100));
   return textResult(rows.map((row) => ({ ...row, url: '/inbox?lane=needs_you' })));
 }
 
