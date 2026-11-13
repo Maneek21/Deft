@@ -25,7 +25,7 @@ function scanTags(html: string, lower: string): Tag[] {
   while (i !== -1) {
     const name = lower.startsWith('meta', i + 1) ? 'meta' : lower.startsWith('link', i + 1) ? 'link' : null;
     const after = i + 1 + (name?.length ?? 0);
-    if (!name || !(after >= len || isSpace(html.charCodeAt(after)) || html[after] === '/' || html[after] === '>')) {
+    if (!name || !endsName(html, after)) {
       i = lower.indexOf('<', i + 1);
       continue;
     }
@@ -57,23 +57,43 @@ function scanTags(html: string, lower: string): Tag[] {
       }
       if (attrName && !(attrName in attrs)) attrs[attrName] = value;
     }
-    tags.push({ tag: name, attrs });
+    if (j < len) tags.push({ tag: name, attrs });
     i = j >= len ? -1 : lower.indexOf('<', j + 1);
   }
   return tags;
 }
 
+// ASCII-only case folding keeps offsets in `lower` aligned with `html`.
+function asciiLower(text: string): string {
+  return text.replace(/[A-Z]+/g, (run) => run.toLowerCase());
+}
+
+function endsName(text: string, at: number): boolean {
+  return at >= text.length || isSpace(text.charCodeAt(at)) || text[at] === '/' || text[at] === '>';
+}
+
+// First <title> element whose text contains no '<' and is closed by </title>.
 function titleText(html: string, lower: string): string | null {
-  const open = lower.indexOf('<title');
-  if (open === -1) return null;
-  const start = html.indexOf('>', open);
-  const end = start === -1 ? -1 : lower.indexOf('</title', start);
-  return end === -1 ? null : html.slice(start + 1, end).trim() || null;
+  let open = lower.indexOf('<title');
+  while (open !== -1) {
+    if (!endsName(lower, open + 6)) {
+      open = lower.indexOf('<title', open + 1);
+      continue;
+    }
+    const start = html.indexOf('>', open);
+    const lt = start === -1 ? -1 : html.indexOf('<', start);
+    if (lt === -1) return null;
+    if (lower.startsWith('</title', lt) && endsName(lower, lt + 7)) {
+      return html.slice(start + 1, lt).trim() || null;
+    }
+    open = lower.indexOf('<title', lt);
+  }
+  return null;
 }
 
 /** Parse preview metadata from an HTML document. */
 export function extractLinkMetadata(html: string, url: string): LinkPreview | null {
-  const lower = html.toLowerCase();
+  const lower = asciiLower(html);
   const tags = scanTags(html, lower);
   const metaContent = (key: 'property' | 'name', value: string): string | null => {
     const found = tags.find((t) => t.tag === 'meta' && t.attrs[key]?.toLowerCase() === value && t.attrs.content);
@@ -86,7 +106,11 @@ export function extractLinkMetadata(html: string, url: string): LinkPreview | nu
   const iconTag = tags.find((t) => t.tag === 'link' && /^(?:shortcut )?icon$/i.test(t.attrs.rel ?? '') && t.attrs.href);
   let favicon = iconTag?.attrs.href || null;
   if (favicon && !favicon.startsWith('http')) {
-    favicon = new URL(favicon, new URL(url).origin).href;
+    try {
+      favicon = new URL(favicon, new URL(url).origin).href;
+    } catch {
+      favicon = null;
+    }
   }
 
   const title = getOg('title') || titleTag;
