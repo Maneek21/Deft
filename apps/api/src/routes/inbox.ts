@@ -240,7 +240,21 @@ inboxRoutes.get('/', async (c) => {
     }
 
     const wantsApprovals = wantsKind('pending_approval') || wantsKind('work_capture');
-    const approvalRows = !wantsApprovals ? [] : await db.select({
+    const approvalWhere = and(
+      eq(agentActions.org_id, user.org_id),
+      eq(agentActions.approval_status, 'pending'),
+      // Auto-tier rows don't need human approval (chat_mention routing,
+      // heartbeat ticks, trigger dispatch, task assignments are
+      // pull-queue entries for BYOA runtimes — not user-actionable).
+      inArray(agentActions.approval_tier, ['quick', 'full']),
+      or(specialApprovalAudienceSql(user), ordinaryPendingApprovalSql(user)),
+    );
+    // A count needs no rows: the same approvals, counted by kind (see approvalKind).
+    const [approvalCounts] = !(countOnly && wantsApprovals) ? [] : await db.select({
+      captures: sql<number>`count(*) FILTER (WHERE ${agentActions.source} = 'defty_capture')::int`,
+      others: sql<number>`count(*) FILTER (WHERE ${agentActions.source} IS DISTINCT FROM 'defty_capture')::int`,
+    }).from(agentActions).where(approvalWhere);
+    const approvalRows = !wantsApprovals || countOnly ? [] : await db.select({
       id: agentActions.id,
       action: agentActions.action,
       params: agentActions.params,
@@ -257,15 +271,7 @@ inboxRoutes.get('/', async (c) => {
         eq(agentActions.agent_employee_id, agentEmployees.id),
         eq(agentEmployees.org_id, user.org_id),
       ))
-      .where(and(
-        eq(agentActions.org_id, user.org_id),
-        eq(agentActions.approval_status, 'pending'),
-        // Auto-tier rows don't need human approval (chat_mention routing,
-        // heartbeat ticks, trigger dispatch, task assignments are
-        // pull-queue entries for BYOA runtimes — not user-actionable).
-        inArray(agentActions.approval_tier, ['quick', 'full']),
-        or(specialApprovalAudienceSql(user), ordinaryPendingApprovalSql(user)),
-      ))
+      .where(approvalWhere)
       .orderBy(desc(agentActions.created_at));
 
     const approvalKind = (r: { action_source: string | null }): InboxItemKind =>
@@ -304,7 +310,10 @@ inboxRoutes.get('/', async (c) => {
     const all = [...notifItems, ...dmItems, ...approvalItems]
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
-    const unreadCount = unreadNotificationCount + dmItems.length + wantedApprovalRows.length;
+    const approvalCount = !countOnly ? wantedApprovalRows.length
+      : (wantsKind('work_capture') ? Number(approvalCounts?.captures ?? 0) : 0)
+        + (wantsKind('pending_approval') ? Number(approvalCounts?.others ?? 0) : 0);
+    const unreadCount = unreadNotificationCount + dmItems.length + approvalCount;
 
     if (countOnly) {
       return c.json({ unread_count: unreadCount });

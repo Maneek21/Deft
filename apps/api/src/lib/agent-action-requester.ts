@@ -229,6 +229,28 @@ export function actionReviewerSql(userId: SQL, alias?: string): SQL<boolean> {
 }
 
 /**
+ * True for every action of `orgId` that `userId` may review, and cheap to test:
+ * `actionReviewerSql` accepts a user only as the action's requester when that
+ * is an active human member of the action's workspace, and otherwise as an
+ * active owner/admin of it, so a reviewer is the requester, or an owner/admin
+ * of an action whose requester is not an active human member. It may also be
+ * true for actions the user does not review, so it only narrows which rows the
+ * full review check runs on (`CASE WHEN candidate THEN check ELSE false END`).
+ * For actions of `orgId` only.
+ */
+export function actionReviewerCandidateSql(userId: string, orgId: string): SQL<boolean> {
+  return sql<boolean>`(SELECT candidate_requester.id = ${userId}
+    OR (EXISTS (SELECT 1 FROM ${orgMembers} candidate_admin
+          WHERE candidate_admin.org_id = ${orgId} AND candidate_admin.user_id = ${userId}
+            AND candidate_admin.is_active = true AND candidate_admin.role IN ('owner', 'admin'))
+      AND COALESCE(candidate_requester.id NOT IN (SELECT candidate_human.id FROM users candidate_human
+          INNER JOIN ${orgMembers} candidate_member ON candidate_member.user_id = candidate_human.id
+          WHERE candidate_member.org_id = ${orgId} AND candidate_member.is_active = true
+            AND candidate_human.is_agent = false AND candidate_human.kind = 'human'), true))
+    FROM (SELECT ${actionRequesterIdSql()} AS id OFFSET 0) candidate_requester)`;
+}
+
+/**
  * True when `userId` reviews the `agent_actions` row: a reviewer of it who,
  * when the action has assignments naming its reviewers who still pass its
  * room and source checks, holds one of them.

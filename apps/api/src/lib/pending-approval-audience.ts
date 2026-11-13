@@ -16,6 +16,7 @@ import { and, eq, inArray, notInArray, sql, type SQL } from 'drizzle-orm';
 import { agentActions } from '@deft/db/schema';
 import { db } from './db.js';
 import { reviewableActionSql } from './agent-action-review-gate.js';
+import { actionReviewerCandidateSql } from './agent-action-requester.js';
 
 export const SPECIAL_APPROVAL_ACTIONS = ['app_run_invoke', 'app_record_mirror_nominate'] as const;
 
@@ -26,14 +27,20 @@ export function specialApprovalActionSql(): SQL {
   return inArray(agentActions.action, [...SPECIAL_APPROVAL_ACTIONS]);
 }
 
-/** Pending ordinary actions needing a human decision that the viewer reviews. */
+/**
+ * Pending ordinary actions needing a human decision that the viewer reviews.
+ * The review gate runs only on the viewer's candidates
+ * (`actionReviewerCandidateSql`, true wherever the gate is); CASE fixes that
+ * order. A positive filter only: never negate it.
+ */
 export function ordinaryPendingApprovalSql(viewer: Viewer): SQL {
   return and(
     eq(agentActions.org_id, viewer.org_id),
     eq(agentActions.approval_status, 'pending'),
     inArray(agentActions.approval_tier, ['quick', 'full']),
     notInArray(agentActions.action, [...SPECIAL_APPROVAL_ACTIONS]),
-    reviewableActionSql(viewer),
+    sql`(CASE WHEN ${actionReviewerCandidateSql(viewer.id, viewer.org_id)}
+      THEN ${reviewableActionSql(viewer)} ELSE false END)`,
   )!;
 }
 
