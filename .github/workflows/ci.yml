@@ -61,42 +61,50 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read
     outputs:
       docs_only: ${{ steps.classify.outputs.docs_only }}
     steps:
       - uses: actions/checkout@v7
         with:
+          # The merge commit this run is pinned to plus its two parents, so the
+          # classification is bound to the exact revision CI tests and cannot
+          # change if the pull request is edited or retargeted later.
+          fetch-depth: 2
           persist-credentials: false
       - name: Classify changed paths
         id: classify
         env:
-          GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" != "pull_request" ]; then
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # Docs-only means EVERY changed path (and every rename source) is a
-          # Markdown file under docs/superpowers/ (plans, specs, audits, notes),
-          # none of which any build, test or check reads. Markdown elsewhere is
-          # not listed: application code, seeds, the public-docs check and the
+          # Docs-only means EVERY path changed by the pull request (additions,
+          # modifications, deletions and both sides of a rename) is a Markdown
+          # file under docs/superpowers/ (plans, specs, audits, notes), none of
+          # which any build, test or check reads. Markdown elsewhere is not
+          # listed: application code, seeds, the public-docs check and the
           # release workflow read it. A file named by the Hermes integration
           # manifest is read by the bundle test and is never docs-only.
-          # File names are only ever piped as JSON strings into jq; they are
-          # never expanded in a shell command.
+          # File names are NUL-separated by git and only ever flow into jq as
+          # data; they are never expanded in a shell command.
+          if [ "$(git rev-list --parents -n 1 HEAD | wc -w)" != 3 ]; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           excluded="$(jq -c '[.. | strings | select(startswith("docs/"))]' integrations/hermes/integration-manifest.json)"
-          gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files?per_page=100" \
-            --jq '.[] | [.filename, .previous_filename] | .[] | select(. != null) | @json' \
-            | jq -s --argjson excluded "$excluded" '
-                length > 0 and length < 3000 and all(.[];
-                  test("^docs/superpowers/[^\n]+[.]md$") and (. as $f | $excluded | any(. == $f) | not)
-                )' > docs-only.json
-          result="$(cat docs-only.json)"
+          # git emits NUL-separated names; NUL becomes newline, so a name that
+          # itself contains a newline splits into fragments that must each pass.
+          git diff --name-only --no-renames -z HEAD^1 HEAD | tr '\0' '\n' \
+            | jq -Rn --argjson excluded "$excluded" '
+                [inputs] as $paths
+                | ($paths | length) > 0 and all($paths[];
+                    startswith("docs/superpowers/") and endswith(".md")
+                    and (. as $f | $excluded | any(. == $f) | not)
+                  )' > "$RUNNER_TEMP/docs-only.json"
+          result="$(cat "$RUNNER_TEMP/docs-only.json")"
           case "$result" in
             true|false) ;;
             *) echo "unexpected classifier output" >&2; exit 1 ;;
@@ -113,7 +121,13 @@ jobs:
     # and with it every job that needs it: Build, Versioned Upgrade, the
     # production image smoke and the Hermes gate. If the classifier failed,
     # docs_only is empty, so this job still runs and fails on the next step.
-    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
+    # A failed cheap prerequisite (boundary check, release scope) is forwarded
+    # here even for a docs-only pull request.
+    if: >-
+      ${{ !cancelled() && (
+        needs.changes.outputs.docs_only != 'true' ||
+        needs.release-scope.result != 'success' ||
+        needs.check-app-boundary.result != 'success') }}
     steps:
       - name: Require cheap CI gates
         if: needs.release-scope.result != 'success' || needs.check-app-boundary.result != 'success' || needs.changes.result != 'success'
