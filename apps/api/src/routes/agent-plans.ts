@@ -1,13 +1,38 @@
 import { Hono } from 'hono';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, or, type SQL } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { agentPlans } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
-import { createPlanRow } from '../lib/agent-plans.js';
+import {
+  assertPlanEmployeeBindable,
+  assertPlanStepsAllowedFor,
+  createPlanRow,
+  PLAN_EMPLOYEE_UNAVAILABLE_ERROR,
+  PlanAccessError,
+} from '../lib/agent-plans.js';
+import { getActiveOrgMembership } from '../lib/org-membership.js';
 import { isDestructiveAction } from '../lib/agent-approval.js';
 import { getMCPToolsForAgent } from '../lib/mcp-tools.js';
 
 export const agentPlanRoutes = new Hono();
+
+/**
+ * A plan is approved, started, resumed or cancelled by its creator or by an
+ * owner/admin of its workspace. A run always executes for the creator.
+ */
+async function planManagerScope(orgId: string, userId: string): Promise<SQL> {
+  const membership = await getActiveOrgMembership(orgId, userId);
+  return membership?.role === 'owner' || membership?.role === 'admin'
+    ? eq(agentPlans.org_id, orgId)
+    : and(eq(agentPlans.org_id, orgId), eq(agentPlans.user_id, userId))!;
+}
+
+function planAccessRefusal(err: unknown) {
+  if (!(err instanceof PlanAccessError)) return null;
+  return err.message === PLAN_EMPLOYEE_UNAVAILABLE_ERROR
+    ? { body: { error: err.message, code: 'INVALID_AGENT_EMPLOYEE' }, status: 400 as const }
+    : { body: { error: err.message, code: 'FORBIDDEN' }, status: 403 as const };
+}
 
 /**
  * Every plan payload a reviewer sees marks each step `destructive`, computed
@@ -97,6 +122,11 @@ agentPlanRoutes.post('/', async (c) => {
       return c.json({ error: 'title and steps are required', code: 'VALIDATION_ERROR' }, 400);
     }
 
+    if (body.agent_employee_id != null) {
+      if (typeof body.agent_employee_id !== 'string') throw new PlanAccessError(PLAN_EMPLOYEE_UNAVAILABLE_ERROR);
+      await assertPlanEmployeeBindable(user.org_id, body.agent_employee_id);
+    }
+
     const { plan_id } = await createPlanRow({
       org_id: user.org_id,
       user_id: user.id,
@@ -121,6 +151,8 @@ agentPlanRoutes.post('/', async (c) => {
 
     return c.json(await withDestructiveMarks(plan), 201);
   } catch (err) {
+    const refusal = planAccessRefusal(err);
+    if (refusal) return c.json(refusal.body, refusal.status);
     console.error('Failed to create plan:', err);
     return c.json({ error: 'Failed to create plan', code: 'INTERNAL_ERROR' }, 500);
   }
@@ -154,6 +186,7 @@ agentPlanRoutes.put('/:id', async (c) => {
     if (body.title) updates.title = body.title;
     if (body.description !== undefined) updates.description = body.description;
     if (body.steps) {
+      await assertPlanStepsAllowedFor(user.org_id, user.id, body.steps);
       updates.steps = body.steps.map((step: any) => ({
         ...step,
         status: step.status ?? 'pending',
@@ -168,6 +201,8 @@ agentPlanRoutes.put('/:id', async (c) => {
 
     return c.json(await withDestructiveMarks(updated));
   } catch (err) {
+    const refusal = planAccessRefusal(err);
+    if (refusal) return c.json(refusal.body, refusal.status);
     console.error('Failed to update plan:', err);
     return c.json({ error: 'Failed to update plan', code: 'INTERNAL_ERROR' }, 500);
   }
@@ -182,7 +217,7 @@ agentPlanRoutes.post('/:id/approve', async (c) => {
     const [plan] = await db
       .select()
       .from(agentPlans)
-      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, user.org_id), eq(agentPlans.user_id, user.id)))
+      .where(and(eq(agentPlans.id, planId), await planManagerScope(user.org_id, user.id)))
       .limit(1);
 
     if (!plan) {
@@ -196,6 +231,8 @@ agentPlanRoutes.post('/:id/approve', async (c) => {
       );
     }
 
+    await assertPlanStepsAllowedFor(plan.org_id, plan.user_id, plan.steps);
+
     const [updated] = await db
       .update(agentPlans)
       .set({ status: 'approved', updated_at: new Date() })
@@ -204,6 +241,8 @@ agentPlanRoutes.post('/:id/approve', async (c) => {
 
     return c.json(await withDestructiveMarks(updated));
   } catch (err) {
+    const refusal = planAccessRefusal(err);
+    if (refusal) return c.json(refusal.body, refusal.status);
     console.error('Failed to approve plan:', err);
     return c.json({ error: 'Failed to approve plan', code: 'INTERNAL_ERROR' }, 500);
   }
@@ -218,7 +257,7 @@ agentPlanRoutes.post('/:id/execute', async (c) => {
     const [plan] = await db
       .select()
       .from(agentPlans)
-      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, user.org_id), eq(agentPlans.user_id, user.id)))
+      .where(and(eq(agentPlans.id, planId), await planManagerScope(user.org_id, user.id)))
       .limit(1);
 
     if (!plan) {
@@ -234,8 +273,8 @@ agentPlanRoutes.post('/:id/execute', async (c) => {
 
     await enqueue(QUEUE_NAMES.AGENT_JOBS, 'plan-executor', {
       planId,
-      orgId: user.org_id,
-      userId: user.id,
+      orgId: plan.org_id,
+      userId: plan.user_id,
     });
 
     return c.json({ message: 'Plan execution enqueued', planId });
@@ -290,7 +329,7 @@ agentPlanRoutes.post('/:id/resume', async (c) => {
     const [plan] = await db
       .select()
       .from(agentPlans)
-      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, user.org_id), eq(agentPlans.user_id, user.id)))
+      .where(and(eq(agentPlans.id, planId), await planManagerScope(user.org_id, user.id)))
       .limit(1);
 
     if (!plan) {
@@ -319,8 +358,8 @@ agentPlanRoutes.post('/:id/resume', async (c) => {
 
     await enqueue(QUEUE_NAMES.AGENT_JOBS, 'plan-executor', {
       planId,
-      orgId: user.org_id,
-      userId: user.id,
+      orgId: plan.org_id,
+      userId: plan.user_id,
     });
 
     return c.json({ message: 'Plan resumed and execution enqueued', planId });
@@ -339,7 +378,7 @@ agentPlanRoutes.post('/:id/abort', async (c) => {
     const [plan] = await db
       .select()
       .from(agentPlans)
-      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, user.org_id), eq(agentPlans.user_id, user.id)))
+      .where(and(eq(agentPlans.id, planId), await planManagerScope(user.org_id, user.id)))
       .limit(1);
 
     if (!plan) {

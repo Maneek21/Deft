@@ -24,6 +24,7 @@ import {
 import { runAgentQuery } from './agent-runner.js';
 import { resolveReasonProvider } from './org-ai-config.js';
 import { createNotificationIfAllowed } from './notification-policy.js';
+import { getActiveOrgMembership } from './org-membership.js';
 import { visibleTaskCondition } from './task-visibility.js';
 import { emitToUser } from '../socket.js';
 
@@ -213,6 +214,9 @@ async function synthesizeMeetingPrep(
       mode: 'chat_mention',
       skipVerification: true,
       maxIterations: 2,
+      // The brief is written from the prepared, recipient-filtered evidence
+      // alone: the unattended run reads and writes nothing on its own.
+      toolPolicy: 'none',
       systemPromptOverride: 'You are Defty preparing a meeting brief for this user. Use only the supplied, permission-filtered evidence. Do not infer private context, invent decisions, or call tools. Return JSON only.',
       content: `Return JSON only with keys agenda, decisions, updates. Each value is an array of {"text": string, "source_ids": string[]}. Return at most 4 items per key, keep each text under 180 characters, and cite at least one supplied source per item. Leave decisions empty when evidence does not show one is needed.\n\nEvidence:\n${JSON.stringify(evidence)}`,
     });
@@ -221,7 +225,7 @@ async function synthesizeMeetingPrep(
         response.text,
         meetingPrepDraftSchema,
         new Set(evidence.map((item) => item.source_id)),
-        { sectionLimits: { agenda: 4, decisions: 4, updates: 4 } },
+        { sectionLimits: { agenda: 4, decisions: 4, updates: 4 }, evidenceText: evidence.map((item) => item.text).join(' ') },
       ),
       generator: 'agent' as const,
       model: response.model,
@@ -245,6 +249,12 @@ export async function generateMeetingPrep(eventId: string, now = new Date()) {
     .innerJoin(orgs, eq(events.org_id, orgs.id))
     .where(eq(events.id, eventId)).limit(1);
   if (!meeting?.user_id) throw new Error('Meeting or recipient not found');
+  const recipientId = meeting.user_id;
+
+  // Briefs are prepared for, and handed to, active members of the meeting's
+  // workspace only.
+  const notActive = { brief: null, run: null, alreadyExisted: false, skipped: 'recipient_not_active' as const };
+  if (!await getActiveOrgMembership(meeting.org_id, recipientId)) return notActive;
 
   const claim = await claimAutomationRun({
     orgId: meeting.org_id,
@@ -255,10 +265,23 @@ export async function generateMeetingPrep(eventId: string, now = new Date()) {
     scheduledFor: meeting.timestamp,
     context: { event_title: meeting.title, event_timestamp: meeting.timestamp.toISOString() },
   });
+  // Membership is read again after the claim: a removal that lands while the
+  // run is claimed stops both the cached return and evidence gathering.
+  const stillActive = await getActiveOrgMembership(meeting.org_id, recipientId);
   if (!claim.claimed) {
+    if (!stillActive) return notActive;
     const [existing] = await db.select().from(meetingBriefs)
-      .where(and(eq(meetingBriefs.event_id, meeting.id), eq(meetingBriefs.user_id, meeting.user_id))).limit(1);
+      .where(and(
+        eq(meetingBriefs.org_id, meeting.org_id),
+        eq(meetingBriefs.event_id, meeting.id),
+        eq(meetingBriefs.user_id, recipientId),
+      )).limit(1);
     return { brief: existing ?? null, run: claim.run, alreadyExisted: true };
+  }
+
+  if (!stillActive) {
+    await failAutomationRun(claim.run.id, 'recipient_not_active');
+    return notActive;
   }
 
   try {
@@ -266,16 +289,34 @@ export async function generateMeetingPrep(eventId: string, now = new Date()) {
     const evidence = await gatherMeetingEvidence({ ...meeting, user_id: meeting.user_id });
     const synthesis = await synthesizeMeetingPrep(meeting.org_id, meeting.org_name, meeting.user_id, evidence);
     const briefText = renderMeetingPrepDraft(meeting.title || 'Upcoming meeting', synthesis.draft);
-    const [brief] = await db.insert(meetingBriefs).values({
-      org_id: meeting.org_id,
-      user_id: meeting.user_id,
-      event_id: meeting.id,
-      brief_text: briefText,
-    }).onConflictDoUpdate({
-      target: [meetingBriefs.event_id, meetingBriefs.user_id],
-      set: { brief_text: briefText, updated_at: new Date() },
-    }).returning();
-    if (!brief) throw new Error('Meeting brief insert returned no row');
+    // The brief is stored only while the recipient's active membership row is
+    // held, so a removal cannot commit between the check and the write. Rows
+    // are locked user first, then membership, the same order member removal uses.
+    const brief = await db.transaction(async (tx) => {
+      await tx.select({ id: users.id }).from(users).where(eq(users.id, recipientId)).for('key share');
+      const [membership] = await tx.select({ id: orgMembers.id }).from(orgMembers).where(and(
+        eq(orgMembers.org_id, meeting.org_id),
+        eq(orgMembers.user_id, recipientId),
+        eq(orgMembers.is_active, true),
+      )).for('share');
+      if (!membership) return null;
+      const [row] = await tx.insert(meetingBriefs).values({
+        org_id: meeting.org_id,
+        user_id: recipientId,
+        event_id: meeting.id,
+        brief_text: briefText,
+      }).onConflictDoUpdate({
+        target: [meetingBriefs.event_id, meetingBriefs.user_id],
+        set: { brief_text: briefText, updated_at: new Date() },
+        setWhere: eq(meetingBriefs.org_id, meeting.org_id),
+      }).returning();
+      if (!row) throw new Error('Meeting brief for this event belongs to another workspace');
+      return row;
+    });
+    if (!brief || !await getActiveOrgMembership(meeting.org_id, recipientId)) {
+      await failAutomationRun(claim.run.id, 'recipient_not_active');
+      return notActive;
+    }
 
     // D09: a failed run is reclaimed with the same run id. If an earlier
     // attempt already notified for this run, the retry must not notify again.

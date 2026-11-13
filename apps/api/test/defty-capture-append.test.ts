@@ -51,6 +51,10 @@ test(`${explicitUpdate ? 'update-prefixed capture' : 'capture matching an existi
     },
     './agent-approval-resolver.js': { approveAction: async () => assert.fail('capture must remain a proposal') },
     './resolve-assignee.js': {},
+    './mcp-tools/wiki-create.js': {
+      wikiUpdateProposalTarget: async () => ({ page, values: { before_state: {} } }),
+      wikiCreateProposalTarget: async () => ({ values: { before_state: {} } }),
+    },
   };
   const module = { exports: {} as Record<string, any> };
   const compiled = ts.transpileModule(readFileSync(url, 'utf8'), {

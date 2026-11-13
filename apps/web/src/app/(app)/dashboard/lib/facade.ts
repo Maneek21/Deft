@@ -79,6 +79,8 @@ export type AgentActivity = {
   id: string; action: string; params: any; result: any;
   approval_status: string; executed_at: string | null;
   created_at: string; error: string | null; agent_employee_id: string | null;
+  /** True when the viewer can approve or reject it in the Inbox. */
+  viewer_can_review?: boolean;
 };
 
 export type AgentEmployeeBrief = { id: string; name: string };

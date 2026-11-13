@@ -43,6 +43,7 @@ import { bulkUpdateTasks, BulkTaskUpdateError, bulkTaskUpdateSchema } from '../t
 import { queryCompactTasks, type CompactTaskQuery } from '../task-compact-query.js';
 import { visibleNoteCondition } from '../note-visibility.js';
 import { approveAction, rejectAction } from '../agent-approval-resolver.js';
+import { currentActionReviewerSql } from '../agent-action-review-gate.js';
 import { resolveProjectTargetFromRows } from '../resolve-project-target.js';
 import { toPlainText } from '../plain-text.js';
 import {
@@ -553,7 +554,10 @@ async function withIdempotency(
   args: { idempotency_key?: unknown } & Record<string, unknown>,
   ctx: HumanToolContext,
   execute: () => Promise<ToolResult>,
+  options: { bind?: string } = {},
 ): Promise<ToolResult> {
+  // A bound result answers only a call for the same target (`bind`).
+  const bind = options.bind ?? null;
   const idempotencyKey = normalizeIdempotencyKey(args.idempotency_key);
   const fallbackSignature = idempotencyKey ? null : fallbackDedupeSignature(toolName, args);
 
@@ -568,6 +572,7 @@ async function withIdempotency(
         eq(oauthAuditEvents.client_id, clientId),
         eq(oauthAuditEvents.event, 'mcp_idempotency_result'),
         sql`${oauthAuditEvents.metadata}->>'tool_name' = ${toolName}`,
+        bind === null ? sql`true` : sql`${oauthAuditEvents.metadata}->>'bind' = ${bind}`,
         idempotencyKey
           ? sql`${oauthAuditEvents.metadata}->>'idempotency_key' = ${idempotencyKey}`
           : sql`${oauthAuditEvents.metadata}->>'fallback_signature' = ${fallbackSignature} AND ${oauthAuditEvents.created_at} >= now() - interval '2 minutes'`,
@@ -592,6 +597,7 @@ async function withIdempotency(
         fallback_window_seconds: fallbackSignature ? 120 : null,
         grant_id: ctx.grant_id ?? null,
         principal_kind: ctx.principal_kind ?? 'human',
+        ...(bind === null ? {} : { bind }),
         result,
       },
     });
@@ -3574,36 +3580,56 @@ export async function humanInboxMarkAllRead(args: Record<string, unknown>, ctx: 
   });
 }
 
+/**
+ * The approvals the connected user reviews now, by the same gate as the web
+ * (their current role, re-checked in the statement), within the token's
+ * module scopes. Null when they are no longer an active member.
+ */
+async function approvalReviewerSql(ctx: HumanToolContext, access: 'read' | 'write') {
+  const reviewer = await currentActionReviewerSql({ id: ctx.user_id, org_id: ctx.org_id });
+  return reviewer ? and(reviewer, visibleModuleActionScopeSql(ctx.scopes, access))! : null;
+}
+
 async function ownApproval(
   ctx: HumanToolContext,
   actionId: string,
   access: 'read' | 'write' = 'read',
 ) {
-  const canReview = ctx.role === 'owner' || ctx.role === 'admin'
-    ? sql`true`
-    : sql`COALESCE(
-        ${agentActions.params}->>'source_user_id',
-        ${agentActions.params}->>'origin_user_id',
-        ${agentActions.user_id}
-      ) = ${ctx.user_id}`;
+  const reviewer = await approvalReviewerSql(ctx, access);
+  if (!reviewer) return null;
   const [row] = await db.select().from(agentActions).where(and(
     eq(agentActions.id, actionId),
     eq(agentActions.org_id, ctx.org_id),
-    visibleModuleActionSql(ctx.role, { userId: ctx.user_id, orgId: ctx.org_id }),
-    visibleModuleActionScopeSql(ctx.scopes, access),
-    canReview,
+    reviewer,
   )).limit(1);
   return row ?? null;
+}
+
+/**
+ * Runs an approval decision for the connected user: checked before any stored
+ * result is replayed, a stored result answers only the same action, and the
+ * check runs again before anything is returned.
+ */
+async function decideApproval(
+  toolName: 'approval_approve' | 'approval_reject',
+  args: Record<string, unknown>,
+  ctx: HumanToolContext,
+  decide: (actionId: string) => Promise<ToolResult>,
+): Promise<ToolResult> {
+  const actionId = args.action_id as string;
+  if (!(await ownApproval(ctx, actionId, 'write'))) return errorResult('Approval not found');
+  const result = await withIdempotency(toolName, args, ctx, () => decide(actionId), { bind: actionId });
+  if (!(await ownApproval(ctx, actionId, 'write'))) return errorResult('Approval not found');
+  return result;
 }
 
 export async function humanApprovalList(args: { status?: string; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:workspace'); if (scopeError) return scopeError;
   const status = args.status ?? 'pending';
   if (!['pending', 'approved', 'rejected', 'expired', 'all'].includes(status)) return errorResult('status must be pending, approved, rejected, expired, or all');
-  const canReview = ctx.role === 'owner' || ctx.role === 'admin'
-    ? sql`true`
-    : sql`COALESCE(${agentActions.params}->>'source_user_id', ${agentActions.params}->>'origin_user_id', ${agentActions.user_id}) = ${ctx.user_id}`;
-  const rows = await db.select().from(agentActions).where(and(eq(agentActions.org_id, ctx.org_id), visibleModuleActionSql(ctx.role, { userId: ctx.user_id, orgId: ctx.org_id }), visibleModuleActionScopeSql(ctx.scopes, 'read'), canReview, status === 'all' ? sql`true` : eq(agentActions.approval_status, status as any))).orderBy(desc(agentActions.created_at)).limit(Math.min(Math.max(1, args.limit ?? 50), 100));
+  const reviewer = await approvalReviewerSql(ctx, 'read');
+  if (!reviewer) return textResult([]);
+  const rows = await db.select().from(agentActions).where(and(eq(agentActions.org_id, ctx.org_id), reviewer, status === 'all' ? sql`true` : eq(agentActions.approval_status, status as any))).orderBy(desc(agentActions.created_at)).limit(Math.min(Math.max(1, args.limit ?? 50), 100));
   return textResult(rows.map((row) => ({ ...row, url: '/inbox?lane=needs_you' })));
 }
 
@@ -3617,9 +3643,8 @@ export async function humanApprovalGet(args: { action_id?: string }, ctx: HumanT
 export async function humanApprovalApprove(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'write:workspace'); if (scopeError) return scopeError;
   if (typeof args.action_id !== 'string') return errorResult('action_id is required');
-  return withIdempotency('approval_approve', args, ctx, async () => {
-    if (!(await ownApproval(ctx, args.action_id as string, 'write'))) return errorResult('Approval not found');
-    const result = await approveAction(args.action_id as string, ctx.user_id);
+  return decideApproval('approval_approve', args, ctx, async (actionId) => {
+    const result = await approveAction(actionId, ctx.user_id);
     return result.status === 'error' ? errorResult(`${result.code}: ${result.message}`) : textResult(result);
   });
 }
@@ -3627,9 +3652,8 @@ export async function humanApprovalApprove(args: Record<string, unknown>, ctx: H
 export async function humanApprovalReject(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'write:workspace'); if (scopeError) return scopeError;
   if (typeof args.action_id !== 'string') return errorResult('action_id is required');
-  return withIdempotency('approval_reject', args, ctx, async () => {
-    if (!(await ownApproval(ctx, args.action_id as string, 'write'))) return errorResult('Approval not found');
-    const result = await rejectAction(args.action_id as string, ctx.user_id, typeof args.reason === 'string' ? args.reason : undefined);
+  return decideApproval('approval_reject', args, ctx, async (actionId) => {
+    const result = await rejectAction(actionId, ctx.user_id, typeof args.reason === 'string' ? args.reason : undefined);
     return result.status === 'error' ? errorResult(`${result.code}: ${result.message}`) : textResult(result);
   });
 }

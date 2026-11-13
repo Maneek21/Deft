@@ -42,6 +42,10 @@ mock.module(new URL('../src/lib/agent-approval-resolver.ts', import.meta.url).hr
 mock.module(new URL('../src/lib/resolve-assignee.ts', import.meta.url).href, { namedExports: {
   resolveAssigneeWithMatches: async () => ({ assigneeId: null, matches: [] }),
 } });
+mock.module(new URL('../src/lib/mcp-tools/wiki-create.ts', import.meta.url).href, { namedExports: {
+  wikiUpdateProposalTarget: async () => ({ page, values: { before_state: {} } }),
+  wikiCreateProposalTarget: async () => ({ values: { before_state: {} } }),
+} });
 const { queueDeftyKnowledgeCapture } = await import('../src/lib/defty-capture.js');
 
 test('B05: a capture refinement does not auto-approve a whole-page replace', async () => {

@@ -1,7 +1,7 @@
 import { nativeNotificationAccessSql } from '../lib/native-mention-visibility.js';
 // apps/api/src/routes/inbox.ts
 import { Hono } from 'hono';
-import { eq, and, desc, sql, lt, gt, inArray } from 'drizzle-orm';
+import { eq, and, desc, sql, lt, gt, inArray, or } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import {
   notifications,
@@ -12,6 +12,10 @@ import {
   agentEmployees,
 } from '@deft/db/schema';
 import { visibleModuleActionSql } from '../lib/module-action-visibility.js';
+import { viewerReviewAuthority } from '../lib/agent-approval-resolver.js';
+import { actionRequesterIdSql } from '../lib/agent-action-requester.js';
+import { visibleCaptureActionSql } from '../lib/agent-action-visibility.js';
+import { ordinaryPendingApprovalSql, specialApprovalActionSql } from '../lib/pending-approval-audience.js';
 
 export const inboxRoutes = new Hono();
 
@@ -46,6 +50,12 @@ export type InboxItem = {
     employee_slug: string | null;
     employee_avatar: string | null;
     proposer: 'employee' | 'defty';
+    /**
+     * Whether this viewer may approve or reject it, as the approve and reject
+     * routes answer. Absent when only the action's own path can tell.
+     */
+    viewer_can_approve?: boolean;
+    viewer_can_reject?: boolean;
   };
   dm?: { space_id: string; unread_count: number; last_message_preview: string | null };
 };
@@ -109,79 +119,16 @@ function notificationTypesForKinds(kinds: Set<InboxItemKind> | null) {
     .map(([type]) => type);
 }
 
-function visibleCaptureActionSql(user: { id: string; org_id: string }) {
-  return sql`(
-    ${agentActions.source} IS DISTINCT FROM 'defty_capture'
-    OR (
-      (
-        COALESCE(
-          ${agentActions.params}->>'source_space_id',
-          ${agentActions.params}->>'origin_space_id',
-          ${agentActions.params}->>'space_id'
-        ) IS NULL
-        OR EXISTS (
-          SELECT 1
-          FROM space_members inbox_capture_sm
-          INNER JOIN spaces inbox_capture_s
-            ON inbox_capture_s.id = inbox_capture_sm.space_id
-          WHERE inbox_capture_sm.space_id = COALESCE(
-              ${agentActions.params}->>'source_space_id',
-              ${agentActions.params}->>'origin_space_id',
-              ${agentActions.params}->>'space_id'
-            )
-            AND inbox_capture_sm.user_id = ${user.id}
-            AND inbox_capture_s.org_id = ${user.org_id}
-            AND inbox_capture_s.is_archived = false
-        )
-      )
-      AND (
-        ${agentActions.params}->>'source_message_id' IS NULL
-        OR EXISTS (
-          SELECT 1
-          FROM messages inbox_capture_m
-          INNER JOIN space_members inbox_capture_msg_sm
-            ON inbox_capture_msg_sm.space_id = inbox_capture_m.space_id
-          INNER JOIN spaces inbox_capture_msg_s
-            ON inbox_capture_msg_s.id = inbox_capture_m.space_id
-          WHERE inbox_capture_m.id = ${agentActions.params}->>'source_message_id'
-            AND inbox_capture_m.org_id = ${user.org_id}
-            AND inbox_capture_m.is_deleted = false
-            AND inbox_capture_msg_sm.user_id = ${user.id}
-            AND inbox_capture_msg_s.org_id = ${user.org_id}
-            AND inbox_capture_msg_s.is_archived = false
-            AND (
-              COALESCE(
-                ${agentActions.params}->>'source_space_id',
-                ${agentActions.params}->>'origin_space_id',
-                ${agentActions.params}->>'space_id'
-              ) IS NULL
-              OR inbox_capture_m.space_id = COALESCE(
-                ${agentActions.params}->>'source_space_id',
-                ${agentActions.params}->>'origin_space_id',
-                ${agentActions.params}->>'space_id'
-              )
-            )
-        )
-      )
-    )
-  )`;
-}
-
-function reviewableActionSql(user: { id: string; org_id: string; role?: string }) {
-  if (user.role === 'owner' || user.role === 'admin') {
-    return and(
-      visibleCaptureActionSql(user),
-      visibleModuleActionSql(user.role, { userId: user.id, orgId: user.org_id }),
-    );
-  }
+/**
+ * The Inbox's own rule for App Run releases and record-mirror nominations,
+ * which have their own approval paths: the requester, or any owner/admin.
+ */
+function specialApprovalAudienceSql(user: { id: string; org_id: string; role?: string }) {
   return and(
+    specialApprovalActionSql(),
     visibleCaptureActionSql(user),
     visibleModuleActionSql(user.role, { userId: user.id, orgId: user.org_id }),
-    sql`COALESCE(
-      ${agentActions.params}->>'source_user_id',
-      ${agentActions.params}->>'origin_user_id',
-      ${agentActions.user_id}
-    ) = ${user.id}`,
+    user.role === 'owner' || user.role === 'admin' ? sql`TRUE` : sql`${actionRequesterIdSql()} = ${user.id}`,
   );
 }
 
@@ -317,12 +264,22 @@ inboxRoutes.get('/', async (c) => {
         // heartbeat ticks, trigger dispatch, task assignments are
         // pull-queue entries for BYOA runtimes — not user-actionable).
         inArray(agentActions.approval_tier, ['quick', 'full']),
-        reviewableActionSql(user),
+        or(specialApprovalAudienceSql(user), ordinaryPendingApprovalSql(user)),
       ))
       .orderBy(desc(agentActions.created_at));
 
-    const approvalItems: InboxItem[] = approvalRows.map((r) => {
+    const approvalKind = (r: { action_source: string | null }): InboxItemKind =>
+      r.action_source === 'defty_capture' ? 'work_capture' : 'pending_approval';
+    const wantedApprovalRows = approvalRows.filter((r) => wantsKind(approvalKind(r)));
+    // The count covers every approval; the list is the page before the cursor.
+    const listedApprovalRows = countOnly ? [] : wantedApprovalRows.filter((r) => !cursor
+      || new Date(r.created_at as unknown as string).getTime() < new Date(cursor).getTime());
+    const reviewAuthority = countOnly
+      ? new Map<string, never>()
+      : await viewerReviewAuthority(user, listedApprovalRows.map((r) => r.id));
+    const approvalItems: InboxItem[] = listedApprovalRows.map((r) => {
       const isCapture = r.action_source === 'defty_capture';
+      const authority = reviewAuthority.get(r.id);
       return {
         id: `approval:${r.id}`,
         kind: isCapture ? 'work_capture' : 'pending_approval',
@@ -344,15 +301,16 @@ inboxRoutes.get('/', async (c) => {
           employee_slug: r.employee_slug,
           employee_avatar: r.employee_avatar,
           proposer: isCapture || !r.agent_employee_id ? 'defty' : 'employee',
+          // Absent when only the action's own path can tell (App Run releases).
+          ...authority,
         },
       };
     });
 
-    const filteredApprovalItems = approvalItems.filter((item) => wantsKind(item.kind));
-    const all = [...notifItems, ...dmItems, ...filteredApprovalItems]
+    const all = [...notifItems, ...dmItems, ...approvalItems]
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
-    const unreadCount = unreadNotificationCount + dmItems.length + filteredApprovalItems.length;
+    const unreadCount = unreadNotificationCount + dmItems.length + wantedApprovalRows.length;
 
     if (countOnly) {
       return c.json({ unread_count: unreadCount });

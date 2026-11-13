@@ -154,10 +154,11 @@ spaceRoutes.post('/', async (c) => {
       }
     }
 
-    // Broadcast space:created via socket to org
+    // The org room receives the new space's id only; clients read names,
+    // types and members through the membership-checked GET /api/spaces.
     const io = getIO();
     if (io) {
-      io.to(`org:${user.org_id}`).emit('space:created', space);
+      io.to(`org:${user.org_id}`).emit('space:created', { id: space!.id });
     }
 
     return c.json(space, 201);

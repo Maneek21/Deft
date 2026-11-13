@@ -1,8 +1,9 @@
 /**
  * Item W2a3-2: readers of agent_actions with their own checks follow the
  * shared Defty action audience (requester, assigned approver, owner/admin;
- * a guest only for its own request). Assigned approvers reach the approvals
- * assigned to them on every approval surface.
+ * a guest only for its own request). Approval surfaces serve an action to its
+ * reviewers: the requester when an active human member, otherwise the
+ * owners/admins; an assignment counts only when it names one of them.
  */
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -109,7 +110,8 @@ test('W2a3-2a: employee activity for the Defty envelope lists its actions only t
   };
   assert.equal(has(await read(ids.peer), employeeActionId), false, 'a member outside the audience does not receive the action');
   assert.equal(has(await read(ids.guestApprover), employeeActionId), false, 'a guest approver does not receive the action');
-  for (const viewer of [ids.requester, ids.approver, ids.admin]) {
+  assert.equal(has(await read(ids.approver), employeeActionId), false, 'an assigned member who is not a reviewer does not receive the action');
+  for (const viewer of [ids.requester, ids.admin]) {
     assert.equal(has(await read(viewer), employeeActionId), true, `${roles[viewer]} audience member keeps the action`);
   }
 });
@@ -126,8 +128,10 @@ test('W2a3-2b: attention hydration returns an action only to its current audienc
     const body = await read(viewer);
     assert.equal(has(body, 'CANARY-PLAIN'), false, `${viewer === ids.peer ? 'peer' : 'guest'} receives neither the item nor its params`);
   }
-  for (const viewer of [ids.requester, ids.approver, ids.admin]) {
-    assert.equal(has(await read(viewer), '"title":"CANARY-PLAIN"'), true, `${roles[viewer]} keeps the approval payload`);
+  assert.equal(has(await read(ids.requester), '"title":"CANARY-PLAIN"'), true, 'the requester keeps the approval payload');
+  // Approval items are served to the action's reviewers: here, its requester.
+  for (const viewer of [ids.approver, ids.admin]) {
+    assert.equal(has(await read(viewer), 'CANARY-PLAIN'), false, `${roles[viewer]} who is not a reviewer receives no approval item`);
   }
 });
 
@@ -140,17 +144,15 @@ test('W2a3-2c: legacy MCP action status answers only the key owner\'s own action
   assert.equal((await own.json() as { id: string }).id, actionId);
 });
 
-test('W2a3-2d: human MCP approval tools list and open approvals for the requester and owners/admins only', async (t) => {
+test('W2a3-2d: human MCP approval tools list and open an active member\'s approval for that member only', async (t) => {
   if (unavailable) return t.skip(unavailable);
   const { humanApprovalList, humanApprovalGet } = await import('../src/lib/mcp-tools/human.js');
   const ctx = (viewer: string) => ({ org_id: orgId, user_id: viewer, role: roles[viewer]!, scopes: ['read:workspace', 'write:workspace'] });
   const listed = async (viewer: string) => JSON.stringify(await humanApprovalList({ status: 'pending' }, ctx(viewer)));
   const got = async (viewer: string) => (await humanApprovalGet({ action_id: actionId }, ctx(viewer))).isError !== true;
-  for (const viewer of [ids.requester, ids.admin]) {
-    assert.equal(has(await listed(viewer), actionId), true);
-    assert.equal(await got(viewer), true);
-  }
-  for (const viewer of [ids.approver, ids.peer, ids.guestApprover]) {
+  assert.equal(has(await listed(ids.requester), actionId), true);
+  assert.equal(await got(ids.requester), true);
+  for (const viewer of [ids.admin, ids.approver, ids.peer, ids.guestApprover]) {
     assert.equal(has(await listed(viewer), actionId), false);
     assert.equal(await got(viewer), false);
   }
@@ -185,9 +187,9 @@ test('W2a3-R5: attention mutations, counts and MCP attention tools follow the cu
     assert.equal((await humanAttentionGet({ attention_id: item }, mcpCtx(viewer))).isError, true);
     assert.equal((await humanAttentionAcknowledge({ attention_id: item, idempotency_key: randomUUID() }, mcpCtx(viewer))).isError, true);
   }
-  // The audience keeps working with its items, and responses carry no action params.
-  const own = await itemOf(ids.approver);
-  const seen = await request(ids.approver, '/api/attention', `/${own}/seen`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+  // The reviewer keeps working with its items, and responses carry no action params.
+  const own = await itemOf(ids.requester);
+  const seen = await request(ids.requester, '/api/attention', `/${own}/seen`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
   assert.equal(seen.status, 200);
   assert.equal(((await seen.json()) as any).item.metadata.params, undefined);
 });
@@ -213,7 +215,7 @@ test('W2a3-R5: backfill does not create approval items outside the viewer\'s cur
   assert.equal(rows[0].n, 0);
 });
 
-test('W2a3-R3-3: an assigned approver can act on a Defty action through the web route and the resolver; others still cannot', async (t) => {
+test('W2a3-R3-3: a Defty action is decided by its requester; an assignment naming another member does not count', async (t) => {
   if (unavailable) return t.skip(unavailable);
   routes['/api/agent'] ??= (await import('../src/routes/agent.js')).agentRoutes;
   const { approveAction } = await import('../src/lib/agent-approval-resolver.js');
@@ -225,14 +227,16 @@ test('W2a3-R3-3: an assigned approver can act on a Defty action through the web 
     return id;
   };
   const approveAs = (viewer: string, id: string) => request(viewer, '/api/agent', `/actions/${id}/approve`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
-  const legacy = await approveAs(ids.approver, await make('create_reminder', ids.approver));
-  assert.ok(![403, 404].includes(legacy.status), `assigned approver passes the web gate for a Defty action (got ${legacy.status})`);
+  const legacyAction = await make('create_reminder', ids.approver);
+  assert.equal((await approveAs(ids.approver, legacyAction)).status, 404, 'an assigned member who is not a reviewer');
+  const legacy = await approveAs(ids.requester, legacyAction);
+  assert.ok(![403, 404].includes(legacy.status), `the requester passes the web gate for a Defty action (got ${legacy.status})`);
 
-  // The resolver accepts the assigned approver; this queued MCP write then
+  // The resolver accepts the requester; this queued MCP write then
   // stops on its own precondition (it names no agent employee), not on
   // authorization, and nothing is claimed.
   const resolverAction = await make('task_create', ids.approver);
-  const resolver = await approveAs(ids.approver, resolverAction);
+  const resolver = await approveAs(ids.requester, resolverAction);
   assert.equal(resolver.status, 400);
   assert.equal(((await resolver.json()) as { code: string }).code, 'EMPLOYEE_MISSING');
   const [unclaimed] = (await client!.query('SELECT approval_status FROM agent_actions WHERE id=$1', [resolverAction])).rows;

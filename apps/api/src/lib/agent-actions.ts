@@ -15,9 +15,6 @@ import {
   taskRelationships,
   users,
   wikiPages,
-  wikiPageVersions,
-  wikiLinks,
-  wikiOpsLog,
   reminders,
   notes,
   canvases,
@@ -52,6 +49,7 @@ import {
 import { getApprovalTier, isDestructiveAction, mandatoryApprovalTier, shouldAutoExecute, type ToolAnnotations } from './agent-approval.js';
 import { validateNativeAgentMentionWrite } from './native-mention-agent-writes.js';
 import { authorizeNativeActionTarget, promotableNoteSql } from './agent-action-visibility.js';
+import { executeWikiWriteAction, TERMINAL_REFUSAL_RESULT, wikiProposalTargetValues } from './wiki-proposal-target.js';
 import {
   MODULE_OPERATION_REQUEST_SCHEMAS,
   ModuleIdSchema,
@@ -87,6 +85,7 @@ import {
 import { requireActiveOrgMembership } from './org-membership.js';
 import { generateReceipt } from './receipts.js';
 import { visibleTaskCondition } from './task-visibility.js';
+import { visibleWikiPageCondition } from './wiki-visibility.js';
 import { resolveReadableRoom } from './retrieve-context.js';
 import {
   employeeProjectAccessAllows,
@@ -1336,6 +1335,96 @@ async function employeeTaskWriteScopeError(
   return scopedTasks.length === taskIds.length ? null : 'Task not found';
 }
 
+/** Native kinds whose task and decision targets the requester must see when they execute. */
+const REQUESTER_TASK_WRITE_ACTIONS = new Set(
+  [...EMPLOYEE_TASK_WRITE_ACTIONS].filter((action) => action !== 'create_task'),
+);
+
+/**
+ * The acting user (the action's requester) must see every task the action
+ * names, and the decision page of `link_decision_to_tasks`. A task that is
+ * missing, deleted, in another organization or not visible gets one answer.
+ * For update_task_status the checked id is pinned for the executor.
+ */
+async function requesterTaskWriteScopeError(
+  action: string,
+  params: Record<string, any>,
+  orgId: string,
+  userId: string,
+  agentEmployeeId: string | null = null,
+): Promise<string | null> {
+  if (action === 'mark_decision_implemented') return requesterDecisionError(params, orgId, userId);
+  if (action === 'link_decision_to_tasks') {
+    // Task ids the requester cannot see are skipped exactly like unknown ids.
+    const rawIds = Array.isArray(params.task_ids)
+      ? params.task_ids.filter((value: unknown): value is string => typeof value === 'string')
+      : [];
+    const visible = rawIds.length === 0 ? [] : await db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .innerJoin(projects, and(eq(projects.id, tasks.project_id), eq(projects.org_id, orgId)))
+      .where(and(
+        eq(tasks.org_id, orgId),
+        eq(tasks.is_deleted, false),
+        eq(projects.is_deleted, false),
+        inArray(tasks.id, rawIds),
+        visibleTaskCondition(userId),
+      ));
+    params.requester_visible_task_ids = visible.map((task) => task.id);
+    // With an employee, unknown ids already refuse the whole call; hidden ones answer the same.
+    if (agentEmployeeId && new Set(visible.map((task) => task.id)).size !== new Set(rawIds).size) return 'Task not found';
+    return requesterDecisionError(params, orgId, userId);
+  }
+  if (!REQUESTER_TASK_WRITE_ACTIONS.has(action)) return null;
+  const identifiers = [...new Set(
+    taskIdentifiersForEmployeeWrite(action, params)
+      .map((identifier) => identifier.trim())
+      .filter(Boolean),
+  )];
+  if (identifiers.length === 0) return 'Task not found';
+  const resolvedTaskIds = await Promise.all(
+    identifiers.map((identifier) => resolveTaskIdentifier(identifier, orgId)),
+  );
+  if (resolvedTaskIds.some((taskId) => !taskId)) return 'Task not found';
+  const taskIds = [...new Set(resolvedTaskIds as string[])];
+  const visibleTasks = await db
+    .select({ id: tasks.id })
+    .from(tasks)
+    .innerJoin(projects, and(eq(projects.id, tasks.project_id), eq(projects.org_id, orgId)))
+    .where(and(
+      eq(tasks.org_id, orgId),
+      eq(tasks.is_deleted, false),
+      eq(projects.is_deleted, false),
+      inArray(tasks.id, taskIds),
+      visibleTaskCondition(userId),
+    ));
+  if (visibleTasks.length !== taskIds.length) return 'Task not found';
+  if (['update_task_status', 'close_task', 'reopen_task', 'assign_task'].includes(action) && taskIds.length === 1) {
+    params.resolved_task_id = taskIds[0];
+  }
+  return null;
+}
+
+async function requesterDecisionError(
+  params: Record<string, any>,
+  orgId: string,
+  userId: string,
+): Promise<string | null> {
+  const decisionId = typeof params.decision_id === 'string' ? params.decision_id : '';
+  if (!decisionId) return null;
+  const [decision] = await db
+    .select({ id: wikiPages.id })
+    .from(wikiPages)
+    .where(and(
+      eq(wikiPages.id, decisionId),
+      eq(wikiPages.org_id, orgId),
+      eq(wikiPages.is_deleted, false),
+      visibleWikiPageCondition(userId, orgId),
+    ))
+    .limit(1);
+  return decision ? null : 'Decision not found';
+}
+
 /**
  * Rebuild the current authorization boundary before a paused plan creates or
  * reuses a reviewed action. This returns the canonical input used by both the
@@ -1472,7 +1561,7 @@ export async function executeAction(
       const referenceError = await validateNativeAgentMentionWrite(action, params, orgId, userId, agentEmployeeId ?? undefined);
       if (referenceError) return { success: false, result: null, error: referenceError };
     }
-    const target = await authorizeNativeActionTarget(action, params, orgId, userId); if ('error' in target) return { success: false, result: null, error: target.error }; params = target.params;
+    const target = await authorizeNativeActionTarget(action, params, orgId, userId); if ('error' in target) return { success: false, result: action === 'wiki_write' ? { ...TERMINAL_REFUSAL_RESULT } : null, error: target.error }; params = target.params;
     const taskScopeError = await employeeTaskWriteScopeError(
       action,
       params,
@@ -1480,6 +1569,15 @@ export async function executeAction(
       agentEmployeeId,
     );
     if (taskScopeError) return { success: false, result: null, error: taskScopeError };
+    const requesterTaskError = await requesterTaskWriteScopeError(action, params, orgId, userId, agentEmployeeId);
+    if (requesterTaskError) {
+      if (isModuleTaskLinkWriteAction(action)) {
+        await terminalizeModuleTaskLinkActionFailure(
+          actionId, action, params, orgId, userId, agentEmployeeId ?? undefined, requesterTaskError,
+        );
+      }
+      return { success: false, result: null, error: requesterTaskError };
+    }
 
     const policyError = await agentToolPolicyError(orgId, agentEmployeeId, action);
     if (policyError) {
@@ -1591,10 +1689,10 @@ export async function executeAction(
     // and chat broadcast without duplication.
     if (action === 'close_task') {
       action = 'update_task_status';
-      params = { task_identifier: params.task_identifier, new_status: 'done' };
+      params = { task_identifier: params.task_identifier, resolved_task_id: params.resolved_task_id, new_status: 'done' };
     } else if (action === 'reopen_task') {
       action = 'update_task_status';
-      params = { task_identifier: params.task_identifier, new_status: 'todo' };
+      params = { task_identifier: params.task_identifier, resolved_task_id: params.resolved_task_id, new_status: 'todo' };
     }
 
     switch (action) {
@@ -2111,8 +2209,11 @@ export async function executeAction(
       }
 
       case 'assign_task': {
-        let taskId = params.task_identifier as string;
-        const m = taskId.match(/^([A-Z]+)-(\d+)$/);
+        const pinnedTaskId = typeof params.resolved_task_id === 'string' && params.resolved_task_id.trim()
+          ? params.resolved_task_id
+          : null;
+        let taskId = pinnedTaskId ?? params.task_identifier as string;
+        const m = pinnedTaskId ? null : taskId.match(/^([A-Z]+)-(\d+)$/);
         if (m) {
           const [proj] = await db
             .select({ id: projects.id })
@@ -2355,144 +2456,9 @@ export async function executeAction(
         return { success: true, result: { knowledge_id: entry!.id, title, space: space.name } };
       }
 
-      case 'wiki_write': {
-        const { slug: existingSlug, title, content, type: pageType, summary, related_slugs } = params;
-
-        if (existingSlug) {
-          const [existing] = await db
-            .select()
-            .from(wikiPages)
-            .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.slug, existingSlug), eq(wikiPages.is_deleted, false)))
-            .limit(1);
-          if (!existing) return { success: false, result: null, error: `Wiki page "${existingSlug}" not found` };
-
-          const updates: Record<string, any> = {};
-          if (title) updates.title = title;
-          if (summary) updates.summary = summary;
-          if (pageType) updates.type = pageType;
-          if (content && content !== existing.content) {
-            updates.content = content;
-            updates.previous_content = existing.content;
-            updates.version = existing.version + 1;
-          }
-
-          if (Object.keys(updates).length > 0) {
-            await db.transaction(async (tx) => {
-              if (updates.version !== undefined) {
-                await tx.insert(wikiPageVersions).values({
-                  page_id: existing.id,
-                  version: existing.version,
-                  title: existing.title,
-                  content: existing.content,
-                  summary: existing.summary,
-                  edited_by: userId,
-                }).onConflictDoNothing({
-                  target: [wikiPageVersions.page_id, wikiPageVersions.version],
-                });
-              }
-              await tx.update(wikiPages).set(updates).where(eq(wikiPages.id, existing.id));
-            });
-          }
-
-          if (related_slugs && related_slugs.length > 0) {
-            await db.delete(wikiLinks).where(eq(wikiLinks.source_page_id, existing.id));
-            const targets = await db
-              .select({ id: wikiPages.id })
-              .from(wikiPages)
-              .where(and(eq(wikiPages.org_id, orgId), inArray(wikiPages.slug, related_slugs)));
-            for (const t of targets) {
-              if (t.id !== existing.id) {
-                await db.insert(wikiLinks).values({ org_id: orgId, source_page_id: existing.id, target_page_id: t.id }).onConflictDoNothing();
-              }
-            }
-          }
-
-          await db.insert(wikiOpsLog).values({
-            org_id: orgId,
-            operation: 'update',
-            page_id: existing.id,
-            details: { updated_fields: Object.keys(updates), by_agent: true },
-            performed_by: userId,
-          });
-
-          await db
-            .update(agentActions)
-            .set({
-              result: { slug: existingSlug, action: 'updated' },
-              before_state: { content: existing.content, version: existing.version },
-              after_state: { content: content || existing.content, version: (existing.version || 0) + 1 },
-              executed_at: new Date(),
-            })
-            .where(eq(agentActions.id, actionId));
-
-          await logAuditEvent({
-            orgId,
-            actorType: 'agent',
-            actorId: userId,
-            action: 'wiki_write',
-            entityType: 'wiki_page',
-            entityId: existing.id,
-            beforeState: { content: existing.content },
-            afterState: { content: content || existing.content },
-            metadata: { action_id: actionId, slug: existingSlug },
-          });
-
-          return { success: true, result: { slug: existingSlug, action: 'updated' } };
-        } else {
-          if (!title || !content || !pageType) {
-            return { success: false, result: null, error: 'title, content, and type are required for new wiki pages' };
-          }
-
-          const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-
-          const [page] = await db
-            .insert(wikiPages)
-            .values({
-              org_id: orgId,
-              scope: 'org',
-              type: pageType,
-              title,
-              slug,
-              summary: summary || null,
-              content,
-              confidence: 0.7,
-              version: 1,
-            })
-            .returning();
-
-          await db.insert(wikiOpsLog).values({
-            org_id: orgId,
-            operation: 'create',
-            page_id: page!.id,
-            details: { type: pageType, by_agent: true },
-            performed_by: userId,
-          });
-
-          await db
-            .update(agentActions)
-            .set({
-              result: { slug, page_id: page!.id, action: 'created' },
-              before_state: null,
-              after_state: { id: page!.id, title, slug, type: pageType },
-              executed_at: new Date(),
-            })
-            .where(eq(agentActions.id, actionId));
-
-          await logAuditEvent({
-            orgId,
-            actorType: 'agent',
-            actorId: userId,
-            action: 'wiki_write',
-            entityType: 'wiki_page',
-            entityId: page!.id,
-            beforeState: null,
-            afterState: { title, slug, type: pageType },
-            metadata: { action_id: actionId },
-          });
-
-          return { success: true, result: { slug, page_id: page!.id, action: 'created' } };
-        }
-      }
+      case 'wiki_write':
+        // A wiki write applies only to the page revision it was proposed against.
+        return await executeWikiWriteAction({ actionId, params, orgId, userId });
 
       case 'comment_on_task': {
         // Task 3.4 — add a comment to a task.
@@ -3033,7 +2999,10 @@ export async function executeAction(
           .select({ id: tasks.id })
           .from(tasks)
           .where(and(inArray(tasks.id, taskIds), eq(tasks.org_id, orgId)));
-        const validTaskIdSet = new Set(validTasks.map((t) => t.id));
+        const requesterVisible = new Set<string>(
+          Array.isArray(params.requester_visible_task_ids) ? params.requester_visible_task_ids : [],
+        );
+        const validTaskIdSet = new Set(validTasks.map((t) => t.id).filter((id) => requesterVisible.has(id)));
 
         const linked: string[] = [];
         for (const taskId of taskIds) {
@@ -3816,7 +3785,7 @@ async function executeActionDirectLocked(
     reusedModuleBulkCreateAction = claimed.reused;
     retryModuleBulkCreateAction = claimed.retry === true;
   } else {
-    const [inserted] = await db.insert(agentActions).values(actionValues).returning();
+    const [inserted] = await db.insert(agentActions).values({ ...actionValues, ...await wikiProposalTargetValues(action, params, orgId, userId) }).returning();
     if (!inserted) throw new Error('Failed to create action log');
     actionRecord = inserted;
   }

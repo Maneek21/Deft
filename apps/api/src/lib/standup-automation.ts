@@ -222,6 +222,9 @@ async function synthesizeStandup(
       mode: 'chat_mention',
       skipVerification: true,
       maxIterations: 2,
+      // The standup is posted for every member: it is written from the
+      // prepared evidence alone, never from Defty's own reads.
+      toolPolicy: 'none',
       systemPromptOverride: 'You are Defty preparing the daily standup. Use only the supplied evidence. Do not invent people, work, blockers, or source IDs. Do not call tools. Return JSON only.',
       content: `Return JSON only with keys done, in_progress, blocked. Each value is an array of {"text": string, "source_ids": string[]}. Keep each text under 180 characters and cite at least one supplied source per item.\n\nEvidence:\n${JSON.stringify(evidence)}`,
     });
@@ -229,7 +232,8 @@ async function synthesizeStandup(
       response.text,
       standupDraftSchema,
       new Set(evidence.map((entry) => entry.source_id)),
-      { sectionLimits: { done: 5, in_progress: 5, blocked: 5 } },
+      // The evidence is non-empty here, so an empty draft would misreport the day.
+      { sectionLimits: { done: 5, in_progress: 5, blocked: 5 }, minItems: 1, evidenceText: evidence.map((entry) => entry.text).join(' ') },
     );
     return { draft, generator: 'agent' as const, model: response.model };
   } catch (error) {

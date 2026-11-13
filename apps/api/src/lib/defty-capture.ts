@@ -6,6 +6,9 @@ import { approveAction } from './agent-approval-resolver.js';
 import { ensureDeftyEmployee } from './ensure-defty-membership.js';
 import { toPlainText, truncatePlainText } from './plain-text.js';
 import { resolveAssigneeWithMatches } from './resolve-assignee.js';
+import { visibleTaskCondition } from './task-visibility.js';
+import { visibleWikiPageCondition } from './wiki-visibility.js';
+import { wikiCreateProposalTarget, wikiUpdateProposalTarget } from './mcp-tools/wiki-create.js';
 
 type ResolvedProject = { id: string; name: string };
 type TaskStatus = 'backlog' | 'todo' | 'in_progress' | 'in_review' | 'done' | 'cancelled';
@@ -252,6 +255,7 @@ function extractKnowledgeUpdateTarget(content: string): string {
 
 async function findWikiPageForExplicitUpdate(params: {
   orgId: string;
+  sourceUserId: string;
   spaceId: string;
   title: string;
   content: string;
@@ -274,6 +278,7 @@ async function findWikiPageForExplicitUpdate(params: {
       eq(wikiPages.type, params.wikiType),
       eq(wikiPages.scope, params.scope),
       params.scope === 'space' ? eq(wikiPages.space_id, params.spaceId) : sql`TRUE`,
+      visibleWikiPageCondition(params.sourceUserId, params.orgId),
     ))
     .limit(250);
 
@@ -383,6 +388,7 @@ function contentMentionsTask(content: string, task: ExistingTaskMatch): boolean 
 async function findReferencedTaskUpdate(
   orgId: string,
   content: string,
+  sourceUserId: string,
 ): Promise<{
   task: ExistingTaskMatch;
   patch: TaskUpdatePatch;
@@ -411,6 +417,7 @@ async function findReferencedTaskUpdate(
       eq(tasks.is_deleted, false),
       eq(projects.is_deleted, false),
       eq(projects.is_archived, false),
+      visibleTaskCondition(sourceUserId),
     ))
     .limit(250);
 
@@ -502,6 +509,7 @@ async function findReferencedTaskUpdate(
 
 async function findSimilarActiveTask(params: {
   orgId: string;
+  sourceUserId: string;
   projectId: string | null;
   title: string;
   content: string;
@@ -530,6 +538,7 @@ async function findSimilarActiveTask(params: {
       eq(projects.is_deleted, false),
       eq(projects.is_archived, false),
       sql`${tasks.status} NOT IN ('done', 'cancelled')`,
+      visibleTaskCondition(params.sourceUserId),
     ))
     .limit(250);
 
@@ -554,6 +563,7 @@ async function findSimilarActiveTask(params: {
 
 async function findSimilarWikiPage(params: {
   orgId: string;
+  sourceUserId: string;
   spaceId: string;
   title: string;
   content: string;
@@ -575,6 +585,7 @@ async function findSimilarWikiPage(params: {
       eq(wikiPages.type, params.wikiType),
       eq(wikiPages.scope, params.scope),
       params.scope === 'space' ? eq(wikiPages.space_id, params.spaceId) : sql`TRUE`,
+      visibleWikiPageCondition(params.sourceUserId, params.orgId),
     ))
     .limit(250);
 
@@ -594,6 +605,7 @@ async function findSimilarWikiPage(params: {
 
 async function findRelatedWikiPage(params: {
   orgId: string;
+  sourceUserId: string;
   spaceId: string;
   title: string;
   content: string;
@@ -616,6 +628,7 @@ async function findRelatedWikiPage(params: {
       eq(wikiPages.type, params.wikiType),
       eq(wikiPages.scope, params.scope),
       params.scope === 'space' ? eq(wikiPages.space_id, params.spaceId) : sql`TRUE`,
+      visibleWikiPageCondition(params.sourceUserId, params.orgId),
     ))
     .limit(250);
 
@@ -661,6 +674,9 @@ function buildKnowledgeTitle(content: string, type: DeftyKnowledgeWikiType): str
     : 'Note from chat';
   return truncatePlainText(candidate || plainContent || fallback, 90) || fallback;
 }
+
+/** Ends a knowledge-update capture without queueing; nothing it wrote is kept. */
+class KnowledgeUpdateSkipped extends Error {}
 
 async function queueDeftyKnowledgeUpdateCapture(params: {
   orgId: string;
@@ -710,7 +726,7 @@ async function queueDeftyKnowledgeUpdateCapture(params: {
   const title = `Update knowledge: ${targetPage.title}`;
   const summary = truncatePlainText(updateText, 240);
 
-  const queued = await db.transaction(async (tx) => {
+  const queued: { queued: boolean; actionId?: string; skippedReason?: string } = await db.transaction(async (tx) => {
     const proposedParams = {
       caller_employee_slug: defty.slug,
       page_id: targetPage.id,
@@ -793,9 +809,18 @@ async function queueDeftyKnowledgeUpdateCapture(params: {
       return { queued: false, actionId: existingAction.id, skippedReason: 'duplicate' };
     }
 
+    // Freeze the page revision this proposal was built on. An append is built
+    // on the snapshot read earlier, so the page must still match it.
+    const frozen = await wikiUpdateProposalTarget(proposedParams, orgId, defty.employeeId, tx);
+    if (!frozen) throw new KnowledgeUpdateSkipped('knowledge_update_target_unavailable');
+    if (preferUpdate && (frozen.page.content !== targetPage.content || frozen.page.version !== targetPage.version)) {
+      throw new KnowledgeUpdateSkipped('knowledge_update_target_changed');
+    }
+
     const [queuedAction] = await tx
       .insert(agentActions)
       .values({
+        ...frozen.values,
         org_id: orgId,
         user_id: defty.userId,
         agent_employee_id: defty.employeeId,
@@ -815,6 +840,9 @@ async function queueDeftyKnowledgeUpdateCapture(params: {
 
     if (!queuedAction) throw new Error('Failed to create Defty knowledge-update approval');
     return { queued: true, actionId: queuedAction.id };
+  }).catch((error: unknown) => {
+    if (error instanceof KnowledgeUpdateSkipped) return { queued: false, skippedReason: error.message };
+    throw error;
   });
 
   if (queued.queued && autoApprove) {
@@ -906,6 +934,7 @@ export async function queueDeftyKnowledgeCapture(params: {
   if (explicitKnowledgeUpdate) {
     const targetPage = await findWikiPageForExplicitUpdate({
       orgId,
+      sourceUserId,
       spaceId,
       title: finalTitle,
       content: rawPlainContent,
@@ -941,6 +970,7 @@ export async function queueDeftyKnowledgeCapture(params: {
 
   const similarPage = await findSimilarWikiPage({
     orgId,
+    sourceUserId,
     spaceId,
     title: finalTitle,
     content: plainContent,
@@ -954,6 +984,7 @@ export async function queueDeftyKnowledgeCapture(params: {
   if (preferUpdate) {
     const relatedPage = await findRelatedWikiPage({
       orgId,
+      sourceUserId,
       spaceId,
       title: finalTitle,
       content: plainContent,
@@ -1112,9 +1143,14 @@ export async function queueDeftyKnowledgeCapture(params: {
       return { queued: false, actionId: existingAction.id, skippedReason: 'duplicate' };
     }
 
+    // Freeze the slug the page will be created at.
+    const frozen = await wikiCreateProposalTarget(proposedParams, orgId, defty.employeeId, tx);
+    if (!frozen) throw new KnowledgeUpdateSkipped('knowledge_create_target_unavailable');
+
     const [queuedAction] = await tx
       .insert(agentActions)
       .values({
+        ...frozen.values,
         org_id: orgId,
         user_id: defty.userId,
         agent_employee_id: defty.employeeId,
@@ -1141,6 +1177,9 @@ export async function queueDeftyKnowledgeCapture(params: {
     }
 
     return { queued: true, actionId: queuedAction.id };
+  }).catch((error: unknown) => {
+    if (error instanceof KnowledgeUpdateSkipped) return { queued: false as const, skippedReason: error.message };
+    throw error;
   });
 
   if (queued.queued && autoApprove) {
@@ -1409,7 +1448,7 @@ export async function queueDeftyCreateTaskCapture(params: {
     .limit(1);
   if (existing) return { queued: false, actionId: existing.id, skippedReason: 'duplicate' };
 
-  const taskUpdate = await findReferencedTaskUpdate(orgId, plainContent);
+  const taskUpdate = await findReferencedTaskUpdate(orgId, plainContent, sourceUserId);
   if (taskUpdate) {
     if (taskUpdate.noChangeReason) {
       return { queued: false, skippedReason: taskUpdate.noChangeReason };
@@ -1439,6 +1478,7 @@ export async function queueDeftyCreateTaskCapture(params: {
   if (captureKind === 'task_candidate') {
     const similarTask = await findSimilarActiveTask({
       orgId,
+      sourceUserId,
       projectId: project.id,
       title: finalTitle,
       content: description || plainContent,

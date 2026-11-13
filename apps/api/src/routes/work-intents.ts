@@ -1,9 +1,18 @@
 import { Hono } from 'hono';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, getTableColumns, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { agentActions, agentEmployees, messageObservations, messages, spaces, users, workIntents } from '@deft/db/schema';
 import { getApprovalTier } from '../lib/agent-approval.js';
 import { ensureDeftyEmployee } from '../lib/ensure-defty-membership.js';
+import { canonicalDeftyActionSql, visibleModuleActionSql } from '../lib/module-action-visibility.js';
+import { currentEmployeeMessageAuthoritySql, currentEmployeeSpaceAuthoritySql } from '../lib/agent-channel-authority.js';
+import { readFrozenTarget, TARGET_KEY } from '../lib/wiki-proposal-target.js';
+import {
+  WIKI_CREATE_TARGET_UNAVAILABLE_ERROR,
+  WIKI_TARGET_UNAVAILABLE_ERROR,
+  wikiCreateProposalTarget,
+  wikiUpdateProposalTarget,
+} from '../lib/mcp-tools/wiki-create.js';
 
 export const workIntentRoutes = new Hono();
 
@@ -17,7 +26,56 @@ const VALID_KINDS = [
   'question_candidate',
 ] as const;
 
-type AuthedUser = { id: string; org_id: string };
+type AuthedUser = { id: string; org_id: string; role?: string };
+
+function visibleWorkIntentActionSql(user: AuthedUser) {
+  // Work intents come from Defty capture, and only the server writes that action source,
+  // so an action's own work_intent_id claim links it to an intent only when it is a capture action.
+  const actionExists = sql`exists (
+    select 1 from ${agentActions}
+    where ${agentActions.org_id} = ${workIntents.org_id}
+      and ${agentActions.source} = 'defty_capture'
+      and (
+        ${agentActions.id} = ${workIntents.converted_action_id}
+        or (${workIntents.converted_action_id} is null
+          and ${agentActions.params}->>'work_intent_id' = ${workIntents.id})
+      )
+      and ${visibleModuleActionSql(user.role, { userId: user.id, orgId: user.org_id })}
+  )`;
+  // Nested so a single-table select keeps the table-qualified column names inside the subquery.
+  return sql<boolean>`(${actionExists})`;
+}
+
+function projectWorkIntent<T extends {
+  id: string;
+  kind: string;
+  status: string;
+  created_at: Date;
+  updated_at: Date;
+  can_read_action: boolean;
+  source_message_id: string | null;
+  space_id: string | null;
+  source_user_id: string | null;
+  source_message_content?: string | null;
+  space_name?: string | null;
+  source_user_name?: string | null;
+}>(row: T) {
+  const { can_read_action, ...intent } = row;
+  if (can_read_action) return intent;
+  return {
+    id: row.id,
+    kind: row.kind,
+    status: row.status,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    source_message_id: row.source_message_id,
+    space_id: row.space_id,
+    source_user_id: row.source_user_id,
+    source_message_content: row.source_message_content,
+    space_name: row.space_name,
+    source_user_name: row.source_user_name,
+  };
+}
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
@@ -26,7 +84,21 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function visibleWorkIntentSourceSql(user: AuthedUser) {
   return sql`(
-    (${workIntents.space_id} IS NULL AND ${workIntents.source_message_id} IS NULL)
+    ${workIntents.agent_employee_id} is null
+    or ${canonicalDeftyActionSql(workIntents.agent_employee_id, workIntents.org_id)}
+    or (
+      exists (
+        select 1 from agent_employees wi_employee
+        where wi_employee.id = ${workIntents.agent_employee_id}
+          and wi_employee.org_id = ${workIntents.org_id}
+          and wi_employee.is_active = true and wi_employee.is_deleted = false
+      )
+      and (${workIntents.source_message_id} is null or ${currentEmployeeMessageAuthoritySql(workIntents.org_id, workIntents.agent_employee_id, workIntents.source_message_id)})
+      and (${workIntents.space_id} is null or ${currentEmployeeSpaceAuthoritySql(workIntents.org_id, workIntents.agent_employee_id, workIntents.space_id)})
+    )
+  ) and (
+    (${workIntents.space_id} IS NULL AND ${workIntents.source_message_id} IS NULL
+      and (${workIntents.source_user_id} = ${user.id} or ${user.role === 'owner' || user.role === 'admin'}))
     OR (
       ${workIntents.source_message_id} IS NULL
       AND ${workIntents.space_id} IS NOT NULL
@@ -160,6 +232,7 @@ workIntentRoutes.get('/', async (c) => {
       metadata: workIntents.metadata,
       created_at: workIntents.created_at,
       updated_at: workIntents.updated_at,
+      can_read_action: visibleWorkIntentActionSql(user),
     })
     .from(workIntents)
     .leftJoin(messages, visibleSourceMessageJoinSql(user))
@@ -176,7 +249,7 @@ workIntentRoutes.get('/', async (c) => {
     .orderBy(desc(workIntents.created_at))
     .limit(limit);
 
-  return c.json({ intents: rows });
+  return c.json({ intents: rows.map(projectWorkIntent) });
 });
 
 workIntentRoutes.get('/observations', async (c) => {
@@ -209,7 +282,8 @@ workIntentRoutes.get('/observations', async (c) => {
       classifier_result: messageObservations.classifier_result,
       downstream_jobs: messageObservations.downstream_jobs,
       capture_count: messageObservations.capture_count,
-      last_error: messageObservations.last_error,
+      last_error: user.role === 'owner' || user.role === 'admin'
+        ? messageObservations.last_error : sql<null>`null`,
       started_at: messageObservations.started_at,
       completed_at: messageObservations.completed_at,
       created_at: messageObservations.created_at,
@@ -250,7 +324,7 @@ workIntentRoutes.get('/:id', async (c) => {
   const id = c.req.param('id');
 
   const [row] = await db
-    .select()
+    .select({ ...getTableColumns(workIntents), can_read_action: visibleWorkIntentActionSql(user) })
     .from(workIntents)
     .where(and(
       eq(workIntents.org_id, user.org_id),
@@ -263,7 +337,7 @@ workIntentRoutes.get('/:id', async (c) => {
     return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
   }
 
-  return c.json({ intent: row });
+  return c.json({ intent: projectWorkIntent(row) });
 });
 
 workIntentRoutes.post('/:id/retry', async (c) => {
@@ -341,6 +415,55 @@ workIntentRoutes.post('/:id/retry', async (c) => {
   const employeeId = row.agent_employee_id && row.agent_user_id ? row.agent_employee_id : fallbackDefty!.employeeId;
   const employeeUserId = row.agent_user_id ?? fallbackDefty!.userId;
   const employeeSlug = row.agent_slug ?? fallbackDefty!.slug;
+
+  // A knowledge-update retry repeats the original proposal against the page
+  // revision it was built on. The original is the capture action this
+  // employee queued for this intent with the same page and patch.
+  let frozenWikiTarget: Record<string, unknown> | null = null;
+  if (row.proposed_action === 'wiki_update') {
+    const proposed = asRecord(row.proposed_params);
+    const jsonParam = (key: string) => JSON.stringify(proposed[key] ?? null);
+    const [original] = await db
+      .select({ before_state: agentActions.before_state })
+      .from(agentActions)
+      .where(and(
+        eq(agentActions.org_id, user.org_id),
+        eq(agentActions.source, 'defty_capture'),
+        eq(agentActions.action, 'wiki_update'),
+        eq(agentActions.agent_employee_id, employeeId),
+        sql`${agentActions.params}->>'work_intent_id' = ${row.id}`,
+        sql`coalesce(${agentActions.params}->'page_id', 'null'::jsonb) = ${jsonParam('page_id')}::jsonb`,
+        sql`coalesce(${agentActions.params}->'slug', 'null'::jsonb) = ${jsonParam('slug')}::jsonb`,
+        sql`coalesce(${agentActions.params}->'patch', 'null'::jsonb) = ${jsonParam('patch')}::jsonb`,
+        sql`coalesce(${agentActions.params}->'expected_version', 'null'::jsonb) = ${jsonParam('expected_version')}::jsonb`,
+      ))
+      .orderBy(desc(agentActions.created_at))
+      .limit(1);
+    const target = readFrozenTarget(original?.before_state);
+    if (!target || target.mode !== 'update' || !target.page_id || !target.revision) {
+      return c.json(
+        {
+          error: 'This knowledge update cannot be retried. Capture it again against the current page.',
+          code: 'RETRY_UNAVAILABLE',
+        },
+        409,
+      );
+    }
+    // The employee must still reach the page; the original revision is kept.
+    if (!(await wikiUpdateProposalTarget(proposed, user.org_id, employeeId))) {
+      return c.json({ error: WIKI_TARGET_UNAVAILABLE_ERROR, code: 'WIKI_TARGET_UNAVAILABLE' }, 409);
+    }
+    frozenWikiTarget = { [TARGET_KEY]: target };
+  }
+  // A knowledge-create retry is a new proposal with its own frozen slug; it
+  // takes nothing from earlier action rows.
+  if (row.proposed_action === 'wiki_create') {
+    const frozen = await wikiCreateProposalTarget(asRecord(row.proposed_params), user.org_id, employeeId);
+    if (!frozen) {
+      return c.json({ error: WIKI_CREATE_TARGET_UNAVAILABLE_ERROR, code: 'WIKI_TARGET_UNAVAILABLE' }, 409);
+    }
+    frozenWikiTarget = frozen.values.before_state;
+  }
 
   const retry = await db.transaction(async (tx) => {
     await tx.execute(sql`
@@ -468,6 +591,7 @@ workIntentRoutes.post('/:id/retry', async (c) => {
         action: row.proposed_action,
         message_id: row.source_message_id,
         params,
+        ...(frozenWikiTarget ? { before_state: frozenWikiTarget } : {}),
         approval_tier: getApprovalTier(row.proposed_action),
         approval_status: 'pending',
         source: 'defty_capture',

@@ -14,6 +14,7 @@ import { truncatePlainText } from './plain-text.js';
 import { ACTION_TOOLS, AGENT_TOOLS } from './agent-tools.js';
 import { buildActionGraph, type ActionGraph } from './agent-action-graph.js';
 import { syncApprovalToAttention } from './attention.js';
+import { wikiProposalTargetValues } from './wiki-proposal-target.js';
 import {
   parseProjectTaskIdentifier,
   agentModuleActionClaimKey,
@@ -460,10 +461,15 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
       };
     }
 
+    // A proposed wiki write records the page revision it was made against.
+    const frozenTargets = await Promise.all(novelActions.map((p) => (
+      wikiProposalTargetValues(p.action, p.params, params.orgId, params.userId, tx)
+    )));
     const actions = await tx
       .insert(agentActions)
       .values(
-        novelActions.map((p) => ({
+        novelActions.map((p, index) => ({
+          ...frozenTargets[index],
           org_id: params.orgId,
           user_id: params.userId,
           conversation_id: params.spaceId,

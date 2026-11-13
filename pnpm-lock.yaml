@@ -13,7 +13,7 @@ overrides:
   engine.io: ^6.6.7
   esbuild: ^0.28.1
   fast-uri: ^3.1.5
-  hono: ^4.13.5
+  hono: ^4.13.16
   ip-address: ^10.3.1
   js-yaml: ^4.3.2
   minimatch@>=7.0.0 <11.0.1: ^11.0.1
@@ -64,7 +64,7 @@ importers:
         version: link:../../packages/shared
       '@hono/node-server':
         specifier: ^2.0.12
-        version: 2.1.5(hono@4.13.14)
+        version: 2.1.7(hono@4.13.18)
       bcryptjs:
         specifier: ^3.0.3
         version: 3.0.3
@@ -78,11 +78,11 @@ importers:
         specifier: 0.8.3
         version: 0.8.3
       hono:
-        specifier: ^4.13.5
-        version: 4.13.14
+        specifier: ^4.13.16
+        version: 4.13.18
       hono-rate-limiter:
         specifier: ^0.5.4
-        version: 0.5.4(hono@4.13.14)
+        version: 0.5.4(hono@4.13.18)
       jsonwebtoken:
         specifier: ^9.0.3
         version: 9.0.3
@@ -750,11 +750,11 @@ packages:
   '@floating-ui/utils@0.2.12':
     resolution: {integrity: sha512-HpCo8tmWzLVad5s2d19EhAz5zqrrQ6s69qd6moPMQvkOuSwDT1YgRfWSVuc4ennqrgv3OHppiOGMQ7oC13yIww==}
 
-  '@hono/node-server@2.1.5':
-    resolution: {integrity: sha512-MgP/I06GdvsilDspMk/qmRzpk8LOUStP6jFAbSRi40W09DhoyUn+Mj7eyKICPqeYKybOjVFLVIAQzvu1bfIa7Q==}
+  '@hono/node-server@2.1.7':
+    resolution: {integrity: sha512-Wr0E6S+v2Bw9FkpGNP5BQ5QbJvclUa06UVehd65WFZe6XeJwbrKQQ5wPDevc0IC+QyzbO7v3Llh5uo45IZcSnA==}
     engines: {node: '>=20'}
     peerDependencies:
-      hono: ^4.13.5
+      hono: ^4.13.16
 
   '@humanfs/core@0.19.2':
     resolution: {integrity: sha512-UhXNm+CFMWcbChXywFwkmhqjs3PRCmcSa/hfBgLIb7oQ5HNb1wS0icWsGtSAUNgefHeI+eBrA8I1fxmbHsGdvA==}
@@ -2593,14 +2593,14 @@ packages:
   hono-rate-limiter@0.5.4:
     resolution: {integrity: sha512-P3/cscAmz1hA+MuM+Hn9gP/EyO2zWv2aXIFkVYuLZkPzrPa4oaWdVCS94vyDlsNBgeMnE/Hr2+LznIKQxrF0ng==}
     peerDependencies:
-      hono: ^4.13.5
+      hono: ^4.13.16
       unstorage: ^1.17.3
     peerDependenciesMeta:
       unstorage:
         optional: true
 
-  hono@4.13.14:
-    resolution: {integrity: sha512-yhRLQ21U6qa9Hsu2N7Qcbh8tE+WKEcoErjIo56LeSGiGXGp9sA7UpE86Ui9uexb61KakiGwuHMn2QdV7w6i6kQ==}
+  hono@4.13.18:
+    resolution: {integrity: sha512-H9q/E1XizaWstJxUW881dmLxEj+t/TrGGnyxINkm4+sK0qUwsMtFdo2BWI9Vs3cIS19MU6b6iCijoUoEf4f3DA==}
     engines: {node: '>=16.9.0'}
 
   hookified@1.15.1:
@@ -4242,9 +4242,9 @@ snapshots:
 
   '@floating-ui/utils@0.2.12': {}
 
-  '@hono/node-server@2.1.5(hono@4.13.14)':
+  '@hono/node-server@2.1.7(hono@4.13.18)':
     dependencies:
-      hono: 4.13.14
+      hono: 4.13.18
 
   '@humanfs/core@0.19.2':
     dependencies:
@@ -6054,11 +6054,11 @@ snapshots:
 
   highlight.js@11.11.1: {}
 
-  hono-rate-limiter@0.5.4(hono@4.13.14):
+  hono-rate-limiter@0.5.4(hono@4.13.18):
     dependencies:
-      hono: 4.13.14
+      hono: 4.13.18
 
-  hono@4.13.14: {}
+  hono@4.13.18: {}
 
   hookified@1.15.1: {}
 

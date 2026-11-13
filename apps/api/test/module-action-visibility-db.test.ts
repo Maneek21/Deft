@@ -96,11 +96,9 @@ test('module actions are visible only to requester, explicit reviewer, or admin'
       moduleActionId,
       ordinaryActionId,
     ]));
-    // Lane W2-a1 (C02): approving one action does not open another member's
-    // private Defty action.
-    assert.deepEqual(new Set(await visibleIds('member', reviewerId)), new Set([
-      moduleActionId,
-    ]));
+    // An approver assignment opens an action only to a reviewer of it; the
+    // requester is an active member, so it is the one reviewer here.
+    assert.deepEqual(await visibleIds('member', reviewerId), []);
     // Lane W2-a1 (C02): a Defty action is private to its requester, an
     // assigned approver and owners/admins, so an unrelated member and a guest
     // no longer receive the ordinary Defty action either.

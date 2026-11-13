@@ -30,6 +30,13 @@ test('ordinary approved wiki update exposes original v1 through history and leav
     await client.query("INSERT INTO agent_actions(id,org_id,user_id,source,action,params,approval_tier,approval_status) VALUES($1,$2,$3,'native','wiki_write',$4::jsonb,'quick','approved')", [actionId, orgId, userId, JSON.stringify(params)]);
 
     const { executeAction } = await import('../src/lib/agent-actions.js');
+    // Created actions record the page revision they were made against.
+    const { wikiProposalTargetValues } = await import('../src/lib/wiki-proposal-target.js');
+    const freeze = async (id: string) => {
+      const frozen = await wikiProposalTargetValues('wiki_write', params, orgId, userId);
+      await client.query('UPDATE agent_actions SET before_state=$2::jsonb WHERE id=$1', [id, JSON.stringify(frozen.before_state)]);
+    };
+    await freeze(actionId);
     const { wikiRoutes } = await import('../src/routes/wiki.js');
     const app = new Hono();
     app.use('*', async (c, next) => {
@@ -61,6 +68,7 @@ test('ordinary approved wiki update exposes original v1 through history and leav
 
     // A separate ordinary unchanged-content action is not an execution replay.
     await client.query("INSERT INTO agent_actions(id,org_id,user_id,source,action,params,approval_tier,approval_status) VALUES($1,$2,$3,'native','wiki_write',$4::jsonb,'quick','approved')", [noOpActionId, orgId, userId, JSON.stringify(params)]);
+    await freeze(noOpActionId);
     const noOp = await executeAction(noOpActionId, 'wiki_write', params, orgId, userId);
     assert.equal(noOp.success, true, noOp.error);
     const afterNoOp = await client.query('SELECT version FROM wiki_page_versions WHERE page_id=$1 ORDER BY version', [pageId]);

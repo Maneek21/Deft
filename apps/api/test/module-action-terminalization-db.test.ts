@@ -31,13 +31,14 @@ async function insertPendingAction(input: {
   action: string;
   params: Record<string, unknown>;
   stale?: boolean;
+  source?: string;
 }) {
   assert.ok(client);
   const result = await client.query(
     `INSERT INTO agent_actions
        (id, org_id, user_id, agent_employee_id, source, action, params,
         approval_tier, approval_status, created_at, updated_at)
-     VALUES (gen_random_uuid()::text, $1, $2, $3, 'mcp', $4, $5::jsonb,
+     VALUES (gen_random_uuid()::text, $1, $2, $3, $7, $4, $5::jsonb,
        'full', 'pending',
        CASE WHEN $6 THEN NOW() - INTERVAL '48 hours' ELSE NOW() END,
        NOW())
@@ -49,6 +50,7 @@ async function insertPendingAction(input: {
       input.action,
       JSON.stringify(input.params),
       input.stale ?? false,
+      input.source ?? 'mcp',
     ],
   );
   const action = result.rows[0];
@@ -157,6 +159,8 @@ test('TTL terminalizes module actions with one verified receipt and closes linke
     shadowUserId: TTL_SHADOW_ID,
     action: 'module_record_update',
     stale: true,
+    // A WorkIntent closes only through its own capture action.
+    source: 'defty_capture',
     params: {
       module_id: 'com.deft.contacts',
       collection_key: 'contacts',
@@ -167,6 +171,27 @@ test('TTL terminalizes module actions with one verified receipt and closes linke
       unset_fields: [],
       idempotency_key: rawKey,
       work_intent_id: workIntentId,
+    },
+  });
+
+  // A non-capture module action naming another intent is terminalized too,
+  // but that intent stays as it was.
+  const untouchedIntentId = await insertWorkIntent(TTL_EMPLOYEE_ID, 'ttl-untouched');
+  const untouchedAction = await insertPendingAction({
+    employeeId: TTL_EMPLOYEE_ID,
+    shadowUserId: TTL_SHADOW_ID,
+    action: 'module_record_update',
+    stale: true,
+    params: {
+      module_id: 'com.deft.contacts',
+      collection_key: 'contacts',
+      record_id: `ttl-untouched-record-${suffix}`,
+      expected_manifest_digest: `sha256:${'a'.repeat(64)}`,
+      expected_revision: 1,
+      patch: { notes: 'untouched' },
+      unset_fields: [],
+      idempotency_key: `ttl-untouched-key-${suffix}`,
+      work_intent_id: untouchedIntentId,
     },
   });
 
@@ -212,6 +237,18 @@ test('TTL terminalizes module actions with one verified receipt and closes linke
   );
   assert.equal(intent.rows[0].status, 'expired');
   assert.equal(intent.rows[0].failure_reason, 'Approval expired');
+  const untouchedTerminal = await client.query(
+    'SELECT approval_status, params, executed_at FROM agent_actions WHERE id = $1',
+    [untouchedAction.id],
+  );
+  assert.equal(untouchedTerminal.rows[0].approval_status, 'expired');
+  assert.ok(untouchedTerminal.rows[0].executed_at);
+  assert.equal('work_intent_id' in untouchedTerminal.rows[0].params, false);
+  const untouched = await client.query(
+    'SELECT status, converted_action_id, failure_reason FROM work_intents WHERE id = $1',
+    [untouchedIntentId],
+  );
+  assert.deepEqual(untouched.rows[0], { status: 'proposed', converted_action_id: null, failure_reason: null });
 });
 
 test('employee DELETE uses module terminalization while preserving generic expiry behavior', { skip: !canRun }, async () => {
@@ -223,6 +260,7 @@ test('employee DELETE uses module terminalization while preserving generic expir
     employeeId: DELETE_EMPLOYEE_ID,
     shadowUserId: DELETE_SHADOW_ID,
     action: 'module_record_create',
+    source: 'defty_capture',
     params: {
       module_id: 'com.deft.contacts',
       collection_key: 'contacts',

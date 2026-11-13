@@ -60,10 +60,11 @@ async function seedFixtures() {
        ON CONFLICT (id) DO NOTHING`,
       [OUTSIDER_USER_ID, OUTSIDER_EMAIL],
     );
+    // The receipts belong to source-less employee actions, which an org admin may read.
     await c.query(
       `INSERT INTO org_members (id, org_id, user_id, role, is_active)
-       VALUES (gen_random_uuid()::text, $1, $2, 'member', true)
-       ON CONFLICT (org_id, user_id) DO NOTHING`,
+       VALUES (gen_random_uuid()::text, $1, $2, 'admin', true)
+       ON CONFLICT (org_id, user_id) DO UPDATE SET role = 'admin', is_active = true`,
       [ORG_ID, MEMBER_USER_ID],
     );
 

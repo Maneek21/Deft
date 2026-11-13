@@ -43,6 +43,7 @@ import {
 import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
 import { normalizeMcpApprovalAction } from '../mcp-approval-actions.js';
+import { wikiCreateProposalTarget, wikiTargetUnavailableResult, wikiUpdateProposalTarget } from './wiki-create.js';
 import { getIO } from '../../socket.js';
 import {
   upsertAttentionItem,
@@ -453,6 +454,14 @@ export async function requestHumanApproval(
   if (!normalized.ok) {
     return errorResult(normalized.error);
   }
+  // A wiki update is frozen to the page revision this employee may update
+  // now; a wiki create to the slug it will be created at.
+  const frozenWikiTarget = normalized.action === 'wiki_update'
+    ? await wikiUpdateProposalTarget(normalized.params, ctx.org_id, ctx.employee_id)
+    : normalized.action === 'wiki_create' ? await wikiCreateProposalTarget(normalized.params, ctx.org_id, ctx.employee_id) : null;
+  if ((normalized.action === 'wiki_update' || normalized.action === 'wiki_create') && !frozenWikiTarget) {
+    return wikiTargetUnavailableResult(normalized.action);
+  }
 
   const [emp] = await db
     .select({
@@ -500,6 +509,7 @@ export async function requestHumanApproval(
   const [row] = await db
     .insert(agentActions)
     .values({
+      ...(frozenWikiTarget ? frozenWikiTarget.values : {}),
       org_id: ctx.org_id,
       user_id: emp.created_by,
       agent_employee_id: ctx.employee_id,

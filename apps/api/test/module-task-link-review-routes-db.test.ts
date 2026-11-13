@@ -194,8 +194,11 @@ test('pending task-link review resolves only current canonical targets for an el
        VALUES ($1,$2,$3,$4,'pending')`,
       [randomUUID(), orgId, reviewerAction, memberId],
     );
-    const reviewerResponse = await response({ id: memberId, org_id: orgId, role: 'member' }, reviewerAction);
-    assert.equal(reviewerResponse.status, 200, 'an explicitly assigned active reviewer can read canonical targets');
+    // The action's reviewers are the owners/admins (its own user is an agent):
+    // an assignment naming a member does not open the review to them.
+    await notFound(await response({ id: memberId, org_id: orgId, role: 'member' }, reviewerAction), [canonicalRecordLabel]);
+    const reviewerResponse = await response({ id: ownerId, org_id: orgId, role: 'owner' }, reviewerAction);
+    assert.equal(reviewerResponse.status, 200, 'a reviewer can read canonical targets');
     assert.equal((await reviewerResponse.json() as any).record.label, canonicalRecordLabel);
 
     await client.query(

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { eq, and, desc, sql, or, isNull, asc, gte, lt, inArray, notInArray } from 'drizzle-orm';
 import crypto from 'node:crypto';
 import { db } from '../lib/db.js';
+import { reviewableApprovalCountsByEmployee } from '../lib/pending-approval-audience.js';
 import { hermesBundleAvailability, type HermesBundleAvailability } from '../lib/hermes-release.js';
 import {
   EMPLOYEE_MCP_APP_SCOPES,
@@ -123,19 +124,8 @@ agentEmployeeRoutes.get('/', async (c) => {
       return c.json(employees);
     }
 
-    // Aggregate pending action counts per employee.
-    const pendingRows = await db.execute(sql`
-      SELECT agent_employee_id, COUNT(*)::int AS cnt
-      FROM agent_actions
-      WHERE org_id = ${user.org_id}
-        AND agent_employee_id IS NOT NULL
-        AND approval_status = 'pending'
-      GROUP BY agent_employee_id
-    `);
-    const pendingMap = new Map<string, number>();
-    for (const r of ((pendingRows as any).rows ?? pendingRows) as any[]) {
-      if (r.agent_employee_id) pendingMap.set(r.agent_employee_id, Number(r.cnt));
-    }
+    // Pending approvals of each employee that this viewer can review.
+    const pendingMap = await reviewableApprovalCountsByEmployee(user);
 
     // 24h session turn stats: count, last_turn_at, avg latency.
     const turnStats = await db.execute(sql`

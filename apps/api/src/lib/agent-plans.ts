@@ -27,6 +27,11 @@ import type { TrustLevel } from './agent-approval.js';
 import { getIO } from '../socket.js';
 import { getMCPToolsForAgent } from './mcp-tools.js';
 import { getActiveAgentToolPolicy } from './agent-tool-policy.js';
+import {
+  CONNECTED_TOOL_UNAVAILABLE_ERROR,
+  isConnectedToolName,
+  isWorkspaceGuest,
+} from './connected-tool-access.js';
 
 // ─── Types ───
 
@@ -87,6 +92,27 @@ type PlanWriteResult = {
 };
 
 class PlanApprovalBoundaryError extends Error {}
+
+/** A plan request the caller may not make; the message is safe to show. */
+export class PlanAccessError extends Error {}
+
+export const PLAN_EMPLOYEE_UNAVAILABLE_ERROR = 'Agent employee is not available';
+
+/** A plan can be bound only to an active employee of its own workspace. */
+export async function assertPlanEmployeeBindable(orgId: string, agentEmployeeId: string): Promise<void> {
+  if (!(await getActiveAgentToolPolicy(orgId, agentEmployeeId))) {
+    throw new PlanAccessError(PLAN_EMPLOYEE_UNAVAILABLE_ERROR);
+  }
+}
+
+/** Plans with connected steps are created and approved for workspace members. */
+export async function assertPlanStepsAllowedFor(orgId: string, userId: string, steps: unknown): Promise<void> {
+  const hasConnectedStep = Array.isArray(steps)
+    && steps.some((step) => isConnectedToolName((step as { tool?: unknown } | null)?.tool));
+  if (hasConnectedStep && await isWorkspaceGuest(orgId, userId)) {
+    throw new PlanAccessError(CONNECTED_TOOL_UNAVAILABLE_ERROR);
+  }
+}
 
 function planStepRequestKey(
   planId: string,
@@ -372,6 +398,7 @@ export interface CreatePlanRowInput {
 export async function createPlanRow(
   input: CreatePlanRowInput,
 ): Promise<{ plan_id: string; status: 'draft' }> {
+  await assertPlanStepsAllowedFor(input.org_id, input.user_id, input.steps);
   const steps = input.steps.map((step) => ({
     ...step,
     status: 'pending' as const,
@@ -423,7 +450,7 @@ async function executePlanUnlocked(
   const [plan] = await db
     .select()
     .from(agentPlans)
-    .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, orgId)))
+    .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, orgId), eq(agentPlans.user_id, userId)))
     .limit(1);
 
   if (!plan) throw new Error(`Plan ${planId} not found`);
@@ -459,6 +486,8 @@ async function executePlanUnlocked(
 
   const steps = plan.steps as PlanStep[];
   const context: PlanContext = (plan.context as PlanContext) ?? {};
+  const connectedStepsRefused = steps.some((candidate) => isConnectedToolName(candidate.tool))
+    && await isWorkspaceGuest(orgId, userId);
   const startIdx = plan.current_step ?? 0;
   const failFast = plan.fail_fast === true;
   const rollbackOnFail = plan.rollback_on_fail === true;
@@ -537,6 +566,14 @@ async function executePlanUnlocked(
 
     try {
       const resolvedParams = resolveStepReferences(step.params, context);
+      if (plan.agent_employee_id && (step.tool === 'document_send' || step.tool === 'workspace_plan_import')) {
+        // These proposals are reviewed against their source message, which an
+        // employee records through its own document_send / workspace_plan_import tools.
+        throw new PlanApprovalBoundaryError(`'${step.tool}' is proposed by the employee's own tool with its source message, not as a plan step`);
+      }
+      if (connectedStepsRefused && isConnectedToolName(step.tool)) {
+        throw new PlanApprovalBoundaryError(CONNECTED_TOOL_UNAVAILABLE_ERROR);
+      }
       const mcpToolPolicy = step.tool.startsWith('mcp__')
         ? (await getMCPToolsForAgent(orgId, plan.agent_employee_id ?? undefined))
           .find((tool) => tool.name === step.tool)
@@ -575,6 +612,9 @@ async function executePlanUnlocked(
           plan.conversation_id ?? undefined,
           plan.agent_employee_id ?? undefined,
         );
+        if ((result as { error?: unknown } | null)?.error === CONNECTED_TOOL_UNAVAILABLE_ERROR) {
+          throw new PlanApprovalBoundaryError(CONNECTED_TOOL_UNAVAILABLE_ERROR);
+        }
         step.status = 'completed';
         step.result = result;
         context[step.id] = { result };
@@ -635,6 +675,8 @@ async function executePlanUnlocked(
             },
           });
           return;
+        } else if (execResult.error === CONNECTED_TOOL_UNAVAILABLE_ERROR) {
+          throw new PlanApprovalBoundaryError(CONNECTED_TOOL_UNAVAILABLE_ERROR);
         } else {
           throw new Error(execResult.error || 'Action execution failed');
         }

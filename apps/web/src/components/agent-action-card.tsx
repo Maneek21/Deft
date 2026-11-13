@@ -63,7 +63,21 @@ export type AgentAction = {
   source?: string | null;
   employee_name?: string | null;
   proposer?: 'employee' | 'defty' | string | null;
+  /** Sent by the Inbox: whether this viewer may approve or reject. */
+  viewer_can_approve?: boolean;
+  viewer_can_reject?: boolean;
 };
+
+/**
+ * The review controls this viewer gets. When the server sends the viewer's
+ * review flags they decide; without them (older servers, and surfaces that
+ * do not send them) both controls stay as before.
+ */
+function getViewerReviewControls(action: { viewer_can_approve?: boolean; viewer_can_reject?: boolean }) {
+  const approve = action.viewer_can_approve !== false;
+  const reject = action.viewer_can_reject !== false;
+  return { approve, reject, waiting: !approve && !reject };
+}
 
 type LocalStatus = 'approving' | 'rejecting' | 'approved' | 'rejected' | 'failed' | 'executing' | null;
 type AgentActionCardVariant = 'review' | 'compact';
@@ -649,6 +663,10 @@ export function AgentActionCard({
       ? action.params.space_id
       : null;
   const resolvedStatus = localStatus ?? serverStatus;
+  const reviewControls = getViewerReviewControls(action);
+  const waitingForReview = reviewControls.waiting ? (
+    <p role="status" className="text-[12px]" style={{ color: 'var(--muted)' }}>Waiting for review</p>
+  ) : null;
   const isBusy = resolvedStatus === 'approving' || resolvedStatus === 'rejecting' || resolvedStatus === 'executing';
   const hasReceipt = action.has_receipt === true;
   const isAppRunAction = action.action === 'app_run_invoke' || action.source === 'app_run';
@@ -1126,6 +1144,7 @@ export function AgentActionCard({
 
         {taskLinkReviewPanel}{runtimeReviewPanel}{nativeReviewPanel}{retiredEmailAction&&<p role="status">This historical action is unavailable. Use the installed connected app to review a new action.</p>}
         <div className="mt-2.5 flex flex-wrap items-center gap-2">
+          {reviewControls.approve && (
           <button
             type="button"
             onClick={handleApprove}
@@ -1138,6 +1157,8 @@ export function AgentActionCard({
             <CheckCircle2 size={13} strokeWidth={1.9} />
             {compactApproveLabel}
           </button>
+          )}
+          {reviewControls.reject && (
           <button
             type="button"
             onClick={handleReject}
@@ -1147,6 +1168,8 @@ export function AgentActionCard({
           >
             Dismiss
           </button>
+          )}
+          {waitingForReview}
           {appRunInspectorButton}
           <button
             type="button"
@@ -1383,6 +1406,7 @@ export function AgentActionCard({
 
       {taskLinkReviewPanel}{runtimeReviewPanel}{nativeReviewPanel}{retiredEmailAction&&<p role="status">This historical action is unavailable. Use the installed connected app to review a new action.</p>}
       <div className="flex flex-col sm:flex-row gap-2 mt-3">
+        {reviewControls.approve && (
         <button
           onClick={handleApprove}
           disabled={isBusy || retiredEmailAction
@@ -1394,6 +1418,8 @@ export function AgentActionCard({
           <CheckCircle2 size={13} strokeWidth={1.8} />
           {approveLabel}
         </button>
+        )}
+        {reviewControls.reject && (
         <button
           onClick={handleReject}
           disabled={isBusy}
@@ -1403,6 +1429,8 @@ export function AgentActionCard({
           <XCircle size={13} strokeWidth={1.8} />
           Dismiss
         </button>
+        )}
+        {waitingForReview}
         {appRunInspectorButton}
       </div>
       {appRunInspector}

@@ -1,4 +1,5 @@
 import { sql, type SQL, type SQLWrapper } from 'drizzle-orm';
+import { actionRequesterIdSql } from './agent-action-requester.js';
 
 /** Current room authority, resolved from canonical rows rather than event payloads. */
 export function currentEmployeeSpaceAuthoritySql(orgId: SQLWrapper, employeeId: SQLWrapper, spaceId: SQLWrapper): SQL {
@@ -100,9 +101,12 @@ export function currentAgentChannelEventAuthoritySql(eventId: SQLWrapper, reader
               and action.org_id = chain.org_id and action.agent_employee_id = chain.agent_employee_id
               and action.approval_status in ('approved', 'rejected')
               and (action.action <> 'chat_mention' or action.message_id is not null)
+              and (action.action not in ('document_send', 'workspace_plan_import') or action.message_id is not null)
               and (action.action <> 'task_assigned' or action.channel_event_id is not null)
               and (action.message_id is null or ${currentEmployeeMessageAuthoritySql(sql`chain.org_id`, sql`chain.agent_employee_id`, sql`action.message_id`)})
               and (action.message_id is null or ${readerMessageAuthoritySql(sql`chain.org_id`, readerUserId, sql`action.message_id`)})
+              and (action.message_id is not null or action.channel_event_id is not null
+                or ${sourcelessActionAudienceSql('action', readerUserId)})
               and (action.channel_event_id is null or (chain.authority_depth < 16 and not action.channel_event_id = any(chain.authority_path)
                 and exists (select 1 from agent_channel_events origin where origin.id = action.channel_event_id
                   and origin.org_id = chain.org_id and origin.agent_employee_id = chain.agent_employee_id)))
@@ -112,10 +116,36 @@ export function currentAgentChannelEventAuthoritySql(eventId: SQLWrapper, reader
   )`;
 }
 
+/**
+ * The human audience of an action with no source: its requester (lib/agent-action-requester.ts) and
+ * current org owners/admins. Agent and system readers pass; their source authority is checked separately.
+ */
+function sourcelessActionAudienceSql(actionAlias: string, readerUserId?: SQLWrapper): SQL {
+  if (!readerUserId) return sql`true`;
+  const field = (name: string) => sql`${sql.identifier(actionAlias)}.${sql.identifier(name)}`;
+  return sql`exists (
+      select 1 from users action_reader where action_reader.id = ${readerUserId}
+        and (
+          (action_reader.kind <> 'human' or action_reader.is_agent = true)
+          or (action_reader.kind = 'human' and action_reader.is_agent = false and (
+            ${actionRequesterIdSql(actionAlias)} = action_reader.id
+            or exists (select 1 from org_members action_reader_membership
+              where action_reader_membership.org_id = ${field('org_id')}
+                and action_reader_membership.user_id = action_reader.id
+                and action_reader_membership.is_active = true
+                and action_reader_membership.role in ('owner', 'admin'))
+          ))
+        )
+    )`;
+}
+
+/** Source-less work is private to its human requester and current org owners/admins; employee reads retain their source authority. */
 export function currentAgentActionSourceAuthoritySql(actionAlias = 'agent_actions', readerUserId?: SQLWrapper): SQL {
   const field = (name: string) => sql`${sql.identifier(actionAlias)}.${sql.identifier(name)}`;
   return sql`(${field('action')} <> 'chat_mention' or ${field('message_id')} is not null)
+    and (${field('action')} not in ('document_send', 'workspace_plan_import') or ${field('message_id')} is not null)
     and (${field('action')} <> 'task_assigned' or ${field('channel_event_id')} is not null)
+    and (${field('message_id')} is not null or ${field('channel_event_id')} is not null or ${sourcelessActionAudienceSql(actionAlias, readerUserId)})
     and (${field('message_id')} is null or ${currentEmployeeMessageAuthoritySql(field('org_id'), field('agent_employee_id'), field('message_id'))})
     and (${field('message_id')} is null or ${readerMessageAuthoritySql(field('org_id'), readerUserId, field('message_id'))})
     and (${field('channel_event_id')} is null or exists (

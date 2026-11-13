@@ -87,6 +87,8 @@ export function NotificationPanel({ onClose }: { onClose: () => void }) {
               created_at: item.created_at,
               approval_tier: item.approval.approval_tier,
               employee_name: item.approval.employee_name,
+              viewer_can_approve: item.approval.viewer_can_approve,
+              viewer_can_reject: item.approval.viewer_can_reject,
             };
             return (
               <div key={item.id} className="py-2">

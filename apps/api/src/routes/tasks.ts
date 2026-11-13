@@ -5,6 +5,7 @@ import { enqueueNativeMentionPublication } from '../lib/native-mentions.js';
 import { z } from 'zod';
 import { eq, and, desc, asc, sql, inArray, ilike, or, isNull, type SQL } from 'drizzle-orm';
 import { db } from '../lib/db.js';
+import { reviewableApprovalCountsByEmployee } from '../lib/pending-approval-audience.js';
 import { nativeCreate, nativeCreateKey, NativeCreateError } from '../lib/native-create.js';
 import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, taskRelationships, files, taskAttachments, savedViews, taskWatchers, taskAssignees, taskReactions, wikiPages, wikiCitations, orgMembers, workflowRules, agentEmployees, agentActions, agentChannelDeliveryAttempts, agentChannelEvents, agentCooperativeLog, spaces, spaceMembers } from '@deft/db/schema';
 import { getIO, emitToUser, emitOrgTaskEvent } from '../socket.js';
@@ -1071,21 +1072,13 @@ taskRoutes.post('/:id/agent-handoff', async (c) => {
       return c.json({ error: 'Could not queue this task for the agent employee', code: 'HANDOFF_FAILED', reason: dispatch.reason }, 500);
     }
 
-    const [pending] = await db.select({
-      count: sql<number>`count(*)::int`,
-    })
-      .from(agentActions)
-      .where(and(
-        eq(agentActions.org_id, user.org_id),
-        eq(agentActions.agent_employee_id, employee.id),
-        eq(agentActions.approval_status, 'pending'),
-      ));
+    const pending = await reviewableApprovalCountsByEmployee(user, [employee.id]);
 
     return c.json({
       queued: true,
       employee: {
         ...employee,
-        pending_action_count: pending?.count ?? 0,
+        pending_action_count: pending.get(employee.id) ?? 0,
       },
     });
   } catch (err) {

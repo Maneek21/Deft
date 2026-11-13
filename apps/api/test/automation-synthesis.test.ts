@@ -18,6 +18,7 @@ test('grounded standup accepts only known evidence references', () => {
     }),
     standupDraftSchema,
     new Set(['task:12']),
+    { evidenceText: 'MKT-12 Launch was completed by Lina.' },
   );
   assert.equal(draft.done[0]?.text, 'MKT-12 shipped by Lina.');
 });
@@ -89,4 +90,121 @@ test('native event contract preserves normalized attendees', () => {
   });
   assert.equal(parsed.metadata?.attendees?.[0]?.email, 'lina@example.com');
   assert.equal(parsed.metadata?.attendees?.[0]?.name, 'Lina');
+});
+
+const sourceIds = new Set(['task:1', 'message:2']);
+const backslash = String.fromCharCode(92);
+const newline = String.fromCharCode(10);
+const standupDraft = (items: Array<{ text: string; source_ids?: string[] }>) => JSON.stringify({ done: [], in_progress: items, blocked: [] });
+
+const linkConstructs = [
+  '[task](/tasks?task=invented "details")',
+  '[task](</tasks?task=invented>)',
+  '[spec](https://example.com/spec)',
+  `See [task][1]${newline}[1]: /tasks?task=invented`,
+  `See [task][r]${newline}${newline}> [r]: &#47;tasks?task=invented`,
+  `- [r]: /tasks`,
+  '[task](&#47;tasks?task=invented)',
+  '&lsqb;task&rsqb;&lpar;/tasks&rpar;',
+  '&#91;task&#93;&#40;/tasks&#41;',
+  '<https://workspace.example/tasks?task=invented>',
+  '&lt;https://workspace.example/tasks&gt;',
+  '<www.example.com>',
+  'Open https://workspace.example/tasks?task=invented',
+  '<a href="/tasks">task</a>',
+  '<img src="https://example.com/x.png">',
+  '[task](https://workspace.example/a(b)/../tasks?task=invented)',
+  `[task](${backslash}/tasks?task=invented)`,
+];
+for (const link of linkConstructs) {
+  test(`grounded parser rejects the link construct ${JSON.stringify(link)}`, () => {
+    assert.throws(() => parseGroundedDraft(standupDraft([{ text: link, source_ids: ['task:1'] }]), standupDraftSchema, sourceIds), /link/i);
+  });
+}
+
+test('grounded parser rejects a link that appears only after JSON decoding', () => {
+  const raw = `{"in_progress":[{"text":"Review [task](${backslash}u002ftasks?task=invented)","source_ids":["task:1"]}]}`;
+  assert.ok(!raw.includes('](/tasks'), 'the serialized reply carries no plain link');
+  assert.throws(() => parseGroundedDraft(raw, standupDraftSchema, sourceIds), /link/i);
+});
+
+for (const claim of [
+  'Project lead approval is required before shipping MKT-1.',
+  'Approval from Dr. Smith is required.',
+  `Approval:${newline}Required before launch.`,
+  'The release must be signed off by Lina.',
+  'Lina will sign off on the release.',
+  'Appr&#111;val is required before launch.',
+  'Ana approved the launch plan.',
+  'No approval is required for MKT-1.',
+]) {
+  test(`grounded parser rejects an item that mentions approval: ${JSON.stringify(claim)}`, () => {
+    assert.throws(() => parseGroundedDraft(standupDraft([{ text: claim, source_ids: ['task:1'] }]), standupDraftSchema, sourceIds), /approval/i);
+  });
+}
+
+test('grounded parser keeps plain cited progress, including brackets and entities that form no link', () => {
+  const draft = parseGroundedDraft(standupDraft([
+    { text: 'Login fix is in progress with Lina.', source_ids: ['task:1'] },
+    { text: '[Draft] launch notes &amp; checklist are 80% done (2 of 3).', source_ids: ['message:2'] },
+  ]), standupDraftSchema, sourceIds);
+  assert.equal(draft.in_progress.length, 2);
+});
+
+test('grounded parser drops uncited items before the section caps', () => {
+  const uncited = Array.from({ length: 5 }, (_, index) => ({ text: `Uncited ${index}`, source_ids: [] }));
+  const draft = parseGroundedDraft(
+    standupDraft([...uncited, { text: 'No ids key' }, { text: 'Login fix is in progress.', source_ids: ['task:1'] }]),
+    standupDraftSchema,
+    sourceIds,
+    { sectionLimits: { done: 5, in_progress: 5, blocked: 5 } },
+  );
+  assert.deepEqual(draft.in_progress.map((item) => item.text), ['Login fix is in progress.']);
+});
+
+test('grounded parser rejects a draft whose items all cite no evidence, and an empty draft when items are required', () => {
+  assert.throws(() => parseGroundedDraft(standupDraft([{ text: 'Uncited claim', source_ids: [] }]), standupDraftSchema, sourceIds), /cites/i);
+  assert.throws(() => parseGroundedDraft('{}', standupDraftSchema, sourceIds, { minItems: 1 }), /cites/i);
+  assert.deepEqual(parseGroundedDraft('{}', meetingPrepDraftSchema, sourceIds).agenda, []);
+});
+
+test('grounded parser keeps bracketed prose followed by a parenthesis', () => {
+  const draft = parseGroundedDraft(standupDraft([{ text: 'Launch [draft] (2 of 3 tasks done).', source_ids: ['task:1'] }]), standupDraftSchema, sourceIds);
+  assert.equal(draft.in_progress.length, 1);
+});
+
+for (const link of ['<owner@example.com>', 'Ask owner@example.com for notes.', `See [a${backslash}]b].${newline}${newline}[a${backslash}]b]: /tasks?task=invented`]) {
+  test(`grounded parser rejects the link construct ${JSON.stringify(link)}`, () => {
+    assert.throws(() => parseGroundedDraft(standupDraft([{ text: link, source_ids: ['task:1'] }]), standupDraftSchema, sourceIds), /link/i);
+  });
+}
+
+const keyEvidence = { evidenceText: 'MKT-1 Ship the login fix is in progress with Lina. Ana in #launch: see @[[deft:person:p1]]' };
+for (const [text, delivered] of [
+  ['MKT-1 is in progress with Lina.', true],
+  ['Review [[deft:task:1]] today.', true],
+  ['Sync with @[[deft:person:p1]].', true],
+  ['FAKE-999 is done.', false],
+  ['MKT-12 is done.', false],
+  ['Review [[deft:task:2]] today.', false],
+  ['Sync with @[[deft:person:p2]].', false],
+] as const) {
+  test(`grounded parser ${delivered ? 'keeps' : 'rejects'} the reference in ${JSON.stringify(text)}`, () => {
+    const parse = () => parseGroundedDraft(standupDraft([{ text, source_ids: ['task:1'] }]), standupDraftSchema, sourceIds, keyEvidence);
+    if (delivered) assert.equal(parse().in_progress.length, 1);
+    else assert.throws(parse, /outside the supplied evidence/);
+  });
+}
+
+test('grounded parser treats every task key as unknown when no evidence text is supplied', () => {
+  assert.throws(() => parseGroundedDraft(standupDraft([{ text: 'MKT-1 is in progress.', source_ids: ['task:1'] }]), standupDraftSchema, sourceIds), /outside the supplied evidence/);
+});
+
+test('grounded parser checks a Markdown-escaped task key as rendered', () => {
+  assert.throws(() => parseGroundedDraft(
+    standupDraft([{ text: `FAKE${backslash}-999 is done.`, source_ids: ['task:1'] }]),
+    standupDraftSchema,
+    sourceIds,
+    keyEvidence,
+  ), /outside the supplied evidence/);
 });

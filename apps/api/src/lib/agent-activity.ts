@@ -13,6 +13,7 @@ import { channelEventTextAudienceSql } from './agent-channel.js';
 import { currentEmployeeMessageAuthoritySql, currentEmployeeSpaceAuthoritySql, currentUserSpaceAuthoritySql } from './agent-channel-authority.js';
 import { isCanonicalDeftyEmployee } from './defty-identity.js';
 import { visibleModuleActionSql } from './module-action-visibility.js';
+import { visibleCaptureActionSql } from './agent-action-visibility.js';
 
 export type AgentActivityItem = {
   id: string;
@@ -85,6 +86,7 @@ export async function loadAgentActivity(params: { orgId: string; employeeId: str
     db.select().from(agentActions).where(and(
       eq(agentActions.org_id, params.orgId),
       eq(agentActions.agent_employee_id, params.employeeId),
+      visibleCaptureActionSql({ id: params.viewer.id, org_id: params.orgId }),
       visibleModuleActionSql(params.viewer.role, { userId: params.viewer.id, orgId: params.orgId }),
     )).orderBy(desc(agentActions.created_at)).limit(perSource),
     db.select().from(agentMcpCallAudit).where(and(
