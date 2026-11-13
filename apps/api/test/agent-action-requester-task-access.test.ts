@@ -1,21 +1,12 @@
-/**
- * Approved agent actions reach a task, wiki page or source message only when
- * the action's requester can see it at execution time.
- *
- * Native task kinds run for the action's user (its requester); a Defty capture
- * action runs for the source message author. A target the requester cannot see
- * gets the same answer as a target that does not exist.
- *
- * Run only against a disposable DB:
- *   pnpm --filter @deft/api test test/agent-action-requester-task-access.test.ts
- */
+// Approved agent actions reach a task, wiki page or source message only when the
+// action's requester (a capture's message author) can see it; hidden answers like missing.
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test, { after, before } from 'node:test';
 import pg from 'pg';
 
 import { closeDb } from '../src/lib/db.js';
-import { executeAction } from '../src/lib/agent-actions.js';
+import { executeAction, executeActionDirect } from '../src/lib/agent-actions.js';
 import { approveAction } from '../src/lib/agent-approval-resolver.js';
 import { queueDeftyCreateTaskCapture, queueDeftyKnowledgeCapture } from '../src/lib/defty-capture.js';
 import { ensureDeftyEmployee } from '../src/lib/ensure-defty-membership.js';
@@ -75,19 +66,13 @@ async function run(userId: string, action: string, params: Record<string, unknow
 
 async function insertMessage(spaceId: string, userId: string, content: string): Promise<string> {
   const id = randomUUID();
-  await client.query(
-    'INSERT INTO messages (id, org_id, space_id, user_id, content) VALUES ($1, $2, $3, $4, $5)',
-    [id, orgId, spaceId, userId, content],
-  );
+  await client.query('INSERT INTO messages (id, org_id, space_id, user_id, content) VALUES ($1, $2, $3, $4, $5)',
+    [id, orgId, spaceId, userId, content]);
   return id;
 }
 
 async function taskRow(id: string) {
-  const { rows } = await client.query(
-    'SELECT status, priority, due_date, assignee_id FROM tasks WHERE id = $1',
-    [id],
-  );
-  return rows[0];
+  return (await client.query('SELECT status, priority, due_date, assignee_id FROM tasks WHERE id = $1', [id])).rows[0];
 }
 
 before(async () => {
@@ -251,6 +236,15 @@ test('every native task kind refuses a hidden task exactly as a missing one, and
   assert.deepEqual(hiddenLink.result.skipped, [hidden.id], 'a hidden task is skipped like an unknown one');
   assert.deepEqual(missingLink.result.skipped, [missingId]);
   assert.deepEqual(hiddenLink.result.linked_task_ids, [open.id]);
+
+  assert.equal((await taskRow(open.id)).priority, 'p2', 'a refused batch changes no task');
+  const countBefore = await client.query("SELECT count(*)::int AS n FROM agent_actions WHERE org_id = $1 AND action = 'set_priority'", [orgId]);
+  await assert.rejects(
+    executeActionDirect('set_priority', { task_identifier: hidden.id, priority: 'p0' }, orgId, memberId, null, 'auto'),
+    /^Error: Task not found$/,
+  );
+  const afterDirect = await client.query("SELECT count(*)::int AS n FROM agent_actions WHERE org_id = $1 AND action = 'set_priority'", [orgId]);
+  assert.equal(afterDirect.rows[0].n, countBefore.rows[0].n, 'a refused direct action records no row');
 
   const ok = await run(memberId, 'set_priority', { task_identifier: open.ref, priority: 'p1' });
   assert.equal(ok.success, true, ok.error);

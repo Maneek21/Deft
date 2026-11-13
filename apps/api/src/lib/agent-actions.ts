@@ -3684,6 +3684,9 @@ async function executeActionDirectLocked(
     options?.agentEmployeeId ?? null,
   );
   if (taskScopeError) throw new Error(taskScopeError);
+  // Refuse before the action row is written, as the employee boundary does.
+  const requesterTaskError = await requesterTaskWriteScopeError(action, { ...params }, orgId, userId);
+  if (requesterTaskError) throw new Error(requesterTaskError);
 
   let effectiveApprovalTier = approvalTier;
   let effectiveMcpConnectionId = options?.mcpConnectionId;
