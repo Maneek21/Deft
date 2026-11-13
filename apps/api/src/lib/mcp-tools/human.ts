@@ -553,7 +553,7 @@ async function withIdempotency(
   args: { idempotency_key?: unknown } & Record<string, unknown>,
   ctx: HumanToolContext,
   execute: () => Promise<ToolResult>,
-  options: { bind?: string; store?: (result: ToolResult) => boolean } = {},
+  options: { bind?: string; store?: (result: ToolResult) => Promise<boolean> } = {},
 ): Promise<ToolResult> {
   // A bound result answers only a call for the same target (`bind`); `store`
   // keeps an unsettled answer from being stored for replay.
@@ -584,7 +584,7 @@ async function withIdempotency(
   }
 
   const result = await execute();
-  if (!result.isError && (idempotencyKey || fallbackSignature) && (options.store?.(result) ?? true)) {
+  if (!result.isError && (idempotencyKey || fallbackSignature) && (await options.store?.(result) ?? true)) {
     await db.insert(oauthAuditEvents).values({
       org_id: ctx.org_id,
       user_id: ctx.user_id,
@@ -3652,13 +3652,17 @@ async function decideAsWebReviewer(
   return textResult({ status: decision === 'approve' ? 'approved' : 'rejected', ...body });
 }
 
-/** An answer that only says the decision is still running is never stored for replay. */
-function isSettledDecision(result: ToolResult): boolean {
-  try {
-    return (JSON.parse(result.content[0]?.text ?? '{}') as { status?: unknown }).status !== 'executing';
-  } catch {
-    return true;
-  }
+/**
+ * An answer is stored for replay only once the action itself is settled:
+ * rejected, expired, or approved with its execution recorded. An answer given
+ * while the action still runs (or may reopen) is never stored.
+ */
+async function isSettledDecision(orgId: string, actionId: string): Promise<boolean> {
+  const [row] = await db.select({ approval_status: agentActions.approval_status, executed_at: agentActions.executed_at })
+    .from(agentActions).where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, orgId))).limit(1);
+  if (!row) return false;
+  return row.approval_status === 'rejected' || row.approval_status === 'expired'
+    || (row.approval_status === 'approved' && row.executed_at !== null);
 }
 
 /**
@@ -3677,7 +3681,7 @@ async function decideApproval(
   // Results are stored under the web-decision binding only; earlier stored
   // answers for the action are not replayed.
   const result = await withIdempotency(toolName, args, ctx, () => decide(actionId), {
-    bind: `web-decision:${actionId}`, store: isSettledDecision,
+    bind: `web-decision:${actionId}`, store: () => isSettledDecision(ctx.org_id, actionId),
   });
   if (!(await ownApproval(ctx, actionId, 'write'))) return errorResult('Approval not found');
   return result;
