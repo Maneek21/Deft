@@ -42,7 +42,7 @@ import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
 import { citedMessageRefusal, employeeCanReadCitedMessage } from './cited-message.js';
 import { normalizeMcpApprovalAction } from '../mcp-approval-actions.js';
-import { wikiCreateProposalTarget, wikiTargetUnavailableResult, wikiUpdateProposalTarget } from './wiki-create.js';
+import { citedWikiSourceRefusal, wikiCreateProposalTarget, wikiTargetUnavailableResult, wikiUpdateProposalTarget } from './wiki-create.js';
 import { getIO } from '../../socket.js';
 import {
   upsertAttentionItem,
@@ -460,6 +460,11 @@ export async function requestHumanApproval(
     : normalized.action === 'wiki_create' ? await wikiCreateProposalTarget(normalized.params, ctx.org_id, ctx.employee_id) : null;
   if ((normalized.action === 'wiki_update' || normalized.action === 'wiki_create') && !frozenWikiTarget) {
     return wikiTargetUnavailableResult(normalized.action);
+  }
+  if (normalized.action === 'wiki_update' || normalized.action === 'wiki_create') {
+    const roomRefusal = await citedWikiSourceRefusal(normalized.action, normalized.params,
+      frozenWikiTarget && 'page' in frozenWikiTarget ? frozenWikiTarget.page : null, ctx);
+    if (roomRefusal) return roomRefusal;
   }
 
   const [emp] = await db
