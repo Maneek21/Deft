@@ -35,8 +35,9 @@ import type { AppRunTransaction } from './app-run-repository.js';
  * every conservative-trust employee's approved writes.
  */
 import { eq, and, or, sql, isNull, inArray } from 'drizzle-orm';
-import { reviewableActionSql } from './agent-action-review-gate.js';
-import { actionRequesterId, captureSourceUserId } from './agent-action-requester.js';
+import { currentActionReviewerSql, reviewableActionSql } from './agent-action-review-gate.js';
+import { actionRequesterId, CAPTURE_ACTION_SOURCE, captureSourceUserId } from './agent-action-requester.js';
+import { visibleCaptureActionSql } from './agent-action-visibility.js';
 import { db, type DbAdvisoryLease } from './db.js';
 import {
   APPROVAL_INTERRUPTED_ERROR,
@@ -624,6 +625,40 @@ async function actionSourceIsCurrent(actionId: string, readerUserId?: string) {
   return Boolean(row);
 }
 
+/**
+ * The source boundary of a decision. On the internal path a Defty capture
+ * also needs its author (the requester) to still see the captured room.
+ */
+function decisionSourceSql(row: ReviewedActionRow, readerUserId: string | undefined, internal: boolean | undefined) {
+  if (!internal || row.source !== CAPTURE_ACTION_SOURCE) return actionSourceAuthoritySql(readerUserId);
+  return and(
+    actionSourceAuthoritySql(readerUserId),
+    visibleCaptureActionSql({ id: actionRequesterId(row), org_id: row.org_id }),
+  )!;
+}
+
+/** App Run releases and record-mirror nominations keep the resolver's own reviewer rule. */
+function hasOwnReviewerRule(action: string): boolean {
+  return action === APP_RUN_APPROVAL_ACTION || action === 'app_record_mirror_nominate';
+}
+
+/**
+ * True when the user reviews the action now by the web's gate
+ * (`currentActionReviewerSql`): its requester when an active human member,
+ * otherwise an owner/admin, in both cases one who can see its room.
+ */
+async function reviewsActionNow(actionId: string, orgId: string, userId: string): Promise<boolean> {
+  const reviewer = await currentActionReviewerSql({ id: userId, org_id: orgId });
+  if (!reviewer) return false;
+  const [row] = await db.select({ id: agentActions.id }).from(agentActions)
+    .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, orgId), reviewer)).limit(1);
+  return Boolean(row);
+}
+
+const notReviewer = (): ApprovalResolverError => ({
+  status: 'error', code: 'FORBIDDEN', message: 'only the reviewer of this action may decide it',
+});
+
 /** This request's lease dropped: nothing recorded, the row is left for recovery. */
 const leaseLost = (actionId: string): ApprovalResolverError => ({
   status: 'error',
@@ -978,7 +1013,13 @@ export async function approveAction(
 async function approveActionLocked(
   actionId: string,
   approverUserId: string,
-  options: { internal?: boolean; appRunFinalGuard?: (tx: AppRunTransaction) => Promise<void>; humanWebSessionId?: string },
+  options: {
+    internal?: boolean;
+    appRunFinalGuard?: (tx: AppRunTransaction) => Promise<void>;
+    humanWebSessionId?: string;
+    /** Maintenance resume of a decision already recorded under `approverUserId`. */
+    resume?: boolean;
+  },
   lease: DbAdvisoryLease,
 ): Promise<ApprovalResolverResult> {
   // Pre-checks read immutable fields so they are safe to run before the
@@ -1014,8 +1055,18 @@ async function approveActionLocked(
     };
   }
 
+  // A maintenance resume carries out a decision already made; the reviewer
+  // rule applies to new decisions and to every other read of the row.
+  const resumesRecordedDecision = options.resume === true
+    && row.approval_status === 'approved' && row.executed_at === null;
+  if (!options.internal && !hasOwnReviewerRule(row.action) && !resumesRecordedDecision
+    && !await reviewsActionNow(actionId, row.org_id, approverUserId)) return notReviewer();
+
   const sourceReaderId = options.internal ? undefined : approverUserId;
-  if (!await actionSourceIsCurrent(actionId, sourceReaderId)) return sourceUnavailable();
+  const decisionSource = decisionSourceSql(row, sourceReaderId, options.internal);
+  const [sourceCurrent] = await db.select({ id: agentActions.id }).from(agentActions)
+    .where(and(eq(agentActions.id, actionId), decisionSource)).limit(1);
+  if (!sourceCurrent) return sourceUnavailable();
 
   if (row.action === APP_RUN_APPROVAL_ACTION) {
     return (await appRunApprovalResolver()).approve(actionId, approverUserId, options.appRunFinalGuard);
@@ -1267,7 +1318,7 @@ async function approveActionLocked(
                  approved_by_user_id = ${approverUserId},
                  result = jsonb_build_object('lifecycle_state', 'executing', 'started_at', ${new Date().toISOString()}::text)
            WHERE id = ${actionId} AND approval_status = 'pending'
-             AND ${actionSourceAuthoritySql(sourceReaderId)}
+             AND ${decisionSource}
            RETURNING approved_at::text AS token`,
     );
     const claimedRows =
@@ -1642,7 +1693,7 @@ export async function resumeApprovedModuleActionForMaintenance(
       .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, orgId)))
       .limit(1);
     if (!current || current.approval_status !== 'approved' || current.executed_at !== null) return null;
-    return approveActionLocked(actionId, approverId, {}, lease);
+    return approveActionLocked(actionId, approverId, { resume: true }, lease);
   });
   if (!held.acquired) return held.reason === 'pool_busy' ? 'busy' : 'held';
   const result = held.value;
@@ -1711,6 +1762,9 @@ async function rejectActionOnce(
       code: 'FORBIDDEN',
       message: refusal,
     };
+  }
+  if (!hasOwnReviewerRule(row.action) && !await reviewsActionNow(actionId, row.org_id, rejecterUserId)) {
+    return notReviewer();
   }
 
   if (!await actionSourceIsCurrent(actionId, rejecterUserId)) return sourceUnavailable();

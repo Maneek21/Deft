@@ -413,7 +413,7 @@ test(
       // Authorized concurrent approve retries repair exactly one receipt while
       // preserving the original automatic decision and its null approver.
       const autoRepairResults = await Promise.all(
-        Array.from({ length: 4 }, () => approveAction(create.actionId, recoveryAdminId)),
+        Array.from({ length: 4 }, () => approveAction(create.actionId, ownerId)),
       );
       assert.ok(autoRepairResults.every((result) => result.status === 'approved'));
       const autoRepairReceipt = await client.query(
@@ -452,7 +452,8 @@ test(
         [
           recoveryActionId,
           orgId,
-          ownerId,
+          // Requested by the admin who resumes it, approved earlier by the owner.
+          recoveryAdminId,
           JSON.stringify({
             module_id: 'com.deft.contacts',
             collection_key: 'contacts',
