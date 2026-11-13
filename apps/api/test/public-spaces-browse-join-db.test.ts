@@ -224,6 +224,8 @@ test('an unjoined member cannot read; after joining reads work; join is idempote
   const outsider = await open(U.admin);
   const guest = await open(U.guest);
   const otherOrgSelf = await open(`${U.member}|${ORG_B}`);
+  // A member of the space whose session is for another org.
+  const foreignSession = await open(`${U.outsider}|${ORG_B}`);
   try {
     const roomSize = () => sockets.sockets.adapter.rooms.get(`space:${S.open}`)?.size ?? 0;
     const waitRoom = async (n: number) => {
@@ -232,7 +234,7 @@ test('an unjoined member cannot read; after joining reads work; join is idempote
       assert.equal(roomSize(), n);
     };
     // Non-members try to subscribe first; the realtime gate refuses them.
-    for (const s of [outsider, guest, otherOrgSelf, self]) s.client.emit('space:join', S.open);
+    for (const s of [outsider, guest, otherOrgSelf, foreignSession, self]) s.client.emit('space:join', S.open);
     peer.client.emit('space:join', S.open);
     await waitRoom(1);
     await new Promise((r) => setTimeout(r, 100));
@@ -254,6 +256,11 @@ test('an unjoined member cannot read; after joining reads work; join is idempote
     assert.deepEqual(outsider.events, [], 'a non-member of the space receives no join event');
     assert.deepEqual(guest.events, [], 'a guest receives no join event');
     assert.deepEqual(otherOrgSelf.events, [], 'the joiner session in another org receives no join event');
+    assert.deepEqual(foreignSession.events, [], 'a space member with another org session receives no join event');
+    // After the join, the joiner's other-org session still cannot subscribe.
+    otherOrgSelf.client.emit('space:join', S.open);
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(roomSize(), 1, 'an other-org session is never admitted to the room');
 
     const read = await readMessages(U.member, S.open);
     assert.equal(read.status, 200, read.text);
@@ -276,7 +283,7 @@ test('an unjoined member cannot read; after joining reads work; join is idempote
     assert.equal(self.events.length, 1, 'a member who left receives no later join event');
     assert.equal((await readMessages(U.member, S.open)).status, 403);
   } finally {
-    for (const s of [peer, self, outsider, guest, otherOrgSelf]) s.client.close();
+    for (const s of [peer, self, outsider, guest, otherOrgSelf, foreignSession]) s.client.close();
     await new Promise<void>((resolve) => sockets.close(() => resolve()));
   }
 });
@@ -297,4 +304,19 @@ test('leave works for public and private spaces; a second leave changes nothing'
   const privLeft = await leave(U.peer, S.priv);
   assert.equal(privLeft.status, 200, privLeft.text);
   assert.equal(await memberRows(S.priv, U.peer), 0);
+});
+
+test('concurrent joins and a join racing a leave all succeed without errors', async () => {
+  const racers = [U.owner, U.admin, U.admin, U.member, U.member, U.peer];
+  const results = await Promise.all(racers.map((u) => join(u, S.other)));
+  for (const r of results) assert.equal(r.status, 200, r.text);
+  for (const u of new Set(racers)) assert.equal(await memberRows(S.other, u), 1, u);
+
+  // The same member joins and leaves at once, several times: never a server error.
+  for (let i = 0; i < 5; i += 1) {
+    const [j, l] = await Promise.all([join(U.peer, S.other), leave(U.peer, S.other)]);
+    assert.ok(j.status === 200, j.text);
+    assert.ok(l.status === 200 || l.status === 403, l.text);
+    await join(U.peer, S.other);
+  }
 });

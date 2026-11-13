@@ -343,22 +343,28 @@ spaceRoutes.post('/:id/join', async (c) => {
   try {
     const user = c.get('user');
     const spaceId = c.req.param('id');
-    // The eligibility and space rows are share-locked until the membership row
-    // is written, so a concurrent archive, type or role change is either seen
-    // here or waits for this join to finish.
+    // The caller's user and org membership rows stay share-locked until the
+    // membership row is written. A new membership locks the space row FOR
+    // UPDATE first, the lock the space_members trigger takes, so concurrent
+    // joins queue on it and a concurrent archive is seen or waits. An existing
+    // member returns before taking the space lock.
+    const joinableSpace = and(
+      eq(spaces.id, spaceId),
+      eq(spaces.org_id, user.org_id),
+      eq(spaces.type, 'public'),
+      eq(spaces.is_archived, false),
+    );
     const result = await db.transaction(async (tx) => {
       if (!(await canSelfJoinPublicSpaces(user.id, user.org_id, tx))) return null;
-      const [space] = await tx.select({ id: spaces.id })
-        .from(spaces)
-        .where(and(
-          eq(spaces.id, spaceId),
-          eq(spaces.org_id, user.org_id),
-          eq(spaces.type, 'public'),
-          eq(spaces.is_archived, false),
-        ))
-        .limit(1)
-        .for('share');
+      const [space] = await tx.select({ id: spaces.id }).from(spaces).where(joinableSpace).limit(1);
       if (!space) return null;
+      const [existing] = await tx.select({ id: spaceMembers.id })
+        .from(spaceMembers)
+        .where(and(eq(spaceMembers.space_id, space.id), eq(spaceMembers.user_id, user.id)))
+        .limit(1);
+      if (existing) return { space, inserted: [] };
+      const [locked] = await tx.select({ id: spaces.id }).from(spaces).where(joinableSpace).limit(1).for('update');
+      if (!locked) return null;
       const inserted = await tx.insert(spaceMembers)
         .values({ space_id: space.id, user_id: user.id })
         .onConflictDoNothing()
