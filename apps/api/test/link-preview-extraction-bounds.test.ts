@@ -127,15 +127,22 @@ for (const [name, html] of Object.entries(families)) {
 }
 
 test('large captured values in every field keep the main thread responsive', async () => {
-  const value = `İ${'x'.repeat(SIZE - 200)}`;
-  const html = `<meta property="og:title" property="og:description" property="og:image" property="og:site_name" content="${value}">`;
+  const value = `İ${'x'.repeat(SIZE / 2 - 200)}`;
+  const html = `<meta property="og:title" property="og:description" property="og:image" property="og:site_name" content="${value}">`
+    + `<link rel="icon" href="/${String.fromCharCode(0xfffd).repeat(SIZE / 2 - 200)}">`;
   const { worstMs, result } = await worstStall(() => extractLinkMetadata(html, URL_A));
   assert.ok(worstMs < 250, `main thread blocked for ${Math.round(worstMs)} ms`);
-  assert.deepEqual(result, { url: URL_A, title: value, description: value, image: value, favicon: null, siteName: value });
+  assert.deepEqual(result, extractLinkMetadataReference(html, URL_A));
+  assert.equal(result?.siteName, value);
+  assert.ok((result?.favicon?.length ?? 0) > SIZE);
 });
 
 async function idle(): Promise<void> {
-  while (linkPreviewExtractionStats.pending > 0) await new Promise((r) => setTimeout(r, 10));
+  const deadline = Date.now() + 10_000;
+  while (linkPreviewExtractionStats.pending > 0) {
+    assert.ok(Date.now() < deadline, 'extractions did not drain');
+    await new Promise((r) => setTimeout(r, 10));
+  }
   assert.equal(linkPreviewExtractionStats.liveWorkers, 0);
   assert.equal(linkPreviewExtractionStats.maxLiveWorkers, 1);
 }

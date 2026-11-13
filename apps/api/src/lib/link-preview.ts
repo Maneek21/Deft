@@ -99,6 +99,7 @@ function runExtractionWorker(
   url: string,
   resolve: (value: LinkPreview | null) => void,
 ): Promise<void> {
+  const startedAt = performance.now();
   let worker: Worker;
   try {
     worker = new Worker(WORKER_SOURCE, {
@@ -114,7 +115,6 @@ function runExtractionWorker(
   const stats = linkPreviewExtractionStats;
   stats.liveWorkers += 1;
   stats.maxLiveWorkers = Math.max(stats.maxLiveWorkers, stats.liveWorkers);
-  const startedAt = performance.now();
   let settled = false;
   const finish = (value: LinkPreview | null) => {
     if (settled) return;
