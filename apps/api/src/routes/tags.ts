@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { eq, and, ilike, sql, desc, inArray } from 'drizzle-orm';
+import { eq, and, ilike, sql, desc, inArray, getTableColumns } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { tags, entityTags, tasks, messages, users, projects, notes, clips } from '@deft/db/schema';
 import type { AuthUser } from '../middleware/auth.js';
@@ -273,25 +273,25 @@ tagRoutes.get('/:id/entities', async (c) => {
   const LIST_LIMIT = 100;
   const PAGE_SIZE = 200;
   const MAX_SCAN = 2000;
-  let cursorId: string | null = null;
+  let cursor: { ts: string; id: string } | null = null;
   const visibleRows: Array<typeof entityTags.$inferSelect> = [];
   const taskMap = new Map<string, { title: string; number: number; prefix: string; status: string }>();
   const messageMap = new Map<string, { content: string; user_name: string; space_id: string }>();
   const noteMap = new Map<string, { title: string }>();
   for (let scanned = 0; visibleRows.length < LIST_LIMIT && scanned < MAX_SCAN; scanned += PAGE_SIZE) {
-    const after: string | null = cursorId;
-    const page: Array<typeof entityTags.$inferSelect> = await db.select().from(entityTags)
+    const after: { ts: string; id: string } | null = cursor;
+    const page = await db.select({ ...getTableColumns(entityTags), cursor_ts: sql<string>`${entityTags.created_at}::text` }).from(entityTags)
       .where(and(
         eq(entityTags.tag_id, tagId),
         eq(entityTags.org_id, user.org_id),
         ...(entityType ? [eq(entityTags.entity_type, entityType as any)] : []),
-        // Cursor read from the row itself so timestamp precision is preserved.
-        ...(after ? [sql`(${entityTags.created_at}, ${entityTags.id}) < (select et_cursor.created_at, et_cursor.id from entity_tags et_cursor where et_cursor.id = ${after})`] : []),
+        // The cursor keeps the full-precision timestamp text of the last row seen.
+        ...(after ? [sql`(${entityTags.created_at}, ${entityTags.id}) < (${after.ts}::timestamp, ${after.id})`] : []),
       ))
       .orderBy(desc(entityTags.created_at), desc(entityTags.id))
       .limit(PAGE_SIZE);
     if (page.length === 0) break;
-    cursorId = page[page.length - 1]!.id;
+    cursor = { ts: page[page.length - 1]!.cursor_ts, id: page[page.length - 1]!.id };
     const resolved = await resolveVisibleTagEntities(page, user);
     for (const [id, v] of resolved.taskMap) taskMap.set(id, v);
     for (const [id, v] of resolved.messageMap) messageMap.set(id, v);

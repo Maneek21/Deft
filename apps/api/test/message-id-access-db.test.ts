@@ -6,11 +6,21 @@
  * Run:
  *   DATABASE_URL=... DEFT_TEST_DATABASE_URL=... pnpm --filter @deft/api test test/message-id-access-db.test.ts
  */
-import { test, before, after } from 'node:test';
+import { test, before, after, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { Hono } from 'hono';
 import pg from 'pg';
 import { randomUUID } from 'node:crypto';
+
+// Lets one test act between the pages of the tag entity scan.
+let onClipAccessCheck: (() => Promise<void>) | null = null;
+const actualClips = await import('../src/routes/clips.js');
+mock.module(new URL('../src/routes/clips.ts', import.meta.url).href, { namedExports: { ...actualClips,
+  canAccessClip: async (...args: Parameters<typeof actualClips.canAccessClip>) => {
+    const hook = onClipAccessCheck; onClipAccessCheck = null;
+    if (hook) await hook();
+    return actualClips.canAccessClip(...args);
+  } } });
 
 const DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 const stamp = Date.now();
@@ -297,6 +307,23 @@ test('the tag entity list reaches visible entities behind many entities the call
     assert.deepEqual((listed.json as Array<{ entity_id: string }>).map((r) => r.entity_id), [MESSAGE]);
   } finally {
     await q(`DELETE FROM entity_tags WHERE tag_id = $1`, [TAG_A]);
+  }
+});
+
+test('the tag entity list keeps scanning when the last row of a page is removed meanwhile', async () => {
+  await q(`INSERT INTO entity_tags (id, org_id, tag_id, entity_type, entity_id, created_at) VALUES ($1, $2, $3, 'message', $4, NOW() - interval '1 day')`, [p('et-older'), ORG_A, TAG_A, MESSAGE]);
+  await q(`INSERT INTO clips (id, org_id, context_type, context_id, created_by, file_key)
+           SELECT $1 || g, $2, 'space', $3, $4, 'k' FROM generate_series(1, 200) g`, [p('clip'), ORG_A, OTHER_SPACE, MEMBER]);
+  await q(`INSERT INTO entity_tags (id, org_id, tag_id, entity_type, entity_id)
+           SELECT gen_random_uuid()::text, $1, $2, 'clip', $3 || g FROM generate_series(1, 200) g`, [ORG_A, TAG_A, p('clip')]);
+  onClipAccessCheck = async () => { await q(`DELETE FROM entity_tags WHERE tag_id = $1 AND entity_type = 'clip'`, [TAG_A]); };
+  try {
+    const member = await call(MEMBER, ORG_A, 'GET', `/api/tags/${TAG_A}/entities`);
+    assert.deepEqual((member.json as Array<{ entity_id: string }>).map((r) => r.entity_id), [MESSAGE]);
+  } finally {
+    onClipAccessCheck = null;
+    await q(`DELETE FROM entity_tags WHERE tag_id = $1`, [TAG_A]);
+    await q(`DELETE FROM clips WHERE org_id = $1`, [ORG_A]);
   }
 });
 
