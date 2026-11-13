@@ -41,20 +41,16 @@ export const SESSION_EXEMPT_ROUTES: ReadonlyArray<{ methods?: readonly string[];
   { path: '/api/app-runtime/channel/*' },
   { path: '/api/app-resource-sync/channel/*' },
   { path: '/api/app-resource-sync-channel/v3/*' },
-  { path: '/api/app-resource-sync-management/*' },
-  { path: '/api/private-resources/*' },
-  { path: '/api/app-resource-private/*' },
-  { path: '/api/app-resource-access/*' },
-  { path: '/api/app-private-mcp/*' },
   { path: '/api/public/apps/*' },
-  { path: '/api/app-connection-sessions/*' },
-  { path: '/api/app-connection-forms/*' },
-  { path: '/api/app-local-jobs/*' },
-  { path: '/api/app-data/*' },
-  { path: '/api/app-integration-tools/*' },
-  { path: '/api/app-resource-observations/*' },
-  // Exact routes that share a prefix with session-gated routers. (The private
-  // Defty routes under /api/apps also require a web session, so they stay gated.)
+  // App Runtime and operator credentials. The owner routes beside them in the
+  // same routers take a web session, so they stay gated.
+  { path: '/api/app-connection-sessions/runtime/*' },
+  { path: '/api/app-connection-forms/runtime/*' },
+  { path: '/api/app-local-jobs/runtime/*' },
+  { path: '/api/app-data/runtime/*' },
+  { path: '/api/app-integration-tools/runtime/*' },
+  { path: '/api/app-resource-observations/runtime/*' },
+  // Exact routes that share a prefix with session-gated routers.
   { methods: ['POST'], path: '/api/agent-webhooks/:slug' },
   { methods: ['GET', 'HEAD'], path: '/api/ics/feed/:token' },
 ];
@@ -131,7 +127,9 @@ export function installRequestGate(
         return await deny(request, { error: 'Invalid request path', code: 'INVALID_PATH', status: 400 });
       }
       if (hasForbiddenPathCharacters(rawPathname(request.url), path)) {
-        return await deny(request, { error: 'Invalid request path', code: 'INVALID_PATH', status: 400 });
+        // A preflight would be answered 204 by the CORS policy; answer it as a plain request instead.
+        const target = request.method === 'OPTIONS' ? new Request(request.url, { headers: request.headers }) : request;
+        return await deny(target, { error: 'Invalid request path', code: 'INVALID_PATH', status: 400 });
       }
       gated = isGatedApiPath(path) && !options.isPublic(request.method, path);
       if (gated && request.method === 'OPTIONS') {

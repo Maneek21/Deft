@@ -132,6 +132,12 @@ test('refusals before routing carry the CORS and security headers', async () => 
     headers: { origin, 'access-control-request-method': 'PATCH' } });
   assert.equal(preflight.status, 204);
   assert.equal(preflight.headers.get('access-control-allow-origin'), origin);
+  const badPreflight = await app.request('/api/tasks/%0A', { method: 'OPTIONS',
+    headers: { origin, 'access-control-request-method': 'GET' } });
+  assert.equal(badPreflight.status, 400);
+  assert.equal(badPreflight.headers.get('access-control-allow-origin'), origin);
+  const owner = await app.request('/api/app-local-jobs/connections/c1/schedule', { method: 'POST', body: '{' });
+  assert.equal(owner.status, 401);
   const head = await app.fetch(new Request('http://localhost/api/tasks/t1', { method: 'HEAD' }));
   assert.equal(head.status, 401);
   assert.equal(await head.text(), '');
@@ -147,6 +153,10 @@ test('the exported fetch refuses a reused request after its session is revoked',
   assert.equal((await app.fetch(request)).status, 401);
   assert.equal((await app.fetch(new Request('http://localhost/api/inbox'))).status, 401);
 });
+
+const WEB_SESSION_ROUTERS = ['/api/apps/private-defty/', '/api/app-resource-sync-management/', '/api/private-resources/',
+  '/api/app-resource-private/', '/api/app-resource-access/', '/api/app-private-mcp/', '/api/app-connection-sessions/',
+  '/api/app-connection-forms/', '/api/app-local-jobs/', '/api/app-data/', '/api/app-integration-tools/', '/api/app-resource-observations/'];
 
 function templateSegments(path: string): string[] {
   return path.replace(/\{[^}]*\}/g, '').split('/').slice(1);
@@ -176,8 +186,8 @@ test('session-exempt routes are exactly the routes mounted ahead of the session 
   const apiRoute = (path: string) => path === '/api' || path.startsWith('/api/');
   routes.forEach((r, index) => {
     if (r.method === 'ALL' || !apiRoute(r.path)) return;
-    // Private Defty is mounted early but verifies the same web session itself.
-    const sessionRequired = r.path.startsWith('/api/apps/private-defty/');
+    // Owner routes mounted early that verify the same web session themselves.
+    const sessionRequired = WEB_SESSION_ROUTERS.some((prefix) => r.path.startsWith(prefix));
     if (index < authIndex && !sessionRequired && !isPublicApiRequest(r.method, sample(r.path))) {
       mismatches.push(`pre-session route not exempt: ${r.method} ${r.path}`);
     }

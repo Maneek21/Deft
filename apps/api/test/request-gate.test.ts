@@ -116,7 +116,9 @@ test('CORS preflight is not refused by the session gate', async () => {
 test('public classification is segment-aware', () => {
   assert.equal(isPublicApiRequest('GET', '/api/auth/me'), true);
   assert.equal(isPublicApiRequest('GET', '/api/authx'), false);
-  assert.equal(isPublicApiRequest('GET', '/api/app-data/x'), true);
+  assert.equal(isPublicApiRequest('POST', '/api/app-data/runtime/authority'), true);
+  assert.equal(isPublicApiRequest('POST', '/api/app-data/connections/c1/requests'), false);
+  assert.equal(isPublicApiRequest('GET', '/api/app-resource-access/grants/g1/resource'), false);
   assert.equal(isPublicApiRequest('GET', '/api/apps/x'), false);
   assert.equal(isPublicApiRequest('GET', '/api/app-data-other'), false);
   assert.equal(isPublicApiRequest('POST', '/api/agent-webhooks/slug'), true);
