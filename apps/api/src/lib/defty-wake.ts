@@ -99,7 +99,7 @@ export async function normalizeChatMentions(orgId: string, content: string): Pro
     }
   }
 
-  const plainMentionScan = normalizedContent.replace(/<@[^>]+>/g, '');
+  const plainMentionScan = normalizedContent.replace(/<@[^|>]+\|[^>]+>/g, '');
   if (/(^|[^a-z0-9_])@[a-z0-9_-]/i.test(plainMentionScan)) {
     const agentIdentities = await db
       .select({

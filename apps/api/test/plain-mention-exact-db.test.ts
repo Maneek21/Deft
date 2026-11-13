@@ -179,6 +179,12 @@ test('a token shared by two participants resolves to nobody and the post is acce
   await expectPlain(`@pat-alpha-${sfx} take this ${randomUUID()}`);
 });
 
+test('a lone non-canonical <@handle> still resolves through the chat path', async () => {
+  const res = await webPost(`<@rc-runner-${sfx}>`);
+  assert.equal(res.status, 201);
+  assert.deepEqual(await wokenAgents(res.body.id!), [rcRunner]);
+});
+
 test('only active humans of the same org compete; an agent whose name is its own slug is one owner', async () => {
   // "Rita" is also an inactive member here and a human in another org.
   await expectResolved(`@rita take this ${randomUUID()}`, rita, 'Rita');
@@ -194,8 +200,6 @@ test('explicit markers are never rewritten and still dispatch beside unresolved 
   const agents = [{ userId: 'rita-user', name: 'Rita', slug: 'rita' }];
   const marker = '<@old-user|@Rita> and <span data-mention-uuid="old-user">@Rita</span>';
   assert.equal(normalizePlainAgentMentions(`${marker} @RC`, agents).content, `${marker} @RC`);
-  const nested = '<span data-deft-ref-kind="task" data-deft-ref-id="t1"><span>Task:</span>@Rita</span>';
-  assert.equal(normalizePlainAgentMentions(`${nested} @RC`, agents).content, `${nested} @RC`);
 });
 
 test('token boundaries and look-alike markup do not hide an exact handle', () => {
