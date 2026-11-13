@@ -53,7 +53,7 @@ Deft is an alpha. It is suitable for technical evaluation, internal use, and con
 - Client support varies by vendor, application, account tier, and connector policy.
 - Native Slack, Gmail, GitHub, Google Calendar OAuth, Linear, and Notion connectors are not part of the current self-hosted v1 promise.
 - External tools should be connected through a customer-owned agent runtime or MCP server.
-- Calendar subscriptions through ICS are read-only and are fetched only from public internet addresses on ports 80 and 443; native Deft calendar events are writable inside Deft.
+- Calendar subscriptions through ICS are read-only and are fetched only from public internet addresses on ports 80 and 443, except exact feed URLs a self-hosted operator lists in `DEFT_CALENDAR_PRIVATE_URL_ALLOWLIST`; native Deft calendar events are writable inside Deft.
 
 ## Apps and Modules
 

@@ -12,6 +12,7 @@
 
 import { randomBytes } from 'node:crypto';
 import nodeIcal from 'node-ical';
+import { PublicFetchError } from './public-http-fetch.js';
 
 export type ParsedEvent = {
   uid: string;
@@ -191,4 +192,21 @@ function foldLine(line: string): string {
  */
 export function newPublishToken(): string {
   return randomBytes(32).toString('base64url');
+}
+
+/** Neutral, fixed message for a failed feed fetch or import (shown, stored and logged). */
+export function humanizeIcsError(err: unknown): string {
+  if (err instanceof PublicFetchError) {
+    if (err.kind === 'too_large') return 'Feed is too large to import.';
+    if (err.kind === 'timeout') return 'Feed request timed out.';
+    if (err.kind === 'unreachable') return 'Could not reach the feed URL.';
+    if (err.kind === 'bad_encoding') return 'Feed response could not be decoded.';
+    if (err.status === 401 || err.status === 403) return 'Feed requires login or is not public/secret-shareable.';
+    if (err.status === 404) return 'Feed URL was not found.';
+    return `Feed server returned HTTP ${err.status}.`;
+  }
+  const message = (err as Error)?.message ?? '';
+  if (/web page/i.test(message)) return 'The URL returned a web page, not a calendar feed. Use the secret/public ICS URL.';
+  if (/^ICS parse failed/.test(message)) return 'Feed could not be read as a calendar.';
+  return 'Feed could not be imported.';
 }

@@ -505,8 +505,26 @@ Requests under `/api` need a web session (CORS preflight is answered by the CORS
 policy) unless the path is one of the
 routes that use their own authentication or are intentionally public (auth, MCP,
 Agent Channel, webhooks, invites, metrics, App developer pairing, App runtime and
-public App routes, `POST /api/agent-webhooks/:slug` and ICS feed URLs). Calendar feeds and link previews are fetched only from
-public internet addresses.
+public App routes, `POST /api/agent-webhooks/:slug` and ICS feed URLs). Link previews are fetched only from public internet
+addresses. Calendar feeds are too, except the exact URLs an operator lists in
+`DEFT_CALENDAR_PRIVATE_URL_ALLOWLIST`.
+
+### Internal calendar feeds
+
+On a self-hosted install (`DEFT_SELF_HOSTED=true`, exactly), set
+`DEFT_CALENDAR_PRIVATE_URL_ALLOWLIST` to a JSON array of exact feed URLs, for
+example `["http://radicale.lan:5232/team/work.ics"]`. A listed URL may use its
+own port and may resolve to loopback, RFC 1918 or IPv6 unique-local addresses;
+cloud metadata addresses are always refused. Matching is by the whole URL
+(scheme, host, port, path and query; `webcal://` counts as `https://`), with no
+wildcards or prefixes, and an entry may not contain credentials. Redirects from a
+listed URL are followed only to another listed URL. A malformed value disables
+the list and logs a warning. The variable is ignored on hosted installs and
+cannot be set by workspace owners or admins.
+
+Every account that knows a listed URL, members and guests alike, can have the
+server fetch that exact URL repeatedly and import its events. List only
+read-only feed URLs, and update the entry when a feed's token rotates.
 
 The resolver checks review authority and action state and claims pending work
 before execution. Repeated approval of a completed action returns its existing
