@@ -308,7 +308,7 @@ export async function sendAttentionDelivery(deliveryId: string, options: { attem
     await db.update(attentionDeliveries).set({ status: 'superseded', updated_at: new Date() }).where(eq(attentionDeliveries.id, deliveryId));
     return { skipped: true, reason: 'superseded' };
   }
-  const { filterVisibleAttentionItems } = await import('./attention.js');
+  const { attentionItemStillVisible, filterVisibleAttentionItems } = await import('./attention.js');
   if ((await filterVisibleAttentionItems(row.item.user_id, [row.item])).length === 0) {
     await db.update(attentionDeliveries).set({ status: 'suppressed', updated_at: new Date() }).where(eq(attentionDeliveries.id, deliveryId));
     return { skipped: true, reason: 'source_access_revoked' };
@@ -368,6 +368,7 @@ export async function sendAttentionDelivery(deliveryId: string, options: { attem
   for (const subscription of subscriptions) {
     try {
       if (!(await appIntegrationNotificationDeliveryCurrent(row.item, options.job))) return { skipped: true, reason: 'app_authority_revoked' };
+      if (!(await attentionItemStillVisible(row.item))) return { skipped: true, reason: 'source_access_revoked' };
       const revealed = revealPushSubscription(subscription);
       await webpush.sendNotification({
         endpoint: revealed.endpoint,

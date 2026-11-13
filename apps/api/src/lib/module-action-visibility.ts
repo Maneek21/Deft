@@ -16,7 +16,7 @@ export function canonicalDeftyActionSql(
 }
 
 /** Source snapshots remain governed by their canonical source's current audience. */
-export function visibleAgentActionSourceSql(options?: { userId?: string; orgId?: string; agentEmployeeId?: string }): SQL {
+export function visibleAgentActionSourceSql(options?: { userId?: string | SQL; orgId?: string | SQL; agentEmployeeId?: string }): SQL {
   const reader = options?.userId ? sql`${options.userId}` : options?.agentEmployeeId ? sql`(
     select reader_employee.user_id from agent_employees reader_employee
     where reader_employee.id = ${options.agentEmployeeId}
@@ -74,13 +74,20 @@ export function isModuleGovernedWriteActionName(
 export function visibleModuleActionSql(
   role?: string,
   options?: {
-    userId?: string;
-    orgId?: string;
+    userId?: string | SQL;
+    orgId?: string | SQL;
     agentEmployeeId?: string;
   },
 ): SQL {
-  return sql`${visibleAgentActionSourceSql(options)} and (${moduleRoleVisibilitySql(role, options)})
-    and (${privateDeftyActionAudienceSql(role, options)})`;
+  return sql`${visibleAgentActionSourceSql(options)} and ${moduleRoleAudienceSql(role, options)}`;
+}
+
+/** The role-dependent part of `visibleModuleActionSql` (module writes and private Defty actions). */
+export function moduleRoleAudienceSql(
+  role?: string,
+  options?: { userId?: string | SQL; orgId?: string | SQL; agentEmployeeId?: string },
+): SQL {
+  return sql`(${moduleRoleVisibilitySql(role, options)}) and (${privateDeftyActionAudienceSql(role, options)})`;
 }
 
 /**
@@ -95,7 +102,7 @@ export function visibleModuleActionSql(
  */
 function privateDeftyActionAudienceSql(
   role?: string,
-  options?: { userId?: string; orgId?: string; agentEmployeeId?: string },
+  options?: { userId?: string | SQL; orgId?: string | SQL; agentEmployeeId?: string },
 ): SQL {
   if (role === 'owner' || role === 'admin') return sql`true`;
   // A guest sees only actions it requested; an approver assignment (for
@@ -109,7 +116,7 @@ function privateDeftyActionAudienceSql(
   )`;
 }
 
-function requesterSql(options?: { userId?: string }): SQL {
+function requesterSql(options?: { userId?: string | SQL }): SQL {
   return options?.userId
     ? sql`(${actionRequesterIdSql()} = ${options.userId})`
     : sql`false`;
@@ -117,7 +124,7 @@ function requesterSql(options?: { userId?: string }): SQL {
 
 /** The requester, or a user whose approver assignment names a reviewer of the action. */
 function requesterOrReviewerSql(
-  options?: { userId?: string; orgId?: string; agentEmployeeId?: string },
+  options?: { userId?: string | SQL; orgId?: string | SQL; agentEmployeeId?: string },
 ): SQL {
   return options?.userId
     ? sql`(
@@ -143,7 +150,7 @@ function requesterOrReviewerSql(
 
 function moduleRoleVisibilitySql(
   role?: string,
-  options?: { userId?: string; orgId?: string; agentEmployeeId?: string },
+  options?: { userId?: string | SQL; orgId?: string | SQL; agentEmployeeId?: string },
 ): SQL {
   if (role === 'guest') {
     return notInArray(agentActions.action, [...MODULE_GOVERNED_WRITE_ACTION_NAMES]);

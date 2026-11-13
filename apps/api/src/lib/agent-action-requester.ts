@@ -16,6 +16,7 @@
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { agentActionApprovers, agentActions, orgMembers, users } from '@deft/db/schema';
 import { db } from './db.js';
+import { assigneeRoomSql } from './agent-action-review-gate.js';
 
 /** The only action source whose params name the requester. */
 export const CAPTURE_ACTION_SOURCE = 'defty_capture';
@@ -102,10 +103,11 @@ export function actionReviewerSql(userId: SQL, alias?: string): SQL<boolean> {
 
 /**
  * True when `userId` reviews the `agent_actions` row: a reviewer of it who,
- * when the action has assignments naming its reviewers, holds one of them.
+ * when the action has assignments naming its reviewers who still pass its
+ * room and source checks, holds one of them.
  * `pendingOnly` limits the user's own assignment to an undecided one.
  */
-export function actionReviewAssignmentSql(userId: string, options: { pendingOnly?: boolean } = {}): SQL<boolean> {
+export function actionReviewAssignmentSql(userId: string | SQL, options: { pendingOnly?: boolean } = {}): SQL<boolean> {
   return sql<boolean>`(${actionReviewerSql(sql`${userId}`)} AND (
     EXISTS (
       SELECT 1 FROM ${agentActionApprovers} own_ap
@@ -119,6 +121,7 @@ export function actionReviewAssignmentSql(userId: string, options: { pendingOnly
       WHERE any_ap.action_id = ${agentActions.id}
         AND any_ap.org_id = ${agentActions.org_id}
         AND ${actionReviewerSql(sql`any_ap.user_id`)}
+        AND ${assigneeRoomSql(sql`any_ap.user_id`)}
     )
   ))`;
 }

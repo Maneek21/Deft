@@ -6,7 +6,7 @@ import {resolveSpaceTargetFromRows} from './resolve-space-target.js';
 import {requireSpaceMembership} from './space-membership.js';
 import {visibleTaskCondition} from './task-visibility.js';
 import {visibleWikiPageCondition} from './wiki-visibility.js';
-export function visibleCaptureActionSql(user: { id: string; org_id: string }) {
+export function visibleCaptureActionSql(user: { id: string | SQL; org_id: string | SQL }) {
   return sql`(
     ${agentActions.source} IS DISTINCT FROM 'defty_capture'
     OR (
