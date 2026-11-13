@@ -308,6 +308,10 @@ test('requester readers outside the helper load the requester rather than derive
   for (const path of files) {
     const source = await readFile(path, 'utf8');
     assert.doesNotMatch(source, /\bactionRequesterId\s*\(/, path);
+    // A capture author with a fallback to the action's own user restates the rule.
+    if (!path.endsWith('agent-action-requester.ts')) {
+      assert.doesNotMatch(source, /captureSourceUserId\([^)]*\)\s*\?\?/, path);
+    }
   }
   for (const file of ['lib/agent-approval-resolver.ts', 'lib/agent-action-visibility.ts', 'lib/connected-tool-access.ts']) {
     assert.match(await readFile(join(root, file), 'utf8'), /loadActionRequesterIds?\(/, file);
