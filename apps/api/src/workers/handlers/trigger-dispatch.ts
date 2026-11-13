@@ -31,7 +31,11 @@ import {
 } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
 import type { SkillAgentConfig } from '../../lib/skill-config.js';
-import { triggerJobOrgId, type TriggerInvocation } from './employee-trigger.js';
+import type { TriggerInvocation } from './employee-trigger.js';
+import { jobOrgId } from '../job-org.js';
+
+/** Cron key the scheduler registers for the recurring dispatch job. */
+export const TRIGGER_DISPATCH_CRON_KEY = 'cron:trigger-dispatch';
 
 type DispatchJobData =
   | { trigger_kind?: string; org_id?: string; orgId?: string; context?: Record<string, unknown>; goal?: string }
@@ -62,16 +66,18 @@ function hourKey(kind: string): string {
 export async function handleTriggerDispatch(job: JobData): Promise<void> {
   const data = (job.data ?? {}) as DispatchJobData;
   // Two invocation paths share this handler:
-  //   (a) cron: invoked with empty `data` — we scan CRON_HOUR_UTC and fire
-  //       every cron kind whose hour matches.
+  //   (a) cron: the recurring scheduler job (cron key
+  //       `cron:trigger-dispatch`, empty data) — we scan CRON_HOUR_UTC and
+  //       fire every cron kind whose hour matches.
   //   (b) webhook / event: invoked with `{ trigger_kind, org_id, context, goal }`
-  //       and we fan out to subscribed employees of that org only. A job
-  //       that names a trigger kind or an org is always an event job; it
-  //       runs only with both a trigger kind and one org id.
-  if (data && typeof data === 'object' && ('trigger_kind' in data || 'org_id' in data || 'orgId' in data)) {
-    const orgId = triggerJobOrgId(data);
-    if (!orgId || typeof data.trigger_kind !== 'string' || !data.trigger_kind) {
-      console.warn('[trigger-dispatch] event job without a trigger kind and workspace; not dispatched');
+  //       and we fan out to subscribed employees of that org only.
+  // Any other job — no scheduler key and no single org — dispatches nothing.
+  const isSchedulerSweep =
+    job.cronKey === TRIGGER_DISPATCH_CRON_KEY && Object.keys(data ?? {}).length === 0;
+  if (!isSchedulerSweep) {
+    const orgId = jobOrgId(job);
+    if (!orgId || !data || typeof data.trigger_kind !== 'string' || !data.trigger_kind) {
+      console.warn('[trigger-dispatch] job without a trigger kind and workspace; not dispatched');
       return;
     }
     await fanOutTrigger({

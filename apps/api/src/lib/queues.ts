@@ -30,6 +30,8 @@ export type DequeuedJob = {
   name: string;
   data: Record<string, any>;
   attempts: number;
+  /** The queue row's org (null for org-less jobs). */
+  orgId?: string | null;
   cronKey: string | null;
   lockedBy: string;
   lockToken: string;
@@ -209,7 +211,7 @@ export async function dequeueJob(
       LIMIT 1
       FOR UPDATE SKIP LOCKED
     )
-    RETURNING id, name, data, attempts, cron_key, locked_by, lock_token, lock_expires_at
+    RETURNING id, org_id, name, data, attempts, cron_key, locked_by, lock_token, lock_expires_at
   `);
 
   const row = resultRows(result)[0];
@@ -220,6 +222,7 @@ export async function dequeueJob(
     name: String(row.name),
     data: typeof row.data === 'string' ? JSON.parse(row.data) : row.data,
     attempts: Number(row.attempts),
+    orgId: typeof row.org_id === 'string' ? row.org_id : null,
     cronKey: typeof row.cron_key === 'string' ? row.cron_key : null,
     lockedBy: String(row.locked_by),
     lockToken: String(row.lock_token),

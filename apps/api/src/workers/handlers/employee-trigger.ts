@@ -12,6 +12,7 @@
  */
 import { eq, and } from 'drizzle-orm';
 import type { JobData } from '../types.js';
+import { jobOrgId } from '../job-org.js';
 import { db } from '../../lib/db.js';
 import { agentActions, agentEmployees, spaces } from '@deft/db/schema';
 
@@ -36,22 +37,10 @@ export type TriggerInvocation = {
   target_space_id?: string;
 };
 
-/**
- * The one org id a trigger job names, or null when it names none or two
- * different ones (`org_id` and the queue's `orgId` alias must agree).
- */
-export function triggerJobOrgId(data: Record<string, unknown> | null | undefined): string | null {
-  if (!data) return null;
-  const snake = typeof data.org_id === 'string' && data.org_id ? data.org_id : null;
-  const camel = typeof data.orgId === 'string' && data.orgId ? data.orgId : null;
-  if (snake && camel && snake !== camel) return null;
-  return snake ?? camel;
-}
-
 export async function handleEmployeeTrigger(job: JobData): Promise<void> {
   const invocation = job.data as TriggerInvocation;
   const { employee_id, trigger_kind, context, goal, target_space_id } = invocation;
-  const orgId = triggerJobOrgId(job.data);
+  const orgId = jobOrgId(job);
   if (!orgId || !employee_id) {
     console.warn(`[employee-trigger] ${trigger_kind} job without a workspace; not delivered`);
     return;

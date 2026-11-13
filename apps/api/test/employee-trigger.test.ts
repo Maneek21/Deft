@@ -252,6 +252,7 @@ test('4. unknown employee id is a clean no-op', async () => {
     name: 'employee-trigger',
     data: {
       employee_id: 'employee-that-does-not-exist-zzz',
+      org_id: ORG_ID,
       trigger_kind: 'cron:standup',
       context: {},
       goal: 'noop',

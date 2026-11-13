@@ -14,7 +14,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 import {
   db, orgs, users, orgMembers, agentEmployees, agentActions, agentWebhooks,
-  spaces, triggers, projects, tasks, workflowRules, workflowRuns, jobQueue,
+  spaces, triggers, projects, tasks, workflowRules, workflowRuns, jobQueue, notifications,
 } from '@deft/db';
 import { handleTriggerDispatch } from '../src/workers/handlers/trigger-dispatch.js';
 import { handleEmployeeTrigger } from '../src/workers/handlers/employee-trigger.js';
@@ -75,7 +75,7 @@ before(async () => {
   const emp = (id: string, org: string, user: string, creator: string) => ({
     id, org_id: org, user_id: user, slug: `${stamp}-${id.slice(0, 8)}`, name: `${stamp} agent`,
     system_prompt: 'test', is_byoa: true, trust_level: 'standard', created_by: creator,
-    role: 'project_manager', trigger_subscriptions: [KIND, 'member.joined'],
+    role: 'project_manager', trigger_subscriptions: [KIND, 'member.joined', 'cron:nightly-review'],
   });
   await db.insert(agentEmployees).values([
     emp(ids.empA, ORG_A, ids.agentUserA, ids.ownerA),
@@ -105,6 +105,7 @@ before(async () => {
 after(async () => {
   await db.delete(jobQueue).where(sql`${jobQueue.data}::text LIKE ${'%' + stamp + '%'}`);
   await db.delete(jobQueue).where(inArray(jobQueue.org_id, [ORG_A, ORG_B]));
+  await db.delete(notifications).where(inArray(notifications.org_id, [ORG_A, ORG_B]));
   await db.delete(workflowRuns).where(eq(workflowRuns.rule_id, ids.ruleB));
   await db.delete(workflowRules).where(eq(workflowRules.id, ids.ruleB));
   await db.delete(tasks).where(eq(tasks.id, ids.taskB));
@@ -118,8 +119,6 @@ after(async () => {
   await db.delete(users).where(inArray(users.id, allUsers));
   await db.delete(orgs).where(inArray(orgs.id, [ORG_A, ORG_B]));
 });
-
-// ─── trigger-dispatch ────────────────────────────────────────────────
 
 test('a trigger event for org A is delivered only to org A agent employees', async () => {
   await handleTriggerDispatch(job('trigger-dispatch', { trigger_kind: KIND, org_id: ORG_A, context: { stamp }, goal: 'go' }));
@@ -143,7 +142,29 @@ test('a trigger event without a workspace, or with an unknown one, delivers noth
   assert.equal((await triggerJobs()).length, 0);
 });
 
-// ─── GitHub webhook ──────────────────────────────────────────────────
+test('only the scheduler job sweeps cron kinds, tagging each job with its employee\'s workspace', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.UTC(2026, 10, 13, 21, 5) });
+  const nightly = async () => (await triggerJobs('cron:nightly-review'))
+    .map((r) => r.data as any).filter((d) => d.employee_id === ids.empA || d.employee_id === ids.empB);
+  await handleTriggerDispatch(job('trigger-dispatch', {}));
+  await handleTriggerDispatch({ ...job('trigger-dispatch', {}), cronKey: 'cron:other' });
+  assert.equal((await nightly()).length, 0);
+  await handleTriggerDispatch({ ...job('trigger-dispatch', {}), cronKey: 'cron:trigger-dispatch' });
+  const rows = await nightly();
+  t.mock.timers.reset();
+  assert.equal(rows.length, 2);
+  for (const d of rows) assert.equal(d.org_id, d.employee_id === ids.empA ? ORG_A : ORG_B);
+  await db.delete(jobQueue).where(and(
+    sql`${jobQueue.data}->>'trigger_kind' = 'cron:nightly-review'`,
+    sql`${jobQueue.data}->>'employee_id' IN (${ids.empA}, ${ids.empB})`,
+  ));
+});
+
+test('a trigger event whose queue row belongs to another workspace delivers nothing', async () => {
+  await handleTriggerDispatch({ ...job('trigger-dispatch', { trigger_kind: KIND, org_id: ORG_A }), orgId: ORG_B });
+  await handleTriggerDispatch(job('trigger-dispatch', { trigger_kind: KIND, org_id: ORG_A, orgId: ORG_B }));
+  assert.equal((await triggerJobs()).length, 0);
+});
 
 test('a signed GitHub merged-PR delivery is acknowledged and dispatches nothing', async (t) => {
   const previous = process.env.GITHUB_WEBHOOK_SECRET;
@@ -167,8 +188,6 @@ test('a signed GitHub merged-PR delivery is acknowledged and dispatches nothing'
   assert.equal(queued.length, 0);
 });
 
-// ─── employee-trigger ────────────────────────────────────────────────
-
 test('an employee trigger for the employee\'s own workspace queues work for it', async () => {
   const kind = `${KIND}-own`;
   await handleEmployeeTrigger(job('employee-trigger', {
@@ -189,10 +208,12 @@ test('an employee trigger with a missing or mismatched workspace queues nothing'
   ]) {
     await handleEmployeeTrigger(job('employee-trigger', data));
   }
+  await handleEmployeeTrigger({
+    ...job('employee-trigger', { employee_id: ids.empA, org_id: ORG_A, trigger_kind: kind, context: {}, goal: 'go' }),
+    orgId: ORG_B,
+  });
   assert.equal((await actionsFor(ids.empA, kind)).length, 0);
 });
-
-// ─── agent-employee-trigger ──────────────────────────────────────────
 
 test('a stored trigger runs only for the workspace that owns it', async () => {
   const count = async () => (await db.select({ id: agentActions.id }).from(agentActions).where(and(
@@ -200,12 +221,12 @@ test('a stored trigger runs only for the workspace that owns it', async () => {
   ))).length;
   await handleAgentEmployeeTrigger(job('agent-employee-trigger', { triggerId: ids.triggerA, orgId: ORG_B, eventType: 'x', eventData: {} }));
   await handleAgentEmployeeTrigger(job('agent-employee-trigger', { triggerId: ids.triggerA, eventType: 'x', eventData: {} }));
+  await handleAgentEmployeeTrigger(job('agent-employee-trigger', { triggerId: ids.triggerA, orgId: ORG_A, org_id: ORG_B, eventType: 'x', eventData: {} }));
+  await handleAgentEmployeeTrigger({ ...job('agent-employee-trigger', { triggerId: ids.triggerA, orgId: ORG_A, eventType: 'x', eventData: {} }), orgId: ORG_B });
   assert.equal(await count(), 0);
   await handleAgentEmployeeTrigger(job('agent-employee-trigger', { triggerId: ids.triggerA, orgId: ORG_A, eventType: 'x', eventData: {} }));
   assert.equal(await count(), 1);
 });
-
-// ─── producers ───────────────────────────────────────────────────────
 
 test('member.joined trigger jobs carry the joining workspace and target only its employees', async () => {
   const n = await emitMemberJoinedTrigger({ org_id: ORG_A, new_user_id: ids.memberA, inviter_user_id: ids.ownerA, role: 'member' });
@@ -243,22 +264,34 @@ test('an external agent webhook delivery carries the webhook\'s workspace', asyn
   assert.equal((rows[0]!.data as any).org_id, ORG_A);
 });
 
-// ─── workflow-execute ────────────────────────────────────────────────
-
 test('a workflow job runs only for the workspace that owns the rule', async () => {
   const runs = async () => (await db.select({ id: workflowRuns.id }).from(workflowRuns).where(eq(workflowRuns.rule_id, ids.ruleB))).length;
   for (const data of [
     { workflow_id: ids.ruleB, task_id: ids.taskB, actor_user_id: ids.adminB },
     { workflow_id: ids.ruleB, task_id: ids.taskB, actor_user_id: ids.adminB, org_id: ORG_A },
+    { workflow_id: ids.ruleB, task_id: ids.taskB, actor_user_id: ids.adminB, org_id: ORG_B, orgId: ORG_A },
   ]) {
     await handleWorkflowExecute(job('workflow-execute', data));
   }
+  await handleWorkflowExecute({
+    ...job('workflow-execute', { workflow_id: ids.ruleB, task_id: ids.taskB, actor_user_id: ids.adminB, org_id: ORG_B }),
+    orgId: ORG_A,
+  });
   assert.equal(await runs(), 0);
   await handleWorkflowExecute(job('workflow-execute', { workflow_id: ids.ruleB, task_id: ids.taskB, actor_user_id: ids.adminB, org_id: ORG_B }));
   assert.equal(await runs(), 1);
 });
 
-// ─── agent webhook management ────────────────────────────────────────
+test('workflow actions assign and notify only members of the rule\'s workspace', async () => {
+  await db.update(workflowRules).set({
+    action_config: { actions: [{ kind: 'assign_to', user_id: ids.ownerA }, { kind: 'notify', user_id: ids.ownerA }] },
+  } as any).where(eq(workflowRules.id, ids.ruleB));
+  await handleWorkflowExecute(job('workflow-execute', { workflow_id: ids.ruleB, task_id: ids.taskB, actor_user_id: ids.adminB, org_id: ORG_B }));
+  const [task] = await db.select({ assignee_id: tasks.assignee_id }).from(tasks).where(eq(tasks.id, ids.taskB));
+  assert.equal(task!.assignee_id, null);
+  const notified = await db.select({ id: notifications.id }).from(notifications).where(eq(notifications.user_id, ids.ownerA));
+  assert.equal(notified.length, 0);
+});
 
 function managementApp(userId: string, orgId: string, role: string) {
   const app = new Hono();

@@ -8,6 +8,7 @@
 // agent_actions row carrying the event payload + the trigger's prompt
 // (if any) so the agent has full context.
 import type { JobData } from '../types.js';
+import { jobOrgId } from '../job-org.js';
 import { db } from '../../lib/db.js';
 import { triggers, agentEmployees, agentActions } from '@deft/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
@@ -20,8 +21,9 @@ interface AgentEmployeeTriggerData {
 }
 
 export async function handleAgentEmployeeTrigger(job: JobData): Promise<void> {
-  const { triggerId, orgId, eventType, eventData } = job.data as AgentEmployeeTriggerData;
-  if (typeof orgId !== 'string' || !orgId || !triggerId) {
+  const { triggerId, eventType, eventData } = job.data as AgentEmployeeTriggerData;
+  const orgId = jobOrgId(job);
+  if (!orgId || !triggerId) {
     console.warn('[agent-employee-trigger] job without a workspace; not delivered');
     return;
   }

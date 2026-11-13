@@ -8,11 +8,12 @@
 //   - add_label     { label_id: string }
 //   - notify        { user_id: string, title?: string }
 import type { JobData } from '../types.js';
+import { jobOrgId } from '../job-org.js';
 import { db } from '../../lib/db.js';
 import {
   workflowRules, workflowRuns,
   tasks, taskComments, taskLabels, labels,
-  taskRelationships,
+  taskRelationships, orgMembers,
 } from '@deft/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { emitToUser } from '../../socket.js';
@@ -35,10 +36,19 @@ type WorkflowAction =
   // that this one was blocking and notify that task's assignee.
   | { kind: 'unblock_dependents' };
 
+/** Workflow actions only address active members of the rule's org. */
+async function assertActiveMember(orgId: string, userId: string): Promise<void> {
+  const [member] = await db.select({ id: orgMembers.id }).from(orgMembers)
+    .where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, userId), eq(orgMembers.is_active, true)))
+    .limit(1);
+  if (!member) throw new Error('user is not an active member of this workspace');
+}
+
 export async function handleWorkflowExecute(job: JobData): Promise<void> {
-  const { workflow_id, task_id, actor_user_id, org_id } =
+  const { workflow_id, task_id, actor_user_id } =
     job.data as WorkflowExecuteJobData;
-  if (!workflow_id || !task_id || typeof org_id !== 'string' || !org_id) return;
+  const org_id = jobOrgId(job);
+  if (!workflow_id || !task_id || !org_id) return;
 
   const [rule] = await db.select().from(workflowRules)
     .where(and(eq(workflowRules.id, workflow_id), eq(workflowRules.org_id, org_id))).limit(1);
@@ -77,6 +87,7 @@ export async function handleWorkflowExecute(job: JobData): Promise<void> {
         }
         case 'assign_to': {
           if (!action.user_id) { results.push({ kind: 'assign_to', ok: false, error: 'missing user_id' }); break; }
+          await assertActiveMember(rule.org_id, action.user_id);
           await db.update(tasks)
             .set({ assignee_id: action.user_id, updated_at: new Date() })
             .where(eq(tasks.id, task.id));
@@ -98,6 +109,7 @@ export async function handleWorkflowExecute(job: JobData): Promise<void> {
         }
         case 'notify': {
           if (!action.user_id) { results.push({ kind: 'notify', ok: false, error: 'missing user_id' }); break; }
+          await assertActiveMember(rule.org_id, action.user_id);
           const title = action.title || `Workflow: ${rule.name}`;
           const notif = await createNotificationIfAllowed({
             org_id: rule.org_id,
