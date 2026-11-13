@@ -196,7 +196,10 @@ test('a guest sees nothing of a public space they have not joined, on any surfac
   assert.equal(pubResource.access, 'restricted');
   assert.equal(pubResource.metadata?.name, undefined);
   const restPub = JSON.parse(out.rest_team!.slice(4)).resources.find((r: any) => r.resource_id === S.pub);
+  assert.ok(out.rest_team!.startsWith('200 '), out.rest_team);
   assert.equal(restPub.access, 'restricted');
+  assert.equal(restPub.label, null);
+  assert.equal(JSON.parse(out.rest_team!.slice(4)).resources.find((r: any) => r.resource_id === S.joined).access, 'visible');
   assert.equal(out[`reader_authority_${S.pub}`], 'false');
   assert.equal(out[`reader_authority_${S.foreign}`], 'false');
   assert.equal(out[`native_source_${M.pub}`], 'false');
@@ -267,6 +270,9 @@ test('owners and members keep seeing joined and unjoined public spaces; other wo
     assert.ok(out.space_list!.includes(S.pub) && out.space_list!.includes(S.joined), out.space_list);
     assert.ok(out.messages_search!.includes(M.pub), out.messages_search);
     assert.ok(out.project_get!.includes(S.pub), out.project_get);
+    assert.ok(out.rest_team!.startsWith('200 '), out.rest_team);
+    const restResources = JSON.parse(out.rest_team!.slice(4)).resources;
+    for (const sid of [S.pub, S.joined]) assert.equal(restResources.find((r: any) => r.resource_id === sid).access, 'visible');
     assert.ok(out.assistant_search_blockers!.includes(M.pub), out.assistant_search_blockers);
     assert.ok(out.thread_fetch_pub!.includes(M.pubReply), out.thread_fetch_pub);
     assert.ok(out.assistant_list_spaces!.includes(S.pub));
