@@ -491,6 +491,23 @@ admin who still has access to the target, can undo it.
 
 An agent action is reviewed by the member who requested it. Owners and admins review when there is no active human requester; they read another active member's request in activity and history. An approver assignment makes a member a reviewer only when this rule does. The Inbox approval list and its counts, Attention and the personal MCP approval tools use this rule for the approvals they list and count.
 
+An agent employee can cite the chat message it answers in a proposal
+(`source_message_id`, or `params.source_message_id` for `request_human_approval`);
+when the server recorded that the message's author, then a non-guest member,
+addressed the employee with it, the proposal is not tied to another delivery or
+room and is made within 24 hours, and the author is now an active human member,
+not a guest, who can read the room, the author reviews it. Personal MCP approval tools follow the same rule as the web.
+A wiki proposal that cites a message from a room the page does not take its
+sources from is refused when proposed (`WIKI_SOURCE_MESSAGE_ROOM`). Agent
+webhooks are managed by owners and admins.
+
+Requests under `/api` need a web session (CORS preflight is answered by the CORS
+policy) unless the path is one of the
+routes that use their own authentication or are intentionally public (auth, MCP,
+Agent Channel, webhooks, invites, metrics, App developer pairing, App runtime and
+public App routes, `POST /api/agent-webhooks/:slug` and ICS feed URLs). Calendar feeds and link previews are fetched only from
+public internet addresses.
+
 The resolver checks review authority and action state and claims pending work
 before execution. Repeated approval of a completed action returns its existing
 state. Idempotency and stale-target checks vary by tool; do not assume global
@@ -552,6 +569,7 @@ can supply its own AI independently of Deft's provider configuration.
 | `OPENROUTER_API_KEY` | No | Optional AI provider fallback | none |
 | `OLLAMA_URL` | No | Optional local Ollama endpoint; set only when running | none |
 | `R2_ENDPOINT` / `R2_ACCESS_KEY` / `R2_SECRET_KEY` / `R2_BUCKET` | No | Cloudflare R2 uploads | local uploads volume |
+| `GITHUB_WEBHOOK_SECRET` | No | Secret for `POST /api/webhooks/github`; unset disables that endpoint (503). GitHub PR-to-Done runs through the per-workspace GitHub sync and does not use it | none |
 | `METRICS_SCRAPE_TOKEN` | No | Bearer token for `/api/metrics` and `/health/queue`; unset disables detailed telemetry | none |
 
 ### Apps feature flags
