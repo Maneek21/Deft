@@ -376,6 +376,7 @@ const MEMBER_COLUMNS: Array<[table: string, col: string]> = [
   ['connected_accounts', 'user_id'],
   ['custom_emoji', 'uploaded_by'],
   ['email_context_transfers', 'owner_user_id'],
+  ['ics_publish_tokens', 'user_id'],
   ['ics_subscriptions', 'user_id'],
   ['integrations', 'connected_by'],
   ['invites', 'invited_by'],
