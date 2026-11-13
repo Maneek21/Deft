@@ -1,3 +1,5 @@
+import { fetchPublicHttpText } from './public-http-fetch.js';
+
 export type LinkPreview = {
   url: string;
   title: string | null;
@@ -7,26 +9,19 @@ export type LinkPreview = {
   siteName: string | null;
 };
 
+const LINK_PREVIEW_MAX_BYTES = 512 * 1024;
+
 export async function fetchLinkPreview(url: string): Promise<LinkPreview | null> {
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
-
-    const res = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        'User-Agent': 'DeftBot/1.0 (link preview)',
-        'Accept': 'text/html',
-      },
-      redirect: 'follow',
+    const res = await fetchPublicHttpText(url, {
+      maxBytes: LINK_PREVIEW_MAX_BYTES,
+      timeoutMs: 5000,
+      accept: 'text/html',
+      userAgent: 'DeftBot/1.0 (link preview)',
     });
-    clearTimeout(timeout);
+    if (!res.contentType.includes('text/html')) return null;
 
-    if (!res.ok) return null;
-    const contentType = res.headers.get('content-type') || '';
-    if (!contentType.includes('text/html')) return null;
-
-    const html = await res.text();
+    const html = res.text;
 
     // Parse OG tags
     const getOg = (property: string): string | null => {
