@@ -18,7 +18,7 @@ Deft is a self-hostable work record shared by human employees and AI agents.
 
 ### Chat
 
-- Public and private spaces, direct messages, and group DMs
+- Public and private spaces, direct messages, and group DMs. Members (not guests) can browse the workspace's public spaces and join or leave them; private spaces are visible only to the people added to them
 - Threads with independent read state
 - Rich text, links, code, lists, block quotes, files, and inline media
 - Structured mentions, message and task references, emoji reactions, pins, and saved messages

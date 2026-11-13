@@ -54,10 +54,13 @@ import {
   Mail,
   ChevronDown,
   AppWindow,
+  Compass,
   type LucideIcon,
 } from 'lucide-react';
 import { CreateSpaceModal } from './create-space-modal';
 import { CreateDmModal } from './create-dm-modal';
+import { BrowseSpacesModal } from './browse-spaces-modal';
+import { canBrowsePublicSpaces } from '@/lib/public-spaces';
 import { SavedMessages } from './saved-messages';
 import { CreateProjectModal } from './create-project-modal';
 import { useInboxCount } from '@/hooks/use-inbox-count';
@@ -144,6 +147,7 @@ function ChatSidebarContent({
   const pathname = usePathname();
   const router = useRouter();
   const [createDmOpen, setCreateDmOpen] = useState(false);
+  const [browseSpacesOpen, setBrowseSpacesOpen] = useState(false);
   const [agentEmployees, setAgentEmployees] = useState<AgentEmployee[]>([]);
 
   useEffect(() => {
@@ -204,14 +208,27 @@ function ChatSidebarContent({
           >
             Spaces
           </span>
-          <button
-            onClick={onOpenCreateSpace}
-            className="p-0.5 rounded"
-            style={{ color: 'var(--outline)' }}
-            title="Create space"
-          >
-            <Plus size={13} strokeWidth={1.5} />
-          </button>
+          <div className="flex items-center gap-1">
+            {canBrowsePublicSpaces(user?.role) && (
+              <button
+                onClick={() => setBrowseSpacesOpen(true)}
+                className="p-0.5 rounded"
+                style={{ color: 'var(--outline)' }}
+                title="Browse spaces"
+                aria-label="Browse spaces"
+              >
+                <Compass size={13} strokeWidth={1.5} />
+              </button>
+            )}
+            <button
+              onClick={onOpenCreateSpace}
+              className="p-0.5 rounded"
+              style={{ color: 'var(--outline)' }}
+              title="Create space"
+            >
+              <Plus size={13} strokeWidth={1.5} />
+            </button>
+          </div>
         </div>
         {publicSpaces.map((space) => {
           const active = activeSpaceId === space.id && pathname.startsWith('/chat');
@@ -518,6 +535,13 @@ function ChatSidebarContent({
 
       {createDmOpen && typeof document !== 'undefined' && createPortal(
         <CreateDmModal onClose={() => setCreateDmOpen(false)} />,
+        document.body
+      )}
+      {browseSpacesOpen && typeof document !== 'undefined' && createPortal(
+        <BrowseSpacesModal
+          onClose={() => setBrowseSpacesOpen(false)}
+          onOpenSpace={(id) => { onSpaceClick(id); router.push(`/chat?space=${id}`); }}
+        />,
         document.body
       )}
     </>

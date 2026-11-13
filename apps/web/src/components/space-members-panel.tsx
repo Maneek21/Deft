@@ -1,9 +1,13 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
+import { useChatContext } from '@/lib/chat-context';
+import { getSocket } from '@/lib/socket';
+import { leaveSpacePath, onMemberJoined } from '@/lib/public-spaces';
 import { useAuth } from '@/lib/auth-context';
-import { X, Plus, UserMinus, Search, Users, Bot, ShieldCheck, Activity } from 'lucide-react';
+import { X, Plus, UserMinus, Search, Users, Bot, ShieldCheck, Activity, LogOut } from 'lucide-react';
 import { AIBadge } from './ai-badge';
 import { CreateDmModal } from './create-dm-modal';
 
@@ -133,6 +137,11 @@ export function SpaceMembersPanel({ spaceId, spaceName, spaceType, onClose }: Pr
   const [loading, setLoading] = useState(true);
   const [addingMemberId, setAddingMemberId] = useState<string | null>(null);
   const [addError, setAddError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [leaveError, setLeaveError] = useState<string | null>(null);
+  const [leaving, setLeaving] = useState(false);
+  const router = useRouter();
+  const { refreshSpaces } = useChatContext();
 
   const isDmLike = spaceType === 'dm' || spaceType === 'group_dm';
 
@@ -149,7 +158,32 @@ export function SpaceMembersPanel({ spaceId, spaceName, spaceType, onClose }: Pr
       setLoading(false);
     }
     load();
+  }, [spaceId, reloadKey]);
+
+  // Someone joined this space from Browse spaces: refresh the list.
+  useEffect(() => {
+    const token = window.localStorage.getItem('deft-access-token');
+    if (!token) return;
+    return onMemberJoined(getSocket(token), (event) => event.space_id === spaceId, () => setReloadKey((k) => k + 1));
   }, [spaceId]);
+
+  const leaveSpace = async () => {
+    setLeaving(true);
+    setLeaveError(null);
+    try {
+      const res = await api.delete(leaveSpacePath(spaceId));
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setLeaveError(data.error || 'Could not leave this space.');
+        return;
+      }
+      refreshSpaces();
+      onClose();
+      router.push('/chat');
+    } finally {
+      setLeaving(false);
+    }
+  };
 
   useEffect(() => {
     function handleEscape(e: KeyboardEvent) {
@@ -428,6 +462,22 @@ export function SpaceMembersPanel({ spaceId, spaceName, spaceType, onClose }: Pr
                   </div>
                 )}
               </div>
+              {(spaceType === 'public' || spaceType === 'private') && (
+                <div className="px-3 pb-3" style={{ borderTop: '1px solid var(--border)' }}>
+                  {leaveError && (
+                    <p className="mt-2 text-[12px]" style={{ color: 'var(--danger)' }}>{leaveError}</p>
+                  )}
+                  <button
+                    onClick={leaveSpace}
+                    disabled={leaving}
+                    className="mt-2 flex items-center gap-2 w-full px-3 py-2 rounded-lg text-[13px] font-medium disabled:opacity-50"
+                    style={{ color: 'var(--danger)' }}
+                  >
+                    <LogOut size={14} strokeWidth={2} />
+                    {leaving ? 'Leaving...' : 'Leave space'}
+                  </button>
+                </div>
+              )}
             </>
           )}
         </div>

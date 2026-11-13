@@ -13,6 +13,7 @@ import { AppHeaderProvider, useAppHeaderContext } from '@/components/app-header-
 import { ExperienceNavigationProvider } from '@/components/apps/experience-navigation-context';
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
+import { onMemberJoined } from '@/lib/public-spaces';
 import { applyPresenceSnapshot, applyPresenceUpdate } from '@/lib/presence-state';
 import { openDirectMessage } from '@/lib/quick-actions';
 import { useHuddle } from '@/hooks/use-huddle';
@@ -298,6 +299,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       window.removeEventListener('click', resetIdleTimer);
     };
   }, [user?.id, pathname]);
+
+  // Another tab or device of this user joined a public space: show it here too.
+  useEffect(() => {
+    const token = localStorage.getItem('deft-access-token');
+    if (!token || !user?.id) return;
+    return onMemberJoined(getSocket(token), (event) => event.user_id === user.id, () => { void loadSpaces(); });
+  }, [user?.id, loadSpaces]);
 
   // Global keyboard shortcuts: ? for help, G then X for navigation, Shift+Esc mark all read
   useEffect(() => {
