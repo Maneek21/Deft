@@ -1351,6 +1351,7 @@ async function requesterTaskWriteScopeError(
   params: Record<string, any>,
   orgId: string,
   userId: string,
+  agentEmployeeId: string | null = null,
 ): Promise<string | null> {
   if (action === 'mark_decision_implemented') return requesterDecisionError(params, orgId, userId);
   if (action === 'link_decision_to_tasks') {
@@ -1370,6 +1371,8 @@ async function requesterTaskWriteScopeError(
         visibleTaskCondition(userId),
       ));
     params.requester_visible_task_ids = visible.map((task) => task.id);
+    // With an employee, unknown ids already refuse the whole call; hidden ones answer the same.
+    if (agentEmployeeId && new Set(visible.map((task) => task.id)).size !== new Set(rawIds).size) return 'Task not found';
     return requesterDecisionError(params, orgId, userId);
   }
   if (!REQUESTER_TASK_WRITE_ACTIONS.has(action)) return null;
@@ -1566,12 +1569,15 @@ export async function executeAction(
       agentEmployeeId,
     );
     if (taskScopeError) return { success: false, result: null, error: taskScopeError };
-    const requesterTaskError = await requesterTaskWriteScopeError(action, params, orgId, userId);
+    const requesterTaskError = await requesterTaskWriteScopeError(action, params, orgId, userId, agentEmployeeId);
     if (requesterTaskError) {
       if (isModuleTaskLinkWriteAction(action)) {
         await terminalizeModuleTaskLinkActionFailure(
           actionId, action, params, orgId, userId, agentEmployeeId ?? undefined, requesterTaskError,
         );
+      } else {
+        await db.update(agentActions).set({ error: requesterTaskError })
+          .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, orgId)));
       }
       return { success: false, result: null, error: requesterTaskError };
     }
@@ -3684,9 +3690,6 @@ async function executeActionDirectLocked(
     options?.agentEmployeeId ?? null,
   );
   if (taskScopeError) throw new Error(taskScopeError);
-  // Refuse before the action row is written, as the employee boundary does.
-  const requesterTaskError = await requesterTaskWriteScopeError(action, { ...params }, orgId, userId);
-  if (requesterTaskError) throw new Error(requesterTaskError);
 
   let effectiveApprovalTier = approvalTier;
   let effectiveMcpConnectionId = options?.mcpConnectionId;

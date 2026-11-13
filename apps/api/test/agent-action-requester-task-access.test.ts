@@ -238,13 +238,10 @@ test('every native task kind refuses a hidden task exactly as a missing one, and
   assert.deepEqual(hiddenLink.result.linked_task_ids, [open.id]);
 
   assert.equal((await taskRow(open.id)).priority, 'p2', 'a refused batch changes no task');
-  const countBefore = await client.query("SELECT count(*)::int AS n FROM agent_actions WHERE org_id = $1 AND action = 'set_priority'", [orgId]);
-  await assert.rejects(
-    executeActionDirect('set_priority', { task_identifier: hidden.id, priority: 'p0' }, orgId, memberId, null, 'auto'),
-    /^Error: Task not found$/,
-  );
-  const afterDirect = await client.query("SELECT count(*)::int AS n FROM agent_actions WHERE org_id = $1 AND action = 'set_priority'", [orgId]);
-  assert.equal(afterDirect.rows[0].n, countBefore.rows[0].n, 'a refused direct action records no row');
+  const direct = await executeActionDirect('set_priority', { task_identifier: hidden.id, priority: 'p0' }, orgId, memberId, null, 'auto');
+  assert.deepEqual({ success: direct.success, error: direct.error }, { success: false, error: 'Task not found' });
+  const stored = await client.query('SELECT error FROM agent_actions WHERE id = $1', [direct.actionId]);
+  assert.equal(stored.rows[0].error, 'Task not found', 'the refusal is recorded on the action');
 
   const ok = await run(memberId, 'set_priority', { task_identifier: open.ref, priority: 'p1' });
   assert.equal(ok.success, true, ok.error);
