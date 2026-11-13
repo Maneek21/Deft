@@ -1486,8 +1486,6 @@ async function ownedApprovalResponse(
       code: 'APPROVAL_SUPERSEDED',
     }, 409);
   }
-  // The proposing employee hears the settled decision, as on the resolver's path.
-  if (outcome.kind !== 'reopened') await publishSettledApprovalResolution(action.id, actorUserId);
   const execResult = outcome.kind === 'succeeded'
     ? { success: true as const, result: outcome.result }
     : { success: false as const, result: outcome.result, error: outcome.error };
@@ -1703,7 +1701,6 @@ export async function rejectActionAsReviewer(
     resolution: 'rejected',
     actorUserId: user.id,
   });
-  await publishSettledApprovalResolution(actionId, user.id);
 
   if (
     action.source === 'defty_capture'

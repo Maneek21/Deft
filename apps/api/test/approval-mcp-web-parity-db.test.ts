@@ -174,10 +174,10 @@ test('P2: a document-send rejected over MCP leaves the same row, decision and re
   assert.deepEqual(await decisions(viaMcp), [{ user_id: bob, decision: 'rejected' }]);
   const receipts = async (id: string) => (await q('SELECT decision FROM action_receipts WHERE action_id = $1', [id])).rows;
   assert.deepEqual(await receipts(viaMcp), await receipts(viaWeb));
-  // The proposing employee hears both rejections.
+  // A document send reports through its own message, never an employee event, on either surface.
   for (const id of [viaWeb, viaMcp]) {
     const events = await q(`SELECT 1 FROM agent_channel_events WHERE org_id = $1 AND kind = 'approval.resolved' AND payload->>'action_id' = $2`, [orgId, id]);
-    assert.equal(events.rowCount, 1);
+    assert.equal(events.rowCount, 0);
   }
 });
 
