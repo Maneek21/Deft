@@ -9,7 +9,7 @@ import {
   users,
   orgMembers,
 } from '@deft/db/schema';
-import { eq, and, inArray, asc } from 'drizzle-orm';
+import { eq, and, inArray, asc, ne } from 'drizzle-orm';
 import { decrypt } from '../lib/encryption.js';
 
 /**
@@ -212,7 +212,12 @@ export async function syncGitHubForUser(accountId: string) {
       const prs = await prRes.json() as any[];
 
       for (const pr of prs) {
-        const externalId = `pr-${repoFullName}-${pr.number}`;
+        // `events.external_id` is unique per source across all workspaces, so
+        // new rows carry the workspace id in a namespace (`gh-pr:`) distinct
+        // from the older `pr-<repo>-<n>` ids, which stay addressable by their
+        // own workspace.
+        const legacyExternalId = `pr-${repoFullName}-${pr.number}`;
+        const externalId = `gh-pr:${account.org_id}:${repoFullName}#${pr.number}`;
         let eventType: string;
         if (pr.merged_at) {
           eventType = 'pr_merged';
@@ -248,24 +253,56 @@ export async function syncGitHubForUser(accountId: string) {
           connected_account_id: account.id,
         };
 
-        // Upsert by source + external_id
-        const existing = await db.select({ id: events.id, event_type: events.event_type }).from(events)
-          .where(and(eq(events.source, 'github'), eq(events.external_id, externalId)))
+        // Upsert within this workspace by source + external_id
+        const existing = await db.select({ id: events.id, event_type: events.event_type, external_id: events.external_id })
+          .from(events)
+          .where(and(
+            eq(events.org_id, account.org_id),
+            eq(events.source, 'github'),
+            inArray(events.external_id, [externalId, legacyExternalId]),
+          ))
           .limit(1);
 
-        const wasAlreadyMerged = existing.length > 0 && existing[0]!.event_type === 'pr_merged';
-
+        // A merged event is final: it is never rewritten, so a stale poll
+        // cannot move it back and the merge transition is claimed by exactly
+        // one write (the insert, or the update that leaves a non-merged row).
+        let claimedWrite = false;
         if (existing.length > 0) {
-          await db.update(events).set(eventData).where(eq(events.id, existing[0]!.id));
+          const updated = await db.update(events)
+            .set({ ...eventData, external_id: existing[0]!.external_id })
+            .where(and(
+              eq(events.id, existing[0]!.id),
+              eq(events.org_id, account.org_id),
+              ne(events.event_type, 'pr_merged'),
+            ))
+            .returning({ id: events.id });
+          claimedWrite = updated.length > 0;
         } else {
-          await db.insert(events).values(eventData);
+          const inserted = await db.insert(events).values(eventData)
+            .onConflictDoNothing()
+            .returning({ id: events.id });
+          claimedWrite = inserted.length > 0;
+          if (!claimedWrite) {
+            // Another sync of this workspace inserted it first; apply this
+            // snapshot to that row unless it already records the merge.
+            const updated = await db.update(events)
+              .set(eventData)
+              .where(and(
+                eq(events.org_id, account.org_id),
+                eq(events.source, 'github'),
+                eq(events.external_id, externalId),
+                ne(events.event_type, 'pr_merged'),
+              ))
+              .returning({ id: events.id });
+            claimedWrite = updated.length > 0;
+          }
         }
         synced++;
 
-        // Task 5.6 — When a PR transitions into pr_merged (new event OR previous
-        // event wasn't already pr_merged), parse PREFIX-N refs and close linked
-        // tasks. Fail-soft: a closure error must never abort the sync run.
-        if (eventType === 'pr_merged' && !wasAlreadyMerged) {
+        // Task 5.6 — When this write moved the PR into pr_merged, parse
+        // PREFIX-N refs and close linked tasks. Fail-soft: a closure error
+        // must never abort the sync run.
+        if (eventType === 'pr_merged' && claimedWrite) {
           try {
             await closeTasksForMergedPR({
               org_id: account.org_id,
