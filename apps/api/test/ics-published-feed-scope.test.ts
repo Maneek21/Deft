@@ -56,6 +56,7 @@ before(async () => {
     task(projectIds.deleted, 1, 'DELETEDPROJ-A-TASK'),
     task(projectIds.foreign, 1, 'MISMATCHED-PROJECT-TASK'),
     { ...task(projectIds.foreign, 2, 'FOREIGN-ORG-TASK'), org_id: foreignOrg },
+    { ...task(projectIds.live, 6, 'FOREIGN-ORG-LOCAL-PROJECT-TASK'), org_id: foreignOrg },
   ]);
   await db.insert(events).values(
     { org_id: orgA, source: 'native', event_type: 'calendar_event', title: 'EVENT-A', timestamp: due, metadata: {}, user_id: owner },
@@ -87,7 +88,7 @@ test('the feed lists only live tasks the owner may see', async () => {
   assert.match(res.body, /LIVE-A-TASK/);
   assert.match(res.body, /EVENT-A/);
   assert.match(res.body, /RESTRICTED-OWNER-TASK/, 'assignee may see a restricted task under the current rule');
-  for (const absent of ['SOFTDELETED-A-TASK', 'TEMPLATE-A-TASK', 'RESTRICTED-HIDDEN-TASK', 'ARCHIVEDPROJ-A-TASK', 'DELETEDPROJ-A-TASK', 'MISMATCHED-PROJECT-TASK', 'FOREIGN-ORG-TASK']) {
+  for (const absent of ['SOFTDELETED-A-TASK', 'TEMPLATE-A-TASK', 'RESTRICTED-HIDDEN-TASK', 'ARCHIVEDPROJ-A-TASK', 'DELETEDPROJ-A-TASK', 'MISMATCHED-PROJECT-TASK', 'FOREIGN-ORG-TASK', 'FOREIGN-ORG-LOCAL-PROJECT-TASK']) {
     assert.doesNotMatch(res.body, new RegExp(absent), absent);
   }
 });

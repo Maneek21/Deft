@@ -153,7 +153,7 @@ Deft also exposes its own tools via MCP, so external agents can use Deft's data.
 
 ### Daily Action Limits
 
-Each employee has a `max_daily_actions` budget (default 50). Each write counts as 1 action: a write tool call (also when it is queued for approval), an approved action when it runs, or an employee chat post. Reads, the journal tools (`record_*`) and `request_human_approval` do not count. Atomic SQL prevents race conditions. When exhausted, the agent tells the user and stops.
+Each employee has a `max_daily_actions` budget (default 50). Each write counts as 1 action: a write tool call (also when it is queued for approval; a module record proposal counts only when it runs), an approved action when it runs, or an employee chat post. Reads, the journal tools (`record_*`) and `request_human_approval` do not count. Atomic SQL prevents race conditions. When exhausted, the agent tells the user and stops.
 
 ### Safety Guards
 
