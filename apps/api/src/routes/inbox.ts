@@ -274,12 +274,8 @@ inboxRoutes.get('/', async (c) => {
     // The count covers every approval; the list is the page before the cursor.
     const listedApprovalRows = countOnly ? [] : wantedApprovalRows.filter((r) => !cursor
       || new Date(r.created_at as unknown as string).getTime() < new Date(cursor).getTime());
-    const reviewAuthority = countOnly
-      ? new Map<string, never>()
-      : await viewerReviewAuthority(user, listedApprovalRows.map((r) => r.id));
     const approvalItems: InboxItem[] = listedApprovalRows.map((r) => {
       const isCapture = r.action_source === 'defty_capture';
-      const authority = reviewAuthority.get(r.id);
       return {
         id: `approval:${r.id}`,
         kind: isCapture ? 'work_capture' : 'pending_approval',
@@ -301,8 +297,6 @@ inboxRoutes.get('/', async (c) => {
           employee_slug: r.employee_slug,
           employee_avatar: r.employee_avatar,
           proposer: isCapture || !r.agent_employee_id ? 'defty' : 'employee',
-          // Absent when only the action's own path can tell (App Run releases).
-          ...authority,
         },
       };
     });
@@ -317,6 +311,11 @@ inboxRoutes.get('/', async (c) => {
     }
 
     const items = all.slice(0, limit);
+    // Review flags only for the approvals in this page; `viewer_can_approve`
+    // is absent for an App Run approval past the per-response check limit.
+    const pageApprovals = items.flatMap((item) => item.approval ? [item.approval] : []);
+    const reviewAuthority = await viewerReviewAuthority(user, pageApprovals.map((approval) => approval.action_id));
+    for (const approval of pageApprovals) Object.assign(approval, reviewAuthority.get(approval.action_id));
     const lastItem = items[items.length - 1];
     const nextCursor = items.length === limit && lastItem ? lastItem.created_at : null;
 

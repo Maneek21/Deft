@@ -9,6 +9,13 @@ import { db } from './db.js';
 import { AppRunError } from './app-run-errors.js';
 import { PostgresAppRunLiveAuthorization } from './app-run-live-authorization.js';
 import {
+  appRunApproveStep,
+  appRunOwnerRefuses,
+  appRunRejectStep,
+  appRunReviewAuthority,
+  type AppRunReviewRow,
+} from './app-run-approval-review.js';
+import {
   PostgresAppRunRepository,
   type AppRunSafeView,
   type AppRunTransaction,
@@ -45,7 +52,7 @@ export interface AppRunApprovalAdapter {
 type AppRunApprovalLiveAuthorization = Pick<
   PostgresAppRunLiveAuthorization,
   'authorizeApprovalInTransaction'
->;
+> & Partial<Pick<PostgresAppRunLiveAuthorization, 'authorizeApprovalRead'>>;
 
 async function approvalOwnerUserId(
   tx: AppRunTransaction,
@@ -145,9 +152,7 @@ export class PostgresAppRunApprovalResolver {
       }
       // Reviewed Runtime/native releases belong to their selected human owner.
       // Generic MCP employee Runs retain the existing workspace approval path.
-      if ((run.initiating_actor_type === 'app_public' || run.provider_kind === 'native'
-        || (run.provider_kind === 'app_runtime' && run.initiating_actor_type === 'agent_employee'))
-        && action.user_id !== approverUserId) {
+      if (appRunOwnerRefuses('approve', run, action.user_id, approverUserId)) {
         return { status: 'error', code: 'NOT_FOUND', message: 'App Run approval was not found' };
       }
 
@@ -156,7 +161,9 @@ export class PostgresAppRunApprovalResolver {
         && !await this.liveAuthorization.authorizeApprovalInTransaction(tx, run, this.now())) {
         return { status: 'error', code: 'INVALID_STATE', message: 'App Run approval is no longer valid' };
       }
-      if (run.execution_release_kind === 'approved') {
+      const approvalNow = this.now();
+      const step = appRunApproveStep(run, action, approvalNow);
+      if (step === 'replay_approved') {
         // A replay keeps the original approver and approval time.
         await this.#markApproved(tx, action.id, action.approved_by_user_id ?? approverUserId, run, action.approved_at ?? undefined);
         await this.#writeApprovalReceipt(
@@ -170,24 +177,22 @@ export class PostgresAppRunApprovalResolver {
         await this.attemptScheduler.scheduleInTransaction(tx, run, this.now());
         return { status: 'approved', decidedElsewhere: true, message: 'already approved', result: this.#safeResult(run, true) };
       }
-      if (run.state === 'cancelled') {
+      if (step === 'replay_rejected') {
         await this.#markRejected(tx, action.id);
         return { status: 'rejected', decidedElsewhere: true, message: 'already rejected' };
       }
-      if (run.state === 'expired' || run.state === 'failed') {
+      if (step === 'terminal') {
         await this.#markExpired(tx, action.id);
         return { status: 'error', code: 'INVALID_STATE', message: 'App Run approval is no longer valid' };
       }
-      if (action.approval_status === 'rejected') {
+      if (step === 'rejected') {
         return { status: 'rejected', decidedElsewhere: true, message: 'already rejected' };
       }
-      if (action.approval_status === 'expired') {
+      if (step === 'expired') {
         return { status: 'error', code: 'INVALID_STATE', message: 'App Run approval is no longer valid' };
       }
-      const approvalNow = this.now();
       if (
-        run.state !== 'pending_approval'
-        || run.input_expires_at <= approvalNow
+        step === 'stale'
         || !await this.liveAuthorization.authorizeApprovalInTransaction(tx, run, approvalNow)
       ) {
         const now = approvalNow;
@@ -253,19 +258,20 @@ export class PostgresAppRunApprovalResolver {
       }
       let run = await this.repository.lockRun(tx, action.org_id, action.app_run_id);
       if (!run) return { status: 'error', code: 'NOT_FOUND', message: 'App Run approval was not found' };
-      if (run.initiating_actor_type === 'app_public' && action.user_id !== rejecterUserId) {
+      if (appRunOwnerRefuses('reject', run, action.user_id, rejecterUserId)) {
         return { status: 'error', code: 'NOT_FOUND', message: 'App Run approval was not found' };
       }
 
-      if (run.execution_release_kind === 'approved') {
+      const step = appRunRejectStep(run, action);
+      if (step === 'replay_approved') {
         await this.#markApproved(tx, action.id, action.approved_by_user_id ?? rejecterUserId, run, action.approved_at ?? undefined);
         return { status: 'approved', decidedElsewhere: true, message: 'already approved', result: this.#safeResult(run, true) };
       }
-      if (run.state === 'cancelled' || action.approval_status === 'rejected') {
+      if (step === 'replay_rejected') {
         await this.#markRejected(tx, action.id);
         return { status: 'rejected', decidedElsewhere: true, message: 'already rejected' };
       }
-      if (run.state !== 'pending_approval') {
+      if (step === 'invalid') {
         await this.#markExpired(tx, action.id);
         return { status: 'error', code: 'INVALID_STATE', message: 'App Run approval is no longer valid' };
       }
@@ -298,6 +304,15 @@ export class PostgresAppRunApprovalResolver {
     });
     await this.#resolveApprovalAttention(actionId, rejecterUserId);
     return result;
+  }
+
+  /**
+   * The review flags of App Run approvals for one viewer, by the rules this
+   * resolver decides with (see `appRunReviewAuthority`). Reads only.
+   */
+  async reviewAuthority(orgId: string, viewerId: string, rows: readonly AppRunReviewRow[]) {
+    const read = this.liveAuthorization.authorizeApprovalRead?.bind(this.liveAuthorization);
+    return appRunReviewAuthority(orgId, viewerId, rows, read, this.now());
   }
 
   async #lockAction(tx: AppRunTransaction, actionId: string) {

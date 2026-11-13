@@ -775,6 +775,24 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     });
   }
 
+  /**
+   * What `authorizeApprovalInTransaction` would answer for this run now,
+   * without reserving budget: the same live state and budget conditions, read
+   * in a transaction that is always rolled back.
+   */
+  async authorizeApprovalRead(run: AppRunSafeView): Promise<boolean> {
+    let authorized = false;
+    try {
+      await db.transaction(async (tx) => {
+        authorized = await this.#authorizeRelease(tx, run, 'prepare', 'read');
+        tx.rollback();
+      });
+    } catch {
+      // The rollback above always lands here; any other failure answers false.
+    }
+    return authorized;
+  }
+
   async authorizeDelivery(input: Readonly<{
     org_id: string;
     run: AppRunSafeView;
@@ -790,23 +808,38 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
   }
 
   async authorizeExecution(input: Parameters<AppRunExecutionAuthorizer['authorizeExecution']>[0]): Promise<boolean> {
-    try {
-      if (input.org_id !== input.run.org_id) return false;
-      const internal = await this.#loadInternalRun(input.tx, input.org_id, input.run.id);
-      if (!internal || !await this.#matchesLiveState(input.tx, input.run, internal,input.stage==='prepare'?'prepared_resource_approval':undefined)) return false;
+    if (input.org_id !== input.run.org_id) return false;
+    return this.#authorizeRelease(input.tx, input.run, input.stage, 'reserve', input.now);
+  }
 
-      const budgetEmployeeId = input.run.execution_actor_type === 'agent_employee'
-        ? input.run.execution_actor_id
-        : input.run.provider_kind === 'app_runtime' && input.run.initiating_actor_type === 'agent_employee'
-          ? input.run.initiating_actor_id : null;
-      const reservesEmployeeBudget = budgetEmployeeId !== null && input.run.risk_class !== 'read';
+  /**
+   * The live state and budget conditions of a release. `reserve` takes the
+   * employee budget slot a first release needs; `read` only checks that the
+   * slot is available, under the same condition.
+   */
+  async #authorizeRelease(
+    tx: AppRunTransaction,
+    run: AppRunSafeView,
+    stage: Parameters<AppRunExecutionAuthorizer['authorizeExecution']>[0]['stage'],
+    mode: 'reserve' | 'read',
+    now: Date = new Date(),
+  ): Promise<boolean> {
+    try {
+      const internal = await this.#loadInternalRun(tx, run.org_id, run.id);
+      if (!internal || !await this.#matchesLiveState(tx, run, internal,stage==='prepare'?'prepared_resource_approval':undefined)) return false;
+
+      const budgetEmployeeId = run.execution_actor_type === 'agent_employee'
+        ? run.execution_actor_id
+        : run.provider_kind === 'app_runtime' && run.initiating_actor_type === 'agent_employee'
+          ? run.initiating_actor_id : null;
+      const reservesEmployeeBudget = budgetEmployeeId !== null && run.risk_class !== 'read';
       if (!reservesEmployeeBudget) {
         return internal.budget_reserved_at === null
           && internal.budget_reserved_count === null
           && internal.budget_limit_at_reservation === null;
       }
 
-      if (input.stage !== 'prepare') {
+      if (stage !== 'prepare') {
         return internal.budget_reserved_at !== null
           && internal.budget_reserved_count === 1
           && internal.budget_limit_at_reservation !== null;
@@ -816,31 +849,37 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
           && internal.budget_limit_at_reservation !== null;
       }
 
-      const [reservation] = await input.tx
+      const budgetAvailable = and(
+        eq(agentEmployees.org_id, run.org_id),
+        eq(agentEmployees.id, budgetEmployeeId!),
+        eq(agentEmployees.is_active, true),
+        eq(agentEmployees.is_deleted, false),
+        eq(agentEmployees.unhealthy, false),
+        sql`${agentEmployees.daily_action_count} < ${agentEmployees.max_daily_actions}`,
+      );
+      if (mode === 'read') {
+        const [available] = await tx.select({ id: agentEmployees.id }).from(agentEmployees)
+          .where(budgetAvailable).limit(1);
+        return Boolean(available);
+      }
+      const [reservation] = await tx
         .update(agentEmployees)
         .set({ daily_action_count: sql`${agentEmployees.daily_action_count} + 1` })
-        .where(and(
-          eq(agentEmployees.org_id, input.org_id),
-          eq(agentEmployees.id, budgetEmployeeId!),
-          eq(agentEmployees.is_active, true),
-          eq(agentEmployees.is_deleted, false),
-          eq(agentEmployees.unhealthy, false),
-          sql`${agentEmployees.daily_action_count} < ${agentEmployees.max_daily_actions}`,
-        ))
+        .where(budgetAvailable)
         .returning({
           count: agentEmployees.daily_action_count,
           limit: agentEmployees.max_daily_actions,
         });
       if (!reservation) return false;
 
-      const [recorded] = await input.tx.update(appRuns).set({
-        budget_reserved_at: input.now,
+      const [recorded] = await tx.update(appRuns).set({
+        budget_reserved_at: now,
         budget_reserved_count: 1,
         budget_limit_at_reservation: reservation.limit,
-        updated_at: input.now,
+        updated_at: now,
       }).where(and(
-        eq(appRuns.org_id, input.org_id),
-        eq(appRuns.id, input.run.id),
+        eq(appRuns.org_id, run.org_id),
+        eq(appRuns.id, run.id),
         isNull(appRuns.budget_reserved_at),
       )).returning({ id: appRuns.id });
       return Boolean(recorded);
