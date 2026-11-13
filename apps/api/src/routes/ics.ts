@@ -6,6 +6,7 @@ import { users, icsSubscriptions, tasks, events, projects } from '@deft/db/schem
 import { generateICS, newPublishToken, parseICS, extractICSCalendarName } from '../lib/ics.js';
 import { syncOne } from '../workers/handlers/ics-sync.js';
 import { env } from '../lib/env.js';
+import { PublicFetchError, fetchCalendarFeedText } from '../lib/public-http-fetch.js';
 
 // Two routers: one public (the feed) mounted before authMiddleware, one
 // authenticated for management. Both export from the same module so the
@@ -13,9 +14,6 @@ import { env } from '../lib/env.js';
 
 export const icsPublicRoutes = new Hono();
 export const icsRoutes = new Hono();
-
-const ICS_PREVIEW_TIMEOUT_MS = 20_000;
-const ICS_PREVIEW_MAX_BYTES = 5 * 1024 * 1024;
 
 function publicApiBase(c: { req: { url: string } }): string {
   const configured = process.env.NEXT_PUBLIC_API_URL || process.env.DEFT_API_URL;
@@ -370,36 +368,21 @@ icsRoutes.post('/my-feed-url/regenerate', async (c) => {
 });
 
 async function fetchICSWithLimits(url: string): Promise<string> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), ICS_PREVIEW_TIMEOUT_MS);
-  try {
-    const httpsUrl = url.replace(/^webcal:\/\//i, 'https://');
-    const res = await globalThis.fetch(httpsUrl, {
-      method: 'GET',
-      headers: { Accept: 'text/calendar, text/plain, application/octet-stream, */*' },
-      signal: controller.signal,
-    });
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`);
-    }
-    const buf = await res.arrayBuffer();
-    if (buf.byteLength > ICS_PREVIEW_MAX_BYTES) {
-      throw new Error(`Body too large: ${buf.byteLength} bytes`);
-    }
-    const text = Buffer.from(buf).toString('utf8');
-    if (/<!doctype html|<html[\s>]/i.test(text.slice(0, 500))) {
-      throw new Error('The URL returned a web page, not an ICS feed');
-    }
-    return text;
-  } finally {
-    clearTimeout(timer);
+  const text = await fetchCalendarFeedText(url);
+  if (/<!doctype html|<html[\s>]/i.test(text.slice(0, 500))) {
+    throw new Error('The URL returned a web page, not an ICS feed');
   }
+  return text;
 }
 
 function humanizeIcsError(err: unknown): string {
+  if (err instanceof PublicFetchError) {
+    if (err.kind === 'too_large') return 'Feed is too large to import.';
+    if (err.kind === 'timeout') return 'Feed request timed out.';
+    if (err.kind === 'unreachable') return 'Could not reach the feed URL.';
+    if (err.kind === 'bad_encoding') return 'Feed response could not be decoded.';
+  }
   const message = (err as Error).message || 'unknown error';
-  if (/Body too large/i.test(message)) return 'Feed is too large to import.';
-  if (/aborted|AbortError/i.test(message)) return 'Feed request timed out.';
   if (/HTTP 401|HTTP 403/i.test(message)) return 'Feed requires login or is not public/secret-shareable.';
   if (/HTTP 404/i.test(message)) return 'Feed URL was not found.';
   if (/web page/i.test(message)) return 'The URL returned a web page, not a calendar feed. Use the secret/public ICS URL.';

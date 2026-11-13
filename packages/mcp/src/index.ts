@@ -7,6 +7,7 @@ export { ToolCache } from "./cache.js";
 export { createTransport } from "./transports.js";
 export {
   isPublicNetworkAddress,
+  isNeverAllowedMetadataAddress,
   isAllowedSelfHostedPrivateAddress,
   isStdioCommandAllowed,
   createSecureMcpFetch,

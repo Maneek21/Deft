@@ -14,10 +14,8 @@ import { eq, and, sql } from 'drizzle-orm';
 import { db } from '../../lib/db.js';
 import { icsSubscriptions, events } from '@deft/db/schema';
 import { parseICS } from '../../lib/ics.js';
+import { fetchCalendarFeedText } from '../../lib/public-http-fetch.js';
 import type { JobData } from '../types.js';
-
-const FETCH_TIMEOUT_MS = 20_000;
-const MAX_BODY_BYTES = 5 * 1024 * 1024; // 5 MB hard cap
 
 export async function handleIcsSync(_job: JobData): Promise<void> {
   // Find every active sub that is due. NULL last_synced_at counts as due
@@ -66,7 +64,7 @@ export async function syncOne(sub: {
   ics_url: string;
   label: string | null;
 }): Promise<{ count: number }> {
-  const text = await fetchWithLimits(sub.ics_url);
+  const text = await fetchCalendarFeedText(sub.ics_url);
   const parsed = parseICS(text);
 
   // Upsert each event. We rely on the existing
@@ -131,35 +129,6 @@ export async function syncOne(sub: {
 
   console.log(`[ics-sync] sub ${sub.id} synced ${count} event(s) from ${truncate(sub.ics_url, 80)}`);
   return { count };
-}
-
-async function fetchWithLimits(url: string): Promise<string> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  try {
-    // Some feeds use webcal:// — rewrite to https.
-    const httpsUrl = url.replace(/^webcal:\/\//i, 'https://');
-    const res = await globalThis.fetch(httpsUrl, {
-      method: 'GET',
-      headers: { Accept: 'text/calendar, text/plain, */*' },
-      signal: controller.signal,
-    });
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`);
-    }
-    const ct = res.headers.get('content-type') ?? '';
-    if (!/text\/calendar|text\/plain|application\/octet-stream/.test(ct)) {
-      // Don't reject — Google's "secret URL" returns text/plain; some servers
-      // return application/ics. Just log noise once per problem feed.
-    }
-    const buf = await res.arrayBuffer();
-    if (buf.byteLength > MAX_BODY_BYTES) {
-      throw new Error(`Body too large: ${buf.byteLength} bytes`);
-    }
-    return Buffer.from(buf).toString('utf8');
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 function truncate(s: string, n: number): string {
