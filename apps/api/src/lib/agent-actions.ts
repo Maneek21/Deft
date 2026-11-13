@@ -1575,9 +1575,6 @@ export async function executeAction(
         await terminalizeModuleTaskLinkActionFailure(
           actionId, action, params, orgId, userId, agentEmployeeId ?? undefined, requesterTaskError,
         );
-      } else {
-        await db.update(agentActions).set({ error: requesterTaskError })
-          .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, orgId)));
       }
       return { success: false, result: null, error: requesterTaskError };
     }
