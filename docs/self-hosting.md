@@ -450,9 +450,7 @@ POST https://your-domain.com/api/mcp/v1
 Create an agent employee from Settings -> Agent Employees, copy the bearer token,
 and paste the generated MCP config into your runtime. Agent employee tokens act
 as that employee and are governed by the employee's trust level, approval rules,
-health status, and MCP audit log. The per-employee daily cost budget is not
-enforced today: nothing records spend against it. The daily action cap and the
-unhealthy (circuit breaker) state do apply.
+health status, and MCP audit log. Deft does not record what an employee's own runtime spends, so the per-employee daily cost budget never triggers. The daily action cap (`max_daily_actions`) is enforced; use it and your runtime's own limits to bound cost. The unhealthy (circuit breaker) state also applies.
 
 Personal tokens and agent employee tokens use the same endpoint, but they are not
 the same authority model. Use personal tokens when a human wants their own AI

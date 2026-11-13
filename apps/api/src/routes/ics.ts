@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { eq, and, isNotNull, gte, lte, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
@@ -14,6 +14,21 @@ import { PublicFetchError, fetchCalendarFeedText } from '../lib/public-http-fetc
 
 export const icsPublicRoutes = new Hono();
 export const icsRoutes = new Hono();
+
+// Any failure in a management handler is answered and logged without the
+// error object: database errors can carry statement parameters (the feed URL).
+function guarded(route: string, handler: (c: Context) => Promise<Response>) {
+  return async (c: Context): Promise<Response> => {
+    try {
+      return await handler(c);
+    } catch (err) {
+      const user = c.get('user') as { id?: string } | undefined;
+      const sub = c.req.param('id');
+      console.error(`[ics] ${route} failed user=${user?.id ?? 'unknown'}${sub ? ` subscription=${sub}` : ''}: ${humanizeIcsError(err)}`);
+      return c.json({ error: 'Calendar feed request failed', code: 'ICS_ROUTE_FAILED' }, 500);
+    }
+  };
+}
 
 function publicApiBase(c: { req: { url: string } }): string {
   const configured = process.env.NEXT_PUBLIC_API_URL || process.env.DEFT_API_URL;
@@ -147,14 +162,14 @@ icsPublicRoutes.get('/feed/:token', async (c) => {
 // ─── Authenticated management ────────────────────────────────────────────────
 
 // GET /api/ics/subscriptions
-icsRoutes.get('/subscriptions', async (c) => {
+icsRoutes.get('/subscriptions', guarded('GET /subscriptions', async (c) => {
   const user = c.get('user') as { id: string; org_id: string };
   const subs = await db
     .select()
     .from(icsSubscriptions)
     .where(and(eq(icsSubscriptions.user_id, user.id), eq(icsSubscriptions.org_id, user.org_id)));
   return c.json(subs);
-});
+}));
 
 const icsUrlSchema = z.string().trim().min(1).max(2048).refine((value) => {
   try {
@@ -184,7 +199,7 @@ const updateSchema = z.object({
 });
 
 // POST /api/ics/preview
-icsRoutes.post('/preview', async (c) => {
+icsRoutes.post('/preview', guarded('POST /preview', async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const parsed = previewSchema.safeParse(body);
   if (!parsed.success) {
@@ -220,9 +235,9 @@ icsRoutes.post('/preview', async (c) => {
       detail: humanizeIcsError(err),
     }, 502);
   }
-});
+}));
 
-icsRoutes.post('/subscriptions', async (c) => {
+icsRoutes.post('/subscriptions', guarded('POST /subscriptions', async (c) => {
   const user = c.get('user') as { id: string; org_id: string };
   const body = await c.req.json().catch(() => ({}));
   const parsed = createSchema.safeParse(body);
@@ -268,10 +283,10 @@ icsRoutes.post('/subscriptions', async (c) => {
     .limit(1);
 
   return c.json(refreshed ?? created, 201);
-});
+}));
 
 // PATCH /api/ics/subscriptions/:id
-icsRoutes.patch('/subscriptions/:id', async (c) => {
+icsRoutes.patch('/subscriptions/:id', guarded('PATCH /subscriptions/:id', async (c) => {
   const user = c.get('user') as { id: string; org_id: string };
   const id = c.req.param('id');
   const body = await c.req.json().catch(() => ({}));
@@ -292,10 +307,10 @@ icsRoutes.patch('/subscriptions/:id', async (c) => {
     .returning();
   if (!updated) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
   return c.json(updated);
-});
+}));
 
 // DELETE /api/ics/subscriptions/:id
-icsRoutes.delete('/subscriptions/:id', async (c) => {
+icsRoutes.delete('/subscriptions/:id', guarded('DELETE /subscriptions/:id', async (c) => {
   const user = c.get('user') as { id: string; org_id: string };
   const id = c.req.param('id');
   const [removed] = await db
@@ -304,10 +319,10 @@ icsRoutes.delete('/subscriptions/:id', async (c) => {
     .returning({ id: icsSubscriptions.id });
   if (!removed) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
   return c.json({ ok: true });
-});
+}));
 
 // POST /api/ics/subscriptions/:id/sync — force-sync a single subscription
-icsRoutes.post('/subscriptions/:id/sync', async (c) => {
+icsRoutes.post('/subscriptions/:id/sync', guarded('POST /subscriptions/:id/sync', async (c) => {
   const user = c.get('user') as { id: string; org_id: string };
   const id = c.req.param('id');
   const [sub] = await db
@@ -339,7 +354,7 @@ icsRoutes.post('/subscriptions/:id/sync', async (c) => {
       .where(eq(icsSubscriptions.id, sub.id));
     return c.json({ error: 'Sync failed', code: 'SYNC_FAILED', detail: msg }, 502);
   }
-});
+}));
 
 // GET /api/ics/my-feed-url — returns the user's outbound feed URL.
 // Lazily generates the publish token on first call.

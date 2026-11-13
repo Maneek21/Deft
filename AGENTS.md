@@ -119,7 +119,7 @@ Phase 8 has NOT shipped yet. Flagged here so future edits don't claim it:
 
 - OpenClaw autonomous heartbeat lifecycle (long-running employees with scheduled self-wake).
 - Skill-defined trigger dispatcher (arbitrary triggers from skill manifests, not just `cron:standup`).
-- Per-employee cost-budget enforcement. BYOA heartbeat dispatch and the unhealthy circuit breaker are implemented; `daily_budget_cents` is not enforced today because nothing increments `daily_cost_cents`.
+- Per-employee cost-budget enforcement. BYOA heartbeat dispatch and the unhealthy circuit breaker are implemented; `daily_budget_cents` never triggers because Deft does not record what an employee's own runtime spends; the daily action cap (`max_daily_actions`) is enforced.
 
 The `agent-employee-heartbeat` worker queues BYOA heartbeat work and applies the unhealthy guard; the rest of the autonomous loop ships in Phase 8.
 

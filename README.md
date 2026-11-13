@@ -208,7 +208,7 @@ Important current boundaries:
 - Versioned upgrades are supported from the `v0.2.0-preview.1` baseline forward; older untracked alpha databases require a reviewed migration or fresh install.
 - Native Google, Slack, Gmail, and GitHub OAuth integrations are not part of the current self-hosted v1 promise. Use ICS for calendar subscriptions and bring external tools through your own agent or MCP runtime.
 - Agent quality depends on the configured model, scopes, workspace data, and approval policy.
-- The per-employee daily cost budget is not enforced: nothing records spend against it, so do not rely on it to cap cost. The daily action cap and the unhealthy (circuit breaker) state do apply.
+- Deft does not record what an employee's own runtime spends, so the per-employee daily cost budget never triggers. The daily action cap (`max_daily_actions`) is enforced; use it and your runtime's own limits to bound cost. The unhealthy (circuit breaker) state also applies.
 - This repository is open source under GNU AGPL v3.0 only.
 
 Security reports should follow [SECURITY.md](SECURITY.md). Operational support boundaries are documented in [docs/self-hosted-v1-contract.md](docs/self-hosted-v1-contract.md).

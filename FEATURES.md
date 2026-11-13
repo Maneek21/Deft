@@ -156,7 +156,7 @@ Client availability and connector UI vary by vendor and account tier. Deft canno
 - An employee's wiki page update applies only while the fields it writes are unchanged since it was proposed, and a page creation only at the slug fixed when proposed
 - A plan created for an agent employee binds to an active employee of the workspace; connected tools are available to members, admins and owners, not to guests
 - Execution receipts, recent agent actions, and audit history. An approval whose request ended after it was claimed is settled. Task-update approval cards list the patched fields, including cleared values, and undo applies only while the task still has the value the action set
-- Token scopes, revocation, daily action limits, and circuit breakers. The per-employee daily cost budget is not enforced today
+- Token scopes, revocation, daily action limits, and circuit breakers. Deft does not record what an employee's own runtime spends, so the per-employee daily cost budget never triggers. The daily action cap (`max_daily_actions`) is enforced; use it and your runtime's own limits to bound cost
 - Space membership checks on REST and WebSocket access
 - Org ownership checks on task, wiki, workflow, message, and agent operations
 
