@@ -12,6 +12,7 @@ type App = typeof import('../src/index.js')['app'];
 let app: App;
 let authMiddleware: unknown;
 let isPublicApiRequest: (method: string, path: string) => boolean;
+let exemptRoutes: ReadonlyArray<{ methods?: readonly string[]; path: string }>;
 let accessToken: string;
 
 async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
@@ -40,10 +41,9 @@ before(async () => {
   });
   ({ app } = await import('../src/index.js'));
   ({ authMiddleware } = await import('../src/middleware/auth.js'));
-  ({ isPublicApiRequest } = await import('../src/middleware/request-gate.js'));
+  ({ isPublicApiRequest, SESSION_EXEMPT_ROUTES: exemptRoutes } = await import('../src/middleware/request-gate.js'));
   const { createWebSession } = await import('../src/lib/web-sessions.js');
-  ({ accessToken } = await createWebSession({ id: USER_ID, email: USER_EMAIL, org_id: ORG_ID }));
-});
+  ({ accessToken } = await createWebSession({ id: USER_ID, email: USER_EMAIL, org_id: ORG_ID }));});
 
 after(async () => {
   await withClient(async (c) => {
@@ -118,17 +118,77 @@ test('deliberately public routes still answer without a session', async () => {
   }
 });
 
-test('the public list matches exactly the routes mounted ahead of the session middleware', () => {
+
+test('refusals before routing carry the CORS and security headers', async () => {
+  const origin = 'http://localhost:3000';
+  const res = await app.request('/api/tasks/t1', { headers: { origin } });
+  assert.equal(res.status, 401);
+  assert.equal(res.headers.get('access-control-allow-origin'), origin);
+  assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+  const bad = await app.request('/api/tasks/%0A', { headers: { origin } });
+  assert.equal(bad.status, 400);
+  assert.equal(bad.headers.get('access-control-allow-origin'), origin);
+  const preflight = await app.request('/api/tasks/t1', { method: 'OPTIONS',
+    headers: { origin, 'access-control-request-method': 'PATCH' } });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get('access-control-allow-origin'), origin);
+  const head = await app.fetch(new Request('http://localhost/api/tasks/t1', { method: 'HEAD' }));
+  assert.equal(head.status, 401);
+  assert.equal(await head.text(), '');
+});
+
+test('the exported fetch refuses a reused request after its session is revoked', async () => {
+  const { createWebSession } = await import('../src/lib/web-sessions.js');
+  const pair = await createWebSession({ id: USER_ID, email: USER_EMAIL, org_id: ORG_ID });
+  const sid = JSON.parse(Buffer.from(pair.accessToken.split('.')[1]!, 'base64url').toString()).sid;
+  const request = new Request('http://localhost/api/inbox?count_only=1', { headers: { authorization: `Bearer ${pair.accessToken}` } });
+  assert.equal((await app.fetch(request)).status, 200);
+  await withClient((c) => c.query('UPDATE web_sessions SET revoked_at = now() WHERE id = $1', [sid]));
+  assert.equal((await app.fetch(request)).status, 401);
+  assert.equal((await app.fetch(new Request('http://localhost/api/inbox'))).status, 401);
+});
+
+function templateSegments(path: string): string[] {
+  return path.replace(/\{[^}]*\}/g, '').split('/').slice(1);
+}
+
+function templatesIntersect(a: string, b: string): boolean {
+  const x = templateSegments(a);
+  const y = templateSegments(b);
+  for (let i = 0; ; i++) {
+    const s = x[i];
+    const t = y[i];
+    if ((s === '*' && i === x.length - 1) || (t === '*' && i === y.length - 1)) return true;
+    if (s === undefined || t === undefined) return s === t;
+    if (s.startsWith(':') || t.startsWith(':')) continue;
+    if (s !== t) return false;
+  }
+}
+
+test('session-exempt routes are exactly the routes mounted ahead of the session middleware', () => {
   const routes = app.routes;
   const authIndex = routes.findIndex((r) => r.handler === authMiddleware);
   assert.ok(authIndex > 0, 'session middleware is registered');
   const sample = (path: string) => path.replace(/:[^/{]+(\{[^}]*\})?\??/g, 'x').replace(/\*/g, 'x');
+  const sameMethod = (methods: readonly string[] | undefined, method: string) =>
+    !methods || methods.includes(method) || (method === 'GET' && methods.includes('HEAD'));
   const mismatches: string[] = [];
+  const apiRoute = (path: string) => path === '/api' || path.startsWith('/api/');
   routes.forEach((r, index) => {
-    if (r.method === 'ALL' || !(r.path === '/api' || r.path.startsWith('/api/'))) return;
-    const isPublic = isPublicApiRequest(r.method, sample(r.path));
-    if (index < authIndex && !isPublic) mismatches.push(`pre-auth route not public: ${r.method} ${r.path}`);
-    if (index > authIndex && isPublic) mismatches.push(`session route treated as public: ${r.method} ${r.path}`);
+    if (r.method === 'ALL' || !apiRoute(r.path)) return;
+    // Private Defty is mounted early but verifies the same web session itself.
+    const sessionRequired = r.path.startsWith('/api/apps/private-defty/');
+    if (index < authIndex && !sessionRequired && !isPublicApiRequest(r.method, sample(r.path))) {
+      mismatches.push(`pre-session route not exempt: ${r.method} ${r.path}`);
+    }
+    if (index > authIndex) {
+      for (const exempt of exemptRoutes) {
+        if (sameMethod(exempt.methods, r.method) && templatesIntersect(exempt.path, r.path)) {
+          mismatches.push(`session route overlaps exemption ${exempt.path}: ${r.method} ${r.path}`);
+        }
+      }
+    }
   });
   assert.deepEqual(mismatches, []);
+  assert.equal(routes.some((r) => r.method === 'OPTIONS'), false, 'no route answers OPTIONS itself');
 });

@@ -116,7 +116,7 @@ test('CORS preflight is not refused by the session gate', async () => {
 test('public classification is segment-aware', () => {
   assert.equal(isPublicApiRequest('GET', '/api/auth/me'), true);
   assert.equal(isPublicApiRequest('GET', '/api/authx'), false);
-  assert.equal(isPublicApiRequest('GET', '/api/apps/private-defty/x'), true);
+  assert.equal(isPublicApiRequest('GET', '/api/app-data/x'), true);
   assert.equal(isPublicApiRequest('GET', '/api/apps/x'), false);
   assert.equal(isPublicApiRequest('GET', '/api/app-data-other'), false);
   assert.equal(isPublicApiRequest('POST', '/api/agent-webhooks/slug'), true);
@@ -125,4 +125,26 @@ test('public classification is segment-aware', () => {
   assert.equal(isPublicApiRequest('POST', '/api/ics/feed/tok'), false);
   assert.equal(isPublicApiRequest('GET', '/api/ics/my-feed-url'), false);
   assert.equal(isPublicApiRequest('GET', '/api/tasks'), false);
+});
+
+test('routes under /api/apps, including private Defty, need a session', () => {
+  assert.equal(isPublicApiRequest('POST', '/api/apps/private-defty/review'), false);
+  assert.equal(isPublicApiRequest('GET', '/api/apps/private-defty/spaces/s1/history'), false);
+  assert.equal(isPublicApiRequest('GET', '/api/apps/private-defty'), false);
+  assert.equal(isPublicApiRequest('POST', '/api/agent-webhooks/'), false);
+  assert.equal(isPublicApiRequest('GET', '/api/ics/feed//x'), false);
+});
+
+test('the gate ends per-request reuse of the auth result once the request is answered', async () => {
+  const released: Request[] = [];
+  const app = new Hono();
+  app.get('/api/tasks/:id', (c) => c.json({ ok: true }));
+  installRequestGate(app, {
+    isPublic: isPublicApiRequest,
+    authenticate: async () => ({ ok: true }),
+    release: (request) => { released.push(request); },
+  });
+  const request = new Request('http://localhost/api/tasks/t1');
+  assert.equal((await app.fetch(request)).status, 200);
+  assert.deepEqual(released, [request]);
 });

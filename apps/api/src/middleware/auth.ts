@@ -21,7 +21,9 @@ export type WebAuthResult =
   | { ok: true; user: AuthUser }
   | { ok: false; status: 401 | 403; error: string; code: string };
 
-const authResults = new WeakMap<Request, Promise<WebAuthResult>>();
+// Holds a result only while one request is being answered (see
+// releaseWebRequest), and only for the Authorization value it was computed from.
+const authResults = new WeakMap<Request, { authorization: string | null; result: Promise<WebAuthResult> }>();
 
 async function verifyRequest(request: Request): Promise<WebAuthResult> {
   const authHeader = request.headers.get('Authorization');
@@ -38,14 +40,18 @@ async function verifyRequest(request: Request): Promise<WebAuthResult> {
   }
 }
 
-/** Verifies the request's web session once; later callers get the same result. */
-export function authenticateWebRequest(request: Request): Promise<WebAuthResult> {
-  let result = authResults.get(request);
-  if (!result) {
-    result = verifyRequest(request);
-    authResults.set(request, result);
-  }
+/** Verifies the request's web session; callers within the same request reuse the result. */
+export function authenticateWebRequest(request: Request, remember = true): Promise<WebAuthResult> {
+  const authorization = request.headers.get('Authorization');
+  const cached = authResults.get(request);
+  if (cached && cached.authorization === authorization) return cached.result;
+  const result = verifyRequest(request);
+  if (remember) authResults.set(request, { authorization, result });
   return result;
+}
+
+export function releaseWebRequest(request: Request): void {
+  authResults.delete(request);
 }
 
 export const authMiddleware: MiddlewareHandler = createMiddleware(async (c, next) => {
@@ -55,7 +61,7 @@ export const authMiddleware: MiddlewareHandler = createMiddleware(async (c, next
     return next();
   }
 
-  const result = await authenticateWebRequest(c.req.raw);
+  const result = await authenticateWebRequest(c.req.raw, false);
   if (!result.ok) {
     return c.json({ error: result.error, code: result.code }, result.status);
   }

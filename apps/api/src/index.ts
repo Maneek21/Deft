@@ -117,7 +117,7 @@ import { appPublicManagementRoutes } from './routes/app-public-management.js';
 import {createMountedAppIntegrationCaptureRoutes} from './routes/app-integration-capture-mounted.js';
 import { APPS_ENABLED, APP_DEVELOPER_PAIRING_ENABLED } from './lib/env.js';
 import { moduleTaskLinkRoutes } from './routes/module-task-links.js';
-import { authMiddleware, authenticateWebRequest } from './middleware/auth.js';
+import { authMiddleware, authenticateWebRequest, releaseWebRequest } from './middleware/auth.js';
 import { installRequestGate, isPublicApiRequest } from './middleware/request-gate.js';
 import {
   authLimiter,
@@ -134,8 +134,8 @@ import { githubWebhookRoutes } from './routes/webhooks/github.js';
 
 const app = new Hono();
 
-app.use('*', logger());
-app.use('*', cors({
+const requestLogger = logger();
+const corsPolicy = cors({
   origin: [
     process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
     'http://localhost:3000',
@@ -155,18 +155,21 @@ app.use('*', cors({
   ],
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   exposeHeaders: ['Content-Disposition', 'X-Content-Type-Options'],
-}));
+});
 
 // Task 4 (private-alpha): security headers. Browsers loading API responses
 // cross-origin only see JSON — no script-src needed here. xFrameOptions
 // blocks the API itself from being iframed even though there's no HTML;
 // defense in depth.
-app.use('*', secureHeaders({
+const securityHeaders = secureHeaders({
   xFrameOptions: 'DENY',
   xContentTypeOptions: 'nosniff',
   referrerPolicy: 'strict-origin-when-cross-origin',
   strictTransportSecurity: 'max-age=31536000; includeSubDomains',
-}));
+});
+// Also applied to responses the request gate produces before routing.
+const edgeMiddleware = [requestLogger, corsPolicy, securityHeaders];
+for (const middleware of edgeMiddleware) app.use('*', middleware);
 
 // Public routes
 app.route('/.well-known', oauthWellKnownRoutes);
@@ -416,7 +419,12 @@ app.get('/health/queue', async (c) => {
 });
 
 // Path and session checks that run before routing, for every request.
-installRequestGate(app, { isPublic: isPublicApiRequest, authenticate: authenticateWebRequest });
+installRequestGate(app, {
+  isPublic: isPublicApiRequest,
+  authenticate: authenticateWebRequest,
+  release: releaseWebRequest,
+  edgeMiddleware,
+});
 
 export { app };
 export default app;
