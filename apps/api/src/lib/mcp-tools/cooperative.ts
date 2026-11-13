@@ -463,7 +463,10 @@ export async function requestHumanApproval(
   }
   if (normalized.action === 'wiki_update' || normalized.action === 'wiki_create') {
     const roomRefusal = await citedWikiSourceRefusal(normalized.action, normalized.params,
-      frozenWikiTarget && 'page' in frozenWikiTarget ? frozenWikiTarget.page : null, ctx);
+      normalized.action === 'wiki_update'
+        ? (frozenWikiTarget as NonNullable<Awaited<ReturnType<typeof wikiUpdateProposalTarget>>>).page
+        : null,
+      ctx);
     if (roomRefusal) return roomRefusal;
   }
 
