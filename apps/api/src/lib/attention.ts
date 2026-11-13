@@ -68,7 +68,7 @@ export function visibleAttentionCondition(userId: string) {
         WHERE ${messages.id} = ${attentionItems.source_id}
           AND ${messages.org_id} = ${attentionItems.org_id}
           AND ${messages.is_deleted} = false
-          AND (${spaces.type} = 'public' OR ${spaceMembers.id} IS NOT NULL)
+          AND (${publicSpaceVisibleSql(spaces.type, spaces.org_id, userId)} OR ${spaceMembers.id} IS NOT NULL)
       )
     )
     OR (
@@ -81,7 +81,7 @@ export function visibleAttentionCondition(userId: string) {
           AND ${spaceMembers.user_id} = ${userId}
         WHERE ${spaces.id} = ${attentionItems.source_id}
           AND ${spaces.org_id} = ${attentionItems.org_id}
-          AND (${spaces.type} = 'public' OR ${spaceMembers.id} IS NOT NULL)
+          AND (${publicSpaceVisibleSql(spaces.type, spaces.org_id, userId)} OR ${spaceMembers.id} IS NOT NULL)
       )
     )
     OR (
