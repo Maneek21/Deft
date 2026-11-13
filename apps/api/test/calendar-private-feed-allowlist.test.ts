@@ -161,13 +161,14 @@ test('a malformed allowlist disables every entry and warns without printing the 
   const warn = mock.method(console, 'warn', () => {});
   try {
     for (const value of ['[not json', '{"url":"http://cal.lan.test/feed"}', '["http://cal.lan.test/feed", 5]',
-      '["http://cal.lan.test/feed", "ftp://cal.lan.test/x"]', '["http://cal.lan.test/feed", "http://u:p@cal.lan.test/feed"]']) {
+      '["http://cal.lan.test/feed", "ftp://cal.lan.test/x"]', '["http://cal.lan.test/feed", "http://u:p@cal.lan.test/feed"]',
+      '["http://cal.lan.test/feed", "http://cal.lan.test:0/feed"]', '["http://cal.lan.test/feed", "http://cal.lan.test/feed?"]']) {
       allow(value);
       await refused(fetchCalendarFeedText('http://cal.lan.test/feed'));
       await refused(fetchCalendarFeedText('http://cal.lan.test/feed'));
     }
     assert.equal(requests.length, 0);
-    assert.equal(warn.mock.callCount(), 5);
+    assert.equal(warn.mock.callCount(), 7);
     for (const call of warn.mock.calls) {
       const text = call.arguments.map(String).join(' ');
       assert.ok(!text.includes('cal.lan.test') && !text.includes('u:p'), text);

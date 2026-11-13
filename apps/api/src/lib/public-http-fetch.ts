@@ -108,6 +108,9 @@ function parseAllowlistEntry(entry: unknown): string | null {
     return null;
   }
   if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password) return null;
+  url.hash = '';
+  // Port 0 and an empty query delimiter would name a different request target than the one sent.
+  if (targetPort(url) === 0 || (!url.search && url.href.endsWith('?'))) return null;
   return feedUrlKey(url);
 }
 
