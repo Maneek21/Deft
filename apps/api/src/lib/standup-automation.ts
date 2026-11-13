@@ -232,7 +232,8 @@ async function synthesizeStandup(
       response.text,
       standupDraftSchema,
       new Set(evidence.map((entry) => entry.source_id)),
-      { sectionLimits: { done: 5, in_progress: 5, blocked: 5 } },
+      // The evidence is non-empty here, so an empty draft would misreport the day.
+      { sectionLimits: { done: 5, in_progress: 5, blocked: 5 }, minItems: 1, evidenceText: evidence.map((entry) => entry.text).join(' ') },
     );
     return { draft, generator: 'agent' as const, model: response.model };
   } catch (error) {

@@ -14,6 +14,7 @@ import { truncatePlainText } from './plain-text.js';
 import { ACTION_TOOLS, AGENT_TOOLS } from './agent-tools.js';
 import { buildActionGraph, type ActionGraph } from './agent-action-graph.js';
 import { syncApprovalToAttention } from './attention.js';
+import { loadActionReviewers } from './agent-action-requester.js';
 import { wikiProposalTargetValues } from './wiki-proposal-target.js';
 import {
   parseProjectTaskIdentifier,
@@ -512,8 +513,9 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
       replayed: false,
     };
   });
+  const reviewers = await loadActionReviewers(persisted.actions).catch(() => null);
   await Promise.all(persisted.actions.map((action) =>
-    syncApprovalToAttention(action).catch((error) => {
+    syncApprovalToAttention(action, reviewers?.has(action.id) ? { reviewers: reviewers.get(action.id)! } : undefined).catch((error) => {
       console.warn('[agent-action-proposals] Approval attention dual-write failed', {
         actionId: action.id,
         error: error instanceof Error ? error.message : String(error),

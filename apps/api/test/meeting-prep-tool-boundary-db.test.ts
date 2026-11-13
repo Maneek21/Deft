@@ -235,3 +235,76 @@ test('a grounded meeting-prep draft without tool calls is still used', async () 
     await cleanup(c, f); await c.end();
   }
 });
+
+test('a meeting-prep draft with an approval requirement the evidence does not state is not delivered', async () => {
+  const c = new pg.Client({ connectionString: process.env.DATABASE_URL }); await c.connect();
+  const f = await seed(c);
+  providerCalls.length = 0; emitted.length = 0;
+  respond = (call) => ({
+    content: [{ type: 'text', text: JSON.stringify({ agenda: [{ text: 'Account manager sign-off is required before the review.', source_ids: [firstSourceId(call.serialized)] }], decisions: [], updates: [] }) }],
+    stop_reason: 'end_turn',
+  });
+  try {
+    const result = await generateMeetingPrep(f.event);
+    assert.ok(result.brief);
+    assert.ok(!/sign-off is required/.test(result.brief!.brief_text), 'the ungrounded claim is not delivered');
+    assert.ok(result.brief!.brief_text.includes(f.attendeeTask), 'the evidence-only fallback is delivered');
+    assert.equal(result.run?.generator, 'fallback');
+  } finally {
+    await cleanup(c, f); await c.end();
+  }
+});
+
+test('a meeting-prep draft restating an approval requirement from its evidence uses the evidence-only form', async () => {
+  const c = new pg.Client({ connectionString: process.env.DATABASE_URL }); await c.connect();
+  const f = await seed(c);
+  const [space] = (await c.query(`SELECT id FROM spaces WHERE org_id=$1 AND name='general'`, [f.org])).rows;
+  const messageId = randomUUID();
+  await c.query(
+    'INSERT INTO messages(id,org_id,space_id,user_id,content) VALUES($1,$2,$3,$4,$5)',
+    [messageId, f.org, space.id, f.users[1], 'Read-only rollout: account manager sign-off is required before launch.'],
+  );
+  providerCalls.length = 0; emitted.length = 0;
+  respond = () => ({
+    content: [{ type: 'text', text: JSON.stringify({ agenda: [{ text: 'MODEL-PHRASING: account manager sign-off is required.', source_ids: [`message:${messageId}`] }], decisions: [], updates: [] }) }],
+    stop_reason: 'end_turn',
+  });
+  try {
+    const result = await generateMeetingPrep(f.event);
+    assert.ok(!result.brief!.brief_text.includes('MODEL-PHRASING'));
+    assert.ok(result.brief!.brief_text.includes(f.attendeeTask), 'the evidence-only form is delivered');
+    assert.equal(result.run?.generator, 'fallback');
+  } finally {
+    await cleanup(c, f); await c.end();
+  }
+});
+
+for (const [label, mention, generator] of [
+  ['a task key from its evidence is delivered', 'MTGK-5', 'agent'],
+  ['a task key outside its evidence uses the evidence-only form', 'FAKE-999', 'fallback'],
+] as const) {
+  test(`a meeting-prep draft naming ${label}`, async () => {
+    const c = new pg.Client({ connectionString: process.env.DATABASE_URL }); await c.connect();
+    const f = await seed(c);
+    const project = randomUUID(), taskId = randomUUID();
+    await c.query(`INSERT INTO projects(id,org_id,name,prefix) VALUES($1,$2,'Key project','MTGK')`, [project, f.org]);
+    await c.query(
+      `INSERT INTO tasks(id,org_id,project_id,number,title,status,assignee_id,created_by,metadata)
+       VALUES($1,$2,$3,5,'Keyed agenda work','in_progress',$4,$4,'{}'::jsonb)`,
+      [taskId, f.org, project, f.users[1]],
+    );
+    providerCalls.length = 0; emitted.length = 0;
+    respond = () => ({
+      content: [{ type: 'text', text: JSON.stringify({ agenda: [{ text: `KEY-ITEM ${mention} is moving.`, source_ids: [`task:${taskId}`] }], decisions: [], updates: [] }) }],
+      stop_reason: 'end_turn',
+    });
+    try {
+      const result = await generateMeetingPrep(f.event);
+      assert.ok(providerCalls[0]!.serialized.includes('MTGK-5'), 'the evidence carries the task key');
+      assert.equal(result.brief!.brief_text.includes('KEY-ITEM'), generator === 'agent');
+      assert.equal(result.run?.generator, generator);
+    } finally {
+      await cleanup(c, f); await c.end();
+    }
+  });
+}
