@@ -36,13 +36,11 @@ import {
   agentChannelEvents,
   agentCooperativeLog,
   agentEmployees,
-  messages,
-  spaceMembers,
   taskActivity,
 } from '@deft/db/schema';
 import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
-import { citedMessageRefusal } from './cited-message.js';
+import { citedMessageRefusal, employeeCanReadCitedMessage } from './cited-message.js';
 import { normalizeMcpApprovalAction } from '../mcp-approval-actions.js';
 import { wikiCreateProposalTarget, wikiTargetUnavailableResult, wikiUpdateProposalTarget } from './wiki-create.js';
 import { getIO } from '../../socket.js';
@@ -488,25 +486,9 @@ export async function requestHumanApproval(
   if (requestedSourceMessageId) {
     const refusal = await citedMessageRefusal(ctx, requestedSourceMessageId);
     if (refusal) return errorResult(refusal);
-    const [visibleSource] = await db
-      .select({ id: messages.id })
-      .from(messages)
-      .innerJoin(
-        spaceMembers,
-        and(
-          eq(spaceMembers.space_id, messages.space_id),
-          eq(spaceMembers.user_id, emp.user_id),
-        ),
-      )
-      .where(
-        and(
-          eq(messages.id, requestedSourceMessageId),
-          eq(messages.org_id, ctx.org_id),
-          eq(messages.is_deleted, false),
-        ),
-      )
-      .limit(1);
-    sourceMessageId = visibleSource?.id ?? null;
+    sourceMessageId = await employeeCanReadCitedMessage(ctx.org_id, emp.user_id, requestedSourceMessageId)
+      ? requestedSourceMessageId
+      : null;
   }
 
   const [row] = await db

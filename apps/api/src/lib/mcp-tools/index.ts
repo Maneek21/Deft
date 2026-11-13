@@ -669,6 +669,10 @@ export const toolSchemas: ToolSchema[] = [
       properties: {
         ...CALLER_SLUG_PROP,
         task_id: { type: 'string' },
+        source_message_id: {
+          type: 'string',
+          description: 'Optional id of the chat message this answers; its author reviews the proposal when one is needed.',
+        },
         patch: {
           type: 'object',
           properties: {
@@ -709,6 +713,10 @@ export const toolSchemas: ToolSchema[] = [
         space_id: { type: 'string' },
         content: { type: 'string' },
         parent_id: { type: 'string', description: 'Optional thread parent id' },
+        source_message_id: {
+          type: 'string',
+          description: 'Optional id of the chat message this answers; its author reviews the proposal when one is needed.',
+        },
       },
       required: ['caller_employee_slug', 'space_id', 'content'],
     },
@@ -756,6 +764,10 @@ export const toolSchemas: ToolSchema[] = [
           ],
         },
         content: { type: 'string', minLength: 1 },
+        source_message_id: {
+          type: 'string',
+          description: 'Optional id of the chat message this answers; its author reviews the proposal when one is needed.',
+        },
       },
       required: ['caller_employee_slug', 'target', 'content'],
       additionalProperties: false,

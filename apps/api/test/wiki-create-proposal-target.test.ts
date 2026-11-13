@@ -210,13 +210,17 @@ test('an unreachable target space is refused when proposed, with one answer for 
   await f.client.query('DELETE FROM spaces WHERE id = $1', [archived]);
 });
 
-test('a create attributed only to a source message is refused with the same answer once access is lost', { skip: !canRun }, async () => {
+test('a create attributed only to a source message is reviewed by nobody and creates nothing once access is lost', { skip: !canRun }, async () => {
   const title = uniqueTitle('Message only');
   const messageId = await f.insertMessage('Message only source');
   const actionId = await CREATORS.mcp!.propose({ title, content: 'From the message', source_message_id: messageId, source_user_id: f.requesterId });
   await leave(shadowId);
   try {
-    await assertRefused(actionId, NOT_CREATED, title);
+    // The proposal cites the message, so it follows the employee's access to that message's room.
+    assert.equal((await approve(actionId)).status, 404);
+    const [row] = (await f.client.query('SELECT approval_status, executed_at FROM agent_actions WHERE id = $1', [actionId])).rows;
+    assert.deepEqual([row.approval_status, row.executed_at], ['pending', null]);
+    assert.equal(await titled(title), 0);
   } finally {
     await join(shadowId);
   }

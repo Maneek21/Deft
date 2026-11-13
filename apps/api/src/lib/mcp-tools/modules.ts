@@ -39,6 +39,7 @@ import {
   consumeAgentDailyActionBudget,
 } from '../agent-tool-policy.js';
 import { errorResult, textResult, type ToolContext, type ToolResult } from './types.js';
+import { verifiedCitedMessage } from './cited-message.js';
 import {
   agentModuleActionClaimKey,
   agentModuleExecutionLockKey,
@@ -58,6 +59,14 @@ function operationInputSchema(operation: ModuleOperationName): Record<string, un
       type: 'string',
       description: 'Slug of the agent employee making this call.',
     },
+    ...(MODULE_OPERATION_DEFINITIONS[operation].mode === 'write'
+      ? {
+        source_message_id: {
+          type: 'string',
+          description: 'Optional id of the chat message this change answers; its author reviews the proposal.',
+        },
+      }
+      : {}),
   };
   const required = new Set(
     Array.isArray(schema.required)
@@ -436,6 +445,7 @@ async function queueModuleMutation(
   operation: ModuleOperationName,
   input: Record<string, unknown>,
   ctx: ToolContext,
+  messageId: string | null,
 ): Promise<ToolResult> {
   const claimed = await db.transaction(async (tx) => {
     await lockEmployeeMutationClaim(tx, operation, input, ctx);
@@ -471,6 +481,7 @@ async function queueModuleMutation(
         agent_employee_id: ctx.employee_id,
         channel_event_id: ctx.channel_event_id,
         runtime_request_key: ctx.runtime_request_key,
+        ...(messageId ? { message_id: messageId } : {}),
         source: 'mcp',
         action: operation,
         params: input,
@@ -484,7 +495,7 @@ async function queueModuleMutation(
     return { kind: 'pending' as const, action };
   });
   if (claimed.kind === 'retry_approved') {
-    return executeDirectModuleMutation(operation, input, ctx);
+    return executeDirectModuleMutation(operation, input, ctx, messageId);
   }
   if (claimed.kind === 'completed_approved') {
     await ensureCompletedEmployeeMutationReceipt(operation, input, ctx, claimed);
@@ -628,6 +639,7 @@ async function executeDirectModuleMutation(
   operation: ModuleOperationName,
   input: Record<string, unknown>,
   ctx: ToolContext,
+  messageId: string | null,
 ): Promise<ToolResult> {
   const lockActor = employeeModuleActor({
     orgId: ctx.org_id,
@@ -639,7 +651,7 @@ async function executeDirectModuleMutation(
   const scopedDigest = moduleIdempotencyDigest(lockActor, rawKey);
   return withDbAdvisoryLock(
     agentModuleExecutionLockKey(ctx.org_id, operation, scopedDigest),
-    () => executeDirectModuleMutationLocked(operation, input, ctx),
+    () => executeDirectModuleMutationLocked(operation, input, ctx, messageId),
   );
 }
 
@@ -647,6 +659,7 @@ async function executeDirectModuleMutationLocked(
   operation: ModuleOperationName,
   input: Record<string, unknown>,
   ctx: ToolContext,
+  messageId: string | null,
 ): Promise<ToolResult> {
   const actor = employeeModuleActor({
     orgId: ctx.org_id,
@@ -701,6 +714,7 @@ async function executeDirectModuleMutationLocked(
         agent_employee_id: ctx.employee_id,
         channel_event_id: ctx.channel_event_id,
         runtime_request_key: ctx.runtime_request_key,
+        ...(!autoExecute && messageId ? { message_id: messageId } : {}),
         source: 'mcp',
         action: operation,
         params: autoExecute ? terminalParams : input,
@@ -904,13 +918,20 @@ async function employeeModuleOperation(
     ) {
       return errorResult('Missing MCP scope: write:modules');
     }
-    const input = parseModuleOperationArgs(operation, args) as Record<string, unknown>;
+    // A write may cite the chat message it answers; the citation is not part
+    // of the operation input.
+    const isWrite = MODULE_OPERATION_DEFINITIONS[operation].mode === 'write';
+    const { source_message_id: citation, ...operationArgs } = args;
+    const input = parseModuleOperationArgs(operation, isWrite ? operationArgs : args) as Record<string, unknown>;
     if (
-      MODULE_OPERATION_DEFINITIONS[operation].mode === 'write'
+      isWrite
       && (typeof input.idempotency_key !== 'string' || !input.idempotency_key.trim())
     ) {
       return errorResult(`${operation} requires idempotency_key for retry-safe MCP writes`);
     }
+    const cited = isWrite ? await verifiedCitedMessage(ctx, citation) : { messageId: null };
+    if ('refusal' in cited) return errorResult(`${operation}: ${cited.refusal}`);
+    const messageOption = cited.messageId ? { messageId: cited.messageId } : {};
     const actor = employeeModuleActor({
       orgId: ctx.org_id,
       employeeId: ctx.employee_id,
@@ -923,7 +944,7 @@ async function employeeModuleOperation(
       if (!userId) return errorResult('Task-link caller is not an active agent employee');
       const execution = await executeActionDirect(operation, input, ctx.org_id, userId, null, getApprovalTier(operation), {
         agentEmployeeId: ctx.employee_id, source: 'mcp',
-        channelEventId: ctx.channel_event_id, runtimeRequestKey: ctx.runtime_request_key,
+        channelEventId: ctx.channel_event_id, runtimeRequestKey: ctx.runtime_request_key, ...messageOption,
       });
       if (execution.requiresApproval) return asPseudoResult(execution.actionId, 'Action requires human approval. The link has not been changed.');
       if (!execution.success) return errorResult(execution.error ?? 'Task-link mutation failed');
@@ -934,7 +955,7 @@ async function employeeModuleOperation(
       if (!userId) return errorResult('Bulk-create caller is not an active agent employee');
       const execution = await executeActionDirect(operation, input, ctx.org_id, userId, null, 'full', {
         agentEmployeeId: ctx.employee_id, source: 'mcp',
-        channelEventId: ctx.channel_event_id, runtimeRequestKey: ctx.runtime_request_key,
+        channelEventId: ctx.channel_event_id, runtimeRequestKey: ctx.runtime_request_key, ...messageOption,
       });
       if (execution.requiresApproval) {
         return asPseudoResult(execution.actionId, 'Bulk create requires human approval. No records have been created.');
@@ -946,9 +967,9 @@ async function employeeModuleOperation(
       return await executeModuleMcpOperationForActor(operation, actor, input);
     }
     if (!shouldAutoExecute(operation, ctx.trust_level, input)) {
-      return await queueModuleMutation(operation, input, ctx);
+      return await queueModuleMutation(operation, input, ctx, cited.messageId);
     }
-    return await executeDirectModuleMutation(operation, input, ctx);
+    return await executeDirectModuleMutation(operation, input, ctx, cited.messageId);
   } catch (error) {
     return moduleOperationErrorResult(operation, error);
   }
