@@ -1306,10 +1306,10 @@ export async function approveActionAsReviewer(c: Context, user: ActionReviewer, 
       await finalizeApprovalOutcome({ actionId, orgId: user.org_id, receipt: 'resolver' });
     }
     // An action approved earlier whose execution failed is reported as
-    // failed, not as a fresh success. A request that first read the action
-    // while it was still pending reads the settled row again.
+    // failed, not as a fresh success. The settled row is read again: this
+    // request's first read may predate the outcome another request recorded.
     if (result.status === 'approved' && !action.app_run_id && result.decidedElsewhere === true) {
-      const settled = action.approval_status === 'approved' ? action : await loadOrgAction(actionId, user.org_id);
+      const settled = await loadOrgAction(actionId, user.org_id);
       if (settled?.approval_status === 'approved' && settled.error) {
         return c.json(approvedButFailedBody(settled.error, settled.action, settled.result));
       }

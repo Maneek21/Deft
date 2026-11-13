@@ -12,6 +12,7 @@ import { randomUUID } from 'node:crypto';
 import test, { after, before } from 'node:test';
 
 import { persistAgentReplyWithActions } from '../src/lib/agent-action-proposals.js';
+import { withApprovalLease } from '../src/lib/agent-action-execution-lease.js';
 import type { ToolContext, ToolResult } from '../src/lib/mcp-tools/types.js';
 import { _setWikiUpdateRevisionCheckedHookForTest, wikiCreate, wikiUpdate } from '../src/lib/mcp-tools/wiki-create.js';
 import { humanApprovalApprove } from '../src/lib/mcp-tools/human.js';
@@ -227,21 +228,26 @@ test('only a wiki proposal action with a known code and its exact message is a t
   assert.equal(wikiProposalRefusalCode('wiki_update', { terminal_refusal: true, refusal_code: 'toString' }, CHANGED), null);
 });
 
-test('concurrent approves of a refused proposal both answer with the failed result', { skip: !canRun }, async () => {
+test('an approve that starts while another approve is executing answers with its failed result', { skip: !canRun }, async () => {
   const page = await createPage();
   const actionId = await mcpUpdate(page);
-  await f.client.query("UPDATE wiki_pages SET content = 'Edited by a person' WHERE id = $1", [page.id]);
   const reviewer = await reviewerFor(actionId);
-  const answers = await Promise.all([0, 1].map(async () => {
-    const response = await f.as(reviewer, `/api/agent/actions/${actionId}/approve`, { method: 'POST' });
-    return { status: response.status, body: await response.json() as Record<string, unknown> };
-  }));
-  const expected = { status: 'failed', message: 'approved, but it did not complete', error: CHANGED, code: 'WIKI_PAGE_CHANGED' };
-  for (const answer of answers) {
-    assert.equal(answer.status, 200, JSON.stringify(answer.body));
-    assert.deepEqual(answer.body, expected);
-  }
-  assert.equal((await pageState(page.id)).content, 'Edited by a person');
+  let second: Promise<{ status: number; body: Record<string, unknown> }> | null = null;
+  // Another approve holds the lease: it has claimed the action and has not settled it yet.
+  await withApprovalLease(actionId, async () => {
+    await f.client.query(
+      `UPDATE agent_actions SET approval_status = 'approved', approved_at = clock_timestamp(), approved_by_user_id = $2,
+              result = '{"lifecycle_state":"executing"}'::jsonb WHERE id = $1`, [actionId, reviewer]);
+    second = Promise.resolve(f.as(reviewer, `/api/agent/actions/${actionId}/approve`, { method: 'POST' }))
+      .then(async (response) => ({ status: response.status, body: await response.json() as Record<string, unknown> }));
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await f.client.query('UPDATE agent_actions SET executed_at = now(), error = $2, result = $3::jsonb WHERE id = $1',
+      [actionId, CHANGED, JSON.stringify(wikiProposalRefusal('WIKI_PAGE_CHANGED'))]);
+  });
+  const answer = await second!;
+  assert.equal(answer.status, 200, JSON.stringify(answer.body));
+  assert.deepEqual(answer.body, { status: 'failed', message: 'approved, but it did not complete', error: CHANGED, code: 'WIKI_PAGE_CHANGED' });
+  assert.equal((await pageState(page.id)).content, 'Original content');
 });
 
 test('personal MCP approval_approve returns the same failed result on the first call and on replay', { skip: !canRun }, async () => {
