@@ -102,7 +102,7 @@ before(async () => {
 
   let offset = 0;
   const action = async (label: string, row: {
-    user: string; org?: string; employee?: string | null; action?: string; tier?: string; status?: string; source?: string;
+    user: string; org?: string; employee?: string | null; action?: string; tier?: string; status?: string; source?: string | null;
     message?: string | null; params?: Record<string, unknown>; approvers?: Array<[string, string?]>;
   }) => {
     const id = randomUUID();
@@ -110,7 +110,7 @@ before(async () => {
     offset += 1;
     await q(`INSERT INTO agent_actions(id,org_id,user_id,agent_employee_id,action,params,approval_tier,approval_status,source,message_id,created_at)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, [id, row.org ?? orgId, row.user, row.employee ?? null, row.action ?? 'create_task',
-      JSON.stringify(row.params ?? { title: label }), row.tier ?? 'quick', row.status ?? 'pending', row.source ?? 'mention',
+      JSON.stringify(row.params ?? { title: label }), row.tier ?? 'quick', row.status ?? 'pending', row.source === undefined ? 'mention' : row.source,
       row.message ?? null, new Date(Date.now() - 600_000 + offset * 1000)]);
     for (const [user, decision] of row.approvers ?? []) {
       await q('INSERT INTO agent_action_approvers(id,org_id,action_id,user_id,decision) VALUES($1,$2,$3,$4,$5)',
@@ -156,14 +156,16 @@ before(async () => {
   await action('assign-member-self', { user: ids.member, source: 'native', approvers: [[ids.member], [ids.admin]] });
   await action('agent-requester', { user: agentUserId, source: 'native' });
   await action('full-member', { user: ids.member, tier: 'full', source: 'native' });
+  await action('null-source-member', { user: ids.member, source: null });
+  await action('null-source-agent', { user: agentUserId, source: null });
   await action('auto-member', { user: ids.member, tier: 'auto', source: 'native' });
   await action('settled-member', { user: ids.member, status: 'approved', source: 'native' });
   await action('foreign-departed', { user: ids.departed, org: otherOrgId, source: 'native' });
   await action('foreign-agent', { user: agentUserId, org: otherOrgId, source: 'native' });
-  // Many pending actions that only the peer reviews: no other viewer is a candidate for them.
-  await q(`INSERT INTO agent_actions(id,org_id,user_id,action,params,approval_tier,approval_status,source,created_at)
-    SELECT gen_random_uuid()::text, $1, $2, 'create_task', '{"title":"bulk"}', 'quick', 'pending', 'native', now() - interval '1 hour'
-    FROM generate_series(1, ${BULK})`, [orgId, ids.peer]);
+  // Many pending employee actions that only the peer reviews: no other viewer is a candidate for them.
+  await q(`INSERT INTO agent_actions(id,org_id,user_id,agent_employee_id,action,params,approval_tier,approval_status,source,created_at)
+    SELECT gen_random_uuid()::text, $1, $2, $3, 'create_task', '{"title":"bulk"}', 'quick', 'pending', 'mcp', now() - interval '1 hour'
+    FROM generate_series(1, ${BULK})`, [orgId, ids.peer, employeeId]);
 
   teamId = randomUUID();
   await q("INSERT INTO teams(id,org_id,name,handle,created_by) VALUES($1,$2,'Count team',$3,$4)", [teamId, orgId, `ct-${teamId.slice(0, 8)}`, ids.owner]);
@@ -333,6 +335,7 @@ test('COUNT-B: the counts run the review gate only on the viewer\'s candidate ac
     AND approval_tier IN ('quick','full') AND action <> ALL($2::text[])`, [orgId, SPECIAL])).rows[0].count);
   const { reviewableApprovalCountsByEmployee } = await import('../src/lib/pending-approval-audience.js');
   const { actionRequesterIdSql } = await import('../src/lib/agent-action-requester.js');
+  const slow: string[] = [];
   for (const person of ['member', 'owner'] as const) {
     const viewer = viewerOf(person);
     // Candidates by the closed rule: the viewer requested it, or the viewer is an active
@@ -353,12 +356,17 @@ test('COUNT-B: the counts run the review gate only on the viewer\'s candidate ac
     assert.equal(employees.length, 1);
     for (const [name, statement] of [['inbox count', inboxCount[0]!], ['employee counts', employees[0]!]] as const) {
       const loops = await reviewGateLoops(statement);
-      assert.ok(loops <= candidates, `${person} ${name}: the gate runs on ${loops} rows, not only the ${candidates} candidates`);
+      if (loops > candidates) slow.push(`${person} ${name}: the gate runs on ${loops} rows, not only the ${candidates} candidates`);
     }
   }
+  assert.deepEqual(slow, []);
   // Control: the same count with the gate as a plain condition runs it on every pending action.
   const reference = await referenceOrdinary(viewerOf('member'));
   const plain = db.select({ n: sql`count(*)` }).from(agentActions).where(reference).toSQL();
   const control = await reviewGateLoops({ text: plain.sql, values: plain.params });
   assert.ok(control >= pending - 5, `control: the plain gate runs ${control} times of ${pending}`);
+  const plainEmployees = db.select({ n: sql`count(*)` }).from(agentActions)
+    .where(and(reference, sql`${agentActions.agent_employee_id} IS NOT NULL`)).toSQL();
+  const employeeControl = await reviewGateLoops({ text: plainEmployees.sql, values: plainEmployees.params });
+  assert.ok(employeeControl >= BULK, `control: the plain gate runs ${employeeControl} times on employee actions`);
 });
