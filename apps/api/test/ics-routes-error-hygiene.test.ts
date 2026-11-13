@@ -4,6 +4,7 @@ import { Hono } from 'hono';
 import { db } from '../src/lib/db.js';
 import { icsPublicRoutes, icsRoutes } from '../src/routes/ics.js';
 
+const TOKEN_ID = 'PUBLISHTOKEN'.repeat(4);
 const FEED = 'https://calendar.example.test/private/SECRETTOKEN123/basic.ics?key=QUERYSECRET456';
 
 function mount() {
@@ -46,7 +47,8 @@ test('calendar feed route failures return and log a neutral message', async () =
       ['GET', '/subscriptions', undefined],
       ['GET', '/my-feed-url', undefined],
       ['POST', '/my-feed-url/regenerate', undefined],
-      ['GET', '/pub/feed/' + 'T'.repeat(20), undefined],
+      ['GET', '/pub/feed/' + 'PUBTOK-'.repeat(3), undefined],
+      ['PATCH', '/subscriptions/' + TOKEN_ID, JSON.stringify({ label: 'x' })],
       ['PATCH', '/subscriptions/' + encodeURIComponent(FEED), JSON.stringify({ label: 'x' })],
     ];
     for (const [method, path, body] of calls) {
@@ -54,11 +56,11 @@ test('calendar feed route failures return and log a neutral message', async () =
       const text = await res.text();
       assert.equal(res.status, 500, `${method} ${path}`);
       assert.deepEqual(JSON.parse(text), { error: 'Calendar feed request failed', code: 'ICS_ROUTE_FAILED' });
-      assert.doesNotMatch(text, /SECRETTOKEN123|QUERYSECRET456|calendar\.example\.test/);
+      assert.doesNotMatch(text, /SECRETTOKEN123|QUERYSECRET456|PUBLISHTOKEN|PUBTOK-|calendar\.example\.test/);
     }
     const all = JSON.stringify(logged.map((l) => l.map((x) => (x instanceof Error ? `${x.message}${x.stack}` : x))));
     assert.ok(logged.length >= calls.length, 'failures are logged');
-    assert.doesNotMatch(all, /SECRETTOKEN123|QUERYSECRET456|calendar\.example\.test/);
+    assert.doesNotMatch(all, /SECRETTOKEN123|QUERYSECRET456|PUBLISHTOKEN|PUBTOK-|calendar\.example\.test/);
     assert.match(all, /user-1/);
   } finally {
     Object.assign(console, { error: origs.error, warn: origs.warn, log: origs.log });

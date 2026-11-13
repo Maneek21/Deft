@@ -17,14 +17,15 @@ export const icsRoutes = new Hono();
 
 // Any failure in these handlers is answered and logged without the error
 // object or request input: database errors can carry statement parameters
-// (the feed URL or publish token). Only the route and server-issued ids are logged.
+// (the feed URL or publish token). Only the route and server-issued ids (the
+// user, and a subscription row already loaded or created) are logged; request
+// path input is never logged.
 const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/;
-function logRouteFailure(c: Context, route: string, err: unknown): void {
+function logRouteFailure(c: Context, route: string, err: unknown, subscriptionId?: string): void {
   const user = c.get('user') as { id?: string } | undefined;
-  const sub = c.req.param('id');
   const parts = [`[ics] ${route} failed`];
   if (user?.id && SAFE_ID.test(user.id)) parts.push(`user=${user.id}`);
-  if (sub && SAFE_ID.test(sub)) parts.push(`subscription=${sub}`);
+  if (subscriptionId && SAFE_ID.test(subscriptionId)) parts.push(`subscription=${subscriptionId}`);
   console.error(`${parts.join(' ')}: ${humanizeIcsError(err)}`);
 }
 
@@ -280,7 +281,7 @@ icsRoutes.post('/subscriptions', guarded('POST /subscriptions', async (c) => {
       label: created.label,
     });
   } catch (err) {
-    logRouteFailure(c, 'POST /subscriptions (initial sync)', err);
+    logRouteFailure(c, 'POST /subscriptions (initial sync)', err, created.id);
     await db
       .update(icsSubscriptions)
       .set({ last_error: humanizeIcsError(err), last_synced_at: new Date() })
@@ -358,7 +359,7 @@ icsRoutes.post('/subscriptions/:id/sync', guarded('POST /subscriptions/:id/sync'
       .limit(1);
     return c.json({ ok: true, count, subscription: refreshed });
   } catch (err) {
-    logRouteFailure(c, 'POST /subscriptions/:id/sync', err);
+    logRouteFailure(c, 'POST /subscriptions/:id/sync', err, sub.id);
     const msg = humanizeIcsError(err);
     await db
       .update(icsSubscriptions)
