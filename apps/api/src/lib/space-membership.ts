@@ -1,5 +1,5 @@
 import { db } from './db.js';
-import { orgMembers, spaceMembers, spaces, users } from '@deft/db/schema';
+import { messages, orgMembers, spaceMembers, spaces, users } from '@deft/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { CoreDatabaseTransaction } from './database-transaction.js';
 
@@ -51,4 +51,36 @@ export async function requireSpaceMembership(spaceId: string, userId: string, or
     ))
     .limit(1);
   return !!member;
+}
+
+/**
+ * Loads the given messages for a caller: each must belong to `orgId`, not be
+ * deleted, and sit in a space the caller passes `requireSpaceMembership` for.
+ * Ids that are missing or not readable by the caller are simply absent from
+ * the result, so callers answer both cases the same way.
+ */
+export async function loadMessagesForMember(
+  messageIds: readonly string[],
+  userId: string,
+  orgId: string,
+): Promise<Map<string, { id: string; space_id: string }>> {
+  const result = new Map<string, { id: string; space_id: string }>();
+  const ids = [...new Set(messageIds)];
+  if (ids.length === 0) return result;
+  const rows = await db.select({ id: messages.id, space_id: messages.space_id })
+    .from(messages)
+    .where(and(inArray(messages.id, ids), eq(messages.org_id, orgId), eq(messages.is_deleted, false)));
+  const readableSpaces = new Set<string>();
+  for (const spaceId of new Set(rows.map((row) => row.space_id))) {
+    if (await requireSpaceMembership(spaceId, userId, orgId)) readableSpaces.add(spaceId);
+  }
+  for (const row of rows) {
+    if (readableSpaces.has(row.space_id)) result.set(row.id, row);
+  }
+  return result;
+}
+
+/** Single-message form of `loadMessagesForMember`; null when missing or not readable. */
+export async function loadMessageForMember(messageId: string, userId: string, orgId: string) {
+  return (await loadMessagesForMember([messageId], userId, orgId)).get(messageId) ?? null;
 }

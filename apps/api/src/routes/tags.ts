@@ -2,7 +2,12 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, ilike, sql, desc, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { tags, entityTags, tasks, messages, users, projects, notes } from '@deft/db/schema';
+import { tags, entityTags, tasks, messages, users, projects, notes, clips } from '@deft/db/schema';
+import type { AuthUser } from '../middleware/auth.js';
+import { loadMessagesForMember } from '../lib/space-membership.js';
+import { visibleTaskCondition } from '../lib/task-visibility.js';
+import { visibleNoteCondition } from '../lib/note-visibility.js';
+import { canAccessClip } from './clips.js';
 
 export const tagRoutes = new Hono();
 
@@ -20,6 +25,93 @@ const removeTagSchema = z.object({
   entity_type: z.enum(['message', 'task', 'clip', 'daily_note', 'note']),
   entity_id: z.string().min(1),
 });
+
+type TagEntityType = z.infer<typeof applyTagSchema>['entity_type'];
+
+const ENTITY_NOT_FOUND = { error: 'Entity not found', code: 'NOT_FOUND' } as const;
+
+/**
+ * Resolves tagged entities the caller may see: each must belong to the
+ * caller's org and pass the same access rule its own routes use (space
+ * membership for messages, task and note visibility, clip access). Entities
+ * that are missing or not visible are absent from every map.
+ */
+async function resolveVisibleTagEntities(
+  refs: ReadonlyArray<{ entity_type: string; entity_id: string }>,
+  user: AuthUser,
+) {
+  const idsOf = (...types: string[]) => [...new Set(refs.filter(r => types.includes(r.entity_type)).map(r => r.entity_id))];
+  const taskIds = idsOf('task');
+  const messageIds = idsOf('message');
+  const noteIds = idsOf('note', 'daily_note');
+  const clipIds = idsOf('clip');
+
+  const taskMap = new Map<string, { title: string; number: number; prefix: string; status: string }>();
+  const messageMap = new Map<string, { content: string; user_name: string; space_id: string }>();
+  const noteMap = new Map<string, { title: string }>();
+  const clipSet = new Set<string>();
+
+  if (taskIds.length > 0) {
+    const taskRows = await db.select({
+      id: tasks.id, title: tasks.title, number: tasks.number,
+      status: tasks.status, prefix: projects.prefix,
+    }).from(tasks)
+      .innerJoin(projects, and(eq(tasks.project_id, projects.id), eq(projects.org_id, user.org_id)))
+      .where(and(
+        inArray(tasks.id, taskIds),
+        eq(tasks.org_id, user.org_id),
+        eq(tasks.is_deleted, false),
+        visibleTaskCondition(user.id),
+      ));
+    for (const t of taskRows) taskMap.set(t.id, { title: t.title, number: t.number, prefix: t.prefix, status: t.status });
+  }
+
+  const readableMessages = await loadMessagesForMember(messageIds, user.id, user.org_id);
+  if (readableMessages.size > 0) {
+    const msgRows = await db.select({
+      id: messages.id, content: messages.content, user_name: users.name, space_id: messages.space_id,
+    }).from(messages)
+      .innerJoin(users, eq(messages.user_id, users.id))
+      .where(and(inArray(messages.id, [...readableMessages.keys()]), eq(messages.org_id, user.org_id)));
+    for (const m of msgRows) messageMap.set(m.id, { content: m.content.slice(0, 120), user_name: m.user_name, space_id: m.space_id });
+  }
+
+  if (noteIds.length > 0) {
+    const noteRows = await db.select({
+      id: notes.id, title: notes.title,
+    }).from(notes)
+      .where(and(
+        inArray(notes.id, noteIds),
+        eq(notes.org_id, user.org_id),
+        eq(notes.is_deleted, false),
+        visibleNoteCondition(user.id),
+      ));
+    for (const n of noteRows) noteMap.set(n.id, { title: n.title });
+  }
+
+  if (clipIds.length > 0) {
+    const clipRows = await db.select().from(clips)
+      .where(and(inArray(clips.id, clipIds), eq(clips.org_id, user.org_id)));
+    for (const clip of clipRows) {
+      if (await canAccessClip(clip, user.org_id, user.id)) clipSet.add(clip.id);
+    }
+  }
+
+  const isVisible = (type: string, id: string) => {
+    if (type === 'task') return taskMap.has(id);
+    if (type === 'message') return messageMap.has(id);
+    if (type === 'note' || type === 'daily_note') return noteMap.has(id);
+    if (type === 'clip') return clipSet.has(id);
+    return false;
+  };
+
+  return { taskMap, messageMap, noteMap, isVisible };
+}
+
+async function canSeeTagEntity(entityType: TagEntityType, entityId: string, user: AuthUser) {
+  const resolved = await resolveVisibleTagEntities([{ entity_type: entityType, entity_id: entityId }], user);
+  return resolved.isVisible(entityType, entityId);
+}
 
 // GET / — list all tags for org with counts
 tagRoutes.get('/', async (c) => {
@@ -125,6 +217,10 @@ tagRoutes.post('/:id/apply', async (c) => {
     return c.json({ error: 'Tag not found', code: 'NOT_FOUND' }, 404);
   }
 
+  if (!await canSeeTagEntity(parsed.data.entity_type, parsed.data.entity_id, user)) {
+    return c.json(ENTITY_NOT_FOUND, 404);
+  }
+
   // Upsert (ignore if already applied)
   try {
     const [et] = await db.insert(entityTags).values({
@@ -151,6 +247,10 @@ tagRoutes.delete('/:id/apply', async (c) => {
     return c.json({ error: 'Invalid request', code: 'VALIDATION_ERROR' }, 400);
   }
 
+  if (!await canSeeTagEntity(parsed.data.entity_type, parsed.data.entity_id, user)) {
+    return c.json(ENTITY_NOT_FOUND, 404);
+  }
+
   await db.delete(entityTags)
     .where(and(
       eq(entityTags.tag_id, tagId),
@@ -174,46 +274,13 @@ tagRoutes.get('/:id/entities', async (c) => {
       eq(entityTags.org_id, user.org_id),
       ...(entityType ? [eq(entityTags.entity_type, entityType as any)] : []),
     ))
-    .orderBy(desc(entityTags.created_at))
-    .limit(100);
+    .orderBy(desc(entityTags.created_at));
 
-  // Batch-resolve entities by type
-  const taskIds = rows.filter(r => r.entity_type === 'task').map(r => r.entity_id);
-  const messageIds = rows.filter(r => r.entity_type === 'message').map(r => r.entity_id);
-  const noteIds = rows.filter(r => r.entity_type === 'note' || r.entity_type === 'daily_note').map(r => r.entity_id);
+  // Only entities the caller can see are listed; the rest are omitted.
+  const { taskMap, messageMap, noteMap, isVisible } = await resolveVisibleTagEntities(rows, user);
+  const visibleRows = rows.filter(row => isVisible(row.entity_type, row.entity_id)).slice(0, 100);
 
-  const taskMap = new Map<string, { title: string; number: number; prefix: string; status: string; project_id: string }>();
-  const messageMap = new Map<string, { content: string; user_name: string; space_id: string }>();
-  const noteMap = new Map<string, { title: string }>();
-
-  if (taskIds.length > 0) {
-    const taskRows = await db.select({
-      id: tasks.id, title: tasks.title, number: tasks.number,
-      status: tasks.status, prefix: projects.prefix,
-    }).from(tasks)
-      .innerJoin(projects, eq(tasks.project_id, projects.id))
-      .where(inArray(tasks.id, taskIds));
-    for (const t of taskRows) taskMap.set(t.id, { title: t.title, number: t.number, prefix: t.prefix, status: t.status, project_id: t.id });
-  }
-
-  if (messageIds.length > 0) {
-    const msgRows = await db.select({
-      id: messages.id, content: messages.content, user_name: users.name, space_id: messages.space_id,
-    }).from(messages)
-      .innerJoin(users, eq(messages.user_id, users.id))
-      .where(inArray(messages.id, messageIds));
-    for (const m of msgRows) messageMap.set(m.id, { content: m.content.slice(0, 120), user_name: m.user_name, space_id: m.space_id });
-  }
-
-  if (noteIds.length > 0) {
-    const noteRows = await db.select({
-      id: notes.id, title: notes.title,
-    }).from(notes)
-      .where(inArray(notes.id, noteIds));
-    for (const n of noteRows) noteMap.set(n.id, { title: n.title });
-  }
-
-  const results = rows.map(row => {
+  const results = visibleRows.map(row => {
     const base = { id: row.id, entity_type: row.entity_type, entity_id: row.entity_id, created_at: row.created_at };
     if (row.entity_type === 'task') {
       const t = taskMap.get(row.entity_id);
@@ -238,6 +305,11 @@ tagRoutes.get('/entity/:type/:entityId', async (c) => {
   const user = c.get('user');
   const entityType = c.req.param('type');
   const entityId = c.req.param('entityId');
+
+  const parsedType = applyTagSchema.shape.entity_type.safeParse(entityType);
+  if (!parsedType.success || !await canSeeTagEntity(parsedType.data, entityId, user)) {
+    return c.json([]);
+  }
 
   const results = await db.select({
     id: tags.id,

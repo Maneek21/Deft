@@ -83,7 +83,7 @@ async function projectExists(projectId: string, orgId: string) {
   return Boolean(row);
 }
 
-async function canAccessClip(clip: typeof clips.$inferSelect, orgId: string, userId: string) {
+export async function canAccessClip(clip: typeof clips.$inferSelect, orgId: string, userId: string) {
   if (clip.org_id !== orgId || clip.is_deleted) return false;
   if (clip.message_id) return Boolean(await canAccessMessage(clip.message_id, orgId, userId));
   if (clip.space_id) return canAccessSpace(clip.space_id, orgId, userId);
