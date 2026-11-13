@@ -247,3 +247,34 @@ test('a standup draft restating an approval requirement from its evidence uses t
     await cleanup(c, f); await c.end();
   }
 });
+
+for (const [label, mention, generator] of [
+  ['a task key from its evidence is delivered', 'KEYQ-7', 'agent'],
+  ['a task key outside its evidence uses the evidence-only form', 'FAKE-999', 'fallback'],
+] as const) {
+  test(`a standup draft naming ${label}`, async () => {
+    const c = new pg.Client({ connectionString: process.env.DATABASE_URL }); await c.connect();
+    const f = await seed(c);
+    const project = randomUUID(), taskId = randomUUID();
+    await c.query(`INSERT INTO projects(id,org_id,name,prefix) VALUES($1,$2,'Key project','KEYQ')`, [project, f.org]);
+    await c.query(
+      `INSERT INTO tasks(id,org_id,project_id,number,title,status,assignee_id,created_by,metadata)
+       VALUES($1,$2,$3,7,'Keyed rollout','in_progress',$4,$4,'{}'::jsonb)`,
+      [taskId, f.org, project, f.owner],
+    );
+    providerCalls.length = 0;
+    respond = () => ({
+      content: [{ type: 'text', text: JSON.stringify({ done: [], in_progress: [{ text: `KEY-ITEM ${mention} is moving.`, source_ids: [`task:${taskId}`] }], blocked: [] }) }],
+      stop_reason: 'end_turn',
+    });
+    try {
+      const result = await generateDailyStandup({ orgId: f.org });
+      assert.ok(providerCalls[0]!.serialized.includes('KEYQ-7'), 'the evidence carries the task key');
+      const text = await published(c, f, result.standup!);
+      assert.equal(text.includes('KEY-ITEM'), generator === 'agent');
+      assert.equal((result.standup!.raw_data as { generator?: string }).generator, generator);
+    } finally {
+      await cleanup(c, f); await c.end();
+    }
+  });
+}

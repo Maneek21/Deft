@@ -90,7 +90,7 @@ export function mentionsApproval(text: string): boolean {
 
 /** Any link construct a Markdown or HTML renderer could turn into a link, whatever its target. */
 export function containsLinkConstruct(text: string): boolean {
-  return /\]\s*[([]|\[[^\]\n]*\]\s*:|<\s*(?:[a-z][a-z0-9+.-]*:|www\.|a\b|img\b)|\b(?:https?|ftp|mailto):|\bwww\./iu.test(text);
+  return /\][([]|\]:|<\s*(?:[a-z][a-z0-9+.-]*:|www\.|a\b|img\b)|<[^\s<>@]+@[^\s<>]+>|[\w.+-]+@[\w-]+\.[\w-]|\b(?:https?|ftp|mailto):|\bwww\./iu.test(text);
 }
 
 /** The string values of a (possibly fenced) JSON reply, one per line; the text itself if it is not JSON. */

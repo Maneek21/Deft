@@ -18,6 +18,7 @@ test('grounded standup accepts only known evidence references', () => {
     }),
     standupDraftSchema,
     new Set(['task:12']),
+    { evidenceText: 'MKT-12 Launch was completed by Lina.' },
   );
   assert.equal(draft.done[0]?.text, 'MKT-12 shipped by Lina.');
 });
@@ -144,7 +145,7 @@ for (const claim of [
 
 test('grounded parser keeps plain cited progress, including brackets and entities that form no link', () => {
   const draft = parseGroundedDraft(standupDraft([
-    { text: 'MKT-1 is in progress with Lina.', source_ids: ['task:1'] },
+    { text: 'Login fix is in progress with Lina.', source_ids: ['task:1'] },
     { text: '[Draft] launch notes &amp; checklist are 80% done (2 of 3).', source_ids: ['message:2'] },
   ]), standupDraftSchema, sourceIds);
   assert.equal(draft.in_progress.length, 2);
@@ -153,16 +154,48 @@ test('grounded parser keeps plain cited progress, including brackets and entitie
 test('grounded parser drops uncited items before the section caps', () => {
   const uncited = Array.from({ length: 5 }, (_, index) => ({ text: `Uncited ${index}`, source_ids: [] }));
   const draft = parseGroundedDraft(
-    standupDraft([...uncited, { text: 'No ids key' }, { text: 'MKT-1 is in progress.', source_ids: ['task:1'] }]),
+    standupDraft([...uncited, { text: 'No ids key' }, { text: 'Login fix is in progress.', source_ids: ['task:1'] }]),
     standupDraftSchema,
     sourceIds,
     { sectionLimits: { done: 5, in_progress: 5, blocked: 5 } },
   );
-  assert.deepEqual(draft.in_progress.map((item) => item.text), ['MKT-1 is in progress.']);
+  assert.deepEqual(draft.in_progress.map((item) => item.text), ['Login fix is in progress.']);
 });
 
 test('grounded parser rejects a draft whose items all cite no evidence, and an empty draft when items are required', () => {
   assert.throws(() => parseGroundedDraft(standupDraft([{ text: 'Uncited claim', source_ids: [] }]), standupDraftSchema, sourceIds), /cites/i);
   assert.throws(() => parseGroundedDraft('{}', standupDraftSchema, sourceIds, { minItems: 1 }), /cites/i);
   assert.deepEqual(parseGroundedDraft('{}', meetingPrepDraftSchema, sourceIds).agenda, []);
+});
+
+test('grounded parser keeps bracketed prose followed by a parenthesis', () => {
+  const draft = parseGroundedDraft(standupDraft([{ text: 'Launch [draft] (2 of 3 tasks done).', source_ids: ['task:1'] }]), standupDraftSchema, sourceIds);
+  assert.equal(draft.in_progress.length, 1);
+});
+
+for (const link of ['<owner@example.com>', 'Ask owner@example.com for notes.', `See [a${backslash}]b].${newline}${newline}[a${backslash}]b]: /tasks?task=invented`]) {
+  test(`grounded parser rejects the link construct ${JSON.stringify(link)}`, () => {
+    assert.throws(() => parseGroundedDraft(standupDraft([{ text: link, source_ids: ['task:1'] }]), standupDraftSchema, sourceIds), /link/i);
+  });
+}
+
+const keyEvidence = { evidenceText: 'MKT-1 Ship the login fix is in progress with Lina. Ana in #launch: see @[[deft:person:p1]]' };
+for (const [text, delivered] of [
+  ['MKT-1 is in progress with Lina.', true],
+  ['Review [[deft:task:1]] today.', true],
+  ['Sync with @[[deft:person:p1]].', true],
+  ['FAKE-999 is done.', false],
+  ['MKT-12 is done.', false],
+  ['Review [[deft:task:2]] today.', false],
+  ['Sync with @[[deft:person:p2]].', false],
+] as const) {
+  test(`grounded parser ${delivered ? 'keeps' : 'rejects'} the reference in ${JSON.stringify(text)}`, () => {
+    const parse = () => parseGroundedDraft(standupDraft([{ text, source_ids: ['task:1'] }]), standupDraftSchema, sourceIds, keyEvidence);
+    if (delivered) assert.equal(parse().in_progress.length, 1);
+    else assert.throws(parse, /outside the supplied evidence/);
+  });
+}
+
+test('grounded parser treats every task key as unknown when no evidence text is supplied', () => {
+  assert.throws(() => parseGroundedDraft(standupDraft([{ text: 'MKT-1 is in progress.', source_ids: ['task:1'] }]), standupDraftSchema, sourceIds), /outside the supplied evidence/);
 });

@@ -21,21 +21,33 @@ export const meetingPrepDraftSchema = z.object({
 export type StandupDraft = z.infer<typeof standupDraftSchema>;
 export type MeetingPrepDraft = z.infer<typeof meetingPrepDraftSchema>;
 
+// The forms the chat renderer turns into task links and reference chips.
+const TASK_KEY = /\b[A-Z]{2,6}-\d+\b/g;
+const DEFT_REFERENCE = /\[\[deft:((?:person|task|wiki_page):[A-Za-z0-9][A-Za-z0-9._:-]{0,255})\]\]/g;
+
 /**
  * Parse a model draft against the supplied evidence ids. On the decoded item
  * text, any link construct or any mention of approval or sign-off in any item
  * rejects the whole draft, so the caller uses its evidence-only form. Items
  * that cite no evidence are dropped before the section caps apply; an unknown
- * source id rejects the draft.
+ * source id rejects the draft. A task key or `[[deft:...]]` reference must
+ * name something in the supplied evidence (`evidenceText` and the `task:`
+ * source ids); without `evidenceText`, every task key is unknown.
  */
 export function parseGroundedDraft<T>(
   text: string,
   schema: z.ZodType<T>,
   allowedSourceIds: ReadonlySet<string>,
-  options?: { sectionLimits?: Record<string, number>; minItems?: number },
+  options?: { sectionLimits?: Record<string, number>; minItems?: number; evidenceText?: string },
 ): T {
   const cleaned = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
   const raw = JSON.parse(cleaned) as Record<string, unknown>;
+  const evidenceText = options?.evidenceText ?? '';
+  const knownKeys = new Set([...evidenceText.matchAll(TASK_KEY)].map((match) => match[0]));
+  const knownRefs = new Set([
+    ...[...evidenceText.matchAll(DEFT_REFERENCE)].map((match) => match[1]!),
+    ...[...allowedSourceIds].filter((id) => id.startsWith('task:')),
+  ]);
   let dropped = 0;
   for (const [section, value] of Object.entries(raw ?? {})) {
     if (!Array.isArray(value)) continue;
@@ -45,6 +57,10 @@ export function parseGroundedDraft<T>(
       const shown = decodeHtmlEntities(itemText);
       if (containsLinkConstruct(shown)) throw new Error('Draft contains a link');
       if (mentionsApproval(shown)) throw new Error('Draft mentions an approval');
+      if ([...shown.matchAll(TASK_KEY)].some((match) => !knownKeys.has(match[0]))
+        || [...shown.matchAll(DEFT_REFERENCE)].some((match) => !knownRefs.has(match[1]!))) {
+        throw new Error('Draft references a record outside the supplied evidence');
+      }
     }
     const cited = value.filter((item) => {
       const ids = (item as { source_ids?: unknown } | null)?.source_ids;

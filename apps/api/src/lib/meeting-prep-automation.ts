@@ -225,7 +225,7 @@ async function synthesizeMeetingPrep(
         response.text,
         meetingPrepDraftSchema,
         new Set(evidence.map((item) => item.source_id)),
-        { sectionLimits: { agenda: 4, decisions: 4, updates: 4 } },
+        { sectionLimits: { agenda: 4, decisions: 4, updates: 4 }, evidenceText: evidence.map((item) => item.text).join(' ') },
       ),
       generator: 'agent' as const,
       model: response.model,
