@@ -200,3 +200,22 @@ test('AL2b-B: Attention list, count and delivery checks match the review gate', 
     await join(rooms.capture, ids.requester);
   }
 });
+
+test('AL2b-D: an approval item closed for lost access opens again when the access returns; a dismissed one does not', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const { resolveApprovalItemsWithoutReviewer, transitionAttentionItem } = await import('../src/lib/attention.js');
+  assert.equal((await attentionSet(ids.requester)).items.includes(a.anchored), true);
+  const [dismissed] = (await q('SELECT id FROM attention_items WHERE org_id=$1 AND user_id=$2 AND source_id=$3', [orgId, ids.requester, a.ord])).rows;
+  await transitionAttentionItem({ orgId, userId: ids.requester, itemId: dismissed.id, state: 'resolved', resolution: 'dismissed' });
+  await leave(rooms.anchor, ids.requester);
+  try {
+    await resolveApprovalItemsWithoutReviewer();
+    const [closed] = (await q('SELECT state, resolution FROM attention_items WHERE org_id=$1 AND user_id=$2 AND source_id=$3', [orgId, ids.requester, a.anchored])).rows;
+    assert.deepEqual(closed, { state: 'resolved', resolution: 'source_access_removed' });
+  } finally {
+    await join(rooms.anchor, ids.requester);
+  }
+  const back = await attentionSet(ids.requester);
+  assert.equal(back.items.includes(a.anchored), true, 'the pending approval is back in needs-you');
+  assert.equal(back.items.includes(a.ord), false, 'a dismissed item stays closed');
+});

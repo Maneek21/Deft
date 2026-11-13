@@ -646,6 +646,8 @@ export async function attentionItemStillVisible(item: { id: string; org_id: stri
   return Boolean(row);
 }
 
+let approvalSweepCursor = '';
+
 /**
  * Resolves, in one bounded statement, open approval items whose owner can no
  * longer review the action, re-checking that inside the update.
@@ -660,7 +662,16 @@ export async function resolveApprovalItemsWithoutReviewer(limit = 500) {
       AND ${currentApprovalRecipientSql(sql`${attentionItems.user_id}`)})`,
   );
   const now = new Date();
-  const batch = db.select({ id: attentionItems.id }).from(attentionItems).where(withoutReviewer).limit(limit);
+  // Each pass checks the next `limit` open approval items by id, so the work
+  // per pass is bounded and every item is reached across passes.
+  const batch = db.select({ id: attentionItems.id }).from(attentionItems).where(and(
+    eq(attentionItems.source_type, 'agent_action'),
+    inArray(attentionItems.state, openStates),
+    sql`${attentionItems.id} > ${approvalSweepCursor}`,
+  )).orderBy(attentionItems.id).limit(limit);
+  const scanned = await batch;
+  approvalSweepCursor = scanned.length === limit ? scanned[scanned.length - 1]!.id : '';
+  if (scanned.length === 0) return 0;
   const resolved = await db.update(attentionItems).set({
     state: 'resolved',
     seen_at: sql`COALESCE(${attentionItems.seen_at}, ${now})`,
@@ -669,7 +680,7 @@ export async function resolveApprovalItemsWithoutReviewer(limit = 500) {
     resolution: 'source_access_removed',
     version: sql`${attentionItems.version} + 1`,
     updated_at: now,
-  }).where(and(inArray(attentionItems.id, batch), withoutReviewer))
+  }).where(and(inArray(attentionItems.id, scanned.map((row) => row.id)), withoutReviewer))
     .returning({ id: attentionItems.id, org_id: attentionItems.org_id, user_id: attentionItems.user_id, version: attentionItems.version });
   if (resolved.length > 0) {
     await db.insert(attentionEvents).values(resolved.map((item) => ({
@@ -780,6 +791,23 @@ export async function ensureAttentionBackfillForUser(params: { orgId: string; us
   for (const notification of legacyNotifications) {
     await syncNotificationToAttention(notification, { deliver: false });
   }
+
+  // Approval items closed because the user lost access open again once the
+  // user reviews the action again; items the user closed stay closed.
+  const reopenedAt = new Date();
+  await db.update(attentionItems).set({
+    state: 'open_unseen', resolved_at: null, resolution: null,
+    version: sql`${attentionItems.version} + 1`, updated_at: reopenedAt,
+  }).where(and(
+    eq(attentionItems.org_id, params.orgId),
+    eq(attentionItems.user_id, params.userId),
+    eq(attentionItems.source_type, 'agent_action'),
+    eq(attentionItems.state, 'resolved'),
+    eq(attentionItems.resolution, 'source_access_removed'),
+    sql`EXISTS (SELECT 1 FROM ${agentActions} WHERE ${agentActions.id} = ${attentionItems.source_id}
+      AND ${agentActions.org_id} = ${attentionItems.org_id} AND ${agentActions.approval_status} = 'pending'
+      AND ${currentApprovalRecipientSql(params.userId)})`,
+  ));
 
   const pendingActions = await db
     .select()
