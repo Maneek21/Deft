@@ -17,7 +17,7 @@ import { emitToUser } from '../socket.js';
 import { isModuleGovernedWriteActionName } from './module-action-visibility.js';
 import { scheduleAttentionDeliveries, scheduleAttentionDelivery } from './web-push.js';
 import { nativeDeliveryAccessSql } from './native-mention-visibility.js';
-import { loadActionReviewers } from './agent-action-requester.js';
+import { actionRequesterIdSql, loadActionReviewers } from './agent-action-requester.js';
 import { currentRoleReviewableActionSql } from './agent-action-review-gate.js';
 
 export type AttentionLane = 'needs_you' | 'updates';
@@ -777,6 +777,25 @@ export async function syncApprovalToAttention(
   return Promise.all(userIds.map((userId) => upsertAttentionItem(approvalToAttentionDraft(action, userId), options)));
 }
 
+/**
+ * True for every action of `orgId` that `userId` may review, and cheap to test
+ * (no per-row review check): `actionReviewerSql` accepts a user only as the
+ * action's requester when that is an active human member of the action's
+ * workspace, and otherwise as an active owner/admin of it, so a reviewer is
+ * the requester, or an owner/admin of an action whose requester is not an
+ * active human member. For actions of `orgId` only.
+ */
+function reviewerCandidateSql(userId: string, orgId: string): SQL {
+  return sql`(${actionRequesterIdSql()} = ${userId}
+    OR (EXISTS (SELECT 1 FROM ${orgMembers} candidate_admin
+          WHERE candidate_admin.org_id = ${orgId} AND candidate_admin.user_id = ${userId}
+            AND candidate_admin.is_active = true AND candidate_admin.role IN ('owner', 'admin'))
+      AND COALESCE(${actionRequesterIdSql()} NOT IN (SELECT candidate_human.id FROM users candidate_human
+          INNER JOIN ${orgMembers} candidate_member ON candidate_member.user_id = candidate_human.id
+          WHERE candidate_member.org_id = ${orgId} AND candidate_member.is_active = true
+            AND candidate_human.is_agent = false AND candidate_human.kind = 'human'), true)))`;
+}
+
 export async function ensureAttentionBackfillForUser(params: { orgId: string; userId: string; role: string }) {
   const legacyNotifications = await db
     .select()
@@ -793,36 +812,51 @@ export async function ensureAttentionBackfillForUser(params: { orgId: string; us
   }
 
   // Approval items closed because the user lost access open again once the
-  // user reviews the action again; items the user closed stay closed.
-  const reopenedAt = new Date();
-  await db.update(attentionItems).set({
-    state: 'open_unseen', resolved_at: null, resolution: null,
-    version: sql`${attentionItems.version} + 1`, updated_at: reopenedAt,
-  }).where(and(
+  // user reviews the action again; items the user closed stay closed. The
+  // review check runs only when the user has such an item for a pending action.
+  const closedForAccess = and(
     eq(attentionItems.org_id, params.orgId),
     eq(attentionItems.user_id, params.userId),
     eq(attentionItems.source_type, 'agent_action'),
     eq(attentionItems.state, 'resolved'),
     eq(attentionItems.resolution, 'source_access_removed'),
-    sql`EXISTS (SELECT 1 FROM ${agentActions} WHERE ${agentActions.id} = ${attentionItems.source_id}
+  );
+  const pendingSource = (reviewer: SQL) => sql`EXISTS (SELECT 1 FROM ${agentActions}
+    WHERE ${agentActions.id} = ${attentionItems.source_id}
       AND ${agentActions.org_id} = ${attentionItems.org_id} AND ${agentActions.approval_status} = 'pending'
-      AND ${currentApprovalRecipientSql(params.userId)})`,
-  ));
+      AND ${reviewer})`;
+  const [reopenable] = await db.select({ id: attentionItems.id }).from(attentionItems)
+    .where(and(closedForAccess, pendingSource(sql`true`))).limit(1);
+  if (reopenable) {
+    const reopenedAt = new Date();
+    await db.update(attentionItems).set({
+      state: 'open_unseen', resolved_at: null, resolution: null,
+      version: sql`${attentionItems.version} + 1`, updated_at: reopenedAt,
+    }).where(and(closedForAccess, pendingSource(currentApprovalRecipientSql(params.userId))));
+  }
 
-  const pendingActions = await db
+  // Actions the user reviews now that have no item for the user yet, so the
+  // window moves past approvals already raised. The review check runs only on
+  // candidates (see reviewerCandidateSql), and not at all when there are none.
+  const awaitingApproval = and(
+    eq(agentActions.org_id, params.orgId),
+    eq(agentActions.approval_status, 'pending'),
+    inArray(agentActions.approval_tier, ['quick', 'full']),
+  );
+  const candidate = sql`(${reviewerCandidateSql(params.userId, params.orgId)}
+    AND NOT EXISTS (SELECT 1 FROM ${attentionEvents} raised
+      WHERE raised.org_id = ${agentActions.org_id} AND raised.user_id = ${params.userId}
+        AND raised.event_type = 'source_event'
+        AND raised.source_event_id = 'approval-requested:' || ${agentActions.id}))`;
+  const [firstCandidate] = await db.select({ id: agentActions.id }).from(agentActions)
+    .where(and(awaitingApproval, candidate)).limit(1);
+  const pendingActions = !firstCandidate ? [] : await db
     .select()
     .from(agentActions)
     .where(and(
-      eq(agentActions.org_id, params.orgId),
-      eq(agentActions.approval_status, 'pending'),
-      inArray(agentActions.approval_tier, ['quick', 'full']),
-      // Actions the user reviews now that have no item for the user yet, so
-      // the window moves past approvals already raised.
-      currentApprovalRecipientSql(params.userId),
-      sql`NOT EXISTS (SELECT 1 FROM ${attentionEvents} raised
-        WHERE raised.org_id = ${agentActions.org_id} AND raised.user_id = ${params.userId}
-          AND raised.event_type = 'source_event'
-          AND raised.source_event_id = 'approval-requested:' || ${agentActions.id})`,
+      awaitingApproval,
+      // CASE fixes the order: the review check runs after the candidate test.
+      sql`(CASE WHEN ${candidate} THEN ${currentApprovalRecipientSql(params.userId)} ELSE false END)`,
     ))
     .orderBy(desc(agentActions.created_at))
     .limit(100);
