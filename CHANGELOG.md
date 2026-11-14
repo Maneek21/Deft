@@ -363,7 +363,7 @@ CI and security checks:
   `Changed Paths` job classifies the pull request, and any other change runs every
   job.
 
-- API tests: tests create their own fixture rows, the recovery
+- API tests: the affected tests create their own fixture rows, the recovery
   sweep tests wait out a busy advisory pool, and the restore-access fixture
   computes its timestamps once, so the sharded run does not depend on file order.
 
