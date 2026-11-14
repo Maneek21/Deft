@@ -333,8 +333,9 @@ Requests, triggers and outbound fetches:
   always refused. Matching is by the whole URL, redirects are followed only to
   another listed URL, and a malformed value disables the list. See
   "Internal calendar feeds" in `docs/self-hosting.md`.
-- Calendar feed routes return and log a fixed `{ error, code }` without feed URLs
-  or ids.
+- Calendar feed routes answer an unexpected failure with a fixed `{ error, code }`
+  that carries no feed URL or id, and the logged message does not include feed URLs
+  or tokens.
 - IPv4-mapped IPv6 addresses (dotted or hex form) are classified by their IPv4
   address in connector URL validation and the public-only fetch, so a mapped cloud
   metadata address is always refused.
@@ -1111,7 +1112,8 @@ The `0.1.0-alpha` tag was originally published under BSL 1.1. The current
 codebase has since been relicensed under [GNU AGPL v3.0 only](LICENSE); consult
 the license file present in the exact revision you use.
 
-[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.141...HEAD
+[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.142...HEAD
+[0.3.0-preview.142]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.142
 [0.3.0-preview.15]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.15
 [0.3.0-preview.14]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.14
 [0.3.0-preview.13]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.13
