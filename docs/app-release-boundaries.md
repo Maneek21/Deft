@@ -1,6 +1,6 @@
 # App release boundaries
 
-The latest published Deft Host is `0.3.0-preview.141`, built with the Apps-enabled browser profile and Author Kit `0.1.0-alpha.43`. The Email App and Email Runtime are released separately and may use different Kit versions. Obtain the exact Host version, commits, image digest, contracts, download URLs and checksums from the `compatibility.json` attached to the Email release you install. A version label or this document alone is not evidence that an artifact has been published or accepted.
+The latest published Deft Host is `0.3.0-preview.142`, built with the Apps-enabled browser profile and Author Kit `0.1.0-alpha.43`. The Email App and Email Runtime are released separately and may use different Kit versions. Obtain the exact Host version, commits, image digest, contracts, download URLs and checksums from the `compatibility.json` attached to the Email release you install. A version label or this document alone is not evidence that an artifact has been published or accepted.
 
 ## Source and deployment ownership
 

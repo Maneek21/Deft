@@ -30,11 +30,11 @@ GHCR image  ghcr.io/maneek21/deft:0.3.0-preview.6
 
 The host and `packages/app-kit` are independently versioned artifacts in this
 repository. Prepare their matching candidate versions and compatibility metadata
-together. The Apps developer-preview target is Host `0.3.0-preview.120` with
-schema 120 and Kit `0.1.0-alpha.38`. Email lives in its independent
-[repository](https://github.com/Maneek21/deft-email), with App `1.9.0-preview.13`
-on Kit alpha.38 and Runtime `0.4.0-preview.15` on Kit alpha.35. Preserve the
-sealed artifacts; no npm publication is required. The authoritative Email
+together. Email lives in its independent
+[repository](https://github.com/Maneek21/deft-email). Its release `v1.9.0-preview.32`
+ships App `1.9.1-preview.12` and Runtime `0.4.0-preview.29`, both on Kit
+`0.1.0-alpha.42`, and its compatibility manifest names Host `0.3.0-preview.138`
+as the minimum. Preserve the sealed artifacts; no npm publication is required. The authoritative Email
 release compatibility manifest binds the final Host digest, source commits,
 App/Runtime/Kit downloads and checksums. See [App release boundaries](docs/app-release-boundaries.md).
 

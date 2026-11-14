@@ -41,7 +41,7 @@ Commands below use Bash; Windows users can use Git Bash with Docker Desktop.
 
 For the independently sideloaded Email developer preview, use a Host
 built with the **apps-developer-preview** browser profile, such as
-`v0.3.0-preview.141`; its `browser-feature-evidence.json` lists the profile. Follow the independent
+`v0.3.0-preview.142`; its `browser-feature-evidence.json` lists the profile. Follow the independent
 [Email setup guide](https://github.com/Maneek21/deft-email/blob/main/docs/setup.md)
 and the `compatibility.json` attached to the Email release being installed
 for the exact Host version and image digest, schema version, sealed Kit downloads, HTTPS/OAuth and
@@ -55,7 +55,7 @@ required. Keep only one active Host when operating the small demo database;
 overlapping Host processes consume separate connection pools.
 
 For a fresh evaluation, follow the [README quick start](../README.md#quick-start-with-docker),
-which pins `v0.3.0-preview.141` and its image digest. Use that release's own Compose
+which pins `v0.3.0-preview.142` and its image digest. Use that release's own Compose
 files and environment template together; this source checkout can differ from
 the published image. The source-build instructions below are for contributors.
 Tagged preview releases publish an amd64 image to
@@ -75,7 +75,7 @@ and surrounding whitespace, and preserves accepted key bytes exactly. Docker
 runs in production mode even on localhost. Set the image in `.env` (the tag has no leading `v`):
 
 ```bash
-DEFT_IMAGE=ghcr.io/maneek21/deft:0.3.0-preview.141
+DEFT_IMAGE=ghcr.io/maneek21/deft:0.3.0-preview.142
 ```
 
 For another host or port, set `NEXT_PUBLIC_APP_URL`, `NEXT_PUBLIC_API_URL`,

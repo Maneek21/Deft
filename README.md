@@ -20,7 +20,7 @@ Capture a team discussion into knowledge, ask Defty to propose a task using that
 
 ## Quick start with Docker
 
-Use the prebuilt [v0.3.0-preview.141 release](https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.141), the latest published prerelease, for evaluation. It targets **Linux amd64** and needs Docker Desktop or Docker Engine with Compose v2. An AI provider is optional. No source build, Node.js, or pnpm is needed for this path.
+Use the prebuilt [v0.3.0-preview.142 release](https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.142), the latest published prerelease, for evaluation. It targets **Linux amd64** and needs Docker Desktop or Docker Engine with Compose v2. An AI provider is optional. No source build, Node.js, or pnpm is needed for this path.
 
 Download `docker-compose.yml`, `compose.prod.yml`, `compose.release.yml`, and `default.env.example` from that release into a **new directory**. In Bash (macOS, Linux, or Git Bash on Windows):
 
@@ -37,7 +37,7 @@ Paste each independently generated secret into its corresponding `.env` variable
 Add this pinned release image to `.env`:
 
 ```dotenv
-DEFT_IMAGE=ghcr.io/maneek21/deft@sha256:2239e1cee9443d2266210e0ecb6d35abf67dfb78d8347c5f60c475324f3403c8
+DEFT_IMAGE=ghcr.io/maneek21/deft@sha256:b547df2611fb2d9b64f63ffce8c6e52e63619af02167a410bb6cac49e1f82c57
 ```
 
 Then run, from that directory:
@@ -108,7 +108,7 @@ Modules add domain records, relationships, and native views. Apps package Module
 
 The bundled **Contacts** module is the first example of this model. The goal is not to turn Deft's core into every application a company might need, but to let new capabilities live on the same shared substrate instead of becoming another disconnected system.
 
-See [Deft, App Kit and domain App boundaries](docs/app-boundaries.md) for authoring contracts, permissions and execution limits. The Apps developer preview exposes generic Protocol 7 forms, external Runtime and source contracts. [Standalone Email](https://github.com/Maneek21/deft-email) is the reference implementation. Host v0.3.0-preview.141 is published with the Apps-enabled browser profile and Author Kit 0.1.0-alpha.43. Follow the [connected App author guide](docs/connected-app-author-guide.md) and the `compatibility.json` attached to the Email release you install, which names the Host version it requires. Use an explicitly Apps-enabled preview image; enabling runtime variables cannot turn on browser features omitted at build time. This is an operator-managed developer preview, not a production Gmail replacement.
+See [Deft, App Kit and domain App boundaries](docs/app-boundaries.md) for authoring contracts, permissions and execution limits. The Apps developer preview exposes generic Protocol 7 forms, external Runtime and source contracts. [Standalone Email](https://github.com/Maneek21/deft-email) is the reference implementation. Host v0.3.0-preview.142 is published with the Apps-enabled browser profile and Author Kit 0.1.0-alpha.43. Follow the [connected App author guide](docs/connected-app-author-guide.md) and the `compatibility.json` attached to the Email release you install, which names the Host version it requires. Use an explicitly Apps-enabled preview image; enabling runtime variables cannot turn on browser features omitted at build time. This is an operator-managed developer preview, not a production Gmail replacement.
 
 ## Product surfaces
 

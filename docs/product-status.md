@@ -9,7 +9,7 @@ notes before upgrading, and keep a tested backup of your workspace.
 
 ## Choose a version
 
-The latest published prerelease is **v0.3.0-preview.141**, a **core** release built with the Apps-enabled browser profile and Author Kit `0.1.0-alpha.43`. The standalone Email App and its Runtime are released separately; the `compatibility.json` attached to each Email release names the Host version it requires. See [App release boundaries](app-release-boundaries.md) for scope. The Apps-enabled browser profile differs from the general default-off configuration.
+The latest published prerelease is **v0.3.0-preview.142**, a **core** release built with the Apps-enabled browser profile and Author Kit `0.1.0-alpha.43`. The standalone Email App and its Runtime are released separately; the `compatibility.json` attached to each Email release names the Host version it requires. See [App release boundaries](app-release-boundaries.md) for scope. The Apps-enabled browser profile differs from the general default-off configuration.
 Development on `master` may include changes absent from the published image; the [changelog](../CHANGELOG.md) lists them under Unreleased.
 
 | Capability | Availability | How to start |
@@ -20,7 +20,7 @@ Development on `master` may include changes absent from the published image; the
 | Standalone Modules | Available; install a manifest in Settings → Modules | [Build your first Module](tutorials/first-module.md) |
 | Internal App packages | Experimental and disabled by default; package declarative resources with App Kit | [Build an internal App](getting-started.md#build-an-internal-app) |
 | Connected Apps and bounded scheduled actions | Included in the published preview; experimental; the runtime flags below are off unless an operator sets them | [Connected App author guide](connected-app-author-guide.md) |
-| Certified Hermes bundle | Release-specific historical support; not part of the preview.141 core release | Read the chosen release's compatibility and certification notes |
+| Certified Hermes bundle | Release-specific historical support; not part of the preview.142 core release | Read the chosen release's compatibility and certification notes |
 | External Runtime, governed source sync and trusted App UI | Available in the scoped Apps developer preview; requires reviewed setup and compatible artifacts | [Connected App author guide](connected-app-author-guide.md) |
 | Arbitrary custom App UI and public portals | Planned; outside the trusted renderer contract | [Roadmap](../ROADMAP.md) |
 | Hosted Deft service | Not currently offered | Self-host using the supported Docker Compose path |

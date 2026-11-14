@@ -56,7 +56,7 @@ Chat:
   private space (`DELETE /api/spaces/:id/members/me`).
 - The create-space dialog explains Public and Private in one line each.
 
-### 0.3.0-preview.142 candidate - publication pending
+## [0.3.0-preview.142] — 2026-11-13 (prerelease)
 
 Changes since `v0.3.0-preview.141`.
 
@@ -84,8 +84,8 @@ Upgrade notes:
 
 Agents and approvals:
 
-- No trust level auto-runs a call classed as destructive. Conservative and
-  Standard now queue those calls for approval, as Autonomous already did. This
+- No trust level auto-runs a call classed as destructive; Conservative,
+  Standard and Autonomous all queue those calls for approval. This
   includes connected (MCP) tools named like an admin tool or `delete_*`, and
   `module_record_task_unlink`.
 - One set of guard rails covers every path on which an agent employee posts a
@@ -120,8 +120,7 @@ Agents and approvals:
 - Chat (web): Enter sends after Escape closes the @ or # popup. A failed history,
   thread or approval read shows an error with Retry. After a reconnect a channel
   catches up through at most 500 messages before offering a "Load earlier
-  messages" control, and an open thread rereads and merges its replies. "Ask Defty" reports a failure instead of doing
-  nothing. Presence snapshots replace the online list. Members see an employee's
+  messages" control, and an open thread rereads and merges its replies. "Ask Defty" reports a failure to the user. Presence snapshots replace the online list. Members see an employee's
   trust level read-only; owners and admins can lower it.
 - Apps developer preview: the runtime authority check for a resource observation
   is decided in one transaction.
@@ -333,6 +332,9 @@ Requests, triggers and outbound fetches:
   always refused. Matching is by the whole URL, redirects are followed only to
   another listed URL, and a malformed value disables the list. See
   "Internal calendar feeds" in `docs/self-hosting.md`.
+- Calendar feed routes answer an unexpected failure with a fixed `{ error, code }`
+  that carries no feed URL or id, and the logged message does not include feed URLs
+  or tokens.
 - IPv4-mapped IPv6 addresses (dotted or hex form) are classified by their IPv4
   address in connector URL validation and the public-only fetch, so a mapped cloud
   metadata address is always refused.
@@ -352,7 +354,7 @@ CI and security checks:
 - CodeQL reviewed findings use manifest v2 (`deft.codeql_false_positives.v2` in
   `.github/codeql-reviewed-false-positives.json`). An entry matches on rule, path
   and a fingerprint of the code on the flagged path, so edits that only move the
-  finding no longer need a new review, while a change to the code on the path, a new
+  finding do not need a new review, while a change to the code on the path, a new
   finding, a duplicate or an unused entry fails the check. See
   `docs/security/codeql-reviewed-findings.md`.
 - Pull requests that change only Markdown files under `docs/superpowers/` skip
@@ -361,7 +363,7 @@ CI and security checks:
   `Changed Paths` job classifies the pull request, and any other change runs every
   job.
 
-- API tests: tests that shared fixture rows now create their own, the recovery
+- API tests: the affected tests create their own fixture rows, the recovery
   sweep tests wait out a busy advisory pool, and the restore-access fixture
   computes its timestamps once, so the sharded run does not depend on file order.
 
@@ -1109,7 +1111,8 @@ The `0.1.0-alpha` tag was originally published under BSL 1.1. The current
 codebase has since been relicensed under [GNU AGPL v3.0 only](LICENSE); consult
 the license file present in the exact revision you use.
 
-[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.141...HEAD
+[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.142...HEAD
+[0.3.0-preview.142]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.142
 [0.3.0-preview.15]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.15
 [0.3.0-preview.14]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.14
 [0.3.0-preview.13]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.13

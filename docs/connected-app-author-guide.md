@@ -1,6 +1,6 @@
 # Connected App author guide
 
-> **Apps developer preview:** use the Host version named by the `compatibility.json` attached to the Email release you install. The latest published Host, `0.3.0-preview.141`, is built with the Apps-enabled browser profile. Historical preview.15 and its alpha.2 artifacts are unchanged.
+> **Apps developer preview:** use the Host version named by the `compatibility.json` attached to the Email release you install. The latest published Host, `0.3.0-preview.142`, is built with the Apps-enabled browser profile. Historical preview.15 and its alpha.2 artifacts are unchanged.
 
 For a standalone tracker, use the [Module tutorial](tutorials/first-module.md). A `deft.module.json` installs through Settings â†’ Modules; this guide packages resources in a separate `deft.app.json` and uses Settings â†’ Apps. [Compare the two paths](modules-and-apps.md).
 
