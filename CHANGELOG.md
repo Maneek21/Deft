@@ -84,8 +84,8 @@ Upgrade notes:
 
 Agents and approvals:
 
-- No trust level auto-runs a call classed as destructive. Conservative and
-  Standard now queue those calls for approval, as Autonomous already did. This
+- No trust level auto-runs a call classed as destructive; Conservative,
+  Standard and Autonomous all queue those calls for approval. This
   includes connected (MCP) tools named like an admin tool or `delete_*`, and
   `module_record_task_unlink`.
 - One set of guard rails covers every path on which an agent employee posts a
@@ -120,8 +120,7 @@ Agents and approvals:
 - Chat (web): Enter sends after Escape closes the @ or # popup. A failed history,
   thread or approval read shows an error with Retry. After a reconnect a channel
   catches up through at most 500 messages before offering a "Load earlier
-  messages" control, and an open thread rereads and merges its replies. "Ask Defty" reports a failure instead of doing
-  nothing. Presence snapshots replace the online list. Members see an employee's
+  messages" control, and an open thread rereads and merges its replies. "Ask Defty" reports a failure to the user. Presence snapshots replace the online list. Members see an employee's
   trust level read-only; owners and admins can lower it.
 - Apps developer preview: the runtime authority check for a resource observation
   is decided in one transaction.
@@ -355,7 +354,7 @@ CI and security checks:
 - CodeQL reviewed findings use manifest v2 (`deft.codeql_false_positives.v2` in
   `.github/codeql-reviewed-false-positives.json`). An entry matches on rule, path
   and a fingerprint of the code on the flagged path, so edits that only move the
-  finding no longer need a new review, while a change to the code on the path, a new
+  finding do not need a new review, while a change to the code on the path, a new
   finding, a duplicate or an unused entry fails the check. See
   `docs/security/codeql-reviewed-findings.md`.
 - Pull requests that change only Markdown files under `docs/superpowers/` skip
@@ -364,7 +363,7 @@ CI and security checks:
   `Changed Paths` job classifies the pull request, and any other change runs every
   job.
 
-- API tests: tests that shared fixture rows now create their own, the recovery
+- API tests: tests create their own fixture rows, the recovery
   sweep tests wait out a busy advisory pool, and the restore-access fixture
   computes its timestamps once, so the sharded run does not depend on file order.
 
