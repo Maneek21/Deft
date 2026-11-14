@@ -30,7 +30,7 @@ and the matching release's source for operational contracts.
 - [Modules and Apps: choose a starting point](modules-and-apps.md)
 
 - [Connected App author guide](connected-app-author-guide.md)
-- [Historical Hermes compatibility guide](../integrations/hermes/deft-platform/README.md) (use only with a release that explicitly certifies it; not part of the preview.141 core release)
+- [Historical Hermes compatibility guide](../integrations/hermes/deft-platform/README.md) (use only with a release that explicitly certifies it; not part of the preview.142 core release)
 - [Legacy Hermes Agent Channel bridge rollback](hermes-agent-channel-service.md)
 - Public product capabilities: [FEATURES.md](../FEATURES.md)
 

@@ -13,7 +13,7 @@ This roadmap communicates direction, not delivery dates. Deft is an alpha and pr
 
 ## Current core preview
 
-- `v0.3.0-preview.141` is the latest published prerelease, a core release
+- `v0.3.0-preview.142` is the latest published prerelease, a core release
 - Connected Apps and bounded scheduled actions ship as experimental, opt-in capabilities
 - Hermes certification and its bundle are excluded from this release
 - Release assets include operational notes, checksums, provenance, SBOM, and the exact revision

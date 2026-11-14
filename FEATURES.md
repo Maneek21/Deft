@@ -1,6 +1,6 @@
 # Deft capability reference
 
-> Availability last reconciled on November 11, 2026. The latest published image is `v0.3.0-preview.141`, a core release. Features present on `master` may be absent from that image; the [changelog](CHANGELOG.md) lists them under Unreleased. See the [availability map](docs/product-status.md).
+> Availability last reconciled on November 14, 2026. The latest published image is `v0.3.0-preview.142`, a core release. Features present on `master` may be absent from that image; the [changelog](CHANGELOG.md) lists them under Unreleased. See the [availability map](docs/product-status.md).
 >
 > Deft is an alpha. This file describes the current product surface, not a compatibility guarantee. See [current limitations](docs/current-limitations.md) and the [roadmap](ROADMAP.md) before planning a production deployment.
 
@@ -117,7 +117,7 @@ Agent employees are separate workspace identities backed by a customer-controlle
 - Post their own chat messages (post, reply, direct message) without approval at every trust level, within guard rails: space membership and visibility, the reply-storm detector, the daily action cap, and the unhealthy (circuit breaker) state. Everything else an employee writes follows that employee's own trust level
 - Expose supervision state, recent contact, failures, and bridge health to admins
 
-Deft does not require a specific agent framework. A compatible customer-operated runtime can use the streamable HTTP MCP endpoint. Hermes support is release-specific historical compatibility; it is not part of the preview.141 core release and is not a new compatibility claim.
+Deft does not require a specific agent framework. A compatible customer-operated runtime can use the streamable HTTP MCP endpoint. Hermes support is release-specific historical compatibility; it is not part of the preview.142 core release and is not a new compatibility claim.
 
 ## Personal AI app connections
 
@@ -190,7 +190,7 @@ Fresh installs use `init` (`pnpm db:push-full` plus platform seed). Supported ve
 - Modules define domain records, relationships, and Deft-rendered native views. Standalone manifests install through Settings → Modules without the Apps feature flags.
 - Module v1 data is shared with owners, admins, and members; it has no private rows or fields. [Choose between a Module and an App](docs/modules-and-apps.md).
 - Declarative internal Apps package Modules for review and installation and are an opt-in alpha capability.
-- Connected Apps and bounded daily actions are experimental and stay off until an operator enables them. The Apps-enabled browser profile in Host preview.141 supports the independent [Email reference app](https://github.com/Maneek21/deft-email); use the `compatibility.json` attached to the Email release you install and the [current author guide](docs/connected-app-author-guide.md). Compiled feature availability does not replace reviewed operator or member permission.
+- Connected Apps and bounded daily actions are experimental and stay off until an operator enables them. The Apps-enabled browser profile in Host preview.142 supports the independent [Email reference app](https://github.com/Maneek21/deft-email); use the `compatibility.json` attached to the Email release you install and the [current author guide](docs/connected-app-author-guide.md). Compiled feature availability does not replace reviewed operator or member permission.
 - The current App protocols do not provide arbitrary custom UI or public portals. External Runtime and governed source sync are bounded developer-preview contracts that need reviewed setup.
 
 ## Security posture

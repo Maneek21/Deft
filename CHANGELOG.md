@@ -56,7 +56,7 @@ Chat:
   private space (`DELETE /api/spaces/:id/members/me`).
 - The create-space dialog explains Public and Private in one line each.
 
-### 0.3.0-preview.142 candidate - publication pending
+## [0.3.0-preview.142] — 2026-11-13 (prerelease)
 
 Changes since `v0.3.0-preview.141`.
 
@@ -333,6 +333,8 @@ Requests, triggers and outbound fetches:
   always refused. Matching is by the whole URL, redirects are followed only to
   another listed URL, and a malformed value disables the list. See
   "Internal calendar feeds" in `docs/self-hosting.md`.
+- Calendar feed routes return and log a fixed `{ error, code }` without feed URLs
+  or ids.
 - IPv4-mapped IPv6 addresses (dotted or hex form) are classified by their IPv4
   address in connector URL validation and the public-only fetch, so a mapped cloud
   metadata address is always refused.
