@@ -163,14 +163,19 @@ export class AppConnectionSessionService {
       state: publicState, scope: record.scope, account: record.account,
       expires_at: ['starting', 'awaiting_callback', 'connecting'].includes(record.state) ? record.callback_expires_at : record.scope.consent_expires_at });
   }
+  /** `restore` (status only) is the state+account read before the check. It is
+   * written back only when the runtime request itself rejected with no answer
+   * and current authority still holds; any answer keeps its normal outcome. */
   private async invoke(caller: ExperienceCaller, record: AppConnectionSessionRecord, purpose: AppConnectionSessionPurpose,
-    authority: AppConnectionSessionAuthority, request: AppConnectionRuntimeRequest) {
+    authority: AppConnectionSessionAuthority, request: AppConnectionRuntimeRequest,
+    restore?: Pick<AppConnectionSessionRecord, 'state' | 'account'>) {
     const controller = new AbortController();
     const remaining = Math.min(IO_MS, authority.expires_at - this.clock(), appConsentDeadline(record.scope.consent_expires_at, record.scope.consent_lifetime) - this.clock(),
       ['starting', 'connecting'].includes(record.state) ? Date.parse(record.callback_expires_at) - this.clock() : IO_MS);
     let timer: ReturnType<typeof setTimeout> | undefined;
     let committed: AppConnectionSessionRecord | undefined;
     let ioDeadline = this.clock() + remaining;
+    let requested = false, answered = false;
     try {
       this.checkDeadline(authority, record);
       // One bounded call includes registration resolution. A hung transport may
@@ -195,12 +200,15 @@ export class AppConnectionSessionService {
         armDeadline();
         const expires_at=new Date(Math.min(Date.parse(request.expires_at),authority.expires_at,current.expires_at,
           ...(['begin','callback'].includes(purpose)?record.action_consents?.map(consent=>appConsentDeadline(consent.expires_at, consent.consent_lifetime))??[]:[]))).toISOString();
+        requested = true;
         if(record.action_consents!==undefined){const {action_consent,...base}=request;void action_consent;
           return (runtime as Awaited<ReturnType<NonNullable<AppConnectionSessionPorts['registeredRuntimeV2']>>>).request(
             AppConnectionRuntimeV2RequestSchema.parse({...base,schema_version:'deft.app_connection_runtime.v2',action_consents:record.action_consents,expires_at}),controller.signal);}
         return (runtime as AppConnectionRegisteredRuntime).request(AppConnectionRuntimeRequestSchema.parse({...request,expires_at}),controller.signal);
       })();
-      const reply = AppConnectionRuntimeResultSchema.parse(await Promise.race([work, deadline]));
+      const answer = await Promise.race([work, deadline]);
+      answered = true;
+      const reply = AppConnectionRuntimeResultSchema.parse(answer);
       await this.authority(caller, this.nomination(record), purpose, record);
       this.checkDeadline(authority, record);
       if (this.clock() >= ioDeadline) throw denied();
@@ -221,6 +229,15 @@ export class AppConnectionSessionService {
       controller.signal.throwIfAborted();
       return { record: committed, reply };
     } catch (error) {
+      // A status check that got no runtime answer leaves the session as it was.
+      if (!committed && restore && requested && !answered
+        && (error as { code?: unknown } | null)?.code !== 'APP_ACCESS_DENIED' && await this.authority(caller, this.nomination(record), purpose, record)
+          .then(current => { this.checkDeadline(authority, record); this.checkDeadline(current, record); return true; }, () => false)) {
+        const restored = await this.write(record, restore);
+        await this.authority(caller, this.nomination(restored), purpose, restored);
+        this.checkDeadline(authority, record);
+        throw new AppError('Connection status unavailable', 'APP_PROVIDER_UNAVAILABLE', 503);
+      }
       // A successful durable write advanced the revision. Its delivery guard
       // must never attempt another CAS against the obsolete previous record.
       if (!committed) committed = await this.write(record, { state: 'indeterminate' });
@@ -280,7 +297,8 @@ export class AppConnectionSessionService {
       ...(purpose === 'disconnect' ? { callback_consumed: true } : {}) });
     const result = await this.invoke(caller, record, purpose, authority, { schema_version: 'deft.app_connection_runtime.v1', operation: purpose,
       session_id: record.session_id, scope: record.scope, expires_at: new Date(authority.expires_at).toISOString(),
-      runtime_session_ref: stored.runtime_session_ref, expected_account_ref: stored.account?.account_ref ?? null });
+      runtime_session_ref: stored.runtime_session_ref, expected_account_ref: stored.account?.account_ref ?? null },
+      purpose === 'status' && (stored.state === 'connected' || stored.state === 'not_connected') ? { state: stored.state, account: stored.account } : undefined);
     return this.view(result.record);
   }
   status(caller: ExperienceCaller, raw: unknown) { return this.manage(caller, raw, 'status'); }
