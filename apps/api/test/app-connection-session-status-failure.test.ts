@@ -27,14 +27,14 @@ function fixture() {
     runtime_registration_id: randomUUID(), operator_user_id: profile.operator_user_id, runtime_epoch: 1,
     profile_digest: 'sha256:' + createHash('sha256').update(canonicalAppConnectionProfileJson(profile)).digest('hex'),
     consent_expires_at: new Date(now + 2 * 60 * 60_000).toISOString() };
-  let expires = now + 30 * 60_000, revoked = false, provider = healthy;
+  let expires = now + 30 * 60_000, revoked = false, unresolved = false, provider = healthy;
   const rows = new Map<string, AppConnectionSessionRecord>(), calls: AppConnectionRuntimeRequest[] = [];
   const ports: AppConnectionSessionPorts = {
     async currentAuthority(active) {
       if (revoked || active.org_id !== scope.org_id || active.user_id !== scope.owner_user_id) throw new AppError('Revoked', 'APP_ACCESS_DENIED', 403);
       return { scope, profile, expires_at: expires };
     },
-    async registeredRuntime() { return { identity: { runtime_registration_id: scope.runtime_registration_id,
+    async registeredRuntime() { if (unresolved) throw new Error('registry unavailable'); return { identity: { runtime_registration_id: scope.runtime_registration_id,
       operator_user_id: scope.operator_user_id, runtime_epoch: scope.runtime_epoch },
       async request(input, signal) { calls.push(input); return provider(input, signal); } }; },
     store: {
@@ -49,7 +49,7 @@ function fixture() {
   const service = new AppConnectionSessionService(ports, () => now);
   return { caller, service, rows, calls, nomination: { installation_id: scope.installation_id, target_key: scope.target_key },
     provider(work: Provider) { provider = work; }, healthy() { provider = healthy; },
-    authorityExpiry(value: number) { expires = value; }, now: () => now, advance(ms: number) { now += ms; }, revoke() { revoked = true; } };
+    authorityExpiry(value: number) { expires = value; }, now: () => now, advance(ms: number) { now += ms; }, unresolve() { unresolved = true; }, revoke() { revoked = true; } };
 }
 type Fixture = ReturnType<typeof fixture>;
 async function connected(f: Fixture) {
@@ -131,6 +131,28 @@ test('authority expiring during a status check still records indeterminate and d
   f.provider(async () => { f.authorityExpiry(f.now()); throw new TypeError('fetch failed'); });
   await assert.rejects(f.service.status(f.caller, { session_id }), /access ended/);
   assert.equal(f.rows.get(session_id)!.state, 'indeterminate');
+});
+
+test('the original deadline passing during a status check still records indeterminate and denies', async () => {
+  const f = fixture(), { session_id } = await connected(f);
+  f.provider(async () => { f.authorityExpiry(f.now() + 60 * 60_000); f.advance(31 * 60_000); throw new TypeError('fetch failed'); });
+  await assert.rejects(f.service.status(f.caller, { session_id }), /access ended/);
+  assert.equal(f.rows.get(session_id)!.state, 'indeterminate');
+});
+
+test('failures that are not a missing runtime answer keep the indeterminate outcome', async () => {
+  const cases: Array<[string, (f: Fixture) => void]> = [
+    ['runtime resolution failed before any request', f => f.unresolve()],
+    ['runtime answered with an invalid result', f => f.provider(async () => ({ state: 'unknown_success' }))],
+    ['runtime denied the request', f => f.provider(async () => { throw new AppError('Denied', 'APP_ACCESS_DENIED', 403); })],
+  ];
+  for (const [name, arrange] of cases) {
+    const f = fixture(), { session_id } = await connected(f);
+    arrange(f);
+    try { assert.equal((await f.service.status(f.caller, { session_id })).state, 'indeterminate', name); }
+    catch (error) { assert.ok(error instanceof AppError && error.code === 'APP_ACCESS_DENIED', name); }
+    assert.equal(f.rows.get(session_id)!.state, 'indeterminate', name);
+  }
 });
 
 test('an indeterminate session from an interrupted disconnect or callback is not re-checked by status', async () => {

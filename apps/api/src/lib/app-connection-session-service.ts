@@ -232,7 +232,7 @@ export class AppConnectionSessionService {
       // A status check that got no runtime answer leaves the session as it was.
       if (!committed && restore && requested && !answered
         && (error as { code?: unknown } | null)?.code !== 'APP_ACCESS_DENIED' && await this.authority(caller, this.nomination(record), purpose, record)
-          .then(current => { this.checkDeadline(authority, record); this.checkDeadline(current, record); return true; }, () => false)) {
+          .then(current => { this.checkDeadline(authority, record); this.checkDeadline(current, record); }).then(() => true, () => false)) {
         const restored = await this.write(record, restore);
         await this.authority(caller, this.nomination(restored), purpose, restored);
         this.checkDeadline(authority, record);
