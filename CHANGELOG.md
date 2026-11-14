@@ -10,16 +10,6 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
-### Changed: a published calendar feed belongs to one workspace
-
-The calendar feed link from Settings -> Calendar -> Share Deft calendar belongs to
-one workspace, and people in several workspaces have one feed link per workspace.
-Schema `0.3.0-preview.137` (`ics_publish_tokens`).
-
-**Upgrade note:** after upgrading, people who belong to more than one workspace need
-to create their feed link again from the workspace they want. People in one
-workspace keep their link.
-
 ### Notice: Kit `0.1.0-alpha.44` removes deprecated Email compatibility
 
 Not before 2026-11-25, and never fewer than 14 days after this notice merged.
@@ -40,7 +30,34 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
   its burn-down bucket, and `node scripts/check-app-boundary.mjs --summary` prints
   the counts per milestone. No finding changed.
 
-### Unreleased: merged to `master` after `v0.3.0-preview.142`
+## [0.3.0-preview.143] — 2026-11-14 (prerelease)
+
+Changes since `v0.3.0-preview.142`.
+
+Upgrade notes:
+
+- Schema head moves to `0.3.0-preview.137`. `pnpm db:upgrade` applies one migration,
+  `.137`, which creates `ics_publish_tokens` and keeps the existing calendar feed
+  link of each person who has exactly one active workspace membership.
+- People who belong to more than one workspace create their calendar feed link again
+  from the workspace they want (Settings -> Calendar -> Share Deft calendar).
+- Spaces created as Public are findable and joinable by members of the workspace
+  (not guests) through **Browse spaces**.
+- Workspace audit browsing (`GET /api/audit`) is for owners and admins.
+- Author Kit stays `0.1.0-alpha.43`; its code and archive are unchanged since
+  `v0.3.0-preview.142`.
+
+Calendar:
+
+- The calendar feed link from Settings -> Calendar -> Share Deft calendar belongs to
+  one person in one workspace (table `ics_publish_tokens`). People in several
+  workspaces have one feed link per workspace, and creating a new link in one
+  leaves the others unchanged. `GET /api/ics/feed/:token` serves only the workspace
+  its link was issued in, while the person is an active member there.
+- A published feed (`GET /api/ics/feed/:token`) lists live tasks only: deleted
+  tasks, template tasks and tasks in archived or deleted projects are left out, and
+  tasks the person may not see stay out. The feed path is shown as
+  `/api/ics/feed/<redacted>` in request logs.
 
 Chat:
 
@@ -55,6 +72,33 @@ Chat:
 - **Leave space** in a space's member list removes you from a public or
   private space (`DELETE /api/spaces/:id/members/me`).
 - The create-space dialog explains Public and Private in one line each.
+
+Spaces and access:
+
+- Guests see only the spaces they are members of in every tool and in the
+  assistant's context; owners, admins, members and agents see what they saw before.
+- Message, bookmark and tag routes check the caller's workspace and access to the
+  message's space. Tasks created from a message, bookmarks and tag lists apply the
+  same rule; a message the caller cannot read answers as a missing one.
+- Workspace audit browsing (`GET /api/audit`) is for active owners and admins of the
+  workspace. A message entry shows its text only when the viewer can read the
+  message's space; otherwise it shows actor, time, action and ids with
+  `content_omitted: true`.
+
+Apps:
+
+- A connection-session status check whose runtime request gets no answer (runtime
+  unreachable, transport error, unparseable body or timeout) leaves the session's
+  state and account unchanged and answers `503 APP_PROVIDER_UNAVAILABLE`. A
+  definite answer keeps its outcome. The write-back happens only while the
+  caller's authority and deadlines hold.
+
+Docs and checks:
+
+- `docs/AGENT-VISION.md` states what counts toward `max_daily_actions`: write tool
+  calls, approved actions when they run, and employee chat posts.
+- The v0.3.0-preview.142 notes are filed as published and the install pins point at
+  that release.
 
 ## [0.3.0-preview.142] — 2026-11-13 (prerelease)
 
@@ -1111,7 +1155,8 @@ The `0.1.0-alpha` tag was originally published under BSL 1.1. The current
 codebase has since been relicensed under [GNU AGPL v3.0 only](LICENSE); consult
 the license file present in the exact revision you use.
 
-[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.142...HEAD
+[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.143...HEAD
+[0.3.0-preview.143]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.143
 [0.3.0-preview.142]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.142
 [0.3.0-preview.15]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.15
 [0.3.0-preview.14]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.14
