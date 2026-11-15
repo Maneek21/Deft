@@ -773,7 +773,6 @@ memberRoutes.get('/directory', async (c) => {
   }
 });
 
-// GET /api/members/invites - admin invite ledger.
 // GET /api/members/seats — seats in use, the paid limit (hosted cells) and
 // whether adding people is frozen and why. Read-only; admins and owners.
 memberRoutes.get('/seats', async (c) => {
@@ -791,6 +790,7 @@ memberRoutes.get('/seats', async (c) => {
   }
 });
 
+// GET /api/members/invites - admin invite ledger.
 memberRoutes.get('/invites', async (c) => {
   try {
     const user = c.get('user');
