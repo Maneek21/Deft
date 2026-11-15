@@ -18,6 +18,10 @@ const AUTH_LIMIT_PER_MINUTE = positiveIntFromEnv(
   'DEFT_AUTH_RATE_LIMIT_PER_MINUTE',
   isProduction ? 10 : 120,
 );
+const INVITE_LIMIT_PER_MINUTE = positiveIntFromEnv(
+  'DEFT_INVITE_RATE_LIMIT_PER_MINUTE',
+  isProduction ? 10 : 120,
+);
 const APP_RUNTIME_LIMIT_PER_MINUTE = positiveIntFromEnv(
   'DEFT_APP_RUNTIME_RATE_LIMIT_PER_MINUTE',
   isProduction ? 90 : 600,
@@ -112,6 +116,20 @@ function withAuditBypass(limiter: MiddlewareHandler): MiddlewareHandler {
 export const authLimiter = withAuditBypass(rateLimiter({
   windowMs: 60 * 1000,
   limit: AUTH_LIMIT_PER_MINUTE,
+  standardHeaders: 'draft-7',
+  keyGenerator: ipKey,
+  handler: (c) => c.json({
+    error: 'Too many requests. Try again in a minute.',
+    code: 'RATE_LIMITED',
+  }, 429),
+}));
+
+// Per-IP for the public invite preview and accept routes. Same budget as the
+// auth routes, but its own counter, so invite traffic from a shared address
+// does not use up that address's sign-in and token-refresh budget.
+export const inviteLimiter = withAuditBypass(rateLimiter({
+  windowMs: 60 * 1000,
+  limit: INVITE_LIMIT_PER_MINUTE,
   standardHeaders: 'draft-7',
   keyGenerator: ipKey,
   handler: (c) => c.json({

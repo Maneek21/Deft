@@ -121,6 +121,7 @@ import { authMiddleware, authenticateWebRequest, releaseWebRequest } from './mid
 import { installRequestGate, isPublicApiRequest } from './middleware/request-gate.js';
 import {
   authLimiter,
+  inviteLimiter,
   appRuntimeLimiter,
   loginIpLimiter,
   agentLimiter,
@@ -226,7 +227,9 @@ app.route('/api/ics', icsPublicRoutes);
 // Public invite preview/accept. The token travels in the POST body (the link
 // carries it after `#`); the legacy GET preview path is redacted in the
 // request log. Admin shares link out-of-band per "Email: none" design.
-// Mounted before authMiddleware.
+// Mounted before authMiddleware and before the default limiter, so it carries
+// its own per-IP limiter.
+app.use('/api/invites/*', inviteLimiter);
 app.route('/api/invites', inviteRoutes);
 
 // Protected routes
