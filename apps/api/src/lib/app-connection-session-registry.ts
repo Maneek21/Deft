@@ -91,10 +91,11 @@ export class AppConnectionSessionRegistry {
     hosted: boolean = isHostedMode()) {
     const parsed = AppConnectionSessionRegistryConfigSchema.parse(raw);
     // A self-hosted install has always refused a file carrying anything but
-    // exact entries. Templates do not change that: outside hosted mode the whole
-    // file stays unavailable, never read as if the templates were absent.
+    // exact entries. Templates do not change that: outside hosted mode a file
+    // that so much as names them stays unavailable as a whole, never read as if
+    // the templates were absent.
+    if (parsed.hosted_templates !== undefined && !hosted) throw unavailable();
     const templates = parsed.hosted_templates ?? [];
-    if (templates.length && !hosted) throw unavailable();
     const templateKeys = templates.map(template => JSON.stringify([template.profile.key, template.profile.resource_key,
       template.profile.runtime_requirement_key, template.profile.action_keys]));
     if (new Set(templateKeys).size !== templateKeys.length) throw unavailable();

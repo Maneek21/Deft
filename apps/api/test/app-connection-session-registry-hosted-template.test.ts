@@ -54,8 +54,9 @@ test('a self-hosted install refuses a file with templates and is otherwise uncha
     assert.throws(() => registry.authenticate(s.scope, 'Bearer ' + authorityToken));
     assert.throws(() => registry.preauthenticateTransport(s.scope, 'Bearer ' + authorityToken));
   }
-  // An empty template list is not a template.
-  assert.doesNotThrow(() => new AppConnectionSessionRegistry(config({ hosted_templates: [] }), fetch, [], false));
+  // Even an empty list names the hosted-only field, which self-hosted has never accepted.
+  assert.throws(() => new AppConnectionSessionRegistry(config({ hosted_templates: [] }), fetch, [], false), unavailable);
+  assert.doesNotThrow(() => new AppConnectionSessionRegistry(config({ hosted_templates: [] }), fetch, [], true));
 });
 
 test('a template is data only: no operator, no other protocol, no author endpoint, bounded and unambiguous', () => {
