@@ -4,6 +4,8 @@ import { useEffect,useRef,useState } from 'react';
 import { useRouter,useSearchParams } from 'next/navigation';
 import { SpaceChat } from '@/components/space-chat';
 import { ThreadPanel } from '@/components/thread-panel';
+import { PublicSpacePreview } from '@/components/public-space-preview';
+import { chatViewFor } from '@/lib/public-spaces';
 import { threadParamId } from '@/components/message-link-navigation';
 import { api, isSameWebSession } from '@/lib/api';
 import { messageDeepLinkDestination } from '@/lib/message-deep-link';
@@ -104,6 +106,15 @@ export default function ChatPage() {
 
   const effectiveSpaceId = urlSpaceId || threadMessage?.space_id || activeSpaceId;
   const activeSpace = spaces.find((s) => s.id === effectiveSpaceId);
+  // A space named in the URL that is not in the joined list is shown read-only
+  // (a public space may be read before joining). Wait for the joined list
+  // first, so a joined space is not previewed while that list is loading.
+  const [spacesSettled, setSpacesSettled] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setSpacesSettled(true), 1500);
+    return () => clearTimeout(timer);
+  }, []);
+  const view = chatViewFor(urlSpaceId, spaces.map((space) => space.id), effectiveSpaceId ?? null);
 
   if (urlMessageId && !urlSpaceId) return <div className="flex h-full items-center justify-center" role="status" style={{ color: 'var(--muted)' }}>
     {messageLinkUnavailable ? 'This message is unavailable.' : 'Opening message…'}
@@ -112,7 +123,7 @@ export default function ChatPage() {
   return (
     <div className="flex h-full">
       <div className="flex-1 min-w-0">
-        {effectiveSpaceId && activeSpace ? (
+        {view === 'chat' && effectiveSpaceId && activeSpace ? (
           <SpaceChat
             spaceId={effectiveSpaceId}
             spaceName={activeSpace.name}
@@ -121,6 +132,8 @@ export default function ChatPage() {
             spaceDescription={activeSpace.description}
             highlightMessageId={urlMessageId || undefined}
           />
+        ) : view === 'preview' && urlSpaceId ? (
+          <PublicSpacePreview key={urlSpaceId} spaceId={urlSpaceId} ready={spaces.length > 0 || spacesSettled} />
         ) : (
           <div
             className="flex items-center justify-center h-full"
@@ -130,7 +143,8 @@ export default function ChatPage() {
           </div>
         )}
       </div>
-      {threadMessage && effectiveSpaceId && (
+      {/* The thread panel has a reply box, so it is only for a space the viewer has joined. */}
+      {threadMessage && effectiveSpaceId && view === 'chat' && (
         <ThreadPanel
           parentMessage={threadMessage}
           spaceId={effectiveSpaceId}
