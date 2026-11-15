@@ -1,9 +1,10 @@
 import { Hono } from 'hono';
-import { eq, and, ilike, desc, or, gte, lte, inArray } from 'drizzle-orm';
+import { eq, and, ilike, desc, or, gte, lte, inArray, isNotNull } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { tasks, projects, spaces, users, messages, orgMembers, tags, notes, spaceMembers } from '@deft/db/schema';
 import { retrieveContext, type ContextResult } from '../lib/retrieve-context.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
+import { unjoinedPublicSpaceReadableSql } from '../lib/space-membership.js';
 import { humanModuleActor } from '../lib/module-service.js';
 import { searchAuthorizedModuleResourcesWithDiagnostics as searchModuleRecords } from '../lib/resource-search-service.js';
 
@@ -29,15 +30,19 @@ searchRoutes.get('/', async (c) => {
       .from(spaceMembers)
       .where(eq(spaceMembers.user_id, user.id));
 
+    // Spaces and messages the caller may read: spaces they are in, and public
+    // spaces a member of the workspace (never a guest) may read before joining.
+    const readableSpace = or(isNotNull(spaceMembers.id), unjoinedPublicSpaceReadableSql(user.id));
+
     const spaceResults = await db.select({
       id: spaces.id, name: spaces.name, type: spaces.type,
     })
       .from(spaces)
-      .innerJoin(spaceMembers, and(
+      .leftJoin(spaceMembers, and(
         eq(spaces.id, spaceMembers.space_id),
         eq(spaceMembers.user_id, user.id),
       ))
-      .where(and(eq(spaces.org_id, user.org_id), eq(spaces.is_archived, false), ilike(spaces.name, pattern)))
+      .where(and(eq(spaces.org_id, user.org_id), eq(spaces.is_archived, false), ilike(spaces.name, pattern), readableSpace))
       .limit(5);
 
     // Search tasks (by title or prefix-number)
@@ -110,11 +115,11 @@ searchRoutes.get('/', async (c) => {
       .from(messages)
       .innerJoin(users, eq(messages.user_id, users.id))
       .innerJoin(spaces, eq(messages.space_id, spaces.id))
-      .innerJoin(spaceMembers, and(
+      .leftJoin(spaceMembers, and(
         eq(messages.space_id, spaceMembers.space_id),
         eq(spaceMembers.user_id, user.id),
       ))
-      .where(and(...msgConditions))
+      .where(and(...msgConditions, readableSpace))
       .orderBy(desc(messages.created_at))
       .limit(10);
 

@@ -4,7 +4,7 @@ import { eq, and, asc, desc, sql, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { spaces, spaceMembers, users, messages, agentEmployees, orgMembers } from '@deft/db/schema';
 import { evictActiveHuddleParticipants, getIO } from '../socket.js';
-import { canSelfJoinPublicSpaces, requireSpaceMembership } from '../lib/space-membership.js';
+import { canReadSpace, canSelfJoinPublicSpaces, requireSpaceMembership } from '../lib/space-membership.js';
 import { DEFTY_EMAIL } from '../lib/ensure-defty-membership.js';
 import { cancelPendingScheduledMessagesForSpace } from '../lib/scheduled-message-cancel.js';
 
@@ -307,7 +307,9 @@ const browseQuerySchema = z.object({
 });
 
 // GET /api/spaces/browse — public spaces of the caller's org (must be before /:id).
-// Returns only directory fields; messages, members and pins stay membership-gated.
+// Returns only directory fields. A member who is not a guest may also read a
+// public space's details, messages and threads before joining; its member
+// list, pins and every write stay membership-gated.
 spaceRoutes.get('/browse', async (c) => {
   try {
     const user = c.get('user');
@@ -417,10 +419,12 @@ spaceRoutes.get('/:id', async (c) => {
       .where(and(eq(spaces.id, spaceId), eq(spaces.org_id, user.org_id)))
       .limit(1);
 
-    // A missing space, a space in another org and a same-org space the caller
-    // is not in all get one identical denial (W1-g).
-    const isMember = space ? await requireSpaceMembership(spaceId, user.id, user.org_id) : false;
-    if (!space || !isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+    // Reading: a member of the space, or a member of the workspace (never a
+    // guest) reading a public space before joining it. A missing space, a
+    // space in another org and a same-org space the caller may not read all
+    // get one identical denial (W1-g).
+    const canRead = space ? await canReadSpace(spaceId, user.id, user.org_id) : false;
+    if (!space || !canRead) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
     return c.json(space);
   } catch (err) {

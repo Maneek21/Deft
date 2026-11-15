@@ -5,7 +5,9 @@
  * caller to one of them; leave removes the caller. Private spaces, DMs, group
  * DMs, agent conversations, archived spaces and other orgs' spaces are never
  * listed and cannot be joined. Guests and agent users cannot browse or
- * self-join. Reading stays membership-based.
+ * self-join. A member may read a public space before joining it and after
+ * leaving it; a guest may not. Live updates and every write stay
+ * membership-based (see public-space-read-before-join-db.test.ts).
  *
  * Run:
  *   DATABASE_URL=... DEFT_TEST_DATABASE_URL=... pnpm --filter @deft/api test test/public-spaces-browse-join-db.test.ts
@@ -196,9 +198,11 @@ test('private, DM, group DM, agent conversation, archived, other-org and missing
   }
 });
 
-test('an unjoined member cannot read; after joining reads work; join is idempotent and emits one event', async () => {
-  assert.equal((await readMessages(U.member, S.open)).status, 403);
-  assert.equal((await call(U.member, 'GET', `/api/spaces/${S.open}`)).status, 403);
+test('an unjoined member can read but gets no live updates, an unjoined guest cannot read; join is idempotent and emits one event', async () => {
+  assert.equal((await readMessages(U.member, S.open)).status, 200);
+  assert.equal((await call(U.member, 'GET', `/api/spaces/${S.open}`)).status, 200);
+  assert.equal((await readMessages(U.guest, S.open)).status, 403);
+  assert.equal((await call(U.guest, 'GET', `/api/spaces/${S.open}`)).status, 403);
   assert.equal(await getHuddleSpaceAccess(S.open, socketUser(U.member)), undefined);
 
   const server = createServer();
@@ -281,7 +285,7 @@ test('an unjoined member cannot read; after joining reads work; join is idempote
     await new Promise((r) => setTimeout(r, 100));
     assert.deepEqual(peer.events.at(-1), { space_id: S.open, user_id: U.owner });
     assert.equal(self.events.length, 1, 'a member who left receives no later join event');
-    assert.equal((await readMessages(U.member, S.open)).status, 403);
+    assert.equal((await readMessages(U.member, S.open)).status, 200, 'a public space stays readable after leaving');
   } finally {
     for (const s of [peer, self, outsider, guest, otherOrgSelf, foreignSession]) s.client.close();
     await new Promise<void>((resolve) => sockets.close(() => resolve()));
@@ -294,7 +298,7 @@ test('leave works for public and private spaces; a second leave changes nothing'
   const left = await leave(U.admin, S.other);
   assert.equal(left.status, 200, left.text);
   assert.equal(await memberRows(S.other, U.admin), 0);
-  assert.equal((await readMessages(U.admin, S.other)).status, 403);
+  assert.equal((await readMessages(U.admin, S.other)).status, 200, 'a public space stays readable after leaving');
   assert.equal(await getHuddleSpaceAccess(S.other, socketUser(U.admin)), undefined, 'leave closes the realtime join gate');
   const again = await leave(U.admin, S.other);
   assert.notEqual(again.status, 200, again.text);

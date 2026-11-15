@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { hasReservedPrivateDeftyMetadata, isPrivateDeftySpace } from '../lib/app-private-defty-message-guard.js';
 import { createNativeChatForward, nativeChatForwardBroadcast, NativeChatForwardError } from '../lib/native-chat-forward.js';
 import { z } from 'zod';
-import { eq, and, desc, lt, lte, gt, sql, isNull, inArray } from 'drizzle-orm';
+import { eq, and, or, desc, lt, lte, gt, sql, isNull, isNotNull, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { nativeCreate, nativeCreateKey, NativeCreateError } from '../lib/native-create.js';
 import { messages, users, reactions, spaces, spaceMembers, threadReads, messageVersions, files, messageAttachments as messageAttachmentLinks } from '@deft/db/schema';
@@ -11,7 +11,7 @@ import { extractNativeMentions, NativeMentionLimitError } from '@deft/shared';
 import { nativeMentionsEnabled, enqueueNativeMentionPublication } from '../lib/native-mentions.js';
 import { fetchLinkPreview, extractUrls, type LinkPreview } from '../lib/link-preview.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
-import { requireSpaceMembership } from '../lib/space-membership.js';
+import { canReadSpace, requireSpaceMembership, unjoinedPublicSpaceReadableSql } from '../lib/space-membership.js';
 import { enqueueChatObservation } from '../lib/chat-observation.js';
 import { createNotificationIfAllowed, createNotificationsIfAllowed } from '../lib/notification-policy.js';
 import { enqueueAgentEmployeeMessageJobs, resolveAgentEmployeeMessageTargets } from '../lib/dispatch-agent-message.js';
@@ -94,7 +94,12 @@ async function getReactionsForMessages(messageIds: string[]) {
   return result;
 }
 
-async function getVisibleMessage(messageId: string, orgId: string, userId: string) {
+/**
+ * Loads a message for a caller who is a member of its space. With
+ * `access: 'read'` the caller may instead be reading a public space before
+ * joining it (never a guest); every write keeps the default.
+ */
+async function getVisibleMessage(messageId: string, orgId: string, userId: string, access: 'member' | 'read' = 'member') {
   const [msg] = await db.select({
     id: messages.id,
     org_id: messages.org_id,
@@ -111,7 +116,7 @@ async function getVisibleMessage(messageId: string, orgId: string, userId: strin
     user_timezone: users.timezone,
   })
     .from(messages)
-    .innerJoin(spaceMembers, and(
+    .leftJoin(spaceMembers, and(
       eq(messages.space_id, spaceMembers.space_id),
       eq(spaceMembers.user_id, userId),
     ))
@@ -121,6 +126,9 @@ async function getVisibleMessage(messageId: string, orgId: string, userId: strin
       eq(messages.id, messageId),
       eq(messages.org_id, orgId),
       eq(messages.is_deleted, false),
+      access === 'read'
+        ? or(isNotNull(spaceMembers.id), unjoinedPublicSpaceReadableSql(userId))
+        : isNotNull(spaceMembers.id),
     ))
     .limit(1);
 
@@ -221,8 +229,10 @@ messageRoutes.get('/:spaceId', async (c) => {
     const user = c.get('user');
     const spaceId = c.req.param('spaceId');
 
-    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
-    if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+    // Reading: a member of the space, or a member of the workspace (never a
+    // guest) reading a public space before joining it.
+    const canRead = await canReadSpace(spaceId, user.id, user.org_id);
+    if (!canRead) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
     const cursor = c.req.query('cursor');
     const around = c.req.query('around');
@@ -925,7 +935,7 @@ messageRoutes.get('/:id/thread', async (c) => {
     const user = c.get('user');
     const messageId = c.req.param('id');
 
-    const parentMsg = await getVisibleMessage(messageId, user.org_id, user.id);
+    const parentMsg = await getVisibleMessage(messageId, user.org_id, user.id, 'read');
     if (!parentMsg) {
       return c.json({ error: 'Message not found', code: 'NOT_FOUND' }, 404);
     }
