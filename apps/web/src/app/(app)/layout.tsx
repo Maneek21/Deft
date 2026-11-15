@@ -22,6 +22,7 @@ import { HuddleOverlay } from '@/components/huddle-overlay';
 import { HuddleErrorToast, HuddleRingToast } from '@/components/huddle-ring-toast';
 import { HUDDLES_ENABLED } from '@/lib/feature-flags';
 import { Logo } from '@/components/brand/logo';
+import { IosInstallHint } from '@/components/ios-install-hint';
 
 type Space = {
   id: string;
@@ -530,6 +531,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           {HUDDLES_ENABLED && huddleState.error && (
             <HuddleErrorToast error={huddleState.error} onDismiss={huddleState.clearError} />
           )}
+          <IosInstallHint />
         </div>
         </ExperienceNavigationProvider>
       </AppHeaderProvider>

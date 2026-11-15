@@ -182,6 +182,8 @@ jobs:
           src/lib/thread-parent.test.ts
           src/lib/composer-suggestion-text.test.ts
           src/lib/public-spaces.test.ts
+          src/lib/web-app-manifest.test.ts
+          src/lib/ios-install-hint.test.ts
       - name: Install locked browser for mounted App contracts
         run: pnpm exec playwright install --with-deps chromium
       - name: Test installed app session and review contracts
