@@ -4117,6 +4117,11 @@ async function executeActionDirectLocked(
       resultJson: result.success ? result.result : null,
     });
   }
+  // C11: every other native action run here also leaves a receipt (none is written twice).
+  if (!isModuleWriteAction(action) && !isModuleTaskLinkWriteAction(action) && !action.startsWith('mcp__')) {
+    const { recordDirectActionReceipt } = await import('./direct-action-receipt.js');
+    await recordDirectActionReceipt({ actionId: actionRecord.id, orgId, userId, action, agentEmployeeId: options?.agentEmployeeId ?? null, outcome: result });
+  }
 
   return { actionId: actionRecord.id, ...result };
 }
