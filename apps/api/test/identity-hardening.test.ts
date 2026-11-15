@@ -71,6 +71,7 @@ const TARGET_OAUTH_ACCESS_ID = crypto.randomUUID();
 const TARGET_OAUTH_REFRESH_ID = crypto.randomUUID();
 const INVITED_EMAIL = `invite-${RUN_ID}@test.local`;
 const RACE_EMAIL = `invite-race-${RUN_ID}@test.local`;
+const REVOKED_EMAIL = `invite-revoked-${RUN_ID}@test.local`;
 
 const sessions = new Map<string, Awaited<ReturnType<typeof createWebSession>>>();
 const sessionKey = (userId: string, orgId: string) => `${orgId}:${userId}`;
@@ -244,9 +245,9 @@ after(async () => {
   await withClient(async (c) => {
     await c.query(`DELETE FROM web_sessions WHERE org_id IN ($1, $2)`, [ORG_ID, OTHER_ORG_ID]);
     await c.query(`DELETE FROM invites WHERE org_id IN ($1, $2)`, [ORG_ID, OTHER_ORG_ID]);
-    await c.query(`DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE created_by IN (SELECT id FROM users WHERE email = ANY($1::text[])))`, [[INVITED_EMAIL, RACE_EMAIL]]);
-    await c.query(`DELETE FROM spaces WHERE created_by IN (SELECT id FROM users WHERE email = ANY($1::text[]))`, [[INVITED_EMAIL, RACE_EMAIL]]);
-    await c.query(`DELETE FROM space_members WHERE user_id IN (SELECT id FROM users WHERE email = ANY($1::text[]))`, [[INVITED_EMAIL, RACE_EMAIL]]);
+    await c.query(`DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE created_by IN (SELECT id FROM users WHERE email = ANY($1::text[])))`, [[INVITED_EMAIL, RACE_EMAIL, REVOKED_EMAIL]]);
+    await c.query(`DELETE FROM spaces WHERE created_by IN (SELECT id FROM users WHERE email = ANY($1::text[]))`, [[INVITED_EMAIL, RACE_EMAIL, REVOKED_EMAIL]]);
+    await c.query(`DELETE FROM space_members WHERE user_id IN (SELECT id FROM users WHERE email = ANY($1::text[]))`, [[INVITED_EMAIL, RACE_EMAIL, REVOKED_EMAIL]]);
     await c.query(`DELETE FROM oauth_access_tokens WHERE org_id IN ($1, $2)`, [ORG_ID, OTHER_ORG_ID]);
     await c.query(`DELETE FROM oauth_refresh_tokens WHERE grant_id IN (SELECT id FROM oauth_grants WHERE org_id IN ($1, $2))`, [ORG_ID, OTHER_ORG_ID]);
     await c.query(`DELETE FROM oauth_grants WHERE org_id IN ($1, $2)`, [ORG_ID, OTHER_ORG_ID]);
@@ -262,7 +263,7 @@ after(async () => {
     await c.query(`DELETE FROM space_members WHERE space_id = $1`, [SPACE_ID]);
     await c.query(`DELETE FROM spaces WHERE id = $1`, [SPACE_ID]);
     await c.query(`DELETE FROM org_members WHERE org_id IN ($1, $2)`, [ORG_ID, OTHER_ORG_ID]);
-    await c.query(`DELETE FROM users WHERE email = ANY($1::text[])`, [[INVITED_EMAIL, RACE_EMAIL]]);
+    await c.query(`DELETE FROM users WHERE email = ANY($1::text[])`, [[INVITED_EMAIL, RACE_EMAIL, REVOKED_EMAIL]]);
     await c.query(`DELETE FROM users WHERE id = ANY($1::text[])`, [[ADMIN_ID, MEMBER_ID, TARGET_ID, INACTIVE_ID, OTHER_USER_ID]]);
     await c.query(`DELETE FROM orgs WHERE id IN ($1, $2)`, [ORG_ID, OTHER_ORG_ID]);
   });
@@ -471,8 +472,27 @@ describe('Loop 0 identity hardening', () => {
     assert.equal(empty.status, 400);
     assert.equal((await empty.json() as Record<string, unknown>).code, 'VALIDATION_ERROR');
 
+    const oversized = 'a'.repeat(8193);
+    for (const [path, body] of [
+      ['/api/invites/preview', { token: oversized }],
+      ['/api/invites/accept', { token: oversized, password: 'Oversized-token-2026!' }],
+    ] as const) {
+      const res = await app.fetch(new Request(`http://localhost${path}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      }));
+      assert.equal(res.status, 400, path);
+      assert.equal((await res.json() as Record<string, unknown>).code, 'VALIDATION_ERROR', path);
+    }
+
     const claims = { purpose: 'invite-accept', user_id: MEMBER_ID, org_id: ORG_ID, email: 'x@test.local', inviter_id: ADMIN_ID, role: 'member' };
     const hs512 = jwt.sign(claims, env.JWT_SECRET, { algorithm: 'HS512', expiresIn: '1h' });
+    // Store the HS512 token as a live invite, so only the algorithm pin can
+    // refuse it (without the pin, preview would answer 200).
+    await withClient(c => c.query(
+      `INSERT INTO invites (id, org_id, email, token, invited_by, expires_at)
+       VALUES ($1, $2, 'x@test.local', $3, $4, now() + interval '1 hour')`,
+      [crypto.randomUUID(), ORG_ID, hs512, ADMIN_ID],
+    ).then(() => undefined));
     for (const [path, init] of [
       ['/api/invites/preview', { method: 'POST', body: JSON.stringify({ token: hs512 }) }],
       [`/api/invites/preview/${encodeURIComponent(hs512)}`, { method: 'GET' }],
@@ -482,6 +502,60 @@ describe('Loop 0 identity hardening', () => {
       assert.equal(res.status, 400, path);
       assert.equal((await res.json() as Record<string, unknown>).code, 'INVITE_INVALID', path);
     }
+  });
+
+  test('POST invite preview answers exactly as the old GET preview for refused and accepted tokens', async () => {
+    const baseClaims = { purpose: 'invite-accept', user_id: MEMBER_ID, org_id: ORG_ID, email: 'y@test.local', inviter_id: ADMIN_ID, role: 'member' };
+    const sign = (claims: Record<string, unknown>) => jwt.sign({ ...claims, nonce: crypto.randomUUID() }, env.JWT_SECRET, { algorithm: 'HS256', expiresIn: '1h' });
+    const store = (token: string, orgId: string, expiresSql: string) => withClient(c => c.query(
+      `INSERT INTO invites (id, org_id, email, token, invited_by, expires_at)
+       VALUES ($1, $2, 'y@test.local', $3, $4, ${expiresSql})`,
+      [crypto.randomUUID(), orgId, token, orgId === ORG_ID ? ADMIN_ID : OTHER_USER_ID],
+    ).then(() => undefined));
+    const bothPreviews = async (token: string) => {
+      const viaGet = await app.fetch(new Request(`http://localhost/api/invites/preview/${encodeURIComponent(token)}`));
+      const viaPost = await app.fetch(new Request('http://localhost/api/invites/preview', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }),
+      }));
+      const getBody = await viaGet.json();
+      const postBody = await viaPost.json();
+      assert.equal(viaPost.status, viaGet.status);
+      assert.deepEqual(postBody, getBody);
+      return { status: viaPost.status, body: postBody as Record<string, unknown> };
+    };
+
+    // HS256 positive control: a live invite previews successfully.
+    const good = sign(baseClaims);
+    await store(good, ORG_ID, `now() + interval '1 hour'`);
+    const ok = await bothPreviews(good);
+    assert.equal(ok.status, 200);
+    assert.equal(ok.body.email, 'y@test.local');
+
+    // Wrong purpose.
+    const wrongPurpose = sign({ ...baseClaims, purpose: 'password-reset' });
+    await store(wrongPurpose, ORG_ID, `now() + interval '1 hour'`);
+    assert.deepEqual(await bothPreviews(wrongPurpose), { status: 400, body: { error: 'invalid', code: 'INVITE_INVALID' } });
+
+    // Expired invite row.
+    const expired = sign(baseClaims);
+    await store(expired, ORG_ID, `now() - interval '1 minute'`);
+    assert.deepEqual(await bothPreviews(expired), { status: 400, body: { error: 'expired', code: 'INVITE_EXPIRED' } });
+
+    // Invite stored in a different workspace from the one its token names.
+    const otherWorkspace = sign(baseClaims);
+    await store(otherWorkspace, OTHER_ORG_ID, `now() + interval '1 hour'`);
+    assert.deepEqual(await bothPreviews(otherWorkspace), { status: 400, body: { error: 'invalid', code: 'INVITE_INVALID' } });
+
+    // Revoked invite: created and then revoked through the admin routes.
+    const created = await authed('/api/members/invite', ADMIN_ID, {
+      method: 'POST', body: JSON.stringify({ email: REVOKED_EMAIL, role: 'member' }),
+    });
+    const createdBody = await created.json() as { invite_url: string };
+    assert.equal(created.status, 201, JSON.stringify(createdBody));
+    const revokedToken = tokenFromFragmentLink(createdBody.invite_url, '/invite');
+    const inviteId = await withClient(async (c) => (await c.query(`SELECT id FROM invites WHERE token = $1`, [revokedToken])).rows[0].id as string);
+    assert.equal((await authed(`/api/members/invites/${inviteId}`, ADMIN_ID, { method: 'DELETE' })).status, 200);
+    assert.deepEqual(await bothPreviews(revokedToken), { status: 400, body: { error: 'invalid', code: 'INVITE_INVALID' } });
   });
 
   test('admin recovery link carries its token only after #', async () => {

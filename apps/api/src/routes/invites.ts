@@ -29,7 +29,7 @@ function verifyInviteToken(token: string): InvitePayload {
   return jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }) as InvitePayload;
 }
 
-const previewSchema = z.object({ token: z.string().min(1) });
+const previewSchema = z.object({ token: z.string().min(1).max(8192) });
 
 // POST /api/invites/preview — public preview of an invite, token in the body.
 // Used by the accept page to render "Sara invited you to Acme". The token
@@ -43,9 +43,11 @@ inviteRoutes.post('/preview', async (c) => {
   return previewInvite(c, parsed.data.token);
 });
 
-// GET /api/invites/preview/:token — legacy preview for links issued before
-// the token moved into the link fragment. Kept until those links expire
-// (7 days); the request logger redacts this path.
+// GET /api/invites/preview/:token — legacy preview. No current page calls it:
+// both the new `/invite#token=` page and the old `/invite/<token>` page use
+// POST /preview. It serves only browser bundles cached from before that
+// change, and should be removed after the next deploy. The request logger
+// redacts this path.
 inviteRoutes.get('/preview/:token', async (c) => previewInvite(c, c.req.param('token')));
 
 async function previewInvite(c: Context, token: string) {
@@ -113,7 +115,7 @@ async function previewInvite(c: Context, token: string) {
 
 // POST /api/invites/accept — finalize an invite and log the user in
 const acceptSchema = z.object({
-  token: z.string().min(1),
+  token: z.string().min(1).max(8192),
   name: z.string().min(1).max(120).optional(),
   password: z.string().min(8),
 });
