@@ -1,4 +1,5 @@
 import { sql, type SQL } from 'drizzle-orm';
+import { notifications } from '@deft/db/schema';
 import { publicSpaceVisibleSql } from './space-visibility.js';
 
 // Watchers are subscriptions, not sufficient authority for new mention surfaces.
@@ -47,10 +48,37 @@ export function nativeDeliveryAccessSql(userId: string, deliveryId: SQL, orgId: 
   )`;
 }
 
-/** Legacy notifications retain their existing semantics. New ones fail closed. */
+/** The space is one `userId` can read today: they are in it, or it is public and they are not a guest. */
+function readableSpaceSql(userId: string, spaceId: SQL, orgId: SQL): SQL {
+  return sql`EXISTS (SELECT 1 FROM spaces ns WHERE ns.id = ${spaceId} AND ns.org_id = ${orgId}
+    AND (${publicSpaceVisibleSql(sql`ns.type`, sql`ns.org_id`, userId)}
+      OR EXISTS (SELECT 1 FROM space_members nsm WHERE nsm.space_id = ns.id AND nsm.user_id = ${userId})))`;
+}
+
+/**
+ * A notification with a mention delivery follows that delivery's source. Any
+ * other notification that names a chat space or message is shown only while
+ * the reader can still read it, the same rule the needs-you list applies
+ * (lib/attention.ts): the space must be readable, and a named message must
+ * exist, not be deleted and sit in a readable space. The space and message
+ * are read from `metadata.space_id` / `metadata.message_id`, else from the
+ * notification's link (`/chat?space=…&message=…`, or the old `/spaces/…`).
+ * A notification that names neither (tasks, reminders without a source,
+ * system notices) is unaffected.
+ */
 export function nativeNotificationAccessSql(
-  userId: string, metadata: SQL, orgId: SQL,
+  userId: string, metadata: SQL, orgId: SQL, link: SQL = sql`${notifications.link}`,
 ): SQL {
-  return sql`(${metadata}->>'native_mention_delivery_id' IS NULL
-    OR ${nativeDeliveryAccessSql(userId, sql`${metadata}->>'native_mention_delivery_id'`, orgId)})`;
+  const spaceId = sql`coalesce(${metadata}->>'space_id',
+    substring(${link} from '^/chat\\?(?:[^#]*&)?space=([^&#]+)'),
+    substring(${link} from '^/spaces/([^/?#]+)$'))`;
+  const messageId = sql`coalesce(${metadata}->>'message_id',
+    substring(${link} from '^/chat\\?(?:[^#]*&)?message=([^&#]+)'))`;
+  return sql`(CASE WHEN ${metadata}->>'native_mention_delivery_id' IS NOT NULL
+    THEN ${nativeDeliveryAccessSql(userId, sql`${metadata}->>'native_mention_delivery_id'`, orgId)}
+    ELSE (${spaceId} IS NULL OR ${readableSpaceSql(userId, spaceId, orgId)})
+      AND (${messageId} IS NULL OR EXISTS (
+        SELECT 1 FROM messages nlm WHERE nlm.id = ${messageId} AND nlm.org_id = ${orgId}
+          AND nlm.is_deleted = false AND ${readableSpaceSql(userId, sql`nlm.space_id`, orgId)}))
+    END)`;
 }

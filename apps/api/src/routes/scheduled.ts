@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { eq, and, inArray, isNull } from 'drizzle-orm';
+import { eq, and, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { files, scheduledMessages } from '@deft/db/schema';
+import { files, scheduledMessages, spaceMembers } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { requireSpaceMembership } from '../lib/space-membership.js';
 import { extractLegacyAttachmentIds, MAX_MESSAGE_ATTACHMENTS } from '../lib/message-attachments.js';
@@ -100,12 +100,19 @@ scheduledRoutes.post('/', async (c) => {
   return c.json(scheduled, 201);
 });
 
-// GET /api/scheduled-messages — list pending scheduled messages
+// GET /api/scheduled-messages — list pending scheduled messages. A message for
+// a space the caller is no longer in is not listed: it cannot be sent (the
+// send worker cancels it), and leaving a space cancels it outright.
 scheduledRoutes.get('/', async (c) => {
   const user = c.get('user');
   const pending = await db.select()
     .from(scheduledMessages)
-    .where(and(eq(scheduledMessages.org_id, user.org_id), eq(scheduledMessages.user_id, user.id), eq(scheduledMessages.status, 'pending')))
+    .where(and(
+      eq(scheduledMessages.org_id, user.org_id),
+      eq(scheduledMessages.user_id, user.id),
+      eq(scheduledMessages.status, 'pending'),
+      sql`EXISTS (SELECT 1 FROM ${spaceMembers} WHERE ${spaceMembers.space_id} = ${scheduledMessages.space_id} AND ${spaceMembers.user_id} = ${user.id})`,
+    ))
     .orderBy(scheduledMessages.scheduled_for);
   return c.json(pending);
 });

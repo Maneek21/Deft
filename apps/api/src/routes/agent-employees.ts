@@ -305,7 +305,8 @@ agentEmployeeRoutes.get('/:id/turns', async (c) => {
     // Any org member sees that a turn happened. Its content (input messages,
     // tool calls, reply, error) follows the action rule: owners/admins; for a
     // Defty turn, the requester only (the author of the triggering message:
-    // the one link to the request that the server itself records); for
+    // the one link to the request that the server itself records), while
+    // they can still read the space the request was made in; for
     // an employee turn, the employee source rule (current employee access to
     // the source and the reader's access to it). A turn whose requester or
     // source cannot be established keeps its content for owners/admins.

@@ -6,6 +6,7 @@ import { spaces, spaceMembers, users, messages, agentEmployees, orgMembers } fro
 import { evictActiveHuddleParticipants, getIO } from '../socket.js';
 import { canSelfJoinPublicSpaces, requireSpaceMembership } from '../lib/space-membership.js';
 import { DEFTY_EMAIL } from '../lib/ensure-defty-membership.js';
+import { cancelPendingScheduledMessagesForSpace } from '../lib/scheduled-message-cancel.js';
 
 export const spaceRoutes = new Hono();
 
@@ -20,6 +21,22 @@ const NOT_A_MEMBER = { error: 'Not a member of this space', code: 'FORBIDDEN' } 
  */
 async function canSeeSpaceForCreatorRoute(space: { id: string; created_by: string | null }, user: { id: string; org_id: string }) {
   return space.created_by === user.id || requireSpaceMembership(space.id, user.id, user.org_id);
+}
+
+/**
+ * Removes one person from a space and, in the same transaction, cancels the
+ * messages they had scheduled for it: posting needs membership, so those
+ * messages could never be sent and must not stay listed as pending. The
+ * scheduled rows are taken before the membership row, the order the send
+ * worker locks them in, so the two cannot deadlock.
+ */
+async function removeSpaceMember(orgId: string, spaceId: string, userId: string) {
+  return db.transaction(async (tx) => {
+    await cancelPendingScheduledMessagesForSpace(tx, { orgId, spaceId, userId });
+    return tx.delete(spaceMembers)
+      .where(and(eq(spaceMembers.space_id, spaceId), eq(spaceMembers.user_id, userId)))
+      .returning();
+  });
 }
 
 const VALID_SPACE_TYPES = ['public', 'private', 'dm', 'group_dm'] as const;
@@ -632,14 +649,7 @@ spaceRoutes.delete('/:id/members/me', async (c) => {
     const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
     if (!isMember) return c.json(NOT_A_MEMBER, 403);
 
-    const deleted = await db.delete(spaceMembers)
-      .where(
-        and(
-          eq(spaceMembers.space_id, spaceId),
-          eq(spaceMembers.user_id, user.id),
-        )
-      )
-      .returning();
+    const deleted = await removeSpaceMember(user.org_id, spaceId, user.id);
 
     if (deleted.length === 0) return c.json(NOT_A_MEMBER, 403);
 
@@ -677,14 +687,7 @@ spaceRoutes.delete('/:id/members/:userId', async (c) => {
       return c.json({ error: 'Forbidden', code: 'FORBIDDEN' }, 403);
     }
 
-    const deleted = await db.delete(spaceMembers)
-      .where(
-        and(
-          eq(spaceMembers.space_id, spaceId),
-          eq(spaceMembers.user_id, userId),
-        )
-      )
-      .returning();
+    const deleted = await removeSpaceMember(user.org_id, spaceId, userId);
 
     if (deleted.length === 0) {
       return c.json({ error: 'User is not a member of this space', code: 'NOT_FOUND' }, 404);
