@@ -238,6 +238,30 @@ function Pill({ children, tone, className = '' }: { children: React.ReactNode; t
   );
 }
 
+type SeatStatus = {
+  hosted: boolean;
+  seats_in_use: number;
+  seat_limit: number | null;
+  growth_frozen: boolean;
+  frozen_reason: string | null;
+};
+
+const FROZEN_REASON_TEXT: Record<string, string> = {
+  not_configured: 'seat settings are missing on this server',
+  not_fetched_since_start: 'the seat limit has not been confirmed since the server started',
+  no_statement: 'no seat limit has been received yet',
+  expired: 'the seat limit has expired and could not be renewed',
+  statement_invalid: 'the stored seat limit could not be verified',
+};
+
+function seatLine(status: SeatStatus): string {
+  if (status.growth_frozen) {
+    const reason = FROZEN_REASON_TEXT[status.frozen_reason ?? ''] ?? 'the seat limit could not be confirmed';
+    return `${status.seats_in_use} seats in use. Adding people is paused because ${reason}. Nobody already here is affected.`;
+  }
+  return `${status.seats_in_use} of ${status.seat_limit ?? 0} paid seats in use. Guests and agents do not use a seat.`;
+}
+
 export default function MembersPage() {
   const { user } = useAuth();
   const [members, setMembers] = useState<DirectoryMember[]>([]);
@@ -265,6 +289,8 @@ export default function MembersPage() {
   const [removingId, setRemovingId] = useState<string | null>(null);
   const [workingInviteId, setWorkingInviteId] = useState<string | null>(null);
   const [recoveringId, setRecoveringId] = useState<string | null>(null);
+  const [seatStatus, setSeatStatus] = useState<SeatStatus | null>(null);
+  const [roleError, setRoleError] = useState('');
 
   const isAdmin = user?.role === 'owner' || user?.role === 'admin';
 
@@ -282,6 +308,10 @@ export default function MembersPage() {
       setSelectedId(nextId);
     }
     setLoading(false);
+    if (isAdmin) {
+      const seats = await api.get('/api/members/seats');
+      setSeatStatus(seats.ok ? await seats.json() as SeatStatus : null);
+    }
   };
 
   const fetchDetail = async (id: string | null) => {
@@ -299,7 +329,7 @@ export default function MembersPage() {
     setDetailLoading(false);
   };
 
-  useEffect(() => { fetchDirectory(); }, []);
+  useEffect(() => { fetchDirectory(); }, [isAdmin]);
   useEffect(() => { fetchDetail(selectedId); }, [selectedId]);
 
   const filteredMembers = useMemo(() => {
@@ -359,10 +389,14 @@ export default function MembersPage() {
   };
 
   const handleRoleChange = async (memberId: string, newRole: string) => {
+    setRoleError('');
     const res = await api.patch(`/api/members/${memberId}`, { role: newRole });
     if (res.ok) {
       await fetchDirectory(memberId);
       await fetchDetail(memberId);
+    } else {
+      const data = await res.json().catch(() => ({}));
+      setRoleError(data.error || 'Failed to change role');
     }
     setRoleDropdown(null);
   };
@@ -510,6 +544,18 @@ export default function MembersPage() {
           <SummaryCard icon={Bot} label="Agents" value={summary.agents} />
           <SummaryCard icon={UserMinus} label="Inactive" value={summary.inactive} />
         </div>
+
+        {isAdmin && seatStatus?.hosted && (
+          <p className="text-[12px]" style={{ color: seatStatus.growth_frozen ? 'var(--error)' : 'var(--muted)' }}>
+            {seatLine(seatStatus)}
+          </p>
+        )}
+
+        {roleError && (
+          <div className="rounded px-3 py-2 text-[12px]" style={{ background: 'rgba(147,0,10,0.2)', color: 'var(--error)' }}>
+            {roleError}
+          </div>
+        )}
 
         {showInvite && (
           <form onSubmit={handleInvite} className="rounded-lg p-4" style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}>
