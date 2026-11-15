@@ -120,6 +120,7 @@ import { moduleTaskLinkRoutes } from './routes/module-task-links.js';
 import { authMiddleware, authenticateWebRequest, releaseWebRequest } from './middleware/auth.js';
 import { installRequestGate, isPublicApiRequest } from './middleware/request-gate.js';
 import { PAUSED_ERROR, isPausedStart, isRefusedWhilePaused } from './lib/paused-start.js';
+import { getSchemaApplied } from './lib/schema-applied.js';
 import {
   authLimiter,
   appRuntimeLimiter,
@@ -355,11 +356,15 @@ if (APPS_ENABLED) {
   app.route('/api/app-runs', appRunRoutes);
 }
 
-app.get('/health', (c) => c.json({
+// schema_head is what this release expects; schema_applied is the newest row
+// of the upgrade ledger (cached, null when the ledger is missing or the
+// database cannot be read). /health/ready reports an unreachable database.
+app.get('/health', async (c) => c.json({
   status: 'ok',
   release: DEFT_RELEASE_VERSION,
   commit: DEFT_BUILD_COMMIT,
   schema_head: DEFT_SCHEMA_HEAD,
+  schema_applied: await getSchemaApplied(),
   agent_channel_protocol: AGENT_CHANNEL_PROTOCOL_VERSION,
   paused: isPausedStart(),
 }));
