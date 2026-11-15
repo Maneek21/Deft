@@ -308,8 +308,8 @@ const browseQuerySchema = z.object({
 
 // GET /api/spaces/browse — public spaces of the caller's org (must be before /:id).
 // Returns only directory fields. A member who is not a guest may also read a
-// public space's details, messages and threads before joining; its member
-// list, pins and every write stay membership-gated.
+// public space before joining (details, member list, messages, threads, edit
+// history, pins, clips, attachments); every write stays membership-gated.
 spaceRoutes.get('/browse', async (c) => {
   try {
     const user = c.get('user');
@@ -484,11 +484,12 @@ spaceRoutes.get('/:id/members', async (c) => {
     const user = c.get('user');
     const spaceId = c.req.param('id');
 
-    // requireSpaceMembership binds the space to the active org, so a missing
-    // space, a space in another org and a same-org space the caller is not in
-    // all get one identical denial (W1-g).
-    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
-    if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+    // Reading: a member of the space, or a member of the workspace (never a
+    // guest) reading a public space before joining it. The check binds the
+    // space to the active org, so a missing space, a space in another org and
+    // a same-org space the caller may not read all get one identical denial (W1-g).
+    const canRead = await canReadSpace(spaceId, user.id, user.org_id);
+    if (!canRead) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
     const members = await db.select({
       id: users.id,

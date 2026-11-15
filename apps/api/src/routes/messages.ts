@@ -1033,7 +1033,7 @@ messageRoutes.get('/:id/history', async (c) => {
     const user = c.get('user');
     const messageId = c.req.param('id');
 
-    const msg = await getVisibleMessage(messageId, user.org_id, user.id);
+    const msg = await getVisibleMessage(messageId, user.org_id, user.id, 'read');
     if (!msg) {
       return c.json({ error: 'Message not found', code: 'NOT_FOUND' }, 404);
     }

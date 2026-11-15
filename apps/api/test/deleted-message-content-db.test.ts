@@ -147,11 +147,8 @@ test('before deletion every reader gets the text on every surface', async (t) =>
     assert.ok(seen.list_around.includes('CANARY-TOP') && seen.list_around.includes('CANARY-FILE'), `${who}: list around`);
     assert.deepEqual(canaries(seen.thread), ['CANARY-KEPT-PARENT', 'CANARY-REPLY'], `${who}: thread`);
     assert.ok(seen.thread_of_deleted.startsWith('200 ') && seen.thread_of_deleted.includes('CANARY-TOP'), `${who}: thread of the top message`);
-    // Edit history and pins are read by people in the space.
-    if (actor !== ids.reader) {
-      assert.deepEqual(canaries(seen.history), ['CANARY-VERSION'], `${who}: history`);
-      assert.deepEqual(canaries(seen.pins), ['CANARY-PIN'], `${who}: pins`);
-    }
+    assert.deepEqual(canaries(seen.history), ['CANARY-VERSION'], `${who}: history`);
+    assert.deepEqual(canaries(seen.pins), ['CANARY-PIN'], `${who}: pins`);
     for (const surface of ['search', 'tool_messages_recent', 'tool_messages_search', 'tool_search']) {
       for (const expected of ['CANARY-TOP', 'CANARY-PIN', 'CANARY-REPLY']) {
         assert.ok(seen[surface]!.includes(expected), `${who}: ${surface} is missing ${expected}: ${seen[surface]}`);
@@ -187,10 +184,8 @@ test('after deletion no reader gets the text back, on any surface', async (t) =>
     assert.ok(seen.list.includes('CANARY-KEPT-LIVE') && seen.thread.includes('CANARY-KEPT-PARENT'), who);
     // A deleted message can no longer be opened by id.
     assert.ok(seen.thread_of_deleted.startsWith('404 '), `${who}: ${seen.thread_of_deleted}`);
-    if (actor !== ids.reader) {
-      assert.ok(seen.history.startsWith('404 '), `${who}: ${seen.history}`);
-      assert.equal(seen.pins.trim(), '200 []', who);
-    }
+    assert.ok(seen.history.startsWith('404 '), `${who}: ${seen.history}`);
+    assert.equal(seen.pins.trim(), '200 []', who);
 
     // The list and the thread keep a placeholder, and only a placeholder.
     const list = await call(actor, 'GET', `/api/messages/${S.pub}`);

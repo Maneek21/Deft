@@ -1,6 +1,6 @@
 // Clip routes — upload, process, retrieve, play async voice/video clips
 import { Hono } from 'hono';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { clips, messages, projects, spaceMembers, spaces, tasks, users } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
@@ -10,6 +10,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
+import { unjoinedPublicSpaceReadableSql } from '../lib/space-membership.js';
 
 export const clipRoutes = new Hono();
 
@@ -53,18 +54,30 @@ async function canAccessTask(taskId: string, orgId: string, userId: string) {
   return Boolean(row);
 }
 
-async function canAccessSpace(spaceId: string, orgId: string, userId: string) {
+/**
+ * `member`: the caller is in the space (every write, and the default).
+ * `read`: the caller is in the space, or is a member of the workspace (never
+ * a guest) reading a public space before joining it.
+ */
+type SpaceAccess = 'member' | 'read';
+
+/** For a query or subquery that selects from `spaces`: the space is not archived and the caller has `access` to it. */
+function spaceAccessSql(userId: string, access: SpaceAccess): SQL {
+  const member = sql`EXISTS (SELECT 1 FROM ${spaceMembers}
+    WHERE ${spaceMembers.space_id} = ${spaces.id} AND ${spaceMembers.user_id} = ${userId})`;
+  return access === 'read'
+    ? sql`(${spaces.is_archived} = false AND (${member} OR ${unjoinedPublicSpaceReadableSql(userId)}))`
+    : sql`(${spaces.is_archived} = false AND ${member})`;
+}
+
+async function canAccessSpace(spaceId: string, orgId: string, userId: string, access: SpaceAccess = 'member') {
   const [row] = await db
     .select({ id: spaces.id })
     .from(spaces)
-    .innerJoin(spaceMembers, and(
-      eq(spaceMembers.space_id, spaces.id),
-      eq(spaceMembers.user_id, userId),
-    ))
     .where(and(
       eq(spaces.id, spaceId),
       eq(spaces.org_id, orgId),
-      eq(spaces.is_archived, false),
+      spaceAccessSql(userId, access),
     ))
     .limit(1);
   return Boolean(row);
@@ -83,15 +96,46 @@ async function projectExists(projectId: string, orgId: string) {
   return Boolean(row);
 }
 
-export async function canAccessClip(clip: typeof clips.$inferSelect, orgId: string, userId: string) {
-  if (clip.org_id !== orgId || clip.is_deleted) return false;
-  if (clip.message_id) return Boolean(await canAccessMessage(clip.message_id, orgId, userId));
-  if (clip.space_id) return canAccessSpace(clip.space_id, orgId, userId);
-  if (clip.context_type === 'space') return canAccessSpace(clip.context_id, orgId, userId);
-  if (clip.context_type === 'thread') return Boolean(await canAccessMessage(clip.context_id, orgId, userId));
-  if (clip.context_type === 'task') return canAccessTask(clip.context_id, orgId, userId);
-  if (clip.context_type === 'project') return projectExists(clip.context_id, orgId);
-  return clip.created_by === userId;
+/**
+ * The clip access rule as one condition, for a query that selects from
+ * `clips`. A clip follows the first of these it has: its chat message (which
+ * must not be deleted), its space, then its context (space, thread, task or
+ * project); a clip with none of them is its creator's. Lists and counts use
+ * this condition directly, so their work does not grow with the number of
+ * clips or spaces.
+ */
+export function accessibleClipSql(orgId: string, userId: string, access: SpaceAccess = 'member'): SQL {
+  const message = (messageId: SQLWrapper) => sql`EXISTS (SELECT 1 FROM ${messages}
+    INNER JOIN ${spaces} ON ${spaces.id} = ${messages.space_id} AND ${spaces.org_id} = ${orgId}
+    WHERE ${messages.id} = ${messageId} AND ${messages.org_id} = ${orgId} AND ${messages.is_deleted} = false
+      AND ${spaceAccessSql(userId, access)})`;
+  const space = (spaceId: SQLWrapper) => sql`EXISTS (SELECT 1 FROM ${spaces}
+    WHERE ${spaces.id} = ${spaceId} AND ${spaces.org_id} = ${orgId} AND ${spaceAccessSql(userId, access)})`;
+  const task = sql`EXISTS (SELECT 1 FROM ${tasks}
+    INNER JOIN ${projects} ON ${projects.id} = ${tasks.project_id}
+    WHERE ${tasks.id} = ${clips.context_id} AND ${tasks.org_id} = ${orgId} AND ${tasks.is_deleted} = false
+      AND ${projects.org_id} = ${orgId} AND ${projects.is_deleted} = false AND ${projects.is_archived} = false
+      AND ${visibleTaskCondition(userId)!})`;
+  const project = sql`EXISTS (SELECT 1 FROM ${projects}
+    WHERE ${projects.id} = ${clips.context_id} AND ${projects.org_id} = ${orgId}
+      AND ${projects.is_deleted} = false AND ${projects.is_archived} = false)`;
+  return sql`(${clips.org_id} = ${orgId} AND ${clips.is_deleted} = false AND CASE
+    WHEN ${clips.message_id} IS NOT NULL THEN ${message(clips.message_id)}
+    WHEN ${clips.space_id} IS NOT NULL THEN ${space(clips.space_id)}
+    WHEN ${clips.context_type} = 'space' THEN ${space(clips.context_id)}
+    WHEN ${clips.context_type} = 'thread' THEN ${message(clips.context_id)}
+    WHEN ${clips.context_type} = 'task' THEN ${task}
+    WHEN ${clips.context_type} = 'project' THEN ${project}
+    ELSE ${clips.created_by} = ${userId} END)`;
+}
+
+/** True when the caller may use this clip (see `accessibleClipSql`). Reading passes `'read'`; deleting keeps the default. */
+export async function canAccessClip(clip: { id: string }, orgId: string, userId: string, access: SpaceAccess = 'member') {
+  const [row] = await db.select({ id: clips.id })
+    .from(clips)
+    .where(and(eq(clips.id, clip.id), accessibleClipSql(orgId, userId, access)))
+    .limit(1);
+  return Boolean(row);
 }
 
 async function serializeClipForViewer(
@@ -267,7 +311,7 @@ clipRoutes.get('/:id', async (c) => {
       .where(and(eq(clips.id, clipId), eq(clips.org_id, user.org_id)))
       .limit(1);
 
-    if (!clip || !(await canAccessClip(clip, user.org_id, user.id))) {
+    if (!clip || !(await canAccessClip(clip, user.org_id, user.id, 'read'))) {
       return c.json({ error: 'Clip not found', code: 'NOT_FOUND' }, 404);
     }
 
@@ -289,7 +333,7 @@ clipRoutes.get('/:id/audio', async (c) => {
       .where(and(eq(clips.id, clipId), eq(clips.org_id, user.org_id)))
       .limit(1);
 
-    if (!clip || !(await canAccessClip(clip, user.org_id, user.id))) {
+    if (!clip || !(await canAccessClip(clip, user.org_id, user.id, 'read'))) {
       return c.json({ error: 'Clip not found', code: 'NOT_FOUND' }, 404);
     }
 
@@ -321,27 +365,26 @@ clipRoutes.get('/space/:spaceId', async (c) => {
     const user = c.get('user');
     const spaceId = c.req.param('spaceId');
 
-    const isMember = await canAccessSpace(spaceId, user.org_id, user.id);
-    if (!isMember) {
+    // Reading: a member of the space, or a member of the workspace (never a
+    // guest) reading a public space before joining it.
+    const canRead = await canAccessSpace(spaceId, user.org_id, user.id, 'read');
+    if (!canRead) {
       return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
     }
 
+    // Being able to read the space is not enough: each clip must also pass
+    // the check its own routes use (for example, its message was not deleted).
     const result = await db.select()
       .from(clips)
       .where(and(
-        eq(clips.org_id, user.org_id),
         eq(clips.space_id, spaceId),
-        eq(clips.is_deleted, false),
+        accessibleClipSql(user.org_id, user.id, 'read'),
       ))
       .orderBy(desc(clips.created_at))
       .limit(50);
 
-    // Belonging to the space is not enough: each clip must also pass the
-    // check its own routes use (for example, its message was not deleted).
-    const allowed = await Promise.all(result.map((clip) => canAccessClip(clip, user.org_id, user.id)));
     return c.json(await Promise.all(
-      result.filter((_, index) => allowed[index])
-        .map((clip) => serializeClipForViewer(clip, user.org_id, user.id)),
+      result.map((clip) => serializeClipForViewer(clip, user.org_id, user.id)),
     ));
   } catch (err) {
     console.error('[clips] List failed:', err);

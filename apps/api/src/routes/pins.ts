@@ -3,7 +3,7 @@ import { eq, and, desc } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { pinnedMessages, messages, users } from '@deft/db/schema';
 import { getIO } from '../socket.js';
-import { requireSpaceMembership } from '../lib/space-membership.js';
+import { canReadSpace, requireSpaceMembership } from '../lib/space-membership.js';
 
 export const pinRoutes = new Hono();
 
@@ -77,8 +77,10 @@ pinRoutes.get('/:spaceId/pins', async (c) => {
   const user = c.get('user');
   const spaceId = c.req.param('spaceId');
 
-  const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
-  if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+  // Reading: a member of the space, or a member of the workspace (never a
+  // guest) reading a public space before joining it. Pinning stays for members.
+  const canRead = await canReadSpace(spaceId, user.id, user.org_id);
+  if (!canRead) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
   const pins = await db.select({
     id: pinnedMessages.id,
