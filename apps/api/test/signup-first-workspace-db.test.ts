@@ -4,7 +4,7 @@
  *
  *   - Hosted mode (DEFT_HOSTED=true): the one-time setup token is required,
  *     and every refusal looks the same.
- *   - Self-hosted mode: no token, as before.
+ *   - Self-hosted mode (DEFT_HOSTED unset or "false"): no token, as before.
  *   - Both modes: the "no workspace yet" check and the creation of the first
  *     user, org and owner membership are one locked transaction, so signups
  *     arriving together produce exactly one workspace.
@@ -136,13 +136,12 @@ test('first-workspace signup: setup token in hosted mode, one workspace under co
     assert.equal(await humanCount(), 1);
   });
 
-  await t.test('self-hosted: the hosted settings are ignored unless DEFT_HOSTED is exactly "true"', async () => {
-    for (const hosted of [undefined, 'false', '1', 'TRUE']) {
-      await freshInstall({
-        ...(hosted === undefined ? {} : { DEFT_HOSTED: hosted }),
-        DEFT_SETUP_TOKEN_SHA256: HASH,
-        DEFT_SETUP_TOKEN_EXPIRES_AT: oneMinuteAgo(),
-      });
+  // A mistyped switch ("1", "TRUE", …) or a setup-token setting without
+  // hosted mode never gets this far: the API refuses to start
+  // (hosted-settings.test.ts). So self-hosted here means unset or "false".
+  await t.test('self-hosted: DEFT_HOSTED=false needs no token, and a token in the body is ignored', async () => {
+    for (const hosted of [undefined, 'false']) {
+      await freshInstall(hosted === undefined ? {} : { DEFT_HOSTED: hosted });
       const res = await signup(person({ setup_token: 'ignored when not hosted' }));
       assert.equal(res.status, 201, `DEFT_HOSTED=${hosted}: ${res.text}`);
       assert.equal(await orgCount(), 1);

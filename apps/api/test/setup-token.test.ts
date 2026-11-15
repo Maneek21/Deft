@@ -22,6 +22,8 @@ const EXPIRES_AT = '2026-12-04T10:00:00Z';
 const BEFORE = Date.parse('2026-12-04T09:59:59Z');
 const AT = Date.parse(EXPIRES_AT);
 
+// Every value here other than "true", "false" and unset also stops the API
+// at startup; see hosted-settings.test.ts.
 test('hosted mode is on only for the exact value "true"', () => {
   const saved = process.env.DEFT_HOSTED;
   try {
@@ -70,13 +72,14 @@ test('settings: a malformed hash or expiry is an error that never echoes the val
   assert.throws(() => readSetupTokenSettings(HASH, ''), /DEFT_SETUP_TOKEN_EXPIRES_AT is required/);
 });
 
-test('startup check applies in hosted mode only', () => {
+test('the value check applies in hosted mode', () => {
   assert.throws(() => validateSetupTokenEnvironment(true, 'not-a-hash', EXPIRES_AT), /DEFT_SETUP_TOKEN_SHA256/);
   assert.throws(() => validateSetupTokenEnvironment(true, HASH, 'soon'), /DEFT_SETUP_TOKEN_EXPIRES_AT/);
   assert.doesNotThrow(() => validateSetupTokenEnvironment(true, HASH, EXPIRES_AT));
   // A missing hash is not a startup error: signup refuses instead.
   assert.doesNotThrow(() => validateSetupTokenEnvironment(true, undefined, undefined));
-  // Self-hosted installs never read the settings.
+  // With hosted mode off this check stays out of the way: the settings being
+  // present at all is refused first, by validateHostedModeEnvironment.
   assert.doesNotThrow(() => validateSetupTokenEnvironment(false, 'not-a-hash', 'soon'));
 });
 
@@ -99,16 +102,18 @@ test('token check: only the matching token before the expiry is accepted', () =>
   assert.equal(isSetupTokenValid(TOKEN, HASH, 'soon', BEFORE), false, 'malformed expiry');
 });
 
+const GUARDED = ['DEFT_HOSTED', 'DEFT_SETUP_TOKEN_SHA256', 'DEFT_SETUP_TOKEN_EXPIRES_AT'];
 function start(overrides: Record<string, string>) {
   const source = new URL('../src/lib/env.ts', import.meta.url).href;
   const script = `await import(${JSON.stringify(source)}); console.log('started');`;
+  // The three settings are left out unless a case sets them: an empty value
+  // is not the same as unset (hosted-settings.test.ts).
+  const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) => !GUARDED.includes(name)));
   return spawnSync(process.execPath, ['--import', import.meta.resolve('tsx'), '--input-type=module', '--eval', script], {
     encoding: 'utf8', timeout: 20_000, windowsHide: true,
-    env: { ...process.env, NODE_ENV: 'test', DOTENV_CONFIG_QUIET: 'true',
+    env: { ...inherited, NODE_ENV: 'test', DOTENV_CONFIG_QUIET: 'true',
       DATABASE_URL: 'postgres://fixture@127.0.0.1:1/never_connected',
-      // Explicit empty values keep a developer .env from filling a case in.
-      DEFT_APP_RUNS_ENABLED: 'false', DEFT_HOSTED: '', DEFT_SETUP_TOKEN_SHA256: '', DEFT_SETUP_TOKEN_EXPIRES_AT: '',
-      ...overrides },
+      DEFT_APP_RUNS_ENABLED: 'false', ...overrides },
   });
 }
 
@@ -128,12 +133,10 @@ test('env import: hosted mode refuses to start with a malformed hash or expiry',
   }
 });
 
-test('env import: hosted mode starts with valid or absent settings; self-hosted ignores them', () => {
+test('env import: hosted mode starts with valid or absent settings', () => {
   for (const [label, overrides] of [
     ['hosted, valid pair', { DEFT_HOSTED: 'true', DEFT_SETUP_TOKEN_SHA256: HASH, DEFT_SETUP_TOKEN_EXPIRES_AT: EXPIRES_AT }],
     ['hosted, nothing set', { DEFT_HOSTED: 'true' }],
-    ['self-hosted, malformed pair', { DEFT_SETUP_TOKEN_SHA256: 'zz-not-a-hash-zz', DEFT_SETUP_TOKEN_EXPIRES_AT: 'zz-not-a-time-zz' }],
-    ['DEFT_HOSTED=TRUE is not hosted', { DEFT_HOSTED: 'TRUE', DEFT_SETUP_TOKEN_SHA256: 'zz-not-a-hash-zz' }],
   ] as const) {
     const child = start(overrides);
     assert.equal(child.status, 0, `${label}: ${child.stderr}`);

@@ -84,6 +84,12 @@ authRoutes.post('/signup', async (c) => {
   // workspace, so it must carry the one-time setup token. This fails closed:
   // no configured hash, no token, a wrong token and an expired token all get
   // the same refusal. See apps/api/src/lib/setup-token.ts.
+  //
+  // The token is never recorded as used. A second signup with it is stopped
+  // only because a workspace then exists (the checks below), which holds
+  // because nothing deletes an org. Whoever adds org deletion must also
+  // record the token as used, or it could claim the emptied install again
+  // until it expires.
   if (isHostedMode()) {
     const presented = setupTokenSchema.safeParse(body);
     const valid = isSetupTokenValid(

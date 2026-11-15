@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { validateAppRunKeyringEnvironment } from './app-run-keyrings.js';
 import { isHostedMode } from './hosted-mode.js';
+import { validateHostedModeEnvironment } from './hosted-settings.js';
 import { validateSetupTokenEnvironment } from './setup-token.js';
 
 // Resolve .env from the repo root via the source file's location, NOT
@@ -151,9 +152,15 @@ export const env = {
   PUSH_MESSAGE_PREVIEWS_ENABLED: process.env.PUSH_MESSAGE_PREVIEWS_ENABLED === 'true',
 };
 
+// The hosted-mode switch must be spelled exactly, and a hosted-only setting
+// must not be present with hosted mode off. Either mistake would let a hosted
+// cell start as a self-hosted install that its first visitor could claim, so
+// both stop the API at startup. See lib/hosted-settings.ts.
+validateHostedModeEnvironment(isHostedMode());
+
 // Hosted mode: a malformed setup-token hash or expiry stops the API at
 // startup. A missing hash is not a startup error — signup refuses instead
-// (routes/auth.ts). Self-hosted installs never read either setting.
+// (routes/auth.ts).
 validateSetupTokenEnvironment(
   isHostedMode(),
   process.env.DEFT_SETUP_TOKEN_SHA256,

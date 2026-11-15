@@ -9,8 +9,9 @@
  *   DEFT_SETUP_TOKEN_EXPIRES_AT  ISO 8601 time with a zone, e.g. 2026-12-04T10:00:00Z
  *
  * The first signup on a hosted cell must present the token. Anything short of
- * a well-formed, unexpired, matching token is refused. Self-hosted installs
- * never read these settings.
+ * a well-formed, unexpired, matching token is refused. Both settings are
+ * hosted-only: the API refuses to start if either is present with hosted mode
+ * off (lib/hosted-settings.ts), so a self-hosted install never has them.
  */
 import { createHash, timingSafeEqual } from 'node:crypto';
 
@@ -56,7 +57,11 @@ export function readSetupTokenSettings(
   return { hash: Buffer.from(hash, 'hex'), expiresAtMs: Date.parse(expiresAt) };
 }
 
-/** Startup check, called from env.ts. Self-hosted installs skip it entirely. */
+/**
+ * Startup check of the two values, called from env.ts. It applies in hosted
+ * mode; with hosted mode off the settings must not be present at all, which
+ * validateHostedModeEnvironment (lib/hosted-settings.ts) has already checked.
+ */
 export function validateSetupTokenEnvironment(
   hostedMode: boolean,
   hash: string | undefined,
