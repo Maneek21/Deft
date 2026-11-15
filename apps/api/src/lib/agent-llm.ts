@@ -21,6 +21,7 @@
  */
 import Anthropic from '@anthropic-ai/sdk';
 import type { ResolvedReasonProvider } from './org-ai-config.js';
+import { anthropicClientAddress, requireAiProviderAddress } from './ai-provider-address.js';
 
 export type AgentMessageResult = {
   content: Anthropic.ContentBlock[];
@@ -78,7 +79,11 @@ async function agentFetch(p: CreateAgentMessageParams, input: RequestInfo | URL,
   } finally { reader.releaseLock(); }
 }
 
-export async function createAgentMessage(p: CreateAgentMessageParams): Promise<AgentMessageResult> {
+export async function createAgentMessage(params: CreateAgentMessageParams): Promise<AgentMessageResult> {
+  // Hosted mode: refuses Ollama and custom addresses, pins standard ones.
+  // Self-hosted: the resolved baseUrl is returned unchanged.
+  const baseUrl = requireAiProviderAddress(params.resolved.provider, params.resolved.baseUrl);
+  const p = baseUrl === params.resolved.baseUrl ? params : { ...params, resolved: { ...params.resolved, baseUrl } };
   switch (p.resolved.provider) {
     case 'anthropic':
       return callAnthropicAgent(p);
@@ -112,7 +117,7 @@ async function callAnthropicAgent(p: CreateAgentMessageParams): Promise<AgentMes
   }
   const anthropic = new Anthropic({ apiKey: p.resolved.apiKey, timeout: 60_000,
     maxRetries: p.privateResponseBytes === undefined ? 1 : 0,
-    ...(p.privateResponseBytes === undefined ? {} : { baseURL: p.resolved.baseUrl }),
+    ...(p.privateResponseBytes === undefined ? anthropicClientAddress() : { baseURL: p.resolved.baseUrl }),
     ...(p.privateResponseBytes === undefined ? {} : { logLevel: 'off' as const, authToken: null }),
     ...(p.privateResponseBytes === undefined ? {} : { fetch: (input, init) => agentFetch(p, input, init) }),
   });

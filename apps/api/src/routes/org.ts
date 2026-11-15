@@ -17,6 +17,7 @@ import {
 import { getEmbedConfigMasked, setEmbedConfig } from '../lib/embed.js';
 import { orgs } from '@deft/db/schema';
 import { env } from '../lib/env.js';
+import { aiProviderAddress, HOSTED_AI_ADDRESS_REFUSED } from '../lib/ai-provider-address.js';
 
 export const orgRoutes = new Hono();
 
@@ -96,6 +97,27 @@ const updateSchema = z.object({
     .optional(),
 });
 
+/**
+ * Hosted mode refuses Ollama and custom AI addresses at save time (the same
+ * rule refuses them again where the provider is resolved for use). Returns
+ * the reason for the first refused address, or null. Always null self-hosted.
+ */
+function refusedAiAddress(data: z.infer<typeof updateSchema>): string | null {
+  const decisions: ReturnType<typeof aiProviderAddress>[] = [];
+  if (typeof data.ollama_url === 'string' && data.ollama_url.trim()) {
+    decisions.push(aiProviderAddress('ollama', data.ollama_url));
+  }
+  for (const t of TASKS) {
+    const route = data.ai_models?.[t];
+    if (route) decisions.push(aiProviderAddress(route.provider, route.baseUrl));
+  }
+  if (typeof data.embed?.base_url === 'string' && data.embed.base_url.trim()) {
+    decisions.push(aiProviderAddress('openai', data.embed.base_url));
+  }
+  for (const decision of decisions) if (!decision.allowed) return decision.reason;
+  return null;
+}
+
 // PUT /api/org/ai-config — admin-only partial update
 orgRoutes.put('/ai-config', async (c) => {
   const guard = await requireAdmin(c);
@@ -107,6 +129,9 @@ orgRoutes.put('/ai-config', async (c) => {
   if (!parsed.success) {
     return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR', detail: parsed.error.message }, 400);
   }
+  // Checked before anything is written, so a refused request changes nothing.
+  const refused = refusedAiAddress(parsed.data);
+  if (refused) return c.json({ error: refused, code: HOSTED_AI_ADDRESS_REFUSED }, 400);
 
   // Apply api_keys updates. Empty string = clear that provider.
   if (parsed.data.api_keys) {

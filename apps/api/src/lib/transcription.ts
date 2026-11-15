@@ -5,6 +5,7 @@ import { eq } from 'drizzle-orm';
 import { db } from './db.js';
 import { orgs } from '@deft/db/schema';
 import { env } from './env.js';
+import { environmentAiAddress } from './ai-provider-address.js';
 import { readFile } from 'node:fs/promises';
 
 export type TranscriptSegment = {
@@ -63,7 +64,7 @@ async function transcribeLocal(audioPath: string): Promise<TranscriptionResult> 
 const OPENAI_TRANSCRIPTION_BASE_URL = 'https://api.openai.com/v1';
 
 async function transcribeOpenAI(audioPath: string): Promise<TranscriptionResult> {
-  const baseUrl = (env.TRANSCRIPTION_OPENAI_BASE_URL || OPENAI_TRANSCRIPTION_BASE_URL).replace(/\/+$/, '');
+  const baseUrl = (environmentAiAddress(env.TRANSCRIPTION_OPENAI_BASE_URL) || OPENAI_TRANSCRIPTION_BASE_URL).replace(/\/+$/, '');
   const model = env.TRANSCRIPTION_OPENAI_MODEL || 'whisper-1';
   const apiKey = env.TRANSCRIPTION_OPENAI_API_KEY || env.OPENAI_API_KEY;
   // OpenAI itself always needs a key; a self-hosted compatible endpoint may not.

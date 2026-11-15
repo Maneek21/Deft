@@ -2,6 +2,7 @@ import {
   resolveUsableReasonProvider,
   type ResolvedReasonProvider,
 } from './org-ai-config.js';
+import { requireAiProviderAddress } from './ai-provider-address.js';
 
 export const MAX_VISION_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const SUPPORTED_IMAGE_TYPES = new Set(['image/gif', 'image/jpeg', 'image/png', 'image/webp']);
@@ -46,6 +47,8 @@ export async function answerImageAttachmentQuestion(params: {
     .slice(0, 1_000);
   const provider = params.provider ?? await resolveUsableReasonProvider(params.orgId);
   if (!provider.ready) throw new Error(provider.reason || 'vision_provider_unavailable');
+  // Hosted mode: refuses Ollama and custom addresses, pins standard ones.
+  const providerBaseUrl = requireAiProviderAddress(provider.provider, provider.baseUrl);
   const fetchImpl = params.fetchImpl ?? fetch;
   const base64 = Buffer.from(params.bytes).toString('base64');
   const dataUrl = `data:${mimeType};base64,${base64}`;
@@ -74,8 +77,8 @@ export async function answerImageAttachmentQuestion(params: {
       signal: AbortSignal.timeout(60_000),
     });
   } else if (provider.provider === 'ollama') {
-    if (!provider.baseUrl) throw new Error('vision_provider_unavailable');
-    response = await fetchImpl(`${provider.baseUrl.replace(/\/$/, '')}/api/chat`, {
+    if (!providerBaseUrl) throw new Error('vision_provider_unavailable');
+    response = await fetchImpl(`${providerBaseUrl.replace(/\/$/, '')}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -86,8 +89,8 @@ export async function answerImageAttachmentQuestion(params: {
       signal: AbortSignal.timeout(60_000),
     });
   } else {
-    if (!provider.baseUrl) throw new Error('vision_provider_unavailable');
-    const baseUrl = provider.baseUrl.replace(/\/$/, '');
+    if (!providerBaseUrl) throw new Error('vision_provider_unavailable');
+    const baseUrl = providerBaseUrl.replace(/\/$/, '');
     const isResponsesModel = provider.provider === 'openai' && /^(gpt-5|o1|o3|o4)/i.test(provider.model);
     response = await fetchImpl(`${baseUrl}/${isResponsesModel ? 'responses' : 'chat/completions'}`, {
       method: 'POST',
