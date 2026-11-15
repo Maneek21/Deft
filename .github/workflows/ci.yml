@@ -167,6 +167,7 @@ jobs:
           src/lib/apps.test.ts
           src/lib/api-retry.test.ts
           src/lib/api-auth.test.ts
+          src/lib/setup-link.test.ts
           src/lib/editor-attribute-security.test.ts
           src/lib/chat-links.test.ts
           src/lib/agent-citations.test.ts

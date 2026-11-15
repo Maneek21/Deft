@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth-context';
+import { takeSetupTokenFromAddress } from '@/lib/setup-link';
 import Link from 'next/link';
 import { Eye, EyeOff } from 'lucide-react';
 import { Logo } from '@/components/brand/logo';
@@ -17,6 +18,16 @@ export default function SignupPage() {
   const [loading, setLoading] = useState(false);
 
   const [passwordError, setPasswordError] = useState('');
+
+  // Hosted workspaces: the setup link is /signup#setup=<token>. The token is
+  // read from the part after # (never the query string), taken out of the
+  // address bar, and kept in memory only until it is sent in the signup body.
+  const [setupToken, setSetupToken] = useState('');
+
+  useEffect(() => {
+    const token = takeSetupTokenFromAddress(window.location, window.history);
+    if (token) setSetupToken(token);
+  }, []);
 
   // Pre-check: does a workspace already exist?
   const [workspaceCheck, setWorkspaceCheck] = useState<'loading' | 'exists' | 'free'>('loading');
@@ -47,7 +58,7 @@ export default function SignupPage() {
     }
     setLoading(true);
     try {
-      await signup(name, email, password, orgName);
+      await signup(name, email, password, orgName, setupToken || undefined);
     } catch (err: any) {
       setError(err.message);
     } finally {
