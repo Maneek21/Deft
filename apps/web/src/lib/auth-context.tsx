@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { api } from './api';
+import { exchangeTwoStepChallenge, readTwoStepPending, storeEnrolToken, type TwoStepPending } from './two-step';
 import { setUserTimezone } from './time';
 import { usePathname, useRouter } from 'next/navigation';
 import { disconnectSocket } from './socket';
@@ -58,7 +59,10 @@ type AuthContextType = {
   org: Org | null;
   loading: boolean;
   sessionCacheScope: string | null;
-  login: (email: string, password: string) => Promise<void>;
+  /** Resolves with a challenge when the account still needs its code. */
+  login: (email: string, password: string) => Promise<TwoStepPending | void>;
+  /** Second call of a sign-in: the challenge plus a code or a recovery code. */
+  verifyTwoStep: (challengeToken: string, proof: { code: string } | { recovery_code: string }) => Promise<void>;
   signup: (name: string, email: string, password: string, orgName: string, setupToken?: string) => Promise<void>;
   logout: (options?: LogoutOptions) => Promise<void>;
   replaceUser: (nextUser: User) => void;
@@ -139,6 +143,7 @@ export async function revokeWebSessionBestEffort(
 const AuthContext = createContext<AuthContextType | null>(null);
 const AUTH_PAGE_PATHS = new Set([
   '/login',
+  '/two-step-setup',
   '/signup',
   '/forgot-password',
   '/reset-password',
@@ -309,6 +314,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       const data = await res.json();
       if (!authGeneration.current.isCurrent(generation)) return;
+      // The password was right but the account needs its second step: there
+      // is no session yet. A code is asked for on the sign-in page; an
+      // owner or admin who must set it up first is sent to do that.
+      const pending = readTwoStepPending(data);
+      if (pending) {
+        setLoading(false);
+        if (pending.status === 'enrolment_required') {
+          storeEnrolToken(pending.token);
+          router.push('/two-step-setup');
+          return;
+        }
+        return pending;
+      }
       api.setTokens(data.accessToken, data.refreshToken);
       await fetchMe();
       if (!authGeneration.current.isCurrent(generation)) return;
@@ -326,6 +344,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       throw error;
     }
+  };
+
+  const verifyTwoStep = async (challengeToken: string, proof: { code: string } | { recovery_code: string }) => {
+    const generation = authGeneration.current.advance();
+    const session = await exchangeTwoStepChallenge(challengeToken, proof);
+    if (!authGeneration.current.isCurrent(generation)) return;
+    sessionCacheEpoch.current += 1;
+    api.setTokens(session.accessToken, session.refreshToken);
+    setLoading(true);
+    await fetchMe();
+    if (!authGeneration.current.isCurrent(generation)) return;
+    const redirect = safePostLoginDestination(
+      sessionStorage.getItem('deft-redirect-after-login'),
+    );
+    sessionStorage.removeItem('deft-redirect-after-login');
+    router.push(redirect ?? '/dashboard');
   };
 
   const signup = async (name: string, email: string, password: string, orgName: string, setupToken?: string) => {
@@ -348,6 +382,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       const data = await res.json();
       if (!authGeneration.current.isCurrent(generation)) return;
+      // Hosted: the first owner sets up two-step verification before anything else.
+      const pending = readTwoStepPending(data);
+      if (pending) {
+        setLoading(false);
+        storeEnrolToken(pending.token);
+        sessionStorage.setItem('deft-redirect-after-login', '/setup-ai');
+        router.push('/two-step-setup');
+        return;
+      }
       api.setTokens(data.accessToken, data.refreshToken);
       await fetchMe();
       if (!authGeneration.current.isCurrent(generation)) return;
@@ -387,7 +430,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, org, loading, sessionCacheScope, login, signup, logout, replaceUser, refreshUser: fetchMe }}>
+    <AuthContext.Provider value={{ user, org, loading, sessionCacheScope, login, verifyTwoStep, signup, logout, replaceUser, refreshUser: fetchMe }}>
       {connectionInterrupted && !credentialPage ? <main className="min-h-dvh flex items-center justify-center bg-[var(--background)] p-6 text-[var(--on-surface)]">
         <div className="max-w-sm space-y-4 text-center" role="status">
           <h1 className="text-xl font-semibold">Reconnecting to Deft</h1>

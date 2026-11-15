@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Eye, EyeOff } from 'lucide-react';
 import { api } from '@/lib/api';
+import { readTwoStepPending, storeEnrolToken } from '@/lib/two-step';
 import { useAuth } from '@/lib/auth-context';
 import { Logo } from '@/components/brand/logo';
 
@@ -97,6 +98,14 @@ export function InviteAccept({ token }: { token: string | null | undefined }) {
           ? 'Too many attempts. Try again in a minute.'
           : data?.error === 'expired' ? 'This invite link has expired. Ask your admin for a new one.' : 'This invite link is invalid or was revoked.');
         setSubmitting(false);
+        return;
+      }
+      // Hosted: a new admin sets up two-step verification before a session exists.
+      const pending = readTwoStepPending(data);
+      if (pending) {
+        storeEnrolToken(pending.token);
+        sessionStorage.setItem('deft-redirect-after-login', '/welcome');
+        router.push('/two-step-setup');
         return;
       }
       api.setTokens(data.accessToken, data.refreshToken);

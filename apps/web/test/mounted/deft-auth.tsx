@@ -34,6 +34,7 @@ export function useAuth(): ReturnType<typeof realUseAuth> {
     loading: false,
     sessionCacheScope: 'mounted-session',
     login: async () => {},
+    verifyTwoStep: async () => {},
     signup: async () => {},
     logout: async () => {},
     replaceUser: () => {},
