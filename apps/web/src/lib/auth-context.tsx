@@ -6,6 +6,7 @@ import { setUserTimezone } from './time';
 import { useRouter } from 'next/navigation';
 import { disconnectSocket } from './socket';
 import { createSessionCacheScope, setActiveSessionCacheScope } from './session-cache';
+import { signupRequestBody } from './setup-link';
 
 type NotificationPreferences = {
   keywords: string[];
@@ -335,10 +336,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setLoading(true);
     try {
       // Hosted workspaces: the one-time setup token goes in the body, never in a URL.
-      const res = await api.post('/api/auth/signup', {
-        name, email, password, org_name: orgName,
-        ...(setupToken ? { setup_token: setupToken } : {}),
-      });
+      const res = await api.post('/api/auth/signup', signupRequestBody(name, email, password, orgName, setupToken));
       if (!authGeneration.current.isCurrent(generation)) return;
       if (!res.ok) {
         const err = await res.json();

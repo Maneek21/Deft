@@ -1,6 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { takeSetupTokenFromAddress } from './setup-link';
+import { signupRequestBody, takeSetupTokenFromAddress } from './setup-link';
+
+test('the signup body carries the setup token as setup_token, and only when there is one', () => {
+  assert.deepEqual(signupRequestBody('Ada', 'ada@example.test', 'a-long-password', 'Analytical', 'tok3n'), {
+    name: 'Ada', email: 'ada@example.test', password: 'a-long-password', org_name: 'Analytical', setup_token: 'tok3n',
+  });
+  for (const none of [undefined, '']) {
+    assert.deepEqual(signupRequestBody('Ada', 'ada@example.test', 'a-long-password', 'Analytical', none), {
+      name: 'Ada', email: 'ada@example.test', password: 'a-long-password', org_name: 'Analytical',
+    }, 'a self-hosted signup sends what it always has');
+  }
+});
+
+test('a token read from the address reaches the signup body unchanged', () => {
+  const page = { location: { pathname: '/signup', search: '', hash: '#setup=a+b/c=_-9' }, history: { replaceState() {} } };
+  const token = takeSetupTokenFromAddress(page.location, page.history);
+  assert.equal(signupRequestBody('Ada', 'ada@example.test', 'a-long-password', 'Analytical', token ?? undefined).setup_token, 'a+b/c=_-9');
+});
 
 function address(pathname: string, search: string, hash: string) {
   const replaced: Array<[unknown, string, string]> = [];
