@@ -34,9 +34,19 @@ test('page may connect only to itself and the configured API and live-connection
     "connect-src 'self' https://api.acme.deft.example wss://api.acme.deft.example https://live.acme.deft.example wss://live.acme.deft.example");
   // No scheme-wide sources left that would let a page script send anywhere.
   assert.doesNotMatch(connectSrc(policy)!, /(^| )(https:|http:|ws:|wss:|\*)( |$)/);
-  // Other directives are unchanged.
+  // Other directives: images stay open (avatars, link previews), so this
+  // policy does not stop every way a page script could leak data.
   assert.match(policy, /img-src 'self' data: blob: https:/);
   assert.match(policy, /frame-ancestors 'none'/);
+  assert.match(policy, /form-action 'self'/);
+  assert.match(policy, /base-uri 'self'/);
+});
+
+test('a ws or wss live-connection address is accepted and both forms are listed', () => {
+  assert.equal(connectSrc(pagePolicy({ NEXT_PUBLIC_API_URL: 'https://api.acme.deft.example', NEXT_PUBLIC_WS_URL: 'wss://live.acme.deft.example/socket' })),
+    "connect-src 'self' https://api.acme.deft.example wss://api.acme.deft.example https://live.acme.deft.example wss://live.acme.deft.example");
+  assert.equal(connectSrc(pagePolicy({ NEXT_PUBLIC_API_URL: 'http://localhost:3001', NEXT_PUBLIC_WS_URL: 'ws://localhost:3001' })),
+    "connect-src 'self' http://localhost:3001 ws://localhost:3001");
 });
 
 test('one address for API and live connection is listed once; local defaults stay usable', () => {

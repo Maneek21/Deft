@@ -62,12 +62,29 @@ test('fills the page policy origins, with WebSocket forms, from the public URLs'
   }
 });
 
+test('accepts a ws or wss live-connection address and derives both forms', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'deft-public-env-'));
+  try {
+    const manifest = join(root, 'routes-manifest.json');
+    await writeFile(manifest, '__DEFT_WS_ORIGIN__ __DEFT_WS_WS_ORIGIN__ | __DEFT_API_ORIGIN__ __DEFT_API_WS_ORIGIN__');
+    await injectPublicEnv(root, {
+      NEXT_PUBLIC_APP_URL: 'https://deft.example',
+      NEXT_PUBLIC_API_URL: 'ws://api.deft.example:3001',
+      NEXT_PUBLIC_WS_URL: 'wss://live.deft.example/socket',
+    });
+    assert.equal(await readFile(manifest, 'utf8'),
+      'https://live.deft.example wss://live.deft.example | http://api.deft.example:3001 ws://api.deft.example:3001');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('refuses an API or live-connection address that is not an http or https URL', async () => {
   const root = await mkdtemp(join(tmpdir(), 'deft-public-env-'));
   try {
     await assert.rejects(
       injectPublicEnv(root, { NEXT_PUBLIC_APP_URL: 'https://deft.example', NEXT_PUBLIC_API_URL: 'api.deft.example', NEXT_PUBLIC_WS_URL: 'https://deft.example' }),
-      /NEXT_PUBLIC_API_URL must be an absolute http or https URL/,
+      /NEXT_PUBLIC_API_URL must be an absolute http\(s\) or ws\(s\) URL/,
     );
   } finally {
     await rm(root, { recursive: true, force: true });

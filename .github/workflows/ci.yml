@@ -153,6 +153,8 @@ jobs:
         run: pnpm test:release-workflow
       - name: Verify container process supervision
         run: node --test scripts/docker-entrypoint.test.mjs
+      - name: Verify public URL and page policy injection
+        run: pnpm test:public-env
       - name: Verify deterministic Hermes integration bundle
         run: pnpm test:hermes-integration-bundle
       - name: Lint web

@@ -88,3 +88,20 @@ test('hosted without a usable web address fails closed', async (t) => {
     assert.equal(await corsOrigin('http://localhost:3000'), null);
   }
 });
+
+async function mcpOriginRefused(origin: string): Promise<boolean> {
+  const { mcpServerV1Routes } = await import('../src/routes/mcp-server-v1.js');
+  const res = await mcpServerV1Routes.request('/', { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: '{}' });
+  if (res.status !== 403) return false;
+  const body = await res.json().catch(() => null) as { error?: { code?: string } } | null;
+  return body?.error?.code === 'invalid_origin';
+}
+
+test('MCP endpoint origin check: local addresses allowed self-hosted, refused hosted', async (t) => {
+  setEnv(t, { DEFT_HOSTED: undefined, NEXT_PUBLIC_APP_URL: WEB });
+  for (const origin of LOCALS) assert.equal(await mcpOriginRefused(origin), false, origin);
+  assert.equal(await mcpOriginRefused('https://evil.example'), true);
+  setEnv(t, { DEFT_HOSTED: 'true' });
+  for (const origin of LOCALS) assert.equal(await mcpOriginRefused(origin), true, origin);
+  assert.equal(await mcpOriginRefused(WEB), false);
+});

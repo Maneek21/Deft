@@ -28,7 +28,7 @@ test('global parent policy permits Blob Workers across SPA entry while retaining
   "default-src 'self'", "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com", "img-src 'self' data: blob: https:",
   "font-src 'self' data: https://fonts.gstatic.com", parent.split('; ').find(part=>part.startsWith('connect-src '))!,
-  "media-src 'self' blob:", "frame-ancestors 'none'",
+  "media-src 'self' blob:", "frame-ancestors 'none'", "form-action 'self'", "base-uri 'self'",
  ].join('; '));
  assert.match(policy('/app-experience-bootstrap'),/script-src 'self'/);assert.match(policy('/app-experience-bootstrap'),/connect-src 'none'/);
 });

@@ -17,6 +17,11 @@ function hostedWebOrigins(): string[] {
   }
 }
 
+/** The two local development web addresses; none in hosted mode. */
+export function localDevelopmentWebOrigins(): string[] {
+  return isHostedMode() ? [] : [...LOCAL_WEB_ORIGINS];
+}
+
 /**
  * Browser origins the API's CORS policy accepts. Self-hosted: the configured
  * web address plus the two local development addresses, exactly as before.

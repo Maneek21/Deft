@@ -23,12 +23,13 @@ function publicOrigin(key, value, ws) {
   try {
     url = new URL(value);
   } catch {
-    throw new Error(`${key} must be an absolute http or https URL`);
+    throw new Error(`${key} must be an absolute http(s) or ws(s) URL`);
   }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error(`${key} must be an absolute http or https URL`);
+  if (!['http:', 'https:', 'ws:', 'wss:'].includes(url.protocol)) {
+    throw new Error(`${key} must be an absolute http(s) or ws(s) URL`);
   }
-  return ws ? url.origin.replace(/^http/, 'ws') : url.origin;
+  const secure = url.protocol === 'https:' || url.protocol === 'wss:';
+  return ws ? `${secure ? 'wss' : 'ws'}://${url.host}` : `${secure ? 'https' : 'http'}://${url.host}`;
 }
 
 const TEXT_EXTENSIONS = new Set(['.html', '.js', '.json', '.map', '.txt']);
