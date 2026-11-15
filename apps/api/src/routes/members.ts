@@ -32,6 +32,7 @@ import { visibleLiveMemberForOrg } from '../lib/member-visibility.js';
 import { OrgMembershipError, requireOrgAdminOrOwner } from '../lib/org-membership.js';
 import { evictActiveHuddleParticipants } from '../socket.js';
 import { emitWebSessionRevocations } from '../lib/web-sessions.js';
+import { getSeatStatus, reserveSeat, withSeatRetry, type SeatReservation } from '../lib/seat-limit.js';
 
 const INVITE_TTL = '7d';
 const RECOVERY_TTL = '24h';
@@ -55,6 +56,16 @@ function adminForbidden(c: Context, err: unknown) {
     return c.json({ error: err.message, code: err.code }, err.status as 403);
   }
   return c.json({ error: 'Only admins can perform this action', code: 'FORBIDDEN' }, 403);
+}
+
+function seatRefused(c: Context, refusal: Exclude<SeatReservation, { ok: true }>) {
+  return c.json({
+    error: refusal.error,
+    code: refusal.code,
+    seat_limit: refusal.seat_limit,
+    seats_in_use: refusal.seats_in_use,
+    frozen_reason: refusal.frozen_reason,
+  }, 409);
 }
 
 // GET /api/members — list all members of current org
@@ -763,6 +774,23 @@ memberRoutes.get('/directory', async (c) => {
 });
 
 // GET /api/members/invites - admin invite ledger.
+// GET /api/members/seats — seats in use, the paid limit (hosted cells) and
+// whether adding people is frozen and why. Read-only; admins and owners.
+memberRoutes.get('/seats', async (c) => {
+  try {
+    const currentUser = c.get('user');
+    try {
+      await requireOrgAdminOrOwner(currentUser.org_id, currentUser.id);
+    } catch (err) {
+      return adminForbidden(c, err);
+    }
+    return c.json(await getSeatStatus(currentUser.org_id));
+  } catch (err) {
+    console.error('Failed to read seat status:', err);
+    return c.json({ error: 'Failed to read seat status', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
 memberRoutes.get('/invites', async (c) => {
   try {
     const user = c.get('user');
@@ -1082,43 +1110,60 @@ memberRoutes.post('/invite', async (c) => {
 
     const { email, role } = parsed.data;
 
-    // Check if user already exists
-    let [existingUser] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+    // The seat check and the membership write share one transaction (and, on
+    // a hosted cell, one seat lock), so two invites cannot both take the last seat.
+    const added = await withSeatRetry(() => db.transaction(async (tx) => {
+      // Check if user already exists
+      let [existingUser] = await tx.select().from(users).where(eq(users.email, email)).limit(1);
 
-    let membershipExists = false;
-    if (existingUser) {
-      const [existingMembership] = await db.select()
-        .from(orgMembers)
-        .where(and(eq(orgMembers.org_id, currentUser.org_id), eq(orgMembers.user_id, existingUser.id)))
-        .limit(1);
+      let existingMembership: typeof orgMembers.$inferSelect | undefined;
+      if (existingUser) {
+        [existingMembership] = await tx.select()
+          .from(orgMembers)
+          .where(and(eq(orgMembers.org_id, currentUser.org_id), eq(orgMembers.user_id, existingUser.id)))
+          .limit(1);
+        if (existingMembership?.is_active) return { alreadyMember: true as const };
+      }
+
+      // A guest, or an existing non-human account, takes no seat.
+      if (role !== 'guest' && (!existingUser || existingUser.kind === 'human')) {
+        const seat = await reserveSeat(tx, currentUser.org_id);
+        if (!seat.ok) return { seatRefusal: seat };
+      }
 
       if (existingMembership) {
-        membershipExists = true;
-        if (existingMembership.is_active) {
-          return c.json({ error: 'User is already a member', code: 'ALREADY_MEMBER' }, 409);
-        }
-        await db.update(orgMembers)
+        await tx.update(orgMembers)
           .set({ is_active: true, role })
           .where(eq(orgMembers.id, existingMembership.id));
       }
-    } else {
-      // Create the user with no password — they'll set one when accepting.
-      const [newUser] = await db.insert(users).values({
-        name: email.split('@')[0]!,
-        email,
-        password_hash: null,
-      }).returning();
-      existingUser = newUser!;
-    }
+      if (!existingUser) {
+        // Create the user with no password — they'll set one when accepting.
+        const [newUser] = await tx.insert(users).values({
+          name: email.split('@')[0]!,
+          email,
+          password_hash: null,
+        }).returning();
+        existingUser = newUser!;
+      }
 
-    // Add to org
-    if (!membershipExists) {
-      await db.insert(orgMembers).values({
-        org_id: currentUser.org_id,
-        user_id: existingUser.id,
-        role,
-      });
+      // Add to org
+      if (!existingMembership) {
+        await tx.insert(orgMembers).values({
+          org_id: currentUser.org_id,
+          user_id: existingUser.id,
+          role,
+        });
+      }
+      return { user: existingUser };
+    }), (result) => ('seatRefusal' in result ? result.seatRefusal : null));
+
+    if ('alreadyMember' in added) {
+      return c.json({ error: 'User is already a member', code: 'ALREADY_MEMBER' }, 409);
     }
+    if ('seatRefusal' in added) {
+      return seatRefused(c, added.seatRefusal);
+    }
+    const existingUser = added.user;
 
     // Add to all default (public) spaces
     const defaultSpaces = await db.select({ id: spaces.id })
@@ -1369,31 +1414,44 @@ memberRoutes.patch('/:id', async (c) => {
       return adminForbidden(c, err);
     }
 
-    // Can't change owner role
-    const [targetMembership] = await db.select({ role: orgMembers.role, id: orgMembers.id })
-      .from(orgMembers)
-      .where(and(eq(orgMembers.org_id, currentUser.org_id), eq(orgMembers.user_id, memberId), eq(orgMembers.is_active, true)))
-      .limit(1);
-
-    if (!targetMembership) {
-      return c.json({ error: 'Member not found', code: 'NOT_FOUND' }, 404);
-    }
-
-    if (targetMembership.role === 'owner') {
-      return c.json({ error: 'Cannot change owner role', code: 'FORBIDDEN' }, 403);
-    }
-
     const body = await c.req.json();
     const parsed = roleUpdateSchema.safeParse(body);
-    if (!parsed.success) {
+
+    // Read, seat check and role change share one transaction (and, on a
+    // hosted cell, one seat lock): a guest becoming a member takes a seat.
+    const changed = await withSeatRetry(() => db.transaction(async (tx) => {
+      // Can't change owner role
+      const [targetMembership] = await tx.select({ role: orgMembers.role, id: orgMembers.id, kind: users.kind })
+        .from(orgMembers)
+        .innerJoin(users, eq(users.id, orgMembers.user_id))
+        .where(and(eq(orgMembers.org_id, currentUser.org_id), eq(orgMembers.user_id, memberId), eq(orgMembers.is_active, true)))
+        .limit(1)
+        .for('update', { of: orgMembers });
+
+      if (!targetMembership) return { failure: 'NOT_FOUND' as const };
+      if (targetMembership.role === 'owner') return { failure: 'OWNER' as const };
+      if (!parsed.success) return { failure: 'INVALID' as const };
+
+      if (targetMembership.role === 'guest' && parsed.data.role !== 'guest' && targetMembership.kind === 'human') {
+        const seat = await reserveSeat(tx, currentUser.org_id);
+        if (!seat.ok) return { seatRefusal: seat };
+      }
+
+      await tx.update(orgMembers)
+        .set({ role: parsed.data.role })
+        .where(eq(orgMembers.id, targetMembership.id));
+      return { previousRole: targetMembership.role, role: parsed.data.role };
+    }), (result) => ('seatRefusal' in result ? result.seatRefusal : null));
+
+    if ('failure' in changed) {
+      if (changed.failure === 'NOT_FOUND') return c.json({ error: 'Member not found', code: 'NOT_FOUND' }, 404);
+      if (changed.failure === 'OWNER') return c.json({ error: 'Cannot change owner role', code: 'FORBIDDEN' }, 403);
       return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
     }
-
-    await db.update(orgMembers)
-      .set({ role: parsed.data.role })
-      .where(eq(orgMembers.id, targetMembership.id));
-
-    if (parsed.data.role !== targetMembership.role) {
+    if ('seatRefusal' in changed) {
+      return seatRefused(c, changed.seatRefusal);
+    }
+    if (changed.role !== changed.previousRole) {
       await evictActiveHuddleParticipants({
         orgId: currentUser.org_id,
         userId: memberId,
