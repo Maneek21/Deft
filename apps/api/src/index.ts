@@ -16,6 +16,7 @@ import {
   DEFT_SCHEMA_HEAD,
 } from './lib/agent-channel.js';
 import { authRoutes } from './routes/auth.js';
+import { twoStepRoutes } from './routes/two-step.js';
 import { spaceRoutes } from './routes/spaces.js';
 import { messageRoutes } from './routes/messages.js';
 import { notificationRoutes } from './routes/notifications.js';
@@ -188,6 +189,11 @@ app.use('/api/auth/reset-password', authLimiter);
 app.use('/api/auth/has-workspace', defaultLimiter);
 app.use('/api/auth/me', defaultLimiter);
 app.use('/api/auth/onboarding', defaultLimiter);
+// Two-step verification. The network-address limiter is only a coarse outer
+// guard; wrong codes are limited per account (lib/two-step-service.ts).
+app.use('/api/auth/two-step/*', loginIpLimiter);
+app.use('/api/auth/two-step', loginIpLimiter);
+app.route('/api/auth/two-step', twoStepRoutes);
 app.route('/api/auth', authRoutes);
 
 // MCP server — own API key auth, mounted before auth middleware

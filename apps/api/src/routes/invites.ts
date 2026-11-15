@@ -8,7 +8,8 @@ import { db } from '../lib/db.js';
 import { users, orgs, orgMembers, invites } from '@deft/db/schema';
 import { env } from '../lib/env.js';
 import { ensureDeftyMembership, ensureDeftyDm } from '../lib/ensure-defty-membership.js';
-import { createWebSession, WebCredentialsChangedError } from '../lib/web-sessions.js';
+import { WebCredentialsChangedError } from '../lib/web-sessions.js';
+import { issueSession, issuedSessionBody } from '../lib/session-issuance.js';
 
 export const inviteRoutes = new Hono();
 
@@ -224,9 +225,10 @@ inviteRoutes.post('/accept', async (c) => {
     }
   })();
 
-  let tokens;
+  // Same policy as login: in hosted mode a new admin gets an enrol-only token.
+  let issued;
   try {
-    tokens = await createWebSession({ id: user.id, email: user.email!, org_id: payload.org_id }, passwordHash);
+    issued = await issueSession({ via: 'invite', identity: { id: user.id, email: user.email!, org_id: payload.org_id }, expectedPasswordHash: passwordHash });
   } catch (error) {
     if (error instanceof WebCredentialsChangedError) {
       return c.json({ error: 'Credentials changed; sign in again', code: 'CREDENTIALS_CHANGED' }, 409);
@@ -237,6 +239,6 @@ inviteRoutes.post('/accept', async (c) => {
   return c.json({
     user: { id: user.id, name: parsed.data.name ?? user.name, email: user.email },
     org_id: payload.org_id,
-    ...tokens,
+    ...issuedSessionBody(issued),
   });
 });

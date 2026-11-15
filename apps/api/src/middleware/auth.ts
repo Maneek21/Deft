@@ -2,6 +2,7 @@ import { createMiddleware } from 'hono/factory';
 import type { MiddlewareHandler } from 'hono';
 import { verifyWebAccess } from '../lib/web-sessions.js';
 import { OrgMembershipError, type OrgRole } from '../lib/org-membership.js';
+import { SecondStepRequiredError } from '../lib/two-step-policy.js';
 
 export type AuthUser = {
   id: string;
@@ -35,6 +36,13 @@ async function verifyRequest(request: Request): Promise<WebAuthResult> {
   } catch (err) {
     if (err instanceof OrgMembershipError) {
       return { ok: false, status: err.status as 403, error: err.message, code: err.code };
+    }
+    // Hosted mode: an owner or admin without two-step verification holds no
+    // usable session. 401, so the web app treats it as a session that has
+    // ended: its refresh is refused too, and it returns to sign-in, where the
+    // password earns the enrol-only token.
+    if (err instanceof SecondStepRequiredError) {
+      return { ok: false, status: 401, error: err.message, code: err.code };
     }
     return { ok: false, status: 401, error: 'Invalid or expired token', code: 'INVALID_TOKEN' };
   }

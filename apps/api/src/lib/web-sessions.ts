@@ -2,11 +2,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import jwt from 'jsonwebtoken';
 import { z } from 'zod';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { webSessions, users, revokedTokens, orgMembers } from '@deft/db/schema';
 import { db } from './db.js';
 import { env } from './env.js';
 import { OrgMembershipError, requireActiveOrgMembership } from './org-membership.js';
+import { roleMustHaveSecondStep, SecondStepRequiredError, secondStepPolicy, sessionMeetsSecondStep } from './two-step-policy.js';
 
 const claimsSchema = z.object({
   id: z.string().min(1).max(256), email: z.string(), org_id: z.string().min(1).max(256),
@@ -37,7 +38,16 @@ function tokens(identity: Identity, sid: string, expiresAt: Date) {
   };
 }
 
-export async function createWebSession(identity: Identity, expectedPasswordHash?: string) {
+/**
+ * The only place a web session is created. It enforces the second-step policy
+ * itself, inside the transaction that also checks the password and the
+ * membership: a person with two-step verification gets a session only when
+ * the caller has just verified a code (`secondStep: 'verified'`, passed only
+ * by session-issuance.ts), and in hosted mode an owner or admin who has not
+ * enrolled gets none. Routes call issueSession() in session-issuance.ts, which
+ * turns the refusal into a challenge.
+ */
+export async function createWebSession(identity: Identity, expectedPasswordHash?: string, options: { secondStep?: 'verified' } = {}) {
   const sid = randomUUID();
   const expiresAt = new Date(Date.now() + 30 * 86400_000);
   const pair = tokens(identity, sid, expiresAt);
@@ -46,9 +56,15 @@ export async function createWebSession(identity: Identity, expectedPasswordHash?
     // cannot create a family after that change has revoked earlier families.
     const [user] = await tx.select().from(users).where(eq(users.id, identity.id)).for('share');
     if (!user || (expectedPasswordHash !== undefined && user.password_hash !== expectedPasswordHash)) throw new WebCredentialsChangedError('Credentials changed; sign in again');
-    const [membership] = await tx.select({ id: orgMembers.id }).from(orgMembers).where(and(eq(orgMembers.org_id, identity.org_id), eq(orgMembers.user_id, identity.id), eq(orgMembers.is_active, true))).for('share');
+    const [membership] = await tx.select({ id: orgMembers.id, role: orgMembers.role }).from(orgMembers).where(and(eq(orgMembers.org_id, identity.org_id), eq(orgMembers.user_id, identity.id), eq(orgMembers.is_active, true))).for('share');
     if (!membership) throw new OrgMembershipError('User is not an active member of this organization');
-    await tx.insert(webSessions).values({ id: sid, user_id: identity.id, org_id: identity.org_id, refresh_token_hash: hash(pair.refreshToken), expires_at: expiresAt });
+    const policy = await secondStepPolicy(tx, identity.id, membership.role);
+    if (policy.requirement === 'enrolment' || (policy.requirement === 'code' && options.secondStep !== 'verified')) {
+      throw new SecondStepRequiredError(policy.requirement, user.password_version);
+    }
+    // clock_timestamp(), not the transaction's start: a session must never
+    // look older than an enrolment that committed while this waited for it.
+    await tx.insert(webSessions).values({ id: sid, user_id: identity.id, org_id: identity.org_id, refresh_token_hash: hash(pair.refreshToken), expires_at: expiresAt, created_at: sql`clock_timestamp()` });
   });
   return pair;
 }
@@ -58,6 +74,13 @@ export async function verifyWebAccess(token: string) {
   const [session] = await db.select().from(webSessions).where(and(eq(webSessions.id, payload.sid), eq(webSessions.user_id, payload.id), eq(webSessions.org_id, payload.org_id))).limit(1);
   if (!session || session.revoked_at || session.expires_at.getTime() <= Date.now()) throw new Error('Session unavailable');
   const membership = await requireActiveOrgMembership(payload.org_id, payload.id);
+  // Hosted mode: an owner or admin holds a normal session only with two-step
+  // verification. This also covers a role change made after the session was
+  // issued. Self-hosted requests take no extra query.
+  if (roleMustHaveSecondStep(membership.role)) {
+    const policy = await secondStepPolicy(db, payload.id, membership.role);
+    if (!sessionMeetsSecondStep(policy, session.created_at)) throw new SecondStepRequiredError(policy.requirement === 'code' ? 'code' : 'enrolment');
+  }
   return { ...payload, role: membership.role };
 }
 
@@ -73,8 +96,15 @@ export async function rotateWebSession(token: string) {
     }
     // Keep this check on the connection holding the session lock: readers can
     // occupy every other ordinary-pool slot while waiting for that same row.
-    const [membership] = await tx.select({ id: orgMembers.id }).from(orgMembers).where(and(eq(orgMembers.org_id, payload.org_id), eq(orgMembers.user_id, payload.id), eq(orgMembers.is_active, true))).limit(1);
+    const [membership] = await tx.select({ id: orgMembers.id, role: orgMembers.role }).from(orgMembers).where(and(eq(orgMembers.org_id, payload.org_id), eq(orgMembers.user_id, payload.id), eq(orgMembers.is_active, true))).limit(1);
     if (!membership) throw new OrgMembershipError('User is not an active member of this organization');
+    // A refresh never upgrades a session past the second-step policy: a
+    // session that no longer satisfies it is revoked, not rotated.
+    const policy = await secondStepPolicy(tx, payload.id, membership.role);
+    if (!sessionMeetsSecondStep(policy, session.created_at)) {
+      await tx.update(webSessions).set({ revoked_at: new Date() }).where(eq(webSessions.id, session.id));
+      return { secondStep: policy.requirement === 'code' ? 'code' as const : 'enrolment' as const };
+    }
     const pair = tokens({ id: payload.id, email: payload.email, org_id: payload.org_id }, session.id, session.expires_at);
     await tx.update(webSessions).set({ refresh_token_hash: hash(pair.refreshToken) }).where(eq(webSessions.id, session.id));
     return pair;
@@ -82,6 +112,10 @@ export async function rotateWebSession(token: string) {
   if (!result) {
     webSessionEvents.emit('revoked', payload.sid);
     throw new Error('Session revoked or refresh reused');
+  }
+  if ('secondStep' in result) {
+    webSessionEvents.emit('revoked', payload.sid);
+    throw new SecondStepRequiredError(result.secondStep);
   }
   return result;
 }
