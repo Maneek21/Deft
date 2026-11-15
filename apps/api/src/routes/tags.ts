@@ -2,12 +2,12 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, ilike, sql, desc, inArray, getTableColumns } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { tags, entityTags, tasks, messages, users, projects, notes, clips, orgMembers } from '@deft/db/schema';
+import { tags, entityTags, tasks, messages, users, projects, notes, clips, orgMembers, spaces, spaceMembers } from '@deft/db/schema';
 import type { AuthUser } from '../middleware/auth.js';
 import { loadMessagesForMember } from '../lib/space-membership.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
 import { visibleNoteCondition } from '../lib/note-visibility.js';
-import { canAccessClip } from './clips.js';
+import { accessibleClipSql } from './clips.js';
 
 export const tagRoutes = new Hono();
 
@@ -90,10 +90,9 @@ async function resolveVisibleTagEntities(
   }
 
   if (clipIds.length > 0) {
-    const clipRows = await db.select().from(clips)
-      .where(and(inArray(clips.id, clipIds), eq(clips.org_id, user.org_id)));
-    const allowed = await Promise.all(clipRows.map(clip => canAccessClip(clip, user.org_id, user.id)));
-    clipRows.forEach((clip, i) => { if (allowed[i]) clipSet.add(clip.id); });
+    const clipRows = await db.select({ id: clips.id }).from(clips)
+      .where(and(inArray(clips.id, clipIds), accessibleClipSql(user.org_id, user.id)));
+    for (const clip of clipRows) clipSet.add(clip.id);
   }
 
   const isVisible = (type: string, id: string) => {
@@ -105,6 +104,41 @@ async function resolveVisibleTagEntities(
   };
 
   return { taskMap, messageMap, noteMap, isVisible };
+}
+
+/**
+ * Per tag, the number of tagged items the caller may see. One grouped query
+ * per kind of item, each with the same condition `resolveVisibleTagEntities`
+ * applies to that kind, so the work is four queries however many items,
+ * spaces or clips the workspace has, and no item is loaded into memory.
+ */
+async function visibleTagCounts(user: AuthUser): Promise<Array<{ tag_id: string; count: number }>> {
+  const count = sql<number>`count(*)::int`;
+  const tagged = (...types: TagEntityType[]) => and(eq(entityTags.org_id, user.org_id), inArray(entityTags.entity_type, types));
+  const grouped = await Promise.all([
+    db.select({ tag_id: entityTags.tag_id, count }).from(entityTags)
+      .innerJoin(tasks, and(eq(tasks.id, entityTags.entity_id), eq(tasks.org_id, user.org_id)))
+      .innerJoin(projects, and(eq(tasks.project_id, projects.id), eq(projects.org_id, user.org_id)))
+      .where(and(tagged('task'), eq(tasks.is_deleted, false), visibleTaskCondition(user.id)))
+      .groupBy(entityTags.tag_id),
+    // Messages: not deleted, in a space of this org the caller is a member of.
+    db.select({ tag_id: entityTags.tag_id, count }).from(entityTags)
+      .innerJoin(messages, and(eq(messages.id, entityTags.entity_id), eq(messages.org_id, user.org_id)))
+      .innerJoin(spaces, and(eq(spaces.id, messages.space_id), eq(spaces.org_id, user.org_id)))
+      .innerJoin(users, eq(users.id, messages.user_id))
+      .where(and(tagged('message'), eq(messages.is_deleted, false),
+        sql`EXISTS (SELECT 1 FROM ${spaceMembers} WHERE ${spaceMembers.space_id} = ${spaces.id} AND ${spaceMembers.user_id} = ${user.id})`))
+      .groupBy(entityTags.tag_id),
+    db.select({ tag_id: entityTags.tag_id, count }).from(entityTags)
+      .innerJoin(notes, and(eq(notes.id, entityTags.entity_id), eq(notes.org_id, user.org_id)))
+      .where(and(tagged('note', 'daily_note'), eq(notes.is_deleted, false), visibleNoteCondition(user.id)))
+      .groupBy(entityTags.tag_id),
+    db.select({ tag_id: entityTags.tag_id, count }).from(entityTags)
+      .innerJoin(clips, eq(clips.id, entityTags.entity_id))
+      .where(and(tagged('clip'), accessibleClipSql(user.org_id, user.id)))
+      .groupBy(entityTags.tag_id),
+  ]);
+  return grouped.flat();
 }
 
 async function canSeeTagEntity(entityType: TagEntityType, entityId: string, user: AuthUser) {
@@ -135,23 +169,10 @@ tagRoutes.get('/', async (c) => {
 
   // Counts follow the tagged-items list (GET /:id/entities): an item the
   // caller cannot see is not counted, so a count says nothing about hidden items.
-  const COUNT_BATCH = 1000;
   const counts = new Map<string, number>();
-
   if (result.length > 0) {
-    const refs = await db.select({
-      tag_id: entityTags.tag_id,
-      entity_type: entityTags.entity_type,
-      entity_id: entityTags.entity_id,
-    }).from(entityTags)
-      .where(eq(entityTags.org_id, user.org_id));
-
-    for (let start = 0; start < refs.length; start += COUNT_BATCH) {
-      const batch = refs.slice(start, start + COUNT_BATCH);
-      const resolved = await resolveVisibleTagEntities(batch, user);
-      for (const ref of batch) {
-        if (resolved.isVisible(ref.entity_type, ref.entity_id)) counts.set(ref.tag_id, (counts.get(ref.tag_id) ?? 0) + 1);
-      }
+    for (const row of await visibleTagCounts(user)) {
+      counts.set(row.tag_id, (counts.get(row.tag_id) ?? 0) + row.count);
     }
   }
 

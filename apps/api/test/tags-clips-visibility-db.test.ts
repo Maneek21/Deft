@@ -197,3 +197,35 @@ test('the clips list of a space leaves out clips the caller cannot open', async 
   // Not in the space at all: refused as before.
   assert.equal((await call(ids.admin, 'GET', `/api/clips/space/${S.shared}`)).status, 403);
 });
+
+test('tag counts take the same number of queries however many spaces and items there are', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  /** The counts for one caller, and how many statements the API sent to the database to produce them. */
+  const counted = async (actor: string) => {
+    const pool = pg.Pool.prototype as any;
+    const original = pool.query;
+    let statements = 0;
+    pool.query = function (...args: unknown[]) { statements += 1; return original.apply(this, args); };
+    try { return { counts: await countsFor(actor), statements }; } finally { pool.query = original; }
+  };
+  const before = await counted(ids.outsider);
+
+  // Forty more private spaces, each with one tagged message. The outsider is in every second one.
+  const SPACES = 40;
+  for (let index = 0; index < SPACES; index += 1) {
+    const space = randomUUID();
+    const message = randomUUID();
+    await client!.query(`INSERT INTO spaces(id,org_id,name,type,created_by) VALUES($1,$2,$3,'private',$4)`, [space, orgId, `many-${space}`, ids.insider]);
+    for (const member of index % 2 === 0 ? [ids.insider, ids.outsider] : [ids.insider]) {
+      await client!.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), space, member]);
+    }
+    await client!.query('INSERT INTO messages(id,org_id,space_id,user_id,content) VALUES($1,$2,$3,$4,$5)', [message, orgId, space, ids.insider, 'CANARY-MESSAGE']);
+    await client!.query(`INSERT INTO entity_tags(id,org_id,tag_id,entity_type,entity_id) VALUES($1,$2,$3,'message',$4)`, [randomUUID(), orgId, tags.main, message]);
+  }
+
+  const after = await counted(ids.outsider);
+  assert.equal(after.counts.main, before.counts.main! + SPACES / 2, 'only messages in spaces the caller is in are counted');
+  assert.equal((await countsFor(ids.insider)).main, 8 + SPACES);
+  assert.equal(after.statements, before.statements, 'the number of statements does not grow with the number of spaces');
+  assert.ok(after.statements <= 6, `GET /api/tags sent ${after.statements} statements`);
+});
