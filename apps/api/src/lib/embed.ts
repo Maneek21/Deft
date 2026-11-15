@@ -67,13 +67,16 @@ async function loadOrgEmbedConfig(orgId: string | null | undefined): Promise<Emb
   }
 
   let provider: EmbedProvider = stored.embed?.provider ?? 'openai';
-  const base_url = stored.embed?.base_url || DEFAULT_BASE_URL;
+  let base_url = stored.embed?.base_url || DEFAULT_BASE_URL;
   const model = stored.embed?.model || DEFAULT_MODEL;
   const api_key = safeDecrypt(stored.api_keys?.openai) || env.OPENAI_API_KEY || '';
 
   // Hosted mode: a stored custom embedding address is never used; embeddings
   // are off (FTS-only search) until it is cleared. Self-hosted: unchanged.
-  if (provider !== 'off' && !aiProviderAddress('openai', base_url).allowed) provider = 'off';
+  // Fetches go to the address the rule returned, not the stored string.
+  const address = aiProviderAddress('openai', base_url);
+  if (!address.allowed) provider = 'off';
+  else if (address.baseUrl) base_url = address.baseUrl;
 
   return { provider, base_url, model, api_key };
 }

@@ -5,7 +5,7 @@ import { eq } from 'drizzle-orm';
 import { db } from './db.js';
 import { orgs } from '@deft/db/schema';
 import { env } from './env.js';
-import { environmentAiAddress } from './ai-provider-address.js';
+import { environmentAiAddress, transcriptionProviderAllowed } from './ai-provider-address.js';
 import { readFile } from 'node:fs/promises';
 
 export type TranscriptSegment = {
@@ -30,7 +30,11 @@ async function transcribeLocal(audioPath: string): Promise<TranscriptionResult> 
   formData.append('file', new Blob([fileBuffer]), 'audio.webm');
   formData.append('response_format', 'verbose_json');
 
-  const res = await fetch(`${env.WHISPER_URL}/v1/audio/transcriptions`, {
+  // Hosted mode never reaches here (see effectiveTranscriptionProvider); the
+  // environment address is ignored there all the same.
+  const whisperUrl = environmentAiAddress(env.WHISPER_URL);
+  if (!whisperUrl) throw new Error('Local transcription is not available');
+  const res = await fetch(`${whisperUrl}/v1/audio/transcriptions`, {
     method: 'POST',
     body: formData,
   });
@@ -162,18 +166,32 @@ type StoredTranscriptionConfig = {
   transcription?: { provider?: 'local' | 'openai' | 'deepgram' };
 };
 
-async function resolveProvider(orgId: string | null | undefined): Promise<'local' | 'openai' | 'deepgram'> {
+export type TranscriptionProvider = 'local' | 'openai' | 'deepgram';
+
+/**
+ * The provider transcription will use: the org's choice, else the
+ * environment's. Hosted mode never uses local Whisper (a stored `local` is
+ * passed over, and an environment default of `local` means no provider).
+ * Self-hosted: exactly as before.
+ */
+export function effectiveTranscriptionProvider(orgChoice: unknown): TranscriptionProvider | 'none' {
+  const stored = orgChoice === 'local' || orgChoice === 'openai' || orgChoice === 'deepgram' ? orgChoice : undefined;
+  const choice = stored && transcriptionProviderAllowed(stored) ? stored : env.TRANSCRIPTION_PROVIDER;
+  return transcriptionProviderAllowed(choice) ? choice : 'none';
+}
+
+async function resolveProvider(orgId: string | null | undefined): Promise<TranscriptionProvider | 'none'> {
+  let p: unknown;
   if (orgId) {
     try {
       const [row] = await db.select({ ai_config: orgs.ai_config }).from(orgs).where(eq(orgs.id, orgId)).limit(1);
       const cfg = (row?.ai_config ?? {}) as StoredTranscriptionConfig;
-      const p = cfg.transcription?.provider;
-      if (p === 'local' || p === 'openai' || p === 'deepgram') return p;
+      p = cfg.transcription?.provider;
     } catch {
       // fall through to env
     }
   }
-  return env.TRANSCRIPTION_PROVIDER;
+  return effectiveTranscriptionProvider(p);
 }
 
 // ─── Public API ───
@@ -181,6 +199,8 @@ export async function transcribe(audioPath: string, orgId?: string | null): Prom
   const provider = await resolveProvider(orgId);
 
   switch (provider) {
+    case 'none':
+      throw new Error('No transcription provider is configured');
     case 'local':
       return transcribeLocal(audioPath);
     case 'deepgram':

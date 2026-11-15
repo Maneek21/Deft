@@ -17,7 +17,9 @@ import {
 import { getEmbedConfigMasked, setEmbedConfig } from '../lib/embed.js';
 import { orgs } from '@deft/db/schema';
 import { env } from '../lib/env.js';
-import { aiProviderAddress, HOSTED_AI_ADDRESS_REFUSED } from '../lib/ai-provider-address.js';
+import { aiProviderAddress, HOSTED_AI_ADDRESS_REFUSED, transcriptionProviderAllowed } from '../lib/ai-provider-address.js';
+import { effectiveTranscriptionProvider } from '../lib/transcription.js';
+import { isHostedMode } from '../lib/hosted-mode.js';
 
 export const orgRoutes = new Hono();
 
@@ -34,13 +36,14 @@ async function requireAdmin(c: Context): Promise<true | Response> {
   return true;
 }
 
-async function readTranscriptionConfig(orgId: string): Promise<{ provider: 'local' | 'openai' | 'deepgram'; effective: 'local' | 'openai' | 'deepgram' }> {
+async function readTranscriptionConfig(orgId: string): Promise<{ provider: 'local' | 'openai' | 'deepgram'; effective: 'local' | 'openai' | 'deepgram' | 'none' }> {
   const [row] = await db.select({ ai_config: orgs.ai_config }).from(orgs).where(eq(orgs.id, orgId)).limit(1);
   const stored = (row?.ai_config ?? {}) as { transcription?: { provider?: 'local' | 'openai' | 'deepgram' } };
   const orgChoice = stored.transcription?.provider;
   return {
     provider: orgChoice ?? env.TRANSCRIPTION_PROVIDER,
-    effective: orgChoice ?? env.TRANSCRIPTION_PROVIDER,
+    // Hosted mode: local Whisper is never used, so it is never reported as in use.
+    effective: effectiveTranscriptionProvider(orgChoice),
   };
 }
 
@@ -59,6 +62,9 @@ orgRoutes.get('/ai-config', async (c) => {
     reason_provider,
     embed,
     transcription,
+    // Hosted cells refuse Ollama, custom AI addresses and local transcription;
+    // the settings page hides those options when this is true.
+    hosted: isHostedMode(),
   });
 });
 
@@ -115,6 +121,9 @@ function refusedAiAddress(data: z.infer<typeof updateSchema>): string | null {
     decisions.push(aiProviderAddress('openai', data.embed.base_url));
   }
   for (const decision of decisions) if (!decision.allowed) return decision.reason;
+  if (data.transcription?.provider && !transcriptionProviderAllowed(data.transcription.provider)) {
+    return 'Local transcription is not available on hosted Deft. Use OpenAI or Deepgram.';
+  }
   return null;
 }
 
@@ -191,5 +200,8 @@ orgRoutes.put('/ai-config', async (c) => {
     reason_provider,
     embed,
     transcription,
+    // Hosted cells refuse Ollama, custom AI addresses and local transcription;
+    // the settings page hides those options when this is true.
+    hosted: isHostedMode(),
   });
 });

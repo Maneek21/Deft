@@ -119,3 +119,58 @@ test('self-hosted: custom and Ollama addresses save and are used exactly as befo
     assert.deepEqual(urls, ['http://10.0.0.5/v1/embeddings']);
   });
 });
+
+test('hosted: local transcription cannot be saved; an unknown stored provider does not break the settings page', { skip: !databaseUrl }, async (t) => {
+  setHosted(t, true);
+  await withOrg(async ({ orgId, client, put }) => {
+    const refused = await put({ transcription: { provider: 'local' } });
+    assert.equal(refused.status, 400);
+    assert.equal((await refused.json()).code, 'HOSTED_CUSTOM_AI_ADDRESS_REFUSED');
+    assert.equal((await put({ transcription: { provider: 'deepgram' } })).status, 200);
+    await client.query('UPDATE orgs SET ai_config=$2 WHERE id=$1', [orgId, JSON.stringify({
+      ai_models: { reason: { provider: 'azure', model: 'x', baseUrl: 'http://10.0.0.5' } },
+      transcription: { provider: 'local' },
+    })]);
+    const app = new Hono();
+    app.use('*', async (c, next) => { c.set('user', { id: 'u', org_id: orgId } as never); await next(); });
+    app.route('/api/org', orgRoutes);
+    const res = await app.request('/api/org/ai-config');
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.hosted, true);
+    assert.equal(body.reason_provider.ready, false);
+    assert.notEqual(body.transcription.effective, 'local');
+    assert.equal((await resolveReasonProvider(orgId)).apiKey, '');
+  });
+});
+
+test('self-hosted: local transcription still saves and is reported in use', { skip: !databaseUrl }, async (t) => {
+  setHosted(t, false);
+  await withOrg(async ({ put }) => {
+    const res = await put({ transcription: { provider: 'local' } });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual([body.transcription.effective, body.hosted], ['local', false]);
+  });
+});
+
+test('hosted: embeddings fetch the standard address the rule returns, not the stored spelling', { skip: !databaseUrl }, async (t) => {
+  setHosted(t, true);
+  await withOrg(async ({ orgId, client }) => {
+    await client.query('UPDATE orgs SET ai_config=$2 WHERE id=$1', [orgId, JSON.stringify({
+      embed: { provider: 'openai', base_url: 'HTTPS://API.OPENAI.COM/v1/' },
+    })]);
+    const { env } = await import('../src/lib/env.js');
+    const target = env as unknown as Record<string, unknown>;
+    const oldKey = target.OPENAI_API_KEY;
+    target.OPENAI_API_KEY = 'k';
+    t.after(() => { target.OPENAI_API_KEY = oldKey; });
+    const urls: string[] = [];
+    t.mock.method(globalThis, 'fetch', async (input: unknown) => {
+      urls.push(String(input));
+      return Response.json({ data: [{ embedding: new Array(1536).fill(0) }] });
+    });
+    assert.equal((await embed('hello', orgId))?.length, 1536);
+    assert.deepEqual(urls, ['https://api.openai.com/v1/embeddings']);
+  });
+});

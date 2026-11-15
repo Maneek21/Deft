@@ -55,7 +55,12 @@ export function aiProviderAddress(provider: AiAddressProvider, customAddress?: s
   if (provider === 'ollama') {
     return { allowed: false, reason: 'Ollama is not available on hosted Deft. Use Anthropic, OpenAI or OpenRouter.' };
   }
-  const standard = STANDARD_AI_PROVIDER_ADDRESSES[provider];
+  // A provider name written straight to the database (not through the
+  // validated settings route) is refused, never looked up blindly.
+  if (!Object.hasOwn(STANDARD_AI_PROVIDER_ADDRESSES, provider)) {
+    return { allowed: false, reason: 'This AI provider is not available on hosted Deft. Use Anthropic, OpenAI or OpenRouter.' };
+  }
+  const standard = STANDARD_AI_PROVIDER_ADDRESSES[provider as keyof typeof STANDARD_AI_PROVIDER_ADDRESSES];
   if (custom && !sameAddress(custom, standard)) {
     return { allowed: false, reason: `Custom AI addresses are not available on hosted Deft. ${provider} uses ${standard}.` };
   }
@@ -76,6 +81,15 @@ export function requireAiProviderAddress(provider: AiAddressProvider, customAddr
  */
 export function anthropicClientAddress(): { baseURL?: string } {
   return isHostedMode() ? { baseURL: STANDARD_AI_PROVIDER_ADDRESSES.anthropic } : {};
+}
+
+/**
+ * Local transcription posts audio to WHISPER_URL, a model server on the
+ * install's own network. Hosted mode allows only the named services
+ * (OpenAI, Deepgram). Self-hosted: every provider, exactly as before.
+ */
+export function transcriptionProviderAllowed(provider: string): boolean {
+  return provider !== 'local' || !isHostedMode();
 }
 
 /**
