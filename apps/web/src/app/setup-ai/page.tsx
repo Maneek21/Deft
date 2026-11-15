@@ -27,6 +27,8 @@ export default function SetupAIPage() {
   const [err, setErr] = useState('');
   const [bootstrapped, setBootstrapped] = useState(false);
   const [hasEnvFallback, setHasEnvFallback] = useState(false);
+  // Hosted Deft refuses Ollama (a server address), so it is not offered there.
+  const [hosted, setHosted] = useState(false);
 
   useEffect(() => {
     if (authLoading) return;
@@ -44,6 +46,10 @@ export default function SetupAIPage() {
         return;
       }
       setHasEnvFallback(Boolean(data.has_provider));
+      if (data.hosted === true) {
+        setHosted(true);
+        setTab('anthropic');
+      }
       setBootstrapped(true);
     }).catch(() => setBootstrapped(true));
   }, [authLoading, user, router]);
@@ -112,7 +118,9 @@ export default function SetupAIPage() {
               <p className="text-[0.875rem] leading-relaxed" style={{ color: 'var(--on-surface-variant)' }}>
                 {hasEnvFallback
                   ? 'This Deft instance has a shared AI key configured at the server level, so the agent and AI features will work out of the box. You can still add a per-workspace key from Settings to override it.'
-                  : 'Deft can run with a local Ollama server or a workspace-owned managed provider key. Choose the model route that fits your self-hosting, data, and billing needs.'}
+                  : hosted
+                    ? 'Add a workspace-owned Anthropic, OpenAI or OpenRouter key. The core workspace keeps working without one.'
+                    : 'Deft can run with a local Ollama server or a workspace-owned managed provider key. Choose the model route that fits your self-hosting, data, and billing needs.'}
               </p>
             </div>
           </div>
@@ -133,7 +141,7 @@ export default function SetupAIPage() {
                 className="flex gap-1 p-1 rounded-lg"
                 style={{ background: 'var(--surface-container-low)', border: '1px solid var(--outline-variant)' }}
               >
-                {TABS.map((t) => {
+                {TABS.filter((t) => !(hosted && t.isUrl)).map((t) => {
                   const isActive = t.id === tab;
                   return (
                     <button

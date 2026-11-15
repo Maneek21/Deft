@@ -22,7 +22,7 @@ type EmbedConfig = {
 
 type TranscriptionConfig = {
   provider: TranscriptionProvider;
-  effective: TranscriptionProvider;
+  effective: TranscriptionProvider | 'none';
 };
 
 type AIConfig = {
@@ -34,6 +34,8 @@ type AIConfig = {
   reason_provider?: { ready: boolean; provider: Provider; model: string; reason?: string };
   embed: EmbedConfig;
   transcription: TranscriptionConfig;
+  /** Hosted Deft refuses Ollama, custom AI addresses and local transcription. */
+  hosted?: boolean;
 };
 
 const PROVIDERS: { id: Provider; label: string; placeholder: string; hint: string }[] = [
@@ -141,7 +143,7 @@ export default function AISettingsPage() {
             AI configuration for {org?.name ?? 'your workspace'}
           </h1>
           <p className="text-sm mt-2 leading-6" style={{ color: 'var(--foreground-secondary)' }}>
-            Bring your own provider. Deft can use managed keys or local Ollama, and the core workspace keeps
+            Bring your own provider. Deft can use {cfg.hosted ? 'Anthropic, OpenAI or OpenRouter keys' : 'managed keys or local Ollama'}, and the core workspace keeps
             working when no AI provider is configured. Keys are encrypted at rest and only used for this workspace.
           </p>
           {!cfg.has_provider && (
@@ -184,7 +186,7 @@ export default function AISettingsPage() {
             Provider keys
           </h3>
           <div className="space-y-2">
-            {PROVIDERS.map((p) => (
+            {PROVIDERS.filter((p) => !(cfg.hosted && p.id === 'ollama')).map((p) => (
               <ProviderCard
                 key={p.id}
                 provider={p.id}
@@ -236,7 +238,9 @@ export default function AISettingsPage() {
             Voice transcription
           </h3>
           <p className="text-sm mb-3 leading-relaxed" style={{ color: 'var(--muted)' }}>
-            Transcribes voice clips posted in chat. The default 'local' provider calls a self-hosted Whisper container — no audio leaves your infrastructure.
+            {cfg.hosted
+              ? 'Transcribes voice clips posted in chat with OpenAI or Deepgram, when the server has a key for it.'
+              : "Transcribes voice clips posted in chat. The default 'local' provider calls a self-hosted Whisper container — no audio leaves your infrastructure."}
           </p>
           <TranscriptionSection cfg={cfg} onSaved={refresh} />
         </section>
@@ -469,7 +473,7 @@ function ModelRouteCard({
     }
     const route = ModelRouteSchema.safeParse({
       provider, model: model.trim(),
-      ...(baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {}),
+      ...(!cfg.hosted && baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {}),
       ...(reasoningEffort.trim() ? { reasoning_effort: reasoningEffort.trim() } : {}),
     });
     if (!route.success) {
@@ -576,7 +580,7 @@ function ModelRouteCard({
               <option value="anthropic">anthropic</option>
               <option value="openai">openai</option>
               <option value="openrouter">openrouter</option>
-              <option value="ollama">ollama</option>
+              {!cfg.hosted && <option value="ollama">ollama</option>}
             </select>
             <input
               type="text"
@@ -612,12 +616,14 @@ function ModelRouteCard({
                 style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }} />
               <span className="mt-1 block text-xs" style={{ color: 'var(--muted)' }}>Use a value supported by your model, such as medium. Leave blank for its default.</span>
             </label>
+            {!cfg.hosted && (
             <label className="text-sm" style={{ color: 'var(--foreground-secondary)' }}>
               Custom endpoint
               <input aria-label={`${label} custom endpoint`} value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)}
                 placeholder="Provider default" className="mt-1 w-full min-w-0 h-9 px-3 rounded-md outline-none"
                 style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }} />
             </label>
+            )}
           </div>
         </div>
       )}
@@ -650,7 +656,8 @@ function EmbedSection({ cfg, onSaved }: { cfg: AIConfig; onSaved: () => Promise<
         embed: {
           provider,
           model: model.trim() || null,
-          base_url: baseUrl.trim() || null,
+          // Hosted: no custom address; clearing restores the standard one.
+          base_url: cfg.hosted ? null : baseUrl.trim() || null,
         },
       });
       if (!r.ok) {
@@ -759,6 +766,7 @@ function EmbedSection({ cfg, onSaved }: { cfg: AIConfig; onSaved: () => Promise<
           />
         </div>
 
+        {!cfg.hosted && (
         <div>
           <label className="text-sm font-semibold block mb-1.5" style={{ color: 'var(--muted)' }}>
             Base URL
@@ -776,6 +784,7 @@ function EmbedSection({ cfg, onSaved }: { cfg: AIConfig; onSaved: () => Promise<
             Point at any OpenAI-compatible server (LM Studio, vllm, llama.cpp server) for fully local embeddings.
           </p>
         </div>
+        )}
 
         {off && (
           <p className="text-[11px] leading-snug" style={{ color: 'var(--muted)' }}>
@@ -888,7 +897,7 @@ function TranscriptionSection({ cfg, onSaved }: { cfg: AIConfig; onSaved: () => 
         )}
 
         <div className="space-y-1.5">
-          {TRANSCRIPTION_OPTIONS.map((opt) => {
+          {TRANSCRIPTION_OPTIONS.filter((opt) => !(cfg.hosted && opt.id === 'local')).map((opt) => {
             const active = provider === opt.id;
             return (
               <label
