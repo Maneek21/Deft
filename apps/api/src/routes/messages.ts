@@ -18,6 +18,7 @@ import { enqueueAgentEmployeeMessageJobs, resolveAgentEmployeeMessageTargets } f
 import { enqueueDeftyWake, finishDeftyWake, type DeftyWakeOutcome, normalizeChatMentions, planDeftyWake, resolveMentionedUserIds } from '../lib/defty-wake.js';
 import { emitMessageToSpaceViewers, projectMessagesForViewer } from '../lib/agent-message-run-details.js';
 import { toPlainText } from '../lib/plain-text.js';
+import { withoutDeletedContent } from '../lib/deleted-message.js';
 import {
   getMessageAttachments,
   type MessageAttachment,
@@ -276,7 +277,8 @@ messageRoutes.get('/:spaceId', async (c) => {
         getMessageAttachments(messageIds, user.org_id),
       ]);
       const projected = await projectMessagesForViewer(user, unique);
-      const result = projected.map(msg => ({
+      // A deleted message stays in the list as a placeholder, without what it said.
+      const result = projected.map(msg => withoutDeletedContent({
         ...msg,
         reactions: reactionsMap.get(msg.id) ?? [],
         reply_count: replyStatsMap.get(msg.id)?.reply_count ?? 0,
@@ -366,7 +368,8 @@ messageRoutes.get('/:spaceId', async (c) => {
         const lastRead = threadReadMap.get(msg.id);
         hasUnreadThreadReplies = !lastRead || new Date(latestReplyAt) > lastRead;
       }
-      return {
+      // A deleted message stays in the list as a placeholder, without what it said.
+      return withoutDeletedContent({
         ...msg,
         reactions: reactionsMap.get(msg.id) ?? [],
         reply_count: replyCount,
@@ -374,7 +377,7 @@ messageRoutes.get('/:spaceId', async (c) => {
         has_unread_thread_replies: hasUnreadThreadReplies,
         file_ids: (attachmentsMap.get(msg.id) ?? []).map((file) => file.id),
         files: attachmentsMap.get(msg.id) ?? [],
-      };
+      });
     });
 
     return c.json({
@@ -982,7 +985,8 @@ messageRoutes.get('/:id/thread', async (c) => {
       files: attachmentsMap.get(parentMsg.id) ?? [],
     };
 
-    const repliesWithReactions = projectedReplies.map((reply) => ({
+    // A deleted reply stays in the thread as a placeholder, without what it said.
+    const repliesWithReactions = projectedReplies.map((reply) => withoutDeletedContent({
       ...reply,
       reactions: reactionsMap.get(reply.id) ?? [],
       file_ids: (attachmentsMap.get(reply.id) ?? []).map((file) => file.id),

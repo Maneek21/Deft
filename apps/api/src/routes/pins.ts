@@ -92,10 +92,12 @@ pinRoutes.get('/:spaceId/pins', async (c) => {
     author_avatar: users.avatar_url,
   })
     .from(pinnedMessages)
+    // A pinned message that was later deleted is left out: its text must not be returned.
     .innerJoin(messages, and(
       eq(pinnedMessages.message_id, messages.id),
       eq(messages.space_id, spaceId),
       eq(messages.org_id, user.org_id),
+      eq(messages.is_deleted, false),
     ))
     .innerJoin(users, eq(messages.user_id, users.id))
     .where(eq(pinnedMessages.space_id, spaceId))

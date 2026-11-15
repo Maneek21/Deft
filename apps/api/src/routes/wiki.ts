@@ -814,7 +814,8 @@ wikiRoutes.get('/:slug', async (c) => {
       page_id: wikiCitations.page_id,
       source_type: wikiCitations.source_type,
       source_id: wikiCitations.source_id,
-      excerpt: wikiCitations.excerpt,
+      // The excerpt is a stored copy of the cited message's text: it goes when the message is deleted.
+      excerpt: sql<string | null>`CASE WHEN ${messages.is_deleted} IS TRUE THEN NULL ELSE ${wikiCitations.excerpt} END`,
       created_at: wikiCitations.created_at,
       source_space_id: sql<string | null>`COALESCE(${wikiCitations.source_space_id}, ${messages.space_id})`,
       source_user_id: sql<string | null>`COALESCE(${wikiCitations.source_user_id}, ${messages.user_id})`,
