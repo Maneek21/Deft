@@ -26,16 +26,22 @@ async function canSeeSpaceForCreatorRoute(space: { id: string; created_by: strin
 /**
  * Removes one person from a space and, in the same transaction, cancels the
  * messages they had scheduled for it: posting needs membership, so those
- * messages could never be sent and must not stay listed as pending. The
- * scheduled rows are taken before the membership row, the order the send
- * worker locks them in, so the two cannot deadlock.
+ * messages could never be sent and must not stay listed as pending.
+ *
+ * The membership row goes first. Scheduling a message holds a share lock on
+ * that row until its own transaction commits (routes/scheduled.ts), so the
+ * delete waits for any scheduling in flight and the cancel that follows sees
+ * the message it wrote; a scheduling that starts later finds no membership.
+ * The cancel skips rows the send worker holds, so it never waits on the
+ * worker while the worker waits on the membership row.
  */
 async function removeSpaceMember(orgId: string, spaceId: string, userId: string) {
   return db.transaction(async (tx) => {
-    await cancelPendingScheduledMessagesForSpace(tx, { orgId, spaceId, userId });
-    return tx.delete(spaceMembers)
+    const removed = await tx.delete(spaceMembers)
       .where(and(eq(spaceMembers.space_id, spaceId), eq(spaceMembers.user_id, userId)))
       .returning();
+    await cancelPendingScheduledMessagesForSpace(tx, { orgId, spaceId, userId });
+    return removed;
   });
 }
 

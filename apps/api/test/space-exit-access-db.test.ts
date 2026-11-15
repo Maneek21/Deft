@@ -27,9 +27,9 @@ import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 
 const url = safeTestDatabaseUrl();
 const orgId = randomUUID();
-const ids = { creator: randomUUID(), leaver: randomUUID(), quitter: randomUUID(), guest: randomUUID(), defty: randomUUID() };
+const ids = { creator: randomUUID(), leaver: randomUUID(), quitter: randomUUID(), guest: randomUUID(), defty: randomUUID(), racer: randomUUID() };
 const roles: Record<string, 'member' | 'guest'> = {
-  [ids.creator]: 'member', [ids.leaver]: 'member', [ids.quitter]: 'member', [ids.guest]: 'guest', [ids.defty]: 'member',
+  [ids.creator]: 'member', [ids.leaver]: 'member', [ids.quitter]: 'member', [ids.guest]: 'guest', [ids.defty]: 'member', [ids.racer]: 'member',
 };
 const employeeId = randomUUID();
 const S = { priv: randomUUID(), other: randomUUID(), pub: randomUUID(), stale: randomUUID() };
@@ -47,14 +47,16 @@ let unavailable = url ? '' : 'Set DEFT_TEST_DATABASE_URL to a disposable test da
 let seeded = false;
 let app: Hono | undefined;
 
-async function call(actor: string, method: string, path: string) {
+async function call(actor: string, method: string, path: string, body?: unknown) {
   const hono = new Hono();
   hono.use('*', async (c, next) => {
     c.set('user', { id: actor, org_id: orgId, email: `${actor}@example.test`, sid: `exit-${actor}`, role: roles[actor] } as any);
     await next();
   });
   hono.route('/', app!);
-  const response = await hono.request(path, { method });
+  const response = await hono.request(path, body === undefined
+    ? { method }
+    : { method, body: JSON.stringify(body), headers: { 'content-type': 'application/json' } });
   const text = await response.text();
   let json: any = text;
   try { json = JSON.parse(text); } catch { /* keep text */ }
@@ -166,6 +168,7 @@ before(async () => {
 
 after(async () => {
   if (seeded && client) {
+    await client.query('DELETE FROM job_queue WHERE org_id=$1', [orgId]).catch(() => undefined);
     for (const table of ['scheduled_messages', 'notifications', 'attention_events', 'attention_items', 'agent_session_turns', 'agent_actions']) {
       await client.query(`DELETE FROM ${table} WHERE org_id=$1`, [orgId]);
     }
@@ -278,4 +281,53 @@ test('a public space: a member who leaves still reads what any member may; a rem
   assert.deepEqual(guest.scheduled, []);
   assert.equal(await scheduledStatus(scheduled.pub), 'cancelled');
   assert.equal(await scheduledStatus(scheduled.pubGuest), 'cancelled');
+});
+
+test('an archived public space: someone who is not in it loses its notifications, someone still in it keeps them', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  // The leaver left the public space in the test above; the creator is still in it.
+  await client!.query(
+    `INSERT INTO notifications(id,org_id,user_id,type,title,body,link) VALUES($1,$2,$3,'mention','fixture','CANARY-N-CREATOR',$4)`,
+    [randomUUID(), orgId, ids.creator, `/chat?space=${S.pub}&message=${M.pub}`]);
+  assert.ok((await seenBy(ids.leaver)).notifications.includes('CANARY-N-PUBLIC'));
+  assert.deepEqual((await seenBy(ids.creator)).notifications, ['CANARY-N-CREATOR']);
+  assert.equal((await call(ids.leaver, 'GET', `/api/spaces/${S.pub}`)).status, 200);
+
+  await client!.query('UPDATE spaces SET is_archived=true WHERE id=$1', [S.pub]);
+
+  // The notification follows the same rule as opening the space.
+  assert.equal((await call(ids.leaver, 'GET', `/api/spaces/${S.pub}`)).status, 403);
+  const leaver = await seenBy(ids.leaver);
+  assert.ok(!leaver.notifications.includes('CANARY-N-PUBLIC'), leaver.notifications.join(','));
+  assert.ok(!leaver.inbox.includes('CANARY-N-PUBLIC'));
+  assert.equal((await call(ids.creator, 'GET', `/api/spaces/${S.pub}`)).status, 200);
+  assert.deepEqual((await seenBy(ids.creator)).notifications, ['CANARY-N-CREATOR']);
+});
+
+test('scheduling a message at the same moment as being removed never leaves a pending message behind', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const space = randomUUID();
+  await client!.query(`INSERT INTO spaces(id,org_id,name,type,created_by) VALUES($1,$2,$3,'private',$4)`, [space, orgId, `race-${space}`, ids.creator]);
+  await client!.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), space, ids.creator]);
+  const outcomes = new Set<number>();
+  for (let round = 0; round < 12; round += 1) {
+    await client!.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), space, ids.racer]);
+    const schedule = () => call(ids.racer, 'POST', '/api/scheduled-messages', { space_id: space, content: `CANARY-S-RACE ${round}`, scheduled_for: '2999-01-01T00:00:00.000Z' });
+    const remove = () => call(ids.creator, 'DELETE', `/api/spaces/${space}/members/${ids.racer}`);
+    // Alternate which request is issued first so both orders are exercised.
+    const [scheduled, removed] = round % 2 === 0
+      ? await Promise.all([schedule(), remove()])
+      : (await Promise.all([remove(), schedule()])).reverse() as [Awaited<ReturnType<typeof schedule>>, Awaited<ReturnType<typeof remove>>];
+    assert.equal(removed.status, 200, removed.text);
+    assert.ok(scheduled.status === 201 || scheduled.status === 403, `${scheduled.status} ${scheduled.text}`);
+    outcomes.add(scheduled.status);
+    const { rows } = await client!.query(
+      `SELECT count(*)::int AS n FROM scheduled_messages WHERE space_id=$1 AND user_id=$2 AND status='pending'`, [space, ids.racer]);
+    assert.equal(rows[0].n, 0, `round ${round}: a pending message survived the removal (schedule answered ${scheduled.status})`);
+  }
+  assert.deepEqual((await seenBy(ids.racer)).scheduled, []);
+  // Once removed, scheduling is refused outright.
+  const late = await call(ids.racer, 'POST', '/api/scheduled-messages', { space_id: space, content: 'late', scheduled_for: '2999-01-01T00:00:00.000Z' });
+  assert.equal(late.status, 403, late.text);
+  t.diagnostic(`schedule answered: ${[...outcomes].sort().join(', ')}`);
 });

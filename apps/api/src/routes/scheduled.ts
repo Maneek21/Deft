@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { files, scheduledMessages, spaceMembers } from '@deft/db/schema';
+import { files, scheduledMessages, spaceMembers, spaces } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { requireSpaceMembership } from '../lib/space-membership.js';
 import { extractLegacyAttachmentIds, MAX_MESSAGE_ATTACHMENTS } from '../lib/message-attachments.js';
@@ -55,6 +55,18 @@ scheduledRoutes.post('/', async (c) => {
   }
 
   const scheduled = await db.transaction(async (tx) => {
+    // Hold the caller's membership row until this transaction commits. A
+    // removal that is in flight either finishes first (no row: refused) or
+    // waits for this message and then cancels it (routes/spaces.ts).
+    const membership = await tx.execute(sql`
+      SELECT 1 FROM ${spaceMembers}
+      INNER JOIN ${spaces} ON ${spaces.id} = ${spaceMembers.space_id}
+      WHERE ${spaceMembers.space_id} = ${parsed.data.space_id} AND ${spaceMembers.user_id} = ${user.id}
+        AND ${spaces.org_id} = ${user.org_id}
+      FOR SHARE OF ${spaceMembers}`);
+    const held = (membership as { rows?: unknown[] }).rows ?? (Array.isArray(membership) ? membership : []);
+    if (held.length === 0) return null;
+
     const [created] = await tx.insert(scheduledMessages).values({
       org_id: user.org_id,
       user_id: user.id,
@@ -97,6 +109,7 @@ scheduledRoutes.post('/', async (c) => {
     return created;
   });
 
+  if (!scheduled) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
   return c.json(scheduled, 201);
 });
 

@@ -1,6 +1,7 @@
 import { sql, type SQL } from 'drizzle-orm';
-import { notifications } from '@deft/db/schema';
+import { notifications, spaceMembers, spaces } from '@deft/db/schema';
 import { publicSpaceVisibleSql } from './space-visibility.js';
+import { unjoinedPublicSpaceReadableSql } from './space-membership.js';
 
 // Watchers are subscriptions, not sufficient authority for new mention surfaces.
 export function nativeTaskAccessSql(userId: string): SQL {
@@ -48,11 +49,16 @@ export function nativeDeliveryAccessSql(userId: string, deliveryId: SQL, orgId: 
   )`;
 }
 
-/** The space is one `userId` can read today: they are in it, or it is public and they are not a guest. */
+/**
+ * The space is one `userId` can read today, by the rule the web routes use
+ * (`canReadSpace`): they are in it (archived or not), or it is a public,
+ * unarchived space and they are a member of the workspace who is not a guest.
+ */
 function readableSpaceSql(userId: string, spaceId: SQL, orgId: SQL): SQL {
-  return sql`EXISTS (SELECT 1 FROM spaces ns WHERE ns.id = ${spaceId} AND ns.org_id = ${orgId}
-    AND (${publicSpaceVisibleSql(sql`ns.type`, sql`ns.org_id`, userId)}
-      OR EXISTS (SELECT 1 FROM space_members nsm WHERE nsm.space_id = ns.id AND nsm.user_id = ${userId})))`;
+  return sql`EXISTS (SELECT 1 FROM ${spaces} WHERE ${spaces.id} = ${spaceId} AND ${spaces.org_id} = ${orgId}
+    AND (EXISTS (SELECT 1 FROM ${spaceMembers}
+        WHERE ${spaceMembers.space_id} = ${spaces.id} AND ${spaceMembers.user_id} = ${userId})
+      OR ${unjoinedPublicSpaceReadableSql(userId)}))`;
 }
 
 /**
