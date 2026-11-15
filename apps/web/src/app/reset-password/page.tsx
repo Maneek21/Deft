@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { readLinkToken } from '@/lib/link-token';
+import { captureLinkToken } from '@/lib/link-token';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
@@ -10,14 +10,14 @@ export default function ResetPasswordPage() {
   // Recovery links carry the token after `#` (`/reset-password#token=...`);
   // links issued before that change used `?token=`, which is still accepted.
   // `undefined` means the address has not been read yet.
+  // The token is taken out of the address bar once read, so it is not kept in
+  // history, shown on screen, or sent onward. The ref keeps the first read so
+  // StrictMode's second mount effect does not see an empty address.
+  const captured = useRef<string | null | undefined>(undefined);
   const [token, setToken] = useState<string | null | undefined>(undefined);
 
   useEffect(() => {
-    const found = readLinkToken(window.location.hash, window.location.search);
-    setToken(found);
-    // Take the token out of the address bar so it is not kept in history,
-    // shown on screen, or sent onward by a reload.
-    if (found) window.history.replaceState(window.history.state, '', window.location.pathname);
+    setToken(captureLinkToken(captured, window.location, window.history, '/reset-password'));
   }, []);
 
   const [password, setPassword] = useState('');
