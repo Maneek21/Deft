@@ -827,7 +827,8 @@ export default function MembersPage() {
                       Admin actions
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      {detail.member.id !== user?.id && (
+                      {/* Only the owner can make a recovery link for an owner or admin. */}
+                      {detail.member.id !== user?.id && (user?.role === 'owner' || (detail.member.role !== 'owner' && detail.member.role !== 'admin')) && (
                         <button
                           onClick={() => handleRecoveryLink(detail.member)}
                           disabled={recoveringId === detail.member.id}
