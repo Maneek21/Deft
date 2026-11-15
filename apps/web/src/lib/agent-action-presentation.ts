@@ -168,6 +168,18 @@ export function getApprovalMutationStatus(
 }
 
 /**
+ * The message to show when an approve answered that the action did not
+ * complete but is still pending and can be approved again. Null for any
+ * other answer.
+ */
+export function retryableApprovalMessage(result: unknown): string | null {
+  const body = objectValue(result);
+  if (body?.status !== 'pending' || body.retryable !== true) return null;
+  const reason = typeof body.error === 'string' && body.error.trim() ? ` Reason: ${body.error.trim()}` : '';
+  return `This did not complete. It is still waiting for approval, so you can approve it again.${reason}`;
+}
+
+/**
  * The action to keep on screen after its approve answered "failed": approved,
  * with the reason from the answer. Null for any other answer.
  */

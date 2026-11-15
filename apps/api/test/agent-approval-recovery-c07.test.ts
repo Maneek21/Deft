@@ -470,9 +470,10 @@ test('C07-j: an interrupted resolver-owned approval is settled as failed on the 
     [randomUUID(), f.orgId, actionId, f.requesterId],
   );
   const response = await approve(actionId);
-  assert.equal(response.status, 500, await response.clone().text());
-  const body = await response.json() as { code: string; error: string };
-  assert.equal(body.code, 'EXECUTE_FAILED');
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json() as { status: string; message: string; error: string };
+  assert.equal(body.status, 'failed');
+  assert.equal(body.message, 'approved, but it did not complete');
   assert.match(body.error, /interrupted/i);
   const row = await actionRow(actionId);
   assert.equal(row.approval_status, 'approved');

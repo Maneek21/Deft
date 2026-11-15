@@ -189,14 +189,20 @@ test('wiki_write: a proposal without a recorded target', { skip: !canRun }, asyn
   await assertFailedResult(actionId, UNVERIFIABLE, 'WIKI_PROPOSAL_UNVERIFIABLE', page.id);
 });
 
-test('an unexpected execution error keeps its error response', { skip: !canRun }, async () => {
+// Fix 5: an execution failure after approval is an answer, never a server error.
+test('an unexpected execution error answers 200: final on the resolver path, retryable on the ordinary path', { skip: !canRun }, async () => {
   const updatePage = await createPage();
   const updateAction = await mcpUpdate(updatePage);
   _setWikiUpdateRevisionCheckedHookForTest(async () => { throw new Error('simulated failure'); });
   try {
     const answer = await approve(updateAction);
-    assert.equal(answer.status, 500, JSON.stringify(answer.body));
-    assert.equal(answer.body.code, 'EXECUTE_FAILED');
+    assert.equal(answer.status, 200, JSON.stringify(answer.body));
+    assert.equal(answer.body.status, 'failed');
+    assert.equal(answer.body.message, 'approved, but it did not complete');
+    assert.match(String(answer.body.error), /simulated failure/);
+    const [row] = (await f.client.query('SELECT approval_status, executed_at FROM agent_actions WHERE id = $1', [updateAction])).rows;
+    assert.equal(row.approval_status, 'approved');
+    assert.ok(row.executed_at, 'the resolver failure is final');
   } finally {
     _setWikiUpdateRevisionCheckedHookForTest(null);
   }
@@ -206,13 +212,21 @@ test('an unexpected execution error keeps its error response', { skip: !canRun }
   _setWikiWriteRevisionCheckedHookForTest(async () => { throw new Error('simulated failure'); });
   try {
     const answer = await approve(writeAction);
-    assert.equal(answer.status, 500, JSON.stringify(answer.body));
-    assert.equal(answer.body.code, 'EXECUTE_FAILED');
+    assert.equal(answer.status, 200, JSON.stringify(answer.body));
+    assert.equal(answer.body.status, 'pending');
+    assert.equal(answer.body.retryable, true);
+    assert.match(String(answer.body.message), /still pending and can be approved again/);
+    assert.match(String(answer.body.error), /simulated failure/);
+    const [row] = (await f.client.query('SELECT approval_status, executed_at FROM agent_actions WHERE id = $1', [writeAction])).rows;
+    assert.equal(row.approval_status, 'pending', 'a retryable failure leaves the action pending');
   } finally {
     _setWikiWriteRevisionCheckedHookForTest(null);
   }
+  // The retry runs the action again and now succeeds.
+  const retried = await approve(writeAction);
+  assert.equal(retried.status, 200, JSON.stringify(retried.body));
+  assert.notEqual(retried.body.status, 'pending');
   assert.equal((await pageState(updatePage.id)).content, 'Original content');
-  assert.equal((await pageState(writePage.id)).content, 'Original content');
 });
 
 test('only a wiki proposal action with a known code and its exact message is a typed refusal', () => {

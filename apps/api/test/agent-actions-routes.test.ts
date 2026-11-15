@@ -1801,7 +1801,7 @@ test('POST reject after Defty work capture approval leaves the intent converted'
   });
 });
 
-test('POST approve on failed legacy action returns non-2xx and leaves it pending', async () => {
+test('POST approve on failed legacy action answers pending-and-retryable (200) and leaves it pending', async () => {
   const title = `routes-legacy-fail-${Date.now()}`;
   const actionId = await insertLegacyCreateTaskWithoutProject(title);
 
@@ -1810,10 +1810,11 @@ test('POST approve on failed legacy action returns non-2xx and leaves it pending
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({}),
   });
-  assert.equal(res.status, 500);
+  assert.equal(res.status, 200);
   const body = await res.json();
-  assert.equal(body.code, 'EXECUTE_FAILED');
-  assert.equal(body.success, false);
+  assert.equal(body.status, 'pending');
+  assert.equal(body.retryable, true);
+  assert.equal(body.error, 'Project not found');
 
   await withClient(async (c) => {
     const r = await c.query(

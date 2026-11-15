@@ -43,6 +43,7 @@ import {
   getAppRunInspectorLabel,
   getAppRunReference,
   getSafeGenericParams,
+  retryableApprovalMessage,
   normalizeTaskLinkReview,
   type ApprovalChipIconName,
   type ApprovalIconName,
@@ -783,6 +784,13 @@ export function AgentActionCard({
     setLocalStatus('approving');
     try {
       const result = await onApprove();
+      // A retryable failure leaves the action pending: keep the controls and say so.
+      const retryMessage = retryableApprovalMessage(result);
+      if (retryMessage) {
+        setLocalStatus(null);
+        setLocalError(retryMessage);
+        return;
+      }
       const status = getApprovalMutationStatus(result, 'approved');
       if (result && typeof result === 'object' && 'result' in result) {
         setLocalResult(result.result);
