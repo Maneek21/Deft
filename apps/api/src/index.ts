@@ -223,8 +223,10 @@ app.route('/api/agent-webhooks', publicAgentWebhookRoutes);
 // subscribe without a JWT.
 app.route('/api/ics', icsPublicRoutes);
 
-// Public invite preview/accept. Token in URL path; admin shares link
-// out-of-band per "Email: none" design. Mounted before authMiddleware.
+// Public invite preview/accept. The token travels in the POST body (the link
+// carries it after `#`); the legacy GET preview path is redacted in the
+// request log. Admin shares link out-of-band per "Email: none" design.
+// Mounted before authMiddleware.
 app.route('/api/invites', inviteRoutes);
 
 // Protected routes
