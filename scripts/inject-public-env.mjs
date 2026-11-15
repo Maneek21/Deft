@@ -8,6 +8,29 @@ export const PUBLIC_ENV_PLACEHOLDERS = {
   __DEFT_WS_URL__: 'NEXT_PUBLIC_WS_URL',
 };
 
+// The web Content-Security-Policy (apps/web/next.config.ts) lets the page
+// connect only to the API and live-connection addresses. It names their
+// origins, not full URLs, plus each origin's WebSocket form.
+export const PUBLIC_ENV_ORIGIN_PLACEHOLDERS = {
+  __DEFT_API_ORIGIN__: { key: 'NEXT_PUBLIC_API_URL', ws: false },
+  __DEFT_API_WS_ORIGIN__: { key: 'NEXT_PUBLIC_API_URL', ws: true },
+  __DEFT_WS_ORIGIN__: { key: 'NEXT_PUBLIC_WS_URL', ws: false },
+  __DEFT_WS_WS_ORIGIN__: { key: 'NEXT_PUBLIC_WS_URL', ws: true },
+};
+
+function publicOrigin(key, value, ws) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`${key} must be an absolute http or https URL`);
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(`${key} must be an absolute http or https URL`);
+  }
+  return ws ? url.origin.replace(/^http/, 'ws') : url.origin;
+}
+
 const TEXT_EXTENSIONS = new Set(['.html', '.js', '.json', '.map', '.txt']);
 
 export async function injectPublicEnv(root, env = process.env) {
@@ -16,6 +39,9 @@ export async function injectPublicEnv(root, env = process.env) {
     if (!value) throw new Error(`${key} is required when using the prebuilt Deft image`);
     return [placeholder, value.replace(/\/$/, '')];
   });
+  for (const [placeholder, { key, ws }] of Object.entries(PUBLIC_ENV_ORIGIN_PLACEHOLDERS)) {
+    replacements.push([placeholder, publicOrigin(key, env[key], ws)]);
+  }
 
   let filesChanged = 0;
   let replacementsMade = 0;

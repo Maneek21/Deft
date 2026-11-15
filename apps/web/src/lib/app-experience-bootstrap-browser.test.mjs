@@ -38,7 +38,7 @@ test('actual srcdoc and HTTP control retain opaque Worker isolation under the re
  let browser;
  try{
   const host=await listen(),foreign=await listen();
-  const rows=await vm.runInNewContext('('+method.replace('async headers()','async function()')+')()',{apiOrigin:foreign});
+  const rows=await vm.runInNewContext('('+method.replace('async headers()','async function()')+')()',{connectSrc:`'self' ${foreign} ${foreign.replace(/^http/,'ws')}`});
   parentPolicy=rows.find(row=>row.source==='/(.*)').headers.find(row=>row.key==='Content-Security-Policy').value;
   childPolicy=rows.find(row=>row.source==='/app-experience-bootstrap').headers.find(row=>row.key==='Content-Security-Policy').value;
   assert.ok(parentPolicy.includes("worker-src 'self' blob:"));

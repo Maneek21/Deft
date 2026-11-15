@@ -27,7 +27,7 @@ test('global parent policy permits Blob Workers across SPA entry while retaining
  assert.equal(parent.replace("worker-src 'self' blob:; ",''),[
   "default-src 'self'", "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com", "img-src 'self' data: blob: https:",
-  "font-src 'self' data: https://fonts.gstatic.com", `connect-src 'self' ws: wss: ${process.env.NEXT_PUBLIC_API_URL||'http://localhost:3001'} https:`,
+  "font-src 'self' data: https://fonts.gstatic.com", parent.split('; ').find(part=>part.startsWith('connect-src '))!,
   "media-src 'self' blob:", "frame-ancestors 'none'",
  ].join('; '));
  assert.match(policy('/app-experience-bootstrap'),/script-src 'self'/);assert.match(policy('/app-experience-bootstrap'),/connect-src 'none'/);

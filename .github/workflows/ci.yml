@@ -161,6 +161,7 @@ jobs:
         run: >-
           pnpm --filter @deft/web exec tsx --test
           src/lib/huddle-state.test.ts
+          src/lib/content-security-policy.test.ts
           src/lib/socket.test.ts
           src/lib/space-socket.test.ts
           src/lib/module-collection-nav.test.ts

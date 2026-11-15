@@ -25,7 +25,29 @@ try {
   // fall through — root .env is optional
 }
 
-const apiOrigin = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+// The page may connect only to itself and to the configured API and live
+// connection addresses (the defaults match lib/api.ts and lib/socket.ts).
+// Each address is listed as its origin plus its WebSocket form, because a
+// CSP source `https://host` does not match `wss://host`. The prebuilt image
+// is built with placeholders (`__DEFT_API_URL__`); for those the policy names
+// `__DEFT_API_ORIGIN__` / `__DEFT_API_WS_ORIGIN__`, which
+// scripts/inject-public-env.mjs fills with the real origins at start.
+function connectSources(url: string): string[] {
+  const placeholder = /^__DEFT_([A-Z]+)_URL__$/.exec(url);
+  if (placeholder) return [`__DEFT_${placeholder[1]}_ORIGIN__`, `__DEFT_${placeholder[1]}_WS_ORIGIN__`];
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { throw new Error(`Invalid public URL for the content security policy: ${url}`); }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`Public URL must be http or https for the content security policy: ${url}`);
+  }
+  return [parsed.origin, parsed.origin.replace(/^http/, 'ws')];
+}
+
+const connectSrc = [...new Set([
+  "'self'",
+  ...connectSources(process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'),
+  ...connectSources(process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:3001'),
+])].join(' ');
 
 const nextConfig: NextConfig = {
   webpack(config) {
@@ -54,8 +76,9 @@ const nextConfig: NextConfig = {
   // Task 4 (private-alpha): security headers. `unsafe-inline` + `unsafe-eval`
   // on script-src are temporary — Next.js 16 + Tailwind v4 + TipTap need them
   // today. Tightening to nonce-based CSP is post-alpha. `microphone=(self)`
-  // keeps the voice-clip recorder working. `connect-src` includes the dev API
-  // URL; production operators can widen via env-driven config later.
+  // keeps the voice-clip recorder working. `connect-src` is narrowed to the
+  // page itself and the configured API and live-connection addresses, so a
+  // script on the page cannot send data anywhere else.
   async headers() {
     return [
       {
@@ -77,7 +100,7 @@ const nextConfig: NextConfig = {
               "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
               "img-src 'self' data: blob: https:",
               "font-src 'self' data: https://fonts.gstatic.com",
-              `connect-src 'self' ws: wss: ${apiOrigin} https:`,
+              `connect-src ${connectSrc}`,
               "media-src 'self' blob:",
               "frame-ancestors 'none'",
             ].join('; '),

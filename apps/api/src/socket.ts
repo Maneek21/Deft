@@ -8,6 +8,7 @@ import * as huddle from './huddle-rooms.js';
 import { requireActiveOrgMembership } from './lib/org-membership.js';
 import { createNotificationIfAllowed } from './lib/notification-policy.js';
 import { isOrgTaskEvent, orgTaskEventPayload, type OrgTaskEvent, type OrgTaskEventPayload } from './lib/task-realtime.js';
+import { socketAllowedWebOrigins } from './lib/web-origins.js';
 
 export type SocketUser = {
   id: string;
@@ -335,7 +336,8 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
   const recordLastSeen = dependencies.recordLastSeen ?? updateLastSeen;
   io = new SocketIOServer(server, {
     cors: {
-      origin: process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
+      // Hosted: only the configured web address (lib/web-origins.ts).
+      origin: socketAllowedWebOrigins(),
       credentials: true,
     },
     pingInterval: 10000,
