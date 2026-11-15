@@ -336,8 +336,12 @@ clipRoutes.get('/space/:spaceId', async (c) => {
       .orderBy(desc(clips.created_at))
       .limit(50);
 
+    // Belonging to the space is not enough: each clip must also pass the
+    // check its own routes use (for example, its message was not deleted).
+    const allowed = await Promise.all(result.map((clip) => canAccessClip(clip, user.org_id, user.id)));
     return c.json(await Promise.all(
-      result.map((clip) => serializeClipForViewer(clip, user.org_id, user.id)),
+      result.filter((_, index) => allowed[index])
+        .map((clip) => serializeClipForViewer(clip, user.org_id, user.id)),
     ));
   } catch (err) {
     console.error('[clips] List failed:', err);

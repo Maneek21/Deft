@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, ilike, sql, desc, inArray, getTableColumns } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { tags, entityTags, tasks, messages, users, projects, notes, clips } from '@deft/db/schema';
+import { tags, entityTags, tasks, messages, users, projects, notes, clips, orgMembers } from '@deft/db/schema';
 import type { AuthUser } from '../middleware/auth.js';
 import { loadMessagesForMember } from '../lib/space-membership.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
@@ -112,7 +112,15 @@ async function canSeeTagEntity(entityType: TagEntityType, entityId: string, user
   return resolved.isVisible(entityType, entityId);
 }
 
-// GET / — list all tags for org with counts
+/** Deleting a tag removes it from every item, so it is for owners and admins. The role is read from the database. */
+async function isOwnerOrAdmin(user: AuthUser) {
+  const [membership] = await db.select({ role: orgMembers.role }).from(orgMembers)
+    .where(and(eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, user.id), eq(orgMembers.is_active, true)))
+    .limit(1);
+  return membership?.role === 'owner' || membership?.role === 'admin';
+}
+
+// GET / — list all tags for org, each with the number of tagged items the caller can see
 tagRoutes.get('/', async (c) => {
   const user = c.get('user');
 
@@ -125,20 +133,25 @@ tagRoutes.get('/', async (c) => {
     .where(eq(tags.org_id, user.org_id))
     .orderBy(tags.name);
 
-  // Get counts per tag
-  const tagIds = result.map(t => t.id);
+  // Counts follow the tagged-items list (GET /:id/entities): an item the
+  // caller cannot see is not counted, so a count says nothing about hidden items.
+  const COUNT_BATCH = 1000;
   const counts = new Map<string, number>();
 
-  if (tagIds.length > 0) {
-    const countRows = await db.select({
+  if (result.length > 0) {
+    const refs = await db.select({
       tag_id: entityTags.tag_id,
-      count: sql<number>`count(*)::int`,
+      entity_type: entityTags.entity_type,
+      entity_id: entityTags.entity_id,
     }).from(entityTags)
-      .where(eq(entityTags.org_id, user.org_id))
-      .groupBy(entityTags.tag_id);
+      .where(eq(entityTags.org_id, user.org_id));
 
-    for (const row of countRows) {
-      counts.set(row.tag_id, row.count);
+    for (let start = 0; start < refs.length; start += COUNT_BATCH) {
+      const batch = refs.slice(start, start + COUNT_BATCH);
+      const resolved = await resolveVisibleTagEntities(batch, user);
+      for (const ref of batch) {
+        if (resolved.isVisible(ref.entity_type, ref.entity_id)) counts.set(ref.tag_id, (counts.get(ref.tag_id) ?? 0) + 1);
+      }
     }
   }
 
@@ -178,10 +191,14 @@ tagRoutes.post('/', async (c) => {
   return c.json(tag, 201);
 });
 
-// DELETE /:id — delete tag
+// DELETE /:id — delete tag (owners and admins only)
 tagRoutes.delete('/:id', async (c) => {
   const user = c.get('user');
   const tagId = c.req.param('id');
+
+  if (!await isOwnerOrAdmin(user)) {
+    return c.json({ error: 'Only owners and admins can delete tags', code: 'FORBIDDEN' }, 403);
+  }
 
   const [tag] = await db.select().from(tags)
     .where(and(eq(tags.id, tagId), eq(tags.org_id, user.org_id)))
