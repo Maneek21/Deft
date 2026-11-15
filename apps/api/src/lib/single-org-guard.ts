@@ -16,16 +16,31 @@
  * We never *prevent* multiple orgs at the DB layer — a scripted import or
  * seed run may legitimately create more than one row. The enforcement
  * surface is the public auth flow.
+ *
+ * Signup decides "no workspace exists yet" and creates the first workspace
+ * in one transaction that holds lockFirstWorkspaceCreation, so two signups
+ * arriving together cannot both find the install empty.
  */
 import { db } from './db.js';
 import { orgs } from '@deft/db/schema';
 import { sql } from 'drizzle-orm';
 
-export async function countOrgs(): Promise<number> {
-  const [row] = await db
+type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+export async function countOrgs(executor: Pick<typeof db, 'select'> = db): Promise<number> {
+  const [row] = await executor
     .select({ n: sql<number>`count(*)::int` })
     .from(orgs);
   return row?.n ?? 0;
+}
+
+/**
+ * Take the install-wide lock for creating the first workspace. It is held
+ * until the transaction commits or rolls back; a second caller waits here and
+ * then sees the first caller's committed workspace when it counts.
+ */
+export async function lockFirstWorkspaceCreation(tx: DbTransaction): Promise<void> {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended('deft.first_workspace_creation.v1', 0))`);
 }
 
 export const SINGLE_ORG_ERROR = {
