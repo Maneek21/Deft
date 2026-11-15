@@ -11,6 +11,7 @@ import test from 'node:test';
 import { isHostedMode } from '../src/lib/hosted-mode.js';
 import {
   isSetupTokenValid,
+  parseIsoTime,
   readSetupTokenSettings,
   validateSetupTokenEnvironment,
 } from '../src/lib/setup-token.js';
@@ -72,6 +73,53 @@ test('settings: a malformed hash or expiry is an error that never echoes the val
   assert.throws(() => readSetupTokenSettings(HASH, ''), /DEFT_SETUP_TOKEN_EXPIRES_AT is required/);
 });
 
+test('expiry: an impossible date or time is an error, never rolled forward to a real one', () => {
+  const impossible = [
+    ['31 November', '2026-11-31T10:00:00Z'],
+    ['29 February in a non-leap year', '2027-02-29T10:00:00Z'],
+    ['29 February 2100, a century that is not a leap year', '2100-02-29T10:00:00Z'],
+    ['30 February', '2028-02-30T10:00:00Z'],
+    ['31 April', '2027-04-31T10:00:00Z'],
+    ['month 13', '2026-13-01T10:00:00Z'],
+    ['month 00', '2026-00-10T10:00:00Z'],
+    ['day 00', '2026-12-00T10:00:00Z'],
+    ['day 32', '2026-12-32T10:00:00Z'],
+    ['hour 24', '2026-12-04T24:00:00Z'],
+    ['minute 60', '2026-12-04T10:60:00Z'],
+    ['second 60', '2026-12-04T10:00:60Z'],
+    ['offset hour 24', '2026-12-04T10:00:00+24:00'],
+    ['offset minute 60', '2026-12-04T10:00:00+05:60'],
+    ['no zone', '2026-12-04T10:00:00'],
+    ['zone without a colon', '2026-12-04T10:00:00+0530'],
+    ['lowercase z', '2026-12-04T10:00:00z'],
+  ] as const;
+  for (const [label, expiry] of impossible) {
+    assert.equal(parseIsoTime(expiry), null, label);
+    assert.throws(() => readSetupTokenSettings(HASH, expiry), /DEFT_SETUP_TOKEN_EXPIRES_AT must be a real ISO 8601/, label);
+    assert.throws(() => validateSetupTokenEnvironment(true, HASH, expiry), /DEFT_SETUP_TOKEN_EXPIRES_AT/, label);
+    // The same value can never make a token acceptable at request time.
+    assert.equal(isSetupTokenValid(TOKEN, HASH, expiry, 0), false, label);
+  }
+
+  const real = [
+    ['a leap day', '2028-02-29T10:00:00Z', Date.UTC(2028, 1, 29, 10)],
+    ['29 February 2000, a century that is a leap year', '2000-02-29T10:00:00Z', Date.UTC(2000, 1, 29, 10)],
+    ['28 February in a non-leap year', '2027-02-28T23:59:59Z', Date.UTC(2027, 1, 28, 23, 59, 59)],
+    ['30 November', '2026-11-30T10:00:00Z', Date.UTC(2026, 10, 30, 10)],
+    ['the last second of a year', '2026-12-31T23:59:59Z', Date.UTC(2026, 11, 31, 23, 59, 59)],
+    ['milliseconds', '2026-12-04T10:00:00.250Z', Date.UTC(2026, 11, 4, 10, 0, 0, 250)],
+    ['tenths of a second', '2026-12-04T10:00:00.5Z', Date.UTC(2026, 11, 4, 10, 0, 0, 500)],
+    ['an offset ahead of UTC', '2026-12-04T15:30:00+05:30', AT],
+    ['an offset behind UTC', '2026-12-04T02:00:00-08:00', AT],
+    ['an offset that crosses midnight', '2026-12-05T00:30:00+14:30', AT],
+  ] as const;
+  for (const [label, expiry, instant] of real) {
+    assert.equal(parseIsoTime(expiry), instant, label);
+    assert.equal(parseIsoTime(expiry), Date.parse(expiry), `${label}: agrees with Date.parse on a real time`);
+    assert.equal(readSetupTokenSettings(HASH, expiry)?.expiresAtMs, instant, label);
+  }
+});
+
 test('the value check applies in hosted mode', () => {
   assert.throws(() => validateSetupTokenEnvironment(true, 'not-a-hash', EXPIRES_AT), /DEFT_SETUP_TOKEN_SHA256/);
   assert.throws(() => validateSetupTokenEnvironment(true, HASH, 'soon'), /DEFT_SETUP_TOKEN_EXPIRES_AT/);
@@ -122,6 +170,7 @@ test('env import: hosted mode refuses to start with a malformed hash or expiry',
     ['malformed hash', { DEFT_SETUP_TOKEN_SHA256: 'zz-not-a-hash-zz', DEFT_SETUP_TOKEN_EXPIRES_AT: EXPIRES_AT }, /DEFT_SETUP_TOKEN_SHA256/],
     ['malformed expiry', { DEFT_SETUP_TOKEN_SHA256: HASH, DEFT_SETUP_TOKEN_EXPIRES_AT: 'zz-not-a-time-zz' }, /DEFT_SETUP_TOKEN_EXPIRES_AT/],
     ['hash without expiry', { DEFT_SETUP_TOKEN_SHA256: HASH }, /DEFT_SETUP_TOKEN_EXPIRES_AT/],
+    ['31 November', { DEFT_SETUP_TOKEN_SHA256: HASH, DEFT_SETUP_TOKEN_EXPIRES_AT: '2026-11-31T10:00:00Z' }, /DEFT_SETUP_TOKEN_EXPIRES_AT/],
   ] as const) {
     const child = start({ DEFT_HOSTED: 'true', ...overrides });
     assert.equal(child.status, 1, `${label}: hosted env import must fail before startup`);

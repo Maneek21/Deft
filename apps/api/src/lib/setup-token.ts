@@ -16,8 +16,35 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
-// A full date and time with an explicit zone, so Date.parse never guesses.
-const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/;
+// A full date and time with an explicit zone: Z, +hh:mm or -hh:mm.
+const ISO_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?(?:Z|([+-])(\d{2}):(\d{2}))$/;
+
+/**
+ * The instant an ISO 8601 time names, in milliseconds, or null when the text
+ * is not a real time. Every part is checked here and the instant is built
+ * from the parts, because Date.parse quietly rolls an impossible date
+ * forward: it reads 31 November as 1 December.
+ */
+export function parseIsoTime(value: string): number | null {
+  const match = ISO_TIME.exec(value);
+  if (!match) return null;
+  const [year, month, day, hour, minute, second] = match.slice(1, 7).map(Number) as
+    [number, number, number, number, number, number];
+  const leapYear = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+  if (daysInMonth === undefined || day < 1 || day > daysInMonth) return null;
+  if (hour > 23 || minute > 59 || second > 59) return null;
+  const milliseconds = Number((match[7] ?? '').padEnd(3, '0'));
+  const offsetHours = Number(match[9] ?? 0);
+  const offsetMinutes = Number(match[10] ?? 0);
+  if (offsetHours > 23 || offsetMinutes > 59) return null;
+  const offsetMs = (match[8] === '-' ? -1 : 1) * (offsetHours * 60 + offsetMinutes) * 60_000;
+  // setUTCFullYear keeps years 0000 to 0099 as written; Date.UTC would add 1900.
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  date.setUTCHours(hour, minute, second, milliseconds);
+  return date.getTime() - offsetMs;
+}
 
 export const SETUP_TOKEN_MAX_LENGTH = 512;
 
@@ -44,17 +71,18 @@ export function readSetupTokenSettings(
   hash: string | undefined,
   expiresAt: string | undefined,
 ): SetupTokenSettings | null {
-  if (expiresAt && (!ISO_TIME.test(expiresAt) || Number.isNaN(Date.parse(expiresAt)))) {
-    throw new Error('DEFT_SETUP_TOKEN_EXPIRES_AT must be an ISO 8601 time with a zone, for example 2026-12-04T10:00:00Z');
+  const expiresAtMs = expiresAt ? parseIsoTime(expiresAt) : null;
+  if (expiresAt && expiresAtMs === null) {
+    throw new Error('DEFT_SETUP_TOKEN_EXPIRES_AT must be a real ISO 8601 date and time with a zone, for example 2026-12-04T10:00:00Z');
   }
   if (!hash) return null;
   if (!SHA256_HEX.test(hash)) {
     throw new Error('DEFT_SETUP_TOKEN_SHA256 must be a SHA-256 hash written as 64 lowercase hex characters');
   }
-  if (!expiresAt) {
+  if (expiresAtMs === null) {
     throw new Error('DEFT_SETUP_TOKEN_EXPIRES_AT is required when DEFT_SETUP_TOKEN_SHA256 is set');
   }
-  return { hash: Buffer.from(hash, 'hex'), expiresAtMs: Date.parse(expiresAt) };
+  return { hash: Buffer.from(hash, 'hex'), expiresAtMs };
 }
 
 /**
