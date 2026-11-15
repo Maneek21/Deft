@@ -7,7 +7,8 @@
  *   - Self-hosted mode (DEFT_HOSTED unset or "false"): no token, as before.
  *   - Both modes: the "no workspace yet" check and the creation of the first
  *     user, org and owner membership are one locked transaction, so signups
- *     arriving together produce exactly one workspace.
+ *     arriving together produce exactly one workspace, and a signup that
+ *     fails part-way leaves nothing behind.
  *
  * The shared test database always holds fixture orgs, and signup only does
  * anything on an install with none. So this file gives its own process empty
@@ -99,16 +100,38 @@ test('first-workspace signup: setup token in hosted mode, one workspace under co
       body: JSON.stringify(body),
     });
     const text = await res.text();
-    return { status: res.status, text, json: JSON.parse(text) as Record<string, any> };
+    // An unhandled failure answers 500 with a plain-text body.
+    let json: Record<string, any> = {};
+    try { json = JSON.parse(text); } catch { /* not JSON */ }
+    return { status: res.status, text, json };
   }
   const count = async (sql: string) => (await admin.query<{ n: number }>(sql)).rows[0]!.n;
   const orgCount = () => count(`SELECT count(*)::int AS n FROM "${schema}".orgs`);
   const ownerCount = () => count(`SELECT count(*)::int AS n FROM "${schema}".org_members WHERE role = 'owner'`);
   const humanCount = () => count(`SELECT count(*)::int AS n FROM "${schema}".users WHERE password_hash IS NOT NULL`);
+  /** No row in any table signup writes to. */
   async function assertNothingCreated(label: string) {
-    assert.equal(await orgCount(), 0, `${label}: no org`);
-    assert.equal(await count(`SELECT count(*)::int AS n FROM "${schema}".users`), 0, `${label}: no user`);
-    assert.equal(await count(`SELECT count(*)::int AS n FROM "${schema}".org_members`), 0, `${label}: no membership`);
+    for (const table of TABLES) {
+      assert.equal(await count(`SELECT count(*)::int AS n FROM "${schema}".${table}`), 0, `${label}: no row in ${table}`);
+    }
+  }
+
+  // The key lockFirstWorkspaceCreation takes (apps/api/src/lib/single-org-guard.ts).
+  // If the two drift apart, the lock test below times out waiting.
+  const LOCK_KEY = 'deft.first_workspace_creation.v1';
+  /** Sessions in this database waiting for the first-workspace lock. */
+  const waitingForLock = () => count(`
+    SELECT count(*)::int AS n
+    FROM pg_locks l, (SELECT hashtextextended('${LOCK_KEY}', 0) AS k) key
+    WHERE l.locktype = 'advisory' AND NOT l.granted AND l.objsubid = 1
+      AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+      AND l.classid::bigint = ((key.k >> 32) & 4294967295) AND l.objid::bigint = (key.k & 4294967295)`);
+  async function untilWaitingForLock() {
+    for (let attempt = 0; attempt < 300; attempt += 1) {
+      if ((await waitingForLock()) > 0) return;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.fail('the signup never waited for the first-workspace lock');
   }
 
   await t.test('the route runs against the empty copies, not the shared tables', async () => {
@@ -217,6 +240,76 @@ test('first-workspace signup: setup token in hosted mode, one workspace under co
     assert.equal((await signup(person({ setup_token: TOKEN }))).status, 201);
     const after = await app.request('/api/auth/has-workspace');
     assert.deepEqual(JSON.parse(await after.text()), { hasWorkspace: true });
+  });
+
+  await t.test('hosted: a signup that fails part-way leaves nothing behind and does not use up the token', async () => {
+    await freshInstall({ DEFT_HOSTED: 'true', DEFT_SETUP_TOKEN_SHA256: HASH, DEFT_SETUP_TOKEN_EXPIRES_AT: inOneHour() });
+    // Make one insert fail after the user, org and owner membership rows exist
+    // inside the transaction: first the last insert, then the first-space insert.
+    for (const table of ['onboarding_state', 'spaces']) {
+      await admin.query(`ALTER TABLE "${schema}".${table} ADD CONSTRAINT forced_failure CHECK (false) NOT VALID`);
+      try {
+        const failed = await signup(person({ setup_token: TOKEN }));
+        assert.equal(failed.status, 500, `${table}: ${failed.text}`);
+        assert.ok(!failed.text.includes(TOKEN) && !failed.text.includes(HASH), 'the failure reply carries neither token nor hash');
+        await assertNothingCreated(`insert into ${table} failed`);
+      } finally {
+        await admin.query(`ALTER TABLE "${schema}".${table} DROP CONSTRAINT forced_failure`);
+      }
+    }
+
+    const retry = await signup(person({ setup_token: TOKEN }));
+    assert.equal(retry.status, 201, retry.text);
+    assert.equal(await orgCount(), 1);
+    assert.equal(await ownerCount(), 1);
+    assert.equal(await humanCount(), 1);
+    const owners = await admin.query(`SELECT user_id, org_id FROM "${schema}".org_members WHERE role = 'owner'`);
+    assert.deepEqual(owners.rows, [{ user_id: retry.json.user.id, org_id: retry.json.org.id }]);
+  });
+
+  await t.test('a signup waits for the first-workspace lock and then acts on what the holder left', async () => {
+    const scenarios = [
+      { label: 'holder creates nothing and commits', rival: false, end: 'COMMIT', status: 201 },
+      { label: 'holder creates a workspace and rolls back', rival: true, end: 'ROLLBACK', status: 201 },
+      { label: 'holder creates a workspace and commits', rival: true, end: 'COMMIT', status: 403 },
+    ];
+    for (const { label, rival, end, status } of scenarios) {
+      await freshInstall({});
+      const holder = new pg.Client({ connectionString: target });
+      await holder.connect();
+      try {
+        await holder.query('BEGIN');
+        await holder.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [LOCK_KEY]);
+        if (rival) {
+          await holder.query(`INSERT INTO "${schema}".orgs (id, name, slug) VALUES ($1, 'Rival workspace', $2)`,
+            [randomUUID(), `rival-${randomUUID()}`]);
+        }
+
+        let settled = false;
+        const waiter = signup(person()).finally(() => { settled = true; });
+        await untilWaitingForLock();
+        assert.equal(settled, false, `${label}: the signup is waiting, not answered`);
+        assert.equal(await humanCount(), 0, `${label}: nothing is created while it waits`);
+
+        await holder.query(end);
+        const res = await waiter;
+        assert.equal(res.status, status, `${label}: ${res.text}`);
+        assert.equal(await waitingForLock(), 0, `${label}: nobody is left waiting`);
+        assert.equal(await orgCount(), 1, `${label}: exactly one workspace`);
+        if (status === 201) {
+          const owners = await admin.query(`SELECT user_id, org_id FROM "${schema}".org_members WHERE role = 'owner'`);
+          assert.deepEqual(owners.rows, [{ user_id: res.json.user.id, org_id: res.json.org.id }], label);
+          assert.equal(await humanCount(), 1, label);
+        } else {
+          assert.equal(res.json.code, 'SINGLE_ORG_LIMIT', label);
+          assert.equal(await humanCount(), 0, `${label}: the refused signup leaves no user behind`);
+          assert.equal(await ownerCount(), 0, `${label}: and no owner`);
+        }
+      } finally {
+        await holder.query('ROLLBACK').catch(() => undefined);
+        await holder.end();
+      }
+    }
   });
 
   await t.test('self-hosted: signups arriving together create exactly one workspace', async () => {
