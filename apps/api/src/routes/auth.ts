@@ -18,6 +18,8 @@ import {
 } from '@deft/db/schema';
 import { env } from '../lib/env.js';
 import { countOrgs, lockFirstWorkspaceCreation, SINGLE_ORG_ERROR } from '../lib/single-org-guard.js';
+import { isHostedMode } from '../lib/hosted-mode.js';
+import { isSetupTokenValid, SETUP_TOKEN_ERROR, SETUP_TOKEN_MAX_LENGTH } from '../lib/setup-token.js';
 import { ensureDeftyMembership, ensureDeftyDm } from '../lib/ensure-defty-membership.js';
 import { OrgMembershipError, requireActiveOrgMembership } from '../lib/org-membership.js';
 import { createWebSession, rotateWebSession, revokeWebSession, changeWebPassword, verifyWebAccess, WebCredentialsChangedError } from '../lib/web-sessions.js';
@@ -30,6 +32,12 @@ const signupSchema = z.object({
   email: z.string().email().max(320),
   password: z.string().min(8).max(1024),
   org_name: z.string().min(1).max(160),
+});
+
+// Hosted mode only: the one-time token from the setup link. Parsed apart from
+// signupSchema so a self-hosted signup is validated exactly as before.
+const setupTokenSchema = z.object({
+  setup_token: z.string().min(1).max(SETUP_TOKEN_MAX_LENGTH),
 });
 
 const loginSchema = z.object({
@@ -71,6 +79,23 @@ authRoutes.post('/signup', async (c) => {
   }
 
   const { name, email, password, org_name } = parsed.data;
+
+  // Hosted mode — the first signup makes its caller the owner of a paid
+  // workspace, so it must carry the one-time setup token. This fails closed:
+  // no configured hash, no token, a wrong token and an expired token all get
+  // the same refusal. See apps/api/src/lib/setup-token.ts.
+  if (isHostedMode()) {
+    const presented = setupTokenSchema.safeParse(body);
+    const valid = isSetupTokenValid(
+      presented.success ? presented.data.setup_token : undefined,
+      process.env.DEFT_SETUP_TOKEN_SHA256,
+      process.env.DEFT_SETUP_TOKEN_EXPIRES_AT,
+    );
+    if (!valid) {
+      console.warn('[signup] refused: hosted mode needs a valid, unexpired setup token');
+      return c.json(SETUP_TOKEN_ERROR, 403);
+    }
+  }
 
   // Self-hosted v1 — only the first signup can create a workspace. Once
   // an org exists, new accounts must arrive through an invite flow that

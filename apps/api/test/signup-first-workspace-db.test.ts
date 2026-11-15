@@ -1,8 +1,13 @@
 /**
  * First-workspace signup: POST /api/auth/signup decides who owns a fresh
- * install. The "no workspace yet" check and the creation of the first user,
- * org and owner membership are one locked transaction, so signups arriving
- * together produce exactly one workspace.
+ * install.
+ *
+ *   - Hosted mode (DEFT_HOSTED=true): the one-time setup token is required,
+ *     and every refusal looks the same.
+ *   - Self-hosted mode: no token, as before.
+ *   - Both modes: the "no workspace yet" check and the creation of the first
+ *     user, org and owner membership are one locked transaction, so signups
+ *     arriving together produce exactly one workspace.
  *
  * The shared test database always holds fixture orgs, and signup only does
  * anything on an install with none. So this file gives its own process empty
@@ -13,7 +18,7 @@
  * Run: pnpm --filter @deft/api test test/signup-first-workspace-db.test.ts
  */
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import test from 'node:test';
 import pg from 'pg';
 import { Hono } from 'hono';
@@ -29,9 +34,21 @@ const safe = (() => {
 })();
 
 const TABLES = ['users', 'orgs', 'org_members', 'spaces', 'space_members', 'onboarding_state', 'web_sessions'];
+const HOSTED_KEYS = ['DEFT_HOSTED', 'DEFT_SETUP_TOKEN_SHA256', 'DEFT_SETUP_TOKEN_EXPIRES_AT'] as const;
+type HostedEnv = Partial<Record<(typeof HOSTED_KEYS)[number], string>>;
 
-test('first-workspace signup: one owner, one workspace under concurrency', { skip: !safe, timeout: 180_000 }, async (t) => {
-  const schema = `signup_first_${randomUUID().replaceAll('-', '')}`;
+const sha256 = (value: string) => createHash('sha256').update(value, 'utf8').digest('hex');
+const TOKEN = randomBytes(32).toString('base64url');
+const HASH = sha256(TOKEN);
+const inOneHour = () => new Date(Date.now() + 3_600_000).toISOString();
+const oneMinuteAgo = () => new Date(Date.now() - 60_000).toISOString();
+const SETUP_REFUSAL = {
+  error: 'This workspace can only be created from its setup link. The link is missing, incorrect, or has expired.',
+  code: 'SETUP_TOKEN_INVALID',
+};
+
+test('first-workspace signup: setup token in hosted mode, one workspace under concurrency', { skip: !safe, timeout: 180_000 }, async (t) => {
+  const schema = `signup_setup_${randomUUID().replaceAll('-', '')}`;
   const admin = new pg.Pool({ connectionString: target, max: 1 });
   await admin.query(`CREATE SCHEMA "${schema}"`);
   for (const table of TABLES) {
@@ -39,6 +56,7 @@ test('first-workspace signup: one owner, one workspace under concurrency', { ski
   }
 
   const savedOptions = process.env.PGOPTIONS;
+  const savedHosted = Object.fromEntries(HOSTED_KEYS.map((key) => [key, process.env[key]]));
   process.env.PGOPTIONS = `-c search_path=${schema},public`;
   const { authRoutes } = await import('../src/routes/auth.js');
   const { closeDb } = await import('../src/lib/db.js');
@@ -47,13 +65,21 @@ test('first-workspace signup: one owner, one workspace under concurrency', { ski
   t.after(async () => {
     await closeDb();
     if (savedOptions === undefined) delete process.env.PGOPTIONS; else process.env.PGOPTIONS = savedOptions;
+    setHostedEnv(savedHosted);
     await admin.query(`DROP SCHEMA "${schema}" CASCADE`);
     await admin.end();
   });
 
-  /** A fresh, empty install. */
-  async function freshInstall() {
+  function setHostedEnv(values: Record<string, string | undefined>) {
+    for (const key of HOSTED_KEYS) {
+      const value = values[key];
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+  /** A fresh, empty install running with exactly these hosted settings. */
+  async function freshInstall(values: HostedEnv) {
     await admin.query(`TRUNCATE ${TABLES.map((table) => `"${schema}".${table}`).join(', ')}`);
+    setHostedEnv(values);
   }
   let people = 0;
   const person = (extra: Record<string, unknown> = {}) => {
@@ -79,15 +105,20 @@ test('first-workspace signup: one owner, one workspace under concurrency', { ski
   const orgCount = () => count(`SELECT count(*)::int AS n FROM "${schema}".orgs`);
   const ownerCount = () => count(`SELECT count(*)::int AS n FROM "${schema}".org_members WHERE role = 'owner'`);
   const humanCount = () => count(`SELECT count(*)::int AS n FROM "${schema}".users WHERE password_hash IS NOT NULL`);
+  async function assertNothingCreated(label: string) {
+    assert.equal(await orgCount(), 0, `${label}: no org`);
+    assert.equal(await count(`SELECT count(*)::int AS n FROM "${schema}".users`), 0, `${label}: no user`);
+    assert.equal(await count(`SELECT count(*)::int AS n FROM "${schema}".org_members`), 0, `${label}: no membership`);
+  }
 
   await t.test('the route runs against the empty copies, not the shared tables', async () => {
-    await freshInstall();
+    await freshInstall({});
     const res = await app.request('/api/auth/has-workspace');
     assert.deepEqual(await res.json(), { hasWorkspace: false });
   });
 
-  await t.test('the first signup becomes the owner; the next is refused', async () => {
-    await freshInstall();
+  await t.test('self-hosted: the first signup needs no token and becomes the owner; the next is refused', async () => {
+    await freshInstall({});
     const first = await signup(person());
     assert.equal(first.status, 201, first.text);
     assert.ok(first.json.accessToken && first.json.refreshToken, 'a session is issued');
@@ -105,8 +136,92 @@ test('first-workspace signup: one owner, one workspace under concurrency', { ski
     assert.equal(await humanCount(), 1);
   });
 
-  await t.test('signups arriving together create exactly one workspace', async () => {
-    await freshInstall();
+  await t.test('self-hosted: the hosted settings are ignored unless DEFT_HOSTED is exactly "true"', async () => {
+    for (const hosted of [undefined, 'false', '1', 'TRUE']) {
+      await freshInstall({
+        ...(hosted === undefined ? {} : { DEFT_HOSTED: hosted }),
+        DEFT_SETUP_TOKEN_SHA256: HASH,
+        DEFT_SETUP_TOKEN_EXPIRES_AT: oneMinuteAgo(),
+      });
+      const res = await signup(person({ setup_token: 'ignored when not hosted' }));
+      assert.equal(res.status, 201, `DEFT_HOSTED=${hosted}: ${res.text}`);
+      assert.equal(await orgCount(), 1);
+    }
+  });
+
+  await t.test('hosted: the right token succeeds once; a second signup is refused', async () => {
+    await freshInstall({ DEFT_HOSTED: 'true', DEFT_SETUP_TOKEN_SHA256: HASH, DEFT_SETUP_TOKEN_EXPIRES_AT: inOneHour() });
+    const first = await signup(person({ setup_token: TOKEN }));
+    assert.equal(first.status, 201, first.text);
+    assert.ok(first.json.accessToken && first.json.refreshToken, 'a session is issued');
+    assert.ok(!first.text.includes(TOKEN) && !first.text.includes(HASH), 'the reply carries neither token nor hash');
+    assert.equal(await orgCount(), 1);
+    assert.equal(await ownerCount(), 1);
+
+    const again = await signup(person({ setup_token: TOKEN }));
+    assert.equal(again.status, 403);
+    assert.equal(again.json.code, 'SINGLE_ORG_LIMIT');
+    const withoutToken = await signup(person());
+    assert.equal(withoutToken.status, 403);
+    assert.equal(await orgCount(), 1);
+    assert.equal(await ownerCount(), 1);
+    assert.equal(await humanCount(), 1);
+  });
+
+  await t.test('hosted: wrong, expired and missing tokens and a missing hash are refused alike', async () => {
+    const configured = { DEFT_HOSTED: 'true', DEFT_SETUP_TOKEN_SHA256: HASH, DEFT_SETUP_TOKEN_EXPIRES_AT: inOneHour() };
+    const cases: Array<[string, HostedEnv, Record<string, unknown>]> = [
+      ['wrong token', configured, { setup_token: randomBytes(32).toString('base64url') }],
+      ['near-miss token', configured, { setup_token: `${TOKEN.slice(0, -1)}${TOKEN.endsWith('A') ? 'B' : 'A'}` }],
+      ['the hash presented as the token', configured, { setup_token: HASH }],
+      ['expired token', { ...configured, DEFT_SETUP_TOKEN_EXPIRES_AT: oneMinuteAgo() }, { setup_token: TOKEN }],
+      ['missing token', configured, {}],
+      ['empty token', configured, { setup_token: '' }],
+      ['token of the wrong type', configured, { setup_token: 12345 }],
+      ['oversized token', configured, { setup_token: 'x'.repeat(10_000) }],
+      ['missing hash', { DEFT_HOSTED: 'true' }, { setup_token: TOKEN }],
+      ['missing hash and token', { DEFT_HOSTED: 'true' }, {}],
+      ['hash without expiry', { DEFT_HOSTED: 'true', DEFT_SETUP_TOKEN_SHA256: HASH }, { setup_token: TOKEN }],
+      ['malformed hash', { ...configured, DEFT_SETUP_TOKEN_SHA256: HASH.toUpperCase() }, { setup_token: TOKEN }],
+    ];
+    for (const [label, values, extra] of cases) {
+      await freshInstall(values);
+      const res = await signup(person(extra));
+      assert.equal(res.status, 403, `${label}: ${res.text}`);
+      assert.deepEqual(res.json, SETUP_REFUSAL, `${label}: one refusal for every cause`);
+      await assertNothingCreated(label);
+    }
+
+    // The same install still accepts the right token afterwards.
+    await freshInstall(configured);
+    assert.equal((await signup(person({ setup_token: 'wrong' }))).status, 403);
+    assert.equal((await signup(person({ setup_token: TOKEN }))).status, 201);
+    assert.equal(await orgCount(), 1);
+  });
+
+  await t.test('hosted: the token is never read from the address', async () => {
+    await freshInstall({ DEFT_HOSTED: 'true', DEFT_SETUP_TOKEN_SHA256: HASH, DEFT_SETUP_TOKEN_EXPIRES_AT: inOneHour() });
+    const res = await app.request(`/api/auth/signup?setup_token=${TOKEN}&setup=${TOKEN}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Setup-Token': TOKEN },
+      body: JSON.stringify(person()),
+    });
+    assert.equal(res.status, 403);
+    assert.deepEqual(await res.json(), SETUP_REFUSAL);
+    await assertNothingCreated('token in the query string');
+  });
+
+  await t.test('hosted: has-workspace reveals neither the token nor its hash', async () => {
+    await freshInstall({ DEFT_HOSTED: 'true', DEFT_SETUP_TOKEN_SHA256: HASH, DEFT_SETUP_TOKEN_EXPIRES_AT: inOneHour() });
+    const before = await app.request('/api/auth/has-workspace');
+    assert.deepEqual(JSON.parse(await before.text()), { hasWorkspace: false });
+    assert.equal((await signup(person({ setup_token: TOKEN }))).status, 201);
+    const after = await app.request('/api/auth/has-workspace');
+    assert.deepEqual(JSON.parse(await after.text()), { hasWorkspace: true });
+  });
+
+  await t.test('self-hosted: signups arriving together create exactly one workspace', async () => {
+    await freshInstall({});
     const results = await Promise.all(Array.from({ length: 6 }, () => signup(person())));
     assert.deepEqual(results.map((res) => res.status).sort(), [201, 403, 403, 403, 403, 403]);
     for (const res of results.filter((entry) => entry.status === 403)) assert.equal(res.json.code, 'SINGLE_ORG_LIMIT');
@@ -116,5 +231,14 @@ test('first-workspace signup: one owner, one workspace under concurrency', { ski
     const winner = results.find((res) => res.status === 201)!;
     const owners = await admin.query(`SELECT user_id, org_id FROM "${schema}".org_members WHERE role = 'owner'`);
     assert.deepEqual(owners.rows, [{ user_id: winner.json.user.id, org_id: winner.json.org.id }]);
+  });
+
+  await t.test('hosted: signups arriving together with the right token create exactly one workspace', async () => {
+    await freshInstall({ DEFT_HOSTED: 'true', DEFT_SETUP_TOKEN_SHA256: HASH, DEFT_SETUP_TOKEN_EXPIRES_AT: inOneHour() });
+    const results = await Promise.all(Array.from({ length: 4 }, () => signup(person({ setup_token: TOKEN }))));
+    assert.deepEqual(results.map((res) => res.status).sort(), [201, 403, 403, 403]);
+    assert.equal(await orgCount(), 1);
+    assert.equal(await ownerCount(), 1);
+    assert.equal(await humanCount(), 1);
   });
 });

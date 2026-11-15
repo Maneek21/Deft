@@ -3,6 +3,8 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { validateAppRunKeyringEnvironment } from './app-run-keyrings.js';
+import { isHostedMode } from './hosted-mode.js';
+import { validateSetupTokenEnvironment } from './setup-token.js';
 
 // Resolve .env from the repo root via the source file's location, NOT
 // process.cwd() — when this module loads under tsx / pnpm --filter / docker /
@@ -148,6 +150,15 @@ export const env = {
   VAPID_SUBJECT: process.env.VAPID_SUBJECT || '',
   PUSH_MESSAGE_PREVIEWS_ENABLED: process.env.PUSH_MESSAGE_PREVIEWS_ENABLED === 'true',
 };
+
+// Hosted mode: a malformed setup-token hash or expiry stops the API at
+// startup. A missing hash is not a startup error — signup refuses instead
+// (routes/auth.ts). Self-hosted installs never read either setting.
+validateSetupTokenEnvironment(
+  isHostedMode(),
+  process.env.DEFT_SETUP_TOKEN_SHA256,
+  process.env.DEFT_SETUP_TOKEN_EXPIRES_AT,
+);
 
 // App Protocol v0 is opt-in while the first vertical slice is certified.
 // Absence and every value except the exact string "true" fail closed.
