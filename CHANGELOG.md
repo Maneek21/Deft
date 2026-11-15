@@ -10,6 +10,16 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### Changed: one assistant reply per space at a time
+
+- The job queue no longer starts an `agent-reply` while another for the same
+  workspace and space is running with a live lease, or is older and due. An
+  expired lease never blocks. This assumes a single API process claims jobs:
+  replies can still overlap with more than one process, or when a reply
+  handler keeps running after its job timeout (120 s by default) settled the
+  row. With `DEFT_JOB_TIMEOUT_MS=0` there is no timeout, so a hung reply holds
+  its space until the process restarts.
+
 ### Changed: approving an action that then fails
 
 - `POST /api/agent/actions/:id/approve` no longer answers HTTP 500 when the

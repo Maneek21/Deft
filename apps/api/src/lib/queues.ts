@@ -204,14 +204,27 @@ export async function dequeueJob(
         -- another for the same org and space holds a live lease, or is older
         -- and due. An expired lease never blocks, so a stuck job cannot hold
         -- a space; cleanupStaleJobs returns it to pending in its turn.
-        AND NOT (
-          candidate.queue = ${QUEUE_NAMES.AGENT_JOBS} AND candidate.name = 'agent-reply'
-          AND EXISTS (
+        -- Cost: evaluated only for due agent-reply candidates; the inner scan
+        -- is restricted to running/pending rows of this queue, which the
+        -- job_queue_poll_idx (status, queue, run_at) index serves, and that
+        -- set is small (live replies only). The space id inside data is not
+        -- indexed, so thousands of live replies would make this a scan of
+        -- them; no index is added for now.
+        -- Assumes a single API process claiming jobs. Two replies can still
+        -- overlap when more than one process claims, or when a handler keeps
+        -- running after its job timeout (120s default) settled the row. With
+        -- DEFT_JOB_TIMEOUT_MS=0 there is no timeout: a hung reply keeps
+        -- renewing its lease and holds its space until the process restarts.
+        AND (
+          candidate.name <> 'agent-reply'
+          OR candidate.queue <> ${QUEUE_NAMES.AGENT_JOBS}
+          OR NOT EXISTS (
             SELECT 1 FROM job_queue other
-            WHERE other.queue = candidate.queue
+            WHERE other.status IN ('running', 'pending')
+              AND other.queue = ${QUEUE_NAMES.AGENT_JOBS}
               AND other.name = 'agent-reply'
               AND other.id <> candidate.id
-              AND other.org_id IS NOT DISTINCT FROM candidate.org_id
+              AND other.org_id = candidate.org_id
               AND other.data->>'spaceId' = candidate.data->>'spaceId'
               AND (
                 (other.status = 'running' AND other.lock_expires_at > now())
