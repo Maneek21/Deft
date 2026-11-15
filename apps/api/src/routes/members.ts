@@ -1155,12 +1155,12 @@ memberRoutes.post('/invite', async (c) => {
         });
       }
       return { user: existingUser };
-    }), (result) => ('seatRefusal' in result ? result.seatRefusal : null));
+    }), (result) => ('seatRefusal' in result && result.seatRefusal ? result.seatRefusal : null));
 
     if ('alreadyMember' in added) {
       return c.json({ error: 'User is already a member', code: 'ALREADY_MEMBER' }, 409);
     }
-    if ('seatRefusal' in added) {
+    if ('seatRefusal' in added && added.seatRefusal) {
       return seatRefused(c, added.seatRefusal);
     }
     const existingUser = added.user;
@@ -1441,14 +1441,14 @@ memberRoutes.patch('/:id', async (c) => {
         .set({ role: parsed.data.role })
         .where(eq(orgMembers.id, targetMembership.id));
       return { previousRole: targetMembership.role, role: parsed.data.role };
-    }), (result) => ('seatRefusal' in result ? result.seatRefusal : null));
+    }), (result) => ('seatRefusal' in result && result.seatRefusal ? result.seatRefusal : null));
 
     if ('failure' in changed) {
       if (changed.failure === 'NOT_FOUND') return c.json({ error: 'Member not found', code: 'NOT_FOUND' }, 404);
       if (changed.failure === 'OWNER') return c.json({ error: 'Cannot change owner role', code: 'FORBIDDEN' }, 403);
       return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
     }
-    if ('seatRefusal' in changed) {
+    if ('seatRefusal' in changed && changed.seatRefusal) {
       return seatRefused(c, changed.seatRefusal);
     }
     if (changed.role !== changed.previousRole) {
