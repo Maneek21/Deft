@@ -20,24 +20,42 @@ import { AppConnectionProfileSchema, AppConnectionRuntimeRequestSchema, AppConne
 import { getScopedAppConnectionSessionRegistry } from './app-authority-registry-scope.js';
 import { AppError } from './app-errors.js';
 import { appRuntimeResponseError } from './app-runtime-response-error.js';
+import { isHostedMode } from './hosted-mode.js';
 import type { AppRunTransaction } from './app-run-repository.js';
 import {AppRecordChangeRuntimeRequestSchema,type AppRecordChangeRuntimeRequest,APP_DATA_FRAME_MEDIA_TYPE,APP_DATA_LIMITS,AppDataRuntimeRequestSchema,AppDataResultSchema,AppDataBinaryMetadataSchema,frameAppData,parseAppDataFrame,type AppDataRuntimeRequest} from '@deft/app-kit/core';
 
 const unavailable = () => new AppError('Reviewed connection runtime unavailable', 'APP_CONNECTION_PROFILE_UNAVAILABLE', 503);
 const id = z.string().uuid();
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
+const endpoint = z.string().max(2048).refine(value => {
+  try { const url = new URL(value); return url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash
+    && url.pathname === '/v1/connections'; } catch { return false; }
+});
+const runtimeAuthToken = z.string().regex(/^[A-Za-z0-9_-]{43,256}$/u);
+/** Hosted mode only. One reviewed Runtime transport for a connection profile,
+ * written by the provisioner before the installation first starts. It names no
+ * organisation, installation, operator or registration, because none of those
+ * exist until the owner has signed up. Where an entry would be matched by those
+ * values, a template is matched by the profile alone and the values are taken
+ * from the caller's own current authority. Credentials stay in the Runtime; the
+ * only protocol a template may carry is the Runtime-served credential form. */
+const HostedTemplateSchema = z.strictObject({
+  profile: AppConnectionProfileSchema.omit({ operator_user_id: true }),
+  connection_protocol: z.literal('credential_form.v1'),
+  endpoint, runtime_auth_token: runtimeAuthToken, authority_token_sha256: digest,
+});
 export const AppConnectionSessionRegistryConfigSchema = z.strictObject({
   schema_version: z.literal('deft.app_connection_http_registrations.v1'),
   entries: z.array(z.strictObject({ org_id: id, installation_id: id, runtime_registration_id: id,
     runtime_epoch: z.number().int().positive().max(2147483647), profile: AppConnectionProfileSchema,
     connection_protocol: z.enum(['v2','credential_form.v1']).optional(),
-    endpoint: z.string().max(2048).refine(value => {
-      try { const url = new URL(value); return url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash
-        && url.pathname === '/v1/connections'; } catch { return false; }
-    }), runtime_auth_token: z.string().regex(/^[A-Za-z0-9_-]{43,256}$/u), authority_token_sha256: digest,
+    endpoint, runtime_auth_token: runtimeAuthToken, authority_token_sha256: digest,
   })).max(32),
+  hosted_templates: z.array(HostedTemplateSchema).max(4).optional(),
 });
 type Entry = z.infer<typeof AppConnectionSessionRegistryConfigSchema>['entries'][number];
+type HostedTemplate = z.infer<typeof HostedTemplateSchema>;
+type Transport = Pick<Entry, 'endpoint' | 'runtime_auth_token' | 'authority_token_sha256'>;
 // Exact pure profile bytes only; every registry/proof and mutable authority
 // read still occurs independently at each admission/invoke/disclosure phase.
 const profileDigestMemo = new Map<string, string>();
@@ -51,10 +69,13 @@ export function connectionProfileDigest(profile: AppConnectionProfile) {
   }
   return digest;
 }
-export function connectionTransportEntryDigest(entry: Entry) {
+export function connectionTransportEntryDigest(entry: Transport) {
   return `sha256:${createHash('sha256').update(JSON.stringify({ endpoint: entry.endpoint,
     runtime_auth_token_sha256: createHash('sha256').update(entry.runtime_auth_token).digest('hex'),
     authority_token_sha256: entry.authority_token_sha256 })).digest('hex')}`;
+}
+function templateProfile(template: HostedTemplate, operatorId: string): AppConnectionProfile {
+  return AppConnectionProfileSchema.parse({ ...template.profile, operator_user_id: operatorId });
 }
 
 /** Data-only deployment review. No author URL, module loader or provider key. */
@@ -65,8 +86,20 @@ export class AppConnectionSessionRegistry {
   // over immutable entry bytes and is computed once at construction instead of
   // again on every profile()/transportDigest()/preauthenticate()/reviewedProtocol().
   private readonly transportDigests = new Map<Entry, string>();
-  constructor(raw: unknown, private readonly fetcher: typeof fetch = fetch, trustedSuccessors: readonly Entry[] = []) {
+  private readonly templates: readonly Readonly<{ template: HostedTemplate; transportDigest: string }>[];
+  constructor(raw: unknown, private readonly fetcher: typeof fetch = fetch, trustedSuccessors: readonly Entry[] = [],
+    hosted: boolean = isHostedMode()) {
     const parsed = AppConnectionSessionRegistryConfigSchema.parse(raw);
+    // A self-hosted install has always refused a file carrying anything but
+    // exact entries. Templates do not change that: outside hosted mode the whole
+    // file stays unavailable, never read as if the templates were absent.
+    const templates = parsed.hosted_templates ?? [];
+    if (templates.length && !hosted) throw unavailable();
+    const templateKeys = templates.map(template => JSON.stringify([template.profile.key, template.profile.resource_key,
+      template.profile.runtime_requirement_key, template.profile.action_keys]));
+    if (new Set(templateKeys).size !== templateKeys.length) throw unavailable();
+    this.templates = Object.freeze(templates.map(template => Object.freeze({
+      template: Object.freeze({ ...template, profile: Object.freeze(template.profile) }), transportDigest: connectionTransportEntryDigest(template) })));
     const rootCount=parsed.entries.length;
     // Successors are internal, independently validated audit proofs; public config keeps its original bound.
     if (trustedSuccessors.length > 256) throw unavailable();
@@ -102,7 +135,16 @@ export class AppConnectionSessionRegistry {
       && entry.profile.key === policy.provider_profile_key && (!operatorId || entry.profile.operator_user_id === operatorId)
       && entry.profile.resource_key === policy.resource_key && entry.profile.runtime_requirement_key === policy.runtime_requirement_key
       && JSON.stringify(entry.profile.action_keys) === JSON.stringify(policy.action_keys));
-    if (!entries.length || new Set(entries.map(entry => `${connectionProfileDigest(entry.profile)}:${this.entryTransportDigest(entry)}:${entry.connection_protocol??'v1'}`)).size !== 1) throw unavailable();
+    if (!entries.length) {
+      // No exact entry was written for this installation. A hosted template for
+      // the declared profile answers, completed with the reviewed operator.
+      const matches = operatorId === undefined ? [] : this.templates.filter(({ template }) => template.profile.key === policy.provider_profile_key
+        && template.profile.resource_key === policy.resource_key && template.profile.runtime_requirement_key === policy.runtime_requirement_key
+        && JSON.stringify(template.profile.action_keys) === JSON.stringify(policy.action_keys));
+      if (matches.length !== 1) throw unavailable();
+      return templateProfile(matches[0]!.template, operatorId!);
+    }
+    if (new Set(entries.map(entry => `${connectionProfileDigest(entry.profile)}:${this.entryTransportDigest(entry)}:${entry.connection_protocol??'v1'}`)).size !== 1) throw unavailable();
     const profile = entries[0]!.profile;
     if (profile.resource_key !== policy.resource_key || profile.runtime_requirement_key !== policy.runtime_requirement_key
       || JSON.stringify(profile.action_keys) !== JSON.stringify(policy.action_keys)) throw unavailable();
@@ -111,15 +153,40 @@ export class AppConnectionSessionRegistry {
   transportDigest(orgId: string, installationId: string, profile: AppConnectionProfile) {
     const entries = this.entries.filter(entry => entry.org_id === orgId && entry.installation_id === installationId
       && connectionProfileDigest(entry.profile) === connectionProfileDigest(profile));
+    if (!entries.length) {
+      const template = this.template(profile.operator_user_id, connectionProfileDigest(profile));
+      if (!template) throw unavailable();
+      return template.transportDigest;
+    }
     const digests = new Set(entries.map(entry => this.entryTransportDigest(entry)));
     if (digests.size !== 1) throw unavailable();
     return digests.values().next().value!;
   }
+  /** The single hosted template whose profile, completed with this operator,
+   * has exactly this digest. Exact entries are always consulted first. */
+  private template(operatorId: string, profileDigest: string) {
+    const matches = this.templates.filter(({ template }) => connectionProfileDigest(templateProfile(template, operatorId)) === profileDigest);
+    return matches.length === 1 ? matches[0]! : undefined;
+  }
   private select(scope: AppConnectionSessionScope, profile?: AppConnectionProfile) {
-    const entries = this.entries.filter(entry => entry.org_id === scope.org_id && entry.installation_id === scope.installation_id
-      && entry.runtime_registration_id === scope.runtime_registration_id && entry.runtime_epoch === scope.runtime_epoch
+    const reviewed = this.entries.filter(entry => entry.org_id === scope.org_id && entry.installation_id === scope.installation_id
       && entry.profile.operator_user_id === scope.operator_user_id && connectionProfileDigest(entry.profile) === scope.profile_digest);
-    if (entries.length !== 1 || profile && connectionProfileDigest(profile) !== scope.profile_digest) throw unavailable();
+    const entries = reviewed.filter(entry => entry.runtime_registration_id === scope.runtime_registration_id && entry.runtime_epoch === scope.runtime_epoch);
+    if (profile && connectionProfileDigest(profile) !== scope.profile_digest) throw unavailable();
+    if (!reviewed.length) {
+      // No exact entry reviews this installation's profile at all. The scope is
+      // the caller's current authority, rebuilt from reviewed rows; the template
+      // supplies only the transport that scope may be sent over. Where exact
+      // entries exist they stay the complete list of registrations.
+      const found = this.template(scope.operator_user_id, scope.profile_digest);
+      if (!found) throw unavailable();
+      const { template } = found;
+      return Object.freeze({ org_id: scope.org_id, installation_id: scope.installation_id,
+        runtime_registration_id: scope.runtime_registration_id, runtime_epoch: scope.runtime_epoch,
+        profile: Object.freeze(templateProfile(template, scope.operator_user_id)), connection_protocol: template.connection_protocol,
+        endpoint: template.endpoint, runtime_auth_token: template.runtime_auth_token, authority_token_sha256: template.authority_token_sha256 }) as Entry;
+    }
+    if (entries.length !== 1) throw unavailable();
     return entries[0]!;
   }
   /** Credential-only entry admission. This does not establish an owner,
@@ -133,8 +200,9 @@ export class AppConnectionSessionRegistry {
     if(!token)throw denied();
     const entries=this.transportRoots.filter(entry=>entry.org_id===scope.org_id&&entry.installation_id===scope.installation_id
       &&entry.profile.operator_user_id===scope.operator_user_id&&connectionProfileDigest(entry.profile)===scope.profile_digest);
-    if(!entries.length||new Set(entries.map(entry=>`${this.entryTransportDigest(entry)}:${entry.connection_protocol??'v1'}`)).size!==1)throw denied();
-    const expected=Buffer.from(entries[0]!.authority_token_sha256.slice(7),'hex');
+    const template=entries.length?undefined:this.template(scope.operator_user_id,scope.profile_digest);
+    if(!template&&(!entries.length||new Set(entries.map(entry=>`${this.entryTransportDigest(entry)}:${entry.connection_protocol??'v1'}`)).size!==1))throw denied();
+    const expected=Buffer.from((template?.template??entries[0]!).authority_token_sha256.slice(7),'hex');
     if(!timingSafeEqual(expected,createHash('sha256').update(token).digest()))throw denied();
   }
   authenticate(scope: AppConnectionSessionScope, authorization: string | undefined) {
@@ -150,6 +218,7 @@ export class AppConnectionSessionRegistry {
   reviewedProtocol(orgId:string,installationId:string,profile:AppConnectionProfile):'v1'|'v2'|'credential_form.v1'{
     const entries=this.entries.filter(entry=>entry.org_id===orgId&&entry.installation_id===installationId
       &&connectionProfileDigest(entry.profile)===connectionProfileDigest(profile));
+    if(!entries.length){const template=this.template(profile.operator_user_id,connectionProfileDigest(profile));if(!template)throw unavailable();return template.template.connection_protocol;}
     const reviews=new Set(entries.map(entry=>`${this.entryTransportDigest(entry)}:${entry.connection_protocol??'v1'}`));
     if(reviews.size!==1)throw unavailable();return entries[0]!.connection_protocol??'v1';
   }
