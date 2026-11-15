@@ -1,22 +1,25 @@
 'use client';
 
-import { useState, Suspense } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
+import { readLinkToken } from '@/lib/link-token';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
 export default function ResetPasswordPage() {
-  return (
-    <Suspense>
-      <ResetPasswordContent />
-    </Suspense>
-  );
-}
+  // Recovery links carry the token after `#` (`/reset-password#token=...`);
+  // links issued before that change used `?token=`, which is still accepted.
+  // `undefined` means the address has not been read yet.
+  const [token, setToken] = useState<string | null | undefined>(undefined);
 
-function ResetPasswordContent() {
-  const searchParams = useSearchParams();
-  const token = searchParams.get('token');
+  useEffect(() => {
+    const found = readLinkToken(window.location.hash, window.location.search);
+    setToken(found);
+    // Take the token out of the address bar so it is not kept in history,
+    // shown on screen, or sent onward by a reload.
+    if (found) window.history.replaceState(window.history.state, '', window.location.pathname);
+  }, []);
+
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [success, setSuccess] = useState(false);
@@ -57,6 +60,12 @@ function ResetPasswordContent() {
       setLoading(false);
     }
   };
+
+  if (token === undefined) {
+    return (
+      <div className="min-h-screen" style={{ background: 'var(--surface-lowest)' }} />
+    );
+  }
 
   if (!token) {
     return (

@@ -94,6 +94,17 @@ async function authed(path: string, userId: string, init: RequestInit = {}) {
   );
 }
 
+/** Secret-bearing links must carry the token only after `#`. */
+function tokenFromFragmentLink(link: string, expectedPath: string): string {
+  const url = new URL(link);
+  assert.equal(url.pathname, expectedPath, link);
+  assert.equal(url.search, '', 'no token in the query string');
+  const token = new URLSearchParams(url.hash.slice(1)).get('token');
+  assert.ok(token, 'expected token after #');
+  assert.ok(!link.split('#')[0]!.includes(token), 'no token before #');
+  return token;
+}
+
 before(async () => {
   await withClient(async (c) => {
     await c.query(
@@ -354,8 +365,12 @@ describe('Loop 0 identity hardening', () => {
     }));
     const body = await res.json() as { invite_url: string; expires_at: string };
     assert.equal(res.status, 201, JSON.stringify(body));
-    const token = new URL(body.invite_url).pathname.split('/').pop();
-    assert.ok(token, 'expected invite token in URL');
+    const token = tokenFromFragmentLink(body.invite_url, '/invite');
+
+    // Old-style links (token in the path) issued before this change still preview.
+    const legacyPreview = await app.fetch(new Request(`http://localhost/api/invites/preview/${encodeURIComponent(token)}`));
+    assert.equal(legacyPreview.status, 200);
+    assert.equal((await legacyPreview.json() as Record<string, unknown>).email, INVITED_EMAIL);
 
     await withClient(async (c) => {
       const { rows } = await c.query(
@@ -365,7 +380,11 @@ describe('Loop 0 identity hardening', () => {
       assert.equal(rows[0].count, 1);
     });
 
-    const preview = await app.fetch(new Request(`http://localhost/api/invites/preview/${encodeURIComponent(token)}`));
+    const preview = await app.fetch(new Request('http://localhost/api/invites/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    }));
     const previewBody = await preview.json() as Record<string, unknown>;
     assert.equal(preview.status, 200, JSON.stringify(previewBody));
     assert.equal(previewBody.email, INVITED_EMAIL);
@@ -405,7 +424,7 @@ describe('Loop 0 identity hardening', () => {
     }));
     const raceInviteBody = await raceInviteResponse.json() as { invite_url: string; error?: string };
     assert.equal(raceInviteResponse.status, 201, JSON.stringify(raceInviteBody));
-    const raceToken = new URL(raceInviteBody.invite_url).pathname.split('/').pop()!;
+    const raceToken = tokenFromFragmentLink(raceInviteBody.invite_url, '/invite');
     const raceInvite = await withClient(async (c) => {
       const { rows } = await c.query(`SELECT id FROM invites WHERE token = $1`, [raceToken]);
       return rows[0] as { id: string };
@@ -443,6 +462,36 @@ describe('Loop 0 identity hardening', () => {
         assert.equal(rows[0].session_count, 0);
       }
     });
+  });
+
+  test('invite preview over POST rejects bad input and tokens signed with another algorithm', async () => {
+    const empty = await app.fetch(new Request('http://localhost/api/invites/preview', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+    }));
+    assert.equal(empty.status, 400);
+    assert.equal((await empty.json() as Record<string, unknown>).code, 'VALIDATION_ERROR');
+
+    const claims = { purpose: 'invite-accept', user_id: MEMBER_ID, org_id: ORG_ID, email: 'x@test.local', inviter_id: ADMIN_ID, role: 'member' };
+    const hs512 = jwt.sign(claims, env.JWT_SECRET, { algorithm: 'HS512', expiresIn: '1h' });
+    for (const [path, init] of [
+      ['/api/invites/preview', { method: 'POST', body: JSON.stringify({ token: hs512 }) }],
+      [`/api/invites/preview/${encodeURIComponent(hs512)}`, { method: 'GET' }],
+      ['/api/invites/accept', { method: 'POST', body: JSON.stringify({ token: hs512, password: 'Pinned-alg-2026!' }) }],
+    ] as const) {
+      const res = await app.fetch(new Request(`http://localhost${path}`, { ...init, headers: { 'Content-Type': 'application/json' } }));
+      assert.equal(res.status, 400, path);
+      assert.equal((await res.json() as Record<string, unknown>).code, 'INVITE_INVALID', path);
+    }
+  });
+
+  test('admin recovery link carries its token only after #', async () => {
+    const res = await authed(`/api/members/${MEMBER_ID}/recovery-url`, ADMIN_ID, { method: 'POST' });
+    const body = await res.json() as { recovery_url: string };
+    assert.equal(res.status, 200, JSON.stringify(body));
+    const token = tokenFromFragmentLink(body.recovery_url, '/reset-password');
+    const payload = jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }) as Record<string, unknown>;
+    assert.equal(payload.purpose, 'password-reset');
+    assert.equal(payload.id, MEMBER_ID);
   });
 
   test('task writes reject inactive or cross-org assignees', async () => {

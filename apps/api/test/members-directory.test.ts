@@ -280,7 +280,7 @@ test('pending invite reissue refreshes link and revoke deactivates never-accepte
   const reissue = await app().request(`/api/members/invites/${pendingInviteId}/reissue`, { method: 'POST' });
   assert.equal(reissue.status, 200);
   const reissueBody = await reissue.json() as any;
-  assert.match(reissueBody.invite_url, /\/invite\//);
+  assert.match(reissueBody.invite_url, /\/invite#token=[^#?/]+$/);
 
   const revoke = await app().request(`/api/members/invites/${pendingInviteId}`, { method: 'DELETE' });
   assert.equal(revoke.status, 200);

@@ -33,6 +33,7 @@ import { OrgMembershipError, requireOrgAdminOrOwner } from '../lib/org-membershi
 import { evictActiveHuddleParticipants } from '../socket.js';
 import { emitWebSessionRevocations } from '../lib/web-sessions.js';
 import { getSeatStatus, reserveSeat, withSeatRetry, type SeatReservation } from '../lib/seat-limit.js';
+import { buildInviteUrl as buildSecretInviteUrl, buildRecoveryUrl as buildSecretRecoveryUrl } from '../lib/secret-links.js';
 
 const INVITE_TTL = '7d';
 const RECOVERY_TTL = '24h';
@@ -42,11 +43,11 @@ const offboardingPayloadSchema = z.object({
 });
 
 function buildInviteUrl(token: string): string {
-  return `${env.NEXT_PUBLIC_APP_URL}/invite/${token}`;
+  return buildSecretInviteUrl(env.NEXT_PUBLIC_APP_URL, token);
 }
 
 function buildRecoveryUrl(token: string): string {
-  return `${env.NEXT_PUBLIC_APP_URL}/reset-password?token=${token}`;
+  return buildSecretRecoveryUrl(env.NEXT_PUBLIC_APP_URL, token);
 }
 
 export const memberRoutes = new Hono();
