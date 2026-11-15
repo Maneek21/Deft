@@ -31,9 +31,10 @@ import { env } from '../lib/env.js';
 import { visibleLiveMemberForOrg } from '../lib/member-visibility.js';
 import { OrgMembershipError, requireOrgAdminOrOwner } from '../lib/org-membership.js';
 import { evictActiveHuddleParticipants } from '../socket.js';
-import { emitWebSessionRevocations } from '../lib/web-sessions.js';
+import { emitWebSessionRevocations, revokeMemberWebSessions } from '../lib/web-sessions.js';
 import { getSeatStatus, reserveSeat, withSeatRetry, type SeatReservation } from '../lib/seat-limit.js';
 import { buildInviteUrl as buildSecretInviteUrl, buildRecoveryUrl as buildSecretRecoveryUrl } from '../lib/secret-links.js';
+import { roleMustHaveSecondStep, secondStepPolicy } from '../lib/two-step-policy.js';
 
 const INVITE_TTL = '7d';
 const RECOVERY_TTL = '24h';
@@ -1366,14 +1367,15 @@ memberRoutes.post('/:id/recovery-url', async (c) => {
     const currentUser = c.get('user');
     const memberId = c.req.param('id');
 
+    let caller;
     try {
-      await requireOrgAdminOrOwner(currentUser.org_id, currentUser.id);
+      caller = await requireOrgAdminOrOwner(currentUser.org_id, currentUser.id);
     } catch (err) {
       return adminForbidden(c, err);
     }
 
     const [target] = await db
-      .select({ id: users.id, email: users.email, password_version: users.password_version })
+      .select({ id: users.id, email: users.email, password_version: users.password_version, role: orgMembers.role })
       .from(users)
       .innerJoin(orgMembers, eq(orgMembers.user_id, users.id))
       .where(and(eq(orgMembers.org_id, currentUser.org_id), eq(users.id, memberId), eq(orgMembers.is_active, true)))
@@ -1381,6 +1383,14 @@ memberRoutes.post('/:id/recovery-url', async (c) => {
 
     if (!target) {
       return c.json({ error: 'Member not found', code: 'NOT_FOUND' }, 404);
+    }
+
+    // A recovery link sets a new password, so it must not let an admin take
+    // over the owner or another admin. Only the owner may make one for an
+    // owner or admin; an admin may make one for members and guests. The link
+    // never removes two-step verification: the person still needs a code.
+    if (caller.role !== 'owner' && (target.role === 'owner' || target.role === 'admin')) {
+      return c.json({ error: 'Only the owner can create a recovery link for an owner or admin', code: 'FORBIDDEN' }, 403);
     }
 
     const resetToken = jwt.sign(
@@ -1461,6 +1471,13 @@ memberRoutes.patch('/:id', async (c) => {
         userId: memberId,
         reason: 'org_role_changed',
       });
+      // Hosted mode: an admin must have two-step verification before the role
+      // takes effect. Their sessions end now; the next sign-in gives only the
+      // enrol-only token until they have set it up.
+      if (roleMustHaveSecondStep(parsed.data.role)
+        && (await secondStepPolicy(db, memberId, parsed.data.role)).requirement === 'enrolment') {
+        await revokeMemberWebSessions(currentUser.org_id, memberId);
+      }
     }
 
     return c.json({ success: true });
