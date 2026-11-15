@@ -330,6 +330,7 @@ export const upgradeManifest = {
     {version:'0.3.0-preview.135',file:'0.3.0-preview.135-app-connection-restore-marker.sql',description:'Allow the restore successor marker on app connection session records'},
     {version:'0.3.0-preview.136',file:'0.3.0-preview.136-agent-actions-pending-index.sql',description:'Index pending agent actions by workspace and creation time'},
     {version:'0.3.0-preview.137',file:'0.3.0-preview.137-ics-publish-tokens.sql',description:'Bind each published calendar feed to one person in one workspace'},
+    {version:'0.3.0-preview.144',file:'0.3.0-preview.144-seat-statements.sql',description:'Store the newest seat statement a hosted cell accepted and its version floor'},
   ] satisfies UpgradeMigration[],
 } as const;
 
