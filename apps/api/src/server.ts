@@ -4,6 +4,7 @@ import { serve } from '@hono/node-server';
 import type { Server } from 'node:http';
 import { app } from './index.js';
 import { getIO, setupSocket } from './socket.js';
+import { isPausedStart, logPausedStart } from './lib/paused-start.js';
 
 // Prefer Railway/Fly's PORT env, then API_PORT, then local default.
 const port = parseInt(process.env.PORT || process.env.API_PORT || '3001');
@@ -18,6 +19,8 @@ let shuttingDown = false;
 workerStartup.require();
 const server = serve({ fetch: app.fetch, port }, async (info) => {
   console.log(`Deft API running on http://localhost:${info.port}`);
+  const paused = isPausedStart();
+  logPausedStart();
 
   // Hosted cells fetch their signed seat statement now and on a timer.
   // A no-op unless hosted mode is on.
@@ -27,7 +30,8 @@ const server = serve({ fetch: app.fetch, port }, async (info) => {
   // Historical MCP connection forms wrote credentials into a JSONB column in
   // plaintext. Encrypt those rows before any worker can construct a runtime
   // transport. This migration is idempotent and never logs credential data.
-  try {
+  // A paused start writes nothing at startup, so this waits for release.
+  if (!paused) try {
     const { migrateLegacyMcpConnectionCredentials } = await import('./lib/mcp-credential-migration.js');
     const result = await migrateLegacyMcpConnectionCredentials();
     if (result.migrated > 0) {
@@ -51,13 +55,16 @@ const server = serve({ fetch: app.fetch, port }, async (info) => {
     const { startWorkers, stopWorkers } = await import('./workers/index.js');
     const { initScheduler } = await import('./lib/job-scheduler.js');
     if (shuttingDown) throw Error('Server stopping');
+    // Paused: workers start with dispatch and startup work off (startWorkers
+    // reads the same setting) and no cron job is registered.
     await startWorkers();
     if (shuttingDown) { await stopWorkers({ timeoutMs: 10_000 }); throw Error('Server stopping'); }
-    await initScheduler();
+    if (!paused) await initScheduler();
     if (shuttingDown) { await stopWorkers({ timeoutMs: 10_000 }); throw Error('Server stopping'); }
   }, { onFailure: (attempt, error) => console.warn(`[startup] Job workers attempt ${attempt}/5 failed:`, (error as Error).message) });
   if (shuttingDown) return;
-  if (workersReady) console.log('[startup] Job workers and scheduler started');
+  if (workersReady && paused) console.log('[startup] Paused: job workers idle, scheduler not started');
+  else if (workersReady) console.log('[startup] Job workers and scheduler started');
   else console.warn('[startup] Job workers unavailable after bounded startup retries');
 
   // Self-hosted v1 — single-org hard-block. Warn the operator if the DB

@@ -119,6 +119,7 @@ import { APPS_ENABLED, APP_DEVELOPER_PAIRING_ENABLED } from './lib/env.js';
 import { moduleTaskLinkRoutes } from './routes/module-task-links.js';
 import { authMiddleware, authenticateWebRequest, releaseWebRequest } from './middleware/auth.js';
 import { installRequestGate, isPublicApiRequest } from './middleware/request-gate.js';
+import { PAUSED_ERROR, isPausedStart, isRefusedWhilePaused } from './lib/paused-start.js';
 import {
   authLimiter,
   appRuntimeLimiter,
@@ -360,6 +361,7 @@ app.get('/health', (c) => c.json({
   commit: DEFT_BUILD_COMMIT,
   schema_head: DEFT_SCHEMA_HEAD,
   agent_channel_protocol: AGENT_CHANNEL_PROTOCOL_VERSION,
+  paused: isPausedStart(),
 }));
 
 app.get('/health/ready', async (c) => {
@@ -386,6 +388,7 @@ app.get('/health/ready', async (c) => {
       commit: DEFT_BUILD_COMMIT,
       schema_head: DEFT_SCHEMA_HEAD,
       agent_channel_protocol: AGENT_CHANNEL_PROTOCOL_VERSION,
+      paused: isPausedStart(),
       checks: {
         agent_channel_v2_schema: Number(row?.channel_column_count ?? 0) === 3,
         wiki_memory_sync: row?.has_memory_sync === true,
@@ -397,6 +400,7 @@ app.get('/health/ready', async (c) => {
       status: 'not_ready',
       error: 'Database readiness check failed',
       code: 'DATABASE_NOT_READY',
+      paused: isPausedStart(),
     }, 503);
   }
 });
@@ -422,6 +426,9 @@ installRequestGate(app, {
   authenticate: authenticateWebRequest,
   release: releaseWebRequest,
   edgeMiddleware,
+  // Paused start: refuse every change except login, refresh and logout, on
+  // every route (MCP, OAuth, webhooks, App Runtime, uploads included).
+  refuse: (method, path) => (isRefusedWhilePaused(method, path) ? { ...PAUSED_ERROR, status: 503 } : null),
 });
 
 export { app };

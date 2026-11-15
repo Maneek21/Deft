@@ -10,6 +10,9 @@ import { Hono, type MiddlewareHandler } from 'hono';
  *    routes below is refused unless it carries a valid web session. The
  *    route-level auth middleware still runs and reuses the same result.
  *
+ * 3. When a `refuse` check is given (the paused start), a request it names is
+ *    refused before routing, whatever the path and whether or not it is public.
+ *
  * Responses the gate produces pass through the same edge middleware as the
  * app (logging, CORS, security headers), so browsers can read them.
  */
@@ -96,7 +99,7 @@ function rawPathname(url: string): string {
   return end === -1 ? url.slice(start) : url.slice(start, start + end);
 }
 
-type Denial = { error: string; code: string; status: 400 | 401 | 403 | 404 | 500 };
+type Denial = { error: string; code: string; status: 400 | 401 | 403 | 404 | 500 | 503 };
 
 export function installRequestGate(
   app: Hono,
@@ -106,6 +109,8 @@ export function installRequestGate(
     /** Called once the request is answered; ends any per-request reuse of the auth result. */
     release?: (request: Request) => void;
     edgeMiddleware?: MiddlewareHandler[];
+    /** Refuses a request before routing and before any session check (the paused start). */
+    refuse?: (method: string, path: string) => Denial | null;
   },
 ): void {
   const routedFetch = app.fetch;
@@ -131,6 +136,8 @@ export function installRequestGate(
         const target = request.method === 'OPTIONS' ? new Request(request.url, { headers: request.headers }) : request;
         return await deny(target, { error: 'Invalid request path', code: 'INVALID_PATH', status: 400 });
       }
+      const refusal = options.refuse?.(request.method, path);
+      if (refusal) return await deny(request, refusal);
       gated = isGatedApiPath(path) && !options.isPublic(request.method, path);
       if (gated && request.method === 'OPTIONS') {
         // Preflight is answered by the CORS policy alone; it never reaches a route.

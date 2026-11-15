@@ -19,6 +19,7 @@ import { APP_RESOURCE_SYNC_SCAN_JOB, ensureAppResourceSyncScan } from '../lib/ap
 import { APP_AUTOMATION_SCAN_CRON, ensureAppAutomationScan } from '../lib/app-automation-scan-progress.js';
 import { GITHUB_SYNC_SCAN_JOB, GITHUB_SYNC_SCAN_MS, githubSyncIntervalMs } from './handlers/github-sync-schedule.js';
 import type { JobHandler } from './types.js';
+import { isPausedStart } from '../lib/paused-start.js';
 
 // ─── Cron re-enqueue delays ───
 const CRON_DELAYS: Record<string, number> = {
@@ -866,7 +867,11 @@ async function startWorkersInternal(opts?: {
 export async function startWorkers(): Promise<void> {
   if (workersRunning) return;
   if (!startingPromise) {
-    startingPromise = startWorkersInternal().finally(() => {
+    // A paused start (restored or upgraded install) claims nothing and runs no
+    // startup work: stale-job recovery would re-queue jobs that were running
+    // when the backup was taken, and rehydration would fire reminders again.
+    const paused = isPausedStart();
+    startingPromise = startWorkersInternal(paused ? { skipStartupWork: true, disableWorkDispatch: true } : undefined).finally(() => {
       startingPromise = null;
     });
   }

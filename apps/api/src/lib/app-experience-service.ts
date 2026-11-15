@@ -24,6 +24,7 @@ import {currentConnectionSessionLocators} from './app-connection-current-locator
 import {experienceTargetAccountLabels} from './app-experience-target-labels.js';
 import {readBackgroundHealthMap} from './app-integration-capture-store.js';
 import {ExperienceAccountTargetHealthSchema} from '@deft/app-kit/experience/core';
+import {isPausedStart} from './paused-start.js';
 
 const SESSION_MS = 15 * 60_000;
 const MAX_ACTIVE_PER_WEB_APP = 8;
@@ -366,7 +367,8 @@ export class AppExperienceService {
   /** A restored private ID discloses only metadata under the current reviewed App. */
   async runStatus(caller: ExperienceCaller, sessionId: string, runId: string, signal?: AbortSignal) {
     const { run } = await this.readRunContext(caller, sessionId, runId, false, signal);
-    if(run.output?.primary_outcome==='accepted'&&run.output?.effect_outcome==='unknown'&&run.output?.inspection_available===true){try{const {AppRunInspectionService}=await import('./app-run-inspection-service.js');const receipt=await new AppRunInspectionService(caller,()=>this.runInspectionContext(caller,sessionId,runId,signal),sessionId).invoke('run_inspection_status',signal);return {run:{...run,output:receipt.run.output,inspection_available:receipt.run.output.inspection_available}};}catch{signal?.throwIfAborted();}}
+    // A paused start never asks the App Runtime; the stored status is shown.
+    if(!isPausedStart()&&run.output?.primary_outcome==='accepted'&&run.output?.effect_outcome==='unknown'&&run.output?.inspection_available===true){try{const {AppRunInspectionService}=await import('./app-run-inspection-service.js');const receipt=await new AppRunInspectionService(caller,()=>this.runInspectionContext(caller,sessionId,runId,signal),sessionId).invoke('run_inspection_status',signal);return {run:{...run,output:receipt.run.output,inspection_available:receipt.run.output.inspection_available}};}catch{signal?.throwIfAborted();}}
     return { run };
   }
 

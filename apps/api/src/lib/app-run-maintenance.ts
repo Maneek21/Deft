@@ -9,6 +9,7 @@ import { AppRunAttemptRunner } from './app-run-attempt-runner.js';
 import { PostgresAppRunReceiptWriter } from './app-run-receipts.js';
 import { postgresAppRunAttemptQueue } from './app-run-scheduler.js';
 import { enqueueRecoveredAppRunAttention } from './app-run-maintenance-attention.js';
+import { isPausedStart } from './paused-start.js';
 
 type Mode = 'recovery' | 'retention';
 type Candidate = { org_id: string; run_id: string };
@@ -108,7 +109,8 @@ export class AppRunMaintenance {
 
 let maintenance: AppRunMaintenance | undefined;
 export async function runAppRunMaintenance(mode: Mode) {
-  if (!APP_RUNS_ENABLED) return;
+  // A paused start must not settle or re-arm Runs left over from a backup.
+  if (!APP_RUNS_ENABLED || isPausedStart()) return;
   const result = await (maintenance ??= new AppRunMaintenance()).run(mode);
   if (result.failed) console.warn(`[app-runs] maintenance ${mode}: ${result.failed} item(s) require retry or key/receipt repair`);
 }
