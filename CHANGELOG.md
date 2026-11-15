@@ -10,6 +10,25 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### Changed: approving an action that then fails
+
+- `POST /api/agent/actions/:id/approve` no longer answers HTTP 500 when the
+  approved action fails. A final failure answers 200 with
+  `{ status: "failed", message: "approved, but it did not complete", error }`
+  (plus `code` for a typed refusal). A failure that can be retried answers 200
+  with `{ status: "pending", retryable: true, message, error }`: the action did
+  not run and is still pending. The approval card shows both in plain words.
+- Personal MCP `approval_approve`: a final failure is still an MCP error
+  (`isError: true`), now with the structured outcome above as its content. This
+  now also applies to typed wiki refusals, which were returned as a normal
+  result. A retryable failure is a normal result with `status: "pending"`,
+  `retryable: true` and a message saying the action did not run and can be
+  approved again.
+- Error text from a failed action is no longer passed through when it is a
+  database or driver error (which carries SQL and bound values): the answer,
+  the stored action error and the MCP result carry a fixed message with a
+  reference id, and the detail is logged on the server under that id.
+
 ### Notice: Kit `0.1.0-alpha.44` removes deprecated Email compatibility
 
 Not before 2026-11-25, and never fewer than 14 days after this notice merged.

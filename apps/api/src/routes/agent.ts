@@ -91,6 +91,7 @@ import {
   DOCUMENT_SEND_ACTION,
   sanitizeDocumentSendParams,
 } from '../lib/document-send.js';
+import { clientSafeErrorText } from '../lib/client-safe-error.js';
 
 export const agentRoutes = new Hono();
 
@@ -1764,7 +1765,8 @@ function approvedButFailedBody(error: string, actionName: string, result?: unkno
   return {
     status: 'failed' as const,
     message: 'approved, but it did not complete',
-    error,
+    // Stored errors from before the executor sanitised them are checked too.
+    error: clientSafeErrorText(error, `approval ${actionName}`),
     ...(refusal ? { code: refusal } : {}),
   };
 }
@@ -1778,7 +1780,7 @@ function approvalRetryableBody(error: string) {
     status: 'pending' as const,
     retryable: true as const,
     message: 'approved, but it did not complete; it is still pending and can be approved again',
-    error,
+    error: clientSafeErrorText(error, 'approval retry'),
   };
 }
 

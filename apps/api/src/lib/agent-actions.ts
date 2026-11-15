@@ -48,6 +48,7 @@ import {
 } from './agent-tool-policy.js';
 import { getApprovalTier, isDestructiveAction, mandatoryApprovalTier, shouldAutoExecute, type ToolAnnotations } from './agent-approval.js';
 import { validateNativeAgentMentionWrite } from './native-mention-agent-writes.js';
+import { clientSafeErrorMessage } from './client-safe-error.js';
 import { authorizeNativeActionTarget, promotableNoteSql } from './agent-action-visibility.js';
 import { executeWikiWriteAction, TERMINAL_REFUSAL_RESULT, wikiProposalTargetValues } from './wiki-proposal-target.js';
 import {
@@ -3500,7 +3501,7 @@ export async function executeAction(
         return { success: false, result: null, error: `Unknown action: ${action}` };
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : 'Unknown error';
+    const msg = clientSafeErrorMessage(err, `agent action ${action}`);
     const partialBulkResult = err instanceof ModuleRecordBulkCreateError ? err.progress : null;
     if (isModuleWriteAction(action)) {
       await terminalizeModuleActionFailure({

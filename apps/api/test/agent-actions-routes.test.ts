@@ -1801,6 +1801,40 @@ test('POST reject after Defty work capture approval leaves the intent converted'
   });
 });
 
+test('POST approve: a real database error returns no SQL, parameter values or table names', async () => {
+  const title = `routes-db-error-secret-${Date.now()}`;
+  const actionId = await insertPendingLegacyTaskCreate(title);
+  const fn = `test_fail_task_insert_${Date.now()}`;
+  await withClient(async (c) => {
+    await c.query(`CREATE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF NEW.title LIKE 'routes-db-error-secret-%' THEN RAISE EXCEPTION 'forced failure'; END IF; RETURN NEW; END $$`);
+    await c.query(`CREATE TRIGGER ${fn} BEFORE INSERT ON tasks FOR EACH ROW EXECUTE FUNCTION ${fn}()`);
+  });
+  try {
+    const res = await app().request(`/api/agent/actions/${actionId}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    for (const leak of ['Failed query', 'insert into', '"tasks"', title, 'params:', 'forced failure']) {
+      assert.ok(!text.includes(leak), `${leak} leaked: ${text}`);
+    }
+    const body = JSON.parse(text);
+    assert.match(String(body.error), /server error\. Reference: [0-9a-f]{8}/);
+    await withClient(async (c) => {
+      const r = await c.query(`SELECT error FROM agent_actions WHERE id = $1`, [actionId]);
+      assert.ok(!String(r.rows[0].error).includes(title), 'the stored error carries no values either');
+    });
+  } finally {
+    await withClient(async (c) => {
+      await c.query(`DROP TRIGGER IF EXISTS ${fn} ON tasks`);
+      await c.query(`DROP FUNCTION IF EXISTS ${fn}()`);
+    });
+  }
+});
+
 test('POST approve on failed legacy action answers pending-and-retryable (200) and leaves it pending', async () => {
   const title = `routes-legacy-fail-${Date.now()}`;
   const actionId = await insertLegacyCreateTaskWithoutProject(title);

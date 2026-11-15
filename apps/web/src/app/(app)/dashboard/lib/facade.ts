@@ -14,6 +14,7 @@
  */
 import { api } from '@/lib/api';
 import { getUserTimezone } from '@/lib/time';
+import { getApprovalMutationStatus, retryableApprovalMessage } from '@/lib/agent-action-presentation';
 
 // ───── domain types (re-exported so widgets don't import from page.tsx) ─────
 
@@ -199,7 +200,10 @@ export const widgetApi: WidgetApiFacade = {
 
   approveAgentAction: async id => {
     const res = await api.post(`/api/agent/actions/${id}/approve`);
-    return res.ok;
+    if (!res.ok) return false;
+    // An approve that failed or left the action pending answers 200 too.
+    const body = await res.json().catch(() => ({ status: 'approved' }));
+    return getApprovalMutationStatus(body, 'approved') === 'approved' && retryableApprovalMessage(body) === null;
   },
   rejectAgentAction: async id => {
     const res = await api.post(`/api/agent/actions/${id}/reject`);
