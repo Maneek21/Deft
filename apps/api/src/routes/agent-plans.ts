@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { eq, and, desc, or, type SQL } from 'drizzle-orm';
+import { eq, and, desc, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { agentPlans } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
@@ -11,6 +11,7 @@ import {
   PlanAccessError,
 } from '../lib/agent-plans.js';
 import { getActiveOrgMembership } from '../lib/org-membership.js';
+import { PLAN_APPROVER_CONTEXT_KEY } from '../lib/direct-action-receipt.js';
 import { isDestructiveAction } from '../lib/agent-approval.js';
 import { getMCPToolsForAgent } from '../lib/mcp-tools.js';
 
@@ -25,6 +26,14 @@ async function planManagerScope(orgId: string, userId: string): Promise<SQL> {
   return membership?.role === 'owner' || membership?.role === 'admin'
     ? eq(agentPlans.org_id, orgId)
     : and(eq(agentPlans.org_id, orgId), eq(agentPlans.user_id, userId))!;
+}
+
+/**
+ * Records who approved (or resumed) the plan in its context, so the receipts
+ * of the steps it then runs name that person as the approver.
+ */
+function planApproverContext(userId: string) {
+  return sql`COALESCE(${agentPlans.context}, '{}'::jsonb) || jsonb_build_object(${PLAN_APPROVER_CONTEXT_KEY}::text, ${userId}::text)`;
 }
 
 function planAccessRefusal(err: unknown) {
@@ -235,7 +244,7 @@ agentPlanRoutes.post('/:id/approve', async (c) => {
 
     const [updated] = await db
       .update(agentPlans)
-      .set({ status: 'approved', updated_at: new Date() })
+      .set({ status: 'approved', context: planApproverContext(user.id), updated_at: new Date() })
       .where(eq(agentPlans.id, planId))
       .returning();
 
@@ -353,7 +362,7 @@ agentPlanRoutes.post('/:id/resume', async (c) => {
 
     await db
       .update(agentPlans)
-      .set({ status: 'approved', steps, updated_at: new Date() })
+      .set({ status: 'approved', steps, context: planApproverContext(user.id), updated_at: new Date() })
       .where(eq(agentPlans.id, planId));
 
     await enqueue(QUEUE_NAMES.AGENT_JOBS, 'plan-executor', {
