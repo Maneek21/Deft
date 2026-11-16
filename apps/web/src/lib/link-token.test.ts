@@ -44,7 +44,7 @@ function fakeBrowser(href: string) {
   const history = {
     state: { kept: true } as unknown,
     replaceState(data: unknown, _unused: string, next?: string | null) {
-      assert.equal(data, history.state, 'history state is preserved');
+      assert.equal(data, null, 'Next must synchronize an external history change');
       calls.push(String(next));
       const target = new URL(String(next), url);
       url.hash = target.hash;

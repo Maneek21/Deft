@@ -174,9 +174,9 @@ export function InviteAccept({ token }: { token: string | null | undefined }) {
 
           {previewState.status === 'invalid' && (
             <div className="flex flex-col gap-3">
-              <h1 className="text-[1.25rem] font-semibold" style={{ color: 'var(--on-surface)' }}>Invite not valid</h1>
+              <h1 className="text-[1.25rem] font-semibold" style={{ color: 'var(--on-surface)' }}>{token ? 'Invite not valid' : 'Open invitation link'}</h1>
               <p className="text-[0.875rem] leading-relaxed" style={{ color: 'var(--on-surface-variant)' }}>
-                This link couldn't be verified. It may have been revoked, or the URL was copied incorrectly. Ask the admin who invited you for a fresh link.
+                {token ? "This link couldn't be verified. It may have been revoked, or the URL was copied incorrectly. Ask the admin who invited you for a fresh link." : 'Reopen the original invitation link to continue.'}
               </p>
             </div>
           )}

@@ -1,25 +1,17 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
-import { captureLinkToken } from '@/lib/link-token';
+import { useLinkToken } from '@/lib/use-link-token';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
 export default function ResetPasswordPage() {
-  // Recovery links carry the token after `#` (`/reset-password#token=...`);
-  // links issued before that change used `?token=`, which is still accepted.
-  // `undefined` means the address has not been read yet.
-  // The token is taken out of the address bar once read, so it is not kept in
-  // history, shown on screen, or sent onward. The ref keeps the first read so
-  // StrictMode's second mount effect does not see an empty address.
-  const captured = useRef<string | null | undefined>(undefined);
-  const [token, setToken] = useState<string | null | undefined>(undefined);
+  const token = useLinkToken('/reset-password');
+  return <ResetPasswordContent key={token} token={token} />;
+}
 
-  useEffect(() => {
-    setToken(captureLinkToken(captured, window.location, window.history, '/reset-password'));
-  }, []);
-
+function ResetPasswordContent({ token }: { token: string | null | undefined }) {
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [success, setSuccess] = useState(false);
@@ -75,7 +67,7 @@ export default function ResetPasswordPage() {
       >
         <div className="text-center flex flex-col gap-4">
           <p className="text-[0.875rem]" style={{ color: 'var(--error)' }}>
-            Invalid or missing reset token.
+            Reopen the original password recovery link to continue.
           </p>
           <Link href="/forgot-password" className="text-[0.875rem] underline underline-offset-4"
             style={{ color: 'var(--primary)' }}>

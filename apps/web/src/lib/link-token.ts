@@ -15,17 +15,16 @@ export function readLinkToken(hash: string, search = ''): string | null {
 
 export type LinkTokenBox = { current: string | null | undefined };
 type LinkLocation = { hash: string; search: string; pathname: string };
-type LinkHistory = { state: unknown; replaceState(data: unknown, unused: string, url?: string | null): void };
+type LinkHistory = { replaceState(data: unknown, unused: string, url?: string | null): void };
 
 /**
- * Captures the page's one-time token once and removes it from the address bar
+ * Captures a newly supplied token and removes it from the address bar
  * (and so from history, the screen and later same-origin Referers) by
  * replacing the address with `cleanPath`.
  *
- * `box` (a React ref) remembers the first result: React StrictMode runs mount
- * effects twice in development, and the second run would otherwise find the
- * address already stripped and report no token. `pathToken` is a token taken
- * from the route path, for old `/invite/<token>` links.
+ * `box` remembers the current token when the address was already stripped
+ * (including StrictMode effect replay), but a replacement link supersedes it.
+ * A legacy path token applies only while that path is still in the address.
  */
 export function captureLinkToken(
   box: LinkTokenBox,
@@ -34,11 +33,13 @@ export function captureLinkToken(
   cleanPath: string,
   pathToken: string | null = null,
 ): string | null {
-  if (box.current !== undefined) return box.current;
-  const token = readLinkToken(location.hash, location.search) ?? (pathToken || null);
-  box.current = token;
+  const token = readLinkToken(location.hash, location.search)
+    ?? (location.pathname !== cleanPath ? pathToken : null);
+  if (token || box.current === undefined) box.current = token;
   if (token && (location.hash || location.search || location.pathname !== cleanPath)) {
-    history.replaceState(history.state, '', cleanPath);
+    // Next copies its internal history state and synchronizes its canonical
+    // URL for external changes; passing its own __NA state would skip that.
+    history.replaceState(null, '', cleanPath);
   }
-  return token;
+  return box.current;
 }
