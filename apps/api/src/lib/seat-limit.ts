@@ -29,9 +29,8 @@ import { orgMembers, users } from '@deft/db/schema';
 import { seatStatements } from '@deft/db/seat-statements';
 import { db } from './db.js';
 import { isHostedMode } from './hosted-mode.js';
+import { parseSeatSettings, type SeatSettings } from './seat-settings.js';
 import {
-  areValidSeatPublicKeys,
-  isValidSeatCellId,
   SEAT_STATEMENT_PREFIX,
   verifySeatStatement,
   type SeatRefusalReason,
@@ -80,8 +79,6 @@ export type SeatReservation =
     frozen_reason: SeatFrozenReason | null;
   };
 
-type SeatSettings = { cellId: string; publicKeys: string[]; url: string; fetchToken: string };
-
 type SeatPolicy = { limit: number | null; frozen: SeatFrozenReason | null };
 
 /** Network seam; tests replace this field. */
@@ -105,20 +102,10 @@ export function _resetSeatProcessStateForTest(): void {
   lastOnDemandAt = 0;
 }
 
+/** Startup refuses a hosted cell without these (env.ts); checked again here, fail closed. */
 function readSeatSettings(): SeatSettings | null {
-  const cellId = (process.env.DEFT_CELL_ID ?? '').trim();
-  const publicKeys = (process.env.DEFT_SEAT_PUBLIC_KEYS ?? '').split(',').map((key) => key.trim()).filter(Boolean);
-  const url = (process.env.DEFT_SEAT_STATEMENT_URL ?? '').trim();
-  const fetchToken = (process.env.DEFT_SEAT_FETCH_TOKEN ?? '').trim();
-  if (!isValidSeatCellId(cellId) || !areValidSeatPublicKeys(publicKeys) || !fetchToken) return null;
-  try {
-    const parsed = new URL(url);
-    // The fetch token is a bearer secret: never send it in clear text.
-    if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return null;
-  } catch {
-    return null;
-  }
-  return { cellId, publicKeys, url, fetchToken };
+  const parsed = parseSeatSettings(process.env);
+  return parsed.ok ? parsed.settings : null;
 }
 
 const nowSeconds = () => Math.floor(seatFetchDeps.now() / 1000);

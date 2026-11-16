@@ -150,7 +150,14 @@ test('token check: only the matching token before the expiry is accepted', () =>
   assert.equal(isSetupTokenValid(TOKEN, HASH, 'soon', BEFORE), false, 'malformed expiry');
 });
 
-const GUARDED = ['DEFT_HOSTED', 'DEFT_SETUP_TOKEN_SHA256', 'DEFT_SETUP_TOKEN_EXPIRES_AT'];
+// A hosted cell does not start without its four seat settings (seat-settings.test.ts).
+const SEATS = {
+  DEFT_CELL_ID: 'cell-7f3a9c',
+  DEFT_SEAT_PUBLIC_KEYS: 'A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg',
+  DEFT_SEAT_STATEMENT_URL: 'https://control.test.invalid/v1/seat-statement',
+  DEFT_SEAT_FETCH_TOKEN: 'test-fetch-token',
+};
+const GUARDED = ['DEFT_HOSTED', 'DEFT_SETUP_TOKEN_SHA256', 'DEFT_SETUP_TOKEN_EXPIRES_AT', ...Object.keys(SEATS)];
 function start(overrides: Record<string, string>) {
   const source = new URL('../src/lib/env.ts', import.meta.url).href;
   const script = `await import(${JSON.stringify(source)}); console.log('started');`;
@@ -184,8 +191,8 @@ test('env import: hosted mode refuses to start with a malformed hash or expiry',
 
 test('env import: hosted mode starts with valid or absent settings', () => {
   for (const [label, overrides] of [
-    ['hosted, valid pair', { DEFT_HOSTED: 'true', DEFT_SETUP_TOKEN_SHA256: HASH, DEFT_SETUP_TOKEN_EXPIRES_AT: EXPIRES_AT }],
-    ['hosted, nothing set', { DEFT_HOSTED: 'true' }],
+    ['hosted, valid pair', { DEFT_HOSTED: 'true', DEFT_SETUP_TOKEN_SHA256: HASH, DEFT_SETUP_TOKEN_EXPIRES_AT: EXPIRES_AT, ...SEATS }],
+    ['hosted, no setup token', { DEFT_HOSTED: 'true', ...SEATS }],
   ] as const) {
     const child = start(overrides);
     assert.equal(child.status, 0, `${label}: ${child.stderr}`);

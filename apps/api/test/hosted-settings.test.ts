@@ -18,6 +18,13 @@ import {
 
 const HASH = 'a'.repeat(64);
 const EXPIRES_AT = '2026-12-04T10:00:00Z';
+// A hosted cell does not start without its four seat settings (seat-settings.test.ts).
+const SEATS = {
+  DEFT_CELL_ID: 'cell-7f3a9c',
+  DEFT_SEAT_PUBLIC_KEYS: 'A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg',
+  DEFT_SEAT_STATEMENT_URL: 'https://control.test.invalid/v1/seat-statement',
+  DEFT_SEAT_FETCH_TOKEN: 'test-fetch-token',
+};
 // What isHostedMode() answers for an environment; the guard is handed it.
 const hosted = (source: NodeJS.ProcessEnv) => source.DEFT_HOSTED === 'true';
 const check = (source: NodeJS.ProcessEnv) => validateHostedModeEnvironment(hosted(source), source);
@@ -36,7 +43,7 @@ test('the switch may be unset, "true" or "false", and nothing else', () => {
 });
 
 test('a hosted-only setting needs hosted mode, whatever its value', () => {
-  assert.deepEqual([...HOSTED_ONLY_SETTINGS], ['DEFT_SETUP_TOKEN_SHA256', 'DEFT_SETUP_TOKEN_EXPIRES_AT']);
+  assert.deepEqual([...HOSTED_ONLY_SETTINGS], ['DEFT_SETUP_TOKEN_SHA256', 'DEFT_SETUP_TOKEN_EXPIRES_AT', ...Object.keys(SEATS)]);
   for (const off of [{}, { DEFT_HOSTED: 'false' }]) {
     for (const name of HOSTED_ONLY_SETTINGS) {
       for (const value of [HASH, EXPIRES_AT, 'anything', '']) {
@@ -106,8 +113,8 @@ test('env import: self-hosted (unset or "false") and hosted ("true") installs st
   for (const [label, overrides] of [
     ['switch unset', {}],
     ['DEFT_HOSTED=false', { DEFT_HOSTED: 'false' }],
-    ['DEFT_HOSTED=true', { DEFT_HOSTED: 'true' }],
-    ['DEFT_HOSTED=true with a setup token', { DEFT_HOSTED: 'true', DEFT_SETUP_TOKEN_SHA256: HASH, DEFT_SETUP_TOKEN_EXPIRES_AT: EXPIRES_AT }],
+    ['DEFT_HOSTED=true', { DEFT_HOSTED: 'true', ...SEATS }],
+    ['DEFT_HOSTED=true with a setup token', { DEFT_HOSTED: 'true', DEFT_SETUP_TOKEN_SHA256: HASH, DEFT_SETUP_TOKEN_EXPIRES_AT: EXPIRES_AT, ...SEATS }],
   ] as const) {
     const child = start(overrides);
     assert.equal(child.status, 0, `${label}: ${child.stderr}`);

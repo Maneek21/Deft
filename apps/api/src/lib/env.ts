@@ -6,6 +6,7 @@ import { validateAppRunKeyringEnvironment } from './app-run-keyrings.js';
 import { isHostedMode } from './hosted-mode.js';
 import { validateHostedModeEnvironment } from './hosted-settings.js';
 import { validateSetupTokenEnvironment } from './setup-token.js';
+import { validateSeatEnvironment } from './seat-settings.js';
 
 // Resolve .env from the repo root via the source file's location, NOT
 // process.cwd() — when this module loads under tsx / pnpm --filter / docker /
@@ -166,6 +167,11 @@ validateSetupTokenEnvironment(
   process.env.DEFT_SETUP_TOKEN_SHA256,
   process.env.DEFT_SETUP_TOKEN_EXPIRES_AT,
 );
+
+// Hosted mode: all four seat settings must be present and usable, or the API
+// does not start. Without them the cell could never learn its seat limit and
+// would refuse every new member (lib/seat-settings.ts).
+validateSeatEnvironment(isHostedMode());
 
 // App Protocol v0 is opt-in while the first vertical slice is certified.
 // Absence and every value except the exact string "true" fail closed.
