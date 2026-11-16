@@ -364,7 +364,7 @@ oauthProtectedRoutes.get('/grants', async (c) => {
       ))
       .orderBy(desc(oauthAuditEvents.created_at))
       .limit(8);
-    const enrichedActions = await enrichOAuthAuditActions(user.org_id, recentActions);
+    const enrichedActions = await enrichOAuthAuditActions(user.org_id, user.id, recentActions);
     return {
       ...grant,
       last_used_at: lastUsed?.last_used_at ?? null,

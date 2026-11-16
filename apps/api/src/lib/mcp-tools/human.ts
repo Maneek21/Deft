@@ -3117,7 +3117,7 @@ export async function humanActivityQuery(args: { limit?: number; tool_name?: str
     metadata: Record<string, unknown> | null;
     created_at: Date;
   }>;
-  const enriched = await enrichOAuthAuditActions(ctx.org_id, actions);
+  const enriched = await enrichOAuthAuditActions(ctx.org_id, ctx.user_id, actions);
   return textResult(enriched);
 }
 
