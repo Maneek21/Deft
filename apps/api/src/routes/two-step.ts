@@ -30,9 +30,9 @@ import {
  *   POST /recovery-codes   current code -> new recovery codes
  *   POST /disable          current code -> off (refused for hosted owners/admins)
  *
- * Callers are a signed-in person, or, for status and the two enrol calls
- * only, the holder of an enrol-only token. That token is opaque (not a JWT),
- * so nothing else in the API accepts it.
+ * Callers are a signed-in person, or, for the two enrol calls only, the
+ * holder of an enrol-only token. That token is opaque (not a JWT), so nothing
+ * else in the API accepts it.
  */
 export const twoStepRoutes = new Hono();
 twoStepRoutes.use('*', bodyLimit({ maxSize: 16 * 1024, onError: (c) => c.json({ error: 'Request body is too large', code: 'VALIDATION_ERROR' }, 413) }));
@@ -121,9 +121,9 @@ twoStepRoutes.post('/verify', async (c) => {
   return c.json({ accessToken: issued.accessToken, refreshToken: issued.refreshToken });
 });
 
-// GET /api/auth/two-step — status for the settings and enrolment screens.
+// GET /api/auth/two-step — status for the settings screen.
 twoStepRoutes.get('/', async (c) => {
-  const caller = await authenticate(c, true);
+  const caller = await authenticate(c, false);
   if (caller instanceof Response) return caller;
   const [status, mandatory] = await Promise.all([getTwoStepStatus(caller.id), twoStepIsMandatoryFor(caller.id)]);
   return c.json({
@@ -187,6 +187,9 @@ twoStepRoutes.post('/disable', async (c) => {
     return c.json({ error: 'Owners and admins must keep two-step verification on', code: 'TWO_STEP_REQUIRED_FOR_ROLE' }, 403);
   }
   const result = await disableTwoStep(caller.id, parsed.data.code);
+  if ('mandatory' in result) {
+    return c.json({ error: 'Owners and admins must keep two-step verification on', code: 'TWO_STEP_REQUIRED_FOR_ROLE' }, 403);
+  }
   if (!result.ok) return refuse(c, result.check);
   return c.json({ success: true });
 });

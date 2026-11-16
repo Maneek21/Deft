@@ -128,9 +128,9 @@ export async function getTwoStepStatus(userId: string) {
 }
 
 /** True when this person may not turn two-step verification off. */
-export async function twoStepIsMandatoryFor(userId: string): Promise<boolean> {
+export async function twoStepIsMandatoryFor(userId: string, reader: Pick<Tx, 'select'> = db): Promise<boolean> {
   if (!isHostedMode()) return false;
-  const [privileged] = await db.select({ id: orgMembers.id }).from(orgMembers)
+  const [privileged] = await reader.select({ id: orgMembers.id }).from(orgMembers)
     .where(and(eq(orgMembers.user_id, userId), eq(orgMembers.is_active, true), inArray(orgMembers.role, ['owner', 'admin'])))
     .limit(1);
   return Boolean(privileged);
@@ -210,10 +210,13 @@ export async function regenerateRecoveryCodes(userId: string, code: string, now 
   });
 }
 
-/** Turns two-step verification off. Needs a current code. The caller refuses
- * this for owners and admins in hosted mode (twoStepIsMandatoryFor). */
-export async function disableTwoStep(userId: string, code: string, now = new Date()): Promise<CodeGatedResult<object>> {
+/** Turns two-step verification off. Needs a current code. Refused for owners
+ * and admins in hosted mode (twoStepIsMandatoryFor), checked under the row
+ * lock a promotion to admin also takes (routes/members.ts). */
+export async function disableTwoStep(userId: string, code: string, now = new Date()): Promise<CodeGatedResult<object> | { ok: false; mandatory: true }> {
   return db.transaction(async (tx) => {
+    await tx.select({ user_id: userTwoStep.user_id }).from(userTwoStep).where(eq(userTwoStep.user_id, userId)).for('update');
+    if (await twoStepIsMandatoryFor(userId, tx)) return { ok: false as const, mandatory: true as const };
     const check = await checkSecondStep(tx, userId, { code }, { secret: 'confirmed', allowRecoveryCode: false, now });
     if (!check.ok) return { ok: false as const, check };
     await tx.update(userTwoStep).set({

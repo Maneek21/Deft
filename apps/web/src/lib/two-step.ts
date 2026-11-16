@@ -85,7 +85,7 @@ export function twoStepMessage(code: unknown, fallback?: unknown, retryAfterSeco
 }
 
 export const twoStepApi = {
-  status: (enrolToken?: string | null) => request<TwoStepStatus>('GET', '', undefined, enrolToken),
+  status: () => request<TwoStepStatus>('GET', ''),
   startEnrolment: (proof: { code?: string; recovery_code?: string }, enrolToken?: string | null) =>
     request<{ secret: string; otpauth_url: string }>('POST', '/enrol/start', proof, enrolToken),
   confirmEnrolment: (code: string, enrolToken?: string | null) =>

@@ -31,10 +31,11 @@ import { env } from '../lib/env.js';
 import { visibleLiveMemberForOrg } from '../lib/member-visibility.js';
 import { OrgMembershipError, requireOrgAdminOrOwner } from '../lib/org-membership.js';
 import { evictActiveHuddleParticipants } from '../socket.js';
-import { emitWebSessionRevocations, revokeMemberWebSessions } from '../lib/web-sessions.js';
+import { emitWebSessionRevocations } from '../lib/web-sessions.js';
 import { getSeatStatus, reserveSeat, withSeatRetry, type SeatReservation } from '../lib/seat-limit.js';
 import { buildInviteUrl as buildSecretInviteUrl, buildRecoveryUrl as buildSecretRecoveryUrl } from '../lib/secret-links.js';
-import { roleMustHaveSecondStep, secondStepPolicy } from '../lib/two-step-policy.js';
+import { roleMustHaveSecondStep } from '../lib/two-step-policy.js';
+import { userTwoStep } from '@deft/db/two-step';
 
 const INVITE_TTL = '7d';
 const RECOVERY_TTL = '24h';
@@ -1446,6 +1447,19 @@ memberRoutes.patch('/:id', async (c) => {
       if (targetMembership.role === 'owner') return { failure: 'OWNER' as const };
       if (!parsed.success) return { failure: 'INVALID' as const };
 
+      // Hosted mode: the admin role takes effect only for someone who already
+      // has two-step verification on, so no credential they hold (a web
+      // session or a connected app's token) ever carries the role without it.
+      // The row lock is the one disableTwoStep takes: either this sees
+      // two-step still on, or turning it off sees the new role and is refused.
+      if (roleMustHaveSecondStep(parsed.data.role)) {
+        const [twoStep] = await tx.select({ confirmed_at: userTwoStep.confirmed_at })
+          .from(userTwoStep)
+          .where(eq(userTwoStep.user_id, memberId))
+          .for('share');
+        if (!twoStep?.confirmed_at) return { failure: 'TWO_STEP' as const };
+      }
+
       if (targetMembership.role === 'guest' && parsed.data.role !== 'guest' && targetMembership.kind === 'human') {
         const seat = await reserveSeat(tx, currentUser.org_id);
         if (!seat.ok) return { seatRefusal: seat };
@@ -1460,6 +1474,12 @@ memberRoutes.patch('/:id', async (c) => {
     if ('failure' in changed) {
       if (changed.failure === 'NOT_FOUND') return c.json({ error: 'Member not found', code: 'NOT_FOUND' }, 404);
       if (changed.failure === 'OWNER') return c.json({ error: 'Cannot change owner role', code: 'FORBIDDEN' }, 403);
+      if (changed.failure === 'TWO_STEP') {
+        return c.json({
+          error: 'This person must turn on two-step verification (Settings, Profile) before they can be made an admin',
+          code: 'TWO_STEP_NOT_ENROLLED',
+        }, 409);
+      }
       return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
     }
     if ('seatRefusal' in changed && changed.seatRefusal) {
@@ -1471,13 +1491,6 @@ memberRoutes.patch('/:id', async (c) => {
         userId: memberId,
         reason: 'org_role_changed',
       });
-      // Hosted mode: an admin must have two-step verification before the role
-      // takes effect. Their sessions end now; the next sign-in gives only the
-      // enrol-only token until they have set it up.
-      if (roleMustHaveSecondStep(parsed.data.role)
-        && (await secondStepPolicy(db, memberId, parsed.data.role)).requirement === 'enrolment') {
-        await revokeMemberWebSessions(currentUser.org_id, memberId);
-      }
     }
 
     return c.json({ success: true });

@@ -500,9 +500,9 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
       await assert.rejects(() => verifyWebAccess(restricted));
       assert.equal((await db.select().from(webSessions).where(eq(webSessions.user_id, who.id))).length, 0, 'no session row exists');
 
+      assert.equal((await call('GET', '/api/auth/two-step', undefined, restricted)).status, 401);
+
       // It can do exactly one thing.
-      const status = await call('GET', '/api/auth/two-step', undefined, restricted);
-      assert.deepEqual(status.json, { enabled: false, confirmed_at: null, recovery_codes_remaining: 0, required: true, can_disable: false });
       const { confirmed, secret } = await enrol(restricted);
       assert.equal(confirmed.recovery_codes.length, 10);
       const full = await probe(confirmed.accessToken);
@@ -545,39 +545,52 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     hosted(false);
   });
 
-  await t.test('hosted: making someone an admin ends their sessions; the next one is enrol-only', async () => {
+  await t.test('hosted: nobody becomes an admin before they have two-step verification on', async () => {
     const roleOrg = randomUUID();
     await db.insert(orgs).values({ id: roleOrg, name: 'Role change', slug: `role-${roleOrg}` });
-    for (const hostedMode of [true, false]) {
-      hosted(false);
-      const owner = await person('owner', roleOrg);
-      const member = await person('member', roleOrg);
-      const memberSession = (await login(member.email)).json;
-      hosted(hostedMode);
-      const actorLogin = await login(owner.email);
-      const actor = hostedMode ? (await enrol(actorLogin.json.two_step.token)).confirmed.accessToken : actorLogin.json.accessToken;
+    const roleOf = async (userId: string) => (await db.select({ role: orgMembers.role }).from(orgMembers)
+      .where(and(eq(orgMembers.org_id, roleOrg), eq(orgMembers.user_id, userId))))[0]?.role;
 
-      const promoted = await call('PATCH', `/api/members/${member.id}`, { role: 'admin' }, actor);
-      assert.equal(promoted.status, 200, JSON.stringify(promoted.json));
+    // Self-hosted: nothing is required.
+    hosted(false);
+    const selfOwner = await person('owner', roleOrg);
+    const selfMember = await person('member', roleOrg);
+    const selfActor = (await login(selfOwner.email)).json.accessToken as string;
+    assert.equal((await call('PATCH', `/api/members/${selfMember.id}`, { role: 'admin' }, selfActor)).status, 200);
+    assert.equal(await roleOf(selfMember.id), 'admin');
 
-      const afterProbe = await probe(memberSession.accessToken);
-      const afterRefresh = await post('/api/auth/refresh', { refreshToken: memberSession.refreshToken });
-      const next = await login(member.email);
-      if (hostedMode) {
-        assert.equal(afterProbe.status, 401, 'the old session is refused at once');
-        assert.equal(afterRefresh.status, 401, 'and cannot be refreshed');
-        assert.equal(next.json.accessToken, undefined);
-        assert.equal(next.json.two_step.status, 'enrolment_required');
-        // After enrolling, the role is in effect.
-        const done = await enrol(next.json.two_step.token);
-        assert.equal((await probe(done.confirmed.accessToken)).json.role, 'admin');
-      } else {
-        assert.equal(afterProbe.status, 200, 'self-hosted: nothing changes');
-        assert.equal(afterProbe.json.role, 'admin');
-        assert.equal(afterRefresh.status, 200);
-        assert.equal(next.json.two_step, undefined);
-      }
-    }
+    hosted(true);
+    const owner = await person('owner', roleOrg);
+    const actor = (await enrol((await login(owner.email)).json.two_step.token)).confirmed.accessToken as string;
+    const member = await person('member', roleOrg);
+    const memberSession = (await login(member.email)).json;
+
+    // Refused, and nothing changes: same role, same session.
+    const refused = await call('PATCH', `/api/members/${member.id}`, { role: 'admin' }, actor);
+    assert.equal(refused.status, 409, JSON.stringify(refused.json));
+    assert.equal(refused.json.code, 'TWO_STEP_NOT_ENROLLED');
+    assert.equal(await roleOf(member.id), 'member');
+    assert.equal((await probe(memberSession.accessToken)).json.role, 'member');
+
+    // A started but unconfirmed enrolment is not enough.
+    await post('/api/auth/two-step/enrol/start', {}, memberSession.accessToken);
+    assert.equal((await call('PATCH', `/api/members/${member.id}`, { role: 'admin' }, actor)).status, 409);
+    assert.equal(await roleOf(member.id), 'member');
+
+    // Once they have turned it on themselves, the promotion goes through and
+    // the session they enrolled on carries the role.
+    const enrolment = await enrol(memberSession.accessToken);
+    await forgetUsedStep(member.id);
+    const promoted = await call('PATCH', `/api/members/${member.id}`, { role: 'admin' }, actor);
+    assert.equal(promoted.status, 200, JSON.stringify(promoted.json));
+    assert.equal((await probe(enrolment.confirmed.accessToken)).json.role, 'admin');
+
+    // And they cannot turn it off now, through the route or the service.
+    const off = await post('/api/auth/two-step/disable', { code: codeFor(enrolment.secret) }, enrolment.confirmed.accessToken);
+    assert.equal(off.status, 403);
+    assert.equal(off.json.code, 'TWO_STEP_REQUIRED_FOR_ROLE');
+    assert.deepEqual(await service.disableTwoStep(member.id, codeFor(enrolment.secret)), { ok: false, mandatory: true });
+    assert.ok((await service.getTwoStepStatus(member.id)).enabled);
     hosted(false);
   });
 

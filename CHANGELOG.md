@@ -81,6 +81,7 @@ codes, shown once. With it on, signing in needs the password and then a code; a
 password reset does not remove it, and a recovery code signs out every other session.
 Self-hosted installs require it of nobody. On the hosted service (`DEFT_HOSTED=true`)
 owners and admins must set it up before they get a session and cannot turn it off.
+Making someone an admin there is refused until that person has turned it on.
 If someone loses both their authenticator and their recovery codes there is no way
 back into that account; the setup screen says so. Schema `0.3.0-preview.149`
 (`user_two_step`, `user_two_step_recovery_codes`, `two_step_challenges`).
