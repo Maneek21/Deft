@@ -2,8 +2,11 @@
 import { ensureCronJob, QUEUE_NAMES } from './queues.js';
 import { APP_AUTOMATIONS_ENABLED } from './env.js';
 import { ensureAppResourceSyncScan } from './app-resource-sync-scanner.js';
+import { isPausedStart } from './paused-start.js';
 
 export async function initScheduler(): Promise<void> {
+  // A paused start registers no cron job (server.ts also skips this call).
+  if (isPausedStart()) return;
   // Re-enqueue cron jobs on startup (idempotent — skips if already pending)
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'standup-generate', 'cron:standup');
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'nudge-check', 'cron:nudge');

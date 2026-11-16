@@ -5,6 +5,7 @@ import { AppConnectionSessionRegistry, AppConnectionSessionRegistryConfigSchema,
   connectionTransportEntryDigest } from '../src/lib/app-connection-session-registry.js';
 import { AppError } from '../src/lib/app-errors.js';
 import { isHostedMode } from '../src/lib/hosted-mode.js';
+import { _setPausedStartForTest, PausedStartError } from '../src/lib/paused-start.js';
 
 const VERSION = 'deft.app_connection_http_registrations.v1' as const;
 const authorityToken = 'a'.repeat(43), runtimeToken = 'b'.repeat(43);
@@ -18,6 +19,23 @@ const policy = { key: 'server_account', resource_key: 'records', action_keys: ['
   provider_profile_key: 'server_account', runtime_requirement_key: 'sync_provider' };
 const config = (extra: Record<string, unknown> = {}) => ({ schema_version: VERSION, entries: [], hosted_templates: [template], ...extra });
 const unavailable = (error: unknown) => error instanceof AppError && error.code === 'APP_CONNECTION_PROFILE_UNAVAILABLE' && error.status === 503;
+
+test('paused hosted templates keep the default transport guard', async () => {
+  const previousFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; throw new Error('unexpected transport'); };
+  _setPausedStartForTest(true);
+  try {
+    const registry = new AppConnectionSessionRegistry(config(), undefined, [], true), s = scopeFor();
+    const input = { schema_version: 'deft.app_connection_form_runtime.v1' as const, session_id: randomUUID(), scope: s.scope, operation: 'begin' as const,
+      expires_at: new Date(Date.now() + 20000).toISOString(), setup_expires_at: new Date(Date.now() + 200000).toISOString(), action_consents: [], source: null };
+    await assert.rejects(registry.formRuntime(s.scope, s.profile).request(input, new AbortController().signal), PausedStartError);
+    assert.equal(calls, 0, 'a hosted template must never bypass pause and call its Runtime');
+  } finally {
+    globalThis.fetch = previousFetch;
+    _setPausedStartForTest(false);
+  }
+});
 
 /** A scope as the Host's own authority builds it: every identifier is created
  * inside the installation, after the template file was written. */

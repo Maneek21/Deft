@@ -34,6 +34,7 @@ import { orgMembers, users } from '@deft/db/schema';
 import { seatStatements } from '@deft/db/seat-statements';
 import { db } from './db.js';
 import { isHostedMode } from './hosted-mode.js';
+import { assertNotPaused, isPausedStart } from './paused-start.js';
 import { parseSeatSettings, type SeatSettings } from './seat-settings.js';
 import {
   SEAT_STATEMENT_PREFIX,
@@ -217,6 +218,7 @@ export type SeatIntakeResult =
  * the seat lock. A refused statement changes nothing.
  */
 export async function acceptSeatStatementToken(token: unknown): Promise<SeatIntakeResult> {
+  assertNotPaused('seat statement storage');
   if (!isHostedMode()) return { ok: false, reason: 'not_hosted' };
   const settings = readSeatSettings();
   if (!settings) return { ok: false, reason: 'not_configured' };
@@ -287,6 +289,7 @@ async function readCappedBody(res: Response): Promise<string | null> {
 }
 
 async function fetchAndAccept(): Promise<SeatIntakeResult> {
+  assertNotPaused('the seat statement service');
   if (!isHostedMode()) return { ok: false, reason: 'not_hosted' };
   const settings = readSeatSettings();
   if (!settings) return { ok: false, reason: 'not_configured' };
@@ -350,9 +353,9 @@ export async function withSeatRetry<T>(
   return attempt();
 }
 
-/** Start-of-process fetch plus a timer. No-op when hosted mode is off. */
+/** Start-of-process fetch plus a timer. No-op when paused or hosted mode is off. */
 export function startSeatStatementRefresher(): void {
-  if (!isHostedMode() || refreshTimer) return;
+  if (isPausedStart() || !isHostedMode() || refreshTimer) return;
   const run = () => {
     void refreshSeatStatement().then((result) => {
       if (!result.ok) console.warn(`[seats] Seat statement not refreshed: ${result.reason}`);

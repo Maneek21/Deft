@@ -5,6 +5,8 @@
  * not let their combined maxima exhaust a small self-hosted PostgreSQL. Keep
  * the total at or below 18 so a 20-connection server retains two operator and
  * recovery slots even when every optional App plane is enabled at once.
+ * The single short-lived schema-health connection uses a recovery slot;
+ * at least one operator slot remains while a health probe is in progress.
  */
 export const APP_DATABASE_POOL_BUDGET = Object.freeze({
   minimum_server_connections: 20,

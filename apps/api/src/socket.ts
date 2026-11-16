@@ -7,6 +7,7 @@ import { eq, and, ne } from 'drizzle-orm';
 import * as huddle from './huddle-rooms.js';
 import { requireActiveOrgMembership } from './lib/org-membership.js';
 import { createNotificationIfAllowed } from './lib/notification-policy.js';
+import { PAUSED_ERROR, isPausedStart } from './lib/paused-start.js';
 import { isOrgTaskEvent, orgTaskEventPayload, type OrgTaskEvent, type OrgTaskEventPayload } from './lib/task-realtime.js';
 import { socketAllowedWebOrigins, socketOriginAllowed } from './lib/web-origins.js';
 
@@ -351,6 +352,9 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
   webSessionEvents.on('revoked', disconnectSession);
   server.once('close', () => webSessionEvents.off('revoked', disconnectSession));
   io.use(async (socket, next) => {
+    // Even connecting broadcasts presence to other people. A restored cell
+    // accepts HTTP reads, but opens no realtime session while paused.
+    if (isPausedStart()) return next(new Error(PAUSED_ERROR.code));
     const token = socket.handshake.auth.token;
     if (!token) {
       return next(new Error('Authentication required'));

@@ -25,6 +25,7 @@ import {
   isPublicNetworkAddress,
   normalizeMappedIPv4,
 } from '@deft/mcp';
+import { assertNotPaused } from './paused-start.js';
 
 export const PUBLIC_FETCH_MAX_REDIRECTS = 3;
 const ALLOWED_PORTS = new Set([80, 443]);
@@ -329,6 +330,8 @@ async function fetchHttpText(
   options: PublicFetchOptions,
   allowlist: FeedAllowlist,
 ): Promise<{ text: string; contentType: string; url: string }> {
+  // Link previews and calendar feeds: nothing is fetched while paused.
+  assertNotPaused('a public URL fetch');
   const signal = AbortSignal.timeout(options.timeoutMs);
   let { url, listed } = parseTarget(rawUrl, undefined, allowlist);
   // A chain that starts at a listed URL may only continue to listed URLs; a

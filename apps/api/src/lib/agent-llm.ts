@@ -22,6 +22,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { ResolvedReasonProvider } from './org-ai-config.js';
 import { anthropicClientAddress, requireAiProviderAddress } from './ai-provider-address.js';
+import { assertNotPaused } from './paused-start.js';
 
 export type AgentMessageResult = {
   content: Anthropic.ContentBlock[];
@@ -80,6 +81,7 @@ async function agentFetch(p: CreateAgentMessageParams, input: RequestInfo | URL,
 }
 
 export async function createAgentMessage(params: CreateAgentMessageParams): Promise<AgentMessageResult> {
+  assertNotPaused('the language model provider');
   // Hosted mode: refuses Ollama and custom addresses, pins standard ones.
   // Self-hosted: the resolved baseUrl is returned unchanged.
   const baseUrl = requireAiProviderAddress(params.resolved.provider, params.resolved.baseUrl);

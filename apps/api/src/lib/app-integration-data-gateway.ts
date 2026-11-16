@@ -1,5 +1,6 @@
 import {randomUUID,createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
+import {assertNotPaused} from './paused-start.js';
 import {AppDataRuntimeRequestSchema,AppDataRuntimeAuthorityRequestSchema,AppDataRuntimeAuthorityResultSchema,canonicalAppDataJson,type AppDataRuntimeRequest} from '@deft/app-kit/core';
 import type {AppIntegrationSourceCaller,AppIntegrationSourceAuthority} from './app-integration-source.js';
 import type {AppIntegrationSourcePurpose,AppIntegrationSourceTarget} from '../../../../packages/app-kit/src/app-integration-source.js';
@@ -41,6 +42,7 @@ export function createAppIntegrationDataGateway<Tx>(ports:AppIntegrationDataGate
    const account=await currentAccount(caller,target,purpose);return {identity:account.identity,expires_at:account.expires_at};},
   async mint(caller:AppIntegrationSourceCaller,target:AppIntegrationSourceTarget,purpose:AppIntegrationSourcePurpose,
    operation:AppDataRuntimeRequest['operation'],input:Record<string,unknown>,max_ms=5000){
+   assertNotPaused('an App integration invocation');
    if(!Number.isSafeInteger(max_ms)||max_ms<1||max_ms>30000)throw denied();
    // This shared source gateway discloses one observed presentation only.
    // Draft/triage/Send tool admissions use their independent operation grants.
@@ -57,6 +59,7 @@ export function createAppIntegrationDataGateway<Tx>(ports:AppIntegrationDataGate
    return request;
   },
   async dispatch(request:AppDataRuntimeRequest,signal?:AbortSignal){
+   assertNotPaused('an App integration invocation');
    const parsed=AppDataRuntimeRequestSchema.parse(request),row=await retained(parsed.request_id);
    const {input:discard,...envelope}=parsed;void discard;
    if(!isDeepStrictEqual(row.context,{...envelope,schema_version:'deft.app_data_authority.v1',input_digest:digest({operation:parsed.operation,input:parsed.input})}))throw denied();

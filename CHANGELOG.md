@@ -48,6 +48,22 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
   approver. Result context remains available for every step ID, including
   `approved_by_user_id`.
 
+### Paused start and applied schema on /health
+
+- `DEFT_PAUSED_START=true` starts an install read-only for review after a
+  restore or upgrade: no scheduler, no background jobs, no startup recovery
+  work, no outbound call, the agent channel and calendar feeds closed, and
+  every other change except login, refresh and logout answered 503 `PAUSED`.
+  Any value other than exactly `true` or `false` refuses to start.
+- `/health` and `/health/ready` now always include `paused` (`false` on a
+  normal start). A load balancer must not treat `paused: true` as serving.
+- `/health` adds `schema_applied` (newest version in the upgrade ledger) and
+  `schema_applied_state` (`ok`, `no_ledger` or `unavailable`) beside the
+  unchanged `schema_head`.
+- Realtime connections and GETs that mutate shared state are refused too;
+  only private onboarding bookkeeping remains writable alongside authentication.
+  Stopping the separate Email helper remains a deployment dependency.
+
 ### Notice: Kit `0.1.0-alpha.44` removes deprecated Email compatibility
 
 Not before 2026-11-25, and never fewer than 14 days after this notice merged.

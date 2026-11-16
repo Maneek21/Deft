@@ -58,9 +58,9 @@
     "path": "apps/api/src/lib/app-connection-registry.ts",
     "rule": "computed-import",
     "token": "import(pathToFileURL(modulePath).href)",
-    "digest": "cb4aac0a8358030226c948e48e9ec3e59e7a896265b6d9c2ad7b0db74b14730d",
+    "digest": "36cbf061508bfae75edfa75754de2db83445d5438329d6bf86872d5aaedba022",
     "occurrences": 1,
-    "reason": "Reviewed generic deployment-owned external adapter loader: absolute file path, private config, symlink/size checks and SHA-256 pin precede loading. Digest pins the complete loader function.",
+    "reason": "Reviewed generic deployment-owned external adapter loader: paused-start refusal, absolute file path, private config, symlink/size checks and SHA-256 pin precede loading. Digest pins the complete loader function.",
     "owner": "@Maneek21",
     "issue": "https://github.com/Maneek21/Deft/issues/382",
     "milestone": "P3: permanent of docs/superpowers/plans/2026-11-06-email-host-kit-shrink.md"

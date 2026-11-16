@@ -119,6 +119,8 @@ import { APPS_ENABLED, APP_DEVELOPER_PAIRING_ENABLED } from './lib/env.js';
 import { moduleTaskLinkRoutes } from './routes/module-task-links.js';
 import { authMiddleware, authenticateWebRequest, releaseWebRequest } from './middleware/auth.js';
 import { installRequestGate, isPublicApiRequest } from './middleware/request-gate.js';
+import { PAUSED_ERROR, isPausedStart, isRefusedWhilePaused } from './lib/paused-start.js';
+import { getSchemaApplied } from './lib/schema-applied.js';
 import {
   authLimiter,
   appRuntimeLimiter,
@@ -354,13 +356,24 @@ if (APPS_ENABLED) {
   app.route('/api/app-runs', appRunRoutes);
 }
 
-app.get('/health', (c) => c.json({
-  status: 'ok',
-  release: DEFT_RELEASE_VERSION,
-  commit: DEFT_BUILD_COMMIT,
-  schema_head: DEFT_SCHEMA_HEAD,
-  agent_channel_protocol: AGENT_CHANNEL_PROTOCOL_VERSION,
-}));
+// schema_head is what this release expects; schema_applied is the newest row
+// of the upgrade ledger (cached), and schema_applied_state says whether it was
+// read (`ok`), the ledger is missing (`no_ledger`), or the database could not
+// be read in time (`unavailable`, last known value or null). /health/ready
+// reports an unreachable database.
+app.get('/health', async (c) => {
+  const applied = await getSchemaApplied();
+  return c.json({
+    status: 'ok',
+    release: DEFT_RELEASE_VERSION,
+    commit: DEFT_BUILD_COMMIT,
+    schema_head: DEFT_SCHEMA_HEAD,
+    schema_applied: applied.value,
+    schema_applied_state: applied.state,
+    agent_channel_protocol: AGENT_CHANNEL_PROTOCOL_VERSION,
+    paused: isPausedStart(),
+  });
+});
 
 app.get('/health/ready', async (c) => {
   try {
@@ -386,6 +399,7 @@ app.get('/health/ready', async (c) => {
       commit: DEFT_BUILD_COMMIT,
       schema_head: DEFT_SCHEMA_HEAD,
       agent_channel_protocol: AGENT_CHANNEL_PROTOCOL_VERSION,
+      paused: isPausedStart(),
       checks: {
         agent_channel_v2_schema: Number(row?.channel_column_count ?? 0) === 3,
         wiki_memory_sync: row?.has_memory_sync === true,
@@ -397,6 +411,7 @@ app.get('/health/ready', async (c) => {
       status: 'not_ready',
       error: 'Database readiness check failed',
       code: 'DATABASE_NOT_READY',
+      paused: isPausedStart(),
     }, 503);
   }
 });
@@ -422,6 +437,9 @@ installRequestGate(app, {
   authenticate: authenticateWebRequest,
   release: releaseWebRequest,
   edgeMiddleware,
+  // Paused start: refuse every change except login, refresh and logout, on
+  // every route (MCP, OAuth, webhooks, App Runtime, uploads included).
+  refuse: (method, path) => (isRefusedWhilePaused(method, path) ? { ...PAUSED_ERROR, status: 503 } : null),
 });
 
 export { app };

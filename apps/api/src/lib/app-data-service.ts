@@ -23,6 +23,7 @@ import {withAppDataBinaryIo} from './app-data-io-limits.js';
 import {appDataSourceWithinStore,appDataRecordSourcesWithinStore} from './app-data-file-copy-guards.js';
 import {appDataConsentExpiry} from './app-data-consent-lifetime.js';
 import {appDataConnectionActionSelection} from './app-data-read-authority.js';
+import {assertNotPaused,isPausedStart} from './paused-start.js';
 const invalid=()=>new AppError('Invalid App data request','APP_ACTION_INVALID',400);
 const conflict=()=>new AppError('App data request already exists; reconcile its status','APP_STATE_CONFLICT',409);
 export class AppDataService {
@@ -48,6 +49,7 @@ export class AppDataService {
  }
  async revoke(sessionId:string,id:string){const store=new PostgresAppDataStore(this.caller),row=await store.consent(id);if(!row)throw appDataDenied();if(row.connection_session_id!==sessionId){const authority=await this.current(sessionId,row.store_key,false);if(!authority.consent_connection_ids.includes(row.connection_session_id))throw appDataDenied();}await store.revoke(id);return {revoked:true};}
  async invoke(sessionId:string,raw:unknown,bytes?:Uint8Array,signal?:AbortSignal){
+  assertNotPaused('an App data invocation');
   const request=AppDataRequestSchema.parse(raw);return withAppDataDiagnostic('invoke',()=>withAppDataBinaryIo(this.caller,request.operation,()=>this.invokeOwned(sessionId,request,bytes,signal)),request.request_id);
  }
  private async invokeOwned(sessionId:string,raw:unknown,bytes?:Uint8Array,signal?:AbortSignal){
@@ -162,7 +164,7 @@ export class AppDataService {
   if(rows.length>32)throw invalid();
   const targets=[];for(const {session:row} of rows){const session=AppConnectionSessionRecordSchema.parse(row.record);if(session.scope.installation_id!==installationId||session.state!=='connected'||!session.account)continue;
    try{
-    const result=await currentAppDataContext(this.caller,session.session_id,this.guard,options,async storeKey=>{
+    const result=await currentAppDataContext(this.caller,session.session_id,this.guard,isPausedStart()?{...options,includeIdentities:false}:options,async storeKey=>{
      const metadata=await this.invoke(session.session_id,{schema_version:'deft.app_data_request.v1',request_id:randomUUID(),operation:'connection_metadata',input:{store_key:storeKey}});
      return metadata.result?.identities??[];
     });

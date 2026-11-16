@@ -18,6 +18,7 @@ import {
 } from './capability-providers/mcp.js';
 import type { GovernedCapabilityInvocationOptions } from './app-run-capability-bridge.js';
 import { APP_RUN_LEGACY_MCP_CUTOVER_ENABLED } from './env.js';
+import { assertNotPaused, isPausedStart } from './paused-start.js';
 import {
   CONNECTED_TOOL_UNAVAILABLE_ERROR,
   workspaceConnectedCallAccess,
@@ -101,6 +102,9 @@ export class CapabilityService {
   ) {}
 
   async discover(request: CapabilityDiscoveryRequest): Promise<CapabilityDiscoveryResult> {
+    // Discovery may connect to an outside tool server (empty cache after a
+    // restart); a paused start connects to none.
+    assertNotPaused('an outside tool server');
     switch (request.provider_kind) {
       case 'mcp':
         return this.mcpProvider.discover(request);
@@ -113,6 +117,7 @@ export class CapabilityService {
    * attempt. It deliberately has no slug, discovery, actor, grant, or policy
    * fields that a caller could reinterpret at dispatch time. */
   async invokePinned(request: CapabilityPinnedInvocationRequest): Promise<McpPinnedExecutionResult> {
+    if (isPausedStart()) return { status: 'not_attempted' };
     const input = CapabilityJsonObjectSchema.safeParse(request.input);
     const allowedKeys = new Set([
       'org_id', 'provider_instance_id', 'operation_name', 'input', 'dispatch_pin', 'signal',
@@ -163,6 +168,7 @@ export class CapabilityService {
     value: unknown,
     options: GovernedCapabilityInvocationOptions = {},
   ): Promise<CapabilityInvocationResult> {
+    assertNotPaused('an outside tool server');
     // Invocation inputs cross an execution boundary, so reject unsupported
     // non-JSON/authority-bearing fields before resolution or any provider call.
     const request = CapabilityInvocationRequestSchema.parse(value);
