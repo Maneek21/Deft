@@ -3,7 +3,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { db } from '../src/lib/db.js';
 import {
-  users, orgs, orgMembers, spaces, spaceMembers, messages, agentActions,
+  users, orgs, orgMembers, spaces, spaceMembers, messages, actionReceipts, agentActions,
 } from '@deft/db/schema';
 import { eq, inArray } from 'drizzle-orm';
 import { executeActionDirect } from '../src/lib/agent-actions.js';
@@ -57,6 +57,7 @@ after(async () => {
   await db.delete(spaces).where(eq(spaces.id, spaceId));
 
   // Delete agent_actions that reference these users (FK constraint)
+  await db.delete(actionReceipts).where(eq(actionReceipts.org_id, testOrgId));
   await db.delete(agentActions).where(eq(agentActions.org_id, testOrgId));
 
   await db.delete(orgMembers).where(eq(orgMembers.org_id, testOrgId));

@@ -253,7 +253,9 @@ test('C05-e: a page id supplied in params never selects the page that is written
   // A slug the requester cannot see is not found, whatever params say.
   const direct = await chatProposal(updateParams(hidden, supplied));
   const answer = await approve(direct);
-  assert.notEqual(answer.status, 200, JSON.stringify(answer.body));
+  assert.equal(answer.status, 200, JSON.stringify(answer.body));
+  assert.equal(answer.body.status, 'failed');
+  assert.match(String(answer.body.error), /not found/);
   assert.ok((await actionRow(direct)).executed_at, 'the refusal is terminal');
   assert.deepEqual(await pageState(hidden.id), hiddenBefore);
 });

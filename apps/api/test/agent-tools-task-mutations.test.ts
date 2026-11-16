@@ -180,6 +180,8 @@ after(async () => {
       [ORG_ID, CALLER_USER_ID, EMP_SHADOW_USER_ID],
     );
     await c.query(`DELETE FROM agent_nudges WHERE org_id = $1 AND user_id IN ($2, $3)`, [ORG_ID, CALLER_USER_ID, EMP_SHADOW_USER_ID]);
+    await c.query(`DELETE FROM action_receipts WHERE org_id = $1 AND action_id IN
+      (SELECT id FROM agent_actions WHERE org_id = $1 AND user_id IN ($2, $3))`, [ORG_ID, CALLER_USER_ID, EMP_SHADOW_USER_ID]);
     await c.query(`DELETE FROM agent_actions WHERE org_id = $1 AND user_id IN ($2, $3)`, [ORG_ID, CALLER_USER_ID, EMP_SHADOW_USER_ID]);
     await c.query(`DELETE FROM agent_employees WHERE id = $1`, [EMP_ID]);
     await c.query(`DELETE FROM org_members WHERE user_id = $1`, [CALLER_USER_ID]);
