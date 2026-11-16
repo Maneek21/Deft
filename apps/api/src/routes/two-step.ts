@@ -10,6 +10,7 @@ import { OrgMembershipError } from '../lib/org-membership.js';
 import { verifyWebAccess, WebCredentialsChangedError } from '../lib/web-sessions.js';
 import { issueSession } from '../lib/session-issuance.js';
 import { SecondStepRequiredError } from '../lib/two-step-policy.js';
+import { isPausedStart, PAUSED_ERROR } from '../lib/paused-start.js';
 import {
   confirmTwoStepEnrolment,
   disableTwoStep,
@@ -140,10 +141,15 @@ twoStepRoutes.get('/', async (c) => {
   });
 });
 
+// A paused install admits enrolment only as part of a sign-in (the
+// enrol-only token), never as a security change from a normal session.
+const refusedWhilePaused = (caller: Caller) => isPausedStart() && !caller.restricted;
+
 // POST /api/auth/two-step/enrol/start
 twoStepRoutes.post('/enrol/start', async (c) => {
   const caller = await authenticate(c, true);
   if (caller instanceof Response) return caller;
+  if (refusedWhilePaused(caller)) return c.json(PAUSED_ERROR, 503);
   const parsed = startSchema.safeParse(await c.req.json().catch(() => ({})));
   if (!parsed.success) return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
   // A stolen access token alone must not be enough to put an attacker's
@@ -164,6 +170,7 @@ twoStepRoutes.post('/enrol/start', async (c) => {
 twoStepRoutes.post('/enrol/confirm', async (c) => {
   const caller = await authenticate(c, true);
   if (caller instanceof Response) return caller;
+  if (refusedWhilePaused(caller)) return c.json(PAUSED_ERROR, 503);
   const parsed = codeSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
   const authority = caller.sid ? { sid: caller.sid } : { challengeToken: caller.challengeToken! };

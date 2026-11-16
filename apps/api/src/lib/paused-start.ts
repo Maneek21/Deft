@@ -18,7 +18,9 @@
  *   scheduled-message rehydration, retention, App Run maintenance, legacy
  *   credential migration) is skipped;
  * - every request other than GET, HEAD and OPTIONS is refused with 503
- *   `{ code: 'PAUSED' }`, except login, token refresh and logout; the agent
+ *   `{ code: 'PAUSED' }`, except login (with its two-step code and, for an
+ *   owner or admin who must still set it up, the enrol-only calls), token
+ *   refresh and logout; the agent
  *   channel (except its static contract), the public calendar feed and the
  *   feed-address route are refused for every method;
  * - reachable outbound calls are refused before transport (LLM
@@ -80,10 +82,16 @@ export const pausedGuardedFetch: typeof fetch = (input, init) =>
 const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 /** Writes allowed while paused: an operator must be able to sign in and out. */
-// C7: add each login verification/enrolment route here with one refusal-rule
-// test. Keep exact paths: a wildcard would also admit account/security changes.
+// Exact paths only: a wildcard would also admit account/security changes
+// (turning two-step off, new recovery codes, a password reset stay refused).
+// The two enrol calls are admitted for the enrol-only token of a sign-in;
+// routes/two-step.ts refuses them to a normal session while paused, so an
+// authenticator cannot be replaced from Settings.
 export const PAUSED_ALLOWED_WRITES: ReadonlyArray<{ method: string; path: string }> = [
   { method: 'POST', path: '/api/auth/login' },
+  { method: 'POST', path: '/api/auth/two-step/verify' },
+  { method: 'POST', path: '/api/auth/two-step/enrol/start' },
+  { method: 'POST', path: '/api/auth/two-step/enrol/confirm' },
   { method: 'POST', path: '/api/auth/refresh' },
   { method: 'POST', path: '/api/auth/logout' },
 ];

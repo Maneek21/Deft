@@ -334,7 +334,7 @@ test('B05 supported password reset revokes accepted exposure and cannot move it 
   try {
     const jwt = (await import('jsonwebtoken')).default;
     const { env } = await import('../src/lib/env.js');
-    const reset = jwt.sign({ id: h.owner.id, org_id: h.f.org_id, purpose: 'password-reset', password_version: h.owner.password_version }, env.JWT_SECRET, { algorithm: 'HS256', expiresIn: '5m', jwtid: randomUUID() });
+    const reset = jwt.sign({ id: h.owner.id, org_id: h.f.org_id, purpose: 'password-reset', password_version: h.owner.password_version, issued_by: h.owner.id }, env.JWT_SECRET, { algorithm: 'HS256', expiresIn: '5m', jwtid: randomUUID() });
     const response = await fetch(`${h.base.replace('/api/app-experiences', '/api/auth')}/reset-password`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: reset, password: `Synthetic-${randomUUID()}` }) });
     assert.equal(response.status, 200);
     noDisclosure(await h.call(`/sessions/${opened.id}/resources/inbox`, 'POST', list));

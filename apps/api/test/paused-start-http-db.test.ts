@@ -135,6 +135,73 @@ test('paused: ordinary and MCP writes get 503 PAUSED; login, refresh, logout and
   assert.equal((await ready.json()).paused, true);
 });
 
+test('paused: an owner or admin can still finish a two-step sign-in; two-step security changes are refused', async () => {
+  const { ensureTwoStepTables } = await import('./fixtures/two-step-tables.js');
+  await ensureTwoStepTables(DATABASE_URL);
+  const { encrypt } = await import('../src/lib/encryption.js');
+  const { generateTwoStepSecret, twoStepCodeForStep, twoStepStepAt } = await import('../src/lib/two-step.js');
+  const hash = await bcrypt.hash(PASSWORD, 4);
+  const enrolledId = `paused-two-step-${RUN}`;
+  const newAdminId = `paused-two-step-new-${RUN}`;
+  const secret = generateTwoStepSecret();
+  const hostedBefore = process.env.DEFT_HOSTED;
+  await withClient(async (c) => {
+    for (const [id, role] of [[enrolledId, 'owner'], [newAdminId, 'admin']] as const) {
+      await c.query(`INSERT INTO users (id, email, name, password_hash, email_verified) VALUES ($1, $2, 'Two-step', $3, true)`, [id, `${id}@test.local`, hash]);
+      await c.query(`INSERT INTO org_members (id, org_id, user_id, role) VALUES ($1, $2, $3, $4)`, [crypto.randomUUID(), ORG_ID, id, role]);
+    }
+    await c.query(`INSERT INTO user_two_step (user_id, secret_encrypted, confirmed_at) VALUES ($1, $2, now() - interval '1 minute')`, [enrolledId, encrypt(secret)]);
+  });
+  const signIn = async (id: string) => {
+    const res = await app.request('/api/auth/login', json({ email: `${id}@test.local`, password: PASSWORD }));
+    assert.equal(res.status, 200);
+    return (await res.json()) as { two_step: { status: string; token: string } };
+  };
+  try {
+    _setPausedStartForTest(true);
+    process.env.DEFT_HOSTED = 'true';
+
+    // Enrolled: the password gives a challenge, the code gives a session.
+    const first = await signIn(enrolledId);
+    assert.equal(first.two_step.status, 'code_required');
+    const verified = await app.request('/api/auth/two-step/verify',
+      json({ challenge_token: first.two_step.token, code: twoStepCodeForStep(secret, twoStepStepAt(Date.now())) }));
+    assert.equal(verified.status, 200, 'verify must work while paused');
+    const session = await verified.json() as { accessToken: string };
+    assert.equal((await app.request('/api/auth/me', { headers: { Authorization: `Bearer ${session.accessToken}` } })).status, 200);
+
+    // A signed-in person cannot change two-step settings while paused.
+    for (const path of ['/api/auth/two-step/enrol/start', '/api/auth/two-step/disable', '/api/auth/two-step/recovery-codes']) {
+      const res = await app.request(path, json({ code: '000000', current_password: PASSWORD }, session.accessToken));
+      assert.equal(res.status, 503, path);
+      assert.equal((await res.json()).code, 'PAUSED', path);
+    }
+
+    // An admin who has not set it up yet can do so with the enrol-only token.
+    const pending = await signIn(newAdminId);
+    assert.equal(pending.two_step.status, 'enrolment_required');
+    const started = await app.request('/api/auth/two-step/enrol/start', json({}, pending.two_step.token));
+    assert.equal(started.status, 200);
+    const { secret: newSecret } = await started.json() as { secret: string };
+    const confirmed = await app.request('/api/auth/two-step/enrol/confirm',
+      json({ code: twoStepCodeForStep(newSecret, twoStepStepAt(Date.now())) }, pending.two_step.token));
+    assert.equal(confirmed.status, 200);
+    const done = await confirmed.json() as { accessToken: string; recovery_codes: string[] };
+    assert.equal(done.recovery_codes.length, 10);
+    assert.equal((await app.request('/api/auth/me', { headers: { Authorization: `Bearer ${done.accessToken}` } })).status, 200);
+  } finally {
+    if (hostedBefore === undefined) delete process.env.DEFT_HOSTED; else process.env.DEFT_HOSTED = hostedBefore;
+    await withClient(async (c) => {
+      for (const id of [enrolledId, newAdminId]) {
+        await c.query('DELETE FROM web_sessions WHERE user_id = $1', [id]);
+        await c.query('DELETE FROM onboarding_state WHERE user_id = $1', [id]);
+        await c.query('DELETE FROM org_members WHERE user_id = $1', [id]);
+        await c.query('DELETE FROM users WHERE id = $1', [id]);
+      }
+    });
+  }
+});
+
 test('not paused: the same requests reach their routes and health says not paused', async () => {
   _setPausedStartForTest(false);
   const { accessToken } = await login();
