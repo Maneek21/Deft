@@ -71,10 +71,12 @@ notificationRoutes.patch('/:id/read', async (c) => {
 
     const [updated] = await db.update(notifications)
       .set({ is_read: true })
-      .where(eq(notifications.id, notificationId))
+      .where(and(eq(notifications.id, notificationId), eq(notifications.user_id, user.id), eq(notifications.org_id, user.org_id),
+        nativeNotificationAccessSql(user.id, sql`${notifications.metadata}`, sql`${notifications.org_id}`)))
       .returning();
 
-    return c.json(updated ? withoutUnverifiableReplyText(updated) : updated);
+    if (!updated) return c.json({ error: 'Notification not found', code: 'NOT_FOUND' }, 404);
+    return c.json(withoutUnverifiableReplyText(updated));
   } catch (err) {
     console.error('Failed to mark notification as read:', err);
     return c.json({ error: 'Failed to update notification', code: 'INTERNAL_ERROR' }, 500);

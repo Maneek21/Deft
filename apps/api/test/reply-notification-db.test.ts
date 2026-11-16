@@ -19,6 +19,7 @@ import { randomUUID } from 'node:crypto';
 import test, { after, before, mock } from 'node:test';
 import { createServer } from 'node:http';
 import { sql } from 'drizzle-orm';
+import { notifications } from '@deft/db/schema';
 import { Hono } from 'hono';
 import pg from 'pg';
 import { closeDb, db } from '../src/lib/db.js';
@@ -62,6 +63,8 @@ const ctx = (user: string): HumanToolContext => ({
   org_id: orgId, user_id: user, role: 'member', scopes: ['read:messages', 'write:messages', 'read:workspace', 'write:workspace', 'read:wiki'], principal_kind: 'human',
 } as HumanToolContext);
 const toolText = (result: { content: Array<{ text: string }> }) => result.content.map((part) => part.text).join('\n');
+
+
 
 /** The four places a notification's text can be read from, as text. */
 async function places(actor: string): Promise<Record<string, string>> {
@@ -436,4 +439,33 @@ test('legacy notification fan-out uses one current-authority read for all recipi
     reads.mock.restore(); stub.mock.restore();
     await new Promise<void>(resolve => io.close(() => resolve()));
   }
+});
+
+test('notification mark-read reauthorizes the row returned after a concurrent source delete', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const source = await post(ids.bob, S.room, 'CANARY-MARK-READ-DELETED');
+  const { rows: [notice] } = await client!.query(`INSERT INTO notifications(id,org_id,user_id,type,title,body,metadata)
+    VALUES($1,$2,$3,'mention','Reply','CANARY-MARK-READ-DELETED',$4) RETURNING *`,
+  [randomUUID(), orgId, ids.alice, JSON.stringify({ message_id: source, space_id: S.room })]);
+  const update = db.update.bind(db);
+  const stub = mock.method(db, 'update', ((table: any) => {
+    const builder = update(table);
+    if (table === notifications) {
+      const set = builder.set.bind(builder);
+      builder.set = ((values: any) => {
+        const query = set(values), returning = query.returning.bind(query);
+        query.returning = (async (...args: any[]) => {
+          await client!.query('UPDATE messages SET is_deleted=true WHERE id=$1', [source]);
+          return returning(...args as []);
+        }) as any;
+        return query;
+      }) as any;
+    }
+    return builder;
+  }) as typeof db.update);
+  try {
+    const response = await call(ids.alice, 'PATCH', `/api/notifications/${notice.id}/read`);
+    assert.equal(response.status, 404, response.text);
+    assert.ok(!response.text.includes('CANARY-MARK-READ-DELETED'));
+  } finally { stub.mock.restore(); }
 });
