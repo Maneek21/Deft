@@ -34,6 +34,7 @@ let projectId: string;
 let taskId: string;
 
 async function runBlockedAlert(content = 'I am completely stuck on the database migration') {
+  await db.update(messages).set({ content }).where(eq(messages.id, msgId));
   await handleBlockedAlert({
     id: 'job',
     name: 'blocked-alert',

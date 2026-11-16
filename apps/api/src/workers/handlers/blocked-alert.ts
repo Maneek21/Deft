@@ -8,20 +8,27 @@ import {
   spaces,
   agentNudges,
   taskRelationships,
+  messages,
 } from '@deft/db/schema';
 import { eq, and, gte } from 'drizzle-orm';
-import { emitToUser } from '../../socket.js';
+import { emitVisibleNotification } from '../../lib/notification-delivery.js';
 import { toPlainText, truncatePlainText } from '../../lib/plain-text.js';
 import { createNotificationIfAllowed } from '../../lib/notification-policy.js';
 
 export async function handleBlockedAlert(job: JobData): Promise<void> {
-  const { messageId, spaceId, content, orgId, userId } = job.data;
+  const { messageId, spaceId, orgId, userId } = job.data;
   console.log('[blocked-alert] Processing blocked signal from user', userId);
 
   const now = new Date();
   const fourHoursAgo = new Date(now.getTime() - 4 * 60 * 60 * 1000);
 
   try {
+    // Jobs can outlive a delete or edit. Quote the exact live source, never the queued snapshot.
+    const [source] = await db.select({ content: messages.content }).from(messages).where(and(
+      eq(messages.id, messageId), eq(messages.org_id, orgId), eq(messages.space_id, spaceId),
+      eq(messages.user_id, userId), eq(messages.is_deleted, false),
+    )).limit(1);
+    if (!source) return;
     // Deduplicate: don't alert for the same user+space within 4 hours
     const existingNudge = await db
       .select({ id: agentNudges.id })
@@ -95,7 +102,7 @@ export async function handleBlockedAlert(job: JobData): Promise<void> {
     }
 
     // Truncate content for notification body
-    const contentSnippet = truncatePlainText(toPlainText(content), 120);
+    const contentSnippet = truncatePlainText(toPlainText(source.content), 120);
 
     for (const task of userTasks) {
       const taskIdentifier = `${task.project_prefix}-${task.number}`;
@@ -132,6 +139,8 @@ export async function handleBlockedAlert(job: JobData): Promise<void> {
         link: `/chat?space=${encodeURIComponent(spaceId)}&message=${encodeURIComponent(messageId)}`,
         metadata: {
           task_id: task.id,
+          message_id: messageId,
+          space_id: spaceId,
           nudge_type: 'blocked',
           blocking_deps: blockingDeps.map((d) => d.source_task_id),
         },
@@ -148,7 +157,7 @@ export async function handleBlockedAlert(job: JobData): Promise<void> {
 
       // Emit notification in real time
       if (notification) {
-        emitToUser(notification.org_id, targetUserId, 'notification:new', notification);
+        await emitVisibleNotification(notification);
       }
 
       console.log(

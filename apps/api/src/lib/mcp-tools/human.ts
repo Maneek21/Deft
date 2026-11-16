@@ -2389,6 +2389,21 @@ export async function humanCommentOnTask(args: { task_id?: string; content?: str
   });
 }
 
+/** A message-write replay proves the write, not permission to read its old body. */
+async function currentMessageWriteResult(result: ToolResult, ctx: HumanToolContext): Promise<ToolResult> {
+  if (result.isError) return result;
+  let payload: Record<string, unknown>;
+  try { payload = JSON.parse(result.content[0]?.text ?? 'null'); } catch { return errorResult('Message not found'); }
+  if (!payload || typeof payload.id !== 'string') return errorResult('Message not found');
+  const [message] = await db.select().from(messages).where(and(
+    eq(messages.id, payload.id), eq(messages.org_id, ctx.org_id), eq(messages.is_deleted, false),
+    readableSpaceSql(ctx.user_id, messages.space_id, messages.org_id),
+  )).limit(1);
+  if (!message) return errorResult('Message not found');
+  const [projected] = await projectMessagesForViewer({ id: ctx.user_id, org_id: ctx.org_id, role: ctx.role }, [message]);
+  return textResult({ ...payload, ...projected });
+}
+
 export async function humanMessagePost(args: { space_id?: string; content?: string; parent_id?: string; idempotency_key?: string }, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'write:messages');
   if (scopeError) return scopeError;
@@ -2396,7 +2411,7 @@ export async function humanMessagePost(args: { space_id?: string; content?: stri
   const spaceId = args.space_id;
   const rawContent = args.content?.trim();
   if (!rawContent) return errorResult('message_post requires content');
-  return withIdempotency('message_post', args, ctx, async () => {
+  const result = await withIdempotency('message_post', args, ctx, async () => {
     if (!(await userCanSeeSpace(ctx, spaceId))) return errorResult('message_post: space not found or not visible to user');
     if (!(await userIsSpaceMember(ctx, spaceId))) return errorResult('message_post: user is not a member of this space');
     if (args.parent_id) {
@@ -2435,8 +2450,9 @@ export async function humanMessagePost(args: { space_id?: string; content?: stri
       actorUserId: ctx.user_id,
       content,
     });
-    return textResult(row);
+    return textResult({ id: row!.id });
   });
+  return currentMessageWriteResult(result, ctx);
 }
 
 type HumanSendMessageArgs = {
@@ -2458,7 +2474,7 @@ export async function humanSendMessage(args: HumanSendMessageArgs, ctx: HumanToo
   const rawContent = args.content?.trim();
   if (!rawContent) return errorResult('send_message requires content');
 
-  return withIdempotency('send_message', args, ctx, async () => {
+  const result = await withIdempotency('send_message', args, ctx, async () => {
     // Same mention normalisation as the web route, before any write (including
     // creating a DM space), storage and the wake decision.
     const normalized = await normalizeChatMentions(ctx.org_id, rawContent);
@@ -2543,7 +2559,7 @@ export async function humanSendMessage(args: HumanSendMessageArgs, ctx: HumanToo
     });
 
     return textResult({
-      ...row,
+      id: row!.id,
       target_kind: targetKind,
       target_user_id: targetUser?.id ?? null,
       target_user_name: targetUser?.name ?? null,
@@ -2552,6 +2568,7 @@ export async function humanSendMessage(args: HumanSendMessageArgs, ctx: HumanToo
       url: `/chat?space=${encodeURIComponent(spaceId!)}&message=${encodeURIComponent(row!.id)}`,
     });
   });
+  return currentMessageWriteResult(result, ctx);
 }
 
 export async function humanThreadFetch(args: { parent_message_id?: string; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
@@ -3498,7 +3515,7 @@ async function transitionHumanAttention(
   }
   const itemId = args.attention_id;
   const visible = async () => (await db
-    .select({ id: attentionItems.id })
+    .select()
     .from(attentionItems)
     .where(and(
       eq(attentionItems.id, itemId),
@@ -3507,7 +3524,7 @@ async function transitionHumanAttention(
       visibleAttentionCondition(ctx.user_id),
       visibleModuleAttentionScopeSql(ctx.scopes, 'write'),
     ))
-    .limit(1)).length > 0;
+    .limit(1))[0];
   if (!await visible()) return errorResult('Attention item not found');
   // A stored result answers only a call for the same item, and the item is
   // checked again before anything is returned.
@@ -3521,9 +3538,12 @@ async function transitionHumanAttention(
       resolution: action !== 'resolve' ? action : typeof args.resolution === 'string' ? args.resolution.slice(0, 120) : 'dismissed',
       actorUserId: ctx.user_id,
     });
-    return row ? textResult({ updated: true, item: projectAttentionItem(row) }) : errorResult('Attention item not found');
+    return row ? textResult({ updated: true }) : errorResult('Attention item not found');
   }, { bind: itemId });
-  return await visible() ? result : errorResult('Attention item not found');
+  if (result.isError) return result;
+  // Dedupe may reuse this id for a newer reply. Never replay a prior item's body.
+  const current = await visible();
+  return current ? textResult({ updated: true, item: projectAttentionItem(current) }) : errorResult('Attention item not found');
 }
 
 export function humanAttentionAcknowledge(args: Record<string, unknown>, ctx: HumanToolContext) {

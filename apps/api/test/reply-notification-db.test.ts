@@ -24,7 +24,9 @@ import pg from 'pg';
 import { closeDb, db } from '../src/lib/db.js';
 import { syncNotificationToAttention, upsertAttentionItem, filterVisibleAttentionItems } from '../src/lib/attention.js';
 import { setupSocket } from '../src/socket.js';
-import { humanAttentionList, humanInboxList, humanInboxMarkRead, type HumanToolContext } from '../src/lib/mcp-tools/human.js';
+import { humanAttentionList, humanAttentionAcknowledge, humanAttentionSnooze, humanAttentionResolve, humanInboxList, humanInboxMarkRead, humanMessagePost, humanSendMessage, type HumanToolContext } from '../src/lib/mcp-tools/human.js';
+import { handleBlockedAlert } from '../src/workers/handlers/blocked-alert.js';
+import { emitVisibleNotification } from '../src/lib/notification-delivery.js';
 import { nativeSourceAccessSql } from '../src/lib/native-mention-visibility.js';
 import { withoutUnverifiableReplyText } from '../src/lib/reply-notification-text.js';
 import { storeLinkPreviews } from '../src/routes/messages.js';
@@ -56,7 +58,7 @@ async function call(actor: string, method: string, path: string, body?: unknown)
 }
 
 const ctx = (user: string): HumanToolContext => ({
-  org_id: orgId, user_id: user, role: 'member', scopes: ['read:messages', 'read:workspace', 'write:workspace', 'read:wiki'], principal_kind: 'human',
+  org_id: orgId, user_id: user, role: 'member', scopes: ['read:messages', 'write:messages', 'read:workspace', 'write:workspace', 'read:wiki'], principal_kind: 'human',
 } as HumanToolContext);
 const toolText = (result: { content: Array<{ text: string }> }) => result.content.map((part) => part.text).join('\n');
 
@@ -104,7 +106,7 @@ before(async () => {
 after(async () => {
   if (seeded && client) {
     await client.query('DELETE FROM job_queue WHERE org_id=$1', [orgId]).catch(() => undefined);
-    for (const table of ['oauth_audit_events', 'attention_events', 'attention_items', 'notifications', 'agent_actions']) {
+    for (const table of ['oauth_audit_events', 'attention_events', 'attention_items', 'notifications', 'agent_actions', 'agent_nudges', 'tasks', 'projects']) {
       await client.query(`DELETE FROM ${table} WHERE org_id=$1`, [orgId]).catch(() => undefined);
     }
     await client.query('DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id=$1)', [orgId]);
@@ -288,6 +290,92 @@ test('delayed attention projection and revoked-source transitions emit no privat
     [randomUUID(), orgId, ids.alice, `/chat?space=${S.room}&message=${message}`]);
     await syncNotificationToAttention(notice, { deliver: false });
     assert.ok(!emitted.some(row => row.body.includes('CANARY-EMISSION') || row.body.includes('CANARY-DELAYED')), JSON.stringify(emitted));
+  } finally {
+    stub.mock.restore();
+    await new Promise<void>(resolve => io.close(() => resolve()));
+  }
+});
+
+test('Attention retries reload the reused thread item instead of a deleted reply snapshot', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  for (const transition of [humanAttentionAcknowledge, humanAttentionSnooze, humanAttentionResolve]) {
+    const parent = await post(ids.alice, S.room, 'Attention retry parent');
+    const reply = await post(ids.bob, S.room, 'CANARY-ATTENTION-DELETED', parent);
+    const { rows: [item] } = await client!.query(`SELECT id FROM attention_items WHERE org_id=$1 AND metadata->>'message_id'=$2`, [orgId, reply]);
+    const args = { attention_id: item.id, idempotency_key: randomUUID(), until: new Date(Date.now() + 86400000).toISOString() };
+    const first = await transition(args, ctx(ids.alice));
+    assert.ok(toolText(first as any).includes('CANARY-ATTENTION-DELETED'));
+    // Keep compatibility with snapshots cached by the old implementation.
+    await client!.query(`UPDATE oauth_audit_events SET metadata=jsonb_set(metadata,'{result}',$3::jsonb)
+      WHERE org_id=$1 AND metadata->>'idempotency_key'=$2`, [orgId, args.idempotency_key, JSON.stringify(first)]);
+    await call(ids.bob, 'DELETE', `/api/messages/${reply}`);
+    await post(ids.bob, S.room, 'CANARY-ATTENTION-CURRENT', parent);
+    const replay = await transition(args, ctx(ids.alice));
+    assert.ok(!replay.isError, toolText(replay as any));
+    assert.ok(!toolText(replay as any).includes('CANARY-ATTENTION-DELETED'));
+    assert.ok(toolText(replay as any).includes('CANARY-ATTENTION-CURRENT'));
+    assert.equal(JSON.parse(toolText(replay as any)).item.state, 'open_unseen', 'a retry must not reapply the old transition to the new reply');
+  }
+});
+
+test('queued blocked alerts never deliver deleted text and quote the live source rather than the queue snapshot', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const project = randomUUID(), task = randomUUID();
+  await client!.query(`INSERT INTO projects(id,org_id,name,prefix,lead_id) VALUES($1,$2,'Blocked alerts','BLA',$3)`, [project, orgId, ids.alice]);
+  await client!.query(`INSERT INTO tasks(id,org_id,project_id,number,title,status,assignee_id,created_by) VALUES($1,$2,$3,1,'Blocked task','in_progress',$4,$5)`, [task, orgId, project, ids.bob, ids.alice]);
+  const io = setupSocket(createServer());
+  const emitted: string[] = [];
+  const stub = mock.method(io, 'to', () => ({ emit: (_event: string, row: unknown) => { emitted.push(JSON.stringify(row)); } }) as any);
+  try {
+    for (const deleted of [true, false]) {
+      await client!.query('DELETE FROM agent_nudges WHERE org_id=$1', [orgId]);
+      const message = await post(ids.bob, S.room, 'CANARY-LIVE-BLOCKER');
+      if (deleted) await call(ids.bob, 'DELETE', `/api/messages/${message}`);
+      emitted.length = 0;
+      await handleBlockedAlert({ id: randomUUID(), name: 'blocked-alert', attempts: 0,
+        data: { orgId, userId: ids.bob, spaceId: S.room, messageId: message, content: 'CANARY-QUEUED-BLOCKER' } });
+      assert.ok(!emitted.join('\n').includes('CANARY-QUEUED-BLOCKER'));
+      assert.equal(emitted.some(text => text.includes('CANARY-LIVE-BLOCKER')), !deleted);
+    }
+  } finally {
+    stub.mock.restore();
+    await new Promise<void>(resolve => io.close(() => resolve()));
+  }
+});
+
+test('MCP message-write retries cannot return cached deleted message text', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  for (const send of [humanMessagePost, humanSendMessage]) {
+    const args = { space_id: S.room, content: 'CANARY-MCP-DELETED', idempotency_key: randomUUID() };
+    const first = await send(args, ctx(ids.bob));
+    assert.ok(!first.isError, toolText(first as any));
+    const message = JSON.parse(toolText(first as any)).id;
+    await client!.query(`UPDATE oauth_audit_events SET metadata=jsonb_set(metadata,'{result}',$3::jsonb)
+      WHERE org_id=$1 AND metadata->>'idempotency_key'=$2`, [orgId, args.idempotency_key, JSON.stringify(first)]);
+    assert.equal((await call(ids.bob, 'DELETE', `/api/messages/${message}`)).status, 200);
+    const replay = await send(args, ctx(ids.bob));
+    assert.ok(!toolText(replay as any).includes('CANARY-MCP-DELETED'));
+    const count = await client!.query('SELECT count(*)::int AS n FROM messages WHERE id=$1', [message]);
+    assert.equal(count.rows[0].n, 1, 'the retry did not create a replacement message');
+  }
+});
+
+test('legacy socket delivery rechecks a notification source after it was created', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const message = await post(ids.bob, S.room, 'Socket source');
+  const { rows: [notice] } = await client!.query(`INSERT INTO notifications(id,org_id,user_id,type,title,body,link)
+    VALUES($1,$2,$3,'agent_suggestion','Blocked Team Member','CANARY-FINAL-SOCKET',$4) RETURNING *`,
+  [randomUUID(), orgId, ids.alice, `/chat?space=${S.room}&message=${message}`]);
+  const io = setupSocket(createServer());
+  const emitted: string[] = [];
+  const stub = mock.method(io, 'to', () => ({ emit: (_event: string, row: unknown) => { emitted.push(JSON.stringify(row)); } }) as any);
+  try {
+    assert.equal(await emitVisibleNotification(notice), true);
+    assert.ok(emitted.join('\n').includes('CANARY-FINAL-SOCKET'));
+    emitted.length = 0;
+    await call(ids.bob, 'DELETE', `/api/messages/${message}`);
+    assert.equal(await emitVisibleNotification(notice), false);
+    assert.ok(!emitted.join('\n').includes('CANARY-FINAL-SOCKET'));
   } finally {
     stub.mock.restore();
     await new Promise<void>(resolve => io.close(() => resolve()));

@@ -6,7 +6,8 @@ import { eq, and, or, desc, lt, lte, gt, sql, isNull, isNotNull, inArray } from 
 import { db } from '../lib/db.js';
 import { nativeCreate, nativeCreateKey, NativeCreateError } from '../lib/native-create.js';
 import { messages, users, reactions, spaces, spaceMembers, threadReads, messageVersions, files, messageAttachments as messageAttachmentLinks } from '@deft/db/schema';
-import { getIO, emitToUser } from '../socket.js';
+import { getIO } from '../socket.js';
+import { emitVisibleNotification } from '../lib/notification-delivery.js';
 import { extractNativeMentions, NativeMentionLimitError } from '@deft/shared';
 import { nativeMentionsEnabled, enqueueNativeMentionPublication } from '../lib/native-mentions.js';
 import { fetchLinkPreview, extractUrls, type LinkPreview } from '../lib/link-preview.js';
@@ -625,7 +626,7 @@ messageRoutes.post('/:spaceId', async (c) => {
         }, { channel: 'chat', spaceId, isMention: true });
 
         if (notification) {
-          emitToUser(notification.org_id, mentionedUserId, 'notification:new', notification);
+          await emitVisibleNotification(notification);
         }
       } catch (err) {
         console.error(`Failed to create mention notification for ${mentionedUserId}:`, err);
@@ -663,7 +664,7 @@ messageRoutes.post('/:spaceId', async (c) => {
           }, { channel: 'chat', spaceId, isMention: true });
 
           if (notification) {
-            emitToUser(notification.org_id, parentMessage.user_id, 'notification:new', notification);
+            await emitVisibleNotification(notification);
           }
         }
 
@@ -727,7 +728,7 @@ messageRoutes.post('/:spaceId', async (c) => {
           { channel: 'chat', spaceId, isMention: false, respectDnd: true },
         );
         for (const notification of recipientNotifications) {
-          emitToUser(notification.org_id, notification.user_id, 'notification:new', notification);
+          await emitVisibleNotification(notification);
         }
       }
     } catch (err) {
