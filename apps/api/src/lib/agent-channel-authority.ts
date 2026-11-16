@@ -143,7 +143,14 @@ function sourcelessActionAudienceSql(actionAlias: string, readerUserId?: SQLWrap
 /** Source-less work is private to its human requester and current org owners/admins; employee reads retain their source authority. */
 export function currentAgentActionSourceAuthoritySql(actionAlias = 'agent_actions', readerUserId?: SQLWrapper): SQL {
   const field = (name: string) => sql`${sql.identifier(actionAlias)}.${sql.identifier(name)}`;
+  // Older task-extraction dispatches stored source identity only in their
+  // server-created payload. Apply source authority to those queued rows too.
+  const extractionMessage = sql`coalesce(${field('message_id')}, ${field('params')}->'trigger_payload'->>'message_id')`;
   return sql`(${field('action')} <> 'chat_mention' or ${field('message_id')} is not null)
+    and (case when ${field('action')} = 'trigger_dispatch' and ${field('params')}->>'trigger_kind' = 'event:task-extract' then
+      ${currentEmployeeMessageAuthoritySql(field('org_id'), field('agent_employee_id'), extractionMessage)}
+      and ${readerMessageAuthoritySql(field('org_id'), readerUserId, extractionMessage)}
+      else true end)
     and (${field('action')} not in ('document_send', 'workspace_plan_import') or ${field('message_id')} is not null)
     and (${field('action')} <> 'task_assigned' or ${field('channel_event_id')} is not null)
     and (${field('message_id')} is not null or ${field('channel_event_id')} is not null or ${sourcelessActionAudienceSql(actionAlias, readerUserId)})

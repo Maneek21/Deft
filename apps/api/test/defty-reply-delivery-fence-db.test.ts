@@ -59,6 +59,19 @@ async function deftyReplies(spaceId: string) {
   return (await client!.query('SELECT id, content, metadata FROM messages WHERE space_id=$1 AND user_id NOT IN ($2,$3) ORDER BY created_at', [spaceId, ownerId, peerId])).rows;
 }
 
+test('a trigger deleted during reasoning cannot publish a reply or its captured text', { skip: !url }, async (t) => {
+  if (!ready) { t.skip(unavailable); return; }
+  const spaceId = await space();
+  const content = '@Defty explain CANARY-DELETED-DURING-REASONING';
+  const triggerId = await message(spaceId, content);
+  const runQuery = (async () => {
+    await client!.query('UPDATE messages SET is_deleted=true WHERE id=$1', [triggerId]);
+    return result('CANARY-DELETED-DURING-REASONING');
+  }) as any;
+  await handleAgentReply(job(spaceId, triggerId, content), { io: null, runQuery } as any).catch(() => undefined);
+  assert.equal((await deftyReplies(spaceId)).length, 0, 'source deletion must fence the final publication, including fallbacks');
+});
+
 test('A09: the job signal aborts the reasoning call and nothing is published', { skip: !url }, async (t) => {
   if (!ready) { t.skip(unavailable); return; }
   const spaceId = await space();

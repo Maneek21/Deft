@@ -72,6 +72,37 @@ function pendingRows(result: ToolResult): ActionRow[] {
   return (JSON.parse(content.text) as { pending_actions: ActionRow[] }).pending_actions;
 }
 
+test('task-extraction second-hop dispatch and MCP polling recheck their message source', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const { handleEmployeeTrigger } = await import('../src/workers/handlers/employee-trigger.js');
+  const { fetchUnread } = await import('../src/lib/mcp-tools/messages.js');
+  const { pollPendingWork } = await import('../src/lib/mcp-tools/cooperative.js');
+  for (const deletedBeforeDispatch of [true, false]) {
+    const source = randomUUID();
+    await client!.query(`INSERT INTO messages(id,org_id,space_id,user_id,content,is_deleted)
+      VALUES($1,$2,$3,$4,'CANARY-QUEUED-TRIGGER',$5)`, [source, orgId, spaceId, ids.requester, deletedBeforeDispatch]);
+    await handleEmployeeTrigger({ id: randomUUID(), name: 'employee-trigger', attempts: 0, data: {
+      employee_id: employeeId, org_id: orgId, trigger_kind: 'event:task-extract', target_space_id: spaceId,
+      goal: 'Inspect the message', context: { message_id: source, space_id: spaceId, author_user_id: ids.requester, message_preview: 'CANARY-QUEUED-TRIGGER' },
+    } });
+    const { rows } = await client!.query(`SELECT id,message_id FROM agent_actions WHERE org_id=$1 AND params->'trigger_payload'->>'message_id'=$2`, [orgId, source]);
+    assert.equal(rows.length, deletedBeforeDispatch ? 0 : 1, 'a deleted queue source must not produce pending work');
+    if (deletedBeforeDispatch) continue;
+    assert.equal(rows[0].message_id, source, 'new dispatches retain canonical source identity');
+    for (const legacy of [false, true]) {
+      await client!.query('UPDATE agent_actions SET message_id=$2 WHERE id=$1', [rows[0].id, legacy ? null : source]);
+      for (const read of [() => fetchUnread({ caller_employee_slug: employeeSlug }, employeeContext), () => pollPendingWork({}, employeeContext)]) {
+        assert.ok(pendingRows(await read()).some(row => row.id === rows[0].id), 'live queued work stays readable');
+      }
+      await client!.query('UPDATE messages SET is_deleted=true WHERE id=$1', [source]);
+      for (const read of [() => fetchUnread({ caller_employee_slug: employeeSlug }, employeeContext), () => pollPendingWork({}, employeeContext)]) {
+        assert.ok(!pendingRows(await read()).some(row => row.id === rows[0].id), 'current and legacy work must hide deleted previews');
+      }
+      await client!.query('UPDATE messages SET is_deleted=false WHERE id=$1', [source]);
+    }
+  }
+});
+
 before(async () => {
   if (unavailable) return;
   client = new pg.Client({ connectionString: url, connectionTimeoutMillis: 3000 });

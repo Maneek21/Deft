@@ -100,6 +100,13 @@ export async function claimDeftyReplySlot(
     await tx.execute(sql.raw(`SET LOCAL statement_timeout = ${boundMs}`));
   }
   throwIfDeliveryLost(delivery);
+  // Reasoning can outlive deletion of its request. Hold the live source until
+  // the reply and proposed actions commit, so deletion cannot precede them.
+  const [source] = await tx.select({ id: messages.id }).from(messages).where(and(
+    eq(messages.id, trigger.triggerMessageId), eq(messages.org_id, trigger.orgId),
+    eq(messages.space_id, trigger.spaceId), eq(messages.is_deleted, false),
+  )).limit(1).for('share');
+  if (!source) throw new DeftyDeliveryLostError('agent-reply: source message is no longer available');
   return findExistingDeftyReply(tx, trigger);
 }
 

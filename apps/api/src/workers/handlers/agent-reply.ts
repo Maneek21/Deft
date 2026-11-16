@@ -1365,7 +1365,6 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
     parentId,
     userId,
     orgName,
-    content,
     followed = false,
   } = job.data as {
     orgId: string;
@@ -1391,11 +1390,12 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
       .where(and(eq(spaces.id, spaceId), eq(spaces.org_id, orgId), eq(spaces.is_archived, false)))
       .limit(1);
     if (!space) return;
-    const [trigger] = await db.select({ created_at: messages.created_at }).from(messages).where(and(
+    const [trigger] = await db.select({ created_at: messages.created_at, content: messages.content }).from(messages).where(and(
       eq(messages.id, messageId), eq(messages.org_id, orgId), eq(messages.space_id, spaceId),
       eq(messages.user_id, userId), eq(messages.is_deleted, false),
     )).limit(1);
     if (!trigger) return;
+    const content = trigger.content;
     // A05: one reply per trigger. A redelivered job whose reply already
     // committed stops here; the insert re-checks under a lock (claimDeftyReplySlot).
     const replyTrigger = { orgId, spaceId, agentUserId, triggerMessageId: messageId, triggerCreatedAt: trigger.created_at };

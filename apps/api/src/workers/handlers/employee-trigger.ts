@@ -10,11 +10,13 @@
  * Phase 9: every employee is BYOA. We never push into a runtime; we
  * record the invitation and let the agent decide when to wake.
  */
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import type { JobData } from '../types.js';
 import { jobOrgId } from '../job-org.js';
 import { db } from '../../lib/db.js';
-import { agentActions, agentEmployees, spaces } from '@deft/db/schema';
+import { agentActions, agentEmployees, messages, spaces } from '@deft/db/schema';
+import { currentEmployeeMessageAuthoritySql } from '../../lib/agent-channel-authority.js';
+import { toPlainText } from '../../lib/plain-text.js';
 
 /**
  * Shape sent to `enqueue('agent-jobs', 'employee-trigger', invocation)`.
@@ -88,6 +90,23 @@ export async function handleEmployeeTrigger(job: JobData): Promise<void> {
     return;
   }
 
+  let messageId: string | null = null;
+  let payload = context ?? {};
+  if (trigger_kind === 'event:task-extract') {
+    // The observation and this dispatch are separate jobs. Preserve the source
+    // for later reads, and never publish the earlier job's captured preview.
+    if (typeof context?.message_id !== 'string' || typeof context.space_id !== 'string'
+      || typeof context.author_user_id !== 'string' || context.space_id !== target_space_id) return;
+    const [source] = await db.select({ id: messages.id, content: messages.content }).from(messages).where(and(
+      eq(messages.id, context.message_id), eq(messages.org_id, orgId), eq(messages.space_id, context.space_id),
+      eq(messages.user_id, context.author_user_id), eq(messages.is_deleted, false),
+      currentEmployeeMessageAuthoritySql(sql`${orgId}`, sql`${employee.id}`, messages.id),
+    )).limit(1);
+    if (!source) return;
+    messageId = source.id;
+    payload = { ...context, message_preview: toPlainText(source.content).slice(0, 500) };
+  }
+
   // 3. Queue an agent_actions row so the BYOA client finds the trigger
   // via `poll_pending_work`. Triggers don't need approval — they're
   // invitations to do work, so tier='auto'.
@@ -99,11 +118,12 @@ export async function handleEmployeeTrigger(job: JobData): Promise<void> {
       // in the audit log.
       user_id: employee.user_id,
       agent_employee_id: employee.id,
+      message_id: messageId,
       source: 'trigger',
       action: 'trigger_dispatch',
       params: {
         trigger_kind,
-        trigger_payload: context ?? {},
+        trigger_payload: payload,
         goal,
         target_space_id: target_space_id ?? null,
       },
