@@ -43,7 +43,7 @@ import { createTaskBundle, type TaskBundleSubtaskInput } from '../task-bundle.js
 import { bulkUpdateTasks, BulkTaskUpdateError, bulkTaskUpdateSchema } from '../task-bulk-update.js';
 import { queryCompactTasks, type CompactTaskQuery } from '../task-compact-query.js';
 import { visibleNoteCondition } from '../note-visibility.js';
-import { publicSpaceVisibleSql } from '../space-visibility.js';
+import { canReadSpace, readableSpaceSql } from '../space-membership.js';
 import { Context } from 'hono';
 import { currentActionReviewerSql } from '../agent-action-review-gate.js';
 import { resolveProjectTargetFromRows } from '../resolve-project-target.js';
@@ -116,17 +116,7 @@ function requireScope(ctx: HumanToolContext, scope: string): ToolResult | null {
 }
 
 async function userCanSeeSpace(ctx: HumanToolContext, spaceId: string): Promise<boolean> {
-  const [space] = await db
-    .select({ id: spaces.id })
-    .from(spaces)
-    .leftJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, ctx.user_id)))
-    .where(and(
-      eq(spaces.id, spaceId),
-      eq(spaces.org_id, ctx.org_id),
-      or(publicSpaceVisibleSql(spaces.type, spaces.org_id, ctx.user_id), sql`${spaceMembers.id} IS NOT NULL`),
-    ))
-    .limit(1);
-  return Boolean(space);
+  return canReadSpace(spaceId, ctx.user_id, ctx.org_id);
 }
 
 async function userIsSpaceMember(ctx: HumanToolContext, spaceId: string): Promise<boolean> {
@@ -899,7 +889,7 @@ async function resolveVisibleSpace(
     LEFT JOIN space_members sm ON sm.space_id = s.id AND sm.user_id = ${ctx.user_id}
     WHERE s.org_id = ${ctx.org_id}
       AND s.is_archived = false
-      AND (${publicSpaceVisibleSql(sql`s.type`, sql`s.org_id`, ctx.user_id)} OR sm.id IS NOT NULL)
+      AND ${readableSpaceSql(ctx.user_id, sql`s.id`, sql`s.org_id`)}
     ORDER BY s.is_default DESC, s.name ASC
     LIMIT 200
   `);
@@ -1425,7 +1415,7 @@ export async function humanSearch(args: { query?: string; limit?: number }, ctx:
       LEFT JOIN space_members sm ON sm.space_id = s.id AND sm.user_id = ${ctx.user_id}
       WHERE m.org_id = ${ctx.org_id}
         AND m.is_deleted = false
-        AND (${publicSpaceVisibleSql(sql`s.type`, sql`s.org_id`, ctx.user_id)} OR sm.id IS NOT NULL)
+        AND ${readableSpaceSql(ctx.user_id, sql`s.id`, sql`s.org_id`)}
         AND lower(m.content) LIKE ${pattern}
       ORDER BY m.created_at DESC
       LIMIT ${limit}
@@ -2050,7 +2040,7 @@ export async function humanProjectGet(args: { project_id?: string }, ctx: HumanT
     JOIN spaces s ON s.id = ps.space_id AND s.org_id = ${ctx.org_id}
     LEFT JOIN space_members sm ON sm.space_id = s.id AND sm.user_id = ${ctx.user_id}
     WHERE ps.project_id = ${args.project_id}
-      AND (${publicSpaceVisibleSql(sql`s.type`, sql`s.org_id`, ctx.user_id)} OR sm.id IS NOT NULL)
+      AND ${readableSpaceSql(ctx.user_id, sql`s.id`, sql`s.org_id`)}
       AND s.is_archived = false
     ORDER BY s.name ASC
   `);
@@ -2070,7 +2060,7 @@ export async function humanSpaceList(args: { query?: string; type?: string; limi
     LEFT JOIN space_members sm_all ON sm_all.space_id = s.id
     WHERE s.org_id = ${ctx.org_id}
       AND s.is_archived = false
-      AND (${publicSpaceVisibleSql(sql`s.type`, sql`s.org_id`, ctx.user_id)} OR sm.id IS NOT NULL)
+      AND ${readableSpaceSql(ctx.user_id, sql`s.id`, sql`s.org_id`)}
       AND (${args.type ? sql`s.type = ${args.type}` : sql`true`})
       AND (${query ? sql`lower(s.name) LIKE ${`%${query}%`} OR lower(coalesce(s.description, '')) LIKE ${`%${query}%`}` : sql`true`})
     GROUP BY s.id, s.name, s.type, s.description, s.is_default, s.created_at, s.updated_at
@@ -2091,7 +2081,7 @@ export async function humanResolveSpace(args: { query?: string; limit?: number }
     LEFT JOIN space_members sm ON sm.space_id = s.id AND sm.user_id = ${ctx.user_id}
     WHERE s.org_id = ${ctx.org_id}
       AND s.is_archived = false
-      AND (${publicSpaceVisibleSql(sql`s.type`, sql`s.org_id`, ctx.user_id)} OR sm.id IS NOT NULL)
+      AND ${readableSpaceSql(ctx.user_id, sql`s.id`, sql`s.org_id`)}
     ORDER BY s.is_default DESC, s.name ASC
     LIMIT 200
   `);
@@ -2752,7 +2742,7 @@ export async function humanMessagesRecent(args: HumanMessagesRecentArgs, ctx: Hu
     WHERE m.org_id = ${ctx.org_id}
       AND m.is_deleted = false
       AND s.is_archived = false
-      AND (${publicSpaceVisibleSql(sql`s.type`, sql`s.org_id`, ctx.user_id)} OR sm.id IS NOT NULL)
+      AND ${readableSpaceSql(ctx.user_id, sql`s.id`, sql`s.org_id`)}
       AND (${spaceResult.space ? sql`m.space_id = ${spaceResult.space.id}` : sql`true`})
       AND (${authorResult.user ? sql`m.user_id = ${authorResult.user.id}` : sql`true`})
       AND (${since instanceof Date ? sql`m.created_at >= ${since}` : sql`true`})
@@ -2881,7 +2871,7 @@ export async function humanAttentionDigest(args: HumanAttentionDigestArgs, ctx: 
       WHERE m.org_id = ${ctx.org_id}
         AND m.is_deleted = false
         AND s.is_archived = false
-        AND (${publicSpaceVisibleSql(sql`s.type`, sql`s.org_id`, ctx.user_id)} OR sm.id IS NOT NULL)
+        AND ${readableSpaceSql(ctx.user_id, sql`s.id`, sql`s.org_id`)}
         AND m.user_id != ${ctx.user_id}
         AND (m.content ILIKE ${`%${ctx.user_id}%`} OR lower(m.content) LIKE ${mentionPattern})
         AND (${spaceResult.space ? sql`m.space_id = ${spaceResult.space.id}` : sql`true`})
@@ -2979,7 +2969,7 @@ export async function humanMessagesSearch(args: { query?: string; limit?: number
     WHERE m.org_id = ${ctx.org_id}
       AND m.is_deleted = false
       AND lower(m.content) LIKE ${pattern}
-      AND (${publicSpaceVisibleSql(sql`s.type`, sql`s.org_id`, ctx.user_id)} OR sm.id IS NOT NULL)
+      AND ${readableSpaceSql(ctx.user_id, sql`s.id`, sql`s.org_id`)}
     ORDER BY m.created_at DESC
     LIMIT ${Math.min(Math.max(1, args.limit ?? 20), 50)}
   `);
@@ -3571,11 +3561,18 @@ export async function humanInboxGet(args: { notification_id?: string }, ctx: Hum
 export async function humanInboxMarkRead(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'write:workspace'); if (scopeError) return scopeError;
   if (typeof args.notification_id !== 'string') return errorResult('notification_id is required');
-  return withIdempotency('inbox_mark_read', args, ctx, async () => {
+  const result = await withIdempotency('inbox_mark_read', args, ctx, async () => {
     const [row] = await db.update(notifications).set({ is_read: true }).where(and(eq(notifications.id, args.notification_id as string), eq(notifications.org_id, ctx.org_id), eq(notifications.user_id, ctx.user_id),
       nativeNotificationAccessSql(ctx.user_id, sql`${notifications.metadata}`, sql`${notifications.org_id}`))).returning();
-    return row ? textResult({ marked_read: true, notification: withoutUnverifiableReplyText(row) }) : errorResult('Notification not found');
-  });
+    return row ? textResult({ marked_read: true }) : errorResult('Notification not found');
+  }, { bind: args.notification_id });
+  if (result.isError) return result;
+  // A replay records the write outcome, never authority to read an old snapshot.
+  const [row] = await db.select().from(notifications).where(and(
+    eq(notifications.id, args.notification_id), eq(notifications.org_id, ctx.org_id), eq(notifications.user_id, ctx.user_id),
+    nativeNotificationAccessSql(ctx.user_id, sql`${notifications.metadata}`, sql`${notifications.org_id}`),
+  )).limit(1);
+  return row ? textResult({ marked_read: true, notification: withoutUnverifiableReplyText(row) }) : errorResult('Notification not found');
 }
 
 export async function humanInboxMarkAllRead(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {

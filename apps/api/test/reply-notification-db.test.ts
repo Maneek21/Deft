@@ -16,13 +16,15 @@
  */
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import test, { after, before } from 'node:test';
+import test, { after, before, mock } from 'node:test';
+import { createServer } from 'node:http';
 import { sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 import pg from 'pg';
 import { closeDb, db } from '../src/lib/db.js';
-import { syncNotificationToAttention, upsertAttentionItem } from '../src/lib/attention.js';
-import { humanAttentionList, humanInboxList, type HumanToolContext } from '../src/lib/mcp-tools/human.js';
+import { syncNotificationToAttention, upsertAttentionItem, filterVisibleAttentionItems } from '../src/lib/attention.js';
+import { setupSocket } from '../src/socket.js';
+import { humanAttentionList, humanInboxList, humanInboxMarkRead, type HumanToolContext } from '../src/lib/mcp-tools/human.js';
 import { nativeSourceAccessSql } from '../src/lib/native-mention-visibility.js';
 import { withoutUnverifiableReplyText } from '../src/lib/reply-notification-text.js';
 import { storeLinkPreviews } from '../src/routes/messages.js';
@@ -54,7 +56,7 @@ async function call(actor: string, method: string, path: string, body?: unknown)
 }
 
 const ctx = (user: string): HumanToolContext => ({
-  org_id: orgId, user_id: user, role: 'member', scopes: ['read:messages', 'read:workspace', 'read:wiki'], principal_kind: 'human',
+  org_id: orgId, user_id: user, role: 'member', scopes: ['read:messages', 'read:workspace', 'write:workspace', 'read:wiki'], principal_kind: 'human',
 } as HumanToolContext);
 const toolText = (result: { content: Array<{ text: string }> }) => result.content.map((part) => part.text).join('\n');
 
@@ -102,7 +104,7 @@ before(async () => {
 after(async () => {
   if (seeded && client) {
     await client.query('DELETE FROM job_queue WHERE org_id=$1', [orgId]).catch(() => undefined);
-    for (const table of ['attention_events', 'attention_items', 'notifications', 'agent_actions']) {
+    for (const table of ['oauth_audit_events', 'attention_events', 'attention_items', 'notifications', 'agent_actions']) {
       await client.query(`DELETE FROM ${table} WHERE org_id=$1`, [orgId]).catch(() => undefined);
     }
     await client.query('DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id=$1)', [orgId]);
@@ -219,4 +221,75 @@ test('an archived public space: the newer mention check and the needs-you list a
   const carol = await places(ids.carol);
   assert.ok(!carol.needs_you.includes('CANARY-PUBLIC') && !carol.needs_you_tool.includes('CANARY-PUBLIC'), carol.needs_you);
   assert.ok((await places(ids.bob)).needs_you.includes('CANARY-PUBLIC'));
+});
+
+test('blocked-alert attention copies lose their message excerpt after deletion or private-space exit', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  for (const revoke of ['delete', 'leave']) {
+    const message = await post(ids.bob, S.room, `CANARY-BLOCKED-${revoke.toUpperCase()}`);
+    const result = await client!.query(`INSERT INTO notifications(id,org_id,user_id,type,title,body,link,metadata)
+      VALUES($1,$2,$3,'agent_suggestion','Blocked Team Member',$4,$5,$6) RETURNING *`,
+    [randomUUID(), orgId, ids.alice, `CANARY-BLOCKED-${revoke.toUpperCase()}`, `/chat?space=${S.room}&message=${message}`, JSON.stringify({ task_id: randomUUID(), nudge_type: 'blocked' })]);
+    await syncNotificationToAttention(result.rows[0], { deliver: false });
+    assert.ok((await places(ids.alice)).needs_you.includes(`CANARY-BLOCKED-${revoke.toUpperCase()}`));
+    try {
+      if (revoke === 'delete') await call(ids.bob, 'DELETE', `/api/messages/${message}`);
+      else await client!.query('DELETE FROM space_members WHERE space_id=$1 AND user_id=$2', [S.room, ids.alice]);
+      for (const [place, text] of Object.entries(await places(ids.alice))) {
+        assert.ok(!text.includes(`CANARY-BLOCKED-${revoke.toUpperCase()}`), `${place} leaks after ${revoke}: ${text}`);
+      }
+    } finally {
+      if (revoke === 'leave') await client!.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), S.room, ids.alice]);
+    }
+  }
+});
+
+test('inbox mark-read replays recheck the source after deletion and private-space exit', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  for (const revoke of ['delete', 'leave']) {
+    const parent = await post(ids.alice, S.room, 'Question for a retry');
+    const reply = await post(ids.bob, S.room, 'CANARY-CACHED reply', parent);
+    const { rows: [notice] } = await client!.query(`SELECT id FROM notifications WHERE org_id=$1 AND metadata->>'message_id'=$2`, [orgId, reply]);
+    const args = { notification_id: notice.id, idempotency_key: randomUUID() };
+    assert.ok(toolText(await humanInboxMarkRead(args, ctx(ids.alice)) as any).includes('CANARY-CACHED'));
+    // A result cached by the old implementation has no target binding and contains the full body.
+    await client!.query(`UPDATE oauth_audit_events SET metadata=(metadata - 'bind') || $3::jsonb
+      WHERE org_id=$1 AND metadata->>'idempotency_key'=$2`, [orgId, args.idempotency_key,
+      JSON.stringify({ result: { content: [{ type: 'text', text: 'CANARY-CACHED legacy result' }] } })]);
+    try {
+      if (revoke === 'delete') await call(ids.bob, 'DELETE', `/api/messages/${reply}`);
+      else await client!.query('DELETE FROM space_members WHERE space_id=$1 AND user_id=$2', [S.room, ids.alice]);
+      const replay = await humanInboxMarkRead(args, ctx(ids.alice));
+      assert.equal(replay.isError, true);
+      assert.ok(!toolText(replay as any).includes('CANARY-CACHED'));
+    } finally {
+      if (revoke === 'leave') await client!.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), S.room, ids.alice]);
+    }
+  }
+});
+
+test('delayed attention projection and revoked-source transitions emit no private or deleted body', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const server = createServer();
+  const io = setupSocket(server);
+  const emitted: Array<{ event: string; body: string }> = [];
+  const stub = mock.method(io, 'to', () => ({ emit: (event: string, row: unknown) => { emitted.push({ event, body: JSON.stringify(row) }); } }) as any);
+  try {
+    const message = await post(ids.bob, S.room, 'A source that will disappear');
+    const item = await upsertAttentionItem({ orgId, userId: ids.alice, kind: 'mention', lane: 'needs_you', priority: 'normal',
+      dedupeKey: randomUUID(), sourceType: 'message', sourceId: message, sourceEventId: randomUUID(), title: 'Mention', body: 'CANARY-EMISSION',
+    }, { deliver: false });
+    assert.ok(emitted.some(row => row.body.includes('CANARY-EMISSION')));
+    emitted.length = 0;
+    await call(ids.bob, 'DELETE', `/api/messages/${message}`);
+    await filterVisibleAttentionItems(ids.alice, [item!]);
+    const { rows: [notice] } = await client!.query(`INSERT INTO notifications(id,org_id,user_id,type,title,body,link)
+      VALUES($1,$2,$3,'mention','Delayed mention','CANARY-DELAYED',$4) RETURNING *`,
+    [randomUUID(), orgId, ids.alice, `/chat?space=${S.room}&message=${message}`]);
+    await syncNotificationToAttention(notice, { deliver: false });
+    assert.ok(!emitted.some(row => row.body.includes('CANARY-EMISSION') || row.body.includes('CANARY-DELAYED')), JSON.stringify(emitted));
+  } finally {
+    stub.mock.restore();
+    await new Promise<void>(resolve => io.close(() => resolve()));
+  }
 });
