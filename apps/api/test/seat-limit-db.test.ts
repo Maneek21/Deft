@@ -285,6 +285,43 @@ test('two invites at the same instant for the last seat: exactly one succeeds', 
   }
 });
 
+test('a paid re-invite, a guest re-invite and a promotion of one person at once: no deadlock', async () => {
+  // Both routes must take the person's membership row before the seat lock.
+  // With the opposite order, the paid re-invite (holding the seat lock) waits
+  // for the row the promotion holds, while the promotion waits for the seat
+  // lock: PostgreSQL kills one of them and the request returns a 500.
+  const former = await addMember({ active: false });
+  const [person] = await db.select({ email: users.email }).from(users).where(eq(users.id, former));
+  await hostedWithSeats((await used()) + 5);
+  let first = true;
+  let releaseFirst: () => void = () => {};
+  const firstMayFinish = new Promise<void>((resolveGate) => { releaseFirst = resolveGate; });
+  let others: Promise<{ status: number }>[] = [];
+  seatTestHooks.afterCount = async () => {
+    if (!first) return;
+    first = false;
+    // The paid re-invite holds the seat lock here. Meanwhile the same person is
+    // re-invited as a guest and then promoted.
+    const guest = invite(person!.email!, 'guest');
+    await Promise.race([guest, new Promise((r) => setTimeout(r, 1_000))]);
+    const promote = setRole(former, 'member');
+    others = [guest, promote];
+    await new Promise((r) => setTimeout(r, 500));
+    releaseFirst();
+  };
+  try {
+    const paid = invite(person!.email!, 'member');
+    await firstMayFinish;
+    const statuses = [(await paid).status, ...(await Promise.all(others)).map((r) => r.status)];
+    assert.ok(!statuses.includes(500), `no request fails with a deadlock: ${statuses.join(', ')}`);
+    const [row] = await db.select({ active: orgMembers.is_active, role: orgMembers.role }).from(orgMembers)
+      .where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, former)));
+    assert.equal(row!.active, true);
+  } finally {
+    seatTestHooks.afterCount = null;
+  }
+});
+
 test('frozen growth: settings missing in hosted mode', async () => {
   hostedEnv();
   _resetSeatProcessStateForTest();

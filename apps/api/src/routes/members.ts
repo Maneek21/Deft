@@ -1118,10 +1118,13 @@ memberRoutes.post('/invite', async (c) => {
 
       let existingMembership: typeof orgMembers.$inferSelect | undefined;
       if (existingUser) {
+        // Lock the membership row before the seat lock, in the same order as
+        // the role change below; the opposite order can deadlock.
         [existingMembership] = await tx.select()
           .from(orgMembers)
           .where(and(eq(orgMembers.org_id, currentUser.org_id), eq(orgMembers.user_id, existingUser.id)))
-          .limit(1);
+          .limit(1)
+          .for('update');
         if (existingMembership?.is_active) return { alreadyMember: true as const };
       }
 
