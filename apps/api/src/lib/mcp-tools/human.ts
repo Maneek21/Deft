@@ -3457,7 +3457,6 @@ export async function humanAttentionList(args: { lane?: string; state?: string; 
     ))
     .orderBy(desc(attentionItems.last_event_at))
     .limit(Math.min(Math.max(1, args.limit ?? 50), 100));
-  const visibleRows = await filterVisibleAttentionItems(ctx.user_id, rows);
   const counts = await db
     .select({
       lane: attentionItems.lane,
@@ -3473,6 +3472,7 @@ export async function humanAttentionList(args: { lane?: string; state?: string; 
       visibleModuleAttentionScopeSql(ctx.scopes, 'read'),
     ))
     .groupBy(attentionItems.lane);
+  const visibleRows = await filterVisibleAttentionItems(ctx.user_id, rows);
   return textResult({
     items: visibleRows.map((row) => ({ ...projectAttentionItem(row), url: row.link ?? `/inbox?lane=${row.lane}` })),
     counts: Object.fromEntries(counts.map((row) => [row.lane, { count: Number(row.count), unseen: Number(row.unseen) }])),

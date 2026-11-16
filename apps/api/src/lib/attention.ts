@@ -320,8 +320,9 @@ export function approvalToAttentionDraft(action: AgentAction, userId: string): A
 /** Emit only to an owner who may still open the item; never with action params. */
 async function emitAttention(event: 'attention:new' | 'attention:updated', item: typeof attentionItems.$inferSelect) {
   try {
-    if (!(await attentionItemStillVisible(item))) return;
-    emitToUser(item.org_id, item.user_id, event, projectAttentionItem(item));
+    const current = await loadVisibleAttentionSnapshot(item);
+    if (!current) return;
+    emitToUser(current.org_id, current.user_id, event, projectAttentionItem(current));
   } catch (error) {
     console.warn('[attention] realtime delivery skipped:', error instanceof Error ? error.message : error);
   }
@@ -584,7 +585,7 @@ export async function filterVisibleAttentionItems<T extends typeof attentionItem
   rows: T[],
 ): Promise<T[]> {
   if (rows.length === 0) return [];
-  const visible = await db.select({ id: attentionItems.id }).from(attentionItems).where(and(
+  const visible = await db.select().from(attentionItems).where(and(
     inArray(attentionItems.id, rows.map((item) => item.id)), eq(attentionItems.user_id, userId), visibleAttentionCondition(userId),
   ));
   const allowed = new Set(visible.map((item) => item.id));
@@ -604,17 +605,33 @@ export async function filterVisibleAttentionItems<T extends typeof attentionItem
       state: 'resolved',
       resolution: 'source_access_removed',
       actorUserId: userId,
+      expectedVersion: item.version,
     });
   }
-  return rows.filter((item) => allowed.has(item.id));
+  const finalRows = hidden.length ? await db.select().from(attentionItems).where(and(
+    inArray(attentionItems.id, rows.map((item) => item.id)), eq(attentionItems.user_id, userId), visibleAttentionCondition(userId),
+  )) : visible;
+  const currentById = new Map(finalRows.map((item) => [item.id, item]));
+  // A thread can reuse its id for a newer reply while this read is in flight.
+  // Drop stale snapshots without resolving the newly visible replacement.
+  return rows.flatMap((item) => {
+    const current = currentById.get(item.id);
+    return current?.version === item.version ? [{ ...item, ...current }] : [];
+  });
 }
 
-/** Whether the item's owner may still open it (checked again right before a push is sent). */
-export async function attentionItemStillVisible(item: { id: string; org_id: string; user_id: string }) {
-  const [row] = await db.select({ id: attentionItems.id }).from(attentionItems).where(and(
+async function loadVisibleAttentionSnapshot(item: { id: string; org_id: string; user_id: string; version: number }) {
+  const [row] = await db.select().from(attentionItems).where(and(
     eq(attentionItems.id, item.id), eq(attentionItems.org_id, item.org_id), eq(attentionItems.user_id, item.user_id),
+    eq(attentionItems.version, item.version),
     visibleAttentionCondition(item.user_id),
   )).limit(1);
+  return row;
+}
+
+/** Whether this version is still readable, including immediately before a push. */
+export async function attentionItemStillVisible(item: { id: string; org_id: string; user_id: string; version: number }) {
+  const row = await loadVisibleAttentionSnapshot(item);
   return Boolean(row);
 }
 
@@ -829,6 +846,8 @@ export async function transitionAttentionItem(params: {
   actorUserId?: string;
   /** A user acting on their own item: it changes only while they may still open it. */
   viewerId?: string;
+  /** Background cleanup must not resolve a newer reply that reused this id. */
+  expectedVersion?: number;
 }) {
   const now = new Date();
   const allowedFrom: Record<AttentionState, AttentionState[]> = {
@@ -862,6 +881,7 @@ export async function transitionAttentionItem(params: {
       eq(attentionItems.user_id, params.userId),
       inArray(attentionItems.state, allowedFrom[params.state]),
       params.viewerId ? visibleAttentionCondition(params.viewerId) : sql`true`,
+      params.expectedVersion === undefined ? undefined : eq(attentionItems.version, params.expectedVersion),
     ))
     .returning();
   if (!item) return null;
@@ -875,7 +895,7 @@ export async function transitionAttentionItem(params: {
     payload: { resolution: params.resolution ?? null, snoozed_until: params.snoozedUntil?.toISOString() ?? null },
   });
   await emitAttention('attention:updated', item);
-  return item;
+  return params.viewerId ? (await loadVisibleAttentionSnapshot(item)) ?? null : item;
 }
 
 export async function recordAttentionFeedback(params: {
@@ -935,7 +955,7 @@ export async function recordAttentionFeedback(params: {
     payload: { feedback: 'not_urgent' },
   });
   await emitAttention('attention:updated', item);
-  return item;
+  return (await loadVisibleAttentionSnapshot(item)) ?? null;
 }
 
 export async function resolveAttentionBySource(params: {

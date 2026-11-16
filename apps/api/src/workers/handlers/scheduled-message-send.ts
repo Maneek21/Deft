@@ -1,3 +1,4 @@
+import { emitCurrentMessageToSpaceViewers } from '../../lib/agent-message-run-details.js';
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { files, messageAttachments as messageAttachmentLinks, messages, scheduledMessages, users } from '@deft/db/schema';
 import { db } from '../../lib/db.js';
@@ -139,7 +140,7 @@ export async function sendScheduledMessage(scheduledId: string): Promise<boolean
     .where(eq(users.id, result.userId))
     .limit(1);
 
-  getIO()?.to(`space:${result.spaceId}`).emit('message:new', {
+  await emitCurrentMessageToSpaceViewers(getIO(), result.spaceId, 'message:new', {
     ...result.message,
     user_name: user?.name,
     user_avatar: user?.avatar_url,

@@ -179,9 +179,10 @@ attentionRoutes.get('/', async (c) => {
     count: Number(row.count),
     unseen: Number(row.unseen),
   }]));
+  const finalRows = await filterVisibleAttentionItems(user.id, hydrated);
 
   return c.json({
-    items: hydrated,
+    items: finalRows.map(projectAttentionItem),
     counts: {
       needs_you: byLane.needs_you ?? { count: 0, unseen: 0 },
       updates: byLane.updates ?? { count: 0, unseen: 0 },
@@ -205,9 +206,9 @@ attentionRoutes.get('/:id', async (c) => {
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
   const visible = await filterVisibleAttentionItems(user.id, [item]);
   if (visible.length === 0) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-  const [hydrated] = await hydrateApprovals(user, visible);
+  const [hydrated] = await filterVisibleAttentionItems(user.id, await hydrateApprovals(user, visible));
   if (!hydrated) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-  return c.json({ item: hydrated });
+  return c.json({ item: projectAttentionItem(hydrated) });
 });
 
 attentionRoutes.post('/:id/seen', async (c) => {

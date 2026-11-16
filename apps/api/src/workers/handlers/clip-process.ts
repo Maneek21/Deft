@@ -1,3 +1,4 @@
+import { emitCurrentMessageToSpaceViewers } from '../../lib/agent-message-run-details.js';
 // Worker handler: transcribe clip audio, then summarize with AI agent
 import { eq, and } from 'drizzle-orm';
 import { db } from '../../lib/db.js';
@@ -293,7 +294,7 @@ async function updateClipMessage(
 
   // Broadcast the edit so clients update in real time
   const io = getIO();
-  io?.to(`space:${spaceId}`).emit('message:edited', {
+  await emitCurrentMessageToSpaceViewers(io, spaceId, 'message:edited', {
     id: messageId,
     content,
     edited_at: null, // not a user edit

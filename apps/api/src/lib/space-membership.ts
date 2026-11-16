@@ -61,7 +61,7 @@ export async function requireSpaceMembership(spaceId: string, userId: string, or
  * (publicSpaceVisibleSql, the check the assistant's and outside agents' tools
  * use). Combine it with the membership check: `<is a member> OR this`.
  */
-export function unjoinedPublicSpaceReadableSql(userId: string): SQL {
+export function unjoinedPublicSpaceReadableSql(userId: string | SQL): SQL {
   return sql`(${spaces.is_archived} = false
     AND ${publicSpaceVisibleSql(spaces.type, spaces.org_id, userId)}
     AND EXISTS (SELECT 1 FROM ${orgMembers}
@@ -74,7 +74,7 @@ export function unjoinedPublicSpaceReadableSql(userId: string): SQL {
  * a public, unarchived space and they are a member of the workspace who is
  * not a guest.
  */
-export function readableSpaceSql(userId: string, spaceId: SQLWrapper, orgId: SQLWrapper): SQL {
+export function readableSpaceSql(userId: string | SQL, spaceId: SQLWrapper, orgId: SQLWrapper): SQL {
   return sql`EXISTS (SELECT 1 FROM ${spaces} WHERE ${spaces.id} = ${spaceId} AND ${spaces.org_id} = ${orgId}
     AND (EXISTS (SELECT 1 FROM ${spaceMembers}
         WHERE ${spaceMembers.space_id} = ${spaces.id} AND ${spaceMembers.user_id} = ${userId})

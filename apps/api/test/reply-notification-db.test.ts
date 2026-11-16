@@ -26,7 +26,8 @@ import { syncNotificationToAttention, upsertAttentionItem, filterVisibleAttentio
 import { setupSocket } from '../src/socket.js';
 import { humanAttentionList, humanAttentionAcknowledge, humanAttentionSnooze, humanAttentionResolve, humanInboxList, humanInboxMarkRead, humanMessagePost, humanSendMessage, type HumanToolContext } from '../src/lib/mcp-tools/human.js';
 import { handleBlockedAlert } from '../src/workers/handlers/blocked-alert.js';
-import { emitVisibleNotification } from '../src/lib/notification-delivery.js';
+import * as notificationDelivery from '../src/lib/notification-delivery.js';
+const { emitVisibleNotification } = notificationDelivery;
 import { nativeSourceAccessSql } from '../src/lib/native-mention-visibility.js';
 import { withoutUnverifiableReplyText } from '../src/lib/reply-notification-text.js';
 import { storeLinkPreviews } from '../src/routes/messages.js';
@@ -378,6 +379,61 @@ test('legacy socket delivery rechecks a notification source after it was created
     assert.ok(!emitted.join('\n').includes('CANARY-FINAL-SOCKET'));
   } finally {
     stub.mock.restore();
+    await new Promise<void>(resolve => io.close(() => resolve()));
+  }
+});
+
+test('Attention delivery and filtering reject an older snapshot after its thread id is reused', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const oldSource = await post(ids.bob, S.room, 'CANARY-OLD-ATTENTION');
+  const newSource = await post(ids.bob, S.room, 'Current Attention source');
+  const effects: Array<() => Promise<void>> = [];
+  const draft = { orgId, userId: ids.alice, kind: 'mention', lane: 'needs_you' as const, priority: 'normal' as const,
+    dedupeKey: randomUUID(), sourceType: 'message', sourceId: oldSource, sourceEventId: randomUUID(),
+    title: 'Reply', body: 'CANARY-OLD-ATTENTION' };
+  const stale = await upsertAttentionItem(draft, { deliver: false, afterCommit: effect => effects.push(effect) });
+  await call(ids.bob, 'DELETE', `/api/messages/${oldSource}`);
+  const current = await upsertAttentionItem({ ...draft, sourceId: newSource, sourceEventId: randomUUID(), body: 'Current Attention body' }, { deliver: false });
+  assert.equal(stale!.id, current!.id);
+  const io = setupSocket(createServer());
+  const emitted: string[] = [];
+  const stub = mock.method(io, 'to', () => ({ emit: (_event: string, row: unknown) => { emitted.push(JSON.stringify(row)); } }) as any);
+  try {
+    for (const effect of effects) await effect();
+    const filtered = await filterVisibleAttentionItems(ids.alice, [stale!]);
+    assert.deepEqual({ leaked: emitted.some(text => text.includes('CANARY-OLD-ATTENTION')), staleRows: filtered.length },
+      { leaked: false, staleRows: 0 });
+    assert.equal((await filterVisibleAttentionItems(ids.alice, [current!])).length, 1, 'rejecting a stale snapshot must not resolve its replacement');
+  } finally {
+    stub.mock.restore();
+    await new Promise<void>(resolve => io.close(() => resolve()));
+  }
+});
+
+test('legacy notification fan-out uses one current-authority read for all recipients', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const source = await post(ids.bob, S.room, 'Fanout source');
+  const notices = [];
+  for (const recipient of [ids.alice, ids.carol]) {
+    const { rows: [notice] } = await client!.query(`INSERT INTO notifications(id,org_id,user_id,type,title,body,metadata)
+      VALUES($1,$2,$3,'message','Fanout','CANARY-FANOUT',$4) RETURNING *`,
+    [randomUUID(), orgId, recipient, JSON.stringify({ message_id: source, space_id: S.room })]);
+    notices.push(notice);
+  }
+  const io = setupSocket(createServer());
+  const emitted: string[] = [];
+  const stub = mock.method(io, 'to', () => ({ emit: (_event: string, row: unknown) => { emitted.push(JSON.stringify(row)); } }) as any);
+  const select = db.select.bind(db);
+  const reads = mock.method(db, 'select', select);
+  try {
+    const emitBatch = (notificationDelivery as any).emitVisibleNotifications;
+    assert.equal(typeof emitBatch, 'function', 'fanout needs a shared batched visibility check');
+    assert.equal(await emitBatch(notices), 1);
+    assert.equal(reads.mock.callCount(), 1, 'authorization round trips must not grow with recipient count');
+    assert.ok(emitted[0]?.includes(ids.alice));
+    assert.ok(!emitted.join('\n').includes(ids.carol), 'a batch must authorize each recipient separately');
+  } finally {
+    reads.mock.restore(); stub.mock.restore();
     await new Promise<void>(resolve => io.close(() => resolve()));
   }
 });

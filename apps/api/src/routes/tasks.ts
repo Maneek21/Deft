@@ -1,3 +1,4 @@
+import { emitCurrentMessageToSpaceViewers } from '../lib/agent-message-run-details.js';
 import {createNativeTask} from '../lib/native-task-create.js';
 import { Hono } from 'hono';
 import { stripNativeMentionAtoms, NativeMentionLimitError } from '@deft/shared';
@@ -2422,7 +2423,7 @@ taskRoutes.patch('/:id', async (c) => {
           }).returning();
 
           if (io) {
-            io.to(`space:${space_id}`).emit('message:new', {
+            await emitCurrentMessageToSpaceViewers(io, space_id, 'message:new', {
               ...sysMessage,
               user_name: userData?.name ?? null,
               user_avatar: null,

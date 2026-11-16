@@ -4,7 +4,7 @@ import { publicSpaceVisibleSql } from './space-visibility.js';
 import { readableSpaceSql } from './space-membership.js';
 
 // Watchers are subscriptions, not sufficient authority for new mention surfaces.
-export function nativeTaskAccessSql(userId: string): SQL {
+export function nativeTaskAccessSql(userId: string | SQL): SQL {
   return sql`(coalesce(t.metadata->>'visibility', 'org') <> 'restricted'
     OR t.created_by = ${userId} OR t.assignee_id = ${userId} OR p.lead_id = ${userId}
     OR coalesce(t.metadata->'visible_user_ids', '[]'::jsonb) ? ${userId}
@@ -12,7 +12,7 @@ export function nativeTaskAccessSql(userId: string): SQL {
 }
 
 export function nativeSourceAccessSql(
-  userId: string, kind: SQL, sourceId: SQL, orgId: SQL,
+  userId: string | SQL, kind: SQL, sourceId: SQL, orgId: SQL,
 ): SQL {
   return sql`(
     EXISTS (SELECT 1 FROM org_members nm WHERE nm.org_id = ${orgId}
@@ -40,7 +40,7 @@ export function nativeSourceAccessSql(
   )`;
 }
 
-export function nativeDeliveryAccessSql(userId: string, deliveryId: SQL, orgId: SQL): SQL {
+export function nativeDeliveryAccessSql(userId: string | SQL, deliveryId: SQL, orgId: SQL): SQL {
   return sql`EXISTS (
     SELECT 1 FROM native_mention_deliveries nd
     JOIN native_reference_states nr ON nr.id = nd.source_state_id AND nr.org_id = nd.org_id
@@ -62,7 +62,7 @@ export function nativeDeliveryAccessSql(userId: string, deliveryId: SQL, orgId: 
  * system notices) is unaffected.
  */
 export function nativeNotificationAccessSql(
-  userId: string, metadata: SQL, orgId: SQL, link: SQL = sql`${notifications.link}`,
+  userId: string | SQL, metadata: SQL, orgId: SQL, link: SQL = sql`${notifications.link}`,
 ): SQL {
   const spaceId = sql`coalesce(${metadata}->>'space_id',
     substring(${link} from '^/chat\\?(?:[^#]*&)?space=([^&#]+)'),

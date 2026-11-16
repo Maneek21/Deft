@@ -1,3 +1,4 @@
+import { emitCurrentMessageToSpaceViewers } from '../lib/agent-message-run-details.js';
 import {canUndoAgentAction, visibleCaptureActionSql} from '../lib/agent-action-visibility.js';
 import { reviewableActionSql } from '../lib/agent-action-review-gate.js';
 import type { AppRunTransaction } from '../lib/app-run-repository.js';
@@ -267,7 +268,7 @@ async function maybePostApprovalConfirmation(params: {
   const io = getIO();
   if (io && posted?.confirmation) {
     if (posted.reconciledMessage) await emitMessageToSpaceViewers(io, { orgId: params.orgId, spaceId: posted.approvalMessage.space_id, event: 'message:edited', message: posted.reconciledMessage });
-    io.to(`space:${posted.approvalMessage.space_id}`).emit('message:new', {
+    await emitCurrentMessageToSpaceViewers(io, posted.approvalMessage.space_id, 'message:new', {
       ...posted.confirmation,
       user_name: posted.actor?.name ?? 'Defty',
       user_avatar: posted.actor?.avatar_url ?? null,

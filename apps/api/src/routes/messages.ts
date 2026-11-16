@@ -1,3 +1,4 @@
+import { emitCurrentMessageToSpaceViewers } from '../lib/agent-message-run-details.js';
 import { Hono } from 'hono';
 import { hasReservedPrivateDeftyMetadata, isPrivateDeftySpace } from '../lib/app-private-defty-message-guard.js';
 import { createNativeChatForward, nativeChatForwardBroadcast, NativeChatForwardError } from '../lib/native-chat-forward.js';
@@ -7,7 +8,7 @@ import { db } from '../lib/db.js';
 import { nativeCreate, nativeCreateKey, NativeCreateError } from '../lib/native-create.js';
 import { messages, users, reactions, spaces, spaceMembers, threadReads, messageVersions, files, messageAttachments as messageAttachmentLinks } from '@deft/db/schema';
 import { getIO } from '../socket.js';
-import { emitVisibleNotification } from '../lib/notification-delivery.js';
+import { emitVisibleNotification, emitVisibleNotifications } from '../lib/notification-delivery.js';
 import { extractNativeMentions, NativeMentionLimitError } from '@deft/shared';
 import { nativeMentionsEnabled, enqueueNativeMentionPublication } from '../lib/native-mentions.js';
 import { fetchLinkPreview, extractUrls, type LinkPreview } from '../lib/link-preview.js';
@@ -235,7 +236,7 @@ messageRoutes.post('/forward', async (c) => {
     if (io && forwarded) {
       const full = await nativeChatForwardBroadcast(db, forwarded.id);
 
-      io.to(`space:${target_space_id}`).emit('message:new', full);
+      await emitCurrentMessageToSpaceViewers(io, target_space_id, 'message:new', full);
     }
 
     return c.json(forwarded, 201);
@@ -580,7 +581,7 @@ messageRoutes.post('/:spaceId', async (c) => {
     // Broadcast via Socket.io
     const io = getIO();
     if (io) {
-      io.to(`space:${spaceId}`).emit('message:new', messageWithUser);
+      await emitCurrentMessageToSpaceViewers(io, spaceId, 'message:new', messageWithUser);
     }
 
     // Async link preview fetch — don't block the response
@@ -604,6 +605,7 @@ messageRoutes.post('/:spaceId', async (c) => {
     // Create mention notifications (mentions were parsed before the insert).
     const nativeRecipients = new Set(nativeMentionsEnabled() ? extractNativeMentions(normalizedContent)
       .filter(ref => ref.resource_type === 'person').map(ref => ref.resource_id) : []);
+    const mentionNotifications: Parameters<typeof emitVisibleNotifications>[0] = [];
     for (const mentionedUserId of mentionedUserIds) {
       if (nativeRecipients.has(mentionedUserId)) continue; // The durable native publication owns this alert.
       // Don't notify the sender
@@ -626,12 +628,13 @@ messageRoutes.post('/:spaceId', async (c) => {
         }, { channel: 'chat', spaceId, isMention: true });
 
         if (notification) {
-          await emitVisibleNotification(notification);
+          mentionNotifications.push(notification);
         }
       } catch (err) {
         console.error(`Failed to create mention notification for ${mentionedUserId}:`, err);
       }
     }
+    await emitVisibleNotifications(mentionNotifications).catch(error => console.error('Failed to deliver mention notifications:', error));
 
     // If it's a thread reply, notify the parent message author and broadcast thread:updated
     if (await isPrivateDeftySpace(user.org_id, spaceId)) return c.json({ error: 'Use the reviewed private context turn', code: 'PRIVATE_CONTEXT_REQUIRED' }, 409);
@@ -727,9 +730,7 @@ messageRoutes.post('/:spaceId', async (c) => {
           })),
           { channel: 'chat', spaceId, isMention: false, respectDnd: true },
         );
-        for (const notification of recipientNotifications) {
-          await emitVisibleNotification(notification);
-        }
+        await emitVisibleNotifications(recipientNotifications);
       }
     } catch (err) {
       console.error('Message notification error:', err);

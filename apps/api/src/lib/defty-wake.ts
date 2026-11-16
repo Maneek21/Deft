@@ -1,3 +1,4 @@
+import { emitCurrentMessageToSpaceViewers } from './agent-message-run-details.js';
 /**
  * The one decision of whether a human chat post wakes Defty, shared by the web
  * route (`POST /api/messages/:spaceId`) and the human MCP tools
@@ -359,7 +360,7 @@ async function postProviderUnavailableReply(
 
   const io = getIO();
   if (io && agentMessage) {
-    io.to(`space:${input.spaceId}`).emit('message:new', {
+    await emitCurrentMessageToSpaceViewers(io, input.spaceId, 'message:new', {
       ...agentMessage,
       user_name: 'Defty',
       user_avatar: null,
@@ -414,7 +415,7 @@ export async function postDeftyReplyFailureNotice(jobData: unknown): Promise<voi
   });
   const io = getIO();
   if (io && posted) {
-    io.to(`space:${spaceId}`).emit('message:new', {
+    await emitCurrentMessageToSpaceViewers(io, spaceId, 'message:new', {
       ...posted, user_name: 'Defty', user_avatar: null, reactions: [], reply_count: 0, latest_reply_at: null,
     });
   }

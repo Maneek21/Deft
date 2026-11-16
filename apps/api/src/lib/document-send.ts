@@ -1,3 +1,4 @@
+import { emitCurrentMessageToSpaceViewers } from './agent-message-run-details.js';
 import { createHash } from 'node:crypto';
 import { extname } from 'node:path';
 import { and, eq, sql } from 'drizzle-orm';
@@ -621,7 +622,7 @@ export async function executeDocumentSend(params: {
     try {
       const io = getIO();
       if (io) {
-        io.to(`space:${result.space_id}`).emit('message:new', {
+        await emitCurrentMessageToSpaceViewers(io, result.space_id, 'message:new', {
           id: result.message_id,
           org_id: params.orgId,
           space_id: result.space_id,

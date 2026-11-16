@@ -1,3 +1,4 @@
+import { emitCurrentMessageToSpaceViewers } from './agent-message-run-details.js';
 import {db} from './db.js';
 import {createAppIntegrationDestination} from './app-integration-destination.js';
 import {appIntegrationDestinationPostgres} from './app-integration-destination-postgres.js';
@@ -16,7 +17,7 @@ let singleton:ReturnType<typeof createRuntime>|undefined;
 async function createRuntime(){const shared=await getAppIntegrationCaptureRuntime(),service=createAppIntegrationDestination<AppRunTransaction>({
  transaction:fn=>db.transaction(fn),source:{resolve:(caller,identity)=>shared.resolve(caller,identity,'transfer'),read:shared.source.read,guard:shared.source.guard},
  ...appIntegrationDestinationPostgres({task:appIntegrationTaskAdapter}),
- afterCommit:async result=>{if(result.destination_kind==='chat'){const value=await nativeChatForwardBroadcast(db,result.destination_id);if(value)getIO()?.to('space:'+value.space_id).emit('message:new',value);}
+ afterCommit:async result=>{if(result.destination_kind==='chat'){const value=await nativeChatForwardBroadcast(db,result.destination_id);if(value)await emitCurrentMessageToSpaceViewers(getIO(), value.space_id, 'message:new', value);}
   if(result.destination_kind==='task'){const [row]=await db.select().from(tasks).where(eq(tasks.id,result.destination_id));if(row)await afterAppIntegrationTaskCommit(row);}},
 });return {...service,async openAttention(caller:AppIntegrationSourceCaller,id:string){
  if(caller.kind!=='human')throw Error('APP_INTEGRATION_DESTINATION_CHANGED_OR_DENIED');

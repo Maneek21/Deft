@@ -1,3 +1,4 @@
+import { emitCurrentMessageToSpaceViewers } from '../../lib/agent-message-run-details.js';
 // Handler: agent-employee-message — processes DMs and @mentions directed at agent employees.
 //
 // Every agent_employees row is BYOA. Deft publishes durable Agent Channel
@@ -266,7 +267,7 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
       })
       .returning();
     if (sysMsg && io) {
-      io.to(`space:${spaceId}`).emit('message:new', sysMsg);
+      await emitCurrentMessageToSpaceViewers(io, spaceId, 'message:new', sysMsg);
     }
   } catch (err) {
     console.warn(

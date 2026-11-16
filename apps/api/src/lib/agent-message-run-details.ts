@@ -253,9 +253,36 @@ type SpaceEmitter = {
   in?(room: string): { fetchSockets(): Promise<ListedSocket[]> };
 };
 
+/** All message broadcasts reload the live row rather than replaying a retained body. */
+export async function emitCurrentMessageToSpaceViewers(
+  io: SpaceEmitter | null | undefined, spaceId: string, event: string, payload: unknown,
+): Promise<void> {
+  if (!io || !payload || typeof payload !== 'object' || !('id' in payload) || typeof payload.id !== 'string') return;
+  const [message] = await db.select().from(messages).where(and(
+    eq(messages.id, payload.id), eq(messages.space_id, spaceId), eq(messages.is_deleted, false),
+  )).limit(1);
+  if (!message) return;
+  await emitMessageToSpaceViewers(io, { orgId: message.org_id, spaceId, event, message: { ...payload, ...message } });
+}
+
 export async function emitMessageToSpaceViewers(io: SpaceEmitter, input: {
   orgId: string; spaceId: string; event: string; message: DetailMessage & Record<string, unknown>;
 }): Promise<void> {
+  const liveSnapshot = async () => {
+    const [current] = await db.select().from(messages).where(and(
+      eq(messages.id, input.message.id), eq(messages.org_id, input.orgId),
+      eq(messages.space_id, input.spaceId), eq(messages.is_deleted, false),
+    )).limit(1);
+    return current;
+  };
+  const source = await liveSnapshot();
+  if (!source) return;
+  input = { ...input, message: { ...input.message, ...source } };
+  // Per-viewer metadata resolution below can itself outlive a delete or edit.
+  const unchanged = async () => {
+    const current = await liveSnapshot();
+    return current && current.content === source.content && JSON.stringify(current.metadata) === JSON.stringify(source.metadata);
+  };
   const room = `space:${input.spaceId}`;
   const full = { ...input.message, metadata: projectAgentMessageMetadata(input.message.metadata, true) };
   if (!hasAgentRunDetails(full.metadata)) {
@@ -291,10 +318,11 @@ export async function emitMessageToSpaceViewers(io: SpaceEmitter, input: {
     // Resolution failed before any socket was sent to: the space still gets
     // the message, without details, and the caller's later emits still run.
     console.warn('[agent-message-run-details] per-viewer delivery unavailable; sending without details', error instanceof Error ? error.message : String(error));
-    io.to(room).emit(input.event, redacted);
+    if (await unchanged()) io.to(room).emit(input.event, redacted);
     return;
   }
   const { allowed, current } = resolved;
+  if (!(await unchanged())) return;
   if (!isRealtimeAccessGenerationCurrent(generation)) {
     io.to(room).emit(input.event, redacted);
     return;

@@ -1,3 +1,4 @@
+import { emitCurrentMessageToSpaceViewers } from './agent-message-run-details.js';
 import { and, desc, eq, gte, lt, sql } from 'drizzle-orm';
 import {
   automationRuns,
@@ -351,7 +352,7 @@ export async function generateDailyStandup(input: {
     if (delivery.message) {
       // Only the destination channel's members (the `space:` room joined after
       // a membership check) may receive the post, never the whole-org room.
-      getIO()?.to(`space:${delivery.message.space_id}`).emit('message:new', {
+      await emitCurrentMessageToSpaceViewers(getIO(), delivery.message.space_id, 'message:new', {
         ...delivery.message,
         user_name: DEFTY_NAME,
         user_avatar: null,

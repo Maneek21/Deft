@@ -1,3 +1,4 @@
+import { emitCurrentMessageToSpaceViewers } from '../lib/agent-message-run-details.js';
 // Clip routes — upload, process, retrieve, play async voice/video clips
 import { Hono } from 'hono';
 import { eq, and, desc, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
@@ -257,7 +258,7 @@ clipRoutes.post('/', async (c) => {
 
     // Broadcast the message in real time
     const io = getIO();
-    io?.to(`space:${targetSpaceId}`).emit('message:new', {
+    await emitCurrentMessageToSpaceViewers(io, targetSpaceId, 'message:new', {
       id: msg!.id,
       content: placeholderContent,
       user_id: user.id,
