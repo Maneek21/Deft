@@ -19,6 +19,11 @@ workerStartup.require();
 const server = serve({ fetch: app.fetch, port }, async (info) => {
   console.log(`Deft API running on http://localhost:${info.port}`);
 
+  // Hosted cells fetch their signed seat statement now and on a timer.
+  // A no-op unless hosted mode is on.
+  const { startSeatStatementRefresher } = await import('./lib/seat-limit.js');
+  startSeatStatementRefresher();
+
   // Historical MCP connection forms wrote credentials into a JSONB column in
   // plaintext. Encrypt those rows before any worker can construct a runtime
   // transport. This migration is idempotent and never logs credential data.
@@ -81,6 +86,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   workerStartup.stop();
+  void import('./lib/seat-limit.js').then(({ stopSeatStatementRefresher }) => stopSeatStatementRefresher());
   console.log(`[shutdown] ${signal} received; draining HTTP and job workers`);
 
   const httpServer = server as unknown as Server;
