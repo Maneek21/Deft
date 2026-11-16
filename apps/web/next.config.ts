@@ -52,9 +52,6 @@ const connectSrc = [...new Set([
   ...connectSources(process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:3001'),
 ])].join(' ');
 
-// Pages that may be opened with a one-time token in the address.
-const SECRET_LINK_PAGE_SOURCES = ['/invite', '/invite/:path*', '/reset-password'];
-
 const nextConfig: NextConfig = {
   webpack(config) {
     config.resolve.extensionAlias = { ...config.resolve.extensionAlias, ".js": [".ts", ".tsx", ".js"] };
@@ -138,7 +135,7 @@ const nextConfig: NextConfig = {
       // token in the address (old-style links). Send no Referer from them,
       // so the token cannot leak onward. Later entries override the
       // site-wide Referrer-Policy above.
-      ...SECRET_LINK_PAGE_SOURCES.map((source) => ({
+      ...['/invite', '/invite/:path*', '/reset-password'].map((source) => ({
         source,
         headers: [{ key: 'Referrer-Policy', value: 'no-referrer' }],
       })),
