@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createServer, createConnection } from 'node:net';
 import {
   isKnownPushService,
   pinnedPushAgent,
@@ -49,7 +50,7 @@ test('every mode: only https endpoints on port 443 that resolve to public addres
     'https://metadata.example.test/send/1',
     'https://unresolvable.example.test/send/1',
   ]) await refuses(endpoint);
-  assert.deepEqual(await resolvePushEndpoint('https://push.example.test/send/1'), { address: '93.184.216.34', family: 4 });
+  assert.deepEqual(await resolvePushEndpoint('https://push.example.test/send/1'), [{ address: '93.184.216.34', family: 4 }]);
 });
 
 test('hosted: only the known browser push services', async (t) => {
@@ -94,7 +95,7 @@ test('the send agent connects only to the checked address', async (t) => {
   assert.deepEqual(one, [null, '93.184.216.34', 4]);
   const all = await new Promise<unknown[]>((resolve) => agent.options.lookup('anything.else', { all: true }, (...a) => resolve(a)));
   assert.deepEqual(all, [null, [{ address: '93.184.216.34', family: 4 }]]);
-  const v6 = pinnedPushAgent({ address: '2606:4700::1', family: 6 }) as unknown as typeof agent;
+  const v6 = pinnedPushAgent([{ address: '2606:4700::1', family: 6 }]) as unknown as typeof agent;
   const six = await new Promise<unknown[]>((resolve) => v6.options.lookup('x', {}, (...a) => resolve(a)));
   assert.deepEqual(six, [null, '2606:4700::1', 6]);
 });
@@ -102,10 +103,46 @@ test('the send agent connects only to the checked address', async (t) => {
 test('the web-push library accepts the pinned agent (it ignores anything that is not an https.Agent)', async () => {
   const webpush = (await import('web-push')).default;
   const keys = webpush.generateVAPIDKeys();
-  const agent = pinnedPushAgent({ address: '93.184.216.34', family: 4 });
+  const agent = pinnedPushAgent([{ address: '93.184.216.34', family: 4 }]);
   const details = webpush.generateRequestDetails(
     { endpoint: 'https://push.example.test/send/1', keys: { p256dh: 'BNcRdreALRFXTkOOUHK1EtK2wtaz5Ry4YfYCA_0QTpQtUbVlUls0VJXg7A8u-Ts1XbjhazAkj7I99e8QcYP7DkM', auth: 'tBHItJI5svbpez7KI4CCXg' } },
     'x', { agent, vapidDetails: { subject: 'mailto:t@example.test', publicKey: keys.publicKey, privateKey: keys.privateKey } },
   ) as { agent?: unknown };
   assert.equal(details.agent, agent);
+});
+
+test('push lookup preserves every validated address without resolving again', async (t) => {
+  setHosted(t, false);
+  const addresses = [{ address: '2606:4700::1', family: 6 }, { address: '93.184.216.34', family: 4 }];
+  let lookups = 0;
+  t.mock.method(publicFetchDeps, 'lookup', async () => { lookups += 1; return addresses; });
+  const agent = await pushAgentFor('https://push.example.test/send/1');
+  const lookup = agent.options.lookup!;
+  try {
+    const all = await new Promise((resolve, reject) => lookup('push.example.test', { all: true }, (error, result) => error ? reject(error) : resolve(result)));
+    assert.deepEqual(all, addresses);
+    await new Promise((resolve, reject) => lookup('push.example.test', { all: true }, (error, result) => error ? reject(error) : resolve(result)));
+    assert.equal(lookups, 1, 'connection attempts reuse only the checked addresses');
+  } finally { agent.destroy(); }
+});
+
+test('pinned lookup lets Node fall back from an unreachable address to a reachable address', { timeout: 5000 }, async () => {
+  const server = createServer(socket => socket.end());
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  // Local transport fixture: IPv6 loopback has no listener, IPv4 does.
+  const agent = pinnedPushAgent([
+    { address: '::1', family: 6 },
+    { address: '127.0.0.1', family: 4 },
+  ]);
+  const socket = createConnection({
+    host: 'checked-push.example.test', port: (server.address() as { port: number }).port,
+    lookup: agent.options.lookup, autoSelectFamily: true,
+  });
+  try {
+    await new Promise<void>((resolve, reject) => { socket.once('connect', resolve); socket.once('error', reject); });
+    assert.equal(socket.remoteAddress, '127.0.0.1');
+  } finally {
+    socket.destroy(); agent.destroy();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
 });

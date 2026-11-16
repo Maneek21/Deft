@@ -41,3 +41,9 @@ export function socketAllowedWebOrigins(): string | string[] {
   if (isHostedMode()) return hostedWebOrigins();
   return process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
 }
+
+/** WebSocket upgrades need an origin check too; CORS covers only polling. */
+export function socketOriginAllowed(origin: string | undefined): boolean {
+  // Non-browser clients omit Origin and still authenticate with their token.
+  return !isHostedMode() || origin === undefined || hostedWebOrigins().includes(origin);
+}

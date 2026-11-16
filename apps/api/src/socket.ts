@@ -8,7 +8,7 @@ import * as huddle from './huddle-rooms.js';
 import { requireActiveOrgMembership } from './lib/org-membership.js';
 import { createNotificationIfAllowed } from './lib/notification-policy.js';
 import { isOrgTaskEvent, orgTaskEventPayload, type OrgTaskEvent, type OrgTaskEventPayload } from './lib/task-realtime.js';
-import { socketAllowedWebOrigins } from './lib/web-origins.js';
+import { socketAllowedWebOrigins, socketOriginAllowed } from './lib/web-origins.js';
 
 export type SocketUser = {
   id: string;
@@ -340,6 +340,7 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
       origin: socketAllowedWebOrigins(),
       credentials: true,
     },
+    allowRequest: (request, callback) => callback(null, socketOriginAllowed(request.headers.origin)),
     pingInterval: 10000,
     pingTimeout: 5000,
   });

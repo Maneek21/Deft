@@ -2,9 +2,9 @@
 // requests to them. So, in every mode: https only, no credentials, port 443,
 // and the hostname must resolve only to public addresses (the same rule as
 // link previews and calendar feeds, lib/public-http-fetch.ts). The request
-// is pinned to the checked address through an https.Agent whose lookup
-// returns only that address; the Host header and TLS server name keep the
-// original hostname. In hosted mode the endpoint must also belong to one of
+// is pinned to the checked addresses through an https.Agent whose lookup
+// permits fallback only within that set. The Host header and TLS server name
+// keep the original hostname. In hosted mode the endpoint must also belong to one of
 // the known browser push services below.
 import { Agent } from 'node:https';
 import { isIP, type LookupFunction } from 'node:net';
@@ -54,13 +54,13 @@ export function checkPushEndpointShape(endpoint: string): URL {
 export type PinnedPushAddress = { address: string; family: 4 | 6 };
 
 /** Resolves the endpoint's host; every answer must be a public address. */
-export async function resolvePushEndpoint(endpoint: string): Promise<PinnedPushAddress> {
+export async function resolvePushEndpoint(endpoint: string): Promise<PinnedPushAddress[]> {
   const url = checkPushEndpointShape(endpoint);
   const host = url.hostname.startsWith('[') ? url.hostname.slice(1, -1) : url.hostname;
   const literal = isIP(host);
   if (literal) {
     if (!isPublicFetchAddress(host)) throw new PushEndpointRefusedError();
-    return { address: host, family: literal as 4 | 6 };
+    return [{ address: host, family: literal as 4 | 6 }];
   }
   let answers: Array<{ address: string; family: number }>;
   try {
@@ -71,15 +71,14 @@ export async function resolvePushEndpoint(endpoint: string): Promise<PinnedPushA
   if (answers.length === 0 || !answers.every((answer) => isPublicFetchAddress(answer.address))) {
     throw new PushEndpointRefusedError();
   }
-  const first = answers[0]!;
-  return { address: first.address, family: first.family === 6 ? 6 : 4 };
+  return answers.map(answer => ({ address: answer.address, family: answer.family === 6 ? 6 : 4 }));
 }
 
-/** An https.Agent that can connect only to the checked address. */
-export function pinnedPushAgent(pinned: PinnedPushAddress): Agent {
+/** An https.Agent that can connect only to the checked addresses. */
+export function pinnedPushAgent(pinned: readonly PinnedPushAddress[]): Agent {
   const lookup = ((_hostname: string, options: { all?: boolean }, callback: (...args: unknown[]) => void) => {
-    if (options?.all) callback(null, [{ address: pinned.address, family: pinned.family }]);
-    else callback(null, pinned.address, pinned.family);
+    if (options?.all) callback(null, [...pinned]);
+    else callback(null, pinned[0]!.address, pinned[0]!.family);
   }) as unknown as LookupFunction;
   return new Agent({ lookup, keepAlive: false });
 }
