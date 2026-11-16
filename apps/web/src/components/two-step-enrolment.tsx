@@ -112,7 +112,11 @@ export function TwoStepEnrolment({ enrolToken = null, replacing = false, onFinis
       // A signed-in person keeps their session. Someone finishing setup with
       // the enrol-only token gets a new one, installed only if nobody signed
       // out or in meanwhile. The recovery codes are shown either way.
-      if (confirmed.accessToken && confirmed.refreshToken) adoptSession(ticket, confirmed.accessToken, confirmed.refreshToken);
+      // An enrol-only setup is for someone who is not signed in: if anyone was
+      // (another tab, a reload after signing in), their session is kept.
+      if (confirmed.accessToken && confirmed.refreshToken && ticket.identity === null) {
+        adoptSession(ticket, confirmed.accessToken, confirmed.refreshToken);
+      }
       clearEnrolToken();
       setSecret('');
       setOtpauthUrl('');

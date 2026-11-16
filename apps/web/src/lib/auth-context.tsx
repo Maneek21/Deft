@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { api } from './api';
-import { exchangeTwoStepChallenge, readTwoStepPending, storeEnrolToken, type TwoStepPending } from './two-step';
+import { clearEnrolToken, exchangeTwoStepChallenge, readTwoStepPending, storeEnrolToken, type TwoStepPending } from './two-step';
 import { setUserTimezone } from './time';
 import { usePathname, useRouter } from 'next/navigation';
 import { disconnectSocket } from './socket';
@@ -326,6 +326,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = async (email: string, password: string) => {
     setConnectionInterrupted(false);
+    // A sign-in ends any unfinished two-step setup in this tab.
+    clearEnrolToken();
     const generation = authGeneration.current.advance();
     sessionCacheEpoch.current += 1;
     api.clearTokens();
@@ -399,6 +401,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signup = async (name: string, email: string, password: string, orgName: string, setupToken?: string) => {
     setConnectionInterrupted(false);
+    clearEnrolToken();
     const generation = authGeneration.current.advance();
     sessionCacheEpoch.current += 1;
     api.clearTokens();
@@ -443,6 +446,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = async (options: LogoutOptions = {}) => {
     setConnectionInterrupted(false);
+    clearEnrolToken();
     const refreshToken = localStorage.getItem('deft-refresh-token');
     authGeneration.current.advance();
     sessionCacheEpoch.current += 1;

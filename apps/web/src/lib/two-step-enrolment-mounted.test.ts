@@ -26,7 +26,7 @@ const A = { access: token({ id: 'user-a', org_id: 'org', sid: 'session-a', jti: 
 const B = { access: token({ id: 'user-b', org_id: 'org', sid: 'session-b', jti: 'b1' }), refresh: token({ id: 'user-b', org_id: 'org', sid: 'session-b', jti: 'b2' }) };
 const CODES = Array.from({ length: 10 }, (_, i) => `AAAA-BBBB-CCCC-${String(i).padStart(4, '0')}`);
 
-async function mountSetup() {
+async function mountSetup(signedInBefore?: { access: string; refresh: string }) {
   const enrolment = path.join(web, 'src/components/two-step-enrolment.tsx');
   const auth = path.join(web, 'src/lib/auth-context.tsx');
   const bundle = await build({
@@ -76,6 +76,12 @@ createRoot(document.getElementById('root')).render(createElement(AuthProvider, n
     return route.abort();
   });
   await tab.goto('http://127.0.0.1/two-step-setup');
+  if (signedInBefore) {
+    await tab.evaluate(({ access, refresh }: { access: string; refresh: string }) => {
+      localStorage.setItem('deft-access-token', access);
+      localStorage.setItem('deft-refresh-token', refresh);
+    }, signedInBefore);
+  }
   await tab.addScriptTag({ content: bundle.outputFiles[0].text });
   await tab.getByRole('button', { name: 'Set up two-step verification' }).click();
   await tab.getByLabel('Code from the app').waitFor();
@@ -94,6 +100,15 @@ test('finishing setup installs the session it hands back when nobody else signed
   const f = await mountSetup();
   try {
     assert.equal(await confirm(f.tab), A.refresh);
+  } finally {
+    await f.close();
+  }
+});
+
+test('setup opened while someone is signed in (a reload after another sign-in) keeps their session', async () => {
+  const f = await mountSetup(B);
+  try {
+    assert.equal(await confirm(f.tab), B.refresh, "B's sign-in is kept");
   } finally {
     await f.close();
   }

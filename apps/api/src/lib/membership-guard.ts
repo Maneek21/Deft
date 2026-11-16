@@ -20,14 +20,20 @@ import type { db } from './db.js';
  *
  * Not guarded, by design: inserts of new membership rows (nothing is taken
  * away), and operator scripts run on the server with database access
- * (`src/scripts/seed-pilot-workspace.ts`, `scripts/pilot-workspace-hygiene.ts`,
- * which only touch agent memberships). An operator can already make a
- * recovery link for anyone (`src/scripts/make-recovery-url.ts`).
+ * (`src/scripts/seed-pilot-workspace.ts`, which deactivates stale pilot agent
+ * memberships, and `scripts/pilot-workspace-hygiene.ts`, which deactivates
+ * pilot test-fixture memberships). An operator can already make a recovery
+ * link for anyone (`src/scripts/make-recovery-url.ts`).
+ *
+ * A pending invite for an owner or admin is a way into that role, so it
+ * follows the same rule: it is reissued or revoked only by the owner or by
+ * whoever made it (`inviteMadeBy`).
  *
  * Writers, each with a test (two-step-db.test.ts):
  *   PATCH  /api/members/:id              role change
  *   DELETE /api/members/:id              deactivation
  *   POST   /api/members/invite           re-activation of a former member
+ *   POST   /api/members/invites/:id/reissue  new link for a pending invitee
  *   DELETE /api/members/invites/:id      deactivation of a pending invitee
  *   DELETE /api/agent-employees/:id      deactivation of the agent's membership
  */
@@ -36,6 +42,7 @@ type Reader = Pick<Tx, 'select'>;
 
 export type MembershipActor = { userId: string } | 'operator';
 export type MembershipChange = { role?: string; isActive?: boolean };
+type GuardInput = { orgId: string; targetUserId: string; actor: MembershipActor; change: MembershipChange; inviteMadeBy?: string };
 export type GuardedMembership = { id: string; role: string; is_active: boolean };
 export type MembershipGuardResult =
   | { ok: true; membership: GuardedMembership | null }
@@ -54,8 +61,10 @@ function takesPrivilegeAway(membership: GuardedMembership, change: MembershipCha
   return (change.role !== undefined && change.role !== membership.role) || change.isActive === false;
 }
 
-async function decide(reader: Reader, orgId: string, membership: GuardedMembership, actor: MembershipActor, change: MembershipChange) {
-  if (!takesPrivilegeAway(membership, change) || actor === 'operator') return null;
+async function decide(reader: Reader, input: GuardInput, membership: GuardedMembership, privileged: boolean) {
+  const { orgId, actor } = input;
+  if (!privileged || actor === 'operator') return null;
+  if (input.inviteMadeBy !== undefined && input.inviteMadeBy === actor.userId) return null;
   const [acting] = await reader.select({ role: orgMembers.role }).from(orgMembers)
     .where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, actor.userId), eq(orgMembers.is_active, true)))
     .limit(1);
@@ -64,27 +73,38 @@ async function decide(reader: Reader, orgId: string, membership: GuardedMembersh
 }
 
 /** The same decision without locks or writes, for a refusal before other work. */
-export async function checkMembershipChange(
+export async function checkMembershipChange(reader: Reader, input: GuardInput): Promise<MembershipGuardResult> {
+  const [membership] = await reader.select({ id: orgMembers.id, role: orgMembers.role, is_active: orgMembers.is_active }).from(orgMembers)
+    .where(and(eq(orgMembers.org_id, input.orgId), eq(orgMembers.user_id, input.targetUserId))).limit(1);
+  if (!membership) return { ok: true, membership: null };
+  const refusal = await decide(reader, input, membership, takesPrivilegeAway(membership, input.change));
+  return refusal ? { ok: false, code: 'FORBIDDEN', error: refusal } : { ok: true, membership };
+}
+
+/**
+ * A new link for a pending invite hands out the invited role. For an owner
+ * or admin, only the owner or whoever made the invite may reissue it.
+ * Nothing is written, so nothing is ended.
+ */
+export async function checkInviteReissue(
   reader: Reader,
-  input: { orgId: string; targetUserId: string; actor: MembershipActor; change: MembershipChange },
+  input: { orgId: string; targetUserId: string; actor: MembershipActor; inviteMadeBy: string },
 ): Promise<MembershipGuardResult> {
   const [membership] = await reader.select({ id: orgMembers.id, role: orgMembers.role, is_active: orgMembers.is_active }).from(orgMembers)
     .where(and(eq(orgMembers.org_id, input.orgId), eq(orgMembers.user_id, input.targetUserId))).limit(1);
   if (!membership) return { ok: true, membership: null };
-  const refusal = await decide(reader, input.orgId, membership, input.actor, input.change);
+  const privileged = membership.role === 'owner' || membership.role === 'admin';
+  const refusal = await decide(reader, { ...input, change: {} }, membership, privileged);
   return refusal ? { ok: false, code: 'FORBIDDEN', error: refusal } : { ok: true, membership };
 }
 
-export async function guardMembershipChange(
-  tx: Tx,
-  input: { orgId: string; targetUserId: string; actor: MembershipActor; change: MembershipChange },
-): Promise<MembershipGuardResult> {
+export async function guardMembershipChange(tx: Tx, input: GuardInput): Promise<MembershipGuardResult> {
   const [account] = await tx.select({ password_version: users.password_version }).from(users)
     .where(eq(users.id, input.targetUserId)).for('update');
   const [membership] = await tx.select({ id: orgMembers.id, role: orgMembers.role, is_active: orgMembers.is_active }).from(orgMembers)
     .where(and(eq(orgMembers.org_id, input.orgId), eq(orgMembers.user_id, input.targetUserId))).for('update');
   if (!account || !membership) return { ok: true, membership: membership ?? null };
-  const refusal = await decide(tx, input.orgId, membership, input.actor, input.change);
+  const refusal = await decide(tx, input, membership, takesPrivilegeAway(membership, input.change));
   if (refusal) return { ok: false, code: 'FORBIDDEN', error: refusal };
   const changes = (input.change.role !== undefined && input.change.role !== membership.role)
     || (input.change.isActive !== undefined && input.change.isActive !== membership.is_active);

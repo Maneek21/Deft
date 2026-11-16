@@ -36,7 +36,7 @@ import { getSeatStatus, reserveSeat, withSeatRetry, type SeatReservation } from 
 import { buildInviteUrl as buildSecretInviteUrl, buildRecoveryUrl as buildSecretRecoveryUrl } from '../lib/secret-links.js';
 import { roleMustHaveSecondStep } from '../lib/two-step-policy.js';
 import { userTwoStep } from '@deft/db/two-step';
-import { checkMembershipChange, guardMembershipChange, MembershipGuardError, type MembershipActor } from '../lib/membership-guard.js';
+import { checkInviteReissue, checkMembershipChange, guardMembershipChange, MembershipGuardError, type MembershipActor } from '../lib/membership-guard.js';
 
 const INVITE_TTL = '7d';
 const RECOVERY_TTL = '24h';
@@ -1267,6 +1267,9 @@ memberRoutes.post('/invites/:id/reissue', async (c) => {
         role = role ?? (target?.role as 'admin' | 'member' | 'guest' | undefined);
       }
       if (!userId || !email) return { failure: 'INVITE_INVALID' as const };
+      // A pending owner or admin invite: only the owner or whoever made it.
+      const reissuable = await checkInviteReissue(tx, { orgId: currentUser.org_id, targetUserId: userId, actor: { userId: currentUser.id }, inviteMadeBy: invite.invited_by });
+      if (!reissuable.ok) return { failure: 'GUARD' as const, error: reissuable.error };
 
       const inviteToken = jwt.sign({
         purpose: 'invite-accept', user_id: userId, org_id: currentUser.org_id, email,
@@ -1281,6 +1284,7 @@ memberRoutes.post('/invites/:id/reissue', async (c) => {
     if ('failure' in result) {
       if (result.failure === 'NOT_FOUND') return c.json({ error: 'Invite not found', code: 'NOT_FOUND' }, 404);
       if (result.failure === 'INVITE_ACCEPTED') return c.json({ error: 'Accepted invites cannot be reissued', code: 'INVITE_ACCEPTED' }, 409);
+      if (result.failure === 'GUARD') return c.json({ error: result.error, code: 'FORBIDDEN' }, 403);
       return c.json({ error: 'Invite payload is incomplete', code: 'INVITE_INVALID' }, 409);
     }
 
@@ -1335,7 +1339,7 @@ memberRoutes.delete('/invites/:id', async (c) => {
           .where(and(eq(orgMembers.org_id, currentUser.org_id), eq(orgMembers.user_id, userId)))
           .for('update');
         if (user && membership?.is_active && !user.password_hash && membership.role !== 'owner') {
-          const guarded = await guardMembershipChange(tx, { orgId: currentUser.org_id, targetUserId: userId, actor: { userId: currentUser.id }, change: { isActive: false } });
+          const guarded = await guardMembershipChange(tx, { orgId: currentUser.org_id, targetUserId: userId, actor: { userId: currentUser.id }, change: { isActive: false }, inviteMadeBy: invite.invited_by });
           if (!guarded.ok) return { failure: 'GUARD' as const, error: guarded.error };
           await tx.update(orgMembers).set({ is_active: false, updated_at: revokedAt }).where(eq(orgMembers.id, membership.id));
           const sessions = await tx.select({ id: webSessions.id }).from(webSessions)

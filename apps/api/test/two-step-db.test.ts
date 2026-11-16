@@ -671,11 +671,26 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     const invited = await call('POST', '/api/members/invite', { email: pendingEmail, role: 'admin' }, ownerSession);
     assert.equal(invited.status, 201, JSON.stringify(invited.json));
     const [inviteRow] = await db.select({ id: invites.id }).from(invites).where(eq(invites.email, pendingEmail));
+    // POST /api/members/invites/:id/reissue: a new link for the owner's admin
+    // invite is the owner's to make, not another admin's.
+    const reissueByAdmin = await call('POST', `/api/members/invites/${inviteRow!.id}/reissue`, {}, adminSession);
+    assert.equal(reissueByAdmin.status, 403, JSON.stringify(reissueByAdmin.json));
+    assert.equal(reissueByAdmin.json.invite_url, undefined);
+    assert.equal((await call('POST', `/api/members/invites/${inviteRow!.id}/reissue`, {}, ownerSession)).status, 200);
     const revokeByAdmin = await call('DELETE', `/api/members/invites/${inviteRow!.id}`, undefined, adminSession);
     assert.equal(revokeByAdmin.status, 403, JSON.stringify(revokeByAdmin.json));
     assert.deepEqual(await membership(invited.json.user_id), { role: 'admin', is_active: true });
     assert.equal((await call('DELETE', `/api/members/invites/${inviteRow!.id}`, undefined, ownerSession)).status, 200);
     assert.deepEqual(await membership(invited.json.user_id), { role: 'admin', is_active: false });
+
+    // An admin may reissue and revoke an admin invite they made themselves.
+    const ownEmail = `guard-own-${randomUUID()}@test.local`;
+    const own = await call('POST', '/api/members/invite', { email: ownEmail, role: 'admin' }, adminSession);
+    assert.equal(own.status, 201, JSON.stringify(own.json));
+    const [ownInvite] = await db.select({ id: invites.id }).from(invites).where(eq(invites.email, ownEmail));
+    assert.equal((await call('POST', `/api/members/invites/${ownInvite!.id}/reissue`, {}, adminSession)).status, 200);
+    assert.equal((await call('DELETE', `/api/members/invites/${ownInvite!.id}`, undefined, adminSession)).status, 200);
+    assert.deepEqual(await membership(own.json.user_id), { role: 'admin', is_active: false });
 
     // DELETE /api/agent-employees/:id: an agent the owner made admin is removed only by the owner.
     const agentUser = randomUUID();
