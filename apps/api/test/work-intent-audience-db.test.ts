@@ -145,6 +145,27 @@ test('pending batch action and work-intent reads and approval follow every evide
   assert.equal((await approveAction(result.actionId!, defty.user_id, { internal: true })).status, 'error', 'auto-approval must not bypass evidence deletion');
 });
 
+test("Defty's get_agent_activity hides a capture once a secondary evidence message is deleted", async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const { queueDeftyKnowledgeCapture } = await import('../src/lib/defty-capture.js');
+  const { executeToolCall } = await import('../src/lib/agent-context.js');
+  const anchor = randomUUID();
+  const secondary = randomUUID();
+  await client!.query("INSERT INTO messages(id,org_id,space_id,user_id,content) VALUES($1,$2,$3,$4,'Activity anchor')", [anchor, orgId, spaceId, ids.source]);
+  await client!.query("INSERT INTO messages(id,org_id,space_id,user_id,content) VALUES($1,$2,$3,$4,'CANARY-ACTIVITY-SECONDARY')", [secondary, orgId, spaceId, ids.peer]);
+  const result = await queueDeftyKnowledgeCapture({ orgId, sourceUserId: ids.source, spaceId, messageId: anchor,
+    content: 'CANARY-ACTIVITY-SECONDARY', title: 'Activity secondary evidence', wikiType: 'fact', captureKind: 'note_candidate', autoApprove: false,
+    metadata: { batch_capture: true, batch_message_ids: [anchor, secondary], batch_message_previews: [{ message_id: secondary, preview: 'CANARY-ACTIVITY-SECONDARY' }] },
+  });
+  assert.equal(result.queued, true, JSON.stringify(result));
+  const activity = async () => (await executeToolCall('get_agent_activity', { limit: 100 }, orgId, ids.owner)).result.actions as Array<{ id: string }>;
+  assert.ok((await activity()).some((action) => action.id === result.actionId), 'the live capture is listed');
+  await client!.query('UPDATE messages SET is_deleted=true WHERE id=$1', [secondary]);
+  const after = await activity();
+  assert.ok(!after.some((action) => action.id === result.actionId), 'the capture must leave the activity list');
+  assert.ok(!JSON.stringify(after).includes('CANARY-ACTIVITY-SECONDARY'), 'no deleted evidence text reaches the model');
+});
+
 async function readIntent(viewer: string, id: string, visible: boolean, detail: boolean) {
   const response = await request(viewer, detail ? '/' + id : '?limit=100');
   assert.equal(response.status, detail && !visible ? 404 : 200, await response.clone().text());
