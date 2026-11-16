@@ -96,6 +96,16 @@ export async function canReadSpace(spaceId: string, userId: string, orgId: strin
   return !!space;
 }
 
+/** Non-deleted messages the caller may read, including public spaces before joining. Writes use loadMessagesForMember. */
+export async function loadMessagesForReader(messageIds: readonly string[], userId: string, orgId: string) {
+  if (messageIds.length === 0) return new Map<string, { id: string; space_id: string }>();
+  const rows = await db.select({ id: messages.id, space_id: messages.space_id }).from(messages).where(and(
+    inArray(messages.id, [...new Set(messageIds)]), eq(messages.org_id, orgId), eq(messages.is_deleted, false),
+    readableSpaceSql(userId, messages.space_id, messages.org_id),
+  ));
+  return new Map(rows.map((row) => [row.id, row]));
+}
+
 /**
  * Loads the given messages for a caller: each must belong to `orgId`, not be
  * deleted, and sit in a space the caller passes `requireSpaceMembership` for.

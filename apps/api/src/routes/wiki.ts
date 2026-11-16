@@ -2,9 +2,9 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, sql, or, ilike, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { wikiPages, wikiLinks, wikiCitations, wikiOpsLog, wikiPageVersions, spaces, notifications, orgMembers, messages, spaceMembers } from '@deft/db/schema';
+import { wikiPages, wikiLinks, wikiCitations, wikiOpsLog, wikiPageVersions, spaces, notifications, orgMembers, messages } from '@deft/db/schema';
 import { ne } from 'drizzle-orm';
-import { canReadSpace, requireSpaceMembership } from '../lib/space-membership.js';
+import { canReadSpace, readableSpaceSql, requireSpaceMembership } from '../lib/space-membership.js';
 import { visibleWikiPageCondition, wikiPageRelevantToSpaceCondition } from '../lib/wiki-visibility.js';
 import { lockWikiPageForLinkWrite } from '../lib/wiki-page-link-lock.js';
 import { retrieveContext } from '../lib/retrieve-context.js';
@@ -68,12 +68,7 @@ function visibleWikiCitationCondition(userId: string, orgId: string) {
     or(eq(wikiCitations.org_id, orgId), sql`${wikiCitations.org_id} IS NULL`),
     or(
       sql`${wikiCitations.source_type} != 'message'`,
-      sql`EXISTS (
-        SELECT 1
-        FROM ${spaceMembers}
-        WHERE ${spaceMembers.space_id} = COALESCE(${wikiCitations.source_space_id}, ${messages.space_id})
-          AND ${spaceMembers.user_id} = ${userId}
-      )`,
+      readableSpaceSql(userId, sql`COALESCE(${wikiCitations.source_space_id}, ${messages.space_id})`, sql`${orgId}`),
     ),
   );
 }

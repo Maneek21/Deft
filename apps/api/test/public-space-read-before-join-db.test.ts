@@ -27,6 +27,8 @@ import {
   AttachmentDownloadAuthorityError, authorizeAttachmentDownload, canAccessAttachmentMessage, getVisibleAttachment,
 } from '../src/lib/attachment-access.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
+import { humanFetch, humanThreadFetch, humanMessagesSearch, humanSearch, type HumanToolContext } from '../src/lib/mcp-tools/human.js';
+import { resolveNativeMessageDisplay } from '../src/lib/native-content-projections.js';
 
 const url = safeTestDatabaseUrl();
 const orgId = randomUUID();
@@ -37,7 +39,7 @@ const ids = {
   creator: randomUUID(), member: randomUUID(), guest: randomUUID(), joinedGuest: randomUUID(),
   inactive: randomUUID(), stranger: randomUUID(), agentViewer: randomUUID(), systemViewer: randomUUID(),
 };
-const roles: Record<string, 'member' | 'guest'> = {
+const roles: Record<string, 'member' | 'guest' | 'admin'> = {
   [ids.creator]: 'member', [ids.member]: 'member', [ids.guest]: 'guest', [ids.joinedGuest]: 'guest',
   [ids.inactive]: 'member', [ids.stranger]: 'member', [ids.agentViewer]: 'member', [ids.systemViewer]: 'member',
 };
@@ -151,6 +153,9 @@ before(async () => {
 after(async () => {
   if (seeded && client) {
     const orgs = [orgId, otherOrgId];
+    for (const table of ['message_bookmarks', 'cross_references', 'audit_log', 'wiki_citations', 'wiki_pages', 'tasks', 'projects']) {
+      await client.query(`DELETE FROM ${table} WHERE org_id=ANY($1::text[])`, [orgs]);
+    }
     for (const table of ['scheduled_messages', 'notifications', 'attention_events', 'attention_items']) {
       await client.query(`DELETE FROM ${table} WHERE org_id=ANY($1::text[])`, [orgs]);
     }
@@ -439,4 +444,67 @@ test('the canvas: a reader sees it but never creates it', async (t) => {
   assert.equal(joined.status, 201, joined.text);
   assert.equal(await canvases(), 1);
   assert.equal((await call(ids.member, 'GET', `/api/spaces/${space}/canvas`)).status, 200);
+});
+
+test('saved messages, task sources/references, wiki citations and native displays use public read authority', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const project = randomUUID(), task = randomUUID(), page = randomUUID();
+  await client!.query(`INSERT INTO projects(id,org_id,name,prefix) VALUES($1,$2,'Public references','PBR')`, [project, orgId]);
+  await client!.query(`INSERT INTO tasks(id,org_id,project_id,number,title,created_by,source_message_id) VALUES($1,$2,$3,1,'Public source',$4,$5)`, [task, orgId, project, ids.creator, M.pub]);
+  await client!.query(`INSERT INTO wiki_pages(id,org_id,title,slug,type,scope,user_id,content) VALUES($1,$2,'Public citations',$3,'decision','org',$4,'{}')`, [page, orgId, `pub-${page}`, ids.creator]);
+  for (const message of [M.pub, M.priv]) {
+    await client!.query(`INSERT INTO cross_references(id,org_id,source_type,source_id,target_type,target_id,created_by) VALUES($1,$2,'message',$3,'task',$4,$5)`, [randomUUID(), orgId, message, task, ids.creator]);
+    await client!.query(`INSERT INTO wiki_citations(id,org_id,page_id,source_type,source_id,excerpt) VALUES($1,$2,$3,'message',$4,$5)`, [randomUUID(), orgId, page, message, `${TOKEN} cited ${message}`]);
+    await client!.query(`INSERT INTO audit_log(id,org_id,actor_type,actor_id,action,entity_type,entity_id,after_state) VALUES($1,$2,'user',$3,'message_post','message',$4,$5)`, [randomUUID(), orgId, ids.creator, message, JSON.stringify({ content: `${TOKEN} audit ${message}` })]);
+    for (const actor of [ids.member, ids.guest]) {
+      await client!.query(`INSERT INTO message_bookmarks(id,org_id,user_id,message_id,space_id) VALUES($1,$2,$3,$4,$5)`, [randomUUID(), orgId, actor, message, message === M.pub ? S.pub : S.priv]);
+    }
+  }
+  app!.route('/api/bookmarks', (await import('../src/routes/bookmarks.js')).bookmarkRoutes)
+    .route('/api/tasks', (await import('../src/routes/tasks.js')).taskRoutes)
+    .route('/api/cross-references', (await import('../src/routes/cross-references.js')).crossReferenceRoutes)
+    .route('/api/audit', (await import('../src/routes/audit.js')).auditRoutes);
+  for (const actor of [ids.member, ids.guest]) {
+    const allowed = actor === ids.member;
+    const bookmarks = await call(actor, 'GET', '/api/bookmarks');
+    assert.equal(bookmarks.status, 200, bookmarks.text);
+    assert.deepEqual(bookmarks.json.map((row: any) => row.message_id), allowed ? [M.pub] : []);
+    const details = await call(actor, 'GET', `/api/tasks/${task}`);
+    assert.equal(details.status, 200, details.text);
+    assert.equal(details.json.source_message?.id ?? null, allowed ? M.pub : null);
+    const refs = await call(actor, 'GET', `/api/cross-references/tasks/${task}/references`);
+    assert.equal(refs.status, 200, refs.text);
+    assert.deepEqual(refs.json.references.map((row: any) => row.source_id), allowed ? [M.pub] : []);
+    const fromMessage = await call(actor, 'GET', `/api/cross-references/messages/${M.pub}/references`);
+    assert.equal(fromMessage.status, allowed ? 200 : 404, fromMessage.text);
+    const citations = await call(actor, 'GET', `/api/wiki/pub-${page}`);
+    assert.equal(citations.status, 200, citations.text);
+    assert.deepEqual(citations.json.citations.map((row: any) => row.source_id), allowed ? [M.pub] : []);
+    assert.equal(Boolean(await resolveNativeMessageDisplay({ user_id: actor, org_id: orgId, role: roles[actor] as any }, M.pub)), allowed);
+  }
+  roles[ids.member] = 'admin';
+  await client!.query(`UPDATE org_members SET role='admin' WHERE org_id=$1 AND user_id=$2`, [orgId, ids.member]);
+  try {
+    const audit = await call(ids.member, 'GET', '/api/audit?entity_type=message');
+    assert.equal(audit.status, 200, audit.text);
+    assert.ok(audit.text.includes(`${TOKEN} audit ${M.pub}`), audit.text);
+    assert.ok(!audit.text.includes(`${TOKEN} audit ${M.priv}`), audit.text);
+  } finally {
+    roles[ids.member] = 'member';
+    await client!.query(`UPDATE org_members SET role='member' WHERE org_id=$1 AND user_id=$2`, [orgId, ids.member]);
+  }
+});
+
+test('MCP public message reads require membership once the space is archived', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const context = (actor: string): HumanToolContext => ({ user_id: actor, org_id: orgId, role: roles[actor], scopes: ['read:messages', 'read:workspace'], principal_kind: 'human' } as HumanToolContext);
+  const text = (result: any) => result.content.map((part: any) => part.text).join('\n');
+  for (const actor of [ids.member, ids.creator]) {
+    const ctx = context(actor);
+    const allowed = actor === ids.creator;
+    assert.equal(Boolean((await humanFetch({ id: `message:${M.archived}` }, ctx)).isError), !allowed);
+    assert.equal(Boolean((await humanThreadFetch({ parent_message_id: M.archived }, ctx)).isError), !allowed);
+    assert.equal(text(await humanMessagesSearch({ query: TOKEN, limit: 50 }, ctx)).includes(M.archived), allowed);
+    assert.equal(text(await humanSearch({ query: TOKEN, limit: 50 }, ctx)).includes(M.archived), allowed);
+  }
 });
