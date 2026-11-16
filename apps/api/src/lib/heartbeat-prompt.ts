@@ -33,12 +33,14 @@ import {
   users,
 } from '@deft/db/schema';
 import type { SkillAgentConfig } from './skill-config.js';
+import { currentEmployeeSpaceAuthoritySql } from './agent-channel-authority.js';
 
 export type HeartbeatContext = {
   employee_id: string;
   slug: string;
   org_id: string;
   recent_messages: Array<{
+    id: string;
     space_id: string;
     user_name: string | null;
     content: string;
@@ -183,6 +185,7 @@ export async function buildHeartbeatPrompt(
   const recentMessages = spaceIds.length
     ? await db
         .select({
+          id: messages.id,
           space_id: messages.space_id,
           user_name: users.name,
           content: messages.content,
@@ -195,6 +198,8 @@ export async function buildHeartbeatPrompt(
             eq(messages.org_id, employee.org_id),
             eq(messages.is_deleted, false),
             inArray(messages.space_id, spaceIds),
+            // Only rooms the employee can read today, not every configured id.
+            currentEmployeeSpaceAuthoritySql(sql`${messages.org_id}`, sql`${employee.id}`, messages.space_id),
           ),
         )
         .orderBy(desc(messages.created_at))
@@ -252,6 +257,7 @@ export async function buildHeartbeatPrompt(
     slug: employee.slug,
     org_id: employee.org_id,
     recent_messages: recentMessages.map((m) => ({
+      id: m.id,
       space_id: m.space_id,
       user_name: m.user_name ?? null,
       content: m.content.slice(0, 400),
@@ -313,15 +319,19 @@ export async function buildHeartbeatPrompt(
     }
   }
   promptLines.push('');
+  // The prompt is stored on a pending heartbeat_tick action and read later,
+  // so it names messages instead of copying their text: the agent reads the
+  // current text with fetch_unread or thread_fetch, under today's access.
   promptLines.push('## Recent messages in your spaces');
   if (ctx.recent_messages.length === 0) {
     promptLines.push('(none)');
   } else {
     for (const m of ctx.recent_messages.slice(0, 6)) {
       promptLines.push(
-        `- [${m.user_name ?? 'user'} in ${m.space_id}] ${m.content}`,
+        `- [${m.user_name ?? 'user'} in ${m.space_id}] message ${m.id}`,
       );
     }
+    promptLines.push('Read them with fetch_unread or thread_fetch.');
   }
   promptLines.push('');
   promptLines.push('## Instructions');
