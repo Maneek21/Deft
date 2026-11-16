@@ -3,6 +3,11 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import ts from 'typescript';
 import { captureLinkToken, readLinkToken, type LinkTokenBox } from './link-token';
 import nextConfig from '../../next.config';
 
@@ -106,4 +111,78 @@ test('invite and reset pages send no Referer', async () => {
     assert.equal(policyFor(source), 'no-referrer', source);
   }
   assert.equal(policyFor('/login'), 'strict-origin-when-cross-origin');
+});
+
+// Exercise the actual component's fetch branches and rendered copy, using the
+// repo's VM/hook harness pattern. This is not a mounted-browser test.
+function inviteScreen(responses: Response[]) {
+  const source = ts.createSourceFile('invite-accept.tsx', readFileSync(new URL('../app/invite/invite-accept.tsx', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const declaration = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'InviteAccept');
+  assert.ok(declaration);
+  const states: unknown[] = [];
+  let cursor = 0;
+  let effect: (() => void) | undefined;
+  let effectDeps: unknown[] = [];
+  const component = runInNewContext(ts.transpileModule(`(${declaration.getText(source).replace(/^export /, '')})`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React },
+  }).outputText, {
+    React, API_URL: 'https://api.test',
+    useState: (initial: unknown) => {
+      const index = cursor++;
+      if (index >= states.length) states.push(initial);
+      return [states[index], (value: unknown) => { states[index] = typeof value === 'function' ? value(states[index]) : value; }];
+    },
+    useEffect: (callback: () => void, deps: unknown[]) => {
+      if (deps.some((value, index) => !Object.is(value, effectDeps[index]))) {
+        effect = callback;
+        effectDeps = [...deps];
+      }
+    },
+    useRouter: () => ({ push: () => assert.fail('rate-limited invites must not navigate') }),
+    useAuth: () => ({ refreshUser: () => assert.fail('rate-limited invites must not sign in') }),
+    api: { setTokens: () => assert.fail('rate-limited invites must not set tokens') },
+    Logo: () => null, Eye: () => null, EyeOff: () => null,
+    fetch: async () => { const response = responses.shift(); assert.ok(response); return response; },
+  }) as (props: { token: string }) => React.ReactElement;
+  const view = () => { cursor = 0; return component({ token: 'synthetic-invite-token' }); };
+  const find = (node: React.ReactNode, match: (element: React.ReactElement<any>) => boolean): React.ReactElement<any> | undefined => {
+    if (!React.isValidElement(node)) return undefined;
+    const element = node as React.ReactElement<any>;
+    if (match(element)) return element;
+    for (const child of React.Children.toArray(element.props.children)) {
+      const found = find(child, match);
+      if (found) return found;
+    }
+    return undefined;
+  };
+  return { view, find, async mount() { view(); effect!(); await new Promise(resolve => setImmediate(resolve)); } };
+}
+
+test('rate-limited invite preview asks the visitor to wait instead of replacing a valid link', async () => {
+  for (const [status, code] of [[429, undefined], [400, 'RATE_LIMITED']] as const) {
+    const screen = inviteScreen([Response.json({ code }, { status }), Response.json({ org_name: 'Workspace', email: 'new@test.local' })]);
+    await screen.mount();
+    const html = renderToStaticMarkup(screen.view());
+    assert.match(html, /Too many attempts/);
+    assert.match(html, /minute/);
+    assert.doesNotMatch(html, /revoked|fresh link|Invite not valid/);
+    screen.find(screen.view(), element => element.type === 'button')!.props.onClick();
+    await screen.mount();
+    assert.match(renderToStaticMarkup(screen.view()), /Join Workspace/);
+  }
+});
+
+test('rate-limited invite acceptance preserves the form and shows a retry message', async () => {
+  for (const [status, code] of [[429, undefined], [400, 'RATE_LIMITED']] as const) {
+    const screen = inviteScreen([Response.json({ email: 'new@test.local', org_name: 'Workspace', inviter_name: 'Admin', role: 'member', already_accepted: false }), Response.json({ code }, { status })]);
+    await screen.mount();
+    screen.find(screen.view(), element => element.type === 'input' && element.props.type === 'password')!.props.onChange({ target: { value: 'Saved-password-2026!' } });
+    await screen.find(screen.view(), element => element.type === 'form')!.props.onSubmit({ preventDefault() {} });
+    const html = renderToStaticMarkup(screen.view());
+    assert.match(html, /Too many attempts/);
+    assert.match(html, /minute/);
+    assert.doesNotMatch(html, /invalid or was revoked/);
+    assert.ok(screen.find(screen.view(), element => element.type === 'form'));
+    assert.match(html, /Saved-password-2026!/);
+  }
 });

@@ -22,6 +22,7 @@ type Preview = {
 type PreviewState =
   | { status: 'loading' }
   | { status: 'expired' }
+  | { status: 'rate_limited' }
   | { status: 'invalid' }
   | { status: 'ok'; preview: Preview };
 
@@ -35,6 +36,7 @@ export function InviteAccept({ token }: { token: string | null | undefined }) {
   const { refreshUser } = useAuth();
 
   const [previewState, setPreviewState] = useState<PreviewState>({ status: 'loading' });
+  const [previewAttempt, setPreviewAttempt] = useState(0);
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
   const [showPw, setShowPw] = useState(false);
@@ -48,6 +50,7 @@ export function InviteAccept({ token }: { token: string | null | undefined }) {
       return;
     }
     let cancelled = false;
+    setPreviewState({ status: 'loading' });
     fetch(`${API_URL}/api/invites/preview`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -57,7 +60,8 @@ export function InviteAccept({ token }: { token: string | null | undefined }) {
         const data = await r.json().catch(() => ({}));
         if (cancelled) return;
         if (!r.ok) {
-          if (data?.code === 'INVITE_EXPIRED') setPreviewState({ status: 'expired' });
+          if (r.status === 429 || data?.code === 'RATE_LIMITED') setPreviewState({ status: 'rate_limited' });
+          else if (data?.code === 'INVITE_EXPIRED') setPreviewState({ status: 'expired' });
           else setPreviewState({ status: 'invalid' });
           return;
         }
@@ -70,7 +74,7 @@ export function InviteAccept({ token }: { token: string | null | undefined }) {
     return () => {
       cancelled = true;
     };
-  }, [token]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [token, previewAttempt]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -89,7 +93,9 @@ export function InviteAccept({ token }: { token: string | null | undefined }) {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setError(data?.error === 'expired' ? 'This invite link has expired. Ask your admin for a new one.' : 'This invite link is invalid or was revoked.');
+        setError(res.status === 429 || data?.code === 'RATE_LIMITED'
+          ? 'Too many attempts. Try again in a minute.'
+          : data?.error === 'expired' ? 'This invite link has expired. Ask your admin for a new one.' : 'This invite link is invalid or was revoked.');
         setSubmitting(false);
         return;
       }
@@ -141,6 +147,20 @@ export function InviteAccept({ token }: { token: string | null | undefined }) {
             <p className="text-center text-[0.875rem]" style={{ color: 'var(--on-surface-variant)' }}>
               Checking your invite…
             </p>
+          )}
+
+          {previewState.status === 'rate_limited' && (
+            <div className="flex flex-col gap-3">
+              <h1 className="text-[1.25rem] font-semibold" style={{ color: 'var(--on-surface)' }}>Too many attempts</h1>
+              <p className="text-[0.875rem] leading-relaxed" style={{ color: 'var(--on-surface-variant)' }}>
+                Try again in a minute.
+              </p>
+              <button type="button" onClick={() => setPreviewAttempt(attempt => attempt + 1)}
+                className="w-full h-11 font-semibold text-[0.875rem]"
+                style={{ background: 'var(--primary-container)', color: '#FFFFFF', borderRadius: '0.5rem', border: 'none' }}>
+                Try again
+              </button>
+            </div>
           )}
 
           {previewState.status === 'expired' && (

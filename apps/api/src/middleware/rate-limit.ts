@@ -124,14 +124,17 @@ export const authLimiter = withAuditBypass(rateLimiter({
   }, 429),
 }));
 
-// Per-IP for the public invite preview and accept routes. Same budget as the
-// auth routes, but its own counter, so invite traffic from a shared address
-// does not use up that address's sign-in and token-refresh budget.
+// Per socket peer for public invite routes, separate from the auth budget.
+// Never trust caller-supplied forwarding headers. A reverse proxy's clients
+// share that proxy peer's budget, as they do for appRuntimeLimiter below.
 export const inviteLimiter = withAuditBypass(rateLimiter({
   windowMs: 60 * 1000,
   limit: INVITE_LIMIT_PER_MINUTE,
   standardHeaders: 'draft-7',
-  keyGenerator: ipKey,
+  keyGenerator: (c) => {
+    try { return getConnInfo(c).remote.address ?? 'unknown'; }
+    catch { return 'unknown'; }
+  },
   handler: (c) => c.json({
     error: 'Too many requests. Try again in a minute.',
     code: 'RATE_LIMITED',
