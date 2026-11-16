@@ -1,3 +1,4 @@
+import { withoutUnverifiableReplyText } from './reply-notification-text.js';
 import { and, desc, eq, inArray, ne, sql, type SQL } from 'drizzle-orm';
 import {
   agentActionApprovers,
@@ -68,7 +69,7 @@ export function visibleAttentionCondition(userId: string) {
         WHERE ${messages.id} = ${attentionItems.source_id}
           AND ${messages.org_id} = ${attentionItems.org_id}
           AND ${messages.is_deleted} = false
-          AND (${publicSpaceVisibleSql(spaces.type, spaces.org_id, userId)} OR ${spaceMembers.id} IS NOT NULL)
+          AND ((${spaces.is_archived} = false AND ${publicSpaceVisibleSql(spaces.type, spaces.org_id, userId)}) OR ${spaceMembers.id} IS NOT NULL)
       )
     )
     OR (
@@ -81,7 +82,7 @@ export function visibleAttentionCondition(userId: string) {
           AND ${spaceMembers.user_id} = ${userId}
         WHERE ${spaces.id} = ${attentionItems.source_id}
           AND ${spaces.org_id} = ${attentionItems.org_id}
-          AND (${publicSpaceVisibleSql(spaces.type, spaces.org_id, userId)} OR ${spaceMembers.id} IS NOT NULL)
+          AND ((${spaces.is_archived} = false AND ${publicSpaceVisibleSql(spaces.type, spaces.org_id, userId)}) OR ${spaceMembers.id} IS NOT NULL)
       )
     )
     OR (
@@ -107,11 +108,15 @@ export function currentApprovalRecipientSql(userId: string | SQL): SQL {
   return currentRoleReviewableActionSql(userId);
 }
 
-/** Outbound attention item: approval items never carry action params. */
+/**
+ * Outbound attention item: approval items never carry action params, and a
+ * reply notice that cannot be tied to its reply carries no reply text.
+ */
 export function projectAttentionItem<T extends { metadata: unknown }>(item: T): T {
-  if (!item.metadata || typeof item.metadata !== 'object' || !Object.hasOwn(item.metadata, 'params')) return item;
-  const { params: _params, ...metadata } = item.metadata as Record<string, unknown>;
-  return { ...item, metadata };
+  const safe = withoutUnverifiableReplyText(item);
+  if (!safe.metadata || typeof safe.metadata !== 'object' || !Object.hasOwn(safe.metadata, 'params')) return safe;
+  const { params: _params, ...metadata } = safe.metadata as Record<string, unknown>;
+  return { ...safe, metadata };
 }
 
 type LegacyNotification = typeof notifications.$inferSelect;

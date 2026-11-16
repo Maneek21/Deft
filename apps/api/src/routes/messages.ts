@@ -19,6 +19,7 @@ import { enqueueDeftyWake, finishDeftyWake, type DeftyWakeOutcome, normalizeChat
 import { emitMessageToSpaceViewers, projectMessagesForViewer } from '../lib/agent-message-run-details.js';
 import { toPlainText } from '../lib/plain-text.js';
 import { withoutDeletedContent } from '../lib/deleted-message.js';
+import { REPLY_NOTIFICATION_TITLE_SUFFIX } from '../lib/reply-notification-text.js';
 import {
   getMessageAttachments,
   type MessageAttachment,
@@ -135,6 +136,27 @@ async function getVisibleMessage(messageId: string, orgId: string, userId: strin
 
   // Raw metadata: a caller that returns it must project it with projectMessagesForViewer.
   return msg ?? null;
+}
+
+/**
+ * Stores fetched link previews on a message and tells the space. The previews
+ * are fetched after the response, so the message may have been deleted in the
+ * meantime: then nothing is written and nothing is sent. Returns whether the
+ * previews were stored.
+ */
+export async function storeLinkPreviews(
+  io: { to(room: string): { emit(event: string, payload: unknown): unknown } },
+  spaceId: string,
+  messageId: string,
+  previews: LinkPreview[],
+): Promise<boolean> {
+  const stored = await db.update(messages)
+    .set({ metadata: { link_previews: previews } })
+    .where(and(eq(messages.id, messageId), eq(messages.is_deleted, false)))
+    .returning({ id: messages.id });
+  if (stored.length === 0) return false;
+  io.to(`space:${spaceId}`).emit('message:link_previews', { message_id: messageId, previews });
+  return true;
 }
 
 // Helper: get reply counts and latest_reply_at for a set of message IDs
@@ -571,16 +593,7 @@ messageRoutes.post('/:spaceId', async (c) => {
             const preview = await fetchLinkPreview(url);
             if (preview) previews.push(preview);
           }
-          if (previews.length > 0) {
-            await db.update(messages)
-              .set({ metadata: { link_previews: previews } })
-              .where(eq(messages.id, message!.id));
-
-            io.to(`space:${spaceId}`).emit('message:link_previews', {
-              message_id: message!.id,
-              previews,
-            });
-          }
+          if (previews.length > 0) await storeLinkPreviews(io, spaceId, message!.id, previews);
         } catch (err) {
           console.error('Link preview fetch failed:', err);
         }
@@ -636,9 +649,17 @@ messageRoutes.post('/:spaceId', async (c) => {
             org_id: user.org_id,
             user_id: parentMessage.user_id,
             type: 'mention',
-            title: `${userData?.name ?? 'Someone'} replied to your message`,
+            title: `${userData?.name ?? 'Someone'}${REPLY_NOTIFICATION_TITLE_SUFFIX}`,
             body: normalizedContent.slice(0, 200),
             link: `/chat?space=${encodeURIComponent(spaceId)}&message=${encodeURIComponent(parsed.data.parent_id)}`,
+            // The body is the reply's text while the link opens the parent, so the
+            // reply is named here: the notification is hidden once the reply is
+            // deleted. The needs-you list keeps one entry per thread, as before.
+            metadata: {
+              message_id: message!.id,
+              space_id: spaceId,
+              attention_dedupe_key: `mention:${parsed.data.parent_id}`,
+            },
           }, { channel: 'chat', spaceId, isMention: true });
 
           if (notification) {
@@ -1059,8 +1080,10 @@ messageRoutes.get('/:spaceId/read-receipts', async (c) => {
     const user = c.get('user');
     const spaceId = c.req.param('spaceId');
 
-    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
-    if (!isMember) {
+    // Reading: a member of the space, or a member of the workspace (never a
+    // guest) reading a public space before joining it.
+    const canRead = await canReadSpace(spaceId, user.id, user.org_id);
+    if (!canRead) {
       return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
     }
 

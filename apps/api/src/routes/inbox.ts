@@ -1,4 +1,5 @@
 import { nativeNotificationAccessSql } from '../lib/native-mention-visibility.js';
+import { withoutUnverifiableReplyText } from '../lib/reply-notification-text.js';
 // apps/api/src/routes/inbox.ts
 import { Hono } from 'hono';
 import { eq, and, desc, sql, lt, gt, inArray, or } from 'drizzle-orm';
@@ -180,7 +181,7 @@ inboxRoutes.get('/', async (c) => {
         .where(unreadNotificationWhere);
     const unreadNotificationCount = Number(notificationCountRow?.count ?? 0);
 
-    const notifItems: InboxItem[] = notifRows.map((n) => ({
+    const notifItems: InboxItem[] = notifRows.map(withoutUnverifiableReplyText).map((n) => ({
       id: `notif:${n.id}`,
       kind: NOTIF_KIND_MAP[n.type] ?? 'system',
       title: n.title,

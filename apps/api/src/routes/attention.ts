@@ -88,7 +88,7 @@ async function hydrateApprovals(
   const actionIds = rows
     .filter((item) => item.source_type === 'agent_action')
     .map((item) => item.source_id);
-  if (actionIds.length === 0) return rows.map((item) => ({ ...item, approval: null }));
+  if (actionIds.length === 0) return rows.map((item) => ({ ...projectAttentionItem(item), approval: null }));
 
   const actions = await db
     .select({

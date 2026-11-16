@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { NativeMentionSourceSchema, nativeMentionToken } from '@deft/shared';
 import { searchNativeMentions, publishNativeMentions, enqueueNativeMentionPublication } from '../native-mentions.js';
 import { nativeNotificationAccessSql } from '../native-mention-visibility.js';
+import { withoutUnverifiableReplyText } from '../reply-notification-text.js';
 import {
   connectedAccounts,
   agentActions,
@@ -3556,7 +3557,7 @@ export async function humanInboxList(args: { unread_only?: boolean; type?: strin
     args.unread_only === false ? sql`true` : eq(notifications.is_read, false),
     args.type ? eq(notifications.type, args.type as any) : sql`true`,
   )).orderBy(desc(notifications.created_at)).limit(Math.min(Math.max(1, args.limit ?? 50), 100));
-  return textResult(rows);
+  return textResult(rows.map(withoutUnverifiableReplyText));
 }
 
 export async function humanInboxGet(args: { notification_id?: string }, ctx: HumanToolContext): Promise<ToolResult> {
@@ -3564,7 +3565,7 @@ export async function humanInboxGet(args: { notification_id?: string }, ctx: Hum
   if (!args.notification_id) return errorResult('notification_id is required');
   const [row] = await db.select().from(notifications).where(and(eq(notifications.id, args.notification_id), eq(notifications.org_id, ctx.org_id), eq(notifications.user_id, ctx.user_id),
     nativeNotificationAccessSql(ctx.user_id, sql`${notifications.metadata}`, sql`${notifications.org_id}`))).limit(1);
-  return row ? textResult(row) : errorResult('Notification not found');
+  return row ? textResult(withoutUnverifiableReplyText(row)) : errorResult('Notification not found');
 }
 
 export async function humanInboxMarkRead(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
@@ -3573,7 +3574,7 @@ export async function humanInboxMarkRead(args: Record<string, unknown>, ctx: Hum
   return withIdempotency('inbox_mark_read', args, ctx, async () => {
     const [row] = await db.update(notifications).set({ is_read: true }).where(and(eq(notifications.id, args.notification_id as string), eq(notifications.org_id, ctx.org_id), eq(notifications.user_id, ctx.user_id),
       nativeNotificationAccessSql(ctx.user_id, sql`${notifications.metadata}`, sql`${notifications.org_id}`))).returning();
-    return row ? textResult({ marked_read: true, notification: row }) : errorResult('Notification not found');
+    return row ? textResult({ marked_read: true, notification: withoutUnverifiableReplyText(row) }) : errorResult('Notification not found');
   });
 }
 

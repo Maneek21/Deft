@@ -3,6 +3,7 @@ import { eq, and, desc, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { notifications } from '@deft/db/schema';
 import { nativeNotificationAccessSql } from '../lib/native-mention-visibility.js';
+import { withoutUnverifiableReplyText } from '../lib/reply-notification-text.js';
 
 export const notificationRoutes = new Hono();
 
@@ -37,7 +38,7 @@ notificationRoutes.get('/', async (c) => {
       );
 
     return c.json({
-      notifications: results,
+      notifications: results.map(withoutUnverifiableReplyText),
       unread_count: unreadResult?.count ?? 0,
     });
   } catch (err) {
@@ -73,7 +74,7 @@ notificationRoutes.patch('/:id/read', async (c) => {
       .where(eq(notifications.id, notificationId))
       .returning();
 
-    return c.json(updated);
+    return c.json(updated ? withoutUnverifiableReplyText(updated) : updated);
   } catch (err) {
     console.error('Failed to mark notification as read:', err);
     return c.json({ error: 'Failed to update notification', code: 'INTERNAL_ERROR' }, 500);
