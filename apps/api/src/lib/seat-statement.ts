@@ -21,6 +21,8 @@ const MAX_SEATS = 1_000_000;
 const MAX_VERSION = 999_999_999_999_999;
 const MAX_TIME = 253_402_300_799;
 export const DEFAULT_SEAT_CLOCK_SKEW_SECONDS = 300;
+/** Longest validity (expires_at - issued_at) accepted: 7 days, as the control plane signs. */
+export const DEFAULT_SEAT_MAX_LIFETIME_SECONDS = 7 * 24 * 60 * 60;
 
 const SPKI_ED25519_HEADER = Buffer.from('302a300506032b6570032100', 'hex');
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
@@ -41,6 +43,7 @@ export type SeatRefusalReason =
   | 'bad_signature'
   | 'wrong_cell'
   | 'not_yet_valid'
+  | 'lifetime_too_long'
   | 'expired'
   | 'stale_version'
   | 'verifier_misconfigured';
@@ -57,6 +60,8 @@ export interface SeatVerifyInput {
   /** Highest version already accepted; 0 if none. */
   versionFloor: number;
   maxClockSkewSeconds?: number;
+  /** Longest lifetime accepted; defaults to 7 days. */
+  maxLifetimeSeconds?: number;
 }
 
 /** Strict base64url: URL-safe alphabet, no padding, canonical. */
@@ -118,9 +123,11 @@ export function verifySeatStatement(input: SeatVerifyInput): SeatVerifyResult {
 function verifyInner(input: SeatVerifyInput): SeatVerifyResult {
   const refuse = (reason: SeatRefusalReason): SeatVerifyResult => ({ ok: false, reason });
   const skew = input.maxClockSkewSeconds ?? DEFAULT_SEAT_CLOCK_SKEW_SECONDS;
+  const maxLifetime = input.maxLifetimeSeconds ?? DEFAULT_SEAT_MAX_LIFETIME_SECONDS;
   if (!wholeInRange(input.nowSeconds, 0, MAX_TIME)
     || !wholeInRange(input.versionFloor, 0, MAX_VERSION)
     || !wholeInRange(skew, 0, MAX_TIME)
+    || !wholeInRange(maxLifetime, 1, MAX_TIME)
     || !isValidSeatCellId(input.expectedCellId)
     || !Array.isArray(input.publicKeys) || input.publicKeys.length === 0) {
     return refuse('verifier_misconfigured');
@@ -151,7 +158,9 @@ function verifyInner(input: SeatVerifyInput): SeatVerifyResult {
   const statement = parsePayload(payloadBytes.toString('latin1'));
   if (!statement) return refuse('malformed');
 
-  // 4 to 7. Meaning.
+  // 4 to 8. Meaning. A statement valid for too long is refused before
+  //    anything else, so a mistaken or stolen long-lived one cannot pin a limit.
+  if (statement.expires_at - statement.issued_at > maxLifetime) return refuse('lifetime_too_long');
   if (statement.cell_id !== input.expectedCellId) return refuse('wrong_cell');
   if (statement.issued_at > input.nowSeconds + skew) return refuse('not_yet_valid');
   if (input.nowSeconds >= statement.expires_at) return refuse('expired');

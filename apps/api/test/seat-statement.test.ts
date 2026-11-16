@@ -19,6 +19,7 @@ type Vector = {
   now: number;
   version_floor: number;
   max_clock_skew_seconds: number;
+  max_lifetime_seconds: number;
   expect: unknown;
 };
 
@@ -28,9 +29,11 @@ const vectors = JSON.parse(readFileSync(resolve(import.meta.dirname, 'fixtures/s
   cases: Vector[];
 };
 
-test('the fixture is the deft-seat-v1 vector file with 51 cases', () => {
+// Copied unchanged from the control plane's test-vectors/seat-statement-v1.json
+// at commit 3a0c971d921456f628cb957293f9af22db3f55c8.
+test('the fixture is the deft-seat-v1 vector file with 56 cases', () => {
   assert.equal(vectors.format, 'deft-seat-v1');
-  assert.equal(vectors.cases.length, 51);
+  assert.equal(vectors.cases.length, 56);
 });
 
 for (const vector of vectors.cases) {
@@ -42,6 +45,7 @@ for (const vector of vectors.cases) {
       nowSeconds: vector.now,
       versionFloor: vector.version_floor,
       maxClockSkewSeconds: vector.max_clock_skew_seconds,
+      maxLifetimeSeconds: vector.max_lifetime_seconds,
     });
     assert.deepEqual(result, vector.expect);
   });
@@ -79,6 +83,9 @@ test('each refusal reason, from statements signed here', () => {
   assert.deepEqual(verifySeatStatement({ ...base, token: good({ issued_at: 1_800_001_000, expires_at: 1_800_090_000 }) }), { ok: false, reason: 'not_yet_valid' });
   assert.deepEqual(verifySeatStatement({ ...base, nowSeconds: 1_800_086_400, token: good() }), { ok: false, reason: 'expired' });
   assert.deepEqual(verifySeatStatement({ ...base, versionFloor: 5, token: good() }), { ok: false, reason: 'stale_version' });
+  // The default maximum lifetime is 7 days: exactly 7 days is accepted, one second more is not.
+  assert.equal(verifySeatStatement({ ...base, token: good({ expires_at: 1_800_604_800 }) }).ok, true);
+  assert.deepEqual(verifySeatStatement({ ...base, token: good({ expires_at: 1_800_604_801 }) }), { ok: false, reason: 'lifetime_too_long' });
   assert.equal(verifySeatStatement({ ...base, versionFloor: 4, token: good() }).ok, true, 'a version equal to the floor is accepted');
   // Good signature, wrong form.
   assert.deepEqual(verifySeatStatement({ ...base, token: signPayload('{"cell_id":"cell-a","seats":12,"version":4,"issued_at":1800000000,"expires_at":1800086400,"x":1}') }), { ok: false, reason: 'malformed' });
