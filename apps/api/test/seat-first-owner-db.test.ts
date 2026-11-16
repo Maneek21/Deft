@@ -16,6 +16,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import test from 'node:test';
 import pg from 'pg';
 import { Hono } from 'hono';
+import { ensureTwoStepTables } from './fixtures/two-step-tables.js';
 
 const target = process.env.DEFT_TEST_DATABASE_URL;
 const safe = (() => {
@@ -27,7 +28,8 @@ const safe = (() => {
   } catch { return false; }
 })();
 
-const TABLES = ['users', 'orgs', 'org_members', 'spaces', 'space_members', 'onboarding_state', 'web_sessions'];
+// A hosted signup also writes the two-step tables (the owner gets an enrol-only challenge).
+const TABLES = ['users', 'orgs', 'org_members', 'spaces', 'space_members', 'onboarding_state', 'web_sessions', 'user_two_step', 'two_step_challenges'];
 const HOSTED = {
   DEFT_HOSTED: 'true',
   DEFT_CELL_ID: `cell-first-owner-${randomUUID().slice(0, 8)}`,
@@ -39,6 +41,7 @@ const TOKEN = randomBytes(32).toString('base64url');
 
 test('hosted: the first owner signs up with no seat statement and takes one seat', { skip: !safe, timeout: 120_000 }, async (t) => {
   const schema = `seat_owner_${randomUUID().replaceAll('-', '')}`;
+  await ensureTwoStepTables(target!);
   const admin = new pg.Pool({ connectionString: target, max: 1 });
   await admin.query(`CREATE SCHEMA "${schema}"`);
   for (const table of TABLES) {

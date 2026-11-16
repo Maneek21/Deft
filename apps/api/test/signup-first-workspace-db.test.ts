@@ -23,6 +23,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import test from 'node:test';
 import pg from 'pg';
 import { Hono } from 'hono';
+import { ensureTwoStepTables } from './fixtures/two-step-tables.js';
 
 const target = process.env.DEFT_TEST_DATABASE_URL;
 const safe = (() => {
@@ -34,7 +35,8 @@ const safe = (() => {
   } catch { return false; }
 })();
 
-const TABLES = ['users', 'orgs', 'org_members', 'spaces', 'space_members', 'onboarding_state', 'web_sessions'];
+// A hosted signup also writes the two-step tables (the owner gets an enrol-only challenge).
+const TABLES = ['users', 'orgs', 'org_members', 'spaces', 'space_members', 'onboarding_state', 'web_sessions', 'user_two_step', 'two_step_challenges'];
 const HOSTED_KEYS = ['DEFT_HOSTED', 'DEFT_SETUP_TOKEN_SHA256', 'DEFT_SETUP_TOKEN_EXPIRES_AT'] as const;
 type HostedEnv = Partial<Record<(typeof HOSTED_KEYS)[number], string>>;
 
@@ -50,6 +52,7 @@ const SETUP_REFUSAL = {
 
 test('first-workspace signup: setup token in hosted mode, one workspace under concurrency', { skip: !safe, timeout: 180_000 }, async (t) => {
   const schema = `signup_setup_${randomUUID().replaceAll('-', '')}`;
+  await ensureTwoStepTables(target!);
   const admin = new pg.Pool({ connectionString: target, max: 1 });
   await admin.query(`CREATE SCHEMA "${schema}"`);
   for (const table of TABLES) {
@@ -175,7 +178,10 @@ test('first-workspace signup: setup token in hosted mode, one workspace under co
     await freshInstall({ DEFT_HOSTED: 'true', DEFT_SETUP_TOKEN_SHA256: HASH, DEFT_SETUP_TOKEN_EXPIRES_AT: inOneHour() });
     const first = await signup(person({ setup_token: TOKEN }));
     assert.equal(first.status, 201, first.text);
-    assert.ok(first.json.accessToken && first.json.refreshToken, 'a session is issued');
+    // A hosted owner must set up two-step verification first: no session yet,
+    // only the enrol-only token.
+    assert.ok(!first.json.accessToken && !first.json.refreshToken, 'no session before two-step setup');
+    assert.equal(first.json.two_step?.status, 'enrolment_required');
     assert.ok(!first.text.includes(TOKEN) && !first.text.includes(HASH), 'the reply carries neither token nor hash');
     assert.equal(await orgCount(), 1);
     assert.equal(await ownerCount(), 1);

@@ -85,11 +85,12 @@ test('web session HTTP and database rotation/revocation boundaries', { skip: !da
     const first = await createWebSession(identity);
     const second = await createWebSession(identity);
     const resetToken = `disposable-one-use-reset-${userId}`;
-    await changeWebPassword(userId, 'test-hash-not-for-login', { resetToken, passwordVersion: 0, orgId });
+    // The person is the owner, so the link must be one the owner made.
+    await changeWebPassword(userId, 'test-hash-not-for-login', { resetToken, passwordVersion: 0, orgId, issuedBy: userId });
     await assert.rejects(() => verifyWebAccess(first.accessToken));
     await assert.rejects(() => rotateWebSession(second.refreshToken));
-    await assert.rejects(() => changeWebPassword(userId, 'replacement', { resetToken, passwordVersion: 0, orgId }));
-    await assert.rejects(() => changeWebPassword(userId, 'replacement', { resetToken: `other-${resetToken}`, passwordVersion: 0, orgId }), 'all older reset links are invalid after any password change');
+    await assert.rejects(() => changeWebPassword(userId, 'replacement', { resetToken, passwordVersion: 0, orgId, issuedBy: userId }));
+    await assert.rejects(() => changeWebPassword(userId, 'replacement', { resetToken: `other-${resetToken}`, passwordVersion: 0, orgId, issuedBy: userId }), 'all older reset links are invalid after any password change');
     await assert.rejects(() => changeWebPassword(userId, 'replacement', { expectedPasswordHash: 'old-password-hash' }), 'a stale password comparison cannot overwrite a concurrent reset');
     const [user] = await db.select().from(users).where(eq(users.id, userId));
     assert.equal(user.password_hash, 'test-hash-not-for-login');
@@ -98,7 +99,7 @@ test('web session HTTP and database rotation/revocation boundaries', { skip: !da
   await t.test('HTTP reset links bind the current password generation and active organization', async () => {
     const [before] = await db.select().from(users).where(eq(users.id, userId));
     const reset = (org_id: string, generation = before.password_version) => jwt.sign({
-      id: userId, org_id, purpose: 'password-reset', password_version: generation, jti: randomUUID(),
+      id: userId, org_id, purpose: 'password-reset', password_version: generation, jti: randomUUID(), issued_by: userId,
     }, process.env.JWT_SECRET!, { expiresIn: '15m' });
     const pair = await createWebSession(identity);
     const token = reset(orgId);

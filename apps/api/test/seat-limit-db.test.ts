@@ -15,6 +15,8 @@ import { Hono } from 'hono';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { orgMembers, orgs, invites, spaceMembers, users } from '@deft/db/schema';
 import { seatStatements } from '@deft/db/seat-statements';
+import { userTwoStep } from '@deft/db/two-step';
+import { ensureTwoStepTables } from './fixtures/two-step-tables.js';
 import { db } from '../src/lib/db.js';
 import {
   _resetSeatProcessStateForTest,
@@ -129,6 +131,8 @@ before(async () => {
   if (!(exists.rows[0] as { present: boolean }).present && process.env.CI !== 'true') {
     await db.execute(sql.raw(readFileSync(resolve(import.meta.dirname, '../../../packages/db/upgrades/0.3.0-preview.144-seat-statements.sql'), 'utf8')));
   }
+  // A hosted admin must have two-step verification on before promotion.
+  await ensureTwoStepTables((process.env.DEFT_TEST_DATABASE_URL ?? process.env.DATABASE_URL)!);
   await db.insert(orgs).values({ id: orgId, name: `Seats ${s}`, slug: `seats-${s}` });
   await db.insert(users).values({ id: ownerId, email: `owner-${s}@test.local`, name: 'Owner' });
   await db.insert(orgMembers).values({ org_id: orgId, user_id: ownerId, role: 'owner' });
@@ -246,6 +250,8 @@ test('guest to member or admin: one below the limit and at it; demotion and agen
   const g2 = await addMember({ role: 'guest' });
   const inUse = await used();
   await hostedWithSeats(inUse + 1);
+  // On a hosted cell only someone with two-step verification on can be made an admin.
+  await db.insert(userTwoStep).values({ user_id: g1, secret_encrypted: 'not-a-real-secret', confirmed_at: new Date() });
   assert.equal((await setRole(g1, 'admin')).status, 200);
   const refused = await setRole(g2, 'member');
   assert.equal(refused.status, 409);
