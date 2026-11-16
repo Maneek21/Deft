@@ -7,7 +7,7 @@ import { useLinkToken } from '@/lib/use-link-token';
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
 export default function ResetPasswordPage() {
-  const token = useLinkToken('/reset-password');
+  const token = useLinkToken();
   return <ResetPasswordContent key={token} token={token} />;
 }
 

@@ -8,6 +8,6 @@ import { InviteAccept } from './invite-accept';
 // is removed from the address bar. A newly supplied fragment replaces the
 // captured token and resets the acceptance form.
 export default function InvitePage() {
-  const token = useLinkToken('/invite');
+  const token = useLinkToken();
   return <InviteAccept key={token} token={token} />;
 }

@@ -2,6 +2,7 @@
 
 import { ThemeProvider } from '@/components/theme-provider';
 import { AuthProvider } from '@/lib/auth-context';
+import { LinkTokenBoundary } from '@/lib/use-link-token';
 import { useEffect } from 'react';
 import { APPS_ENABLED, APP_RESOURCE_SYNC_ENABLED, APP_ATTACHMENT_BROKER_ENABLED } from '@/lib/feature-flags';
 
@@ -18,8 +19,8 @@ export function Providers({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <ThemeProvider>
-      <AuthProvider>{children}</AuthProvider>
-    </ThemeProvider>
+    <LinkTokenBoundary>
+      <ThemeProvider><AuthProvider>{children}</AuthProvider></ThemeProvider>
+    </LinkTokenBoundary>
   );
 }

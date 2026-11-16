@@ -185,6 +185,7 @@ jobs:
           src/lib/approval-failure-retention.test.ts
           src/lib/thread-parent.test.ts
           src/lib/link-token.test.ts
+          src/lib/legacy-link-redirect.test.ts
           src/lib/composer-suggestion-text.test.ts
           src/lib/public-spaces.test.ts
           src/lib/web-app-manifest.test.ts
@@ -207,6 +208,7 @@ jobs:
           src/components/apps/integrations/source-nomination.test.ts
           src/lib/app-experience-bootstrap-browser.test.mjs
           src/lib/link-token-browser.test.mjs
+          src/lib/link-token-next-browser.test.mjs
           src/lib/app-connection-reattachment.test.ts
           src/lib/app-runtime-setup.test.ts
           src/components/apps/runtime-app-setup-selection.test.mjs

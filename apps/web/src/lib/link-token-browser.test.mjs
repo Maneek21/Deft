@@ -20,6 +20,7 @@ before(async () => {
       import { AuthProvider, useAuth } from './src/lib/auth-context';
       import InvitePage from './src/app/invite/page';
       import ResetPage from './src/app/reset-password/page';
+      import { LinkTokenBoundary } from './src/lib/use-link-token';
       window.fixtureBoot = crypto.randomUUID();
       window.storageWrites = [];
       const setItem = Storage.prototype.setItem;
@@ -34,7 +35,7 @@ before(async () => {
       const content = location.pathname === '/protected'
         ? <div id="protected-content">Protected workspace</div> : <Page/>;
       createRoot(document.getElementById('root')).render(
-        <StrictMode><AuthProvider><SessionState/>{content}</AuthProvider></StrictMode>
+        <StrictMode><LinkTokenBoundary><AuthProvider><SessionState/>{content}</AuthProvider></LinkTokenBoundary></StrictMode>
       );
     ` },
     bundle: true, write: false, platform: 'browser', format: 'iife',
