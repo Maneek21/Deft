@@ -628,6 +628,24 @@ jobs:
           "
           bash scripts/ci/snapshot-upgrade-data.sh "$RUNNER_TEMP/upgrade-after"
           diff --recursive --unified "$RUNNER_TEMP/upgrade-before" "$RUNNER_TEMP/upgrade-after"
+      - name: Rehearse both database restore routes with stored consent data
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE deft_restore_source_test TEMPLATE deft_upgrade'
+          # Dump and restore with the server image's own pg_dump, pg_restore and psql, as the
+          # Compose commands in docs/self-hosting.md do: the runner's client is newer than the
+          # server, and a newer pg_dump writes settings (SET transaction_timeout) it rejects.
+          image="$(docker ps --filter publish=5432 --format '{{.Image}}' | head -n 1)"
+          test -n "$image"
+          bin="$RUNNER_TEMP/server-pg-client"
+          mkdir -p "$bin"
+          for tool in pg_dump pg_restore psql; do
+            cat > "$bin/$tool" <<WRAPPER
+          #!/bin/sh
+          exec docker run --rm --network host --user $(id -u):$(id -g) -v /tmp:/tmp -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD -e PGDATABASE "$image" $tool "\$@"
+          WRAPPER
+            chmod +x "$bin/$tool"
+          done
+          TMPDIR=/tmp DEFT_PG_BIN="$bin" DATABASE_URL=postgres://postgres:postgres@localhost:5432/deft_restore_source_test pnpm --filter @deft/db test:restore
       - name: Run upgrade unit tests
         run: pnpm test:upgrade
 

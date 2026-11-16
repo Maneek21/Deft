@@ -331,6 +331,7 @@ export const upgradeManifest = {
     {version:'0.3.0-preview.136',file:'0.3.0-preview.136-agent-actions-pending-index.sql',description:'Index pending agent actions by workspace and creation time'},
     {version:'0.3.0-preview.137',file:'0.3.0-preview.137-ics-publish-tokens.sql',description:'Bind each published calendar feed to one person in one workspace'},
     {version:'0.3.0-preview.144',file:'0.3.0-preview.144-seat-statements.sql',description:'Store the newest seat statement a hosted cell accepted and its version floor'},
+    {version:'0.3.0-preview.148',file:'0.3.0-preview.148-restore-safe-check-helpers.sql',description:'Give every function a CHECK constraint calls its own search_path so a dump with stored rows restores'},
   ] satisfies UpgradeMigration[],
 } as const;
 

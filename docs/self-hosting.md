@@ -839,6 +839,89 @@ export COMPOSE_PROJECT_NAME=deft
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml start deft
 ```
 
+### Supported database restore routes
+
+Two ways of restoring the database are supported. Both restore into a new, empty
+database, as a PostgreSQL role that may create the `vector` extension (the
+Compose `postgres` user may). Dump and restore with PostgreSQL client tools of
+the same major version as the server: the Compose commands above run them inside
+the `postgres` container, which does this. A newer `pg_dump` on the host (version
+17 or later) writes `SET transaction_timeout`, which a version 16 server rejects
+when the dump is restored.
+
+| Dump | Restore | Status |
+|---|---|---|
+| Plain SQL: `pg_dump --clean --if-exists --no-owner --no-privileges`, the `database.sql.gz` that `pnpm selfhost:backup` and the commands above write | `psql -v ON_ERROR_STOP=1` | Supported. This is the documented route. |
+| Custom format: `pg_dump --format=custom --no-owner --no-privileges` | `pg_restore --no-owner --no-privileges --exit-on-error --dbname deft` | Supported. |
+
+Both need a dump taken at schema `0.3.0-preview.148` or later; see below for
+older dumps. Nothing else is supported: not a restore over an initialized
+database, not a partial restore (`--data-only`, `--schema-only`, single tables),
+and not a copy of the PostgreSQL data directory of a running server. The
+directory and tar dump formats have not been tested.
+
+`pnpm --filter @deft/db test:restore` checks both routes against a disposable
+test database: it stores an App connection record, dumps the database both ways,
+restores each dump into an empty database and compares the row count of every
+table. This covers the database only: restoring uploads and secrets, and keeping
+people removed since the backup removed after a restore, are not covered.
+
+#### Dumps taken before schema `0.3.0-preview.148`
+
+`pnpm db:upgrade --status` shows the schema a database is at. A dump taken at
+`0.3.0-preview.137` or earlier, in either format, can fail to restore when the
+workspace holds App connection or consent records: rows in
+`app_connection_sessions`, `app_connection_forms`, `app_data_consents`,
+`app_data_invocations`, `app_resource_observation_consents`,
+`app_local_job_schedules`, `app_native_bindings` or
+`app_public_cancellation_selections`. Whether a row stops the restore depends on what it
+records; a connection session that carries an action consent does. The restore
+then stops while loading the table:
+
+```text
+ERROR:  function deft_app_consent_valid(jsonb, text) does not exist
+CONTEXT:  PL/pgSQL function public.deft_app_consent_deadline(jsonb,text) line 3 at IF
+COPY app_connection_sessions, line 1
+```
+
+The data in the dump is intact; PostgreSQL restores a dump with an empty
+`search_path`, and before `0.3.0-preview.148` the functions that check those rows
+could not find each other without it. A workspace with no rows in those tables is
+not affected.
+
+The backup that `pnpm selfhost:upgrade` takes before it upgrades is such an older
+dump, and it is the one to restore if an upgrade fails. After upgrading to
+`0.3.0-preview.148`, take a fresh backup and rehearse restoring that one.
+
+To restore an older dump, give those functions their search path in the new
+database before the rows load. `fix.sql` below holds the 11 `ALTER FUNCTION` lines
+of `packages/db/upgrades/0.3.0-preview.148-restore-safe-check-helpers.sql` from the
+release source (`grep '^ALTER FUNCTION' <that file> > fix.sql`). A dump older than
+`0.3.0-preview.120` does not define every one of those functions: remove the lines
+of any function the dump lacks (`pg_restore --list database.dump | grep ' FUNCTION '`,
+or `gunzip -c database.sql.gz | grep 'CREATE FUNCTION'`), or the fix stops with
+"function does not exist". Restore into a new, empty database as above.
+
+Custom format: restore in three steps, with the fix between the first two:
+
+```bash
+pg_restore --no-owner --no-privileges --exit-on-error --section=pre-data --dbname deft database.dump
+psql -v ON_ERROR_STOP=1 -d deft -f fix.sql
+pg_restore --no-owner --no-privileges --exit-on-error --section=data --dbname deft database.dump
+pg_restore --no-owner --no-privileges --exit-on-error --section=post-data --dbname deft database.dump
+```
+
+Plain SQL: put the same lines before the first `COPY` of the dump:
+
+```bash
+gunzip -c database.sql.gz \
+  | awk 'FNR==NR{fix=fix $0 "\n"; next} /^COPY /&&!done{printf "%s", fix; done=1} 1' fix.sql - \
+  | psql -v ON_ERROR_STOP=1 -d deft
+```
+
+Both were checked on PostgreSQL 16 with a connection session that carries an action
+consent: each restored it with the row intact.
+
 ### Content exports
 
 Available exports include wiki JSON/Markdown/CSV (`GET /api/wiki/export`, with

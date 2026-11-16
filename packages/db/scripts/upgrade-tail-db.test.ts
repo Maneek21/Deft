@@ -17,6 +17,15 @@ const safe = (() => {
     && url.port === '55440' && /^\/(fix_a_|deft_test_424fix_)/u.test(url.pathname);
 })();
 
+/** The functions `.148` alters, read from the upgrade file itself. */
+function restoreSafeFunctions() {
+  const sql = readFileSync(resolve(upgradeDir, '0.3.0-preview.148-restore-safe-check-helpers.sql'), 'utf8');
+  const signatures = [...sql.matchAll(/^ALTER FUNCTION (public\.[a-z0-9_]+\([a-z ,]*\)) SET search_path = pg_catalog, public, pg_temp;$/gmu)]
+    .map((match) => match[1]!);
+  assert.equal(signatures.length, 11, 'preview148 function list is located');
+  return signatures;
+}
+
 async function isReviewedHead(client: pg.Client) {
   try {
     return (await assertReviewedCurrent(client)).stage === 'current';
@@ -26,8 +35,8 @@ async function isReviewedHead(client: pg.Client) {
 }
 
 /** Resets a `.131`-head database to exactly the pre-tail state, reverting the
- * `.133` and `.135` function/constraint changes, the `.136` index and the `.137` and `.144` tables in place so it again matches a
- * reviewed head variant. A fresh (push-full) database already carries the
+ * `.133` and `.135` function/constraint changes, the `.136` index, the `.137` and `.144` tables and the `.148` function
+ * search_path settings in place so it again matches a reviewed head variant. A fresh (push-full) database already carries the
  * `.132` columns and `.134` table in its reviewed bootstrap; an upgraded clone
  * does not, so those are dropped only when the clone needs it. Runs in one
  * transaction and rolls back unless the result is a reviewed head, so a fixture
@@ -55,6 +64,10 @@ async function resetToHead(client: pg.Client) {
     await client.query('DROP TABLE IF EXISTS public.ics_publish_tokens');
     // Revert the .144 seat statement table.
     await client.query('DROP TABLE IF EXISTS public.seat_statements');
+    // Revert the .148 search_path setting on every function a CHECK constraint calls.
+    for (const signature of restoreSafeFunctions()) {
+      await client.query(`ALTER FUNCTION ${signature} RESET search_path`);
+    }
     await client.query(`DELETE FROM deft_schema_migrations WHERE version = ANY($1::text[])`,
       [tailMigrations().map((migration) => migration.version)]);
     const head = await client.query('SELECT 1 FROM deft_schema_migrations WHERE version = $1', [CONVERGE_HEAD_VERSION]);
