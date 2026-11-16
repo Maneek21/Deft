@@ -192,8 +192,10 @@ test('queued sends combine opt-in preview text with a checked and pinned push en
     sends.push({ ...JSON.parse(String(payload)), endpoint: subscription.endpoint, agent: options?.agent });
     return { statusCode: 201, body: '', headers: {} };
   });
+  let queuedMessageId = '';
   const queue = async () => {
     const messageId = await message(rooms.general, ids.alice, 'Review the launch plan');
+    queuedMessageId = messageId;
     const attention = await item(ids.bob, { type: 'message', id: messageId });
     const deliveryId = randomUUID();
     await q("INSERT INTO attention_deliveries(id,org_id,attention_item_id,user_id,channel) VALUES($1,$2,$3,$4,'push')",
@@ -211,6 +213,15 @@ test('queued sends combine opt-in preview text with a checked and pinned push en
     const pinned = await new Promise<unknown[]>(resolve => agent.options.lookup('fcm.googleapis.com', {}, (...args) => resolve(args)));
     assert.deepEqual(pinned, [null, '142.250.1.1', 4]);
   }
+  const deletionDuringDns = t.mock.method(publicFetchDeps, 'lookup', async () => {
+    await q('UPDATE messages SET is_deleted=true WHERE id=$1', [queuedMessageId]);
+    return [{ address: '142.250.1.1', family: 4 }];
+  });
+  try {
+    env.PUSH_MESSAGE_PREVIEWS_ENABLED = true;
+    assert.deepEqual(await sendAttentionDelivery(await queue()), { skipped: true, reason: 'source_access_revoked' });
+    assert.equal(sends.length, 2, 'a source deleted during DNS must not deliver its retained preview');
+  } finally { deletionDuringDns.mock.restore(); }
   address = '10.0.0.5';
   await assert.rejects(sendAttentionDelivery(await queue()), /push endpoint/i);
   assert.equal(sends.length, 2, 'a stored endpoint resolving internally is never contacted');
