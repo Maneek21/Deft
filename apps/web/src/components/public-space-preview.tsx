@@ -8,6 +8,7 @@ import { canPreviewSpace, joinPublicSpacePath, previewMessagesPath, publicSpaceD
 import { formatDayLabel, formatMessageTime, isSameDay } from '@/lib/time';
 import { PersonAvatar } from './person-avatar';
 import { ThreadMessageContent } from './thread-panel';
+import { ProtectedDownload } from './protected-file';
 
 type PreviewSpace = { id: string; name: string; type: string; topic?: string | null; description?: string | null; is_archived?: boolean };
 
@@ -20,7 +21,7 @@ type PreviewMessage = {
   is_deleted: boolean;
   reply_count?: number;
   metadata?: ComponentProps<typeof ThreadMessageContent>['metadata'];
-  files?: Array<{ id: string; filename: string }>;
+  files?: Array<{ id: string; name: string }>;
 };
 
 type Props = {
@@ -31,10 +32,59 @@ type Props = {
 
 const EMPTY = 'Select a space to start chatting';
 
+function PreviewMessageBody({ message }: { message: PreviewMessage }) {
+  if (message.is_deleted) return <p className="text-[13px] italic">This message was deleted</p>;
+  return (
+    <div className="text-[13px] whitespace-pre-wrap break-words">
+      {message.content.startsWith('[[clip:')
+        ? <span className="italic">Voice or video clip</span>
+        : <ThreadMessageContent content={message.content} metadata={message.metadata} />}
+      {(message.files ?? []).map((file) => (
+        <ProtectedDownload key={file.id} file={file} className="block text-[12px] underline">{file.name}</ProtectedDownload>
+      ))}
+    </div>
+  );
+}
+
+/** Fetches only replies: opening a preview thread never marks it read or subscribes to writes. */
+function PreviewThread({ parentId, onClose }: { parentId: string; onClose: () => void }) {
+  const [replies, setReplies] = useState<PreviewMessage[] | null>(null);
+  const [error, setError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setError(false);
+    void (async () => {
+      try {
+        const res = await api.get(`/api/messages/${encodeURIComponent(parentId)}/thread`);
+        if (!res.ok) throw new Error('Thread unavailable');
+        const data = await res.json();
+        if (active) setReplies(data.replies ?? []);
+      } catch {
+        if (active) setError(true);
+      }
+    })();
+    return () => { active = false; };
+  }, [parentId, attempt]);
+  return (
+    <section aria-label="Thread" className="ml-3 my-2 border-l pl-3">
+      <button type="button" onClick={onClose} className="text-[12px] underline">Close thread</button>
+      {error ? <p role="alert">Could not load replies. <button type="button" onClick={() => setAttempt((value) => value + 1)}>Retry</button></p>
+        : replies === null ? <p role="status">Loading replies…</p>
+          : replies.map((reply) => (
+            <div key={reply.id} className="py-2">
+              <p className="text-[12px] font-semibold">{reply.user_name} <span className="font-normal">{formatMessageTime(reply.created_at)}</span></p>
+              <PreviewMessageBody message={reply} />
+            </div>
+          ))}
+    </section>
+  );
+}
+
 /**
  * Read-only view of a public space the viewer has not joined. It loads the
  * space and its messages through the same routes the chat uses and shows
- * them without any way to write: no composer, reactions, thread replies or
+ * them without any way to write: no composer, reactions, reply composer or
  * message menu. The Join button takes the composer's place; once the join
  * succeeds the space is in the joined list and the chat page shows the
  * normal view. A space the viewer may not read (private, archived, or the
@@ -49,6 +99,7 @@ export function PublicSpacePreview({ spaceId, ready }: Props) {
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [joining, setJoining] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [threadId, setThreadId] = useState<string | null>(null);
   const mounted = useRef(true);
   const bottom = useRef<HTMLDivElement>(null);
 
@@ -164,23 +215,13 @@ export function PublicSpacePreview({ spaceId, ready }: Props) {
                     <span className="font-semibold" style={{ color: 'var(--foreground)' }}>{message.user_name}</span>
                     <span className="ml-2 text-[11px]" style={{ color: 'var(--muted)' }}>{formatMessageTime(message.created_at)}</span>
                   </p>
-                  {message.is_deleted ? (
-                    <p className="text-[13px] italic" style={{ color: 'var(--muted)' }}>This message was deleted</p>
-                  ) : (
-                    <div className="text-[13px] whitespace-pre-wrap break-words" style={{ color: 'var(--foreground)', lineHeight: '20px' }}>
-                      {message.content.startsWith('[[clip:')
-                        ? <span className="italic" style={{ color: 'var(--muted)' }}>Voice or video clip</span>
-                        : <ThreadMessageContent content={message.content} metadata={message.metadata} />}
-                      {(message.files ?? []).map((file) => (
-                        <p key={file.id} className="text-[12px]" style={{ color: 'var(--muted)' }}>Attachment: {file.filename}</p>
-                      ))}
-                    </div>
-                  )}
-                  {!message.is_deleted && (message.reply_count ?? 0) > 0 && (
-                    <p className="text-[12px]" style={{ color: 'var(--muted)' }}>
+                  <PreviewMessageBody message={message} />
+                  {(message.reply_count ?? 0) > 0 && (
+                    <button type="button" onClick={() => setThreadId(message.id)} className="text-[12px] underline" style={{ color: 'var(--muted)' }}>
                       {message.reply_count} {message.reply_count === 1 ? 'reply' : 'replies'}
-                    </p>
+                    </button>
                   )}
+                  {threadId === message.id && <PreviewThread key={message.id} parentId={message.id} onClose={() => setThreadId(null)} />}
                 </div>
               </div>
             </div>
