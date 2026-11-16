@@ -6,6 +6,7 @@ import {
   agentEmployees,
   tasks,
   taskComments,
+  messages,
 } from '@deft/db/schema';
 import { eq, and, sql, gte } from 'drizzle-orm';
 import { getOrgAIConfig, hasAnyAIProvider } from '../../lib/org-ai-config.js';
@@ -188,6 +189,12 @@ export async function handleTaskExtract(job: JobData): Promise<void> {
     console.log(`[task-extract] Background chat-to-task capture disabled; skipping ${messageId}`);
     return;
   }
+
+  const [source] = await db.select({ id: messages.id }).from(messages).where(and(
+    eq(messages.id, messageId), eq(messages.org_id, orgId), eq(messages.space_id, spaceId),
+    eq(messages.user_id, userId), eq(messages.is_deleted, false),
+  )).limit(1);
+  if (!source) return;
 
   if (hasNoTaskDirective(content)) {
     console.log(`[task-extract] Skipped message ${messageId} due to explicit no-task directive`);
