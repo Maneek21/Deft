@@ -15,3 +15,8 @@ test('an authorized public message can resolve before the reader has joined any 
     '/chat?message=public-message&space=public-space');
   assert.equal(messageDeepLinkDestination(null, 'private-message', 'message=private-message'), null);
 });
+
+test('an authorized reply keeps its target and names its parent thread', () => {
+  assert.equal(messageDeepLinkDestination({ parent: { id: 'reply', space_id: 'public', parent_id: 'root' } }, 'reply', 'message=reply'),
+    '/chat?message=reply&space=public&thread=root');
+});

@@ -7,5 +7,8 @@ export function messageDeepLinkDestination(value: unknown, messageId: string, se
   const query = new URLSearchParams(search);
   if (query.getAll('message').length !== 1 || query.get('message') !== messageId || query.has('space')) return null;
   query.set('space', parent.space_id);
+  if (!query.has('thread') && 'parent_id' in parent && typeof parent.parent_id === 'string' && parent.parent_id) {
+    query.set('thread', parent.parent_id);
+  }
   return `/chat?${query.toString()}`;
 }

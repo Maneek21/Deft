@@ -56,10 +56,12 @@ function displayedMessage(message: PreviewMessage) {
 }
 
 /** Fetches only replies: opening a preview thread never marks it read or subscribes to writes. */
-function PreviewThread({ parentId, onClose }: { parentId: string; onClose: () => void }) {
+function PreviewThread({ parentId, highlightMessageId, onClose }: { parentId: string; highlightMessageId?: string; onClose: () => void }) {
   const [replies, setReplies] = useState<PreviewMessage[] | null>(null);
   const [error, setError] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  const target = useRef<HTMLDivElement>(null);
+  useEffect(() => { target.current?.scrollIntoView({ block: 'nearest' }); }, [replies, highlightMessageId]);
   useEffect(() => {
     let active = true;
     setError(false);
@@ -81,7 +83,9 @@ function PreviewThread({ parentId, onClose }: { parentId: string; onClose: () =>
       {error ? <p role="alert">Could not load replies. <button type="button" onClick={() => setAttempt((value) => value + 1)}>Retry</button></p>
         : replies === null ? <p role="status">Loading replies…</p>
           : replies.filter(displayedMessage).map((reply) => (
-            <div key={reply.id} className="py-2">
+            <div key={reply.id} ref={reply.id === highlightMessageId ? target : undefined}
+              data-highlighted={reply.id === highlightMessageId || undefined}
+              className={`py-2 ${reply.id === highlightMessageId ? 'ring-1 ring-current rounded' : ''}`}>
               <p className="text-[12px] font-semibold">{reply.user_name} <span className="font-normal">{formatMessageTime(reply.created_at)}</span></p>
               <PreviewMessageBody message={reply} />
             </div>
@@ -126,7 +130,18 @@ export function PublicSpacePreview({ spaceId, ready, highlightMessageId, initial
     setState('loading');
     void (async () => {
       try {
-        const targetId = initialThreadId ?? highlightMessageId;
+        let targetId = initialThreadId ?? highlightMessageId;
+        let resolvedThreadId = initialThreadId ?? null;
+        if (highlightMessageId && !initialThreadId) {
+          const response = await api.get(`/api/messages/${encodeURIComponent(highlightMessageId)}/thread`);
+          if (!response.ok) throw new Error('Message unavailable');
+          const { parent } = await response.json();
+          if (parent?.id !== highlightMessageId || parent.space_id !== spaceId) throw new Error('Message unavailable');
+          if (typeof parent.parent_id === 'string' && parent.parent_id) {
+            targetId = parent.parent_id;
+            resolvedThreadId = parent.parent_id;
+          }
+        }
         const path = targetId ? `${previewMessagesPath(spaceId)}?around=${encodeURIComponent(targetId)}` : previewMessagesPath(spaceId);
         const [details, list] = await Promise.all([api.get(publicSpaceDetailsPath(spaceId)), api.get(path)]);
         if (!active) return;
@@ -136,6 +151,7 @@ export function PublicSpacePreview({ spaceId, ready, highlightMessageId, initial
         if (!active) return;
         if (!canPreviewSpace(loaded)) { setState('unavailable'); return; }
         setSpace(loaded);
+        setThreadId(resolvedThreadId);
         setMessages(page.messages ?? []);
         setOlderCursor(page.next_cursor ?? null);
         setState('ready');
@@ -218,7 +234,7 @@ export function PublicSpacePreview({ spaceId, ready, highlightMessageId, initial
           const previous = displayed[index - 1];
           const newDay = !previous || !isSameDay(previous.created_at, message.created_at);
           return (
-            <div key={message.id} ref={message.id === (initialThreadId ?? highlightMessageId) ? target : undefined}>
+            <div key={message.id} ref={message.id === (threadId ?? highlightMessageId) ? target : undefined}>
               {newDay && (
                 <p className="py-2 text-center text-[11px] font-medium" style={{ color: 'var(--muted)' }}>{formatDayLabel(message.created_at)}</p>
               )}
@@ -235,7 +251,7 @@ export function PublicSpacePreview({ spaceId, ready, highlightMessageId, initial
                       {message.reply_count} {message.reply_count === 1 ? 'reply' : 'replies'}
                     </button>
                   )}
-                  {threadId === message.id && <PreviewThread key={message.id} parentId={message.id} onClose={() => setThreadId(null)} />}
+                  {threadId === message.id && <PreviewThread key={message.id} parentId={message.id} highlightMessageId={highlightMessageId} onClose={() => setThreadId(null)} />}
                 </div>
               </div>
             </div>

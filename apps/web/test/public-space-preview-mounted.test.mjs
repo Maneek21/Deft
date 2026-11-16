@@ -17,7 +17,7 @@ const parent = message('parent', 'Public parent', {
   space_id: 'public', reply_count: 2, files: [{ id: 'parent-file', name: 'public.txt' }],
 });
 const replies = [
-  message('reply', 'Public reply', { files: [{ id: 'reply-file', name: 'reply.txt' }] }),
+  message('reply', 'Public reply', { space_id: 'public', parent_id: 'parent', files: [{ id: 'reply-file', name: 'reply.txt' }] }),
   message('gone', 'CANARY-DELETED', { is_deleted: true, files: [{ id: 'gone-file', name: 'secret.txt' }] }),
   message('internal-reply', 'CANARY-HIDDEN-REPLY', { metadata: { hidden: true } }),
   message('clip-reply', '[[clip:reply-clip:ready]]'),
@@ -70,7 +70,8 @@ async function open(browser, props = {}) {
     const body = pathname === '/api/spaces/public' ? { id: 'public', name: 'Public room', type: 'public' }
       : pathname === '/api/messages/public' ? { messages: [parent,
         message('internal', 'CANARY-HIDDEN', { metadata: { kind: 'tool_result' } }), message('clip', '[[clip:parent-clip:ready]]')] }
-      : pathname === '/api/messages/parent/thread' ? { parent, replies } : {};
+      : pathname === '/api/messages/parent/thread' ? { parent, replies }
+      : pathname === '/api/messages/reply/thread' ? { parent: replies[0], replies: [] } : {};
     if (pathname.startsWith('/api/clips/')) return route.fulfill({ contentType: 'application/json', body: JSON.stringify({
       id: pathname.split('/').pop(), status: 'ready', transcript: 'Public clip transcript',
       summary: { tldr: 'Public clip summary', decisions: [], actions: [], blockers: [] },
@@ -156,5 +157,28 @@ test('ChatPage resolves a public message with no joined spaces and forwards prev
     await second.page.getByRole('region', { name: 'Thread' }).getByText('Public reply', { exact: true }).waitFor();
     assert.ok(second.calls.some(call => call.pathname === '/api/messages/public' && call.search === '?around=parent'));
     assert.deepEqual([...first.errors, ...second.errors], []);
+  } finally { await browser.close(); }
+});
+
+test('a reply link without thread opens its parent thread and retains the highlighted reply', async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const { page, calls, errors } = await open(browser, { chatPage: true, search: '?space=public&message=reply' });
+    const reply = page.getByRole('region', { name: 'Thread' }).getByText('Public reply', { exact: true });
+    await reply.waitFor();
+    assert.equal(await page.getByRole('region', { name: 'Thread' }).locator('[data-highlighted="true"]').getByText('Public reply', { exact: true }).count(), 1);
+    assert.ok(calls.some(call => call.pathname === '/api/messages/public' && call.search === '?around=parent'));
+    assert.ok(!calls.some(call => call.pathname === '/api/messages/public' && call.search === '?around=reply'));
+    assert.ok(calls.every(call => call.method === 'GET'));
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
+test('a message-only reply link resolves its authorized parent thread', async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const { page, errors } = await open(browser, { chatPage: true, search: '?message=reply' });
+    await page.waitForFunction(() => window.destination === '/chat?message=reply&space=public&thread=parent');
+    assert.deepEqual(errors, []);
   } finally { await browser.close(); }
 });
