@@ -628,7 +628,8 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     const member = await person('member', linkOrg);
     const ownerSession = (await login(owner.email)).json.accessToken as string;
     const adminSession = (await login(admin.email)).json.accessToken as string;
-    const reset = (url: string) => post('/api/auth/reset-password', { token: new URL(url).searchParams.get('token'), password: 'A-new-password-2026!' });
+    // The token travels after `#` (lib/secret-links.ts).
+    const reset = (url: string) => post('/api/auth/reset-password', { token: new URLSearchParams(new URL(url).hash.slice(1)).get('token'), password: 'A-new-password-2026!' });
 
     // An admin's link for a member stops working once that member is an admin.
     const forMember = (await call('POST', `/api/members/${member.id}/recovery-url`, {}, adminSession)).json.recovery_url as string;

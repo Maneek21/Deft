@@ -18,6 +18,7 @@ import { orgMembers, users } from '@deft/db/schema';
 import { db } from '../lib/db.js';
 import { env } from '../lib/env.js';
 import { OPERATOR_RECOVERY_ISSUER } from '../lib/web-sessions.js';
+import { buildRecoveryUrl } from '../lib/secret-links.js';
 
 const RECOVERY_TTL = '24h';
 
@@ -35,7 +36,7 @@ export async function makeOperatorRecoveryUrl(email: string): Promise<{ url: str
     { expiresIn: RECOVERY_TTL },
   );
   const { exp } = jwt.decode(token) as { exp: number };
-  return { url: `${env.NEXT_PUBLIC_APP_URL}/reset-password?token=${token}`, expires_at: new Date(exp * 1000).toISOString() };
+  return { url: buildRecoveryUrl(env.NEXT_PUBLIC_APP_URL, token), expires_at: new Date(exp * 1000).toISOString() };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
