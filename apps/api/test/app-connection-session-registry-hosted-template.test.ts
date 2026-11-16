@@ -153,3 +153,22 @@ test('exact entries stay the complete review for their installation; a template 
   assert.equal(registry.protocol(other.scope, other.profile), 'credential_form.v1');
   assert.doesNotThrow(() => registry.authenticate(other.scope, 'Bearer ' + authorityToken));
 });
+
+test('an exact entry covers its installation whoever the operator is; a different operator never falls through to the template', () => {
+  const s = scopeFor(), entryToken = 'c'.repeat(43);
+  const entry = { org_id: s.scope.org_id, installation_id: s.scope.installation_id, runtime_registration_id: s.scope.runtime_registration_id,
+    runtime_epoch: 1, profile: s.profile, connection_protocol: 'credential_form.v1' as const,
+    endpoint: 'https://reviewed.example.test/v1/connections', runtime_auth_token: 'd'.repeat(43), authority_token_sha256: sha(entryToken) };
+  const registry = new AppConnectionSessionRegistry(config({ entries: [entry] }), fetch, [], true);
+  // The same organisation and installation, reviewed for operator A, asked about operator B.
+  const b = scopeFor(randomUUID()), org = s.scope.org_id, installation = s.scope.installation_id;
+  const scope = { ...b.scope, org_id: org, installation_id: installation };
+  assert.throws(() => registry.profile(org, installation, policy, b.scope.operator_user_id), unavailable);
+  assert.throws(() => registry.transportDigest(org, installation, b.profile), unavailable);
+  assert.throws(() => registry.reviewedProtocol(org, installation, b.profile), unavailable);
+  assert.throws(() => registry.protocol(scope, b.profile), unavailable);
+  assert.throws(() => registry.authenticate(scope, 'Bearer ' + authorityToken));
+  assert.throws(() => registry.preauthenticateTransport(scope, 'Bearer ' + authorityToken));
+  // Operator A is still answered by the entry alone.
+  assert.equal(registry.transportDigest(org, installation, s.profile), connectionTransportEntryDigest(entry));
+});

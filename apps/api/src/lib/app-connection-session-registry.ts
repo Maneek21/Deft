@@ -139,6 +139,8 @@ export class AppConnectionSessionRegistry {
     if (!entries.length) {
       // No exact entry was written for this installation. A hosted template for
       // the declared profile answers, completed with the reviewed operator.
+      if (this.covers(orgId, installationId, { key: policy.provider_profile_key, resource_key: policy.resource_key,
+        runtime_requirement_key: policy.runtime_requirement_key, action_keys: policy.action_keys })) throw unavailable();
       const matches = operatorId === undefined ? [] : this.templates.filter(({ template }) => template.profile.key === policy.provider_profile_key
         && template.profile.resource_key === policy.resource_key && template.profile.runtime_requirement_key === policy.runtime_requirement_key
         && JSON.stringify(template.profile.action_keys) === JSON.stringify(policy.action_keys));
@@ -155,7 +157,7 @@ export class AppConnectionSessionRegistry {
     const entries = this.entries.filter(entry => entry.org_id === orgId && entry.installation_id === installationId
       && connectionProfileDigest(entry.profile) === connectionProfileDigest(profile));
     if (!entries.length) {
-      const template = this.template(profile.operator_user_id, connectionProfileDigest(profile));
+      const template = this.template(orgId, installationId, profile.operator_user_id, connectionProfileDigest(profile));
       if (!template) throw unavailable();
       return template.transportDigest;
     }
@@ -163,11 +165,19 @@ export class AppConnectionSessionRegistry {
     if (digests.size !== 1) throw unavailable();
     return digests.values().next().value!;
   }
+  /** Whether any exact entry reviews this installation for this profile, whoever
+   * its operator is. An entry that names another operator still covers it. */
+  private covers(orgId: string, installationId: string, keys: { key: string | undefined; resource_key: string; runtime_requirement_key: string | undefined; action_keys: readonly string[] }) {
+    return this.entries.some(entry => entry.org_id === orgId && entry.installation_id === installationId && entry.profile.key === keys.key
+      && entry.profile.resource_key === keys.resource_key && entry.profile.runtime_requirement_key === keys.runtime_requirement_key
+      && JSON.stringify(entry.profile.action_keys) === JSON.stringify(keys.action_keys));
+  }
   /** The single hosted template whose profile, completed with this operator,
-   * has exactly this digest. Exact entries are always consulted first. */
-  private template(operatorId: string, profileDigest: string) {
+   * has exactly this digest, and only where no exact entry covers the
+   * installation and profile. */
+  private template(orgId: string, installationId: string, operatorId: string, profileDigest: string) {
     const matches = this.templates.filter(({ template }) => connectionProfileDigest(templateProfile(template, operatorId)) === profileDigest);
-    return matches.length === 1 ? matches[0]! : undefined;
+    return matches.length === 1 && !this.covers(orgId, installationId, matches[0]!.template.profile) ? matches[0]! : undefined;
   }
   private select(scope: AppConnectionSessionScope, profile?: AppConnectionProfile) {
     const reviewed = this.entries.filter(entry => entry.org_id === scope.org_id && entry.installation_id === scope.installation_id
@@ -179,7 +189,7 @@ export class AppConnectionSessionRegistry {
       // the caller's current authority, rebuilt from reviewed rows; the template
       // supplies only the transport that scope may be sent over. Where exact
       // entries exist they stay the complete list of registrations.
-      const found = this.template(scope.operator_user_id, scope.profile_digest);
+      const found = this.template(scope.org_id, scope.installation_id, scope.operator_user_id, scope.profile_digest);
       if (!found) throw unavailable();
       const { template } = found;
       return Object.freeze({ org_id: scope.org_id, installation_id: scope.installation_id,
@@ -201,7 +211,7 @@ export class AppConnectionSessionRegistry {
     if(!token)throw denied();
     const entries=this.transportRoots.filter(entry=>entry.org_id===scope.org_id&&entry.installation_id===scope.installation_id
       &&entry.profile.operator_user_id===scope.operator_user_id&&connectionProfileDigest(entry.profile)===scope.profile_digest);
-    const template=entries.length?undefined:this.template(scope.operator_user_id,scope.profile_digest);
+    const template=entries.length?undefined:this.template(scope.org_id,scope.installation_id,scope.operator_user_id,scope.profile_digest);
     if(!template&&(!entries.length||new Set(entries.map(entry=>`${this.entryTransportDigest(entry)}:${entry.connection_protocol??'v1'}`)).size!==1))throw denied();
     const expected=Buffer.from((template?.template??entries[0]!).authority_token_sha256.slice(7),'hex');
     if(!timingSafeEqual(expected,createHash('sha256').update(token).digest()))throw denied();
@@ -219,7 +229,7 @@ export class AppConnectionSessionRegistry {
   reviewedProtocol(orgId:string,installationId:string,profile:AppConnectionProfile):'v1'|'v2'|'credential_form.v1'{
     const entries=this.entries.filter(entry=>entry.org_id===orgId&&entry.installation_id===installationId
       &&connectionProfileDigest(entry.profile)===connectionProfileDigest(profile));
-    if(!entries.length){const template=this.template(profile.operator_user_id,connectionProfileDigest(profile));if(!template)throw unavailable();return template.template.connection_protocol;}
+    if(!entries.length){const template=this.template(orgId,installationId,profile.operator_user_id,connectionProfileDigest(profile));if(!template)throw unavailable();return template.template.connection_protocol;}
     const reviews=new Set(entries.map(entry=>`${this.entryTransportDigest(entry)}:${entry.connection_protocol??'v1'}`));
     if(reviews.size!==1)throw unavailable();return entries[0]!.connection_protocol??'v1';
   }
