@@ -1,5 +1,8 @@
 import { sql } from 'drizzle-orm';
-import { db } from './db.js';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import pg from 'pg';
+import { Socket } from 'node:net';
+import { env } from './env.js';
 
 /**
  * The database version actually applied, read from the upgrade ledger
@@ -17,7 +20,7 @@ export type LedgerReader = () => Promise<LedgerRow[] | null>;
 const CACHE_MS = 30_000;
 const FAILURE_CACHE_MS = 5_000;
 const READ_TIMEOUT_MS = 1_000;
-const STATEMENT_TIMEOUT_MS = 800;
+const DATABASE_BUDGET_MS = 800;
 
 function parseVersion(version: string): { core: number[]; pre: number[] | null } {
   const [core, pre] = version.split('-', 2) as [string, string | undefined];
@@ -63,18 +66,50 @@ function resultRows(result: unknown): Record<string, unknown>[] {
 }
 
 /**
- * Null when the ledger table does not exist. The query carries its own
- * statement timeout (set for this transaction only, not for the pool).
+ * Use at most one short-lived recovery connection, never the ordinary pool.
+ * Its deadline includes startup, queries and transport stalls. Destroying our
+ * socket closes the database session even when PostgreSQL cannot respond.
+ * The existing two reserved recovery/operator slots cover this one reader.
  */
-export const readLedgerFromDatabase: LedgerReader = () => db.transaction(async (tx) => {
-  await tx.execute(sql.raw(`SET LOCAL statement_timeout = ${STATEMENT_TIMEOUT_MS}`));
-  const exists = resultRows(await tx.execute(sql`
-    SELECT to_regclass('public.deft_schema_migrations') IS NOT NULL AS exists
-  `))[0]?.exists === true;
-  if (!exists) return null;
-  return resultRows(await tx.execute(sql`SELECT version, applied_at FROM deft_schema_migrations`))
-    .map((row) => ({ version: String(row.version), applied_at: row.applied_at as Date | string | null }));
-});
+async function readLedgerOnce(): Promise<LedgerRow[] | null> {
+  const socket = new Socket();
+  const closed = new Promise<void>((resolve) => socket.once('close', () => resolve()));
+  const client = new pg.Client({ connectionString: env.DATABASE_URL, stream: () => socket,
+    connectionTimeoutMillis: DATABASE_BUDGET_MS, query_timeout: DATABASE_BUDGET_MS,
+    statement_timeout: DATABASE_BUDGET_MS, application_name: 'deft-schema-health' });
+  // Errors between queries must not become uncaught EventEmitter errors.
+  client.on('error', () => {});
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => { socket.destroy(); reject(new Error('Schema ledger read deadline')); }, DATABASE_BUDGET_MS);
+  });
+  const read = async () => {
+    await client.connect();
+    const reader = drizzle(client);
+    const exists = resultRows(await reader.execute(sql`
+      SELECT to_regclass('public.deft_schema_migrations') IS NOT NULL AS exists
+    `))[0]?.exists === true;
+    if (!exists) return null;
+    return resultRows(await reader.execute(sql`SELECT version, applied_at FROM deft_schema_migrations`))
+      .map((row) => ({ version: String(row.version), applied_at: row.applied_at as Date | string | null }));
+  };
+  try {
+    return await Promise.race([read(), timedOut]);
+  } finally {
+    clearTimeout(timer);
+    void client.end().catch(() => {});
+    socket.destroy();
+    await closed;
+  }
+}
+
+let activeRead: ReturnType<typeof readLedgerOnce> | null = null;
+export const readLedgerFromDatabase: LedgerReader = () => {
+  // Keep the slot until local socket cleanup completes, even if the HTTP cache
+  // has already answered unavailable. Concurrent probes cannot pile up work.
+  activeRead ??= readLedgerOnce().finally(() => { activeRead = null; });
+  return activeRead;
+};
 
 /**
  * `ok`: read from the ledger. `no_ledger`: the ledger table is missing (or
