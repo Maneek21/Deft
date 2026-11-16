@@ -19,7 +19,7 @@ import { currentAgentActionSourceAuthoritySql } from '../agent-channel-authority
  * Phase 12 review fix: before returning any thread content, verify the
  * caller employee is allowed to see the parent message's space:
  *   - same org
- *   - space is public OR the employee's shadow user is a space_members row
+ *   - space is active public OR the employee's shadow user has joined it
  *
  * Without this, an employee bearer-scoped to the org can read any private
  * space's threads by id-guessing a parent_message_id.
@@ -30,17 +30,17 @@ async function canEmployeeSeeSpace(
   employeeId: string,
 ): Promise<boolean> {
   const [space] = await db
-    .select({ id: spaces.id, type: spaces.type })
+    .select({ id: spaces.id, type: spaces.type, is_archived: spaces.is_archived })
     .from(spaces)
     .where(and(eq(spaces.id, spaceId), eq(spaces.org_id, orgId)))
     .limit(1);
   if (!space) return false;
-  if (space.type === 'public') return true;
+  if (space.type === 'public' && !space.is_archived) return true;
 
   const [emp] = await db
     .select({ user_id: agentEmployees.user_id })
     .from(agentEmployees)
-    .where(eq(agentEmployees.id, employeeId))
+    .where(and(eq(agentEmployees.id, employeeId), eq(agentEmployees.org_id, orgId)))
     .limit(1);
   if (!emp?.user_id) return false;
 

@@ -72,6 +72,22 @@ function pendingRows(result: ToolResult): ActionRow[] {
   return (JSON.parse(content.text) as { pending_actions: ActionRow[] }).pending_actions;
 }
 
+test('employee MCP reads active public threads before joining but archived threads require membership', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const { threadFetch } = await import('../src/lib/mcp-tools/messages.js');
+  const room = randomUUID(), source = randomUUID();
+  await client!.query("INSERT INTO spaces(id,org_id,name,type,created_by) VALUES($1,$2,'Archive read contract','public',$3)", [room, orgId, ids.requester]);
+  await client!.query("INSERT INTO messages(id,org_id,space_id,user_id,content) VALUES($1,$2,$3,$4,'CANARY-ARCHIVED-EMPLOYEE')", [source, orgId, room, ids.requester]);
+  const read = () => threadFetch({ caller_employee_slug: employeeSlug, parent_message_id: source }, employeeContext);
+  assert.ok(!(await read()).isError, 'an unjoined employee still reads an active public space');
+  await client!.query('UPDATE spaces SET is_archived=true WHERE id=$1', [room]);
+  const refused = await read();
+  assert.equal(refused.isError, true, 'archived public reads require joining');
+  assert.ok(!JSON.stringify(refused).includes('CANARY-ARCHIVED-EMPLOYEE'));
+  await client!.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), room, employeeUserId]);
+  assert.ok(!(await read()).isError, 'joined employees keep archived content access');
+});
+
 test('task-extraction second-hop dispatch and MCP polling recheck their message source', async (t) => {
   if (unavailable) return t.skip(unavailable);
   const { handleEmployeeTrigger } = await import('../src/workers/handlers/employee-trigger.js');
