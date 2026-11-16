@@ -208,6 +208,7 @@ jobs:
           src/lib/private-state-adoption.test.ts
           src/lib/action-batch-review.test.ts
           src/lib/app-navigation.test.ts
+          src/lib/setup-link-mounted.test.ts
       - name: Test bounded resource observation claim deadlines
         run: pnpm --filter @deft/api exec tsx --test src/lib/app-resource-sync-claim-budget.test.ts
       - name: Type check API
