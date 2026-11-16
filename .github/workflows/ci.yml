@@ -198,6 +198,8 @@ jobs:
           src/lib/ios-install-hint.test.ts
       - name: Install locked browser for mounted App contracts
         run: pnpm exec playwright install --with-deps chromium
+      - name: Test public space preview reads
+        run: node --test apps/web/test/public-space-preview-mounted.test.mjs
       - name: Test installed app session and review contracts
         run: >-
           pnpm --filter @deft/web exec tsx --test
