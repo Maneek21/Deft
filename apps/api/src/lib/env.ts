@@ -146,6 +146,7 @@ export const env = {
   VAPID_PUBLIC_KEY: process.env.VAPID_PUBLIC_KEY || '',
   VAPID_PRIVATE_KEY: process.env.VAPID_PRIVATE_KEY || '',
   VAPID_SUBJECT: process.env.VAPID_SUBJECT || '',
+  PUSH_MESSAGE_PREVIEWS_ENABLED: process.env.PUSH_MESSAGE_PREVIEWS_ENABLED === 'true',
 };
 
 // App Protocol v0 is opt-in while the first vertical slice is certified.
