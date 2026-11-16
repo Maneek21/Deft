@@ -14,6 +14,7 @@ import { eq, inArray, sql } from 'drizzle-orm';
 import { jobQueue } from '@deft/db/schema';
 import { db } from '../src/lib/db.js';
 import { completeJob, dequeueJob, enqueue, QUEUE_NAMES } from '../src/lib/queues.js';
+import { _processDequeuedJobForTest } from '../src/workers/index.js';
 
 const orgIds: string[] = [];
 
@@ -93,6 +94,46 @@ test('a running job whose lease expired does not block the space', async () => {
   const next = await claim(orgId);
   assert.equal(next?.data.messageId, second, 'an expired lease stops blocking');
   await completeJob(next!.id, next!.lockToken);
+});
+
+test('a reply has a finite timeout even when the global job timeout is disabled', async (t) => {
+  const orgId = newOrg();
+  const spaceId = crypto.randomUUID();
+  await enqueueReply(orgId, spaceId);
+  const second = await enqueueReply(orgId, spaceId);
+  const stuck = await claim(orgId);
+  assert.ok(stuck);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  let fireTimeout: (() => void) | undefined;
+  const originalTimeout = globalThis.setTimeout;
+  const timer = t.mock.method(globalThis, 'setTimeout', (callback: (...args: any[]) => void, delay?: number, ...args: any[]) => {
+    if (delay === 120_000) fireTimeout = () => callback(...args);
+    return originalTimeout(callback, delay, ...args);
+  });
+  const processing = _processDequeuedJobForTest(QUEUE_NAMES.AGENT_JOBS, stuck, {
+    timeoutMs: 0,
+    resolveHandler: async () => async () => { entered(); await held; },
+  });
+  try {
+    await started;
+    assert.ok(fireTimeout, 'a disabled timeout must fall back to the finite reply default');
+    assert.equal(await claim(orgId), null, 'the second reply waits before the timeout');
+    fireTimeout();
+    await processing;
+    const [row] = await db.select().from(jobQueue).where(eq(jobQueue.id, stuck.id));
+    assert.equal(row?.status, 'failed');
+    assert.match(row?.error ?? '', /timed out after 120000ms/);
+    const next = await claim(orgId);
+    assert.equal(next?.data.messageId, second, 'the timed-out occurrence stops holding the space');
+    await completeJob(next!.id, next!.lockToken);
+  } finally {
+    release();
+    await processing;
+    timer.mock.restore();
+  }
 });
 
 test('an older pending reply that is not yet due does not block a due one', async () => {

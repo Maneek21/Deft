@@ -17,8 +17,8 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
   expired lease never blocks. This assumes a single API process claims jobs:
   replies can still overlap with more than one process, or when a reply
   handler keeps running after its job timeout (120 s by default) settled the
-  row. With `DEFT_JOB_TIMEOUT_MS=0` there is no timeout, so a hung reply holds
-  its space until the process restarts.
+  row. With general timeouts disabled (or invalid), assistant replies retain
+  the 120-second default so a hung occurrence stops holding its space.
 
 ### Changed: approving an action that then fails
 
@@ -44,7 +44,9 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 - Ordinary native actions run directly by the assistant now leave a signed
   receipt. Personal MCP and API-key calls name the user behind the credential;
   employee calls name the employee. Plan approve/resume records the reviewer
-  in `context.approved_by_user_id`, which the step receipt names as approver.
+  in each step's `approved_by_user_id` metadata, which its receipt names as
+  approver. Result context remains available for every step ID, including
+  `approved_by_user_id`.
 
 ### Notice: Kit `0.1.0-alpha.44` removes deprecated Email compatibility
 

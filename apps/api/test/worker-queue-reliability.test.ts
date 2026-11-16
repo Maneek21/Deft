@@ -102,6 +102,25 @@ test('operational pauses preserve a durable occurrence without spending retry bu
   assert.ok((row?.run_at.getTime() ?? 0) > Date.now());
 });
 
+test('disabled timeouts remain disabled for job kinds other than assistant replies', async (t) => {
+  const name = `no-timeout:${crypto.randomUUID()}`;
+  await enqueue(TEST_QUEUE, name, {});
+  const claim = await dequeueJob(TEST_QUEUE);
+  assert.ok(claim);
+  const originalTimeout = globalThis.setTimeout;
+  let replyTimeoutInstalled = false;
+  t.mock.method(globalThis, 'setTimeout', (callback: (...args: any[]) => void, delay?: number, ...args: any[]) => {
+    if (delay === 120_000) replyTimeoutInstalled = true;
+    return originalTimeout(callback, delay, ...args);
+  });
+  await _processDequeuedJobForTest(TEST_QUEUE, claim, {
+    timeoutMs: 0,
+    resolveHandler: async () => async () => {},
+  });
+  assert.equal(replyTimeoutInstalled, false);
+  assert.equal((await rowsFor(name))[0]?.status, 'completed');
+});
+
 test('a terminally failed recurring occurrence schedules one successor', async () => {
   const name = 'nudge-check';
   const cronKey = `cron:worker-failure:${crypto.randomUUID()}`;

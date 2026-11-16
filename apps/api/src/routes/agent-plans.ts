@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { eq, and, desc, or, sql, type SQL } from 'drizzle-orm';
+import { eq, and, desc, or, type SQL } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { agentPlans } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
@@ -9,9 +9,9 @@ import {
   createPlanRow,
   PLAN_EMPLOYEE_UNAVAILABLE_ERROR,
   PlanAccessError,
+  type PlanStep,
 } from '../lib/agent-plans.js';
 import { getActiveOrgMembership } from '../lib/org-membership.js';
-import { PLAN_APPROVER_CONTEXT_KEY } from '../lib/direct-action-receipt.js';
 import { isDestructiveAction } from '../lib/agent-approval.js';
 import { getMCPToolsForAgent } from '../lib/mcp-tools.js';
 
@@ -29,11 +29,11 @@ async function planManagerScope(orgId: string, userId: string): Promise<SQL> {
 }
 
 /**
- * Records who approved (or resumed) the plan in its context, so the receipts
- * of the steps it then runs name that person as the approver.
+ * Stamp step metadata without occupying a caller-controlled step-result key
+ * in context. Approval replaces any approver supplied with the draft steps.
  */
-function planApproverContext(userId: string) {
-  return sql`COALESCE(${agentPlans.context}, '{}'::jsonb) || jsonb_build_object(${PLAN_APPROVER_CONTEXT_KEY}::text, ${userId}::text)`;
+function withPlanApprover(steps: PlanStep[], userId: string): PlanStep[] {
+  return steps.map((step) => ({ ...step, approved_by_user_id: userId }));
 }
 
 function planAccessRefusal(err: unknown) {
@@ -198,6 +198,7 @@ agentPlanRoutes.put('/:id', async (c) => {
       await assertPlanStepsAllowedFor(user.org_id, user.id, body.steps);
       updates.steps = body.steps.map((step: any) => ({
         ...step,
+        approved_by_user_id: (existing.steps as PlanStep[]).find((prior) => prior.id === step.id)?.approved_by_user_id,
         status: step.status ?? 'pending',
       }));
     }
@@ -244,7 +245,7 @@ agentPlanRoutes.post('/:id/approve', async (c) => {
 
     const [updated] = await db
       .update(agentPlans)
-      .set({ status: 'approved', context: planApproverContext(user.id), updated_at: new Date() })
+      .set({ status: 'approved', steps: withPlanApprover(plan.steps as PlanStep[], user.id), updated_at: new Date() })
       .where(eq(agentPlans.id, planId))
       .returning();
 
@@ -362,7 +363,7 @@ agentPlanRoutes.post('/:id/resume', async (c) => {
 
     await db
       .update(agentPlans)
-      .set({ status: 'approved', steps, context: planApproverContext(user.id), updated_at: new Date() })
+      .set({ status: 'approved', steps: withPlanApprover(steps, user.id), updated_at: new Date() })
       .where(eq(agentPlans.id, planId));
 
     await enqueue(QUEUE_NAMES.AGENT_JOBS, 'plan-executor', {

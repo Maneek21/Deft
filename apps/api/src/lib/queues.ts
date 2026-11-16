@@ -212,9 +212,9 @@ export async function dequeueJob(
         -- them; no index is added for now.
         -- Assumes a single API process claiming jobs. Two replies can still
         -- overlap when more than one process claims, or when a handler keeps
-        -- running after its job timeout (120s default) settled the row. With
-        -- DEFT_JOB_TIMEOUT_MS=0 there is no timeout: a hung reply keeps
-        -- renewing its lease and holds its space until the process restarts.
+        -- running after its job timeout (120s default) settled the row.
+        -- Disabled/invalid general timeouts fall back to 120s for agent-reply,
+        -- so a hung occurrence cannot renew its space hold indefinitely.
         AND (
           candidate.name <> 'agent-reply'
           OR candidate.queue <> ${QUEUE_NAMES.AGENT_JOBS}

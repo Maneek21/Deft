@@ -91,6 +91,19 @@ async function receipts(actionId: string) {
 
 const createTask = (title: string) => ({ title: `${title} ${suffix}`, resolved_project_id: projectId, priority: 'p2' });
 
+function planApp() {
+  const app = new Hono();
+  app.use('*', async (c, next) => {
+    c.set('user', { id: adminId, org_id: orgId, role: 'admin' } as any);
+    await next();
+  });
+  app.route('/api/agent/plans', agentPlanRoutes);
+  return app;
+}
+
+const reviewPlan = (planId: string, route: 'approve' | 'resume') =>
+  planApp().request(`/api/agent/plans/${planId}/${route}`, { method: 'POST' });
+
 test('Defty: an automatically executed ordinary action leaves exactly one receipt', { skip: !canRun }, async () => {
   const executed = await executeActionDirect('create_task', createTask('Defty task'), orgId, ownerId, null, 'auto', { source: 'background' });
   assert.equal(executed.success, true, executed.error);
@@ -132,35 +145,37 @@ for (const source of ['mcp_api', 'mcp']) {
   });
 }
 
-for (const route of ['approve', 'resume']) {
+for (const route of ['approve', 'resume'] as const) {
   test(`plan ${route}: HTTP records the reviewer and execution signs the step with that approver`, { skip: !canRun }, async () => {
     const planId = randomUUID();
-    const steps = [{ id: 'step-1', tool: 'create_task', params: createTask('Plan task'),
-      status: route === 'resume' ? 'waiting_approval' : 'pending' }];
-    const context = { retained: { result: 'previous step' }, approved_by_user_id: ownerId };
+    const priorResult = { title: `Preserved plan result ${route} ${suffix}` };
+    const steps = [
+      { id: 'approved_by_user_id', tool: 'create_task', params: createTask('Prior task'), status: 'completed', result: priorResult },
+      { id: 'step-1', tool: 'create_task',
+        params: { ...createTask('Plan task'), title: '$step.approved_by_user_id.result.title' },
+        approved_by_user_id: ownerId, status: route === 'resume' ? 'waiting_approval' : 'pending' },
+    ];
+    const context = { retained: { result: 'previous step' }, approved_by_user_id: { result: priorResult } };
     await client.query(
       `INSERT INTO agent_plans (id, org_id, user_id, title, steps, status, current_step, context)
-       VALUES ($1, $2, $3, 'Receipt plan', $4::jsonb, $5, 0, $6::jsonb)`,
-      [planId, orgId, ownerId, JSON.stringify(steps), route === 'resume' ? 'paused' : 'draft', JSON.stringify(context)],
+       VALUES ($1, $2, $3, 'Receipt plan', $4::jsonb, 'paused', 1, $5::jsonb)`,
+      [planId, orgId, ownerId, JSON.stringify(steps), JSON.stringify(context)],
     );
-    const app = new Hono();
-    app.use('*', async (c, next) => {
-      c.set('user', { id: adminId, org_id: orgId, role: 'admin' } as any);
-      await next();
-    });
-    app.route('/api/agent/plans', agentPlanRoutes);
-    const response = await app.request(`/api/agent/plans/${planId}/${route}`, { method: 'POST' });
+    const response = await reviewPlan(planId, route);
     assert.equal(response.status, 200, await response.clone().text());
     const approved = (await client.query('SELECT context, status, steps FROM agent_plans WHERE id = $1', [planId])).rows[0];
-    assert.deepEqual(approved.context, { ...context, approved_by_user_id: adminId });
+    assert.deepEqual(approved.context, context, 'reviewing a plan must preserve every step result');
     assert.equal(approved.status, 'approved');
-    assert.equal(approved.steps[0].status, 'pending');
+    assert.equal(approved.steps[1].status, 'pending');
+    assert.ok(approved.steps.every((step: any) => step.approved_by_user_id === adminId), 'the route replaces supplied approver metadata');
 
     await executePlan(planId, orgId, ownerId);
     const actions = (await client.query('SELECT id, error, executed_at FROM agent_actions WHERE plan_id = $1 AND org_id = $2', [planId, orgId])).rows;
     assert.equal(actions.length, 1);
     assert.equal(actions[0].error, null);
     assert.ok(actions[0].executed_at);
+    const task = (await client.query('SELECT title FROM tasks WHERE org_id = $1 AND title = $2', [orgId, priorResult.title])).rows[0];
+    assert.equal(task?.title, priorResult.title, 'a downstream step still resolves the prior result');
     const rows = await receipts(actions[0].id);
     assert.equal(rows.length, 1);
     assert.equal(rows[0]!.decision, 'approved');
@@ -168,6 +183,47 @@ for (const route of ['approve', 'resume']) {
     assert.equal(rows[0]!.proposer, 'defty');
   });
 }
+
+test('executing a step named approved_by_user_id preserves the reviewer on subsequent receipts', { skip: !canRun }, async () => {
+  const planId = randomUUID();
+  const steps = [
+    { id: 'approved_by_user_id', tool: 'create_task', params: createTask('First collision task') },
+    { id: 'next', tool: 'create_task', params: createTask('Following task') },
+  ];
+  await client.query(`INSERT INTO agent_plans (id, org_id, user_id, title, steps, status, context)
+    VALUES ($1, $2, $3, 'Step id collision', $4::jsonb, 'draft', '{}'::jsonb)`,
+    [planId, orgId, ownerId, JSON.stringify(steps)]);
+  const response = await reviewPlan(planId, 'approve');
+  assert.equal(response.status, 200, await response.clone().text());
+  await executePlan(planId, orgId, ownerId);
+  const actions = (await client.query('SELECT id, error FROM agent_actions WHERE plan_id = $1 AND org_id = $2', [planId, orgId])).rows;
+  assert.equal(actions.length, 2);
+  for (const action of actions) {
+    assert.equal(action.error, null);
+    const rows = await receipts(action.id);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]!.decision, 'approved');
+    assert.equal(rows[0]!.approver_id, adminId);
+  }
+});
+
+test('plan create/edit cannot supply or replace the server-stamped reviewer', { skip: !canRun }, async () => {
+  const app = planApp();
+  const steps = [{ id: 'step', tool: 'create_task', params: createTask('Metadata ownership'), approved_by_user_id: ownerId }];
+  const created = await app.request('/api/agent/plans', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'Metadata ownership', steps }),
+  });
+  assert.equal(created.status, 201, await created.clone().text());
+  const plan = await created.json() as any;
+  assert.equal(plan.steps[0].approved_by_user_id, undefined);
+  assert.equal((await reviewPlan(plan.id, 'approve')).status, 200);
+  await client.query("UPDATE agent_plans SET status = 'paused' WHERE id = $1 AND org_id = $2", [plan.id, orgId]);
+  const edited = await app.request(`/api/agent/plans/${plan.id}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ steps }),
+  });
+  assert.equal(edited.status, 200, await edited.clone().text());
+  assert.equal((await edited.json() as any).steps[0].approved_by_user_id, adminId);
+});
 
 test('an action that already has a receipt under another decision gets no second one', { skip: !canRun }, async () => {
   // No approver on the row, so the helper would sign "auto_executed"; the

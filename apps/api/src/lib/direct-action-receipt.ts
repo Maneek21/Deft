@@ -2,15 +2,13 @@ import { and, eq } from 'drizzle-orm';
 import { actionReceipts, agentActions, agentPlans } from '@deft/db/schema';
 import { db } from './db.js';
 import { generateReceipt, type ReceiptDecision, type ReceiptProposer } from './receipts.js';
+import type { PlanStep } from './agent-plans.js';
 
 /** Sources whose calls are made by a person with their own credential. */
 const PERSON_SOURCES: ReadonlySet<string> = new Set([
   'mcp_api', // legacy /api/mcp/call with an API key not bound to an employee
   'mcp', // personal MCP token
 ]);
-
-/** The plan context key that records who approved the plan (set by the plan approve and resume routes). */
-export const PLAN_APPROVER_CONTEXT_KEY = 'approved_by_user_id';
 
 /**
  * C11: a native action run directly or automatically (agent runner, plans,
@@ -44,6 +42,7 @@ export async function recordDirectActionReceipt(input: {
         params: agentActions.params,
         source: agentActions.source,
         plan_id: agentActions.plan_id,
+        plan_step_id: agentActions.plan_step_id,
       })
       .from(agentActions)
       .where(and(eq(agentActions.id, input.actionId), eq(agentActions.org_id, input.orgId)))
@@ -65,12 +64,13 @@ export async function recordDirectActionReceipt(input: {
       approverId = row.approved_by_user_id;
     } else if (row.plan_id) {
       const [plan] = await db
-        .select({ context: agentPlans.context })
+        .select({ steps: agentPlans.steps })
         .from(agentPlans)
         .where(and(eq(agentPlans.id, row.plan_id), eq(agentPlans.org_id, input.orgId)))
         .limit(1);
       decision = 'approved';
-      const recorded = (plan?.context as Record<string, unknown> | null)?.[PLAN_APPROVER_CONTEXT_KEY];
+      const steps = Array.isArray(plan?.steps) ? plan.steps as PlanStep[] : [];
+      const recorded = steps.find((step) => step?.id === row.plan_step_id)?.approved_by_user_id;
       approverId = typeof recorded === 'string' && recorded ? recorded : null;
     }
 
