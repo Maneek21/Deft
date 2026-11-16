@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import {
   getAgentActionDisplayStatus,
   getApprovalMutationStatus,
+  retryableApprovalMessage,
 } from './agent-action-presentation';
 
 test('E04: an approved native action with an error is shown as failed', () => {
@@ -41,6 +42,19 @@ test('E04: approve answers map failed and executing instead of defaulting to app
   assert.equal(getApprovalMutationStatus({ status: 'approved' }, 'approved'), 'approved');
   assert.equal(getApprovalMutationStatus({ status: 'rejected' }, 'approved'), 'rejected');
   assert.equal(getApprovalMutationStatus(undefined, 'rejected'), 'rejected');
+});
+
+test('Fix 5: a retryable approve failure gives a plain message and is not shown as approved or failed', () => {
+  const answer = { status: 'pending', retryable: true, message: 'approved, but it did not complete', error: 'Project not found' };
+  const message = retryableApprovalMessage(answer);
+  assert.ok(message);
+  assert.match(message, /still waiting for approval/);
+  assert.match(message, /Project not found/);
+  assert.equal(retryableApprovalMessage({ status: 'failed', error: 'x' }), null);
+  assert.equal(retryableApprovalMessage({ status: 'pending' }), null);
+  assert.equal(retryableApprovalMessage(undefined), null);
+  const card = readFileSync(new URL('../components/agent-action-card.tsx', import.meta.url), 'utf8');
+  assert.match(card, /const retryMessage = retryableApprovalMessage\(result\);/);
 });
 
 test('E04: the card derives its server status from the shared display status', () => {

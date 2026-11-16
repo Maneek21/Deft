@@ -189,14 +189,20 @@ test('wiki_write: a proposal without a recorded target', { skip: !canRun }, asyn
   await assertFailedResult(actionId, UNVERIFIABLE, 'WIKI_PROPOSAL_UNVERIFIABLE', page.id);
 });
 
-test('an unexpected execution error keeps its error response', { skip: !canRun }, async () => {
+// Fix 5: an execution failure after approval is an answer, never a server error.
+test('an unexpected execution error answers 200: final on the resolver path, retryable on the ordinary path', { skip: !canRun }, async () => {
   const updatePage = await createPage();
   const updateAction = await mcpUpdate(updatePage);
   _setWikiUpdateRevisionCheckedHookForTest(async () => { throw new Error('simulated failure'); });
   try {
     const answer = await approve(updateAction);
-    assert.equal(answer.status, 500, JSON.stringify(answer.body));
-    assert.equal(answer.body.code, 'EXECUTE_FAILED');
+    assert.equal(answer.status, 200, JSON.stringify(answer.body));
+    assert.equal(answer.body.status, 'failed');
+    assert.equal(answer.body.message, 'approved, but it did not complete');
+    assert.match(String(answer.body.error), /simulated failure/);
+    const [row] = (await f.client.query('SELECT approval_status, executed_at FROM agent_actions WHERE id = $1', [updateAction])).rows;
+    assert.equal(row.approval_status, 'approved');
+    assert.ok(row.executed_at, 'the resolver failure is final');
   } finally {
     _setWikiUpdateRevisionCheckedHookForTest(null);
   }
@@ -206,13 +212,21 @@ test('an unexpected execution error keeps its error response', { skip: !canRun }
   _setWikiWriteRevisionCheckedHookForTest(async () => { throw new Error('simulated failure'); });
   try {
     const answer = await approve(writeAction);
-    assert.equal(answer.status, 500, JSON.stringify(answer.body));
-    assert.equal(answer.body.code, 'EXECUTE_FAILED');
+    assert.equal(answer.status, 200, JSON.stringify(answer.body));
+    assert.equal(answer.body.status, 'pending');
+    assert.equal(answer.body.retryable, true);
+    assert.match(String(answer.body.message), /still pending and can be approved again/);
+    assert.match(String(answer.body.error), /simulated failure/);
+    const [row] = (await f.client.query('SELECT approval_status, executed_at FROM agent_actions WHERE id = $1', [writeAction])).rows;
+    assert.equal(row.approval_status, 'pending', 'a retryable failure leaves the action pending');
   } finally {
     _setWikiWriteRevisionCheckedHookForTest(null);
   }
+  // The retry runs the action again and now succeeds.
+  const retried = await approve(writeAction);
+  assert.equal(retried.status, 200, JSON.stringify(retried.body));
+  assert.notEqual(retried.body.status, 'pending');
   assert.equal((await pageState(updatePage.id)).content, 'Original content');
-  assert.equal((await pageState(writePage.id)).content, 'Original content');
 });
 
 test('only a wiki proposal action with a known code and its exact message is a typed refusal', () => {
@@ -250,7 +264,7 @@ test('an approve that starts while another approve is executing answers with its
   assert.equal((await pageState(page.id)).content, 'Original content');
 });
 
-test('personal MCP approval_approve returns the same failed result on the first call and on replay', { skip: !canRun }, async () => {
+test('personal MCP approval_approve returns the same failed error result on the first call and on replay', { skip: !canRun }, async () => {
   const page = await createPage();
   const actionId = await mcpUpdate(page);
   await f.client.query('UPDATE wiki_pages SET is_deleted = true WHERE id = $1', [page.id]);
@@ -260,7 +274,8 @@ test('personal MCP approval_approve returns the same failed result on the first 
   const answers = [];
   for (let i = 0; i < 2; i += 1) {
     const result = await humanApprovalApprove({ action_id: actionId }, humanCtx);
-    assert.notEqual(result.isError, true, textOf(result));
+    // A final failure is an MCP error; the structured outcome stays in the content.
+    assert.equal(result.isError, true, textOf(result));
     answers.push(JSON.parse(textOf(result)));
   }
   for (const answer of answers) {
@@ -275,4 +290,70 @@ test('personal MCP approval_approve returns the same failed result on the first 
 async function reviewerFor(actionId: string): Promise<string> {
   const [row] = (await f.client.query('SELECT user_id FROM agent_actions WHERE id = $1', [actionId])).rows;
   return row?.user_id === shadowId ? f.adminId : f.requesterId;
+}
+
+function humanContextFor(reviewer: string, tag: string) {
+  return { org_id: f.orgId, user_id: reviewer, role: (reviewer === f.adminId ? 'admin' : 'member') as 'admin' | 'member',
+    scopes: ['read:workspace', 'write:workspace'], token_id: `${tag}-${randomUUID().slice(0, 8)}` };
+}
+
+// Fix 5 (MCP): an outside agent that reads only isError must not take a failed approval as done.
+test('personal MCP approval_approve: a final failure is an error with the structured outcome', { skip: !canRun }, async () => {
+  const page = await createPage();
+  const actionId = await mcpUpdate(page);
+  _setWikiUpdateRevisionCheckedHookForTest(async () => { throw new Error('simulated failure'); });
+  try {
+    const result = await humanApprovalApprove({ action_id: actionId }, humanContextFor(await reviewerFor(actionId), 'final'));
+    assert.equal(result.isError, true, textOf(result));
+    const body = JSON.parse(textOf(result));
+    assert.equal(body.status, 'failed');
+    assert.equal(body.message, 'approved, but it did not complete');
+    assert.match(body.error, /simulated failure/);
+  } finally {
+    _setWikiUpdateRevisionCheckedHookForTest(null);
+  }
+});
+
+test('personal MCP approval_approve: a retryable failure is pending, retryable and not an error', { skip: !canRun }, async () => {
+  const page = await createPage();
+  const actionId = await chatWrite(writeUpdate(page));
+  _setWikiWriteRevisionCheckedHookForTest(async () => { throw new Error('simulated failure'); });
+  try {
+    const result = await humanApprovalApprove({ action_id: actionId }, humanContextFor(await reviewerFor(actionId), 'retry'));
+    assert.notEqual(result.isError, true, textOf(result));
+    const body = JSON.parse(textOf(result));
+    assert.equal(body.status, 'pending');
+    assert.equal(body.retryable, true);
+    assert.equal(body.message, 'The action did not complete. It is still pending and can be approved again.');
+    const [row] = (await f.client.query('SELECT approval_status FROM agent_actions WHERE id = $1', [actionId])).rows;
+    assert.equal(row.approval_status, 'pending');
+  } finally {
+    _setWikiWriteRevisionCheckedHookForTest(null);
+  }
+});
+
+// Fix 5 (review item 2): a database error never reaches the approver as SQL or values.
+const DB_ERROR = 'Failed query: update "wiki_pages" set "content" = $1 where "wiki_pages"."id" = $2\nparams: secret-value-123,page-id-456';
+for (const [label, propose, setHook] of [
+  ['resolver path', mcpUpdate, _setWikiUpdateRevisionCheckedHookForTest],
+  ['ordinary path', (page: { id: string; slug: string }) => chatWrite(writeUpdate(page)), _setWikiWriteRevisionCheckedHookForTest],
+] as const) {
+  test(`a database error during an approved action returns no SQL, values or table names (${label})`, { skip: !canRun }, async () => {
+    const page = await createPage();
+    const actionId = await propose(page);
+    (setHook as (hook: (() => Promise<void>) | null) => void)(async () => { throw new Error(DB_ERROR); });
+    try {
+      const answer = await approve(actionId);
+      assert.equal(answer.status, 200, JSON.stringify(answer.body));
+      const text = JSON.stringify(answer.body);
+      for (const leak of ['Failed query', 'wiki_pages', 'secret-value-123', 'page-id-456', 'params:']) {
+        assert.ok(!text.includes(leak), `${leak} leaked: ${text}`);
+      }
+      assert.match(String(answer.body.error), /server error\. Reference: [0-9a-f]{8}/);
+      const [row] = (await f.client.query('SELECT error FROM agent_actions WHERE id = $1', [actionId])).rows;
+      assert.ok(!String(row.error).includes('secret-value-123'), 'the stored error carries no values either');
+    } finally {
+      (setHook as (hook: null) => void)(null);
+    }
+  });
 }

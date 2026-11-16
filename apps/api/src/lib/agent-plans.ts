@@ -37,6 +37,8 @@ import {
 
 export interface PlanStep {
   id: string;
+  /** Stamped by approve/resume, separately from caller-controlled result keys. */
+  approved_by_user_id?: string;
   description: string;
   tool: string;
   params: Record<string, any>;
@@ -401,6 +403,7 @@ export async function createPlanRow(
   await assertPlanStepsAllowedFor(input.org_id, input.user_id, input.steps);
   const steps = input.steps.map((step) => ({
     ...step,
+    approved_by_user_id: undefined,
     status: 'pending' as const,
   }));
 

@@ -34,6 +34,7 @@ import type { AppRunTransaction } from './app-run-repository.js';
  * happened when the row was queued, and re-gating here would bounce
  * every conservative-trust employee's approved writes.
  */
+import { clientSafeErrorMessage, clientSafeErrorText } from './client-safe-error.js';
 import { eq, and, or, sql, isNull, inArray, type SQL } from 'drizzle-orm';
 import { currentActionReviewerSql, reviewableActionSql } from './agent-action-review-gate.js';
 import {
@@ -1497,7 +1498,9 @@ async function approveActionLocked(
       );
     }
   } catch (err) {
-    caughtError = err instanceof Error ? err : new Error(String(err));
+    // Raw exception text (a database error carries SQL and values) never
+    // reaches the approver: it is logged and replaced with a reference.
+    caughtError = new Error(clientSafeErrorMessage(err, `approval ${row.action}`));
     toolResult = {
       content: [{ type: 'text', text: caughtError.message }],
       isError: true,
@@ -1505,13 +1508,15 @@ async function approveActionLocked(
   }
 
   const isError = toolResult.isError === true;
-  const resultText = toolResult.content?.[0]?.text ?? '';
+  const rawResultText = toolResult.content?.[0]?.text ?? '';
+  // Tool error text can wrap a raw exception (as JSON or as "x failed: …").
+  const resultText = isError ? clientSafeErrorText(rawResultText, `approval ${row.action}`) : rawResultText;
   // A typed wiki proposal refusal is recorded with its code, so every answer
   // for this action can name it.
   const wikiRefusal = isError && !caughtError ? wikiProposalRefusalCode(row.action, toolResult.structuredContent, resultText) : null;
   let parsedResult: unknown = resultText;
   try {
-    parsedResult = JSON.parse(resultText);
+    parsedResult = JSON.parse(rawResultText);
   } catch {
     // leave as string
   }

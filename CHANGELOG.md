@@ -10,6 +10,44 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### Changed: one assistant reply per space at a time
+
+- The job queue no longer starts an `agent-reply` while another for the same
+  workspace and space is running with a live lease, or is older and due. An
+  expired lease never blocks. This assumes a single API process claims jobs:
+  replies can still overlap with more than one process, or when a reply
+  handler keeps running after its job timeout (120 s by default) settled the
+  row. With general timeouts disabled (or invalid), assistant replies retain
+  the 120-second default so a hung occurrence stops holding its space.
+
+### Changed: approving an action that then fails
+
+- `POST /api/agent/actions/:id/approve` no longer answers HTTP 500 when the
+  approved action fails. A final failure answers 200 with
+  `{ status: "failed", message: "approved, but it did not complete", error }`
+  (plus `code` for a typed refusal). A failure that can be retried answers 200
+  with `{ status: "pending", retryable: true, message, error }`: the action did
+  not complete and is still pending. The approval card shows both in plain words.
+- Personal MCP `approval_approve`: a final failure is still an MCP error
+  (`isError: true`), now with the structured outcome above as its content. This
+  now also applies to typed wiki refusals, which were returned as a normal
+  result. A retryable failure is a normal result with `status: "pending"`,
+  `retryable: true` and a message saying the action did not complete and can be
+  approved again.
+- Error text from a failed action is no longer passed through when it is a
+  database or driver error (which carries SQL and bound values): the answer,
+  the stored action error and the MCP result carry a fixed message with a
+  reference id, and the detail is logged on the server under that id.
+
+### Changed: receipts for direct native actions
+
+- Ordinary native actions run directly by the assistant now leave a signed
+  receipt. Personal MCP and API-key calls name the user behind the credential;
+  employee calls name the employee. Plan approve/resume records the reviewer
+  in each step's `approved_by_user_id` metadata, which its receipt names as
+  approver. Result context remains available for every step ID, including
+  `approved_by_user_id`.
+
 ### Notice: Kit `0.1.0-alpha.44` removes deprecated Email compatibility
 
 Not before 2026-11-25, and never fewer than 14 days after this notice merged.

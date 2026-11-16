@@ -91,6 +91,7 @@ import {
   DOCUMENT_SEND_ACTION,
   sanitizeDocumentSendParams,
 } from '../lib/document-send.js';
+import { clientSafeErrorText } from '../lib/client-safe-error.js';
 
 export const agentRoutes = new Hono();
 
@@ -1250,11 +1251,15 @@ export async function approveActionAsReviewer(c: Context, user: ActionReviewer, 
         await finalizeApprovalOutcome({ actionId, orgId: user.org_id, receipt: 'resolver', hooks: approvalFinaliserHooks });
         // A typed refusal ended the approval: answer with the failed result a replay gives.
         if (result.refusalCode) return c.json(approvedButFailedBody(result.message, action.action, wikiProposalRefusal(result.refusalCode)));
+        // A failed execution is an answer, not a server error. A failure that
+        // left the action pending can be approved again.
+        const settled = await loadOrgAction(actionId, user.org_id);
+        if (settled?.approval_status === 'pending') return c.json(approvalRetryableBody(result.message));
+        return c.json(approvedButFailedBody(result.message, action.action, settled?.result));
       }
       const statusCode =
         result.code === 'NOT_FOUND' ? 404
         : result.code === 'FORBIDDEN' ? 403
-        : result.code === 'EXECUTE_FAILED' ? 500
         : 400;
       return c.json(
         { error: result.message, code: result.code },
@@ -1548,19 +1553,12 @@ async function ownedApprovalResponse(
   };
 
   if (!execResult.success) {
+    const error = execResult.error ?? 'Action failed';
+    // A retryable failure left the action pending: it can be approved again.
+    if (outcome.kind === 'reopened') return c.json(approvalRetryableBody(error));
     // A typed refusal ended the approval: answer with the failed result a replay gives.
-    const refusal = outcome.kind === 'failed_terminal' ? wikiProposalRefusalCode(action.action, execResult.result, execResult.error) : null;
-    if (refusal) {
-      return c.json(approvedButFailedBody(WIKI_PROPOSAL_REFUSALS[refusal], action.action, execResult.result));
-    }
-    return c.json(
-      {
-        ...legacyResultBody,
-        error: execResult.error ?? 'Action failed',
-        code: 'EXECUTE_FAILED',
-      },
-      500,
-    );
+    const refusal = wikiProposalRefusalCode(action.action, execResult.result, execResult.error);
+    return c.json(approvedButFailedBody(refusal ? WIKI_PROPOSAL_REFUSALS[refusal] : error, action.action, execResult.result));
   }
 
   return c.json(legacyResultBody);
@@ -1767,8 +1765,22 @@ function approvedButFailedBody(error: string, actionName: string, result?: unkno
   return {
     status: 'failed' as const,
     message: 'approved, but it did not complete',
-    error,
+    // Stored errors from before the executor sanitised them are checked too.
+    error: clientSafeErrorText(error, `approval ${actionName}`),
     ...(refusal ? { code: refusal } : {}),
+  };
+}
+
+/**
+ * Answer for an approval whose execution failed in a way that can be retried:
+ * the action is still pending, and approving it again runs it again.
+ */
+function approvalRetryableBody(error: string) {
+  return {
+    status: 'pending' as const,
+    retryable: true as const,
+    message: 'approved, but it did not complete; it is still pending and can be approved again',
+    error: clientSafeErrorText(error, 'approval retry'),
   };
 }
 

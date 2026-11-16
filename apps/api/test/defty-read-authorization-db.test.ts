@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { after, before, describe, test } from 'node:test';
 import { eq, inArray } from 'drizzle-orm';
 import {
-  agentActions, agentEmployees, agentMemory, canvases, mcpConnections, mcpToolOverrides, notes, orgMembers, orgs, spaceMembers,
+  actionReceipts, agentActions, agentEmployees, agentMemory, canvases, mcpConnections, mcpToolOverrides, notes, orgMembers, orgs, spaceMembers,
   spaces, users, wikiPages,
 } from '@deft/db/schema';
 import { db, closeDb } from '../src/lib/db.js';
@@ -92,6 +92,7 @@ describe('W1-b Defty read authorization', { skip: !canRun }, () => {
   });
 
   after(async () => {
+    await db.delete(actionReceipts).where(inArray(actionReceipts.org_id, [orgA, orgB]));
     await db.delete(agentActions).where(inArray(agentActions.org_id, [orgA, orgB]));
     await db.delete(agentEmployees).where(eq(agentEmployees.id, employeeId));
     await db.delete(agentMemory).where(inArray(agentMemory.org_id, [orgA, orgB]));

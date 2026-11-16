@@ -75,7 +75,8 @@ const CRON_KEYS: Record<string, string> = {
   ...(githubSyncIntervalMs() > 0 ? { [GITHUB_SYNC_SCAN_JOB]: 'cron:github-sync-scan' } : {}),
 };
 
-const JOB_TIMEOUT_MS = Number.parseInt(process.env.DEFT_JOB_TIMEOUT_MS ?? '120000', 10);
+const DEFAULT_JOB_TIMEOUT_MS = 120_000;
+const JOB_TIMEOUT_MS = Number.parseInt(process.env.DEFT_JOB_TIMEOUT_MS ?? String(DEFAULT_JOB_TIMEOUT_MS), 10);
 const WORKER_POLL_INTERVAL_MS = Number.parseInt(process.env.DEFT_WORKER_POLL_INTERVAL_MS ?? '1000', 10);
 const WORKER_BATCH_SIZE = Math.max(1, Number.parseInt(process.env.DEFT_WORKER_BATCH_SIZE ?? '5', 10));
 const JOB_LEASE_MS = Math.max(
@@ -133,7 +134,13 @@ async function runClaimedWork<T>(
   overrides?: WorkerProcessOverrides,
   trackExecution?: TrackExecution,
 ): Promise<T> {
-  const timeoutMs = overrides?.timeoutMs ?? JOB_TIMEOUT_MS;
+  const configuredTimeoutMs = overrides?.timeoutMs ?? JOB_TIMEOUT_MS;
+  // A hung reply must not hold its space forever when general job timeouts
+  // are disabled. Other job kinds retain the operator's timeout setting.
+  const timeoutMs = jobs.some((job) => job.name === 'agent-reply')
+    && (!Number.isFinite(configuredTimeoutMs) || configuredTimeoutMs <= 0)
+    ? DEFAULT_JOB_TIMEOUT_MS
+    : configuredTimeoutMs;
   const leaseMs = overrides?.leaseMs ?? JOB_LEASE_MS;
   const renewIntervalMs = overrides?.renewIntervalMs
     ?? Math.max(1_000, Math.min(LEASE_RENEW_INTERVAL_MS, Math.floor(leaseMs / 3)));

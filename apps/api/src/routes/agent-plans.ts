@@ -9,6 +9,7 @@ import {
   createPlanRow,
   PLAN_EMPLOYEE_UNAVAILABLE_ERROR,
   PlanAccessError,
+  type PlanStep,
 } from '../lib/agent-plans.js';
 import { getActiveOrgMembership } from '../lib/org-membership.js';
 import { isDestructiveAction } from '../lib/agent-approval.js';
@@ -25,6 +26,14 @@ async function planManagerScope(orgId: string, userId: string): Promise<SQL> {
   return membership?.role === 'owner' || membership?.role === 'admin'
     ? eq(agentPlans.org_id, orgId)
     : and(eq(agentPlans.org_id, orgId), eq(agentPlans.user_id, userId))!;
+}
+
+/**
+ * Stamp step metadata without occupying a caller-controlled step-result key
+ * in context. Approval replaces any approver supplied with the draft steps.
+ */
+function withPlanApprover(steps: PlanStep[], userId: string): PlanStep[] {
+  return steps.map((step) => ({ ...step, approved_by_user_id: userId }));
 }
 
 function planAccessRefusal(err: unknown) {
@@ -189,6 +198,7 @@ agentPlanRoutes.put('/:id', async (c) => {
       await assertPlanStepsAllowedFor(user.org_id, user.id, body.steps);
       updates.steps = body.steps.map((step: any) => ({
         ...step,
+        approved_by_user_id: (existing.steps as PlanStep[]).find((prior) => prior.id === step.id)?.approved_by_user_id,
         status: step.status ?? 'pending',
       }));
     }
@@ -235,7 +245,7 @@ agentPlanRoutes.post('/:id/approve', async (c) => {
 
     const [updated] = await db
       .update(agentPlans)
-      .set({ status: 'approved', updated_at: new Date() })
+      .set({ status: 'approved', steps: withPlanApprover(plan.steps as PlanStep[], user.id), updated_at: new Date() })
       .where(eq(agentPlans.id, planId))
       .returning();
 
@@ -353,7 +363,7 @@ agentPlanRoutes.post('/:id/resume', async (c) => {
 
     await db
       .update(agentPlans)
-      .set({ status: 'approved', steps, updated_at: new Date() })
+      .set({ status: 'approved', steps: withPlanApprover(steps, user.id), updated_at: new Date() })
       .where(eq(agentPlans.id, planId));
 
     await enqueue(QUEUE_NAMES.AGENT_JOBS, 'plan-executor', {
