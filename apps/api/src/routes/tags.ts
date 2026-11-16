@@ -4,7 +4,7 @@ import { eq, and, ilike, sql, desc, inArray, getTableColumns } from 'drizzle-orm
 import { db } from '../lib/db.js';
 import { tags, entityTags, tasks, messages, users, projects, notes, clips, orgMembers, spaces, spaceMembers } from '@deft/db/schema';
 import type { AuthUser } from '../middleware/auth.js';
-import { loadMessagesForMember } from '../lib/space-membership.js';
+import { readableSpaceSql } from '../lib/space-membership.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
 import { visibleNoteCondition } from '../lib/note-visibility.js';
 import { accessibleClipSql } from './clips.js';
@@ -33,12 +33,13 @@ const ENTITY_NOT_FOUND = { error: 'Entity not found', code: 'NOT_FOUND' } as con
 /**
  * Resolves tagged entities the caller may see: each must belong to the
  * caller's org and pass the same access rule its own routes use (space
- * membership for messages, task and note visibility, clip access). Entities
+ * access for messages, task and note visibility, clip access). Entities
  * that are missing or not visible are absent from every map.
  */
 async function resolveVisibleTagEntities(
   refs: ReadonlyArray<{ entity_type: string; entity_id: string }>,
   user: AuthUser,
+  access: 'member' | 'read' = 'member',
 ) {
   const idsOf = (...types: string[]) => [...new Set(refs.filter(r => types.includes(r.entity_type)).map(r => r.entity_id))];
   const taskIds = idsOf('task');
@@ -66,13 +67,14 @@ async function resolveVisibleTagEntities(
     for (const t of taskRows) taskMap.set(t.id, { title: t.title, number: t.number, prefix: t.prefix, status: t.status });
   }
 
-  const readableMessages = await loadMessagesForMember(messageIds, user.id, user.org_id);
-  if (readableMessages.size > 0) {
+  if (messageIds.length > 0) {
     const msgRows = await db.select({
       id: messages.id, content: messages.content, user_name: users.name, space_id: messages.space_id,
     }).from(messages)
       .innerJoin(users, eq(messages.user_id, users.id))
-      .where(and(inArray(messages.id, [...readableMessages.keys()]), eq(messages.org_id, user.org_id)));
+      .where(and(inArray(messages.id, messageIds), eq(messages.org_id, user.org_id), eq(messages.is_deleted, false),
+        access === 'read' ? readableSpaceSql(user.id, messages.space_id, messages.org_id)
+          : sql`EXISTS (SELECT 1 FROM ${spaceMembers} WHERE ${spaceMembers.space_id} = ${messages.space_id} AND ${spaceMembers.user_id} = ${user.id})`));
     for (const m of msgRows) messageMap.set(m.id, { content: m.content.slice(0, 120), user_name: m.user_name, space_id: m.space_id });
   }
 
@@ -91,7 +93,7 @@ async function resolveVisibleTagEntities(
 
   if (clipIds.length > 0) {
     const clipRows = await db.select({ id: clips.id }).from(clips)
-      .where(and(inArray(clips.id, clipIds), accessibleClipSql(user.org_id, user.id)));
+      .where(and(inArray(clips.id, clipIds), accessibleClipSql(user.org_id, user.id, access)));
     for (const clip of clipRows) clipSet.add(clip.id);
   }
 
@@ -121,13 +123,13 @@ async function visibleTagCounts(user: AuthUser): Promise<Array<{ tag_id: string;
       .innerJoin(projects, and(eq(tasks.project_id, projects.id), eq(projects.org_id, user.org_id)))
       .where(and(tagged('task'), eq(tasks.is_deleted, false), visibleTaskCondition(user.id)))
       .groupBy(entityTags.tag_id),
-    // Messages: not deleted, in a space of this org the caller is a member of.
+    // Messages: not deleted, in a space of this org the caller may read.
     db.select({ tag_id: entityTags.tag_id, count }).from(entityTags)
       .innerJoin(messages, and(eq(messages.id, entityTags.entity_id), eq(messages.org_id, user.org_id)))
       .innerJoin(spaces, and(eq(spaces.id, messages.space_id), eq(spaces.org_id, user.org_id)))
       .innerJoin(users, eq(users.id, messages.user_id))
       .where(and(tagged('message'), eq(messages.is_deleted, false),
-        sql`EXISTS (SELECT 1 FROM ${spaceMembers} WHERE ${spaceMembers.space_id} = ${spaces.id} AND ${spaceMembers.user_id} = ${user.id})`))
+        readableSpaceSql(user.id, messages.space_id, messages.org_id)))
       .groupBy(entityTags.tag_id),
     db.select({ tag_id: entityTags.tag_id, count }).from(entityTags)
       .innerJoin(notes, and(eq(notes.id, entityTags.entity_id), eq(notes.org_id, user.org_id)))
@@ -135,14 +137,14 @@ async function visibleTagCounts(user: AuthUser): Promise<Array<{ tag_id: string;
       .groupBy(entityTags.tag_id),
     db.select({ tag_id: entityTags.tag_id, count }).from(entityTags)
       .innerJoin(clips, eq(clips.id, entityTags.entity_id))
-      .where(and(tagged('clip'), accessibleClipSql(user.org_id, user.id)))
+      .where(and(tagged('clip'), accessibleClipSql(user.org_id, user.id, 'read')))
       .groupBy(entityTags.tag_id),
   ]);
   return grouped.flat();
 }
 
-async function canSeeTagEntity(entityType: TagEntityType, entityId: string, user: AuthUser) {
-  const resolved = await resolveVisibleTagEntities([{ entity_type: entityType, entity_id: entityId }], user);
+async function canSeeTagEntity(entityType: TagEntityType, entityId: string, user: AuthUser, access: 'member' | 'read' = 'member') {
+  const resolved = await resolveVisibleTagEntities([{ entity_type: entityType, entity_id: entityId }], user, access);
   return resolved.isVisible(entityType, entityId);
 }
 
@@ -330,7 +332,7 @@ tagRoutes.get('/:id/entities', async (c) => {
       .limit(PAGE_SIZE);
     if (page.length === 0) break;
     cursor.current = { ts: page[page.length - 1]!.cursor_ts, id: page[page.length - 1]!.id };
-    const resolved = await resolveVisibleTagEntities(page, user);
+    const resolved = await resolveVisibleTagEntities(page, user, 'read');
     for (const [id, v] of resolved.taskMap) taskMap.set(id, v);
     for (const [id, v] of resolved.messageMap) messageMap.set(id, v);
     for (const [id, v] of resolved.noteMap) noteMap.set(id, v);
@@ -366,7 +368,7 @@ tagRoutes.get('/entity/:type/:entityId', async (c) => {
   const entityId = c.req.param('entityId');
 
   const parsedType = applyTagSchema.shape.entity_type.safeParse(entityType);
-  if (!parsedType.success || !await canSeeTagEntity(parsedType.data, entityId, user)) {
+  if (!parsedType.success || !await canSeeTagEntity(parsedType.data, entityId, user, 'read')) {
     return c.json([]);
   }
 

@@ -38,14 +38,16 @@ let unavailable = url ? '' : 'Set DEFT_TEST_DATABASE_URL to a disposable test da
 let seeded = false;
 let app: Hono | undefined;
 
-async function call(actor: string, method: string, path: string, sessionRole?: string) {
+async function call(actor: string, method: string, path: string, sessionRole?: string, body?: unknown) {
   const hono = new Hono();
   hono.use('*', async (c, next) => {
     c.set('user', { id: actor, org_id: orgId, email: `${actor}@example.test`, sid: `tags-${actor}`, role: sessionRole ?? roles[actor] } as any);
     await next();
   });
   hono.route('/', app!);
-  const response = await hono.request(path, { method });
+  const response = await hono.request(path, { method, ...(body === undefined ? {} : {
+    body: JSON.stringify(body), headers: { 'content-type': 'application/json' },
+  }) });
   const text = await response.text();
   let json: any = text;
   try { json = JSON.parse(text); } catch { /* keep text */ }
@@ -228,4 +230,30 @@ test('tag counts take the same number of queries however many spaces and items t
   assert.equal((await countsFor(ids.insider)).main, 8 + SPACES);
   assert.equal(after.statements, before.statements, 'the number of statements does not grow with the number of spaces');
   assert.ok(after.statements <= 6, `GET /api/tags sent ${after.statements} statements`);
+});
+
+test('public message and clip tags can be read before joining, but cannot be changed; guests see neither', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const space = randomUUID(), message = randomUUID(), clip = randomUUID(), tag = randomUUID();
+  await client!.query(`INSERT INTO spaces(id,org_id,name,type,created_by) VALUES($1,$2,'Public tags','public',$3)`, [space, orgId, ids.insider]);
+  await client!.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), space, ids.insider]);
+  await client!.query(`INSERT INTO messages(id,org_id,space_id,user_id,content) VALUES($1,$2,$3,$4,'Public tagged message')`, [message, orgId, space, ids.insider]);
+  await client!.query(`INSERT INTO clips(id,org_id,space_id,message_id,context_type,context_id,created_by,file_key,status)
+    VALUES($1,$2,$3,$4,'space',$3,$5,'public.webm','ready')`, [clip, orgId, space, message, ids.insider]);
+  await client!.query(`INSERT INTO tags(id,org_id,name) VALUES($1,$2,'public-read')`, [tag, orgId]);
+  for (const [type, id] of [['message', message], ['clip', clip]]) {
+    await client!.query('INSERT INTO entity_tags(id,org_id,tag_id,entity_type,entity_id) VALUES($1,$2,$3,$4,$5)', [randomUUID(), orgId, tag, type, id]);
+  }
+  for (const actor of [ids.outsider, ids.admin, ids.guest]) {
+    const expected = actor === ids.guest ? 0 : 2;
+    assert.equal((await countsFor(actor))['public-read'], expected);
+    assert.equal((await call(actor, 'GET', `/api/tags/${tag}/entities`)).json.length, expected);
+    for (const [type, id] of [['message', message], ['clip', clip]]) {
+      assert.equal((await call(actor, 'GET', `/api/tags/entity/${type}/${id}`)).json.length, expected / 2);
+      for (const method of ['POST', 'DELETE']) {
+        assert.equal((await call(actor, method, `/api/tags/${tag}/apply`, undefined, { entity_type: type, entity_id: id })).status, 404);
+      }
+    }
+  }
+  assert.equal(await tagRows(tag), 2, 'read-only visitors did not change the tags');
 });
