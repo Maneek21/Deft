@@ -21,9 +21,10 @@
  *   `{ code: 'PAUSED' }`, except login, token refresh and logout; the agent
  *   channel (except its static contract), the public calendar feed and the
  *   feed-address route are refused for every method;
- * - every outbound call this process can make is refused at its source (LLM
+ * - reachable outbound calls are refused before transport (LLM
  *   and embedding providers, transcription, outside tool servers, the App
  *   Runtime, public URL fetches, web push), so a read cannot call out either;
+ *   legacy GitHub sync is unreachable behind the request and worker gates;
  * - realtime connections are refused before presence is broadcast.
  */
 export type PausedStartSetting = { paused: boolean; invalid: string | null };
@@ -109,6 +110,11 @@ function refusedForEveryMethod(path: string): boolean {
   if (path === '/api/ics/my-feed-url') return true;
   if (['/api/attention', '/api/agent/conversations', '/api/members'].includes(path)) return true;
   if (/^\/api\/spaces\/[^/]+\/canvas$/.test(path)) return true;
+  // These reads journal live source checks or execute adapter factories.
+  // Context and wiki page reads instead skip identity/source I/O while paused.
+  if (/^\/api\/app-owner-connections\/[^/]+\/connections$/.test(path)) return true;
+  if (/^\/api\/(?:app-integrations\/knowledge|email-adoption)\/source\/[^/]+$/.test(path)) return true;
+  if (/^\/api\/app-integrations\/destinations\/(?:(?:status|source)\/[^/]+|attention\/source\/[^/]+|calendar\/status\/[^/]+)$/.test(path)) return true;
   return path.startsWith('/api/ics/feed/');
 }
 

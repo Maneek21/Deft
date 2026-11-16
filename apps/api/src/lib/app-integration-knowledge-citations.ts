@@ -1,5 +1,6 @@
 import {and,eq,inArray,or,sql} from 'drizzle-orm';
 import {isDeepStrictEqual} from 'node:util';
+import {isPausedStart} from './paused-start.js';
 import {wikiPages,wikiCitations} from '@deft/db/schema';
 import {appIntegrationCaptureSources as sources} from '../../../../packages/db/src/app-integration-capture-schema.js';
 import type {AppRunTransaction as Tx} from './app-run-repository.js';
@@ -42,7 +43,7 @@ export async function decorateAppIntegrationKnowledgeCitations<T extends {source
  const records=input.records.filter(source=>source.org_id===input.caller.org_id&&ids.includes(source.id));
  const links=new Map<string,string|null>();
  for(const source of records){let href:string|null=null;
-  if(source.owner_user_id===input.caller.user_id&&input.caller.kind==='human')try{
+  if(!isPausedStart()&&source.owner_user_id===input.caller.user_id&&input.caller.kind==='human')try{
    await input.read(input.caller,source.target as AppIntegrationSourceIdentity);href=`/apps/source/${source.id}`;
   }catch{/* Destination copy remains readable; original access ended. */}
   links.set(source.id,href);

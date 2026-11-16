@@ -4,6 +4,7 @@ import { isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { AppError } from './app-errors.js';
+import { assertNotPaused } from './paused-start.js';
 import { AppConnectionPinsSchema, type AppConnectionAdapter, type AppConnectionPins, type AppConnectionContext } from './app-connection-contract.js';
 
 export type AppConnectionEntry = Readonly<{ pins: AppConnectionPins; adapter: AppConnectionAdapter;module_sha256?:string;implementation_digest?:string }>;
@@ -38,6 +39,7 @@ export class AppConnectionRegistry {
 }
 
 export async function loadAppConnectionRegistry(configPath: string | undefined): Promise<AppConnectionRegistry> {
+  assertNotPaused('deployment adapter initialization');
   if (!configPath) return new AppConnectionRegistry([]);
   try {
     if (!isAbsolute(configPath)) throw unavailable();

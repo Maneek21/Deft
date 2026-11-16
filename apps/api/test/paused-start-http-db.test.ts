@@ -198,3 +198,17 @@ test('paused: shared-state GET writes are refused, personal onboarding bookkeepi
   assert.equal(onboarding.status, 200);
   assert.equal((await onboarding.json()).user_id, USER_ID);
 });
+
+test('paused: live source resolution and adapter initialization are refused before journals or factories', async () => {
+  _setPausedStartForTest(true);
+  for (const path of ['/api/app-owner-connections/example/connections', '/api/app-integrations/knowledge/source/example',
+    '/api/app-integrations/destinations/status/example', '/api/app-integrations/destinations/source/example',
+    '/api/app-integrations/destinations/attention/source/example', '/api/app-integrations/destinations/calendar/status/example',
+    '/api/email-adoption/source/example']) {
+    for (const method of ['GET', 'HEAD']) {
+      const res = await app.request(path, { method });
+      assert.equal(res.status, 503, `${method} ${path}`);
+      if (method === 'GET') assert.equal((await res.json()).code, 'PAUSED');
+    }
+  }
+});
