@@ -864,14 +864,18 @@ async function startWorkersInternal(opts?: {
   );
 }
 
+/** Options startWorkers uses: a paused start claims nothing and runs no startup work. */
+export function workerStartOptions(): { skipStartupWork: true; disableWorkDispatch: true } | undefined {
+  return isPausedStart() ? { skipStartupWork: true, disableWorkDispatch: true } : undefined;
+}
+
 export async function startWorkers(): Promise<void> {
   if (workersRunning) return;
   if (!startingPromise) {
     // A paused start (restored or upgraded install) claims nothing and runs no
     // startup work: stale-job recovery would re-queue jobs that were running
     // when the backup was taken, and rehydration would fire reminders again.
-    const paused = isPausedStart();
-    startingPromise = startWorkersInternal(paused ? { skipStartupWork: true, disableWorkDispatch: true } : undefined).finally(() => {
+    startingPromise = startWorkersInternal(workerStartOptions()).finally(() => {
       startingPromise = null;
     });
   }

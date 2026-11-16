@@ -7,7 +7,7 @@ import { eq, and, ne } from 'drizzle-orm';
 import * as huddle from './huddle-rooms.js';
 import { requireActiveOrgMembership } from './lib/org-membership.js';
 import { createNotificationIfAllowed } from './lib/notification-policy.js';
-import { PAUSED_ERROR, isPausedStart, isSocketEventRefusedWhilePaused } from './lib/paused-start.js';
+import { PAUSED_ERROR, isPausedStart } from './lib/paused-start.js';
 import { isOrgTaskEvent, orgTaskEventPayload, type OrgTaskEvent, type OrgTaskEventPayload } from './lib/task-realtime.js';
 import { socketAllowedWebOrigins, socketOriginAllowed } from './lib/web-origins.js';
 
@@ -334,9 +334,7 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
   const verifyAccess = dependencies.verifyAccess ?? verifyWebAccess;
   const requireMembership = dependencies.requireMembership ?? requireActiveOrgMembership;
   const getSpaceAccess = dependencies.getSpaceAccess ?? getHuddleSpaceAccess;
-  const writeLastSeen = dependencies.recordLastSeen ?? updateLastSeen;
-  // A paused start writes nothing, presence bookkeeping included.
-  const recordLastSeen: typeof updateLastSeen = (userId) => { if (!isPausedStart()) writeLastSeen(userId); };
+  const recordLastSeen = dependencies.recordLastSeen ?? updateLastSeen;
   io = new SocketIOServer(server, {
     cors: {
       // Hosted: only the configured web address (lib/web-origins.ts).
@@ -354,6 +352,9 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
   webSessionEvents.on('revoked', disconnectSession);
   server.once('close', () => webSessionEvents.off('revoked', disconnectSession));
   io.use(async (socket, next) => {
+    // Even connecting broadcasts presence to other people. A restored cell
+    // accepts HTTP reads, but opens no realtime session while paused.
+    if (isPausedStart()) return next(new Error(PAUSED_ERROR.code));
     const token = socket.handshake.auth.token;
     if (!token) {
       return next(new Error('Authentication required'));
@@ -386,11 +387,6 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
     socket.once('disconnect', () => settleInitialization(false));
     socket.use(async (event, next) => {
       dependencies.onPacketIngress?.(String(event[0] ?? ''));
-      if (isSocketEventRefusedWhilePaused(String(event[0] ?? ''))) {
-        // Reading stays open; an event that writes or notifies is refused.
-        socket.emit('paused:refused', { error: PAUSED_ERROR.error, code: PAUSED_ERROR.code, event: String(event[0]) });
-        return;
-      }
       const packetGeneration = captureRealtimeAccessGeneration();
       try {
         if (!await initializationReady || !socket.connected) {

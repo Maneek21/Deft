@@ -25,7 +25,7 @@ import { orgs } from '@deft/db/schema';
 import { decrypt } from './encryption.js';
 import { env } from './env.js';
 import { aiProviderAddress } from './ai-provider-address.js';
-import { isPausedStart } from './paused-start.js';
+import { assertNotPaused, isPausedStart } from './paused-start.js';
 
 export const EMBED_DIMS = 1536;
 
@@ -91,6 +91,7 @@ async function loadOrgEmbedConfig(orgId: string | null | undefined): Promise<Emb
  * Throws on network/HTTP failure so worker queues can retry.
  */
 export async function embed(text: string, orgId: string | null | undefined): Promise<number[] | null> {
+  assertNotPaused('the embedding provider');
   const cfg = await loadOrgEmbedConfig(orgId);
 
   if (cfg.provider === 'off') return null;

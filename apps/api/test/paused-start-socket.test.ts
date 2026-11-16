@@ -17,7 +17,7 @@ const exp = Math.floor(Date.now() / 1000) + 600;
 
 afterEach(() => _setPausedStartForTest(false));
 
-async function harness() {
+async function harness(paused = false) {
   const principal: SocketUser & { exp: number } = { id: `paused-user-${stamp}`, org_id: ORG, email: 'p@test.local', sid: 's-1', exp };
   const calls = { spaceAccess: 0, lastSeen: 0 };
   const server = createServer();
@@ -34,7 +34,10 @@ async function harness() {
   client.onAny((event: string, data: unknown) => events.push({ event, data }));
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('presence:init timed out')), 5_000);
-    client.once('presence:init', () => { clearTimeout(timer); resolve(); });
+    client.once(paused ? 'connect_error' : 'presence:init', (error: Error) => {
+      clearTimeout(timer);
+      if (paused && error.message !== 'PAUSED') reject(error); else resolve();
+    });
   });
   return {
     client, events, calls,
@@ -44,21 +47,14 @@ async function harness() {
 
 const settle = () => new Promise((r) => setTimeout(r, 200));
 
-test('paused: huddle:create is refused, last-seen is not written, reads still answered', async () => {
+test('paused: realtime connection is refused before presence, notifications or last-seen writes', async () => {
   _setPausedStartForTest(true);
-  const h = await harness();
+  const h = await harness(true);
   try {
+    assert.equal(h.client.connected, false);
     assert.equal(h.calls.lastSeen, 0, 'connect wrote last_seen_at while paused');
-    h.client.emit('huddle:create', { space_id: 'space-1' });
-    h.client.emit('presence:active');
-    h.client.emit('space:join', 'space-1');
-    await settle();
-    assert.equal(h.calls.lastSeen, 0, 'presence:active wrote last_seen_at while paused');
-    const refused = h.events.find((e) => e.event === 'paused:refused');
-    assert.equal(refused?.data?.code, 'PAUSED');
-    assert.equal(refused?.data?.event, 'huddle:create');
-    // huddle:create never reached its handler (which checks space access); space:join (a read) did.
-    assert.equal(h.calls.spaceAccess, 1);
+    assert.equal(h.calls.spaceAccess, 0);
+    assert.deepEqual(h.events, [], 'a paused connection must receive no application events');
   } finally {
     await h.close();
   }

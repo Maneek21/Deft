@@ -3,6 +3,7 @@ import { env } from './env.js';
 import { DEFAULT_DEFTY_OPENAI_MODEL } from '@deft/shared';
 import { createAgentMessage, isOpenAIReasoningModel } from './agent-llm.js';
 import { aiProviderAddress, anthropicClientAddress, environmentAiAddress, requireAiProviderAddress } from './ai-provider-address.js';
+import { assertNotPaused } from './paused-start.js';
 
 export type LLMTask = 'classify' | 'summarize' | 'reason' | 'extract';
 
@@ -160,6 +161,7 @@ export async function llm(params: {
   usage?: { input: number; output: number };
   model: string;
 }> {
+  assertNotPaused('the language model provider');
   const routed = getModelConfig(params.task, params.orgConfig);
   // Hosted mode: refuses Ollama and custom addresses, pins standard ones.
   // Self-hosted: returns routed.baseUrl unchanged.

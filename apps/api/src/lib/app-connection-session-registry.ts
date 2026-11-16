@@ -23,6 +23,7 @@ import { appRuntimeResponseError } from './app-runtime-response-error.js';
 import { isHostedMode } from './hosted-mode.js';
 import type { AppRunTransaction } from './app-run-repository.js';
 import {AppRecordChangeRuntimeRequestSchema,type AppRecordChangeRuntimeRequest,APP_DATA_FRAME_MEDIA_TYPE,APP_DATA_LIMITS,AppDataRuntimeRequestSchema,AppDataResultSchema,AppDataBinaryMetadataSchema,frameAppData,parseAppDataFrame,type AppDataRuntimeRequest} from '@deft/app-kit/core';
+import { pausedGuardedFetch } from './paused-start.js';
 
 const unavailable = () => new AppError('Reviewed connection runtime unavailable', 'APP_CONNECTION_PROFILE_UNAVAILABLE', 503);
 const id = z.string().uuid();
@@ -87,7 +88,7 @@ export class AppConnectionSessionRegistry {
   // again on every profile()/transportDigest()/preauthenticate()/reviewedProtocol().
   private readonly transportDigests = new Map<Entry, string>();
   private readonly templates: readonly Readonly<{ template: HostedTemplate; transportDigest: string }>[];
-  constructor(raw: unknown, private readonly fetcher: typeof fetch = fetch, trustedSuccessors: readonly Entry[] = [],
+  constructor(raw: unknown, private readonly fetcher: typeof fetch = pausedGuardedFetch, trustedSuccessors: readonly Entry[] = [],
     hosted: boolean = isHostedMode()) {
     const parsed = AppConnectionSessionRegistryConfigSchema.parse(raw);
     // A self-hosted install has always refused a file carrying anything but
@@ -409,7 +410,8 @@ export async function loadAppConnectionSessionRegistry(path: string | undefined,
     if(options.trustedSuccessors===false)return new AppConnectionSessionRegistry(config);
     const { trustedUpgradeRegistryEntries } = await import('./app-upgrade-trust-registry.js');
     const successors = await trustedUpgradeRegistryEntries(config.entries, transaction).catch(() => []);
-    return new AppConnectionSessionRegistry(config, fetch, successors);
+    // The App Runtime is never called while paused (pausedGuardedFetch refuses).
+    return new AppConnectionSessionRegistry(config, pausedGuardedFetch, successors);
   } catch { throw unavailable(); }
 }
 // Reread deployment review on each authority check; replacement/removal revokes

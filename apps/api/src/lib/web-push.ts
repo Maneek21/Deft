@@ -21,6 +21,7 @@ import { toPlainText } from './plain-text.js';
 import { revealPushSubscription } from './push-subscription.js';
 import { pushAgentFor } from './push-endpoint.js';
 import { enqueue, QUEUE_NAMES } from './queues.js';
+import { assertNotPaused } from './paused-start.js';
 
 type AttentionItem = typeof attentionItems.$inferSelect;
 export const PUSH_MAX_ATTEMPTS = 4;
@@ -404,6 +405,7 @@ export async function scheduleAttentionDeliveries(items: AttentionItem[]) {
 }
 
 export async function sendAttentionDelivery(deliveryId: string, options: { attempt?: number; job?: JobData } = {}) {
+  assertNotPaused('web push');
   if (!webPushConfigured()) throw new Error('Web Push is not configured');
   const [row] = await db
     .select({ delivery: attentionDeliveries, item: attentionItems, preferences: users.notification_preferences })
@@ -521,6 +523,7 @@ export async function sendAttentionDelivery(deliveryId: string, options: { attem
 }
 
 export async function sendPushTest(params: { orgId: string; userId: string }) {
+  assertNotPaused('web push');
   if (!webPushConfigured()) return { sent: 0, configured: false };
   const subscriptions = await db.select().from(webPushSubscriptions).where(and(
     eq(webPushSubscriptions.org_id, params.orgId),

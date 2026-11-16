@@ -7,6 +7,7 @@ import { orgs } from '@deft/db/schema';
 import { env } from './env.js';
 import { environmentAiAddress, transcriptionProviderAllowed } from './ai-provider-address.js';
 import { readFile } from 'node:fs/promises';
+import { assertNotPaused } from './paused-start.js';
 
 export type TranscriptSegment = {
   start: number; // seconds
@@ -196,6 +197,7 @@ async function resolveProvider(orgId: string | null | undefined): Promise<Transc
 
 // ─── Public API ───
 export async function transcribe(audioPath: string, orgId?: string | null): Promise<TranscriptionResult> {
+  assertNotPaused('the transcription provider');
   const provider = await resolveProvider(orgId);
 
   switch (provider) {

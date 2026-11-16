@@ -17,6 +17,9 @@ const ORG_ID = crypto.randomUUID();
 const USER_ID = `paused-start-${RUN}`;
 const EMAIL = `paused-start-${RUN}@test.local`;
 const PASSWORD = 'paused-start-password';
+const AGENT_USER_ID = `paused-start-agent-${RUN}`;
+const EMPLOYEE_ID = crypto.randomUUID();
+const EVENT_ID = crypto.randomUUID();
 
 type App = typeof import('../src/index.js')['app'];
 let app: App;
@@ -36,6 +39,13 @@ before(async () => {
       ON CONFLICT (id) DO NOTHING`, [USER_ID, EMAIL, hash]);
     await c.query(`INSERT INTO org_members (id, org_id, user_id, role) VALUES ($1, $2, $3, 'owner')
       ON CONFLICT (org_id, user_id) DO NOTHING`, [crypto.randomUUID(), ORG_ID, USER_ID]);
+    await c.query(`INSERT INTO users (id, email, name, kind, is_agent, email_verified) VALUES ($1, $2, 'Paused agent', 'agent', true, true)`,
+      [AGENT_USER_ID, `${AGENT_USER_ID}@agents.test`]);
+    await c.query(`INSERT INTO agent_employees (id, org_id, user_id, name, slug, role, system_prompt, trust_level, is_byoa, is_active, created_by)
+      VALUES ($1, $2, $3, 'Paused agent', $4, 'project_manager', 'Fixture', 'conservative', true, true, $5)`,
+      [EMPLOYEE_ID, ORG_ID, AGENT_USER_ID, `paused-agent-${EMPLOYEE_ID.slice(0, 8)}`, USER_ID]);
+    await c.query(`INSERT INTO agent_channel_events (id, org_id, agent_employee_id, kind, idempotency_key)
+      VALUES ($1, $2, $3, 'message.created', $1)`, [EVENT_ID, ORG_ID, EMPLOYEE_ID]);
   });
   ({ app } = await import('../src/index.js'));
 });
@@ -45,9 +55,12 @@ afterEach(() => _setPausedStartForTest(false));
 after(async () => {
   _setPausedStartForTest(false);
   await withClient(async (c) => {
+    await c.query('DELETE FROM agent_channel_events WHERE id = $1', [EVENT_ID]);
+    await c.query('DELETE FROM agent_employees WHERE id = $1', [EMPLOYEE_ID]);
     await c.query('DELETE FROM web_sessions WHERE user_id = $1', [USER_ID]);
+    await c.query('DELETE FROM onboarding_state WHERE user_id = $1', [USER_ID]);
     await c.query('DELETE FROM org_members WHERE user_id = $1', [USER_ID]);
-    await c.query('DELETE FROM users WHERE id = $1', [USER_ID]);
+    await c.query('DELETE FROM users WHERE id IN ($1, $2)', [USER_ID, AGENT_USER_ID]);
     await c.query('DELETE FROM orgs WHERE id = $1', [ORG_ID]);
   });
   const { closeDb } = await import('../src/lib/db.js');
@@ -74,10 +87,16 @@ test('the refusal rule: writes refused everywhere except login, refresh, logout 
     ['POST', '/api/webhooks/github'], ['POST', '/api/agent-webhooks/slug'], ['POST', '/api/agent-channel/v1/events/ack'],
     ['POST', '/api/app-runtime/channel/x'], ['POST', '/api/upload/presign'], ['POST', '/api/auth/signup'],
     ['POST', '/api/auth/reset-password'], ['PATCH', '/api/auth/password'], ['POST', '/api/invites/accept/x'],
+    ['GET', '/api/agent-channel/v1/events'], ['GET', '/api/agent-channel/v1/connect'], ['HEAD', '/api/agent-channel/v1/events'],
+    ['GET', '/api/ics/my-feed-url'], ['GET', '/api/ics/feed/token'], ['HEAD', '/api/ics/feed/token'],
+    ['GET', '/api/attention'], ['GET', '/api/members'], ['GET', '/api/agent/conversations'],
+    ['GET', '/api/spaces/x/canvas'], ['HEAD', '/api/spaces/x/canvas/'],
   ] as const) assert.equal(isRefusedWhilePaused(method, path), true, `${method} ${path}`);
   for (const [method, path] of [
     ['GET', '/api/tasks'], ['HEAD', '/api/tasks'], ['OPTIONS', '/api/tasks'], ['POST', '/api/auth/login'],
     ['POST', '/api/auth/refresh'], ['POST', '/api/auth/logout'], ['POST', '/api/auth/login/'], ['GET', '/health'],
+    ['GET', '/api/agent-channel/v1/contract'], ['OPTIONS', '/api/agent-channel/v1/events'], ['GET', '/api/ics/subscriptions'],
+    ['GET', '/api/auth/onboarding'], ['GET', '/api/members/directory'],
   ] as const) assert.equal(isRefusedWhilePaused(method, path), false, `${method} ${path}`);
   _setPausedStartForTest(false);
   assert.equal(isRefusedWhilePaused('POST', '/api/tasks'), false);
@@ -125,4 +144,57 @@ test('not paused: the same requests reach their routes and health says not pause
   const mcp = await app.request('/api/mcp/v1', json({ jsonrpc: '2.0', id: 1, method: 'tools/list' }, 'not-a-token'));
   assert.equal(mcp.status, 401);
   assert.equal((await (await app.request('/health')).json()).paused, false);
+});
+
+async function eventRow() {
+  return withClient(async (c) => (await c.query(
+    `SELECT status, delivery_count, claim_token, claim_owner, claimed_at, lease_expires_at FROM agent_channel_events WHERE id = $1`,
+    [EVENT_ID],
+  )).rows[0]);
+}
+
+test('paused: an agent-channel poll gets 503 and the pending event is not handed out', async () => {
+  _setPausedStartForTest(true);
+  const before = await eventRow();
+  assert.equal(before.status, 'pending');
+  for (const path of ['/api/agent-channel/v1/events?worker_id=w', '/api/agent-channel/v1/connect?worker_id=w']) {
+    const res = await app.request(path, { headers: { Authorization: 'Bearer any-restored-token' } });
+    assert.equal(res.status, 503, path);
+    assert.equal((await res.json()).code, 'PAUSED');
+  }
+  assert.deepEqual(await eventRow(), before, 'the event row changed while paused');
+  const contract = await app.request('/api/agent-channel/v1/contract');
+  assert.equal(contract.status, 200, 'the static contract stays readable');
+});
+
+test('paused: a GET that writes is refused (feed address, public feed); one left open still answers', async () => {
+  _setPausedStartForTest(true);
+  const { accessToken } = await login();
+  const auth = { headers: { Authorization: `Bearer ${accessToken}` } };
+  const hasFeedTokens = await withClient(async (c) =>
+    (await c.query(`SELECT to_regclass('public.ics_publish_tokens') IS NOT NULL AS ok`)).rows[0].ok as boolean);
+  const countTokens = () => withClient(async (c) =>
+    Number((await c.query('SELECT count(*)::int AS n FROM ics_publish_tokens WHERE user_id = $1', [USER_ID])).rows[0].n));
+  const before = hasFeedTokens ? await countTokens() : 0;
+  const mint = await app.request('/api/ics/my-feed-url', auth);
+  assert.equal(mint.status, 503);
+  if (hasFeedTokens) assert.equal(await countTokens(), before, 'a feed token was minted while paused');
+  const feed = await app.request('/api/ics/feed/some-restored-token');
+  assert.equal(feed.status, 503);
+  const members = await app.request('/api/members/directory', auth);
+  assert.equal(members.status, 200, 'a GET left open must still answer');
+});
+
+test('paused: shared-state GET writes are refused, personal onboarding bookkeeping stays open', async () => {
+  _setPausedStartForTest(true);
+  for (const path of ['/api/attention', '/api/agent/conversations', '/api/members', `/api/spaces/${crypto.randomUUID()}/canvas`]) {
+    for (const method of ['GET', 'HEAD']) {
+      const res = await app.request(path, { method });
+      assert.equal(res.status, 503, `${method} ${path} must be refused before auth or handler writes`);
+    }
+  }
+  const { accessToken } = await login();
+  const onboarding = await app.request('/api/auth/onboarding', { headers: { Authorization: `Bearer ${accessToken}` } });
+  assert.equal(onboarding.status, 200);
+  assert.equal((await onboarding.json()).user_id, USER_ID);
 });

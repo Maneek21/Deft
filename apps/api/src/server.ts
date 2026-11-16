@@ -4,7 +4,7 @@ import { serve } from '@hono/node-server';
 import type { Server } from 'node:http';
 import { app } from './index.js';
 import { getIO, setupSocket } from './socket.js';
-import { isPausedStart, logPausedStart } from './lib/paused-start.js';
+import { assertPausedStartSettingValid, logPausedStart, serverStartupPlan } from './lib/paused-start.js';
 
 // Prefer Railway/Fly's PORT env, then API_PORT, then local default.
 const port = parseInt(process.env.PORT || process.env.API_PORT || '3001');
@@ -16,10 +16,13 @@ let shuttingDown = false;
 // index.ts (process.argv[1] string-endsWith check) silently disabled the
 // listen() under `tsx watch` because argv[1] became the tsx CLI script,
 // not our source file. Splitting removes the guard entirely.
+// A malformed DEFT_PAUSED_START ("TRUE", "1", "true\r") must not start a
+// restored copy live: refuse to start at all.
+assertPausedStartSettingValid();
+const startupPlan = serverStartupPlan();
 workerStartup.require();
 const server = serve({ fetch: app.fetch, port }, async (info) => {
   console.log(`Deft API running on http://localhost:${info.port}`);
-  const paused = isPausedStart();
   logPausedStart();
 
   // Hosted cells fetch their signed seat statement now and on a timer.
@@ -31,7 +34,7 @@ const server = serve({ fetch: app.fetch, port }, async (info) => {
   // plaintext. Encrypt those rows before any worker can construct a runtime
   // transport. This migration is idempotent and never logs credential data.
   // A paused start writes nothing at startup, so this waits for release.
-  if (!paused) try {
+  if (startupPlan.migrateLegacyMcpCredentials) try {
     const { migrateLegacyMcpConnectionCredentials } = await import('./lib/mcp-credential-migration.js');
     const result = await migrateLegacyMcpConnectionCredentials();
     if (result.migrated > 0) {
@@ -59,11 +62,11 @@ const server = serve({ fetch: app.fetch, port }, async (info) => {
     // reads the same setting) and no cron job is registered.
     await startWorkers();
     if (shuttingDown) { await stopWorkers({ timeoutMs: 10_000 }); throw Error('Server stopping'); }
-    if (!paused) await initScheduler();
+    if (startupPlan.initScheduler) await initScheduler();
     if (shuttingDown) { await stopWorkers({ timeoutMs: 10_000 }); throw Error('Server stopping'); }
   }, { onFailure: (attempt, error) => console.warn(`[startup] Job workers attempt ${attempt}/5 failed:`, (error as Error).message) });
   if (shuttingDown) return;
-  if (workersReady && paused) console.log('[startup] Paused: job workers idle, scheduler not started');
+  if (workersReady && !startupPlan.initScheduler) console.log('[startup] Paused: job workers idle, scheduler not started');
   else if (workersReady) console.log('[startup] Job workers and scheduler started');
   else console.warn('[startup] Job workers unavailable after bounded startup retries');
 

@@ -32,6 +32,7 @@ export {
   mcpResultPayload,
   toConnectionConfig,
 } from './mcp-runtime.js';
+import { isPausedStart } from './paused-start.js';
 
 export const MAX_MCP_PROVIDER_DESCRIPTION_CHARS = 1_000;
 const MAX_MCP_SCHEMA_ANNOTATION_CHARS = 500;
@@ -209,6 +210,9 @@ export async function getMCPToolsForAgent(
   orgId: string,
   agentEmployeeId?: string,
 ): Promise<(MCPTool & { approvalTierMapped: 'auto' | 'quick' | 'full' })[]> {
+  // A paused start connects to no outside tool server. Callers fall back to
+  // marking steps by tool name and params (agent-plans withDestructiveMarks).
+  if (isPausedStart()) return [];
   // 1. Get active MCP connections for the org
   let activeConnections = await db
     .select()

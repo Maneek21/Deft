@@ -3,6 +3,7 @@ import {
   type ResolvedReasonProvider,
 } from './org-ai-config.js';
 import { requireAiProviderAddress } from './ai-provider-address.js';
+import { assertNotPaused } from './paused-start.js';
 
 export const MAX_VISION_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const SUPPORTED_IMAGE_TYPES = new Set(['image/gif', 'image/jpeg', 'image/png', 'image/webp']);
@@ -40,6 +41,7 @@ export async function answerImageAttachmentQuestion(params: {
   provider?: VisionProvider;
   fetchImpl?: typeof fetch;
 }): Promise<AttachmentVisionResult> {
+  assertNotPaused('the vision provider');
   const mimeType = params.mimeType.toLowerCase().split(';', 1)[0]!.trim();
   if (!SUPPORTED_IMAGE_TYPES.has(mimeType)) throw new Error('unsupported_image_type');
   if (params.bytes.byteLength > MAX_VISION_ATTACHMENT_BYTES) throw new Error('image_size_limit');
