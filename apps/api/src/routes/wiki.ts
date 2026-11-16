@@ -4,7 +4,7 @@ import { eq, and, desc, sql, or, ilike, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { wikiPages, wikiLinks, wikiCitations, wikiOpsLog, wikiPageVersions, spaces, notifications, orgMembers, messages, spaceMembers } from '@deft/db/schema';
 import { ne } from 'drizzle-orm';
-import { requireSpaceMembership } from '../lib/space-membership.js';
+import { canReadSpace, requireSpaceMembership } from '../lib/space-membership.js';
 import { visibleWikiPageCondition, wikiPageRelevantToSpaceCondition } from '../lib/wiki-visibility.js';
 import { lockWikiPageForLinkWrite } from '../lib/wiki-page-link-lock.js';
 import { retrieveContext } from '../lib/retrieve-context.js';
@@ -236,8 +236,11 @@ wikiRoutes.get('/graph', async (c) => {
       if (!spaceId) {
         return c.json({ error: 'space_id is required for space graph mode', code: 'VALIDATION_ERROR' }, 400);
       }
-      const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
-      if (!isMember) {
+      // Reading: a member of the space, or a member of the workspace (never a
+      // guest) reading a public space before joining it. The pages in the
+      // graph are still limited by wiki page visibility (above).
+      const canRead = await canReadSpace(spaceId, user.id, user.org_id);
+      if (!canRead) {
         return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
       }
       const [space] = await db.select({ name: spaces.name })

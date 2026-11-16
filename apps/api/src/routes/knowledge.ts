@@ -4,7 +4,7 @@ import { db } from '../lib/db.js';
 import { wikiPages, wikiCitations, messages, users, spaces } from '@deft/db/schema';
 import { getIO } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
-import { requireSpaceMembership } from '../lib/space-membership.js';
+import { canReadSpace, requireSpaceMembership } from '../lib/space-membership.js';
 import { visibleWikiPageCondition, wikiPageRelevantToSpaceCondition } from '../lib/wiki-visibility.js';
 import { toPlainText } from '../lib/plain-text.js';
 import { createNativeKnowledge } from '../lib/native-context-create.js';
@@ -178,8 +178,12 @@ knowledgeRoutes.get('/:spaceId/knowledge', async (c) => {
     const typeFilter = c.req.query('type');
     const limitParam = Math.min(parseInt(c.req.query('limit') || '50'), 100);
 
-    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
-    if (!isMember) {
+    // Reading: a member of the space, or a member of the workspace (never a
+    // guest) reading a public space before joining it. Which pages are listed
+    // is still decided by wiki page visibility (visibleWikiPageCondition): a
+    // page scoped to the space itself is shown only to people in the space.
+    const canRead = await canReadSpace(spaceId, user.id, user.org_id);
+    if (!canRead) {
       return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
     }
 

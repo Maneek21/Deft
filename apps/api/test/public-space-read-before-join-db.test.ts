@@ -3,8 +3,11 @@
  *
  * A member of the workspace who is not a guest may READ a public space they
  * have not joined, on every web surface: space details, member list,
- * messages, threads, edit history, pinned messages, clips, attachments and
- * search. A guest never can. Every WRITE still needs the caller to have
+ * messages, threads, edit history, read receipts, pinned messages, clips,
+ * attachments, the canvas, the space's knowledge and wiki graph, and search.
+ * The live socket room stays for people in the space (see
+ * public-spaces-browse-join-db.test.ts). A guest never can. Every WRITE
+ * still needs the caller to have
  * joined. Private spaces, DMs, group DMs, agent conversations, archived and
  * other-workspace spaces are unchanged.
  *
@@ -125,6 +128,9 @@ before(async () => {
       VALUES($1,$2,$3,$4,'text/plain',4,$5,$6)`, [file, orgId, ids.creator, `${TOKEN}.txt`, `public-read-${file}`, messageId]);
     await q('INSERT INTO message_attachments(org_id,message_id,file_id,position) VALUES($1,$2,$3,0)', [orgId, messageId, file]);
   }
+  for (const space of [S.pub, S.priv]) {
+    await q(`INSERT INTO canvases(id,org_id,space_id,title,content) VALUES($1,$2,$3,$4,'{}'::jsonb)`, [randomUUID(), orgId, space, `${TOKEN} canvas`]);
+  }
   for (const [sid, user] of [[SESSION.member, ids.member], [SESSION.guest, ids.guest]] as const) {
     await q(`INSERT INTO web_sessions(id,user_id,org_id,refresh_token_hash,expires_at) VALUES($1,$2,$3,'test', now() + interval '1 hour')`, [sid, user, orgId]);
   }
@@ -135,7 +141,10 @@ before(async () => {
     .route('/api/search', (await import('../src/routes/search.js')).searchRoutes)
     .route('/api/scheduled-messages', (await import('../src/routes/scheduled.js')).scheduledRoutes)
     .route('/api/spaces', (await import('../src/routes/pins.js')).pinRoutes)
-    .route('/api/clips', (await import('../src/routes/clips.js')).clipRoutes);
+    .route('/api/clips', (await import('../src/routes/clips.js')).clipRoutes)
+    .route('/api/spaces', (await import('../src/routes/canvas.js')).canvasRoutes)
+    .route('/api/spaces', (await import('../src/routes/knowledge.js')).knowledgeRoutes)
+    .route('/api/wiki', (await import('../src/routes/wiki.js')).wikiRoutes);
   seeded = true;
 });
 
@@ -150,6 +159,7 @@ after(async () => {
     await client.query('DELETE FROM message_attachments WHERE org_id=ANY($1::text[])', [orgs]);
     await client.query('DELETE FROM files WHERE org_id=ANY($1::text[])', [orgs]);
     await client.query('DELETE FROM clips WHERE org_id=ANY($1::text[])', [orgs]);
+    await client.query('DELETE FROM canvases WHERE org_id=ANY($1::text[])', [orgs]);
     for (const table of ['pinned_messages', 'message_versions']) {
       await client.query(`DELETE FROM ${table} WHERE message_id IN (SELECT id FROM messages WHERE org_id=ANY($1::text[]))`, [orgs]);
     }
@@ -188,6 +198,10 @@ const READS: Row[] = [
   { surface: 'pinned messages', method: 'GET', path: `/api/spaces/${S.pub}/pins`, member: 200, guest: 403 },
   { surface: 'clips in the space', method: 'GET', path: `/api/clips/space/${S.pub}`, member: 200, guest: 403 },
   { surface: 'one clip', method: 'GET', path: `/api/clips/${CLIP.pub}`, member: 200, guest: 404 },
+  { surface: 'read receipts', method: 'GET', path: `/api/messages/${S.pub}/read-receipts`, member: 200, guest: 403 },
+  { surface: 'canvas', method: 'GET', path: `/api/spaces/${S.pub}/canvas`, member: 200, guest: 403 },
+  { surface: 'knowledge of the space', method: 'GET', path: `/api/spaces/${S.pub}/knowledge`, member: 200, guest: 403 },
+  { surface: 'wiki graph of the space', method: 'GET', path: `/api/wiki/graph?mode=space&space_id=${S.pub}`, member: 200, guest: 403 },
 ];
 
 // WRITE: refused for both until they join.
@@ -213,11 +227,9 @@ const WRITES: Row[] = [
   { surface: 'pin a message', method: 'POST', path: `/api/spaces/${S.pub}/pins`, body: { message_id: M.pubReply }, member: 403, guest: 403 },
   { surface: 'unpin a message', method: 'DELETE', path: `/api/spaces/${S.pub}/pins/${M.pub}`, member: 403, guest: 403 },
   { surface: 'delete a clip', method: 'DELETE', path: `/api/clips/${CLIP.pub}`, member: 404, guest: 404 },
-];
-
-// Not opened: where each member has read up to is about the members, not the space's content.
-const STILL_JOINED_ONLY: Row[] = [
-  { surface: 'read receipts', method: 'GET', path: `/api/messages/${S.pub}/read-receipts`, member: 403, guest: 403 },
+  { surface: 'edit the canvas', method: 'PATCH', path: `/api/spaces/${S.pub}/canvas`, body: { title: 'changed' }, member: 403, guest: 403 },
+  { surface: 'add knowledge', method: 'POST', path: `/api/spaces/${S.pub}/knowledge`, body: { type: 'decision', title: 'added' }, member: 403, guest: 403 },
+  { surface: 'capture a discussion', method: 'POST', path: `/api/spaces/${S.pub}/knowledge/capture-discussion`, body: {}, member: 403, guest: 403 },
 ];
 
 const snapshot = async () => {
@@ -229,12 +241,14 @@ const snapshot = async () => {
     scheduled: await one('SELECT count(*)::int AS n FROM scheduled_messages WHERE space_id=$1'),
     pins: await one('SELECT count(*)::int AS n FROM pinned_messages WHERE space_id=$1'),
     clips: await one('SELECT count(*)::int AS n FROM clips WHERE space_id=$1 AND is_deleted=false'),
+    canvas: (await client!.query('SELECT title FROM canvases WHERE space_id=$1', [S.pub])).rows[0],
+    knowledge: await one('SELECT count(*)::int AS n FROM wiki_pages WHERE space_id=$1'),
     name: (await client!.query('SELECT name, is_archived FROM spaces WHERE id=$1', [S.pub])).rows[0],
     content: (await client!.query('SELECT content FROM messages WHERE id=$1', [M.pub])).rows[0].content,
   };
 };
 
-for (const [label, rows] of [['read', READS], ['write', WRITES], ['read receipts, not opened', STILL_JOINED_ONLY]] as const) {
+for (const [label, rows] of [['read', READS], ['write', WRITES]] as const) {
   test(`public space, not joined — ${label}: member and guest`, async (t) => {
     if (unavailable) return t.skip(unavailable);
     const before = await snapshot();
@@ -368,6 +382,8 @@ test('private spaces, DMs, group DMs and agent conversations stay closed to anyo
       const refused: Array<[string, number]> = [
         [`/api/spaces/${space}`, 403], [`/api/spaces/${space}/members`, 403], [`/api/messages/${space}`, 403],
         [`/api/spaces/${space}/pins`, 403], [`/api/clips/space/${space}`, 403],
+        [`/api/messages/${space}/read-receipts`, 403], [`/api/spaces/${space}/canvas`, 403],
+        [`/api/spaces/${space}/knowledge`, 403], [`/api/wiki/graph?mode=space&space_id=${space}`, 403],
         [`/api/messages/${message}/thread`, 404], [`/api/messages/${message}/history`, 404],
       ];
       for (const [path, status] of refused) {
@@ -405,4 +421,22 @@ test('an agent user and a system user follow the same shared rule: read a public
   // The agent is in its own conversation and reads it; the system user is not.
   assert.equal((await call(ids.agentViewer, 'GET', `/api/messages/${S.agentConversation}`)).status, 200);
   assert.equal((await call(ids.systemViewer, 'GET', `/api/messages/${S.agentConversation}`)).status, 403);
+});
+
+test('the canvas: a reader sees it but never creates it', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  assert.equal((await call(ids.member, 'GET', `/api/spaces/${S.pub}/canvas`)).json.title, `${TOKEN} canvas`);
+  // A public space that has no canvas yet. Opening the canvas creates an empty one, which is a write.
+  const space = randomUUID();
+  await client!.query(`INSERT INTO spaces(id,org_id,name,type,created_by) VALUES($1,$2,$3,'public',$4)`, [space, orgId, `no canvas ${space}`, ids.creator]);
+  await client!.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), space, ids.creator]);
+  const canvases = async () => Number((await client!.query('SELECT count(*)::int AS n FROM canvases WHERE space_id=$1', [space])).rows[0].n);
+  const reader = await call(ids.member, 'GET', `/api/spaces/${space}/canvas`);
+  assert.equal(reader.status, 404, reader.text);
+  assert.equal(await canvases(), 0, 'reading created nothing');
+  assert.equal((await call(ids.guest, 'GET', `/api/spaces/${space}/canvas`)).status, 403);
+  const joined = await call(ids.creator, 'GET', `/api/spaces/${space}/canvas`);
+  assert.equal(joined.status, 201, joined.text);
+  assert.equal(await canvases(), 1);
+  assert.equal((await call(ids.member, 'GET', `/api/spaces/${space}/canvas`)).status, 200);
 });
