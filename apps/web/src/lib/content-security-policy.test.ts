@@ -7,7 +7,6 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const repoRoot = resolve(webRoot, '..', '..');
 
 /** Builds the page policy exactly as Next would, in a fresh process with the given public URLs. */
 function pagePolicy(env: Record<string, string>): string {
@@ -59,13 +58,14 @@ test('prebuilt image: placeholders in the policy become the real origins at star
   assert.equal(connectSrc(policy),
     "connect-src 'self' __DEFT_API_ORIGIN__ __DEFT_API_WS_ORIGIN__ __DEFT_WS_ORIGIN__ __DEFT_WS_WS_ORIGIN__");
   // Run the image's start-time injection over a routes manifest carrying the policy.
-  const { injectPublicEnv } = await import(pathToFileURL(join(repoRoot, 'scripts', 'inject-public-env.mjs')).href);
+  const { injectPublicEnv } = await import('../../../../scripts/inject-public-env.mjs');
   const root = await mkdtemp(join(tmpdir(), 'deft-csp-'));
   try {
     await mkdir(join(root, 'server'), { recursive: true });
     const manifest = join(root, 'routes-manifest.json');
     await writeFile(manifest, JSON.stringify({ headers: [{ source: '/(.*)', headers: [{ key: 'Content-Security-Policy', value: policy }] }] }));
     await injectPublicEnv(root, {
+      NODE_ENV: 'test',
       NEXT_PUBLIC_APP_URL: 'https://acme.deft.example',
       NEXT_PUBLIC_API_URL: 'https://api.acme.deft.example/',
       NEXT_PUBLIC_WS_URL: 'https://api.acme.deft.example',
