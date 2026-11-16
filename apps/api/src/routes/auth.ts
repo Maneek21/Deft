@@ -17,7 +17,9 @@ import {
   type UserNotificationPreferences,
 } from '@deft/db/schema';
 import { env } from '../lib/env.js';
-import { countOrgs, SINGLE_ORG_ERROR } from '../lib/single-org-guard.js';
+import { countOrgs, lockFirstWorkspaceCreation, SINGLE_ORG_ERROR } from '../lib/single-org-guard.js';
+import { isHostedMode } from '../lib/hosted-mode.js';
+import { isSetupTokenValid, SETUP_TOKEN_ERROR, SETUP_TOKEN_MAX_LENGTH } from '../lib/setup-token.js';
 import { ensureDeftyMembership, ensureDeftyDm } from '../lib/ensure-defty-membership.js';
 import { OrgMembershipError, requireActiveOrgMembership } from '../lib/org-membership.js';
 import { createWebSession, rotateWebSession, revokeWebSession, changeWebPassword, verifyWebAccess, WebCredentialsChangedError } from '../lib/web-sessions.js';
@@ -30,6 +32,12 @@ const signupSchema = z.object({
   email: z.string().email().max(320),
   password: z.string().min(8).max(1024),
   org_name: z.string().min(1).max(160),
+});
+
+// Hosted mode only: the one-time token from the setup link. Parsed apart from
+// signupSchema so a self-hosted signup is validated exactly as before.
+const setupTokenSchema = z.object({
+  setup_token: z.string().min(1).max(SETUP_TOKEN_MAX_LENGTH),
 });
 
 const loginSchema = z.object({
@@ -72,88 +80,130 @@ authRoutes.post('/signup', async (c) => {
 
   const { name, email, password, org_name } = parsed.data;
 
+  // Hosted mode — the first signup makes its caller the owner of a paid
+  // workspace, so it must carry the one-time setup token. This fails closed:
+  // no configured hash, no token, a wrong token and an expired token all get
+  // the same refusal. See apps/api/src/lib/setup-token.ts.
+  //
+  // The token is never recorded as used. A second signup with it is stopped
+  // only because a workspace then exists (the checks below), which holds
+  // because nothing deletes an org. Whoever adds org deletion must also
+  // record the token as used, or it could claim the emptied install again
+  // until it expires.
+  if (isHostedMode()) {
+    const presented = setupTokenSchema.safeParse(body);
+    const valid = isSetupTokenValid(
+      presented.success ? presented.data.setup_token : undefined,
+      process.env.DEFT_SETUP_TOKEN_SHA256,
+      process.env.DEFT_SETUP_TOKEN_EXPIRES_AT,
+    );
+    if (!valid) {
+      console.warn('[signup] refused: hosted mode needs a valid, unexpired setup token');
+      return c.json(SETUP_TOKEN_ERROR, 403);
+    }
+  }
+
   // Self-hosted v1 — only the first signup can create a workspace. Once
   // an org exists, new accounts must arrive through an invite flow that
   // joins the existing org. See apps/api/src/lib/single-org-guard.ts.
+  // This first look is only a cheap early exit; the decision that counts is
+  // made again under the lock below.
   if ((await countOrgs()) > 0) {
     return c.json(SINGLE_ORG_ERROR, 403);
   }
 
-  // Check if user exists
-  const existing = await db.select().from(users).where(eq(users.email, email)).limit(1);
-  if (existing.length > 0) {
-    return c.json({ error: 'Email already registered', code: 'EMAIL_EXISTS' }, 409);
-  }
-
   const passwordHash = await bcrypt.hash(password, 12);
 
-  // Create user. Self-hosted Deft has no outbound email — the bootstrap user
-  // is implicitly verified (they own the instance). Subsequent accounts go
-  // through invites, which flip the flag on acceptance.
-  const [user] = await db.insert(users).values({
-    name,
-    email,
-    password_hash: passwordHash,
-    email_verified: true,
-  }).returning();
+  // One transaction, under the first-workspace lock: confirm no workspace
+  // exists, then create the first user, the org and the owner membership.
+  // Two signups arriving together cannot both pass the check — the second
+  // waits for the lock and then finds the first one's workspace.
+  const created = await db.transaction(async (tx) => {
+    await lockFirstWorkspaceCreation(tx);
 
-  // Create org
-  const slug = org_name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-  const [org] = await db.insert(orgs).values({
-    name: org_name,
-    slug: `${slug}-${user!.id.slice(0, 8)}`,
-  }).returning();
+    if ((await countOrgs(tx)) > 0) return 'workspace_exists' as const;
 
-  // Add user as org owner
-  await db.insert(orgMembers).values({
-    org_id: org!.id,
-    user_id: user!.id,
-    role: 'owner',
+    const existing = await tx.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1);
+    if (existing.length > 0) return 'email_exists' as const;
+
+    // Create user. Self-hosted Deft has no outbound email — the bootstrap user
+    // is implicitly verified (they own the instance). Subsequent accounts go
+    // through invites, which flip the flag on acceptance.
+    const [user] = await tx.insert(users).values({
+      name,
+      email,
+      password_hash: passwordHash,
+      email_verified: true,
+    }).returning();
+
+    // Create org
+    const slug = org_name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const [org] = await tx.insert(orgs).values({
+      name: org_name,
+      slug: `${slug}-${user!.id.slice(0, 8)}`,
+    }).returning();
+
+    // Add user as org owner
+    await tx.insert(orgMembers).values({
+      org_id: org!.id,
+      user_id: user!.id,
+      role: 'owner',
+    });
+
+    // Create #general space
+    const [generalSpace] = await tx.insert(spaces).values({
+      org_id: org!.id,
+      name: 'general',
+      description: 'General discussion',
+      type: 'public',
+      is_default: true,
+      created_by: user!.id,
+    }).returning();
+
+    // Add user to #general
+    await tx.insert(spaceMembers).values({
+      space_id: generalSpace!.id,
+      user_id: user!.id,
+    });
+
+    // Create onboarding state
+    await tx.insert(onboardingState).values({
+      user_id: user!.id,
+      org_created: true,
+    });
+
+    return { user: user!, org: org! };
   });
 
-  // Create #general space
-  const [generalSpace] = await db.insert(spaces).values({
-    org_id: org!.id,
-    name: 'general',
-    description: 'General discussion',
-    type: 'public',
-    is_default: true,
-    created_by: user!.id,
-  }).returning();
-
-  // Add user to #general
-  await db.insert(spaceMembers).values({
-    space_id: generalSpace!.id,
-    user_id: user!.id,
-  });
+  if (created === 'workspace_exists') {
+    return c.json(SINGLE_ORG_ERROR, 403);
+  }
+  if (created === 'email_exists') {
+    return c.json({ error: 'Email already registered', code: 'EMAIL_EXISTS' }, 409);
+  }
+  const { user, org } = created;
 
   // Phase 1 invariant — ensure Defty system user has an org_members row in
   // every org. Idempotent.
   try {
-    await ensureDeftyMembership(org!.id);
+    await ensureDeftyMembership(org.id);
   } catch (err) {
-    console.error('[ensureDeftyMembership] failed for org', org!.id, err);
+    console.error('[ensureDeftyMembership] failed for org', org.id, err);
   }
 
   // Materialize Defty's 1:1 DM so the user sees it in the sidebar
   // immediately. Failure must not block signup.
   try {
-    await ensureDeftyDm(org!.id, user!.id);
+    await ensureDeftyDm(org.id, user.id);
   } catch (err) {
-    console.error('[ensureDeftyDm] failed for org', org!.id, 'user', user!.id, err);
+    console.error('[ensureDeftyDm] failed for org', org.id, 'user', user.id, err);
   }
 
-  // Create onboarding state
-  await db.insert(onboardingState).values({
-    user_id: user!.id,
-    org_created: true,
-  });
-
-  const tokens = await createWebSession({ id: user!.id, email: user!.email!, org_id: org!.id });
+  const tokens = await createWebSession({ id: user.id, email: user.email!, org_id: org.id });
 
   return c.json({
-    user: { id: user!.id, name: user!.name, email: user!.email },
-    org: { id: org!.id, name: org!.name, slug: org!.slug },
+    user: { id: user.id, name: user.name, email: user.email },
+    org: { id: org.id, name: org.name, slug: org.slug },
     ...tokens,
   }, 201);
 });

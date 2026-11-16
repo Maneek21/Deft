@@ -6,6 +6,7 @@ import { setUserTimezone } from './time';
 import { useRouter } from 'next/navigation';
 import { disconnectSocket } from './socket';
 import { createSessionCacheScope, setActiveSessionCacheScope } from './session-cache';
+import { signupRequestBody } from './setup-link';
 
 type NotificationPreferences = {
   keywords: string[];
@@ -58,7 +59,7 @@ type AuthContextType = {
   loading: boolean;
   sessionCacheScope: string | null;
   login: (email: string, password: string) => Promise<void>;
-  signup: (name: string, email: string, password: string, orgName: string) => Promise<void>;
+  signup: (name: string, email: string, password: string, orgName: string, setupToken?: string) => Promise<void>;
   logout: (options?: LogoutOptions) => Promise<void>;
   replaceUser: (nextUser: User) => void;
   refreshUser: () => Promise<void>;
@@ -323,7 +324,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const signup = async (name: string, email: string, password: string, orgName: string) => {
+  const signup = async (name: string, email: string, password: string, orgName: string, setupToken?: string) => {
     setConnectionInterrupted(false);
     const generation = authGeneration.current.advance();
     sessionCacheEpoch.current += 1;
@@ -334,7 +335,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setOrg(null);
     setLoading(true);
     try {
-      const res = await api.post('/api/auth/signup', { name, email, password, org_name: orgName });
+      // Hosted workspaces: the one-time setup token goes in the body, never in a URL.
+      const res = await api.post('/api/auth/signup', signupRequestBody(name, email, password, orgName, setupToken));
       if (!authGeneration.current.isCurrent(generation)) return;
       if (!res.ok) {
         const err = await res.json();
