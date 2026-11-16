@@ -289,8 +289,15 @@ test('an archived public space: someone who is not in it loses its notifications
   await client!.query(
     `INSERT INTO notifications(id,org_id,user_id,type,title,body,link) VALUES($1,$2,$3,'mention','fixture','CANARY-N-CREATOR',$4)`,
     [randomUUID(), orgId, ids.creator, `/chat?space=${S.pub}&message=${M.pub}`]);
+  // The creator asked Defty something in the public space (the creator is a plain member of the workspace).
+  await client!.query(
+    `INSERT INTO agent_session_turns(id,org_id,employee_id,trigger_kind,triggering_message_id,space_id,input_messages_json,raw_reply_text,latency_ms,result,error)
+     VALUES($1,$2,$3,'mention',$4,$5,'[]'::jsonb,'CANARY-CREATOR-REPLY',12,'error','CANARY-CREATOR-ERROR')`,
+    [randomUUID(), orgId, employeeId, M.pub, S.pub]);
   assert.ok((await seenBy(ids.leaver)).notifications.includes('CANARY-N-PUBLIC'));
+  assert.ok((await seenBy(ids.leaver)).turns.includes('CANARY-PUB-REPLY'), 'a public space is readable without being in it');
   assert.deepEqual((await seenBy(ids.creator)).notifications, ['CANARY-N-CREATOR']);
+  assert.deepEqual((await seenBy(ids.creator)).turns, ['CANARY-CREATOR-ERROR', 'CANARY-CREATOR-REPLY']);
   assert.equal((await call(ids.leaver, 'GET', `/api/spaces/${S.pub}`)).status, 200);
 
   await client!.query('UPDATE spaces SET is_archived=true WHERE id=$1', [S.pub]);
@@ -302,6 +309,11 @@ test('an archived public space: someone who is not in it loses its notifications
   assert.ok(!leaver.inbox.includes('CANARY-N-PUBLIC'));
   assert.equal((await call(ids.creator, 'GET', `/api/spaces/${S.pub}`)).status, 200);
   assert.deepEqual((await seenBy(ids.creator)).notifications, ['CANARY-N-CREATOR']);
+  // Turn history follows the same rule: gone for someone not in the archived space, kept for someone in it.
+  assert.ok(!leaver.turns.includes('CANARY-PUB-REPLY') && !leaver.activity.includes('CANARY-PUB-ERROR'), leaver.turns.join(','));
+  const creator = await seenBy(ids.creator);
+  assert.deepEqual(creator.turns, ['CANARY-CREATOR-ERROR', 'CANARY-CREATOR-REPLY']);
+  assert.deepEqual(creator.activity, ['CANARY-CREATOR-ERROR']);
 });
 
 test('scheduling a message at the same moment as being removed never leaves a pending message behind', async (t) => {

@@ -1,7 +1,7 @@
 import { sql, type SQL } from 'drizzle-orm';
-import { notifications, spaceMembers, spaces } from '@deft/db/schema';
+import { notifications } from '@deft/db/schema';
 import { publicSpaceVisibleSql } from './space-visibility.js';
-import { unjoinedPublicSpaceReadableSql } from './space-membership.js';
+import { readableSpaceSql } from './space-membership.js';
 
 // Watchers are subscriptions, not sufficient authority for new mention surfaces.
 export function nativeTaskAccessSql(userId: string): SQL {
@@ -21,7 +21,8 @@ export function nativeSourceAccessSql(
       (${kind} = 'message' AND EXISTS (
         SELECT 1 FROM messages m JOIN spaces s ON s.id = m.space_id AND s.org_id = m.org_id
         WHERE m.id = ${sourceId} AND m.org_id = ${orgId} AND m.is_deleted = false
-        AND (${publicSpaceVisibleSql(sql`s.type`, sql`s.org_id`, userId)} OR EXISTS (SELECT 1 FROM space_members sm WHERE sm.space_id = s.id AND sm.user_id = ${userId}))))
+        AND ((s.is_archived = false AND ${publicSpaceVisibleSql(sql`s.type`, sql`s.org_id`, userId)})
+          OR EXISTS (SELECT 1 FROM space_members sm WHERE sm.space_id = s.id AND sm.user_id = ${userId}))))
       OR (${kind} = 'task' AND EXISTS (
         SELECT 1 FROM tasks t JOIN projects p ON p.id = t.project_id AND p.org_id = t.org_id
         WHERE t.id = ${sourceId} AND t.org_id = ${orgId} AND t.is_deleted = false AND p.is_deleted = false
@@ -47,18 +48,6 @@ export function nativeDeliveryAccessSql(userId: string, deliveryId: SQL, orgId: 
       AND nd.recipient_user_id = ${userId} AND nr.is_deleted = false
       AND ${nativeSourceAccessSql(userId, sql`nr.source_kind`, sql`nr.source_id`, sql`nr.org_id`)}
   )`;
-}
-
-/**
- * The space is one `userId` can read today, by the rule the web routes use
- * (`canReadSpace`): they are in it (archived or not), or it is a public,
- * unarchived space and they are a member of the workspace who is not a guest.
- */
-function readableSpaceSql(userId: string, spaceId: SQL, orgId: SQL): SQL {
-  return sql`EXISTS (SELECT 1 FROM ${spaces} WHERE ${spaces.id} = ${spaceId} AND ${spaces.org_id} = ${orgId}
-    AND (EXISTS (SELECT 1 FROM ${spaceMembers}
-        WHERE ${spaceMembers.space_id} = ${spaces.id} AND ${spaceMembers.user_id} = ${userId})
-      OR ${unjoinedPublicSpaceReadableSql(userId)}))`;
 }
 
 /**

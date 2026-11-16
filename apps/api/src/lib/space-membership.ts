@@ -1,6 +1,6 @@
 import { db } from './db.js';
 import { messages, orgMembers, spaceMembers, spaces, users } from '@deft/db/schema';
-import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import type { CoreDatabaseTransaction } from './database-transaction.js';
 import { publicSpaceVisibleSql } from './space-visibility.js';
 
@@ -66,6 +66,19 @@ export function unjoinedPublicSpaceReadableSql(userId: string): SQL {
     AND ${publicSpaceVisibleSql(spaces.type, spaces.org_id, userId)}
     AND EXISTS (SELECT 1 FROM ${orgMembers}
       WHERE ${orgMembers.org_id} = ${spaces.org_id} AND ${orgMembers.user_id} = ${userId} AND ${orgMembers.is_active} = true))`;
+}
+
+/**
+ * `canReadSpace` as a condition for any query: the space `spaceId` of `orgId`
+ * is one `userId` can read today. They are in it (archived or not), or it is
+ * a public, unarchived space and they are a member of the workspace who is
+ * not a guest.
+ */
+export function readableSpaceSql(userId: string, spaceId: SQLWrapper, orgId: SQLWrapper): SQL {
+  return sql`EXISTS (SELECT 1 FROM ${spaces} WHERE ${spaces.id} = ${spaceId} AND ${spaces.org_id} = ${orgId}
+    AND (EXISTS (SELECT 1 FROM ${spaceMembers}
+        WHERE ${spaceMembers.space_id} = ${spaces.id} AND ${spaceMembers.user_id} = ${userId})
+      OR ${unjoinedPublicSpaceReadableSql(userId)}))`;
 }
 
 /**
