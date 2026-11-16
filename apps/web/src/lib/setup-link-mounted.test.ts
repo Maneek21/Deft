@@ -105,3 +105,17 @@ test('the mounted signup page without a setup link sends the body a self-hosted 
     await f.close();
   }
 });
+
+test('a setup link opened into an already open signup page is read too', async () => {
+  const f = await mountSignup('');
+  try {
+    await f.tab.getByRole('button', { name: 'Create workspace' }).waitFor();
+    // Same path, new fragment: the browser does not reload, the page stays mounted.
+    await f.tab.evaluate(() => { window.location.hash = '#setup=pasted-later'; });
+    await f.tab.waitForFunction(() => window.location.href === 'http://127.0.0.1/signup');
+    await submit(f.tab);
+    assert.equal((f.signupBodies[0] as { setup_token?: string }).setup_token, 'pasted-later');
+  } finally {
+    await f.close();
+  }
+});

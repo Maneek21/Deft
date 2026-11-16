@@ -25,8 +25,15 @@ export default function SignupPage() {
   const [setupToken, setSetupToken] = useState('');
 
   useEffect(() => {
-    const token = takeSetupTokenFromAddress(window.location, window.history);
-    if (token) setSetupToken(token);
+    const take = () => {
+      const token = takeSetupTokenFromAddress(window.location, window.history);
+      if (token) setSetupToken(token);
+    };
+    take();
+    // A link opened into an already open signup page changes only the part
+    // after #, so the page stays mounted; read the token then too.
+    window.addEventListener('hashchange', take);
+    return () => window.removeEventListener('hashchange', take);
   }, []);
 
   // Pre-check: does a workspace already exist?
