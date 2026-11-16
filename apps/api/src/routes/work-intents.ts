@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { and, desc, eq, getTableColumns, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
+import { captureEvidenceAvailableSql } from '../lib/capture-evidence.js';
 import { agentActions, agentEmployees, messageObservations, messages, spaces, users, workIntents } from '@deft/db/schema';
 import { getApprovalTier } from '../lib/agent-approval.js';
 import { ensureDeftyEmployee } from '../lib/ensure-defty-membership.js';
@@ -83,7 +84,9 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 function visibleWorkIntentSourceSql(user: AuthedUser) {
-  return sql`(
+  return sql`${captureEvidenceAvailableSql(sql`${workIntents.metadata}`, workIntents.org_id, workIntents.space_id, user.id)}
+  AND ${captureEvidenceAvailableSql(sql`${workIntents.proposed_params}->'metadata'`, workIntents.org_id, workIntents.space_id, user.id)}
+  AND (
     ${workIntents.agent_employee_id} is null
     or ${canonicalDeftyActionSql(workIntents.agent_employee_id, workIntents.org_id)}
     or (

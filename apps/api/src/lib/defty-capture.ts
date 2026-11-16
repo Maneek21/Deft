@@ -9,6 +9,7 @@ import { resolveAssigneeWithMatches } from './resolve-assignee.js';
 import { visibleTaskCondition } from './task-visibility.js';
 import { visibleWikiPageCondition } from './wiki-visibility.js';
 import { wikiCreateProposalTarget, wikiUpdateProposalTarget } from './mcp-tools/wiki-create.js';
+import { captureEvidenceIds, lockCaptureEvidence } from './capture-evidence.js';
 
 type ResolvedProject = { id: string; name: string };
 type TaskStatus = 'backlog' | 'todo' | 'in_progress' | 'in_review' | 'done' | 'cancelled';
@@ -36,10 +37,7 @@ function batchEvidenceMessageIds(
   messageId: string,
   metadata: Record<string, unknown>,
 ): string[] {
-  const metadataIds = Array.isArray(metadata.batch_message_ids)
-    ? metadata.batch_message_ids.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-    : [];
-  return [...new Set([messageId, ...metadataIds])].sort();
+  return captureEvidenceIds(messageId, metadata) ?? [];
 }
 
 function batchEvidenceDedupeKey(messageIds: string[]): string {
@@ -727,6 +725,7 @@ async function queueDeftyKnowledgeUpdateCapture(params: {
   const summary = truncatePlainText(updateText, 240);
 
   const queued: { queued: boolean; actionId?: string; skippedReason?: string } = await db.transaction(async (tx) => {
+    if (!await lockCaptureEvidence(tx, { orgId, spaceId, messageId, metadata })) throw new KnowledgeUpdateSkipped('source_evidence_missing');
     const proposedParams = {
       caller_employee_slug: defty.slug,
       page_id: targetPage.id,
@@ -1067,6 +1066,7 @@ export async function queueDeftyKnowledgeCapture(params: {
 
   const autoApprove = forceAutoApprove ?? shouldAutoApproveKnowledgeCapture({ captureKind, targetScope });
   const queued = await db.transaction(async (tx) => {
+    if (!await lockCaptureEvidence(tx, { orgId, spaceId, messageId, metadata })) throw new KnowledgeUpdateSkipped('source_evidence_missing');
     const proposedParams = {
       caller_employee_slug: defty.slug,
       title: finalTitle,

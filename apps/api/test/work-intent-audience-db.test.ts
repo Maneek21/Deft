@@ -58,12 +58,14 @@ before(async () => {
   await client.query('INSERT INTO orgs(id,name,slug) VALUES($1,$2,$3)', [otherOrgId, 'Other intent org', 'other-intent-' + otherOrgId]);
   await client.query("INSERT INTO org_members(id,org_id,user_id,role) VALUES($1,$2,$3,'owner')", [randomUUID(), otherOrgId, ids.owner]);
   routes = (await import('../src/routes/work-intents.js')).workIntentRoutes;
+  await client.query(`INSERT INTO space_members(id,space_id,user_id)
+    SELECT $1,$2,user_id FROM agent_employees WHERE id=$3`, [randomUUID(), spaceId, deftyEmployeeId]);
   seeded = true;
 });
 
 after(async () => {
   if (seeded && client) {
-    for (const table of ['work_intents', 'message_observations', 'agent_action_approvers', 'agent_actions']) {
+    for (const table of ['wiki_citations', 'wiki_links', 'wiki_ops_log', 'wiki_pages', 'work_intents', 'message_observations', 'agent_action_approvers', 'agent_actions']) {
       await client.query('DELETE FROM ' + table + ' WHERE org_id=$1', [orgId]);
     }
     await client.query('DELETE FROM messages WHERE org_id=$1', [orgId]);
@@ -98,6 +100,50 @@ async function insertIntent(options: { noSource?: boolean; employee?: string | n
   }
   return id;
 }
+
+test('batch capture refuses publication when a secondary evidence message was deleted during classification', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const { queueDeftyKnowledgeCapture } = await import('../src/lib/defty-capture.js');
+  const secondary = randomUUID();
+  await client!.query("INSERT INTO messages(id,org_id,space_id,user_id,content,is_deleted) VALUES($1,$2,$3,$4,'CANARY-SECONDARY-DELETED',true)", [secondary, orgId, spaceId, ids.peer]);
+  const result = await queueDeftyKnowledgeCapture({ orgId, sourceUserId: ids.source, spaceId, messageId,
+    content: 'CANARY-SECONDARY-DELETED', title: 'Deleted secondary evidence', wikiType: 'decision', captureKind: 'decision_candidate',
+    autoApprove: true, metadata: { batch_capture: true, batch_message_ids: [messageId, secondary],
+      batch_message_previews: [{ message_id: messageId, preview: 'Source message' }, { message_id: secondary, preview: 'CANARY-SECONDARY-DELETED' }] },
+  });
+  assert.equal(result.queued, false, JSON.stringify(result));
+  const rows = await client!.query("SELECT id FROM agent_actions WHERE org_id=$1 AND params::text LIKE '%CANARY-SECONDARY-DELETED%'", [orgId]);
+  assert.equal(rows.rowCount, 0, 'the copied text must not reach proposals or auto-approval');
+});
+
+test('pending batch action and work-intent reads and approval follow every evidence message', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const { queueDeftyKnowledgeCapture } = await import('../src/lib/defty-capture.js');
+  const { approveAction } = await import('../src/lib/agent-approval-resolver.js');
+  const { visibleCaptureActionSql } = await import('../src/lib/agent-action-visibility.js');
+  const { db } = await import('../src/lib/db.js');
+  const { agentActions } = await import('@deft/db/schema');
+  const { and, eq } = await import('drizzle-orm');
+  const secondary = randomUUID();
+  await client!.query("INSERT INTO messages(id,org_id,space_id,user_id,content) VALUES($1,$2,$3,$4,'CANARY-SECONDARY-PENDING')", [secondary, orgId, spaceId, ids.peer]);
+  const result = await queueDeftyKnowledgeCapture({ orgId, sourceUserId: ids.source, spaceId, messageId,
+    content: 'CANARY-SECONDARY-PENDING', title: 'Live secondary evidence', wikiType: 'fact', captureKind: 'note_candidate', autoApprove: false,
+    metadata: { batch_capture: true, batch_message_ids: [messageId, secondary], batch_message_previews: [{ message_id: secondary, preview: 'CANARY-SECONDARY-PENDING' }] },
+  });
+  assert.equal(result.queued, true, JSON.stringify(result));
+  const { rows: [intent] } = await client!.query("SELECT id FROM work_intents WHERE org_id=$1 AND proposed_params->'metadata'->'batch_message_ids' ? $2", [orgId, secondary]);
+  assert.equal((await request(ids.source, '/' + intent.id)).status, 200);
+  await client!.query('UPDATE messages SET is_deleted=true WHERE id=$1', [secondary]);
+  assert.equal((await request(ids.source, '/' + intent.id)).status, 404, 'intent must not expose retained secondary evidence');
+  assert.equal((await db.select({ id: agentActions.id }).from(agentActions).where(and(eq(agentActions.id, result.actionId!), visibleCaptureActionSql({ id: ids.source, org_id: orgId })))).length, 0);
+  // Legacy payloads can name a contributor only in their preview array.
+  await client!.query("UPDATE agent_actions SET params=jsonb_set(params,'{metadata}',(params->'metadata')-'batch_message_ids') WHERE id=$1", [result.actionId]);
+  await client!.query("UPDATE work_intents SET metadata=metadata-'batch_message_ids', proposed_params=jsonb_set(proposed_params,'{metadata}',(proposed_params->'metadata')-'batch_message_ids') WHERE id=$1", [intent.id]);
+  assert.equal((await request(ids.source, '/' + intent.id)).status, 404, 'legacy preview-only evidence must stay source-gated');
+  assert.equal((await db.select({ id: agentActions.id }).from(agentActions).where(and(eq(agentActions.id, result.actionId!), visibleCaptureActionSql({ id: ids.source, org_id: orgId })))).length, 0);
+  const { rows: [defty] } = await client!.query('SELECT user_id FROM agent_employees WHERE id=$1', [deftyEmployeeId]);
+  assert.equal((await approveAction(result.actionId!, defty.user_id, { internal: true })).status, 'error', 'auto-approval must not bypass evidence deletion');
+});
 
 async function readIntent(viewer: string, id: string, visible: boolean, detail: boolean) {
   const response = await request(viewer, detail ? '/' + id : '?limit=100');

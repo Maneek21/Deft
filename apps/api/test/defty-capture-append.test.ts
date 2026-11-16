@@ -28,7 +28,7 @@ test(`${explicitUpdate ? 'update-prefixed capture' : 'capture matching an existi
   const db = {
     select: () => query,
     async transaction(run: (tx: any) => Promise<unknown>) {
-      return run({ select: () => ({ ...query, limit: async () => [] }),
+      return run({ select: () => ({ ...query, limit: async () => [], orderBy() { return this; }, for: async () => [{ id: 'message-one' }] }),
         insert(table: unknown) {
           return {
             values(value: unknown) {

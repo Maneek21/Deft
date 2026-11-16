@@ -46,6 +46,7 @@ import {
   type RequesterActionRow,
 } from './agent-action-requester.js';
 import { visibleCaptureActionSql } from './agent-action-visibility.js';
+import { captureEvidenceAvailableSql } from './capture-evidence.js';
 import { db, type DbAdvisoryLease } from './db.js';
 import {
   APPROVAL_INTERRUPTED_ERROR,
@@ -645,7 +646,10 @@ function actionSourceAuthoritySql(readerUserId?: string) {
   // Internal Defty keeps its established human-source boundary. External
   // employee proposals use only durable source columns, never model arguments.
   return sql`(${agentActions.agent_employee_id} is null or ${canonicalDeftyActionSql()}
-    or (${currentAgentActionSourceAuthoritySql('agent_actions', readerUserId ? sql`${readerUserId}` : undefined)}))`;
+    or (${currentAgentActionSourceAuthoritySql('agent_actions', readerUserId ? sql`${readerUserId}` : undefined)}))
+    and (${agentActions.source} is distinct from 'defty_capture' or
+      ${captureEvidenceAvailableSql(sql`${agentActions.params}->'metadata'`, agentActions.org_id,
+        sql`coalesce(${agentActions.params}->>'source_space_id', ${agentActions.params}->>'space_id')`)})`;
 }
 
 async function actionSourceIsCurrent(actionId: string, readerUserId?: string) {
