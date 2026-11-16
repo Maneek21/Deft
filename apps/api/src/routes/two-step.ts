@@ -2,11 +2,12 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
+import bcrypt from 'bcryptjs';
 import { eq } from 'drizzle-orm';
 import { users } from '@deft/db/schema';
 import { db } from '../lib/db.js';
 import { OrgMembershipError } from '../lib/org-membership.js';
-import { verifyWebAccess } from '../lib/web-sessions.js';
+import { verifyWebAccess, WebCredentialsChangedError } from '../lib/web-sessions.js';
 import { issueSession } from '../lib/session-issuance.js';
 import { SecondStepRequiredError } from '../lib/two-step-policy.js';
 import {
@@ -25,7 +26,8 @@ import {
  *
  *   POST /verify           challenge + code (or recovery code) -> session
  *   GET  /                 status
- *   POST /enrol/start      -> secret + otpauth:// address
+ *   POST /enrol/start      -> secret + otpauth:// address (the password too, the
+ *                             first time someone signed in sets it up)
  *   POST /enrol/confirm    code -> recovery codes (shown once) + a new session
  *   POST /recovery-codes   current code -> new recovery codes
  *   POST /disable          current code -> off (refused for hosted owners/admins)
@@ -53,11 +55,12 @@ const verifySchema = z.object({
 const startSchema = z.object({
   code: codeField.optional(),
   recovery_code: recoveryCodeField.optional(),
+  current_password: z.string().min(1).max(1024).optional(),
 }).refine((value) => !(value.code && value.recovery_code));
 
 const codeSchema = z.object({ code: codeField });
 
-type Caller = { id: string; email: string; org_id: string; restricted: boolean };
+type Caller = { id: string; email: string; org_id: string; restricted: boolean; sid: string | null; challengeToken: string | null };
 
 function refuse(c: Context, check: Exclude<SecondStepCheck, { ok: true }> | { ok: false; reason: 'proof_required' }) {
   if (check.reason === 'locked') {
@@ -81,11 +84,11 @@ async function authenticate(c: Context, allowRestricted: boolean): Promise<Calle
   if (token.startsWith('tsc_')) {
     const identity = allowRestricted ? await resolveEnrolChallenge(token) : null;
     if (!identity) return c.json({ error: 'Invalid or expired token', code: 'INVALID_TOKEN' }, 401);
-    return { ...identity, restricted: true };
+    return { ...identity, restricted: true, sid: null, challengeToken: token };
   }
   try {
     const payload = await verifyWebAccess(token);
-    return { id: payload.id, email: payload.email, org_id: payload.org_id, restricted: false };
+    return { id: payload.id, email: payload.email, org_id: payload.org_id, restricted: false, sid: payload.sid, challengeToken: null };
   } catch (err) {
     if (err instanceof OrgMembershipError) return c.json({ error: err.message, code: err.code }, err.status as 403);
     if (err instanceof SecondStepRequiredError) return c.json({ error: err.message, code: err.code }, 401);
@@ -108,6 +111,8 @@ twoStepRoutes.post('/verify', async (c) => {
   } catch (err) {
     if (err instanceof OrgMembershipError) return c.json({ error: err.message, code: err.code }, err.status as 403);
     if (err instanceof SecondStepRequiredError) return c.json({ error: err.message, code: err.code }, 403);
+    // The password or the authenticator changed after the code was checked.
+    if (err instanceof WebCredentialsChangedError) return c.json({ error: 'Sign in again', code: 'TWO_STEP_CHALLENGE_INVALID' }, 401);
     throw err;
   }
   if (issued.status === 'refused') {
@@ -141,6 +146,15 @@ twoStepRoutes.post('/enrol/start', async (c) => {
   if (caller instanceof Response) return caller;
   const parsed = startSchema.safeParse(await c.req.json().catch(() => ({})));
   if (!parsed.success) return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
+  // A stolen access token alone must not be enough to put an attacker's
+  // authenticator on an account: nothing removes a second step afterwards.
+  // The enrol-only token was itself earned with the password a moment ago.
+  if (!caller.restricted && !(await getTwoStepStatus(caller.id)).enabled) {
+    const [account] = await db.select({ password_hash: users.password_hash }).from(users).where(eq(users.id, caller.id)).limit(1);
+    if (!parsed.data.current_password || !account?.password_hash || !(await bcrypt.compare(parsed.data.current_password, account.password_hash))) {
+      return c.json({ error: 'Enter your current password to set up two-step verification', code: 'INVALID_CREDENTIALS' }, 403);
+    }
+  }
   const started = await startTwoStepEnrolment(caller, { code: parsed.data.code, recoveryCode: parsed.data.recovery_code });
   if (!started.ok) return refuse(c, started.check);
   return c.json({ secret: started.secret, otpauth_url: started.otpauth_url });
@@ -152,17 +166,30 @@ twoStepRoutes.post('/enrol/confirm', async (c) => {
   if (caller instanceof Response) return caller;
   const parsed = codeSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
-  const confirmed = await confirmTwoStepEnrolment(caller.id, parsed.data.code);
-  if (!confirmed.ok) return refuse(c, confirmed.check);
+  const authority = caller.sid ? { sid: caller.sid } : { challengeToken: caller.challengeToken! };
+  const confirmed = await confirmTwoStepEnrolment(caller.id, parsed.data.code, authority);
+  if (!confirmed.ok) {
+    if ('reason' in confirmed) return c.json({ error: 'Sign in again', code: 'INVALID_TOKEN' }, 401);
+    return refuse(c, confirmed.check);
+  }
   // Every earlier session (this one included) and the enrol-only token ended
-  // with the confirmation. The person continues on a session issued now.
-  const issued = await issueSession({ via: 'enrolment', identity: { id: caller.id, email: caller.email, org_id: caller.org_id } });
+  // with the confirmation. The person continues on a session issued now. If
+  // that fails (the password changed a moment ago), the recovery codes are
+  // still returned: they are shown only here, and the person signs in again.
+  const issued = await issueSession({
+    via: 'enrolment',
+    identity: { id: caller.id, email: caller.email, org_id: caller.org_id },
+    credentials: confirmed.credentials,
+  }).catch((err: unknown) => {
+    if (err instanceof WebCredentialsChangedError || err instanceof OrgMembershipError || err instanceof SecondStepRequiredError) return null;
+    throw err;
+  });
   const [user] = await db.select({ id: users.id, name: users.name, email: users.email }).from(users).where(eq(users.id, caller.id)).limit(1);
   return c.json({
     recovery_codes: confirmed.recoveryCodes,
     user,
     org_id: caller.org_id,
-    ...(issued.status === 'session' ? { accessToken: issued.accessToken, refreshToken: issued.refreshToken } : {}),
+    ...(issued?.status === 'session' ? { accessToken: issued.accessToken, refreshToken: issued.refreshToken } : {}),
   });
 });
 

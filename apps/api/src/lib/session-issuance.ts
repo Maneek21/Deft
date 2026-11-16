@@ -6,6 +6,7 @@ import {
   type ChallengeExchange,
   type SecondStepProof,
   type TwoStepChallenge,
+  type VerifiedCredentials,
 } from './two-step-service.js';
 
 /**
@@ -26,7 +27,7 @@ export type SessionRequest =
   /** A login challenge plus an authenticator code or a recovery code. */
   | { via: 'challenge'; challengeToken: string; proof: SecondStepProof }
   /** Enrolment was confirmed with a code a moment ago. */
-  | { via: 'enrolment'; identity: Identity };
+  | { via: 'enrolment'; identity: Identity; credentials: VerifiedCredentials };
 
 export type IssuedSession =
   | { status: 'session'; accessToken: string; refreshToken: string }
@@ -68,10 +69,10 @@ export async function issueSession(request: SessionRequest): Promise<IssuedSessi
     case 'challenge': {
       const exchange = await exchangeVerifyChallenge(request.challengeToken, request.proof);
       if (!exchange.ok) return { status: 'refused', exchange };
-      return { status: 'session', ...(await createWebSession(exchange.identity, undefined, { secondStep: 'verified' })) };
+      return { status: 'session', ...(await createWebSession(exchange.identity, undefined, { secondStep: 'verified', verified: exchange.credentials })) };
     }
     case 'enrolment':
-      return { status: 'session', ...(await createWebSession(request.identity, undefined, { secondStep: 'verified' })) };
+      return { status: 'session', ...(await createWebSession(request.identity, undefined, { secondStep: 'verified', verified: request.credentials })) };
   }
 }
 

@@ -34,7 +34,8 @@ test('refresh completes with all other ordinary connections waiting on its sessi
   await admin.query(`CREATE SCHEMA ${namespace};
     CREATE TABLE ${namespace}.web_sessions (id text PRIMARY KEY, user_id text, org_id text,
       refresh_token_hash text, expires_at timestamptz, revoked_at timestamptz, created_at timestamptz DEFAULT now());
-    CREATE TABLE ${namespace}.org_members (id text, org_id text, user_id text, role text, is_active boolean);`);
+    CREATE TABLE ${namespace}.org_members (id text, org_id text, user_id text, role text, is_active boolean);
+    CREATE TABLE ${namespace}.user_two_step (user_id text PRIMARY KEY, confirmed_at timestamptz);`);
   const database = drizzle(pool, { schema });
   const secret = 'disposable-refresh-pool-regression';
   mock.module(new URL('../src/lib/db.ts', import.meta.url).href, { namedExports: { db: database } });

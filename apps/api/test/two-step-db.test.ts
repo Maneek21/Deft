@@ -40,7 +40,7 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
   const { inviteRoutes } = await import('../src/routes/invites.js');
   const { memberRoutes } = await import('../src/routes/members.js');
   const { authMiddleware } = await import('../src/middleware/auth.js');
-  const { createWebSession, verifyWebAccess, rotateWebSession } = await import('../src/lib/web-sessions.js');
+  const { createWebSession, verifyWebAccess, rotateWebSession, WebCredentialsChangedError } = await import('../src/lib/web-sessions.js');
   const { issueSession } = await import('../src/lib/session-issuance.js');
   const { SecondStepRequiredError } = await import('../src/lib/two-step-policy.js');
   const { twoStepCodeForStep, twoStepStepAt, hashRecoveryCode } = await import('../src/lib/two-step.js');
@@ -103,7 +103,8 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
 
   /** Enrols through the HTTP routes with whatever bearer the person holds. */
   async function enrol(bearer: string) {
-    const started = await post('/api/auth/two-step/enrol/start', {}, bearer);
+    // A signed-in person also gives their password; an enrol-only token does not.
+    const started = await post('/api/auth/two-step/enrol/start', bearer.startsWith('tsc_') ? {} : { current_password: PASSWORD }, bearer);
     assert.equal(started.status, 200, JSON.stringify(started.json));
     const secret = started.json.secret as string;
     const confirmed = await post('/api/auth/two-step/enrol/confirm', { code: codeFor(secret) }, bearer);
@@ -187,7 +188,14 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
   await t.test('enrolment needs a right code, and an enrolled person must prove the second step to replace it', async () => {
     const who = await person('member');
     const session = (await login(who.email)).json;
-    const started = await post('/api/auth/two-step/enrol/start', {}, session.accessToken);
+    // A signed-in session alone cannot add an authenticator: the password is needed too.
+    for (const body of [{}, { current_password: 'not-the-password' }]) {
+      const refused = await post('/api/auth/two-step/enrol/start', body, session.accessToken);
+      assert.equal(refused.status, 403);
+      assert.equal(refused.json.code, 'INVALID_CREDENTIALS');
+    }
+    assert.equal((await db.select().from(userTwoStep).where(eq(userTwoStep.user_id, who.id))).length, 0, 'nothing stored');
+    const started = await post('/api/auth/two-step/enrol/start', { current_password: PASSWORD }, session.accessToken);
     const wrong = await post('/api/auth/two-step/enrol/confirm', { code: wrongCode(started.json.secret) }, session.accessToken);
     assert.equal(wrong.status, 403);
     assert.equal(wrong.json.code, 'TWO_STEP_CODE_INVALID');
@@ -272,6 +280,43 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     const fresh = codeFor(who.secret);
     const race = await Promise.all([a, b].map((res) => post('/api/auth/two-step/verify', { challenge_token: res.json.two_step.token, code: fresh })));
     assert.deepEqual(race.map((res) => res.status).sort(), [200, 401]);
+  });
+
+  await t.test('replacing the authenticator with a recovery code ends every other session at once', async () => {
+    const who = await enrolledPerson();
+    const elsewhere = await loginWithCode(who);
+    const started = await post('/api/auth/two-step/enrol/start', { recovery_code: who.recoveryCodes[0] }, who.accessToken);
+    assert.equal(started.status, 200, JSON.stringify(started.json));
+    // Not confirmed, yet the other session is over and this one continues.
+    assert.equal((await probe(elsewhere.accessToken)).status, 401);
+    assert.equal((await probe(who.accessToken)).status, 200);
+    // A code from the current authenticator does not end anything.
+    const again = await loginWithCode(who);
+    assert.equal((await post('/api/auth/two-step/enrol/start', { code: codeFor(who.secret) }, who.accessToken)).status, 200);
+    assert.equal((await probe(again.accessToken)).status, 200);
+  });
+
+  await t.test('enrolment confirmation re-checks the caller, and a session after a code is bound to the credentials it checked', async () => {
+    // The session that started enrolment ended (say, a password reset) before confirmation.
+    const who = await person('member');
+    const session = (await login(who.email)).json;
+    const started = await post('/api/auth/two-step/enrol/start', { current_password: PASSWORD }, session.accessToken);
+    await db.update(webSessions).set({ revoked_at: new Date() }).where(eq(webSessions.user_id, who.id));
+    assert.equal((await service.confirmTwoStepEnrolment(who.id, codeFor(started.json.secret), { sid: 'not-a-session' })).ok, false);
+    const [anySession] = await db.select({ id: webSessions.id }).from(webSessions).where(eq(webSessions.user_id, who.id)).limit(1);
+    const lost = await service.confirmTwoStepEnrolment(who.id, codeFor(started.json.secret), { sid: anySession!.id });
+    assert.deepEqual(lost, { ok: false, reason: 'authority_lost' });
+    assert.equal((await service.getTwoStepStatus(who.id)).enabled, false);
+
+    // A code checked against an older password or authenticator gives no session.
+    const enrolled = await enrolledPerson();
+    const [current] = await db.select({ confirmed_at: userTwoStep.confirmed_at }).from(userTwoStep).where(eq(userTwoStep.user_id, enrolled.id));
+    const [account] = await db.select({ password_version: users.password_version }).from(users).where(eq(users.id, enrolled.id));
+    const identity = { id: enrolled.id, email: enrolled.email, org_id: orgId };
+    const verified = (passwordVersion: number, confirmedAt: Date) => ({ secondStep: 'verified' as const, verified: { passwordVersion, confirmedAt } });
+    await assert.rejects(() => createWebSession(identity, undefined, verified(account!.password_version - 1, current!.confirmed_at!)), WebCredentialsChangedError);
+    await assert.rejects(() => createWebSession(identity, undefined, verified(account!.password_version, new Date(0))), WebCredentialsChangedError);
+    await createWebSession(identity, undefined, verified(account!.password_version, current!.confirmed_at!));
   });
 
   await t.test('a recovery code works once and ends every other session', async () => {
@@ -573,7 +618,7 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     assert.equal((await probe(memberSession.accessToken)).json.role, 'member');
 
     // A started but unconfirmed enrolment is not enough.
-    await post('/api/auth/two-step/enrol/start', {}, memberSession.accessToken);
+    await post('/api/auth/two-step/enrol/start', { current_password: PASSWORD }, memberSession.accessToken);
     assert.equal((await call('PATCH', `/api/members/${member.id}`, { role: 'admin' }, actor)).status, 409);
     assert.equal(await roleOf(member.id), 'member');
 
@@ -719,7 +764,7 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     const ownerIdentity = { id: owner.id, email: owner.email, org_id: orgId };
     await assert.rejects(() => createWebSession(ownerIdentity), SecondStepRequiredError);
     // Not even a claimed second step helps someone who has not enrolled.
-    await assert.rejects(() => issueSession({ via: 'enrolment', identity: ownerIdentity }), SecondStepRequiredError);
+    await assert.rejects(() => issueSession({ via: 'enrolment', identity: ownerIdentity, credentials: { passwordVersion: 0, confirmedAt: new Date() } }), SecondStepRequiredError);
     assert.equal((await issueSession({ via: 'signup', identity: ownerIdentity })).status, 'enrolment_required');
     hosted(false);
     assert.equal((await issueSession({ via: 'signup', identity: ownerIdentity })).status, 'session');

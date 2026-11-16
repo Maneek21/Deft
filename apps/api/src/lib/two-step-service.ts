@@ -1,4 +1,4 @@
-import { and, count, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, count, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { orgMembers, users, webSessions } from '@deft/db/schema';
 import { twoStepChallenges, userTwoStep, userTwoStepRecoveryCodes } from '@deft/db/two-step';
 import { db } from './db.js';
@@ -109,10 +109,10 @@ async function replaceRecoveryCodes(tx: Tx, userId: string): Promise<string[]> {
   return codes;
 }
 
-async function revokeAllSessions(tx: Tx, userId: string): Promise<string[]> {
+async function revokeAllSessions(tx: Tx, userId: string, keepSessionId: string | null = null): Promise<string[]> {
   const sessions = await tx.update(webSessions)
     .set({ revoked_at: new Date() })
-    .where(and(eq(webSessions.user_id, userId), isNull(webSessions.revoked_at)))
+    .where(and(eq(webSessions.user_id, userId), isNull(webSessions.revoked_at), keepSessionId ? ne(webSessions.id, keepSessionId) : undefined))
     .returning({ id: webSessions.id });
   return sessions.map((session) => session.id);
 }
@@ -145,26 +145,40 @@ export type EnrolmentStart =
  * once. A person who is already enrolled must prove the current second step
  * (a code or a recovery code) to replace their authenticator.
  */
-export async function startTwoStepEnrolment(user: { id: string; email: string }, proof: SecondStepProof = {}, now = new Date()): Promise<EnrolmentStart> {
-  return db.transaction(async (tx) => {
+export async function startTwoStepEnrolment(user: { id: string; email: string; sid: string | null }, proof: SecondStepProof = {}, now = new Date()): Promise<EnrolmentStart> {
+  const result = await db.transaction(async (tx) => {
     await tx.insert(userTwoStep).values({ user_id: user.id }).onConflictDoNothing();
     const [row] = await tx.select({ confirmed_at: userTwoStep.confirmed_at }).from(userTwoStep).where(eq(userTwoStep.user_id, user.id)).for('update');
+    let revoked: string[] = [];
     if (row?.confirmed_at) {
       if (!proof.code && !proof.recoveryCode) return { ok: false as const, check: { ok: false as const, reason: 'proof_required' as const } };
       const check = await checkSecondStep(tx, user.id, proof, { secret: 'confirmed', allowRecoveryCode: true, now });
       if (!check.ok) return { ok: false as const, check };
+      // Using a recovery code ends every other session, even if the
+      // replacement is never confirmed. The caller's own session continues.
+      if (check.method === 'recovery_code') revoked = await revokeAllSessions(tx, user.id, user.sid);
     }
     const secret = generateTwoStepSecret();
     await tx.update(userTwoStep)
       .set({ pending_secret_encrypted: encrypt(secret), pending_created_at: now })
       .where(eq(userTwoStep.user_id, user.id));
-    return { ok: true as const, secret, otpauth_url: buildOtpauthUrl({ secret, account: user.email, issuer: ISSUER }) };
+    return { ok: true as const, secret, otpauth_url: buildOtpauthUrl({ secret, account: user.email, issuer: ISSUER }), revoked };
   });
+  if (!result.ok) return result;
+  emitWebSessionRevocations(result.revoked);
+  return { ok: true, secret: result.secret, otpauth_url: result.otpauth_url };
 }
 
 export type EnrolmentConfirm =
-  | { ok: true; recoveryCodes: string[] }
-  | { ok: false; check: Exclude<SecondStepCheck, { ok: true }> };
+  | { ok: true; recoveryCodes: string[]; credentials: VerifiedCredentials }
+  | { ok: false; check: Exclude<SecondStepCheck, { ok: true }> }
+  | { ok: false; reason: 'authority_lost' };
+
+/** What a session issued right after a second step is bound to: it is
+ * refused if the password or the authenticator changed in between. */
+export type VerifiedCredentials = { passwordVersion: number; confirmedAt: Date };
+/** How the caller of an enrolment call is signed in. */
+export type EnrolAuthority = { sid: string } | { challengeToken: string };
 
 /**
  * Confirms enrolment with a code from the new authenticator. In one
@@ -172,14 +186,24 @@ export type EnrolmentConfirm =
  * every existing session and kills every outstanding challenge, so no session
  * issued without a code survives. The caller then issues a fresh session.
  */
-export async function confirmTwoStepEnrolment(userId: string, code: string, now = new Date()): Promise<EnrolmentConfirm> {
+export async function confirmTwoStepEnrolment(userId: string, code: string, authority: EnrolAuthority, now = new Date()): Promise<EnrolmentConfirm> {
   const result = await db.transaction(async (tx) => {
-    // Same row session creation locks: enrolment and issuance are serialized.
-    const [user] = await tx.select({ id: users.id }).from(users).where(eq(users.id, userId)).for('update');
+    // Same row session creation and password changes lock: enrolment,
+    // issuance and a password reset are serialized.
+    const [user] = await tx.select({ id: users.id, password_version: users.password_version }).from(users).where(eq(users.id, userId)).for('update');
     if (!user) return { ok: false as const, check: { ok: false as const, reason: 'not_enrolled' as const } };
+    // The caller was authenticated before this lock: check they still are.
+    if ('sid' in authority) {
+      const [session] = await tx.select({ revoked_at: webSessions.revoked_at, expires_at: webSessions.expires_at }).from(webSessions)
+        .where(and(eq(webSessions.id, authority.sid), eq(webSessions.user_id, userId))).limit(1);
+      if (!session || session.revoked_at || session.expires_at.getTime() <= now.getTime()) return { ok: false as const, reason: 'authority_lost' as const };
+    } else {
+      const challenge = await lockLiveChallenge(tx, authority.challengeToken, 'enrol', now);
+      if (challenge?.user_id !== userId) return { ok: false as const, reason: 'authority_lost' as const };
+    }
     const check = await checkSecondStep(tx, userId, { code }, { secret: 'pending', allowRecoveryCode: false, now });
     if (!check.ok) return { ok: false as const, check };
-    await tx.update(userTwoStep).set({
+    const [confirmed] = await tx.update(userTwoStep).set({
       secret_encrypted: sql`${userTwoStep.pending_secret_encrypted}`,
       pending_secret_encrypted: null,
       pending_created_at: null,
@@ -187,16 +211,17 @@ export async function confirmTwoStepEnrolment(userId: string, code: string, now 
       last_used_step: check.step ?? 0,
       failed_attempts: 0,
       locked_until: null,
-    }).where(eq(userTwoStep.user_id, userId));
+    }).where(eq(userTwoStep.user_id, userId)).returning({ confirmed_at: userTwoStep.confirmed_at });
     const recoveryCodes = await replaceRecoveryCodes(tx, userId);
     const revoked = await revokeAllSessions(tx, userId);
     await tx.update(twoStepChallenges).set({ consumed_at: now })
       .where(and(eq(twoStepChallenges.user_id, userId), isNull(twoStepChallenges.consumed_at)));
-    return { ok: true as const, recoveryCodes, revoked };
+    const credentials = { passwordVersion: user.password_version, confirmedAt: confirmed!.confirmed_at! };
+    return { ok: true as const, recoveryCodes, revoked, credentials };
   });
   if (!result.ok) return result;
   emitWebSessionRevocations(result.revoked);
-  return { ok: true, recoveryCodes: result.recoveryCodes };
+  return { ok: true, recoveryCodes: result.recoveryCodes, credentials: result.credentials };
 }
 
 export type CodeGatedResult<T> = ({ ok: true } & T) | { ok: false; check: Exclude<SecondStepCheck, { ok: true }> };
@@ -243,24 +268,29 @@ export async function createTwoStepChallenge(input: { userId: string; orgId: str
   return { token, expires_at: expiresAt.toISOString() };
 }
 
-type LiveChallenge = { id: string; user_id: string; org_id: string; email: string; failed_attempts: number };
+type LiveChallenge = { id: string; user_id: string; org_id: string; email: string; failed_attempts: number; password_version: number };
 
 /** The challenge, locked, if it is live: right kind, unused, unexpired, the
  * password unchanged since it was issued, and the membership still active. */
 async function lockLiveChallenge(tx: Tx, token: string, kind: 'verify' | 'enrol', now: Date): Promise<LiveChallenge | null> {
-  const [challenge] = await tx.select().from(twoStepChallenges).where(eq(twoStepChallenges.token_hash, hashTwoStepToken(token))).for('update');
+  const tokenHash = hashTwoStepToken(token);
+  const [owner] = await tx.select({ user_id: twoStepChallenges.user_id }).from(twoStepChallenges).where(eq(twoStepChallenges.token_hash, tokenHash)).limit(1);
+  if (!owner) return null;
+  // The account row first, then the challenge: the order enrolment
+  // confirmation takes them in, so the two cannot deadlock.
+  const [user] = await tx.select({ email: users.email, password_version: users.password_version }).from(users).where(eq(users.id, owner.user_id)).for('share');
+  const [challenge] = await tx.select().from(twoStepChallenges).where(eq(twoStepChallenges.token_hash, tokenHash)).for('update');
   if (!challenge || challenge.kind !== kind || challenge.consumed_at || challenge.expires_at.getTime() <= now.getTime()) return null;
-  const [user] = await tx.select({ email: users.email, password_version: users.password_version }).from(users).where(eq(users.id, challenge.user_id)).limit(1);
   if (!user?.email || user.password_version !== challenge.password_version) return null;
   const [membership] = await tx.select({ id: orgMembers.id }).from(orgMembers)
     .where(and(eq(orgMembers.org_id, challenge.org_id), eq(orgMembers.user_id, challenge.user_id), eq(orgMembers.is_active, true))).limit(1);
   if (!membership) return null;
-  return { id: challenge.id, user_id: challenge.user_id, org_id: challenge.org_id, email: user.email, failed_attempts: challenge.failed_attempts };
+  return { id: challenge.id, user_id: challenge.user_id, org_id: challenge.org_id, email: user.email, failed_attempts: challenge.failed_attempts, password_version: challenge.password_version };
 }
 
 export type ChallengeIdentity = { id: string; email: string; org_id: string };
 export type ChallengeExchange =
-  | { ok: true; identity: ChallengeIdentity; method: 'code' | 'recovery_code' }
+  | { ok: true; identity: ChallengeIdentity; method: 'code' | 'recovery_code'; credentials: VerifiedCredentials }
   | { ok: false; reason: 'challenge_invalid' | 'invalid' | 'challenge_dead' }
   | { ok: false; reason: 'locked'; retryAfterSeconds: number };
 
@@ -278,7 +308,9 @@ export async function exchangeVerifyChallenge(token: string, proof: SecondStepPr
     if (check.ok) {
       await tx.update(twoStepChallenges).set({ consumed_at: now }).where(eq(twoStepChallenges.id, challenge.id));
       const revoked = check.method === 'recovery_code' ? await revokeAllSessions(tx, challenge.user_id) : [];
-      return { ok: true as const, identity: { id: challenge.user_id, email: challenge.email, org_id: challenge.org_id }, method: check.method, revoked };
+      const [row] = await tx.select({ confirmed_at: userTwoStep.confirmed_at }).from(userTwoStep).where(eq(userTwoStep.user_id, challenge.user_id)).limit(1);
+      const credentials = { passwordVersion: challenge.password_version, confirmedAt: row!.confirmed_at! };
+      return { ok: true as const, identity: { id: challenge.user_id, email: challenge.email, org_id: challenge.org_id }, method: check.method, revoked, credentials };
     }
     if (check.reason === 'locked') return check;
     if (check.reason === 'not_enrolled') {
@@ -294,7 +326,7 @@ export async function exchangeVerifyChallenge(token: string, proof: SecondStepPr
   });
   if (result.ok) {
     emitWebSessionRevocations(result.revoked);
-    return { ok: true, identity: result.identity, method: result.method };
+    return { ok: true, identity: result.identity, method: result.method, credentials: result.credentials };
   }
   return result;
 }

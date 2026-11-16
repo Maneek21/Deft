@@ -43,11 +43,13 @@ function tokens(identity: Identity, sid: string, expiresAt: Date) {
  * itself, inside the transaction that also checks the password and the
  * membership: a person with two-step verification gets a session only when
  * the caller has just verified a code (`secondStep: 'verified'`, passed only
- * by session-issuance.ts), and in hosted mode an owner or admin who has not
+ * by session-issuance.ts) against the password and authenticator still in
+ * force (`verified`), and in hosted mode an owner or admin who has not
  * enrolled gets none. Routes call issueSession() in session-issuance.ts, which
  * turns the refusal into a challenge.
  */
-export async function createWebSession(identity: Identity, expectedPasswordHash?: string, options: { secondStep?: 'verified' } = {}) {
+type SecondStepVerified = { secondStep: 'verified'; verified: { passwordVersion: number; confirmedAt: Date } };
+export async function createWebSession(identity: Identity, expectedPasswordHash?: string, options: SecondStepVerified | { secondStep?: undefined } = {}) {
   const sid = randomUUID();
   const expiresAt = new Date(Date.now() + 30 * 86400_000);
   const pair = tokens(identity, sid, expiresAt);
@@ -61,6 +63,12 @@ export async function createWebSession(identity: Identity, expectedPasswordHash?
     const policy = await secondStepPolicy(tx, identity.id, membership.role);
     if (policy.requirement === 'enrolment' || (policy.requirement === 'code' && options.secondStep !== 'verified')) {
       throw new SecondStepRequiredError(policy.requirement, user.password_version);
+    }
+    // The code was checked in an earlier transaction. A password reset or a
+    // new authenticator since then voids it.
+    if (options.secondStep === 'verified' && (user.password_version !== options.verified.passwordVersion
+      || policy.confirmedAt?.getTime() !== options.verified.confirmedAt.getTime())) {
+      throw new WebCredentialsChangedError('Credentials changed; sign in again');
     }
     // clock_timestamp(), not the transaction's start: a session must never
     // look older than an enrolment that committed while this waited for it.

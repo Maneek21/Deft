@@ -70,6 +70,10 @@ type Props = {
 export function TwoStepEnrolment({ enrolToken = null, replacing = false, onFinished, doneLabel }: Props) {
   const [step, setStep] = useState<'intro' | 'secret' | 'codes'>('intro');
   const [proof, setProof] = useState('');
+  // Signed in normally and turning it on for the first time: the server asks
+  // for the password, so a stolen session alone cannot add an authenticator.
+  const needsPassword = !enrolToken && !replacing;
+  const [password, setPassword] = useState('');
   const [secret, setSecret] = useState('');
   const [otpauthUrl, setOtpauthUrl] = useState('');
   const [code, setCode] = useState('');
@@ -82,7 +86,8 @@ export function TwoStepEnrolment({ enrolToken = null, replacing = false, onFinis
     setBusy(true);
     try {
       const typed = proof.trim();
-      const body = !replacing ? {} : /^\d{6}$/.test(typed.replace(/\s/g, '')) ? { code: typed } : { recovery_code: typed };
+      const body = needsPassword ? { current_password: password }
+        : !replacing ? {} : /^\d{6}$/.test(typed.replace(/\s/g, '')) ? { code: typed } : { recovery_code: typed };
       const started = await twoStepApi.startEnrolment(body, enrolToken);
       setSecret(started.secret);
       setOtpauthUrl(started.otpauth_url);
@@ -130,12 +135,17 @@ export function TwoStepEnrolment({ enrolToken = null, replacing = false, onFinis
             You will also get recovery codes. If you lose both your authenticator and your recovery codes,
             there is no way back into this account: nobody, including Deft, can restore access.
           </p>
+          {needsPassword && (
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Current password"
+              autoComplete="current-password" aria-label="Current password"
+              className="w-full h-11 px-4 text-[0.875rem] outline-none" style={inputStyle} />
+          )}
           {replacing && (
             <input value={proof} onChange={(e) => setProof(e.target.value)} placeholder="Current code or a recovery code"
               autoComplete="one-time-code" aria-label="Current code or a recovery code"
               className="w-full h-11 px-4 text-[0.875rem] outline-none" style={inputStyle} />
           )}
-          <button type="button" onClick={start} disabled={busy || (replacing && !proof.trim())}
+          <button type="button" onClick={start} disabled={busy || (replacing && !proof.trim()) || (needsPassword && !password)}
             className="w-full h-11 font-semibold text-[0.875rem] disabled:opacity-50 inline-flex items-center justify-center gap-2" style={primaryButton}>
             {busy && <Loader2 size={15} className="animate-spin" />}
             {replacing ? 'Replace authenticator' : 'Set up two-step verification'}
