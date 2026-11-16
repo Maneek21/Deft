@@ -122,9 +122,11 @@ async function used() {
 }
 
 before(async () => {
-  // A database set up before this change may lack the table; create it from the upgrade file.
+  // A local database made before this change, or by a push-full that stopped
+  // before the forward upgrades, may lack the table; create it from the upgrade
+  // file. In CI the fresh install must already have it.
   const exists = await db.execute(sql`SELECT to_regclass('public.seat_statements') IS NOT NULL AS present`);
-  if (!(exists.rows[0] as { present: boolean }).present) {
+  if (!(exists.rows[0] as { present: boolean }).present && process.env.CI !== 'true') {
     await db.execute(sql.raw(readFileSync(resolve(import.meta.dirname, '../../../packages/db/upgrades/0.3.0-preview.144-seat-statements.sql'), 'utf8')));
   }
   await db.insert(orgs).values({ id: orgId, name: `Seats ${s}`, slug: `seats-${s}` });
@@ -158,6 +160,16 @@ after(async () => {
   await db.delete(orgMembers).where(eq(orgMembers.org_id, orgId));
   await db.delete(users).where(inArray(users.id, ids));
   await db.delete(orgs).where(eq(orgs.id, orgId));
+});
+
+test('the seat statement table matches the upgrade file', async () => {
+  // Same definitions as the Versioned Upgrade job checks after db:upgrade.
+  const columns = await db.execute(sql`SELECT string_agg(column_name || ':' || data_type || ':' || is_nullable, ',' ORDER BY ordinal_position) AS v
+    FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'seat_statements'`);
+  const checks = await db.execute(sql`SELECT string_agg(conname || ': ' || pg_get_constraintdef(oid), ' | ' ORDER BY conname) AS v
+    FROM pg_constraint WHERE conrelid = 'public.seat_statements'::regclass AND contype = 'c'`);
+  assert.equal(columns.rows[0]?.v, 'cell_id:text:NO,token:text:NO,seats:integer:NO,version:bigint:NO,issued_at:bigint:NO,expires_at:bigint:NO,highest_version:bigint:NO,accepted_at:timestamp without time zone:NO,created_at:timestamp without time zone:NO,updated_at:timestamp without time zone:NO');
+  assert.equal(checks.rows[0]?.v, 'seat_statements_seats_check: CHECK ((seats >= 0)) | seat_statements_version_check: CHECK (((version >= 1) AND (highest_version >= version)))');
 });
 
 test('only active human non-guest members count', async () => {
