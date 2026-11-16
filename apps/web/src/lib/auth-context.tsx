@@ -67,6 +67,10 @@ type AuthContextType = {
   logout: (options?: LogoutOptions) => Promise<void>;
   replaceUser: (nextUser: User) => void;
   refreshUser: () => Promise<void>;
+  /** Taken before a request that may hand back a session later. */
+  sessionTicket: () => number;
+  /** Installs that session only if nobody signed out or in since the ticket. */
+  adoptSession: (ticket: number, accessToken: string, refreshToken: string) => boolean;
 };
 
 type LogoutOptions = {
@@ -112,6 +116,17 @@ export function isCrossTabSessionReplacement(oldRefresh: string | null, newRefre
   const oldIdentity = sessionIdentity(oldRefresh);
   const newIdentity = sessionIdentity(newRefresh);
   return oldIdentity === null || newIdentity === null || oldIdentity !== newIdentity;
+}
+
+/**
+ * A session handed back by a slow request (finishing two-step setup) is
+ * installed only if no sign-out, sign-in or other-tab change happened since
+ * the request started; otherwise it would bring back a session after logout.
+ */
+export function adoptSessionIfCurrent(generation: AuthRequestGeneration, ticket: number, install: () => void): boolean {
+  if (!generation.isCurrent(ticket)) return false;
+  install();
+  return true;
 }
 
 export function isCurrentRefreshStorageEvent(eventValue: string | null, storedValue: string | null): boolean {
@@ -346,6 +361,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const sessionTicket = () => authGeneration.current.capture();
+  const adoptSession = (ticket: number, accessToken: string, refreshToken: string) => adoptSessionIfCurrent(authGeneration.current, ticket, () => {
+    sessionCacheEpoch.current += 1;
+    api.setTokens(accessToken, refreshToken);
+  });
+
   const verifyTwoStep = async (challengeToken: string, proof: { code: string } | { recovery_code: string }) => {
     const generation = authGeneration.current.advance();
     const session = await exchangeTwoStepChallenge(challengeToken, proof);
@@ -430,7 +451,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, org, loading, sessionCacheScope, login, verifyTwoStep, signup, logout, replaceUser, refreshUser: fetchMe }}>
+    <AuthContext.Provider value={{ user, org, loading, sessionCacheScope, login, verifyTwoStep, signup, logout, replaceUser, refreshUser: fetchMe, sessionTicket, adoptSession }}>
       {connectionInterrupted && !credentialPage ? <main className="min-h-dvh flex items-center justify-center bg-[var(--background)] p-6 text-[var(--on-surface)]">
         <div className="max-w-sm space-y-4 text-center" role="status">
           <h1 className="text-xl font-semibold">Reconnecting to Deft</h1>

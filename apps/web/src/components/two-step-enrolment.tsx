@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { Loader2 } from 'lucide-react';
-import { api } from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
 import { clearEnrolToken, twoStepApi } from '@/lib/two-step';
 
 const inputStyle = {
@@ -69,6 +69,7 @@ type Props = {
  */
 export function TwoStepEnrolment({ enrolToken = null, replacing = false, onFinished, doneLabel }: Props) {
   const [step, setStep] = useState<'intro' | 'secret' | 'codes'>('intro');
+  const { sessionTicket, adoptSession } = useAuth();
   const [proof, setProof] = useState('');
   // Signed in normally and turning it on for the first time: the server asks
   // for the password, so a stolen session alone cannot add an authenticator.
@@ -104,9 +105,12 @@ export function TwoStepEnrolment({ enrolToken = null, replacing = false, onFinis
     setError('');
     setBusy(true);
     try {
+      const ticket = sessionTicket();
       const confirmed = await twoStepApi.confirmEnrolment(code.trim(), enrolToken);
-      // Every earlier session ended with enrolment; continue on the new one.
-      if (confirmed.accessToken && confirmed.refreshToken) api.setTokens(confirmed.accessToken, confirmed.refreshToken);
+      // A signed-in person keeps their session. Someone finishing setup with
+      // the enrol-only token gets a new one, installed only if nobody signed
+      // out or in meanwhile. The recovery codes are shown either way.
+      if (confirmed.accessToken && confirmed.refreshToken) adoptSession(ticket, confirmed.accessToken, confirmed.refreshToken);
       clearEnrolToken();
       setSecret('');
       setOtpauthUrl('');

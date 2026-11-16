@@ -170,7 +170,7 @@ export async function startTwoStepEnrolment(user: { id: string; email: string; s
 }
 
 export type EnrolmentConfirm =
-  | { ok: true; recoveryCodes: string[]; credentials: VerifiedCredentials }
+  | { ok: true; recoveryCodes: string[]; credentials: VerifiedCredentials; keptSession: boolean }
   | { ok: false; check: Exclude<SecondStepCheck, { ok: true }> }
   | { ok: false; reason: 'authority_lost' };
 
@@ -213,15 +213,22 @@ export async function confirmTwoStepEnrolment(userId: string, code: string, auth
       locked_until: null,
     }).where(eq(userTwoStep.user_id, userId)).returning({ confirmed_at: userTwoStep.confirmed_at });
     const recoveryCodes = await replaceRecoveryCodes(tx, userId);
-    const revoked = await revokeAllSessions(tx, userId);
+    // Every other session ends. The caller's own session, which has just
+    // shown a code (and the password, or the current second step), continues
+    // as a session issued now: other tabs using it see no sign-out while this
+    // tab shows the recovery codes. An enrol-only caller has no session; the
+    // route issues one.
+    const keptSid = 'sid' in authority ? authority.sid : null;
+    const revoked = await revokeAllSessions(tx, userId, keptSid);
+    if (keptSid) await tx.update(webSessions).set({ created_at: sql`clock_timestamp()` }).where(eq(webSessions.id, keptSid));
     await tx.update(twoStepChallenges).set({ consumed_at: now })
       .where(and(eq(twoStepChallenges.user_id, userId), isNull(twoStepChallenges.consumed_at)));
     const credentials = { passwordVersion: user.password_version, confirmedAt: confirmed!.confirmed_at! };
-    return { ok: true as const, recoveryCodes, revoked, credentials };
+    return { ok: true as const, recoveryCodes, revoked, credentials, keptSession: keptSid !== null };
   });
   if (!result.ok) return result;
   emitWebSessionRevocations(result.revoked);
-  return { ok: true, recoveryCodes: result.recoveryCodes, credentials: result.credentials };
+  return { ok: true, recoveryCodes: result.recoveryCodes, credentials: result.credentials, keptSession: result.keptSession };
 }
 
 export type CodeGatedResult<T> = ({ ok: true } & T) | { ok: false; check: Exclude<SecondStepCheck, { ok: true }> };

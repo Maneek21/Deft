@@ -5,6 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { api, refreshAccessToken } from './api';
 import {
+  adoptSessionIfCurrent,
   AuthRequestGeneration,
   isCrossTabSessionReplacement,
   isCurrentRefreshStorageEvent,
@@ -417,6 +418,17 @@ test('auth generations reject a pre-logout response and an older login response'
   const secondLoginMe = generation.advance(); // newer login starts
   assert.equal(generation.isCurrent(firstLoginMe), false, 'the older identity response cannot win');
   assert.equal(generation.isCurrent(secondLoginMe), true);
+});
+
+test('a session handed back after a sign-out or another sign-in is not installed', () => {
+  const generation = new AuthRequestGeneration();
+  const installed: string[] = [];
+  const beforeLogout = generation.capture();
+  generation.advance(); // logout while two-step setup was finishing
+  assert.equal(adoptSessionIfCurrent(generation, beforeLogout, () => installed.push('late')), false);
+  const current = generation.capture();
+  assert.equal(adoptSessionIfCurrent(generation, current, () => installed.push('current')), true);
+  assert.deepEqual(installed, ['current']);
 });
 
 test('cross-tab session replacement differs from seamless refresh rotation', () => {

@@ -39,5 +39,7 @@ export function useAuth(): ReturnType<typeof realUseAuth> {
     logout: async () => {},
     replaceUser: () => {},
     refreshUser: async () => {},
+    sessionTicket: () => 0,
+    adoptSession: () => true,
   };
 }

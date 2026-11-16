@@ -464,10 +464,10 @@ authRoutes.post('/reset-password', async (c) => {
   const { token, password } = parsed.data;
 
   try {
-    const payload = z.object({ id: z.string().min(1), org_id: z.string().min(1), purpose: z.literal('password-reset'), password_version: z.number().int().nonnegative() }).parse(jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }));
+    const payload = z.object({ id: z.string().min(1), org_id: z.string().min(1), purpose: z.literal('password-reset'), password_version: z.number().int().nonnegative(), issued_by: z.string().min(1).max(256).optional() }).parse(jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }));
 
     const passwordHash = await bcrypt.hash(password, 12);
-    await changeWebPassword(payload.id, passwordHash, { resetToken: token, passwordVersion: payload.password_version, orgId: payload.org_id });
+    await changeWebPassword(payload.id, passwordHash, { resetToken: token, passwordVersion: payload.password_version, orgId: payload.org_id, issuedBy: payload.issued_by ?? null });
 
     return c.json({ success: true, message: 'Password has been reset. You can now log in.' });
   } catch {

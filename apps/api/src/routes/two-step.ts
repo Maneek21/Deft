@@ -172,11 +172,12 @@ twoStepRoutes.post('/enrol/confirm', async (c) => {
     if ('reason' in confirmed) return c.json({ error: 'Sign in again', code: 'INVALID_TOKEN' }, 401);
     return refuse(c, confirmed.check);
   }
-  // Every earlier session (this one included) and the enrol-only token ended
-  // with the confirmation. The person continues on a session issued now. If
-  // that fails (the password changed a moment ago), the recovery codes are
-  // still returned: they are shown only here, and the person signs in again.
-  const issued = await issueSession({
+  // A signed-in caller keeps their session (every other one ended). The
+  // enrol-only token ended with the confirmation, so its holder continues on a
+  // session issued now. If that fails (the password changed a moment ago), the
+  // recovery codes are still returned: they are shown only here, and the
+  // person signs in again.
+  const issued = confirmed.keptSession ? null : await issueSession({
     via: 'enrolment',
     identity: { id: caller.id, email: caller.email, org_id: caller.org_id },
     credentials: confirmed.credentials,

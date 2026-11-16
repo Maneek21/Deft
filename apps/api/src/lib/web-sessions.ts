@@ -134,15 +134,27 @@ export async function revokeWebSession(token: string) {
   webSessionEvents.emit('revoked', payload.sid);
 }
 
-type PasswordChangeAuthority = { expectedPasswordHash: string } | { resetToken: string; passwordVersion: number; orgId: string };
+/** Who made a recovery link: a member's id, or OPERATOR_RECOVERY_ISSUER for a
+ * link made on the server by `make-recovery-url`. Links made before this
+ * claim existed carry null. */
+type PasswordChangeAuthority = { expectedPasswordHash: string } | { resetToken: string; passwordVersion: number; orgId: string; issuedBy: string | null };
+export const OPERATOR_RECOVERY_ISSUER = 'operator';
 export async function changeWebPassword(userId: string, passwordHash: string, authority: PasswordChangeAuthority) {
   const sessions = await db.transaction(async (tx) => {
     const [user] = await tx.select().from(users).where(eq(users.id, userId)).for('update');
     if (!user) throw new WebCredentialsChangedError('Credentials changed');
     if ('resetToken' in authority) {
       if (user.password_version !== authority.passwordVersion) throw new WebCredentialsChangedError('Reset link superseded');
-      const [membership] = await tx.select({ id: orgMembers.id }).from(orgMembers).where(and(eq(orgMembers.org_id, authority.orgId), eq(orgMembers.user_id, userId), eq(orgMembers.is_active, true))).for('share');
+      const [membership] = await tx.select({ id: orgMembers.id, role: orgMembers.role }).from(orgMembers).where(and(eq(orgMembers.org_id, authority.orgId), eq(orgMembers.user_id, userId), eq(orgMembers.is_active, true))).for('share');
       if (!membership) throw new OrgMembershipError('Reset membership is no longer active');
+      // The rule that only the owner makes a link for an owner or admin holds
+      // when the link is used too: the person may have been promoted since.
+      if ((membership.role === 'owner' || membership.role === 'admin') && authority.issuedBy !== OPERATOR_RECOVERY_ISSUER) {
+        const [issuer] = authority.issuedBy
+          ? await tx.select({ role: orgMembers.role }).from(orgMembers).where(and(eq(orgMembers.org_id, authority.orgId), eq(orgMembers.user_id, authority.issuedBy), eq(orgMembers.is_active, true))).limit(1)
+          : [];
+        if (issuer?.role !== 'owner') throw new WebCredentialsChangedError('Reset link is not valid for this account');
+      }
       const inserted = await tx.insert(revokedTokens).values({ token_hash: hash(authority.resetToken), user_id: userId }).onConflictDoNothing().returning({ id: revokedTokens.id });
       if (!inserted.length) throw new Error('Reset token already used');
     } else if (user.password_hash !== authority.expectedPasswordHash) {

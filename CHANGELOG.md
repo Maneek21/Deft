@@ -89,7 +89,12 @@ back into that account; the setup screen says so. Schema `0.3.0-preview.149`
 ### Changed: who can create a recovery link
 
 An admin can no longer create a recovery link for the owner or for another admin;
-only the owner can. Admins can still create one for members and guests.
+only the owner can. Admins can still create one for members and guests. The rule
+is checked again when the link is used, so a link made for a member stops working
+if that member becomes an admin. Only the owner can change an admin's role.
+An owner who has forgotten their password gets a link from the server:
+`node --import tsx src/scripts/make-recovery-url.ts <email>` in `apps/api` (see
+docs/self-hosting.md). A recovery link never removes two-step verification.
 
 ### Notice: Kit `0.1.0-alpha.44` removes deprecated Email compatibility
 

@@ -1395,7 +1395,9 @@ memberRoutes.post('/:id/recovery-url', async (c) => {
     }
 
     const resetToken = jwt.sign(
-      { id: target.id, email: target.email, org_id: currentUser.org_id, purpose: 'password-reset', password_version: target.password_version },
+      // issued_by: the reset re-checks, when the link is used, that an owner
+      // or admin target is still allowed by whoever made it (web-sessions.ts).
+      { id: target.id, email: target.email, org_id: currentUser.org_id, purpose: 'password-reset', password_version: target.password_version, issued_by: currentUser.id },
       env.JWT_SECRET,
       { expiresIn: RECOVERY_TTL },
     );
@@ -1423,8 +1425,9 @@ memberRoutes.patch('/:id', async (c) => {
     const currentUser = c.get('user');
     const memberId = c.req.param('id');
 
+    let caller;
     try {
-      await requireOrgAdminOrOwner(currentUser.org_id, currentUser.id);
+      caller = await requireOrgAdminOrOwner(currentUser.org_id, currentUser.id);
     } catch (err) {
       return adminForbidden(c, err);
     }
@@ -1445,6 +1448,10 @@ memberRoutes.patch('/:id', async (c) => {
 
       if (!targetMembership) return { failure: 'NOT_FOUND' as const };
       if (targetMembership.role === 'owner') return { failure: 'OWNER' as const };
+      // Only the owner changes an admin's role. Otherwise an admin could
+      // demote a peer, make a recovery link for them as a member, and take
+      // over their account.
+      if (targetMembership.role === 'admin' && caller.role !== 'owner') return { failure: 'ADMIN' as const };
       if (!parsed.success) return { failure: 'INVALID' as const };
 
       // Hosted mode: the admin role takes effect only for someone who already
@@ -1474,6 +1481,7 @@ memberRoutes.patch('/:id', async (c) => {
     if ('failure' in changed) {
       if (changed.failure === 'NOT_FOUND') return c.json({ error: 'Member not found', code: 'NOT_FOUND' }, 404);
       if (changed.failure === 'OWNER') return c.json({ error: 'Cannot change owner role', code: 'FORBIDDEN' }, 403);
+      if (changed.failure === 'ADMIN') return c.json({ error: "Only the owner can change an admin's role", code: 'FORBIDDEN' }, 403);
       if (changed.failure === 'TWO_STEP') {
         return c.json({
           error: 'This person must turn on two-step verification (Settings, Profile) before they can be made an admin',

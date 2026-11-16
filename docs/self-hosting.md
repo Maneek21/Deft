@@ -383,7 +383,19 @@ Settings -> Members. Deft generates one-time invite URLs; share them out of band
 
 Core self-hosted account recovery does not send email. This is separate from the independently installed Email App. Password recovery is admin-generated:
 owners/admins create recovery URLs from Settings -> Members and share them
-manually.
+manually. Only the owner can create one for the owner or an admin, and only the
+owner can change an admin's role.
+
+If the owner has forgotten their password, an operator with shell access to the
+server prints a one-time recovery URL (valid 24 hours):
+
+```bash
+docker compose exec deft sh -c "cd /app/apps/api && node --import tsx src/scripts/make-recovery-url.ts owner@example.com"
+```
+
+A recovery URL sets a new password only. It never removes two-step
+verification: the person still needs a code from their authenticator app or one
+of their recovery codes.
 
 ## MCP Access And Agents
 

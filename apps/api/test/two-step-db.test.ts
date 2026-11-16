@@ -102,21 +102,26 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
   };
 
   /** Enrols through the HTTP routes with whatever bearer the person holds. */
-  async function enrol(bearer: string) {
+  async function enrol(bearer: string, refreshToken?: string) {
     // A signed-in person also gives their password; an enrol-only token does not.
     const started = await post('/api/auth/two-step/enrol/start', bearer.startsWith('tsc_') ? {} : { current_password: PASSWORD }, bearer);
     assert.equal(started.status, 200, JSON.stringify(started.json));
     const secret = started.json.secret as string;
     const confirmed = await post('/api/auth/two-step/enrol/confirm', { code: codeFor(secret) }, bearer);
     assert.equal(confirmed.status, 200, JSON.stringify(confirmed.json));
-    return { secret, started: started.json, confirmed: confirmed.json, recoveryCodes: confirmed.json.recovery_codes as string[] };
+    // A signed-in caller keeps its session and gets no new tokens; the holder
+    // of an enrol-only token gets a session issued now.
+    const enrolOnly = bearer.startsWith('tsc_');
+    assert.equal(Boolean(confirmed.json.accessToken), enrolOnly);
+    const session = enrolOnly ? confirmed.json : { ...confirmed.json, accessToken: bearer, refreshToken };
+    return { secret, started: started.json, confirmed: session, recoveryCodes: confirmed.json.recovery_codes as string[] };
   }
   /** A member who has two-step verification, plus a signed-in session. */
   async function enrolledPerson(role: 'owner' | 'admin' | 'member' = 'member') {
     const who = await person(role);
     const first = await login(who.email);
     const bearer = (first.json.accessToken ?? first.json.two_step?.token) as string;
-    const enrolment = await enrol(bearer);
+    const enrolment = await enrol(bearer, first.json.refreshToken);
     await forgetUsedStep(who.id);
     return { ...who, ...enrolment, accessToken: enrolment.confirmed.accessToken as string, refreshToken: enrolment.confirmed.refreshToken as string };
   }
@@ -151,7 +156,7 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     const who = await person('member');
     const before = (await login(who.email)).json;
     const other = (await login(who.email)).json;
-    const { secret, started, recoveryCodes, confirmed } = await enrol(before.accessToken);
+    const { secret, started, recoveryCodes, confirmed } = await enrol(before.accessToken, before.refreshToken);
 
     assert.match(secret, /^[A-Z2-7]{32}$/);
     const otpauth = new URL(started.otpauth_url);
@@ -171,11 +176,16 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     assert.deepEqual(stored.map((code) => code.code_hash).sort(), recoveryCodes.map((code) => hashRecoveryCode(code)!).sort());
     for (const code of recoveryCodes) assert.ok(!JSON.stringify(stored).includes(code), 'recovery codes are stored only as hashes');
 
-    // Sessions issued before enrolment never saw a code: all of them end.
-    assert.equal((await probe(before.accessToken)).status, 401);
+    // Every other session never saw a code: they end. The session that
+    // enrolled (password and code) continues, and keeps refreshing, so other
+    // tabs using it are not signed out while this one shows the codes.
     assert.equal((await probe(other.accessToken)).status, 401);
     assert.equal((await post('/api/auth/refresh', { refreshToken: other.refreshToken })).status, 401);
-    assert.equal((await probe(confirmed.accessToken)).status, 200);
+    assert.equal(confirmed.accessToken, before.accessToken);
+    assert.equal((await probe(before.accessToken)).status, 200);
+    const refreshed = await post('/api/auth/refresh', { refreshToken: before.refreshToken });
+    assert.equal(refreshed.status, 200, JSON.stringify(refreshed.json));
+    assert.equal((await probe(refreshed.json.accessToken)).status, 200);
 
     const status = await call('GET', '/api/auth/two-step', undefined, confirmed.accessToken);
     assert.equal(status.json.enabled, true);
@@ -590,6 +600,56 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     hosted(false);
   });
 
+  await t.test('only the owner changes an admin\'s role, so an admin cannot demote a peer to reach a recovery link', async () => {
+    const roleOrg = randomUUID();
+    await db.insert(orgs).values({ id: roleOrg, name: 'Peer admins', slug: `peer-${roleOrg}` });
+    hosted(false);
+    const owner = await person('owner', roleOrg);
+    const admin = await person('admin', roleOrg);
+    const peer = await person('admin', roleOrg);
+    const member = await person('member', roleOrg);
+    const adminSession = (await login(admin.email)).json.accessToken as string;
+    const ownerSession = (await login(owner.email)).json.accessToken as string;
+    const demote = await call('PATCH', `/api/members/${peer.id}`, { role: 'member' }, adminSession);
+    assert.equal(demote.status, 403);
+    assert.equal(demote.json.code, 'FORBIDDEN');
+    assert.equal((await call('POST', `/api/members/${peer.id}/recovery-url`, {}, adminSession)).status, 403, 'and so no link for the peer');
+    // Members and guests are still the admin's to change; the owner changes anyone.
+    assert.equal((await call('PATCH', `/api/members/${member.id}`, { role: 'guest' }, adminSession)).status, 200);
+    assert.equal((await call('PATCH', `/api/members/${peer.id}`, { role: 'member' }, ownerSession)).status, 200);
+  });
+
+  await t.test('a recovery link for an owner or admin is checked again when it is used', async () => {
+    const linkOrg = randomUUID();
+    await db.insert(orgs).values({ id: linkOrg, name: 'Link use', slug: `link-${linkOrg}` });
+    hosted(false);
+    const owner = await person('owner', linkOrg);
+    const admin = await person('admin', linkOrg);
+    const member = await person('member', linkOrg);
+    const ownerSession = (await login(owner.email)).json.accessToken as string;
+    const adminSession = (await login(admin.email)).json.accessToken as string;
+    const reset = (url: string) => post('/api/auth/reset-password', { token: new URL(url).searchParams.get('token'), password: 'A-new-password-2026!' });
+
+    // An admin's link for a member stops working once that member is an admin.
+    const forMember = (await call('POST', `/api/members/${member.id}/recovery-url`, {}, adminSession)).json.recovery_url as string;
+    assert.equal((await call('PATCH', `/api/members/${member.id}`, { role: 'admin' }, ownerSession)).status, 200);
+    const refused = await reset(forMember);
+    assert.equal(refused.status, 400);
+    assert.equal((await login(member.email)).status, 200, 'the password did not change');
+
+    // A link without its maker (made before this rule) is refused for an admin.
+    const legacy = jwt.sign({ id: admin.id, email: admin.email, org_id: linkOrg, purpose: 'password-reset', password_version: 0 }, env.JWT_SECRET, { expiresIn: '1h' });
+    assert.equal((await post('/api/auth/reset-password', { token: legacy, password: 'A-new-password-2026!' })).status, 400);
+
+    // The owner's link for an admin works; so does an operator's link for the owner.
+    const forAdmin = (await call('POST', `/api/members/${admin.id}/recovery-url`, {}, ownerSession)).json.recovery_url as string;
+    assert.equal((await reset(forAdmin)).status, 200);
+    const { makeOperatorRecoveryUrl } = await import('../src/scripts/make-recovery-url.js');
+    const operator = await makeOperatorRecoveryUrl(owner.email);
+    assert.equal((await reset(operator.url)).status, 200);
+    assert.equal((await login(owner.email, 'A-new-password-2026!')).status, 200);
+  });
+
   await t.test('hosted: nobody becomes an admin before they have two-step verification on', async () => {
     const roleOrg = randomUUID();
     await db.insert(orgs).values({ id: roleOrg, name: 'Role change', slug: `role-${roleOrg}` });
@@ -722,9 +782,14 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
   });
 
   await t.test('signup goes through the same policy', async () => {
+    // A hosted cell's first signup also needs its one-time setup token.
+    const setupToken = `setup-${randomUUID()}`;
+    const setupBefore = { hash: process.env.DEFT_SETUP_TOKEN_SHA256, expires: process.env.DEFT_SETUP_TOKEN_EXPIRES_AT };
+    process.env.DEFT_SETUP_TOKEN_SHA256 = createHash('sha256').update(setupToken).digest('hex');
+    process.env.DEFT_SETUP_TOKEN_EXPIRES_AT = new Date(Date.now() + 3600_000).toISOString();
     const signup = () => {
       const id = randomUUID();
-      return post('/api/auth/signup', { name: 'First owner', email: `two-step-signup-${id}@test.local`, password: PASSWORD, org_name: `Signup ${id}` });
+      return post('/api/auth/signup', { name: 'First owner', email: `two-step-signup-${id}@test.local`, password: PASSWORD, org_name: `Signup ${id}`, setup_token: setupToken });
     };
     pretendEmptyInstall = true;
     try {
@@ -747,6 +812,9 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     } finally {
       pretendEmptyInstall = false;
       hosted(false);
+      for (const [key, value] of [['DEFT_SETUP_TOKEN_SHA256', setupBefore.hash], ['DEFT_SETUP_TOKEN_EXPIRES_AT', setupBefore.expires]] as const) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
     }
   });
 
