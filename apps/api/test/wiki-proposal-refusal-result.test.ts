@@ -324,7 +324,7 @@ test('personal MCP approval_approve: a retryable failure is pending, retryable a
     const body = JSON.parse(textOf(result));
     assert.equal(body.status, 'pending');
     assert.equal(body.retryable, true);
-    assert.equal(body.message, 'The action did not run. It is still pending and can be approved again.');
+    assert.equal(body.message, 'The action did not complete. It is still pending and can be approved again.');
     const [row] = (await f.client.query('SELECT approval_status FROM agent_actions WHERE id = $1', [actionId])).rows;
     assert.equal(row.approval_status, 'pending');
   } finally {

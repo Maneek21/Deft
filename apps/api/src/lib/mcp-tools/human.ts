@@ -3655,7 +3655,7 @@ async function decideAsWebReviewer(
   if (decision === 'approve' && body.status === 'pending' && body.retryable === true) {
     return textResult({
       ...body,
-      message: 'The action did not run. It is still pending and can be approved again.',
+      message: 'The action did not complete. It is still pending and can be approved again.',
     });
   }
   // The web's ordinary path answers without a status; MCP callers always get one.
@@ -3973,7 +3973,7 @@ function operationalHumanSchemas(): Array<Record<string, unknown>> {
     write('attention_resolve', 'Resolve Deft Attention', 'Clear an attention item without mutating its source object.', { attention_id: id('Attention item id'), resolution: { type: 'string' } }, ['attention_id']),
     read('approval_list', 'List Deft Approvals', 'List pending or historical approval actions assigned to the connected user.', { status: { type: 'string', enum: ['pending', 'approved', 'rejected', 'expired', 'all'] }, limit }),
     read('approval_get', 'Get Deft Approval', 'Read one approval assigned to the connected user, including exact action parameters.', { action_id: id('Approval action id') }, ['action_id']),
-    write('approval_approve', 'Approve Deft Action', 'Approve and execute one pending action assigned to the connected user through the canonical approval resolver. If the action then fails for good, the result is an error whose content is {"status":"failed","message","error"} (plus "code" for a typed refusal). If it fails in a way that can be retried, the result is not an error: {"status":"pending","retryable":true,"message","error"}; the action did not run and can be approved again.', { action_id: id('Approval action id') }, ['action_id']),
+    write('approval_approve', 'Approve Deft Action', 'Approve and execute one pending action assigned to the connected user through the canonical approval resolver. If the action then fails for good, the result is an error whose content is {"status":"failed","message","error"} (plus "code" for a typed refusal). If it fails in a way that can be retried, the result is not an error: {"status":"pending","retryable":true,"message","error"}; the action did not complete and can be approved again.', { action_id: id('Approval action id') }, ['action_id']),
     write('approval_reject', 'Reject Deft Action', 'Reject one pending action assigned to the connected user.', { action_id: id('Approval action id'), reason: { type: 'string' } }, ['action_id']),
     write('project_create', 'Create Deft Project', 'Create a project with fixed Deft workflow defaults.', { name: { type: 'string' }, prefix: { type: 'string', minLength: 2, maxLength: 6 }, description: { type: 'string' }, color: { type: 'string' }, icon: { type: 'string' }, lead_id: id('Optional member user id') }, ['name', 'prefix']),
     write('project_update', 'Update Deft Project', 'Update editable fields on an active project. Prefixes remain immutable.', { project_id: id('Project id'), name: { type: 'string' }, description: { type: ['string', 'null'] }, color: { type: ['string', 'null'] }, icon: { type: ['string', 'null'] }, lead_id: { type: ['string', 'null'] } }, ['project_id']),
