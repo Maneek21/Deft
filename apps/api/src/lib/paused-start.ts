@@ -130,7 +130,6 @@ export function isRefusedWhilePaused(method: string, path: string): boolean {
   // A CORS preflight runs nothing; it is never refused.
   if (refusedForEveryMethod(routed)) return verb !== 'OPTIONS';
   if (READ_METHODS.has(verb)) return false;
-  if (routed === '/health' || routed.startsWith('/health/')) return false;
   return !PAUSED_ALLOWED_WRITES.some((allowed) => allowed.method === verb && allowed.path === routed);
 }
 

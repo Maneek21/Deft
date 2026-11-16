@@ -46,6 +46,7 @@ test('read side effects shared with other people are refused; private onboarding
   }
   assert.equal(isRefusedWhilePaused('GET', '/api/auth/onboarding'), false);
   assert.equal(isRefusedWhilePaused('POST', '/api/auth/reset-password'), true);
+  assert.equal(isRefusedWhilePaused('POST', '/health/future-write'), true);
 });
 
 test('paused provider and transport entry points refuse before network, files or database work', async () => {
