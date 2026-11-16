@@ -23,6 +23,21 @@ NEXT_PUBLIC_WS_URL=https://demo.example.com
 
 Keep provider keys in `.env`; do not add them to the Compose overlay.
 
+The overlay sets `DEFT_INVITE_TRUSTED_PROXIES=caddy` for invite preview and
+acceptance limits. The API resolves that service name and trusts forwarded
+addresses only when the socket peer matches its current IP; container IP
+changes require no manual setting. Other API limiters are unchanged.
+
+For a different proxy, set this variable to a comma-separated list of its
+exact IPs or DNS names that you control (no CIDRs or implicit private ranges).
+An absent setting uses the socket peer. Missing/invalid forwarding headers or
+failed DNS resolution also use that peer, sharing its budget. A configured
+proxy must overwrite untrusted `X-Forwarded-For` or append its actual client as
+the rightmost entry; the API ignores earlier entries and `X-Real-IP`.
+[Caddy does this by default](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#defaults).
+With additional proxies in front of Caddy, this policy counts Caddy's immediate
+client, not an unverified address farther back in the chain.
+
 ## Preflight and deploy
 
 ```bash

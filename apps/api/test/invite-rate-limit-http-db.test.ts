@@ -8,6 +8,7 @@ import { serve } from '@hono/node-server';
 // The invite routes are public and mounted before the default limiter, so
 // they carry their own per-IP limiter. Use a small budget for this process.
 process.env.DEFT_INVITE_RATE_LIMIT_PER_MINUTE = '3';
+delete process.env.DEFT_INVITE_TRUSTED_PROXIES;
 
 test('public invite routes limit socket peers despite spoofed forwarding headers', async () => {
   const { app } = await import('../src/index.js');

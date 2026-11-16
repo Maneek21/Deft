@@ -4,6 +4,7 @@ import { getConnInfo } from '@hono/node-server/conninfo';
 import { rateLimiter } from 'hono-rate-limiter';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { Context, MiddlewareHandler } from 'hono';
+import { createInviteClientKey } from '../lib/invite-client-ip.js';
 
 const isProduction = process.env.NODE_ENV === 'production';
 
@@ -124,17 +125,13 @@ export const authLimiter = withAuditBypass(rateLimiter({
   }, 429),
 }));
 
-// Per socket peer for public invite routes, separate from the auth budget.
-// Never trust caller-supplied forwarding headers. A reverse proxy's clients
-// share that proxy peer's budget, as they do for appRuntimeLimiter below.
+// Invite-only proxy trust; other limiters keep their existing key policy.
+// Without explicitly configured trusted proxies, use the socket peer.
 export const inviteLimiter = withAuditBypass(rateLimiter({
   windowMs: 60 * 1000,
   limit: INVITE_LIMIT_PER_MINUTE,
   standardHeaders: 'draft-7',
-  keyGenerator: (c) => {
-    try { return getConnInfo(c).remote.address ?? 'unknown'; }
-    catch { return 'unknown'; }
-  },
+  keyGenerator: createInviteClientKey(),
   handler: (c) => c.json({
     error: 'Too many requests. Try again in a minute.',
     code: 'RATE_LIMITED',
