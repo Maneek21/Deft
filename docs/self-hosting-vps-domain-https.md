@@ -102,6 +102,30 @@ demo.example.com {
 If you use Nginx, keep the same routing split: `/api`, `/oauth`, and
 `/.well-known` go to the API port; everything else goes to the web port.
 
+For host-installed Caddy or Nginx, set `DEFT_INVITE_TRUSTED_PROXIES` in `.env`
+to the proxy's **actual socket peer address as seen by the API**, then recreate
+the `deft` container. This applies only to invite preview/accept rate limits;
+it does not change the other API limiters. Without it, all visitors behind the
+proxy share one 10-request/minute invite budget, including after an upgrade.
+
+With a native API on the same host the peer may be `127.0.0.1` or `::1`. A host
+proxy reaching a published Docker port often appears as the Docker bridge
+gateway instead. Inspect the running container's network gateways, then confirm
+which one is the proxy peer before trusting that exact address:
+
+```bash
+docker inspect --format '{{range .NetworkSettings.Networks}}{{println .Gateway}}{{end}}' \
+  "$(docker compose -f docker-compose.yml -f compose.prod.yml ps -q deft)"
+```
+
+Use comma-separated exact IPs or DNS names you control, never a whole private
+subnet. The trusted proxy must overwrite incoming `X-Forwarded-For` or append
+the real immediate client as its final entry. For Nginx this is normally
+`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`; Caddy's default
+forwarding behavior already meets this rule. `X-Real-IP` alone is not used.
+The bundled Docker Caddy overlay supplies the trusted `caddy` service name
+automatically; it does not apply to the host-installed proxy shown above.
+
 ## 4. Bootstrap
 
 From the repo:
