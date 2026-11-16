@@ -56,7 +56,11 @@ test('ledger absent: explicit no_ledger state', async () => {
   assert.equal(newestLedgerVersion([]), null);
 });
 
-test('database error or a hung read: unavailable, quickly, without throwing', async () => {
+test('database error or a hung read: unavailable, quickly, without throwing', async (t) => {
+  // The HTTP listener keeps production alive; a synthetic hung reader has no
+  // handles. Keep this test alive for its intentionally unref'ed deadline.
+  const keepAlive = setTimeout(() => {}, 3_000);
+  t.after(() => clearTimeout(keepAlive));
   const failing = createSchemaAppliedCache(async () => { throw new Error('connection refused'); });
   assert.deepEqual(await failing(), { value: null, state: 'unavailable' });
   const hung = createSchemaAppliedCache(() => new Promise<never>(() => {}));
@@ -85,7 +89,9 @@ test('failed refresh preserves the last known version with unavailable state', a
   assert.deepEqual(await get(), { value: '0.3.0-preview.137', state: 'unavailable' });
 });
 
-test('a timed-out read cannot overwrite a newer successful read', async () => {
+test('a timed-out read cannot overwrite a newer successful read', async (t) => {
+  const keepAlive = setTimeout(() => {}, 3_000);
+  t.after(() => clearTimeout(keepAlive));
   let clock = 0;
   let finish!: (rows: LedgerRow[]) => void;
   let calls = 0;
