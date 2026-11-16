@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -22,13 +23,37 @@ type InvitePayload = {
   exp?: number;
 };
 
-// GET /api/invites/preview/:token — public preview of an invite
-// Used by the accept page to render "Sara invited you to Acme".
-inviteRoutes.get('/preview/:token', async (c) => {
-  const token = c.req.param('token');
+// Invite tokens are signed with HS256 in routes/members.ts; never accept any
+// other algorithm when verifying them.
+function verifyInviteToken(token: string): InvitePayload {
+  return jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }) as InvitePayload;
+}
+
+const previewSchema = z.object({ token: z.string().min(1).max(8192) });
+
+// POST /api/invites/preview — public preview of an invite, token in the body.
+// Used by the accept page to render "Sara invited you to Acme". The token
+// travels in the body so it never appears in a request log.
+inviteRoutes.post('/preview', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = previewSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
+  }
+  return previewInvite(c, parsed.data.token);
+});
+
+// GET /api/invites/preview/:token — legacy preview. No current page calls it:
+// both the new `/invite#token=` page and the old `/invite/<token>` page use
+// POST /preview. It serves only browser bundles cached from before that
+// change, and should be removed after the next deploy. The request logger
+// redacts this path.
+inviteRoutes.get('/preview/:token', async (c) => previewInvite(c, c.req.param('token')));
+
+async function previewInvite(c: Context, token: string) {
   let payload: InvitePayload;
   try {
-    payload = jwt.verify(token, env.JWT_SECRET) as InvitePayload;
+    payload = verifyInviteToken(token);
   } catch (err) {
     const isExpired = err instanceof Error && err.name === 'TokenExpiredError';
     return c.json({ error: isExpired ? 'expired' : 'invalid', code: isExpired ? 'INVITE_EXPIRED' : 'INVITE_INVALID' }, 400);
@@ -86,11 +111,11 @@ inviteRoutes.get('/preview/:token', async (c) => {
     already_accepted: Boolean(invite.accepted_at ?? user.password_hash),
     expires_at: invite.expires_at?.toISOString() ?? (payload.exp ? new Date(payload.exp * 1000).toISOString() : null),
   });
-});
+}
 
 // POST /api/invites/accept — finalize an invite and log the user in
 const acceptSchema = z.object({
-  token: z.string().min(1),
+  token: z.string().min(1).max(8192),
   name: z.string().min(1).max(120).optional(),
   password: z.string().min(8),
 });
@@ -104,7 +129,7 @@ inviteRoutes.post('/accept', async (c) => {
 
   let payload: InvitePayload;
   try {
-    payload = jwt.verify(parsed.data.token, env.JWT_SECRET) as InvitePayload;
+    payload = verifyInviteToken(parsed.data.token);
   } catch (err) {
     const isExpired = err instanceof Error && err.name === 'TokenExpiredError';
     return c.json({ error: isExpired ? 'expired' : 'invalid', code: isExpired ? 'INVITE_EXPIRED' : 'INVITE_INVALID' }, 400);

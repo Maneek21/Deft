@@ -4,6 +4,7 @@ import { getConnInfo } from '@hono/node-server/conninfo';
 import { rateLimiter } from 'hono-rate-limiter';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { Context, MiddlewareHandler } from 'hono';
+import { createInviteClientKey } from '../lib/invite-client-ip.js';
 
 const isProduction = process.env.NODE_ENV === 'production';
 
@@ -16,6 +17,10 @@ function positiveIntFromEnv(name: string, fallback: number): number {
 
 const AUTH_LIMIT_PER_MINUTE = positiveIntFromEnv(
   'DEFT_AUTH_RATE_LIMIT_PER_MINUTE',
+  isProduction ? 10 : 120,
+);
+const INVITE_LIMIT_PER_MINUTE = positiveIntFromEnv(
+  'DEFT_INVITE_RATE_LIMIT_PER_MINUTE',
   isProduction ? 10 : 120,
 );
 const APP_RUNTIME_LIMIT_PER_MINUTE = positiveIntFromEnv(
@@ -114,6 +119,19 @@ export const authLimiter = withAuditBypass(rateLimiter({
   limit: AUTH_LIMIT_PER_MINUTE,
   standardHeaders: 'draft-7',
   keyGenerator: ipKey,
+  handler: (c) => c.json({
+    error: 'Too many requests. Try again in a minute.',
+    code: 'RATE_LIMITED',
+  }, 429),
+}));
+
+// Invite-only proxy trust; other limiters keep their existing key policy.
+// Without explicitly configured trusted proxies, use the socket peer.
+export const inviteLimiter = withAuditBypass(rateLimiter({
+  windowMs: 60 * 1000,
+  limit: INVITE_LIMIT_PER_MINUTE,
+  standardHeaders: 'draft-7',
+  keyGenerator: createInviteClientKey(),
   handler: (c) => c.json({
     error: 'Too many requests. Try again in a minute.',
     code: 'RATE_LIMITED',

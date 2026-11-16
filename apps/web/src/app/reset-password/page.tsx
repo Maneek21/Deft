@@ -1,22 +1,17 @@
 'use client';
 
-import { useState, Suspense } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
+import { useLinkToken } from '@/lib/use-link-token';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
 export default function ResetPasswordPage() {
-  return (
-    <Suspense>
-      <ResetPasswordContent />
-    </Suspense>
-  );
+  const token = useLinkToken();
+  return <ResetPasswordContent key={token} token={token} />;
 }
 
-function ResetPasswordContent() {
-  const searchParams = useSearchParams();
-  const token = searchParams.get('token');
+function ResetPasswordContent({ token }: { token: string | null | undefined }) {
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [success, setSuccess] = useState(false);
@@ -58,6 +53,12 @@ function ResetPasswordContent() {
     }
   };
 
+  if (token === undefined) {
+    return (
+      <div className="min-h-screen" style={{ background: 'var(--surface-lowest)' }} />
+    );
+  }
+
   if (!token) {
     return (
       <div
@@ -66,7 +67,7 @@ function ResetPasswordContent() {
       >
         <div className="text-center flex flex-col gap-4">
           <p className="text-[0.875rem]" style={{ color: 'var(--error)' }}>
-            Invalid or missing reset token.
+            Reopen the original password recovery link to continue.
           </p>
           <Link href="/forgot-password" className="text-[0.875rem] underline underline-offset-4"
             style={{ color: 'var(--primary)' }}>

@@ -131,6 +131,14 @@ const nextConfig: NextConfig = {
           { key: 'Referrer-Policy', value: 'no-referrer' },
         ],
       },
+      // Invite and password recovery pages can be opened with a one-time
+      // token in the address (old-style links). Send no Referer from them,
+      // so the token cannot leak onward. Later entries override the
+      // site-wide Referrer-Policy above.
+      ...['/invite', '/invite/:path*', '/reset-password'].map((source) => ({
+        source,
+        headers: [{ key: 'Referrer-Policy', value: 'no-referrer' }],
+      })),
     ];
   },
 };

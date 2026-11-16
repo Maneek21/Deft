@@ -123,6 +123,7 @@ import { PAUSED_ERROR, isPausedStart, isRefusedWhilePaused } from './lib/paused-
 import { getSchemaApplied } from './lib/schema-applied.js';
 import {
   authLimiter,
+  inviteLimiter,
   appRuntimeLimiter,
   loginIpLimiter,
   agentLimiter,
@@ -225,8 +226,12 @@ app.route('/api/agent-webhooks', publicAgentWebhookRoutes);
 // subscribe without a JWT.
 app.route('/api/ics', icsPublicRoutes);
 
-// Public invite preview/accept. Token in URL path; admin shares link
-// out-of-band per "Email: none" design. Mounted before authMiddleware.
+// Public invite preview/accept. The token travels in the POST body (the link
+// carries it after `#`); the legacy GET preview path is redacted in the
+// request log. Admin shares link out-of-band per "Email: none" design.
+// Mounted before authMiddleware and before the default limiter, so it carries
+// its own per-IP limiter.
+app.use('/api/invites/*', inviteLimiter);
 app.route('/api/invites', inviteRoutes);
 
 // Protected routes

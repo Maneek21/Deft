@@ -3,7 +3,7 @@
 import { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { api } from './api';
 import { setUserTimezone } from './time';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { disconnectSocket } from './socket';
 import { createSessionCacheScope, setActiveSessionCacheScope } from './session-cache';
 import { signupRequestBody } from './setup-link';
@@ -175,6 +175,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [connectionInterrupted, setConnectionInterrupted] = useState(false);
   const [sessionCacheScope, setSessionCacheScope] = useState<string | null>(null);
   const router = useRouter();
+  const pathname = usePathname();
+  // These public forms do not require an authenticated session. Keeping them
+  // mounted retains their in-memory credential while identity checks retry.
+  const credentialPage = pathname === '/reset-password' || pathname === '/invite' || pathname?.startsWith('/invite/');
   const authGeneration = useRef(new AuthRequestGeneration());
   const sessionCacheEpoch = useRef(0);
   const identityRequest = useRef<number | null>(null);
@@ -384,7 +388,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider value={{ user, org, loading, sessionCacheScope, login, signup, logout, replaceUser, refreshUser: fetchMe }}>
-      {connectionInterrupted ? <main className="min-h-dvh flex items-center justify-center bg-[var(--background)] p-6 text-[var(--on-surface)]">
+      {connectionInterrupted && !credentialPage ? <main className="min-h-dvh flex items-center justify-center bg-[var(--background)] p-6 text-[var(--on-surface)]">
         <div className="max-w-sm space-y-4 text-center" role="status">
           <h1 className="text-xl font-semibold">Reconnecting to Deft</h1>
           <p className="text-sm text-[var(--on-surface-variant)]">We can’t reach your workspace. We’ll try again automatically when the connection returns.</p>
