@@ -68,9 +68,9 @@ type AuthContextType = {
   replaceUser: (nextUser: User) => void;
   refreshUser: () => Promise<void>;
   /** Taken before a request that may hand back a session later. */
-  sessionTicket: () => number;
+  sessionTicket: () => SessionTicket;
   /** Installs that session only if nobody signed out or in since the ticket. */
-  adoptSession: (ticket: number, accessToken: string, refreshToken: string) => boolean;
+  adoptSession: (ticket: SessionTicket, accessToken: string, refreshToken: string) => boolean;
 };
 
 type LogoutOptions = {
@@ -118,13 +118,27 @@ export function isCrossTabSessionReplacement(oldRefresh: string | null, newRefre
   return oldIdentity === null || newIdentity === null || oldIdentity !== newIdentity;
 }
 
+/** Who was signed in, in this tab and in storage, when a flow began. */
+export type SessionTicket = { generation: number; identity: string | null };
+
+/** The signed-in session in shared storage (user, workspace, session), or null. */
+export function storedSessionIdentity(): string | null {
+  try {
+    return sessionIdentity(localStorage.getItem('deft-refresh-token'));
+  } catch {
+    return null;
+  }
+}
+
 /**
  * A session handed back by a slow request (finishing two-step setup) is
- * installed only if no sign-out, sign-in or other-tab change happened since
- * the request started; otherwise it would bring back a session after logout.
+ * installed only if nobody signed out or in since the flow began: in this tab
+ * (the generation) and in shared storage (the identity, which another tab
+ * changes before this tab hears of it). Otherwise it would bring back a
+ * session after logout, or replace someone else's.
  */
-export function adoptSessionIfCurrent(generation: AuthRequestGeneration, ticket: number, install: () => void): boolean {
-  if (!generation.isCurrent(ticket)) return false;
+export function adoptSessionIfCurrent(generation: AuthRequestGeneration, ticket: SessionTicket, currentIdentity: string | null, install: () => void): boolean {
+  if (!generation.isCurrent(ticket.generation) || ticket.identity !== currentIdentity) return false;
   install();
   return true;
 }
@@ -361,8 +375,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const sessionTicket = () => authGeneration.current.capture();
-  const adoptSession = (ticket: number, accessToken: string, refreshToken: string) => adoptSessionIfCurrent(authGeneration.current, ticket, () => {
+  const sessionTicket = (): SessionTicket => ({ generation: authGeneration.current.capture(), identity: storedSessionIdentity() });
+  const adoptSession = (ticket: SessionTicket, accessToken: string, refreshToken: string) => adoptSessionIfCurrent(authGeneration.current, ticket, storedSessionIdentity(), () => {
     sessionCacheEpoch.current += 1;
     api.setTokens(accessToken, refreshToken);
   });

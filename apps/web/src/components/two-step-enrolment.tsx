@@ -70,6 +70,9 @@ type Props = {
 export function TwoStepEnrolment({ enrolToken = null, replacing = false, onFinished, doneLabel }: Props) {
   const [step, setStep] = useState<'intro' | 'secret' | 'codes'>('intro');
   const { sessionTicket, adoptSession } = useAuth();
+  // Taken when setup begins: a sign-out or a sign-in as someone else in any
+  // tab after this point means the session setup hands back is not installed.
+  const [ticket] = useState(sessionTicket);
   const [proof, setProof] = useState('');
   // Signed in normally and turning it on for the first time: the server asks
   // for the password, so a stolen session alone cannot add an authenticator.
@@ -105,7 +108,6 @@ export function TwoStepEnrolment({ enrolToken = null, replacing = false, onFinis
     setError('');
     setBusy(true);
     try {
-      const ticket = sessionTicket();
       const confirmed = await twoStepApi.confirmEnrolment(code.trim(), enrolToken);
       // A signed-in person keeps their session. Someone finishing setup with
       // the enrol-only token gets a new one, installed only if nobody signed

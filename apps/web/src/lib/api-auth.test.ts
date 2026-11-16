@@ -425,9 +425,11 @@ test('a session handed back after a sign-out or another sign-in is not installed
   const installed: string[] = [];
   const beforeLogout = generation.capture();
   generation.advance(); // logout while two-step setup was finishing
-  assert.equal(adoptSessionIfCurrent(generation, beforeLogout, () => installed.push('late')), false);
-  const current = generation.capture();
-  assert.equal(adoptSessionIfCurrent(generation, current, () => installed.push('current')), true);
+  assert.equal(adoptSessionIfCurrent(generation, { generation: beforeLogout, identity: null }, null, () => installed.push('late')), false);
+  const current = { generation: generation.capture(), identity: null };
+  // Another tab signed someone in: storage changed before this tab heard of it.
+  assert.equal(adoptSessionIfCurrent(generation, current, 'user-b:org:session-b', () => installed.push('other tab')), false);
+  assert.equal(adoptSessionIfCurrent(generation, current, null, () => installed.push('current')), true);
   assert.deepEqual(installed, ['current']);
 });
 

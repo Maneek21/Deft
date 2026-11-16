@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { eq, and, desc, sql, or, isNull, asc, gte, lt, inArray, notInArray } from 'drizzle-orm';
 import crypto from 'node:crypto';
 import { db } from '../lib/db.js';
+import { checkMembershipChange, guardMembershipChange } from '../lib/membership-guard.js';
 import { reviewableApprovalCountsByEmployee } from '../lib/pending-approval-audience.js';
 import { hermesBundleAvailability, type HermesBundleAvailability } from '../lib/hermes-release.js';
 import {
@@ -2468,6 +2469,8 @@ agentEmployeeRoutes.delete('/:id', async (c) => {
         403,
       );
     }
+    const removable = await checkMembershipChange(db, { orgId: user.org_id, targetUserId: existing.user_id, actor: { userId: user.id }, change: { isActive: false } });
+    if (!removable.ok) return c.json({ error: removable.error, code: 'FORBIDDEN' }, 403);
 
     // Soft-delete: is_deleted=true + deleted_at. List endpoints filter
     // is_deleted=false so the row disappears from the UI. The shadow user
@@ -2478,10 +2481,18 @@ agentEmployeeRoutes.delete('/:id', async (c) => {
       .set({ is_active: false, is_deleted: true, deleted_at: new Date() })
       .where(eq(agentEmployees.id, id));
     await db.update(users).set({ is_agent: false }).where(eq(users.id, existing.user_id));
-    await db
-      .update(orgMembers)
-      .set({ is_active: false, updated_at: new Date() })
-      .where(and(eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, existing.user_id)));
+    // The agent's membership is deactivated through the membership guard: an
+    // agent made admin by the owner is removed only by the owner.
+    const deactivated = await db.transaction(async (tx) => {
+      const guarded = await guardMembershipChange(tx, { orgId: user.org_id, targetUserId: existing.user_id, actor: { userId: user.id }, change: { isActive: false } });
+      if (!guarded.ok) return guarded;
+      await tx
+        .update(orgMembers)
+        .set({ is_active: false, updated_at: new Date() })
+        .where(and(eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, existing.user_id)));
+      return guarded;
+    });
+    if (!deactivated.ok) console.warn('[agent-employees] membership left active:', deactivated.error);
 
     // Module proposals temporarily contain record values for review. Close
     // those through the module-aware terminal path before the legacy generic

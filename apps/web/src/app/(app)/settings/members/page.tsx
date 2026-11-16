@@ -840,7 +840,7 @@ export default function MembersPage() {
                         </button>
                       )}
 
-                      {detail.member.role !== 'owner' && detail.member.id !== user?.id && detail.member.is_active && (
+                      {detail.member.role !== 'owner' && (user?.role === 'owner' || detail.member.role !== 'admin') && detail.member.id !== user?.id && detail.member.is_active && (
                         <div className="relative">
                           <button
                             onClick={() => setRoleDropdown(roleDropdown === detail.member.id ? null : detail.member.id)}
@@ -870,7 +870,7 @@ export default function MembersPage() {
                         </div>
                       )}
 
-                      {detail.member.role !== 'owner' && detail.member.id !== user?.id && detail.member.is_active && (
+                      {detail.member.role !== 'owner' && (user?.role === 'owner' || detail.member.role !== 'admin') && detail.member.id !== user?.id && detail.member.is_active && (
                         confirmRemove === detail.member.id ? (
                           <div
                             className="w-full rounded-lg p-3 sm:w-[420px]"

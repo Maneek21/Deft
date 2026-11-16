@@ -33,12 +33,13 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
 
   const { db, closeDb } = await import('../src/lib/db.js');
   const { env } = await import('../src/lib/env.js');
-  const { users, orgs, orgMembers, invites, webSessions } = await import('@deft/db/schema');
+  const { users, orgs, orgMembers, invites, webSessions, agentEmployees } = await import('@deft/db/schema');
   const { userTwoStep, userTwoStepRecoveryCodes, twoStepChallenges } = await import('@deft/db/two-step');
   const { authRoutes } = await import('../src/routes/auth.js');
   const { twoStepRoutes } = await import('../src/routes/two-step.js');
   const { inviteRoutes } = await import('../src/routes/invites.js');
   const { memberRoutes } = await import('../src/routes/members.js');
+  const { agentEmployeeRoutes } = await import('../src/routes/agent-employees.js');
   const { authMiddleware } = await import('../src/middleware/auth.js');
   const { createWebSession, verifyWebAccess, rotateWebSession, WebCredentialsChangedError } = await import('../src/lib/web-sessions.js');
   const { issueSession } = await import('../src/lib/session-issuance.js');
@@ -61,6 +62,7 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
   app.use('/api/*', authMiddleware);
   app.get('/api/probe', (c) => c.json({ ok: true, role: c.get('user').role }));
   app.route('/api/members', memberRoutes);
+  app.route('/api/agent-employees', agentEmployeeRoutes);
 
   const call = async (method: string, path: string, body?: unknown, bearer?: string, headers: Record<string, string> = {}) => {
     const res = await app.request(path, {
@@ -614,9 +616,80 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     assert.equal(demote.status, 403);
     assert.equal(demote.json.code, 'FORBIDDEN');
     assert.equal((await call('POST', `/api/members/${peer.id}/recovery-url`, {}, adminSession)).status, 403, 'and so no link for the peer');
+    // Nor by removing the peer and re-inviting them as a member.
+    const removed = await call('DELETE', `/api/members/${peer.id}`, {}, adminSession);
+    assert.equal(removed.status, 403);
+    assert.equal(removed.json.code, 'FORBIDDEN');
+    const [still] = await db.select({ role: orgMembers.role, is_active: orgMembers.is_active }).from(orgMembers)
+      .where(and(eq(orgMembers.org_id, roleOrg), eq(orgMembers.user_id, peer.id)));
+    assert.deepEqual(still, { role: 'admin', is_active: true });
+    assert.equal((await call('POST', '/api/members/invite', { email: peer.email, role: 'member' }, adminSession)).status, 409, 'an active admin cannot be re-invited');
     // Members and guests are still the admin's to change; the owner changes anyone.
     assert.equal((await call('PATCH', `/api/members/${member.id}`, { role: 'guest' }, adminSession)).status, 200);
     assert.equal((await call('PATCH', `/api/members/${peer.id}`, { role: 'member' }, ownerSession)).status, 200);
+    // The owner may remove an admin.
+    const other = await person('admin', roleOrg);
+    assert.equal((await call('DELETE', `/api/members/${other.id}`, {}, ownerSession)).status, 200);
+  });
+
+  await t.test('every writer of a membership role or active state goes through the one guard', async () => {
+    const guardOrg = randomUUID();
+    await db.insert(orgs).values({ id: guardOrg, name: 'Guard', slug: `guard-${guardOrg}` });
+    hosted(false);
+    const owner = await person('owner', guardOrg);
+    const admin = await person('admin', guardOrg);
+    const ownerSession = (await login(owner.email)).json.accessToken as string;
+    const adminSession = (await login(admin.email)).json.accessToken as string;
+    const generation = async (id: string) => (await db.select({ v: users.password_version }).from(users).where(eq(users.id, id)))[0]!.v;
+    const membership = async (id: string) => (await db.select({ role: orgMembers.role, is_active: orgMembers.is_active }).from(orgMembers)
+      .where(and(eq(orgMembers.org_id, guardOrg), eq(orgMembers.user_id, id))))[0];
+
+    // PATCH /api/members/:id: a role change ends the links made before it.
+    const member = await person('member', guardOrg);
+    const early = (await call('POST', `/api/members/${member.id}/recovery-url`, {}, adminSession)).json.recovery_url as string;
+    assert.equal((await call('PATCH', `/api/members/${member.id}`, { role: 'guest' }, adminSession)).status, 200);
+    const earlyToken = new URLSearchParams(new URL(early).hash.slice(1)).get('token');
+    assert.equal((await post('/api/auth/reset-password', { token: earlyToken, password: 'A-new-password-2026!' })).status, 400, 'the link made before the role change is dead');
+
+    // DELETE /api/members/:id: only the owner removes an admin (tested above);
+    // the owner's removal moves the generation on.
+    const leaving = await person('admin', guardOrg);
+    const before = await generation(leaving.id);
+    assert.equal((await call('DELETE', `/api/members/${leaving.id}`, {}, adminSession)).status, 403);
+    assert.equal(await generation(leaving.id), before, 'a refused removal changes nothing');
+    assert.equal((await call('DELETE', `/api/members/${leaving.id}`, {}, ownerSession)).status, 200);
+    assert.ok((await generation(leaving.id)) > before);
+
+    // POST /api/members/invite: re-activating a former member goes through the guard too.
+    const afterRemoval = await generation(leaving.id);
+    assert.equal((await call('POST', '/api/members/invite', { email: leaving.email, role: 'member' }, adminSession)).status, 201);
+    assert.deepEqual(await membership(leaving.id), { role: 'member', is_active: true });
+    assert.ok((await generation(leaving.id)) > afterRemoval, 're-activation ends earlier links');
+
+    // DELETE /api/members/invites/:id: an admin cannot revoke the owner's pending admin invite.
+    const pendingEmail = `guard-pending-${randomUUID()}@test.local`;
+    const invited = await call('POST', '/api/members/invite', { email: pendingEmail, role: 'admin' }, ownerSession);
+    assert.equal(invited.status, 201, JSON.stringify(invited.json));
+    const [inviteRow] = await db.select({ id: invites.id }).from(invites).where(eq(invites.email, pendingEmail));
+    const revokeByAdmin = await call('DELETE', `/api/members/invites/${inviteRow!.id}`, undefined, adminSession);
+    assert.equal(revokeByAdmin.status, 403, JSON.stringify(revokeByAdmin.json));
+    assert.deepEqual(await membership(invited.json.user_id), { role: 'admin', is_active: true });
+    assert.equal((await call('DELETE', `/api/members/invites/${inviteRow!.id}`, undefined, ownerSession)).status, 200);
+    assert.deepEqual(await membership(invited.json.user_id), { role: 'admin', is_active: false });
+
+    // DELETE /api/agent-employees/:id: an agent the owner made admin is removed only by the owner.
+    const agentUser = randomUUID();
+    const employeeId = randomUUID();
+    await db.insert(users).values({ id: agentUser, name: 'Guard agent', email: `${agentUser}@agents.test`, kind: 'agent', is_agent: true, email_verified: true });
+    await db.insert(orgMembers).values({ org_id: guardOrg, user_id: agentUser, role: 'admin' });
+    await db.insert(agentEmployees).values({
+      id: employeeId, org_id: guardOrg, user_id: agentUser, name: 'Guard agent', slug: `guard-agent-${employeeId.slice(0, 8)}`,
+      role: 'project_manager', system_prompt: 'Fixture', trust_level: 'conservative', is_byoa: true, is_active: true, created_by: owner.id,
+    });
+    const agentByAdmin = await call('DELETE', `/api/agent-employees/${employeeId}`, undefined, adminSession);
+    assert.equal(agentByAdmin.status, 403, JSON.stringify(agentByAdmin.json));
+    assert.equal((await db.select({ is_deleted: agentEmployees.is_deleted }).from(agentEmployees).where(eq(agentEmployees.id, employeeId)))[0]!.is_deleted, false, 'nothing was deleted');
+    assert.deepEqual(await membership(agentUser), { role: 'admin', is_active: true });
   });
 
   await t.test('a recovery link for an owner or admin is checked again when it is used', async () => {

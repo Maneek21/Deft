@@ -1,0 +1,95 @@
+import { and, eq } from 'drizzle-orm';
+import { orgMembers, users } from '@deft/db/schema';
+import type { db } from './db.js';
+
+/**
+ * The one rule for every write to `org_members.role` or `org_members.is_active`
+ * made by the app (routes, workers, tools). Each writer calls
+ * guardMembershipChange inside its transaction, immediately before its write:
+ *
+ * - Only the owner, or an operator on the server, may take the role away from
+ *   an active owner or admin or deactivate them. An admin who could demote or
+ *   remove a peer could then make a recovery link for them as a member, set
+ *   their password and promote them back.
+ * - Any change to a person's role or active state ends every recovery link
+ *   made for them so far (it moves `users.password_version` on), so no link
+ *   outlives a change of who that person is in the workspace.
+ *
+ * It locks the account row, then the membership row: the order sign-in and
+ * password changes use.
+ *
+ * Not guarded, by design: inserts of new membership rows (nothing is taken
+ * away), and operator scripts run on the server with database access
+ * (`src/scripts/seed-pilot-workspace.ts`, `scripts/pilot-workspace-hygiene.ts`,
+ * which only touch agent memberships). An operator can already make a
+ * recovery link for anyone (`src/scripts/make-recovery-url.ts`).
+ *
+ * Writers, each with a test (two-step-db.test.ts):
+ *   PATCH  /api/members/:id              role change
+ *   DELETE /api/members/:id              deactivation
+ *   POST   /api/members/invite           re-activation of a former member
+ *   DELETE /api/members/invites/:id      deactivation of a pending invitee
+ *   DELETE /api/agent-employees/:id      deactivation of the agent's membership
+ */
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type Reader = Pick<Tx, 'select'>;
+
+export type MembershipActor = { userId: string } | 'operator';
+export type MembershipChange = { role?: string; isActive?: boolean };
+export type GuardedMembership = { id: string; role: string; is_active: boolean };
+export type MembershipGuardResult =
+  | { ok: true; membership: GuardedMembership | null }
+  | { ok: false; code: 'FORBIDDEN'; error: string };
+
+export class MembershipGuardError extends Error {
+  readonly code = 'FORBIDDEN';
+  constructor(message: string) {
+    super(message);
+    this.name = 'MembershipGuardError';
+  }
+}
+
+function takesPrivilegeAway(membership: GuardedMembership, change: MembershipChange): boolean {
+  if (!membership.is_active || (membership.role !== 'owner' && membership.role !== 'admin')) return false;
+  return (change.role !== undefined && change.role !== membership.role) || change.isActive === false;
+}
+
+async function decide(reader: Reader, orgId: string, membership: GuardedMembership, actor: MembershipActor, change: MembershipChange) {
+  if (!takesPrivilegeAway(membership, change) || actor === 'operator') return null;
+  const [acting] = await reader.select({ role: orgMembers.role }).from(orgMembers)
+    .where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, actor.userId), eq(orgMembers.is_active, true)))
+    .limit(1);
+  if (acting?.role === 'owner') return null;
+  return membership.role === 'owner' ? 'The owner cannot be changed or removed' : "Only the owner can change or remove an admin";
+}
+
+/** The same decision without locks or writes, for a refusal before other work. */
+export async function checkMembershipChange(
+  reader: Reader,
+  input: { orgId: string; targetUserId: string; actor: MembershipActor; change: MembershipChange },
+): Promise<MembershipGuardResult> {
+  const [membership] = await reader.select({ id: orgMembers.id, role: orgMembers.role, is_active: orgMembers.is_active }).from(orgMembers)
+    .where(and(eq(orgMembers.org_id, input.orgId), eq(orgMembers.user_id, input.targetUserId))).limit(1);
+  if (!membership) return { ok: true, membership: null };
+  const refusal = await decide(reader, input.orgId, membership, input.actor, input.change);
+  return refusal ? { ok: false, code: 'FORBIDDEN', error: refusal } : { ok: true, membership };
+}
+
+export async function guardMembershipChange(
+  tx: Tx,
+  input: { orgId: string; targetUserId: string; actor: MembershipActor; change: MembershipChange },
+): Promise<MembershipGuardResult> {
+  const [account] = await tx.select({ password_version: users.password_version }).from(users)
+    .where(eq(users.id, input.targetUserId)).for('update');
+  const [membership] = await tx.select({ id: orgMembers.id, role: orgMembers.role, is_active: orgMembers.is_active }).from(orgMembers)
+    .where(and(eq(orgMembers.org_id, input.orgId), eq(orgMembers.user_id, input.targetUserId))).for('update');
+  if (!account || !membership) return { ok: true, membership: membership ?? null };
+  const refusal = await decide(tx, input.orgId, membership, input.actor, input.change);
+  if (refusal) return { ok: false, code: 'FORBIDDEN', error: refusal };
+  const changes = (input.change.role !== undefined && input.change.role !== membership.role)
+    || (input.change.isActive !== undefined && input.change.isActive !== membership.is_active);
+  if (changes) {
+    await tx.update(users).set({ password_version: account.password_version + 1 }).where(eq(users.id, input.targetUserId));
+  }
+  return { ok: true, membership };
+}

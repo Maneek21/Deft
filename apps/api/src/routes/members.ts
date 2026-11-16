@@ -36,6 +36,7 @@ import { getSeatStatus, reserveSeat, withSeatRetry, type SeatReservation } from 
 import { buildInviteUrl as buildSecretInviteUrl, buildRecoveryUrl as buildSecretRecoveryUrl } from '../lib/secret-links.js';
 import { roleMustHaveSecondStep } from '../lib/two-step-policy.js';
 import { userTwoStep } from '@deft/db/two-step';
+import { checkMembershipChange, guardMembershipChange, MembershipGuardError, type MembershipActor } from '../lib/membership-guard.js';
 
 const INVITE_TTL = '7d';
 const RECOVERY_TTL = '24h';
@@ -106,19 +107,16 @@ async function getCurrentMembership(orgId: string, userId: string) {
   return membership ?? null;
 }
 
-async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, deactivateMembership = true) {
+async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, deactivateMembership: boolean, actor: MembershipActor) {
   const revokedAt = new Date();
   const revokedSessionIds = await db.transaction(async (tx) => {
-    const [user] = await tx.select({ password_version: users.password_version })
-      .from(users).where(eq(users.id, memberId)).for('update');
-    const [membership] = await tx.select({ id: orgMembers.id })
-      .from(orgMembers)
-      .where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, memberId)))
-      .for('update');
-    if (!user || !membership) return [];
+    // The membership guard locks the account and the membership row (in that
+    // order) and, when it deactivates, ends every recovery link made so far.
+    const guarded = await guardMembershipChange(tx, { orgId, targetUserId: memberId, actor, change: deactivateMembership ? { isActive: false } : {} });
+    if (!guarded.ok) throw new MembershipGuardError(guarded.error);
+    if (!guarded.membership) return [];
     if (deactivateMembership) {
-      await tx.update(users).set({ password_version: user.password_version + 1 }).where(eq(users.id, memberId));
-      await tx.update(orgMembers).set({ is_active: false, updated_at: revokedAt }).where(eq(orgMembers.id, membership.id));
+      await tx.update(orgMembers).set({ is_active: false, updated_at: revokedAt }).where(eq(orgMembers.id, guarded.membership.id));
     }
     const sessions = await tx.select({ id: webSessions.id })
       .from(webSessions)
@@ -1116,8 +1114,8 @@ memberRoutes.post('/invite', async (c) => {
     // The seat check and the membership write share one transaction (and, on
     // a hosted cell, one seat lock), so two invites cannot both take the last seat.
     const added = await withSeatRetry(() => db.transaction(async (tx) => {
-      // Check if user already exists
-      let [existingUser] = await tx.select().from(users).where(eq(users.email, email)).limit(1);
+      // Check if user already exists (the account row first, as the membership guard locks it)
+      let [existingUser] = await tx.select().from(users).where(eq(users.email, email)).limit(1).for('update');
 
       let existingMembership: typeof orgMembers.$inferSelect | undefined;
       if (existingUser) {
@@ -1138,6 +1136,8 @@ memberRoutes.post('/invite', async (c) => {
       }
 
       if (existingMembership) {
+        const guarded = await guardMembershipChange(tx, { orgId: currentUser.org_id, targetUserId: existingMembership.user_id, actor: { userId: currentUser.id }, change: { isActive: true, role } });
+        if (!guarded.ok) return { guardRefusal: guarded.error };
         await tx.update(orgMembers)
           .set({ is_active: true, role })
           .where(eq(orgMembers.id, existingMembership.id));
@@ -1165,6 +1165,9 @@ memberRoutes.post('/invite', async (c) => {
 
     if ('alreadyMember' in added) {
       return c.json({ error: 'User is already a member', code: 'ALREADY_MEMBER' }, 409);
+    }
+    if ('guardRefusal' in added) {
+      return c.json({ error: added.guardRefusal, code: 'FORBIDDEN' }, 403);
     }
     if ('seatRefusal' in added && added.seatRefusal) {
       return seatRefused(c, added.seatRefusal);
@@ -1332,7 +1335,8 @@ memberRoutes.delete('/invites/:id', async (c) => {
           .where(and(eq(orgMembers.org_id, currentUser.org_id), eq(orgMembers.user_id, userId)))
           .for('update');
         if (user && membership?.is_active && !user.password_hash && membership.role !== 'owner') {
-          await tx.update(users).set({ password_version: user.password_version + 1 }).where(eq(users.id, userId));
+          const guarded = await guardMembershipChange(tx, { orgId: currentUser.org_id, targetUserId: userId, actor: { userId: currentUser.id }, change: { isActive: false } });
+          if (!guarded.ok) return { failure: 'GUARD' as const, error: guarded.error };
           await tx.update(orgMembers).set({ is_active: false, updated_at: revokedAt }).where(eq(orgMembers.id, membership.id));
           const sessions = await tx.select({ id: webSessions.id }).from(webSessions)
             .where(and(eq(webSessions.org_id, currentUser.org_id), eq(webSessions.user_id, userId), sql`${webSessions.revoked_at} IS NULL`))
@@ -1349,11 +1353,12 @@ memberRoutes.delete('/invites/:id', async (c) => {
     });
     if ('failure' in result) {
       if (result.failure === 'NOT_FOUND') return c.json({ error: 'Invite not found', code: 'NOT_FOUND' }, 404);
+      if (result.failure === 'GUARD') return c.json({ error: result.error, code: 'FORBIDDEN' }, 403);
       return c.json({ error: 'Accepted invites cannot be revoked here', code: 'INVITE_ACCEPTED' }, 409);
     }
     emitWebSessionRevocations(result.revokedSessionIds);
     if (result.deactivatedUserId) {
-      await revokeMemberWorkspaceAccess(currentUser.org_id, result.deactivatedUserId, false);
+      await revokeMemberWorkspaceAccess(currentUser.org_id, result.deactivatedUserId, false, { userId: currentUser.id });
     }
 
     return c.json({ success: true });
@@ -1425,9 +1430,8 @@ memberRoutes.patch('/:id', async (c) => {
     const currentUser = c.get('user');
     const memberId = c.req.param('id');
 
-    let caller;
     try {
-      caller = await requireOrgAdminOrOwner(currentUser.org_id, currentUser.id);
+      await requireOrgAdminOrOwner(currentUser.org_id, currentUser.id);
     } catch (err) {
       return adminForbidden(c, err);
     }
@@ -1438,6 +1442,8 @@ memberRoutes.patch('/:id', async (c) => {
     // Read, seat check and role change share one transaction (and, on a
     // hosted cell, one seat lock): a guest becoming a member takes a seat.
     const changed = await withSeatRetry(() => db.transaction(async (tx) => {
+      // The account row first, then the membership: the membership guard's order.
+      await tx.select({ id: users.id }).from(users).where(eq(users.id, memberId)).for('update');
       // Can't change owner role
       const [targetMembership] = await tx.select({ role: orgMembers.role, id: orgMembers.id, kind: users.kind })
         .from(orgMembers)
@@ -1448,11 +1454,10 @@ memberRoutes.patch('/:id', async (c) => {
 
       if (!targetMembership) return { failure: 'NOT_FOUND' as const };
       if (targetMembership.role === 'owner') return { failure: 'OWNER' as const };
-      // Only the owner changes an admin's role. Otherwise an admin could
-      // demote a peer, make a recovery link for them as a member, and take
-      // over their account.
-      if (targetMembership.role === 'admin' && caller.role !== 'owner') return { failure: 'ADMIN' as const };
       if (!parsed.success) return { failure: 'INVALID' as const };
+      // Only the owner changes an admin's role (lib/membership-guard.ts).
+      const allowed = await checkMembershipChange(tx, { orgId: currentUser.org_id, targetUserId: memberId, actor: { userId: currentUser.id }, change: { role: parsed.data.role } });
+      if (!allowed.ok) return { failure: 'ADMIN' as const };
 
       // Hosted mode: the admin role takes effect only for someone who already
       // has two-step verification on, so no credential they hold (a web
@@ -1472,6 +1477,8 @@ memberRoutes.patch('/:id', async (c) => {
         if (!seat.ok) return { seatRefusal: seat };
       }
 
+      const guarded = await guardMembershipChange(tx, { orgId: currentUser.org_id, targetUserId: memberId, actor: { userId: currentUser.id }, change: { role: parsed.data.role } });
+      if (!guarded.ok) return { failure: 'ADMIN' as const };
       await tx.update(orgMembers)
         .set({ role: parsed.data.role })
         .where(eq(orgMembers.id, targetMembership.id));
@@ -1548,6 +1555,10 @@ memberRoutes.delete('/:id', async (c) => {
     if (targetMembership.role === 'owner') {
       return c.json({ error: 'Cannot remove the org owner', code: 'FORBIDDEN' }, 403);
     }
+    // Only the owner removes an admin (lib/membership-guard.ts), checked here
+    // before any work is reassigned and again, under lock, at the write.
+    const removable = await checkMembershipChange(db, { orgId: currentUser.org_id, targetUserId: memberId, actor: { userId: currentUser.id }, change: { isActive: false } });
+    if (!removable.ok) return c.json({ error: removable.error, code: 'FORBIDDEN' }, 403);
 
     const preview = await buildOffboardingPreview(currentUser.org_id, memberId);
     let reassigned = {
@@ -1566,7 +1577,12 @@ memberRoutes.delete('/:id', async (c) => {
         }, 400);
       }
     }
-    await revokeMemberWorkspaceAccess(currentUser.org_id, memberId, true);
+    try {
+      await revokeMemberWorkspaceAccess(currentUser.org_id, memberId, true, { userId: currentUser.id });
+    } catch (err) {
+      if (err instanceof MembershipGuardError) return c.json({ error: err.message, code: 'FORBIDDEN' }, 403);
+      throw err;
+    }
     const remaining = await buildOffboardingPreview(currentUser.org_id, memberId);
 
     return c.json({
