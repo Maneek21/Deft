@@ -967,7 +967,8 @@ review before correcting rows by hand.
 
 ## Optional web app installation and message previews
 
-Both features default off. For a source build, set
+Both features default off; the disabled manifest endpoint serves an empty
+manifest with no installation metadata. For a source build, set
 `NEXT_PUBLIC_FEATURE_WEB_APP_INSTALL=true` before building (Compose forwards it
 as a build argument). This adds the standalone manifest, square app icons and
 an iPhone Safari hint: tap Share, then Add to Home Screen. Prebuilt images must
