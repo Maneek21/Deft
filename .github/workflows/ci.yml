@@ -196,6 +196,7 @@ jobs:
           src/lib/public-spaces.test.ts
           src/lib/web-app-manifest.test.ts
           src/lib/ios-install-hint.test.ts
+          src/lib/message-deep-link.test.ts
       - name: Install locked browser for mounted App contracts
         run: pnpm exec playwright install --with-deps chromium
       - name: Test public space preview reads

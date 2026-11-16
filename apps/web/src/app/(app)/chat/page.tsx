@@ -34,13 +34,13 @@ export default function ChatPage() {
   }, [urlMessageId, urlSpaceId]);
 
   useEffect(() => {
-    if (!urlMessageId || urlSpaceId || !spaces.length) return;
+    if (!urlMessageId || urlSpaceId) return;
     const controller = new AbortController(), token = api.getAccessToken(), search = currentSearch.current;
     const current = () => !controller.signal.aborted && currentSearch.current === search && isSameWebSession(token, api.getAccessToken());
     setMessageLinkUnavailable(false);
     void api.fetch(`/api/messages/${encodeURIComponent(urlMessageId)}/thread`, { signal: controller.signal, cache: 'no-store' }).then(async response => {
       if (!response.ok) throw Error('Message unavailable');
-      const destination = messageDeepLinkDestination(await response.json(), urlMessageId, spaces.map(space => space.id), search);
+      const destination = messageDeepLinkDestination(await response.json(), urlMessageId, search);
       if (!current()) return;
       if (!destination) throw Error('Message unavailable');
       if (!urlThreadId) setThreadMessage(null);
@@ -72,7 +72,7 @@ export default function ChatPage() {
   }, [urlThreadId, setThreadMessage]);
 
   useEffect(() => {
-    if (!urlThreadId) return;
+    if (!urlThreadId || (urlSpaceId && !spaces.some((space) => space.id === urlSpaceId))) return;
     if (threadMessage?.id === urlThreadId) {
       resolvedThreadId.current = urlThreadId;
       return;
@@ -102,7 +102,7 @@ export default function ChatPage() {
     return () => {
       cancelled = true;
     };
-  }, [urlThreadId, threadMessage?.id, activeSpaceId, spaces, syncActiveSpaceIdFromUrl, setThreadMessage]);
+  }, [urlThreadId, urlSpaceId, threadMessage?.id, activeSpaceId, spaces, syncActiveSpaceIdFromUrl, setThreadMessage]);
 
   const effectiveSpaceId = urlSpaceId || threadMessage?.space_id || activeSpaceId;
   const activeSpace = spaces.find((s) => s.id === effectiveSpaceId);
@@ -133,7 +133,8 @@ export default function ChatPage() {
             highlightMessageId={urlMessageId || undefined}
           />
         ) : view === 'preview' && urlSpaceId ? (
-          <PublicSpacePreview key={urlSpaceId} spaceId={urlSpaceId} ready={spaces.length > 0 || spacesSettled} />
+          <PublicSpacePreview key={urlSpaceId} spaceId={urlSpaceId} ready={spaces.length > 0 || spacesSettled}
+            highlightMessageId={urlMessageId || undefined} initialThreadId={urlThreadId || undefined} />
         ) : (
           <div
             className="flex items-center justify-center h-full"

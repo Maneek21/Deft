@@ -9,6 +9,7 @@ import { formatDayLabel, formatMessageTime, isSameDay } from '@/lib/time';
 import { PersonAvatar } from './person-avatar';
 import { ThreadMessageContent } from './thread-panel';
 import { ProtectedDownload } from './protected-file';
+import { ClipCard } from './clip-card';
 
 type PreviewSpace = { id: string; name: string; type: string; topic?: string | null; description?: string | null; is_archived?: boolean };
 
@@ -26,6 +27,8 @@ type PreviewMessage = {
 
 type Props = {
   spaceId: string;
+  highlightMessageId?: string;
+  initialThreadId?: string;
   /** False while the list of joined spaces is still loading, so a joined space is not previewed by mistake. */
   ready: boolean;
 };
@@ -34,16 +37,22 @@ const EMPTY = 'Select a space to start chatting';
 
 function PreviewMessageBody({ message }: { message: PreviewMessage }) {
   if (message.is_deleted) return <p className="text-[13px] italic">This message was deleted</p>;
+  const clip = message.content.match(/^\[\[clip:([^:]+):([^\]]+)\]\]/);
   return (
     <div className="text-[13px] whitespace-pre-wrap break-words">
-      {message.content.startsWith('[[clip:')
-        ? <span className="italic">Voice or video clip</span>
+      {clip
+        ? <ClipCard clipId={clip[1]!} clipStatus={clip[2]!} clipUserName={message.user_name} />
         : <ThreadMessageContent content={message.content} metadata={message.metadata} />}
       {(message.files ?? []).map((file) => (
         <ProtectedDownload key={file.id} file={file} className="block text-[12px] underline">{file.name}</ProtectedDownload>
       ))}
     </div>
   );
+}
+
+function displayedMessage(message: PreviewMessage) {
+  const metadata = message.metadata as Record<string, unknown> | undefined;
+  return metadata?.hidden !== true && metadata?.kind !== 'tool_result';
 }
 
 /** Fetches only replies: opening a preview thread never marks it read or subscribes to writes. */
@@ -71,7 +80,7 @@ function PreviewThread({ parentId, onClose }: { parentId: string; onClose: () =>
       <button type="button" onClick={onClose} className="text-[12px] underline">Close thread</button>
       {error ? <p role="alert">Could not load replies. <button type="button" onClick={() => setAttempt((value) => value + 1)}>Retry</button></p>
         : replies === null ? <p role="status">Loading replies…</p>
-          : replies.map((reply) => (
+          : replies.filter(displayedMessage).map((reply) => (
             <div key={reply.id} className="py-2">
               <p className="text-[12px] font-semibold">{reply.user_name} <span className="font-normal">{formatMessageTime(reply.created_at)}</span></p>
               <PreviewMessageBody message={reply} />
@@ -90,7 +99,7 @@ function PreviewThread({ parentId, onClose }: { parentId: string; onClose: () =>
  * normal view. A space the viewer may not read (private, archived, or the
  * viewer is a guest) shows the usual empty state.
  */
-export function PublicSpacePreview({ spaceId, ready }: Props) {
+export function PublicSpacePreview({ spaceId, ready, highlightMessageId, initialThreadId }: Props) {
   const { refreshSpaces } = useChatContext();
   const [state, setState] = useState<'loading' | 'ready' | 'unavailable'>('loading');
   const [space, setSpace] = useState<PreviewSpace | null>(null);
@@ -99,9 +108,12 @@ export function PublicSpacePreview({ spaceId, ready }: Props) {
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [joining, setJoining] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [threadId, setThreadId] = useState<string | null>(null);
+  const [threadId, setThreadId] = useState<string | null>(initialThreadId ?? null);
   const mounted = useRef(true);
   const bottom = useRef<HTMLDivElement>(null);
+  const target = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { setThreadId(initialThreadId ?? null); }, [initialThreadId]);
 
   useEffect(() => {
     mounted.current = true;
@@ -114,7 +126,9 @@ export function PublicSpacePreview({ spaceId, ready }: Props) {
     setState('loading');
     void (async () => {
       try {
-        const [details, list] = await Promise.all([api.get(publicSpaceDetailsPath(spaceId)), api.get(previewMessagesPath(spaceId))]);
+        const targetId = initialThreadId ?? highlightMessageId;
+        const path = targetId ? `${previewMessagesPath(spaceId)}?around=${encodeURIComponent(targetId)}` : previewMessagesPath(spaceId);
+        const [details, list] = await Promise.all([api.get(publicSpaceDetailsPath(spaceId)), api.get(path)]);
         if (!active) return;
         if (!details.ok || !list.ok) { setState('unavailable'); return; }
         const loaded: PreviewSpace = await details.json();
@@ -125,13 +139,13 @@ export function PublicSpacePreview({ spaceId, ready }: Props) {
         setMessages(page.messages ?? []);
         setOlderCursor(page.next_cursor ?? null);
         setState('ready');
-        requestAnimationFrame(() => bottom.current?.scrollIntoView());
+        requestAnimationFrame(() => (target.current ?? bottom.current)?.scrollIntoView());
       } catch {
         if (active) setState('unavailable');
       }
     })();
     return () => { active = false; };
-  }, [spaceId, ready]);
+  }, [spaceId, ready, highlightMessageId, initialThreadId]);
 
   const loadOlder = async () => {
     if (!olderCursor || loadingOlder) return;
@@ -200,11 +214,11 @@ export function PublicSpacePreview({ spaceId, ready }: Props) {
         {messages.length === 0 && (
           <p className="py-6 text-center text-[13px]" style={{ color: 'var(--muted)' }}>No messages yet.</p>
         )}
-        {messages.map((message, index) => {
-          const previous = messages[index - 1];
+        {messages.filter(displayedMessage).map((message, index, displayed) => {
+          const previous = displayed[index - 1];
           const newDay = !previous || !isSameDay(previous.created_at, message.created_at);
           return (
-            <div key={message.id}>
+            <div key={message.id} ref={message.id === (initialThreadId ?? highlightMessageId) ? target : undefined}>
               {newDay && (
                 <p className="py-2 text-center text-[11px] font-medium" style={{ color: 'var(--muted)' }}>{formatDayLabel(message.created_at)}</p>
               )}
