@@ -7,6 +7,7 @@ import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { requireSpaceMembership } from '../lib/space-membership.js';
 import { extractLegacyAttachmentIds, MAX_MESSAGE_ATTACHMENTS } from '../lib/message-attachments.js';
 import { stagedAttachmentExpiry } from '../lib/attachment-retention.js';
+import { releaseScheduledMessageAttachments } from '../lib/scheduled-message-cancel.js';
 
 export const scheduledRoutes = new Hono();
 
@@ -79,7 +80,7 @@ scheduledRoutes.post('/', async (c) => {
 
     if (attachmentIds.length > 0) {
       const retained = await tx.update(files)
-        .set({ staged_expires_at: stagedAttachmentExpiry(scheduledFor) })
+        .set({ staged_expires_at: sql`greatest(${files.staged_expires_at}, ${stagedAttachmentExpiry(scheduledFor)})` })
         .where(and(
           inArray(files.id, attachmentIds),
           eq(files.org_id, user.org_id),
@@ -146,17 +147,7 @@ scheduledRoutes.delete('/:id', async (c) => {
       .returning({ content: scheduledMessages.content });
     if (!cancelled) return;
     const attachmentIds = Array.from(new Set(extractLegacyAttachmentIds(cancelled.content)));
-    if (attachmentIds.length > 0) {
-      await tx.update(files)
-        .set({ staged_expires_at: stagedAttachmentExpiry() })
-        .where(and(
-          inArray(files.id, attachmentIds),
-          eq(files.org_id, user.org_id),
-          eq(files.uploaded_by, user.id),
-          isNull(files.message_id),
-          isNull(files.task_id),
-        ));
-    }
+    await releaseScheduledMessageAttachments(tx, { orgId: user.org_id, userId: user.id, attachmentIds });
   });
   return c.json({ success: true });
 });

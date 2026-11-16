@@ -24,6 +24,8 @@ import { Hono } from 'hono';
 import pg from 'pg';
 import { closeDb } from '../src/lib/db.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
+import { sweepExpiredStagedAttachments } from '../src/lib/attachment-retention.js';
+import { sendScheduledMessage } from '../src/workers/handlers/scheduled-message-send.js';
 
 const url = safeTestDatabaseUrl();
 const orgId = randomUUID();
@@ -168,6 +170,8 @@ before(async () => {
 
 after(async () => {
   if (seeded && client) {
+    await client.query('DELETE FROM message_attachments WHERE org_id=$1', [orgId]);
+    await client.query('DELETE FROM files WHERE org_id=$1', [orgId]);
     await client.query('DELETE FROM job_queue WHERE org_id=$1', [orgId]).catch(() => undefined);
     for (const table of ['scheduled_messages', 'notifications', 'attention_events', 'attention_items', 'agent_session_turns', 'agent_actions']) {
       await client.query(`DELETE FROM ${table} WHERE org_id=$1`, [orgId]);
@@ -342,4 +346,30 @@ test('scheduling a message at the same moment as being removed never leaves a pe
   const late = await call(ids.racer, 'POST', '/api/scheduled-messages', { space_id: space, content: 'late', scheduled_for: '2999-01-01T00:00:00.000Z' });
   assert.equal(late.status, 403, late.text);
   t.diagnostic(`schedule answered: ${[...outcomes].sort().join(', ')}`);
+});
+
+
+test('leaving or cancelling one schedule preserves an upload needed by another pending schedule', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  for (const cancel of ['leave', 'cancel']) {
+    const firstSpace = randomUUID(), secondSpace = randomUUID(), file = randomUUID();
+    for (const space of [firstSpace, secondSpace]) {
+      await client!.query("INSERT INTO spaces(id,org_id,name,type,created_by) VALUES($1,$2,$3,'private',$4)", [space, orgId, space, ids.creator]);
+      await client!.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), space, ids.creator]);
+    }
+    await client!.query("INSERT INTO files(id,org_id,uploaded_by,filename,mime_type,size_bytes,storage_key,staged_expires_at) VALUES($1,$2,$3,'shared.txt','text/plain',5,$4,now()+interval '1 day')", [file, orgId, ids.creator, 'shared-' + file]);
+    const content = '[[file:' + file + ':shared.txt:text/plain:5:/api/files/' + file + ']]';
+    const create = (space: string, days: number) => call(ids.creator, 'POST', '/api/scheduled-messages', { space_id: space, content, scheduled_for: new Date(Date.now() + days * 86400000).toISOString() });
+    const first = await create(firstSpace, 2), second = await create(secondSpace, 7);
+    assert.equal(first.status, 201, first.text);
+    assert.equal(second.status, 201, second.text);
+    const cancelled = cancel === 'leave' ? await call(ids.creator, 'DELETE', '/api/spaces/' + firstSpace + '/members/me')
+      : await call(ids.creator, 'DELETE', '/api/scheduled-messages/' + first.json.id);
+    assert.equal(cancelled.status, 200, cancelled.text);
+    const deleted: string[] = [];
+    await sweepExpiredStagedAttachments({ now: new Date(Date.now() + 3 * 86400000), store: { delete: async (key: string) => { deleted.push(key); } } as any });
+    assert.equal((await client!.query('SELECT 1 FROM files WHERE id=$1', [file])).rowCount, 1, cancel + " discarded another schedule's upload");
+    assert.ok(!deleted.includes('shared-' + file));
+    assert.equal(await sendScheduledMessage(second.json.id), true, 'the remaining message can claim its attachment');
+  }
 });
