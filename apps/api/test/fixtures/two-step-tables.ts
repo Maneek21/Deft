@@ -2,10 +2,10 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import pg from 'pg';
 
-const UPGRADE = resolve(import.meta.dirname, '../../../../packages/db/upgrades/0.3.0-preview.138-two-step-verification.sql');
+const UPGRADE = resolve(import.meta.dirname, '../../../../packages/db/upgrades/0.3.0-preview.149-two-step-verification.sql');
 
 /**
- * The two-step tables are created by upgrade 0.3.0-preview.138 (db:push-full
+ * The two-step tables are created by upgrade 0.3.0-preview.149 (db:push-full
  * and db:upgrade both apply it). A disposable test database whose setup
  * stopped before the upgrade tail has none of them, so apply that same
  * upgrade file once. Returns true when it had to.
