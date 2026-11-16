@@ -357,17 +357,23 @@ if (APPS_ENABLED) {
 }
 
 // schema_head is what this release expects; schema_applied is the newest row
-// of the upgrade ledger (cached, null when the ledger is missing or the
-// database cannot be read). /health/ready reports an unreachable database.
-app.get('/health', async (c) => c.json({
-  status: 'ok',
-  release: DEFT_RELEASE_VERSION,
-  commit: DEFT_BUILD_COMMIT,
-  schema_head: DEFT_SCHEMA_HEAD,
-  schema_applied: await getSchemaApplied(),
-  agent_channel_protocol: AGENT_CHANNEL_PROTOCOL_VERSION,
-  paused: isPausedStart(),
-}));
+// of the upgrade ledger (cached), and schema_applied_state says whether it was
+// read (`ok`), the ledger is missing (`no_ledger`), or the database could not
+// be read in time (`unavailable`, last known value or null). /health/ready
+// reports an unreachable database.
+app.get('/health', async (c) => {
+  const applied = await getSchemaApplied();
+  return c.json({
+    status: 'ok',
+    release: DEFT_RELEASE_VERSION,
+    commit: DEFT_BUILD_COMMIT,
+    schema_head: DEFT_SCHEMA_HEAD,
+    schema_applied: applied.value,
+    schema_applied_state: applied.state,
+    agent_channel_protocol: AGENT_CHANNEL_PROTOCOL_VERSION,
+    paused: isPausedStart(),
+  });
+});
 
 app.get('/health/ready', async (c) => {
   try {

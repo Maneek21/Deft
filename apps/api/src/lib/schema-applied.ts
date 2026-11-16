@@ -8,8 +8,8 @@ import { db } from './db.js';
  * expected `schema_head`.
  *
  * /health must stay cheap and must not fail when the database is down: the
- * value is cached, a read is bounded by a short timeout, and any failure
- * reports null (the ledger missing also reports null).
+ * value is cached (30s; 5s after a failure), a read is bounded by a short
+ * timeout and abandoned when stuck, and the state says which case applies.
  */
 export type LedgerRow = { version: string; applied_at: Date | string | null };
 export type LedgerReader = () => Promise<LedgerRow[] | null>;
@@ -17,6 +17,7 @@ export type LedgerReader = () => Promise<LedgerRow[] | null>;
 const CACHE_MS = 30_000;
 const FAILURE_CACHE_MS = 5_000;
 const READ_TIMEOUT_MS = 1_000;
+const STATEMENT_TIMEOUT_MS = 800;
 
 function parseVersion(version: string): { core: number[]; pre: number[] | null } {
   const [core, pre] = version.split('-', 2) as [string, string | undefined];
@@ -43,18 +44,16 @@ export function compareSchemaVersions(a: string, b: string): number {
 }
 
 /**
- * The newest ledger row. A fresh install records the whole manifest in one
- * transaction, so applied_at can tie: ties are broken by release order.
+ * The newest ledger row, by release order alone. applied_at is not used: a
+ * fresh install records the whole manifest in one transaction (ties), and a
+ * restore host whose clock is behind would pick the wrong row.
  */
 export function newestLedgerVersion(rows: readonly LedgerRow[]): string | null {
-  let best: { version: string; at: number } | null = null;
+  let best: string | null = null;
   for (const row of rows) {
-    const at = row.applied_at === null ? 0 : new Date(row.applied_at).getTime() || 0;
-    if (!best || at > best.at || (at === best.at && compareSchemaVersions(row.version, best.version) > 0)) {
-      best = { version: row.version, at };
-    }
+    if (best === null || compareSchemaVersions(row.version, best) > 0) best = row.version;
   }
-  return best?.version ?? null;
+  return best;
 }
 
 function resultRows(result: unknown): Record<string, unknown>[] {
@@ -63,40 +62,66 @@ function resultRows(result: unknown): Record<string, unknown>[] {
   return [];
 }
 
-/** Null when the ledger table does not exist. */
-export const readLedgerFromDatabase: LedgerReader = async () => {
-  const exists = resultRows(await db.execute(sql`
+/**
+ * Null when the ledger table does not exist. The query carries its own
+ * statement timeout (set for this transaction only, not for the pool).
+ */
+export const readLedgerFromDatabase: LedgerReader = () => db.transaction(async (tx) => {
+  await tx.execute(sql.raw(`SET LOCAL statement_timeout = ${STATEMENT_TIMEOUT_MS}`));
+  const exists = resultRows(await tx.execute(sql`
     SELECT to_regclass('public.deft_schema_migrations') IS NOT NULL AS exists
   `))[0]?.exists === true;
   if (!exists) return null;
-  return resultRows(await db.execute(sql`SELECT version, applied_at FROM deft_schema_migrations`))
+  return resultRows(await tx.execute(sql`SELECT version, applied_at FROM deft_schema_migrations`))
     .map((row) => ({ version: String(row.version), applied_at: row.applied_at as Date | string | null }));
-};
+});
+
+/**
+ * `ok`: read from the ledger. `no_ledger`: the ledger table is missing (or
+ * empty). `unavailable`: the database could not be read in time; the value is
+ * then the last one read, or null.
+ */
+export type SchemaAppliedState = 'ok' | 'no_ledger' | 'unavailable';
+export type SchemaApplied = { value: string | null; state: SchemaAppliedState };
 
 export function createSchemaAppliedCache(read: LedgerReader, now: () => number = Date.now) {
-  let cached: { value: string | null; until: number } | null = null;
-  let inFlight: Promise<string | null> | null = null;
+  let cached: { result: SchemaApplied; until: number } | null = null;
+  let lastRead: SchemaApplied | null = null;
+  let inFlight: Promise<SchemaApplied> | null = null;
+  const unavailable = (): SchemaApplied => ({ value: lastRead?.value ?? null, state: 'unavailable' });
 
-  const refresh = (): Promise<string | null> => {
-    inFlight ??= read()
-      .then((rows) => {
-        const value = rows ? newestLedgerVersion(rows) : null;
-        cached = { value, until: now() + CACHE_MS };
-        return value;
-      }, () => {
-        cached = { value: null, until: now() + FAILURE_CACHE_MS };
-        return null;
-      })
-      .finally(() => { inFlight = null; });
-    return inFlight;
+  const refresh = (): Promise<SchemaApplied> => {
+    if (inFlight) return inFlight;
+    const attempt: Promise<SchemaApplied> = read().then((rows) => {
+      const value = rows ? newestLedgerVersion(rows) : null;
+      const result: SchemaApplied = { value, state: value === null ? 'no_ledger' : 'ok' };
+      // An abandoned read must not overwrite a newer result after recovery.
+      if (inFlight === attempt) {
+        lastRead = result;
+        cached = { result, until: now() + CACHE_MS };
+      }
+      return result;
+    }, () => {
+      if (inFlight === attempt) cached = { result: unavailable(), until: now() + FAILURE_CACHE_MS };
+      return unavailable();
+    }).finally(() => { if (inFlight === attempt) inFlight = null; });
+    inFlight = attempt;
+    return attempt;
   };
 
-  return async function getSchemaApplied(): Promise<string | null> {
-    if (cached && now() < cached.until) return cached.value;
+  return async function getSchemaApplied(): Promise<SchemaApplied> {
+    if (cached && now() < cached.until) return cached.result;
+    const attempt = refresh();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timedOut = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), READ_TIMEOUT_MS); timer.unref?.(); });
     try {
-      return await Promise.race([refresh(), timedOut]);
+      const result = await Promise.race([attempt, timedOut]);
+      if (result) return result;
+      // Stuck read: abandon it, so the next check after the short cache starts
+      // a fresh one, and serve the last known value meanwhile.
+      if (inFlight === attempt) inFlight = null;
+      cached = { result: unavailable(), until: now() + FAILURE_CACHE_MS };
+      return cached.result;
     } finally {
       clearTimeout(timer);
     }
