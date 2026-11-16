@@ -18,7 +18,12 @@
  * failing verification - growth is frozen at the current count: nobody new
  * can be added. Nothing here ever removes, deactivates or locks out anyone.
  *
- * Every path that adds a counted person calls `reserveSeat` inside the same
+ * The first owner is the one exception: signup with the setup token
+ * (routes/auth.ts) is never refused for want of seats, so claiming a cell
+ * never waits on the control plane, and the owner then counts as one used
+ * seat (owner's decision, 16 Nov 2026; test/seat-first-owner-db.test.ts).
+ *
+ * Every other path that adds a counted person calls `reserveSeat` inside the same
  * transaction as its write. `reserveSeat` and taking in a new statement both
  * hold one transaction-scoped advisory lock, so two requests can never both
  * take the last seat. A hosted cell holds one workspace, so the lock is
