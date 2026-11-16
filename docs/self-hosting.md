@@ -866,6 +866,13 @@ restores each dump into an empty database and compares the row count of every
 table. This covers the database only: restoring uploads and secrets, and keeping
 people removed since the backup removed after a restore, are not covered.
 
+CI also runs `pnpm --filter @deft/db check:add-only-upgrades`. It checks SQL files
+added since the release tag named by `origin/master` and refuses changes to
+released SQL. New files may add tables, optional columns and non-unique indexes;
+drops, renames, type changes, narrowing constraints and data rewrites fail.
+Procedural or otherwise unclassified SQL fails closed. This structural check
+does not replace testing the previous application release on the new schema.
+
 #### Dumps taken before schema `0.3.0-preview.148`
 
 `pnpm db:upgrade --status` shows the schema a database is at. A dump taken at
