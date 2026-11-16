@@ -8,13 +8,16 @@ import {
   DEFAULT_NOTIFICATION_PREFERENCES,
   emailAccounts,
   emailNotificationEvents,
+  messages,
   orgMembers,
+  spaces,
   users,
   webPushSubscriptions,
   type UserNotificationPreferences,
 } from '@deft/db/schema';
 import { db } from './db.js';
 import { env } from './env.js';
+import { toPlainText } from './plain-text.js';
 import { revealPushSubscription } from './push-subscription.js';
 import { enqueue, QUEUE_NAMES } from './queues.js';
 
@@ -121,6 +124,13 @@ export const webPushPolicy = {
   failureStatus: (attempt: number) => attempt >= PUSH_MAX_ATTEMPTS ? 'failed' as const : 'queued' as const,
 };
 
+/**
+ * Generic push payload: the item's title and a fixed body, never the source's
+ * content. A push leaves Deft through the browser vendor's push service and
+ * is shown on a lock screen; it is used for every kind with no message, and
+ * whenever a message preview cannot be shown safely (see
+ * `attentionPushPayload`).
+ */
 export function safeAttentionPushPayload(item: Pick<AttentionItem, 'title' | 'link' | 'lane' | 'id'>) {
   return JSON.stringify({
     title: item.title.slice(0, 120),
@@ -129,6 +139,105 @@ export function safeAttentionPushPayload(item: Pick<AttentionItem, 'title' | 'li
     attention_id: item.id,
     tag: `deft-attention-${item.id}`,
   });
+}
+
+export const PUSH_PREVIEW_MAX_CHARS = 100;
+const PUSH_NAME_MAX_CHARS = 60;
+/** Web Push carries at most 4096 encrypted bytes; stay well inside it. */
+export const PUSH_PAYLOAD_MAX_BYTES = 3000;
+
+/** Plain text of a chat message for a lock screen: no HTML, mention tokens or common Markdown marks. */
+export function pushPreviewText(content: string): string {
+  return toPlainText(content)
+    .replace(/\[\[deft:[a-z_]+:[^\]]*\]\]/g, ' ')
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/(\*\*|__|~~|`+)/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^(#{1,6}|>)\s+/, '');
+}
+
+function cutChars(value: string, max: number): string {
+  const chars = Array.from(value);
+  return chars.length <= max ? value : `${chars.slice(0, max - 1).join('').trimEnd()}…`;
+}
+
+/** Sender (and room) title plus a short plain-text preview of a chat message. */
+export function messagePushPayload(
+  item: Pick<AttentionItem, 'link' | 'lane' | 'id'>,
+  preview: { senderName: string; spaceName: string | null; content: string },
+): string | null {
+  const sender = cutChars(preview.senderName.replace(/\s+/g, ' ').trim(), PUSH_NAME_MAX_CHARS);
+  const body = cutChars(pushPreviewText(preview.content), PUSH_PREVIEW_MAX_CHARS);
+  if (!sender || !body) return null;
+  const space = preview.spaceName ? cutChars(preview.spaceName.replace(/\s+/g, ' ').trim(), PUSH_NAME_MAX_CHARS) : '';
+  const payload = JSON.stringify({
+    title: space ? `${sender} in #${space}` : sender,
+    body,
+    url: item.link ?? `/inbox?lane=${item.lane}`,
+    attention_id: item.id,
+    tag: `deft-attention-${item.id}`,
+  });
+  return Buffer.byteLength(payload, 'utf8') <= PUSH_PAYLOAD_MAX_BYTES ? payload : null;
+}
+
+/**
+ * The push payload for one delivery, built at the moment of sending.
+ *
+ * Only an item whose source is a chat message gets a sender-and-preview
+ * payload, and only when, in the same query, the message still exists, is not
+ * deleted, and the recipient may read it under the Inbox's own visibility rule
+ * (`visibleAttentionCondition`) while an active member of the workspace.
+ * Everything else, and every doubtful case (a thread reply whose source is
+ * the recipient's own message, a system sender, a private Defty turn), gets
+ * the generic payload.
+ */
+export async function attentionPushPayload(item: AttentionItem): Promise<string> {
+  const generic = safeAttentionPushPayload(item);
+  if (!env.PUSH_MESSAGE_PREVIEWS_ENABLED || item.source_type !== 'message') return generic;
+  try {
+    const { visibleAttentionCondition } = await import('./attention.js');
+    const [row] = await db
+      .select({
+        content: messages.content,
+        metadata: messages.metadata,
+        sender_id: messages.user_id,
+        sender_name: users.name,
+        sender_kind: users.kind,
+        space_name: spaces.name,
+        space_type: spaces.type,
+      })
+      .from(attentionItems)
+      .innerJoin(messages, and(eq(messages.id, attentionItems.source_id), eq(messages.org_id, attentionItems.org_id)))
+      .innerJoin(spaces, and(eq(spaces.id, messages.space_id), eq(spaces.org_id, messages.org_id)))
+      .innerJoin(users, eq(users.id, messages.user_id))
+      .innerJoin(orgMembers, and(
+        eq(orgMembers.org_id, attentionItems.org_id),
+        eq(orgMembers.user_id, attentionItems.user_id),
+        eq(orgMembers.is_active, true),
+      ))
+      .where(and(
+        eq(attentionItems.id, item.id),
+        eq(attentionItems.org_id, item.org_id),
+        eq(attentionItems.user_id, item.user_id),
+        eq(attentionItems.source_type, 'message'),
+        eq(messages.is_deleted, false),
+        visibleAttentionCondition(item.user_id),
+      ))
+      .limit(1);
+    if (!row || row.sender_id === item.user_id || row.sender_kind === 'system') return generic;
+    const metadata = row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata)
+      ? row.metadata as Record<string, unknown> : {};
+    if (metadata.schema_version === 'deft.private_defty_message.v1') return generic;
+    const named = row.space_type === 'public' || row.space_type === 'private';
+    return messagePushPayload(item, {
+      senderName: row.sender_name,
+      spaceName: named ? row.space_name : null,
+      content: row.content,
+    }) ?? generic;
+  } catch {
+    return generic;
+  }
 }
 
 /** A queued email push is suppressed if its exact owner event or account
@@ -370,11 +479,12 @@ export async function sendAttentionDelivery(deliveryId: string, options: { attem
     try {
       if (!(await appIntegrationNotificationDeliveryCurrent(row.item, options.job))) return { skipped: true, reason: 'app_authority_revoked' };
       if (!(await attentionItemStillVisible(row.item))) { accessRevoked = true; break; }
+      const payload = await attentionPushPayload(row.item);
       const revealed = revealPushSubscription(subscription);
       await webpush.sendNotification({
         endpoint: revealed.endpoint,
         keys: { p256dh: revealed.p256dh, auth: revealed.auth },
-      }, safeAttentionPushPayload(row.item), { TTL: row.item.priority === 'critical' ? 300 : 3600 });
+      }, payload, { TTL: row.item.priority === 'critical' ? 300 : 3600 });
       sent += 1;
       await db.update(webPushSubscriptions).set({ failure_count: 0, last_used_at: new Date(), updated_at: new Date() }).where(eq(webPushSubscriptions.id, subscription.id));
     } catch (error) {

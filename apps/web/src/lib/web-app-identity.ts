@@ -7,5 +7,5 @@
 export const DEFT_APP_NAME = 'Deft';
 export const DEFT_THEME_COLOR = '#131315';
 export const DEFT_BACKGROUND_COLOR = '#131315';
-/** The only brand icon shipped today (500x400 PNG). */
-export const DEFT_ICON_PATH = '/brand/deft-icon.png';
+/** Square app icons derived from the existing brand logo, without cropping. */
+export const DEFT_ICON_PATH = '/brand/deft-192.png';

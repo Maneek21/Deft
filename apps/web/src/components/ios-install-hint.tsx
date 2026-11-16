@@ -21,6 +21,7 @@ export function IosInstallHint() {
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
+    if (process.env.NEXT_PUBLIC_FEATURE_WEB_APP_INSTALL !== 'true') return;
     const nav = navigator as Navigator & { standalone?: boolean };
     setVisible(shouldShowIosInstallHint({
       userAgent: nav.userAgent,

@@ -4,7 +4,14 @@ import {
   attentionItems,
   DEFAULT_NOTIFICATION_PREFERENCES,
 } from '@deft/db/schema';
-import { emailNotificationPushStillCurrent, safeAttentionPushPayload, webPushPolicy } from '../src/lib/web-push.js';
+import {
+  emailNotificationPushStillCurrent,
+  messagePushPayload,
+  PUSH_PAYLOAD_MAX_BYTES,
+  pushPreviewText,
+  safeAttentionPushPayload,
+  webPushPolicy,
+} from '../src/lib/web-push.js';
 
 type AttentionItem = typeof attentionItems.$inferSelect;
 
@@ -65,4 +72,29 @@ test('quiet hours defer non-critical pushes across midnight', () => {
   assert.equal(webPushPolicy.failureStatus(1), 'queued');
   assert.equal(webPushPolicy.failureStatus(3), 'queued');
   assert.equal(webPushPolicy.failureStatus(4), 'failed');
+});
+
+test('message previews strip markup and cut long text', () => {
+  assert.equal(pushPreviewText('<p>Hello <strong>team</strong>, see <a href="https://x.test">the doc</a></p>'), 'Hello team, see the doc');
+  assert.equal(pushPreviewText('## Ship **today** with `pnpm` and [notes](https://x.test)'), 'Ship today with pnpm and notes');
+  assert.equal(pushPreviewText('Ask [[deft:person:abc123]] about it'), 'Ask about it');
+  const long = JSON.parse(messagePushPayload(item(), { senderName: 'Alice', spaceName: null, content: 'x'.repeat(500) })!);
+  assert.equal(Array.from(long.body).length, 100);
+  assert.ok(long.body.endsWith('…'));
+  const emoji = JSON.parse(messagePushPayload(item(), { senderName: 'Alice', spaceName: null, content: '🚀'.repeat(300) })!);
+  assert.equal(Array.from(emoji.body).length, 100, 'cut by characters, never inside one');
+});
+
+test('message payloads stay within the push size limit', () => {
+  const worst = messagePushPayload(item({ link: `/chat?space=${'s'.repeat(40)}&message=${'m'.repeat(40)}` }), {
+    senderName: '名'.repeat(500), spaceName: '空'.repeat(500), content: '😀'.repeat(5000),
+  });
+  assert.ok(worst);
+  assert.ok(Buffer.byteLength(worst!, 'utf8') <= PUSH_PAYLOAD_MAX_BYTES);
+  const parsed = JSON.parse(worst!);
+  assert.ok(Array.from(parsed.title).length <= 125);
+  assert.equal(messagePushPayload(item(), { senderName: 'Alice', spaceName: null, content: '<p></p>' }), null,
+    'an empty preview falls back to the generic payload');
+  assert.equal(messagePushPayload(item({ link: `/x?${'a'.repeat(4000)}` }), { senderName: 'Alice', spaceName: null, content: 'hi' }), null,
+    'an oversized payload falls back to the generic payload');
 });

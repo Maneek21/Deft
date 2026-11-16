@@ -14,11 +14,11 @@ import {
  * image needs no start-time address injection for it, and the default
  * Content-Security-Policy (`default-src 'self'`) already allows it.
  *
- * Icons: the only brand icon shipped today is 500x400 and is declared at its
- * real size only. Square 192x192 and 512x512 icons (and a maskable variant)
- * do not exist yet; they are missing artwork, not invented here.
+ * Square icons use the existing logo on the app background. The maskable
+ * variant keeps the complete logo inside the central safe circle.
  */
 export default function manifest(): MetadataRoute.Manifest {
+  if (process.env.NEXT_PUBLIC_FEATURE_WEB_APP_INSTALL !== 'true') return {};
   return {
     id: '/',
     name: DEFT_APP_NAME,
@@ -32,10 +32,12 @@ export default function manifest(): MetadataRoute.Manifest {
     icons: [
       {
         src: DEFT_ICON_PATH,
-        sizes: '500x400',
+        sizes: '192x192',
         type: 'image/png',
         purpose: 'any',
       },
+      { src: '/brand/deft-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+      { src: '/brand/deft-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
     ],
   };
 }

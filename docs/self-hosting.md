@@ -965,6 +965,30 @@ pnpm --filter @deft/api exec tsx src/scripts/audit-mixed-org-rows.ts \
 Review the list before deciding anything. Take a backup first and ask for
 review before correcting rows by hand.
 
+## Optional web app installation and message previews
+
+Both features default off. For a source build, set
+`NEXT_PUBLIC_FEATURE_WEB_APP_INSTALL=true` before building (Compose forwards it
+as a build argument). This adds the standalone manifest, square app icons and
+an iPhone Safari hint: tap Share, then Add to Home Screen. Prebuilt images must
+have this build-time flag enabled by their publisher. Installation is optional;
+the app still requires a network connection. Phones need HTTPS; localhost is
+sufficient for desktop development. The icons reuse the existing Deft logo;
+the maskable variant keeps it within the central safe circle.
+
+Set `PUSH_MESSAGE_PREVIEWS_ENABLED=true` at API startup to include a sender and
+up to 100 characters of plain chat text in browser notifications. This changes
+lock-screen text for existing subscribed devices too. Without the setting,
+existing subscribers continue to see "Open Deft to review." Browser notification
+configuration, user preferences and quiet hours still apply. Message previews
+are checked against the recipient's current workspace and space access at send
+time. Deleted messages, unavailable sources, private Defty messages and non-chat
+items retain generic text. A legacy thread notification that points at the
+recipient's own parent message stays generic rather than quoting the wrong turn.
+
+On iPhone, browser notifications require launching the installed Home Screen
+app (iOS 16.4 or later) and enabling notifications there.
+
 ## What's Not In Self-Hosted v1
 
 - Managed hosting or one-click cloud deployments

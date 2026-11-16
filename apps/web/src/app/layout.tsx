@@ -12,15 +12,15 @@ export const metadata: Metadata = {
   // The <link rel="manifest"> tag comes from app/manifest.ts (Next adds it).
   // appleWebApp emits mobile-web-app-capable, apple-mobile-web-app-title and
   // apple-mobile-web-app-status-bar-style.
-  appleWebApp: {
+  appleWebApp: process.env.NEXT_PUBLIC_FEATURE_WEB_APP_INSTALL === 'true' ? {
     capable: true,
     title: DEFT_APP_NAME,
     statusBarStyle: 'black',
-  },
+  } : undefined,
 };
 
 export const viewport: Viewport = {
-  themeColor: DEFT_THEME_COLOR,
+  themeColor: process.env.NEXT_PUBLIC_FEATURE_WEB_APP_INSTALL === 'true' ? DEFT_THEME_COLOR : undefined,
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -30,9 +30,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
         {/* Older iPhone Safari reads only the apple- prefixed tag for Add to
             Home Screen; Next's appleWebApp emits the unprefixed one. */}
-        <meta name="apple-mobile-web-app-capable" content="yes" />
-        {/* Only brand icon shipped is 500x400; no 180x180 touch icon exists yet. */}
-        <link rel="apple-touch-icon" href={DEFT_ICON_PATH} />
+        {process.env.NEXT_PUBLIC_FEATURE_WEB_APP_INSTALL === 'true' && <>
+          <meta name="apple-mobile-web-app-capable" content="yes" />
+          <link rel="apple-touch-icon" href={DEFT_ICON_PATH} />
+        </>}
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
