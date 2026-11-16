@@ -2,6 +2,7 @@
 import { env } from './env.js';
 import { DEFAULT_DEFTY_OPENAI_MODEL } from '@deft/shared';
 import { createAgentMessage, isOpenAIReasoningModel } from './agent-llm.js';
+import { aiProviderAddress, anthropicClientAddress, environmentAiAddress, requireAiProviderAddress } from './ai-provider-address.js';
 
 export type LLMTask = 'classify' | 'summarize' | 'reason' | 'extract';
 
@@ -53,14 +54,14 @@ function configuredValue(value: unknown): string {
 
 function hasOrgProviderConfigured(provider: LLMProvider, orgConfig?: Record<string, any>): boolean {
   if (provider === 'ollama') {
-    return Boolean(configuredValue(orgConfig?.ollama_url));
+    return aiProviderAddress('ollama').allowed && Boolean(configuredValue(orgConfig?.ollama_url));
   }
   return Boolean(configuredValue(orgConfig?.api_keys?.[provider]));
 }
 
 function hasEnvProviderConfigured(provider: LLMProvider): boolean {
   if (provider === 'ollama') {
-    return Boolean(configuredValue(env.OLLAMA_URL));
+    return Boolean(configuredValue(environmentAiAddress(env.OLLAMA_URL)));
   }
   return Boolean(resolveApiKey(provider));
 }
@@ -68,7 +69,7 @@ function hasEnvProviderConfigured(provider: LLMProvider): boolean {
 function routeWithProviderDefaults(provider: LLMProvider, task: LLMTask, orgConfig?: Record<string, any>): LLMConfig {
   const route = PROVIDER_DEFAULT_ROUTES[provider][task];
   if (provider === 'ollama' && !route.baseUrl) {
-    return { ...route, baseUrl: configuredValue(orgConfig?.ollama_url) || configuredValue(env.OLLAMA_URL) };
+    return { ...route, baseUrl: configuredValue(orgConfig?.ollama_url) || configuredValue(environmentAiAddress(env.OLLAMA_URL)) };
   }
   return route;
 }
@@ -82,7 +83,7 @@ export function getModelConfig(task: LLMTask, orgConfig?: Record<string, any>): 
     // route itself doesn't pin one. Precedence (highest first):
     //   route.baseUrl → orgConfig.ollama_url → env.OLLAMA_URL (callOllama default)
     if (route.provider === 'ollama' && !configuredValue(route.baseUrl)) {
-      return { ...route, baseUrl: configuredValue(orgConfig?.ollama_url) || configuredValue(env.OLLAMA_URL) };
+      return { ...route, baseUrl: configuredValue(orgConfig?.ollama_url) || configuredValue(environmentAiAddress(env.OLLAMA_URL)) };
     }
     return route;
   }
@@ -159,7 +160,11 @@ export async function llm(params: {
   usage?: { input: number; output: number };
   model: string;
 }> {
-  const config = getModelConfig(params.task, params.orgConfig);
+  const routed = getModelConfig(params.task, params.orgConfig);
+  // Hosted mode: refuses Ollama and custom addresses, pins standard ones.
+  // Self-hosted: returns routed.baseUrl unchanged.
+  const baseUrl = requireAiProviderAddress(routed.provider, routed.baseUrl);
+  const config = baseUrl === routed.baseUrl ? routed : { ...routed, baseUrl };
   const apiKey = resolveApiKey(config.provider, params.orgConfig);
   if (config.provider !== 'ollama' && !apiKey) {
     throw new Error(`${config.provider} API key is not configured`);
@@ -200,7 +205,7 @@ async function callAnthropic(
   },
 ): Promise<{ text: string; toolCalls?: any[]; usage?: { input: number; output: number }; model: string }> {
   const Anthropic = (await import('@anthropic-ai/sdk')).default;
-  const client = new Anthropic({ apiKey, timeout: 60_000, maxRetries: 1 });
+  const client = new Anthropic({ apiKey, timeout: 60_000, maxRetries: 1, ...anthropicClientAddress() });
 
   // Filter out system messages — Anthropic uses the system parameter instead
   const nonSystemMessages = params.messages.filter((m) => m.role !== 'system');
@@ -332,7 +337,7 @@ async function callOllama(
     maxTokens?: number;
   },
 ): Promise<{ text: string; toolCalls?: any[]; usage?: { input: number; output: number }; model: string }> {
-  const baseURL = config.baseUrl || env.OLLAMA_URL;
+  const baseURL = config.baseUrl || environmentAiAddress(env.OLLAMA_URL);
   if (!baseURL) {
     throw new Error('Ollama URL is not configured');
   }

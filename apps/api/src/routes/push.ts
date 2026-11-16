@@ -6,6 +6,7 @@ import { db } from '../lib/db.js';
 import { env } from '../lib/env.js';
 import { protectPushSubscription } from '../lib/push-subscription.js';
 import { sendPushTest, webPushConfigured } from '../lib/web-push.js';
+import { PushEndpointRefusedError, PUSH_ENDPOINT_REFUSED, resolvePushEndpoint } from '../lib/push-endpoint.js';
 
 export const pushRoutes = new Hono();
 
@@ -49,6 +50,14 @@ pushRoutes.post('/subscribe', async (c) => {
   const parsed = subscriptionSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) {
     return c.json({ error: 'Invalid push subscription', code: 'VALIDATION_ERROR' }, 400);
+  }
+  // The server will send requests to this address: https, public addresses
+  // only, and in hosted mode a known browser push service.
+  try {
+    await resolvePushEndpoint(parsed.data.endpoint);
+  } catch (error) {
+    if (!(error instanceof PushEndpointRefusedError)) throw error;
+    return c.json({ error: error.message, code: PUSH_ENDPOINT_REFUSED }, 400);
   }
   const protectedSubscription = protectPushSubscription({
     endpoint: parsed.data.endpoint,

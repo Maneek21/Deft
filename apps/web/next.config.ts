@@ -25,7 +25,32 @@ try {
   // fall through — root .env is optional
 }
 
-const apiOrigin = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+// connect-src: fetch, XHR, WebSocket, EventSource and beacon requests may go
+// only to the page itself and to the configured API and live-connection
+// addresses (the defaults match lib/api.ts and lib/socket.ts). Each address
+// is listed as its http(s) origin plus its WebSocket form, because a CSP
+// source `https://host` does not match `wss://host`; either form may be
+// configured (NEXT_PUBLIC_WS_URL=wss://host is accepted). The prebuilt image
+// is built with placeholders (`__DEFT_API_URL__`); for those the policy names
+// `__DEFT_API_ORIGIN__` / `__DEFT_API_WS_ORIGIN__`, which
+// scripts/inject-public-env.mjs fills with the real origins at start.
+function connectSources(url: string): string[] {
+  const placeholder = /^__DEFT_([A-Z]+)_URL__$/.exec(url);
+  if (placeholder) return [`__DEFT_${placeholder[1]}_ORIGIN__`, `__DEFT_${placeholder[1]}_WS_ORIGIN__`];
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { throw new Error(`Invalid public URL for the content security policy: ${url}`); }
+  if (!['http:', 'https:', 'ws:', 'wss:'].includes(parsed.protocol)) {
+    throw new Error(`Public URL must be http(s) or ws(s) for the content security policy: ${url}`);
+  }
+  const secure = parsed.protocol === 'https:' || parsed.protocol === 'wss:';
+  return [`${secure ? 'https' : 'http'}://${parsed.host}`, `${secure ? 'wss' : 'ws'}://${parsed.host}`];
+}
+
+const connectSrc = [...new Set([
+  "'self'",
+  ...connectSources(process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'),
+  ...connectSources(process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:3001'),
+])].join(' ');
 
 const nextConfig: NextConfig = {
   webpack(config) {
@@ -54,8 +79,17 @@ const nextConfig: NextConfig = {
   // Task 4 (private-alpha): security headers. `unsafe-inline` + `unsafe-eval`
   // on script-src are temporary — Next.js 16 + Tailwind v4 + TipTap need them
   // today. Tightening to nonce-based CSP is post-alpha. `microphone=(self)`
-  // keeps the voice-clip recorder working. `connect-src` includes the dev API
-  // URL; production operators can widen via env-driven config later.
+  // keeps the voice-clip recorder working. `connect-src` is narrowed to the
+  // page itself and the configured API and live-connection addresses: that
+  // stops fetch, XHR, WebSocket and beacon connections to other addresses.
+  // It does NOT by itself stop a script already running on the page from
+  // leaking data another way: `img-src` still allows any https address
+  // (external avatars and link-preview images need it), and navigation is
+  // not restricted. `form-action 'self'` and `base-uri 'self'` close two
+  // cheap routes (every form in the app submits through script to the page
+  // itself; nothing uses <base>). `object-src` is left to `default-src
+  // 'self'`: PDF previews open as blob documents that inherit this policy,
+  // and 'none' could block the browser's PDF viewer there.
   async headers() {
     return [
       {
@@ -77,9 +111,11 @@ const nextConfig: NextConfig = {
               "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
               "img-src 'self' data: blob: https:",
               "font-src 'self' data: https://fonts.gstatic.com",
-              `connect-src 'self' ws: wss: ${apiOrigin} https:`,
+              `connect-src ${connectSrc}`,
               "media-src 'self' blob:",
               "frame-ancestors 'none'",
+              "form-action 'self'",
+              "base-uri 'self'",
             ].join('; '),
           },
           { key: 'Strict-Transport-Security', value: 'max-age=31536000; includeSubDomains' },

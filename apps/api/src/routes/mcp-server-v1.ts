@@ -70,6 +70,7 @@ import { getActiveAgentChannelRuntimeCorrelation } from '../lib/agent-channel.js
 import { McpRequestBodyError, readMcpRequestJson } from '../lib/mcp-request-body.js';
 import { dispatchPrivateMcpTool, isPrivateMcpTool, privateMcpCatalog } from '../lib/app-private-mcp-dispatch.js';
 import { isRuntimeWorkflowTool, runtimeWorkflowHasScopes, RUNTIME_WORKFLOW_SCOPES } from '../lib/app-runtime-workflow-tools.js';
+import { localDevelopmentWebOrigins } from '../lib/web-origins.js';
 
 export const mcpServerV1Routes = new Hono();
 const requestBodies = new WeakMap<Request, Promise<unknown>>();
@@ -255,8 +256,8 @@ function allowedMcpOrigins(): Set<string> {
     process.env.NEXT_PUBLIC_APP_URL,
     process.env.NEXT_PUBLIC_API_URL,
     process.env.DEFT_PUBLIC_URL,
-    'http://localhost:3000',
-    'http://127.0.0.1:3000',
+    // Hosted mode: no local addresses (lib/web-origins.ts).
+    ...localDevelopmentWebOrigins(),
   ];
   return new Set(
     candidates

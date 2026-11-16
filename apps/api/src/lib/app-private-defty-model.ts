@@ -4,11 +4,15 @@ import type { AppRunKeyProvider } from './app-run-keyrings.js';
 import { AppRunKeyVersionUnavailableError } from './app-run-keyrings.js';
 import type { ResolvedReasonProvider } from './org-ai-config.js';
 import { PrivateDeftyModelDestination } from './app-private-defty-contract.js';
+import { aiProviderAddress } from './ai-provider-address.js';
 
 /** Exact normalized destination, not a wildcard provider grant. Query/fragment
  * endpoint credentials are rejected rather than copied into review metadata. */
 export function privateDeftyEndpoint(resolved: ResolvedReasonProvider): string {
-  const endpoint = new URL(resolved.baseUrl || (resolved.provider === 'anthropic'
+  // Hosted mode: no Ollama or custom address. Self-hosted: baseUrl unchanged.
+  const address = aiProviderAddress(resolved.provider, resolved.baseUrl);
+  if (!address.allowed) throw new Error('Private model endpoint unavailable');
+  const endpoint = new URL(address.baseUrl || (resolved.provider === 'anthropic'
     ? 'https://api.anthropic.com' : resolved.provider === 'ollama'
       ? 'http://localhost:11434' : resolved.provider === 'openrouter'
         ? 'https://openrouter.ai/api/v1' : 'https://api.openai.com/v1'));

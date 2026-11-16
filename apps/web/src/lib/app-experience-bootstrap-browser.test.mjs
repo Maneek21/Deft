@@ -38,7 +38,7 @@ test('actual srcdoc and HTTP control retain opaque Worker isolation under the re
  let browser;
  try{
   const host=await listen(),foreign=await listen();
-  const rows=await vm.runInNewContext('('+method.replace('async headers()','async function()')+')()',{apiOrigin:foreign});
+  const rows=await vm.runInNewContext('('+method.replace('async headers()','async function()')+')()',{connectSrc:`'self' ${foreign} ${foreign.replace(/^http/,'ws')}`});
   parentPolicy=rows.find(row=>row.source==='/(.*)').headers.find(row=>row.key==='Content-Security-Policy').value;
   childPolicy=rows.find(row=>row.source==='/app-experience-bootstrap').headers.find(row=>row.key==='Content-Security-Policy').value;
   assert.ok(parentPolicy.includes("worker-src 'self' blob:"));
@@ -57,5 +57,59 @@ test('actual srcdoc and HTTP control retain opaque Worker isolation under the re
  }finally{
   await browser?.close();
   await Promise.all(servers.map(server=>new Promise(resolve=>{server.closeAllConnections();server.close(resolve);})));
+ }
+});
+
+test('native app document print frame renders and enters print under the real parent policy', {timeout:30000}, async()=>{
+ const source=readFileSync(new URL('../../next.config.ts',import.meta.url),'utf8');
+ const ast=ts.createSourceFile('next.config.ts',source,ts.ScriptTarget.Latest,true);let method;
+ const visit=node=>{if(ts.isMethodDeclaration(node)&&node.name.getText(ast)==='headers')method=node.getText(ast);ts.forEachChild(node,visit);};visit(ast);
+ const rows=await vm.runInNewContext('('+method.replace('async headers()','async function()')+')()',{connectSrc:"'self'"});
+ const policy=rows.find(row=>row.source==='/(.*)').headers.find(row=>row.key==='Content-Security-Policy').value;
+ const compiled=await build({stdin:{contents:`
+  import {printExperienceDocument} from './app-experience-safe-document';
+  document.querySelector('button').addEventListener('click',()=>printExperienceDocument({
+   format:'html',content:'<table><tr><td>App document body</td></tr></table><img src="https://foreign.invalid/pixel"><script>window.bad=true<\\/script>'
+  },'App print title',[{label:'From',value:'sender@example.test'}]));
+ `,resolveDir:fileURLToPath(new URL('.',import.meta.url)),loader:'ts'},bundle:true,write:false,platform:'browser',format:'iife'});
+ const requests=[];
+ const server=createServer((req,res)=>{
+  requests.push(req.url);
+  res.writeHead(200,{'Content-Type':req.url==='/bundle.js'?'application/javascript':'text/html','Content-Security-Policy':policy});
+  res.end(req.url==='/bundle.js'?compiled.outputFiles[0].text:'<!doctype html><button>Print app document</button><script src="/bundle.js" defer></script>');
+ });
+ let browser;
+ try{
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  browser=await chromium.launch({headless:true,...(process.env.DEFT_TEST_BROWSER_EXECUTABLE?{executablePath:process.env.DEFT_TEST_BROWSER_EXECUTABLE}:{})});
+  const page=await browser.newPage();
+  await page.addInitScript(()=>{
+   const create=document.createElement.bind(document);
+   document.createElement=function(...args){
+    const element=create(...args);
+    if(args[0]==='iframe')element.addEventListener('load',()=>{
+     const target=element.contentWindow;
+     target.addEventListener('beforeprint',()=>{
+      window.printReport={text:target.document.body.textContent,title:target.document.title,
+       sandbox:element.getAttribute('sandbox'),scripts:target.document.scripts.length,
+       images:target.document.images.length,tableWidth:target.document.querySelector('table').getBoundingClientRect().width,
+       policy:target.document.querySelector('meta[http-equiv="Content-Security-Policy"]').content};
+     },{once:true});
+    });
+    return element;
+   };
+  });
+  await page.goto('http://127.0.0.1:'+server.address().port);
+  await page.getByRole('button',{name:'Print app document',exact:true}).click();
+  await page.waitForFunction(()=>window.printReport);
+  const report=await page.evaluate(()=>window.printReport);
+  assert.match(report.text,/App document body/);assert.match(report.text,/sender@example.test/);
+  assert.equal(report.title,'App print title');assert.equal(report.sandbox,'allow-same-origin allow-modals');
+  assert.equal(report.scripts,0);assert.equal(report.images,0);assert.ok(report.tableWidth>0);
+  assert.match(report.policy,/default-src 'none'/);
+  assert.equal(requests.some(path=>path.includes('pixel')),false);
+ }finally{
+  await browser?.close();
+  server.closeAllConnections();await new Promise(resolve=>server.close(resolve));
  }
 });

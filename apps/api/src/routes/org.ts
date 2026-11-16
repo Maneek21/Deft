@@ -17,6 +17,9 @@ import {
 import { getEmbedConfigMasked, setEmbedConfig } from '../lib/embed.js';
 import { orgs } from '@deft/db/schema';
 import { env } from '../lib/env.js';
+import { aiProviderAddress, HOSTED_AI_ADDRESS_REFUSED, transcriptionProviderAllowed } from '../lib/ai-provider-address.js';
+import { effectiveTranscriptionProvider } from '../lib/transcription.js';
+import { isHostedMode } from '../lib/hosted-mode.js';
 
 export const orgRoutes = new Hono();
 
@@ -33,13 +36,14 @@ async function requireAdmin(c: Context): Promise<true | Response> {
   return true;
 }
 
-async function readTranscriptionConfig(orgId: string): Promise<{ provider: 'local' | 'openai' | 'deepgram'; effective: 'local' | 'openai' | 'deepgram' }> {
+async function readTranscriptionConfig(orgId: string): Promise<{ provider: 'local' | 'openai' | 'deepgram'; effective: 'local' | 'openai' | 'deepgram' | 'none' }> {
   const [row] = await db.select({ ai_config: orgs.ai_config }).from(orgs).where(eq(orgs.id, orgId)).limit(1);
   const stored = (row?.ai_config ?? {}) as { transcription?: { provider?: 'local' | 'openai' | 'deepgram' } };
   const orgChoice = stored.transcription?.provider;
   return {
     provider: orgChoice ?? env.TRANSCRIPTION_PROVIDER,
-    effective: orgChoice ?? env.TRANSCRIPTION_PROVIDER,
+    // Hosted mode: local Whisper is never used, so it is never reported as in use.
+    effective: effectiveTranscriptionProvider(orgChoice),
   };
 }
 
@@ -58,6 +62,9 @@ orgRoutes.get('/ai-config', async (c) => {
     reason_provider,
     embed,
     transcription,
+    // Hosted cells refuse Ollama, custom AI addresses and local transcription;
+    // the settings page hides those options when this is true.
+    hosted: isHostedMode(),
   });
 });
 
@@ -96,6 +103,30 @@ const updateSchema = z.object({
     .optional(),
 });
 
+/**
+ * Hosted mode refuses Ollama and custom AI addresses at save time (the same
+ * rule refuses them again where the provider is resolved for use). Returns
+ * the reason for the first refused address, or null. Always null self-hosted.
+ */
+function refusedAiAddress(data: z.infer<typeof updateSchema>): string | null {
+  const decisions: ReturnType<typeof aiProviderAddress>[] = [];
+  if (typeof data.ollama_url === 'string' && data.ollama_url.trim()) {
+    decisions.push(aiProviderAddress('ollama', data.ollama_url));
+  }
+  for (const t of TASKS) {
+    const route = data.ai_models?.[t];
+    if (route) decisions.push(aiProviderAddress(route.provider, route.baseUrl));
+  }
+  if (typeof data.embed?.base_url === 'string' && data.embed.base_url.trim()) {
+    decisions.push(aiProviderAddress('openai', data.embed.base_url));
+  }
+  for (const decision of decisions) if (!decision.allowed) return decision.reason;
+  if (data.transcription?.provider && !transcriptionProviderAllowed(data.transcription.provider)) {
+    return 'Local transcription is not available on hosted Deft. Use OpenAI or Deepgram.';
+  }
+  return null;
+}
+
 // PUT /api/org/ai-config — admin-only partial update
 orgRoutes.put('/ai-config', async (c) => {
   const guard = await requireAdmin(c);
@@ -107,6 +138,9 @@ orgRoutes.put('/ai-config', async (c) => {
   if (!parsed.success) {
     return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR', detail: parsed.error.message }, 400);
   }
+  // Checked before anything is written, so a refused request changes nothing.
+  const refused = refusedAiAddress(parsed.data);
+  if (refused) return c.json({ error: refused, code: HOSTED_AI_ADDRESS_REFUSED }, 400);
 
   // Apply api_keys updates. Empty string = clear that provider.
   if (parsed.data.api_keys) {
@@ -166,5 +200,8 @@ orgRoutes.put('/ai-config', async (c) => {
     reason_provider,
     embed,
     transcription,
+    // Hosted cells refuse Ollama, custom AI addresses and local transcription;
+    // the settings page hides those options when this is true.
+    hosted: isHostedMode(),
   });
 });

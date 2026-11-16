@@ -131,15 +131,14 @@ import {
   webhookLimiter,
 } from './middleware/rate-limit.js';
 import { githubWebhookRoutes } from './routes/webhooks/github.js';
+import { corsAllowedWebOrigins } from './lib/web-origins.js';
 
 const app = new Hono();
 
 const corsPolicy = cors({
-  origin: [
-    process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
-    'http://localhost:3000',
-    'http://127.0.0.1:3000',
-  ],
+  // Self-hosted: the configured web address plus the two local addresses.
+  // Hosted: only the configured web address (lib/web-origins.ts).
+  origin: (origin) => (corsAllowedWebOrigins().includes(origin) ? origin : null),
   credentials: true,
   allowHeaders: [
     'X-Email-Filename',

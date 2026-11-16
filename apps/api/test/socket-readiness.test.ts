@@ -13,6 +13,67 @@ const user: SocketUser = {
   exp: Math.floor(Date.now() / 1000) + 300,
 };
 
+async function directWebSocketConnection(origin?: string) {
+  const server = createServer();
+  let verifications = 0;
+  const sockets = setupSocket(server, {
+    verifyAccess: async (token) => {
+      assert.equal(token, 'test-token');
+      verifications += 1;
+      return user as any;
+    },
+    requireMembership: async () => ({ role: 'member' }) as any,
+    getSpaceAccess: async () => undefined,
+    recordLastSeen: () => {},
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const client = connect(`http://127.0.0.1:${(server.address() as { port: number }).port}`, {
+    auth: { token: 'test-token' }, transports: ['websocket'], reconnection: false,
+    ...(origin === undefined ? {} : { extraHeaders: { Origin: origin } }),
+  });
+  try {
+    const connected = await new Promise<boolean>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('direct WebSocket connection timed out')), 5000);
+      client.once('connect', () => { clearTimeout(timer); resolve(true); });
+      client.once('connect_error', () => { clearTimeout(timer); resolve(false); });
+    });
+    if (connected) assert.equal(client.io.engine.transport.name, 'websocket');
+    return { connected, verifications };
+  } finally {
+    client.close();
+    await new Promise<void>(resolve => sockets.close(() => resolve()));
+  }
+}
+
+test('hosted direct WebSocket handshakes reject excluded browser origins before authentication', async (t) => {
+  const previousMode = process.env.DEFT_HOSTED;
+  const previousUrl = process.env.NEXT_PUBLIC_APP_URL;
+  t.after(() => {
+    if (previousMode === undefined) delete process.env.DEFT_HOSTED; else process.env.DEFT_HOSTED = previousMode;
+    if (previousUrl === undefined) delete process.env.NEXT_PUBLIC_APP_URL; else process.env.NEXT_PUBLIC_APP_URL = previousUrl;
+  });
+  process.env.DEFT_HOSTED = 'true';
+  process.env.NEXT_PUBLIC_APP_URL = 'https://cell.example.test/';
+  assert.equal((await directWebSocketConnection('https://cell.example.test')).connected, true);
+  for (const origin of ['http://localhost:3000', 'http://127.0.0.1:3000', 'https://foreign.example.test', 'null']) {
+    assert.deepEqual(await directWebSocketConnection(origin), { connected: false, verifications: 0 }, origin);
+  }
+  assert.equal((await directWebSocketConnection()).connected, true, 'non-browser clients retain token authentication');
+  delete process.env.NEXT_PUBLIC_APP_URL;
+  assert.deepEqual(await directWebSocketConnection('https://cell.example.test'), { connected: false, verifications: 0 });
+});
+
+test('self-hosted direct WebSocket origin behaviour is preserved', async (t) => {
+  const previousMode = process.env.DEFT_HOSTED;
+  t.after(() => { if (previousMode === undefined) delete process.env.DEFT_HOSTED; else process.env.DEFT_HOSTED = previousMode; });
+  for (const mode of [undefined, 'false']) {
+    if (mode === undefined) delete process.env.DEFT_HOSTED; else process.env.DEFT_HOSTED = mode;
+    for (const origin of ['http://localhost:3000', 'https://foreign.example.test', undefined]) {
+      assert.equal((await directWebSocketConnection(origin)).connected, true);
+    }
+  }
+});
+
 function deferred() {
   let resolve!: () => void;
   let reject!: (error: Error) => void;

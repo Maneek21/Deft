@@ -19,6 +19,7 @@ import { db } from './db.js';
 import { env } from './env.js';
 import { toPlainText } from './plain-text.js';
 import { revealPushSubscription } from './push-subscription.js';
+import { pushAgentFor } from './push-endpoint.js';
 import { enqueue, QUEUE_NAMES } from './queues.js';
 
 type AttentionItem = typeof attentionItems.$inferSelect;
@@ -481,10 +482,13 @@ export async function sendAttentionDelivery(deliveryId: string, options: { attem
       if (!(await attentionItemStillVisible(row.item))) { accessRevoked = true; break; }
       const payload = await attentionPushPayload(row.item);
       const revealed = revealPushSubscription(subscription);
+      // Checked and pinned on every send: a stored endpoint that now
+      // resolves to an internal address is never contacted.
+      const agent = await pushAgentFor(revealed.endpoint);
       await webpush.sendNotification({
         endpoint: revealed.endpoint,
         keys: { p256dh: revealed.p256dh, auth: revealed.auth },
-      }, payload, { TTL: row.item.priority === 'critical' ? 300 : 3600 });
+      }, payload, { TTL: row.item.priority === 'critical' ? 300 : 3600, agent });
       sent += 1;
       await db.update(webPushSubscriptions).set({ failure_count: 0, last_used_at: new Date(), updated_at: new Date() }).where(eq(webPushSubscriptions.id, subscription.id));
     } catch (error) {
@@ -527,12 +531,13 @@ export async function sendPushTest(params: { orgId: string; userId: string }) {
   for (const subscription of subscriptions) {
     try {
       const revealed = revealPushSubscription(subscription);
+      const agent = await pushAgentFor(revealed.endpoint);
       await webpush.sendNotification({ endpoint: revealed.endpoint, keys: { p256dh: revealed.p256dh, auth: revealed.auth } }, JSON.stringify({
         title: 'Deft notifications are ready',
         body: 'This device can receive time-sensitive work alerts.',
         url: '/settings/profile',
         tag: 'deft-push-test',
-      }), { TTL: 60 });
+      }), { TTL: 60, agent });
       sent += 1;
     } catch {
       // The normal delivery worker records and retries operational failures.

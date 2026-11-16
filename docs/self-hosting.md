@@ -990,6 +990,9 @@ recipient's own parent message stays generic rather than quoting the wrong turn.
 On iPhone, browser notifications require launching the installed Home Screen
 app (iOS 16.4 or later) and enabling notifications there.
 
+Push endpoints require HTTPS on port 443 and every resolved address must be public,
+including on self-hosted installs. Private-network push servers cannot subscribe.
+
 ## What's Not In Self-Hosted v1
 
 - Managed hosting or one-click cloud deployments

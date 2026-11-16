@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test, { after, before } from 'node:test';
 import pg from 'pg';
+import webpush from 'web-push';
 import { closeDb } from '../src/lib/db.js';
 import { env } from '../src/lib/env.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
@@ -74,7 +75,7 @@ after(async () => {
   env.PUSH_MESSAGE_PREVIEWS_ENABLED = originalPreviewsEnabled;
   if (seeded && client) {
     await q('DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id=$1)', [orgId]);
-    for (const table of ['attention_deliveries', 'attention_events', 'attention_items', 'messages', 'spaces', 'org_members']) {
+    for (const table of ['web_push_subscriptions', 'attention_deliveries', 'attention_events', 'attention_items', 'messages', 'spaces', 'org_members']) {
       await q(`DELETE FROM ${table} WHERE org_id=$1`, [orgId]);
     }
     await q('DELETE FROM orgs WHERE id=$1', [orgId]);
@@ -155,4 +156,62 @@ test('a thread reply whose source is the recipient\'s own message, and non-messa
   assert.equal((await payloadFor(ids.bob, { type: 'message', id: own })).body, GENERIC);
   assert.equal((await payloadFor(ids.bob, { type: 'agent_action', id: randomUUID() }, 'approval')).body, GENERIC);
   assert.equal((await payloadFor(ids.bob, { type: 'task', id: randomUUID() }, 'task_assigned')).body, GENERIC);
+});
+
+test('queued sends combine opt-in preview text with a checked and pinned push endpoint', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const { sendAttentionDelivery } = await import('../src/lib/web-push.js');
+  const { protectPushSubscription } = await import('../src/lib/push-subscription.js');
+  const { publicFetchDeps } = await import('../src/lib/public-http-fetch.js');
+  const originalHosted = process.env.DEFT_HOSTED;
+  const originalSettings = {
+    VAPID_PUBLIC_KEY: env.VAPID_PUBLIC_KEY,
+    VAPID_PRIVATE_KEY: env.VAPID_PRIVATE_KEY,
+    VAPID_SUBJECT: env.VAPID_SUBJECT,
+    PUSH_MESSAGE_PREVIEWS_ENABLED: env.PUSH_MESSAGE_PREVIEWS_ENABLED,
+  };
+  t.after(() => {
+    Object.assign(env, originalSettings);
+    if (originalHosted === undefined) delete process.env.DEFT_HOSTED;
+    else process.env.DEFT_HOSTED = originalHosted;
+  });
+  process.env.DEFT_HOSTED = 'true';
+  const keys = webpush.generateVAPIDKeys();
+  Object.assign(env, { VAPID_PUBLIC_KEY: keys.publicKey, VAPID_PRIVATE_KEY: keys.privateKey, VAPID_SUBJECT: 'mailto:push-test@example.test' });
+  await q('UPDATE users SET notification_preferences=$1 WHERE id=$2', [
+    { push: { enabled: true, chat: true } }, ids.bob,
+  ]);
+  const endpoint = 'https://fcm.googleapis.com/fcm/send/combined-test';
+  const protectedSubscription = protectPushSubscription({ endpoint, p256dh: keys.publicKey, auth: 'abcdefghijklmnop' });
+  await q('INSERT INTO web_push_subscriptions(id,org_id,user_id,endpoint,endpoint_hash,p256dh,auth) VALUES($1,$2,$3,$4,$5,$6,$7)',
+    [randomUUID(), orgId, ids.bob, protectedSubscription.endpoint, protectedSubscription.endpoint_hash, protectedSubscription.p256dh, protectedSubscription.auth]);
+  let address = '142.250.1.1';
+  t.mock.method(publicFetchDeps, 'lookup', async () => [{ address, family: 4 }]);
+  const sends: Array<{ body: string; title: string; endpoint: string; agent: unknown }> = [];
+  t.mock.method(webpush, 'sendNotification', async (subscription, payload, options) => {
+    sends.push({ ...JSON.parse(String(payload)), endpoint: subscription.endpoint, agent: options?.agent });
+    return { statusCode: 201, body: '', headers: {} };
+  });
+  const queue = async () => {
+    const messageId = await message(rooms.general, ids.alice, 'Review the launch plan');
+    const attention = await item(ids.bob, { type: 'message', id: messageId });
+    const deliveryId = randomUUID();
+    await q("INSERT INTO attention_deliveries(id,org_id,attention_item_id,user_id,channel) VALUES($1,$2,$3,$4,'push')",
+      [deliveryId, orgId, attention.id, ids.bob]);
+    return deliveryId;
+  };
+  for (const enabled of [true, false]) {
+    env.PUSH_MESSAGE_PREVIEWS_ENABLED = enabled;
+    assert.deepEqual(await sendAttentionDelivery(await queue()), { sent: 1, failed: 0 });
+    const sent = sends.at(-1)!;
+    assert.equal(sent.body, enabled ? 'Review the launch plan' : GENERIC);
+    assert.equal(sent.title, enabled ? 'Alice Example in #general' : 'Alice mentioned you');
+    assert.equal(sent.endpoint, endpoint);
+    const agent = sent.agent as { options: { lookup: (host: string, options: object, callback: (...args: unknown[]) => void) => void } };
+    const pinned = await new Promise<unknown[]>(resolve => agent.options.lookup('fcm.googleapis.com', {}, (...args) => resolve(args)));
+    assert.deepEqual(pinned, [null, '142.250.1.1', 4]);
+  }
+  address = '10.0.0.5';
+  await assert.rejects(sendAttentionDelivery(await queue()), /push endpoint/i);
+  assert.equal(sends.length, 2, 'a stored endpoint resolving internally is never contacted');
 });

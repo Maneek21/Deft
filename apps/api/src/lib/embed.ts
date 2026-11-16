@@ -24,6 +24,7 @@ import { db } from './db.js';
 import { orgs } from '@deft/db/schema';
 import { decrypt } from './encryption.js';
 import { env } from './env.js';
+import { aiProviderAddress } from './ai-provider-address.js';
 
 export const EMBED_DIMS = 1536;
 
@@ -65,10 +66,17 @@ async function loadOrgEmbedConfig(orgId: string | null | undefined): Promise<Emb
     stored = (row?.ai_config ?? {}) as StoredAIConfig;
   }
 
-  const provider: EmbedProvider = stored.embed?.provider ?? 'openai';
-  const base_url = stored.embed?.base_url || DEFAULT_BASE_URL;
+  let provider: EmbedProvider = stored.embed?.provider ?? 'openai';
+  let base_url = stored.embed?.base_url || DEFAULT_BASE_URL;
   const model = stored.embed?.model || DEFAULT_MODEL;
   const api_key = safeDecrypt(stored.api_keys?.openai) || env.OPENAI_API_KEY || '';
+
+  // Hosted mode: a stored custom embedding address is never used; embeddings
+  // are off (FTS-only search) until it is cleared. Self-hosted: unchanged.
+  // Fetches go to the address the rule returned, not the stored string.
+  const address = aiProviderAddress('openai', base_url);
+  if (!address.allowed) provider = 'off';
+  else if (address.baseUrl) base_url = address.baseUrl;
 
   return { provider, base_url, model, api_key };
 }

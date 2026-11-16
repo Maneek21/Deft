@@ -30,6 +30,7 @@ import { orgs } from '@deft/db/schema';
 import { encrypt, decrypt } from './encryption.js';
 import { env } from './env.js';
 import { DEFAULT_DEFTY_OPENAI_MODEL, type ModelRoute } from '@deft/shared';
+import { aiProviderAddress, environmentAiAddress } from './ai-provider-address.js';
 
 export type LLMProvider = 'anthropic' | 'openai' | 'openrouter' | 'ollama';
 export type LLMTask = 'classify' | 'summarize' | 'reason' | 'extract';
@@ -191,6 +192,11 @@ export function selectReasonProvider(input: ReasonProviderSelectionInput): Reaso
   const envApiKeys = input.envApiKeys ?? {};
 
   if (route) {
+    // Hosted mode: only named providers at their standard addresses.
+    const address = aiProviderAddress(route.provider, route.provider === 'ollama' ? route.baseUrl ?? input.orgOllamaUrl : route.baseUrl);
+    if (!address.allowed) {
+      return { ready: false, provider: route.provider, model: route.model, source: 'org_route', reason: address.reason };
+    }
     if (route.provider === 'ollama') {
       const ready = hasOllamaConfigured(input.orgOllamaUrl, route.baseUrl ?? input.envOllamaUrl);
       return {
@@ -234,7 +240,7 @@ export function selectReasonProvider(input: ReasonProviderSelectionInput): Reaso
     }
   }
 
-  if (hasOllamaConfigured(input.orgOllamaUrl, input.envOllamaUrl)) {
+  if (aiProviderAddress('ollama').allowed && hasOllamaConfigured(input.orgOllamaUrl, input.envOllamaUrl)) {
     return {
       ready: true,
       provider: 'ollama',
@@ -279,7 +285,7 @@ export function resolveReasonProviderFromConfig(cfg: OrgAIConfigRuntime | null):
       openrouter: env.OPENROUTER_API_KEY,
     },
     orgOllamaUrl: ollamaUrl,
-    envOllamaUrl: process.env.OLLAMA_URL || null,
+    envOllamaUrl: environmentAiAddress(process.env.OLLAMA_URL) || null,
   });
   const provider = selected.provider;
   const model = selected.model;
@@ -305,9 +311,16 @@ export function resolveReasonProviderFromConfig(cfg: OrgAIConfigRuntime | null):
   let baseUrl = route?.baseUrl;
   if (provider === 'openai' && !baseUrl) baseUrl = OPENAI_BASE_URL;
   if (provider === 'openrouter' && !baseUrl) baseUrl = OPENROUTER_BASE_URL;
-  if (provider === 'ollama' && !baseUrl) baseUrl = ollamaUrl || env.OLLAMA_URL;
+  if (provider === 'ollama' && !baseUrl) baseUrl = ollamaUrl || environmentAiAddress(env.OLLAMA_URL);
 
-  return { provider, model, apiKey, baseUrl, reasoningEffort: route?.reasoning_effort };
+  // The one place the reasoning provider and its address are chosen for use.
+  // In hosted mode a stored Ollama or custom address (saved before the rule,
+  // or restored from a backup) is never used: it resolves as "no provider".
+  const address = aiProviderAddress(provider, baseUrl);
+  if (!address.allowed) {
+    return { provider: 'anthropic', model: HARDCODED_DEFAULTS.reason, apiKey: '', baseUrl: undefined };
+  }
+  return { provider, model, apiKey, baseUrl: address.baseUrl, reasoningEffort: route?.reasoning_effort };
 }
 
 export async function resolveUsableReasonProvider(orgId: string | null | undefined): Promise<ResolvedReasonProvider & ReasonProviderReadiness> {
@@ -347,7 +360,7 @@ export async function getReasonProviderReadiness(orgId: string | null | undefine
       openrouter: env.OPENROUTER_API_KEY,
     },
     orgOllamaUrl: ollamaUrl,
-    envOllamaUrl: process.env.OLLAMA_URL || null,
+    envOllamaUrl: environmentAiAddress(process.env.OLLAMA_URL) || null,
   });
 }
 
@@ -381,7 +394,8 @@ export async function getOrgAIConfigMasked(orgId: string): Promise<OrgAIConfigMa
       anthropic: Boolean(env.ANTHROPIC_API_KEY?.trim()),
       openai: Boolean(env.OPENAI_API_KEY?.trim()),
       openrouter: Boolean(env.OPENROUTER_API_KEY?.trim()),
-      ollama: Boolean(stored.ollama_url?.trim() || process.env.OLLAMA_URL?.trim()),
+      ollama: aiProviderAddress('ollama').allowed
+        && Boolean(stored.ollama_url?.trim() || process.env.OLLAMA_URL?.trim()),
     },
   };
 }
@@ -436,7 +450,7 @@ export async function hasAnyAIProvider(orgId: string | null | undefined): Promis
   if (orgId) {
     const cfg = await getOrgAIConfig(orgId).catch(() => null);
     if (cfg?.api_keys && Object.values(cfg.api_keys).some((key) => Boolean(key?.trim()))) return true;
-    if (cfg?.ollama_url?.trim()) return true;
+    if (cfg?.ollama_url?.trim() && aiProviderAddress('ollama').allowed) return true;
   }
-  return Boolean(env.ANTHROPIC_API_KEY?.trim() || env.OPENAI_API_KEY?.trim() || env.OPENROUTER_API_KEY?.trim() || process.env.OLLAMA_URL?.trim());
+  return Boolean(env.ANTHROPIC_API_KEY?.trim() || env.OPENAI_API_KEY?.trim() || env.OPENROUTER_API_KEY?.trim() || environmentAiAddress(process.env.OLLAMA_URL).trim());
 }
