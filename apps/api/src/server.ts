@@ -26,7 +26,7 @@ const server = serve({ fetch: app.fetch, port }, async (info) => {
   logPausedStart();
 
   // Hosted cells fetch their signed seat statement now and on a timer.
-  // A no-op unless hosted mode is on.
+  // A no-op unless hosted mode is on and this process is not paused.
   const { startSeatStatementRefresher } = await import('./lib/seat-limit.js');
   startSeatStatementRefresher();
 

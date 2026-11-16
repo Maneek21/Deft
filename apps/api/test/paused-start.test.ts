@@ -73,3 +73,29 @@ test('paused provider and transport entry points refuse before network, files or
   await assert.rejects(sendPushTest({ orgId: 'no-db-org', userId: 'no-db-user' }), PausedStartError);
   await assert.rejects(sendAttentionDelivery('no-db-delivery'), PausedStartError);
 });
+
+test('paused seat refresher performs no fetch, timer registration or statement intake', async (t) => {
+  const seats = await import('../src/lib/seat-limit.js');
+  const names = ['DEFT_HOSTED', 'DEFT_CELL_ID', 'DEFT_SEAT_PUBLIC_KEYS', 'DEFT_SEAT_STATEMENT_URL', 'DEFT_SEAT_FETCH_TOKEN'];
+  const previous = names.map((name) => process.env[name]);
+  const fetcher = seats.seatFetchDeps.fetch;
+  const interval = t.mock.method(globalThis, 'setInterval');
+  let calls = 0;
+  Object.assign(process.env, { DEFT_HOSTED: 'true', DEFT_CELL_ID: 'paused-seat-test',
+    DEFT_SEAT_PUBLIC_KEYS: Buffer.alloc(32, 1).toString('base64url'),
+    DEFT_SEAT_STATEMENT_URL: 'https://example.invalid/seats', DEFT_SEAT_FETCH_TOKEN: 'synthetic-token' });
+  seats.seatFetchDeps.fetch = async () => { calls++; return new Response(null, { status: 503 }); };
+  _setPausedStartForTest(true);
+  try {
+    seats.startSeatStatementRefresher();
+    assert.equal(calls, 0, 'startup sent a seat-statement fetch while paused');
+    assert.equal(interval.mock.callCount(), 0, 'startup registered a background timer while paused');
+    await assert.rejects(async () => seats.refreshSeatStatement(), PausedStartError);
+    await assert.rejects(seats.acceptSeatStatementToken('synthetic'), PausedStartError);
+    assert.equal(calls, 0);
+  } finally {
+    seats.stopSeatStatementRefresher();
+    seats.seatFetchDeps.fetch = fetcher;
+    names.forEach((name, index) => { if (previous[index] === undefined) delete process.env[name]; else process.env[name] = previous[index]; });
+  }
+});
