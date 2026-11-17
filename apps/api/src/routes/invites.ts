@@ -20,6 +20,8 @@ type InvitePayload = {
   inviter_id: string;
   role: 'admin' | 'member' | 'guest';
   purpose: 'invite-accept';
+  /** The account's password generation when the link was made; absent on links made before it existed. */
+  password_version?: number;
   iat?: number;
   exp?: number;
 };
@@ -167,11 +169,18 @@ inviteRoutes.post('/accept', async (c) => {
     // credentials established by another invite or an admin recovery.
     if (user.password_hash) return { failure: 'INVITE_ALREADY_ACCEPTED' as AcceptanceFailure };
     const [membership] = await tx
-      .select({ id: orgMembers.id })
+      .select({ id: orgMembers.id, role: orgMembers.role })
       .from(orgMembers)
       .where(and(eq(orgMembers.user_id, payload.user_id), eq(orgMembers.org_id, payload.org_id), eq(orgMembers.is_active, true)))
       .for('share');
     if (!membership) return { failure: 'INVITE_REVOKED' as AcceptanceFailure };
+    // A link made before the person was removed, re-invited or given another
+    // role is stale (lib/membership-guard.ts moves the generation on). A link
+    // without a generation is accepted only for a member or guest.
+    const privileged = membership.role === 'owner' || membership.role === 'admin';
+    if (payload.password_version === undefined ? privileged : payload.password_version !== user.password_version) {
+      return { failure: 'INVITE_REVOKED' as AcceptanceFailure };
+    }
 
     await tx.update(users).set({ ...updates, password_version: user.password_version + 1 }).where(eq(users.id, payload.user_id));
     await tx.update(invites)

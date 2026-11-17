@@ -9,7 +9,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { Hono } from 'hono';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq, isNull } from 'drizzle-orm';
 import { isSafeTestDatabaseTarget } from './fixtures/safe-test-database-target.js';
 import { ensureTwoStepTables } from './fixtures/two-step-tables.js';
 
@@ -661,8 +661,13 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     assert.ok((await generation(leaving.id)) > before);
 
     // POST /api/members/invite: re-activating a former member goes through the guard too.
+    // A removed admin is still an admin's role to the guard: an admin cannot
+    // bring them back as a member (and then recover the account).
     const afterRemoval = await generation(leaving.id);
-    assert.equal((await call('POST', '/api/members/invite', { email: leaving.email, role: 'member' }, adminSession)).status, 201);
+    const backAsMember = await call('POST', '/api/members/invite', { email: leaving.email, role: 'member' }, adminSession);
+    assert.equal(backAsMember.status, 403, JSON.stringify(backAsMember.json));
+    assert.deepEqual(await membership(leaving.id), { role: 'admin', is_active: false });
+    assert.equal((await call('POST', '/api/members/invite', { email: leaving.email, role: 'member' }, ownerSession)).status, 201);
     assert.deepEqual(await membership(leaving.id), { role: 'member', is_active: true });
     assert.ok((await generation(leaving.id)) > afterRemoval, 're-activation ends earlier links');
 
@@ -705,6 +710,58 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     assert.equal(agentByAdmin.status, 403, JSON.stringify(agentByAdmin.json));
     assert.equal((await db.select({ is_deleted: agentEmployees.is_deleted }).from(agentEmployees).where(eq(agentEmployees.id, employeeId)))[0]!.is_deleted, false, 'nothing was deleted');
     assert.deepEqual(await membership(agentUser), { role: 'admin', is_active: true });
+  });
+
+  await t.test('an invite link does not outlive a role or active-state change', async () => {
+    const inviteOrg = randomUUID();
+    await db.insert(orgs).values({ id: inviteOrg, name: 'Invite links', slug: `invites-${inviteOrg}` });
+    hosted(false);
+    const owner = await person('owner', inviteOrg);
+    const admin = await person('admin', inviteOrg);
+    const ownerSession = (await login(owner.email)).json.accessToken as string;
+    const adminSession = (await login(admin.email)).json.accessToken as string;
+    const tokenOf = (url: string) => new URLSearchParams(new URL(url).hash.slice(1)).get('token')!;
+    const accept = (url: string) => post('/api/invites/accept', { token: tokenOf(url), password: 'Taken-over-2026!' });
+    const inviteRowFor = async (email: string) => (await db.select({ id: invites.id }).from(invites)
+      .where(and(eq(invites.email, email), isNull(invites.accepted_at))).orderBy(desc(invites.created_at)).limit(1))[0]!.id;
+
+    // The owner invites E as a member; another admin reissues it and keeps
+    // the link; the owner then makes E an admin. The kept link is dead, and
+    // the admin can no longer reissue it.
+    const e = `invite-promoted-${randomUUID()}@test.local`;
+    const invitedE = await call('POST', '/api/members/invite', { email: e, role: 'member' }, ownerSession);
+    const eRow = await inviteRowFor(e);
+    const kept = await call('POST', `/api/members/invites/${eRow}/reissue`, {}, adminSession);
+    assert.equal(kept.status, 200);
+    assert.equal((await call('PATCH', `/api/members/${invitedE.json.user_id}`, { role: 'admin' }, ownerSession)).status, 200);
+    const stale = await accept(kept.json.invite_url);
+    assert.equal(stale.status, 400);
+    assert.equal(stale.json.code, 'INVITE_REVOKED');
+    assert.equal((await call('POST', `/api/members/invites/${eRow}/reissue`, {}, adminSession)).status, 403, 'made as a member invite: not the admin\'s to reissue now');
+    const fresh = await call('POST', `/api/members/invites/${eRow}/reissue`, {}, ownerSession);
+    assert.equal(fresh.status, 200);
+    assert.equal((await accept(fresh.json.invite_url)).status, 200, 'the owner\'s new link works');
+
+    // An admin invites F as a member and keeps the link; the owner removes F
+    // and re-invites F as an admin. The admin's old link is dead.
+    const f = `invite-reinvited-${randomUUID()}@test.local`;
+    const oldLink = await call('POST', '/api/members/invite', { email: f, role: 'member' }, adminSession);
+    assert.equal((await call('DELETE', `/api/members/${oldLink.json.user_id}`, {}, ownerSession)).status, 200);
+    const newLink = await call('POST', '/api/members/invite', { email: f, role: 'admin' }, ownerSession);
+    assert.equal(newLink.status, 201, JSON.stringify(newLink.json));
+    const takeover = await accept(oldLink.json.invite_url);
+    assert.equal(takeover.status, 400);
+    assert.equal(takeover.json.code, 'INVITE_REVOKED');
+    assert.equal((await accept(newLink.json.invite_url)).status, 200, 'the person accepts the owner\'s link');
+
+    // A link made before links carried a generation is refused for an admin.
+    const g = `invite-legacy-${randomUUID()}@test.local`;
+    const legacyFor = await call('POST', '/api/members/invite', { email: g, role: 'admin' }, ownerSession);
+    const legacy = jwt.sign({ purpose: 'invite-accept', user_id: legacyFor.json.user_id, org_id: inviteOrg, email: g, inviter_id: owner.id, role: 'admin' }, env.JWT_SECRET, { expiresIn: '1h' });
+    await db.update(invites).set({ token: legacy }).where(eq(invites.id, await inviteRowFor(g)));
+    const legacyAccept = await post('/api/invites/accept', { token: legacy, password: 'Taken-over-2026!' });
+    assert.equal(legacyAccept.status, 400);
+    assert.equal(legacyAccept.json.code, 'INVITE_REVOKED');
   });
 
   await t.test('a recovery link for an owner or admin is checked again when it is used', async () => {
@@ -840,7 +897,7 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
       const email = `two-step-invite-${id}@test.local`;
       await db.insert(users).values({ id, name: 'Invited', email, password_hash: null });
       await db.insert(orgMembers).values({ org_id: orgId, user_id: id, role });
-      const token = jwt.sign({ user_id: id, org_id: orgId, email, inviter_id: inviter.id, role, purpose: 'invite-accept' }, env.JWT_SECRET, { expiresIn: '7d' });
+      const token = jwt.sign({ user_id: id, org_id: orgId, email, inviter_id: inviter.id, role, purpose: 'invite-accept', password_version: 0 }, env.JWT_SECRET, { expiresIn: '7d' });
       await db.insert(invites).values({ org_id: orgId, email, token, invited_by: inviter.id, expires_at: new Date(Date.now() + 86_400_000) });
       return { id, email, token };
     }

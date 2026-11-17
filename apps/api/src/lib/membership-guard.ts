@@ -7,13 +7,15 @@ import type { db } from './db.js';
  * made by the app (routes, workers, tools). Each writer calls
  * guardMembershipChange inside its transaction, immediately before its write:
  *
- * - Only the owner, or an operator on the server, may take the role away from
- *   an active owner or admin or deactivate them. An admin who could demote or
+ * - Only the owner, or an operator on the server, may change the role of an
+ *   owner or admin (active or removed: re-inviting a removed admin as a
+ *   member is a role change) or deactivate an active one. An admin who could demote or
  *   remove a peer could then make a recovery link for them as a member, set
  *   their password and promote them back.
  * - Any change to a person's role or active state ends every recovery link
- *   made for them so far (it moves `users.password_version` on), so no link
- *   outlives a change of who that person is in the workspace.
+ *   and every pending invite link made for them so far (both carry
+ *   `users.password_version`, which this moves on), so no link outlives a
+ *   change of who that person is in the workspace.
  *
  * It locks the account row, then the membership row: the order sign-in and
  * password changes use.
@@ -57,8 +59,9 @@ export class MembershipGuardError extends Error {
 }
 
 function takesPrivilegeAway(membership: GuardedMembership, change: MembershipChange): boolean {
-  if (!membership.is_active || (membership.role !== 'owner' && membership.role !== 'admin')) return false;
-  return (change.role !== undefined && change.role !== membership.role) || change.isActive === false;
+  if (membership.role !== 'owner' && membership.role !== 'admin') return false;
+  if (change.role !== undefined && change.role !== membership.role) return true;
+  return membership.is_active && change.isActive === false;
 }
 
 async function decide(reader: Reader, input: GuardInput, membership: GuardedMembership, privileged: boolean) {

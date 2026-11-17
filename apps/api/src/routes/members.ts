@@ -1188,10 +1188,14 @@ memberRoutes.post('/invite', async (c) => {
 
     // Generate an invite URL the admin shares out-of-band (chat, in person,
     // whatever). The `member.joined` trigger fires on accept, not here, so
-    // agents only react when the user actually shows up.
+    // agents only react when the user actually shows up. It carries the
+    // account's password generation: any later role or active-state change
+    // (lib/membership-guard.ts) makes it stale.
+    const [generation] = await db.select({ password_version: users.password_version }).from(users).where(eq(users.id, existingUser.id)).limit(1);
     const inviteToken = jwt.sign(
       {
         purpose: 'invite-accept',
+        password_version: generation?.password_version ?? 0,
         user_id: existingUser.id,
         org_id: currentUser.org_id,
         email,
@@ -1267,13 +1271,18 @@ memberRoutes.post('/invites/:id/reissue', async (c) => {
         role = role ?? (target?.role as 'admin' | 'member' | 'guest' | undefined);
       }
       if (!userId || !email) return { failure: 'INVITE_INVALID' as const };
-      // A pending owner or admin invite: only the owner or whoever made it.
-      const reissuable = await checkInviteReissue(tx, { orgId: currentUser.org_id, targetUserId: userId, actor: { userId: currentUser.id }, inviteMadeBy: invite.invited_by });
+      // A pending owner or admin invite: only the owner, or whoever made it as
+      // an admin invite (not someone who made or reissued it as a member
+      // invite before the person was promoted).
+      const madeAsAdminInvite = claims?.role === 'admin';
+      const reissuable = await checkInviteReissue(tx, { orgId: currentUser.org_id, targetUserId: userId, actor: { userId: currentUser.id }, inviteMadeBy: madeAsAdminInvite ? invite.invited_by : '' });
       if (!reissuable.ok) return { failure: 'GUARD' as const, error: reissuable.error };
+      const [generation] = await tx.select({ password_version: users.password_version }).from(users).where(eq(users.id, userId)).limit(1);
+      const currentRole = (reissuable.membership?.role as 'admin' | 'member' | 'guest' | undefined) ?? role ?? 'member';
 
       const inviteToken = jwt.sign({
-        purpose: 'invite-accept', user_id: userId, org_id: currentUser.org_id, email,
-        inviter_id: currentUser.id, role: role ?? 'member', nonce: crypto.randomUUID(),
+        purpose: 'invite-accept', password_version: generation?.password_version ?? 0, user_id: userId, org_id: currentUser.org_id, email,
+        inviter_id: currentUser.id, role: currentRole, nonce: crypto.randomUUID(),
       }, env.JWT_SECRET, { expiresIn: INVITE_TTL });
       const decoded = jwt.decode(inviteToken) as { exp?: number } | null;
       const expiresAtDate = decoded?.exp ? new Date(decoded.exp * 1000) : null;

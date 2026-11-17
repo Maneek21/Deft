@@ -2476,23 +2476,23 @@ agentEmployeeRoutes.delete('/:id', async (c) => {
     // is_deleted=false so the row disappears from the UI. The shadow user
     // is flipped out of is_agent so cross-references don't spuriously
     // render it as a real employee.
-    await db
-      .update(agentEmployees)
-      .set({ is_active: false, is_deleted: true, deleted_at: new Date() })
-      .where(eq(agentEmployees.id, id));
-    await db.update(users).set({ is_agent: false }).where(eq(users.id, existing.user_id));
-    // The agent's membership is deactivated through the membership guard: an
-    // agent made admin by the owner is removed only by the owner.
+    // One transaction, the membership guard first: an agent made admin by the
+    // owner is removed only by the owner, and a refusal leaves nothing deleted.
     const deactivated = await db.transaction(async (tx) => {
       const guarded = await guardMembershipChange(tx, { orgId: user.org_id, targetUserId: existing.user_id, actor: { userId: user.id }, change: { isActive: false } });
       if (!guarded.ok) return guarded;
+      await tx
+        .update(agentEmployees)
+        .set({ is_active: false, is_deleted: true, deleted_at: new Date() })
+        .where(eq(agentEmployees.id, id));
+      await tx.update(users).set({ is_agent: false }).where(eq(users.id, existing.user_id));
       await tx
         .update(orgMembers)
         .set({ is_active: false, updated_at: new Date() })
         .where(and(eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, existing.user_id)));
       return guarded;
     });
-    if (!deactivated.ok) console.warn('[agent-employees] membership left active:', deactivated.error);
+    if (!deactivated.ok) return c.json({ error: deactivated.error, code: 'FORBIDDEN' }, 403);
 
     // Module proposals temporarily contain record values for review. Close
     // those through the module-aware terminal path before the legacy generic

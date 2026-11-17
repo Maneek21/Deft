@@ -103,6 +103,9 @@ export function InviteAccept({ token }: { token: string | null | undefined }) {
       // Hosted: a new admin sets up two-step verification before a session exists.
       const pending = readTwoStepPending(data);
       if (pending) {
+        // Like sign-in: whoever was signed in in this browser is signed out,
+        // so setup ends with the invitee signed in as themselves.
+        api.clearTokens();
         storeEnrolToken(pending.token);
         sessionStorage.setItem('deft-redirect-after-login', '/welcome');
         router.push('/two-step-setup');
