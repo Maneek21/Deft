@@ -34,7 +34,7 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
 
   const { db, closeDb } = await import('../src/lib/db.js');
   const { env } = await import('../src/lib/env.js');
-  const { users, orgs, orgMembers, invites, webSessions, agentEmployees } = await import('@deft/db/schema');
+  const { users, orgs, orgMembers, invites, webSessions, agentEmployees, spaces, spaceMembers } = await import('@deft/db/schema');
   const { userTwoStep, userTwoStepRecoveryCodes, twoStepChallenges } = await import('@deft/db/two-step');
   const { authRoutes } = await import('../src/routes/auth.js');
   const { twoStepRoutes } = await import('../src/routes/two-step.js');
@@ -407,7 +407,7 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     const who = await enrolledPerson();
     const [before] = await db.select().from(users).where(eq(users.id, who.id));
     const pending = await login(who.email);
-    const resetToken = jwt.sign({ id: who.id, email: who.email, org_id: orgId, purpose: 'password-reset', password_version: before!.password_version }, env.JWT_SECRET, { expiresIn: '15m' });
+    const resetToken = jwt.sign({ id: who.id, email: who.email, org_id: orgId, purpose: 'password-reset', password_version: before!.password_version, issued_by: 'operator' }, env.JWT_SECRET, { expiresIn: '15m' });
     const newPassword = 'Reset-does-not-clear-2026!';
     const reset = await post('/api/auth/reset-password', { token: resetToken, password: newPassword });
     assert.equal(reset.status, 200);
@@ -696,11 +696,15 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     assert.equal((await call('DELETE', `/api/members/invites/${inviteRow!.id}`, undefined, ownerSession)).status, 200);
     assert.deepEqual(await membership(invited.json.user_id), { role: 'admin', is_active: false });
 
-    // An admin cannot invite anyone as an admin: only the owner makes admins.
+    // An admin may invite a brand-new person as admin, but the grant is a
+    // one-way door: the invite, once it exists, is the owner's to reissue or revoke.
     const ownEmail = `guard-own-${randomUUID()}@test.local`;
     const own = await call('POST', '/api/members/invite', { email: ownEmail, role: 'admin' }, adminSession);
-    assert.equal(own.status, 403, JSON.stringify(own.json));
-    assert.equal((await db.select({ id: users.id }).from(users).where(eq(users.email, ownEmail))).length, 0, 'nothing was created');
+    assert.equal(own.status, 201, JSON.stringify(own.json));
+    const [ownInvite] = await db.select({ id: invites.id }).from(invites).where(eq(invites.email, ownEmail));
+    assert.equal((await call('POST', `/api/members/invites/${ownInvite!.id}/reissue`, {}, adminSession)).status, 403);
+    assert.equal((await call('DELETE', `/api/members/invites/${ownInvite!.id}`, undefined, adminSession)).status, 403);
+    assert.equal((await call('DELETE', `/api/members/invites/${ownInvite!.id}`, undefined, ownerSession)).status, 200, 'the owner can');
 
     // DELETE /api/agent-employees/:id: an agent the owner made admin is removed only by the owner.
     const agentUser = randomUUID();
@@ -843,6 +847,142 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     assert.deepEqual(await roleOf(madeByPeer.json.user_id), { role: 'admin', is_active: true });
   });
 
+  await t.test('an admin grants admin once; after that only the owner touches the membership', async () => {
+    const grantOrg = randomUUID();
+    await db.insert(orgs).values({ id: grantOrg, name: 'Grants', slug: `grants-${grantOrg}` });
+    hosted(false);
+    const owner = await person('owner', grantOrg);
+    const admin = await person('admin', grantOrg);
+    const ownerSession = (await login(owner.email)).json.accessToken as string;
+    const adminSession = (await login(admin.email)).json.accessToken as string;
+    const tokenOf = (url: string) => new URLSearchParams(new URL(url).hash.slice(1)).get('token')!;
+    const accept = (url: string, password = 'A-password-2026!') => post('/api/invites/accept', { token: tokenOf(url), password });
+
+    // (a) A brand-new person invited as admin by an admin: the first-grant link works.
+    const x = `grant-new-${randomUUID()}@test.local`;
+    const firstGrant = await call('POST', '/api/members/invite', { email: x, role: 'admin' }, adminSession);
+    assert.equal(firstGrant.status, 201, JSON.stringify(firstGrant.json));
+    const accepted = await accept(firstGrant.json.invite_url);
+    assert.equal(accepted.status, 200, JSON.stringify(accepted.json));
+    assert.equal((await probe(accepted.json.accessToken)).json.role, 'admin');
+    // ... and from then on the new admin is the owner's alone.
+    assert.equal((await call('PATCH', `/api/members/${firstGrant.json.user_id}`, { role: 'member' }, adminSession)).status, 403);
+    assert.equal((await call('POST', `/api/members/${firstGrant.json.user_id}/recovery-url`, {}, adminSession)).status, 403);
+
+    // (b) A member promoted by an admin: allowed, then the owner's.
+    const m = await person('member', grantOrg);
+    assert.equal((await call('PATCH', `/api/members/${m.id}`, { role: 'admin' }, adminSession)).status, 200);
+    assert.equal((await call('PATCH', `/api/members/${m.id}`, { role: 'member' }, adminSession)).status, 403);
+    assert.equal((await call('PATCH', `/api/members/${m.id}`, { role: 'member' }, ownerSession)).status, 200);
+    assert.equal((await call('PATCH', `/api/members/${m.id}`, { role: 'admin' }, adminSession)).status, 403, 'a former admin is never granted again by an admin');
+
+    // (c) A removed member, never privileged, re-invited as admin by an admin.
+    const r = await person('member', grantOrg);
+    assert.equal((await call('DELETE', `/api/members/${r.id}`, {}, ownerSession)).status, 200);
+    assert.equal((await call('POST', '/api/members/invite', { email: r.email, role: 'admin' }, adminSession)).status, 201);
+
+    // A pending member an admin promotes keeps no working link from before;
+    // a new one is the owner's to send.
+    const pm = `grant-pending-${randomUUID()}@test.local`;
+    const memberLink = await call('POST', '/api/members/invite', { email: pm, role: 'member' }, adminSession);
+    assert.equal((await call('PATCH', `/api/members/${memberLink.json.user_id}`, { role: 'admin' }, adminSession)).status, 200);
+    assert.equal((await accept(memberLink.json.invite_url)).json.code, 'INVITE_REVOKED');
+    const [pmInvite] = await db.select({ id: invites.id }).from(invites).where(eq(invites.email, pm));
+    assert.equal((await call('POST', `/api/members/invites/${pmInvite!.id}/reissue`, {}, adminSession)).status, 403);
+    const ownerLink = await call('POST', `/api/members/invites/${pmInvite!.id}/reissue`, {}, ownerSession);
+    assert.equal((await accept(ownerLink.json.invite_url)).status, 200);
+
+    // A first-grant link does not survive the owner's later changes: removal
+    // and the owner's own re-invite leave only the owner's new link working.
+    const y = `grant-later-${randomUUID()}@test.local`;
+    const yGrant = await call('POST', '/api/members/invite', { email: y, role: 'admin' }, adminSession);
+    assert.equal((await call('DELETE', `/api/members/${yGrant.json.user_id}`, {}, ownerSession)).status, 200);
+    const yAgain = await call('POST', '/api/members/invite', { email: y, role: 'admin' }, ownerSession);
+    assert.equal(yAgain.status, 201);
+    assert.ok((await accept(yGrant.json.invite_url)).status === 400, 'the admin-made first-grant link is dead');
+    assert.equal((await accept(yAgain.json.invite_url)).status, 200);
+  });
+
+  await t.test('round 7 reproductions (sol, astra, Opus) are refused', async () => {
+    const r7Org = randomUUID();
+    await db.insert(orgs).values({ id: r7Org, name: 'Round 7', slug: `r7-${r7Org}` });
+    hosted(false);
+    const owner = await person('owner', r7Org);
+    const admin = await person('admin', r7Org);
+    const ownerSession = (await login(owner.email)).json.accessToken as string;
+    const adminSession = (await login(admin.email)).json.accessToken as string;
+    const tokenOf = (url: string) => new URLSearchParams(new URL(url).hash.slice(1)).get('token')!;
+    const inviteRowFor = async (email: string) => (await db.select({ id: invites.id }).from(invites)
+      .where(and(eq(invites.email, email), isNull(invites.accepted_at))).orderBy(desc(invites.created_at)).limit(1))[0]!.id;
+
+    // sol and astra: an admin revokes a pending member invite while the owner
+    // is restoring that person as an admin. The revocation waits for the
+    // account and membership rows, then sees an admin and does nothing:
+    // no later cleanup step exists to reach the restored membership.
+    const r = `r7-revoke-race-${randomUUID()}@test.local`;
+    const pending = await call('POST', '/api/members/invite', { email: r, role: 'member' }, ownerSession);
+    const pendingInvite = await inviteRowFor(r);
+    const [general] = await db.insert(spaces).values({ org_id: r7Org, name: `r7-${randomUUID().slice(0, 8)}`, type: 'public', created_by: owner.id }).returning({ id: spaces.id });
+    await db.insert(spaceMembers).values({ space_id: general!.id, user_id: pending.json.user_id });
+    const restore = new pg.Client({ connectionString: databaseUrl! });
+    await restore.connect();
+    try {
+      await restore.query('BEGIN');
+      await restore.query('SELECT 1 FROM users WHERE id = $1 FOR UPDATE', [pending.json.user_id]);
+      await restore.query('SELECT 1 FROM org_members WHERE org_id = $1 AND user_id = $2 FOR UPDATE', [r7Org, pending.json.user_id]);
+      const revoke = call('DELETE', `/api/members/invites/${pendingInvite}`, undefined, adminSession);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await restore.query("UPDATE org_members SET role = 'admin' WHERE org_id = $1 AND user_id = $2", [r7Org, pending.json.user_id]);
+      await restore.query('UPDATE users SET password_version = password_version + 1 WHERE id = $1', [pending.json.user_id]);
+      await restore.query('COMMIT');
+      const raced = await revoke;
+      assert.equal(raced.status, 403, JSON.stringify(raced.json));
+    } finally {
+      await restore.end();
+    }
+    const [restored] = await db.select({ role: orgMembers.role, is_active: orgMembers.is_active }).from(orgMembers)
+      .where(and(eq(orgMembers.org_id, r7Org), eq(orgMembers.user_id, pending.json.user_id)));
+    assert.deepEqual(restored, { role: 'admin', is_active: true });
+    assert.equal((await db.select({ id: spaceMembers.id }).from(spaceMembers)
+      .where(and(eq(spaceMembers.space_id, general!.id), eq(spaceMembers.user_id, pending.json.user_id)))).length, 1, 'space access untouched');
+
+    // A revocation that does go through ends access in the same transaction.
+    const gone = `r7-revoke-${randomUUID()}@test.local`;
+    const goneInvite = await call('POST', '/api/members/invite', { email: gone, role: 'member' }, ownerSession);
+    await db.insert(spaceMembers).values({ space_id: general!.id, user_id: goneInvite.json.user_id });
+    assert.equal((await call('DELETE', `/api/members/invites/${await inviteRowFor(gone)}`, undefined, adminSession)).status, 200);
+    assert.equal((await db.select({ id: spaceMembers.id }).from(spaceMembers)
+      .where(and(eq(spaceMembers.space_id, general!.id), eq(spaceMembers.user_id, goneInvite.json.user_id)))).length, 0);
+
+    // Opus P2: an invite for a pending admin made by an admin before this
+    // release (no generation, made by an admin) is refused; the owner's is not.
+    const legacyFor = async (maker: { id: string }) => {
+      const email = `r7-legacy-${randomUUID()}@test.local`;
+      const made = await call('POST', '/api/members/invite', { email, role: 'admin' }, ownerSession);
+      const token = jwt.sign({ purpose: 'invite-accept', user_id: made.json.user_id, org_id: r7Org, email, inviter_id: maker.id, role: 'admin' }, env.JWT_SECRET, { expiresIn: '1h' });
+      await db.update(invites).set({ token }).where(eq(invites.id, await inviteRowFor(email)));
+      return token;
+    };
+    const byAdmin = await post('/api/invites/accept', { token: await legacyFor(admin), password: 'Taken-over-2026!' });
+    assert.equal(byAdmin.status, 400);
+    assert.equal(byAdmin.json.code, 'INVITE_REVOKED');
+    assert.equal((await post('/api/invites/accept', { token: await legacyFor(owner), password: 'A-password-2026!' })).status, 200, "the owner's own old link still works");
+
+    // Opus P3: links an admin made for members die with that admin's role.
+    const leaving = await person('admin', r7Org);
+    const leavingSession = (await login(leaving.email)).json.accessToken as string;
+    const member = await person('member', r7Org);
+    const recovery = (await call('POST', `/api/members/${member.id}/recovery-url`, {}, leavingSession)).json.recovery_url as string;
+    const newcomer = `r7-newcomer-${randomUUID()}@test.local`;
+    const inviteLink = (await call('POST', '/api/members/invite', { email: newcomer, role: 'member' }, leavingSession)).json.invite_url as string;
+    assert.equal((await call('DELETE', `/api/members/${leaving.id}`, {}, ownerSession)).status, 200);
+    assert.equal((await post('/api/auth/reset-password', { token: tokenOf(recovery), password: 'A-new-password-2026!' })).status, 400, "a removed admin's recovery link is dead");
+    assert.equal((await login(member.email)).status, 200, 'the password did not change');
+    const deadInvite = await post('/api/invites/accept', { token: tokenOf(inviteLink), password: 'A-password-2026!' });
+    assert.equal(deadInvite.status, 400, "a removed admin's invite link is dead");
+    assert.equal(deadInvite.json.code, 'INVITE_REVOKED');
+  });
+
   await t.test('owner-only table: actor role x the target\'s past and present role x operation', async () => {
     const tableOrg = randomUUID();
     await db.insert(orgs).values({ id: tableOrg, name: 'Owner-only table', slug: `table-${tableOrg}` });
@@ -853,13 +993,29 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
       owner: (await login(owner.email)).json.accessToken as string,
       admin: (await login(admin.email)).json.accessToken as string,
     };
-    type State = 'member' | 'admin' | 'demoted_admin' | 'removed_admin' | 'removed_member' | 'pending_member' | 'pending_admin' | 'new_address';
+    type State = 'member' | 'guest' | 'admin' | 'demoted_admin' | 'removed_admin' | 'removed_member' | 'pending_member' | 'pending_admin' | 'new_address'
+      | 'agent_member' | 'agent_admin' | 'agent_demoted_admin';
     const isProtected: Record<State, boolean> = {
-      member: false, admin: true, demoted_admin: true, removed_admin: true, removed_member: false, pending_member: false, pending_admin: true, new_address: false,
+      member: false, guest: false, admin: true, demoted_admin: true, removed_admin: true, removed_member: false, pending_member: false, pending_admin: true, new_address: false,
+      agent_member: false, agent_admin: true, agent_demoted_admin: true,
     };
-    async function make(state: State): Promise<{ id: string; email: string }> {
+    async function make(state: State): Promise<{ id: string; email: string; employeeId?: string }> {
       const as = sessions.owner;
-      if (state === 'member' || state === 'admin') return person(state, tableOrg);
+      if (state === 'agent_member' || state === 'agent_admin' || state === 'agent_demoted_admin') {
+        // An agent employee; the owner made it admin (and, for the demoted one, a member again).
+        const agentUser = randomUUID();
+        const employeeId = randomUUID();
+        await db.insert(users).values({ id: agentUser, name: 'Table agent', email: `${agentUser}@agents.test`, kind: 'agent', is_agent: true, email_verified: true });
+        await db.insert(orgMembers).values({ org_id: tableOrg, user_id: agentUser, role: 'member' });
+        await db.insert(agentEmployees).values({
+          id: employeeId, org_id: tableOrg, user_id: agentUser, name: 'Table agent', slug: `table-agent-${employeeId.slice(0, 8)}`,
+          role: 'project_manager', system_prompt: 'Fixture', trust_level: 'conservative', is_byoa: true, is_active: true, created_by: owner.id,
+        });
+        if (state !== 'agent_member') assert.equal((await call('PATCH', `/api/members/${agentUser}`, { role: 'admin' }, as)).status, 200, `${state} setup`);
+        if (state === 'agent_demoted_admin') assert.equal((await call('PATCH', `/api/members/${agentUser}`, { role: 'member' }, as)).status, 200, `${state} setup`);
+        return { id: agentUser, email: '', employeeId };
+      }
+      if (state === 'member' || state === 'guest' || state === 'admin') return person(state, tableOrg);
       if (state === 'demoted_admin' || state === 'removed_admin' || state === 'removed_member') {
         const who = await person(state === 'removed_member' ? 'member' : 'admin', tableOrg);
         const step = state === 'demoted_admin'
@@ -876,11 +1032,14 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     }
     const latestInvite = async (email: string) => (await db.select({ id: invites.id }).from(invites)
       .where(and(eq(invites.email, email), isNull(invites.accepted_at))).orderBy(desc(invites.created_at)).limit(1))[0]!.id;
-    type Op = { name: string; makesAdmin: boolean; states: State[]; run: (target: { id: string; email: string }, as: string) => Promise<{ status: number; json: Json }> };
+    type Op = { name: string; makesAdmin: boolean; states: State[]; run: (target: { id: string; email: string; employeeId?: string }, as: string) => Promise<{ status: number; json: Json }> };
+    const agents: State[] = ['agent_member', 'agent_admin', 'agent_demoted_admin'];
     const ops: Op[] = [
       { name: 'change role to guest', makesAdmin: false, states: ['member', 'admin', 'demoted_admin', 'pending_member', 'pending_admin'],
         run: (t, as) => call('PATCH', `/api/members/${t.id}`, { role: 'guest' }, as) },
-      { name: 'change role to admin', makesAdmin: true, states: ['member', 'demoted_admin', 'pending_member'],
+      // The three grants an admin may make (owner's decision): promote a member
+      // or guest, and invite as admin someone never privileged (below).
+      { name: 'change role to admin', makesAdmin: true, states: ['member', 'guest', 'demoted_admin', 'pending_member'],
         run: (t, as) => call('PATCH', `/api/members/${t.id}`, { role: 'admin' }, as) },
       { name: 'remove', makesAdmin: false, states: ['member', 'admin', 'demoted_admin', 'pending_member', 'pending_admin'],
         run: (t, as) => call('DELETE', `/api/members/${t.id}`, {}, as) },
@@ -894,6 +1053,17 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
         run: async (t, as) => call('POST', `/api/members/invites/${await latestInvite(t.email)}/reissue`, {}, as) },
       { name: 'revoke the invite', makesAdmin: false, states: ['pending_member', 'pending_admin'],
         run: async (t, as) => call('DELETE', `/api/members/invites/${await latestInvite(t.email)}`, undefined, as) },
+      // Opus round 7: an agent employee's credentials and settings follow its membership.
+      { name: 'agent: new API key', makesAdmin: false, states: agents,
+        run: (t, as) => call('POST', `/api/agent-employees/${t.employeeId}/regenerate-token`, { mcp_app_scopes: [], mcp_resource_scopes: [] }, as) },
+      { name: 'agent: new channel key', makesAdmin: false, states: agents,
+        run: (t, as) => call('POST', `/api/agent-employees/${t.employeeId}/regenerate-channel-token`, {}, as) },
+      { name: 'agent: replace settings', makesAdmin: false, states: agents,
+        run: (t, as) => call('PUT', `/api/agent-employees/${t.employeeId}`, { name: 'Renamed agent' }, as) },
+      { name: 'agent: edit settings', makesAdmin: false, states: agents,
+        run: (t, as) => call('PATCH', `/api/agent-employees/${t.employeeId}`, { name: 'Edited agent' }, as) },
+      { name: 'agent: pause', makesAdmin: false, states: agents,
+        run: (t, as) => call('POST', `/api/agent-employees/${t.employeeId}/pause`, {}, as) },
     ];
     let cases = 0;
     for (const actor of ['owner', 'admin'] as const) {
@@ -901,7 +1071,8 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
         for (const state of op.states) {
           const target = await make(state);
           const res = await op.run(target, sessions[actor]);
-          const allowed = actor === 'owner' || (!isProtected[state] && !op.makesAdmin);
+          // Owner: always. Admin: only on someone who is not and never was an owner or admin.
+          const allowed = actor === 'owner' || !isProtected[state];
           const label = `${actor} / ${state} / ${op.name}: ${res.status} ${JSON.stringify(res.json)}`;
           if (allowed) assert.ok(res.status === 200 || res.status === 201, label);
           else assert.equal(res.status, 403, label);

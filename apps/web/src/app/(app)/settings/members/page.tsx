@@ -293,8 +293,6 @@ export default function MembersPage() {
   const [roleError, setRoleError] = useState('');
 
   const isAdmin = user?.role === 'owner' || user?.role === 'admin';
-  // Only the owner makes someone an admin (the server refuses anyone else).
-  const roleOptions = user?.role === 'owner' ? ROLE_OPTIONS : ROLE_OPTIONS.filter((r) => r !== 'admin');
 
   const fetchDirectory = async (preferredId?: string | null) => {
     setLoading(true);
@@ -593,7 +591,7 @@ export default function MembersPage() {
                 className="h-9 rounded-md px-2 text-[12px] outline-none"
                 style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
               >
-                {roleOptions.map(r => <option key={r} value={r}>{roleLabel(r)}</option>)}
+                {ROLE_OPTIONS.map(r => <option key={r} value={r}>{roleLabel(r)}</option>)}
               </select>
               <button
                 type="submit"
@@ -856,7 +854,7 @@ export default function MembersPage() {
                             <>
                               <div className="fixed inset-0 z-10" onClick={() => setRoleDropdown(null)} />
                               <div className="absolute left-0 top-full z-20 mt-1 w-32 rounded-lg py-1" style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}>
-                                {roleOptions.map((r) => (
+                                {ROLE_OPTIONS.map((r) => (
                                   <button
                                     key={r}
                                     onClick={() => handleRoleChange(detail.member.id, r)}

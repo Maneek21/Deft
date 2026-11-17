@@ -59,5 +59,7 @@ export const twoStepChallenges = pgTable('two_step_challenges', {
 export const orgMemberPrivilegeHistory = pgTable('org_member_privilege_history', {
   org_id: text('org_id').notNull(),
   user_id: text('user_id').notNull(),
+  /** The account's password generation at the first grant (the first-grant link carries it). */
+  first_generation: integer('first_generation').notNull(),
   first_recorded_at: timestamp('first_recorded_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => [primaryKey({ columns: [t.org_id, t.user_id] })]);

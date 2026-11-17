@@ -52,13 +52,16 @@ CREATE INDEX two_step_challenges_user_idx ON two_step_challenges (user_id);
 
 -- Memberships that are or have ever been owner or admin. Only the owner
 -- manages them (apps/api/src/lib/membership-guard.ts), even after a demotion
--- or a removal. A row is written whenever a role moves into or out of owner or
--- admin; a membership whose current role is owner or admin is protected
--- whether or not it has a row. Memberships demoted before this upgrade are not
--- known. Deleting the membership deletes its row.
+-- or a removal. A row is written when a membership is first granted owner or
+-- admin, or first leaves it; a membership whose current role is owner or admin
+-- is protected whether or not it has a row. Memberships demoted before this
+-- upgrade are not known. first_generation is the account's password
+-- generation at that first grant: an invite link made at exactly that
+-- generation is the first-grant link. Deleting the membership deletes its row.
 CREATE TABLE org_member_privilege_history (
   org_id text NOT NULL,
   user_id text NOT NULL,
+  first_generation integer NOT NULL,
   first_recorded_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (org_id, user_id),
   CONSTRAINT org_member_privilege_history_member_fk FOREIGN KEY (org_id, user_id)

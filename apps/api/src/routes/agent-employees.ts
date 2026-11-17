@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { eq, and, desc, sql, or, isNull, asc, gte, lt, inArray, notInArray } from 'drizzle-orm';
 import crypto from 'node:crypto';
 import { db } from '../lib/db.js';
-import { authorizeMembershipOperation, checkMembershipOperation, lockMembership, recordMembershipChange } from '../lib/membership-guard.js';
+import { authorizeMembershipOperation, checkMembershipOperation, holdMembership, lockMembership, recordMembershipChange } from '../lib/membership-guard.js';
 import { reviewableApprovalCountsByEmployee } from '../lib/pending-approval-audience.js';
 import { hermesBundleAvailability, type HermesBundleAvailability } from '../lib/hermes-release.js';
 import {
@@ -1625,6 +1625,27 @@ async function cancelPendingCertification(orgId: string, employeeId: string, rea
   `);
 }
 
+/**
+ * An agent whose membership is, was or would become owner or admin is
+ * managed only by the owner (lib/membership-guard.ts): its credentials and
+ * settings included. Holds the agent's membership row so its role cannot
+ * change meanwhile, checks the rule, then runs `work` under that hold.
+ */
+async function asOwnerForProtectedAgent<T>(
+  user: { id: string; org_id: string },
+  agentUserId: string,
+  work: () => Promise<T>,
+): Promise<{ refusal: string } | { value: T }> {
+  return db.transaction(async (tx) => {
+    const held = await holdMembership(tx, { orgId: user.org_id, targetUserId: agentUserId });
+    if (held.protected) {
+      const refusal = await authorizeMembershipOperation(tx, { orgId: user.org_id, actor: { userId: user.id }, locked: held });
+      if (refusal) return { refusal };
+    }
+    return { value: await work() };
+  });
+}
+
 async function issueMcpToken({
   orgId,
   employeeId,
@@ -1897,6 +1918,9 @@ agentEmployeeRoutes.put('/:id', async (c) => {
     if (!existing) {
       return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
     }
+    // An admin agent's settings are the owner's (lib/membership-guard.ts).
+    const managed = await asOwnerForProtectedAgent(user, existing.user_id, async () => null);
+    if ('refusal' in managed) return c.json({ error: managed.refusal, code: 'FORBIDDEN' }, 403);
 
     const data = parsed.data;
     const invalidReference = await validateAgentTenantReferences({
@@ -2085,6 +2109,9 @@ agentEmployeeRoutes.patch('/:id', async (c) => {
     if (!existing) {
       return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
     }
+    // An admin agent's settings are the owner's (lib/membership-guard.ts).
+    const managed = await asOwnerForProtectedAgent(user, existing.user_id, async () => null);
+    if ('refusal' in managed) return c.json({ error: managed.refusal, code: 'FORBIDDEN' }, 403);
 
     // Any destructive field flips (trust_level in Phase 10, cadence +
     // mark_healthy in Phase 8) require `owner` or `admin` on the caller's
@@ -2558,7 +2585,9 @@ agentEmployeeRoutes.post('/:id/pause', async (c) => {
       return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
     }
 
-    await db.update(agentEmployees).set({ is_active: false }).where(eq(agentEmployees.id, id));
+    const guarded = await asOwnerForProtectedAgent(user, existing.user_id, () =>
+      db.update(agentEmployees).set({ is_active: false }).where(eq(agentEmployees.id, id)));
+    if ('refusal' in guarded) return c.json({ error: guarded.refusal, code: 'FORBIDDEN' }, 403);
 
     return c.json({ success: true, is_active: false });
   } catch (err) {
@@ -3510,7 +3539,7 @@ agentEmployeeRoutes.post('/:id/regenerate-token', async (c) => {
       .limit(1);
     if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
 
-    const issuedMcpToken = await issueMcpToken({
+    const guarded = await asOwnerForProtectedAgent(user, employee.user_id, () => issueMcpToken({
       orgId: user.org_id,
       employeeId: employee.id,
       employeeName: employee.name,
@@ -3518,7 +3547,9 @@ agentEmployeeRoutes.post('/:id/regenerate-token', async (c) => {
       appScopes: parsed.data.mcp_app_scopes,
       resourceScopes: parsed.data.mcp_resource_scopes,
       deactivateExisting: true,
-    });
+    }));
+    if ('refusal' in guarded) return c.json({ error: guarded.refusal, code: 'FORBIDDEN' }, 403);
+    const issuedMcpToken = guarded.value;
 
     return c.json({
       employee: {
@@ -3552,13 +3583,15 @@ agentEmployeeRoutes.post('/:id/regenerate-channel-token', async (c) => {
       .limit(1);
     if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
 
-    const channelToken = await issueAgentChannelToken({
+    const guarded = await asOwnerForProtectedAgent(user, employee.user_id, () => issueAgentChannelToken({
       orgId: user.org_id,
       employeeId: employee.id,
       employeeName: employee.name,
       createdBy: user.id,
       deactivateExisting: true,
-    });
+    }));
+    if ('refusal' in guarded) return c.json({ error: guarded.refusal, code: 'FORBIDDEN' }, 403);
+    const channelToken = guarded.value;
 
     return c.json({
       employee: {

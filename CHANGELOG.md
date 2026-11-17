@@ -86,21 +86,24 @@ If someone loses both their authenticator and their recovery codes there is no w
 back into that account; the setup screen says so. Schema `0.3.0-preview.149`
 (`user_two_step`, `user_two_step_recovery_codes`, `two_step_challenges`).
 
-### Changed: only the owner manages admins (self-hosted installs too)
+### Changed: only the owner can change, remove or recover an admin (self-hosted installs too)
 
-Admins can no longer invite, promote, re-invite, remove or recover other admins;
-the owner does. Every operation on someone who is, was, or would become an owner or
-admin is the owner's alone: inviting as admin, re-inviting or reactivating, reissuing
-or revoking their invite, removing or deactivating them, changing their role to or from
-admin, and making a recovery link. An admin still manages people who are and have
-always been members or guests and are staying that way. "Was" is recorded from this
-release on (`org_member_privilege_history`, schema `0.3.0-preview.149`); someone
-demoted before it is treated like any member.
+Admins can still make new admins: invite a new person as admin, promote a member or
+guest, or invite as admin someone who has never been an owner or admin. Everything
+else about someone who is or ever was an owner or admin, a pending admin invite
+included, is the owner's alone: demoting, removing or deactivating them, re-inviting
+or reactivating them, reissuing or revoking their invite, making a recovery link, and
+resetting an admin agent's keys or settings. "Was" is recorded from this release on
+(`org_member_privilege_history`, schema `0.3.0-preview.149`); someone demoted before
+it is treated like any member.
 
 Any change to a person's role or active state ends every invite link and recovery
 link made for them before it, whoever made it, and removing someone deletes their
-pending invites. An invite link made before this release stops working at the first
-such change.
+pending invites. A link made by an admin who has since been removed stops working.
+At upgrade: a pending admin invite that an admin (not the owner) made before this
+release stops working, because it cannot be shown to be that person's first grant;
+the owner re-sends it. An invite link made before this release also stops working at
+the first change to that person's role or active state.
 An owner who has forgotten their password gets a link from the server:
 `node --import tsx src/scripts/make-recovery-url.ts <email>` in `apps/api` (see
 docs/self-hosting.md). A recovery link never removes two-step verification.

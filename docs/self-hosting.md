@@ -383,9 +383,9 @@ Settings -> Members. Deft generates one-time invite URLs; share them out of band
 
 Core self-hosted account recovery does not send email. This is separate from the independently installed Email App. Password recovery is admin-generated:
 owners/admins create recovery URLs from Settings -> Members and share them
-manually. Only the owner manages admins: anyone who is, was or would become an
-owner or admin is invited, promoted, removed or recovered by the owner, not by
-another admin.
+manually. Admins can make new admins (invite or promote someone who has never been
+an owner or admin), but only the owner can change, remove, re-invite or recover
+someone who is or was an owner or admin, a pending admin invite included.
 
 If the owner has forgotten their password, an operator with shell access to the
 server prints a one-time recovery URL (valid 24 hours):

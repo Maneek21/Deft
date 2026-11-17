@@ -7,18 +7,21 @@ import type { db } from './db.js';
  * Who may manage whom in a workspace, and the one locked path every such
  * operation takes.
  *
- * THE RULE (owner-only, no exceptions). An operation whose target membership
- * is, was at any time, or would become owner or admin is the owner's alone
- * (or a server operator's, `src/scripts/make-recovery-url.ts`). That covers:
- * invite as admin, re-invite, reactivate, reissue an invite, revoke an
- * invite, remove, deactivate, change role to or from admin, and make a
- * recovery link. An admin may do these only for people who are and have
- * always been member or guest and are staying that way.
+ * THE RULE (owner's decision, 17 Nov). Granting admin is open to admins: an
+ * admin may invite a brand-new person as admin, promote a member or guest,
+ * or (re-)invite as admin someone whose membership has never been owner or
+ * admin. Everything else about a membership that is or ever was owner or
+ * admin, a pending admin invite included, is the owner's alone (or a server
+ * operator's, `src/scripts/make-recovery-url.ts`), with no exceptions:
+ * demote, remove, deactivate, reactivate, re-invite, reissue or revoke its
+ * invite, recovery link, an admin agent's credentials and settings. The
+ * grant is a one-way door: once a membership is admin, even pending, only
+ * the owner touches it.
  *
- * "Was at any time" comes from `org_member_privilege_history`, written here
- * whenever a role moves into or out of owner or admin, plus the current role
- * (active or not). Memberships demoted before upgrade 0.3.0-preview.149 are
- * not known.
+ * "Was" comes from `org_member_privilege_history`, written at the first
+ * grant (or the first time a role leaves owner or admin) in the same locked
+ * transaction, plus the current role (active or not). Memberships demoted
+ * before upgrade 0.3.0-preview.149 are not known.
  *
  * ONE LOCKED PATH. Every such operation, inside one transaction:
  *   1. lockMembership: the target's account row, then their membership row
@@ -113,8 +116,9 @@ export async function authorizeMembershipOperation(
     .limit(1);
   if (acting?.role === 'owner') return null;
   if (acting?.role !== 'admin') return 'Only the owner or an admin can manage members';
+  // An admin may grant admin to someone never privileged (resultingRole), but
+  // never act on a membership that is or was owner or admin.
   if (input.locked.protected) return 'Only the owner can manage someone who is or was an owner or admin';
-  if (privilegedRole(input.resultingRole)) return 'Only the owner can make someone an admin';
   return null;
 }
 
@@ -133,6 +137,17 @@ export async function checkMembershipOperation(
 }
 
 /**
+ * The first time a membership is granted owner or admin (or first leaves it),
+ * record it with the account's generation at that moment. Later grants keep
+ * the first row. Call it inside the locked transaction of the grant.
+ */
+export async function recordPrivilege(tx: Tx, input: { orgId: string; userId: string; generation: number }) {
+  await tx.insert(orgMemberPrivilegeHistory)
+    .values({ org_id: input.orgId, user_id: input.userId, first_generation: input.generation })
+    .onConflictDoNothing();
+}
+
+/**
  * Step 4: a role or active-state write is about to happen (call it in the
  * same transaction, after step 2). Returns the account's new generation.
  */
@@ -148,11 +163,63 @@ export async function recordMembershipChange(
   const next = account.password_version + 1;
   await tx.update(users).set({ password_version: next }).where(eq(users.id, input.targetUserId));
   if (privilegedRole(membership.role) || privilegedRole(input.change.role)) {
-    await tx.insert(orgMemberPrivilegeHistory).values({ org_id: input.orgId, user_id: input.targetUserId }).onConflictDoNothing();
+    await recordPrivilege(tx, { orgId: input.orgId, userId: input.targetUserId, generation: next });
   }
   if (input.change.isActive === false && membership.is_active && account.email) {
     // Removal kills the person's pending invites (by the address they were sent to).
     await tx.delete(invites).where(and(eq(invites.org_id, input.orgId), eq(invites.email, account.email), isNull(invites.accepted_at)));
   }
   return next;
+}
+
+/**
+ * At redemption: does whoever made this invite or recovery link still count?
+ * For someone who is or was an owner or admin, only a link the current owner
+ * made works; for anyone else, the maker must still be an active owner or
+ * admin (a removed admin's links die with their role). A link with no
+ * recorded maker counts for no one. (A recovery link from the server
+ * operator script is accepted by the caller before this is asked.)
+ */
+export async function linkMakerStillCounts(
+  reader: Reader,
+  input: {
+    orgId: string; targetUserId: string; makerUserId: string | null | undefined; targetProtected: boolean;
+    /** For an invite link: the role and generation it was made for, to recognise the first-grant link. */
+    firstGrant?: { role: string | null | undefined; generation: number | undefined; currentGeneration: number };
+  },
+): Promise<boolean> {
+  if (!input.makerUserId) return false;
+  const [maker] = await reader.select({ role: orgMembers.role }).from(orgMembers)
+    .where(and(eq(orgMembers.org_id, input.orgId), eq(orgMembers.user_id, input.makerUserId), eq(orgMembers.is_active, true)))
+    .limit(1);
+  const makerIsOwner = maker?.role === 'owner';
+  const makerIsAdmin = makerIsOwner || maker?.role === 'admin';
+  if (!input.targetProtected) return makerIsAdmin;
+  if (makerIsOwner) return true;
+  // The first-grant link: an admin invited someone never privileged as admin.
+  // Recognised only from stored data: the link was made for the admin role at
+  // exactly the generation recorded at the first grant, and the generation has
+  // not moved since. A link without a generation (made before this release)
+  // is never one.
+  const grant = input.firstGrant;
+  if (!makerIsAdmin || !grant || grant.role !== 'admin' || grant.generation === undefined) return false;
+  if (grant.generation !== grant.currentGeneration) return false;
+  const [history] = await reader.select({ first_generation: orgMemberPrivilegeHistory.first_generation }).from(orgMemberPrivilegeHistory)
+    .where(and(eq(orgMemberPrivilegeHistory.org_id, input.orgId), eq(orgMemberPrivilegeHistory.user_id, input.targetUserId))).limit(1);
+  return history?.first_generation === grant.generation;
+}
+
+/**
+ * For an operation that acts for a membership without changing it (an agent
+ * employee's credentials or settings): hold the membership row FOR SHARE, so
+ * its role cannot change until the caller's transaction ends, and say
+ * whether it is protected. It does not lock the account row, so work done on
+ * other connections meanwhile (inserts that reference the account) cannot
+ * wait on it.
+ */
+export async function holdMembership(tx: Tx, input: { orgId: string; targetUserId: string }): Promise<{ exists: boolean; protected: boolean }> {
+  const [membership] = await tx.select({ role: orgMembers.role }).from(orgMembers)
+    .where(and(eq(orgMembers.org_id, input.orgId), eq(orgMembers.user_id, input.targetUserId))).for('share');
+  if (!membership) return { exists: false, protected: false };
+  return { exists: true, protected: await readProtection(tx, input.orgId, input.targetUserId, membership.role) };
 }

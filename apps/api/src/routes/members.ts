@@ -37,7 +37,7 @@ import { buildInviteUrl as buildSecretInviteUrl, buildRecoveryUrl as buildSecret
 import { roleMustHaveSecondStep } from '../lib/two-step-policy.js';
 import { userTwoStep } from '@deft/db/two-step';
 import {
-  authorizeMembershipOperation, checkMembershipOperation, lockMembership, MembershipGuardError, recordMembershipChange, type MembershipActor,
+  authorizeMembershipOperation, checkMembershipOperation, lockMembership, MembershipGuardError, recordMembershipChange, recordPrivilege, type MembershipActor,
 } from '../lib/membership-guard.js';
 
 const INVITE_TTL = '7d';
@@ -109,31 +109,25 @@ async function getCurrentMembership(orgId: string, userId: string) {
   return membership ?? null;
 }
 
-async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, deactivateMembership: boolean, actor: MembershipActor) {
-  const revokedAt = new Date();
-  const revokedSessionIds = await db.transaction(async (tx) => {
-    // The one locked path (lib/membership-guard.ts): account, membership,
-    // the owner-only rule, then the write and its stamp.
-    const locked = await lockMembership(tx, { orgId, targetUserId: memberId });
-    if (!locked.account || !locked.membership) return [];
-    if (deactivateMembership) {
-      const refusal = await authorizeMembershipOperation(tx, { orgId, actor, locked });
-      if (refusal) throw new MembershipGuardError(refusal);
-      await recordMembershipChange(tx, { orgId, targetUserId: memberId, locked, change: { isActive: false } });
-      await tx.update(orgMembers).set({ is_active: false, updated_at: revokedAt }).where(eq(orgMembers.id, locked.membership.id));
-    }
-    const sessions = await tx.select({ id: webSessions.id })
-      .from(webSessions)
-      .where(and(eq(webSessions.org_id, orgId), eq(webSessions.user_id, memberId), sql`${webSessions.revoked_at} IS NULL`))
-      .for('update');
-    if (sessions.length) {
-      await tx.update(webSessions).set({ revoked_at: revokedAt }).where(inArray(webSessions.id, sessions.map(session => session.id)));
-    }
-    return sessions.map(session => session.id);
-  });
-  emitWebSessionRevocations(revokedSessionIds);
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-  await db.execute(sql`
+/**
+ * Everything that ends a person's access to the workspace: sessions, spaces,
+ * teams, groups, task assignments, personal and API keys, connected apps.
+ * Runs inside the caller's transaction, which holds the person's account and
+ * membership locks (lib/membership-guard.ts), so it can never act on a
+ * membership that was restored after the removal was authorized.
+ */
+async function endWorkspaceAccess(tx: Tx, orgId: string, memberId: string, revokedAt: Date): Promise<string[]> {
+  const sessions = await tx.select({ id: webSessions.id })
+    .from(webSessions)
+    .where(and(eq(webSessions.org_id, orgId), eq(webSessions.user_id, memberId), sql`${webSessions.revoked_at} IS NULL`))
+    .for('update');
+  if (sessions.length) {
+    await tx.update(webSessions).set({ revoked_at: revokedAt }).where(inArray(webSessions.id, sessions.map(session => session.id)));
+  }
+
+  await tx.execute(sql`
     DELETE FROM ${spaceMembers}
     WHERE ${spaceMembers.user_id} = ${memberId}
       AND ${spaceMembers.space_id} IN (
@@ -142,17 +136,9 @@ async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, deac
         WHERE ${spaces.org_id} = ${orgId}
       )
   `);
-
-  await evictActiveHuddleParticipants({
-    orgId,
-    userId: memberId,
-    reason: 'org_membership_revoked',
-  });
-
-  await db.delete(teamMembers)
+  await tx.delete(teamMembers)
     .where(and(eq(teamMembers.org_id, orgId), eq(teamMembers.user_id, memberId)));
-
-  await db.execute(sql`
+  await tx.execute(sql`
     DELETE FROM ${userGroupMembers}
     WHERE ${userGroupMembers.user_id} = ${memberId}
       AND ${userGroupMembers.group_id} IN (
@@ -161,8 +147,7 @@ async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, deac
         WHERE ${userGroups.org_id} = ${orgId}
       )
   `);
-
-  await db.execute(sql`
+  await tx.execute(sql`
     DELETE FROM ${taskAssignees}
     WHERE ${taskAssignees.user_id} = ${memberId}
       AND ${taskAssignees.task_id} IN (
@@ -171,38 +156,35 @@ async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, deac
         WHERE ${tasks.org_id} = ${orgId}
       )
   `);
-
-  await db.update(mcpTokens)
+  await tx.update(mcpTokens)
     .set({ revoked_at: revokedAt, updated_at: revokedAt })
     .where(and(
       eq(mcpTokens.org_id, orgId),
       eq(mcpTokens.user_id, memberId),
       sql`${mcpTokens.revoked_at} IS NULL`,
     ));
-
-  await db.update(apiKeys)
+  await tx.update(apiKeys)
     .set({ is_active: false, updated_at: revokedAt })
     .where(and(
       eq(apiKeys.org_id, orgId),
       eq(apiKeys.created_by, memberId),
       eq(apiKeys.is_active, true),
     ));
-
-  await db.update(oauthGrants)
+  await tx.update(oauthGrants)
     .set({ revoked_at: revokedAt, updated_at: revokedAt })
     .where(and(
       eq(oauthGrants.org_id, orgId),
       eq(oauthGrants.user_id, memberId),
       sql`${oauthGrants.revoked_at} IS NULL`,
     ));
-  await db.update(oauthAccessTokens)
+  await tx.update(oauthAccessTokens)
     .set({ revoked_at: revokedAt, updated_at: revokedAt })
     .where(and(
       eq(oauthAccessTokens.org_id, orgId),
       eq(oauthAccessTokens.user_id, memberId),
       sql`${oauthAccessTokens.revoked_at} IS NULL`,
     ));
-  await db.execute(sql`
+  await tx.execute(sql`
     UPDATE ${oauthRefreshTokens}
     SET revoked_at = ${revokedAt}, updated_at = ${revokedAt}
     WHERE revoked_at IS NULL
@@ -213,6 +195,32 @@ async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, deac
           AND user_id = ${memberId}
       )
   `);
+  return sessions.map(session => session.id);
+}
+
+/** After commit: live effects of a removal, only if the person is still removed. */
+async function afterWorkspaceAccessEnded(orgId: string, memberId: string, sessionIds: string[]) {
+  emitWebSessionRevocations(sessionIds);
+  const [still] = await db.select({ is_active: orgMembers.is_active }).from(orgMembers)
+    .where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, memberId))).limit(1);
+  if (still && !still.is_active) {
+    await evictActiveHuddleParticipants({ orgId, userId: memberId, reason: 'org_membership_revoked' });
+  }
+}
+
+/** Removes a member: the one locked path, the owner-only rule, and every access ended in the same transaction. */
+async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, actor: MembershipActor) {
+  const revokedAt = new Date();
+  const revokedSessionIds = await db.transaction(async (tx) => {
+    const locked = await lockMembership(tx, { orgId, targetUserId: memberId });
+    if (!locked.account || !locked.membership) return null;
+    const refusal = await authorizeMembershipOperation(tx, { orgId, actor, locked });
+    if (refusal) throw new MembershipGuardError(refusal);
+    await recordMembershipChange(tx, { orgId, targetUserId: memberId, locked, change: { isActive: false } });
+    await tx.update(orgMembers).set({ is_active: false, updated_at: revokedAt }).where(eq(orgMembers.id, locked.membership.id));
+    return endWorkspaceAccess(tx, orgId, memberId, revokedAt);
+  });
+  if (revokedSessionIds) await afterWorkspaceAccessEnded(orgId, memberId, revokedSessionIds);
 }
 
 async function reassignMemberOwnership(orgId: string, memberId: string, replacementUserId: string) {
@@ -1119,9 +1127,10 @@ memberRoutes.post('/invite', async (c) => {
     // a hosted cell, one seat lock), so two invites cannot both take the last seat.
     const added = await withSeatRetry(() => db.transaction(async (tx) => {
       // The one locked path (lib/membership-guard.ts): account, membership,
-      // the owner-only rule (inviting as admin, or anyone who is or was an
-      // owner or admin, is the owner's), then the writes and the link, all
-      // under the same locks. Membership row before the seat lock.
+      // the owner-only rule (anyone who is or was an owner or admin is the
+      // owner's; an admin may grant admin to someone never privileged), then
+      // the writes, the record of the grant and the link, all under the same
+      // locks. Membership row before the seat lock.
       const [byEmail] = await tx.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1);
       const locked = byEmail ? await lockMembership(tx, { orgId: currentUser.org_id, targetUserId: byEmail.id }) : null;
       if (locked?.membership?.is_active) return { alreadyMember: true as const };
@@ -1162,6 +1171,8 @@ memberRoutes.post('/invite', async (c) => {
           user_id: userId,
           role,
         });
+        // A first grant of admin is recorded with the generation its link carries.
+        if (role === 'admin') await recordPrivilege(tx, { orgId: currentUser.org_id, userId, generation });
       }
 
       // The invite link, made under the same locks: it carries the account's
@@ -1350,13 +1361,9 @@ memberRoutes.delete('/invites/:id', async (c) => {
         if (user && membership?.is_active && !user.password_hash && membership.role !== 'owner') {
           await recordMembershipChange(tx, { orgId: currentUser.org_id, targetUserId: userId, locked, change: { isActive: false } });
           await tx.update(orgMembers).set({ is_active: false, updated_at: revokedAt }).where(eq(orgMembers.id, membership.id));
-          const sessions = await tx.select({ id: webSessions.id }).from(webSessions)
-            .where(and(eq(webSessions.org_id, currentUser.org_id), eq(webSessions.user_id, userId), sql`${webSessions.revoked_at} IS NULL`))
-            .for('update');
-          if (sessions.length) {
-            await tx.update(webSessions).set({ revoked_at: revokedAt }).where(inArray(webSessions.id, sessions.map(session => session.id)));
-            revokedSessionIds.push(...sessions.map(session => session.id));
-          }
+          // Every access ends here, under the same locks: nothing runs later
+          // that could reach a membership the owner restored in between.
+          revokedSessionIds.push(...await endWorkspaceAccess(tx, currentUser.org_id, userId, revokedAt));
           deactivatedUserId = userId;
         }
       }
@@ -1368,10 +1375,8 @@ memberRoutes.delete('/invites/:id', async (c) => {
       if (result.failure === 'GUARD') return c.json({ error: result.error, code: 'FORBIDDEN' }, 403);
       return c.json({ error: 'Accepted invites cannot be revoked here', code: 'INVITE_ACCEPTED' }, 409);
     }
-    emitWebSessionRevocations(result.revokedSessionIds);
-    if (result.deactivatedUserId) {
-      await revokeMemberWorkspaceAccess(currentUser.org_id, result.deactivatedUserId, false, { userId: currentUser.id });
-    }
+    if (result.deactivatedUserId) await afterWorkspaceAccessEnded(currentUser.org_id, result.deactivatedUserId, result.revokedSessionIds);
+    else emitWebSessionRevocations(result.revokedSessionIds);
 
     return c.json({ success: true });
   } catch (err) {
@@ -1464,7 +1469,7 @@ memberRoutes.patch('/:id', async (c) => {
       if (!targetMembership) return { failure: 'NOT_FOUND' as const };
       if (targetMembership.role === 'owner') return { failure: 'OWNER' as const };
       if (!parsed.success) return { failure: 'INVALID' as const };
-      // Owner-only for anyone who is or was an owner or admin, and for making anyone an admin.
+      // Owner-only for anyone who is or was an owner or admin; an admin may promote a member or guest.
       const refusal = await authorizeMembershipOperation(tx, {
         orgId: currentUser.org_id, actor: { userId: currentUser.id }, locked, resultingRole: parsed.data.role,
       });
@@ -1588,7 +1593,7 @@ memberRoutes.delete('/:id', async (c) => {
       }
     }
     try {
-      await revokeMemberWorkspaceAccess(currentUser.org_id, memberId, true, { userId: currentUser.id });
+      await revokeMemberWorkspaceAccess(currentUser.org_id, memberId, { userId: currentUser.id });
     } catch (err) {
       if (err instanceof MembershipGuardError) return c.json({ error: err.message, code: 'FORBIDDEN' }, 403);
       throw err;

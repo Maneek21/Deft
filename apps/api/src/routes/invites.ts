@@ -10,6 +10,7 @@ import { env } from '../lib/env.js';
 import { ensureDeftyMembership, ensureDeftyDm } from '../lib/ensure-defty-membership.js';
 import { WebCredentialsChangedError } from '../lib/web-sessions.js';
 import { issueSession, issuedSessionBody } from '../lib/session-issuance.js';
+import { isProtectedMembership, linkMakerStillCounts } from '../lib/membership-guard.js';
 
 export const inviteRoutes = new Hono();
 
@@ -171,7 +172,7 @@ inviteRoutes.post('/accept', async (c) => {
     // credentials established by another invite or an admin recovery.
     if (user.password_hash) return { failure: 'INVITE_ALREADY_ACCEPTED' as AcceptanceFailure };
     const [membership] = await tx
-      .select({ id: orgMembers.id })
+      .select({ id: orgMembers.id, role: orgMembers.role })
       .from(orgMembers)
       .where(and(eq(orgMembers.user_id, payload.user_id), eq(orgMembers.org_id, payload.org_id), eq(orgMembers.is_active, true)))
       .for('share');
@@ -182,6 +183,20 @@ inviteRoutes.post('/accept', async (c) => {
     // generation is refused once the generation has left its starting value 0.
     const madeAt = payload.password_version ?? 0;
     if (madeAt !== user.password_version) return { failure: 'INVITE_REVOKED' as AcceptanceFailure };
+    // And whoever made it must still count (lib/membership-guard.ts): for
+    // someone who is or was an owner or admin, the current owner's link, or
+    // the first-grant link an admin made when inviting someone never
+    // privileged as admin; for anyone else, a link whose maker is still an
+    // active owner or admin. A pending admin invite an admin made before this
+    // release cannot be shown to be a first grant and stops working: the
+    // owner re-sends it.
+    const targetProtected = await isProtectedMembership(tx, payload.org_id, payload.user_id, membership.role);
+    if (!await linkMakerStillCounts(tx, {
+      orgId: payload.org_id, targetUserId: payload.user_id, makerUserId: payload.inviter_id, targetProtected,
+      firstGrant: { role: payload.role, generation: payload.password_version, currentGeneration: user.password_version },
+    })) {
+      return { failure: 'INVITE_REVOKED' as AcceptanceFailure };
+    }
 
     await tx.update(users).set({ ...updates, password_version: user.password_version + 1 }).where(eq(users.id, payload.user_id));
     await tx.update(invites)
