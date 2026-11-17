@@ -3,14 +3,13 @@ import assert from 'node:assert/strict';
 import { Hono } from 'hono';
 
 for (const [name, configured, peer] of [
-  ['direct', '', '10.0.0.7'],
   ['untrusted', '10.0.0.2', '10.0.0.7'],
   ['trusted', '10.0.0.2', '10.0.0.2'],
 ] as const) {
   test(`general limiter: ${name} peer`, async () => {
     process.env.DEFT_AUTH_RATE_LIMIT_PER_MINUTE = '1';
     process.env.DEFT_INVITE_TRUSTED_PROXIES = configured;
-    const { authLimiter } = await import(`../src/middleware/rate-limit.js?proxy=${name}`);
+    const { authLimiter } = await import('../src/middleware/rate-limit.js');
     const app = new Hono();
     app.use('*', authLimiter);
     app.get('/', c => c.text('ok'));

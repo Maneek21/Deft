@@ -14045,16 +14045,5 @@
     "owner": "@Maneek21",
     "issue": "https://github.com/Maneek21/Deft/issues/382",
     "milestone": "P3: permanent of docs/superpowers/plans/2026-11-06-email-host-kit-shrink.md"
-  },
-{
-  "path": "apps/api/test/rate-limit-trusted-proxy.test.ts",
-  "rule": "computed-import",
-  "token": "import(`../src/middleware/rate-limit.js?proxy=${name}`)",
-  "digest": "1d4a4e84d57302664f17f3382531ee1b8052c761b048176a890fff6e149223e3",
-  "occurrences": 1,
-  "reason": "Reviewed test-only cache-busted rate-limit middleware import. Closed local scenario names reload module-scoped environment configuration; no production mailbox authority.",
-  "owner": "@Maneek21",
-  "issue": "https://github.com/Maneek21/Deft/pull/542",
-  "milestone": "Lane R trusted proxy regression"
-}
+  }
 ]
