@@ -74,6 +74,8 @@ before(async () => {
 after(async () => {
   env.PUSH_MESSAGE_PREVIEWS_ENABLED = originalPreviewsEnabled;
   if (seeded && client) {
+    await q(`DELETE FROM job_queue WHERE name='attention-delivery' AND data->>'delivery_id' IN
+      (SELECT id FROM attention_deliveries WHERE org_id=$1)`, [orgId]);
     await q('DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id=$1)', [orgId]);
     for (const table of ['job_queue', 'notifications', 'web_push_subscriptions', 'attention_deliveries', 'attention_events', 'attention_items', 'messages', 'spaces', 'org_members']) {
       await q(`DELETE FROM ${table} WHERE org_id=$1`, [orgId]);
@@ -227,10 +229,10 @@ test('queued sends combine opt-in preview text with a checked and pinned push en
   assert.equal(sends.length, 2, 'a stored endpoint resolving internally is never contacted');
 });
 
-for (const mode of ['before', 'concurrent', 'deleted', 'removed']) {
+for (const mode of ['before', 'concurrent', 'job-first', 'single-before', 'single-concurrent', 'deleted', 'removed', 'deleted-before', 'removed-before']) {
   test(`back-fill and sync preserve one delivery with source mode ${mode}`, async (t) => {
     if (unavailable) return t.skip(unavailable);
-    const { ensureAttentionBackfillForUser } = await import('../src/lib/attention.js');
+    const { ensureAttentionBackfillForUser, syncNotificationToAttention } = await import('../src/lib/attention.js');
     const { handleNotificationAttentionSync } = await import('../src/workers/handlers/notification-attention-sync.js');
     const { sendAttentionDelivery } = await import('../src/lib/web-push.js');
     const { protectPushSubscription } = await import('../src/lib/push-subscription.js');
@@ -252,21 +254,57 @@ for (const mode of ['before', 'concurrent', 'deleted', 'removed']) {
     await q(`INSERT INTO notifications(id,org_id,user_id,type,title,body,link,metadata) VALUES($1,$2,$3,'message','Alice','Race preview',$4,$5)`,
       [notificationId, orgId, ids.bob, `/chat?space=${rooms.general}&message=${messageId}`, { message_id: messageId, space_id: rooms.general }]);
     const backfill = () => ensureAttentionBackfillForUser({ orgId, userId: ids.bob, role: 'member' });
-    const job = () => handleNotificationAttentionSync({ id: randomUUID(), name: 'notification-attention-sync', attempts: 1, data: { orgId, notificationIds: [notificationId] } });
-    if (mode === 'concurrent') await Promise.all([backfill(), job()]);
-    else { await backfill(); await job(); }
+    const job = async () => {
+      if (mode.startsWith('single')) {
+        const { db } = await import('../src/lib/db.js');
+        const { notifications } = await import('@deft/db/schema');
+        const { eq } = await import('drizzle-orm');
+        const [row] = await db.select().from(notifications).where(eq(notifications.id, notificationId));
+        await syncNotificationToAttention(row!);
+      } else await handleNotificationAttentionSync({ id: randomUUID(), name: 'notification-attention-sync', attempts: 1, data: { orgId, notificationIds: [notificationId] } });
+    };
+    const removeMembership = async () => {
+      await q('DELETE FROM space_members WHERE space_id=$1 AND user_id=$2', [rooms.general, ids.bob]);
+      t.after(async () => { await q('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING', [randomUUID(), rooms.general, ids.bob]); });
+    };
+    if (mode.endsWith('concurrent')) {
+      await q('BEGIN');
+      await q('SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE', [ids.bob]);
+      const racing = Promise.all([backfill(), job()]);
+      try {
+        const deadline = Date.now() + 5_000;
+        let waiting = 0;
+        while (waiting < 2 && Date.now() < deadline) {
+          await q('SELECT pg_stat_clear_snapshot()');
+          const locks = await q(`SELECT count(*)::int AS count FROM pg_stat_activity
+            WHERE datname=current_database() AND pid<>pg_backend_pid()
+              AND wait_event_type='Lock' AND query LIKE '%users%for no key update%'`);
+          waiting = locks.rows[0].count;
+          if (waiting < 2) await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        assert.equal(waiting, 2, 'both projection paths must reach the held recipient lock');
+      } finally { await q('COMMIT'); }
+      await racing;
+    }
+    else if (mode === 'job-first') { await job(); await backfill(); }
+    else {
+      await backfill();
+      if (mode === 'deleted-before') await q('UPDATE messages SET is_deleted=true WHERE id=$1', [messageId]);
+      if (mode === 'removed-before') await removeMembership();
+      await job();
+    }
     await Promise.all([job(), job()]);
     const deliveries = await q('SELECT d.* FROM attention_deliveries d JOIN attention_items i ON i.id=d.attention_item_id WHERE i.source_id=$1', [messageId]);
-    assert.equal(deliveries.rows.length, 1);
+    assert.equal(deliveries.rows.length, mode.endsWith('-before') && !mode.startsWith('single') ? 0 : 1);
+    if (deliveries.rows.length === 0) return;
     const itemRows = await q('SELECT version,event_count FROM attention_items WHERE source_id=$1', [messageId]);
     assert.equal(itemRows.rows[0].version, 1);
     assert.equal(itemRows.rows[0].event_count, 1);
     if (mode === 'deleted') await q('UPDATE messages SET is_deleted=true WHERE id=$1', [messageId]);
-    if (mode === 'removed') await q('DELETE FROM space_members WHERE space_id=$1 AND user_id=$2', [rooms.general, ids.bob]);
+    if (mode === 'removed') await removeMembership();
     const revoked = mode === 'deleted' || mode === 'removed';
     assert.deepEqual(await sendAttentionDelivery(deliveries.rows[0].id), revoked ? { skipped: true, reason: 'source_access_revoked' } : { sent: 1, failed: 0 });
     await sendAttentionDelivery(deliveries.rows[0].id);
     assert.equal(sends, revoked ? 0 : 1);
-    if (mode === 'removed') await q('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), rooms.general, ids.bob]);
   });
 }
