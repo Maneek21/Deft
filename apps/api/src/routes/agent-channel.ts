@@ -48,7 +48,7 @@ import { getIO } from '../socket.js';
 import { executeSendMessage, executeTaskUpdate, verifyParentMessageMatches } from '../lib/mcp-tools/writes.js';
 import { employeeCanAccessSpace } from '../lib/mcp-tools/employee-space-access.js';
 import { chargeEmployeeChatPostOncePerAttempt, checkEmployeeChatPost } from '../lib/employee-chat-post-guard.js';
-import { currentAgentChannelEventAuthoritySql } from '../lib/agent-channel-authority.js';
+import { currentAgentChannelEventAuthoritySql, currentEmployeeMessageAuthoritySql } from '../lib/agent-channel-authority.js';
 import { buildAgentChannelLifecyclePatch } from '../lib/agent-channel-lifecycle.js';
 import { reconcileAgentChannelRuntimeAttempt } from '../lib/agent-channel-reconciliation.js';
 
@@ -196,6 +196,34 @@ const statusSchema = z.object({
   }).strict().optional(),
   caller_employee_slug: z.string().optional(),
 }).strict();
+
+/**
+ * A stored reply result (idempotent replay, failed-attempt echo, recovered
+ * certification reply) can hold the whole posted message. Return its text
+ * only while the message is undeleted and the employee can still read its
+ * room; otherwise only its ids, so a replay never hands back deleted text.
+ */
+async function currentChannelReplyResult(principal: AgentChannelPrincipal, stored: unknown): Promise<unknown> {
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return stored;
+  const reply = stored as Record<string, unknown>;
+  if (!('content' in reply)) return stored;
+  const messageId = typeof reply.message_id === 'string'
+    ? reply.message_id
+    : typeof reply.id === 'string' && typeof reply.space_id === 'string' ? reply.id : null;
+  if (!messageId) return stored;
+  const [current] = await db.select({ content: messages.content }).from(messages).where(and(
+    eq(messages.id, messageId),
+    eq(messages.org_id, principal.org_id),
+    eq(messages.is_deleted, false),
+    currentEmployeeMessageAuthoritySql(sql`${principal.org_id}`, sql`${principal.employee_id}`, sql`${messageId}`),
+  )).limit(1);
+  if (current) return { ...reply, content: current.content };
+  const kept: Record<string, unknown> = { content: null, deleted: true };
+  for (const key of ['id', 'message_id', 'space_id', 'parent_id', 'user_id', 'created_at']) {
+    if (key in reply) kept[key] = reply[key];
+  }
+  return kept;
+}
 
 function errorResponse(c: Context, status: 400 | 401 | 403 | 404 | 409 | 426 | 500, code: string, message: string) {
   return c.json({ error: message, code }, status);
@@ -1289,7 +1317,7 @@ agentChannelRoutes.post('/reply', async (c) => {
         adapter_mode: reconciliation.adapterMode,
         transport_reply: 'sent',
         business_outcome: reconciliation.outcome,
-        result: reconciliation.reply,
+        result: await currentChannelReplyResult(principal, reconciliation.reply),
       });
     }
     const autonomousReconciliation = await reconcileDurableAutonomousReply(existingAttempt);
@@ -1316,7 +1344,7 @@ agentChannelRoutes.post('/reply', async (c) => {
         adapter_mode: 'autonomous_platform',
         transport_reply: 'sent',
         business_outcome: null,
-        result: autonomousReconciliation.reply,
+        result: await currentChannelReplyResult(principal, autonomousReconciliation.reply),
       });
     }
   }
@@ -1339,7 +1367,7 @@ agentChannelRoutes.post('/reply', async (c) => {
             transportReply: 'sent',
           });
         }
-        return c.json({ ok: true, idempotent: true, reconciled: true, result: reconciliation.reply });
+        return c.json({ ok: true, idempotent: true, reconciled: true, result: await currentChannelReplyResult(principal, reconciliation.reply) });
       }
     }
     if (autonomousReply) {
@@ -1353,7 +1381,7 @@ agentChannelRoutes.post('/reply', async (c) => {
         transportReply: 'sent',
       });
     }
-    return c.json({ ok: true, idempotent: true, result: existingAttempt.response_json });
+    return c.json({ ok: true, idempotent: true, result: await currentChannelReplyResult(principal, existingAttempt.response_json) });
   }
   if (!autonomousReply && (!parsed.data.claim_token || !hasActiveAgentChannelClaim(event, parsed.data.claim_token))) {
     return errorResponse(c, 409, 'STALE_CLAIM', 'The Agent Channel claim is missing, expired, or owned by another worker');
@@ -1414,7 +1442,7 @@ agentChannelRoutes.post('/reply', async (c) => {
         ok: false,
         idempotent: true,
         error: existingAttempt.error ?? 'The prior reply attempt failed',
-        result: existingAttempt.response_json,
+        result: await currentChannelReplyResult(principal, existingAttempt.response_json),
       }, 500);
     } else {
       const [retryClaim] = await db
@@ -1508,7 +1536,7 @@ agentChannelRoutes.post('/reply', async (c) => {
           adapter_mode: reconciliation.adapterMode,
           transport_reply: 'sent',
           business_outcome: reconciliation.outcome,
-          result: reconciliation.reply,
+          result: await currentChannelReplyResult(principal, reconciliation.reply),
         });
       }
       const autonomousReconciliation = await reconcileDurableAutonomousReply(latestAttempt);
@@ -1535,7 +1563,7 @@ agentChannelRoutes.post('/reply', async (c) => {
           adapter_mode: 'autonomous_platform',
           transport_reply: 'sent',
           business_outcome: null,
-          result: autonomousReconciliation.reply,
+          result: await currentChannelReplyResult(principal, autonomousReconciliation.reply),
         });
       }
     }
@@ -1557,7 +1585,7 @@ agentChannelRoutes.post('/reply', async (c) => {
               transportReply: 'sent',
             });
           }
-          return c.json({ ok: true, idempotent: true, reconciled: true, result: reconciliation.reply });
+          return c.json({ ok: true, idempotent: true, reconciled: true, result: await currentChannelReplyResult(principal, reconciliation.reply) });
         }
       }
       if (autonomousReply) {
@@ -1571,7 +1599,7 @@ agentChannelRoutes.post('/reply', async (c) => {
           transportReply: 'sent',
         });
       }
-      return c.json({ ok: true, idempotent: true, result: latestAttempt.response_json });
+      return c.json({ ok: true, idempotent: true, result: await currentChannelReplyResult(principal, latestAttempt.response_json) });
     }
     if (latestAttempt?.status === 'failed') {
       claimedFrom = latestAttempt;
@@ -1582,7 +1610,7 @@ agentChannelRoutes.post('/reply', async (c) => {
           ok: false,
           idempotent: true,
           error: latestAttempt.error ?? 'The prior reply attempt failed',
-          result: latestAttempt.response_json,
+          result: await currentChannelReplyResult(principal, latestAttempt.response_json),
         }, 500);
       } else {
         const [retryClaim] = await db

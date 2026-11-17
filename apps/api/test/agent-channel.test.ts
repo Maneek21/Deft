@@ -1307,6 +1307,52 @@ test('autonomous platform reply terminalizes transport without completing busine
   );
 });
 
+test('a replayed reply whose message was deleted does not return its text', async () => {
+  const connect = await app.request(`/api/agent-channel/v1/connect?${autonomousCompatibilityQuery()}`, {
+    headers: { authorization: `Bearer ${bearer}` },
+  });
+  assert.equal(connect.status, 200);
+  const [fallbackAction] = await db.insert(agentActions).values({
+    org_id: orgId,
+    user_id: humanUserId,
+    agent_employee_id: employeeId,
+    source: 'mention',
+    action: 'chat_mention',
+    params: { message_id: sourceMessageId },
+    approval_tier: 'auto',
+    approval_status: 'pending',
+  }).returning({ id: agentActions.id });
+  const event = await publishMessageEvent(`deleted-reply-replay-${crypto.randomUUID()}`, fallbackAction!.id);
+  const poll = await app.request(
+    `/api/agent-channel/v1/events?limit=100&lease_ms=30000&${autonomousCompatibilityQuery('deleted-reply-worker')}`,
+    { headers: { authorization: `Bearer ${bearer}` } },
+  );
+  const delivery = await poll.json() as any;
+  const claimed = delivery.events.find((candidate: any) => candidate.id === event.id);
+  assert.ok(claimed?.claim_token, JSON.stringify(delivery));
+  const accept = await app.request('/api/agent-channel/v1/accept', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ event_id: event.id, claim_token: claimed.claim_token }),
+  });
+  assert.equal(accept.status, 200, await accept.text());
+  const canary = `CANARY-DELETED-CHANNEL-REPLY-${crypto.randomUUID()}`;
+  const replyKey = `deleted-reply-${crypto.randomUUID()}`;
+  const body = JSON.stringify({ event_id: event.id, content: canary, idempotency_key: replyKey, adapter_mode: 'autonomous_platform' });
+  const reply = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST', headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' }, body,
+  });
+  assert.equal(reply.status, 200, await reply.text());
+  const updated = await db.update(messages).set({ is_deleted: true })
+    .where(and(eq(messages.org_id, orgId), eq(messages.content, canary))).returning({ id: messages.id });
+  assert.equal(updated.length, 1, 'the reply was posted as a chat message');
+  const replay = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST', headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' }, body,
+  });
+  const replayText = await replay.text();
+  assert.ok(!replayText.includes(canary), `replay must not return deleted text: ${replay.status} ${replayText}`);
+});
+
 test('autonomous failed chat reply retries once when no durable effect exists', async () => {
   const event = await publishMessageEvent(`autonomous-chat-no-effect-${crypto.randomUUID()}`);
   await acceptAutonomousEvent(event.id);
