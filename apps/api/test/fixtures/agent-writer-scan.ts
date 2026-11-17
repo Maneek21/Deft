@@ -79,10 +79,33 @@ function tableOf(expr: ts.Expression, tables: Map<string, string>): string | nul
   return null;
 }
 
+/** Does this binding (a parameter or declaration name) introduce `name`? */
+function bindsName(binding: ts.BindingName, name: string): boolean {
+  if (ts.isIdentifier(binding)) return binding.text === name;
+  return binding.elements.some((el) => !ts.isOmittedExpression(el) && bindsName(el.name, name));
+}
+
+/** Is `name` declared again between `from` and `work` (a shadowing parameter or variable)? */
+function shadowedBetween(from: ts.Node, work: ts.Node, name: string): boolean {
+  for (let at: ts.Node | undefined = from.parent; at && at !== work; at = at.parent) {
+    if (ts.isFunctionLike(at) && at.parameters.some((param) => bindsName(param.name, name))) return true;
+    if (ts.isBlock(at) || ts.isSourceFile(at)) {
+      for (const statement of at.statements) {
+        if (ts.isVariableStatement(statement) && statement.declarationList.declarations.some((d) => bindsName(d.name, name))) return true;
+      }
+    }
+    if ((ts.isForStatement(at) || ts.isForOfStatement(at) || ts.isForInStatement(at)) && at.initializer && ts.isVariableDeclarationList(at.initializer)
+      && at.initializer.declarations.some((d) => bindsName(d.name, name))) return true;
+    if (ts.isCatchClause(at) && at.variableDeclaration && bindsName(at.variableDeclaration.name, name)) return true;
+  }
+  return false;
+}
+
 /**
  * A credential issuer called inside the choke point must be handed that
- * callback's own transaction: `executor: tx`, where `tx` is the callback's
- * first parameter (not `undefined`, not some other handle).
+ * callback's own transaction: exactly one `executor: tx`, where `tx` is the
+ * callback's first parameter and is not shadowed on the way, and no spread
+ * in the same object that could override it.
  */
 function passesExecutor(call: ts.CallExpression, work: ts.Node): boolean {
   const unwrap = (e: ts.Expression | undefined) => {
@@ -93,12 +116,15 @@ function passesExecutor(call: ts.CallExpression, work: ts.Node): boolean {
   if (!first || !ts.isIdentifier(first)) return false;
   const arg = unwrap(call.arguments[0]);
   if (!arg || !ts.isObjectLiteralExpression(arg)) return false;
-  return arg.properties.some((p) => {
-    if (ts.isShorthandPropertyAssignment(p)) return p.name.text === 'executor' && first.text === 'executor';
-    if (!ts.isPropertyAssignment(p) || !ts.isIdentifier(p.name) || p.name.text !== 'executor') return false;
-    const value = unwrap(p.initializer);
-    return Boolean(value && ts.isIdentifier(value) && value.text === first.text);
-  });
+  if (arg.properties.some((p) => ts.isSpreadAssignment(p))) return false;
+  const executors = arg.properties.filter((p) => p.name && ts.isIdentifier(p.name) && p.name.text === 'executor');
+  if (executors.length !== 1) return false;
+  const only = executors[0]!;
+  let value: ts.Expression | undefined;
+  if (ts.isShorthandPropertyAssignment(only)) value = only.name;
+  else if (ts.isPropertyAssignment(only)) value = unwrap(only.initializer);
+  if (!value || !ts.isIdentifier(value) || value.text !== first.text) return false;
+  return !shadowedBetween(value, work, first.text);
 }
 
 function calleeName(call: ts.CallExpression): string | null {
