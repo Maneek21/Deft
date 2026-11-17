@@ -10,6 +10,15 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### Security: trusted proxy peers for API rate limits (operator action)
+
+- General API IP limits now ignore forwarding headers unless the socket peer
+  matches `DEFT_INVITE_TRUSTED_PROXIES`. The bundled Caddy overlay already sets
+  this. Custom-proxy operators must set it to their proxy's exact peer IPs or
+  controlled DNS names; otherwise visitors share the proxy's rate-limit bucket,
+  including the production 10/minute auth budget used by refresh. Direct API
+  installs need no setting. Startup warns when the setting is absent.
+
 ### Changed: one assistant reply per space at a time
 
 - The job queue no longer starts an `agent-reply` while another for the same

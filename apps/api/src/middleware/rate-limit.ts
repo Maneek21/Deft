@@ -64,6 +64,7 @@ const OAUTH_PUBLIC_LIMIT_PER_MINUTE = positiveIntFromEnv(
   isProduction ? 120 : 1200,
 );
 
+// General limiters use the same trusted-peer policy as invites.
 const ipKey = createInviteClientKey();
 
 async function userOrIpKey(c: Context): Promise<string> {
@@ -118,13 +119,12 @@ export const authLimiter = withAuditBypass(rateLimiter({
   }, 429),
 }));
 
-// All IP-based limiters share the invite proxy trust policy.
 // Without explicitly configured trusted proxies, use the socket peer.
 export const inviteLimiter = withAuditBypass(rateLimiter({
   windowMs: 60 * 1000,
   limit: INVITE_LIMIT_PER_MINUTE,
   standardHeaders: 'draft-7',
-  keyGenerator: createInviteClientKey(),
+  keyGenerator: ipKey,
   handler: (c) => c.json({
     error: 'Too many requests. Try again in a minute.',
     code: 'RATE_LIMITED',
