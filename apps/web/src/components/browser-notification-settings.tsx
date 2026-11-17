@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { BellRing, Check, Loader2, Monitor, Send, Trash2 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { activePushRegistration } from '@/lib/browser-push';
 
 type PushPreferences = {
   enabled: boolean;
@@ -114,7 +115,7 @@ export function BrowserNotificationSettings() {
       const nextPermission = await Notification.requestPermission();
       setPermission(nextPermission);
       if (nextPermission !== 'granted') throw new Error('Browser permission was not granted');
-      const registration = await navigator.serviceWorker.register('/deft-sw.js');
+      const registration = await activePushRegistration(navigator.serviceWorker);
       const existing = await registration.pushManager.getSubscription();
       const subscription = existing ?? await registration.pushManager.subscribe({
         userVisibleOnly: true,
