@@ -144,7 +144,12 @@ export type IssuedEmployeeMcpToken = Readonly<{
  * existing employee issuance remains App-blind until an operator explicitly
  * selects one of the additive App scopes.
  */
+/** A database handle or an open transaction to run on (the caller's connection). */
+export type DbExecutor = Pick<typeof db, 'select' | 'insert' | 'update' | 'delete' | 'transaction'>;
+
 export async function issueScopedEmployeeMcpToken(params: {
+  /** Run on this connection (a nested transaction inside the caller's) instead of a new one. */
+  executor?: DbExecutor;
   orgId: string;
   employeeId: string;
   name?: string;
@@ -173,7 +178,7 @@ export async function issueScopedEmployeeMcpToken(params: {
   const tokenHash = await bcrypt.hash(raw, params.bcryptRounds ?? BCRYPT_ROUNDS);
   const now = new Date();
 
-  return db.transaction(async (tx) => {
+  return (params.executor ?? db).transaction(async (tx) => {
     const [employee] = await tx
       .select({ id: agentEmployees.id })
       .from(agentEmployees)

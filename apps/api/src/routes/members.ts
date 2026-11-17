@@ -11,6 +11,7 @@ import {
   spaces,
   spaceMembers,
   agentEmployees,
+  agentChannelTokens,
   mcpTokens,
   invites,
   apiKeys,
@@ -195,6 +196,21 @@ async function endWorkspaceAccess(tx: Tx, orgId: string, memberId: string, revok
           AND user_id = ${memberId}
       )
   `);
+  // An agent's own credentials are keyed by the employee, not the user: a
+  // removed agent stops working too, and is paused.
+  const employees = await tx.select({ id: agentEmployees.id }).from(agentEmployees)
+    .where(and(eq(agentEmployees.org_id, orgId), eq(agentEmployees.user_id, memberId)));
+  if (employees.length) {
+    const employeeIds = employees.map((employee) => employee.id);
+    await tx.update(mcpTokens).set({ revoked_at: revokedAt, updated_at: revokedAt })
+      .where(and(eq(mcpTokens.org_id, orgId), inArray(mcpTokens.agent_employee_id, employeeIds), sql`${mcpTokens.revoked_at} IS NULL`));
+    await tx.update(apiKeys).set({ is_active: false, updated_at: revokedAt })
+      .where(and(eq(apiKeys.org_id, orgId), inArray(apiKeys.agent_employee_id, employeeIds), eq(apiKeys.is_active, true)));
+    await tx.update(agentChannelTokens).set({ is_active: false, revoked_at: revokedAt })
+      .where(and(eq(agentChannelTokens.org_id, orgId), inArray(agentChannelTokens.agent_employee_id, employeeIds), eq(agentChannelTokens.is_active, true)));
+    await tx.update(agentEmployees).set({ is_active: false })
+      .where(and(eq(agentEmployees.org_id, orgId), inArray(agentEmployees.id, employeeIds)));
+  }
   return sessions.map(session => session.id);
 }
 
@@ -208,33 +224,47 @@ async function afterWorkspaceAccessEnded(orgId: string, memberId: string, sessio
   }
 }
 
-/** Removes a member: the one locked path, the owner-only rule, and every access ended in the same transaction. */
-async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, actor: MembershipActor) {
+type Reassigned = { replacement_user_id: string | null; primary_open_tasks: number; led_projects: number; led_teams: number };
+
+/**
+ * Removes a member: the one locked path, the owner-only rule, then (under the
+ * same locks) the reassignment of their open work and the end of every
+ * access. A refusal changes nothing.
+ */
+async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, actor: MembershipActor, replacementUserId: string | null = null): Promise<Reassigned> {
   const revokedAt = new Date();
+  let reassigned: Reassigned = { replacement_user_id: replacementUserId, primary_open_tasks: 0, led_projects: 0, led_teams: 0 };
   const revokedSessionIds = await db.transaction(async (tx) => {
     const locked = await lockMembership(tx, { orgId, targetUserId: memberId });
     if (!locked.account || !locked.membership) return null;
     const refusal = await authorizeMembershipOperation(tx, { orgId, actor, locked });
     if (refusal) throw new MembershipGuardError(refusal);
+    if (replacementUserId) reassigned = await reassignMemberOwnership(tx, orgId, memberId, replacementUserId);
     await recordMembershipChange(tx, { orgId, targetUserId: memberId, locked, change: { isActive: false } });
     await tx.update(orgMembers).set({ is_active: false, updated_at: revokedAt }).where(eq(orgMembers.id, locked.membership.id));
     return endWorkspaceAccess(tx, orgId, memberId, revokedAt);
   });
   if (revokedSessionIds) await afterWorkspaceAccessEnded(orgId, memberId, revokedSessionIds);
+  return reassigned;
 }
 
-async function reassignMemberOwnership(orgId: string, memberId: string, replacementUserId: string) {
+class ReassignmentError extends Error {}
+
+/** Moves the person's open work to the replacement, on the caller's locked transaction. */
+async function reassignMemberOwnership(tx: Tx, orgId: string, memberId: string, replacementUserId: string) {
   if (memberId === replacementUserId) {
-    throw new Error('Replacement cannot be the member being removed');
+    throw new ReassignmentError('Replacement cannot be the member being removed');
   }
 
-  const replacement = await getCurrentMembership(orgId, replacementUserId);
+  const [replacement] = await tx.select({ role: orgMembers.role }).from(orgMembers)
+    .where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, replacementUserId), eq(orgMembers.is_active, true)))
+    .limit(1);
   if (!replacement) {
-    throw new Error('Replacement must be an active member of this organization');
+    throw new ReassignmentError('Replacement must be an active member of this organization');
   }
 
   const reassignedAt = new Date();
-  const ledTeamRows = await db
+  const ledTeamRows = await tx
     .select({ id: teams.id })
     .from(teams)
     .where(and(
@@ -243,7 +273,7 @@ async function reassignMemberOwnership(orgId: string, memberId: string, replacem
       eq(teams.is_archived, false),
     ));
 
-  const reassignedTasks = await db
+  const reassignedTasks = await tx
     .update(tasks)
     .set({ assignee_id: replacementUserId, updated_at: reassignedAt })
     .where(and(
@@ -254,7 +284,7 @@ async function reassignMemberOwnership(orgId: string, memberId: string, replacem
     ))
     .returning({ id: tasks.id });
 
-  const reassignedProjects = await db
+  const reassignedProjects = await tx
     .update(projects)
     .set({ lead_id: replacementUserId, updated_at: reassignedAt })
     .where(and(
@@ -264,7 +294,7 @@ async function reassignMemberOwnership(orgId: string, memberId: string, replacem
     ))
     .returning({ id: projects.id });
 
-  const reassignedTeams = await db
+  const reassignedTeams = await tx
     .update(teams)
     .set({ lead_user_id: replacementUserId, updated_at: reassignedAt })
     .where(and(
@@ -275,7 +305,7 @@ async function reassignMemberOwnership(orgId: string, memberId: string, replacem
     .returning({ id: teams.id });
 
   for (const team of ledTeamRows) {
-    await db
+    await tx
       .insert(teamMembers)
       .values({
         id: crypto.randomUUID(),
@@ -1237,6 +1267,10 @@ memberRoutes.post('/invite', async (c) => {
       201,
     );
   } catch (err) {
+    // Two invites for the same new address at once: the second finds the
+    // first's account (unique email) and is told so.
+    const code = (err as { code?: string; cause?: { code?: string } })?.code ?? (err as { cause?: { code?: string } })?.cause?.code;
+    if (code === '23505') return c.json({ error: 'User is already a member', code: 'ALREADY_MEMBER' }, 409);
     console.error('Failed to invite member:', err);
     return c.json({ error: 'Failed to invite member', code: 'INTERNAL_ERROR' }, 500);
   }
@@ -1576,26 +1610,12 @@ memberRoutes.delete('/:id', async (c) => {
     if (notRemovable) return c.json({ error: notRemovable, code: 'FORBIDDEN' }, 403);
 
     const preview = await buildOffboardingPreview(currentUser.org_id, memberId);
-    let reassigned = {
-      replacement_user_id: replacementUserId,
-      primary_open_tasks: 0,
-      led_projects: 0,
-      led_teams: 0,
-    };
-    if (replacementUserId) {
-      try {
-        reassigned = await reassignMemberOwnership(currentUser.org_id, memberId, replacementUserId);
-      } catch (error) {
-        return c.json({
-          error: error instanceof Error ? error.message : 'Failed to reassign member ownership',
-          code: 'VALIDATION_ERROR',
-        }, 400);
-      }
-    }
+    let reassigned: Reassigned;
     try {
-      await revokeMemberWorkspaceAccess(currentUser.org_id, memberId, { userId: currentUser.id });
+      reassigned = await revokeMemberWorkspaceAccess(currentUser.org_id, memberId, { userId: currentUser.id }, replacementUserId);
     } catch (err) {
       if (err instanceof MembershipGuardError) return c.json({ error: err.message, code: 'FORBIDDEN' }, 403);
+      if (err instanceof ReassignmentError) return c.json({ error: err.message, code: 'VALIDATION_ERROR' }, 400);
       throw err;
     }
     const remaining = await buildOffboardingPreview(currentUser.org_id, memberId);

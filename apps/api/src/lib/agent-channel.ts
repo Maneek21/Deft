@@ -223,6 +223,8 @@ export type AgentChannelPrincipal = {
 const CHANNEL_TOKEN_ROUNDS = 10;
 
 export async function issueAgentChannelToken(params: {
+  /** Run on the caller's transaction instead of a new connection. */
+  executor?: Pick<typeof db, 'select' | 'insert' | 'update' | 'delete'>;
   orgId: string;
   employeeId: string;
   employeeName: string;
@@ -233,8 +235,9 @@ export async function issueAgentChannelToken(params: {
   const prefix = raw.slice(0, 18);
   const hash = await bcrypt.hash(raw, CHANNEL_TOKEN_ROUNDS);
 
+  const exec = params.executor ?? db;
   if (params.deactivateExisting ?? true) {
-    await db
+    await exec
       .update(agentChannelTokens)
       .set({ is_active: false, revoked_at: new Date() })
       .where(
@@ -246,7 +249,7 @@ export async function issueAgentChannelToken(params: {
       );
   }
 
-  const [row] = await db
+  const [row] = await exec
     .insert(agentChannelTokens)
     .values({
       org_id: params.orgId,

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { eq, and, desc, sql, or, isNull, asc, gte, lt, inArray, notInArray } from 'drizzle-orm';
 import crypto from 'node:crypto';
 import { db } from '../lib/db.js';
-import { authorizeMembershipOperation, checkMembershipOperation, holdMembership, lockMembership, recordMembershipChange } from '../lib/membership-guard.js';
+import { authorizeMembershipOperation, checkMembershipOperation, holdMembership, isProtectedMembership, lockMembership, recordMembershipChange } from '../lib/membership-guard.js';
 import { reviewableApprovalCountsByEmployee } from '../lib/pending-approval-audience.js';
 import { hermesBundleAvailability, type HermesBundleAvailability } from '../lib/hermes-release.js';
 import {
@@ -13,6 +13,7 @@ import {
   type EmployeeMcpAppScope,
   type EmployeeMcpResourceScope,
   type EmployeeMcpScope,
+  type DbExecutor,
 } from '../lib/mcp-token.js';
 import {
   agentEmployees,
@@ -67,6 +68,35 @@ import {
 } from '../lib/defty-identity.js';
 
 export const agentEmployeeRoutes = new Hono();
+
+/**
+ * One gate for every write to one agent employee (`/:id` and below): an
+ * agent whose membership is or ever was owner or admin is managed only by
+ * the owner (lib/membership-guard.ts), its keys, settings, triggers, budget,
+ * channel events, certification, pause and resume included. For other agents
+ * each route's own permission check applies unchanged. Routes that issue a
+ * credential or change the agent's state also check again while holding the
+ * agent's membership row (asOwnerForProtectedAgent); removal takes the full
+ * locked path.
+ */
+async function protectedAgentGate(c: Context, next: () => Promise<void>) {
+  if (c.req.method === 'GET' || c.req.method === 'HEAD' || c.req.method === 'OPTIONS') return next();
+  const user = c.get('user');
+  const id = c.req.param('id');
+  if (!user || !id) return next();
+  const [employee] = await db.select({ user_id: agentEmployees.user_id }).from(agentEmployees)
+    .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id))).limit(1);
+  if (!employee?.user_id) return next();
+  const [membership] = await db.select({ role: orgMembers.role }).from(orgMembers)
+    .where(and(eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, employee.user_id))).limit(1);
+  if (!membership || !await isProtectedMembership(db, user.org_id, employee.user_id, membership.role)) return next();
+  const [acting] = await db.select({ role: orgMembers.role }).from(orgMembers)
+    .where(and(eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, user.id), eq(orgMembers.is_active, true))).limit(1);
+  if (acting?.role === 'owner') return next();
+  return c.json({ error: 'Only the owner can manage an agent that is or was an owner or admin', code: 'FORBIDDEN' }, 403);
+}
+agentEmployeeRoutes.use('/:id', protectedAgentGate);
+agentEmployeeRoutes.use('/:id/*', protectedAgentGate);
 
 // ═══ TEMPLATES ═══
 
@@ -1631,22 +1661,26 @@ async function cancelPendingCertification(orgId: string, employeeId: string, rea
  * settings included. Holds the agent's membership row so its role cannot
  * change meanwhile, checks the rule, then runs `work` under that hold.
  */
+type AgentTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 async function asOwnerForProtectedAgent<T>(
   user: { id: string; org_id: string },
   agentUserId: string,
-  work: () => Promise<T>,
+  work: (tx: AgentTx) => Promise<T>,
 ): Promise<{ refusal: string } | { value: T }> {
+  // `work` runs on this transaction's own connection: a second pooled
+  // connection while this one is held could exhaust the pool.
   return db.transaction(async (tx) => {
     const held = await holdMembership(tx, { orgId: user.org_id, targetUserId: agentUserId });
     if (held.protected) {
       const refusal = await authorizeMembershipOperation(tx, { orgId: user.org_id, actor: { userId: user.id }, locked: held });
       if (refusal) return { refusal };
     }
-    return { value: await work() };
+    return { value: await work(tx) };
   });
 }
 
 async function issueMcpToken({
+  executor = db,
   orgId,
   employeeId,
   employeeName,
@@ -1655,6 +1689,7 @@ async function issueMcpToken({
   resourceScopes = [],
   deactivateExisting = false,
 }: {
+  executor?: DbExecutor;
   orgId: string;
   employeeId: string;
   employeeName: string;
@@ -1668,6 +1703,7 @@ async function issueMcpToken({
   const keyPrefix = rawApiKey.slice(0, 12);
 
   const issued = await issueScopedEmployeeMcpToken({
+    executor,
     orgId,
     employeeId,
     name: `${employeeName} MCP token`,
@@ -1680,13 +1716,13 @@ async function issueMcpToken({
   });
 
   if (deactivateExisting) {
-    await db
+    await executor
       .update(apiKeys)
       .set({ is_active: false })
       .where(and(eq(apiKeys.org_id, orgId), eq(apiKeys.agent_employee_id, employeeId)));
   }
 
-  await db.insert(apiKeys).values({
+  await executor.insert(apiKeys).values({
     org_id: orgId,
     agent_employee_id: employeeId,
     name: `${employeeName} API Key`,
@@ -2404,6 +2440,7 @@ agentEmployeeRoutes.post('/:id/reassign-trigger', async (c) => {
       const peers = await tx
         .select({
           id: agentEmployees.id,
+          user_id: agentEmployees.user_id,
           trigger_subscriptions: agentEmployees.trigger_subscriptions,
         })
         .from(agentEmployees)
@@ -2413,6 +2450,19 @@ agentEmployeeRoutes.post('/:id/reassign-trigger', async (c) => {
             eq(agentEmployees.is_active, true),
           ),
         );
+
+      // Taking a trigger away from an agent that is or was an owner or admin
+      // is the owner's to do (lib/membership-guard.ts), like any change to it.
+      const losing = peers.filter((peer) => peer.id !== targetEmployeeId && (peer.trigger_subscriptions ?? []).includes(trigger_kind));
+      const [acting] = await tx.select({ role: orgMembers.role }).from(orgMembers)
+        .where(and(eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, user.id), eq(orgMembers.is_active, true))).limit(1);
+      if (acting?.role !== 'owner') {
+        for (const peer of losing) {
+          if (!peer.user_id) continue;
+          const held = await holdMembership(tx, { orgId: user.org_id, targetUserId: peer.user_id });
+          if (held.protected) return { refusal: 'Only the owner can take a trigger from an agent that is or was an owner or admin' } as const;
+        }
+      }
 
       for (const peer of peers) {
         if (peer.id === targetEmployeeId) continue;
@@ -2458,6 +2508,7 @@ agentEmployeeRoutes.post('/:id/reassign-trigger', async (c) => {
 
       return updated!;
     });
+    if ('refusal' in updatedTarget) return c.json({ error: updatedTarget.refusal, code: 'FORBIDDEN' }, 403);
 
     return c.json({
       employee: updatedTarget,
@@ -2585,8 +2636,8 @@ agentEmployeeRoutes.post('/:id/pause', async (c) => {
       return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
     }
 
-    const guarded = await asOwnerForProtectedAgent(user, existing.user_id, () =>
-      db.update(agentEmployees).set({ is_active: false }).where(eq(agentEmployees.id, id)));
+    const guarded = await asOwnerForProtectedAgent(user, existing.user_id, (tx) =>
+      tx.update(agentEmployees).set({ is_active: false }).where(eq(agentEmployees.id, id)));
     if ('refusal' in guarded) return c.json({ error: guarded.refusal, code: 'FORBIDDEN' }, 403);
 
     return c.json({ success: true, is_active: false });
@@ -2618,7 +2669,9 @@ agentEmployeeRoutes.post('/:id/resume', async (c) => {
       return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
     }
 
-    await db.update(agentEmployees).set({ is_active: true }).where(eq(agentEmployees.id, id));
+    const guarded = await asOwnerForProtectedAgent(user, existing.user_id, (tx) =>
+      tx.update(agentEmployees).set({ is_active: true }).where(eq(agentEmployees.id, id)));
+    if ('refusal' in guarded) return c.json({ error: guarded.refusal, code: 'FORBIDDEN' }, 403);
 
     return c.json({ success: true, is_active: true });
   } catch (err) {
@@ -3539,7 +3592,8 @@ agentEmployeeRoutes.post('/:id/regenerate-token', async (c) => {
       .limit(1);
     if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
 
-    const guarded = await asOwnerForProtectedAgent(user, employee.user_id, () => issueMcpToken({
+    const guarded = await asOwnerForProtectedAgent(user, employee.user_id, (tx) => issueMcpToken({
+      executor: tx,
       orgId: user.org_id,
       employeeId: employee.id,
       employeeName: employee.name,
@@ -3583,7 +3637,8 @@ agentEmployeeRoutes.post('/:id/regenerate-channel-token', async (c) => {
       .limit(1);
     if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
 
-    const guarded = await asOwnerForProtectedAgent(user, employee.user_id, () => issueAgentChannelToken({
+    const guarded = await asOwnerForProtectedAgent(user, employee.user_id, (tx) => issueAgentChannelToken({
+      executor: tx,
       orgId: user.org_id,
       employeeId: employee.id,
       employeeName: employee.name,

@@ -34,7 +34,7 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
 
   const { db, closeDb } = await import('../src/lib/db.js');
   const { env } = await import('../src/lib/env.js');
-  const { users, orgs, orgMembers, invites, webSessions, agentEmployees, spaces, spaceMembers } = await import('@deft/db/schema');
+  const { users, orgs, orgMembers, invites, webSessions, agentEmployees, spaces, spaceMembers, projects, mcpTokens, agentChannelTokens, skills } = await import('@deft/db/schema');
   const { userTwoStep, userTwoStepRecoveryCodes, twoStepChallenges } = await import('@deft/db/two-step');
   const { authRoutes } = await import('../src/routes/auth.js');
   const { twoStepRoutes } = await import('../src/routes/two-step.js');
@@ -983,6 +983,97 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     assert.equal(deadInvite.json.code, 'INVITE_REVOKED');
   });
 
+  await t.test('round 8 reproductions (Opus, sol, astra) are fixed', async () => {
+    const r8Org = randomUUID();
+    await db.insert(orgs).values({ id: r8Org, name: 'Round 8', slug: `r8-${r8Org}` });
+    hosted(false);
+    const owner = await person('owner', r8Org);
+    const admin = await person('admin', r8Org);
+    const ownerSession = (await login(owner.email)).json.accessToken as string;
+    const adminSession = (await login(admin.email)).json.accessToken as string;
+    async function agent(role: 'member' | 'admin') {
+      const userId = randomUUID();
+      const employeeId = randomUUID();
+      await db.insert(users).values({ id: userId, name: 'R8 agent', email: `${userId}@agents.test`, kind: 'agent', is_agent: true, email_verified: true });
+      await db.insert(orgMembers).values({ org_id: r8Org, user_id: userId, role: 'member' });
+      await db.insert(agentEmployees).values({
+        id: employeeId, org_id: r8Org, user_id: userId, name: 'R8 agent', slug: `r8-agent-${employeeId.slice(0, 8)}`,
+        role: 'project_manager', system_prompt: 'Fixture', trust_level: 'conservative', is_byoa: true, is_active: true, created_by: owner.id,
+      });
+      if (role === 'admin') assert.equal((await call('PATCH', `/api/members/${userId}`, { role: 'admin' }, ownerSession)).status, 200);
+      return { userId, employeeId };
+    }
+
+    // Opus and astra: concurrent key resets used to hold every pooled
+    // connection while each waited for another. They all finish now.
+    const many = await Promise.all(Array.from({ length: 8 }, () => agent('member')));
+    const resets = Promise.all(many.map((a) => call('POST', `/api/agent-employees/${a.employeeId}/regenerate-channel-token`, {}, adminSession)));
+    const finished = await Promise.race([resets, new Promise<null>((resolve) => setTimeout(() => resolve(null), 20_000))]);
+    assert.ok(finished, 'eight concurrent key resets finish');
+    assert.deepEqual(finished.map((r) => r.status), many.map(() => 200));
+
+    // Opus, sol, astra: a peer admin cannot resume an admin agent the owner paused.
+    const adminAgent = await agent('admin');
+    assert.equal((await call('POST', `/api/agent-employees/${adminAgent.employeeId}/pause`, {}, ownerSession)).status, 200);
+    assert.equal((await call('POST', `/api/agent-employees/${adminAgent.employeeId}/resume`, {}, adminSession)).status, 403);
+    assert.equal((await db.select({ is_active: agentEmployees.is_active }).from(agentEmployees).where(eq(agentEmployees.id, adminAgent.employeeId)))[0]!.is_active, false);
+
+    // Opus: reassigning a trigger takes it away from every other agent; a
+    // peer admin may not take it from an admin agent.
+    const [skill] = await db.insert(skills).values({ name: 'R8 trigger skill', slug: `r8-skill-${randomUUID().slice(0, 8)}`, source: 'org', org_id: r8Org,
+      agent_config: { triggers: ['member.joined'] } }).returning({ id: skills.id });
+    const holder = await agent('admin');
+    await db.update(agentEmployees).set({ trigger_subscriptions: ['member.joined'] }).where(eq(agentEmployees.id, holder.employeeId));
+    const taker = await agent('member');
+    const peerReassign = await call('POST', `/api/agent-employees/${taker.employeeId}/reassign-trigger`, { trigger_kind: 'member.joined', skill_id: skill!.id }, adminSession);
+    assert.equal(peerReassign.status, 403, JSON.stringify(peerReassign.json));
+    assert.deepEqual((await db.select({ t: agentEmployees.trigger_subscriptions }).from(agentEmployees).where(eq(agentEmployees.id, holder.employeeId)))[0]!.t, ['member.joined']);
+    assert.equal((await call('POST', `/api/agent-employees/${taker.employeeId}/reassign-trigger`, { trigger_kind: 'member.joined', skill_id: skill!.id }, ownerSession)).status, 200);
+
+    // Opus P4: a removal refused because the person was promoted meanwhile
+    // reassigns nothing (the reassignment is inside the locked transaction).
+    const target = await person('member', r8Org);
+    const replacement = await person('member', r8Org);
+    const [project] = await db.insert(projects).values({ org_id: r8Org, name: 'R8 project', prefix: `R${randomUUID().slice(0, 6).toUpperCase()}`, lead_id: target.id }).returning({ id: projects.id });
+    const promotion = new pg.Client({ connectionString: databaseUrl! });
+    await promotion.connect();
+    try {
+      await promotion.query('BEGIN');
+      await promotion.query('SELECT 1 FROM users WHERE id = $1 FOR UPDATE', [target.id]);
+      await promotion.query('SELECT 1 FROM org_members WHERE org_id = $1 AND user_id = $2 FOR UPDATE', [r8Org, target.id]);
+      const removal = call('DELETE', `/api/members/${target.id}`, { replacement_user_id: replacement.id }, adminSession);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await promotion.query("UPDATE org_members SET role = 'admin' WHERE org_id = $1 AND user_id = $2", [r8Org, target.id]);
+      await promotion.query('UPDATE users SET password_version = password_version + 1 WHERE id = $1', [target.id]);
+      await promotion.query('COMMIT');
+      assert.equal((await removal).status, 403);
+    } finally {
+      await promotion.end();
+    }
+    assert.equal((await db.select({ lead_id: projects.lead_id }).from(projects).where(eq(projects.id, project!.id)))[0]!.lead_id, target.id, 'the project lead did not move');
+
+    // sol: removing an agent through the members route ends its own keys too.
+    const removedAgent = await agent('member');
+    assert.equal((await call('POST', `/api/agent-employees/${removedAgent.employeeId}/regenerate-channel-token`, {}, ownerSession)).status, 200);
+    assert.equal((await call('POST', `/api/agent-employees/${removedAgent.employeeId}/regenerate-token`, { mcp_app_scopes: [], mcp_resource_scopes: [] }, ownerSession)).status, 200);
+    assert.equal((await call('DELETE', `/api/members/${removedAgent.userId}`, {}, ownerSession)).status, 200);
+    const liveTokens = await db.select({ id: mcpTokens.id }).from(mcpTokens)
+      .where(and(eq(mcpTokens.agent_employee_id, removedAgent.employeeId), isNull(mcpTokens.revoked_at)));
+    assert.equal(liveTokens.length, 0, 'no live MCP token');
+    const liveChannel = await db.select({ id: agentChannelTokens.id }).from(agentChannelTokens)
+      .where(and(eq(agentChannelTokens.agent_employee_id, removedAgent.employeeId), eq(agentChannelTokens.is_active, true)));
+    assert.equal(liveChannel.length, 0, 'no live channel key');
+    assert.equal((await db.select({ is_active: agentEmployees.is_active }).from(agentEmployees).where(eq(agentEmployees.id, removedAgent.employeeId)))[0]!.is_active, false);
+
+    // Opus nit: two invites for the same new address at once: one 201, one 409.
+    const same = `r8-same-${randomUUID()}@test.local`;
+    const both = await Promise.all([
+      call('POST', '/api/members/invite', { email: same, role: 'member' }, adminSession),
+      call('POST', '/api/members/invite', { email: same, role: 'member' }, ownerSession),
+    ]);
+    assert.deepEqual(both.map((r) => r.status).sort(), [201, 409]);
+  });
+
   await t.test('owner-only table: actor role x the target\'s past and present role x operation', async () => {
     const tableOrg = randomUUID();
     await db.insert(orgs).values({ id: tableOrg, name: 'Owner-only table', slug: `table-${tableOrg}` });
@@ -1064,6 +1155,10 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
         run: (t, as) => call('PATCH', `/api/agent-employees/${t.employeeId}`, { name: 'Edited agent' }, as) },
       { name: 'agent: pause', makesAdmin: false, states: agents,
         run: (t, as) => call('POST', `/api/agent-employees/${t.employeeId}/pause`, {}, as) },
+      { name: 'agent: resume', makesAdmin: false, states: agents,
+        run: (t, as) => call('POST', `/api/agent-employees/${t.employeeId}/resume`, {}, as) },
+      { name: 'agent: reset action budget', makesAdmin: false, states: agents,
+        run: (t, as) => call('POST', `/api/agent-employees/${t.employeeId}/action-budget/reset`, {}, as) },
     ];
     let cases = 0;
     for (const actor of ['owner', 'admin'] as const) {

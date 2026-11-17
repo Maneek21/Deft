@@ -100,6 +100,8 @@ it is treated like any member.
 Any change to a person's role or active state ends every invite link and recovery
 link made for them before it, whoever made it, and removing someone deletes their
 pending invites. A link made by an admin who has since been removed stops working.
+A recovery link made before this release records no maker and is refused (they last 24
+hours). Removing an agent through Members also ends its own keys and pauses it.
 At upgrade: a pending admin invite that an admin (not the owner) made before this
 release stops working, because it cannot be shown to be that person's first grant;
 the owner re-sends it. An invite link made before this release also stops working at
