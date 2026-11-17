@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { BellRing, Check, Loader2, Monitor, Send, Trash2 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { activePushRegistration, currentPushDevice } from '@/lib/browser-push';
 
 type PushPreferences = {
   enabled: boolean;
@@ -18,6 +19,7 @@ type PushPreferences = {
 
 type Device = {
   id: string;
+  endpoint_hash: string;
   device_name: string | null;
   user_agent: string | null;
   last_used_at: string | null;
@@ -65,6 +67,7 @@ export function BrowserNotificationSettings() {
   const [configured, setConfigured] = useState(false);
   const [publicKey, setPublicKey] = useState<string | null>(null);
   const [devices, setDevices] = useState<Device[]>([]);
+  const [currentDeviceId, setCurrentDeviceId] = useState<string | null>(null);
   const [permission, setPermission] = useState<NotificationPermission | 'unsupported'>('default');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
@@ -81,6 +84,7 @@ export function BrowserNotificationSettings() {
     setConfigured(Boolean(body.configured));
     setPublicKey(typeof body.public_key === 'string' ? body.public_key : null);
     setDevices(Array.isArray(body.devices) ? body.devices : []);
+    setCurrentDeviceId(supported ? await currentPushDevice(navigator.serviceWorker, body.devices ?? []).catch(() => null) : null);
   };
 
   useEffect(() => {
@@ -114,7 +118,7 @@ export function BrowserNotificationSettings() {
       const nextPermission = await Notification.requestPermission();
       setPermission(nextPermission);
       if (nextPermission !== 'granted') throw new Error('Browser permission was not granted');
-      const registration = await navigator.serviceWorker.register('/deft-sw.js');
+      const registration = await activePushRegistration(navigator.serviceWorker);
       const existing = await registration.pushManager.getSubscription();
       const subscription = existing ?? await registration.pushManager.subscribe({
         userVisibleOnly: true,
@@ -180,7 +184,7 @@ export function BrowserNotificationSettings() {
             </p>
           </div>
         </div>
-        {preferences.enabled && devices.length > 0 ? (
+        {preferences.enabled && currentDeviceId && permission === 'granted' ? (
           <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium" style={{ background: 'color-mix(in srgb, var(--success) 12%, transparent)', color: 'var(--success)' }}>
             <Check size={12} /> Enabled
           </span>

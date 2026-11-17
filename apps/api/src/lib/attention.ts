@@ -12,6 +12,7 @@ import {
   spaceMembers,
   spaces,
   tasks,
+  users,
 } from '@deft/db/schema';
 import { db } from './db.js';
 import { emitToUser } from '../socket.js';
@@ -332,7 +333,7 @@ export async function upsertAttentionItem(
   draft: AttentionDraft,
   options: { deliver?: boolean; executor?: Pick<typeof db, 'select' | 'insert'>;
     afterCommit?: (effect: () => Promise<void>) => void } = {},
-) {
+): Promise<typeof attentionItems.$inferSelect | null> {
   const executor = options.executor ?? db;
   const [existingEvent] = await executor
     .select({ attention_item_id: attentionEvents.attention_item_id })
@@ -461,7 +462,19 @@ export async function syncNotificationToAttention(
       // Legacy links without a parseable task target remain notification-backed.
     }
   }
-  return upsertAttentionItem(draft, options);
+  const [existingEvent] = await db.select({ itemId: attentionEvents.attention_item_id }).from(attentionEvents)
+    .where(and(eq(attentionEvents.org_id, draft.orgId), eq(attentionEvents.user_id, draft.userId),
+      eq(attentionEvents.source_event_id, draft.sourceEventId), eq(attentionEvents.event_type, 'source_event'))).limit(1);
+  const effects: Array<() => Promise<void>> = [];
+  const item = existingEvent
+    ? await upsertAttentionItem(draft, { deliver: false })
+    : await db.transaction(async (tx) => {
+      await tx.select({ id: users.id }).from(users).where(eq(users.id, draft.userId)).for('no key update');
+      return upsertAttentionItem(draft, { deliver: false, executor: tx, afterCommit: (effect) => effects.push(effect) });
+    });
+  for (const effect of effects) await effect();
+  if (options?.deliver !== false && item) await scheduleVisibleNotificationItems([item]);
+  return item;
 }
 
 function draftIdentity(draft: AttentionDraft) {
@@ -481,17 +494,25 @@ export async function syncNotificationsToAttention(
   const drafts = sourceNotifications.map(notificationToAttentionDraft);
   const sourceEventIds = drafts.map((draft) => draft.sourceEventId);
 
-  const items = await db.transaction(async (tx) => {
+  const { projected, items } = await db.transaction(async (tx) => {
+    // Serialize projection for a recipient with the single-item back-fill path.
+    await tx.select({ id: users.id }).from(users)
+      .where(inArray(users.id, drafts.map((draft) => draft.userId))).orderBy(users.id).for('no key update');
     const existingEvents = await tx
-      .select({ source_event_id: attentionEvents.source_event_id })
+      .select({ source_event_id: attentionEvents.source_event_id, attention_item_id: attentionEvents.attention_item_id })
       .from(attentionEvents)
       .where(and(
+        inArray(attentionEvents.org_id, drafts.map((draft) => draft.orgId)),
+        inArray(attentionEvents.user_id, drafts.map((draft) => draft.userId)),
         inArray(attentionEvents.source_event_id, sourceEventIds),
         eq(attentionEvents.event_type, 'source_event'),
       ));
     const alreadyProjected = new Set(existingEvents.map((event) => event.source_event_id));
     const pendingDrafts = drafts.filter((draft) => !alreadyProjected.has(draft.sourceEventId));
-    if (pendingDrafts.length === 0) return [];
+    const existingItems = existingEvents.length ? await tx.select().from(attentionItems)
+      .where(and(inArray(attentionItems.org_id, drafts.map((draft) => draft.orgId)),
+        inArray(attentionItems.id, existingEvents.map((event) => event.attention_item_id)))) : [];
+    if (pendingDrafts.length === 0) return { projected: [], items: existingItems };
 
     const grouped = new Map<string, { draft: AttentionDraft; eventCount: number }>();
     for (const draft of pendingDrafts) {
@@ -567,17 +588,52 @@ export async function syncNotificationsToAttention(
       })))
       .onConflictDoNothing();
 
-    return projected;
+    const projectedIds = new Set(projected.map((item) => item.id));
+    return { projected, items: [...projected, ...existingItems.filter((item) => !projectedIds.has(item.id))] };
   });
 
-  for (const item of items) await emitAttention(item.event_count > 1 ? 'attention:updated' : 'attention:new', item);
+  const visible = await filterVisibleAttentionItemsForDelivery(items).catch((error) => {
+    console.warn('[attention] visibility check failed:', error instanceof Error ? error.message : error);
+    return [];
+  });
+  const projectedIds = new Set(projected.map((item) => item.id));
+  for (const item of visible) {
+    if (projectedIds.has(item.id)) {
+      emitToUser(item.org_id, item.user_id, item.event_count > 1 ? 'attention:updated' : 'attention:new', projectAttentionItem(item));
+    }
+  }
   if (options.deliver !== false) {
-    await scheduleAttentionDeliveries(items).catch((error) => {
+    await scheduleAttentionDeliveries(visible).catch((error) => {
       console.warn('[attention] push scheduling failed:', error instanceof Error ? error.message : error);
       return [];
     });
   }
-  return items;
+  return projected;
+}
+
+async function scheduleVisibleNotificationItems(items: Array<typeof attentionItems.$inferSelect>) {
+  await filterVisibleAttentionItemsForDelivery(items).then(scheduleAttentionDeliveries).catch((error) => {
+    console.warn('[attention] push scheduling failed:', error instanceof Error ? error.message : error);
+  });
+}
+
+async function filterVisibleAttentionItemsForDelivery(items: Array<typeof attentionItems.$inferSelect>) {
+  const groups = new Map<string, Array<typeof attentionItems.$inferSelect>>();
+  for (const item of items) {
+    const key = `${item.org_id}:${item.user_id}`;
+    groups.set(key, [...(groups.get(key) ?? []), item]);
+  }
+  const visible: Array<typeof attentionItems.$inferSelect> = [];
+  for (const group of groups.values()) {
+    const first = group[0]!;
+    const versions = new Map(group.map((item) => [item.id, item.version]));
+    const rows = await db.select().from(attentionItems).where(and(
+      eq(attentionItems.org_id, first.org_id), eq(attentionItems.user_id, first.user_id),
+      inArray(attentionItems.id, group.map((item) => item.id)), visibleAttentionCondition(first.user_id),
+    ));
+    visible.push(...rows.filter((item) => versions.get(item.id) === item.version));
+  }
+  return visible;
 }
 
 export async function filterVisibleAttentionItems<T extends typeof attentionItems.$inferSelect>(

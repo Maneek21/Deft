@@ -24,6 +24,7 @@ pushRoutes.get('/status', async (c) => {
   const devices = await db
     .select({
       id: webPushSubscriptions.id,
+      endpoint_hash: webPushSubscriptions.endpoint_hash,
       device_name: webPushSubscriptions.device_name,
       user_agent: webPushSubscriptions.user_agent,
       last_used_at: webPushSubscriptions.last_used_at,
