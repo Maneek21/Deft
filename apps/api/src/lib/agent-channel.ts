@@ -210,6 +210,8 @@ export type PublishAgentChannelEventInput = {
   actorUserId?: string | null;
   payload?: Record<string, unknown>;
   idempotencyKey: string;
+  /** Run on the caller's transaction (lib/agent-management.ts) instead of a new connection. */
+  executor?: Pick<typeof db, 'select' | 'insert'>;
 };
 
 export type AgentChannelPrincipal = {
@@ -223,6 +225,8 @@ export type AgentChannelPrincipal = {
 const CHANNEL_TOKEN_ROUNDS = 10;
 
 export async function issueAgentChannelToken(params: {
+  /** Run on the caller's transaction (lib/agent-management.ts) instead of a new connection. */
+  executor?: Pick<typeof db, 'select' | 'insert' | 'update' | 'delete'>;
   orgId: string;
   employeeId: string;
   employeeName: string;
@@ -231,10 +235,11 @@ export async function issueAgentChannelToken(params: {
 }): Promise<{ raw: string; prefix: string; tokenId: string }> {
   const raw = `deft_ch_${randomBytes(32).toString('base64url')}`;
   const prefix = raw.slice(0, 18);
+  const exec = params.executor ?? db;
   const hash = await bcrypt.hash(raw, CHANNEL_TOKEN_ROUNDS);
 
   if (params.deactivateExisting ?? true) {
-    await db
+    await exec
       .update(agentChannelTokens)
       .set({ is_active: false, revoked_at: new Date() })
       .where(
@@ -246,7 +251,7 @@ export async function issueAgentChannelToken(params: {
       );
   }
 
-  const [row] = await db
+  const [row] = await exec
     .insert(agentChannelTokens)
     .values({
       org_id: params.orgId,
@@ -325,7 +330,8 @@ export async function publishAgentChannelEvent(input: PublishAgentChannelEventIn
   }
 
   const id = crypto.randomUUID();
-  const insertRows = await db
+  const exec = input.executor ?? db;
+  const insertRows = await exec
     .insert(agentChannelEvents)
     .values({
       id,
@@ -354,7 +360,7 @@ export async function publishAgentChannelEvent(input: PublishAgentChannelEventIn
     return { event: insertRows[0], created: true };
   }
 
-  const [existing] = await db
+  const [existing] = await exec
     .select()
     .from(agentChannelEvents)
     .where(

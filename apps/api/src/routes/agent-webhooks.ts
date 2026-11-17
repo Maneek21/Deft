@@ -27,6 +27,7 @@ import { agentWebhooks, agentEmployees } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { encrypt, decrypt } from '../lib/encryption.js';
 import { requireOrgAdmin } from '../lib/org-admin-guard.js';
+import { manageAgent } from '../lib/agent-management.js';
 
 export const agentWebhookRoutes = new Hono();
 
@@ -71,24 +72,19 @@ agentWebhookRoutes.post('/', async (c) => {
       return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR', details: parsed.error.flatten() }, 400);
     }
 
-    const [emp] = await db
-      .select({ id: agentEmployees.id })
-      .from(agentEmployees)
-      .where(and(eq(agentEmployees.id, parsed.data.agent_employee_id), eq(agentEmployees.org_id, user.org_id)))
-      .limit(1);
-    if (!emp) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
-
     const slug = randomSlug();
     const secret = randomSecret();
     const hmacKey = randomHmacKey();
     const id = crypto.randomUUID();
 
-    const [inserted] = await db
+    // A webhook can wake the agent: creating one manages the agent
+    // (lib/agent-management.ts), which also checks it is in this org.
+    const managed = await manageAgent({ userId: user.id, orgId: user.org_id }, parsed.data.agent_employee_id, (tx, agent) => tx
       .insert(agentWebhooks)
       .values({
         id,
         org_id: user.org_id,
-        agent_employee_id: emp.id,
+        agent_employee_id: agent.employeeId,
         slug,
         secret_hash: hashSecret(secret),
         hmac_key_encrypted: encrypt(hmacKey),
@@ -96,7 +92,9 @@ agentWebhookRoutes.post('/', async (c) => {
         enabled: true,
         created_by: user.id,
       })
-      .returning();
+      .returning());
+    if (!managed.ok) return c.json({ error: managed.error, code: managed.code }, managed.status);
+    const [inserted] = managed.value;
 
     return c.json({
       webhook: {
@@ -164,11 +162,16 @@ agentWebhookRoutes.delete('/:id', async (c) => {
   try {
     const user = c.get('user');
     const id = c.req.param('id');
-    const res = await db
+    const [hook] = await db.select({ agent_employee_id: agentWebhooks.agent_employee_id }).from(agentWebhooks)
+      .where(and(eq(agentWebhooks.id, id), eq(agentWebhooks.org_id, user.org_id))).limit(1);
+    if (!hook) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+    // Revoking an agent's webhook manages the agent (lib/agent-management.ts).
+    const managed = await manageAgent({ userId: user.id, orgId: user.org_id }, hook.agent_employee_id, (tx) => tx
       .delete(agentWebhooks)
-      .where(and(eq(agentWebhooks.id, id), eq(agentWebhooks.org_id, user.org_id)))
-      .returning({ id: agentWebhooks.id });
-    if (res.length === 0) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+      .where(and(eq(agentWebhooks.id, id), eq(agentWebhooks.org_id, user.org_id), eq(agentWebhooks.agent_employee_id, hook.agent_employee_id)))
+      .returning({ id: agentWebhooks.id }));
+    if (!managed.ok) return c.json({ error: managed.error, code: managed.code }, managed.status);
+    if (managed.value.length === 0) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
     return c.json({ revoked: true });
   } catch (err) {
     console.error('Failed to revoke webhook:', err);

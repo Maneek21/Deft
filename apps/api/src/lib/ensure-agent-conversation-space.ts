@@ -12,19 +12,22 @@ export type EnsureAgentConversationSpaceArgs = {
   agentUserId: string;
   conversationId: string;
   title: string;
+  /** Run on the caller's transaction (lib/agent-management.ts) instead of a new connection. */
+  executor?: Pick<typeof db, 'select' | 'insert'>;
 };
 
 export async function ensureAgentConversationSpace(args: EnsureAgentConversationSpaceArgs): Promise<void> {
   const { orgId, userId, agentUserId, conversationId, title } = args;
+  const exec = args.executor ?? db;
 
   // 1. Ensure spaces row exists with this exact id.
-  const [existing] = await db.select({ id: spaces.id })
+  const [existing] = await exec.select({ id: spaces.id })
     .from(spaces)
     .where(eq(spaces.id, conversationId))
     .limit(1);
 
   if (!existing) {
-    await db.insert(spaces).values({
+    await exec.insert(spaces).values({
       id: conversationId,
       org_id: orgId,
       name: title,
@@ -34,7 +37,7 @@ export async function ensureAgentConversationSpace(args: EnsureAgentConversation
   }
 
   // 2. Ensure both members are present.
-  await db.insert(spaceMembers).values([
+  await exec.insert(spaceMembers).values([
     { space_id: conversationId, user_id: userId },
     { space_id: conversationId, user_id: agentUserId },
   ]).onConflictDoNothing();

@@ -7,22 +7,20 @@ import type { db } from './db.js';
  * Who may manage whom in a workspace, and the one locked path every such
  * operation takes.
  *
- * THE RULE (owner's decision, 17 Nov), for HUMAN memberships (users.kind =
- * 'human'). Granting admin is open to admins: an admin may invite a
- * brand-new person as admin, promote a member or guest, or (re-)invite as
- * admin someone whose membership has never been owner or admin. Everything
- * else about a human membership that is or ever was owner or admin, a
- * pending admin invite included, is the owner's alone (or a server
- * operator's, `src/scripts/make-recovery-url.ts`), with no exceptions:
- * demote, remove, deactivate, reactivate, re-invite, reissue or revoke its
- * invite, recovery link. The grant is a one-way door: once a person is
- * admin, even pending, only the owner touches their membership.
+ * THE RULE (owner's decision, 17 Nov), for every membership: a person's or
+ * an agent's. Granting admin is open to admins: an admin may invite a
+ * brand-new person as admin, promote a member or guest (or a member-level
+ * agent), or (re-)invite as admin someone whose membership has never been
+ * owner or admin. Everything else about a membership that is or ever was
+ * owner or admin, a pending admin invite included, is the owner's alone (or
+ * a server operator's, `src/scripts/make-recovery-url.ts`), with no
+ * exceptions: demote, remove, deactivate, reactivate, re-invite, reissue or
+ * revoke its invite, recovery link. The grant is a one-way door: once a
+ * membership is admin, even pending, only the owner touches it.
  *
- * NOT COVERED: agent and system memberships (users.kind 'agent' or
- * 'system'). Admins manage an agent that holds admin rights exactly as before
- * this rule (only a current owner membership is protected, as it always
- * was). Owner-only management of admin agents, across the agent-employee
- * routes, API keys, webhooks, MCP tools and budgets, is a separate follow-up.
+ * An agent employee's own credentials, state, authority and wake-ups follow
+ * the same rule through one choke point, `lib/agent-management.ts`
+ * (`manageAgent`), which uses `isProtectedMembership` below.
  *
  * "Was" comes from `org_member_privilege_history`, written at the first
  * grant (or the first time a role leaves owner or admin) in the same locked
@@ -81,18 +79,10 @@ export class MembershipGuardError extends Error {
 const privilegedRole = (role: string | null | undefined) => role === 'owner' || role === 'admin';
 
 /**
- * Is or was this membership owner or admin, for the rule above? A membership
- * that is not a person's (an agent or the system user) counts only while it
- * is the owner.
+ * Is or was this membership owner or admin, for the rule above? (A person's
+ * or an agent's alike.)
  */
-async function readProtection(reader: Reader, orgId: string, userId: string, role: string | null | undefined, kind?: string | null): Promise<boolean> {
-  if (role === 'owner') return true;
-  let accountKind = kind;
-  if (accountKind === undefined) {
-    const [account] = await reader.select({ kind: users.kind }).from(users).where(eq(users.id, userId)).limit(1);
-    accountKind = account?.kind ?? null;
-  }
-  if (accountKind !== 'human') return false;
+async function readProtection(reader: Reader, orgId: string, userId: string, role: string | null | undefined): Promise<boolean> {
   if (privilegedRole(role)) return true;
   const [history] = await reader.select({ org_id: orgMemberPrivilegeHistory.org_id }).from(orgMemberPrivilegeHistory)
     .where(and(eq(orgMemberPrivilegeHistory.org_id, orgId), eq(orgMemberPrivilegeHistory.user_id, userId))).limit(1);
@@ -109,11 +99,11 @@ export async function lockMembership(tx: Tx, input: { orgId: string; targetUserI
   return {
     account: account ?? null,
     membership: membership ?? null,
-    protected: membership ? await readProtection(tx, input.orgId, input.targetUserId, membership.role, account?.kind ?? null) : false,
+    protected: membership ? await readProtection(tx, input.orgId, input.targetUserId, membership.role) : false,
   };
 }
 
-/** Is or was this human membership owner or admin? (Also used where a link is redeemed.) */
+/** Is or was this membership owner or admin? (Also used where a link is redeemed.) */
 export function isProtectedMembership(reader: Reader, orgId: string, userId: string, role: string | null | undefined) {
   return readProtection(reader, orgId, userId, role);
 }
@@ -135,7 +125,7 @@ export async function authorizeMembershipOperation(
   if (acting?.role !== 'admin') return 'Only the owner or an admin can manage members';
   // An admin may grant admin to someone never privileged (resultingRole), but
   // never act on a human membership that is or was owner or admin.
-  if (input.locked.protected) return 'Only the owner can manage a person who is or was an owner or admin';
+  if (input.locked.protected) return 'Only the owner can manage someone who is or was an owner or admin';
   return null;
 }
 

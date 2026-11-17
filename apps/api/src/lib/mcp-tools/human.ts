@@ -92,6 +92,7 @@ import {
   type AppActionOperationName,
 } from '../app-action-operations.js';
 
+import { manageAgent } from '../agent-management.js';
 import { RUNTIME_WORKFLOW_NAMES, RUNTIME_WORKFLOW_SCOPES, isRuntimeWorkflowTool, runtimeWorkflowHasScopes, humanRuntimeWorkflowTool } from '../app-runtime-workflow-tools.js';
 
 export type HumanToolContext = {
@@ -3849,7 +3850,11 @@ export async function humanAgentEmployeeUpdateState(args: Record<string, unknown
     else if (args.state === 'active') updates.is_active = true;
     else if (args.state === 'healthy') { updates.unhealthy = false; updates.unhealthy_reason = null; }
     else return errorResult('state must be active, paused, or healthy');
-    const [updated] = await db.update(agentEmployees).set(updates).where(and(eq(agentEmployees.id, args.employee_id as string), eq(agentEmployees.org_id, ctx.org_id), eq(agentEmployees.is_deleted, false))).returning({ id: agentEmployees.id, name: agentEmployees.name, is_active: agentEmployees.is_active, unhealthy: agentEmployees.unhealthy });
+    // The same choke point as the HTTP routes (lib/agent-management.ts): an
+    // agent that is or was an owner or admin is the owner's to pause or resume.
+    const managed = await manageAgent({ userId: ctx.user_id, orgId: ctx.org_id }, args.employee_id as string, (tx) => tx.update(agentEmployees).set(updates).where(and(eq(agentEmployees.id, args.employee_id as string), eq(agentEmployees.org_id, ctx.org_id), eq(agentEmployees.is_deleted, false))).returning({ id: agentEmployees.id, name: agentEmployees.name, is_active: agentEmployees.is_active, unhealthy: agentEmployees.unhealthy }));
+    if (!managed.ok) return errorResult(managed.error);
+    const [updated] = managed.value;
     return updated ? textResult({ updated: true, employee: updated, url: `/settings/agent-employees/${updated.id}` }) : errorResult('Agent employee not found');
   });
 }

@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { eq, and, desc, sql, or, isNull, asc, gte, lt, inArray, notInArray } from 'drizzle-orm';
 import crypto from 'node:crypto';
 import { db } from '../lib/db.js';
+import { agentManagementView, authorizeAgentManagement, manageAgent, managementFor, ownerOnlyAgentUsers, type AgentManagementRefusal } from '../lib/agent-management.js';
+import { lockMembership, recordMembershipChange } from '../lib/membership-guard.js';
 import { reviewableApprovalCountsByEmployee } from '../lib/pending-approval-audience.js';
 import { hermesBundleAvailability, type HermesBundleAvailability } from '../lib/hermes-release.js';
 import {
@@ -12,6 +14,7 @@ import {
   type EmployeeMcpAppScope,
   type EmployeeMcpResourceScope,
   type EmployeeMcpScope,
+  type DbExecutor,
 } from '../lib/mcp-token.js';
 import {
   agentEmployees,
@@ -67,6 +70,11 @@ import {
 
 export const agentEmployeeRoutes = new Hono();
 
+/** A refusal from the agent-management choke point (lib/agent-management.ts). */
+function managementRefused(c: Context, refusal: AgentManagementRefusal) {
+  return c.json({ error: refusal.error, code: refusal.code }, refusal.status);
+}
+
 // ═══ TEMPLATES ═══
 
 // GET /templates — pre-built role templates read from DB.
@@ -118,7 +126,12 @@ agentEmployeeRoutes.get('/', async (c) => {
           eq(agentEmployees.is_deleted, false),
         ),
       )
-      .orderBy(desc(agentEmployees.created_at));
+      .orderBy(desc(agentEmployees.created_at))
+      // Whether the fleet page shows Pause, Resume and Delete to this viewer.
+      .then(async (rows) => {
+        const ownerOnly = rows.length > 0 ? await ownerOnlyAgentUsers(user.org_id) : new Set<string>();
+        return rows.map((row) => ({ ...row, management: managementFor(user.role, ownerOnly.has(row.user_id)) }));
+      });
 
     if (!wantsStats || employees.length === 0) {
       return c.json(employees);
@@ -508,7 +521,9 @@ agentEmployeeRoutes.get('/:id', async (c) => {
       return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
     }
 
-    return c.json(employee);
+    // Whether the settings page shows management controls to this viewer.
+    const management = await agentManagementView({ userId: user.id, orgId: user.org_id, role: user.role }, employee.user_id);
+    return c.json({ ...employee, management });
   } catch (err) {
     console.error('Failed to get agent employee:', err);
     return c.json({ error: 'Failed to get agent employee', code: 'INTERNAL_ERROR' }, 500);
@@ -1594,8 +1609,8 @@ function certificationFailureReason(params: {
   return 'Required tools were called, but the challenge nonce was not recorded in the cooperative log.';
 }
 
-async function cancelPendingCertification(orgId: string, employeeId: string, reason: string) {
-  await db.execute(sql`
+async function cancelPendingCertification(orgId: string, employeeId: string, reason: string, executor: Pick<typeof db, 'execute'> = db) {
+  await executor.execute(sql`
     UPDATE agent_certification_challenges
     SET status = 'reset',
         failure_reason = ${reason},
@@ -1605,7 +1620,7 @@ async function cancelPendingCertification(orgId: string, employeeId: string, rea
       AND employee_id = ${employeeId}
       AND status = 'pending'
   `);
-  await db.execute(sql`
+  await executor.execute(sql`
     UPDATE agent_channel_events
     SET status = 'cancelled',
         completed_at = COALESCE(completed_at, now()),
@@ -1625,6 +1640,7 @@ async function cancelPendingCertification(orgId: string, employeeId: string, rea
 }
 
 async function issueMcpToken({
+  executor = db,
   orgId,
   employeeId,
   employeeName,
@@ -1633,6 +1649,8 @@ async function issueMcpToken({
   resourceScopes = [],
   deactivateExisting = false,
 }: {
+  /** The choke point's transaction (lib/agent-management.ts), or a new connection. */
+  executor?: DbExecutor;
   orgId: string;
   employeeId: string;
   employeeName: string;
@@ -1646,6 +1664,7 @@ async function issueMcpToken({
   const keyPrefix = rawApiKey.slice(0, 12);
 
   const issued = await issueScopedEmployeeMcpToken({
+    executor,
     orgId,
     employeeId,
     name: `${employeeName} MCP token`,
@@ -1658,13 +1677,13 @@ async function issueMcpToken({
   });
 
   if (deactivateExisting) {
-    await db
+    await executor
       .update(apiKeys)
       .set({ is_active: false })
       .where(and(eq(apiKeys.org_id, orgId), eq(apiKeys.agent_employee_id, employeeId)));
   }
 
-  await db.insert(apiKeys).values({
+  await executor.insert(apiKeys).values({
     org_id: orgId,
     agent_employee_id: employeeId,
     name: `${employeeName} API Key`,
@@ -1933,23 +1952,26 @@ agentEmployeeRoutes.put('/:id', async (c) => {
       return c.json(existing);
     }
 
-    const [updated] = await db
-      .update(agentEmployees)
-      .set(updates)
-      .where(eq(agentEmployees.id, id))
-      .returning();
+    const managed = await manageAgent({ userId: user.id, orgId: user.org_id }, id, async (tx) => {
+      const [row] = await tx
+        .update(agentEmployees)
+        .set(updates)
+        .where(eq(agentEmployees.id, id))
+        .returning();
+      // Also update the user name if changed
+      if (data.name) {
+        await tx.update(users).set({ name: data.name }).where(eq(users.id, existing.user_id));
+      }
+      if (data.job_title !== undefined) {
+        await tx.update(users).set({ title: data.job_title ?? roleToTitle(existing.role) }).where(eq(users.id, existing.user_id));
+      }
+      return row;
+    });
+    if (!managed.ok) return managementRefused(c, managed);
     if (data.project_ids !== undefined) {
       invalidatePlatformContextCacheFor(id);
     }
-
-    // Also update the user name if changed
-    if (data.name) {
-      await db.update(users).set({ name: data.name }).where(eq(users.id, existing.user_id));
-    }
-    if (data.job_title !== undefined) {
-      await db.update(users).set({ title: data.job_title ?? roleToTitle(existing.role) }).where(eq(users.id, existing.user_id));
-    }
-    return c.json(updated);
+    return c.json(managed.value);
   } catch (err) {
     console.error('Failed to update agent employee:', err);
     return c.json({ error: 'Failed to update agent employee', code: 'INTERNAL_ERROR' }, 500);
@@ -2141,31 +2163,29 @@ agentEmployeeRoutes.patch('/:id', async (c) => {
       return c.json(existing);
     }
 
-    let updated = existing;
-    if (Object.keys(updates).length > 0) {
-      const [row] = await db
-        .update(agentEmployees)
-        .set(updates)
-        .where(eq(agentEmployees.id, id))
-        .returning();
-      if (row) updated = row;
-    }
-
-    if (parsed.data.mark_healthy === true) {
-      // Idempotent — clears the unhealthy flag regardless of current state.
-      await db.execute(
-        sql`UPDATE agent_employees
-              SET unhealthy = false,
-                  unhealthy_reason = NULL
-            WHERE id = ${id}`,
-      );
-      const [refreshed] = await db
-        .select()
-        .from(agentEmployees)
-        .where(eq(agentEmployees.id, id))
-        .limit(1);
-      if (refreshed) updated = refreshed;
-    }
+    const managed = await manageAgent({ userId: user.id, orgId: user.org_id }, id, async (tx) => {
+      let row = existing;
+      if (Object.keys(updates).length > 0) {
+        const [changed] = await tx
+          .update(agentEmployees)
+          .set(updates)
+          .where(eq(agentEmployees.id, id))
+          .returning();
+        if (changed) row = changed;
+      }
+      if (parsed.data.mark_healthy === true) {
+        // Idempotent — clears the unhealthy flag regardless of current state.
+        const [healthy] = await tx
+          .update(agentEmployees)
+          .set({ unhealthy: false, unhealthy_reason: null })
+          .where(eq(agentEmployees.id, id))
+          .returning();
+        if (healthy) row = healthy;
+      }
+      return row;
+    });
+    if (!managed.ok) return managementRefused(c, managed);
+    const updated = managed.value;
 
     // Task 8.3 — kick the scheduler so the new cadence takes effect on
     // the next tick. Best-effort — if the cron is already pending this
@@ -2194,7 +2214,7 @@ agentEmployeeRoutes.post('/:id/action-budget/reset', async (c) => {
     const user = c.get('user');
     const employeeId = c.req.param('id');
     const now = new Date();
-    const reset = await db.transaction(async (tx) => {
+    const managedReset = await manageAgent({ userId: user.id, orgId: user.org_id }, employeeId, async (tx) => {
       const [employee] = await tx.select({
         id: agentEmployees.id,
         daily_action_count: agentEmployees.daily_action_count,
@@ -2240,6 +2260,8 @@ agentEmployeeRoutes.post('/:id/action-budget/reset', async (c) => {
         previousCount: employee.daily_action_count,
       };
     });
+    if (!managedReset.ok) return managementRefused(c, managedReset);
+    const reset = managedReset.value;
 
     if (!reset) {
       return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
@@ -2369,7 +2391,8 @@ agentEmployeeRoutes.post('/:id/reassign-trigger', async (c) => {
     // 4. Reassign in a transaction: strip trigger_kind from every other
     //    active employee in this org, install skill on target, and union
     //    any remaining skill triggers into the target's inline column.
-    const updatedTarget = await db.transaction(async (tx) => {
+    const actor = { userId: user.id, orgId: user.org_id };
+    const managedTarget = await manageAgent(actor, targetEmployeeId, async (tx) => {
       // Strip the trigger from peers (inline column only — skill-owned
       // triggers would require uninstalling the skill, which is a separate
       // user flow).
@@ -2386,10 +2409,14 @@ agentEmployeeRoutes.post('/:id/reassign-trigger', async (c) => {
           ),
         );
 
-      for (const peer of peers) {
-        if (peer.id === targetEmployeeId) continue;
+      // Taking the trigger from a peer manages that peer too: the same rule,
+      // under each peer's own locks, in a fixed order.
+      const losing = peers
+        .filter((peer) => peer.id !== targetEmployeeId && (peer.trigger_subscriptions ?? []).includes(trigger_kind))
+        .sort((a, b) => a.id.localeCompare(b.id));
+      for (const peer of losing) {
+        await authorizeAgentManagement(tx, actor, peer.id);
         const claims = peer.trigger_subscriptions ?? [];
-        if (!claims.includes(trigger_kind)) continue;
         const next = claims.filter((t) => t !== trigger_kind);
         await tx
           .update(agentEmployees)
@@ -2430,6 +2457,8 @@ agentEmployeeRoutes.post('/:id/reassign-trigger', async (c) => {
 
       return updated!;
     });
+    if (!managedTarget.ok) return managementRefused(c, managedTarget);
+    const updatedTarget = managedTarget.value;
 
     return c.json({
       employee: updatedTarget,
@@ -2473,15 +2502,22 @@ agentEmployeeRoutes.delete('/:id', async (c) => {
     // is_deleted=false so the row disappears from the UI. The shadow user
     // is flipped out of is_agent so cross-references don't spuriously
     // render it as a real employee.
-    await db
-      .update(agentEmployees)
-      .set({ is_active: false, is_deleted: true, deleted_at: new Date() })
-      .where(eq(agentEmployees.id, id));
-    await db.update(users).set({ is_agent: false }).where(eq(users.id, existing.user_id));
-    await db
-      .update(orgMembers)
-      .set({ is_active: false, updated_at: new Date() })
-      .where(and(eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, existing.user_id)));
+    // The agent's membership ends on the membership locked path
+    // (lib/membership-guard.ts), under the choke point's locks.
+    const managed = await manageAgent({ userId: user.id, orgId: user.org_id }, id, async (tx) => {
+      const locked = await lockMembership(tx, { orgId: user.org_id, targetUserId: existing.user_id });
+      await recordMembershipChange(tx, { orgId: user.org_id, targetUserId: existing.user_id, locked, change: { isActive: false } });
+      await tx
+        .update(agentEmployees)
+        .set({ is_active: false, is_deleted: true, deleted_at: new Date() })
+        .where(eq(agentEmployees.id, id));
+      await tx.update(users).set({ is_agent: false }).where(eq(users.id, existing.user_id));
+      await tx
+        .update(orgMembers)
+        .set({ is_active: false, updated_at: new Date() })
+        .where(and(eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, existing.user_id)));
+    });
+    if (!managed.ok) return managementRefused(c, managed);
 
     // Module proposals temporarily contain record values for review. Close
     // those through the module-aware terminal path before the legacy generic
@@ -2545,7 +2581,9 @@ agentEmployeeRoutes.post('/:id/pause', async (c) => {
       return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
     }
 
-    await db.update(agentEmployees).set({ is_active: false }).where(eq(agentEmployees.id, id));
+    const managed = await manageAgent({ userId: user.id, orgId: user.org_id }, id, (tx) =>
+      tx.update(agentEmployees).set({ is_active: false }).where(eq(agentEmployees.id, id)));
+    if (!managed.ok) return managementRefused(c, managed);
 
     return c.json({ success: true, is_active: false });
   } catch (err) {
@@ -2576,7 +2614,9 @@ agentEmployeeRoutes.post('/:id/resume', async (c) => {
       return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
     }
 
-    await db.update(agentEmployees).set({ is_active: true }).where(eq(agentEmployees.id, id));
+    const managed = await manageAgent({ userId: user.id, orgId: user.org_id }, id, (tx) =>
+      tx.update(agentEmployees).set({ is_active: true }).where(eq(agentEmployees.id, id)));
+    if (!managed.ok) return managementRefused(c, managed);
 
     return c.json({ success: true, is_active: true });
   } catch (err) {
@@ -2630,7 +2670,8 @@ agentEmployeeRoutes.post('/:id/channel-events/:eventId/retry', async (c) => {
     return c.json({ error: 'Only failed or cancelled deliveries can be retried', code: 'INVALID_STATE' }, 409);
   }
 
-  const [updated] = await db.update(agentChannelEvents).set({
+  // Re-delivering an event wakes the agent: the choke point decides.
+  const managed = await manageAgent({ userId: user.id, orgId: user.org_id }, id, (tx) => tx.update(agentChannelEvents).set({
     status: 'pending',
     delivered_at: null,
     acked_at: null,
@@ -2651,7 +2692,9 @@ agentEmployeeRoutes.post('/:id/channel-events/:eventId/retry', async (c) => {
     eq(agentChannelEvents.agent_employee_id, id),
     eq(agentChannelEvents.org_id, user.org_id),
     or(eq(agentChannelEvents.status, 'failed'), eq(agentChannelEvents.status, 'cancelled')),
-  )).returning();
+  )).returning());
+  if (!managed.ok) return managementRefused(c, managed);
+  const [updated] = managed.value;
   if (!updated) {
     return c.json({ error: 'Delivery state changed before it could be retried', code: 'INVALID_STATE' }, 409);
   }
@@ -2677,7 +2720,7 @@ agentEmployeeRoutes.post('/:id/channel-events/:eventId/cancel', async (c) => {
     return c.json({ error: 'Terminal deliveries cannot be cancelled', code: 'INVALID_STATE' }, 409);
   }
 
-  const [updated] = await db.update(agentChannelEvents).set({
+  const managed = await manageAgent({ userId: user.id, orgId: user.org_id }, id, (tx) => tx.update(agentChannelEvents).set({
     status: 'cancelled',
     error: 'Cancelled by an operator',
     failed_at: new Date(),
@@ -2697,7 +2740,9 @@ agentEmployeeRoutes.post('/:id/channel-events/:eventId/cancel', async (c) => {
       eq(agentChannelEvents.status, 'running'),
       eq(agentChannelEvents.status, 'approval_pending'),
     ),
-  )).returning();
+  )).returning());
+  if (!managed.ok) return managementRefused(c, managed);
+  const [updated] = managed.value;
   if (!updated) {
     return c.json({ error: 'Delivery state changed before it could be cancelled', code: 'INVALID_STATE' }, 409);
   }
@@ -2934,6 +2979,8 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
       : null;
 
     return c.json({
+      // Whether this tab shows key, certification and delivery controls to this viewer.
+      management: await agentManagementView({ userId: user.id, orgId: user.org_id, role: user.role }, employee.user_id),
       employee: {
         id: employee.id,
         slug: employee.slug,
@@ -3047,7 +3094,9 @@ agentEmployeeRoutes.post('/:id/channel-test/start', async (c) => {
     if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
 
     const nonce = `deft-channel-${employee.slug}-${crypto.randomBytes(4).toString('hex')}`;
-    const { event, created } = await publishAgentChannelEvent({
+    // A test event wakes the agent: the choke point decides.
+    const managed = await manageAgent({ userId: user.id, orgId: user.org_id }, employee.id, (tx) => publishAgentChannelEvent({
+      executor: tx,
       orgId: user.org_id,
       employeeId: employee.id,
       kind: 'certification.challenge',
@@ -3061,7 +3110,9 @@ agentEmployeeRoutes.post('/:id/channel-test/start', async (c) => {
         instruction: 'Acknowledge this event, then reply through /api/agent-channel/v1/reply with the nonce in the message.',
         expected_reply_contains: nonce,
       },
-    });
+    }));
+    if (!managed.ok) return managementRefused(c, managed);
+    const { event, created } = managed.value;
 
     return c.json({
       ok: true,
@@ -3122,52 +3173,59 @@ agentEmployeeRoutes.post('/:id/certification/start', async (c) => {
       ? Number(connectionMetadata.restart_count)
       : 0;
 
-    await cancelPendingCertification(user.org_id, employee.id, 'Superseded by a new certification challenge');
     const nonce = `deft-cert-${employee.slug}-${crypto.randomBytes(6).toString('hex')}`;
-    const [challenge] = await db
-      .insert(agentCertificationChallenges)
-      .values({
-        org_id: user.org_id,
-        employee_id: employee.id,
-        nonce,
-        required_tools: [...CERTIFICATION_REQUIRED_TOOLS],
-        status: 'pending',
-      })
-      .returning();
-    if (!challenge) throw new Error('Certification challenge insert returned no row');
+    const started = await manageAgent({ userId: user.id, orgId: user.org_id }, employee.id, async (tx) => {
+      await cancelPendingCertification(user.org_id, employee.id, 'Superseded by a new certification challenge', tx);
+      const [challenge] = await tx
+        .insert(agentCertificationChallenges)
+        .values({
+          org_id: user.org_id,
+          employee_id: employee.id,
+          nonce,
+          required_tools: [...CERTIFICATION_REQUIRED_TOOLS],
+          status: 'pending',
+        })
+        .returning();
+      if (!challenge) throw new Error('Certification challenge insert returned no row');
 
-    await ensureAgentConversationSpace({
-      orgId: user.org_id,
-      userId: user.id,
-      agentUserId: employee.user_id,
-      conversationId: challenge.id,
-      title: `${employee.name} onboarding check`,
-    });
-    const { event: channelEvent } = await publishAgentChannelEvent({
-      orgId: user.org_id,
-      employeeId: employee.id,
-      kind: 'certification.challenge',
-      sourceKind: 'certification',
-      sourceId: challenge.id,
-      spaceId: challenge.id,
-      actorUserId: user.id,
-      idempotencyKey: `employee-certification:${challenge.id}`,
-      payload: {
-        nonce,
-        employee_slug: employee.slug,
-        is_dm: true,
-        parent_id: null,
-        certification_prompt: buildCertificationPrompt(employee, nonce),
-        expected_reply_contains: nonce,
-        onboarding_requirements: preflightInput.data,
-        baseline_restart_count: baselineRestartCount,
-      },
-    });
+      await ensureAgentConversationSpace({
+        executor: tx,
+        orgId: user.org_id,
+        userId: user.id,
+        agentUserId: employee.user_id,
+        conversationId: challenge.id,
+        title: `${employee.name} onboarding check`,
+      });
+      const { event: channelEvent } = await publishAgentChannelEvent({
+        executor: tx,
+        orgId: user.org_id,
+        employeeId: employee.id,
+        kind: 'certification.challenge',
+        sourceKind: 'certification',
+        sourceId: challenge.id,
+        spaceId: challenge.id,
+        actorUserId: user.id,
+        idempotencyKey: `employee-certification:${challenge.id}`,
+        payload: {
+          nonce,
+          employee_slug: employee.slug,
+          is_dm: true,
+          parent_id: null,
+          certification_prompt: buildCertificationPrompt(employee, nonce),
+          expected_reply_contains: nonce,
+          onboarding_requirements: preflightInput.data,
+          baseline_restart_count: baselineRestartCount,
+        },
+      });
 
-    await db
-      .update(agentEmployees)
-      .set({ certification_status: 'challenge_issued' })
-      .where(and(eq(agentEmployees.id, employee.id), eq(agentEmployees.org_id, user.org_id)));
+      await tx
+        .update(agentEmployees)
+        .set({ certification_status: 'challenge_issued' })
+        .where(and(eq(agentEmployees.id, employee.id), eq(agentEmployees.org_id, user.org_id)));
+      return { challenge, channelEvent };
+    });
+    if (!started.ok) return managementRefused(c, started);
+    const { challenge, channelEvent } = started.value;
 
     return c.json({
       challenge,
@@ -3371,44 +3429,48 @@ agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
       restartProofCompleted,
     });
 
-    if (completed && challenge.status !== 'completed') {
-      const now = new Date();
-      const [completedChallenge] = await db
-        .update(agentCertificationChallenges)
-        .set({ status: 'completed', completed_at: now, failure_reason: null, updated_at: now })
-        .where(and(
-          eq(agentCertificationChallenges.id, challenge.id),
-          eq(agentCertificationChallenges.org_id, user.org_id),
-          eq(agentCertificationChallenges.status, 'pending'),
-        ))
-        .returning({ id: agentCertificationChallenges.id });
-      if (completedChallenge) {
-        await db
-          .update(agentEmployees)
-          .set({ certification_status: 'verified', last_verified_at: now })
-          .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)));
+    // Recording the result changes the agent's certification: the choke point decides.
+    const recorded = await manageAgent({ userId: user.id, orgId: user.org_id }, id, async (tx) => {
+      if (completed && challenge.status !== 'completed') {
+        const now = new Date();
+        const [completedChallenge] = await tx
+          .update(agentCertificationChallenges)
+          .set({ status: 'completed', completed_at: now, failure_reason: null, updated_at: now })
+          .where(and(
+            eq(agentCertificationChallenges.id, challenge.id),
+            eq(agentCertificationChallenges.org_id, user.org_id),
+            eq(agentCertificationChallenges.status, 'pending'),
+          ))
+          .returning({ id: agentCertificationChallenges.id });
+        if (completedChallenge) {
+          await tx
+            .update(agentEmployees)
+            .set({ certification_status: 'verified', last_verified_at: now })
+            .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)));
+        }
+      } else if (!completed) {
+        const now = new Date();
+        await tx
+          .update(agentCertificationChallenges)
+          .set({
+            status: challenge.status === 'completed' ? 'pending' : challenge.status,
+            completed_at: challenge.status === 'completed' ? null : challenge.completed_at,
+            failure_reason: failureReason,
+            updated_at: now,
+          })
+          .where(and(
+            eq(agentCertificationChallenges.id, challenge.id),
+            eq(agentCertificationChallenges.org_id, user.org_id),
+          ));
+        if (challenge.status === 'completed') {
+          await tx
+            .update(agentEmployees)
+            .set({ certification_status: 'challenge_issued', last_verified_at: null, updated_at: now })
+            .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)));
+        }
       }
-    } else if (!completed) {
-      const now = new Date();
-      await db
-        .update(agentCertificationChallenges)
-        .set({
-          status: challenge.status === 'completed' ? 'pending' : challenge.status,
-          completed_at: challenge.status === 'completed' ? null : challenge.completed_at,
-          failure_reason: failureReason,
-          updated_at: now,
-        })
-        .where(and(
-          eq(agentCertificationChallenges.id, challenge.id),
-          eq(agentCertificationChallenges.org_id, user.org_id),
-        ));
-      if (challenge.status === 'completed') {
-        await db
-          .update(agentEmployees)
-          .set({ certification_status: 'challenge_issued', last_verified_at: null, updated_at: now })
-          .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)));
-      }
-    }
+    });
+    if (!recorded.ok) return managementRefused(c, recorded);
 
     return c.json({
       status: completed ? 'completed' : 'pending',
@@ -3460,11 +3522,14 @@ agentEmployeeRoutes.post('/:id/certification/reset', async (c) => {
       .limit(1);
     if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
 
-    await cancelPendingCertification(user.org_id, id, 'Reset by operator');
-    await db
-      .update(agentEmployees)
-      .set({ certification_status: employee.last_mcp_call_at ? 'mcp_reachable' : 'token_issued' })
-      .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)));
+    const managed = await manageAgent({ userId: user.id, orgId: user.org_id }, id, async (tx) => {
+      await cancelPendingCertification(user.org_id, id, 'Reset by operator', tx);
+      await tx
+        .update(agentEmployees)
+        .set({ certification_status: employee.last_mcp_call_at ? 'mcp_reachable' : 'token_issued' })
+        .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)));
+    });
+    if (!managed.ok) return managementRefused(c, managed);
 
     return c.json({ ok: true });
   } catch (err) {
@@ -3497,7 +3562,8 @@ agentEmployeeRoutes.post('/:id/regenerate-token', async (c) => {
       .limit(1);
     if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
 
-    const issuedMcpToken = await issueMcpToken({
+    const managed = await manageAgent({ userId: user.id, orgId: user.org_id }, employee.id, (tx) => issueMcpToken({
+      executor: tx,
       orgId: user.org_id,
       employeeId: employee.id,
       employeeName: employee.name,
@@ -3505,7 +3571,9 @@ agentEmployeeRoutes.post('/:id/regenerate-token', async (c) => {
       appScopes: parsed.data.mcp_app_scopes,
       resourceScopes: parsed.data.mcp_resource_scopes,
       deactivateExisting: true,
-    });
+    }));
+    if (!managed.ok) return managementRefused(c, managed);
+    const issuedMcpToken = managed.value;
 
     return c.json({
       employee: {
@@ -3539,13 +3607,16 @@ agentEmployeeRoutes.post('/:id/regenerate-channel-token', async (c) => {
       .limit(1);
     if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
 
-    const channelToken = await issueAgentChannelToken({
+    const managed = await manageAgent({ userId: user.id, orgId: user.org_id }, employee.id, (tx) => issueAgentChannelToken({
+      executor: tx,
       orgId: user.org_id,
       employeeId: employee.id,
       employeeName: employee.name,
       createdBy: user.id,
       deactivateExisting: true,
-    });
+    }));
+    if (!managed.ok) return managementRefused(c, managed);
+    const channelToken = managed.value;
 
     return c.json({
       employee: {
@@ -3612,55 +3683,62 @@ agentEmployeeRoutes.post('/:id/clone', async (c) => {
 
     const newId = crypto.randomUUID();
     const newName = parsed.data.name ?? `${source.name} (copy)`;
-    const [inserted] = await db
-      .insert(agentEmployees)
-      .values({
-        id: newId,
-        org_id: source.org_id,
-        user_id: source.user_id,
-        name: newName,
-        slug: candidate,
-        role: source.role,
-        runtime_kind: source.runtime_kind,
-        is_byoa: true,
-        job_title: source.job_title,
-        wake_mode: source.wake_mode,
-        avatar_url: source.avatar_url,
-        system_prompt: source.system_prompt,
-        expertise_description: source.expertise_description,
-        connection_notes: source.connection_notes,
-        starter_prompts: source.starter_prompts,
-        trust_level: source.trust_level,
-        max_daily_actions: source.max_daily_actions,
-        heartbeat_enabled: source.heartbeat_enabled,
-        heartbeat_interval_min: source.heartbeat_interval_min,
-        heartbeat_config: source.heartbeat_config,
-        daily_budget_cents: source.daily_budget_cents,
-        trigger_subscriptions: source.trigger_subscriptions,
-        // capability_packs column dropped (PR 4 C); not carried into the clone.
-        created_by: user.id,
-        // Intentionally NOT cloned: mcp_token_hash, daily_action_count/cost,
-        // last_heartbeat_at. The clone is a fresh employee — its MCP token
-        // must be issued separately.
-      })
-      .returning();
+    // A clone acts as the same user (and so the same membership and role)
+    // as its source: cloning copies the source's authority, so it is
+    // managing the source (lib/agent-management.ts).
+    const managed = await manageAgent({ userId: user.id, orgId: user.org_id }, id, async (tx) => {
+      const [inserted] = await tx
+        .insert(agentEmployees)
+        .values({
+          id: newId,
+          org_id: source.org_id,
+          user_id: source.user_id,
+          name: newName,
+          slug: candidate,
+          role: source.role,
+          runtime_kind: source.runtime_kind,
+          is_byoa: true,
+          job_title: source.job_title,
+          wake_mode: source.wake_mode,
+          avatar_url: source.avatar_url,
+          system_prompt: source.system_prompt,
+          expertise_description: source.expertise_description,
+          connection_notes: source.connection_notes,
+          starter_prompts: source.starter_prompts,
+          trust_level: source.trust_level,
+          max_daily_actions: source.max_daily_actions,
+          heartbeat_enabled: source.heartbeat_enabled,
+          heartbeat_interval_min: source.heartbeat_interval_min,
+          heartbeat_config: source.heartbeat_config,
+          daily_budget_cents: source.daily_budget_cents,
+          trigger_subscriptions: source.trigger_subscriptions,
+          // capability_packs column dropped (PR 4 C); not carried into the clone.
+          created_by: user.id,
+          // Intentionally NOT cloned: mcp_token_hash, daily_action_count/cost,
+          // last_heartbeat_at. The clone is a fresh employee — its MCP token
+          // must be issued separately.
+        })
+        .returning();
 
-    // Copy installed skills
-    const sourceSkills = await db
-      .select()
-      .from(agentEmployeeSkills)
-      .where(eq(agentEmployeeSkills.agent_employee_id, id));
-    if (sourceSkills.length > 0) {
-      await db.insert(agentEmployeeSkills).values(
-        sourceSkills.map((s) => ({
-          agent_employee_id: newId,
-          skill_id: s.skill_id,
-          installed_version: s.installed_version,
-        })),
-      );
-    }
+      // Copy installed skills
+      const sourceSkills = await tx
+        .select()
+        .from(agentEmployeeSkills)
+        .where(eq(agentEmployeeSkills.agent_employee_id, id));
+      if (sourceSkills.length > 0) {
+        await tx.insert(agentEmployeeSkills).values(
+          sourceSkills.map((s) => ({
+            agent_employee_id: newId,
+            skill_id: s.skill_id,
+            installed_version: s.installed_version,
+          })),
+        );
+      }
+      return inserted;
+    });
+    if (!managed.ok) return managementRefused(c, managed);
 
-    return c.json({ employee: inserted, cloned_from: id }, 201);
+    return c.json({ employee: managed.value, cloned_from: id }, 201);
   } catch (err) {
     console.error('Failed to clone agent employee:', err);
     return c.json({ error: 'Failed to clone', code: 'INTERNAL_ERROR' }, 500);

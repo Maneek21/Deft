@@ -1109,8 +1109,8 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
       owner: (await login(owner.email)).json.accessToken as string,
       admin: (await login(admin.email)).json.accessToken as string,
     };
-    // The rule is about people (users.kind 'human'); agents are outside it
-    // (see 'agents are outside the owner-only rule' below).
+    // People here; an agent's membership follows the same rule (see 'an
+    // admin agent is the owner's too' below and test/protected-agent-db.test.ts).
     type State = 'member' | 'guest' | 'admin' | 'demoted_admin' | 'removed_admin' | 'removed_member' | 'pending_member' | 'pending_admin' | 'new_address';
     const isProtected: Record<State, boolean> = {
       member: false, guest: false, admin: true, demoted_admin: true, removed_admin: true, removed_member: false, pending_member: false, pending_admin: true, new_address: false,
@@ -1173,7 +1173,7 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     assert.equal(cases, 2 * ops.reduce((n, op) => n + op.states.length, 0));
   });
 
-  await t.test('agents are outside the owner-only rule: an admin manages an admin agent as before', async () => {
+  await t.test('an admin agent is the owner’s too, as a person is', async () => {
     const scopeOrg = randomUUID();
     await db.insert(orgs).values({ id: scopeOrg, name: 'Rule scope', slug: `scope-${scopeOrg}` });
     hosted(false);
@@ -1190,19 +1190,18 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
         id: employeeId, org_id: scopeOrg, user_id: userId, name: 'Scope agent', slug: `scope-agent-${employeeId.slice(0, 8)}`,
         role: 'project_manager', system_prompt: 'Fixture', trust_level: 'conservative', is_byoa: true, is_active: true, created_by: owner.id,
       });
-      // The owner makes it admin; an admin's later actions on it are not owner-only.
+      // The owner makes it admin; from then on it is the owner's alone.
       assert.equal((await call('PATCH', `/api/members/${userId}`, { role: 'admin' }, ownerSession)).status, 200);
       return { userId, employeeId };
     }
-    const demoted = await adminAgent();
-    assert.equal((await call('PATCH', `/api/members/${demoted.userId}`, { role: 'member' }, adminSession)).status, 200, 'an admin demotes an admin agent');
-    const removed = await adminAgent();
-    assert.equal((await call('DELETE', `/api/members/${removed.userId}`, {}, adminSession)).status, 200, 'an admin removes an admin agent');
-    const deleted = await adminAgent();
-    assert.equal((await call('DELETE', `/api/agent-employees/${deleted.employeeId}`, undefined, adminSession)).status, 200, 'an admin deletes an admin agent');
-    const keyed = await adminAgent();
-    assert.equal((await call('POST', `/api/agent-employees/${keyed.employeeId}/regenerate-channel-token`, {}, adminSession)).status, 200, "an admin resets an admin agent's key");
-    // A person stays owner-only: the same admin cannot demote a human admin.
+    const agentAdmin = await adminAgent();
+    assert.equal((await call('PATCH', `/api/members/${agentAdmin.userId}`, { role: 'member' }, adminSession)).status, 403, 'an admin cannot demote an admin agent');
+    assert.equal((await call('DELETE', `/api/members/${agentAdmin.userId}`, {}, adminSession)).status, 403, 'an admin cannot remove an admin agent');
+    assert.equal((await call('DELETE', `/api/agent-employees/${agentAdmin.employeeId}`, undefined, adminSession)).status, 403, 'an admin cannot delete an admin agent');
+    assert.equal((await call('POST', `/api/agent-employees/${agentAdmin.employeeId}/regenerate-channel-token`, {}, adminSession)).status, 403, "an admin cannot reset an admin agent's key");
+    assert.equal((await call('POST', `/api/agent-employees/${agentAdmin.employeeId}/regenerate-channel-token`, {}, ownerSession)).status, 200, 'the owner can');
+    assert.equal((await call('PATCH', `/api/members/${agentAdmin.userId}`, { role: 'member' }, ownerSession)).status, 200, 'the owner can');
+    // A person: the same.
     const human = await person('admin', scopeOrg);
     assert.equal((await call('PATCH', `/api/members/${human.id}`, { role: 'member' }, adminSession)).status, 403);
   });
