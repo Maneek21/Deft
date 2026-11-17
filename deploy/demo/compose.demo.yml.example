@@ -11,7 +11,7 @@ services:
       DEFT_WEB_URL: http://deft:3000
       DEFT_API_URL: http://deft:3001
       NODE_ENV: production
-      # Only the bundled Caddy service may supply invite client addresses.
+      # Only the bundled Caddy service may supply general API and invite client addresses.
       DEFT_INVITE_TRUSTED_PROXIES: ${DEFT_INVITE_TRUSTED_PROXIES:-caddy}
 
   caddy:

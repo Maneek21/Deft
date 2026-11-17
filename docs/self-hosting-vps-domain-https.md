@@ -104,9 +104,12 @@ If you use Nginx, keep the same routing split: `/api`, `/oauth`, and
 
 For host-installed Caddy or Nginx, set `DEFT_INVITE_TRUSTED_PROXIES` in `.env`
 to the proxy's **actual socket peer address as seen by the API**, then recreate
-the `deft` container. This applies only to invite preview/accept rate limits;
-it does not change the other API limiters. Without it, all visitors behind the
-proxy share one 10-request/minute invite budget, including after an upgrade.
+the `deft` container. This governs general API and invite IP rate limits.
+Without it, visitors share the proxy's budgets, including after an upgrade:
+auth routes (including refresh) share 10 requests/minute in production,
+login and MCP each share 120/minute, and invites share 10/minute by default.
+Authenticated user/channel buckets and runtime socket-only limits are unchanged.
+Direct API access needs no setting. Startup logs warn when the setting is absent.
 
 With a native API on the same host the peer may be `127.0.0.1` or `::1`. A host
 proxy reaching a published Docker port often appears as the Docker bridge

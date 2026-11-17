@@ -13,7 +13,7 @@ function canonicalIp(value: string): string | null {
   return new SocketAddress({ address, family: family === 4 ? 'ipv4' : 'ipv6' }).address;
 }
 
-/** Invite routes only. No private/loopback range is implicitly trusted. */
+/** Shared client-address policy. No private/loopback range is implicitly trusted. */
 export function createInviteClientKey(
   configured = process.env.DEFT_INVITE_TRUSTED_PROXIES ?? '',
   resolveProxy: ProxyLookup = hostname => lookup(hostname, { all: true }),

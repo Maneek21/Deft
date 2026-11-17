@@ -24,6 +24,9 @@ workerStartup.require();
 const server = serve({ fetch: app.fetch, port }, async (info) => {
   console.log(`Deft API running on http://localhost:${info.port}`);
   logPausedStart();
+  if (!process.env.DEFT_INVITE_TRUSTED_PROXIES?.trim()) {
+    console.warn('[startup] DEFT_INVITE_TRUSTED_PROXIES is unset: IP rate limits use socket peers. Behind a custom proxy, visitors share its bucket; configure trusted proxy peers for per-visitor limits.');
+  }
 
   // Hosted cells fetch their signed seat statement now and on a timer.
   // A no-op unless hosted mode is on and this process is not paused.
