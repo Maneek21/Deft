@@ -69,6 +69,8 @@ type DirectoryMember = {
   last_seen_at: string | null;
   email_verified: boolean;
   role: string;
+  /** Is or was owner or admin: the owner's alone (sent with a member's detail). */
+  owner_only?: boolean;
   is_active: boolean;
   joined_at: string | null;
   lifecycle_status: LifecycleStatus;
@@ -180,8 +182,9 @@ function lifecycleTone(status: LifecycleStatus) {
  * agent alike (the API also refuses for a former admin; see
  * apps/api/src/lib/membership-guard.ts and lib/agent-management.ts).
  */
-function ownerOnly(member: Pick<DirectoryMember, 'role'>) {
-  return member.role === 'owner' || member.role === 'admin';
+function ownerOnly(member: Pick<DirectoryMember, 'role' | 'owner_only'>) {
+  // `owner_only` also counts a former admin; without it (an older API), the current role.
+  return member.owner_only ?? (member.role === 'owner' || member.role === 'admin');
 }
 
 function roleLabel(role: string) {

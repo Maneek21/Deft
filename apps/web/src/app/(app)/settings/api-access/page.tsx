@@ -19,6 +19,8 @@ type ApiKey = {
   is_active: boolean;
   expires_at: string | null;
   created_at: string;
+  /** Sent with each key, including keys of deleted agents. */
+  management?: AgentManagement;
 };
 
 type AgentEmployee = {
@@ -130,7 +132,7 @@ export default function ApiAccessPage() {
     return emp?.name || null;
   };
   // A key bound to an agent that is or was an owner or admin is the owner's to change.
-  const keyLocked = (id: string | null) => Boolean(id) && !canManageAgent(employees.find(e => e.id === id)?.management);
+  const keyLocked = (k: ApiKey) => !canManageAgent(k.management ?? (k.agent_employee_id ? employees.find(e => e.id === k.agent_employee_id)?.management : undefined));
 
   if (loading) {
     return (
@@ -414,7 +416,7 @@ export default function ApiAccessPage() {
               </div>
 
               {/* Actions row — inline on md+, wraps below title on mobile */}
-              {keyLocked(k.agent_employee_id) ? (
+              {keyLocked(k) ? (
                 <span className="flex-shrink-0 text-[11px]" style={{ color: 'var(--muted)' }} title={OWNER_ONLY_AGENT_NOTE}>
                   Owner only
                 </span>

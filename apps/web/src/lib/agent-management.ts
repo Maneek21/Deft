@@ -8,7 +8,11 @@ export type AgentManagement = { owner_only: boolean; can_manage: boolean };
 
 export const OWNER_ONLY_AGENT_NOTE = 'Only the workspace owner can manage this agent, because it is or was an owner or admin.';
 
-/** No `management` (an older API): show the controls and let the API decide. */
+/**
+ * Locks only what the owner-only rule locks: an agent that is not owner-only
+ * shows its controls exactly as before (each route's own check decides), and
+ * no `management` (an older API) shows them too. The API decides every write.
+ */
 export function canManageAgent(management: AgentManagement | null | undefined): boolean {
-  return management ? management.can_manage : true;
+  return !management || !management.owner_only || management.can_manage;
 }

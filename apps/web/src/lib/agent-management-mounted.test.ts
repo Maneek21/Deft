@@ -207,3 +207,31 @@ test('agent overview page: clone, trust and delete on an agent that is or was an
     await browser.close();
   }
 });
+
+test('API access page: a key bound to a deleted agent that was an admin is the owner’s; other keys are not', async () => {
+  const page = await bundle('src/app/(app)/settings/api-access/page.tsx');
+  const browser = await chromium.launch({ headless: true, ...(process.env.DEFT_TEST_BROWSER_EXECUTABLE ? { executablePath: process.env.DEFT_TEST_BROWSER_EXECUTABLE } : {}) });
+  const key = (id: string, name: string, agentId: string | null, viewer: Viewer, ownerOnly: boolean) => ({
+    id, name, key_prefix: `deft_${id}`, agent_employee_id: agentId, permissions: ['mcp:full'], rate_limit_per_minute: 60, rate_limit_per_day: 1000,
+    last_used_at: null, request_count: 0, is_active: true, expires_at: null, created_at: '2026-11-01T00:00:00Z', management: management(viewer, ownerOnly),
+  });
+  try {
+    for (const viewer of ['admin', 'owner'] as const) {
+      // The deleted agent is absent from /api/agent-employees; the key itself says it is owner-only.
+      const keys = [key('k1', 'Deleted admin agent key', 'deleted-agent', viewer, true), key('k2', 'Member agent key', 'member-agent', viewer, false)];
+      const tab = await mount(browser, page, viewer, {}, (p) => {
+        if (p === '/api/api-keys') return keys;
+        if (p === '/api/agent-employees') return [employee('member-agent', 'Member Agent', false, viewer)];
+        return undefined;
+      });
+      await tab.getByText('Member agent key').waitFor();
+      const toggles = tab.locator('button[title="Deactivate"]');
+      // The member-level agent's key always has its toggle; the deleted admin agent's only for the owner.
+      assert.equal(await toggles.count(), viewer === 'owner' ? 2 : 1, `${viewer}: key toggles`);
+      assert.equal(await tab.getByText('Owner only').count(), viewer === 'owner' ? 0 : 1, `${viewer}: owner-only label`);
+      await tab.close();
+    }
+  } finally {
+    await browser.close();
+  }
+});
