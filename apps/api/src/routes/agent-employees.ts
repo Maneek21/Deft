@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { eq, and, desc, sql, or, isNull, asc, gte, lt, inArray, notInArray } from 'drizzle-orm';
 import crypto from 'node:crypto';
 import { db } from '../lib/db.js';
-import { agentManagementView, authorizeAgentManagement, manageAgent, managementFor, ownerOnlyAgentUsers, type AgentManagementRefusal } from '../lib/agent-management.js';
+import { agentManagementView, authorizeAgentManagement, manageAgent, manageAgents, managementFor, ownerOnlyAgentUsers, type AgentManagementRefusal } from '../lib/agent-management.js';
 import { lockMembership, recordMembershipChange } from '../lib/membership-guard.js';
 import { reviewableApprovalCountsByEmployee } from '../lib/pending-approval-audience.js';
 import { hermesBundleAvailability, type HermesBundleAvailability } from '../lib/hermes-release.js';
@@ -1832,21 +1832,32 @@ agentEmployeeRoutes.post('/', async (c) => {
     // surface (auth via api_keys). /api/mcp/v1 is the modern path; /mcp
     // is kept during the deprecation window so existing integrations
     // don't break.
-    const issuedMcpToken = await issueMcpToken({
-      orgId: currentUser.org_id,
-      employeeId: employee!.id,
-      employeeName: data.name,
-      createdBy: currentUser.id,
-      appScopes: data.mcp_app_scopes,
-      resourceScopes: data.mcp_resource_scopes,
-    });
-    const channelToken = await issueAgentChannelToken({
-      orgId: currentUser.org_id,
-      employeeId: employee!.id,
-      employeeName: data.name,
-      createdBy: currentUser.id,
-      deactivateExisting: false,
-    });
+    //
+    // The new agent's membership is already committed, so someone could
+    // have promoted it since: its first keys go through the choke point too
+    // (lib/agent-management.ts). If it is now owner-only, the agent stays
+    // created without keys and the owner issues them.
+    const firstKeys = await manageAgent({ userId: currentUser.id, orgId: currentUser.org_id }, employee!.id, async (tx) => ({
+      issuedMcpToken: await issueMcpToken({
+        executor: tx,
+        orgId: currentUser.org_id,
+        employeeId: employee!.id,
+        employeeName: data.name,
+        createdBy: currentUser.id,
+        appScopes: data.mcp_app_scopes,
+        resourceScopes: data.mcp_resource_scopes,
+      }),
+      channelToken: await issueAgentChannelToken({
+        executor: tx,
+        orgId: currentUser.org_id,
+        employeeId: employee!.id,
+        employeeName: data.name,
+        createdBy: currentUser.id,
+        deactivateExisting: false,
+      }),
+    }));
+    if (!firstKeys.ok) return managementRefused(c, firstKeys);
+    const { issuedMcpToken, channelToken } = firstKeys.value;
 
     return c.json(
       {
@@ -2392,30 +2403,31 @@ agentEmployeeRoutes.post('/:id/reassign-trigger', async (c) => {
     //    active employee in this org, install skill on target, and union
     //    any remaining skill triggers into the target's inline column.
     const actor = { userId: user.id, orgId: user.org_id };
-    const managedTarget = await manageAgent(actor, targetEmployeeId, async (tx) => {
+    // Taking the trigger from a peer manages that peer too. Every agent
+    // involved is locked and decided in one id-ordered pass (manageAgents),
+    // so two reassignments with different targets cannot deadlock.
+    const holders = async (reader: Pick<typeof db, 'select'>) => (await reader
+      .select({
+        id: agentEmployees.id,
+        trigger_subscriptions: agentEmployees.trigger_subscriptions,
+      })
+      .from(agentEmployees)
+      .where(
+        and(
+          eq(agentEmployees.org_id, user.org_id),
+          eq(agentEmployees.is_active, true),
+        ),
+      ))
+      .filter((peer) => peer.id !== targetEmployeeId && (peer.trigger_subscriptions ?? []).includes(trigger_kind));
+    const expectedLosers = (await holders(db)).map((peer) => peer.id);
+    const managedTarget = await manageAgents(actor, [targetEmployeeId, ...expectedLosers], async (tx) => {
       // Strip the trigger from peers (inline column only — skill-owned
       // triggers would require uninstalling the skill, which is a separate
-      // user flow).
-      const peers = await tx
-        .select({
-          id: agentEmployees.id,
-          trigger_subscriptions: agentEmployees.trigger_subscriptions,
-        })
-        .from(agentEmployees)
-        .where(
-          and(
-            eq(agentEmployees.org_id, user.org_id),
-            eq(agentEmployees.is_active, true),
-          ),
-        );
-
-      // Taking the trigger from a peer manages that peer too: the same rule,
-      // under each peer's own locks, in a fixed order.
-      const losing = peers
-        .filter((peer) => peer.id !== targetEmployeeId && (peer.trigger_subscriptions ?? []).includes(trigger_kind))
-        .sort((a, b) => a.id.localeCompare(b.id));
+      // user flow), as they stand under the locks. A peer that took the
+      // trigger since the read above is decided here too (rare; out of order).
+      const losing = (await holders(tx)).sort((a, b) => a.id.localeCompare(b.id));
       for (const peer of losing) {
-        await authorizeAgentManagement(tx, actor, peer.id);
+        if (!expectedLosers.includes(peer.id)) await authorizeAgentManagement(tx, actor, peer.id);
         const claims = peer.trigger_subscriptions ?? [];
         const next = claims.filter((t) => t !== trigger_kind);
         await tx
@@ -2440,7 +2452,9 @@ agentEmployeeRoutes.post('/:id/reassign-trigger', async (c) => {
       // skills, but writing through to the inline column keeps the
       // existing `= ANY(trigger_subscriptions)` cron dispatchers working
       // without needing them to consult skill config.
-      const existingClaims = target.trigger_subscriptions ?? [];
+      const [current] = await tx.select({ trigger_subscriptions: agentEmployees.trigger_subscriptions })
+        .from(agentEmployees).where(eq(agentEmployees.id, targetEmployeeId)).limit(1);
+      const existingClaims = current?.trigger_subscriptions ?? [];
       const mergedClaims = Array.from(
         new Set([...existingClaims, ...skillTriggers]),
       );

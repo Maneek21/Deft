@@ -32,8 +32,7 @@ import { isProtectedMembership } from './membership-guard.js';
  *      `work` callback or uses `db` inside one.
  *
  * An operation on several agents (reassigning a trigger away from peers)
- * calls `authorizeAgentManagement(tx, ...)` for each further agent inside
- * the first agent's `work`.
+ * uses `manageAgents`, which locks them all in id order first.
  */
 
 export type AgentManagementTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -92,6 +91,30 @@ export async function manageAgent<T>(
       const agent = await authorizeAgentManagement(tx, actor, employeeId);
       const value = await work(tx, agent);
       return { ok: true as const, value, agent };
+    });
+  } catch (err) {
+    if (err instanceof Refused) return { ok: false, ...err.refusal };
+    throw err;
+  }
+}
+
+/**
+ * The choke point for one operation on several agents (reassigning a
+ * trigger away from peers): every agent is locked and decided in id order,
+ * so two such operations never wait on each other in opposite orders.
+ */
+export async function manageAgents<T>(
+  actor: ManagementActor,
+  employeeIds: string[],
+  work: (tx: AgentManagementTx, agents: ManagedAgent[]) => Promise<T>,
+): Promise<AgentManagementResult<T>> {
+  const ordered = [...new Set(employeeIds)].sort();
+  try {
+    return await db.transaction(async (tx) => {
+      const agents: ManagedAgent[] = [];
+      for (const id of ordered) agents.push(await authorizeAgentManagement(tx, actor, id));
+      const value = await work(tx, agents);
+      return { ok: true as const, value, agent: agents[0]! };
     });
   } catch (err) {
     if (err instanceof Refused) return { ok: false, ...err.refusal };

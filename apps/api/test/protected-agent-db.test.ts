@@ -14,7 +14,7 @@ import { randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { Hono } from 'hono';
 import pg from 'pg';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { isSafeTestDatabaseTarget } from './fixtures/safe-test-database-target.js';
 import { ensureTwoStepTables } from './fixtures/two-step-tables.js';
 import { PROTECTED_AGENT_ROUTES, type AgentTarget } from './fixtures/protected-agent-operations.js';
@@ -282,5 +282,25 @@ test('agents that are or were owner or admin are managed only by the owner', { s
     const list = (await call(admin)('GET', '/api/agent-employees')).json as Json[];
     assert.deepEqual(list.find((row) => row.id === protectedAgent.employeeId)?.management, { owner_only: true, can_manage: false });
     assert.deepEqual(list.find((row) => row.id === plain.employeeId)?.management, { owner_only: false, can_manage: true });
+    // Members: a demoted admin agent is still the owner's (round 1 of #544).
+    assert.equal((await call(admin)('GET', `/api/members/${protectedAgent.userId}/detail`)).json.member.owner_only, true);
+    assert.equal((await call(admin)('GET', `/api/members/${plain.userId}/detail`)).json.member.owner_only, false);
+    // API keys carry it too, a deleted agent's keys included (round 1 of #544).
+    await db.update(agentEmployees).set({ is_deleted: true }).where(eq(agentEmployees.id, protectedAgent.employeeId));
+    const keys = (await call(admin)('GET', '/api/api-keys')).json as unknown as Json[];
+    assert.deepEqual(keys.find((k) => k.id === protectedAgent.apiKeyId)?.management, { owner_only: true, can_manage: false });
+    assert.deepEqual(keys.find((k) => k.id === plain.apiKeyId)?.management, { owner_only: false, can_manage: true });
+  });
+
+  await t.test('round 1 of #544: reciprocal trigger reassignments do not deadlock', async () => {
+    for (let round = 0; round < 5; round += 1) {
+      await db.update(agentEmployees).set({ trigger_subscriptions: [] }).where(eq(agentEmployees.org_id, orgId));
+      const x = await agent('member');
+      const y = await agent('member');
+      await db.update(agentEmployees).set({ trigger_subscriptions: ['member.joined'] }).where(inArray(agentEmployees.id, [x.employeeId, y.employeeId]));
+      const results = await Promise.all([x, y, x, y].map((target) =>
+        call(owner)('POST', `/api/agent-employees/${target.employeeId}/reassign-trigger`, { trigger_kind: 'member.joined', skill_id: skillId })));
+      assert.deepEqual(results.map((r) => r.status), [200, 200, 200, 200], JSON.stringify(results.map((r) => r.json)));
+    }
   });
 });

@@ -3,10 +3,10 @@ import { z } from 'zod';
 import { eq, and, isNull } from 'drizzle-orm';
 import bcrypt from 'bcryptjs';
 import { db } from '../lib/db.js';
-import { apiKeys } from '@deft/db/schema';
+import { agentEmployees, apiKeys } from '@deft/db/schema';
 import { OrgMembershipError, requireOrgAdminOrOwner } from '../lib/org-membership.js';
 import { requireOrgAdmin } from '../lib/org-admin-guard.js';
-import { manageAgentIfBound } from '../lib/agent-management.js';
+import { manageAgentIfBound, managementFor, ownerOnlyAgentUsers } from '../lib/agent-management.js';
 
 export const apiKeyRoutes = new Hono();
 
@@ -70,11 +70,20 @@ apiKeyRoutes.get('/', async (c) => {
       created_by: apiKeys.created_by,
       created_at: apiKeys.created_at,
       updated_at: apiKeys.updated_at,
+      agent_user_id: agentEmployees.user_id,
     })
     .from(apiKeys)
+    // Deleted agents too: their keys may still be active.
+    .leftJoin(agentEmployees, and(eq(agentEmployees.id, apiKeys.agent_employee_id), eq(agentEmployees.org_id, apiKeys.org_id)))
     .where(eq(apiKeys.org_id, user.org_id));
 
-  return c.json(keys);
+  // Whether the API access page shows each key's controls to this viewer: a
+  // key bound to an agent that is or was an owner or admin is the owner's.
+  const ownerOnly = keys.some((key) => key.agent_user_id) ? await ownerOnlyAgentUsers(user.org_id) : new Set<string>();
+  return c.json(keys.map(({ agent_user_id, ...key }) => ({
+    ...key,
+    management: managementFor(user.role, Boolean(agent_user_id && ownerOnly.has(agent_user_id))),
+  })));
 });
 
 // POST / — Create a new API key

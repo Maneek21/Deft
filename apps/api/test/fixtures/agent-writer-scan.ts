@@ -15,9 +15,15 @@ export const WATCHED_TABLES: Record<string, string> = {
   agentChannelTokens: 'agent_channel_tokens',
   mcpTokens: 'mcp_tokens',
   apiKeys: 'api_keys',
+  // What else can wake an agent or extend its authority.
+  agentEmployeeSkills: 'agent_employee_skills',
+  agentChannelEvents: 'agent_channel_events',
+  agentCertificationChallenges: 'agent_certification_challenges',
 };
 const SQL_TABLES = Object.values(WATCHED_TABLES);
 const SQL_WRITE = new RegExp(`\\b(update|insert\\s+into|delete\\s+from)\\s+"?(${SQL_TABLES.join('|')})"?\\b`, 'i');
+/** The SQL text just before an interpolated table (sql`UPDATE ${agentEmployees} ...`). */
+const SQL_WRITE_BEFORE_TABLE = /\b(update|insert\s+into|delete\s+from)\s*"?$/i;
 
 export type AgentWriter = {
   /** apps/api/src-relative path, forward slashes. */
@@ -29,18 +35,57 @@ export type AgentWriter = {
   site: string;
   /** Inside the `work` callback of manageAgent / manageAgentIfBound (lib/agent-management.ts). */
   inChokePoint: boolean;
-  /** That callback mentions the global `db` (a second pooled connection). */
+  /**
+   * That callback mentions the global `db`, or this is a credential issuer
+   * called there without `executor` (both take a second pooled connection).
+   */
   dbInsideWork: boolean;
 };
 
 /** The choke point's entry points; a write counts as managed only inside their callback. */
-export const CHOKE_POINTS = new Set(['manageAgent', 'manageAgentIfBound']);
+export const CHOKE_POINTS = new Set(['manageAgent', 'manageAgents', 'manageAgentIfBound']);
 /** Helpers that issue an agent credential; a call to one is reported like a write. */
 export const CREDENTIAL_ISSUERS: Record<string, string> = {
   issueMcpToken: 'mcp_tokens',
   issueScopedEmployeeMcpToken: 'mcp_tokens',
   issueAgentChannelToken: 'agent_channel_tokens',
 };
+
+/**
+ * Local names for the watched tables and issuers in one file, following
+ * import renames (`import { agentEmployees as ae }`). A namespace import's
+ * property (`schema.agentEmployees`) is matched by property name.
+ */
+function localNames(source: ts.SourceFile): { tables: Map<string, string>; issuers: Map<string, string> } {
+  const tables = new Map(Object.entries(WATCHED_TABLES));
+  const issuers = new Map(Object.entries(CREDENTIAL_ISSUERS));
+  for (const statement of source.statements) {
+    if (!ts.isImportDeclaration(statement)) continue;
+    const bindings = statement.importClause?.namedBindings;
+    if (!bindings || !ts.isNamedImports(bindings)) continue;
+    for (const el of bindings.elements) {
+      const imported = (el.propertyName ?? el.name).text;
+      if (WATCHED_TABLES[imported]) tables.set(el.name.text, WATCHED_TABLES[imported]!);
+      if (CREDENTIAL_ISSUERS[imported]) issuers.set(el.name.text, CREDENTIAL_ISSUERS[imported]!);
+    }
+  }
+  return { tables, issuers };
+}
+
+/** The watched table an expression names (`agentEmployees`, an alias, or `schema.agentEmployees`). */
+function tableOf(expr: ts.Expression, tables: Map<string, string>): string | null {
+  if (ts.isIdentifier(expr)) return tables.get(expr.text) ?? null;
+  if (ts.isPropertyAccessExpression(expr)) return WATCHED_TABLES[expr.name.text] ?? null;
+  return null;
+}
+
+/** A credential issuer called inside the choke point must be handed the transaction. */
+function passesExecutor(call: ts.CallExpression): boolean {
+  let arg = call.arguments[0];
+  while (arg && (ts.isAsExpression(arg) || ts.isParenthesizedExpression(arg) || ts.isSatisfiesExpression(arg))) arg = arg.expression;
+  return Boolean(arg && ts.isObjectLiteralExpression(arg) && arg.properties.some((p) =>
+    (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) && ts.isIdentifier(p.name) && p.name.text === 'executor'));
+}
 
 function calleeName(call: ts.CallExpression): string | null {
   const e = call.expression;
@@ -114,33 +159,45 @@ export function scanAgentWriters(srcRoot: string): AgentWriter[] {
     const rel = path.relative(srcRoot, file).split(path.sep).join('/');
     if (rel.startsWith('scripts/')) continue; // operator scripts with database access
     const text = fs.readFileSync(file, 'utf8');
-    if (!SQL_TABLES.some((t) => text.includes(t)) && !Object.keys(WATCHED_TABLES).some((t) => text.includes(t))) continue;
+    // Every file is parsed: a writer may name a table through an alias or a
+    // namespace, or only call an issuer.
     const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+    const { tables, issuers } = localNames(source);
+    const opOf = (word: string): AgentWriter['op'] => (word.toLowerCase().startsWith('update') ? 'update' : word.toLowerCase().startsWith('insert') ? 'insert' : 'delete');
     const visit = (node: ts.Node) => {
-      const record = (table: string, op: AgentWriter['op']) => {
+      const record = (table: string, op: AgentWriter['op'], issuerWithoutExecutor = false) => {
         const work = chokePointWork(node);
         found.push({
           file: rel,
           line: source.getLineAndCharacterOfPosition(node.getStart()).line + 1,
           table, op, site: siteOf(node, source),
           inChokePoint: Boolean(work),
-          dbInsideWork: work ? mentionsDb(work) : false,
+          dbInsideWork: work ? mentionsDb(work) || issuerWithoutExecutor : false,
         });
       };
       if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
-        && ['update', 'insert', 'delete'].includes(node.expression.name.text)
-        && node.arguments.length === 1 && ts.isIdentifier(node.arguments[0]!) && WATCHED_TABLES[node.arguments[0]!.text]) {
-        record(WATCHED_TABLES[node.arguments[0]!.text]!, node.expression.name.text as AgentWriter['op']);
+        && ['update', 'insert', 'delete'].includes(node.expression.name.text) && node.arguments.length === 1) {
+        const table = tableOf(node.arguments[0]!, tables);
+        if (table) record(table, node.expression.name.text as AgentWriter['op']);
       }
-      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && CREDENTIAL_ISSUERS[node.expression.text]) {
-        record(CREDENTIAL_ISSUERS[node.expression.text]!, 'issue');
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+        const issued = issuers.get(node.expression.text);
+        if (issued) record(issued, 'issue', !passesExecutor(node));
       }
+      // Raw SQL naming a table in its text.
       if (ts.isTaggedTemplateExpression(node) || ts.isNoSubstitutionTemplateLiteral(node) || ts.isTemplateExpression(node) || ts.isStringLiteral(node)) {
         const raw = node.getText(source);
         const match = SQL_WRITE.exec(raw);
-        if (match && !ts.isTemplateSpan(node.parent) && !(ts.isTaggedTemplateExpression(node.parent))) {
-          const op = match[1]!.toLowerCase().startsWith('update') ? 'update' : match[1]!.toLowerCase().startsWith('insert') ? 'insert' : 'delete';
-          record(match[2]!.toLowerCase(), op);
+        if (match && !ts.isTemplateSpan(node.parent) && !(ts.isTaggedTemplateExpression(node.parent))) record(match[2]!.toLowerCase(), opOf(match[1]!));
+      }
+      // Raw SQL interpolating a table (sql`UPDATE ${agentEmployees} ...`).
+      if (ts.isTemplateExpression(node)) {
+        let before = node.head.text;
+        for (const span of node.templateSpans) {
+          const table = tableOf(span.expression, tables);
+          const match = SQL_WRITE_BEFORE_TABLE.exec(before);
+          if (table && match) record(table, opOf(match[1]!));
+          before = span.literal.text;
         }
       }
       ts.forEachChild(node, visit);
