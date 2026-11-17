@@ -1157,7 +1157,7 @@ memberRoutes.post('/invite', async (c) => {
     // a hosted cell, one seat lock), so two invites cannot both take the last seat.
     const added = await withSeatRetry(() => db.transaction(async (tx) => {
       // The one locked path (lib/membership-guard.ts): account, membership,
-      // the owner-only rule (anyone who is or was an owner or admin is the
+      // the owner-only rule (a person who is or was an owner or admin is the
       // owner's; an admin may grant admin to someone never privileged), then
       // the writes, the record of the grant and the link, all under the same
       // locks. Membership row before the seat lock.
@@ -1431,7 +1431,7 @@ memberRoutes.post('/:id/recovery-url', async (c) => {
     }
 
     // A recovery link sets a new password, so it follows the owner-only rule:
-    // for anyone who is or was an owner or admin, only the owner makes one.
+    // for a person who is or was an owner or admin, only the owner makes one.
     // It is made under the one locked path and carries the generation read
     // there. It never removes two-step verification: a code is still needed.
     const made = await db.transaction(async (tx) => {
@@ -1503,7 +1503,7 @@ memberRoutes.patch('/:id', async (c) => {
       if (!targetMembership) return { failure: 'NOT_FOUND' as const };
       if (targetMembership.role === 'owner') return { failure: 'OWNER' as const };
       if (!parsed.success) return { failure: 'INVALID' as const };
-      // Owner-only for anyone who is or was an owner or admin; an admin may promote a member or guest.
+      // Owner-only for a person who is or was an owner or admin; an admin may promote a member or guest.
       const refusal = await authorizeMembershipOperation(tx, {
         orgId: currentUser.org_id, actor: { userId: currentUser.id }, locked, resultingRole: parsed.data.role,
       });

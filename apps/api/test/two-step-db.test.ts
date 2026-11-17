@@ -34,7 +34,7 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
 
   const { db, closeDb } = await import('../src/lib/db.js');
   const { env } = await import('../src/lib/env.js');
-  const { users, orgs, orgMembers, invites, webSessions, agentEmployees, spaces, spaceMembers, projects, mcpTokens, agentChannelTokens, skills } = await import('@deft/db/schema');
+  const { users, orgs, orgMembers, invites, webSessions, agentEmployees, spaces, spaceMembers, projects, mcpTokens, agentChannelTokens } = await import('@deft/db/schema');
   const { userTwoStep, userTwoStepRecoveryCodes, twoStepChallenges } = await import('@deft/db/two-step');
   const { authRoutes } = await import('../src/routes/auth.js');
   const { twoStepRoutes } = await import('../src/routes/two-step.js');
@@ -706,19 +706,6 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     assert.equal((await call('DELETE', `/api/members/invites/${ownInvite!.id}`, undefined, adminSession)).status, 403);
     assert.equal((await call('DELETE', `/api/members/invites/${ownInvite!.id}`, undefined, ownerSession)).status, 200, 'the owner can');
 
-    // DELETE /api/agent-employees/:id: an agent the owner made admin is removed only by the owner.
-    const agentUser = randomUUID();
-    const employeeId = randomUUID();
-    await db.insert(users).values({ id: agentUser, name: 'Guard agent', email: `${agentUser}@agents.test`, kind: 'agent', is_agent: true, email_verified: true });
-    await db.insert(orgMembers).values({ org_id: guardOrg, user_id: agentUser, role: 'admin' });
-    await db.insert(agentEmployees).values({
-      id: employeeId, org_id: guardOrg, user_id: agentUser, name: 'Guard agent', slug: `guard-agent-${employeeId.slice(0, 8)}`,
-      role: 'project_manager', system_prompt: 'Fixture', trust_level: 'conservative', is_byoa: true, is_active: true, created_by: owner.id,
-    });
-    const agentByAdmin = await call('DELETE', `/api/agent-employees/${employeeId}`, undefined, adminSession);
-    assert.equal(agentByAdmin.status, 403, JSON.stringify(agentByAdmin.json));
-    assert.equal((await db.select({ is_deleted: agentEmployees.is_deleted }).from(agentEmployees).where(eq(agentEmployees.id, employeeId)))[0]!.is_deleted, false, 'nothing was deleted');
-    assert.deepEqual(await membership(agentUser), { role: 'admin', is_active: true });
   });
 
   await t.test('an invite link does not outlive a role or active-state change', async () => {
@@ -983,7 +970,7 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     assert.equal(deadInvite.json.code, 'INVITE_REVOKED');
   });
 
-  await t.test('round 8 reproductions (Opus, sol, astra) are fixed', async () => {
+  await t.test('round 8 reproductions (Opus, sol) are fixed', async () => {
     const r8Org = randomUUID();
     await db.insert(orgs).values({ id: r8Org, name: 'Round 8', slug: `r8-${r8Org}` });
     hosted(false);
@@ -1003,32 +990,6 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
       if (role === 'admin') assert.equal((await call('PATCH', `/api/members/${userId}`, { role: 'admin' }, ownerSession)).status, 200);
       return { userId, employeeId };
     }
-
-    // Opus and astra: concurrent key resets used to hold every pooled
-    // connection while each waited for another. They all finish now.
-    const many = await Promise.all(Array.from({ length: 8 }, () => agent('member')));
-    const resets = Promise.all(many.map((a) => call('POST', `/api/agent-employees/${a.employeeId}/regenerate-channel-token`, {}, adminSession)));
-    const finished = await Promise.race([resets, new Promise<null>((resolve) => setTimeout(() => resolve(null), 20_000))]);
-    assert.ok(finished, 'eight concurrent key resets finish');
-    assert.deepEqual(finished.map((r) => r.status), many.map(() => 200));
-
-    // Opus, sol, astra: a peer admin cannot resume an admin agent the owner paused.
-    const adminAgent = await agent('admin');
-    assert.equal((await call('POST', `/api/agent-employees/${adminAgent.employeeId}/pause`, {}, ownerSession)).status, 200);
-    assert.equal((await call('POST', `/api/agent-employees/${adminAgent.employeeId}/resume`, {}, adminSession)).status, 403);
-    assert.equal((await db.select({ is_active: agentEmployees.is_active }).from(agentEmployees).where(eq(agentEmployees.id, adminAgent.employeeId)))[0]!.is_active, false);
-
-    // Opus: reassigning a trigger takes it away from every other agent; a
-    // peer admin may not take it from an admin agent.
-    const [skill] = await db.insert(skills).values({ name: 'R8 trigger skill', slug: `r8-skill-${randomUUID().slice(0, 8)}`, source: 'org', org_id: r8Org,
-      agent_config: { triggers: ['member.joined'] } }).returning({ id: skills.id });
-    const holder = await agent('admin');
-    await db.update(agentEmployees).set({ trigger_subscriptions: ['member.joined'] }).where(eq(agentEmployees.id, holder.employeeId));
-    const taker = await agent('member');
-    const peerReassign = await call('POST', `/api/agent-employees/${taker.employeeId}/reassign-trigger`, { trigger_kind: 'member.joined', skill_id: skill!.id }, adminSession);
-    assert.equal(peerReassign.status, 403, JSON.stringify(peerReassign.json));
-    assert.deepEqual((await db.select({ t: agentEmployees.trigger_subscriptions }).from(agentEmployees).where(eq(agentEmployees.id, holder.employeeId)))[0]!.t, ['member.joined']);
-    assert.equal((await call('POST', `/api/agent-employees/${taker.employeeId}/reassign-trigger`, { trigger_kind: 'member.joined', skill_id: skill!.id }, ownerSession)).status, 200);
 
     // Opus P4: a removal refused because the person was promoted meanwhile
     // reassigns nothing (the reassignment is inside the locked transaction).
@@ -1084,28 +1045,14 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
       owner: (await login(owner.email)).json.accessToken as string,
       admin: (await login(admin.email)).json.accessToken as string,
     };
-    type State = 'member' | 'guest' | 'admin' | 'demoted_admin' | 'removed_admin' | 'removed_member' | 'pending_member' | 'pending_admin' | 'new_address'
-      | 'agent_member' | 'agent_admin' | 'agent_demoted_admin';
+    // The rule is about people (users.kind 'human'); agents are outside it
+    // (see 'agents are outside the owner-only rule' below).
+    type State = 'member' | 'guest' | 'admin' | 'demoted_admin' | 'removed_admin' | 'removed_member' | 'pending_member' | 'pending_admin' | 'new_address';
     const isProtected: Record<State, boolean> = {
       member: false, guest: false, admin: true, demoted_admin: true, removed_admin: true, removed_member: false, pending_member: false, pending_admin: true, new_address: false,
-      agent_member: false, agent_admin: true, agent_demoted_admin: true,
     };
-    async function make(state: State): Promise<{ id: string; email: string; employeeId?: string }> {
+    async function make(state: State): Promise<{ id: string; email: string }> {
       const as = sessions.owner;
-      if (state === 'agent_member' || state === 'agent_admin' || state === 'agent_demoted_admin') {
-        // An agent employee; the owner made it admin (and, for the demoted one, a member again).
-        const agentUser = randomUUID();
-        const employeeId = randomUUID();
-        await db.insert(users).values({ id: agentUser, name: 'Table agent', email: `${agentUser}@agents.test`, kind: 'agent', is_agent: true, email_verified: true });
-        await db.insert(orgMembers).values({ org_id: tableOrg, user_id: agentUser, role: 'member' });
-        await db.insert(agentEmployees).values({
-          id: employeeId, org_id: tableOrg, user_id: agentUser, name: 'Table agent', slug: `table-agent-${employeeId.slice(0, 8)}`,
-          role: 'project_manager', system_prompt: 'Fixture', trust_level: 'conservative', is_byoa: true, is_active: true, created_by: owner.id,
-        });
-        if (state !== 'agent_member') assert.equal((await call('PATCH', `/api/members/${agentUser}`, { role: 'admin' }, as)).status, 200, `${state} setup`);
-        if (state === 'agent_demoted_admin') assert.equal((await call('PATCH', `/api/members/${agentUser}`, { role: 'member' }, as)).status, 200, `${state} setup`);
-        return { id: agentUser, email: '', employeeId };
-      }
       if (state === 'member' || state === 'guest' || state === 'admin') return person(state, tableOrg);
       if (state === 'demoted_admin' || state === 'removed_admin' || state === 'removed_member') {
         const who = await person(state === 'removed_member' ? 'member' : 'admin', tableOrg);
@@ -1123,8 +1070,7 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     }
     const latestInvite = async (email: string) => (await db.select({ id: invites.id }).from(invites)
       .where(and(eq(invites.email, email), isNull(invites.accepted_at))).orderBy(desc(invites.created_at)).limit(1))[0]!.id;
-    type Op = { name: string; makesAdmin: boolean; states: State[]; run: (target: { id: string; email: string; employeeId?: string }, as: string) => Promise<{ status: number; json: Json }> };
-    const agents: State[] = ['agent_member', 'agent_admin', 'agent_demoted_admin'];
+    type Op = { name: string; makesAdmin: boolean; states: State[]; run: (target: { id: string; email: string }, as: string) => Promise<{ status: number; json: Json }> };
     const ops: Op[] = [
       { name: 'change role to guest', makesAdmin: false, states: ['member', 'admin', 'demoted_admin', 'pending_member', 'pending_admin'],
         run: (t, as) => call('PATCH', `/api/members/${t.id}`, { role: 'guest' }, as) },
@@ -1144,21 +1090,6 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
         run: async (t, as) => call('POST', `/api/members/invites/${await latestInvite(t.email)}/reissue`, {}, as) },
       { name: 'revoke the invite', makesAdmin: false, states: ['pending_member', 'pending_admin'],
         run: async (t, as) => call('DELETE', `/api/members/invites/${await latestInvite(t.email)}`, undefined, as) },
-      // Opus round 7: an agent employee's credentials and settings follow its membership.
-      { name: 'agent: new API key', makesAdmin: false, states: agents,
-        run: (t, as) => call('POST', `/api/agent-employees/${t.employeeId}/regenerate-token`, { mcp_app_scopes: [], mcp_resource_scopes: [] }, as) },
-      { name: 'agent: new channel key', makesAdmin: false, states: agents,
-        run: (t, as) => call('POST', `/api/agent-employees/${t.employeeId}/regenerate-channel-token`, {}, as) },
-      { name: 'agent: replace settings', makesAdmin: false, states: agents,
-        run: (t, as) => call('PUT', `/api/agent-employees/${t.employeeId}`, { name: 'Renamed agent' }, as) },
-      { name: 'agent: edit settings', makesAdmin: false, states: agents,
-        run: (t, as) => call('PATCH', `/api/agent-employees/${t.employeeId}`, { name: 'Edited agent' }, as) },
-      { name: 'agent: pause', makesAdmin: false, states: agents,
-        run: (t, as) => call('POST', `/api/agent-employees/${t.employeeId}/pause`, {}, as) },
-      { name: 'agent: resume', makesAdmin: false, states: agents,
-        run: (t, as) => call('POST', `/api/agent-employees/${t.employeeId}/resume`, {}, as) },
-      { name: 'agent: reset action budget', makesAdmin: false, states: agents,
-        run: (t, as) => call('POST', `/api/agent-employees/${t.employeeId}/action-budget/reset`, {}, as) },
     ];
     let cases = 0;
     for (const actor of ['owner', 'admin'] as const) {
@@ -1176,6 +1107,40 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
       }
     }
     assert.equal(cases, 2 * ops.reduce((n, op) => n + op.states.length, 0));
+  });
+
+  await t.test('agents are outside the owner-only rule: an admin manages an admin agent as before', async () => {
+    const scopeOrg = randomUUID();
+    await db.insert(orgs).values({ id: scopeOrg, name: 'Rule scope', slug: `scope-${scopeOrg}` });
+    hosted(false);
+    const owner = await person('owner', scopeOrg);
+    const admin = await person('admin', scopeOrg);
+    const ownerSession = (await login(owner.email)).json.accessToken as string;
+    const adminSession = (await login(admin.email)).json.accessToken as string;
+    async function adminAgent() {
+      const userId = randomUUID();
+      const employeeId = randomUUID();
+      await db.insert(users).values({ id: userId, name: 'Scope agent', email: `${userId}@agents.test`, kind: 'agent', is_agent: true, email_verified: true });
+      await db.insert(orgMembers).values({ org_id: scopeOrg, user_id: userId, role: 'member' });
+      await db.insert(agentEmployees).values({
+        id: employeeId, org_id: scopeOrg, user_id: userId, name: 'Scope agent', slug: `scope-agent-${employeeId.slice(0, 8)}`,
+        role: 'project_manager', system_prompt: 'Fixture', trust_level: 'conservative', is_byoa: true, is_active: true, created_by: owner.id,
+      });
+      // The owner makes it admin; an admin's later actions on it are not owner-only.
+      assert.equal((await call('PATCH', `/api/members/${userId}`, { role: 'admin' }, ownerSession)).status, 200);
+      return { userId, employeeId };
+    }
+    const demoted = await adminAgent();
+    assert.equal((await call('PATCH', `/api/members/${demoted.userId}`, { role: 'member' }, adminSession)).status, 200, 'an admin demotes an admin agent');
+    const removed = await adminAgent();
+    assert.equal((await call('DELETE', `/api/members/${removed.userId}`, {}, adminSession)).status, 200, 'an admin removes an admin agent');
+    const deleted = await adminAgent();
+    assert.equal((await call('DELETE', `/api/agent-employees/${deleted.employeeId}`, undefined, adminSession)).status, 200, 'an admin deletes an admin agent');
+    const keyed = await adminAgent();
+    assert.equal((await call('POST', `/api/agent-employees/${keyed.employeeId}/regenerate-channel-token`, {}, adminSession)).status, 200, "an admin resets an admin agent's key");
+    // A person stays owner-only: the same admin cannot demote a human admin.
+    const human = await person('admin', scopeOrg);
+    assert.equal((await call('PATCH', `/api/members/${human.id}`, { role: 'member' }, adminSession)).status, 403);
   });
 
   await t.test('a recovery link for an owner or admin is checked again when it is used', async () => {

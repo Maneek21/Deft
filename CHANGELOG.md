@@ -88,12 +88,14 @@ back into that account; the setup screen says so. Schema `0.3.0-preview.149`
 
 ### Changed: only the owner can change, remove or recover an admin (self-hosted installs too)
 
-Admins can still make new admins: invite a new person as admin, promote a member or
-guest, or invite as admin someone who has never been an owner or admin. Everything
-else about someone who is or ever was an owner or admin, a pending admin invite
-included, is the owner's alone: demoting, removing or deactivating them, re-inviting
-or reactivating them, reissuing or revoking their invite, making a recovery link, and
-resetting an admin agent's keys or settings. "Was" is recorded from this release on
+This rule is about people. Admins can still make new admins: invite a new person as
+admin, promote a member or guest, or invite as admin someone who has never been an
+owner or admin. Everything else about a person who is or ever was an owner or admin,
+a pending admin invite included, is the owner's alone: demoting, removing or
+deactivating them, re-inviting or reactivating them, reissuing or revoking their
+invite, and making a recovery link. Agents are not covered: admins manage an agent
+that holds admin rights (its role, keys, settings, pause and resume) exactly as
+before; owner-only management of admin agents is planned separately. "Was" is recorded from this release on
 (`org_member_privilege_history`, schema `0.3.0-preview.149`); someone demoted before
 it is treated like any member.
 

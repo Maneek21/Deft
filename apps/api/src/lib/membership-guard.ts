@@ -7,16 +7,22 @@ import type { db } from './db.js';
  * Who may manage whom in a workspace, and the one locked path every such
  * operation takes.
  *
- * THE RULE (owner's decision, 17 Nov). Granting admin is open to admins: an
- * admin may invite a brand-new person as admin, promote a member or guest,
- * or (re-)invite as admin someone whose membership has never been owner or
- * admin. Everything else about a membership that is or ever was owner or
- * admin, a pending admin invite included, is the owner's alone (or a server
+ * THE RULE (owner's decision, 17 Nov), for HUMAN memberships (users.kind =
+ * 'human'). Granting admin is open to admins: an admin may invite a
+ * brand-new person as admin, promote a member or guest, or (re-)invite as
+ * admin someone whose membership has never been owner or admin. Everything
+ * else about a human membership that is or ever was owner or admin, a
+ * pending admin invite included, is the owner's alone (or a server
  * operator's, `src/scripts/make-recovery-url.ts`), with no exceptions:
  * demote, remove, deactivate, reactivate, re-invite, reissue or revoke its
- * invite, recovery link, an admin agent's credentials and settings. The
- * grant is a one-way door: once a membership is admin, even pending, only
- * the owner touches it.
+ * invite, recovery link. The grant is a one-way door: once a person is
+ * admin, even pending, only the owner touches their membership.
+ *
+ * NOT COVERED: agent and system memberships (users.kind 'agent' or
+ * 'system'). Admins manage an agent that holds admin rights exactly as before
+ * this rule (only a current owner membership is protected, as it always
+ * was). Owner-only management of admin agents, across the agent-employee
+ * routes, API keys, webhooks, MCP tools and budgets, is a separate follow-up.
  *
  * "Was" comes from `org_member_privilege_history`, written at the first
  * grant (or the first time a role leaves owner or admin) in the same locked
@@ -47,7 +53,6 @@ import type { db } from './db.js';
  *   POST   /api/members/invites/:id/reissue  reissue an invite
  *   DELETE /api/members/invites/:id          revoke an invite
  *   POST   /api/members/:id/recovery-url     make a recovery link
- *   DELETE /api/agent-employees/:id          remove an agent's membership
  *
  * Not on this path, by design: inserts of brand-new membership rows for a
  * member, guest or agent (signup's owner row is the workspace's first), and
@@ -75,7 +80,19 @@ export class MembershipGuardError extends Error {
 
 const privilegedRole = (role: string | null | undefined) => role === 'owner' || role === 'admin';
 
-async function readProtection(reader: Reader, orgId: string, userId: string, role: string | null | undefined): Promise<boolean> {
+/**
+ * Is or was this membership owner or admin, for the rule above? A membership
+ * that is not a person's (an agent or the system user) counts only while it
+ * is the owner.
+ */
+async function readProtection(reader: Reader, orgId: string, userId: string, role: string | null | undefined, kind?: string | null): Promise<boolean> {
+  if (role === 'owner') return true;
+  let accountKind = kind;
+  if (accountKind === undefined) {
+    const [account] = await reader.select({ kind: users.kind }).from(users).where(eq(users.id, userId)).limit(1);
+    accountKind = account?.kind ?? null;
+  }
+  if (accountKind !== 'human') return false;
   if (privilegedRole(role)) return true;
   const [history] = await reader.select({ org_id: orgMemberPrivilegeHistory.org_id }).from(orgMemberPrivilegeHistory)
     .where(and(eq(orgMemberPrivilegeHistory.org_id, orgId), eq(orgMemberPrivilegeHistory.user_id, userId))).limit(1);
@@ -92,11 +109,11 @@ export async function lockMembership(tx: Tx, input: { orgId: string; targetUserI
   return {
     account: account ?? null,
     membership: membership ?? null,
-    protected: membership ? await readProtection(tx, input.orgId, input.targetUserId, membership.role) : false,
+    protected: membership ? await readProtection(tx, input.orgId, input.targetUserId, membership.role, account?.kind ?? null) : false,
   };
 }
 
-/** Is or was this membership owner or admin? (Also used where a link is redeemed.) */
+/** Is or was this human membership owner or admin? (Also used where a link is redeemed.) */
 export function isProtectedMembership(reader: Reader, orgId: string, userId: string, role: string | null | undefined) {
   return readProtection(reader, orgId, userId, role);
 }
@@ -117,8 +134,8 @@ export async function authorizeMembershipOperation(
   if (acting?.role === 'owner') return null;
   if (acting?.role !== 'admin') return 'Only the owner or an admin can manage members';
   // An admin may grant admin to someone never privileged (resultingRole), but
-  // never act on a membership that is or was owner or admin.
-  if (input.locked.protected) return 'Only the owner can manage someone who is or was an owner or admin';
+  // never act on a human membership that is or was owner or admin.
+  if (input.locked.protected) return 'Only the owner can manage a person who is or was an owner or admin';
   return null;
 }
 
@@ -207,19 +224,4 @@ export async function linkMakerStillCounts(
   const [history] = await reader.select({ first_generation: orgMemberPrivilegeHistory.first_generation }).from(orgMemberPrivilegeHistory)
     .where(and(eq(orgMemberPrivilegeHistory.org_id, input.orgId), eq(orgMemberPrivilegeHistory.user_id, input.targetUserId))).limit(1);
   return history?.first_generation === grant.generation;
-}
-
-/**
- * For an operation that acts for a membership without changing it (an agent
- * employee's credentials or settings): hold the membership row FOR SHARE, so
- * its role cannot change until the caller's transaction ends, and say
- * whether it is protected. It does not lock the account row, so work done on
- * other connections meanwhile (inserts that reference the account) cannot
- * wait on it.
- */
-export async function holdMembership(tx: Tx, input: { orgId: string; targetUserId: string }): Promise<{ exists: boolean; protected: boolean }> {
-  const [membership] = await tx.select({ role: orgMembers.role }).from(orgMembers)
-    .where(and(eq(orgMembers.org_id, input.orgId), eq(orgMembers.user_id, input.targetUserId))).for('share');
-  if (!membership) return { exists: false, protected: false };
-  return { exists: true, protected: await readProtection(tx, input.orgId, input.targetUserId, membership.role) };
 }
