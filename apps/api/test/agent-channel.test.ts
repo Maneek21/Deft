@@ -1361,50 +1361,11 @@ function isEventIdSelect(fields: unknown): boolean {
 }
 
 test('a reply deleted during the final event check is not returned by a replay', async () => {
-  const connect = await app.request(`/api/agent-channel/v1/connect?${autonomousCompatibilityQuery()}`, {
-    headers: { authorization: `Bearer ${bearer}` },
-  });
-  assert.equal(connect.status, 200);
-  const [fallbackAction] = await db.insert(agentActions).values({
-    org_id: orgId, user_id: humanUserId, agent_employee_id: employeeId, source: 'mention', action: 'chat_mention',
-    params: { message_id: sourceMessageId }, approval_tier: 'auto', approval_status: 'pending',
-  }).returning({ id: agentActions.id });
-  const event = await publishMessageEvent(`final-check-race-${crypto.randomUUID()}`, fallbackAction!.id);
-  const poll = await app.request(
-    `/api/agent-channel/v1/events?limit=100&lease_ms=30000&${autonomousCompatibilityQuery('final-check-race-worker')}`,
-    { headers: { authorization: `Bearer ${bearer}` } },
-  );
-  const claimed = (await poll.json() as any).events.find((candidate: any) => candidate.id === event.id);
-  assert.ok(claimed?.claim_token);
-  const accept = await app.request('/api/agent-channel/v1/accept', {
-    method: 'POST', headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ event_id: event.id, claim_token: claimed.claim_token }),
-  });
-  assert.equal(accept.status, 200, await accept.text());
-  const canary = `CANARY-FINAL-CHECK-RACE-${crypto.randomUUID()}`;
-  const body = JSON.stringify({ event_id: event.id, content: canary, idempotency_key: `final-check-race-${crypto.randomUUID()}`, adapter_mode: 'autonomous_platform' });
-  const send = () => app.request('/api/agent-channel/v1/reply', {
-    method: 'POST', headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' }, body,
-  });
-  assert.equal((await send()).status, 200);
-  // Count the event-id checks a replay makes; the middleware's is the last.
-  const select = apiDb.select.bind(apiDb);
-  let checks = 0;
-  const counting = mock.method(apiDb, 'select', ((fields?: any) => { if (isEventIdSelect(fields)) checks += 1; return select(fields); }) as typeof apiDb.select);
-  try { assert.equal((await send()).status, 200); } finally { counting.mock.restore(); }
-  assert.ok(checks > 0);
-  let seen = 0;
-  const racing = mock.method(apiDb, 'select', ((fields?: any) => {
-    if (!isEventIdSelect(fields) || ++seen !== checks) return select(fields);
-    return { from: (table: any) => ({ where: async (...args: any[]) => {
-      await db.update(messages).set({ is_deleted: true }).where(and(eq(messages.org_id, orgId), eq(messages.content, canary)));
-      return (select(fields) as any).from(table).where(...args);
-    } }) } as any;
-  }) as typeof apiDb.select);
-  let replayText = '';
-  try { replayText = await (await send()).text(); } finally { racing.mock.restore(); }
-  assert.equal(seen, checks, 'the final event check ran');
-  assert.ok(!replayText.includes(canary), `replay must not return the reply deleted during the final check: ${replayText}`);
+  // astra R8 F1 (1): the reply is deleted while the final authority check runs.
+  const posted = await postedReplyOnOwnSource('final-reply-delete');
+  const replay = await replayDeletingAt(posted.replyId, 'final', posted.send);
+  assert.ok(replay.deleted, 'the reply was deleted just before the final read');
+  assert.ok(!replay.text.includes(posted.canary), `replay must not return the reply deleted during the final check: ${replay.text}`);
 });
 
 test('a certification reply recovered after a failed post does not return text deleted meanwhile', async () => {
@@ -1444,6 +1405,131 @@ test('a certification reply recovered after a failed post does not return text d
   const [stored] = await db.select({ is_deleted: messages.is_deleted }).from(messages).where(eq(messages.id, replyId));
   assert.equal(stored?.is_deleted, true, 'the reply was written and then deleted');
   assert.ok(!text.includes(canary), `recovered reply must not return deleted text: ${text}`);
+});
+
+/** A fresh source message, its event, and an accepted autonomous reply to it. */
+async function postedReplyOnOwnSource(label: string) {
+  // Many replies in a row: keep the employee's daily cap and loop breaker
+  // out of this test's way, and give every reply a distinct start.
+  await db.update(agentEmployees).set({ daily_action_count: 0, unhealthy: false, unhealthy_reason: null })
+    .where(eq(agentEmployees.id, employeeId));
+  const connect = await app.request(`/api/agent-channel/v1/connect?${autonomousCompatibilityQuery(`${label}-worker`)}`, {
+    headers: { authorization: `Bearer ${bearer}` },
+  });
+  assert.equal(connect.status, 200, await connect.text());
+  const sourceId = crypto.randomUUID();
+  await db.insert(messages).values({ id: sourceId, org_id: orgId, space_id: spaceId, user_id: humanUserId, content: `source for ${label}` });
+  const [fallbackAction] = await db.insert(agentActions).values({
+    org_id: orgId, user_id: humanUserId, agent_employee_id: employeeId, source: 'mention', action: 'chat_mention',
+    params: { message_id: sourceId }, approval_tier: 'auto', approval_status: 'pending',
+  }).returning({ id: agentActions.id });
+  const { event } = await publishAgentChannelEvent({
+    orgId, employeeId, kind: 'message.created', sourceKind: 'message', sourceId, spaceId, threadId: sourceId,
+    actorUserId: humanUserId, idempotencyKey: `${label}-${crypto.randomUUID()}`,
+    payload: { message_id: sourceId, content: 'hello', reply_thread_id: sourceId, pending_action_id: fallbackAction!.id },
+  });
+  const poll = await app.request(
+    `/api/agent-channel/v1/events?limit=100&lease_ms=30000&${autonomousCompatibilityQuery(`${label}-worker`)}`,
+    { headers: { authorization: `Bearer ${bearer}` } },
+  );
+  const claimed = (await poll.json() as any).events.find((candidate: any) => candidate.id === event!.id);
+  assert.ok(claimed?.claim_token, `${label}: event claimed`);
+  const accept = await app.request('/api/agent-channel/v1/accept', {
+    method: 'POST', headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ event_id: event!.id, claim_token: claimed.claim_token }),
+  });
+  assert.equal(accept.status, 200, await accept.text());
+  const canary = `${crypto.randomUUID()} CANARY-${label}`;
+  const body = JSON.stringify({ event_id: event!.id, content: canary, idempotency_key: `${label}-${crypto.randomUUID()}`, adapter_mode: 'autonomous_platform' });
+  const send = () => app.request('/api/agent-channel/v1/reply', {
+    method: 'POST', headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' }, body,
+  });
+  assert.equal((await send()).status, 200);
+  const [reply] = await db.select({ id: messages.id }).from(messages).where(and(eq(messages.org_id, orgId), eq(messages.content, canary)));
+  assert.ok(reply, `${label}: reply posted`);
+  return { sourceId, replyId: reply!.id, canary, send };
+}
+
+// A deleted source makes its event unreadable. Put it back after asserting:
+// lib/agent-channel.ts's bound-task check reads event authority from a
+// single-table select list, where drizzle leaves the column unqualified, so
+// one unreadable event anywhere would fail later tests (a listed follow-up).
+const undelete = (id: string) => db.update(messages).set({ is_deleted: false }).where(eq(messages.id, id));
+
+const isFinalReplyRead = (query: any) => /final_event/.test(new PgDialect().sqlToQuery(query).sql);
+
+/**
+ * Replays a posted reply while deleting `target` at one await point: just
+ * before the `checkAt`-th database read the replay awaits (any select), or
+ * just before the final authority read itself (`checkAt` = 'final').
+ */
+async function replayDeletingAt(target: string, checkAt: number | 'final', send: () => Promise<Response>) {
+  const remove = () => db.update(messages).set({ is_deleted: true }).where(eq(messages.id, target));
+  const select = apiDb.select.bind(apiDb);
+  const execute = apiDb.execute.bind(apiDb);
+  let seen = 0;
+  let deleted = false;
+  const deleteFirst = (builder: any): any => new Proxy(builder, {
+    get(base, key) {
+      if (key === 'then') {
+        return (resolve: any, reject: any) => (deleted ? Promise.resolve() : remove().then(() => { deleted = true; }))
+          .then(() => base.then(resolve, reject), reject);
+      }
+      const value = base[key];
+      if (typeof value !== 'function') return value;
+      return (...args: any[]) => {
+        const next = value.apply(base, args);
+        return next && typeof next === 'object' && 'then' in next ? deleteFirst(next) : next;
+      };
+    },
+  });
+  const selects = mock.method(apiDb, 'select', ((fields?: any) => {
+    const builder = select(fields);
+    return checkAt !== 'final' && ++seen === checkAt ? deleteFirst(builder) : builder;
+  }) as typeof apiDb.select);
+  const executes = mock.method(apiDb, 'execute', (async (query: any) => {
+    if (checkAt === 'final' && !deleted && isFinalReplyRead(query)) { await remove(); deleted = true; }
+    return execute(query);
+  }) as typeof apiDb.execute);
+  try {
+    const response = await send();
+    return { status: response.status, text: await response.text(), deleted };
+  } finally { selects.mock.restore(); executes.mock.restore(); }
+}
+
+test('a source message deleted during the final reply read gives 404 and no reply text (astra R9 F5)', async () => {
+  const posted = await postedReplyOnOwnSource('final-source-delete');
+  const replay = await replayDeletingAt(posted.sourceId, 'final', posted.send);
+  assert.ok(replay.deleted, 'the source was deleted just before the final read');
+  try {
+    assert.equal(replay.status, 404, replay.text);
+    assert.ok(!replay.text.includes(posted.canary), replay.text);
+  } finally { await undelete(posted.sourceId); }
+});
+
+test('deleting the source or the reply at any await point of a replay never returns the reply text', async (t) => {
+  // Count the database reads an undisturbed replay awaits before its final read.
+  const probe = await postedReplyOnOwnSource('await-points-probe');
+  const select = apiDb.select.bind(apiDb);
+  let checks = 0;
+  const counting = mock.method(apiDb, 'select', ((fields?: any) => { checks += 1; return select(fields); }) as typeof apiDb.select);
+  try { assert.equal((await probe.send()).status, 200); } finally { counting.mock.restore(); }
+  assert.ok(checks > 0, 'the replay awaits database reads before its final read');
+  const points: Array<number | 'final'> = [...Array.from({ length: checks }, (_, i) => i + 1), 'final'];
+  t.diagnostic(`await points: ${points.length} (${checks} database reads plus the final read)`);
+  for (const point of points) {
+    for (const which of ['source', 'reply'] as const) {
+      const posted = await postedReplyOnOwnSource(`await-${point}-${which}`);
+      const replay = await replayDeletingAt(which === 'source' ? posted.sourceId : posted.replyId, point, posted.send);
+      if (which === 'source') await undelete(posted.sourceId);
+      // A read that never runs on this path (an earlier refusal) leaves nothing to test.
+      if (!replay.deleted) continue;
+      assert.ok(!replay.text.includes(posted.canary), `${which} deleted at ${point} leaked: ${replay.status} ${replay.text}`);
+      if (which === 'source') assert.notEqual(replay.status, 200, `${which} deleted at ${point}: ${replay.text}`);
+    }
+  }
+  await db.update(agentEmployees).set({ daily_action_count: 0, unhealthy: false, unhealthy_reason: null })
+    .where(eq(agentEmployees.id, employeeId));
 });
 
 test('autonomous failed chat reply retries once when no durable effect exists', async () => {
