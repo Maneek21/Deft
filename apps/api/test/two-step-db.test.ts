@@ -644,6 +644,13 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     const membership = async (id: string) => (await db.select({ role: orgMembers.role, is_active: orgMembers.is_active }).from(orgMembers)
       .where(and(eq(orgMembers.org_id, guardOrg), eq(orgMembers.user_id, id))))[0];
 
+    // A recovery link made by the owner dies at a role change too: whoever made it.
+    const ownersMember = await person('member', guardOrg);
+    const ownersLink = (await call('POST', `/api/members/${ownersMember.id}/recovery-url`, {}, ownerSession)).json.recovery_url as string;
+    assert.equal((await call('PATCH', `/api/members/${ownersMember.id}`, { role: 'guest' }, ownerSession)).status, 200);
+    const ownersToken = new URLSearchParams(new URL(ownersLink).hash.slice(1)).get('token');
+    assert.equal((await post('/api/auth/reset-password', { token: ownersToken, password: 'A-new-password-2026!' })).status, 400);
+
     // PATCH /api/members/:id: a role change ends the links made before it.
     const member = await person('member', guardOrg);
     const early = (await call('POST', `/api/members/${member.id}/recovery-url`, {}, adminSession)).json.recovery_url as string;
@@ -742,16 +749,18 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     assert.equal(fresh.status, 200);
     assert.equal((await accept(fresh.json.invite_url)).status, 200, 'the owner\'s new link works');
 
-    // An admin invites F as a member and keeps the link; the owner removes F
-    // and re-invites F as an admin. The admin's old link is dead.
+    // Opus round 5: an admin invites F as a member and keeps the link; F is
+    // removed (this kills F's invite rows) and the owner re-invites F as an
+    // admin. The admin's old link is dead.
     const f = `invite-reinvited-${randomUUID()}@test.local`;
     const oldLink = await call('POST', '/api/members/invite', { email: f, role: 'member' }, adminSession);
     assert.equal((await call('DELETE', `/api/members/${oldLink.json.user_id}`, {}, ownerSession)).status, 200);
+    assert.equal((await db.select({ id: invites.id }).from(invites).where(eq(invites.email, f))).length, 0, 'removal kills the pending invites');
     const newLink = await call('POST', '/api/members/invite', { email: f, role: 'admin' }, ownerSession);
     assert.equal(newLink.status, 201, JSON.stringify(newLink.json));
     const takeover = await accept(oldLink.json.invite_url);
     assert.equal(takeover.status, 400);
-    assert.equal(takeover.json.code, 'INVITE_REVOKED');
+    assert.ok(['INVITE_INVALID', 'INVITE_REVOKED'].includes(takeover.json.code), takeover.json.code);
     assert.equal((await accept(newLink.json.invite_url)).status, 200, 'the person accepts the owner\'s link');
 
     // A link made before links carried a generation is refused for an admin.
@@ -762,6 +771,20 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     const legacyAccept = await post('/api/invites/accept', { token: legacy, password: 'Taken-over-2026!' });
     assert.equal(legacyAccept.status, 400);
     assert.equal(legacyAccept.json.code, 'INVITE_REVOKED');
+
+    // A link without a generation is accepted only for the role it was made
+    // for: once the role changed, it is a link made before the change.
+    const legacyMember = async (email: string) => {
+      const made = await call('POST', '/api/members/invite', { email, role: 'member' }, ownerSession);
+      const token = jwt.sign({ purpose: 'invite-accept', user_id: made.json.user_id, org_id: inviteOrg, email, inviter_id: owner.id, role: 'member' }, env.JWT_SECRET, { expiresIn: '1h' });
+      await db.update(invites).set({ token }).where(eq(invites.id, await inviteRowFor(email)));
+      return { token, userId: made.json.user_id as string };
+    };
+    const changed = await legacyMember(`invite-legacy-changed-${randomUUID()}@test.local`);
+    assert.equal((await call('PATCH', `/api/members/${changed.userId}`, { role: 'guest' }, ownerSession)).status, 200);
+    assert.equal((await post('/api/invites/accept', { token: changed.token, password: 'A-password-2026!' })).json.code, 'INVITE_REVOKED');
+    const unchanged = await legacyMember(`invite-legacy-same-${randomUUID()}@test.local`);
+    assert.equal((await post('/api/invites/accept', { token: unchanged.token, password: 'A-password-2026!' })).status, 200, 'an unchanged legacy member link still works');
   });
 
   await t.test('a recovery link for an owner or admin is checked again when it is used', async () => {

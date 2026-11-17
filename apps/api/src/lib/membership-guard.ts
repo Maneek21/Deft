@@ -1,5 +1,5 @@
-import { and, eq } from 'drizzle-orm';
-import { orgMembers, users } from '@deft/db/schema';
+import { and, eq, isNull } from 'drizzle-orm';
+import { invites, orgMembers, users } from '@deft/db/schema';
 import type { db } from './db.js';
 
 /**
@@ -12,10 +12,12 @@ import type { db } from './db.js';
  *   member is a role change) or deactivate an active one. An admin who could demote or
  *   remove a peer could then make a recovery link for them as a member, set
  *   their password and promote them back.
- * - Any change to a person's role or active state ends every recovery link
- *   and every pending invite link made for them so far (both carry
- *   `users.password_version`, which this moves on), so no link outlives a
- *   change of who that person is in the workspace.
+ * - One rule for links: an invite link or a recovery link is a credential
+ *   for one membership at one privilege level. Any change to the role or
+ *   active state moves `users.password_version` on (the one stamp, here);
+ *   invite acceptance (routes/invites.ts) and recovery (lib/web-sessions.ts
+ *   changeWebPassword) refuse a link made before it, whoever made it.
+ *   Deactivation also deletes the person's pending invite rows.
  *
  * It locks the account row, then the membership row: the order sign-in and
  * password changes use.
@@ -113,6 +115,13 @@ export async function guardMembershipChange(tx: Tx, input: GuardInput): Promise<
     || (input.change.isActive !== undefined && input.change.isActive !== membership.is_active);
   if (changes) {
     await tx.update(users).set({ password_version: account.password_version + 1 }).where(eq(users.id, input.targetUserId));
+  }
+  if (input.change.isActive === false && membership.is_active) {
+    // Removal kills the person's pending invites (by the address they were sent to).
+    const [person] = await tx.select({ email: users.email }).from(users).where(eq(users.id, input.targetUserId)).limit(1);
+    if (person?.email) {
+      await tx.delete(invites).where(and(eq(invites.org_id, input.orgId), eq(invites.email, person.email), isNull(invites.accepted_at)));
+    }
   }
   return { ok: true, membership };
 }

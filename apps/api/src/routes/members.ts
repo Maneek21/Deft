@@ -1322,27 +1322,33 @@ memberRoutes.delete('/invites/:id', async (c) => {
 
     const revokedAt = new Date();
     const result = await db.transaction(async (tx) => {
+      // Find the person first, then lock account -> invite -> membership ->
+      // sessions: the membership guard's order (account, membership, invites).
+      const [found] = await tx.select().from(invites)
+        .where(and(eq(invites.org_id, currentUser.org_id), eq(invites.id, inviteId)))
+        .limit(1);
+      if (!found) return { failure: 'NOT_FOUND' as const };
+      const claims = decodeInviteClaims(found.token);
+      let userId = claims?.user_id ?? null;
+      const email = found.email ?? claims?.email;
+      if (!userId && email) {
+        const [byEmail] = await tx.select({ id: users.id }).from(users)
+          .where(eq(users.email, email)).limit(1);
+        userId = byEmail?.id ?? null;
+      }
+      const [user] = userId
+        ? await tx.select({ password_hash: users.password_hash, password_version: users.password_version })
+          .from(users).where(eq(users.id, userId)).for('update')
+        : [];
       const [invite] = await tx.select().from(invites)
         .where(and(eq(invites.org_id, currentUser.org_id), eq(invites.id, inviteId)))
         .for('update');
       if (!invite) return { failure: 'NOT_FOUND' as const };
       if (invite.accepted_at) return { failure: 'INVITE_ACCEPTED' as const };
 
-      const claims = decodeInviteClaims(invite.token);
-      let userId = claims?.user_id ?? null;
-      const email = invite.email ?? claims?.email;
-      if (!userId && email) {
-        const [found] = await tx.select({ id: users.id }).from(users)
-          .where(eq(users.email, email)).limit(1);
-        userId = found?.id ?? null;
-      }
-
       const revokedSessionIds: string[] = [];
       let deactivatedUserId: string | null = null;
       if (userId) {
-        // Invite row is already locked; keep remaining order user -> membership -> sessions.
-        const [user] = await tx.select({ password_hash: users.password_hash, password_version: users.password_version })
-          .from(users).where(eq(users.id, userId)).for('update');
         const [membership] = await tx.select({ id: orgMembers.id, role: orgMembers.role, is_active: orgMembers.is_active })
           .from(orgMembers)
           .where(and(eq(orgMembers.org_id, currentUser.org_id), eq(orgMembers.user_id, userId)))

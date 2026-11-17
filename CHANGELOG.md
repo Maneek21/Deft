@@ -91,7 +91,11 @@ back into that account; the setup screen says so. Schema `0.3.0-preview.149`
 An admin can no longer create a recovery link for the owner or for another admin;
 only the owner can. Admins can still create one for members and guests. The rule
 is checked again when the link is used, so a link made for a member stops working
-if that member becomes an admin. Only the owner can change an admin's role.
+if that member becomes an admin. Only the owner can change, remove or deactivate an
+admin, including one already removed. Any change to a person's role or active state
+ends every invite link and recovery link made for them before it, and removing someone
+deletes their pending invites. A pending invite for an owner or admin is reissued or
+revoked only by the owner or by whoever made it as an admin invite.
 An owner who has forgotten their password gets a link from the server:
 `node --import tsx src/scripts/make-recovery-url.ts <email>` in `apps/api` (see
 docs/self-hosting.md). A recovery link never removes two-step verification.
