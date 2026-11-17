@@ -18,6 +18,7 @@ import {
 } from '@deft/db/schema';
 import { eq, and, desc, sql } from 'drizzle-orm';
 import { getIO } from '../../socket.js';
+import { HEARTBEAT_PROMPT_FORMAT } from '../../lib/heartbeat-tick-scrub.js';
 
 export type HeartbeatOutcome =
   | 'queued'
@@ -294,6 +295,7 @@ export async function handleAgentEmployeeHeartbeat(_job: JobData): Promise<void>
           action: 'heartbeat_tick',
           params: {
             heartbeat_prompt: prompt,
+            heartbeat_prompt_format: HEARTBEAT_PROMPT_FORMAT,
             due_at: dueAt,
           },
           approval_tier: 'auto',

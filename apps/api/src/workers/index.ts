@@ -832,6 +832,13 @@ async function startWorkersInternal(opts?: {
         console.warn('[workers] scheduled work rehydrate failed:', result.reason);
       }
     }
+
+    // Older heartbeat ticks copied chat text into stored params; rewrite them
+    // (lib/heartbeat-tick-scrub.ts). Runs in the background, never blocks start.
+    void trackBackground(import('../lib/heartbeat-tick-scrub.js')
+      .then((mod) => mod.scrubLegacyHeartbeatTicks())
+      .then((count) => { if (count > 0) console.log(`[workers] Scrubbed ${count} older heartbeat tick(s)`); })
+      .catch((err) => console.warn('[workers] heartbeat tick scrub failed:', (err as Error).message)));
   }
 
   workersRunning = true;
