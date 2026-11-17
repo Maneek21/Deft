@@ -12,3 +12,15 @@ export async function activePushRegistration(serviceWorker: ServiceWorkerContain
     clearTimeout(timeout);
   }
 }
+export async function currentPushDevice(
+  serviceWorker: ServiceWorkerContainer,
+  devices: Array<{ id: string; endpoint_hash: string }>,
+) {
+  const registration = await serviceWorker.getRegistration('/deft-sw.js');
+  const subscription = await registration?.pushManager.getSubscription();
+  if (!subscription) return null;
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(subscription.endpoint));
+  const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return devices.find((device) => device.endpoint_hash === hash)?.id ?? null;
+}
+

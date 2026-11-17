@@ -1,6 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { activePushRegistration } from './browser-push';
+import { activePushRegistration, currentPushDevice } from './browser-push';
+
+test('another device does not enable this browser, and removed subscriptions can be enabled again', async () => {
+  const endpoint = 'https://push.example.test/phone';
+  let subscription: { endpoint: string } | null = null;
+  const serviceWorker = {
+    getRegistration: async () => ({ pushManager: { getSubscription: async () => subscription } }),
+  } as unknown as ServiceWorkerContainer;
+  const hash = Buffer.from(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(endpoint))).toString('hex');
+  const devices = [{ id: 'desktop', endpoint_hash: 'other' }];
+  assert.equal(await currentPushDevice(serviceWorker, devices), null);
+  subscription = { endpoint };
+  assert.equal(await currentPushDevice(serviceWorker, devices), null);
+  devices.push({ id: 'phone', endpoint_hash: hash });
+  assert.equal(await currentPushDevice(serviceWorker, devices), 'phone');
+  assert.equal(await currentPushDevice(serviceWorker, devices.slice(0, 1)), null);
+});
 
 test('Enable waits for a slow activation before subscribing', async () => {
   let activate!: (registration: ServiceWorkerRegistration) => void;
