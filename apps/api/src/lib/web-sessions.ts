@@ -8,6 +8,7 @@ import { db } from './db.js';
 import { env } from './env.js';
 import { OrgMembershipError, requireActiveOrgMembership } from './org-membership.js';
 import { roleMustHaveSecondStep, SecondStepRequiredError, secondStepPolicy, sessionMeetsSecondStep } from './two-step-policy.js';
+import { isProtectedMembership } from './membership-guard.js';
 
 const claimsSchema = z.object({
   id: z.string().min(1).max(256), email: z.string(), org_id: z.string().min(1).max(256),
@@ -147,9 +148,10 @@ export async function changeWebPassword(userId: string, passwordHash: string, au
       if (user.password_version !== authority.passwordVersion) throw new WebCredentialsChangedError('Reset link superseded');
       const [membership] = await tx.select({ id: orgMembers.id, role: orgMembers.role }).from(orgMembers).where(and(eq(orgMembers.org_id, authority.orgId), eq(orgMembers.user_id, userId), eq(orgMembers.is_active, true))).for('share');
       if (!membership) throw new OrgMembershipError('Reset membership is no longer active');
-      // The rule that only the owner makes a link for an owner or admin holds
-      // when the link is used too: the person may have been promoted since.
-      if ((membership.role === 'owner' || membership.role === 'admin') && authority.issuedBy !== OPERATOR_RECOVERY_ISSUER) {
+      // The owner-only rule (lib/membership-guard.ts) holds when the link is
+      // used too: for someone who is or was an owner or admin, only a link the
+      // current owner (or the server operator) made works.
+      if (authority.issuedBy !== OPERATOR_RECOVERY_ISSUER && await isProtectedMembership(tx, authority.orgId, userId, membership.role)) {
         const [issuer] = authority.issuedBy
           ? await tx.select({ role: orgMembers.role }).from(orgMembers).where(and(eq(orgMembers.org_id, authority.orgId), eq(orgMembers.user_id, authority.issuedBy), eq(orgMembers.is_active, true))).limit(1)
           : [];

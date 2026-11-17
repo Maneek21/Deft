@@ -86,16 +86,21 @@ If someone loses both their authenticator and their recovery codes there is no w
 back into that account; the setup screen says so. Schema `0.3.0-preview.149`
 (`user_two_step`, `user_two_step_recovery_codes`, `two_step_challenges`).
 
-### Changed: who can create a recovery link
+### Changed: only the owner manages admins (self-hosted installs too)
 
-An admin can no longer create a recovery link for the owner or for another admin;
-only the owner can. Admins can still create one for members and guests. The rule
-is checked again when the link is used, so a link made for a member stops working
-if that member becomes an admin. Only the owner can change, remove or deactivate an
-admin, including one already removed. Any change to a person's role or active state
-ends every invite link and recovery link made for them before it, and removing someone
-deletes their pending invites. A pending invite for an owner or admin is reissued or
-revoked only by the owner or by whoever made it as an admin invite.
+Admins can no longer invite, promote, re-invite, remove or recover other admins;
+the owner does. Every operation on someone who is, was, or would become an owner or
+admin is the owner's alone: inviting as admin, re-inviting or reactivating, reissuing
+or revoking their invite, removing or deactivating them, changing their role to or from
+admin, and making a recovery link. An admin still manages people who are and have
+always been members or guests and are staying that way. "Was" is recorded from this
+release on (`org_member_privilege_history`, schema `0.3.0-preview.149`); someone
+demoted before it is treated like any member.
+
+Any change to a person's role or active state ends every invite link and recovery
+link made for them before it, whoever made it, and removing someone deletes their
+pending invites. An invite link made before this release stops working at the first
+such change.
 An owner who has forgotten their password gets a link from the server:
 `node --import tsx src/scripts/make-recovery-url.ts <email>` in `apps/api` (see
 docs/self-hosting.md). A recovery link never removes two-step verification.

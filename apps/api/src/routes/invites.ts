@@ -171,21 +171,17 @@ inviteRoutes.post('/accept', async (c) => {
     // credentials established by another invite or an admin recovery.
     if (user.password_hash) return { failure: 'INVITE_ALREADY_ACCEPTED' as AcceptanceFailure };
     const [membership] = await tx
-      .select({ id: orgMembers.id, role: orgMembers.role })
+      .select({ id: orgMembers.id })
       .from(orgMembers)
       .where(and(eq(orgMembers.user_id, payload.user_id), eq(orgMembers.org_id, payload.org_id), eq(orgMembers.is_active, true)))
       .for('share');
     if (!membership) return { failure: 'INVITE_REVOKED' as AcceptanceFailure };
-    // A link made before the last change of this membership's role or active
-    // state is refused, whoever made it (lib/membership-guard.ts moves the
-    // generation on). A link made before links carried a generation is
-    // accepted only if the person still holds the role it was made for, and
-    // never for an owner or admin.
-    const privileged = membership.role === 'owner' || membership.role === 'admin';
-    const stale = payload.password_version === undefined
-      ? privileged || payload.role !== membership.role
-      : payload.password_version !== user.password_version;
-    if (stale) return { failure: 'INVITE_REVOKED' as AcceptanceFailure };
+    // A link is refused if the account's generation has moved at all since
+    // it was made, whoever made it (lib/membership-guard.ts moves it on at
+    // every role or active-state change). A link made before links carried a
+    // generation is refused once the generation has left its starting value 0.
+    const madeAt = payload.password_version ?? 0;
+    if (madeAt !== user.password_version) return { failure: 'INVITE_REVOKED' as AcceptanceFailure };
 
     await tx.update(users).set({ ...updates, password_version: user.password_version + 1 }).where(eq(users.id, payload.user_id));
     await tx.update(invites)

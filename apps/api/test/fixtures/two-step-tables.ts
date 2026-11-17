@@ -14,7 +14,7 @@ export async function ensureTwoStepTables(databaseUrl: string): Promise<boolean>
   const client = new pg.Client({ connectionString: databaseUrl });
   await client.connect();
   try {
-    const present = await client.query<{ present: boolean }>("SELECT to_regclass('public.user_two_step') IS NOT NULL AS present");
+    const present = await client.query<{ present: boolean }>("SELECT to_regclass('public.org_member_privilege_history') IS NOT NULL AS present");
     if (present.rows[0]?.present) return false;
     await client.query('BEGIN');
     try {

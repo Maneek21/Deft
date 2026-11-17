@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { eq, and, desc, sql, or, isNull, asc, gte, lt, inArray, notInArray } from 'drizzle-orm';
 import crypto from 'node:crypto';
 import { db } from '../lib/db.js';
-import { checkMembershipChange, guardMembershipChange } from '../lib/membership-guard.js';
+import { authorizeMembershipOperation, checkMembershipOperation, lockMembership, recordMembershipChange } from '../lib/membership-guard.js';
 import { reviewableApprovalCountsByEmployee } from '../lib/pending-approval-audience.js';
 import { hermesBundleAvailability, type HermesBundleAvailability } from '../lib/hermes-release.js';
 import {
@@ -2469,8 +2469,8 @@ agentEmployeeRoutes.delete('/:id', async (c) => {
         403,
       );
     }
-    const removable = await checkMembershipChange(db, { orgId: user.org_id, targetUserId: existing.user_id, actor: { userId: user.id }, change: { isActive: false } });
-    if (!removable.ok) return c.json({ error: removable.error, code: 'FORBIDDEN' }, 403);
+    const notRemovable = await checkMembershipOperation(db, { orgId: user.org_id, targetUserId: existing.user_id, actor: { userId: user.id } });
+    if (notRemovable) return c.json({ error: notRemovable, code: 'FORBIDDEN' }, 403);
 
     // Soft-delete: is_deleted=true + deleted_at. List endpoints filter
     // is_deleted=false so the row disappears from the UI. The shadow user
@@ -2479,8 +2479,10 @@ agentEmployeeRoutes.delete('/:id', async (c) => {
     // One transaction, the membership guard first: an agent made admin by the
     // owner is removed only by the owner, and a refusal leaves nothing deleted.
     const deactivated = await db.transaction(async (tx) => {
-      const guarded = await guardMembershipChange(tx, { orgId: user.org_id, targetUserId: existing.user_id, actor: { userId: user.id }, change: { isActive: false } });
-      if (!guarded.ok) return guarded;
+      const locked = await lockMembership(tx, { orgId: user.org_id, targetUserId: existing.user_id });
+      const refusal = await authorizeMembershipOperation(tx, { orgId: user.org_id, actor: { userId: user.id }, locked });
+      if (refusal) return { ok: false as const, error: refusal };
+      await recordMembershipChange(tx, { orgId: user.org_id, targetUserId: existing.user_id, locked, change: { isActive: false } });
       await tx
         .update(agentEmployees)
         .set({ is_active: false, is_deleted: true, deleted_at: new Date() })
@@ -2490,7 +2492,7 @@ agentEmployeeRoutes.delete('/:id', async (c) => {
         .update(orgMembers)
         .set({ is_active: false, updated_at: new Date() })
         .where(and(eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, existing.user_id)));
-      return guarded;
+      return { ok: true as const };
     });
     if (!deactivated.ok) return c.json({ error: deactivated.error, code: 'FORBIDDEN' }, 403);
 

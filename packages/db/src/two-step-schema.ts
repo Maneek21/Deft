@@ -1,4 +1,4 @@
-import { bigint, index, integer, pgTable, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
+import { bigint, index, integer, pgTable, primaryKey, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
 
 /** Two-step verification belongs to the account (the `users` row), like the
  * password, so these tables carry `user_id` and no `org_id`. Created by
@@ -53,3 +53,11 @@ export const twoStepChallenges = pgTable('two_step_challenges', {
   uniqueIndex('two_step_challenges_token_uidx').on(t.token_hash),
   index('two_step_challenges_user_idx').on(t.user_id),
 ]);
+
+/** Memberships that are or have ever been owner or admin (created by the same
+ * upgrade). Only the owner manages them, even after a demotion or a removal. */
+export const orgMemberPrivilegeHistory = pgTable('org_member_privilege_history', {
+  org_id: text('org_id').notNull(),
+  user_id: text('user_id').notNull(),
+  first_recorded_at: timestamp('first_recorded_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => [primaryKey({ columns: [t.org_id, t.user_id] })]);

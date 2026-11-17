@@ -69,7 +69,7 @@ async function resetToHead(client: pg.Client) {
       await client.query(`ALTER FUNCTION ${signature} RESET search_path`);
     }
     // Revert the .149 two-step verification tables.
-    await client.query('DROP TABLE IF EXISTS public.two_step_challenges, public.user_two_step_recovery_codes, public.user_two_step');
+    await client.query('DROP TABLE IF EXISTS public.org_member_privilege_history, public.two_step_challenges, public.user_two_step_recovery_codes, public.user_two_step');
     await client.query(`DELETE FROM deft_schema_migrations WHERE version = ANY($1::text[])`,
       [tailMigrations().map((migration) => migration.version)]);
     const head = await client.query('SELECT 1 FROM deft_schema_migrations WHERE version = $1', [CONVERGE_HEAD_VERSION]);
