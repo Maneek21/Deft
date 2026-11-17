@@ -23,4 +23,3 @@ export async function currentPushDevice(
   const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
   return devices.find((device) => device.endpoint_hash === hash)?.id ?? null;
 }
-

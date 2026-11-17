@@ -71,6 +71,8 @@ test('the root layout carries the theme colour and Apple home-screen tags', () =
 
 test('the service worker sits at the site root so its scope covers the start address', () => {
   const settings = readFileSync(new URL('../components/browser-notification-settings.tsx', import.meta.url), 'utf8');
-  assert.match(settings, /serviceWorker\.register\('\/deft-sw\.js'\)/);
+  assert.match(settings, /activePushRegistration\(navigator\.serviceWorker\)/);
+  const push = readFileSync(new URL('./browser-push.ts', import.meta.url), 'utf8');
+  assert.match(push, /serviceWorker\.register\('\/deft-sw\.js'\)/);
   readFileSync(new URL('../../public/deft-sw.js', import.meta.url), 'utf8');
 });
