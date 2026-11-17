@@ -100,15 +100,21 @@ export async function manageAgent<T>(
 
 /**
  * The choke point for one operation on several agents (reassigning a
- * trigger away from peers): every agent is locked and decided in id order,
- * so two such operations never wait on each other in opposite orders.
+ * trigger away from peers): every agent is locked and decided in the order
+ * of its account (clones share one) and then its own id, so two such
+ * operations never wait on each other in opposite orders. If `work` finds
+ * it needs an agent outside the set, it throws `AgentSetGrew` and the caller
+ * retries with the larger set, rather than locking out of order.
  */
 export async function manageAgents<T>(
   actor: ManagementActor,
   employeeIds: string[],
   work: (tx: AgentManagementTx, agents: ManagedAgent[]) => Promise<T>,
 ): Promise<AgentManagementResult<T>> {
-  const ordered = [...new Set(employeeIds)].sort();
+  const unique = [...new Set(employeeIds)];
+  const accounts = new Map((await db.select({ id: agentEmployees.id, user_id: agentEmployees.user_id }).from(agentEmployees)
+    .where(and(inArray(agentEmployees.id, unique), eq(agentEmployees.org_id, actor.orgId)))).map((row) => [row.id, row.user_id ?? '']));
+  const ordered = unique.sort((a, b) => (accounts.get(a) ?? '').localeCompare(accounts.get(b) ?? '') || a.localeCompare(b));
   try {
     return await db.transaction(async (tx) => {
       const agents: ManagedAgent[] = [];
@@ -119,6 +125,13 @@ export async function manageAgents<T>(
   } catch (err) {
     if (err instanceof Refused) return { ok: false, ...err.refusal };
     throw err;
+  }
+}
+
+/** Thrown from `manageAgents` work when it needs more agents than it locked. */
+export class AgentSetGrew extends Error {
+  constructor(readonly employeeIds: string[]) {
+    super('The set of agents to manage changed; retry with the larger set');
   }
 }
 

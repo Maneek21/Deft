@@ -65,8 +65,8 @@ function localNames(source: ts.SourceFile): { tables: Map<string, string>; issue
     if (!bindings || !ts.isNamedImports(bindings)) continue;
     for (const el of bindings.elements) {
       const imported = (el.propertyName ?? el.name).text;
-      if (WATCHED_TABLES[imported]) tables.set(el.name.text, WATCHED_TABLES[imported]!);
-      if (CREDENTIAL_ISSUERS[imported]) issuers.set(el.name.text, CREDENTIAL_ISSUERS[imported]!);
+      if (Object.hasOwn(WATCHED_TABLES, imported)) tables.set(el.name.text, WATCHED_TABLES[imported]!);
+      if (Object.hasOwn(CREDENTIAL_ISSUERS, imported)) issuers.set(el.name.text, CREDENTIAL_ISSUERS[imported]!);
     }
   }
   return { tables, issuers };
@@ -75,16 +75,30 @@ function localNames(source: ts.SourceFile): { tables: Map<string, string>; issue
 /** The watched table an expression names (`agentEmployees`, an alias, or `schema.agentEmployees`). */
 function tableOf(expr: ts.Expression, tables: Map<string, string>): string | null {
   if (ts.isIdentifier(expr)) return tables.get(expr.text) ?? null;
-  if (ts.isPropertyAccessExpression(expr)) return WATCHED_TABLES[expr.name.text] ?? null;
+  if (ts.isPropertyAccessExpression(expr)) return Object.hasOwn(WATCHED_TABLES, expr.name.text) ? WATCHED_TABLES[expr.name.text]! : null;
   return null;
 }
 
-/** A credential issuer called inside the choke point must be handed the transaction. */
-function passesExecutor(call: ts.CallExpression): boolean {
-  let arg = call.arguments[0];
-  while (arg && (ts.isAsExpression(arg) || ts.isParenthesizedExpression(arg) || ts.isSatisfiesExpression(arg))) arg = arg.expression;
-  return Boolean(arg && ts.isObjectLiteralExpression(arg) && arg.properties.some((p) =>
-    (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) && ts.isIdentifier(p.name) && p.name.text === 'executor'));
+/**
+ * A credential issuer called inside the choke point must be handed that
+ * callback's own transaction: `executor: tx`, where `tx` is the callback's
+ * first parameter (not `undefined`, not some other handle).
+ */
+function passesExecutor(call: ts.CallExpression, work: ts.Node): boolean {
+  const unwrap = (e: ts.Expression | undefined) => {
+    while (e && (ts.isAsExpression(e) || ts.isParenthesizedExpression(e) || ts.isSatisfiesExpression(e) || ts.isNonNullExpression(e))) e = e.expression;
+    return e;
+  };
+  const first = (ts.isArrowFunction(work) || ts.isFunctionExpression(work)) ? work.parameters[0]?.name : undefined;
+  if (!first || !ts.isIdentifier(first)) return false;
+  const arg = unwrap(call.arguments[0]);
+  if (!arg || !ts.isObjectLiteralExpression(arg)) return false;
+  return arg.properties.some((p) => {
+    if (ts.isShorthandPropertyAssignment(p)) return p.name.text === 'executor' && first.text === 'executor';
+    if (!ts.isPropertyAssignment(p) || !ts.isIdentifier(p.name) || p.name.text !== 'executor') return false;
+    const value = unwrap(p.initializer);
+    return Boolean(value && ts.isIdentifier(value) && value.text === first.text);
+  });
 }
 
 function calleeName(call: ts.CallExpression): string | null {
@@ -165,8 +179,9 @@ export function scanAgentWriters(srcRoot: string): AgentWriter[] {
     const { tables, issuers } = localNames(source);
     const opOf = (word: string): AgentWriter['op'] => (word.toLowerCase().startsWith('update') ? 'update' : word.toLowerCase().startsWith('insert') ? 'insert' : 'delete');
     const visit = (node: ts.Node) => {
-      const record = (table: string, op: AgentWriter['op'], issuerWithoutExecutor = false) => {
+      const record = (table: string, op: AgentWriter['op'], issuerCall?: ts.CallExpression) => {
         const work = chokePointWork(node);
+        const issuerWithoutExecutor = Boolean(issuerCall && work && !passesExecutor(issuerCall, work));
         found.push({
           file: rel,
           line: source.getLineAndCharacterOfPosition(node.getStart()).line + 1,
@@ -180,9 +195,11 @@ export function scanAgentWriters(srcRoot: string): AgentWriter[] {
         const table = tableOf(node.arguments[0]!, tables);
         if (table) record(table, node.expression.name.text as AgentWriter['op']);
       }
-      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
-        const issued = issuers.get(node.expression.text);
-        if (issued) record(issued, 'issue', !passesExecutor(node));
+      // A credential issuer, by its (possibly renamed) import or through a namespace (`channel.issueAgentChannelToken`).
+      if (ts.isCallExpression(node)) {
+        const issued = ts.isIdentifier(node.expression) ? issuers.get(node.expression.text)
+          : ts.isPropertyAccessExpression(node.expression) && Object.hasOwn(CREDENTIAL_ISSUERS, node.expression.name.text) ? CREDENTIAL_ISSUERS[node.expression.name.text] : undefined;
+        if (issued) record(issued, 'issue', node);
       }
       // Raw SQL naming a table in its text.
       if (ts.isTaggedTemplateExpression(node) || ts.isNoSubstitutionTemplateLiteral(node) || ts.isTemplateExpression(node) || ts.isStringLiteral(node)) {

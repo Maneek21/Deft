@@ -303,4 +303,20 @@ test('agents that are or were owner or admin are managed only by the owner', { s
       assert.deepEqual(results.map((r) => r.status), [200, 200, 200, 200], JSON.stringify(results.map((r) => r.json)));
     }
   });
+
+  await t.test('round 2 of #544: reassignments over clones (which share an account) do not deadlock', async () => {
+    for (let round = 0; round < 8; round += 1) {
+      await db.update(agentEmployees).set({ trigger_subscriptions: [] }).where(eq(agentEmployees.org_id, orgId));
+      const x = await agent('member');
+      const y = await agent('member');
+      // A clone of x: another agent on x's account.
+      const cloned = await call(owner)('POST', `/api/agent-employees/${x.employeeId}/clone`, {});
+      assert.equal(cloned.status, 201);
+      const ids = [x.employeeId, y.employeeId, cloned.json.employee.id as string];
+      await db.update(agentEmployees).set({ trigger_subscriptions: ['member.joined'] }).where(inArray(agentEmployees.id, ids));
+      const results = await Promise.all([...ids, ...ids].map((id) =>
+        call(owner)('POST', `/api/agent-employees/${id}/reassign-trigger`, { trigger_kind: 'member.joined', skill_id: skillId })));
+      assert.deepEqual(results.map((r) => r.status), results.map(() => 200), JSON.stringify(results.map((r) => r.json)));
+    }
+  });
 });

@@ -134,13 +134,20 @@ test('the scan sees the writers reviewers slipped past it (round 1 of #544)', ()
     probe('interpolated.ts', "import { sql } from 'drizzle-orm';\nimport { agentEmployees } from '@deft/db/schema';\nexport const d = (db: any, id: string) => db.execute(sql`UPDATE ${agentEmployees} SET is_active = false WHERE id = ${id}`);\n");
     probe('no-executor.ts', "import { manageAgent } from '../lib/agent-management.js';\nimport { issueAgentChannelToken } from '../lib/agent-channel.js';\nexport const e = () => manageAgent({} as any, 'x', (tx) => issueAgentChannelToken({ orgId: 'o', employeeId: 'x', employeeName: 'n' } as any));\n");
     probe('with-executor.ts', "import { manageAgent } from '../lib/agent-management.js';\nimport { issueAgentChannelToken } from '../lib/agent-channel.js';\nexport const f = () => manageAgent({} as any, 'x', (tx) => issueAgentChannelToken({ executor: tx, orgId: 'o', employeeId: 'x', employeeName: 'n' } as any));\n");
+    // Round 2: an executor that is not the callback's transaction, and an issuer through a namespace import.
+    probe('undefined-executor.ts', "import { manageAgent } from '../lib/agent-management.js';\nimport { issueAgentChannelToken } from '../lib/agent-channel.js';\nexport const g = () => manageAgent({} as any, 'x', (tx) => issueAgentChannelToken({ executor: undefined, orgId: 'o', employeeId: 'x', employeeName: 'n' } as any));\n");
+    probe('other-executor.ts', "import { db } from '../lib/db.js';\nimport { manageAgent } from '../lib/agent-management.js';\nimport { issueAgentChannelToken } from '../lib/agent-channel.js';\nexport const h = () => manageAgent({} as any, 'x', (tx) => issueAgentChannelToken({ executor: db, orgId: 'o', employeeId: 'x', employeeName: 'n' } as any));\n");
+    probe('namespace-issuer.ts', "import * as channel from '../lib/agent-channel.js';\nexport const i = () => channel.issueAgentChannelToken({ orgId: 'o', employeeId: 'e', employeeName: 'n' } as any);\n");
     const found = scanAgentWriters(dir).map((w) => `${w.file} ${w.op} ${w.table} ${w.inChokePoint ? 'managed' : 'outside'}${w.dbInsideWork ? ' second-connection' : ''}`);
     assert.deepEqual(found, [
       'aliased.ts update agent_employees outside',
       'interpolated.ts update agent_employees outside',
       'issuer-only.ts issue agent_channel_tokens outside',
+      'namespace-issuer.ts issue agent_channel_tokens outside',
       'namespace.ts delete agent_webhooks outside',
       'no-executor.ts issue agent_channel_tokens managed second-connection',
+      'other-executor.ts issue agent_channel_tokens managed second-connection',
+      'undefined-executor.ts issue agent_channel_tokens managed second-connection',
       'with-executor.ts issue agent_channel_tokens managed',
     ]);
   } finally {

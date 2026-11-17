@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { eq, and, desc, sql, or, isNull, asc, gte, lt, inArray, notInArray } from 'drizzle-orm';
 import crypto from 'node:crypto';
 import { db } from '../lib/db.js';
-import { agentManagementView, authorizeAgentManagement, manageAgent, manageAgents, managementFor, ownerOnlyAgentUsers, type AgentManagementRefusal } from '../lib/agent-management.js';
+import { AgentSetGrew, agentManagementView, manageAgent, manageAgents, managementFor, ownerOnlyAgentUsers, type AgentManagementRefusal } from '../lib/agent-management.js';
 import { lockMembership, recordMembershipChange } from '../lib/membership-guard.js';
 import { reviewableApprovalCountsByEmployee } from '../lib/pending-approval-audience.js';
 import { hermesBundleAvailability, type HermesBundleAvailability } from '../lib/hermes-release.js';
@@ -2419,66 +2419,75 @@ agentEmployeeRoutes.post('/:id/reassign-trigger', async (c) => {
         ),
       ))
       .filter((peer) => peer.id !== targetEmployeeId && (peer.trigger_subscriptions ?? []).includes(trigger_kind));
-    const expectedLosers = (await holders(db)).map((peer) => peer.id);
-    const managedTarget = await manageAgents(actor, [targetEmployeeId, ...expectedLosers], async (tx) => {
-      // Strip the trigger from peers (inline column only — skill-owned
-      // triggers would require uninstalling the skill, which is a separate
-      // user flow), as they stand under the locks. A peer that took the
-      // trigger since the read above is decided here too (rare; out of order).
-      const losing = (await holders(tx)).sort((a, b) => a.id.localeCompare(b.id));
-      for (const peer of losing) {
-        if (!expectedLosers.includes(peer.id)) await authorizeAgentManagement(tx, actor, peer.id);
-        const claims = peer.trigger_subscriptions ?? [];
-        const next = claims.filter((t) => t !== trigger_kind);
-        await tx
-          .update(agentEmployees)
-          .set({ trigger_subscriptions: next.length > 0 ? next : null })
-          .where(eq(agentEmployees.id, peer.id));
+    // A peer that took the trigger after this read makes the operation retry
+    // with the larger set (AgentSetGrew), so locks are always taken in order.
+    let expectedLosers = (await holders(db)).map((peer) => peer.id);
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        const managedTarget = await manageAgents(actor, [targetEmployeeId, ...expectedLosers], async (tx) => {
+          // Strip the trigger from peers (inline column only — skill-owned
+          // triggers would require uninstalling the skill, which is a separate
+          // user flow), as they stand under the locks.
+          const losing = (await holders(tx)).sort((a, b) => a.id.localeCompare(b.id));
+          const unexpected = losing.filter((peer) => !expectedLosers.includes(peer.id)).map((peer) => peer.id);
+          if (unexpected.length > 0) throw new AgentSetGrew([...expectedLosers, ...unexpected]);
+          for (const peer of losing) {
+            const claims = peer.trigger_subscriptions ?? [];
+            const next = claims.filter((t) => t !== trigger_kind);
+            await tx
+              .update(agentEmployees)
+              .set({ trigger_subscriptions: next.length > 0 ? next : null })
+              .where(eq(agentEmployees.id, peer.id));
+          }
+
+          // Install skill on target (idempotent).
+          await tx
+            .insert(agentEmployeeSkills)
+            .values({
+              agent_employee_id: targetEmployeeId,
+              skill_id: skill_id,
+              installed_version: skill.version,
+            })
+            .onConflictDoNothing();
+
+          // Merge skill.agent_config.triggers into the target's inline
+          // `trigger_subscriptions` (set union). Read-time dedup already
+          // collapses any overlap between the inline column and installed
+          // skills, but writing through to the inline column keeps the
+          // existing `= ANY(trigger_subscriptions)` cron dispatchers working
+          // without needing them to consult skill config.
+          const [current] = await tx.select({ trigger_subscriptions: agentEmployees.trigger_subscriptions })
+            .from(agentEmployees).where(eq(agentEmployees.id, targetEmployeeId)).limit(1);
+          const existingClaims = current?.trigger_subscriptions ?? [];
+          const mergedClaims = Array.from(
+            new Set([...existingClaims, ...skillTriggers]),
+          );
+
+          // capability_packs column was dropped (PR 4 C); pack membership is now
+          // derived at runtime from installed skills' agent_config.capability_packs.
+          const [updated] = await tx
+            .update(agentEmployees)
+            .set({
+              trigger_subscriptions: mergedClaims,
+            })
+            .where(eq(agentEmployees.id, targetEmployeeId))
+            .returning();
+
+          return updated!;
+        });
+        if (!managedTarget.ok) return managementRefused(c, managedTarget);
+        const updatedTarget = managedTarget.value;
+
+        return c.json({
+          employee: updatedTarget,
+          reassigned_trigger: trigger_kind,
+          skill_id,
+        });
+      } catch (err) {
+        if (!(err instanceof AgentSetGrew) || attempt >= 3) throw err;
+        expectedLosers = err.employeeIds;
       }
-
-      // Install skill on target (idempotent).
-      await tx
-        .insert(agentEmployeeSkills)
-        .values({
-          agent_employee_id: targetEmployeeId,
-          skill_id: skill_id,
-          installed_version: skill.version,
-        })
-        .onConflictDoNothing();
-
-      // Merge skill.agent_config.triggers into the target's inline
-      // `trigger_subscriptions` (set union). Read-time dedup already
-      // collapses any overlap between the inline column and installed
-      // skills, but writing through to the inline column keeps the
-      // existing `= ANY(trigger_subscriptions)` cron dispatchers working
-      // without needing them to consult skill config.
-      const [current] = await tx.select({ trigger_subscriptions: agentEmployees.trigger_subscriptions })
-        .from(agentEmployees).where(eq(agentEmployees.id, targetEmployeeId)).limit(1);
-      const existingClaims = current?.trigger_subscriptions ?? [];
-      const mergedClaims = Array.from(
-        new Set([...existingClaims, ...skillTriggers]),
-      );
-
-      // capability_packs column was dropped (PR 4 C); pack membership is now
-      // derived at runtime from installed skills' agent_config.capability_packs.
-      const [updated] = await tx
-        .update(agentEmployees)
-        .set({
-          trigger_subscriptions: mergedClaims,
-        })
-        .where(eq(agentEmployees.id, targetEmployeeId))
-        .returning();
-
-      return updated!;
-    });
-    if (!managedTarget.ok) return managementRefused(c, managedTarget);
-    const updatedTarget = managedTarget.value;
-
-    return c.json({
-      employee: updatedTarget,
-      reassigned_trigger: trigger_kind,
-      skill_id,
-    });
+    }
   } catch (err) {
     console.error('Failed to reassign trigger:', err);
     return c.json({ error: 'Failed to reassign trigger', code: 'INTERNAL_ERROR' }, 500);
