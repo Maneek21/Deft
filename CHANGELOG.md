@@ -73,6 +73,22 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
   only private onboarding bookkeeping remains writable alongside authentication.
   Stopping the separate Email helper remains a deployment dependency.
 
+### Changed: agents that are or were admins are the owner's to manage (self-hosted installs too)
+
+An agent employee whose membership is, or ever was, owner or admin is now managed
+only by the workspace owner, like a person who is or was an admin. Admins can no
+longer, for such an agent: reset its MCP or channel key; create, change or revoke an
+API key bound to it; create or revoke its webhooks; pause, resume or mark it healthy
+(in Settings or through the MCP tool `agent_employee_update_state`); reset its action
+budget; reassign a trigger to or away from it; start, check or reset its
+certification; retry, cancel or send test deliveries; edit, clone or delete it; or
+demote, remove or make a recovery link for its membership. Those calls answer 403
+`FORBIDDEN`, and the settings pages disable the controls. Agents that are and
+always were member-level are managed by admins as before. Keys and webhooks that
+already exist keep working; the owner can rotate or revoke them. "Was" counts from
+schema `0.3.0-preview.149` (agents demoted before it are treated as member-level).
+Creating an API key bound to an agent in another workspace now answers 404.
+
 ### Added: two-step verification and recovery codes
 
 Anyone can turn on two-step verification from Settings -> Profile -> Security: an
@@ -88,14 +104,13 @@ back into that account; the setup screen says so. Schema `0.3.0-preview.149`
 
 ### Changed: only the owner can change, remove or recover an admin (self-hosted installs too)
 
-This rule is about people. Admins can still make new admins: invite a new person as
-admin, promote a member or guest, or invite as admin someone who has never been an
-owner or admin. Everything else about a person who is or ever was an owner or admin,
-a pending admin invite included, is the owner's alone: demoting, removing or
-deactivating them, re-inviting or reactivating them, reissuing or revoking their
-invite, and making a recovery link. Agents are not covered: admins manage an agent
-that holds admin rights (its role, keys, settings, pause and resume) exactly as
-before; owner-only management of admin agents is planned separately. "Was" is recorded from this release on
+Admins can still make new admins: invite a new person as admin, promote a member or
+guest, or invite as admin someone who has never been an owner or admin. Everything
+else about someone who is or ever was an owner or admin, a pending admin invite
+included, is the owner's alone: demoting, removing or deactivating them, re-inviting
+or reactivating them, reissuing or revoking their invite, and making a recovery link.
+The same holds for an agent's membership, and for its keys, state and settings (see
+"agents that are or were admins" above). "Was" is recorded from this release on
 (`org_member_privilege_history`, schema `0.3.0-preview.149`); someone demoted before
 it is treated like any member.
 
