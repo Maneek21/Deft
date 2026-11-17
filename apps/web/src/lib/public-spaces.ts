@@ -33,6 +33,32 @@ export function joinPublicSpacePath(spaceId: string): string {
   return `/api/spaces/${encodeURIComponent(spaceId)}/join`;
 }
 
+/** Details of one space: a member may read a public space before joining it. */
+export function publicSpaceDetailsPath(spaceId: string): string {
+  return `/api/spaces/${encodeURIComponent(spaceId)}`;
+}
+
+/** Messages of a space for the read-only preview; `cursor` pages to older messages. */
+export function previewMessagesPath(spaceId: string, cursor?: string | null): string {
+  const base = `/api/messages/${encodeURIComponent(spaceId)}`;
+  return cursor ? `${base}?cursor=${encodeURIComponent(cursor)}` : base;
+}
+
+/** Only a public, unarchived space is shown read-only to someone who has not joined it. */
+export function canPreviewSpace(space: { type?: string | null; is_archived?: boolean | null } | null | undefined): boolean {
+  return !!space && space.type === 'public' && space.is_archived !== true;
+}
+
+/**
+ * What the chat page shows for the space named in the URL: the normal chat
+ * when the viewer has joined it, the read-only preview when they have not,
+ * and nothing when no space is named.
+ */
+export function chatViewFor(urlSpaceId: string | null, joinedSpaceIds: readonly string[], effectiveSpaceId: string | null): 'chat' | 'preview' | 'empty' {
+  if (effectiveSpaceId && joinedSpaceIds.includes(effectiveSpaceId)) return 'chat';
+  return urlSpaceId ? 'preview' : 'empty';
+}
+
 export function leaveSpacePath(spaceId: string): string {
   return `/api/spaces/${encodeURIComponent(spaceId)}/members/me`;
 }

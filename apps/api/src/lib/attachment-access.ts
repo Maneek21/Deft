@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, isNotNull, or, sql } from 'drizzle-orm';
 import {
   files,
   messageAttachments,
@@ -15,16 +15,24 @@ import {
 } from '@deft/db/schema';
 import { db } from './db.js';
 import { visibleTaskCondition } from './task-visibility.js';
+import { unjoinedPublicSpaceReadableSql } from './space-membership.js';
 
+/**
+ * The message exists, is not deleted and the caller is in its space. With
+ * `access: 'read'` the caller may instead be a member of the workspace (never
+ * a guest) reading a public space before joining it. Attaching a file to a
+ * message is a write and keeps the default.
+ */
 export async function canAccessAttachmentMessage(
   messageId: string,
   orgId: string,
   userId: string,
+  access: 'member' | 'read' = 'member',
 ): Promise<boolean> {
   const [row] = await db.select({ id: messages.id })
     .from(messages)
     .innerJoin(spaces, and(eq(messages.space_id, spaces.id), eq(spaces.org_id, orgId)))
-    .innerJoin(spaceMembers, and(
+    .leftJoin(spaceMembers, and(
       eq(messages.space_id, spaceMembers.space_id),
       eq(spaceMembers.user_id, userId),
     ))
@@ -32,6 +40,9 @@ export async function canAccessAttachmentMessage(
       eq(messages.id, messageId),
       eq(messages.org_id, orgId),
       eq(messages.is_deleted, false),
+      access === 'read'
+        ? or(isNotNull(spaceMembers.id), unjoinedPublicSpaceReadableSql(userId))
+        : isNotNull(spaceMembers.id),
     ))
     .limit(1);
   return Boolean(row);
@@ -85,7 +96,7 @@ export async function getVisibleAttachment(fileId: string, orgId: string, userId
   if (messageLinks.length + taskLinks.length > 0) {
     if (messageLinks.length + taskLinks.length !== 1) return null;
     if (messageLinks[0]) {
-      return await canAccessAttachmentMessage(messageLinks[0].message_id, orgId, userId) ? file : null;
+      return await canAccessAttachmentMessage(messageLinks[0].message_id, orgId, userId, 'read') ? file : null;
     }
     return await canAccessAttachmentTask(taskLinks[0]!.task_id, orgId, userId) ? file : null;
   }
@@ -94,7 +105,7 @@ export async function getVisibleAttachment(fileId: string, orgId: string, userId
     return await canAccessAttachmentTask(file.task_id, orgId, userId) ? file : null;
   }
   if (file.message_id) {
-    return await canAccessAttachmentMessage(file.message_id, orgId, userId) ? file : null;
+    return await canAccessAttachmentMessage(file.message_id, orgId, userId, 'read') ? file : null;
   }
   return file.uploaded_by === userId ? file : null;
 }
@@ -133,10 +144,19 @@ export async function authorizeAttachmentDownload(params: Readonly<{
     const messageId = typed ? messageLinks[0]?.id : file.task_id ? undefined : file.message_id;
     const taskId = typed ? taskLinks[0]?.id : file.task_id;
     if (messageId) {
-      const [parent] = await tx.select({ id: messages.id }).from(messages)
+      let [parent] = await tx.select({ id: messages.id }).from(messages)
         .innerJoin(spaces, and(eq(messages.space_id, spaces.id), eq(spaces.org_id, params.org_id)))
         .innerJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, params.user_id)))
         .where(and(eq(messages.id, messageId), eq(messages.org_id, params.org_id), eq(messages.is_deleted, false))).for('share');
+      if (!parent) {
+        // Not in the space: a member of the workspace (never a guest) may still
+        // read a public space before joining it. The message and space rows are
+        // SHARE-locked; the caller's org membership row already is (above).
+        [parent] = await tx.select({ id: messages.id }).from(messages)
+          .innerJoin(spaces, and(eq(messages.space_id, spaces.id), eq(spaces.org_id, params.org_id)))
+          .where(and(eq(messages.id, messageId), eq(messages.org_id, params.org_id), eq(messages.is_deleted, false),
+            unjoinedPublicSpaceReadableSql(params.user_id))).for('share');
+      }
       if (!parent) throw missing();
     } else if (taskId) {
       // UPDATE prevents concurrent FK-backed watcher/assignee insertion after

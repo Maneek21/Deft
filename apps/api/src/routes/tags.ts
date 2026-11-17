@@ -2,12 +2,12 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, ilike, sql, desc, inArray, getTableColumns } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { tags, entityTags, tasks, messages, users, projects, notes, clips } from '@deft/db/schema';
+import { tags, entityTags, tasks, messages, users, projects, notes, clips, orgMembers, spaces, spaceMembers } from '@deft/db/schema';
 import type { AuthUser } from '../middleware/auth.js';
-import { loadMessagesForMember } from '../lib/space-membership.js';
+import { readableSpaceSql } from '../lib/space-membership.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
 import { visibleNoteCondition } from '../lib/note-visibility.js';
-import { canAccessClip } from './clips.js';
+import { accessibleClipSql } from './clips.js';
 
 export const tagRoutes = new Hono();
 
@@ -33,12 +33,13 @@ const ENTITY_NOT_FOUND = { error: 'Entity not found', code: 'NOT_FOUND' } as con
 /**
  * Resolves tagged entities the caller may see: each must belong to the
  * caller's org and pass the same access rule its own routes use (space
- * membership for messages, task and note visibility, clip access). Entities
+ * access for messages, task and note visibility, clip access). Entities
  * that are missing or not visible are absent from every map.
  */
 async function resolveVisibleTagEntities(
   refs: ReadonlyArray<{ entity_type: string; entity_id: string }>,
   user: AuthUser,
+  access: 'member' | 'read' = 'member',
 ) {
   const idsOf = (...types: string[]) => [...new Set(refs.filter(r => types.includes(r.entity_type)).map(r => r.entity_id))];
   const taskIds = idsOf('task');
@@ -66,13 +67,14 @@ async function resolveVisibleTagEntities(
     for (const t of taskRows) taskMap.set(t.id, { title: t.title, number: t.number, prefix: t.prefix, status: t.status });
   }
 
-  const readableMessages = await loadMessagesForMember(messageIds, user.id, user.org_id);
-  if (readableMessages.size > 0) {
+  if (messageIds.length > 0) {
     const msgRows = await db.select({
       id: messages.id, content: messages.content, user_name: users.name, space_id: messages.space_id,
     }).from(messages)
       .innerJoin(users, eq(messages.user_id, users.id))
-      .where(and(inArray(messages.id, [...readableMessages.keys()]), eq(messages.org_id, user.org_id)));
+      .where(and(inArray(messages.id, messageIds), eq(messages.org_id, user.org_id), eq(messages.is_deleted, false),
+        access === 'read' ? readableSpaceSql(user.id, messages.space_id, messages.org_id)
+          : sql`EXISTS (SELECT 1 FROM ${spaceMembers} WHERE ${spaceMembers.space_id} = ${messages.space_id} AND ${spaceMembers.user_id} = ${user.id})`));
     for (const m of msgRows) messageMap.set(m.id, { content: m.content.slice(0, 120), user_name: m.user_name, space_id: m.space_id });
   }
 
@@ -90,10 +92,9 @@ async function resolveVisibleTagEntities(
   }
 
   if (clipIds.length > 0) {
-    const clipRows = await db.select().from(clips)
-      .where(and(inArray(clips.id, clipIds), eq(clips.org_id, user.org_id)));
-    const allowed = await Promise.all(clipRows.map(clip => canAccessClip(clip, user.org_id, user.id)));
-    clipRows.forEach((clip, i) => { if (allowed[i]) clipSet.add(clip.id); });
+    const clipRows = await db.select({ id: clips.id }).from(clips)
+      .where(and(inArray(clips.id, clipIds), accessibleClipSql(user.org_id, user.id, access)));
+    for (const clip of clipRows) clipSet.add(clip.id);
   }
 
   const isVisible = (type: string, id: string) => {
@@ -107,12 +108,55 @@ async function resolveVisibleTagEntities(
   return { taskMap, messageMap, noteMap, isVisible };
 }
 
-async function canSeeTagEntity(entityType: TagEntityType, entityId: string, user: AuthUser) {
-  const resolved = await resolveVisibleTagEntities([{ entity_type: entityType, entity_id: entityId }], user);
+/**
+ * Per tag, the number of tagged items the caller may see. One grouped query
+ * per kind of item, each with the same condition `resolveVisibleTagEntities`
+ * applies to that kind, so the work is four queries however many items,
+ * spaces or clips the workspace has, and no item is loaded into memory.
+ */
+async function visibleTagCounts(user: AuthUser): Promise<Array<{ tag_id: string; count: number }>> {
+  const count = sql<number>`count(*)::int`;
+  const tagged = (...types: TagEntityType[]) => and(eq(entityTags.org_id, user.org_id), inArray(entityTags.entity_type, types));
+  const grouped = await Promise.all([
+    db.select({ tag_id: entityTags.tag_id, count }).from(entityTags)
+      .innerJoin(tasks, and(eq(tasks.id, entityTags.entity_id), eq(tasks.org_id, user.org_id)))
+      .innerJoin(projects, and(eq(tasks.project_id, projects.id), eq(projects.org_id, user.org_id)))
+      .where(and(tagged('task'), eq(tasks.is_deleted, false), visibleTaskCondition(user.id)))
+      .groupBy(entityTags.tag_id),
+    // Messages: not deleted, in a space of this org the caller may read.
+    db.select({ tag_id: entityTags.tag_id, count }).from(entityTags)
+      .innerJoin(messages, and(eq(messages.id, entityTags.entity_id), eq(messages.org_id, user.org_id)))
+      .innerJoin(spaces, and(eq(spaces.id, messages.space_id), eq(spaces.org_id, user.org_id)))
+      .innerJoin(users, eq(users.id, messages.user_id))
+      .where(and(tagged('message'), eq(messages.is_deleted, false),
+        readableSpaceSql(user.id, messages.space_id, messages.org_id)))
+      .groupBy(entityTags.tag_id),
+    db.select({ tag_id: entityTags.tag_id, count }).from(entityTags)
+      .innerJoin(notes, and(eq(notes.id, entityTags.entity_id), eq(notes.org_id, user.org_id)))
+      .where(and(tagged('note', 'daily_note'), eq(notes.is_deleted, false), visibleNoteCondition(user.id)))
+      .groupBy(entityTags.tag_id),
+    db.select({ tag_id: entityTags.tag_id, count }).from(entityTags)
+      .innerJoin(clips, eq(clips.id, entityTags.entity_id))
+      .where(and(tagged('clip'), accessibleClipSql(user.org_id, user.id, 'read')))
+      .groupBy(entityTags.tag_id),
+  ]);
+  return grouped.flat();
+}
+
+async function canSeeTagEntity(entityType: TagEntityType, entityId: string, user: AuthUser, access: 'member' | 'read' = 'member') {
+  const resolved = await resolveVisibleTagEntities([{ entity_type: entityType, entity_id: entityId }], user, access);
   return resolved.isVisible(entityType, entityId);
 }
 
-// GET / — list all tags for org with counts
+/** Deleting a tag removes it from every item, so it is for owners and admins. The role is read from the database. */
+async function isOwnerOrAdmin(user: AuthUser) {
+  const [membership] = await db.select({ role: orgMembers.role }).from(orgMembers)
+    .where(and(eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, user.id), eq(orgMembers.is_active, true)))
+    .limit(1);
+  return membership?.role === 'owner' || membership?.role === 'admin';
+}
+
+// GET / — list all tags for org, each with the number of tagged items the caller can see
 tagRoutes.get('/', async (c) => {
   const user = c.get('user');
 
@@ -125,20 +169,12 @@ tagRoutes.get('/', async (c) => {
     .where(eq(tags.org_id, user.org_id))
     .orderBy(tags.name);
 
-  // Get counts per tag
-  const tagIds = result.map(t => t.id);
+  // Counts follow the tagged-items list (GET /:id/entities): an item the
+  // caller cannot see is not counted, so a count says nothing about hidden items.
   const counts = new Map<string, number>();
-
-  if (tagIds.length > 0) {
-    const countRows = await db.select({
-      tag_id: entityTags.tag_id,
-      count: sql<number>`count(*)::int`,
-    }).from(entityTags)
-      .where(eq(entityTags.org_id, user.org_id))
-      .groupBy(entityTags.tag_id);
-
-    for (const row of countRows) {
-      counts.set(row.tag_id, row.count);
+  if (result.length > 0) {
+    for (const row of await visibleTagCounts(user)) {
+      counts.set(row.tag_id, (counts.get(row.tag_id) ?? 0) + row.count);
     }
   }
 
@@ -178,10 +214,14 @@ tagRoutes.post('/', async (c) => {
   return c.json(tag, 201);
 });
 
-// DELETE /:id — delete tag
+// DELETE /:id — delete tag (owners and admins only)
 tagRoutes.delete('/:id', async (c) => {
   const user = c.get('user');
   const tagId = c.req.param('id');
+
+  if (!await isOwnerOrAdmin(user)) {
+    return c.json({ error: 'Only owners and admins can delete tags', code: 'FORBIDDEN' }, 403);
+  }
 
   const [tag] = await db.select().from(tags)
     .where(and(eq(tags.id, tagId), eq(tags.org_id, user.org_id)))
@@ -292,7 +332,7 @@ tagRoutes.get('/:id/entities', async (c) => {
       .limit(PAGE_SIZE);
     if (page.length === 0) break;
     cursor.current = { ts: page[page.length - 1]!.cursor_ts, id: page[page.length - 1]!.id };
-    const resolved = await resolveVisibleTagEntities(page, user);
+    const resolved = await resolveVisibleTagEntities(page, user, 'read');
     for (const [id, v] of resolved.taskMap) taskMap.set(id, v);
     for (const [id, v] of resolved.messageMap) messageMap.set(id, v);
     for (const [id, v] of resolved.noteMap) noteMap.set(id, v);
@@ -328,7 +368,7 @@ tagRoutes.get('/entity/:type/:entityId', async (c) => {
   const entityId = c.req.param('entityId');
 
   const parsedType = applyTagSchema.shape.entity_type.safeParse(entityType);
-  if (!parsedType.success || !await canSeeTagEntity(parsedType.data, entityId, user)) {
+  if (!parsedType.success || !await canSeeTagEntity(parsedType.data, entityId, user, 'read')) {
     return c.json([]);
   }
 

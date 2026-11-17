@@ -91,8 +91,21 @@ after(() => {
 let handleMemoryExtract: (job: { id: string; name: string; data: unknown }) => Promise<void>;
 
 before(async () => {
+  await withClient(async c => {
+    await c.query(`INSERT INTO spaces(id,org_id,name,type,created_by) VALUES($1,$2,'Memory extraction source','public',$3) ON CONFLICT DO NOTHING`, [SPACE_ID, ORG_ID, USER_ID]);
+    for (const id of [MESSAGE_ID, `${MESSAGE_ID}-wiki-check`]) {
+      await c.query(`INSERT INTO messages(id,org_id,space_id,user_id,content) VALUES($1,$2,$3,$4,'Live source') ON CONFLICT DO NOTHING`, [id, ORG_ID, SPACE_ID, USER_ID]);
+    }
+  });
   const mod = await import('../src/workers/handlers/memory-extract.js');
   handleMemoryExtract = mod.handleMemoryExtract as any;
+});
+
+after(async () => {
+  await withClient(async c => {
+    await c.query('DELETE FROM messages WHERE org_id=$1 AND space_id=$2', [ORG_ID, SPACE_ID]);
+    await c.query('DELETE FROM spaces WHERE id=$1', [SPACE_ID]);
+  });
 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

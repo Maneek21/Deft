@@ -53,7 +53,7 @@ async function recentActionsForPersonalToken(orgId: string, userId: string, toke
     ))
     .orderBy(desc(oauthAuditEvents.created_at))
     .limit(limit);
-  return enrichOAuthAuditActions(orgId, actions);
+  return enrichOAuthAuditActions(orgId, userId, actions);
 }
 
 async function recentActionsForGrant(orgId: string, userId: string, clientId: string, grantId: string, limit = 8) {
@@ -73,7 +73,7 @@ async function recentActionsForGrant(orgId: string, userId: string, clientId: st
     ))
     .orderBy(desc(oauthAuditEvents.created_at))
     .limit(limit);
-  return enrichOAuthAuditActions(orgId, actions);
+  return enrichOAuthAuditActions(orgId, userId, actions);
 }
 
 mcpAccessRoutes.get('/tokens', async (c) => {

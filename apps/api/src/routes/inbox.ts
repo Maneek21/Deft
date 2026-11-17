@@ -1,4 +1,5 @@
-import { nativeNotificationAccessSql } from '../lib/native-mention-visibility.js';
+import { currentlyVisibleNotificationIds, nativeNotificationAccessSql } from '../lib/native-mention-visibility.js';
+import { withoutUnverifiableReplyText } from '../lib/reply-notification-text.js';
 // apps/api/src/routes/inbox.ts
 import { Hono } from 'hono';
 import { eq, and, desc, sql, lt, gt, inArray, or } from 'drizzle-orm';
@@ -180,7 +181,7 @@ inboxRoutes.get('/', async (c) => {
         .where(unreadNotificationWhere);
     const unreadNotificationCount = Number(notificationCountRow?.count ?? 0);
 
-    const notifItems: InboxItem[] = notifRows.map((n) => ({
+    const notifItems: InboxItem[] = notifRows.map(withoutUnverifiableReplyText).map((n) => ({
       id: `notif:${n.id}`,
       kind: NOTIF_KIND_MAP[n.type] ?? 'system',
       title: n.title,
@@ -327,9 +328,12 @@ inboxRoutes.get('/', async (c) => {
     for (const approval of pageApprovals) Object.assign(approval, reviewAuthority.get(approval.action_id));
     const lastItem = items[items.length - 1];
     const nextCursor = items.length === limit && lastItem ? lastItem.created_at : null;
+    // Recheck the page's notifications last, after the other queries above.
+    const pageNotificationIds = items.flatMap((item) => item.source === 'notification' ? [item.id.slice('notif:'.length)] : []);
+    const stillVisible = await currentlyVisibleNotificationIds(user, pageNotificationIds);
 
     return c.json({
-      items,
+      items: items.filter((item) => item.source !== 'notification' || stillVisible.has(item.id.slice('notif:'.length))),
       unread_count: unreadCount,
       has_more: nextCursor !== null,
       next_cursor: nextCursor,

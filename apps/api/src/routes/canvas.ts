@@ -3,7 +3,7 @@ import { eq, and } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { canvases } from '@deft/db/schema';
 import { getIO } from '../socket.js';
-import { requireSpaceMembership } from '../lib/space-membership.js';
+import { canReadSpace, requireSpaceMembership } from '../lib/space-membership.js';
 
 export const canvasRoutes = new Hono();
 
@@ -12,8 +12,10 @@ canvasRoutes.get('/:spaceId/canvas', async (c) => {
   const user = c.get('user');
   const spaceId = c.req.param('spaceId');
 
-  const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
-  if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+  // Reading: a member of the space, or a member of the workspace (never a
+  // guest) reading a public space before joining it.
+  const canRead = await canReadSpace(spaceId, user.id, user.org_id);
+  if (!canRead) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
   const [existing] = await db.select()
     .from(canvases)
@@ -22,6 +24,11 @@ canvasRoutes.get('/:spaceId/canvas', async (c) => {
 
   if (existing) {
     return c.json(existing);
+  }
+
+  // Creating the first, empty canvas is a write: only for someone in the space.
+  if (!(await requireSpaceMembership(spaceId, user.id, user.org_id))) {
+    return c.json({ error: 'This space has no canvas yet', code: 'NOT_FOUND' }, 404);
   }
 
   // Create empty canvas

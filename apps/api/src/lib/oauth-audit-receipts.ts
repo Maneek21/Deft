@@ -1,7 +1,8 @@
 import { and, eq, inArray } from 'drizzle-orm';
-import { projects, spaces, tasks } from '@deft/db/schema';
+import { messages, projects, spaces, tasks } from '@deft/db/schema';
 import { db } from './db.js';
 import { toPlainText } from './plain-text.js';
+import { readableSpaceSql } from './space-membership.js';
 
 export type AuditReceipt = {
   title: string;
@@ -137,8 +138,15 @@ function defaultReceipt(action: AuditActionRow): AuditReceipt {
   };
 }
 
+/**
+ * Receipts for a user's own MCP audit rows. A stored idempotency result can
+ * hold a whole message or notification row from before it was deleted, so the
+ * raw `metadata.result` is never returned, and a message receipt's preview
+ * comes from the current message only while `readerId` can still read it.
+ */
 export async function enrichOAuthAuditActions<T extends AuditActionRow>(
   orgId: string,
+  readerId: string,
   actions: T[],
 ): Promise<Array<EnrichedAuditAction<T>>> {
   if (actions.length === 0) return [];
@@ -146,6 +154,7 @@ export async function enrichOAuthAuditActions<T extends AuditActionRow>(
   const parsedResults = new Map<string, ToolResultRecord | null>();
   const taskIds = new Set<string>();
   const spaceIds = new Set<string>();
+  const messageIds = new Set<string>();
 
   for (const action of actions) {
     const result = parseToolResult(action);
@@ -162,6 +171,8 @@ export async function enrichOAuthAuditActions<T extends AuditActionRow>(
     if (tool === 'message_post' || tool === 'send_message') {
       const spaceId = asString(result.space_id);
       if (spaceId) spaceIds.add(spaceId);
+      const messageId = asString(result.id);
+      if (messageId) messageIds.add(messageId);
     }
   }
 
@@ -195,6 +206,20 @@ export async function enrichOAuthAuditActions<T extends AuditActionRow>(
       .from(spaces)
       .where(and(eq(spaces.org_id, orgId), inArray(spaces.id, [...spaceIds])));
     for (const space of spaceRows) spaceMap.set(space.id, space.name);
+  }
+
+  const liveMessages = new Map<string, string>();
+  if (messageIds.size > 0) {
+    const messageRows = await db
+      .select({ id: messages.id, content: messages.content })
+      .from(messages)
+      .where(and(
+        eq(messages.org_id, orgId),
+        inArray(messages.id, [...messageIds]),
+        eq(messages.is_deleted, false),
+        readableSpaceSql(readerId, messages.space_id, messages.org_id),
+      ));
+    for (const message of messageRows) liveMessages.set(message.id, message.content);
   }
 
   return actions.map((action) => {
@@ -242,7 +267,7 @@ export async function enrichOAuthAuditActions<T extends AuditActionRow>(
         const messageId = asString(result.id);
         const spaceId = asString(result.space_id);
         const spaceName = asString(result.space_name) ?? (spaceId ? spaceMap.get(spaceId) : null);
-        const preview = cleanPreview(result.content);
+        const preview = messageId ? cleanPreview(liveMessages.get(messageId)) : null;
         const targetUser = asString(result.target_user_name) ?? asString(result.target_user_email);
         const targetKind = asString(result.target_kind);
         receipt = {
@@ -270,6 +295,7 @@ export async function enrichOAuthAuditActions<T extends AuditActionRow>(
       }
     }
 
-    return { ...action, receipt };
+    const { result: _storedResult, ...publicMetadata } = metadata;
+    return { ...action, metadata: action.metadata ? publicMetadata : action.metadata, receipt };
   });
 }

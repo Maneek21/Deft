@@ -1,3 +1,4 @@
+import { emitCurrentMessageToSpaceViewers } from '../agent-message-run-details.js';
 /**
  * Phase 4 — task_create, task_update, message_post MCP tools.
  *
@@ -1003,7 +1004,7 @@ export async function executeMessagePost(
       const { getIO } = await import('../../socket.js');
       const io = getIO();
       if (io) {
-        io.to(`space:${args.space_id}`).emit('message:new', row);
+        await emitCurrentMessageToSpaceViewers(io, args.space_id, 'message:new', row);
       }
     } catch {
       // swallow — broadcast must not roll back the write.
@@ -1242,7 +1243,7 @@ export async function executeSendMessage(opts: {
       const { getIO } = await import('../../socket.js');
       const io = getIO();
       if (io && row) {
-        io.to(`space:${spaceId}`).emit('message:new', messageWithUser);
+        await emitCurrentMessageToSpaceViewers(io, spaceId, 'message:new', messageWithUser);
         if (parentId) {
           const [replyStats] = await db
             .select({

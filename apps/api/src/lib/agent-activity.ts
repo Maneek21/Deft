@@ -12,6 +12,7 @@ import { summarizeAgentChannelLifecycle } from './agent-channel-lifecycle.js';
 import { channelEventTextAudienceSql } from './agent-channel.js';
 import { currentEmployeeMessageAuthoritySql, currentEmployeeSpaceAuthoritySql, currentUserSpaceAuthoritySql } from './agent-channel-authority.js';
 import { isCanonicalDeftyEmployee } from './defty-identity.js';
+import { readableSpaceSql } from './space-membership.js';
 import { visibleModuleActionSql } from './module-action-visibility.js';
 import { visibleCaptureActionSql } from './agent-action-visibility.js';
 
@@ -31,7 +32,8 @@ export type AgentActivityItem = {
  * Who may read a session turn's content (input messages, tool calls, reply,
  * error) besides owners/admins: for a Defty turn, its requester (the author
  * of the triggering message, the one link to the request that the server
- * itself records); for an employee turn, the employee source rule (current
+ * itself records) for as long as the requester can still read the space the
+ * request was made in; for an employee turn, the employee source rule (current
  * employee access to the source and the reader's access to it). A turn whose
  * requester or source cannot be established matches nobody.
  */
@@ -45,7 +47,8 @@ export function sessionTurnContentAudienceSql(params: { orgId: string; employeeI
         EXISTS (SELECT 1 FROM messages turn_request
           WHERE turn_request.id = ${trigger} AND turn_request.org_id = ${org}
             AND turn_request.user_id = ${reader} AND turn_request.is_deleted = false
-            AND (${turnSpace} IS NULL OR turn_request.space_id = ${turnSpace})))`
+            AND (${turnSpace} IS NULL OR turn_request.space_id = ${turnSpace})
+            AND ${readableSpaceSql(params.readerId, sql`turn_request.space_id`, org)}))`
     : sql`CASE
         WHEN ${agentSessionTurns.triggering_message_id} IS NOT NULL THEN
           ${currentEmployeeMessageAuthoritySql(org, sql`${params.employeeId}`, trigger)}

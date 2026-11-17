@@ -1,5 +1,6 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../db.js';
+import { lockCaptureEvidence } from '../capture-evidence.js';
 import { employeeMentionWriteError } from './native-mention-write-guard.js';
 import {
   agentActions,
@@ -323,6 +324,11 @@ export async function executeWikiCreate(
         sourceUserId = source.user_id;
         sourceMessageExcerpt = toPlainText(source.content).slice(0, 200);
       }
+      if (args.metadata?.batch_capture === true || args.metadata?.batch_message_ids !== undefined || args.metadata?.batch_message_previews !== undefined) {
+        if (!args.source_message_id || !sourceSpaceId || !await lockCaptureEvidence(tx, {
+          orgId: ctx.org_id, spaceId: sourceSpaceId, messageId: args.source_message_id, metadata: args.metadata,
+        })) deny('wiki_create: source evidence is no longer available');
+      }
       sourceUserId = sourceUserId ?? shadowUserId;
       if (createAccessCheckedHook) await createAccessCheckedHook(tx);
 
@@ -579,6 +585,8 @@ export type WikiUpdateArgs = {
   source_message_id?: string | null;
   source_space_id?: string | null;
   source_user_id?: string | null;
+  /** Provenance carried by native batch-capture proposals, separate from page metadata. */
+  metadata?: Record<string, unknown> | null;
   capture_reason?: string | null;
   /** When set, the update applies only if the page is still at this version. */
   expected_version?: number | null;
@@ -917,6 +925,11 @@ export async function executeWikiUpdate(
         sourceSpaceId = source.space_id;
         sourceUserId = source.user_id;
         sourceMessageExcerpt = toPlainText(source.content).slice(0, 200);
+      }
+      if (args.metadata?.batch_capture === true || args.metadata?.batch_message_ids !== undefined || args.metadata?.batch_message_previews !== undefined) {
+        if (!args.source_message_id || !sourceSpaceId || !await lockCaptureEvidence(tx, {
+          orgId: ctx.org_id, spaceId: sourceSpaceId, messageId: args.source_message_id, metadata: args.metadata,
+        })) refuse('wiki_update: source evidence is no longer available');
       }
       sourceUserId = sourceUserId ?? shadowUserId;
 

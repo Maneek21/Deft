@@ -1,3 +1,4 @@
+import { withoutUnverifiableReplyText } from './reply-notification-text.js';
 import { and, desc, eq, inArray, ne, sql, type SQL } from 'drizzle-orm';
 import {
   agentActionApprovers,
@@ -16,7 +17,7 @@ import { db } from './db.js';
 import { emitToUser } from '../socket.js';
 import { isModuleGovernedWriteActionName } from './module-action-visibility.js';
 import { scheduleAttentionDeliveries, scheduleAttentionDelivery } from './web-push.js';
-import { nativeDeliveryAccessSql } from './native-mention-visibility.js';
+import { nativeDeliveryAccessSql, nativeNotificationAccessSql } from './native-mention-visibility.js';
 import { publicSpaceVisibleSql } from './space-visibility.js';
 import { actionReviewerCandidateSql, loadActionReviewers } from './agent-action-requester.js';
 import { currentRoleReviewableActionSql } from './agent-action-review-gate.js';
@@ -53,6 +54,9 @@ export type AttentionDraft = {
 
 export function visibleAttentionCondition(userId: string) {
   return sql<boolean>`(
+    (${attentionItems.metadata}->>'legacy_notification_id' IS NULL OR
+      ${nativeNotificationAccessSql(userId, sql`${attentionItems.metadata}`, sql`${attentionItems.org_id}`, sql`${attentionItems.link}`)})
+    AND (
     ${attentionItems.source_type} NOT IN ('message', 'space', 'agent_action', 'native_mention')
     OR (${attentionItems.source_type} = 'native_mention'
       AND ${nativeDeliveryAccessSql(userId, sql`${attentionItems.source_id}`, sql`${attentionItems.org_id}`)})
@@ -68,7 +72,7 @@ export function visibleAttentionCondition(userId: string) {
         WHERE ${messages.id} = ${attentionItems.source_id}
           AND ${messages.org_id} = ${attentionItems.org_id}
           AND ${messages.is_deleted} = false
-          AND (${publicSpaceVisibleSql(spaces.type, spaces.org_id, userId)} OR ${spaceMembers.id} IS NOT NULL)
+          AND ((${spaces.is_archived} = false AND ${publicSpaceVisibleSql(spaces.type, spaces.org_id, userId)}) OR ${spaceMembers.id} IS NOT NULL)
       )
     )
     OR (
@@ -81,7 +85,7 @@ export function visibleAttentionCondition(userId: string) {
           AND ${spaceMembers.user_id} = ${userId}
         WHERE ${spaces.id} = ${attentionItems.source_id}
           AND ${spaces.org_id} = ${attentionItems.org_id}
-          AND (${publicSpaceVisibleSql(spaces.type, spaces.org_id, userId)} OR ${spaceMembers.id} IS NOT NULL)
+          AND ((${spaces.is_archived} = false AND ${publicSpaceVisibleSql(spaces.type, spaces.org_id, userId)}) OR ${spaceMembers.id} IS NOT NULL)
       )
     )
     OR (
@@ -93,6 +97,7 @@ export function visibleAttentionCondition(userId: string) {
           AND ${agentActions.org_id} = ${attentionItems.org_id}
           AND ${currentApprovalRecipientSql(userId)}
       )
+    )
     )
   )`;
 }
@@ -107,11 +112,15 @@ export function currentApprovalRecipientSql(userId: string | SQL): SQL {
   return currentRoleReviewableActionSql(userId);
 }
 
-/** Outbound attention item: approval items never carry action params. */
+/**
+ * Outbound attention item: approval items never carry action params, and a
+ * reply notice that cannot be tied to its reply carries no reply text.
+ */
 export function projectAttentionItem<T extends { metadata: unknown }>(item: T): T {
-  if (!item.metadata || typeof item.metadata !== 'object' || !Object.hasOwn(item.metadata, 'params')) return item;
-  const { params: _params, ...metadata } = item.metadata as Record<string, unknown>;
-  return { ...item, metadata };
+  const safe = withoutUnverifiableReplyText(item);
+  if (!safe.metadata || typeof safe.metadata !== 'object' || !Object.hasOwn(safe.metadata, 'params')) return safe;
+  const { params: _params, ...metadata } = safe.metadata as Record<string, unknown>;
+  return { ...safe, metadata };
 }
 
 type LegacyNotification = typeof notifications.$inferSelect;
@@ -311,13 +320,9 @@ export function approvalToAttentionDraft(action: AgentAction, userId: string): A
 /** Emit only to an owner who may still open the item; never with action params. */
 async function emitAttention(event: 'attention:new' | 'attention:updated', item: typeof attentionItems.$inferSelect) {
   try {
-    if (item.source_type === 'agent_action') {
-      const [visible] = await db.select({ id: agentActions.id }).from(agentActions).where(and(
-        eq(agentActions.id, item.source_id), eq(agentActions.org_id, item.org_id), currentApprovalRecipientSql(item.user_id),
-      )).limit(1);
-      if (!visible) return;
-    }
-    emitToUser(item.org_id, item.user_id, event, projectAttentionItem(item));
+    const current = await loadVisibleAttentionSnapshot(item);
+    if (!current) return;
+    emitToUser(current.org_id, current.user_id, event, projectAttentionItem(current));
   } catch (error) {
     console.warn('[attention] realtime delivery skipped:', error instanceof Error ? error.message : error);
   }
@@ -579,51 +584,19 @@ export async function filterVisibleAttentionItems<T extends typeof attentionItem
   userId: string,
   rows: T[],
 ): Promise<T[]> {
-  const nativeIds = rows.filter(item => item.source_type === 'native_mention').map(item => item.id);
-  const visibleNative = nativeIds.length ? await db.select({ id: attentionItems.id }).from(attentionItems).where(and(
-    inArray(attentionItems.id, nativeIds),
-    nativeDeliveryAccessSql(userId, sql`${attentionItems.source_id}`, sql`${attentionItems.org_id}`),
-  )) : [];
-  const allowedNative = new Set(visibleNative.map(item => item.id));
-  const messageIds = rows.filter((item) => item.source_type === 'message').map((item) => item.source_id);
-  const spaceIds = rows.filter((item) => item.source_type === 'space').map((item) => item.source_id);
-  const actionIds = rows.filter((item) => item.source_type === 'agent_action').map((item) => item.source_id);
-  const visibleMessages = messageIds.length > 0
-    ? await db
-      .select({ id: messages.id, public_visible: sql<boolean>`${publicSpaceVisibleSql(spaces.type, spaces.org_id, userId)}`, member_id: spaceMembers.id })
-      .from(messages)
-      .innerJoin(spaces, eq(spaces.id, messages.space_id))
-      .leftJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, userId)))
-      .where(and(inArray(messages.id, messageIds), eq(messages.is_deleted, false)))
-    : [];
-  const visibleSpaces = spaceIds.length > 0
-    ? await db
-      .select({ id: spaces.id, public_visible: sql<boolean>`${publicSpaceVisibleSql(spaces.type, spaces.org_id, userId)}`, member_id: spaceMembers.id })
-      .from(spaces)
-      .leftJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, userId)))
-      .where(inArray(spaces.id, spaceIds))
-    : [];
-  const knownActions = actionIds.length > 0
-    ? await db
-      .select({ id: agentActions.id, allowed: sql<boolean>`coalesce((${currentApprovalRecipientSql(userId)}), false)` })
-      .from(agentActions)
-      .where(inArray(agentActions.id, actionIds))
-    : [];
-  const existingActions = new Set(knownActions.map((row) => row.id));
-  const visibleActions = knownActions.filter((row) => row.allowed);
-  const allowedMessages = new Set(visibleMessages.filter((row) => row.public_visible || row.member_id).map((row) => row.id));
-  const allowedSpaces = new Set(visibleSpaces.filter((row) => row.public_visible || row.member_id).map((row) => row.id));
-  const allowedActions = new Set(visibleActions.map((row) => row.id));
-  const inaccessible = rows.filter((item) =>
-    (item.source_type === 'native_mention' && !allowedNative.has(item.id))
-    ||
-    (item.source_type === 'message' && !allowedMessages.has(item.source_id))
-    || (item.source_type === 'space' && !allowedSpaces.has(item.source_id))
-    || (item.source_type === 'agent_action' && !existingActions.has(item.source_id)));
-  // Approval items are held back, not closed, while their owner cannot review
-  // the action; attention maintenance resolves those that stay that way.
-  const heldBack = rows.filter((item) => item.source_type === 'agent_action'
-    && existingActions.has(item.source_id) && !allowedActions.has(item.source_id));
+  if (rows.length === 0) return [];
+  const visible = await db.select().from(attentionItems).where(and(
+    inArray(attentionItems.id, rows.map((item) => item.id)), eq(attentionItems.user_id, userId), visibleAttentionCondition(userId),
+  ));
+  const allowed = new Set(visible.map((item) => item.id));
+  const hidden = rows.filter((item) => !allowed.has(item.id));
+  // Keep existing approvals held back while their reviewer lacks authority;
+  // missing sources are resolved, as are inaccessible message/notification sources.
+  const actionIds = hidden.filter((item) => item.source_type === 'agent_action').map((item) => item.source_id);
+  const knownActions = actionIds.length ? await db.select({ id: agentActions.id }).from(agentActions)
+    .where(inArray(agentActions.id, actionIds)) : [];
+  const existingActions = new Set(knownActions.map((item) => item.id));
+  const inaccessible = hidden.filter((item) => item.source_type !== 'agent_action' || !existingActions.has(item.source_id));
   for (const item of inaccessible) {
     await transitionAttentionItem({
       orgId: item.org_id,
@@ -632,18 +605,33 @@ export async function filterVisibleAttentionItems<T extends typeof attentionItem
       state: 'resolved',
       resolution: 'source_access_removed',
       actorUserId: userId,
+      expectedVersion: item.version,
     });
   }
-  const hidden = new Set([...inaccessible, ...heldBack].map((item) => item.id));
-  return rows.filter((item) => !hidden.has(item.id));
+  const finalRows = hidden.length ? await db.select().from(attentionItems).where(and(
+    inArray(attentionItems.id, rows.map((item) => item.id)), eq(attentionItems.user_id, userId), visibleAttentionCondition(userId),
+  )) : visible;
+  const currentById = new Map(finalRows.map((item) => [item.id, item]));
+  // A thread can reuse its id for a newer reply while this read is in flight.
+  // Drop stale snapshots without resolving the newly visible replacement.
+  return rows.flatMap((item) => {
+    const current = currentById.get(item.id);
+    return current?.version === item.version ? [{ ...item, ...current }] : [];
+  });
 }
 
-/** Whether the item's owner may still open it (checked again right before a push is sent). */
-export async function attentionItemStillVisible(item: { id: string; org_id: string; user_id: string }) {
-  const [row] = await db.select({ id: attentionItems.id }).from(attentionItems).where(and(
+async function loadVisibleAttentionSnapshot(item: { id: string; org_id: string; user_id: string; version: number }) {
+  const [row] = await db.select().from(attentionItems).where(and(
     eq(attentionItems.id, item.id), eq(attentionItems.org_id, item.org_id), eq(attentionItems.user_id, item.user_id),
+    eq(attentionItems.version, item.version),
     visibleAttentionCondition(item.user_id),
   )).limit(1);
+  return row;
+}
+
+/** Whether this version is still readable, including immediately before a push. */
+export async function attentionItemStillVisible(item: { id: string; org_id: string; user_id: string; version: number }) {
+  const row = await loadVisibleAttentionSnapshot(item);
   return Boolean(row);
 }
 
@@ -858,6 +846,8 @@ export async function transitionAttentionItem(params: {
   actorUserId?: string;
   /** A user acting on their own item: it changes only while they may still open it. */
   viewerId?: string;
+  /** Background cleanup must not resolve a newer reply that reused this id. */
+  expectedVersion?: number;
 }) {
   const now = new Date();
   const allowedFrom: Record<AttentionState, AttentionState[]> = {
@@ -891,6 +881,7 @@ export async function transitionAttentionItem(params: {
       eq(attentionItems.user_id, params.userId),
       inArray(attentionItems.state, allowedFrom[params.state]),
       params.viewerId ? visibleAttentionCondition(params.viewerId) : sql`true`,
+      params.expectedVersion === undefined ? undefined : eq(attentionItems.version, params.expectedVersion),
     ))
     .returning();
   if (!item) return null;
@@ -904,7 +895,7 @@ export async function transitionAttentionItem(params: {
     payload: { resolution: params.resolution ?? null, snoozed_until: params.snoozedUntil?.toISOString() ?? null },
   });
   await emitAttention('attention:updated', item);
-  return item;
+  return params.viewerId ? (await loadVisibleAttentionSnapshot(item)) ?? null : item;
 }
 
 export async function recordAttentionFeedback(params: {
@@ -964,7 +955,7 @@ export async function recordAttentionFeedback(params: {
     payload: { feedback: 'not_urgent' },
   });
   await emitAttention('attention:updated', item);
-  return item;
+  return (await loadVisibleAttentionSnapshot(item)) ?? null;
 }
 
 export async function resolveAttentionBySource(params: {

@@ -1,3 +1,4 @@
+import { emitCurrentMessageToSpaceViewers } from './agent-message-run-details.js';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { db, withDbAdvisoryLock } from './db.js';
@@ -2109,7 +2110,7 @@ export async function executeAction(
 
               const io = getIO();
               if (io && msg) {
-                io.to(`space:${ls.space_id}`).emit('message:new', {
+                await emitCurrentMessageToSpaceViewers(io, ls.space_id, 'message:new', {
                   ...msg, user_name: actor?.name || DEFTY_NAME, user_avatar: null,
                 });
               }
@@ -2363,7 +2364,7 @@ export async function executeAction(
 
         const io = getIO();
         if (io) {
-          io.to(`space:${space.id}`).emit('message:new', {
+          await emitCurrentMessageToSpaceViewers(io, space.id, 'message:new', {
             ...msg,
             user_name: DEFTY_NAME,
             user_avatar: null,
@@ -3278,7 +3279,7 @@ export async function executeAction(
 
         const io = getIO();
         if (io) {
-          io.to(`space:${parent.space_id}`).emit('message:new', {
+          await emitCurrentMessageToSpaceViewers(io, parent.space_id, 'message:new', {
             ...msg,
             user_name: DEFTY_NAME,
             user_avatar: null,

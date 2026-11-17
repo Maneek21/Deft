@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import {
   browsePublicSpacesPath,
   canBrowsePublicSpaces,
+  canPreviewSpace,
+  chatViewFor,
+  previewMessagesPath,
+  publicSpaceDetailsPath,
   joinPublicSpacePath,
   leaveSpacePath,
   onMemberJoined,
@@ -42,4 +46,31 @@ test('member-joined subscription filters events and unsubscribes', () => {
   assert.deepEqual(seen, [{ space_id: 's1', user_id: 'me' }]);
   stop();
   assert.equal(listeners.size, 0);
+});
+
+test('an unjoined space named in the URL is previewed; a joined one opens the normal chat', () => {
+  const joined = ['general', 'eng'];
+  assert.equal(chatViewFor('eng', joined, 'eng'), 'chat');
+  assert.equal(chatViewFor(null, joined, 'general'), 'chat');
+  assert.equal(chatViewFor('open-space', joined, 'open-space'), 'preview');
+  // Before the joined list has loaded, a space from the URL is a preview candidate; the preview waits for the list.
+  assert.equal(chatViewFor('eng', [], 'eng'), 'preview');
+  assert.equal(chatViewFor(null, joined, null), 'empty');
+  assert.equal(chatViewFor(null, joined, 'left-space'), 'empty');
+});
+
+test('only a public, unarchived space can be previewed', () => {
+  assert.equal(canPreviewSpace({ type: 'public' }), true);
+  assert.equal(canPreviewSpace({ type: 'public', is_archived: false }), true);
+  assert.equal(canPreviewSpace({ type: 'public', is_archived: true }), false);
+  for (const type of ['private', 'dm', 'group_dm', 'agent_conversation']) assert.equal(canPreviewSpace({ type }), false);
+  assert.equal(canPreviewSpace(null), false);
+  assert.equal(canPreviewSpace(undefined), false);
+});
+
+test('builds the preview paths', () => {
+  assert.equal(publicSpaceDetailsPath('a/b'), '/api/spaces/a%2Fb');
+  assert.equal(previewMessagesPath('s1'), '/api/messages/s1');
+  assert.equal(previewMessagesPath('s1', null), '/api/messages/s1');
+  assert.equal(previewMessagesPath('s1', '2026-01-01T00:00:00.000Z|m1'), '/api/messages/s1?cursor=2026-01-01T00%3A00%3A00.000Z%7Cm1');
 });

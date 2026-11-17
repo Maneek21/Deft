@@ -59,6 +59,7 @@ import {
 } from './module-service.js';
 import { requireActiveOrgMembership } from './org-membership.js';
 import { visibleModuleActionSql } from './module-action-visibility.js';
+import { visibleCaptureActionSql } from './agent-action-visibility.js';
 import {
   loadEmployeeProjectAccess,
   type EmployeeProjectAccess,
@@ -2401,6 +2402,9 @@ export async function executeToolCall(
           ? { agentEmployeeId }
           : { userId: _userId, orgId }),
       ];
+      // Capture params copy chat text; they follow every evidence message,
+      // as on the web activity routes.
+      if (!agentEmployeeId) conditions.push(visibleCaptureActionSql({ id: _userId, org_id: orgId }));
       if (employee_id) {
         conditions.push(eq(agentActions.agent_employee_id, employee_id));
       }

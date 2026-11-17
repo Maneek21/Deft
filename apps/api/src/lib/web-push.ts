@@ -480,13 +480,13 @@ export async function sendAttentionDelivery(deliveryId: string, options: { attem
   const failures: string[] = [];
   for (const subscription of subscriptions) {
     try {
-      if (!(await appIntegrationNotificationDeliveryCurrent(row.item, options.job))) return { skipped: true, reason: 'app_authority_revoked' };
-      if (!(await attentionItemStillVisible(row.item))) { accessRevoked = true; break; }
-      const payload = await attentionPushPayload(row.item);
       const revealed = revealPushSubscription(subscription);
       // Checked and pinned on every send: a stored endpoint that now
       // resolves to an internal address is never contacted.
       const agent = await pushAgentFor(revealed.endpoint);
+      if (!(await appIntegrationNotificationDeliveryCurrent(row.item, options.job))) return { skipped: true, reason: 'app_authority_revoked' };
+      if (!(await attentionItemStillVisible(row.item))) { accessRevoked = true; break; }
+      const payload = await attentionPushPayload(row.item);
       await webpush.sendNotification({
         endpoint: revealed.endpoint,
         keys: { p256dh: revealed.p256dh, auth: revealed.auth },

@@ -244,7 +244,7 @@ async function decorateResourcesForUser(
       and(
         eq(spaces.org_id, orgId),
         inArray(spaces.id, Array.from(new Set(spaceIds))),
-        or(publicSpaceVisibleSql(spaces.type, spaces.org_id, userId), sql`${spaceMembers.id} is not null`),
+        or(and(publicSpaceVisibleSql(spaces.type, spaces.org_id, userId), eq(spaces.is_archived, false)), sql`${spaceMembers.id} is not null`),
       ),
     );
   const visibleSpaceIds = new Set(visibleSpaces.map((space) => space.id));

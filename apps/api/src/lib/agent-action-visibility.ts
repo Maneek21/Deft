@@ -6,10 +6,14 @@ import {resolveSpaceTargetFromRows} from './resolve-space-target.js';
 import {requireSpaceMembership} from './space-membership.js';
 import {visibleTaskCondition} from './task-visibility.js';
 import {visibleWikiPageCondition} from './wiki-visibility.js';
+import {captureEvidenceAvailableSql} from './capture-evidence.js';
 export function visibleCaptureActionSql(user: { id: string | SQL; org_id: string | SQL }) {
   return sql`(
     ${agentActions.source} IS DISTINCT FROM 'defty_capture'
     OR (
+      ${captureEvidenceAvailableSql(sql`${agentActions.params}->'metadata'`, user.org_id,
+        sql`coalesce(${agentActions.params}->>'source_space_id', ${agentActions.params}->>'space_id')`, user.id)}
+      AND
       (
         COALESCE(
           ${agentActions.params}->>'source_space_id',

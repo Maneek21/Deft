@@ -56,6 +56,8 @@ export default function TagsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { user } = useAuth();
+  // Deleting a tag removes it from every item; the API allows it for owners and admins only.
+  const canDeleteTags = user?.role === 'owner' || user?.role === 'admin';
   const [tags, setTags] = useState<Tag[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(searchParams.get('new') === '1');
@@ -96,7 +98,8 @@ export default function TagsPage() {
 
   const handleDelete = async (tagId: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    await api.delete(`/api/tags/${tagId}`);
+    const res = await api.delete(`/api/tags/${tagId}`);
+    if (!res.ok) return;
     setTags(prev => prev.filter(t => t.id !== tagId));
     if (selectedTag?.id === tagId) { setSelectedTag(null); setEntities([]); }
   };
@@ -213,12 +216,14 @@ export default function TagsPage() {
                     </div>
                     <span className="text-[11px] tabular-nums flex-shrink-0"
                       style={{ color: 'var(--muted)' }}>{tag.count}</span>
-                    <button onClick={(e) => handleDelete(tag.id, e)}
-                      aria-label={`Delete tag ${tag.name}`}
-                      className="p-0.5 rounded opacity-60 hover:opacity-100 transition-opacity flex-shrink-0"
-                      style={{ color: 'var(--muted)' }}>
-                      <X size={13} />
-                    </button>
+                    {canDeleteTags && (
+                      <button onClick={(e) => handleDelete(tag.id, e)}
+                        aria-label={`Delete tag ${tag.name}`}
+                        className="p-0.5 rounded opacity-60 hover:opacity-100 transition-opacity flex-shrink-0"
+                        style={{ color: 'var(--muted)' }}>
+                        <X size={13} />
+                      </button>
+                    )}
                   </div>
                 );
               })}

@@ -18,7 +18,7 @@ const db = {
   select: () => query,
   async transaction(run: (tx: any) => Promise<unknown>) {
     return run({
-      select: () => ({ ...query, limit: async () => [] }),
+      select: () => ({ ...query, limit: async () => [], orderBy() { return this; }, for: async () => [{ id: 'message-one' }] }),
       insert(table: unknown) {
         return {
           values(value: unknown) {

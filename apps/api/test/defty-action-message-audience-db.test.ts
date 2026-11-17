@@ -427,6 +427,9 @@ test('W2a3-R6: a viewer removed from the space while delivery is resolved receiv
   await client!.query('INSERT INTO messages(id,org_id,space_id,user_id,content) VALUES($1,$2,$3,$4,$5)', [ask, orgId, room, ids.requester, '@Defty draft it']);
   const stored = await storedReply();
   const message = { ...stored, id: randomUUID(), space_id: room, metadata: { ...(stored.metadata as object), reply_to_message_id: ask } };
+  for (const id of [message.id, `${message.id}-control`]) await client!.query(
+    'INSERT INTO messages(id,org_id,space_id,user_id,content,metadata) VALUES($1,$2,$3,$4,$5,$6)',
+    [id, orgId, room, message.user_id, message.content, JSON.stringify(message.metadata)]);
   // Control: delivered normally, the requester receives the details.
   await emitMessageToSpaceViewers(io as any, { orgId, spaceId: room, event: 'message:new', message: { ...message, id: `${message.id}-control` } });
   await settle();
@@ -447,6 +450,8 @@ test('W2a3-R7: when delivery cannot be resolved, the space still receives the me
   const io = realtime.io;
   const failing = { to: (name: string) => io.to(name), in: () => ({ fetchSockets: async () => { throw new Error('adapter unavailable'); } }) };
   const message = { ...(await storedReply()), id: randomUUID() };
+  await client!.query('INSERT INTO messages(id,org_id,space_id,user_id,content,metadata) VALUES($1,$2,$3,$4,$5,$6)',
+    [message.id, orgId, spaceId, message.user_id, message.content, JSON.stringify(message.metadata)]);
   await emitMessageToSpaceViewers(failing as any, { orgId, spaceId, event: 'message:new', message });
   await settle();
   for (const socket of [requester, peer]) {
@@ -487,8 +492,32 @@ test('W2a3-R4-A: approval result rows follow the audience of their action, not t
   const { emitMessageToSpaceViewers } = await import('../src/lib/agent-message-run-details.js');
   const [row] = (await client!.query('SELECT * FROM messages WHERE id=$1', [byGuest])).rows;
   const message = { ...row, id: `${byGuest}-live` };
+  await client!.query('INSERT INTO messages(id,org_id,space_id,user_id,content,metadata) VALUES($1,$2,$3,$4,$5,$6)',
+    [message.id, orgId, room, message.user_id, message.content, JSON.stringify(message.metadata)]);
   await emitMessageToSpaceViewers(realtime.io as any, { orgId, spaceId: room, event: 'message:new', message });
   await settle();
   assert.deepEqual(canaries(JSON.stringify(newMessages(guest.events, message.id))), []);
   assert.deepEqual(canaries(JSON.stringify(newMessages(requester.events, message.id))), ['CANARY-BYGUEST']);
+});
+
+test('a message deleted during per-viewer socket resolution is never broadcast from its retained snapshot', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const { emitMessageToSpaceViewers, emitCurrentMessageToSpaceViewers } = await import('../src/lib/agent-message-run-details.js');
+  const message = await storedReply();
+  const emitted: unknown[] = [];
+  const io = {
+    to: () => ({ emit: (_event: string, payload: unknown) => emitted.push(payload) }),
+    in: () => ({ fetchSockets: async () => {
+      await client!.query('UPDATE messages SET is_deleted=true WHERE id=$1', [message.id]);
+      return [];
+    } }),
+  };
+  try {
+    await emitMessageToSpaceViewers(io, { orgId, spaceId, event: 'message:new', message });
+    assert.deepEqual(emitted, []);
+    await emitCurrentMessageToSpaceViewers(io, spaceId, 'message:new', message);
+    assert.deepEqual(emitted, []);
+  } finally {
+    await client!.query('UPDATE messages SET is_deleted=false WHERE id=$1', [message.id]);
+  }
 });

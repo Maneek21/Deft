@@ -37,7 +37,7 @@ function stubBlockedAlertDatabase(leadCanReadSpace = true) {
         if (table === taskRelationships || table === agentNudges) rows = [];
         if (table === messages) {
           staleMessageReads += 1;
-          rows = [{ id: 'older-flaky-test', content: 'I am blocked by a flaky test.' }];
+          rows = [{ id: trigger.messageId, content: trigger.content }];
         }
         return Promise.resolve(resolve(rows));
       },
@@ -74,7 +74,7 @@ test('blocked alert for a new blocked message links and quotes that message', as
   assert.equal(notification.link, '/chat?space=engineering-space&message=new-migration-blocker');
   assert.ok(notification.body.includes(`'${trigger.content}'`));
   assert.doesNotMatch(notification.body, /flaky test/);
-  assert.equal(database.staleMessageReads(), 0, 'the supplied trigger must not be replaced by an older message');
+  assert.equal(database.staleMessageReads(), 1, 'reload the exact trigger to check deletion and avoid stale queued text');
 });
 
 test('blocked alert does not quote private space content to a lead without membership', async () => {

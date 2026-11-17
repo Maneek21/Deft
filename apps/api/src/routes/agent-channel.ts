@@ -48,17 +48,76 @@ import { getIO } from '../socket.js';
 import { executeSendMessage, executeTaskUpdate, verifyParentMessageMatches } from '../lib/mcp-tools/writes.js';
 import { employeeCanAccessSpace } from '../lib/mcp-tools/employee-space-access.js';
 import { chargeEmployeeChatPostOncePerAttempt, checkEmployeeChatPost } from '../lib/employee-chat-post-guard.js';
-import { currentAgentChannelEventAuthoritySql } from '../lib/agent-channel-authority.js';
+import { currentAgentChannelEventAuthoritySql, currentEmployeeMessageAuthoritySql } from '../lib/agent-channel-authority.js';
 import { buildAgentChannelLifecyclePatch } from '../lib/agent-channel-lifecycle.js';
 import { reconcileAgentChannelRuntimeAttempt } from '../lib/agent-channel-reconciliation.js';
 
 export const agentChannelRoutes = new Hono();
 
 const responseAuthority = new WeakMap<Context, { principal: AgentChannelPrincipal; eventIds: string[]; list?: boolean }>();
+// `/reply` responses whose `result` may hold a posted message (a fresh reply,
+// a stored replay, a recovered certification reply, a failed-attempt echo).
+const replyResponseAuthority = new WeakMap<Context, AgentChannelPrincipal>();
 // Replays and reconciliation can await several durable lookups after entry. Check
 // the pinned canonical IDs again before returning any cached private result.
 agentChannelRoutes.use('*', async (c, next) => {
   await next();
+  const replyPrincipal = replyResponseAuthority.get(c);
+  if (replyPrincipal) await finalizeReplyResponse(c, replyPrincipal);
+  else await recheckEventAuthority(c);
+});
+
+/**
+ * The last step of every `/reply` response (fresh reply, stored replay,
+ * duplicate, failed-attempt echo, recovered certification reply). ONE
+ * statement reads, from one snapshot, whether the event is still readable by
+ * this employee (its source message included) and, for a chat reply, the
+ * reply message's current text when it is undeleted and readable. That read
+ * alone decides the body: an unreadable event gives 404 (or no reply body on
+ * an error response), a deleted or unreadable reply gives its ids only.
+ * Two separate checks would always leave a gap for one of the two deletes.
+ */
+async function finalizeReplyResponse(c: Context, principal: AgentChannelPrincipal) {
+  const eventIds = responseAuthority.get(c)?.eventIds ?? [];
+  const isJson = c.res.headers.get('content-type')?.includes('application/json') ?? false;
+  const body = isJson
+    ? await c.res.clone().json().catch(() => null) as Record<string, unknown> | null
+    : null;
+  const hasResult = Boolean(body && typeof body === 'object' && 'result' in body);
+  const replyId = hasResult ? replyMessageId(body!.result) : null;
+  if (eventIds.length === 0) {
+    if (hasResult) c.res = c.json({ ...body, result: replyIdsOnly(body!.result) }, c.res.status as 200);
+    return;
+  }
+  const rows = await db.execute(sql`
+    SELECT final_event.id AS event_id, final_reply.id AS reply_id, final_reply.content AS reply_content
+    FROM agent_channel_events final_event
+    LEFT JOIN messages final_reply
+      ON ${replyId ? sql`final_reply.id = ${replyId}
+        AND final_reply.org_id = ${principal.org_id}
+        AND final_reply.is_deleted = false
+        AND ${currentEmployeeMessageAuthoritySql(sql`${principal.org_id}`, sql`${principal.employee_id}`, sql`final_reply.id`)}` : sql`false`}
+    WHERE final_event.id IN (${sql.join(eventIds.map((id) => sql`${id}`), sql`, `)})
+      AND final_event.org_id = ${principal.org_id}
+      AND final_event.agent_employee_id = ${principal.employee_id}
+      AND ${currentAgentChannelEventAuthoritySql(sql`final_event.id`)}
+  `);
+  const found = (rows.rows ?? []) as Array<{ event_id: string; reply_id: string | null; reply_content: string | null }>;
+  const eventReadable = eventIds.every((id) => found.some((row) => row.event_id === id));
+  if (!eventReadable) {
+    if (c.res.status < 400) c.res = errorResponse(c, 404, 'NOT_FOUND', 'Channel event not found');
+    else if (hasResult) c.res = c.json({ ...body, result: replyIdsOnly(body!.result) }, c.res.status as 500);
+    return;
+  }
+  if (!replyId) return;
+  const reply = found.find((row) => row.reply_id === replyId);
+  const result = reply
+    ? { ...(body!.result as Record<string, unknown>), content: reply.reply_content }
+    : replyIdsOnly(body!.result);
+  c.res = c.json({ ...body, result }, c.res.status as 200);
+}
+
+async function recheckEventAuthority(c: Context) {
   const authority = responseAuthority.get(c);
   if (!authority || c.res.status >= 400 || authority.eventIds.length === 0) return;
   const rows = await db.select({ id: agentChannelEvents.id }).from(agentChannelEvents).where(and(
@@ -76,7 +135,7 @@ agentChannelRoutes.use('*', async (c, next) => {
   } else {
     c.res = errorResponse(c, 404, 'NOT_FOUND', 'Channel event not found');
   }
-});
+}
 
 function channelContract() {
   return {
@@ -196,6 +255,27 @@ const statusSchema = z.object({
   }).strict().optional(),
   caller_employee_slug: z.string().optional(),
 }).strict();
+
+/** The chat message a reply result holds text from, if any. */
+function replyMessageId(stored: unknown): string | null {
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return null;
+  const reply = stored as Record<string, unknown>;
+  if (!('content' in reply)) return null;
+  return typeof reply.message_id === 'string'
+    ? reply.message_id
+    : typeof reply.id === 'string' && typeof reply.space_id === 'string' ? reply.id : null;
+}
+
+/** A reply result reduced to its ids: no message, comment or other text. */
+function replyIdsOnly(stored: unknown): unknown {
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return stored ?? null;
+  const reply = stored as Record<string, unknown>;
+  const kept: Record<string, unknown> = { content: null, deleted: true };
+  for (const key of ['id', 'message_id', 'comment_id', 'task_id', 'space_id', 'parent_id', 'user_id', 'created_at']) {
+    if (key in reply) kept[key] = reply[key];
+  }
+  return kept;
+}
 
 function errorResponse(c: Context, status: 400 | 401 | 403 | 404 | 409 | 426 | 500, code: string, message: string) {
   return c.json({ error: message, code }, status);
@@ -833,6 +913,7 @@ agentChannelRoutes.post('/reply', async (c) => {
 
   const principal = await resolveChannelPrincipal(c, parsed.data.caller_employee_slug);
   if (isResponse(principal)) return principal;
+  replyResponseAuthority.set(c, principal);
 
   const event = await getEventForPrincipal(parsed.data.event_id, principal, c);
   if (!event) {

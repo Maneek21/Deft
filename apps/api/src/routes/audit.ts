@@ -6,7 +6,7 @@ import type { AuthUser } from '../middleware/auth.js';
 import { assertModuleAuditReadAccess, humanModuleActor } from '../lib/module-service.js';
 import { isModuleError } from '../lib/module-errors.js';
 import { OrgMembershipError, requireOrgAdminOrOwner } from '../lib/org-membership.js';
-import { loadMessagesForMember } from '../lib/space-membership.js';
+import { loadMessagesForReader } from '../lib/space-membership.js';
 
 export const auditRoutes = new Hono();
 
@@ -25,7 +25,7 @@ function pickFields(value: unknown, keys: readonly string[]): Record<string, unk
  */
 async function projectMessageEntries<T extends typeof auditLog.$inferSelect>(events: T[], user: AuthUser) {
   const messageIds = events.filter((event) => event.entity_type === 'message').map((event) => event.entity_id);
-  const readable = await loadMessagesForMember(messageIds, user.id, user.org_id);
+  const readable = await loadMessagesForReader(messageIds, user.id, user.org_id);
   return events.map((event) => {
     if (event.entity_type !== 'message' || readable.has(event.entity_id)) return event;
     return {

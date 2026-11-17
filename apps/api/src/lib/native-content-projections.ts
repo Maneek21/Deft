@@ -1,5 +1,6 @@
 import { and, eq, isNull, or } from 'drizzle-orm';
-import { messages, notes, spaceMembers, spaces, wikiPages } from '@deft/db/schema';
+import { messages, notes, spaces, wikiPages } from '@deft/db/schema';
+import { readableSpaceSql } from './space-membership.js';
 import { db } from './db.js';
 import { visibleNoteCondition } from './note-visibility.js';
 import { visibleWikiPageCondition } from './wiki-visibility.js';
@@ -22,14 +23,11 @@ export async function resolveNativeMessageDisplay(
       eq(spaces.id, messages.space_id),
       eq(spaces.org_id, subject.org_id),
     ))
-    .innerJoin(spaceMembers, and(
-      eq(spaceMembers.space_id, spaces.id),
-      eq(spaceMembers.user_id, subject.user_id),
-    ))
     .where(and(
       eq(messages.id, id),
       eq(messages.org_id, subject.org_id),
       eq(messages.is_deleted, false),
+      readableSpaceSql(subject.user_id, messages.space_id, messages.org_id),
     ))
     .limit(1);
   if (!row) return null;

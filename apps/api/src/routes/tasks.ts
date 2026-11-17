@@ -1,14 +1,15 @@
+import { emitCurrentMessageToSpaceViewers } from '../lib/agent-message-run-details.js';
 import {createNativeTask} from '../lib/native-task-create.js';
 import { Hono } from 'hono';
 import { stripNativeMentionAtoms, NativeMentionLimitError } from '@deft/shared';
 import { enqueueNativeMentionPublication } from '../lib/native-mentions.js';
 import { z } from 'zod';
 import { eq, and, desc, asc, sql, inArray, ilike, or, isNull, type SQL } from 'drizzle-orm';
-import { loadMessageForMember } from '../lib/space-membership.js';
+import { loadMessageForMember, readableSpaceSql } from '../lib/space-membership.js';
 import { db } from '../lib/db.js';
 import { reviewableApprovalCountsByEmployee } from '../lib/pending-approval-audience.js';
 import { nativeCreate, nativeCreateKey, NativeCreateError } from '../lib/native-create.js';
-import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, taskRelationships, files, taskAttachments, savedViews, taskWatchers, taskAssignees, taskReactions, wikiPages, wikiCitations, orgMembers, workflowRules, agentEmployees, agentActions, agentChannelDeliveryAttempts, agentChannelEvents, agentCooperativeLog, spaces, spaceMembers } from '@deft/db/schema';
+import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, taskRelationships, files, taskAttachments, savedViews, taskWatchers, taskAssignees, taskReactions, wikiPages, wikiCitations, orgMembers, workflowRules, agentEmployees, agentActions, agentChannelDeliveryAttempts, agentChannelEvents, agentCooperativeLog, spaces } from '@deft/db/schema';
 import { getIO, emitToUser, emitOrgTaskEvent } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { canDeleteTask } from '../lib/task-permissions.js';
@@ -1253,10 +1254,6 @@ taskRoutes.get('/:id', async (c) => {
         created_at: messages.created_at,
       })
         .from(messages)
-        .innerJoin(spaceMembers, and(
-          eq(spaceMembers.space_id, messages.space_id),
-          eq(spaceMembers.user_id, user.id),
-        ))
         .innerJoin(spaces, and(
           eq(spaces.id, messages.space_id),
           eq(spaces.org_id, user.org_id),
@@ -1265,6 +1262,7 @@ taskRoutes.get('/:id', async (c) => {
         .leftJoin(users, eq(users.id, messages.user_id))
         .where(and(
           eq(messages.id, task.source_message_id),
+          readableSpaceSql(user.id, messages.space_id, messages.org_id),
           eq(messages.org_id, user.org_id),
           eq(messages.is_deleted, false),
         ))
@@ -2425,7 +2423,7 @@ taskRoutes.patch('/:id', async (c) => {
           }).returning();
 
           if (io) {
-            io.to(`space:${space_id}`).emit('message:new', {
+            await emitCurrentMessageToSpaceViewers(io, space_id, 'message:new', {
               ...sysMessage,
               user_name: userData?.name ?? null,
               user_avatar: null,

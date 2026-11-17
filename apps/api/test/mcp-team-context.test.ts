@@ -449,3 +449,23 @@ test('team tools fail closed for inactive and deleted employee principals', asyn
     [agentEmployeeId],
   ));
 });
+
+test('team_get shows an archived public room only to its members', async () => {
+  await withClient(async (client) => {
+    await client.query(`UPDATE spaces SET is_archived = true, topic = 'CANARY-ARCHIVED-TEAM-TOPIC' WHERE id = $1`, [spaceId]);
+    await client.query(`DELETE FROM space_members WHERE space_id = $1 AND user_id = $2`, [spaceId, userId]);
+  });
+  try {
+    const profile = await callTool(humanToken, 'team_get', { handle: 'mcp-launch-team' });
+    assert.equal(profile.status, 'resolved');
+    assert.ok(!JSON.stringify(profile).includes('CANARY-ARCHIVED-TEAM-TOPIC'), 'an unjoined archived public room stays hidden');
+    await withClient((client) => client.query(`UPDATE spaces SET is_archived = false WHERE id = $1`, [spaceId]));
+    const active = await callTool(humanToken, 'team_get', { handle: 'mcp-launch-team' });
+    assert.ok(JSON.stringify(active).includes('CANARY-ARCHIVED-TEAM-TOPIC'), 'an active public room is still readable before joining');
+  } finally {
+    await withClient(async (client) => {
+      await client.query(`UPDATE spaces SET is_archived = false, topic = NULL WHERE id = $1`, [spaceId]);
+      await client.query(`INSERT INTO space_members (id, space_id, user_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, [randomUUID(), spaceId, userId]);
+    });
+  }
+});

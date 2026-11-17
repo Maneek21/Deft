@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { eq, and, desc } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { messageBookmarks, messages, users, spaces } from '@deft/db/schema';
-import { loadMessageForMember, loadMessagesForMember } from '../lib/space-membership.js';
+import { loadMessageForMember, loadMessagesForReader } from '../lib/space-membership.js';
 
 const MESSAGE_NOT_FOUND = { error: 'Message not found', code: 'NOT_FOUND' } as const;
 
@@ -31,7 +31,7 @@ bookmarkRoutes.get('/', async (c) => {
     .where(and(eq(messageBookmarks.user_id, user.id), eq(messageBookmarks.org_id, user.org_id)))
     .orderBy(desc(messageBookmarks.created_at));
 
-  const readable = await loadMessagesForMember(saved.map((row) => row.message_id), user.id, user.org_id);
+  const readable = await loadMessagesForReader(saved.map((row) => row.message_id), user.id, user.org_id);
   return c.json(saved.filter((row) => readable.has(row.message_id)));
 });
 

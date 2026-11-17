@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Hash, Search, X } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useChatContext } from '@/lib/chat-context';
@@ -21,6 +22,13 @@ export function BrowseSpacesModal({ onClose, onOpenSpace }: Props) {
   const searchRef = useRef<HTMLInputElement>(null);
   const mountedRef = useRef(true);
   const { refreshSpaces } = useChatContext();
+  const router = useRouter();
+
+  // Opens a space the viewer has not joined, read-only (the chat page shows the preview).
+  const view = (id: string) => {
+    router.push(`/chat?space=${encodeURIComponent(id)}`);
+    onClose();
+  };
 
   useEffect(() => {
     mountedRef.current = true;
@@ -75,7 +83,7 @@ export function BrowseSpacesModal({ onClose, onOpenSpace }: Props) {
     <AppDialog
       onClose={onClose}
       title="Browse spaces"
-      description="Public spaces in this workspace. Join one to read and post."
+      description="Public spaces in this workspace. You can read one before joining; join it to post."
       width={480}
       initialFocusRef={searchRef}
       headerActions={(
@@ -131,6 +139,16 @@ export function BrowseSpacesModal({ onClose, onOpenSpace }: Props) {
                   Open
                 </button>
               ) : (
+                <>
+                <button
+                  type="button"
+                  onClick={() => view(space.id)}
+                  aria-label={`View ${space.name} without joining`}
+                  className="px-3 py-1.5 rounded-lg text-[12px] font-medium"
+                  style={{ background: 'var(--surface)', color: 'var(--foreground-secondary)' }}
+                >
+                  View
+                </button>
                 <button
                   type="button"
                   onClick={() => join(space)}
@@ -141,6 +159,7 @@ export function BrowseSpacesModal({ onClose, onOpenSpace }: Props) {
                 >
                   {joiningId === space.id ? 'Joining...' : 'Join'}
                 </button>
+                </>
               )}
             </div>
           ))

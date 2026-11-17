@@ -2,7 +2,8 @@ import { Hono } from 'hono';
 import { eq, and, desc, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { notifications } from '@deft/db/schema';
-import { nativeNotificationAccessSql } from '../lib/native-mention-visibility.js';
+import { currentlyVisibleNotificationIds, nativeNotificationAccessSql } from '../lib/native-mention-visibility.js';
+import { withoutUnverifiableReplyText } from '../lib/reply-notification-text.js';
 
 export const notificationRoutes = new Hono();
 
@@ -36,8 +37,9 @@ notificationRoutes.get('/', async (c) => {
         )
       );
 
+    const visible = await currentlyVisibleNotificationIds(user, results.map((row) => row.id));
     return c.json({
-      notifications: results,
+      notifications: results.filter((row) => visible.has(row.id)).map(withoutUnverifiableReplyText),
       unread_count: unreadResult?.count ?? 0,
     });
   } catch (err) {
@@ -70,10 +72,12 @@ notificationRoutes.patch('/:id/read', async (c) => {
 
     const [updated] = await db.update(notifications)
       .set({ is_read: true })
-      .where(eq(notifications.id, notificationId))
+      .where(and(eq(notifications.id, notificationId), eq(notifications.user_id, user.id), eq(notifications.org_id, user.org_id),
+        nativeNotificationAccessSql(user.id, sql`${notifications.metadata}`, sql`${notifications.org_id}`)))
       .returning();
 
-    return c.json(updated);
+    if (!updated) return c.json({ error: 'Notification not found', code: 'NOT_FOUND' }, 404);
+    return c.json(withoutUnverifiableReplyText(updated));
   } catch (err) {
     console.error('Failed to mark notification as read:', err);
     return c.json({ error: 'Failed to update notification', code: 'INTERNAL_ERROR' }, 500);

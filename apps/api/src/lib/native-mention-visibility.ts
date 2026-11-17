@@ -1,8 +1,11 @@
-import { sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { db } from './db.js';
+import { notifications } from '@deft/db/schema';
 import { publicSpaceVisibleSql } from './space-visibility.js';
+import { readableSpaceSql } from './space-membership.js';
 
 // Watchers are subscriptions, not sufficient authority for new mention surfaces.
-export function nativeTaskAccessSql(userId: string): SQL {
+export function nativeTaskAccessSql(userId: string | SQL): SQL {
   return sql`(coalesce(t.metadata->>'visibility', 'org') <> 'restricted'
     OR t.created_by = ${userId} OR t.assignee_id = ${userId} OR p.lead_id = ${userId}
     OR coalesce(t.metadata->'visible_user_ids', '[]'::jsonb) ? ${userId}
@@ -10,7 +13,7 @@ export function nativeTaskAccessSql(userId: string): SQL {
 }
 
 export function nativeSourceAccessSql(
-  userId: string, kind: SQL, sourceId: SQL, orgId: SQL,
+  userId: string | SQL, kind: SQL, sourceId: SQL, orgId: SQL,
 ): SQL {
   return sql`(
     EXISTS (SELECT 1 FROM org_members nm WHERE nm.org_id = ${orgId}
@@ -19,7 +22,8 @@ export function nativeSourceAccessSql(
       (${kind} = 'message' AND EXISTS (
         SELECT 1 FROM messages m JOIN spaces s ON s.id = m.space_id AND s.org_id = m.org_id
         WHERE m.id = ${sourceId} AND m.org_id = ${orgId} AND m.is_deleted = false
-        AND (${publicSpaceVisibleSql(sql`s.type`, sql`s.org_id`, userId)} OR EXISTS (SELECT 1 FROM space_members sm WHERE sm.space_id = s.id AND sm.user_id = ${userId}))))
+        AND ((s.is_archived = false AND ${publicSpaceVisibleSql(sql`s.type`, sql`s.org_id`, userId)})
+          OR EXISTS (SELECT 1 FROM space_members sm WHERE sm.space_id = s.id AND sm.user_id = ${userId}))))
       OR (${kind} = 'task' AND EXISTS (
         SELECT 1 FROM tasks t JOIN projects p ON p.id = t.project_id AND p.org_id = t.org_id
         WHERE t.id = ${sourceId} AND t.org_id = ${orgId} AND t.is_deleted = false AND p.is_deleted = false
@@ -37,7 +41,7 @@ export function nativeSourceAccessSql(
   )`;
 }
 
-export function nativeDeliveryAccessSql(userId: string, deliveryId: SQL, orgId: SQL): SQL {
+export function nativeDeliveryAccessSql(userId: string | SQL, deliveryId: SQL, orgId: SQL): SQL {
   return sql`EXISTS (
     SELECT 1 FROM native_mention_deliveries nd
     JOIN native_reference_states nr ON nr.id = nd.source_state_id AND nr.org_id = nd.org_id
@@ -47,10 +51,46 @@ export function nativeDeliveryAccessSql(userId: string, deliveryId: SQL, orgId: 
   )`;
 }
 
-/** Legacy notifications retain their existing semantics. New ones fail closed. */
+/**
+ * A notification with a mention delivery follows that delivery's source. Any
+ * other notification that names a chat space or message is shown only while
+ * the reader can still read it, the same rule the needs-you list applies
+ * (lib/attention.ts): the space must be readable, and a named message must
+ * exist, not be deleted and sit in a readable space. The space and message
+ * are read from `metadata.space_id` / `metadata.message_id`, else from the
+ * notification's link (`/chat?space=…&message=…`, or the old `/spaces/…`).
+ * A notification that names neither (tasks, reminders without a source,
+ * system notices) is unaffected.
+ */
 export function nativeNotificationAccessSql(
-  userId: string, metadata: SQL, orgId: SQL,
+  userId: string | SQL, metadata: SQL, orgId: SQL, link: SQL = sql`${notifications.link}`,
 ): SQL {
-  return sql`(${metadata}->>'native_mention_delivery_id' IS NULL
-    OR ${nativeDeliveryAccessSql(userId, sql`${metadata}->>'native_mention_delivery_id'`, orgId)})`;
+  const spaceId = sql`coalesce(${metadata}->>'space_id',
+    substring(${link} from '^/chat\\?(?:[^#]*&)?space=([^&#]+)'),
+    substring(${link} from '^/spaces/([^/?#]+)$'))`;
+  const messageId = sql`coalesce(${metadata}->>'message_id',
+    substring(${link} from '^/chat\\?(?:[^#]*&)?message=([^&#]+)'))`;
+  return sql`(CASE WHEN ${metadata}->>'native_mention_delivery_id' IS NOT NULL
+    THEN ${nativeDeliveryAccessSql(userId, sql`${metadata}->>'native_mention_delivery_id'`, orgId)}
+    ELSE (${spaceId} IS NULL OR ${readableSpaceSql(userId, spaceId, orgId)})
+      AND (${messageId} IS NULL OR EXISTS (
+        SELECT 1 FROM messages nlm WHERE nlm.id = ${messageId} AND nlm.org_id = ${orgId}
+          AND nlm.is_deleted = false AND ${readableSpaceSql(userId, sql`nlm.space_id`, orgId)}))
+    END)`;
+}
+
+/**
+ * The notification ids among `ids` the user may still read, checked again
+ * right before a list responds: a source deleted or a room left while the
+ * route did its other queries drops the row instead of sending its body.
+ */
+export async function currentlyVisibleNotificationIds(user: { id: string; org_id: string }, ids: string[]): Promise<Set<string>> {
+  if (ids.length === 0) return new Set();
+  const rows = await db.select({ id: notifications.id }).from(notifications).where(and(
+    inArray(notifications.id, ids),
+    eq(notifications.user_id, user.id),
+    eq(notifications.org_id, user.org_id),
+    nativeNotificationAccessSql(user.id, sql`${notifications.metadata}`, sql`${notifications.org_id}`),
+  ));
+  return new Set(rows.map((row) => row.id));
 }

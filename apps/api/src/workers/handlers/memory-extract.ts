@@ -3,7 +3,7 @@
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
 import { lockWikiPageForLinkWrite } from '../../lib/wiki-page-link-lock.js';
-import { wikiPages, wikiLinks, wikiCitations, wikiOpsLog, wikiPageVersions } from '@deft/db/schema';
+import { messages, wikiPages, wikiLinks, wikiCitations, wikiOpsLog, wikiPageVersions } from '@deft/db/schema';
 import { eq, and, desc, sql, inArray } from 'drizzle-orm';
 import { llm } from '../../lib/llm.js';
 import { getOrgAIConfig, type OrgAIConfigRuntime } from '../../lib/org-ai-config.js';
@@ -629,6 +629,12 @@ export async function handleMemoryExtract(job: JobData): Promise<void> {
   const { messageId, spaceId, content, orgId, userId, facts, decision } =
     job.data as MemoryExtractJobData;
 
+  const sourceIsLive = async () => (await db.select({ id: messages.id }).from(messages).where(and(
+    eq(messages.id, messageId), eq(messages.org_id, orgId), eq(messages.space_id, spaceId),
+    eq(messages.user_id, userId), eq(messages.is_deleted, false),
+  )).limit(1)).length > 0;
+  if (!(await sourceIsLive())) return;
+
   // BYOK — resolve once, reuse across decideWikiAction + cascadeIngest below.
   const orgConfig = await getOrgAIConfig(orgId);
 
@@ -660,6 +666,7 @@ export async function handleMemoryExtract(job: JobData): Promise<void> {
     try {
       // LLM-powered wiki ingest
       const result = await decideWikiAction(item.text, item.isDecision, existingPages, orgConfig);
+      if (!(await sourceIsLive())) return;
 
       // Determine tags and referenced_user_ids for commitment facts.
       const extraTags: string[] = isCommitmentFact(item.text) ? ['commitment'] : [];

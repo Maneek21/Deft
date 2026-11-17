@@ -4,8 +4,9 @@ import { eq, and, asc, desc, sql, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { spaces, spaceMembers, users, messages, agentEmployees, orgMembers } from '@deft/db/schema';
 import { evictActiveHuddleParticipants, getIO } from '../socket.js';
-import { canSelfJoinPublicSpaces, requireSpaceMembership } from '../lib/space-membership.js';
+import { canReadSpace, canSelfJoinPublicSpaces, requireSpaceMembership } from '../lib/space-membership.js';
 import { DEFTY_EMAIL } from '../lib/ensure-defty-membership.js';
+import { cancelPendingScheduledMessagesForSpace } from '../lib/scheduled-message-cancel.js';
 
 export const spaceRoutes = new Hono();
 
@@ -20,6 +21,28 @@ const NOT_A_MEMBER = { error: 'Not a member of this space', code: 'FORBIDDEN' } 
  */
 async function canSeeSpaceForCreatorRoute(space: { id: string; created_by: string | null }, user: { id: string; org_id: string }) {
   return space.created_by === user.id || requireSpaceMembership(space.id, user.id, user.org_id);
+}
+
+/**
+ * Removes one person from a space and, in the same transaction, cancels the
+ * messages they had scheduled for it: posting needs membership, so those
+ * messages could never be sent and must not stay listed as pending.
+ *
+ * The membership row goes first. Scheduling a message holds a share lock on
+ * that row until its own transaction commits (routes/scheduled.ts), so the
+ * delete waits for any scheduling in flight and the cancel that follows sees
+ * the message it wrote; a scheduling that starts later finds no membership.
+ * The cancel skips rows the send worker holds, so it never waits on the
+ * worker while the worker waits on the membership row.
+ */
+async function removeSpaceMember(orgId: string, spaceId: string, userId: string) {
+  return db.transaction(async (tx) => {
+    const removed = await tx.delete(spaceMembers)
+      .where(and(eq(spaceMembers.space_id, spaceId), eq(spaceMembers.user_id, userId)))
+      .returning();
+    await cancelPendingScheduledMessagesForSpace(tx, { orgId, spaceId, userId });
+    return removed;
+  });
 }
 
 const VALID_SPACE_TYPES = ['public', 'private', 'dm', 'group_dm'] as const;
@@ -290,7 +313,9 @@ const browseQuerySchema = z.object({
 });
 
 // GET /api/spaces/browse — public spaces of the caller's org (must be before /:id).
-// Returns only directory fields; messages, members and pins stay membership-gated.
+// Returns only directory fields. A member who is not a guest may also read a
+// public space before joining (details, member list, messages, threads, edit
+// history, pins, clips, attachments); every write stays membership-gated.
 spaceRoutes.get('/browse', async (c) => {
   try {
     const user = c.get('user');
@@ -400,10 +425,12 @@ spaceRoutes.get('/:id', async (c) => {
       .where(and(eq(spaces.id, spaceId), eq(spaces.org_id, user.org_id)))
       .limit(1);
 
-    // A missing space, a space in another org and a same-org space the caller
-    // is not in all get one identical denial (W1-g).
-    const isMember = space ? await requireSpaceMembership(spaceId, user.id, user.org_id) : false;
-    if (!space || !isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+    // Reading: a member of the space, or a member of the workspace (never a
+    // guest) reading a public space before joining it. A missing space, a
+    // space in another org and a same-org space the caller may not read all
+    // get one identical denial (W1-g).
+    const canRead = space ? await canReadSpace(spaceId, user.id, user.org_id) : false;
+    if (!space || !canRead) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
     return c.json(space);
   } catch (err) {
@@ -463,11 +490,12 @@ spaceRoutes.get('/:id/members', async (c) => {
     const user = c.get('user');
     const spaceId = c.req.param('id');
 
-    // requireSpaceMembership binds the space to the active org, so a missing
-    // space, a space in another org and a same-org space the caller is not in
-    // all get one identical denial (W1-g).
-    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
-    if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+    // Reading: a member of the space, or a member of the workspace (never a
+    // guest) reading a public space before joining it. The check binds the
+    // space to the active org, so a missing space, a space in another org and
+    // a same-org space the caller may not read all get one identical denial (W1-g).
+    const canRead = await canReadSpace(spaceId, user.id, user.org_id);
+    if (!canRead) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
     const members = await db.select({
       id: users.id,
@@ -632,14 +660,7 @@ spaceRoutes.delete('/:id/members/me', async (c) => {
     const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
     if (!isMember) return c.json(NOT_A_MEMBER, 403);
 
-    const deleted = await db.delete(spaceMembers)
-      .where(
-        and(
-          eq(spaceMembers.space_id, spaceId),
-          eq(spaceMembers.user_id, user.id),
-        )
-      )
-      .returning();
+    const deleted = await removeSpaceMember(user.org_id, spaceId, user.id);
 
     if (deleted.length === 0) return c.json(NOT_A_MEMBER, 403);
 
@@ -677,14 +698,7 @@ spaceRoutes.delete('/:id/members/:userId', async (c) => {
       return c.json({ error: 'Forbidden', code: 'FORBIDDEN' }, 403);
     }
 
-    const deleted = await db.delete(spaceMembers)
-      .where(
-        and(
-          eq(spaceMembers.space_id, spaceId),
-          eq(spaceMembers.user_id, userId),
-        )
-      )
-      .returning();
+    const deleted = await removeSpaceMember(user.org_id, spaceId, userId);
 
     if (deleted.length === 0) {
       return c.json({ error: 'User is not a member of this space', code: 'NOT_FOUND' }, 404);

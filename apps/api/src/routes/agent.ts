@@ -1,3 +1,4 @@
+import { emitCurrentMessageToSpaceViewers } from '../lib/agent-message-run-details.js';
 import {canUndoAgentAction, visibleCaptureActionSql} from '../lib/agent-action-visibility.js';
 import { reviewableActionSql } from '../lib/agent-action-review-gate.js';
 import type { AppRunTransaction } from '../lib/app-run-repository.js';
@@ -267,7 +268,7 @@ async function maybePostApprovalConfirmation(params: {
   const io = getIO();
   if (io && posted?.confirmation) {
     if (posted.reconciledMessage) await emitMessageToSpaceViewers(io, { orgId: params.orgId, spaceId: posted.approvalMessage.space_id, event: 'message:edited', message: posted.reconciledMessage });
-    io.to(`space:${posted.approvalMessage.space_id}`).emit('message:new', {
+    await emitCurrentMessageToSpaceViewers(io, posted.approvalMessage.space_id, 'message:new', {
       ...posted.confirmation,
       user_name: posted.actor?.name ?? 'Defty',
       user_avatar: posted.actor?.avatar_url ?? null,
@@ -908,7 +909,8 @@ agentRoutes.get('/actions/pending-by-space', async (c) => {
   const rows = await db.execute(sql`
     SELECT
       a.*,
-      msg.content AS source_message_content,
+      -- The action stays listed when its source message was deleted; the text does not.
+      CASE WHEN msg.is_deleted THEN NULL ELSE msg.content END AS source_message_content,
       msg.space_id AS source_message_space_id
     FROM agent_actions a
     JOIN messages msg ON msg.id = a.message_id
@@ -983,7 +985,8 @@ agentRoutes.get('/conversations/:id/trace.json', async (c) => {
   if (!convo) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
 
   // P2-7: Read from unified messages table. Trace export keeps full fidelity —
-  // includes hidden + tool_result rows for audit purposes (no is_deleted filter either).
+  // includes hidden + tool_result rows for audit purposes. A deleted message
+  // keeps its place in the trace, marked `deleted`, without what it said.
   const msgRows = await db
     .select()
     .from(messages)
@@ -999,13 +1002,15 @@ agentRoutes.get('/conversations/:id/trace.json', async (c) => {
   const msgs = (await projectMessagesForViewer(user, msgRows)).map((r) => {
     const m = sanitizeAgentMetadataForStorage(r.metadata, traceToolNames);
     const role = (traceAgentUserId && r.user_id === traceAgentUserId) ? 'assistant' : 'user';
+    const deleted = r.is_deleted === true;
     return {
       id: r.id,
       role,
-      content: r.content,
-      content_blocks: m.agent_blocks ?? null,
-      citations: m.citations ?? null,
-      tool_calls: m.tool_calls ?? null,
+      content: deleted ? '' : r.content,
+      content_blocks: deleted ? null : m.agent_blocks ?? null,
+      citations: deleted ? null : m.citations ?? null,
+      tool_calls: deleted ? null : m.tool_calls ?? null,
+      deleted,
       hidden: m.hidden ?? false,
       model: m.model ?? null,
       tokens_in: m.tokens_in ?? null,

@@ -2,9 +2,9 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, sql, or, ilike, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { wikiPages, wikiLinks, wikiCitations, wikiOpsLog, wikiPageVersions, spaces, notifications, orgMembers, messages, spaceMembers } from '@deft/db/schema';
+import { wikiPages, wikiLinks, wikiCitations, wikiOpsLog, wikiPageVersions, spaces, notifications, orgMembers, messages } from '@deft/db/schema';
 import { ne } from 'drizzle-orm';
-import { requireSpaceMembership } from '../lib/space-membership.js';
+import { canReadSpace, readableSpaceSql, requireSpaceMembership } from '../lib/space-membership.js';
 import { visibleWikiPageCondition, wikiPageRelevantToSpaceCondition } from '../lib/wiki-visibility.js';
 import { lockWikiPageForLinkWrite } from '../lib/wiki-page-link-lock.js';
 import { retrieveContext } from '../lib/retrieve-context.js';
@@ -68,12 +68,7 @@ function visibleWikiCitationCondition(userId: string, orgId: string) {
     or(eq(wikiCitations.org_id, orgId), sql`${wikiCitations.org_id} IS NULL`),
     or(
       sql`${wikiCitations.source_type} != 'message'`,
-      sql`EXISTS (
-        SELECT 1
-        FROM ${spaceMembers}
-        WHERE ${spaceMembers.space_id} = COALESCE(${wikiCitations.source_space_id}, ${messages.space_id})
-          AND ${spaceMembers.user_id} = ${userId}
-      )`,
+      readableSpaceSql(userId, sql`COALESCE(${wikiCitations.source_space_id}, ${messages.space_id})`, sql`${orgId}`),
     ),
   );
 }
@@ -236,8 +231,11 @@ wikiRoutes.get('/graph', async (c) => {
       if (!spaceId) {
         return c.json({ error: 'space_id is required for space graph mode', code: 'VALIDATION_ERROR' }, 400);
       }
-      const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
-      if (!isMember) {
+      // Reading: a member of the space, or a member of the workspace (never a
+      // guest) reading a public space before joining it. The pages in the
+      // graph are still limited by wiki page visibility (above).
+      const canRead = await canReadSpace(spaceId, user.id, user.org_id);
+      if (!canRead) {
         return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
       }
       const [space] = await db.select({ name: spaces.name })
@@ -814,7 +812,8 @@ wikiRoutes.get('/:slug', async (c) => {
       page_id: wikiCitations.page_id,
       source_type: wikiCitations.source_type,
       source_id: wikiCitations.source_id,
-      excerpt: wikiCitations.excerpt,
+      // The excerpt is a stored copy of the cited message's text: it goes when the message is deleted.
+      excerpt: sql<string | null>`CASE WHEN ${messages.is_deleted} IS TRUE THEN NULL ELSE ${wikiCitations.excerpt} END`,
       created_at: wikiCitations.created_at,
       source_space_id: sql<string | null>`COALESCE(${wikiCitations.source_space_id}, ${messages.space_id})`,
       source_user_id: sql<string | null>`COALESCE(${wikiCitations.source_user_id}, ${messages.user_id})`,

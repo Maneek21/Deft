@@ -1,23 +1,27 @@
+import { emitCurrentMessageToSpaceViewers } from '../lib/agent-message-run-details.js';
 import { Hono } from 'hono';
 import { hasReservedPrivateDeftyMetadata, isPrivateDeftySpace } from '../lib/app-private-defty-message-guard.js';
 import { createNativeChatForward, nativeChatForwardBroadcast, NativeChatForwardError } from '../lib/native-chat-forward.js';
 import { z } from 'zod';
-import { eq, and, desc, lt, lte, gt, sql, isNull, inArray } from 'drizzle-orm';
+import { eq, and, or, desc, lt, lte, gt, sql, isNull, isNotNull, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { nativeCreate, nativeCreateKey, NativeCreateError } from '../lib/native-create.js';
 import { messages, users, reactions, spaces, spaceMembers, threadReads, messageVersions, files, messageAttachments as messageAttachmentLinks } from '@deft/db/schema';
-import { getIO, emitToUser } from '../socket.js';
+import { getIO } from '../socket.js';
+import { emitVisibleNotification, emitVisibleNotifications } from '../lib/notification-delivery.js';
 import { extractNativeMentions, NativeMentionLimitError } from '@deft/shared';
 import { nativeMentionsEnabled, enqueueNativeMentionPublication } from '../lib/native-mentions.js';
 import { fetchLinkPreview, extractUrls, type LinkPreview } from '../lib/link-preview.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
-import { requireSpaceMembership } from '../lib/space-membership.js';
+import { canReadSpace, requireSpaceMembership, unjoinedPublicSpaceReadableSql } from '../lib/space-membership.js';
 import { enqueueChatObservation } from '../lib/chat-observation.js';
 import { createNotificationIfAllowed, createNotificationsIfAllowed } from '../lib/notification-policy.js';
 import { enqueueAgentEmployeeMessageJobs, resolveAgentEmployeeMessageTargets } from '../lib/dispatch-agent-message.js';
 import { enqueueDeftyWake, finishDeftyWake, type DeftyWakeOutcome, normalizeChatMentions, planDeftyWake, resolveMentionedUserIds } from '../lib/defty-wake.js';
 import { emitMessageToSpaceViewers, projectMessagesForViewer } from '../lib/agent-message-run-details.js';
 import { toPlainText } from '../lib/plain-text.js';
+import { withoutDeletedContent } from '../lib/deleted-message.js';
+import { REPLY_NOTIFICATION_TITLE_SUFFIX } from '../lib/reply-notification-text.js';
 import {
   getMessageAttachments,
   type MessageAttachment,
@@ -94,7 +98,12 @@ async function getReactionsForMessages(messageIds: string[]) {
   return result;
 }
 
-async function getVisibleMessage(messageId: string, orgId: string, userId: string) {
+/**
+ * Loads a message for a caller who is a member of its space. With
+ * `access: 'read'` the caller may instead be reading a public space before
+ * joining it (never a guest); every write keeps the default.
+ */
+async function getVisibleMessage(messageId: string, orgId: string, userId: string, access: 'member' | 'read' = 'member') {
   const [msg] = await db.select({
     id: messages.id,
     org_id: messages.org_id,
@@ -111,7 +120,7 @@ async function getVisibleMessage(messageId: string, orgId: string, userId: strin
     user_timezone: users.timezone,
   })
     .from(messages)
-    .innerJoin(spaceMembers, and(
+    .leftJoin(spaceMembers, and(
       eq(messages.space_id, spaceMembers.space_id),
       eq(spaceMembers.user_id, userId),
     ))
@@ -121,11 +130,35 @@ async function getVisibleMessage(messageId: string, orgId: string, userId: strin
       eq(messages.id, messageId),
       eq(messages.org_id, orgId),
       eq(messages.is_deleted, false),
+      access === 'read'
+        ? or(isNotNull(spaceMembers.id), unjoinedPublicSpaceReadableSql(userId))
+        : isNotNull(spaceMembers.id),
     ))
     .limit(1);
 
   // Raw metadata: a caller that returns it must project it with projectMessagesForViewer.
   return msg ?? null;
+}
+
+/**
+ * Stores fetched link previews on a message and tells the space. The previews
+ * are fetched after the response, so the message may have been deleted in the
+ * meantime: then nothing is written and nothing is sent. Returns whether the
+ * previews were stored.
+ */
+export async function storeLinkPreviews(
+  io: { to(room: string): { emit(event: string, payload: unknown): unknown } },
+  spaceId: string,
+  messageId: string,
+  previews: LinkPreview[],
+): Promise<boolean> {
+  const stored = await db.update(messages)
+    .set({ metadata: { link_previews: previews } })
+    .where(and(eq(messages.id, messageId), eq(messages.is_deleted, false)))
+    .returning({ id: messages.id });
+  if (stored.length === 0) return false;
+  io.to(`space:${spaceId}`).emit('message:link_previews', { message_id: messageId, previews });
+  return true;
 }
 
 // Helper: get reply counts and latest_reply_at for a set of message IDs
@@ -203,7 +236,7 @@ messageRoutes.post('/forward', async (c) => {
     if (io && forwarded) {
       const full = await nativeChatForwardBroadcast(db, forwarded.id);
 
-      io.to(`space:${target_space_id}`).emit('message:new', full);
+      await emitCurrentMessageToSpaceViewers(io, target_space_id, 'message:new', full);
     }
 
     return c.json(forwarded, 201);
@@ -221,8 +254,10 @@ messageRoutes.get('/:spaceId', async (c) => {
     const user = c.get('user');
     const spaceId = c.req.param('spaceId');
 
-    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
-    if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+    // Reading: a member of the space, or a member of the workspace (never a
+    // guest) reading a public space before joining it.
+    const canRead = await canReadSpace(spaceId, user.id, user.org_id);
+    if (!canRead) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
     const cursor = c.req.query('cursor');
     const around = c.req.query('around');
@@ -266,7 +301,8 @@ messageRoutes.get('/:spaceId', async (c) => {
         getMessageAttachments(messageIds, user.org_id),
       ]);
       const projected = await projectMessagesForViewer(user, unique);
-      const result = projected.map(msg => ({
+      // A deleted message stays in the list as a placeholder, without what it said.
+      const result = projected.map(msg => withoutDeletedContent({
         ...msg,
         reactions: reactionsMap.get(msg.id) ?? [],
         reply_count: replyStatsMap.get(msg.id)?.reply_count ?? 0,
@@ -356,7 +392,8 @@ messageRoutes.get('/:spaceId', async (c) => {
         const lastRead = threadReadMap.get(msg.id);
         hasUnreadThreadReplies = !lastRead || new Date(latestReplyAt) > lastRead;
       }
-      return {
+      // A deleted message stays in the list as a placeholder, without what it said.
+      return withoutDeletedContent({
         ...msg,
         reactions: reactionsMap.get(msg.id) ?? [],
         reply_count: replyCount,
@@ -364,7 +401,7 @@ messageRoutes.get('/:spaceId', async (c) => {
         has_unread_thread_replies: hasUnreadThreadReplies,
         file_ids: (attachmentsMap.get(msg.id) ?? []).map((file) => file.id),
         files: attachmentsMap.get(msg.id) ?? [],
-      };
+      });
     });
 
     return c.json({
@@ -544,7 +581,7 @@ messageRoutes.post('/:spaceId', async (c) => {
     // Broadcast via Socket.io
     const io = getIO();
     if (io) {
-      io.to(`space:${spaceId}`).emit('message:new', messageWithUser);
+      await emitCurrentMessageToSpaceViewers(io, spaceId, 'message:new', messageWithUser);
     }
 
     // Async link preview fetch — don't block the response
@@ -558,16 +595,7 @@ messageRoutes.post('/:spaceId', async (c) => {
             const preview = await fetchLinkPreview(url);
             if (preview) previews.push(preview);
           }
-          if (previews.length > 0) {
-            await db.update(messages)
-              .set({ metadata: { link_previews: previews } })
-              .where(eq(messages.id, message!.id));
-
-            io.to(`space:${spaceId}`).emit('message:link_previews', {
-              message_id: message!.id,
-              previews,
-            });
-          }
+          if (previews.length > 0) await storeLinkPreviews(io, spaceId, message!.id, previews);
         } catch (err) {
           console.error('Link preview fetch failed:', err);
         }
@@ -577,6 +605,7 @@ messageRoutes.post('/:spaceId', async (c) => {
     // Create mention notifications (mentions were parsed before the insert).
     const nativeRecipients = new Set(nativeMentionsEnabled() ? extractNativeMentions(normalizedContent)
       .filter(ref => ref.resource_type === 'person').map(ref => ref.resource_id) : []);
+    const mentionNotifications: Parameters<typeof emitVisibleNotifications>[0] = [];
     for (const mentionedUserId of mentionedUserIds) {
       if (nativeRecipients.has(mentionedUserId)) continue; // The durable native publication owns this alert.
       // Don't notify the sender
@@ -599,12 +628,13 @@ messageRoutes.post('/:spaceId', async (c) => {
         }, { channel: 'chat', spaceId, isMention: true });
 
         if (notification) {
-          emitToUser(notification.org_id, mentionedUserId, 'notification:new', notification);
+          mentionNotifications.push(notification);
         }
       } catch (err) {
         console.error(`Failed to create mention notification for ${mentionedUserId}:`, err);
       }
     }
+    await emitVisibleNotifications(mentionNotifications).catch(error => console.error('Failed to deliver mention notifications:', error));
 
     // If it's a thread reply, notify the parent message author and broadcast thread:updated
     if (await isPrivateDeftySpace(user.org_id, spaceId)) return c.json({ error: 'Use the reviewed private context turn', code: 'PRIVATE_CONTEXT_REQUIRED' }, 409);
@@ -623,13 +653,21 @@ messageRoutes.post('/:spaceId', async (c) => {
             org_id: user.org_id,
             user_id: parentMessage.user_id,
             type: 'mention',
-            title: `${userData?.name ?? 'Someone'} replied to your message`,
+            title: `${userData?.name ?? 'Someone'}${REPLY_NOTIFICATION_TITLE_SUFFIX}`,
             body: normalizedContent.slice(0, 200),
             link: `/chat?space=${encodeURIComponent(spaceId)}&message=${encodeURIComponent(parsed.data.parent_id)}`,
+            // The body is the reply's text while the link opens the parent, so the
+            // reply is named here: the notification is hidden once the reply is
+            // deleted. The needs-you list keeps one entry per thread, as before.
+            metadata: {
+              message_id: message!.id,
+              space_id: spaceId,
+              attention_dedupe_key: `mention:${parsed.data.parent_id}`,
+            },
           }, { channel: 'chat', spaceId, isMention: true });
 
           if (notification) {
-            emitToUser(notification.org_id, parentMessage.user_id, 'notification:new', notification);
+            await emitVisibleNotification(notification);
           }
         }
 
@@ -692,9 +730,7 @@ messageRoutes.post('/:spaceId', async (c) => {
           })),
           { channel: 'chat', spaceId, isMention: false, respectDnd: true },
         );
-        for (const notification of recipientNotifications) {
-          emitToUser(notification.org_id, notification.user_id, 'notification:new', notification);
-        }
+        await emitVisibleNotifications(recipientNotifications);
       }
     } catch (err) {
       console.error('Message notification error:', err);
@@ -925,7 +961,7 @@ messageRoutes.get('/:id/thread', async (c) => {
     const user = c.get('user');
     const messageId = c.req.param('id');
 
-    const parentMsg = await getVisibleMessage(messageId, user.org_id, user.id);
+    const parentMsg = await getVisibleMessage(messageId, user.org_id, user.id, 'read');
     if (!parentMsg) {
       return c.json({ error: 'Message not found', code: 'NOT_FOUND' }, 404);
     }
@@ -972,7 +1008,8 @@ messageRoutes.get('/:id/thread', async (c) => {
       files: attachmentsMap.get(parentMsg.id) ?? [],
     };
 
-    const repliesWithReactions = projectedReplies.map((reply) => ({
+    // A deleted reply stays in the thread as a placeholder, without what it said.
+    const repliesWithReactions = projectedReplies.map((reply) => withoutDeletedContent({
       ...reply,
       reactions: reactionsMap.get(reply.id) ?? [],
       file_ids: (attachmentsMap.get(reply.id) ?? []).map((file) => file.id),
@@ -1019,7 +1056,7 @@ messageRoutes.get('/:id/history', async (c) => {
     const user = c.get('user');
     const messageId = c.req.param('id');
 
-    const msg = await getVisibleMessage(messageId, user.org_id, user.id);
+    const msg = await getVisibleMessage(messageId, user.org_id, user.id, 'read');
     if (!msg) {
       return c.json({ error: 'Message not found', code: 'NOT_FOUND' }, 404);
     }
@@ -1045,8 +1082,10 @@ messageRoutes.get('/:spaceId/read-receipts', async (c) => {
     const user = c.get('user');
     const spaceId = c.req.param('spaceId');
 
-    const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
-    if (!isMember) {
+    // Reading: a member of the space, or a member of the workspace (never a
+    // guest) reading a public space before joining it.
+    const canRead = await canReadSpace(spaceId, user.id, user.org_id);
+    if (!canRead) {
       return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
     }
 

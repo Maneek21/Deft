@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { eq, and, inArray, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
+import { readableSpaceSql } from '../lib/space-membership.js';
 import {
   crossReferences,
   messages,
@@ -9,7 +10,6 @@ import {
   users,
   spaces,
   notes,
-  spaceMembers,
 } from '@deft/db/schema';
 import { visibleNoteCondition } from '../lib/note-visibility.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
@@ -67,11 +67,7 @@ crossReferenceRoutes.get('/tasks/:taskId/references', async (c) => {
         eq(crossReferences.source_id, messages.id),
         eq(messages.org_id, user.org_id),
         eq(messages.is_deleted, false),
-        sql`exists (
-          select 1 from ${spaceMembers}
-          where ${spaceMembers.space_id} = ${messages.space_id}
-            and ${spaceMembers.user_id} = ${user.id}
-        )`,
+        readableSpaceSql(user.id, messages.space_id, messages.org_id),
       ))
       .leftJoin(spaces, and(
         eq(messages.space_id, spaces.id),
@@ -234,12 +230,9 @@ crossReferenceRoutes.get('/messages/:messageId/references', async (c) => {
         eq(messages.space_id, spaces.id),
         eq(spaces.org_id, user.org_id),
       ))
-      .innerJoin(spaceMembers, and(
-        eq(spaceMembers.space_id, messages.space_id),
-        eq(spaceMembers.user_id, user.id),
-      ))
       .where(and(
         eq(messages.id, messageId),
+        readableSpaceSql(user.id, messages.space_id, messages.org_id),
         eq(messages.org_id, user.org_id),
         eq(messages.is_deleted, false),
       ))
