@@ -274,3 +274,23 @@ test('Private operational withdrawal leaves an unknown request fenced without au
   const rows = await h.db.execute(h.sql`SELECT metadata->>'role' AS role FROM messages WHERE org_id=${h.owned.org_id} AND space_id=${h.spaceId}`);
   assert.deepEqual(rows.rows.map(row => row.role), ['user']);
 });
+
+test('Deleted private Defty messages leave history, model input and replay', { skip: !safe }, async t => {
+  const h = await fixture(); t.after(h.close);
+  await h.accept();
+  const first = { schema_version: 'deft.app_private_defty_turn.v1', request_id: randomUUID(), prompt: 'CANARY-PRIVATE-DELETED-PROMPT' };
+  const answered = await h.call(`/spaces/${h.spaceId}/turns`, 'POST', first);
+  assert.equal(answered.status, 200, JSON.stringify(answered.body));
+  // Soft-delete both turns, as the owner deleting them would.
+  await h.db.execute(h.sql`UPDATE messages SET is_deleted=true WHERE org_id=${h.owned.org_id} AND space_id=${h.spaceId}`);
+  const history = await h.call(`/spaces/${h.spaceId}/history`);
+  assert.equal(history.status, 200, JSON.stringify(history.body));
+  assert.equal(history.body.messages.length, 0, 'deleted turns are not shown again');
+  assert.equal(JSON.stringify(history.body).includes('CANARY-PRIVATE-DELETED-PROMPT'), false);
+  const replay = await h.call(`/spaces/${h.spaceId}/turns`, 'POST', first);
+  assert.notEqual(replay.status, 200, 'a deleted answer is not replayed');
+  assert.equal(JSON.stringify(replay.body).includes('private-derived-answer'), false);
+  const next = await h.call(`/spaces/${h.spaceId}/turns`, 'POST', { ...first, request_id: randomUUID(), prompt: 'Next question' });
+  assert.equal(next.status, 200, JSON.stringify(next.body));
+  assert.equal(JSON.stringify(h.captured.at(-1)).includes('CANARY-PRIVATE-DELETED-PROMPT'), false, 'the model never receives a deleted turn');
+});

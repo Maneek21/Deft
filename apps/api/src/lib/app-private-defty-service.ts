@@ -204,12 +204,13 @@ export class AppPrivateDeftyService {
       const grants = await tx.execute(sql`SELECT id,snapshot,expires_at,revoked_at FROM app_private_defty_grants
         WHERE org_id=${c.org_id} AND seal_id=${seal.id} FOR SHARE`);
       const grant = grants.rows[0];
-      const rows = await tx.execute(sql`SELECT id,metadata,created_at FROM messages WHERE org_id=${c.org_id}
+      const rows = await tx.execute(sql`SELECT id,metadata,created_at,is_deleted FROM messages WHERE org_id=${c.org_id}
         AND space_id=${spaceId} ORDER BY created_at,id LIMIT 21`);
       if (rows.rows.length > 20) throw accessUnavailable();
       const crypto = new PrivateDeftySecretService(this.keys);
       let bytes = 0;
-      const values = rows.rows.map(row => {
+      // A deleted message is never shown again, even to its owner.
+      const values = rows.rows.filter(row => row.is_deleted !== true).map(row => {
         const metadata = PrivateDeftyMessageMetadata.parse(row.metadata);
         if (metadata.seal_id !== seal.id) throw accessUnavailable();
         bytes += Buffer.from(metadata.envelope.ciphertext_b64, 'base64').length;
@@ -316,7 +317,7 @@ export class AppPrivateDeftyService {
     try {
       const reserved = await this.run(signal, async tx => {
         const state = await this.live(tx, c, spaceId, signal);
-        const rows = await tx.execute(sql`SELECT id,metadata FROM messages WHERE org_id=${c.org_id}
+        const rows = await tx.execute(sql`SELECT id,metadata,is_deleted FROM messages WHERE org_id=${c.org_id}
           AND space_id=${spaceId} ORDER BY created_at,id LIMIT 21`);
         if (rows.rows.length > 20) throw accessUnavailable();
         let bytes = 0;
@@ -330,7 +331,7 @@ export class AppPrivateDeftyService {
           const plain = crypto.open(metadata.envelope, { org_id: c.org_id, space_id: spaceId,
             message_id: String(row.id), owner_user_id: c.user_id, defty_user_id: state.snapshot.defty_user_id,
             seal_id: state.snapshot.seal_id, grant_id: state.grantId, role: metadata.role });
-          return { metadata, plain, id: String(row.id) };
+          return { metadata, plain, id: String(row.id), deleted: row.is_deleted === true };
         });
         const prior = history.find(value => value.metadata.request_id === input.request_id && value.plain.role === 'user');
         if (prior) {
@@ -338,6 +339,8 @@ export class AppPrivateDeftyService {
           const answer = history.find(value => value.metadata.request_id === input.request_id && value.plain.role === 'assistant');
           await this.final(tx, c, state.context, new Date(state.snapshot.expires_at));
           if (!answer) throw new PrivateDeftyRequestError('APP_PRIVATE_DEFTY_REQUEST_PENDING_OR_UNKNOWN');
+          // Deduplication still sees deleted turns; a deleted answer is not replayed.
+          if (answer.deleted) throw accessUnavailable();
           return { kind: 'replay' as const, result: PrivateDeftyTurnOutput.parse({
             schema_version: 'deft.app_private_defty_turn_result.v1', space_id: spaceId, request_id: input.request_id,
             message_id: answer.id, text: answer.plain.text, expires_at: state.snapshot.expires_at,
@@ -358,7 +361,7 @@ export class AppPrivateDeftyService {
           return [field, state.context.parent.record!.data[field]!];
         }));
         return { kind: 'dispatch' as const, state, fingerprint, selected,
-          history: history.map(value => value.plain) };
+          history: history.filter(value => !value.deleted).map(value => value.plain) };
       });
       if (reserved.kind === 'replay') return reserved.result;
       signal?.throwIfAborted();
