@@ -4,12 +4,12 @@
  * Run:
  *   cd apps/api && pnpm exec tsx --env-file=../../.env --test test/agent-channel.test.ts
  */
-import { test, before, after } from 'node:test';
+import { test, before, after, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import bcrypt from 'bcryptjs';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, getTableName, inArray, sql } from 'drizzle-orm';
 import {
   db,
   agentChannelConnections,
@@ -1351,6 +1351,99 @@ test('a replayed reply whose message was deleted does not return its text', asyn
   });
   const replayText = await replay.text();
   assert.ok(!replayText.includes(canary), `replay must not return deleted text: ${replay.status} ${replayText}`);
+});
+
+function isEventIdSelect(fields: unknown): boolean {
+  if (!fields || typeof fields !== 'object') return false;
+  const keys = Object.keys(fields);
+  const column = (fields as any).id;
+  return keys.length === 1 && keys[0] === 'id' && column?.table && getTableName(column.table) === 'agent_channel_events';
+}
+
+test('a reply deleted during the final event check is not returned by a replay', async () => {
+  const connect = await app.request(`/api/agent-channel/v1/connect?${autonomousCompatibilityQuery()}`, {
+    headers: { authorization: `Bearer ${bearer}` },
+  });
+  assert.equal(connect.status, 200);
+  const [fallbackAction] = await db.insert(agentActions).values({
+    org_id: orgId, user_id: humanUserId, agent_employee_id: employeeId, source: 'mention', action: 'chat_mention',
+    params: { message_id: sourceMessageId }, approval_tier: 'auto', approval_status: 'pending',
+  }).returning({ id: agentActions.id });
+  const event = await publishMessageEvent(`final-check-race-${crypto.randomUUID()}`, fallbackAction!.id);
+  const poll = await app.request(
+    `/api/agent-channel/v1/events?limit=100&lease_ms=30000&${autonomousCompatibilityQuery('final-check-race-worker')}`,
+    { headers: { authorization: `Bearer ${bearer}` } },
+  );
+  const claimed = (await poll.json() as any).events.find((candidate: any) => candidate.id === event.id);
+  assert.ok(claimed?.claim_token);
+  const accept = await app.request('/api/agent-channel/v1/accept', {
+    method: 'POST', headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ event_id: event.id, claim_token: claimed.claim_token }),
+  });
+  assert.equal(accept.status, 200, await accept.text());
+  const canary = `CANARY-FINAL-CHECK-RACE-${crypto.randomUUID()}`;
+  const body = JSON.stringify({ event_id: event.id, content: canary, idempotency_key: `final-check-race-${crypto.randomUUID()}`, adapter_mode: 'autonomous_platform' });
+  const send = () => app.request('/api/agent-channel/v1/reply', {
+    method: 'POST', headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' }, body,
+  });
+  assert.equal((await send()).status, 200);
+  // Count the event-id checks a replay makes; the middleware's is the last.
+  const select = apiDb.select.bind(apiDb);
+  let checks = 0;
+  const counting = mock.method(apiDb, 'select', ((fields?: any) => { if (isEventIdSelect(fields)) checks += 1; return select(fields); }) as typeof apiDb.select);
+  try { assert.equal((await send()).status, 200); } finally { counting.mock.restore(); }
+  assert.ok(checks > 0);
+  let seen = 0;
+  const racing = mock.method(apiDb, 'select', ((fields?: any) => {
+    if (!isEventIdSelect(fields) || ++seen !== checks) return select(fields);
+    return { from: (table: any) => ({ where: async (...args: any[]) => {
+      await db.update(messages).set({ is_deleted: true }).where(and(eq(messages.org_id, orgId), eq(messages.content, canary)));
+      return (select(fields) as any).from(table).where(...args);
+    } }) } as any;
+  }) as typeof apiDb.select);
+  let replayText = '';
+  try { replayText = await (await send()).text(); } finally { racing.mock.restore(); }
+  assert.equal(seen, checks, 'the final event check ran');
+  assert.ok(!replayText.includes(canary), `replay must not return the reply deleted during the final check: ${replayText}`);
+});
+
+test('a certification reply recovered after a failed post does not return text deleted meanwhile', async () => {
+  const { event } = await publishAgentChannelEvent({
+    orgId, employeeId, kind: 'certification.challenge', sourceKind: 'certification', sourceId: `cert-${crypto.randomUUID()}`,
+    spaceId, actorUserId: humanUserId, idempotencyKey: `cert-recovery-${crypto.randomUUID()}`, payload: { content: 'certify' },
+  });
+  const claimed = await claimChannelEvent(event!.id);
+  const [root] = await db.insert(messages).values({
+    id: crypto.randomUUID(), org_id: orgId, space_id: spaceId, user_id: humanUserId, content: 'certification thread root',
+  }).returning({ id: messages.id });
+  const canary = `CANARY-CERT-RECOVERY-${crypto.randomUUID()}`;
+  const replyId = `agent-channel-certification-reply:${event!.id}`;
+  const select = apiDb.select.bind(apiDb);
+  let failed = false;
+  // The post is written, then its author lookup fails; the reply is deleted in between.
+  const stub = mock.method(apiDb, 'select', ((fields?: any) => {
+    if (!failed && fields && Object.keys(fields).join(',') === 'name,avatar_url') {
+      failed = true;
+      return { from: () => ({ where: () => ({ limit: async () => {
+        await db.update(messages).set({ is_deleted: true }).where(eq(messages.id, replyId));
+        throw new Error('simulated author lookup failure');
+      } }) }) } as any;
+    }
+    return select(fields);
+  }) as typeof apiDb.select);
+  let text = '';
+  try {
+    const response = await app.request('/api/agent-channel/v1/reply', {
+      method: 'POST', headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ event_id: event!.id, thread_id: root!.id, content: canary, idempotency_key: `cert-recovery-${crypto.randomUUID()}`,
+        claim_token: claimed.claim_token, outcome: 'completed' }),
+    });
+    text = await response.text();
+  } finally { stub.mock.restore(); }
+  assert.ok(failed, `the author lookup ran: ${text}`);
+  const [stored] = await db.select({ is_deleted: messages.is_deleted }).from(messages).where(eq(messages.id, replyId));
+  assert.equal(stored?.is_deleted, true, 'the reply was written and then deleted');
+  assert.ok(!text.includes(canary), `recovered reply must not return deleted text: ${text}`);
 });
 
 test('autonomous failed chat reply retries once when no durable effect exists', async () => {
