@@ -373,7 +373,8 @@ async function enrichResources(access: TeamAccessContext, teamId: string) {
       )
       .where(and(eq(spaces.org_id, access.org_id), inArray(spaces.id, spaceIds)));
     rows.forEach((row) => {
-      const canRead = Boolean(row.public_visible) || Boolean(row.membership_id);
+      // An archived public room needs membership, like every other surface.
+      const canRead = (Boolean(row.public_visible) && !row.is_archived) || Boolean(row.membership_id);
       if (canRead) {
         put('space', row.id, {
           id: row.id,
