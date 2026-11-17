@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { eq, and, desc, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { notifications } from '@deft/db/schema';
-import { nativeNotificationAccessSql } from '../lib/native-mention-visibility.js';
+import { currentlyVisibleNotificationIds, nativeNotificationAccessSql } from '../lib/native-mention-visibility.js';
 import { withoutUnverifiableReplyText } from '../lib/reply-notification-text.js';
 
 export const notificationRoutes = new Hono();
@@ -37,8 +37,9 @@ notificationRoutes.get('/', async (c) => {
         )
       );
 
+    const visible = await currentlyVisibleNotificationIds(user, results.map((row) => row.id));
     return c.json({
-      notifications: results.map(withoutUnverifiableReplyText),
+      notifications: results.filter((row) => visible.has(row.id)).map(withoutUnverifiableReplyText),
       unread_count: unreadResult?.count ?? 0,
     });
   } catch (err) {

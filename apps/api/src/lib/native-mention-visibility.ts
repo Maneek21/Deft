@@ -1,4 +1,5 @@
-import { sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { db } from './db.js';
 import { notifications } from '@deft/db/schema';
 import { publicSpaceVisibleSql } from './space-visibility.js';
 import { readableSpaceSql } from './space-membership.js';
@@ -76,4 +77,20 @@ export function nativeNotificationAccessSql(
         SELECT 1 FROM messages nlm WHERE nlm.id = ${messageId} AND nlm.org_id = ${orgId}
           AND nlm.is_deleted = false AND ${readableSpaceSql(userId, sql`nlm.space_id`, orgId)}))
     END)`;
+}
+
+/**
+ * The notification ids among `ids` the user may still read, checked again
+ * right before a list responds: a source deleted or a room left while the
+ * route did its other queries drops the row instead of sending its body.
+ */
+export async function currentlyVisibleNotificationIds(user: { id: string; org_id: string }, ids: string[]): Promise<Set<string>> {
+  if (ids.length === 0) return new Set();
+  const rows = await db.select({ id: notifications.id }).from(notifications).where(and(
+    inArray(notifications.id, ids),
+    eq(notifications.user_id, user.id),
+    eq(notifications.org_id, user.org_id),
+    nativeNotificationAccessSql(user.id, sql`${notifications.metadata}`, sql`${notifications.org_id}`),
+  ));
+  return new Set(rows.map((row) => row.id));
 }

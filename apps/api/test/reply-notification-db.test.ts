@@ -469,3 +469,33 @@ test('notification mark-read reauthorizes the row returned after a concurrent so
     assert.ok(!response.text.includes('CANARY-MARK-READ-DELETED'));
   } finally { stub.mock.restore(); }
 });
+
+test('notification and inbox lists drop a row whose source is deleted while the list is built', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  for (const path of ['/api/notifications', '/api/inbox?kind=mention']) {
+    const canary = 'CANARY-LIST-STALE-' + randomUUID();
+    const source = await post(ids.bob, S.room, canary);
+    await client!.query(`INSERT INTO notifications(id,org_id,user_id,type,title,body,metadata)
+      VALUES($1,$2,$3,'mention','Mention',$4,$5)`,
+    [randomUUID(), orgId, ids.alice, canary, JSON.stringify({ message_id: source, space_id: S.room })]);
+    const select = db.select.bind(db);
+    let deleted = false;
+    // Delete the source when the route runs its unread count, after the list query.
+    const stub = mock.method(db, 'select', ((fields?: any) => {
+      if (!deleted && fields && 'count' in fields) {
+        deleted = true;
+        return { from: (table: any) => ({ where: async (...args: any[]) => {
+          await client!.query('UPDATE messages SET is_deleted=true WHERE id=$1', [source]);
+          return (select(fields) as any).from(table).where(...args);
+        } }) } as any;
+      }
+      return select(fields);
+    }) as typeof db.select);
+    try {
+      const response = await call(ids.alice, 'GET', path);
+      assert.equal(response.status, 200, response.text);
+      assert.ok(deleted, 'the count query ran after the list query on ' + path);
+      assert.ok(!response.text.includes(canary), path + ' must not return the deleted source text');
+    } finally { stub.mock.restore(); }
+  }
+});
