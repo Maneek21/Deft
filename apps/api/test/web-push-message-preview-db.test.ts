@@ -75,7 +75,7 @@ after(async () => {
   env.PUSH_MESSAGE_PREVIEWS_ENABLED = originalPreviewsEnabled;
   if (seeded && client) {
     await q('DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id=$1)', [orgId]);
-    for (const table of ['web_push_subscriptions', 'attention_deliveries', 'attention_events', 'attention_items', 'messages', 'spaces', 'org_members']) {
+    for (const table of ['job_queue', 'notifications', 'web_push_subscriptions', 'attention_deliveries', 'attention_events', 'attention_items', 'messages', 'spaces', 'org_members']) {
       await q(`DELETE FROM ${table} WHERE org_id=$1`, [orgId]);
     }
     await q('DELETE FROM orgs WHERE id=$1', [orgId]);
@@ -226,3 +226,47 @@ test('queued sends combine opt-in preview text with a checked and pinned push en
   await assert.rejects(sendAttentionDelivery(await queue()), /push endpoint/i);
   assert.equal(sends.length, 2, 'a stored endpoint resolving internally is never contacted');
 });
+
+for (const mode of ['before', 'concurrent', 'deleted', 'removed']) {
+  test(`back-fill and sync preserve one delivery with source mode ${mode}`, async (t) => {
+    if (unavailable) return t.skip(unavailable);
+    const { ensureAttentionBackfillForUser } = await import('../src/lib/attention.js');
+    const { handleNotificationAttentionSync } = await import('../src/workers/handlers/notification-attention-sync.js');
+    const { sendAttentionDelivery } = await import('../src/lib/web-push.js');
+    const { protectPushSubscription } = await import('../src/lib/push-subscription.js');
+    const { publicFetchDeps } = await import('../src/lib/public-http-fetch.js');
+    const original = { VAPID_PUBLIC_KEY: env.VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY: env.VAPID_PRIVATE_KEY, VAPID_SUBJECT: env.VAPID_SUBJECT };
+    t.after(() => { Object.assign(env, original); });
+    const keys = webpush.generateVAPIDKeys();
+    Object.assign(env, { VAPID_PUBLIC_KEY: keys.publicKey, VAPID_PRIVATE_KEY: keys.privateKey, VAPID_SUBJECT: 'mailto:test@example.test' });
+    await q('UPDATE users SET notification_preferences=$1 WHERE id=$2', [{ push: { enabled: true, chat: true } }, ids.bob]);
+    await q('DELETE FROM web_push_subscriptions WHERE org_id=$1', [orgId]);
+    const protectedSub = protectPushSubscription({ endpoint: 'https://fcm.googleapis.com/fcm/send/race', p256dh: keys.publicKey, auth: 'abcdefghijklmnop' });
+    await q('INSERT INTO web_push_subscriptions(id,org_id,user_id,endpoint,endpoint_hash,p256dh,auth) VALUES($1,$2,$3,$4,$5,$6,$7)',
+      [randomUUID(), orgId, ids.bob, protectedSub.endpoint, protectedSub.endpoint_hash, protectedSub.p256dh, protectedSub.auth]);
+    let sends = 0;
+    t.mock.method(publicFetchDeps, 'lookup', async () => [{ address: '142.250.1.1', family: 4 }]);
+    t.mock.method(webpush, 'sendNotification', async () => { sends++; return { statusCode: 201, body: '', headers: {} }; });
+    const messageId = await message(rooms.general, ids.alice, 'Race preview');
+    const notificationId = randomUUID();
+    await q(`INSERT INTO notifications(id,org_id,user_id,type,title,body,link,metadata) VALUES($1,$2,$3,'message','Alice','Race preview',$4,$5)`,
+      [notificationId, orgId, ids.bob, `/chat?space=${rooms.general}&message=${messageId}`, { message_id: messageId, space_id: rooms.general }]);
+    const backfill = () => ensureAttentionBackfillForUser({ orgId, userId: ids.bob, role: 'member' });
+    const job = () => handleNotificationAttentionSync({ id: randomUUID(), name: 'notification-attention-sync', attempts: 1, data: { orgId, notificationIds: [notificationId] } });
+    if (mode === 'concurrent') await Promise.all([backfill(), job()]);
+    else { await backfill(); await job(); }
+    await Promise.all([job(), job()]);
+    const deliveries = await q('SELECT d.* FROM attention_deliveries d JOIN attention_items i ON i.id=d.attention_item_id WHERE i.source_id=$1', [messageId]);
+    assert.equal(deliveries.rows.length, 1);
+    const itemRows = await q('SELECT version,event_count FROM attention_items WHERE source_id=$1', [messageId]);
+    assert.equal(itemRows.rows[0].version, 1);
+    assert.equal(itemRows.rows[0].event_count, 1);
+    if (mode === 'deleted') await q('UPDATE messages SET is_deleted=true WHERE id=$1', [messageId]);
+    if (mode === 'removed') await q('DELETE FROM space_members WHERE space_id=$1 AND user_id=$2', [rooms.general, ids.bob]);
+    const revoked = mode === 'deleted' || mode === 'removed';
+    assert.deepEqual(await sendAttentionDelivery(deliveries.rows[0].id), revoked ? { skipped: true, reason: 'source_access_revoked' } : { sent: 1, failed: 0 });
+    await sendAttentionDelivery(deliveries.rows[0].id);
+    assert.equal(sends, revoked ? 0 : 1);
+    if (mode === 'removed') await q('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), rooms.general, ids.bob]);
+  });
+}
