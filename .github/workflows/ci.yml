@@ -228,6 +228,7 @@ jobs:
           src/lib/setup-link-mounted.test.ts
           src/lib/two-step-enrolment-mounted.test.ts
           src/lib/invite-two-step-mounted.test.ts
+          src/lib/members-admin-actions-mounted.test.ts
       - name: Test bounded resource observation claim deadlines
         run: pnpm --filter @deft/api exec tsx --test src/lib/app-resource-sync-claim-budget.test.ts
       - name: Type check API

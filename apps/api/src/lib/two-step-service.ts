@@ -1,3 +1,4 @@
+import bcrypt from 'bcryptjs';
 import { and, count, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { orgMembers, users, webSessions } from '@deft/db/schema';
 import { twoStepChallenges, userTwoStep, userTwoStepRecoveryCodes } from '@deft/db/two-step';
@@ -138,18 +139,40 @@ export async function twoStepIsMandatoryFor(userId: string, reader: Pick<Tx, 'se
 
 export type EnrolmentStart =
   | { ok: true; secret: string; otpauth_url: string }
-  | { ok: false; check: Exclude<SecondStepCheck, { ok: true }> | { ok: false; reason: 'proof_required' } };
+  | { ok: false; check: Exclude<SecondStepCheck, { ok: true }> | { ok: false; reason: 'proof_required' } | { ok: false; reason: 'password_required' } };
+
+/** Rolls back the enrolment start's row insert when the password is refused. */
+class PasswordRequired extends Error {}
+
+/** What the caller offers to start enrolment. */
+export type EnrolmentProof = SecondStepProof & {
+  /** The account password, typed again now. */
+  currentPassword?: string | undefined;
+  /** The caller holds an enrol-only token, earned with the password a moment ago. */
+  passwordProven?: boolean;
+};
 
 /**
  * Starts (or restarts) enrolment: stores a new pending secret and returns it
- * once. A person who is already enrolled must prove the current second step
- * (a code or a recovery code) to replace their authenticator.
+ * once. The proof required is decided here, from the state read under the
+ * row lock (never from an earlier read by the caller):
+ *   - already enrolled: a current code or a recovery code (replacing the
+ *     authenticator);
+ *   - not enrolled: the password, typed now or proven by an enrol-only token.
+ * A stolen access token alone must not be enough to put someone else's
+ * authenticator on an account, whichever way a concurrent turn-off lands.
  */
-export async function startTwoStepEnrolment(user: { id: string; email: string; sid: string | null }, proof: SecondStepProof = {}, now = new Date()): Promise<EnrolmentStart> {
+export async function startTwoStepEnrolment(user: { id: string; email: string; sid: string | null }, proof: EnrolmentProof = {}, now = new Date()): Promise<EnrolmentStart> {
   const result = await db.transaction(async (tx) => {
     await tx.insert(userTwoStep).values({ user_id: user.id }).onConflictDoNothing();
     const [row] = await tx.select({ confirmed_at: userTwoStep.confirmed_at }).from(userTwoStep).where(eq(userTwoStep.user_id, user.id)).for('update');
     let revoked: string[] = [];
+    if (!row?.confirmed_at && !proof.passwordProven) {
+      const [account] = await tx.select({ password_hash: users.password_hash }).from(users).where(eq(users.id, user.id)).limit(1);
+      if (!proof.currentPassword || !account?.password_hash || !(await bcrypt.compare(proof.currentPassword, account.password_hash))) {
+        throw new PasswordRequired();
+      }
+    }
     if (row?.confirmed_at) {
       if (!proof.code && !proof.recoveryCode) return { ok: false as const, check: { ok: false as const, reason: 'proof_required' as const } };
       const check = await checkSecondStep(tx, user.id, proof, { secret: 'confirmed', allowRecoveryCode: true, now });
@@ -163,6 +186,9 @@ export async function startTwoStepEnrolment(user: { id: string; email: string; s
       .set({ pending_secret_encrypted: encrypt(secret), pending_created_at: now })
       .where(eq(userTwoStep.user_id, user.id));
     return { ok: true as const, secret, otpauth_url: buildOtpauthUrl({ secret, account: user.email, issuer: ISSUER }), revoked };
+  }).catch((err: unknown) => {
+    if (err instanceof PasswordRequired) return { ok: false as const, check: { ok: false as const, reason: 'password_required' as const } };
+    throw err;
   });
   if (!result.ok) return result;
   emitWebSessionRevocations(result.revoked);

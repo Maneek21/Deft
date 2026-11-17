@@ -332,6 +332,70 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     await createWebSession(identity, undefined, verified(account!.password_version, current!.confirmed_at!));
   });
 
+  await t.test('enrolment start decides its proof under the lock, whichever way a concurrent change lands', async () => {
+    // astra round 10: a stolen session calls /enrol/start with no proof while
+    // the person turns two-step off. The disable commits first; enrolment then
+    // sees "not enrolled" and must ask for the password, not hand out a secret.
+    const disabling = await enrolledPerson();
+    const holder = new pg.Client({ connectionString: databaseUrl! });
+    await holder.connect();
+    try {
+      await holder.query('BEGIN');
+      await holder.query('SELECT 1 FROM user_two_step WHERE user_id = $1 FOR UPDATE', [disabling.id]);
+      const stolen = post('/api/auth/two-step/enrol/start', {}, disabling.accessToken);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      // What disableTwoStep writes, committed while the start waits on the row.
+      await holder.query(`UPDATE user_two_step SET secret_encrypted = NULL, confirmed_at = NULL, pending_secret_encrypted = NULL,
+        pending_created_at = NULL, last_used_step = 0, failed_attempts = 0, locked_until = NULL WHERE user_id = $1`, [disabling.id]);
+      await holder.query('DELETE FROM user_two_step_recovery_codes WHERE user_id = $1', [disabling.id]);
+      await holder.query('COMMIT');
+      const refused = await stolen;
+      assert.equal(refused.status, 403, JSON.stringify(refused.json));
+      assert.equal(refused.json.code, 'INVALID_CREDENTIALS');
+      assert.equal(refused.json.secret, undefined);
+    } finally {
+      await holder.end();
+    }
+    const [afterDisable] = await db.select({ pending: userTwoStep.pending_secret_encrypted, confirmed_at: userTwoStep.confirmed_at })
+      .from(userTwoStep).where(eq(userTwoStep.user_id, disabling.id));
+    assert.deepEqual(afterDisable, { pending: null, confirmed_at: null }, 'no secret was installed');
+    // The person themselves, with the password, can set it up again.
+    assert.equal((await post('/api/auth/two-step/enrol/start', { current_password: PASSWORD }, disabling.accessToken)).status, 200);
+
+    // The mirror: an enrolment commits while a start that offers only the
+    // password waits. It now sees "enrolled" and must ask for a current code.
+    const enrolling = await person('member');
+    const session = (await login(enrolling.email)).json.accessToken as string;
+    assert.equal((await post('/api/auth/two-step/enrol/start', { current_password: PASSWORD }, session)).status, 200);
+    const mirror = new pg.Client({ connectionString: databaseUrl! });
+    await mirror.connect();
+    try {
+      await mirror.query('BEGIN');
+      await mirror.query('SELECT 1 FROM user_two_step WHERE user_id = $1 FOR UPDATE', [enrolling.id]);
+      const replace = post('/api/auth/two-step/enrol/start', { current_password: PASSWORD }, session);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      // What confirmTwoStepEnrolment writes, committed while the start waits.
+      await mirror.query(`UPDATE user_two_step SET secret_encrypted = pending_secret_encrypted, pending_secret_encrypted = NULL,
+        pending_created_at = NULL, confirmed_at = clock_timestamp() WHERE user_id = $1`, [enrolling.id]);
+      await mirror.query('COMMIT');
+      const refused = await replace;
+      assert.equal(refused.status, 403, JSON.stringify(refused.json));
+      assert.equal(refused.json.code, 'TWO_STEP_CODE_REQUIRED');
+    } finally {
+      await mirror.end();
+    }
+    const [afterEnrol] = await db.select({ pending: userTwoStep.pending_secret_encrypted }).from(userTwoStep).where(eq(userTwoStep.user_id, enrolling.id));
+    assert.equal(afterEnrol!.pending, null, 'the enrolment was not replaced');
+
+    // Without any race: a signed-in, not-enrolled caller still needs the password.
+    const plain = await person('member');
+    const plainSession = (await login(plain.email)).json.accessToken as string;
+    const noPassword = await post('/api/auth/two-step/enrol/start', {}, plainSession);
+    assert.equal(noPassword.status, 403);
+    assert.equal(noPassword.json.code, 'INVALID_CREDENTIALS');
+    assert.equal((await post('/api/auth/two-step/enrol/start', { current_password: 'wrong-password' }, plainSession)).status, 403);
+  });
+
   await t.test('a recovery code works once and ends every other session', async () => {
     const who = await enrolledPerson();
     const elsewhere = await loginWithCode(who);

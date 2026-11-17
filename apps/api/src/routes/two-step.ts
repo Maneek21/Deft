@@ -2,7 +2,6 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
-import bcrypt from 'bcryptjs';
 import { eq } from 'drizzle-orm';
 import { users } from '@deft/db/schema';
 import { db } from '../lib/db.js';
@@ -152,17 +151,22 @@ twoStepRoutes.post('/enrol/start', async (c) => {
   if (refusedWhilePaused(caller)) return c.json(PAUSED_ERROR, 503);
   const parsed = startSchema.safeParse(await c.req.json().catch(() => ({})));
   if (!parsed.success) return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
-  // A stolen access token alone must not be enough to put an attacker's
-  // authenticator on an account: nothing removes a second step afterwards.
-  // The enrol-only token was itself earned with the password a moment ago.
-  if (!caller.restricted && !(await getTwoStepStatus(caller.id)).enabled) {
-    const [account] = await db.select({ password_hash: users.password_hash }).from(users).where(eq(users.id, caller.id)).limit(1);
-    if (!parsed.data.current_password || !account?.password_hash || !(await bcrypt.compare(parsed.data.current_password, account.password_hash))) {
+  // The service decides which proof is needed under its row lock: the
+  // password when not enrolled (an enrol-only token was earned with it a
+  // moment ago), a current code when replacing an enrolment.
+  const started = await startTwoStepEnrolment(caller, {
+    code: parsed.data.code,
+    recoveryCode: parsed.data.recovery_code,
+    currentPassword: parsed.data.current_password,
+    passwordProven: caller.restricted,
+  });
+  if (!started.ok) {
+    const check = started.check;
+    if (check.reason === 'password_required') {
       return c.json({ error: 'Enter your current password to set up two-step verification', code: 'INVALID_CREDENTIALS' }, 403);
     }
+    return refuse(c, check);
   }
-  const started = await startTwoStepEnrolment(caller, { code: parsed.data.code, recoveryCode: parsed.data.recovery_code });
-  if (!started.ok) return refuse(c, started.check);
   return c.json({ secret: started.secret, otpauth_url: started.otpauth_url });
 });
 
@@ -218,9 +222,7 @@ twoStepRoutes.post('/disable', async (c) => {
   if (caller instanceof Response) return caller;
   const parsed = codeSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
-  if (await twoStepIsMandatoryFor(caller.id)) {
-    return c.json({ error: 'Owners and admins must keep two-step verification on', code: 'TWO_STEP_REQUIRED_FOR_ROLE' }, 403);
-  }
+  // Whether it is mandatory is decided by the service under its row lock.
   const result = await disableTwoStep(caller.id, parsed.data.code);
   if ('mandatory' in result) {
     return c.json({ error: 'Owners and admins must keep two-step verification on', code: 'TWO_STEP_REQUIRED_FOR_ROLE' }, 403);

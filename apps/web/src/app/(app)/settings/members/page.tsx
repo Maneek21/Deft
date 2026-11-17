@@ -175,6 +175,15 @@ function lifecycleTone(status: LifecycleStatus) {
   return { label: 'Inactive', color: 'var(--muted)', bg: 'var(--surface)' };
 }
 
+/**
+ * Only the owner manages a person who is an owner or admin (the API also
+ * refuses for a former admin). Agents are outside that rule, as before: only
+ * an agent that is the owner is the owner's.
+ */
+function ownerOnly(member: Pick<DirectoryMember, 'kind' | 'role'>) {
+  return member.role === 'owner' || (member.kind === 'human' && member.role === 'admin');
+}
+
 function roleLabel(role: string) {
   return role ? role.charAt(0).toUpperCase() + role.slice(1) : 'Member';
 }
@@ -827,8 +836,8 @@ export default function MembersPage() {
                       Admin actions
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      {/* Only the owner can make a recovery link for an owner or admin. */}
-                      {detail.member.id !== user?.id && (user?.role === 'owner' || (detail.member.role !== 'owner' && detail.member.role !== 'admin')) && (
+                      {/* Only the owner can make a recovery link for a person who is an owner or admin. */}
+                      {detail.member.id !== user?.id && (user?.role === 'owner' || !ownerOnly(detail.member)) && (
                         <button
                           onClick={() => handleRecoveryLink(detail.member)}
                           disabled={recoveringId === detail.member.id}
@@ -840,7 +849,7 @@ export default function MembersPage() {
                         </button>
                       )}
 
-                      {detail.member.role !== 'owner' && (user?.role === 'owner' || detail.member.role !== 'admin') && detail.member.id !== user?.id && detail.member.is_active && (
+                      {detail.member.role !== 'owner' && (user?.role === 'owner' || !ownerOnly(detail.member)) && detail.member.id !== user?.id && detail.member.is_active && (
                         <div className="relative">
                           <button
                             onClick={() => setRoleDropdown(roleDropdown === detail.member.id ? null : detail.member.id)}
@@ -870,7 +879,7 @@ export default function MembersPage() {
                         </div>
                       )}
 
-                      {detail.member.role !== 'owner' && (user?.role === 'owner' || detail.member.role !== 'admin') && detail.member.id !== user?.id && detail.member.is_active && (
+                      {detail.member.role !== 'owner' && (user?.role === 'owner' || !ownerOnly(detail.member)) && detail.member.id !== user?.id && detail.member.is_active && (
                         confirmRemove === detail.member.id ? (
                           <div
                             className="w-full rounded-lg p-3 sm:w-[420px]"
