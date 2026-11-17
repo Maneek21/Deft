@@ -60,6 +60,10 @@ Use `init` only with a fresh database. For custom ports, public URLs, image veri
 
 [Architecture](#architecture) · [Current limitations](docs/current-limitations.md) · [Licensing](#license)
 
+## One-click deploy
+
+[![Deploy on RepoCloud](https://d16t0pc4846x52.cloudfront.net/deploylobe.svg)](https://repocloud.io/details/Deft/)
+
 ## Try one workflow
 
 - [Set up your first workspace](docs/tutorials/first-workspace.md)
