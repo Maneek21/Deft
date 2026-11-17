@@ -64,26 +64,19 @@ const OAUTH_PUBLIC_LIMIT_PER_MINUTE = positiveIntFromEnv(
   isProduction ? 120 : 1200,
 );
 
-function userOrIpKey(c: Context): string {
+const ipKey = createInviteClientKey();
+
+async function userOrIpKey(c: Context): Promise<string> {
   const user = c.get('user') as { id?: string } | undefined;
-  return user?.id ||
-         c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ||
-         c.req.header('x-real-ip') ||
-         'unknown';
+  return user?.id || await ipKey(c);
 }
 
-function ipKey(c: Context): string {
-  return c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ||
-         c.req.header('x-real-ip') ||
-         'unknown';
-}
-
-function agentChannelKey(c: Context): string {
+async function agentChannelKey(c: Context): Promise<string> {
   const authorization = c.req.header('authorization')?.trim();
   if (authorization) {
     return `channel:${createHash('sha256').update(authorization).digest('hex').slice(0, 32)}`;
   }
-  return `ip:${ipKey(c)}`;
+  return `ip:${await ipKey(c)}`;
 }
 
 export function shouldBypassRateLimitForAudit(c: Context): boolean {
@@ -125,7 +118,7 @@ export const authLimiter = withAuditBypass(rateLimiter({
   }, 429),
 }));
 
-// Invite-only proxy trust; other limiters keep their existing key policy.
+// All IP-based limiters share the invite proxy trust policy.
 // Without explicitly configured trusted proxies, use the socket peer.
 export const inviteLimiter = withAuditBypass(rateLimiter({
   windowMs: 60 * 1000,

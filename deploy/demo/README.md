@@ -23,10 +23,10 @@ NEXT_PUBLIC_WS_URL=https://demo.example.com
 
 Keep provider keys in `.env`; do not add them to the Compose overlay.
 
-The overlay sets `DEFT_INVITE_TRUSTED_PROXIES=caddy` for invite preview and
-acceptance limits. The API resolves that service name and trusts forwarded
+The overlay sets `DEFT_INVITE_TRUSTED_PROXIES=caddy` for general API and invite
+limits. The API resolves that service name and trusts forwarded
 addresses only when the socket peer matches its current IP; container IP
-changes require no manual setting. Other API limiters are unchanged.
+changes require no manual setting.
 
 For a different proxy, set this variable to a comma-separated list of its
 exact IPs or DNS names that you control (no CIDRs or implicit private ranges).
