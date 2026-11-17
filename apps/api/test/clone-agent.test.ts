@@ -54,8 +54,13 @@ before(async () => {
 
   // Source employee with one attached skill
   sourceEmployeeId = crypto.randomUUID();
+  // The agent's own member-level account, as a real agent has (an agent
+  // that is or was an admin is the owner's alone: lib/agent-management.ts).
+  const agentUserId = crypto.randomUUID();
+  await db.insert(users).values({ id: agentUserId, email: `${agentUserId}@agents.test`, name: 'Fixture agent', kind: 'agent', is_agent: true });
+  await db.insert(orgMembers).values({ id: crypto.randomUUID(), org_id: testOrgId, user_id: agentUserId, role: 'member' });
   await db.insert(agentEmployees).values({
-    id: sourceEmployeeId, org_id: testOrgId, user_id: testUserId,
+    id: sourceEmployeeId, org_id: testOrgId, user_id: agentUserId,
     slug: `b31-source-${Date.now()}`, name: 'B31 Source', system_prompt: 'test',
     is_byoa: true, trust_level: 'standard',
     expertise_description: 'Source agent', starter_prompts: ['Say hi'] as any,

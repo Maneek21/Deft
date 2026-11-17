@@ -1,13 +1,21 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, isNull } from 'drizzle-orm';
 import bcrypt from 'bcryptjs';
 import { db } from '../lib/db.js';
-import { apiKeys } from '@deft/db/schema';
+import { agentEmployees, apiKeys } from '@deft/db/schema';
 import { OrgMembershipError, requireOrgAdminOrOwner } from '../lib/org-membership.js';
 import { requireOrgAdmin } from '../lib/org-admin-guard.js';
+import { manageAgentIfBound, managementFor, ownerOnlyAgentUsers } from '../lib/agent-management.js';
 
 export const apiKeyRoutes = new Hono();
+
+/** The agent a key is bound to, if any (it never changes after issue). */
+async function keyAgent(orgId: string, keyId: string): Promise<string | null> {
+  const [key] = await db.select({ agent_employee_id: apiKeys.agent_employee_id }).from(apiKeys)
+    .where(and(eq(apiKeys.id, keyId), eq(apiKeys.org_id, orgId))).limit(1);
+  return key?.agent_employee_id ?? null;
+}
 
 const createKeySchema = z.object({
   name: z.string().min(1),
@@ -62,11 +70,20 @@ apiKeyRoutes.get('/', async (c) => {
       created_by: apiKeys.created_by,
       created_at: apiKeys.created_at,
       updated_at: apiKeys.updated_at,
+      agent_user_id: agentEmployees.user_id,
     })
     .from(apiKeys)
+    // Deleted agents too: their keys may still be active.
+    .leftJoin(agentEmployees, and(eq(agentEmployees.id, apiKeys.agent_employee_id), eq(agentEmployees.org_id, apiKeys.org_id)))
     .where(eq(apiKeys.org_id, user.org_id));
 
-  return c.json(keys);
+  // Whether the API access page shows each key's controls to this viewer: a
+  // key bound to an agent that is or was an owner or admin is the owner's.
+  const ownerOnly = keys.some((key) => key.agent_user_id) ? await ownerOnlyAgentUsers(user.org_id) : new Set<string>();
+  return c.json(keys.map(({ agent_user_id, ...key }) => ({
+    ...key,
+    management: managementFor(user.role, Boolean(agent_user_id && ownerOnly.has(agent_user_id))),
+  })));
 });
 
 // POST / — Create a new API key
@@ -81,7 +98,9 @@ apiKeyRoutes.post('/', async (c) => {
   const keyPrefix = rawKey.slice(0, 12);
   const keyHash = await bcrypt.hash(rawKey, 10);
 
-  const [key] = await db
+  // A key bound to an agent acts as that agent: issuing one manages the
+  // agent (lib/agent-management.ts), and the agent must be in this org.
+  const issued = await manageAgentIfBound({ userId: user.id, orgId: user.org_id }, body.agent_employee_id, (tx) => tx
     .insert(apiKeys)
     .values({
       org_id: user.org_id,
@@ -95,7 +114,9 @@ apiKeyRoutes.post('/', async (c) => {
       expires_at: body.expires_at ? new Date(body.expires_at) : null,
       created_by: user.id,
     })
-    .returning();
+    .returning());
+  if (!issued.ok) return c.json({ error: issued.error, code: issued.code }, issued.status);
+  const [key] = issued.value;
 
   return c.json({
     ...key,
@@ -111,8 +132,9 @@ apiKeyRoutes.put('/:id', async (c) => {
   const user = c.get('user');
   const keyId = c.req.param('id');
   const body = updateKeySchema.parse(await c.req.json());
+  const boundTo = await keyAgent(user.org_id, keyId);
 
-  const [updated] = await db
+  const changed = await manageAgentIfBound({ userId: user.id, orgId: user.org_id }, boundTo, (tx) => tx
     .update(apiKeys)
     .set({
       ...(body.name !== undefined ? { name: body.name } : {}),
@@ -122,7 +144,7 @@ apiKeyRoutes.put('/:id', async (c) => {
       ...(body.is_active !== undefined ? { is_active: body.is_active } : {}),
       ...(body.expires_at !== undefined ? { expires_at: body.expires_at ? new Date(body.expires_at) : null } : {}),
     })
-    .where(and(eq(apiKeys.id, keyId), eq(apiKeys.org_id, user.org_id)))
+    .where(and(eq(apiKeys.id, keyId), eq(apiKeys.org_id, user.org_id), boundTo ? eq(apiKeys.agent_employee_id, boundTo) : isNull(apiKeys.agent_employee_id)))
     .returning({
       id: apiKeys.id,
       org_id: apiKeys.org_id,
@@ -139,7 +161,9 @@ apiKeyRoutes.put('/:id', async (c) => {
       created_by: apiKeys.created_by,
       created_at: apiKeys.created_at,
       updated_at: apiKeys.updated_at,
-    });
+    }));
+  if (!changed.ok) return c.json({ error: changed.error, code: changed.code }, changed.status);
+  const [updated] = changed.value;
 
   if (!updated) {
     return c.json({ error: 'API key not found', code: 'NOT_FOUND' }, 404);
@@ -154,11 +178,14 @@ apiKeyRoutes.delete('/:id', async (c) => {
   if (denied) return denied;
   const user = c.get('user');
   const keyId = c.req.param('id');
+  const boundTo = await keyAgent(user.org_id, keyId);
 
-  const [deleted] = await db
+  const removed = await manageAgentIfBound({ userId: user.id, orgId: user.org_id }, boundTo, (tx) => tx
     .delete(apiKeys)
-    .where(and(eq(apiKeys.id, keyId), eq(apiKeys.org_id, user.org_id)))
-    .returning({ id: apiKeys.id });
+    .where(and(eq(apiKeys.id, keyId), eq(apiKeys.org_id, user.org_id), boundTo ? eq(apiKeys.agent_employee_id, boundTo) : isNull(apiKeys.agent_employee_id)))
+    .returning({ id: apiKeys.id }));
+  if (!removed.ok) return c.json({ error: removed.error, code: removed.code }, removed.status);
+  const [deleted] = removed.value;
 
   if (!deleted) {
     return c.json({ error: 'API key not found', code: 'NOT_FOUND' }, 404);

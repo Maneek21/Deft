@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { api } from '@/lib/api';
+import { canManageAgent, OWNER_ONLY_AGENT_NOTE, type AgentManagement } from '@/lib/agent-management';
 import { ArrowLeft, Activity, ChevronDown, ChevronRight } from 'lucide-react';
 import { fmtCost, HeartbeatSummaryTiles, type HeartbeatCostSummary } from './heartbeat-summary-tiles';
 
@@ -30,6 +31,7 @@ type EmployeeSummary = {
   max_daily_actions: number;
   unhealthy: boolean;
   unhealthy_reason: string | null;
+  management?: AgentManagement;
 };
 
 const OUTCOME_LABELS: Record<string, { label: string; tone: string }> = {
@@ -91,6 +93,7 @@ export default function HeartbeatsPage() {
           max_daily_actions: emp.max_daily_actions ?? 0,
           unhealthy: !!emp.unhealthy,
           unhealthy_reason: emp.unhealthy_reason ?? null,
+          management: emp.management,
         });
       }
     } catch (err) {
@@ -160,7 +163,10 @@ export default function HeartbeatsPage() {
               Today&apos;s usage
             </div>
             <div className="flex items-center gap-2">
-              {employee.daily_action_count > 0 && (
+              {!canManageAgent(employee.management) && (
+                <span className="text-xs text-slate-500" title={OWNER_ONLY_AGENT_NOTE}>Owner only</span>
+              )}
+              {canManageAgent(employee.management) && employee.daily_action_count > 0 && (
                 <button
                   disabled={resettingBudget}
                   onClick={async () => {
@@ -185,7 +191,7 @@ export default function HeartbeatsPage() {
                   {resettingBudget ? 'Resetting...' : 'Reset action count'}
                 </button>
               )}
-              {employee.unhealthy && (
+              {canManageAgent(employee.management) && employee.unhealthy && (
                 <button
                   disabled={markHealing}
                   onClick={async () => {

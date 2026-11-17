@@ -9,9 +9,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
+import { canManageAgent, OWNER_ONLY_AGENT_NOTE, type AgentManagement } from '@/lib/agent-management';
 import { Check, Copy, Loader2, Play, RefreshCw, RotateCcw, Terminal, X } from 'lucide-react';
 
 type DeveloperPayload = {
+  management?: AgentManagement;
   employee: {
     id: string;
     slug: string;
@@ -379,6 +381,8 @@ export default function DeveloperPage() {
     return <div className="mx-auto max-w-4xl p-6 text-sm text-destructive">{error}</div>;
   }
   if (!data) return null;
+  // An agent that is or was an owner or admin: the owner alone may use these controls.
+  const locked = !canManageAgent(data.management);
 
   const tokenForConfig = newToken ?? '<bearer-token>';
   const channelTokenForConfig = newChannelToken ?? '<channel-token>';
@@ -443,6 +447,9 @@ export default function DeveloperPage() {
         </p>
       </div>
 
+      {locked && (
+        <div role="note" className="mb-3 rounded border border-border px-3 py-2 text-xs">{OWNER_ONLY_AGENT_NOTE}</div>
+      )}
       {copyHint && (
         <div className="mb-3 rounded bg-accent/60 px-3 py-1.5 text-xs">{copyHint}</div>
       )}
@@ -455,10 +462,10 @@ export default function DeveloperPage() {
         <div className="font-medium">{data.channel.recovery.title}</div>
         <div className="mt-0.5 text-muted-foreground">{data.channel.recovery.detail}</div>
         {data.channel.recovery.action === 'regenerate_channel_token' && (
-          <button type="button" onClick={regenerateChannelToken} className="mt-2 rounded border border-border px-2 py-1 hover:bg-accent">Generate token</button>
+          <button type="button" onClick={regenerateChannelToken} disabled={locked} className="mt-2 rounded border border-border px-2 py-1 hover:bg-accent">Generate token</button>
         )}
         {data.channel.recovery.action === 'send_channel_test' && (
-          <button type="button" onClick={startChannelTest} className="mt-2 rounded border border-border px-2 py-1 hover:bg-accent">Send test event</button>
+          <button type="button" onClick={startChannelTest} disabled={locked} className="mt-2 rounded border border-border px-2 py-1 hover:bg-accent">Send test event</button>
         )}
       </div>
 
@@ -507,7 +514,7 @@ export default function DeveloperPage() {
               <button
                 type="button"
                 onClick={regenerateToken}
-                disabled={regenerating}
+                disabled={locked || regenerating}
                 className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-accent"
               >
                 {regenerating ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
@@ -541,7 +548,7 @@ export default function DeveloperPage() {
               <button
                 type="button"
                 onClick={regenerateChannelToken}
-                disabled={regeneratingChannel}
+                disabled={locked || regeneratingChannel}
                 className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-accent"
               >
                 {regeneratingChannel ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
@@ -573,7 +580,7 @@ export default function DeveloperPage() {
             <button
               type="button"
               onClick={startChannelTest}
-              disabled={channelTestBusy}
+              disabled={locked || channelTestBusy}
               className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-accent disabled:opacity-50"
             >
               {channelTestBusy ? <Loader2 className="size-3 animate-spin" /> : <Play className="size-3" />}
@@ -618,7 +625,7 @@ export default function DeveloperPage() {
             <button
               type="button"
               onClick={() => certificationAction('start')}
-              disabled={certBusy}
+              disabled={locked || certBusy}
               className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-accent disabled:opacity-50"
             >
               {certBusy ? <Loader2 className="size-3 animate-spin" /> : <Play className="size-3" />}
@@ -627,7 +634,7 @@ export default function DeveloperPage() {
             <button
               type="button"
               onClick={() => certificationAction('check')}
-              disabled={certBusy}
+              disabled={locked || certBusy}
               className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-accent disabled:opacity-50"
             >
               <Check className="size-3" />
@@ -636,7 +643,7 @@ export default function DeveloperPage() {
             <button
               type="button"
               onClick={() => certificationAction('reset')}
-              disabled={certBusy}
+              disabled={locked || certBusy}
               className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-accent disabled:opacity-50"
             >
               <RotateCcw className="size-3" />
@@ -809,11 +816,11 @@ export default function DeveloperPage() {
             main: `${row.status}${row.work_outcome ? ` / ${row.work_outcome}` : ''} ${row.kind}`,
             sub: `${new Date(row.created_at).toLocaleString()} - delivery count ${row.delivery_count}${row.outcome_detail ? ` - ${row.outcome_detail}` : ''}${row.error ? ` - ${row.error}` : ''}`,
             actions: row.status === 'failed' || row.status === 'cancelled' ? (
-              <button type="button" onClick={() => controlDelivery(row.id, 'retry')} disabled={queueBusy === row.id} className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-50">
+              <button type="button" onClick={() => controlDelivery(row.id, 'retry')} disabled={locked || queueBusy === row.id} className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-50">
                 <RotateCcw className="size-3" /> Retry
               </button>
             ) : ['pending', 'delivered', 'acknowledged', 'running', 'approval_pending'].includes(row.status) ? (
-              <button type="button" onClick={() => controlDelivery(row.id, 'cancel')} disabled={queueBusy === row.id} className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-50">
+              <button type="button" onClick={() => controlDelivery(row.id, 'cancel')} disabled={locked || queueBusy === row.id} className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-50">
                 <X className="size-3" /> Cancel
               </button>
             ) : undefined,

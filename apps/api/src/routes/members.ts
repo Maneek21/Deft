@@ -38,7 +38,7 @@ import { buildInviteUrl as buildSecretInviteUrl, buildRecoveryUrl as buildSecret
 import { roleMustHaveSecondStep } from '../lib/two-step-policy.js';
 import { userTwoStep } from '@deft/db/two-step';
 import {
-  authorizeMembershipOperation, checkMembershipOperation, lockMembership, MembershipGuardError, recordMembershipChange, recordPrivilege, type MembershipActor,
+  authorizeMembershipOperation, checkMembershipOperation, isProtectedMembership, lockMembership, MembershipGuardError, recordMembershipChange, recordPrivilege, type MembershipActor,
 } from '../lib/membership-guard.js';
 
 const INVITE_TTL = '7d';
@@ -1000,6 +1000,9 @@ memberRoutes.get('/:id/detail', async (c) => {
         last_seen_at: compactDate(member.last_seen_at),
         email_verified: member.email_verified,
         role: member.role,
+        // Is or was owner or admin (a person or an agent): only the owner
+        // changes, removes or recovers this membership (lib/membership-guard.ts).
+        owner_only: await isProtectedMembership(db, user.org_id, member.id, member.role),
         is_active: member.is_active,
         joined_at: compactDate(member.joined_at),
         lifecycle_status: member.is_active

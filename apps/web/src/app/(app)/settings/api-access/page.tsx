@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { api } from '@/lib/api';
+import { canManageAgent, OWNER_ONLY_AGENT_NOTE, type AgentManagement } from '@/lib/agent-management';
 import Link from 'next/link';
 import { Trash2, X, Plus, Copy, Check, Key, Bot, Server, ShieldCheck } from 'lucide-react';
 
@@ -18,6 +19,8 @@ type ApiKey = {
   is_active: boolean;
   expires_at: string | null;
   created_at: string;
+  /** Sent with each key, including keys of deleted agents. */
+  management?: AgentManagement;
 };
 
 type AgentEmployee = {
@@ -25,6 +28,7 @@ type AgentEmployee = {
   name: string;
   role: string;
   is_active: boolean;
+  management?: AgentManagement;
 };
 
 export default function ApiAccessPage() {
@@ -127,6 +131,8 @@ export default function ApiAccessPage() {
     const emp = employees.find(e => e.id === id);
     return emp?.name || null;
   };
+  // A key bound to an agent that is or was an owner or admin is the owner's to change.
+  const keyLocked = (k: ApiKey) => !canManageAgent(k.management ?? (k.agent_employee_id ? employees.find(e => e.id === k.agent_employee_id)?.management : undefined));
 
   if (loading) {
     return (
@@ -270,7 +276,9 @@ export default function ApiAccessPage() {
             >
               <option value="">None</option>
               {employees.map(emp => (
-                <option key={emp.id} value={emp.id}>{emp.name} ({emp.role})</option>
+                <option key={emp.id} value={emp.id} disabled={!canManageAgent(emp.management)}>
+                  {emp.name} ({emp.role}){canManageAgent(emp.management) ? '' : ' (owner only)'}
+                </option>
               ))}
             </select>
           </div>
@@ -408,6 +416,11 @@ export default function ApiAccessPage() {
               </div>
 
               {/* Actions row — inline on md+, wraps below title on mobile */}
+              {keyLocked(k) ? (
+                <span className="flex-shrink-0 text-[11px]" style={{ color: 'var(--muted)' }} title={OWNER_ONLY_AGENT_NOTE}>
+                  Owner only
+                </span>
+              ) : (
               <div className="flex items-center gap-3 flex-shrink-0">
                 {/* Active toggle */}
                 <button
@@ -452,6 +465,7 @@ export default function ApiAccessPage() {
                   </button>
                 )}
               </div>
+              )}
             </div>
           ))}
         </div>

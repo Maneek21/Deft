@@ -6,9 +6,10 @@ import path from 'node:path';
 
 // The real Members settings page inside the real AuthProvider, mounted in
 // Chromium, viewed by an admin who is not the owner. Only the owner manages a
-// PERSON who is an owner or admin; agents are outside that rule, so an admin
-// still sees Recovery link, the role control and Remove for an admin agent,
-// as before. For an admin person they are hidden; the owner sees them.
+// member who is an owner or admin, a person or an agent: for an admin agent
+// and an admin person, an admin sees no Recovery link, role control or
+// Remove. A member-level agent is managed by admins as before. The owner
+// sees every control.
 const web = fileURLToPath(new URL('../..', import.meta.url));
 const require = createRequire(path.join(web, 'package.json'));
 const { chromium } = require('playwright');
@@ -25,16 +26,22 @@ function token(claims: Record<string, string>): string {
 }
 
 const stats = { spaces: 0, assigned_tasks_open: 0, assigned_tasks_total: 0, led_projects: 0, wiki_pages: 0, active_mcp_tokens: 0, active_api_keys: 0, active_oauth_grants: 0 };
-function member(id: string, name: string, kind: 'human' | 'agent', role: string) {
+function member(id: string, name: string, kind: 'human' | 'agent', role: string, ownerOnly = role === 'owner' || role === 'admin') {
   return {
     id, name, email: kind === 'human' ? `${id}@example.test` : null, kind, avatar_url: null, title: null, profile_summary: null,
     expertise_tags: [], timezone: 'UTC', status_emoji: null, status_text: null, last_seen_at: null, email_verified: true,
-    role, is_active: true, joined_at: null, lifecycle_status: 'active', pending_invite_id: null, pending_invite_expires_at: null,
+    role, owner_only: ownerOnly, is_active: true, joined_at: null, lifecycle_status: 'active', pending_invite_id: null, pending_invite_expires_at: null,
     stats,
     agent: kind === 'agent' ? { id: `emp-${id}`, name, role: 'project_manager', trust_level: 'standard', runtime_kind: 'custom', certification_status: null, is_active: true, unhealthy: false, last_mcp_call_at: null, last_heartbeat_at: null } : null,
   };
 }
-const MEMBERS = [member('admin-agent', 'Admin Agent', 'agent', 'admin'), member('admin-person', 'Admin Person', 'human', 'admin')];
+const MEMBERS = [
+  member('admin-agent', 'Admin Agent', 'agent', 'admin'),
+  member('admin-person', 'Admin Person', 'human', 'admin'),
+  member('member-agent', 'Member Agent', 'agent', 'member'),
+  // Demoted by the owner: member now, but was admin, so still the owner's (the API sends owner_only).
+  member('former-admin-agent', 'Demoted Agent', 'agent', 'member', true),
+];
 
 async function controlsFor(viewerRole: 'admin' | 'owner') {
   const page = path.join(web, 'src/app/(app)/settings/members/page.tsx');
@@ -103,7 +110,7 @@ createRoot(document.getElementById('root')).render(createElement(AuthProvider, n
       const panel = tab.locator('div.rounded-md', { hasText: 'Admin actions' }).last();
       seen[m.id] = {
         recovery: await panel.getByRole('button', { name: 'Recovery link' }).count() > 0,
-        role: await panel.getByRole('button', { name: 'Admin' }).count() > 0,
+        role: await panel.getByRole('button', { name: m.role === 'admin' ? 'Admin' : 'Member', exact: true }).count() > 0,
         remove: await panel.getByRole('button', { name: 'Remove' }).count() > 0,
       };
     }
@@ -113,9 +120,9 @@ createRoot(document.getElementById('root')).render(createElement(AuthProvider, n
   }
 }
 
-test('Members page: an admin manages an admin agent as before, but not an admin person', async () => {
+test("Members page: an admin agent and an admin person are the owner's; a member-level agent is not", async () => {
   const all = { recovery: true, role: true, remove: true };
   const none = { recovery: false, role: false, remove: false };
-  assert.deepEqual(await controlsFor('admin'), { 'admin-agent': all, 'admin-person': none });
-  assert.deepEqual(await controlsFor('owner'), { 'admin-agent': all, 'admin-person': all });
+  assert.deepEqual(await controlsFor('admin'), { 'admin-agent': none, 'admin-person': none, 'member-agent': { recovery: true, role: true, remove: true }, 'former-admin-agent': none });
+  assert.deepEqual(await controlsFor('owner'), { 'admin-agent': all, 'admin-person': all, 'member-agent': all, 'former-admin-agent': all });
 });

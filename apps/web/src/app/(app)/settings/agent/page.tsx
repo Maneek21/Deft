@@ -21,6 +21,7 @@ import {
 } from '@/components/trust-level-control';
 import { useAuth } from '@/lib/auth-context';
 import { EmployeeTrustActions } from './employee-trust-actions';
+import { canManageAgent, OWNER_ONLY_AGENT_NOTE, type AgentManagement } from '@/lib/agent-management';
 
 // Phase 10 — mirrors apps/api/src/lib/model-pricing.ts. Kept in sync by hand
 // because the cost column is advisory only.
@@ -68,6 +69,8 @@ type Employee = {
   recent_turn_count_24h?: number;
   last_turn_at?: string | null;
   avg_latency_ms_24h?: number | null;
+  /** Whether this viewer may manage it (an agent that is or was an admin is the owner's). */
+  management?: AgentManagement;
 };
 
 type Turn = SessionTurn;
@@ -575,7 +578,8 @@ export default function AgentSettingsPage() {
                         <button
                           type="button"
                           onClick={() => handleCloneEmployee(emp)}
-                          disabled={rowActionBusy === emp.id}
+                          disabled={rowActionBusy === emp.id || !canManageAgent(emp.management)}
+                          title={canManageAgent(emp.management) ? undefined : OWNER_ONLY_AGENT_NOTE}
                           className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] hover:bg-accent/40 disabled:opacity-50"
                           style={{ color: 'var(--foreground)' }}
                         >
@@ -806,14 +810,16 @@ export default function AgentSettingsPage() {
               <div className="flex items-start gap-2 mb-4">
                 <EmployeeTrustActions
                   trustLevel={drawerEmp.trust_level}
-                  canEdit={canEditTrust}
+                  canEdit={canEditTrust && canManageAgent(drawerEmp.management)}
                   busy={employeeTrustBusy}
                   onUpgrade={() => setConfirmAutonomous(true)}
                   onLower={lowerEmployeeTrust}
                 />
                 <button
                   onClick={() => setConfirmDelete(true)}
-                  className="text-[12px] px-3 py-2 rounded font-medium"
+                  disabled={!canManageAgent(drawerEmp.management)}
+                  title={canManageAgent(drawerEmp.management) ? undefined : OWNER_ONLY_AGENT_NOTE}
+                  className="text-[12px] px-3 py-2 rounded font-medium disabled:opacity-50"
                   style={{
                     background: 'transparent',
                     color: 'var(--danger, #ef4444)',

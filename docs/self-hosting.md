@@ -385,8 +385,10 @@ Core self-hosted account recovery does not send email. This is separate from the
 owners/admins create recovery URLs from Settings -> Members and share them
 manually. Admins can make new admins (invite or promote someone who has never been
 an owner or admin), but only the owner can change, remove, re-invite or recover a
-person who is or was an owner or admin, a pending admin invite included. Agents are
-not covered by this rule: admins manage agents, admin agents included, as before.
+person who is or was an owner or admin, a pending admin invite included. The same
+applies to an agent that is or was an owner or admin: only the owner resets its
+keys, manages its API keys and webhooks, pauses or resumes it, or edits, clones or
+deletes it. Admins manage member-level agents as before.
 
 If the owner has forgotten their password, an operator with shell access to the
 server prints a one-time recovery URL (valid 24 hours):
