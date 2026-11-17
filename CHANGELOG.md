@@ -73,6 +73,45 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
   only private onboarding bookkeeping remains writable alongside authentication.
   Stopping the separate Email helper remains a deployment dependency.
 
+### Added: two-step verification and recovery codes
+
+Anyone can turn on two-step verification from Settings -> Profile -> Security: an
+authenticator app (time-based 6-digit codes, RFC 6238) plus ten single-use recovery
+codes, shown once. With it on, signing in needs the password and then a code; a
+password reset does not remove it, and a recovery code signs out every other session.
+Self-hosted installs require it of nobody. On the hosted service (`DEFT_HOSTED=true`)
+owners and admins must set it up before they get a session and cannot turn it off.
+Making someone an admin there is refused until that person has turned it on.
+If someone loses both their authenticator and their recovery codes there is no way
+back into that account; the setup screen says so. Schema `0.3.0-preview.149`
+(`user_two_step`, `user_two_step_recovery_codes`, `two_step_challenges`).
+
+### Changed: only the owner can change, remove or recover an admin (self-hosted installs too)
+
+This rule is about people. Admins can still make new admins: invite a new person as
+admin, promote a member or guest, or invite as admin someone who has never been an
+owner or admin. Everything else about a person who is or ever was an owner or admin,
+a pending admin invite included, is the owner's alone: demoting, removing or
+deactivating them, re-inviting or reactivating them, reissuing or revoking their
+invite, and making a recovery link. Agents are not covered: admins manage an agent
+that holds admin rights (its role, keys, settings, pause and resume) exactly as
+before; owner-only management of admin agents is planned separately. "Was" is recorded from this release on
+(`org_member_privilege_history`, schema `0.3.0-preview.149`); someone demoted before
+it is treated like any member.
+
+Any change to a person's role or active state ends every invite link and recovery
+link made for them before it, whoever made it, and removing someone deletes their
+pending invites. A link made by an admin who has since been removed stops working.
+A recovery link made before this release records no maker and is refused (they last 24
+hours). Removing an agent through Members also ends its own keys and pauses it.
+At upgrade: a pending admin invite that an admin (not the owner) made before this
+release stops working, because it cannot be shown to be that person's first grant;
+the owner re-sends it. An invite link made before this release also stops working at
+the first change to that person's role or active state.
+An owner who has forgotten their password gets a link from the server:
+`node --import tsx src/scripts/make-recovery-url.ts <email>` in `apps/api` (see
+docs/self-hosting.md). A recovery link never removes two-step verification.
+
 ### Notice: Kit `0.1.0-alpha.44` removes deprecated Email compatibility
 
 Not before 2026-11-25, and never fewer than 14 days after this notice merged.

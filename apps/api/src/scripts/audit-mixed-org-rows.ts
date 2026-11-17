@@ -408,6 +408,7 @@ const MEMBER_COLUMNS: Array<[table: string, col: string]> = [
   ['user_groups', 'created_by'],
   ['web_push_subscriptions', 'user_id'],
   ['web_sessions', 'user_id'],
+  ['two_step_challenges', 'user_id'],
   ['wiki_citations', 'source_user_id'],
   ['work_intents', 'converted_by'],
   ['work_intents', 'dismissed_by'],

@@ -11,6 +11,7 @@ import {
   spaces,
   spaceMembers,
   agentEmployees,
+  agentChannelTokens,
   mcpTokens,
   invites,
   apiKeys,
@@ -34,6 +35,11 @@ import { evictActiveHuddleParticipants } from '../socket.js';
 import { emitWebSessionRevocations } from '../lib/web-sessions.js';
 import { getSeatStatus, reserveSeat, withSeatRetry, type SeatReservation } from '../lib/seat-limit.js';
 import { buildInviteUrl as buildSecretInviteUrl, buildRecoveryUrl as buildSecretRecoveryUrl } from '../lib/secret-links.js';
+import { roleMustHaveSecondStep } from '../lib/two-step-policy.js';
+import { userTwoStep } from '@deft/db/two-step';
+import {
+  authorizeMembershipOperation, checkMembershipOperation, lockMembership, MembershipGuardError, recordMembershipChange, recordPrivilege, type MembershipActor,
+} from '../lib/membership-guard.js';
 
 const INVITE_TTL = '7d';
 const RECOVERY_TTL = '24h';
@@ -104,32 +110,25 @@ async function getCurrentMembership(orgId: string, userId: string) {
   return membership ?? null;
 }
 
-async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, deactivateMembership = true) {
-  const revokedAt = new Date();
-  const revokedSessionIds = await db.transaction(async (tx) => {
-    const [user] = await tx.select({ password_version: users.password_version })
-      .from(users).where(eq(users.id, memberId)).for('update');
-    const [membership] = await tx.select({ id: orgMembers.id })
-      .from(orgMembers)
-      .where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, memberId)))
-      .for('update');
-    if (!user || !membership) return [];
-    if (deactivateMembership) {
-      await tx.update(users).set({ password_version: user.password_version + 1 }).where(eq(users.id, memberId));
-      await tx.update(orgMembers).set({ is_active: false, updated_at: revokedAt }).where(eq(orgMembers.id, membership.id));
-    }
-    const sessions = await tx.select({ id: webSessions.id })
-      .from(webSessions)
-      .where(and(eq(webSessions.org_id, orgId), eq(webSessions.user_id, memberId), sql`${webSessions.revoked_at} IS NULL`))
-      .for('update');
-    if (sessions.length) {
-      await tx.update(webSessions).set({ revoked_at: revokedAt }).where(inArray(webSessions.id, sessions.map(session => session.id)));
-    }
-    return sessions.map(session => session.id);
-  });
-  emitWebSessionRevocations(revokedSessionIds);
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-  await db.execute(sql`
+/**
+ * Everything that ends a person's access to the workspace: sessions, spaces,
+ * teams, groups, task assignments, personal and API keys, connected apps.
+ * Runs inside the caller's transaction, which holds the person's account and
+ * membership locks (lib/membership-guard.ts), so it can never act on a
+ * membership that was restored after the removal was authorized.
+ */
+async function endWorkspaceAccess(tx: Tx, orgId: string, memberId: string, revokedAt: Date): Promise<string[]> {
+  const sessions = await tx.select({ id: webSessions.id })
+    .from(webSessions)
+    .where(and(eq(webSessions.org_id, orgId), eq(webSessions.user_id, memberId), sql`${webSessions.revoked_at} IS NULL`))
+    .for('update');
+  if (sessions.length) {
+    await tx.update(webSessions).set({ revoked_at: revokedAt }).where(inArray(webSessions.id, sessions.map(session => session.id)));
+  }
+
+  await tx.execute(sql`
     DELETE FROM ${spaceMembers}
     WHERE ${spaceMembers.user_id} = ${memberId}
       AND ${spaceMembers.space_id} IN (
@@ -138,17 +137,9 @@ async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, deac
         WHERE ${spaces.org_id} = ${orgId}
       )
   `);
-
-  await evictActiveHuddleParticipants({
-    orgId,
-    userId: memberId,
-    reason: 'org_membership_revoked',
-  });
-
-  await db.delete(teamMembers)
+  await tx.delete(teamMembers)
     .where(and(eq(teamMembers.org_id, orgId), eq(teamMembers.user_id, memberId)));
-
-  await db.execute(sql`
+  await tx.execute(sql`
     DELETE FROM ${userGroupMembers}
     WHERE ${userGroupMembers.user_id} = ${memberId}
       AND ${userGroupMembers.group_id} IN (
@@ -157,8 +148,7 @@ async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, deac
         WHERE ${userGroups.org_id} = ${orgId}
       )
   `);
-
-  await db.execute(sql`
+  await tx.execute(sql`
     DELETE FROM ${taskAssignees}
     WHERE ${taskAssignees.user_id} = ${memberId}
       AND ${taskAssignees.task_id} IN (
@@ -167,38 +157,35 @@ async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, deac
         WHERE ${tasks.org_id} = ${orgId}
       )
   `);
-
-  await db.update(mcpTokens)
+  await tx.update(mcpTokens)
     .set({ revoked_at: revokedAt, updated_at: revokedAt })
     .where(and(
       eq(mcpTokens.org_id, orgId),
       eq(mcpTokens.user_id, memberId),
       sql`${mcpTokens.revoked_at} IS NULL`,
     ));
-
-  await db.update(apiKeys)
+  await tx.update(apiKeys)
     .set({ is_active: false, updated_at: revokedAt })
     .where(and(
       eq(apiKeys.org_id, orgId),
       eq(apiKeys.created_by, memberId),
       eq(apiKeys.is_active, true),
     ));
-
-  await db.update(oauthGrants)
+  await tx.update(oauthGrants)
     .set({ revoked_at: revokedAt, updated_at: revokedAt })
     .where(and(
       eq(oauthGrants.org_id, orgId),
       eq(oauthGrants.user_id, memberId),
       sql`${oauthGrants.revoked_at} IS NULL`,
     ));
-  await db.update(oauthAccessTokens)
+  await tx.update(oauthAccessTokens)
     .set({ revoked_at: revokedAt, updated_at: revokedAt })
     .where(and(
       eq(oauthAccessTokens.org_id, orgId),
       eq(oauthAccessTokens.user_id, memberId),
       sql`${oauthAccessTokens.revoked_at} IS NULL`,
     ));
-  await db.execute(sql`
+  await tx.execute(sql`
     UPDATE ${oauthRefreshTokens}
     SET revoked_at = ${revokedAt}, updated_at = ${revokedAt}
     WHERE revoked_at IS NULL
@@ -209,20 +196,75 @@ async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, deac
           AND user_id = ${memberId}
       )
   `);
+  // An agent's own credentials are keyed by the employee, not the user: a
+  // removed agent stops working too, and is paused.
+  const employees = await tx.select({ id: agentEmployees.id }).from(agentEmployees)
+    .where(and(eq(agentEmployees.org_id, orgId), eq(agentEmployees.user_id, memberId)));
+  if (employees.length) {
+    const employeeIds = employees.map((employee) => employee.id);
+    await tx.update(mcpTokens).set({ revoked_at: revokedAt, updated_at: revokedAt })
+      .where(and(eq(mcpTokens.org_id, orgId), inArray(mcpTokens.agent_employee_id, employeeIds), sql`${mcpTokens.revoked_at} IS NULL`));
+    await tx.update(apiKeys).set({ is_active: false, updated_at: revokedAt })
+      .where(and(eq(apiKeys.org_id, orgId), inArray(apiKeys.agent_employee_id, employeeIds), eq(apiKeys.is_active, true)));
+    await tx.update(agentChannelTokens).set({ is_active: false, revoked_at: revokedAt })
+      .where(and(eq(agentChannelTokens.org_id, orgId), inArray(agentChannelTokens.agent_employee_id, employeeIds), eq(agentChannelTokens.is_active, true)));
+    await tx.update(agentEmployees).set({ is_active: false })
+      .where(and(eq(agentEmployees.org_id, orgId), inArray(agentEmployees.id, employeeIds)));
+  }
+  return sessions.map(session => session.id);
 }
 
-async function reassignMemberOwnership(orgId: string, memberId: string, replacementUserId: string) {
+/** After commit: live effects of a removal, only if the person is still removed. */
+async function afterWorkspaceAccessEnded(orgId: string, memberId: string, sessionIds: string[]) {
+  emitWebSessionRevocations(sessionIds);
+  const [still] = await db.select({ is_active: orgMembers.is_active }).from(orgMembers)
+    .where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, memberId))).limit(1);
+  if (still && !still.is_active) {
+    await evictActiveHuddleParticipants({ orgId, userId: memberId, reason: 'org_membership_revoked' });
+  }
+}
+
+type Reassigned = { replacement_user_id: string | null; primary_open_tasks: number; led_projects: number; led_teams: number };
+
+/**
+ * Removes a member: the one locked path, the owner-only rule, then (under the
+ * same locks) the reassignment of their open work and the end of every
+ * access. A refusal changes nothing.
+ */
+async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, actor: MembershipActor, replacementUserId: string | null = null): Promise<Reassigned> {
+  const revokedAt = new Date();
+  let reassigned: Reassigned = { replacement_user_id: replacementUserId, primary_open_tasks: 0, led_projects: 0, led_teams: 0 };
+  const revokedSessionIds = await db.transaction(async (tx) => {
+    const locked = await lockMembership(tx, { orgId, targetUserId: memberId });
+    if (!locked.account || !locked.membership) return null;
+    const refusal = await authorizeMembershipOperation(tx, { orgId, actor, locked });
+    if (refusal) throw new MembershipGuardError(refusal);
+    if (replacementUserId) reassigned = await reassignMemberOwnership(tx, orgId, memberId, replacementUserId);
+    await recordMembershipChange(tx, { orgId, targetUserId: memberId, locked, change: { isActive: false } });
+    await tx.update(orgMembers).set({ is_active: false, updated_at: revokedAt }).where(eq(orgMembers.id, locked.membership.id));
+    return endWorkspaceAccess(tx, orgId, memberId, revokedAt);
+  });
+  if (revokedSessionIds) await afterWorkspaceAccessEnded(orgId, memberId, revokedSessionIds);
+  return reassigned;
+}
+
+class ReassignmentError extends Error {}
+
+/** Moves the person's open work to the replacement, on the caller's locked transaction. */
+async function reassignMemberOwnership(tx: Tx, orgId: string, memberId: string, replacementUserId: string) {
   if (memberId === replacementUserId) {
-    throw new Error('Replacement cannot be the member being removed');
+    throw new ReassignmentError('Replacement cannot be the member being removed');
   }
 
-  const replacement = await getCurrentMembership(orgId, replacementUserId);
+  const [replacement] = await tx.select({ role: orgMembers.role }).from(orgMembers)
+    .where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, replacementUserId), eq(orgMembers.is_active, true)))
+    .limit(1);
   if (!replacement) {
-    throw new Error('Replacement must be an active member of this organization');
+    throw new ReassignmentError('Replacement must be an active member of this organization');
   }
 
   const reassignedAt = new Date();
-  const ledTeamRows = await db
+  const ledTeamRows = await tx
     .select({ id: teams.id })
     .from(teams)
     .where(and(
@@ -231,7 +273,7 @@ async function reassignMemberOwnership(orgId: string, memberId: string, replacem
       eq(teams.is_archived, false),
     ));
 
-  const reassignedTasks = await db
+  const reassignedTasks = await tx
     .update(tasks)
     .set({ assignee_id: replacementUserId, updated_at: reassignedAt })
     .where(and(
@@ -242,7 +284,7 @@ async function reassignMemberOwnership(orgId: string, memberId: string, replacem
     ))
     .returning({ id: tasks.id });
 
-  const reassignedProjects = await db
+  const reassignedProjects = await tx
     .update(projects)
     .set({ lead_id: replacementUserId, updated_at: reassignedAt })
     .where(and(
@@ -252,7 +294,7 @@ async function reassignMemberOwnership(orgId: string, memberId: string, replacem
     ))
     .returning({ id: projects.id });
 
-  const reassignedTeams = await db
+  const reassignedTeams = await tx
     .update(teams)
     .set({ lead_user_id: replacementUserId, updated_at: reassignedAt })
     .where(and(
@@ -263,7 +305,7 @@ async function reassignMemberOwnership(orgId: string, memberId: string, replacem
     .returning({ id: teams.id });
 
   for (const team of ledTeamRows) {
-    await db
+    await tx
       .insert(teamMembers)
       .values({
         id: crypto.randomUUID(),
@@ -1114,61 +1156,94 @@ memberRoutes.post('/invite', async (c) => {
     // The seat check and the membership write share one transaction (and, on
     // a hosted cell, one seat lock), so two invites cannot both take the last seat.
     const added = await withSeatRetry(() => db.transaction(async (tx) => {
-      // Check if user already exists
-      let [existingUser] = await tx.select().from(users).where(eq(users.email, email)).limit(1);
-
-      let existingMembership: typeof orgMembers.$inferSelect | undefined;
-      if (existingUser) {
-        // Lock the membership row before the seat lock, in the same order as
-        // the role change below; the opposite order can deadlock.
-        [existingMembership] = await tx.select()
-          .from(orgMembers)
-          .where(and(eq(orgMembers.org_id, currentUser.org_id), eq(orgMembers.user_id, existingUser.id)))
-          .limit(1)
-          .for('update');
-        if (existingMembership?.is_active) return { alreadyMember: true as const };
-      }
+      // The one locked path (lib/membership-guard.ts): account, membership,
+      // the owner-only rule (a person who is or was an owner or admin is the
+      // owner's; an admin may grant admin to someone never privileged), then
+      // the writes, the record of the grant and the link, all under the same
+      // locks. Membership row before the seat lock.
+      const [byEmail] = await tx.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1);
+      const locked = byEmail ? await lockMembership(tx, { orgId: currentUser.org_id, targetUserId: byEmail.id }) : null;
+      if (locked?.membership?.is_active) return { alreadyMember: true as const };
+      const refusal = await authorizeMembershipOperation(tx, {
+        orgId: currentUser.org_id, actor: { userId: currentUser.id }, locked: { protected: locked?.protected ?? false }, resultingRole: role,
+      });
+      if (refusal) return { guardRefusal: refusal };
 
       // A guest, or an existing non-human account, takes no seat.
-      if (role !== 'guest' && (!existingUser || existingUser.kind === 'human')) {
+      if (role !== 'guest' && (!locked?.account || locked.account.kind === 'human')) {
         const seat = await reserveSeat(tx, currentUser.org_id);
         if (!seat.ok) return { seatRefusal: seat };
       }
 
-      if (existingMembership) {
+      let userId = locked?.account?.id ?? null;
+      let generation = locked?.account?.password_version ?? 0;
+      if (locked?.account && locked.membership) {
+        generation = await recordMembershipChange(tx, { orgId: currentUser.org_id, targetUserId: locked.account.id, locked, change: { isActive: true, role } });
         await tx.update(orgMembers)
           .set({ is_active: true, role })
-          .where(eq(orgMembers.id, existingMembership.id));
+          .where(eq(orgMembers.id, locked.membership.id));
       }
-      if (!existingUser) {
+      if (!userId) {
         // Create the user with no password — they'll set one when accepting.
         const [newUser] = await tx.insert(users).values({
           name: email.split('@')[0]!,
           email,
           password_hash: null,
         }).returning();
-        existingUser = newUser!;
+        userId = newUser!.id;
+        generation = newUser!.password_version;
       }
 
       // Add to org
-      if (!existingMembership) {
+      if (!locked?.membership) {
         await tx.insert(orgMembers).values({
           org_id: currentUser.org_id,
-          user_id: existingUser.id,
+          user_id: userId,
           role,
         });
+        // A first grant of admin is recorded with the generation its link carries.
+        if (role === 'admin') await recordPrivilege(tx, { orgId: currentUser.org_id, userId, generation });
       }
-      return { user: existingUser };
+
+      // The invite link, made under the same locks: it carries the account's
+      // generation, so any later role or active-state change makes it stale.
+      // The `member.joined` trigger fires on accept, not here.
+      const inviteToken = jwt.sign(
+        {
+          purpose: 'invite-accept',
+          password_version: generation,
+          user_id: userId,
+          org_id: currentUser.org_id,
+          email,
+          inviter_id: currentUser.id,
+          role,
+          nonce: crypto.randomUUID(),
+        },
+        env.JWT_SECRET,
+        { expiresIn: INVITE_TTL },
+      );
+      const decoded = jwt.decode(inviteToken) as { exp?: number } | null;
+      const expiresAtDate = decoded?.exp ? new Date(decoded.exp * 1000) : null;
+      await tx.insert(invites).values({
+        org_id: currentUser.org_id,
+        email,
+        token: inviteToken,
+        type: 'email',
+        invited_by: currentUser.id,
+        expires_at: expiresAtDate ?? undefined,
+      });
+      return { userId, inviteToken, expiresAtDate };
     }), (result) => ('seatRefusal' in result && result.seatRefusal ? result.seatRefusal : null));
 
     if ('alreadyMember' in added) {
       return c.json({ error: 'User is already a member', code: 'ALREADY_MEMBER' }, 409);
     }
+    if ('guardRefusal' in added) {
+      return c.json({ error: added.guardRefusal, code: 'FORBIDDEN' }, 403);
+    }
     if ('seatRefusal' in added && added.seatRefusal) {
       return seatRefused(c, added.seatRefusal);
     }
-    const existingUser = added.user;
-
     // Add to all default (public) spaces
     const defaultSpaces = await db.select({ id: spaces.id })
       .from(spaces)
@@ -1177,51 +1252,25 @@ memberRoutes.post('/invite', async (c) => {
     for (const space of defaultSpaces) {
       await db.insert(spaceMembers).values({
         space_id: space.id,
-        user_id: existingUser.id,
+        user_id: added.userId,
       }).onConflictDoNothing();
     }
-
-    // Generate an invite URL the admin shares out-of-band (chat, in person,
-    // whatever). The `member.joined` trigger fires on accept, not here, so
-    // agents only react when the user actually shows up.
-    const inviteToken = jwt.sign(
-      {
-        purpose: 'invite-accept',
-        user_id: existingUser.id,
-        org_id: currentUser.org_id,
-        email,
-        inviter_id: currentUser.id,
-        role,
-        nonce: crypto.randomUUID(),
-      },
-      env.JWT_SECRET,
-      { expiresIn: INVITE_TTL },
-    );
-
-    const decoded = jwt.decode(inviteToken) as { exp?: number } | null;
-    const expiresAtDate = decoded?.exp ? new Date(decoded.exp * 1000) : null;
-    const expiresAt = expiresAtDate?.toISOString() ?? null;
-
-    await db.insert(invites).values({
-      org_id: currentUser.org_id,
-      email,
-      token: inviteToken,
-      type: 'email',
-      invited_by: currentUser.id,
-      expires_at: expiresAtDate ?? undefined,
-    });
 
     return c.json(
       {
         success: true,
         message: 'Invitation created',
-        user_id: existingUser.id,
-        invite_url: buildInviteUrl(inviteToken),
-        expires_at: expiresAt,
+        user_id: added.userId,
+        invite_url: buildInviteUrl(added.inviteToken),
+        expires_at: added.expiresAtDate?.toISOString() ?? null,
       },
       201,
     );
   } catch (err) {
+    // Two invites for the same new address at once: the second finds the
+    // first's account (unique email) and is told so.
+    const code = (err as { code?: string; cause?: { code?: string } })?.code ?? (err as { cause?: { code?: string } })?.cause?.code;
+    if (code === '23505') return c.json({ error: 'User is already a member', code: 'ALREADY_MEMBER' }, 409);
     console.error('Failed to invite member:', err);
     return c.json({ error: 'Failed to invite member', code: 'INTERNAL_ERROR' }, 500);
   }
@@ -1243,29 +1292,36 @@ memberRoutes.post('/invites/:id/reissue', async (c) => {
     }
 
     const result = await db.transaction(async (tx) => {
+      // Find the person, then the one locked path (lib/membership-guard.ts):
+      // account, membership, invite; the owner-only rule; then the new link,
+      // made from the generation and role read under those locks.
+      const [found] = await tx.select().from(invites)
+        .where(and(eq(invites.org_id, currentUser.org_id), eq(invites.id, inviteId)))
+        .limit(1);
+      if (!found) return { failure: 'NOT_FOUND' as const };
+      const claims = decodeInviteClaims(found.token);
+      let userId = claims?.user_id ?? null;
+      const email = found.email ?? claims?.email;
+      if (!userId && email) {
+        const [byEmail] = await tx.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1);
+        userId = byEmail?.id ?? null;
+      }
+      if (!userId || !email) return { failure: 'INVITE_INVALID' as const };
+      const locked = await lockMembership(tx, { orgId: currentUser.org_id, targetUserId: userId });
       const [invite] = await tx.select().from(invites)
         .where(and(eq(invites.org_id, currentUser.org_id), eq(invites.id, inviteId)))
         .for('update');
       if (!invite) return { failure: 'NOT_FOUND' as const };
       if (invite.accepted_at) return { failure: 'INVITE_ACCEPTED' as const };
-
-      const claims = decodeInviteClaims(invite.token);
-      let userId = claims?.user_id ?? null;
-      let role = claims?.role as 'admin' | 'member' | 'guest' | undefined;
-      const email = invite.email ?? claims?.email;
-      if ((!userId || !role) && email) {
-        const [target] = await tx.select({ id: users.id, role: orgMembers.role })
-          .from(users).innerJoin(orgMembers, eq(orgMembers.user_id, users.id))
-          .where(and(eq(users.email, email), eq(orgMembers.org_id, currentUser.org_id)))
-          .limit(1);
-        userId = userId ?? target?.id ?? null;
-        role = role ?? (target?.role as 'admin' | 'member' | 'guest' | undefined);
-      }
-      if (!userId || !email) return { failure: 'INVITE_INVALID' as const };
+      if (!locked.account || !locked.membership) return { failure: 'INVITE_INVALID' as const };
+      const refusal = await authorizeMembershipOperation(tx, {
+        orgId: currentUser.org_id, actor: { userId: currentUser.id }, locked, resultingRole: locked.membership.role,
+      });
+      if (refusal) return { failure: 'GUARD' as const, error: refusal };
 
       const inviteToken = jwt.sign({
-        purpose: 'invite-accept', user_id: userId, org_id: currentUser.org_id, email,
-        inviter_id: currentUser.id, role: role ?? 'member', nonce: crypto.randomUUID(),
+        purpose: 'invite-accept', password_version: locked.account.password_version, user_id: userId, org_id: currentUser.org_id, email,
+        inviter_id: currentUser.id, role: locked.membership.role, nonce: crypto.randomUUID(),
       }, env.JWT_SECRET, { expiresIn: INVITE_TTL });
       const decoded = jwt.decode(inviteToken) as { exp?: number } | null;
       const expiresAtDate = decoded?.exp ? new Date(decoded.exp * 1000) : null;
@@ -1276,6 +1332,7 @@ memberRoutes.post('/invites/:id/reissue', async (c) => {
     if ('failure' in result) {
       if (result.failure === 'NOT_FOUND') return c.json({ error: 'Invite not found', code: 'NOT_FOUND' }, 404);
       if (result.failure === 'INVITE_ACCEPTED') return c.json({ error: 'Accepted invites cannot be reissued', code: 'INVITE_ACCEPTED' }, 409);
+      if (result.failure === 'GUARD') return c.json({ error: result.error, code: 'FORBIDDEN' }, 403);
       return c.json({ error: 'Invite payload is incomplete', code: 'INVITE_INVALID' }, 409);
     }
 
@@ -1304,41 +1361,43 @@ memberRoutes.delete('/invites/:id', async (c) => {
 
     const revokedAt = new Date();
     const result = await db.transaction(async (tx) => {
+      // Find the person first, then lock account -> invite -> membership ->
+      // sessions: the membership guard's order (account, membership, invites).
+      const [found] = await tx.select().from(invites)
+        .where(and(eq(invites.org_id, currentUser.org_id), eq(invites.id, inviteId)))
+        .limit(1);
+      if (!found) return { failure: 'NOT_FOUND' as const };
+      const claims = decodeInviteClaims(found.token);
+      let userId = claims?.user_id ?? null;
+      const email = found.email ?? claims?.email;
+      if (!userId && email) {
+        const [byEmail] = await tx.select({ id: users.id }).from(users)
+          .where(eq(users.email, email)).limit(1);
+        userId = byEmail?.id ?? null;
+      }
+      // The one locked path: account, membership, invite; the owner-only rule.
+      const locked = userId ? await lockMembership(tx, { orgId: currentUser.org_id, targetUserId: userId }) : null;
       const [invite] = await tx.select().from(invites)
         .where(and(eq(invites.org_id, currentUser.org_id), eq(invites.id, inviteId)))
         .for('update');
       if (!invite) return { failure: 'NOT_FOUND' as const };
       if (invite.accepted_at) return { failure: 'INVITE_ACCEPTED' as const };
-
-      const claims = decodeInviteClaims(invite.token);
-      let userId = claims?.user_id ?? null;
-      const email = invite.email ?? claims?.email;
-      if (!userId && email) {
-        const [found] = await tx.select({ id: users.id }).from(users)
-          .where(eq(users.email, email)).limit(1);
-        userId = found?.id ?? null;
+      if (locked?.membership) {
+        const refusal = await authorizeMembershipOperation(tx, { orgId: currentUser.org_id, actor: { userId: currentUser.id }, locked });
+        if (refusal) return { failure: 'GUARD' as const, error: refusal };
       }
 
       const revokedSessionIds: string[] = [];
       let deactivatedUserId: string | null = null;
-      if (userId) {
-        // Invite row is already locked; keep remaining order user -> membership -> sessions.
-        const [user] = await tx.select({ password_hash: users.password_hash, password_version: users.password_version })
-          .from(users).where(eq(users.id, userId)).for('update');
-        const [membership] = await tx.select({ id: orgMembers.id, role: orgMembers.role, is_active: orgMembers.is_active })
-          .from(orgMembers)
-          .where(and(eq(orgMembers.org_id, currentUser.org_id), eq(orgMembers.user_id, userId)))
-          .for('update');
+      if (userId && locked) {
+        const user = locked.account;
+        const membership = locked.membership;
         if (user && membership?.is_active && !user.password_hash && membership.role !== 'owner') {
-          await tx.update(users).set({ password_version: user.password_version + 1 }).where(eq(users.id, userId));
+          await recordMembershipChange(tx, { orgId: currentUser.org_id, targetUserId: userId, locked, change: { isActive: false } });
           await tx.update(orgMembers).set({ is_active: false, updated_at: revokedAt }).where(eq(orgMembers.id, membership.id));
-          const sessions = await tx.select({ id: webSessions.id }).from(webSessions)
-            .where(and(eq(webSessions.org_id, currentUser.org_id), eq(webSessions.user_id, userId), sql`${webSessions.revoked_at} IS NULL`))
-            .for('update');
-          if (sessions.length) {
-            await tx.update(webSessions).set({ revoked_at: revokedAt }).where(inArray(webSessions.id, sessions.map(session => session.id)));
-            revokedSessionIds.push(...sessions.map(session => session.id));
-          }
+          // Every access ends here, under the same locks: nothing runs later
+          // that could reach a membership the owner restored in between.
+          revokedSessionIds.push(...await endWorkspaceAccess(tx, currentUser.org_id, userId, revokedAt));
           deactivatedUserId = userId;
         }
       }
@@ -1347,12 +1406,11 @@ memberRoutes.delete('/invites/:id', async (c) => {
     });
     if ('failure' in result) {
       if (result.failure === 'NOT_FOUND') return c.json({ error: 'Invite not found', code: 'NOT_FOUND' }, 404);
+      if (result.failure === 'GUARD') return c.json({ error: result.error, code: 'FORBIDDEN' }, 403);
       return c.json({ error: 'Accepted invites cannot be revoked here', code: 'INVITE_ACCEPTED' }, 409);
     }
-    emitWebSessionRevocations(result.revokedSessionIds);
-    if (result.deactivatedUserId) {
-      await revokeMemberWorkspaceAccess(currentUser.org_id, result.deactivatedUserId, false);
-    }
+    if (result.deactivatedUserId) await afterWorkspaceAccessEnded(currentUser.org_id, result.deactivatedUserId, result.revokedSessionIds);
+    else emitWebSessionRevocations(result.revokedSessionIds);
 
     return c.json({ success: true });
   } catch (err) {
@@ -1372,22 +1430,30 @@ memberRoutes.post('/:id/recovery-url', async (c) => {
       return adminForbidden(c, err);
     }
 
-    const [target] = await db
-      .select({ id: users.id, email: users.email, password_version: users.password_version })
-      .from(users)
-      .innerJoin(orgMembers, eq(orgMembers.user_id, users.id))
-      .where(and(eq(orgMembers.org_id, currentUser.org_id), eq(users.id, memberId), eq(orgMembers.is_active, true)))
-      .limit(1);
-
-    if (!target) {
-      return c.json({ error: 'Member not found', code: 'NOT_FOUND' }, 404);
+    // A recovery link sets a new password, so it follows the owner-only rule:
+    // for a person who is or was an owner or admin, only the owner makes one.
+    // It is made under the one locked path and carries the generation read
+    // there. It never removes two-step verification: a code is still needed.
+    const made = await db.transaction(async (tx) => {
+      const locked = await lockMembership(tx, { orgId: currentUser.org_id, targetUserId: memberId });
+      if (!locked.account || !locked.membership?.is_active) return { failure: 'NOT_FOUND' as const };
+      const refusal = await authorizeMembershipOperation(tx, { orgId: currentUser.org_id, actor: { userId: currentUser.id }, locked });
+      if (refusal) return { failure: 'GUARD' as const, error: refusal };
+      return {
+        token: jwt.sign(
+          // issued_by: redemption checks again that someone who is or was an
+          // owner or admin is recovered only with the owner's link.
+          { id: locked.account.id, email: locked.account.email, org_id: currentUser.org_id, purpose: 'password-reset', password_version: locked.account.password_version, issued_by: currentUser.id },
+          env.JWT_SECRET,
+          { expiresIn: RECOVERY_TTL },
+        ),
+      };
+    });
+    if ('failure' in made) {
+      if (made.failure === 'NOT_FOUND') return c.json({ error: 'Member not found', code: 'NOT_FOUND' }, 404);
+      return c.json({ error: made.error, code: 'FORBIDDEN' }, 403);
     }
-
-    const resetToken = jwt.sign(
-      { id: target.id, email: target.email, org_id: currentUser.org_id, purpose: 'password-reset', password_version: target.password_version },
-      env.JWT_SECRET,
-      { expiresIn: RECOVERY_TTL },
-    );
+    const resetToken = made.token;
 
     const decoded = jwt.decode(resetToken) as { exp?: number } | null;
     const expiresAt = decoded?.exp ? new Date(decoded.exp * 1000).toISOString() : null;
@@ -1424,6 +1490,8 @@ memberRoutes.patch('/:id', async (c) => {
     // Read, seat check and role change share one transaction (and, on a
     // hosted cell, one seat lock): a guest becoming a member takes a seat.
     const changed = await withSeatRetry(() => db.transaction(async (tx) => {
+      // The one locked path (lib/membership-guard.ts): account, membership.
+      const locked = await lockMembership(tx, { orgId: currentUser.org_id, targetUserId: memberId });
       // Can't change owner role
       const [targetMembership] = await tx.select({ role: orgMembers.role, id: orgMembers.id, kind: users.kind })
         .from(orgMembers)
@@ -1435,12 +1503,31 @@ memberRoutes.patch('/:id', async (c) => {
       if (!targetMembership) return { failure: 'NOT_FOUND' as const };
       if (targetMembership.role === 'owner') return { failure: 'OWNER' as const };
       if (!parsed.success) return { failure: 'INVALID' as const };
+      // Owner-only for a person who is or was an owner or admin; an admin may promote a member or guest.
+      const refusal = await authorizeMembershipOperation(tx, {
+        orgId: currentUser.org_id, actor: { userId: currentUser.id }, locked, resultingRole: parsed.data.role,
+      });
+      if (refusal) return { failure: 'ADMIN' as const, error: refusal };
+
+      // Hosted mode: the admin role takes effect only for someone who already
+      // has two-step verification on, so no credential they hold (a web
+      // session or a connected app's token) ever carries the role without it.
+      // The row lock is the one disableTwoStep takes: either this sees
+      // two-step still on, or turning it off sees the new role and is refused.
+      if (roleMustHaveSecondStep(parsed.data.role)) {
+        const [twoStep] = await tx.select({ confirmed_at: userTwoStep.confirmed_at })
+          .from(userTwoStep)
+          .where(eq(userTwoStep.user_id, memberId))
+          .for('share');
+        if (!twoStep?.confirmed_at) return { failure: 'TWO_STEP' as const };
+      }
 
       if (targetMembership.role === 'guest' && parsed.data.role !== 'guest' && targetMembership.kind === 'human') {
         const seat = await reserveSeat(tx, currentUser.org_id);
         if (!seat.ok) return { seatRefusal: seat };
       }
 
+      await recordMembershipChange(tx, { orgId: currentUser.org_id, targetUserId: memberId, locked, change: { role: parsed.data.role } });
       await tx.update(orgMembers)
         .set({ role: parsed.data.role })
         .where(eq(orgMembers.id, targetMembership.id));
@@ -1450,6 +1537,13 @@ memberRoutes.patch('/:id', async (c) => {
     if ('failure' in changed) {
       if (changed.failure === 'NOT_FOUND') return c.json({ error: 'Member not found', code: 'NOT_FOUND' }, 404);
       if (changed.failure === 'OWNER') return c.json({ error: 'Cannot change owner role', code: 'FORBIDDEN' }, 403);
+      if (changed.failure === 'ADMIN') return c.json({ error: changed.error, code: 'FORBIDDEN' }, 403);
+      if (changed.failure === 'TWO_STEP') {
+        return c.json({
+          error: 'This person must turn on two-step verification (Settings, Profile) before they can be made an admin',
+          code: 'TWO_STEP_NOT_ENROLLED',
+        }, 409);
+      }
       return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
     }
     if ('seatRefusal' in changed && changed.seatRefusal) {
@@ -1510,25 +1604,20 @@ memberRoutes.delete('/:id', async (c) => {
     if (targetMembership.role === 'owner') {
       return c.json({ error: 'Cannot remove the org owner', code: 'FORBIDDEN' }, 403);
     }
+    // Only the owner removes an admin (lib/membership-guard.ts), checked here
+    // before any work is reassigned and again, under lock, at the write.
+    const notRemovable = await checkMembershipOperation(db, { orgId: currentUser.org_id, targetUserId: memberId, actor: { userId: currentUser.id } });
+    if (notRemovable) return c.json({ error: notRemovable, code: 'FORBIDDEN' }, 403);
 
     const preview = await buildOffboardingPreview(currentUser.org_id, memberId);
-    let reassigned = {
-      replacement_user_id: replacementUserId,
-      primary_open_tasks: 0,
-      led_projects: 0,
-      led_teams: 0,
-    };
-    if (replacementUserId) {
-      try {
-        reassigned = await reassignMemberOwnership(currentUser.org_id, memberId, replacementUserId);
-      } catch (error) {
-        return c.json({
-          error: error instanceof Error ? error.message : 'Failed to reassign member ownership',
-          code: 'VALIDATION_ERROR',
-        }, 400);
-      }
+    let reassigned: Reassigned;
+    try {
+      reassigned = await revokeMemberWorkspaceAccess(currentUser.org_id, memberId, { userId: currentUser.id }, replacementUserId);
+    } catch (err) {
+      if (err instanceof MembershipGuardError) return c.json({ error: err.message, code: 'FORBIDDEN' }, 403);
+      if (err instanceof ReassignmentError) return c.json({ error: err.message, code: 'VALIDATION_ERROR' }, 400);
+      throw err;
     }
-    await revokeMemberWorkspaceAccess(currentUser.org_id, memberId, true);
     const remaining = await buildOffboardingPreview(currentUser.org_id, memberId);
 
     return c.json({

@@ -22,7 +22,9 @@ import { isHostedMode } from '../lib/hosted-mode.js';
 import { isSetupTokenValid, SETUP_TOKEN_ERROR, SETUP_TOKEN_MAX_LENGTH } from '../lib/setup-token.js';
 import { ensureDeftyMembership, ensureDeftyDm } from '../lib/ensure-defty-membership.js';
 import { OrgMembershipError, requireActiveOrgMembership } from '../lib/org-membership.js';
-import { createWebSession, rotateWebSession, revokeWebSession, changeWebPassword, verifyWebAccess, WebCredentialsChangedError } from '../lib/web-sessions.js';
+import { revokeWebSession, changeWebPassword, verifyWebAccess, WebCredentialsChangedError } from '../lib/web-sessions.js';
+import { issueSession, issuedSessionBody } from '../lib/session-issuance.js';
+import { SecondStepRequiredError } from '../lib/two-step-policy.js';
 
 export const authRoutes = new Hono();
 authRoutes.use('*', bodyLimit({ maxSize: 64 * 1024, onError: (c) => c.json({ error: 'Request body is too large', code: 'VALIDATION_ERROR' }, 413) }));
@@ -199,12 +201,13 @@ authRoutes.post('/signup', async (c) => {
     console.error('[ensureDeftyDm] failed for org', org.id, 'user', user.id, err);
   }
 
-  const tokens = await createWebSession({ id: user.id, email: user.email!, org_id: org.id });
+  // In hosted mode the first owner gets an enrol-only token here, not a session.
+  const issued = await issueSession({ via: 'signup', identity: { id: user.id, email: user.email!, org_id: org.id } });
 
   return c.json({
     user: { id: user.id, name: user.name, email: user.email },
     org: { id: org.id, name: org.name, slug: org.slug },
-    ...tokens,
+    ...issuedSessionBody(issued),
   }, 201);
 });
 
@@ -251,9 +254,11 @@ authRoutes.post('/login', async (c) => {
     return c.json({ error: 'No active organization membership found', code: 'ORG_MEMBERSHIP_INACTIVE' }, 403);
   }
 
-  let tokens;
+  // A correct password alone gives a session only when the policy asks for
+  // nothing more; otherwise the answer carries a challenge and no tokens.
+  let issued;
   try {
-    tokens = await createWebSession({ id: user.id, email: user.email!, org_id: membership.org_id }, user.password_hash);
+    issued = await issueSession({ via: 'login', identity: { id: user.id, email: user.email!, org_id: membership.org_id }, expectedPasswordHash: user.password_hash });
   } catch (error) {
     if (error instanceof WebCredentialsChangedError) return c.json({ error: 'Credentials changed. Please sign in again.', code: 'INVALID_CREDENTIALS' }, 401);
     if (error instanceof OrgMembershipError) return c.json({ error: error.message, code: error.code }, 403);
@@ -263,7 +268,7 @@ authRoutes.post('/login', async (c) => {
   return c.json({
     user: { id: user.id, name: user.name, email: user.email },
     org_id: membership.org_id,
-    ...tokens,
+    ...issuedSessionBody(issued),
   });
 });
 
@@ -273,11 +278,15 @@ authRoutes.post('/refresh', async (c) => {
   if (!parsed.success) return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
 
   try {
-    const tokens = await rotateWebSession(parsed.data.refreshToken);
-    return c.json(tokens);
+    const issued = await issueSession({ via: 'refresh', refreshToken: parsed.data.refreshToken });
+    return c.json(issuedSessionBody(issued));
   } catch (err) {
     if (err instanceof OrgMembershipError) {
       return c.json({ error: err.message, code: err.code }, err.status as 403);
+    }
+    // The session was revoked: a refresh never satisfies the second step.
+    if (err instanceof SecondStepRequiredError) {
+      return c.json({ error: err.message, code: err.code }, 401);
     }
     return c.json({ error: 'Invalid refresh token', code: 'INVALID_TOKEN' }, 401);
   }
@@ -455,10 +464,10 @@ authRoutes.post('/reset-password', async (c) => {
   const { token, password } = parsed.data;
 
   try {
-    const payload = z.object({ id: z.string().min(1), org_id: z.string().min(1), purpose: z.literal('password-reset'), password_version: z.number().int().nonnegative() }).parse(jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }));
+    const payload = z.object({ id: z.string().min(1), org_id: z.string().min(1), purpose: z.literal('password-reset'), password_version: z.number().int().nonnegative(), issued_by: z.string().min(1).max(256).optional() }).parse(jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }));
 
     const passwordHash = await bcrypt.hash(password, 12);
-    await changeWebPassword(payload.id, passwordHash, { resetToken: token, passwordVersion: payload.password_version, orgId: payload.org_id });
+    await changeWebPassword(payload.id, passwordHash, { resetToken: token, passwordVersion: payload.password_version, orgId: payload.org_id, issuedBy: payload.issued_by ?? null });
 
     return c.json({ success: true, message: 'Password has been reset. You can now log in.' });
   } catch {

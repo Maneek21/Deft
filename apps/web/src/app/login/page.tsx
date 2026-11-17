@@ -5,6 +5,7 @@ import { useAuth } from '@/lib/auth-context';
 import Link from 'next/link';
 import { Eye, EyeOff } from 'lucide-react';
 import { Logo } from '@/components/brand/logo';
+import { TwoStepError, type TwoStepPending } from '@/lib/two-step';
 
 
 export default function LoginPage() {
@@ -16,21 +17,50 @@ export default function LoginPage() {
 }
 
 function LoginContent() {
-  const { login } = useAuth();
+  const { login, verifyTwoStep } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  // Set once the password is accepted and the account needs its code.
+  const [pending, setPending] = useState<TwoStepPending | null>(null);
+  const [code, setCode] = useState('');
+  const [useRecoveryCode, setUseRecoveryCode] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setLoading(true);
     try {
-      await login(email, password);
+      const next = await login(email, password);
+      if (next) {
+        setPassword('');
+        setCode('');
+        setUseRecoveryCode(false);
+        setPending(next);
+      }
     } catch (err: any) {
       setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pending) return;
+    setError('');
+    setLoading(true);
+    try {
+      await verifyTwoStep(pending.token, useRecoveryCode ? { recovery_code: code.trim() } : { code: code.trim() });
+    } catch (err: any) {
+      setError(err.message);
+      setCode('');
+      // The challenge is used up or dead: start again from the password.
+      if (err instanceof TwoStepError && (err.code === 'TWO_STEP_CHALLENGE_DEAD' || err.code === 'TWO_STEP_CHALLENGE_INVALID')) {
+        setPending(null);
+      }
     } finally {
       setLoading(false);
     }
@@ -64,7 +94,54 @@ function LoginContent() {
             boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)',
             outline: '1px solid var(--ghost-border)',
           }}>
-          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          {pending && (
+            <form onSubmit={handleCode} className="flex flex-col gap-4">
+              {error && (
+                <div className="px-4 py-3 text-[0.8125rem] rounded-lg" role="alert"
+                  style={{ background: 'rgba(147,0,10,0.3)', color: 'var(--error)' }}>
+                  {error}
+                </div>
+              )}
+              <div className="flex flex-col gap-2">
+                <label htmlFor="login-two-step-code" className="text-[0.6875rem] font-semibold uppercase"
+                  style={{ color: 'var(--on-surface-variant)', letterSpacing: '0.05em' }}>
+                  {useRecoveryCode ? 'Recovery code' : 'Code from your authenticator app'}
+                </label>
+                <input id="login-two-step-code" value={code} onChange={e => setCode(e.target.value)}
+                  placeholder={useRecoveryCode ? 'XXXX-XXXX-XXXX-XXXX' : '123456'}
+                  inputMode={useRecoveryCode ? 'text' : 'numeric'}
+                  autoComplete="one-time-code"
+                  autoFocus
+                  className="w-full h-11 px-4 text-[0.875rem] outline-none"
+                  style={{
+                    background: 'var(--surface-container)',
+                    border: '1px solid var(--outline-variant)',
+                    borderRadius: '0.5rem',
+                    color: 'var(--foreground)',
+                  }}
+                  required />
+                {useRecoveryCode && (
+                  <p className="text-[0.75rem]" style={{ color: 'var(--on-surface-variant)' }}>
+                    A recovery code works once, and using one signs you out everywhere else.
+                  </p>
+                )}
+              </div>
+              <button type="submit" disabled={loading || code.trim().length < 6}
+                className="w-full h-11 font-semibold text-[0.875rem] mt-2 disabled:opacity-50 active:scale-[0.98]"
+                style={{ background: 'var(--primary-container)', color: '#FFFFFF', borderRadius: '0.5rem', border: 'none' }}>
+                {loading ? 'Checking...' : 'Continue'}
+              </button>
+              <button type="button" onClick={() => { setUseRecoveryCode(v => !v); setCode(''); setError(''); }}
+                className="min-h-[44px] text-[0.8125rem] underline underline-offset-4" style={{ color: 'var(--primary)' }}>
+                {useRecoveryCode ? 'Use a code from your authenticator app' : 'Use a recovery code instead'}
+              </button>
+              <button type="button" onClick={() => { setPending(null); setCode(''); setError(''); }}
+                className="min-h-[44px] text-[0.8125rem]" style={{ color: 'var(--on-surface-variant)' }}>
+                Back to sign in
+              </button>
+            </form>
+          )}
+          <form onSubmit={handleSubmit} className="flex flex-col gap-4" hidden={pending !== null}>
             {error && (
               <div className="px-4 py-3 text-[0.8125rem] rounded-lg"
                 style={{ background: 'rgba(147,0,10,0.3)', color: 'var(--error)' }}>

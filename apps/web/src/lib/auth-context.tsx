@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { api } from './api';
+import { clearEnrolToken, exchangeTwoStepChallenge, readTwoStepPending, storeEnrolToken, type TwoStepPending } from './two-step';
 import { setUserTimezone } from './time';
 import { usePathname, useRouter } from 'next/navigation';
 import { disconnectSocket } from './socket';
@@ -58,11 +59,18 @@ type AuthContextType = {
   org: Org | null;
   loading: boolean;
   sessionCacheScope: string | null;
-  login: (email: string, password: string) => Promise<void>;
+  /** Resolves with a challenge when the account still needs its code. */
+  login: (email: string, password: string) => Promise<TwoStepPending | void>;
+  /** Second call of a sign-in: the challenge plus a code or a recovery code. */
+  verifyTwoStep: (challengeToken: string, proof: { code: string } | { recovery_code: string }) => Promise<void>;
   signup: (name: string, email: string, password: string, orgName: string, setupToken?: string) => Promise<void>;
   logout: (options?: LogoutOptions) => Promise<void>;
   replaceUser: (nextUser: User) => void;
   refreshUser: () => Promise<void>;
+  /** Taken before a request that may hand back a session later. */
+  sessionTicket: () => SessionTicket;
+  /** Installs that session only if nobody signed out or in since the ticket. */
+  adoptSession: (ticket: SessionTicket, accessToken: string, refreshToken: string) => boolean;
 };
 
 type LogoutOptions = {
@@ -110,6 +118,31 @@ export function isCrossTabSessionReplacement(oldRefresh: string | null, newRefre
   return oldIdentity === null || newIdentity === null || oldIdentity !== newIdentity;
 }
 
+/** Who was signed in, in this tab and in storage, when a flow began. */
+export type SessionTicket = { generation: number; identity: string | null };
+
+/** The signed-in session in shared storage (user, workspace, session), or null. */
+export function storedSessionIdentity(): string | null {
+  try {
+    return sessionIdentity(localStorage.getItem('deft-refresh-token'));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A session handed back by a slow request (finishing two-step setup) is
+ * installed only if nobody signed out or in since the flow began: in this tab
+ * (the generation) and in shared storage (the identity, which another tab
+ * changes before this tab hears of it). Otherwise it would bring back a
+ * session after logout, or replace someone else's.
+ */
+export function adoptSessionIfCurrent(generation: AuthRequestGeneration, ticket: SessionTicket, currentIdentity: string | null, install: () => void): boolean {
+  if (!generation.isCurrent(ticket.generation) || ticket.identity !== currentIdentity) return false;
+  install();
+  return true;
+}
+
 export function isCurrentRefreshStorageEvent(eventValue: string | null, storedValue: string | null): boolean {
   return eventValue === storedValue;
 }
@@ -139,6 +172,7 @@ export async function revokeWebSessionBestEffort(
 const AuthContext = createContext<AuthContextType | null>(null);
 const AUTH_PAGE_PATHS = new Set([
   '/login',
+  '/two-step-setup',
   '/signup',
   '/forgot-password',
   '/reset-password',
@@ -292,6 +326,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = async (email: string, password: string) => {
     setConnectionInterrupted(false);
+    // A sign-in ends any unfinished two-step setup in this tab.
+    clearEnrolToken();
     const generation = authGeneration.current.advance();
     sessionCacheEpoch.current += 1;
     api.clearTokens();
@@ -309,6 +345,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       const data = await res.json();
       if (!authGeneration.current.isCurrent(generation)) return;
+      // The password was right but the account needs its second step: there
+      // is no session yet. A code is asked for on the sign-in page; an
+      // owner or admin who must set it up first is sent to do that.
+      const pending = readTwoStepPending(data);
+      if (pending) {
+        setLoading(false);
+        if (pending.status === 'enrolment_required') {
+          storeEnrolToken(pending.token);
+          router.push('/two-step-setup');
+          return;
+        }
+        return pending;
+      }
       api.setTokens(data.accessToken, data.refreshToken);
       await fetchMe();
       if (!authGeneration.current.isCurrent(generation)) return;
@@ -328,8 +377,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const sessionTicket = (): SessionTicket => ({ generation: authGeneration.current.capture(), identity: storedSessionIdentity() });
+  const adoptSession = (ticket: SessionTicket, accessToken: string, refreshToken: string) => adoptSessionIfCurrent(authGeneration.current, ticket, storedSessionIdentity(), () => {
+    sessionCacheEpoch.current += 1;
+    api.setTokens(accessToken, refreshToken);
+  });
+
+  const verifyTwoStep = async (challengeToken: string, proof: { code: string } | { recovery_code: string }) => {
+    const generation = authGeneration.current.advance();
+    const session = await exchangeTwoStepChallenge(challengeToken, proof);
+    if (!authGeneration.current.isCurrent(generation)) return;
+    sessionCacheEpoch.current += 1;
+    api.setTokens(session.accessToken, session.refreshToken);
+    setLoading(true);
+    await fetchMe();
+    if (!authGeneration.current.isCurrent(generation)) return;
+    const redirect = safePostLoginDestination(
+      sessionStorage.getItem('deft-redirect-after-login'),
+    );
+    sessionStorage.removeItem('deft-redirect-after-login');
+    router.push(redirect ?? '/dashboard');
+  };
+
   const signup = async (name: string, email: string, password: string, orgName: string, setupToken?: string) => {
     setConnectionInterrupted(false);
+    clearEnrolToken();
     const generation = authGeneration.current.advance();
     sessionCacheEpoch.current += 1;
     api.clearTokens();
@@ -348,6 +420,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       const data = await res.json();
       if (!authGeneration.current.isCurrent(generation)) return;
+      // Hosted: the first owner sets up two-step verification before anything else.
+      const pending = readTwoStepPending(data);
+      if (pending) {
+        setLoading(false);
+        storeEnrolToken(pending.token);
+        sessionStorage.setItem('deft-redirect-after-login', '/setup-ai');
+        router.push('/two-step-setup');
+        return;
+      }
       api.setTokens(data.accessToken, data.refreshToken);
       await fetchMe();
       if (!authGeneration.current.isCurrent(generation)) return;
@@ -365,6 +446,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = async (options: LogoutOptions = {}) => {
     setConnectionInterrupted(false);
+    clearEnrolToken();
     const refreshToken = localStorage.getItem('deft-refresh-token');
     authGeneration.current.advance();
     sessionCacheEpoch.current += 1;
@@ -387,7 +469,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, org, loading, sessionCacheScope, login, signup, logout, replaceUser, refreshUser: fetchMe }}>
+    <AuthContext.Provider value={{ user, org, loading, sessionCacheScope, login, verifyTwoStep, signup, logout, replaceUser, refreshUser: fetchMe, sessionTicket, adoptSession }}>
       {connectionInterrupted && !credentialPage ? <main className="min-h-dvh flex items-center justify-center bg-[var(--background)] p-6 text-[var(--on-surface)]">
         <div className="max-w-sm space-y-4 text-center" role="status">
           <h1 className="text-xl font-semibold">Reconnecting to Deft</h1>

@@ -6,6 +6,7 @@ import { useAuth } from '@/lib/auth-context';
 import { Clock, KeyRound, Loader2, Save, X } from 'lucide-react';
 import { SettingsSectionNav } from '@/components/settings-section-nav';
 import { BrowserNotificationSettings } from '@/components/browser-notification-settings';
+import { TwoStepSettings } from '@/components/two-step-settings';
 
 const COMMON_TIMEZONES = [
   'UTC',
@@ -481,6 +482,7 @@ export default function ProfileSettingsPage() {
                 </button>
               </div>
             </div>
+            {section === 'security' && <TwoStepSettings />}
         </section>
       </div>
     </div>

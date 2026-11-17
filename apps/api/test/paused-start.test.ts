@@ -37,6 +37,20 @@ for (const path of ['/api/auth/login', '/api/auth/refresh', '/api/auth/logout'])
   });
 }
 
+test('paused two-step sign-in is admitted exactly; two-step security changes stay refused', () => {
+  _setPausedStartForTest(true);
+  for (const path of ['/api/auth/two-step/verify', '/api/auth/two-step/enrol/start', '/api/auth/two-step/enrol/confirm']) {
+    assert.ok(PAUSED_ALLOWED_WRITES.some((route) => route.method === 'POST' && route.path === path), path);
+    assert.equal(isRefusedWhilePaused('POST', path), false, path);
+    assert.equal(isRefusedWhilePaused('POST', `${path}/extra`), true, path);
+    assert.equal(isRefusedWhilePaused('PUT', path), true, path);
+  }
+  for (const path of ['/api/auth/two-step/disable', '/api/auth/two-step/recovery-codes', '/api/auth/two-step', '/api/auth/two-step/enrol']) {
+    assert.equal(isRefusedWhilePaused('POST', path), true, path);
+  }
+  assert.equal(isRefusedWhilePaused('GET', '/api/auth/two-step'), false, 'the status read stays open');
+});
+
 test('read side effects shared with other people are refused; private onboarding remains available', () => {
   _setPausedStartForTest(true);
   for (const path of ['/api/attention', '/api/agent/conversations', '/api/members', '/api/spaces/example/canvas',

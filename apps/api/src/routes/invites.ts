@@ -8,7 +8,9 @@ import { db } from '../lib/db.js';
 import { users, orgs, orgMembers, invites } from '@deft/db/schema';
 import { env } from '../lib/env.js';
 import { ensureDeftyMembership, ensureDeftyDm } from '../lib/ensure-defty-membership.js';
-import { createWebSession, WebCredentialsChangedError } from '../lib/web-sessions.js';
+import { WebCredentialsChangedError } from '../lib/web-sessions.js';
+import { issueSession, issuedSessionBody } from '../lib/session-issuance.js';
+import { isProtectedMembership, linkMakerStillCounts } from '../lib/membership-guard.js';
 
 export const inviteRoutes = new Hono();
 
@@ -19,6 +21,8 @@ type InvitePayload = {
   inviter_id: string;
   role: 'admin' | 'member' | 'guest';
   purpose: 'invite-accept';
+  /** The account's password generation when the link was made; absent on links made before it existed. */
+  password_version?: number;
   iat?: number;
   exp?: number;
 };
@@ -148,8 +152,11 @@ inviteRoutes.post('/accept', async (c) => {
 
   type AcceptanceFailure = 'INVITE_INVALID' | 'INVITE_ALREADY_ACCEPTED' | 'INVITE_EXPIRED' | 'INVITE_REVOKED';
   const accepted = await db.transaction(async (tx) => {
-    // Lock the invite first so exactly one concurrent acceptance can set the
-    // password and mint a session from this token.
+    // The account row first, then the invite: the order the membership guard
+    // takes (account, membership, invites), so a removal and an acceptance
+    // cannot deadlock. The invite lock lets exactly one concurrent acceptance
+    // set the password and mint a session from this token.
+    const [user] = await tx.select().from(users).where(eq(users.id, payload.user_id)).for('update');
     const [invite] = await tx
       .select({ id: invites.id, accepted_at: invites.accepted_at, expires_at: invites.expires_at })
       .from(invites)
@@ -159,18 +166,37 @@ inviteRoutes.post('/accept', async (c) => {
     if (invite.accepted_at) return { failure: 'INVITE_ALREADY_ACCEPTED' as AcceptanceFailure };
     if (invite.expires_at && invite.expires_at < new Date()) return { failure: 'INVITE_EXPIRED' as AcceptanceFailure };
 
-    const [user] = await tx.select().from(users).where(eq(users.id, payload.user_id)).for('update');
     if (!user) return { failure: 'INVITE_INVALID' as AcceptanceFailure };
     // An invite-created account has no password until its one accepted invite
     // establishes credentials. Never let a stale pending invite replace
     // credentials established by another invite or an admin recovery.
     if (user.password_hash) return { failure: 'INVITE_ALREADY_ACCEPTED' as AcceptanceFailure };
     const [membership] = await tx
-      .select({ id: orgMembers.id })
+      .select({ id: orgMembers.id, role: orgMembers.role })
       .from(orgMembers)
       .where(and(eq(orgMembers.user_id, payload.user_id), eq(orgMembers.org_id, payload.org_id), eq(orgMembers.is_active, true)))
       .for('share');
     if (!membership) return { failure: 'INVITE_REVOKED' as AcceptanceFailure };
+    // A link is refused if the account's generation has moved at all since
+    // it was made, whoever made it (lib/membership-guard.ts moves it on at
+    // every role or active-state change). A link made before links carried a
+    // generation is refused once the generation has left its starting value 0.
+    const madeAt = payload.password_version ?? 0;
+    if (madeAt !== user.password_version) return { failure: 'INVITE_REVOKED' as AcceptanceFailure };
+    // And whoever made it must still count (lib/membership-guard.ts): for
+    // someone who is or was an owner or admin, the current owner's link, or
+    // the first-grant link an admin made when inviting someone never
+    // privileged as admin; for anyone else, a link whose maker is still an
+    // active owner or admin. A pending admin invite an admin made before this
+    // release cannot be shown to be a first grant and stops working: the
+    // owner re-sends it.
+    const targetProtected = await isProtectedMembership(tx, payload.org_id, payload.user_id, membership.role);
+    if (!await linkMakerStillCounts(tx, {
+      orgId: payload.org_id, targetUserId: payload.user_id, makerUserId: payload.inviter_id, targetProtected,
+      firstGrant: { role: payload.role, generation: payload.password_version, currentGeneration: user.password_version },
+    })) {
+      return { failure: 'INVITE_REVOKED' as AcceptanceFailure };
+    }
 
     await tx.update(users).set({ ...updates, password_version: user.password_version + 1 }).where(eq(users.id, payload.user_id));
     await tx.update(invites)
@@ -224,9 +250,10 @@ inviteRoutes.post('/accept', async (c) => {
     }
   })();
 
-  let tokens;
+  // Same policy as login: in hosted mode a new admin gets an enrol-only token.
+  let issued;
   try {
-    tokens = await createWebSession({ id: user.id, email: user.email!, org_id: payload.org_id }, passwordHash);
+    issued = await issueSession({ via: 'invite', identity: { id: user.id, email: user.email!, org_id: payload.org_id }, expectedPasswordHash: passwordHash });
   } catch (error) {
     if (error instanceof WebCredentialsChangedError) {
       return c.json({ error: 'Credentials changed; sign in again', code: 'CREDENTIALS_CHANGED' }, 409);
@@ -237,6 +264,6 @@ inviteRoutes.post('/accept', async (c) => {
   return c.json({
     user: { id: user.id, name: parsed.data.name ?? user.name, email: user.email },
     org_id: payload.org_id,
-    ...tokens,
+    ...issuedSessionBody(issued),
   });
 });

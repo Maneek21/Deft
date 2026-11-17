@@ -35,7 +35,7 @@ async function isReviewedHead(client: pg.Client) {
 }
 
 /** Resets a `.131`-head database to exactly the pre-tail state, reverting the
- * `.133` and `.135` function/constraint changes, the `.136` index, the `.137` and `.144` tables and the `.148` function
+ * `.133` and `.135` function/constraint changes, the `.136` index, the `.137`, `.144` and `.149` tables and the `.148` function
  * search_path settings in place so it again matches a reviewed head variant. A fresh (push-full) database already carries the
  * `.132` columns and `.134` table in its reviewed bootstrap; an upgraded clone
  * does not, so those are dropped only when the clone needs it. Runs in one
@@ -68,6 +68,8 @@ async function resetToHead(client: pg.Client) {
     for (const signature of restoreSafeFunctions()) {
       await client.query(`ALTER FUNCTION ${signature} RESET search_path`);
     }
+    // Revert the .149 two-step verification tables.
+    await client.query('DROP TABLE IF EXISTS public.org_member_privilege_history, public.two_step_challenges, public.user_two_step_recovery_codes, public.user_two_step');
     await client.query(`DELETE FROM deft_schema_migrations WHERE version = ANY($1::text[])`,
       [tailMigrations().map((migration) => migration.version)]);
     const head = await client.query('SELECT 1 FROM deft_schema_migrations WHERE version = $1', [CONVERGE_HEAD_VERSION]);
