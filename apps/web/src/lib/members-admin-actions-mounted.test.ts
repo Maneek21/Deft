@@ -6,9 +6,10 @@ import path from 'node:path';
 
 // The real Members settings page inside the real AuthProvider, mounted in
 // Chromium, viewed by an admin who is not the owner. Only the owner manages a
-// PERSON who is an owner or admin; agents are outside that rule, so an admin
-// still sees Recovery link, the role control and Remove for an admin agent,
-// as before. For an admin person they are hidden; the owner sees them.
+// member who is an owner or admin, a person or an agent: for an admin agent
+// and an admin person, an admin sees no Recovery link, role control or
+// Remove. A member-level agent is managed by admins as before. The owner
+// sees every control.
 const web = fileURLToPath(new URL('../..', import.meta.url));
 const require = createRequire(path.join(web, 'package.json'));
 const { chromium } = require('playwright');
@@ -34,7 +35,11 @@ function member(id: string, name: string, kind: 'human' | 'agent', role: string)
     agent: kind === 'agent' ? { id: `emp-${id}`, name, role: 'project_manager', trust_level: 'standard', runtime_kind: 'custom', certification_status: null, is_active: true, unhealthy: false, last_mcp_call_at: null, last_heartbeat_at: null } : null,
   };
 }
-const MEMBERS = [member('admin-agent', 'Admin Agent', 'agent', 'admin'), member('admin-person', 'Admin Person', 'human', 'admin')];
+const MEMBERS = [
+  member('admin-agent', 'Admin Agent', 'agent', 'admin'),
+  member('admin-person', 'Admin Person', 'human', 'admin'),
+  member('member-agent', 'Member Agent', 'agent', 'member'),
+];
 
 async function controlsFor(viewerRole: 'admin' | 'owner') {
   const page = path.join(web, 'src/app/(app)/settings/members/page.tsx');
@@ -103,7 +108,7 @@ createRoot(document.getElementById('root')).render(createElement(AuthProvider, n
       const panel = tab.locator('div.rounded-md', { hasText: 'Admin actions' }).last();
       seen[m.id] = {
         recovery: await panel.getByRole('button', { name: 'Recovery link' }).count() > 0,
-        role: await panel.getByRole('button', { name: 'Admin' }).count() > 0,
+        role: await panel.getByRole('button', { name: m.role === 'admin' ? 'Admin' : 'Member', exact: true }).count() > 0,
         remove: await panel.getByRole('button', { name: 'Remove' }).count() > 0,
       };
     }
@@ -113,9 +118,9 @@ createRoot(document.getElementById('root')).render(createElement(AuthProvider, n
   }
 }
 
-test('Members page: an admin manages an admin agent as before, but not an admin person', async () => {
+test("Members page: an admin agent and an admin person are the owner's; a member-level agent is not", async () => {
   const all = { recovery: true, role: true, remove: true };
   const none = { recovery: false, role: false, remove: false };
-  assert.deepEqual(await controlsFor('admin'), { 'admin-agent': all, 'admin-person': none });
-  assert.deepEqual(await controlsFor('owner'), { 'admin-agent': all, 'admin-person': all });
+  assert.deepEqual(await controlsFor('admin'), { 'admin-agent': none, 'admin-person': none, 'member-agent': { recovery: true, role: true, remove: true } });
+  assert.deepEqual(await controlsFor('owner'), { 'admin-agent': all, 'admin-person': all, 'member-agent': all });
 });

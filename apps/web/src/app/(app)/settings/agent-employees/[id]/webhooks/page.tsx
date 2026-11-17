@@ -9,6 +9,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
+import { canManageAgent, OWNER_ONLY_AGENT_NOTE, type AgentManagement } from '@/lib/agent-management';
 import { Copy, Loader2, Plus, Trash2, Webhook, AlertCircle } from 'lucide-react';
 
 type Webhook = {
@@ -34,12 +35,19 @@ export default function WebhooksPage() {
   const [createdSecret, setCreatedSecret] = useState<{ secret: string; slug: string; post_url: string } | null>(null);
   const [copyHint, setCopyHint] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState(false);
+  // An agent that is or was an owner or admin: only the owner adds or revokes its webhooks.
+  const [management, setManagement] = useState<AgentManagement | null>(null);
+  const locked = !canManageAgent(management);
 
   const load = useCallback(async () => {
     setLoading(true);
     setErr(null);
     try {
-      const res = await api.fetch(`/api/agent-webhooks?employee_id=${employeeId}`);
+      const [res, agentRes] = await Promise.all([
+        api.fetch(`/api/agent-webhooks?employee_id=${employeeId}`),
+        api.fetch(`/api/agent-employees/${employeeId}`),
+      ]);
+      if (agentRes.ok) setManagement(((await agentRes.json()) as { management?: AgentManagement }).management ?? null);
       if (res.status === 403) {
         setForbidden(true);
         setWebhooks([]);
@@ -127,6 +135,7 @@ export default function WebhooksPage() {
           Only workspace owners and admins can manage webhooks.
         </div>
       ) : (<>
+      {locked && <div role="note" className="mb-3 rounded border border-border px-3 py-2 text-xs">{OWNER_ONLY_AGENT_NOTE}</div>}
       {copyHint && <div className="mb-3 rounded bg-accent/60 px-3 py-1.5 text-xs">{copyHint}</div>}
       {err && (
         <div className="mb-3 flex items-start gap-2 rounded border border-destructive/30 bg-destructive/10 p-3 text-sm">
@@ -170,7 +179,7 @@ export default function WebhooksPage() {
           <button
             type="button"
             onClick={create}
-            disabled={creating}
+            disabled={locked || creating}
             className="inline-flex items-center gap-1 rounded bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
           >
             {creating ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />}
@@ -215,6 +224,7 @@ export default function WebhooksPage() {
                   <button
                     type="button"
                     onClick={() => revoke(w.id)}
+                    disabled={locked}
                     aria-label={`Revoke webhook ${w.label ?? w.slug}`}
                     className="rounded border border-border p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
                   >

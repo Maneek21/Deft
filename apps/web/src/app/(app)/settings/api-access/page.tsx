@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { api } from '@/lib/api';
+import { canManageAgent, OWNER_ONLY_AGENT_NOTE, type AgentManagement } from '@/lib/agent-management';
 import Link from 'next/link';
 import { Trash2, X, Plus, Copy, Check, Key, Bot, Server, ShieldCheck } from 'lucide-react';
 
@@ -25,6 +26,7 @@ type AgentEmployee = {
   name: string;
   role: string;
   is_active: boolean;
+  management?: AgentManagement;
 };
 
 export default function ApiAccessPage() {
@@ -127,6 +129,8 @@ export default function ApiAccessPage() {
     const emp = employees.find(e => e.id === id);
     return emp?.name || null;
   };
+  // A key bound to an agent that is or was an owner or admin is the owner's to change.
+  const keyLocked = (id: string | null) => Boolean(id) && !canManageAgent(employees.find(e => e.id === id)?.management);
 
   if (loading) {
     return (
@@ -270,7 +274,9 @@ export default function ApiAccessPage() {
             >
               <option value="">None</option>
               {employees.map(emp => (
-                <option key={emp.id} value={emp.id}>{emp.name} ({emp.role})</option>
+                <option key={emp.id} value={emp.id} disabled={!canManageAgent(emp.management)}>
+                  {emp.name} ({emp.role}){canManageAgent(emp.management) ? '' : ' (owner only)'}
+                </option>
               ))}
             </select>
           </div>
@@ -408,6 +414,11 @@ export default function ApiAccessPage() {
               </div>
 
               {/* Actions row — inline on md+, wraps below title on mobile */}
+              {keyLocked(k.agent_employee_id) ? (
+                <span className="flex-shrink-0 text-[11px]" style={{ color: 'var(--muted)' }} title={OWNER_ONLY_AGENT_NOTE}>
+                  Owner only
+                </span>
+              ) : (
               <div className="flex items-center gap-3 flex-shrink-0">
                 {/* Active toggle */}
                 <button
@@ -452,6 +463,7 @@ export default function ApiAccessPage() {
                   </button>
                 )}
               </div>
+              )}
             </div>
           ))}
         </div>

@@ -176,12 +176,12 @@ function lifecycleTone(status: LifecycleStatus) {
 }
 
 /**
- * Only the owner manages a person who is an owner or admin (the API also
- * refuses for a former admin). Agents are outside that rule, as before: only
- * an agent that is the owner is the owner's.
+ * Only the owner manages a member who is an owner or admin, a person or an
+ * agent alike (the API also refuses for a former admin; see
+ * apps/api/src/lib/membership-guard.ts and lib/agent-management.ts).
  */
-function ownerOnly(member: Pick<DirectoryMember, 'kind' | 'role'>) {
-  return member.role === 'owner' || (member.kind === 'human' && member.role === 'admin');
+function ownerOnly(member: Pick<DirectoryMember, 'role'>) {
+  return member.role === 'owner' || member.role === 'admin';
 }
 
 function roleLabel(role: string) {

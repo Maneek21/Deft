@@ -24,6 +24,7 @@ import {
 } from '@/lib/agent-employee-fleet';
 import { agentConnectionStatus, agentEmployeeLifecycle } from '@/lib/agent-employee-status';
 import { getSocket } from '@/lib/socket';
+import { canManageAgent, OWNER_ONLY_AGENT_NOTE, type AgentManagement } from '@/lib/agent-management';
 
 type AgentEmployee = {
   id: string;
@@ -55,6 +56,7 @@ type AgentEmployee = {
   channel_status?: string | null;
   installed_skill_count?: number;
   required_workspace_skill_installed?: boolean;
+  management?: AgentManagement;
 };
 
 const ROLE_LABELS: Record<string, string> = {
@@ -415,7 +417,9 @@ export default function AgentEmployeesPage() {
                 </div>
               </Link>
 
-              {/* Controls stay aligned on desktop and wrap below the identity on mobile. */}
+              {/* Controls stay aligned on desktop and wrap below the identity on mobile.
+                  An agent that is or was an owner or admin is the owner's to pause or delete. */}
+              {canManageAgent(emp.management) ? (
               <div className="ml-11 flex flex-shrink-0 items-center gap-3 md:ml-0">
                 {/* Toggle switch */}
                 <button
@@ -469,6 +473,11 @@ export default function AgentEmployeesPage() {
                   </button>
                 )}
               </div>
+              ) : (
+                <span className="ml-11 flex-shrink-0 text-[11px] md:ml-0" style={{ color: 'var(--muted)' }} title={OWNER_ONLY_AGENT_NOTE}>
+                  Owner only
+                </span>
+              )}
             </div>
             );
           })}
