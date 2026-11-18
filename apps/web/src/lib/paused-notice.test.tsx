@@ -33,7 +33,7 @@ test('not paused: no banner at all', () => {
   assert.equal(render({ notice: null }), '');
 });
 
-test('the session field is read strictly; absent means not paused', () => {
+test('absent means not paused; an unknown reason still shows the neutral notice', () => {
   assert.equal(parsePausedNotice(undefined), null);
   assert.equal(parsePausedNotice(null), null);
   assert.deepEqual(parsePausedNotice({ reason: 'billing' }), { reason: 'billing' });

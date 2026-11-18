@@ -42,6 +42,7 @@ import { stripHtml } from '@/lib/strip-html';
 import { NoteSaveCoordinator, type NoteSaveStatus } from './note-save-coordinator';
 import { noteImageAttributes, ProtectedNoteImage } from './protected-note-image';
 import { noteLoadFailureState, type NoteLoadState } from './note-load-state';
+import { PausedBannerHost } from '@/components/paused-banner';
 
 // Register built-in slash menu commands (idempotent).
 registerBuiltInCommands();
@@ -611,6 +612,8 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
   return (
     <div className={`h-full overflow-y-auto ${focusMode ? 'fixed inset-0 z-[90]' : ''}`}
       style={focusMode ? { background: 'var(--background)', padding: '2rem 0' } : undefined}>
+      {/* Focus mode covers the app shell, so it carries the paused notice itself. */}
+      {focusMode && <PausedBannerHost />}
 
       {/* Undo-delete toast */}
       {pendingDelete && (

@@ -101,14 +101,14 @@ export function getSocket(token: string): Socket {
           notifyConnectionChange(false);
           authRetry = setTimeout(() => {
             authRetry = null;
-            if (socket === createdSocket) createdSocket.connect();
+            if (socket === createdSocket && !refusedWhilePaused) createdSocket.connect();
           }, 5000);
         }
         return;
       }
       // A logout/login may have replaced the singleton while refresh was in
       // flight. Never mutate or disconnect that newer socket from this handler.
-      if (socket !== createdSocket) return;
+      if (socket !== createdSocket || refusedWhilePaused) return;
       if (fresh) {
         createdSocket.auth = { token: fresh };
         createdSocket.connect();

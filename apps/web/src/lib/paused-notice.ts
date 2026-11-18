@@ -22,7 +22,11 @@ export const PAUSED_READ_MESSAGE = 'This is not available while the workspace is
 /** Fired on window whenever the API or realtime refuses something as paused. */
 export const PAUSED_REFUSED_EVENT = 'deft:paused-refused';
 
-/** Accepts only the shape the API sends; anything else is "not paused". */
+/**
+ * Absent or not an object: not paused. An object is the API saying it is
+ * paused; a reason this build does not know still gets the neutral notice,
+ * because hiding the banner while changes are refused is the worse failure.
+ */
 export function parsePausedNotice(value: unknown): PausedNotice | null {
   if (!value || typeof value !== 'object') return null;
   const reason = (value as { reason?: unknown }).reason;
