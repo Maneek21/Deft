@@ -13,6 +13,9 @@
  */
 import assert from 'node:assert/strict';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import pg from 'pg';
 import { Hono } from 'hono';
@@ -56,7 +59,14 @@ test('hosted: the first owner signs up with no seat statement and takes one seat
   const { authRoutes } = await import('../src/routes/auth.js');
   const { closeDb, db } = await import('../src/lib/db.js');
   const seats = await import('../src/lib/seat-limit.js');
+  // Keep the setup-token marker off the real uploads directory.
+  const { setupTokenUseStore } = await import('../src/lib/setup-token-use.js');
+  const volume = await mkdtemp(join(tmpdir(), 'deft-seat-owner-'));
+  const savedMarkerDir = setupTokenUseStore.dir;
+  setupTokenUseStore.dir = join(volume, '.setup-token-used');
   t.after(async () => {
+    setupTokenUseStore.dir = savedMarkerDir;
+    await rm(volume, { recursive: true, force: true });
     await closeDb();
     process.env = savedEnv;
     await admin.query(`DROP SCHEMA "${schema}" CASCADE`);

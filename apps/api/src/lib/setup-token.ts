@@ -50,14 +50,24 @@ export const SETUP_TOKEN_MAX_LENGTH = 512;
 
 /**
  * One public answer for every refusal (no hash configured, no token sent,
- * wrong token, expired token), so a caller learns nothing about how close a
+ * wrong token, expired token, token already used), so a caller learns nothing about how close a
  * guess was or how the cell is configured.
  */
 export const SETUP_TOKEN_ERROR = {
   error:
     'This workspace can only be created from its setup link. ' +
-    'The link is missing, incorrect, or has expired.',
+    'The link is missing, incorrect, expired, or already used.',
   code: 'SETUP_TOKEN_INVALID',
+} as const;
+
+/**
+ * The setup token was right but its use could not be checked or recorded
+ * (lib/setup-token-use.ts), so no workspace was created. Only a caller holding
+ * the right, unused token can see this.
+ */
+export const SETUP_UNAVAILABLE_ERROR = {
+  error: 'The workspace could not be created right now. Try the setup link again in a few minutes.',
+  code: 'SETUP_UNAVAILABLE',
 } as const;
 
 export type SetupTokenSettings = { hash: Buffer; expiresAtMs: number };

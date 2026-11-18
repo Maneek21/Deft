@@ -20,7 +20,8 @@ import {
 import { env } from '../lib/env.js';
 import { countOrgs, lockFirstWorkspaceCreation, SINGLE_ORG_ERROR } from '../lib/single-org-guard.js';
 import { isHostedMode } from '../lib/hosted-mode.js';
-import { isSetupTokenValid, SETUP_TOKEN_ERROR, SETUP_TOKEN_MAX_LENGTH } from '../lib/setup-token.js';
+import { isSetupTokenValid, SETUP_TOKEN_ERROR, SETUP_TOKEN_MAX_LENGTH, SETUP_UNAVAILABLE_ERROR } from '../lib/setup-token.js';
+import { isSetupTokenUsed, markSetupTokenUsed, SetupTokenUseError } from '../lib/setup-token-use.js';
 import { ensureDeftyMembership, ensureDeftyDm } from '../lib/ensure-defty-membership.js';
 import { OrgMembershipError, requireActiveOrgMembership } from '../lib/org-membership.js';
 import { revokeWebSession, changeWebPassword, verifyWebAccess, WebCredentialsChangedError } from '../lib/web-sessions.js';
@@ -89,20 +90,33 @@ authRoutes.post('/signup', async (c) => {
   // no configured hash, no token, a wrong token and an expired token all get
   // the same refusal. See apps/api/src/lib/setup-token.ts.
   //
-  // The token is never recorded as used. A second signup with it is stopped
-  // only because a workspace then exists (the checks below), which holds
-  // because nothing deletes an org. Whoever adds org deletion must also
-  // record the token as used, or it could claim the emptied install again
-  // until it expires.
+  // The token works once. Its use is recorded as a marker file on the
+  // uploads volume, written just before the transaction below commits, so a
+  // lost or emptied database cannot be claimed again with the same link.
+  // See apps/api/src/lib/setup-token-use.ts.
+  let setupTokenHash: string | null = null;
   if (isHostedMode()) {
     const presented = setupTokenSchema.safeParse(body);
+    const configuredHash = process.env.DEFT_SETUP_TOKEN_SHA256;
     const valid = isSetupTokenValid(
       presented.success ? presented.data.setup_token : undefined,
-      process.env.DEFT_SETUP_TOKEN_SHA256,
+      configuredHash,
       process.env.DEFT_SETUP_TOKEN_EXPIRES_AT,
     );
-    if (!valid) {
+    if (!valid || !configuredHash) {
       console.warn('[signup] refused: hosted mode needs a valid, unexpired setup token');
+      return c.json(SETUP_TOKEN_ERROR, 403);
+    }
+    setupTokenHash = configuredHash;
+    let used: boolean;
+    try {
+      used = await isSetupTokenUsed(setupTokenHash);
+    } catch {
+      console.error('[signup] refused: could not check whether the setup token was used');
+      return c.json(SETUP_UNAVAILABLE_ERROR, 503);
+    }
+    if (used) {
+      console.warn('[signup] refused: the setup token was already used');
       return c.json(SETUP_TOKEN_ERROR, 403);
     }
   }
@@ -176,9 +190,25 @@ authRoutes.post('/signup', async (c) => {
       org_created: true,
     });
 
+    // Last step before the commit: record the setup token as used. If the
+    // marker cannot be written this throws, the transaction rolls back and
+    // no owner is created.
+    if (setupTokenHash) await markSetupTokenUsed(setupTokenHash);
+
     return { user: user!, org: org! };
+  }).catch((error: unknown) => {
+    if (error instanceof SetupTokenUseError) return error;
+    throw error;
   });
 
+  if (created instanceof SetupTokenUseError) {
+    if (created.reason === 'used') {
+      console.warn('[signup] refused: the setup token was already used');
+      return c.json(SETUP_TOKEN_ERROR, 403);
+    }
+    console.error('[signup] refused: could not record the setup token as used');
+    return c.json(SETUP_UNAVAILABLE_ERROR, 503);
+  }
   if (created === 'workspace_exists') {
     return c.json(SINGLE_ORG_ERROR, 403);
   }

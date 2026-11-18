@@ -6,6 +6,9 @@
 import assert from 'node:assert/strict';
 import { mock, test } from 'node:test';
 import { createHash, randomUUID } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { Hono } from 'hono';
@@ -1375,6 +1378,11 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     const setupBefore = { hash: process.env.DEFT_SETUP_TOKEN_SHA256, expires: process.env.DEFT_SETUP_TOKEN_EXPIRES_AT };
     process.env.DEFT_SETUP_TOKEN_SHA256 = createHash('sha256').update(setupToken).digest('hex');
     process.env.DEFT_SETUP_TOKEN_EXPIRES_AT = new Date(Date.now() + 3600_000).toISOString();
+    // Keep the setup-token marker off the real uploads directory.
+    const { setupTokenUseStore } = await import('../src/lib/setup-token-use.js');
+    const volume = await mkdtemp(join(tmpdir(), 'deft-two-step-signup-'));
+    const savedMarkerDir = setupTokenUseStore.dir;
+    setupTokenUseStore.dir = join(volume, '.setup-token-used');
     const signup = () => {
       const id = randomUUID();
       return post('/api/auth/signup', { name: 'First owner', email: `two-step-signup-${id}@test.local`, password: PASSWORD, org_name: `Signup ${id}`, setup_token: setupToken });
@@ -1400,6 +1408,8 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     } finally {
       pretendEmptyInstall = false;
       hosted(false);
+      setupTokenUseStore.dir = savedMarkerDir;
+      await rm(volume, { recursive: true, force: true });
       for (const [key, value] of [['DEFT_SETUP_TOKEN_SHA256', setupBefore.hash], ['DEFT_SETUP_TOKEN_EXPIRES_AT', setupBefore.expires]] as const) {
         if (value === undefined) delete process.env[key]; else process.env[key] = value;
       }
