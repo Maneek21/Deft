@@ -2,6 +2,7 @@ export type WorkerStartupPhase = 'not_required' | 'starting' | 'ready' | 'failed
 export type WorkerStartupSnapshot = { required: boolean; phase: WorkerStartupPhase; attempts: number };
 
 type Options = {
+  keepRetrying?: boolean;
   wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   onFailure?: (attempt: number, error: unknown) => void;
 };
@@ -35,7 +36,7 @@ export class WorkerStartup {
 
   private async run(start: () => Promise<void>, options: Options): Promise<boolean> {
     const delays = [1000, 2000, 4000, 8000];
-    for (let attempt = 1; attempt <= 5; attempt++) {
+    for (let attempt = 1; options.keepRetrying || attempt <= 5; attempt++) {
       if (this.controller.signal.aborted) return false;
       this.state = { required: true, phase: 'starting', attempts: attempt };
       try {
@@ -46,8 +47,8 @@ export class WorkerStartup {
       } catch (error) {
         if (this.controller.signal.aborted) return false;
         options.onFailure?.(attempt, error);
-        if (attempt === 5) break;
-        try { await (options.wait ?? wait)(delays[attempt - 1]!, this.controller.signal); }
+        if (attempt === 5 && !options.keepRetrying) break;
+        try { await (options.wait ?? wait)(delays[Math.min(attempt - 1, delays.length - 1)]!, this.controller.signal); }
         catch { if (this.controller.signal.aborted) return false; throw error; }
       }
     }

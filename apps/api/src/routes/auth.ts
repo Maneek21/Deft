@@ -1,3 +1,4 @@
+import { isDatabaseFailure } from '../lib/database-connection-errors.js';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
@@ -281,6 +282,7 @@ authRoutes.post('/refresh', async (c) => {
     const issued = await issueSession({ via: 'refresh', refreshToken: parsed.data.refreshToken });
     return c.json(issuedSessionBody(issued));
   } catch (err) {
+    if (isDatabaseFailure(err)) return c.json({ error: 'Database unavailable', code: 'DATABASE_UNAVAILABLE' }, 503);
     if (err instanceof OrgMembershipError) {
       return c.json({ error: err.message, code: err.code }, err.status as 403);
     }
@@ -302,6 +304,7 @@ authRoutes.post('/logout', async (c) => {
     await revokeWebSession(token);
     return c.json({ ok: true });
   } catch (err) {
+    if (isDatabaseFailure(err)) return c.json({ error: 'Database unavailable', code: 'DATABASE_UNAVAILABLE' }, 503);
     return c.json({ error: 'Invalid token', code: 'INVALID_TOKEN' }, 401);
   }
 });
@@ -348,6 +351,7 @@ authRoutes.get('/me', async (c) => {
 
     return c.json({ user: { ...user, role: membership.role }, org });
   } catch (err) {
+    if (isDatabaseFailure(err)) return c.json({ error: 'Database unavailable', code: 'DATABASE_UNAVAILABLE' }, 503);
     if (err instanceof OrgMembershipError) {
       return c.json({ error: err.message, code: err.code }, err.status as 403);
     }
@@ -512,6 +516,7 @@ authRoutes.patch('/password', async (c) => {
 
     return c.json({ success: true });
   } catch (err) {
+    if (isDatabaseFailure(err)) return c.json({ error: 'Database unavailable', code: 'DATABASE_UNAVAILABLE' }, 503);
     if (err instanceof OrgMembershipError) {
       return c.json({ error: err.message, code: err.code }, err.status as 403);
     }
@@ -535,6 +540,7 @@ authRoutes.get('/onboarding', async (c) => {
     }
     return c.json(state);
   } catch (err) {
+    if (isDatabaseFailure(err)) return c.json({ error: 'Database unavailable', code: 'DATABASE_UNAVAILABLE' }, 503);
     if (err instanceof OrgMembershipError) {
       return c.json({ error: err.message, code: err.code }, err.status as 403);
     }
@@ -579,6 +585,7 @@ authRoutes.patch('/onboarding', async (c) => {
     const [refreshed] = await db.select().from(onboardingState).where(eq(onboardingState.user_id, payload.id)).limit(1);
     return c.json(refreshed);
   } catch (err) {
+    if (isDatabaseFailure(err)) return c.json({ error: 'Database unavailable', code: 'DATABASE_UNAVAILABLE' }, 503);
     if (err instanceof OrgMembershipError) {
       return c.json({ error: err.message, code: err.code }, err.status as 403);
     }
@@ -656,6 +663,7 @@ authRoutes.patch('/me', async (c) => {
 
     return c.json({ success: true, user: { ...updated, role: membership.role } });
   } catch (err) {
+    if (isDatabaseFailure(err)) return c.json({ error: 'Database unavailable', code: 'DATABASE_UNAVAILABLE' }, 503);
     if (err instanceof OrgMembershipError) {
       return c.json({ error: err.message, code: err.code }, err.status as 403);
     }
