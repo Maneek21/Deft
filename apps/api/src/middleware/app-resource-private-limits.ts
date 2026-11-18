@@ -1,7 +1,8 @@
 import { createAppResourceSyncLimits, type AppResourceSyncLimitsOptions } from './app-resource-sync-limits.js';
 
 /** Independent pre-authentication budgets for host owner reads and management.
- * The shared limiter uses the socket peer, never caller forwarding headers.
+ * The shared limiter keys on the trusted client address, never on forwarding
+ * headers from a peer that is not a configured trusted proxy.
  * Admitted work retains its concurrency slot until downstream unwinds, including
  * after an abort, so cancelling a client cannot multiply ongoing database work.
  */

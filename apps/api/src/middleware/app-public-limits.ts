@@ -1,6 +1,6 @@
 import { isIP } from 'node:net';
-import { getConnInfo } from '@hono/node-server/conninfo';
 import type { Context, MiddlewareHandler } from 'hono';
+import { createInviteClientKey } from '../lib/invite-client-ip.js';
 
 const WINDOW_MS = 60_000;
 const UNKNOWN_PEER = 'unknown';
@@ -8,8 +8,9 @@ const OVERFLOW_PEER = 'overflow';
 
 type Bucket = { windowStart: number; count: number; inFlight: number };
 export type AppPublicLimitsOptions = Readonly<{
-  /** Supply only a socket peer or a value verified by a trusted host proxy. */
-  peerAddress?: (c: Context) => string | null | undefined;
+  /** Supply only a socket peer or a value verified by a trusted host proxy.
+   * Defaults to the shared trusted-proxy client address (invite-client-ip). */
+  peerAddress?: (c: Context) => string | null | undefined | Promise<string | null | undefined>;
   now?: () => number;
   globalPerMinute?: number;
   peerPerMinute?: number;
@@ -20,15 +21,6 @@ export type AppPublicLimitsOptions = Readonly<{
 
 function positiveInt(value: number | undefined, fallback: number): number {
   return value !== undefined && Number.isSafeInteger(value) && value > 0 ? value : fallback;
-}
-
-function socketPeer(c: Context): string | null {
-  try {
-    return getConnInfo(c).remote.address ?? null;
-  } catch {
-    // Hono's in-memory request adapter has no socket. Share the unknown bucket.
-    return null;
-  }
 }
 
 function peerKey(value: string | null | undefined): string {
@@ -47,12 +39,14 @@ function tick(bucket: Bucket, now: number): void {
 
 /**
  * Process-local admission before public body parsing, authentication lookups,
- * or DB work. Forwarding headers are deliberately never inspected here.
- * A deployment with a trusted reverse proxy may inject its verified peer.
+ * or DB work. Peers are keyed by the shared client-address policy: the socket
+ * peer, or the final X-Forwarded-For entry only when that socket peer is listed
+ * in DEFT_INVITE_TRUSTED_PROXIES. With no socket (Hono's in-memory adapter)
+ * every request shares the unknown bucket.
  */
 export function createAppPublicLimits(options: AppPublicLimitsOptions = {}): MiddlewareHandler {
   const now = options.now ?? Date.now;
-  const resolvePeer = options.peerAddress ?? socketPeer;
+  const resolvePeer = options.peerAddress ?? createInviteClientKey();
   const globalPerMinute = positiveInt(options.globalPerMinute, 600);
   const peerPerMinute = positiveInt(options.peerPerMinute, 30);
   const globalConcurrent = positiveInt(options.globalConcurrent, 32);
@@ -75,7 +69,7 @@ export function createAppPublicLimits(options: AppPublicLimitsOptions = {}): Mid
       return c.json({ error: 'Public request rate limit reached', code: 'PUBLIC_RATE_LIMITED' }, 429);
     }
 
-    const key = peerKey(resolvePeer(c));
+    const key = peerKey(await resolvePeer(c));
     let peer: Bucket;
     if (key === UNKNOWN_PEER) {
       peer = unknown;

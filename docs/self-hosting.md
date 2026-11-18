@@ -595,6 +595,7 @@ can supply its own AI independently of Deft's provider configuration.
 | `DEFT_WEB_PORT` | No | Host port for web | `3000` |
 | `DEFT_API_PORT` | No | Host port for API | `3001` |
 | `DEFT_BIND_HOST` | No | Host address for local database publishing | `127.0.0.1` |
+| `DEFT_INVITE_TRUSTED_PROXIES` | Behind a reverse proxy | Comma-separated exact IPs or DNS names of the proxies in front of the API. When the API's socket peer is one of them, every IP rate limit keys on the last `X-Forwarded-For` entry instead of the peer: auth, login, invites, MCP, webhooks, OAuth, uploads and the default limiter, and the Apps limiters (App Runtime channel, public App routes, resource sync and the App connection, data and job routes). Despite the name it is not specific to invites. The proxy must append the real client address as the final `X-Forwarded-For` entry. Unset: the socket peer is used and forwarding headers are ignored. See [`docs/self-hosting-vps-domain-https.md`](./self-hosting-vps-domain-https.md) | none |
 | `DEFT_POSTGRES_PORT` | No | Host Postgres port in local compose | `5432` |
 | `ANTHROPIC_API_KEY` | No | Optional AI provider fallback | none |
 | `OPENAI_API_KEY` | No | Optional AI provider/embedding/transcription fallback | none |
