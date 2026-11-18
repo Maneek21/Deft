@@ -9,6 +9,7 @@ import { requestLogger } from '../src/lib/request-logger.js';
 import { contentFreeErrorHandler } from '../src/lib/content-free-error-handler.js';
 import { clientSafeErrorMessage } from '../src/lib/client-safe-error.js';
 import { withAppDataDiagnostic } from '../src/lib/app-data-diagnostics.js';
+import { HTTPException } from 'hono/http-exception';
 
 const root = fileURLToPath(new URL('../src/', import.meta.url));
 function files(dir: string): string[] {
@@ -16,10 +17,13 @@ function files(dir: string): string[] {
     entry.isDirectory() ? (entry.name === 'scripts' ? [] : files(join(dir, entry.name)))
       : entry.name.endsWith('.ts') ? [join(dir, entry.name)] : []);
 }
-function literal(node: ts.Node): boolean {
+function literal(node: ts.Node, helpers: Set<string>): boolean {
   return ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)
     || ts.isNumericLiteral(node) || (ts.isBinaryExpression(node)
-      && node.operatorToken.kind === ts.SyntaxKind.PlusToken && literal(node.left) && literal(node.right));
+      && node.operatorToken.kind === ts.SyntaxKind.PlusToken && literal(node.left, helpers) && literal(node.right, helpers))
+    || (ts.isTemplateExpression(node) && node.templateSpans.every(span => literal(span.expression, helpers)))
+    || (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && helpers.has(node.expression.text)
+      && (node.expression.text !== 'logCapacityProfile' || ts.isStringLiteral(node.arguments[0]!)));
 }
 
 test('API and workers never pass customer-controlled values to console', () => {
@@ -28,10 +32,22 @@ test('API and workers never pass customer-controlled values to console', () => {
     // This dedicated sink has behavioral coverage below for attacker-controlled URLs.
     if (relative(root, file).replaceAll('\\', '/') === 'lib/request-logger.ts') continue;
     const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
+    const helpers = new Set<string>();
+    for (const statement of source.statements) {
+      if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)
+        && join(file, '..', statement.moduleSpecifier.text).replace(/\.js$/, '.ts') === join(root, 'lib/log-metadata.ts')) {
+        const bindings = statement.importClause?.namedBindings;
+        if (bindings && ts.isNamedImports(bindings)) for (const spec of bindings.elements) {
+          if (!spec.propertyName && ['logNumber', 'logId', 'logJobName', 'logQueueName', 'logSignal', 'logCapacityProfile'].includes(spec.name.text)) {
+            helpers.add(spec.name.text);
+          }
+        }
+      }
+    }
     const visit = (node: ts.Node) => {
       if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
         && node.expression.expression.getText(source) === 'console'
-        && node.arguments.some(arg => !literal(arg))) {
+        && node.arguments.some(arg => !literal(arg, helpers))) {
         const name = relative(root, file).replaceAll('\\', '/');
         // Audited structured telemetry uses a closed vocabulary and generated
         // request IDs; client error references are generated random hex IDs.
@@ -42,6 +58,17 @@ test('API and workers never pass customer-controlled values to console', () => {
           && node.getText(source) === "console.error('[client-safe-error] Action failed; reference:', reference)");
         if (!audited) leaks.push(`${name}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}`);
       }
+      if (ts.isPropertyAccessExpression(node) && node.expression.getText(source) === 'console'
+        && !(ts.isCallExpression(node.parent) && node.parent.expression === node)) {
+        const name = relative(root, file).replaceAll('\\', '/');
+        if (!(name === 'lib/paused-start.ts' && node.getText(source) === 'console.warn'
+          && ts.isParameter(node.parent) && node.parent.initializer === node)) leaks.push(`${name}:console alias`);
+      }
+      if (ts.isElementAccessExpression(node) && node.expression.getText(source) === 'console') {
+        leaks.push(`${relative(root, file)}:computed console access`);
+      }
+      if (ts.isPropertyAccessExpression(node) && /^(?:process\.)?(?:stdout|stderr)$/.test(node.expression.getText(source))
+        && node.name.text === 'write') leaks.push(`${relative(root, file)}:direct stream write`);
       ts.forEachChild(node, visit);
     };
     visit(source);
@@ -78,9 +105,28 @@ test('unhandled errors omit messages, causes and properties while retaining HTTP
     const response = await app.request('/fail');
     assert.equal(response.status, 500);
     assert.equal(await response.text(), 'Internal Server Error');
+    const reference = response.headers.get('X-Deft-Error-Reference');
+    assert.match(reference ?? '', /^[a-f0-9-]{36}$/);
+    assert.ok(output.some(args => args.includes(reference)), 'support can correlate the client reference');
   } finally { console.error = original; }
   assert.ok(output.length > 0);
   assert.ok(!JSON.stringify(output).includes(marker));
+});
+
+test('HTTP errors retain prepared headers and compatible getResponse behavior', async () => {
+  const app = new Hono();
+  app.onError(contentFreeErrorHandler);
+  app.get('/http', c => { c.header('X-Test', 'preserved'); throw new HTTPException(409, { message: 'Conflict' }); });
+  app.get('/compatible', c => {
+    c.header('X-Test', 'preserved');
+    throw Object.assign(new Error('compatible'), { getResponse: () => new Response('denied', { status: 403 }) });
+  });
+  for (const [path, status, body] of [['/http', 409, 'Conflict'], ['/compatible', 403, 'denied']] as const) {
+    const response = await app.request(path);
+    assert.equal(response.status, status);
+    assert.equal(response.headers.get('X-Test'), 'preserved');
+    assert.equal(await response.text(), body);
+  }
 });
 
 test('request logging omits arbitrary content in paths, queries, headers and failed bodies', async () => {

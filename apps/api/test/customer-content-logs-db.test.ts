@@ -14,16 +14,20 @@ test('native writes, agent replies and failed writes never log customer content'
   if (!url) return t.skip('Set DEFT_TEST_DATABASE_URL to a disposable test database');
   const client = new pg.Client({ connectionString: url });
   await client.connect();
-  const org = randomUUID(), user = randomUUID(), space = randomUUID(), project = randomUUID();
+  const org = randomUUID(), user = randomUUID(), peer = randomUUID(), space = randomUUID(), project = randomUUID();
   const kinds = ['chat', 'title', 'description', 'note', 'canvas', 'filename', 'email', 'prompt', 'reply',
     'invite', 'recovery', 'api-key', 'failed-body', 'database-error'] as const;
   const markers = Object.fromEntries(kinds.map(kind => [kind, `PRIVATE-${randomUUID()}-${kind}`]));
   const output: string[] = [];
   const methods = ['log', 'info', 'warn', 'error', 'debug'] as const;
   const originals = methods.map(method => console[method]);
+  const previousCapacityTrace = process.env.DEFT_CAPACITY_TRACE;
+  process.env.DEFT_CAPACITY_TRACE = '1';
   t.after(async () => {
+    if (previousCapacityTrace === undefined) delete process.env.DEFT_CAPACITY_TRACE;
+    else process.env.DEFT_CAPACITY_TRACE = previousCapacityTrace;
     try {
-      for (const table of ['job_queue', 'notifications', 'agent_actions', 'native_create_requests', 'task_activity',
+      for (const table of ['job_queue', 'attention_items', 'notifications', 'agent_actions', 'native_create_requests', 'task_activity',
         'tasks', 'notes', 'canvases', 'agent_employees', 'org_members']) {
         await client.query(`DELETE FROM ${table} WHERE org_id=$1`, [org]);
       }
@@ -31,7 +35,7 @@ test('native writes, agent replies and failed writes never log customer content'
       await client.query('DELETE FROM messages WHERE org_id=$1', [org]);
       await client.query('DELETE FROM spaces WHERE org_id=$1', [org]);
       await client.query('DELETE FROM projects WHERE org_id=$1', [org]);
-      await client.query('DELETE FROM users WHERE id=$1', [user]);
+      await client.query('DELETE FROM users WHERE id IN ($1,$2)', [user, peer]);
       await client.query('DELETE FROM orgs WHERE id=$1', [org]);
     } finally { await client.end(); await closeDb(); }
   });
@@ -48,9 +52,12 @@ test('native writes, agent replies and failed writes never log customer content'
   try {
     await client.query('INSERT INTO orgs(id,name,slug) VALUES($1,$1,$1)', [org]);
     await client.query('INSERT INTO users(id,email,name) VALUES($1,$2,$1)', [user, `${user}@example.test`]);
+    await client.query('INSERT INTO users(id,email,name) VALUES($1,$2,$1)', [peer, `${peer}@example.test`]);
     await client.query("INSERT INTO org_members(id,org_id,user_id,role) VALUES($1,$2,$3,'owner')", [randomUUID(), org, user]);
+    await client.query("INSERT INTO org_members(id,org_id,user_id,role) VALUES($1,$2,$3,'member')", [randomUUID(), org, peer]);
     await client.query("INSERT INTO spaces(id,org_id,name,type,created_by) VALUES($1,$2,$3,'public',$4)", [space, org, 'Log regression', user]);
     await client.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), space, user]);
+    await client.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), space, peer]);
     await client.query("INSERT INTO projects(id,org_id,name,prefix) VALUES($1,$2,'Log regression','LG')", [project, org]);
     app.route('/api/messages', (await import('../src/routes/messages.js')).messageRoutes);
     app.route('/api/tasks', (await import('../src/routes/tasks.js')).taskRoutes);
@@ -93,6 +100,17 @@ test('native writes, agent replies and failed writes never log customer content'
     assert.ok(called, 'worker must reach the agent reply boundary');
     const replies = await client.query('SELECT content FROM messages WHERE org_id=$1 AND user_id<>$2', [org, user]);
     assert.ok(replies.rows.some(row => row.content.includes(markers.reply)), 'marked reply must be published');
+
+    const projectionJobs = await client.query("SELECT data FROM job_queue WHERE org_id=$1 AND name='notification-attention-sync'", [org]);
+    assert.ok(projectionJobs.rows.length > 0, 'real notification writes must enqueue attention projection');
+    const { handleNotificationAttentionSync } = await import('../src/workers/handlers/notification-attention-sync.js');
+    for (const row of projectionJobs.rows) {
+      await handleNotificationAttentionSync({ id: randomUUID(), name: 'notification-attention-sync', data: row.data, attempts: 1 });
+    }
+    const profiles = output.filter(line => line.startsWith('[capacity-profile] '))
+      .map(line => JSON.parse(line.slice('[capacity-profile] '.length)));
+    assert.ok(profiles.some(row => row.event === 'notification_fanout' && row.allowed > 0));
+    assert.ok(profiles.some(row => row.event === 'attention_projection' && row.projected_items > 0));
 
     assert.equal((await send(`/api/messages/${space}`, { content: 123, invalid_body: markers['failed-body'] })).status, 400);
     // PostgreSQL rejects NUL in text. Drizzle wraps it with the SQL parameters,

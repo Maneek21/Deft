@@ -1,3 +1,4 @@
+import { logId } from '../../lib/log-metadata.js';
 // Handler: memory-capture - routes explicit decisions/resources through
 // Defty's approval ledger instead of silently writing wiki pages.
 import type { JobData } from '../types.js';
@@ -92,7 +93,7 @@ function dedupeSimilarFacts(facts: string[]): string[] {
 export async function handleMemoryCapture(job: JobData) {
   if (!ENABLE_IMMEDIATE_MEMORY_CAPTURE) {
     const data = job.data as MemoryCaptureJobData;
-    console.log("[memory-capture] Immediate chat-to-knowledge capture disabled; skipping <redacted>");
+    console.log(`[memory-capture] Immediate chat-to-knowledge capture disabled; skipping ${logId(data.messageId)}`);
     return;
   }
 
@@ -128,9 +129,9 @@ export async function handleMemoryCapture(job: JobData) {
       },
     });
     if (queued.queued) {
-      console.log("[memory-capture] Queued decision capture for message <redacted>");
+      console.log(`[memory-capture] Queued decision capture for message ${logId(messageId)}`);
     } else {
-      console.log("[memory-capture] Skipped decision capture for message <redacted>: <redacted>");
+      console.log(`[memory-capture] Skipped decision capture for message ${logId(messageId)}: <redacted>`);
     }
   }
 
@@ -162,9 +163,9 @@ export async function handleMemoryCapture(job: JobData) {
       },
     });
     if (queued.queued) {
-      console.log("[memory-capture] Queued note capture for message <redacted>");
+      console.log(`[memory-capture] Queued note capture for message ${logId(messageId)}`);
     } else {
-      console.log("[memory-capture] Skipped note capture for message <redacted>: <redacted>");
+      console.log(`[memory-capture] Skipped note capture for message ${logId(messageId)}: <redacted>`);
     }
   }
 
@@ -190,9 +191,9 @@ export async function handleMemoryCapture(job: JobData) {
       },
     });
     if (queued.queued) {
-      console.log("[memory-capture] Queued resource capture for message <redacted>");
+      console.log(`[memory-capture] Queued resource capture for message ${logId(messageId)}`);
     } else {
-      console.log("[memory-capture] Skipped resource capture for message <redacted>: <redacted>");
+      console.log(`[memory-capture] Skipped resource capture for message ${logId(messageId)}: <redacted>`);
     }
   }
 }

@@ -1,3 +1,4 @@
+import { logId } from '../../lib/log-metadata.js';
 /**
  * Handler: employee-trigger — trigger dispatcher.
  *
@@ -48,7 +49,7 @@ export async function handleEmployeeTrigger(job: JobData): Promise<void> {
     return;
   }
 
-  console.log("[employee-trigger] Queueing <redacted> for employee <redacted>"
+  console.log(`[employee-trigger] Queueing <redacted> for employee ${logId(employee_id)}`
   );
 
   // 1. Load the employee from the job's org and verify it is active.
@@ -63,7 +64,7 @@ export async function handleEmployeeTrigger(job: JobData): Promise<void> {
     .limit(1);
 
   if (!employee) {
-    console.warn("[employee-trigger] Employee <redacted> not found or inactive, skipping"
+    console.warn(`[employee-trigger] Employee ${logId(employee_id)} not found or inactive, skipping`
     );
     return;
   }

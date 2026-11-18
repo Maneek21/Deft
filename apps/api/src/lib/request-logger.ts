@@ -52,8 +52,12 @@ export function printRequestLogLine(line: string): void {
   const method = /^(GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS|CONNECT|TRACE)$/.test(parts[1] ?? '')
     ? parts[1] : 'OTHER';
   const target = redactLogTarget(parts[2] ?? '');
-  const status = /^\d{3}$/.test(parts[3] ?? '') ? ` ${parts[3]}` : '';
-  const elapsed = /^\d+(?:\.\d+)?(?:ms|s)$/.test(parts[4] ?? '') ? ` ${parts[4]}` : '';
+  // Hono colors statuses even when stdout is not a TTY. Strip only its SGR
+  // sequences, then still require a numeric status before printing anything.
+  const plainStatus = (parts[3] ?? '').replace(/\x1b\[[0-9;]*m/g, '');
+  const status = /^\d{3}$/.test(plainStatus) ? ` ${plainStatus}` : '';
+  const plainElapsed = (parts[4] ?? '').replaceAll(',', '');
+  const elapsed = /^\d+(?:\.\d+)?(?:ms|s)$/.test(plainElapsed) ? ` ${plainElapsed}` : '';
   console.log(`${direction} ${method} ${target}${status}${elapsed}`);
 }
 

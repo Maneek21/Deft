@@ -1,3 +1,4 @@
+import { logId } from './log-metadata.js';
 import { and, eq, sql } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 import { agentActions, messages, projects, projectSpaces, spaces, tasks, wikiPages, workIntents } from '@deft/db/schema';
@@ -148,7 +149,7 @@ async function autoApproveDeftyCapture(params: {
   if (!params.actionId) return;
   const result = await approveAction(params.actionId, params.deftyUserId, { internal: true });
   if (result.status === 'error') {
-    console.warn("[defty-capture] Auto-approval failed for <redacted> (<redacted>): <redacted> <redacted>"
+    console.warn(`[defty-capture] Auto-approval failed for <redacted> (${logId(params.actionId)}): <redacted> <redacted>`
     );
   }
 }

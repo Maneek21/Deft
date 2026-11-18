@@ -1,3 +1,4 @@
+import { logNumber } from '../../lib/log-metadata.js';
 /**
  * Handler: reminder-fire — scheduled-jobs queue handler that fires a single
  * reminder row. Replaces the in-process `setTimeout` path in routes/reminders.ts
@@ -119,7 +120,7 @@ export async function rehydratePendingReminders(): Promise<number> {
   }
 
   if (pending.length > 0) {
-    console.log("[reminder-fire] rehydrated <redacted> pending reminder(s) on boot"
+    console.log(`[reminder-fire] rehydrated ${logNumber(pending.length)} pending reminder(s) on boot`
     );
   }
   return pending.length;

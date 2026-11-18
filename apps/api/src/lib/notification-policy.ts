@@ -1,3 +1,4 @@
+import { logCapacityProfile } from './log-metadata.js';
 import { and, eq, inArray } from 'drizzle-orm';
 import {
   DEFAULT_NOTIFICATION_PREFERENCES,
@@ -269,7 +270,14 @@ export async function createNotificationsIfAllowed(
 
   if (allowed.length === 0) {
     if (traceEnabled) {
-      console.info("[capacity-profile] <redacted>");
+      console.info(logCapacityProfile('notification_fanout', {
+        requested: values.length,
+        allowed: 0,
+        policy_read_ms: Math.round((policyReadAt - startedAt) * 10) / 10,
+        notification_insert_ms: 0,
+        attention_sync_ms: 0,
+        total_ms: Math.round((performance.now() - startedAt) * 10) / 10,
+      }));
     }
     return [];
   }
@@ -297,7 +305,15 @@ export async function createNotificationsIfAllowed(
   }
   const attentionQueuedAt = performance.now();
   if (traceEnabled) {
-    console.info("[capacity-profile] <redacted>");
+    console.info(logCapacityProfile('notification_fanout', {
+      requested: values.length,
+      allowed: inserted.length,
+      policy_read_ms: Math.round((policyReadAt - startedAt) * 10) / 10,
+      notification_insert_ms: Math.round((insertedAt - policyReadAt) * 10) / 10,
+      attention_enqueue_ms: Math.round((attentionQueuedAt - insertedAt) * 10) / 10,
+      attention_mode: attentionMode,
+      total_ms: Math.round((attentionQueuedAt - startedAt) * 10) / 10
+    }));
   }
   return inserted;
 }

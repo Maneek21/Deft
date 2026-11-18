@@ -1,3 +1,4 @@
+import { logId } from '../../lib/log-metadata.js';
 // Scheduled GitHub sync. A 60-second scan picks at most
 // GITHUB_SYNC_SCAN_BATCH due GitHub connections and, in one transaction,
 // reserves each one's next turn and queues one `github-sync-connection` job
@@ -83,7 +84,7 @@ export async function handleGitHubSyncConnection(job: JobData): Promise<void> {
     WHERE c.id = ${connectionId} AND c.org_id = ${orgId} AND c.provider = 'github'
     LIMIT 1`));
   if (!eligible) {
-    console.warn("[github-sync] connection <redacted> is not eligible for a scheduled sync now; skipped");
+    console.warn(`[github-sync] connection ${logId(connectionId)} is not eligible for a scheduled sync now; skipped`);
     return;
   }
 

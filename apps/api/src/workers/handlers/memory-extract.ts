@@ -1,3 +1,4 @@
+import { logId } from '../../lib/log-metadata.js';
 // Handler: memory-extract — extracts memorable facts and decisions from classified messages
 // and stores them as wiki pages (LLM Wiki pattern).
 import type { JobData } from '../types.js';
@@ -376,7 +377,7 @@ async function executeWikiIngest(
       try {
         await enqueue(QUEUE_NAMES.AGENT_JOBS, 'embed-content', { source_type: 'wiki_page', source_id: existing.id });
       } catch (err) {
-        console.warn("[memory-extract] failed to enqueue embed-content for wiki_page <redacted> (message <redacted>)");
+        console.warn(`[memory-extract] failed to enqueue embed-content for wiki_page ${logId(existing.id)} (message ${logId(messageId)})`);
       }
 
       return;
@@ -472,7 +473,7 @@ async function executeWikiIngest(
     try {
       await enqueue(QUEUE_NAMES.AGENT_JOBS, 'embed-content', { source_type: 'wiki_page', source_id: page!.id });
     } catch (err) {
-      console.warn("[memory-extract] failed to enqueue embed-content for wiki_page <redacted> (message <redacted>)");
+      console.warn(`[memory-extract] failed to enqueue embed-content for wiki_page <redacted> (message ${logId(messageId)})`);
     }
   }
 }
@@ -616,7 +617,7 @@ Return [] if no updates needed.`;
       try {
         await enqueue(QUEUE_NAMES.AGENT_JOBS, 'embed-content', { source_type: 'wiki_page', source_id: page.id });
       } catch (err) {
-        console.warn("[cascade-ingest] failed to enqueue embed-content for wiki_page <redacted> (message <redacted>)");
+        console.warn(`[cascade-ingest] failed to enqueue embed-content for wiki_page ${logId(page.id)} (message ${logId(messageId)})`);
       }
     }
   } catch (err) {

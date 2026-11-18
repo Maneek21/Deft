@@ -1,3 +1,4 @@
+import { logNumber } from './log-metadata.js';
 import { NATIVE_MENTION_AGENT_GUIDANCE } from './native-mention-agent-contract.js';
 import { nativeMentionsEnabled } from './native-mentions.js';
 import { validateNativeAgentMentionWrite } from './native-mention-agent-writes.js';
@@ -677,7 +678,7 @@ export async function runAgentQuery(params: {
       const cacheRead = response.usage.cache_read ?? 0;
       const cacheWrite = response.usage.cache_write ?? 0;
       if (cacheRead > 0 || cacheWrite > 0) {
-        console.log("[agent-runner] cache: read=<redacted> write=<redacted> fresh=<redacted>"
+        console.log(`[agent-runner] cache: read=${logNumber(cacheRead)} write=${logNumber(cacheWrite)} fresh=${logNumber(response.usage.input_tokens)}`
         );
       }
       totalTokensIn += response.usage.input_tokens ?? 0;

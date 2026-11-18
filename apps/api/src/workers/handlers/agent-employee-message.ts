@@ -1,3 +1,4 @@
+import { logId } from '../../lib/log-metadata.js';
 import { emitCurrentMessageToSpaceViewers } from '../../lib/agent-message-run-details.js';
 // Handler: agent-employee-message — processes DMs and @mentions directed at agent employees.
 //
@@ -107,7 +108,7 @@ async function notifyAdminsOfQueuedRuntime(orgId: string, employeeId: string, em
 export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
   const { messageId, spaceId, orgId, employeeId, isDM } = job.data as AgentEmployeeMessageData;
 
-  console.log("[agent-employee-message] Processing <redacted> for employee <redacted> in space <redacted>");
+  console.log(`[agent-employee-message] Processing <redacted> for employee ${logId(employeeId)} in space ${logId(spaceId)}`);
 
   // Block agent→agent mentions (prevent loops)
   const [triggerMsg] = await db.select().from(messages)
@@ -136,11 +137,11 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
     .limit(1);
 
   if (!employee) {
-    console.warn("[agent-employee-message] Employee <redacted> not found or inactive, skipping");
+    console.warn(`[agent-employee-message] Employee ${logId(employeeId)} not found or inactive, skipping`);
     return;
   }
   if (!(await employeeCanAccessSpace(employeeId, orgId, spaceId))) {
-    console.warn("[agent-employee-message] Employee <redacted> cannot access space <redacted>, skipping");
+    console.warn(`[agent-employee-message] Employee ${logId(employeeId)} cannot access space ${logId(spaceId)}, skipping`);
     return;
   }
 
@@ -198,7 +199,7 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
       },
     });
   } catch (err) {
-    console.error("[agent-employee-message] failed to queue BYOA mention for <redacted>:"
+    console.error(`[agent-employee-message] failed to queue BYOA mention for ${logId(employeeId)}:`
     );
   }
 

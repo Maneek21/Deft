@@ -1,3 +1,4 @@
+import { logNumber } from '../lib/log-metadata.js';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { z } from 'zod';
@@ -243,7 +244,7 @@ inviteRoutes.post('/accept', async (c) => {
         role: payload.role,
       });
       if (count > 0) {
-        console.log("[invites] Fired member.joined trigger to <redacted> employee(s)");
+        console.log(`[invites] Fired member.joined trigger to ${logNumber(count)} employee(s)`);
       }
     } catch (err) {
       console.warn('[invites] member.joined trigger failed:');

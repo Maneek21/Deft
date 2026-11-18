@@ -1,3 +1,4 @@
+import { logId } from '../../lib/log-metadata.js';
 // Handler: Weekly Digest — generates and delivers weekly digests for all managers
 import { db } from '../../lib/db.js';
 import {
@@ -79,15 +80,15 @@ export async function handleWeeklyDigest(job: JobData): Promise<void> {
             emitToUser(notification.org_id, manager.userId, 'notification:new', notification);
           }
 
-          console.log("[weekly-digest] Generated digest for manager <redacted> in org <redacted>"
+          console.log(`[weekly-digest] Generated digest for manager ${logId(manager.userId)} in org ${logId(org.id)}`
           );
         } catch (err) {
-          console.error("[weekly-digest] Failed for manager <redacted>:"
+          console.error(`[weekly-digest] Failed for manager ${logId(manager.userId)}:`
           );
         }
       }
     } catch (err) {
-      console.error("[weekly-digest] Failed for org <redacted>:");
+      console.error(`[weekly-digest] Failed for org ${logId(org.id)}:`);
     }
   }
 

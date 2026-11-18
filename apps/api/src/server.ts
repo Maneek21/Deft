@@ -1,3 +1,5 @@
+import './lib/content-free-process-errors.js';
+import { logNumber, logSignal } from './lib/log-metadata.js';
 import 'dotenv/config';
 import { workerStartup } from './lib/worker-startup.js';
 import { serve } from '@hono/node-server';
@@ -22,7 +24,7 @@ assertPausedStartSettingValid();
 const startupPlan = serverStartupPlan();
 workerStartup.require();
 const server = serve({ fetch: app.fetch, port }, async (info) => {
-  console.log("Deft API running on http://localhost:<redacted>");
+  console.log(`Deft API running on http://localhost:${logNumber(info.port)}`);
   logPausedStart();
   if (!process.env.DEFT_INVITE_TRUSTED_PROXIES?.trim()) {
     console.warn('[startup] DEFT_INVITE_TRUSTED_PROXIES is unset: IP rate limits use socket peers. Behind a custom proxy, visitors share its bucket; configure trusted proxy peers for per-visitor limits.');
@@ -41,14 +43,14 @@ const server = serve({ fetch: app.fetch, port }, async (info) => {
     const { migrateLegacyMcpConnectionCredentials } = await import('./lib/mcp-credential-migration.js');
     const result = await migrateLegacyMcpConnectionCredentials();
     if (result.migrated > 0) {
-      console.log("[startup] Encrypted <redacted> legacy MCP credential row(s)");
+      console.log(`[startup] Encrypted ${logNumber(result.migrated)} legacy MCP credential row(s)`);
     }
     if (result.disabledUnsupportedAuth > 0) {
-      console.warn("[startup] Disabled <redacted> MCP connection(s) using unsupported external OAuth"
+      console.warn(`[startup] Disabled ${logNumber(result.disabledUnsupportedAuth)} MCP connection(s) using unsupported external OAuth`
       );
     }
     if (result.disabledUnsafeTarget > 0) {
-      console.warn("[startup] Disabled <redacted> MCP connection(s) blocked by host transport policy");
+      console.warn(`[startup] Disabled ${logNumber(result.disabledUnsafeTarget)} MCP connection(s) blocked by host transport policy`);
     }
   } catch (err) {
     console.warn('[startup] MCP credential migration failed:');
@@ -66,7 +68,7 @@ const server = serve({ fetch: app.fetch, port }, async (info) => {
     if (shuttingDown) { await stopWorkers({ timeoutMs: 10_000 }); throw Error('Server stopping'); }
     if (startupPlan.initScheduler) await initScheduler();
     if (shuttingDown) { await stopWorkers({ timeoutMs: 10_000 }); throw Error('Server stopping'); }
-  }, { onFailure: (attempt, error) => console.warn("[startup] Job workers attempt <redacted>/5 failed:") });
+  }, { onFailure: (attempt, error) => console.warn(`[startup] Job workers attempt ${logNumber(attempt)}/5 failed:`) });
   if (shuttingDown) return;
   if (workersReady && !startupPlan.initScheduler) console.log('[startup] Paused: job workers idle, scheduler not started');
   else if (workersReady) console.log('[startup] Job workers and scheduler started');
@@ -98,7 +100,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   shuttingDown = true;
   workerStartup.stop();
   void import('./lib/seat-limit.js').then(({ stopSeatStatementRefresher }) => stopSeatStatementRefresher());
-  console.log("[shutdown] <redacted> received; draining HTTP and job workers");
+  console.log(`[shutdown] ${logSignal(signal)} received; draining HTTP and job workers`);
 
   const httpServer = server as unknown as Server;
   const socketClosed = getIO()?.close() ?? Promise.resolve();

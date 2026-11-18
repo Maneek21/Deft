@@ -1,3 +1,4 @@
+import { logId } from '../../lib/log-metadata.js';
 // Handler: detect blocked users and alert project leads
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
@@ -160,7 +161,7 @@ export async function handleBlockedAlert(job: JobData): Promise<void> {
         await emitVisibleNotification(notification);
       }
 
-      console.log("[blocked-alert] Sent blocked alert for <redacted> to lead <redacted>"
+      console.log(`[blocked-alert] Sent blocked alert for <redacted> to lead ${logId(targetUserId)}`
       );
 
       // Only send one notification per blocked signal (avoid spam)

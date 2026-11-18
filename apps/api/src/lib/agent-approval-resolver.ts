@@ -1,3 +1,4 @@
+import { logId } from './log-metadata.js';
 import type { AppRunTransaction } from './app-run-repository.js';
 /**
  * Phase 6.5 — approval resolver.
@@ -297,7 +298,7 @@ async function publishApprovalResolution(actionId: string, actorUserId: string):
       },
     });
   } catch (error) {
-    console.error("[agent-approval-resolver] failed to publish resolution for <redacted>:");
+    console.error(`[agent-approval-resolver] failed to publish resolution for ${logId(actionId)}:`);
   }
 }
 

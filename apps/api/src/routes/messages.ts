@@ -1,3 +1,4 @@
+import { logId } from '../lib/log-metadata.js';
 import { emitCurrentMessageToSpaceViewers } from '../lib/agent-message-run-details.js';
 import { Hono } from 'hono';
 import { hasReservedPrivateDeftyMetadata, isPrivateDeftySpace } from '../lib/app-private-defty-message-guard.js';
@@ -631,7 +632,7 @@ messageRoutes.post('/:spaceId', async (c) => {
           mentionNotifications.push(notification);
         }
       } catch (err) {
-        console.error("Failed to create mention notification for <redacted>:");
+        console.error(`Failed to create mention notification for ${logId(mentionedUserId)}:`);
       }
     }
     await emitVisibleNotifications(mentionNotifications).catch(error => console.error('Failed to deliver mention notifications:'));

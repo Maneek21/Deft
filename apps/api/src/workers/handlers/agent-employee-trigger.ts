@@ -1,3 +1,4 @@
+import { logId } from '../../lib/log-metadata.js';
 // Handler: agent-employee-trigger — fires when events occur and evaluates
 // per-employee trigger conditions, then queues a pending `agent_actions`
 // row so the BYOA client picks the work up via `poll_pending_work`.
@@ -28,7 +29,7 @@ export async function handleAgentEmployeeTrigger(job: JobData): Promise<void> {
     return;
   }
 
-  console.log("[agent-employee-trigger] Processing trigger <redacted> for event <redacted>");
+  console.log(`[agent-employee-trigger] Processing trigger ${logId(triggerId)} for event <redacted>`);
 
   // 1. Load the job org's trigger and verify it's active
   const [trigger] = await db.select()
@@ -37,7 +38,7 @@ export async function handleAgentEmployeeTrigger(job: JobData): Promise<void> {
     .limit(1);
 
   if (!trigger || !trigger.agent_employee_id) {
-    console.warn("[agent-employee-trigger] Trigger <redacted> not found, inactive, or has no agent employee");
+    console.warn(`[agent-employee-trigger] Trigger ${logId(triggerId)} not found, inactive, or has no agent employee`);
     return;
   }
 
@@ -52,7 +53,7 @@ export async function handleAgentEmployeeTrigger(job: JobData): Promise<void> {
     .limit(1);
 
   if (!employee) {
-    console.warn("[agent-employee-trigger] Agent employee <redacted> not found or inactive");
+    console.warn(`[agent-employee-trigger] Agent employee ${logId(trigger.agent_employee_id)} not found or inactive`);
     return;
   }
 
@@ -108,7 +109,7 @@ export async function handleAgentEmployeeTrigger(job: JobData): Promise<void> {
       });
       queued += 1;
     } catch (err) {
-      console.error("[agent-employee-trigger] failed to queue trigger <redacted>:"
+      console.error(`[agent-employee-trigger] failed to queue trigger ${logId(triggerId)}:`
       );
     }
   }
@@ -123,5 +124,5 @@ export async function handleAgentEmployeeTrigger(job: JobData): Promise<void> {
     }).where(eq(triggers.id, triggerId));
   }
 
-  console.log("[agent-employee-trigger] Trigger <redacted> (<redacted>) queued <redacted> action(s) for event <redacted>");
+  console.log(`[agent-employee-trigger] Trigger ${logId(triggerId)} (<redacted>) queued <redacted> action(s) for event <redacted>`);
 }

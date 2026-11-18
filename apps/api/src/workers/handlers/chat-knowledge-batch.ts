@@ -1,3 +1,4 @@
+import { logNumber } from '../../lib/log-metadata.js';
 import { and, eq, gte, lt, desc, or, sql } from 'drizzle-orm';
 import {
   messageClassifications,
@@ -748,5 +749,5 @@ export async function handleChatKnowledgeBatch(job: JobData): Promise<void> {
     }
   }
 
-  console.log("[chat-knowledge-batch] processed <redacted> messages, queued <redacted>, skipped <redacted>");
+  console.log(`[chat-knowledge-batch] processed ${logNumber(rows.length)} messages, queued ${logNumber(queuedCount)}, skipped ${logNumber(skippedCount)}`);
 }

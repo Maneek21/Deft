@@ -1,3 +1,4 @@
+import { logId } from './log-metadata.js';
 /**
  * dispatchAgentEmployeeTask — wake an agent employee on task assignment.
  *
@@ -166,6 +167,6 @@ export async function publishTaskChannelEventForAssignee(params: {
       },
     });
   } catch (err) {
-    console.error("[dispatch-agent-task] failed to publish <redacted> for <redacted>:");
+    console.error(`[dispatch-agent-task] failed to publish <redacted> for ${logId(params.task.id)}:`);
   }
 }

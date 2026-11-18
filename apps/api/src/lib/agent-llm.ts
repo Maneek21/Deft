@@ -117,10 +117,10 @@ async function callAnthropicAgent(p: CreateAgentMessageParams): Promise<AgentMes
   if (p.privateResponseBytes !== undefined && process.env.ANTHROPIC_CUSTOM_HEADERS?.trim()) {
     throw new Error('Private Anthropic custom headers unavailable');
   }
-  const anthropic = new Anthropic({ apiKey: p.resolved.apiKey, timeout: 60_000,
+  const anthropic = new Anthropic({ apiKey: p.resolved.apiKey, timeout: 60_000, logLevel: 'off',
     maxRetries: p.privateResponseBytes === undefined ? 1 : 0,
     ...(p.privateResponseBytes === undefined ? anthropicClientAddress() : { baseURL: p.resolved.baseUrl }),
-    ...(p.privateResponseBytes === undefined ? {} : { logLevel: 'off' as const, authToken: null }),
+    ...(p.privateResponseBytes === undefined ? {} : { authToken: null }),
     ...(p.privateResponseBytes === undefined ? {} : { fetch: (input, init) => agentFetch(p, input, init) }),
   });
 

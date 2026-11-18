@@ -1,3 +1,4 @@
+import { logId } from '../../lib/log-metadata.js';
 import { projectAgentReadDiagnostics } from '../../lib/agent-read-diagnostics.js';
 // Handler: process @agent/@deft mentions in chat and generate AI replies in-thread
 import type { JobData } from '../types.js';
@@ -1377,7 +1378,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
     followed?: boolean;
   };
 
-  console.log("[agent-reply] Processing agent reply for message <redacted> in space <redacted>");
+  console.log(`[agent-reply] Processing agent reply for message ${logId(messageId)} in space ${logId(spaceId)}`);
 
   try {
     // Load space context — type drives both threading behavior and the
@@ -2134,7 +2135,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
         beforeCommit: (tx) => assertDeliveryOwnedBeforeCommit(tx, delivery),
       });
       if (persisted.replayed) {
-        console.log("[agent-reply] Reply to <redacted> already posted as <redacted>; skipping");
+        console.log(`[agent-reply] Reply to ${logId(messageId)} already posted as ${logId(persisted.message.id)}; skipping`);
         return;
       }
       agentMessage = persisted.message;
@@ -2177,7 +2178,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
       console.warn('[agent-reply] Reply committed but its broadcast failed');
     }
 
-    console.log("[agent-reply] Posted agent reply <redacted> in space <redacted><redacted>");
+    console.log(`[agent-reply] Posted agent reply ${logId(agentMessage.id)} in space ${logId(spaceId)}<redacted>`);
   } catch (err) {
     console.error('[agent-reply] Failed to generate agent reply:');
     throw err; // Re-throw so the PostgreSQL queue worker can retry.

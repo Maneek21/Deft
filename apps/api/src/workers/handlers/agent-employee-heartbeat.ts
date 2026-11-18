@@ -1,3 +1,4 @@
+import { logNumber } from '../../lib/log-metadata.js';
 // Handler: agent-employee-heartbeat — runs periodic checks for proactive
 // agent employees.
 //
@@ -189,7 +190,7 @@ export async function handleAgentEmployeeHeartbeat(_job: JobData): Promise<void>
       ),
     );
 
-  console.log("[heartbeat] found <redacted> employee(s) due"
+  console.log(`[heartbeat] found ${logNumber(dueEmployees.length)} employee(s) due`
   );
 
   for (const employee of dueEmployees) {
