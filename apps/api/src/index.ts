@@ -4,6 +4,7 @@ import {appIntegrationToolRoutes} from './routes/app-integration-tools.js';
 import {appLocalJobRoutes} from './routes/app-local-jobs.js';
 import 'dotenv/config';
 import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 import { cors } from 'hono/cors';
 import { requestLogger } from './lib/request-logger.js';
 import { secureHeaders } from 'hono/secure-headers';
@@ -138,6 +139,12 @@ import { githubWebhookRoutes } from './routes/webhooks/github.js';
 import { corsAllowedWebOrigins } from './lib/web-origins.js';
 
 const app = new Hono();
+app.onError((error, c) => {
+  if (error instanceof HTTPException) return error.getResponse();
+  // HTTP failures stay responses; no process-wide exception/rejection handler.
+  console.error('[api] Request failed:', error.name);
+  return c.json({ error: 'Request failed', code: 'INTERNAL_ERROR' }, 500);
+});
 
 const corsPolicy = cors({
   // Self-hosted: the configured web address plus the two local addresses.

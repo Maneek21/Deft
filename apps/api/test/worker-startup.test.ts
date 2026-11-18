@@ -52,3 +52,9 @@ test('real readiness route returns 503 when required startup exhausts despite a 
   assert.equal(body.checks.job_workers, false);
   assert.equal(body.status, 'not_ready');
 });
+
+test('server startup recovers after more than five failed attempts', async () => {
+  const lifecycle = new WorkerStartup(); lifecycle.require(); let attempts = 0;
+  assert.equal(await lifecycle.start(async () => { if (++attempts <= 7) throw Error('offline'); }, { keepRetrying: true, wait: instant }), true);
+  assert.equal(attempts, 8); assert.equal(lifecycle.isReady(), true);
+});

@@ -22,6 +22,12 @@ const advisoryPool = new Pool({
   max: APP_DATABASE_POOL_BUDGET.advisory,
 });
 
+// pg removes failed idle clients before emitting this pool event. Active
+// query failures still reject normally; subsequent checkouts reconnect.
+for (const connectionPool of [pool, advisoryPool]) {
+  connectionPool.on('error', () => console.warn('[database] Idle connection lost; reconnecting on next checkout'));
+}
+
 export const db = drizzle(pool, { schema });
 
 /**

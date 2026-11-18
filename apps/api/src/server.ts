@@ -67,7 +67,7 @@ const server = serve({ fetch: app.fetch, port }, async (info) => {
     if (shuttingDown) { await stopWorkers({ timeoutMs: 10_000 }); throw Error('Server stopping'); }
     if (startupPlan.initScheduler) await initScheduler();
     if (shuttingDown) { await stopWorkers({ timeoutMs: 10_000 }); throw Error('Server stopping'); }
-  }, { onFailure: (attempt, error) => console.warn(`[startup] Job workers attempt ${attempt}/5 failed:`, (error as Error).message) });
+  }, { keepRetrying: true, onFailure: (attempt, error) => console.warn(`[startup] Job workers attempt ${attempt} failed:`, (error as Error).message) });
   if (shuttingDown) return;
   if (workersReady && !startupPlan.initScheduler) console.log('[startup] Paused: job workers idle, scheduler not started');
   else if (workersReady) console.log('[startup] Job workers and scheduler started');
