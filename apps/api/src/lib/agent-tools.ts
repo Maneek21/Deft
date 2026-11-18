@@ -1084,32 +1084,6 @@ export const SUPERINTENDENT_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
-    name: 'manage_agent_employee',
-    description:
-      'Create, update, pause, resume, or delete an agent employee. REQUIRES USER APPROVAL.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        action: {
-          type: 'string',
-          enum: ['create', 'update', 'pause', 'resume', 'delete'],
-          description: 'Action to perform',
-        },
-        employee_id: { type: 'string', description: 'Employee ID (required for update/pause/resume/delete)' },
-        name: { type: 'string', description: 'Employee name (required for create)' },
-        role: { type: 'string', description: 'Employee role' },
-        system_prompt: { type: 'string', description: 'System prompt for the employee' },
-        trust_level: {
-          type: 'string',
-          enum: ['conservative', 'standard', 'autonomous'],
-          description: 'Trust level for the employee',
-        },
-        max_daily_actions: { type: 'number', description: 'Maximum daily actions allowed' },
-      },
-      required: ['action'],
-    },
-  },
-  {
     name: 'get_agent_activity',
     description:
       'Get recent agent actions across employees. Optionally filter by a specific employee.',
@@ -1192,7 +1166,6 @@ export const SUPERINTENDENT_TOOLS: Anthropic.Tool[] = [
 
 /** Superintendent tool names that require user approval before execution */
 export const SUPERINTENDENT_ACTION_TOOLS = new Set([
-  'manage_agent_employee',
   'manage_mcp_connection',
   'manage_triggers',
 ]);
