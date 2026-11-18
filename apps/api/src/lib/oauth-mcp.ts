@@ -171,7 +171,7 @@ export async function auditOAuth(event: {
       metadata: event.metadata ?? {},
     });
   } catch (err) {
-    console.warn('[oauth-mcp] audit failed:', err);
+    console.warn('[oauth-mcp] audit failed:');
   }
 }
 

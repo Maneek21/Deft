@@ -231,7 +231,7 @@ async function synthesizeMeetingPrep(
       model: response.model,
     };
   } catch (error) {
-    console.error('[meeting-prep-automation] Grounded synthesis failed; using fallback:', error);
+    console.error('[meeting-prep-automation] Grounded synthesis failed; using fallback:');
     return { draft: fallback, generator: 'fallback' as const, model: null };
   }
 }

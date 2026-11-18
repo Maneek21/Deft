@@ -388,8 +388,7 @@ export class AppRunService {
     try {
       await this.attention.projectApprovalRequested(orgId, runId);
     } catch (error) {
-      console.warn('[app-runs] approval Attention projection failed:',
-        error instanceof Error ? error.message : 'unknown error');
+      console.warn('[app-runs] approval Attention projection failed:');
     }
   }
 
@@ -1421,8 +1420,7 @@ export class AppRunService {
       try {
         await this.attention.projectApprovalRequested(submitted.org_id, submitted.id);
       } catch (error) {
-        console.warn('[app-runs] approval Attention projection failed:',
-          error instanceof Error ? error.message : 'unknown error');
+        console.warn('[app-runs] approval Attention projection failed:');
       }
     }
     return submitted;
@@ -1520,8 +1518,7 @@ export class AppRunService {
     try {
       await this.attention.projectRunState(reconciled, 'reconciled');
     } catch (error) {
-      console.warn('[app-runs] reconciliation Attention projection failed:',
-        error instanceof Error ? error.message : 'unknown error');
+      console.warn('[app-runs] reconciliation Attention projection failed:');
     }
     return reconciled;
   }

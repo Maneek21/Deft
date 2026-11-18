@@ -872,8 +872,7 @@ async function rollbackCompletedSteps(
         case 'create_task': {
           const createdId = step.result?.task_id ?? step.result?.id;
           if (!createdId) {
-            console.warn(
-              `[plan-rollback] create_task step ${step.id} has no task_id in result; skipping`,
+            console.warn("[plan-rollback] create_task step <redacted> has no task_id in result; skipping"
             );
             break;
           }
@@ -886,8 +885,7 @@ async function rollbackCompletedSteps(
         case 'post_message': {
           const msgId = step.result?.message_id ?? step.result?.id;
           if (!msgId) {
-            console.warn(
-              `[plan-rollback] post_message step ${step.id} has no message_id in result; skipping`,
+            console.warn("[plan-rollback] post_message step <redacted> has no message_id in result; skipping"
             );
             break;
           }
@@ -902,14 +900,11 @@ async function rollbackCompletedSteps(
           // set_due_date, set_priority, add_label, close_task, reopen_task,
           // add_dependency, remove_dependency — none of these can be safely
           // reversed without a pre-state snapshot we don't currently capture.
-          console.warn(
-            `[plan-rollback] tool "${step.tool}" has no safe reversal; leaving step ${step.id} as-is`,
+          console.warn("[plan-rollback] tool \"<redacted>\" has no safe reversal; leaving step <redacted> as-is"
           );
       }
     } catch (err) {
-      console.warn(
-        `[plan-rollback] step ${step.id} (${step.tool}) rollback failed:`,
-        (err as Error).message,
+      console.warn("[plan-rollback] step <redacted> (<redacted>) rollback failed:"
       );
     }
   }

@@ -148,8 +148,7 @@ async function autoApproveDeftyCapture(params: {
   if (!params.actionId) return;
   const result = await approveAction(params.actionId, params.deftyUserId, { internal: true });
   if (result.status === 'error') {
-    console.warn(
-      `[defty-capture] Auto-approval failed for ${params.label} (${params.actionId}): ${result.code} ${result.message}`,
+    console.warn("[defty-capture] Auto-approval failed for <redacted> (<redacted>): <redacted> <redacted>"
     );
   }
 }

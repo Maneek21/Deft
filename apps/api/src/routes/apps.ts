@@ -169,7 +169,7 @@ function failure(c: Context, error: unknown) {
   if (error && typeof error === 'object' && 'appPayloadTooLarge' in error) {
     return c.json({ error: 'App package is too large', code: 'APP_INVALID_PACKAGE' }, 413);
   }
-  console.error('[apps] request failed:', error);
+  console.error('[apps] request failed:');
   return c.json({ error: 'App request failed', code: 'INTERNAL_ERROR' }, 500);
 }
 

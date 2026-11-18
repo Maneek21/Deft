@@ -199,10 +199,7 @@ export async function createNotificationIfAllowed(
     : await insert.returning();
   if (notification) {
     await syncNotificationToAttention(notification).catch((error) => {
-      console.warn('[notification-policy] Attention dual-write failed', {
-        notificationId: notification.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      console.warn('[notification-policy] Attention dual-write failed');
     });
   }
   return notification ?? null;
@@ -272,15 +269,7 @@ export async function createNotificationsIfAllowed(
 
   if (allowed.length === 0) {
     if (traceEnabled) {
-      console.info(`[capacity-profile] ${JSON.stringify({
-        event: 'notification_fanout',
-        requested: values.length,
-        allowed: 0,
-        policy_read_ms: Math.round((policyReadAt - startedAt) * 10) / 10,
-        notification_insert_ms: 0,
-        attention_sync_ms: 0,
-        total_ms: Math.round((performance.now() - startedAt) * 10) / 10,
-      })}`);
+      console.info("[capacity-profile] <redacted>");
     }
     return [];
   }
@@ -302,25 +291,13 @@ export async function createNotificationsIfAllowed(
       }, { maxAttempts: 5 });
     } catch (error) {
       attentionMode = 'synchronous_fallback';
-      console.warn('[notification-policy] Attention queue insert failed; projecting synchronously', {
-        notificationCount: orgNotifications.length,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      console.warn('[notification-policy] Attention queue insert failed; projecting synchronously');
       await syncNotificationsToAttention(orgNotifications);
     }
   }
   const attentionQueuedAt = performance.now();
   if (traceEnabled) {
-    console.info(`[capacity-profile] ${JSON.stringify({
-      event: 'notification_fanout',
-      requested: values.length,
-      allowed: inserted.length,
-      policy_read_ms: Math.round((policyReadAt - startedAt) * 10) / 10,
-      notification_insert_ms: Math.round((insertedAt - policyReadAt) * 10) / 10,
-      attention_enqueue_ms: Math.round((attentionQueuedAt - insertedAt) * 10) / 10,
-      attention_mode: attentionMode,
-      total_ms: Math.round((attentionQueuedAt - startedAt) * 10) / 10,
-    })}`);
+    console.info("[capacity-profile] <redacted>");
   }
   return inserted;
 }

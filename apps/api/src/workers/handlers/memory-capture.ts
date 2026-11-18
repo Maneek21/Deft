@@ -92,7 +92,7 @@ function dedupeSimilarFacts(facts: string[]): string[] {
 export async function handleMemoryCapture(job: JobData) {
   if (!ENABLE_IMMEDIATE_MEMORY_CAPTURE) {
     const data = job.data as MemoryCaptureJobData;
-    console.log(`[memory-capture] Immediate chat-to-knowledge capture disabled; skipping ${data.messageId}`);
+    console.log("[memory-capture] Immediate chat-to-knowledge capture disabled; skipping <redacted>");
     return;
   }
 
@@ -128,9 +128,9 @@ export async function handleMemoryCapture(job: JobData) {
       },
     });
     if (queued.queued) {
-      console.log(`[memory-capture] Queued decision capture for message ${messageId}`);
+      console.log("[memory-capture] Queued decision capture for message <redacted>");
     } else {
-      console.log(`[memory-capture] Skipped decision capture for message ${messageId}: ${queued.skippedReason}`);
+      console.log("[memory-capture] Skipped decision capture for message <redacted>: <redacted>");
     }
   }
 
@@ -162,9 +162,9 @@ export async function handleMemoryCapture(job: JobData) {
       },
     });
     if (queued.queued) {
-      console.log(`[memory-capture] Queued note capture for message ${messageId}`);
+      console.log("[memory-capture] Queued note capture for message <redacted>");
     } else {
-      console.log(`[memory-capture] Skipped note capture for message ${messageId}: ${queued.skippedReason}`);
+      console.log("[memory-capture] Skipped note capture for message <redacted>: <redacted>");
     }
   }
 
@@ -190,9 +190,9 @@ export async function handleMemoryCapture(job: JobData) {
       },
     });
     if (queued.queued) {
-      console.log(`[memory-capture] Queued resource capture for message ${messageId}`);
+      console.log("[memory-capture] Queued resource capture for message <redacted>");
     } else {
-      console.log(`[memory-capture] Skipped resource capture for message ${messageId}: ${queued.skippedReason}`);
+      console.log("[memory-capture] Skipped resource capture for message <redacted>: <redacted>");
     }
   }
 }

@@ -209,7 +209,7 @@ export async function executeMemoryUpdate(
           actionId = insertedAction?.id ?? null;
         }
       } catch (err) {
-        console.error('[memory_update] auto-exec action row insert failed:', err);
+        console.error('[memory_update] auto-exec action row insert failed:');
       }
       if (actionId) {
         await generateReceipt({

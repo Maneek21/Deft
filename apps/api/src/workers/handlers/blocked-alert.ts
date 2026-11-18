@@ -17,7 +17,7 @@ import { createNotificationIfAllowed } from '../../lib/notification-policy.js';
 
 export async function handleBlockedAlert(job: JobData): Promise<void> {
   const { messageId, spaceId, orgId, userId } = job.data;
-  console.log('[blocked-alert] Processing blocked signal from user', userId);
+  console.log('[blocked-alert] Processing blocked signal from user');
 
   const now = new Date();
   const fourHoursAgo = new Date(now.getTime() - 4 * 60 * 60 * 1000);
@@ -160,15 +160,14 @@ export async function handleBlockedAlert(job: JobData): Promise<void> {
         await emitVisibleNotification(notification);
       }
 
-      console.log(
-        `[blocked-alert] Sent blocked alert for ${taskIdentifier} to lead ${targetUserId}`,
+      console.log("[blocked-alert] Sent blocked alert for <redacted> to lead <redacted>"
       );
 
       // Only send one notification per blocked signal (avoid spam)
       break;
     }
   } catch (err) {
-    console.error('[blocked-alert] Error processing blocked alert:', err);
+    console.error('[blocked-alert] Error processing blocked alert:');
     throw err;
   }
 }

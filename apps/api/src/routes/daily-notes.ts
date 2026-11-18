@@ -29,7 +29,7 @@ async function enqueueNoteCrossReference(
       userId,
     });
   } catch (err) {
-    console.error('Failed to enqueue note cross-reference job:', (err as Error).message);
+    console.error('Failed to enqueue note cross-reference job:');
   }
 }
 

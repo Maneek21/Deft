@@ -13,10 +13,10 @@ export async function handleStandupGenerate(job: JobData): Promise<void> {
     try {
       const result = await generateDailyStandup({ orgId: org.id, now });
       if (!result.alreadyExisted) {
-        console.log(`[standup-generate] Delivered ${due.dateKey} standup for ${org.name} (job ${job.id})`);
+        console.log("[standup-generate] Delivered <redacted> standup for <redacted> (job <redacted>)");
       }
     } catch (error) {
-      console.error(`[standup-generate] Failed for org ${org.id}:`, error);
+      console.error("[standup-generate] Failed for org <redacted>:");
     }
   }
 }

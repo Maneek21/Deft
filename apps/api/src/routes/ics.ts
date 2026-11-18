@@ -28,7 +28,7 @@ function logRouteFailure(c: Context, route: string, err: unknown, subscriptionId
   const parts = [`[ics] ${route} failed`];
   if (user?.id && SAFE_ID.test(user.id)) parts.push(`user=${user.id}`);
   if (subscriptionId && SAFE_ID.test(subscriptionId)) parts.push(`subscription=${subscriptionId}`);
-  console.error(`${parts.join(' ')}: ${humanizeIcsError(err)}`);
+  console.error("<redacted>: <redacted>");
 }
 
 function guarded(route: string, handler: (c: Context) => Promise<Response>) {

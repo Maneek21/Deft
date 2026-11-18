@@ -366,7 +366,7 @@ async function noticeFailedAgentReply(row: Record<string, unknown>): Promise<voi
     const { postDeftyReplyFailureNotice } = await import('./defty-wake.js');
     await postDeftyReplyFailureNotice(typeof row.data === 'string' ? JSON.parse(row.data) : row.data);
   } catch (err) {
-    console.warn('[queues] agent-reply failure notice not posted', err instanceof Error ? err.message : String(err));
+    console.warn('[queues] agent-reply failure notice not posted');
   }
 }
 

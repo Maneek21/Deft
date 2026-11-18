@@ -243,7 +243,7 @@ messageRoutes.post('/forward', async (c) => {
   } catch (err) {
     if (err instanceof NativeChatForwardError) return c.json({ error: 'No access to target space', code: err.code },
       err.code === 'PRIVATE_CONTEXT_REQUIRED' ? 409 : 403);
-    console.error('Failed to forward message:', err);
+    console.error('Failed to forward message:');
     return c.json({ error: 'Failed to forward', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -411,7 +411,7 @@ messageRoutes.get('/:spaceId', async (c) => {
       next_cursor: result.length === limit ? historyCursorFor(result[result.length - 1]) : null,
     });
   } catch (err) {
-    console.error('Failed to fetch messages:', err);
+    console.error('Failed to fetch messages:');
     return c.json({ error: 'Failed to fetch messages', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -597,7 +597,7 @@ messageRoutes.post('/:spaceId', async (c) => {
           }
           if (previews.length > 0) await storeLinkPreviews(io, spaceId, message!.id, previews);
         } catch (err) {
-          console.error('Link preview fetch failed:', err);
+          console.error('Link preview fetch failed:');
         }
       })();
     }
@@ -631,10 +631,10 @@ messageRoutes.post('/:spaceId', async (c) => {
           mentionNotifications.push(notification);
         }
       } catch (err) {
-        console.error(`Failed to create mention notification for ${mentionedUserId}:`, err);
+        console.error("Failed to create mention notification for <redacted>:");
       }
     }
-    await emitVisibleNotifications(mentionNotifications).catch(error => console.error('Failed to deliver mention notifications:', error));
+    await emitVisibleNotifications(mentionNotifications).catch(error => console.error('Failed to deliver mention notifications:'));
 
     // If it's a thread reply, notify the parent message author and broadcast thread:updated
     if (await isPrivateDeftySpace(user.org_id, spaceId)) return c.json({ error: 'Use the reviewed private context turn', code: 'PRIVATE_CONTEXT_REQUIRED' }, 409);
@@ -683,7 +683,7 @@ messageRoutes.post('/:spaceId', async (c) => {
           });
         }
       } catch (err) {
-        console.error('Failed to handle thread reply notification:', err);
+        console.error('Failed to handle thread reply notification:');
       }
     }
 
@@ -733,7 +733,7 @@ messageRoutes.post('/:spaceId', async (c) => {
         await emitVisibleNotifications(recipientNotifications);
       }
     } catch (err) {
-      console.error('Message notification error:', err);
+      console.error('Message notification error:');
     }
 
     // Defty is the only agent that fires agent-reply. BYOA agent mentions are
@@ -756,7 +756,7 @@ messageRoutes.post('/:spaceId', async (c) => {
           userId: user.id,
         });
       } catch (err) {
-        console.error('Failed to enqueue cross-reference job:', err);
+        console.error('Failed to enqueue cross-reference job:');
       }
     }
 
@@ -768,7 +768,7 @@ messageRoutes.post('/:spaceId', async (c) => {
         userId: user.id,
       });
     } catch (err) {
-      console.error('Failed to enqueue chat observation:', err);
+      console.error('Failed to enqueue chat observation:');
     }
 
         // Blocked detection — enqueue alert if someone is blocked
@@ -779,7 +779,7 @@ messageRoutes.post('/:spaceId', async (c) => {
     }
     if (err instanceof NativeCreateError) return c.json({ error: err.message, code: err.code }, err.status);
     if (err instanceof NativeMentionLimitError) return c.json({ error: err.message, code: 'NATIVE_MENTION_LIMIT' }, 400);
-    console.error('Failed to send message:', err);
+    console.error('Failed to send message:');
     return c.json({ error: 'Failed to send message', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -908,7 +908,7 @@ messageRoutes.post('/:id/reactions', async (c) => {
 
     return c.json(reaction, 201);
   } catch (err) {
-    console.error('Failed to add reaction:', err);
+    console.error('Failed to add reaction:');
     return c.json({ error: 'Failed to add reaction', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -950,7 +950,7 @@ messageRoutes.delete('/:id/reactions/:emoji', async (c) => {
 
     return c.json({ success: true });
   } catch (err) {
-    console.error('Failed to remove reaction:', err);
+    console.error('Failed to remove reaction:');
     return c.json({ error: 'Failed to remove reaction', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1018,7 +1018,7 @@ messageRoutes.get('/:id/thread', async (c) => {
 
     return c.json({ parent: parentWithReactions, replies: repliesWithReactions });
   } catch (err) {
-    console.error('Failed to fetch thread:', err);
+    console.error('Failed to fetch thread:');
     return c.json({ error: 'Failed to fetch thread', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1045,7 +1045,7 @@ messageRoutes.post('/:parentId/thread-read', async (c) => {
 
     return c.json({ success: true });
   } catch (err) {
-    console.error('Failed to mark thread read:', err);
+    console.error('Failed to mark thread read:');
     return c.json({ error: 'Failed to mark thread read', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1071,7 +1071,7 @@ messageRoutes.get('/:id/history', async (c) => {
 
     return c.json({ versions });
   } catch (err) {
-    console.error('Failed to fetch message history:', err);
+    console.error('Failed to fetch message history:');
     return c.json({ error: 'Failed to fetch history', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1106,7 +1106,7 @@ messageRoutes.get('/:spaceId/read-receipts', async (c) => {
 
     return c.json({ receipts: visible });
   } catch (err) {
-    console.error('Failed to fetch read receipts:', err);
+    console.error('Failed to fetch read receipts:');
     return c.json({ error: 'Failed to fetch read receipts', code: 'INTERNAL_ERROR' }, 500);
   }
 });

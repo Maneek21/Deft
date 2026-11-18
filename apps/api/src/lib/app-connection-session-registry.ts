@@ -271,7 +271,7 @@ export class AppConnectionSessionRegistry {
           Accept:`application/json, ${APP_DATA_FRAME_MEDIA_TYPE}`},body:body as BodyInit});
       if(!response.ok||response.redirected){
         const error=await appRuntimeResponseError(response,signal);
-        if(error.details?.runtime_code)console.warn('[app-runtime] data request denied',{code:error.code,runtime_code:error.details.runtime_code,status:error.status,operation:input.operation,request_id:input.request_id});
+        if(error.details?.runtime_code)console.warn('[app-runtime] data request denied');
         throw error;
       }
       const type=response.headers.get('content-type')??'';

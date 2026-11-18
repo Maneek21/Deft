@@ -1237,7 +1237,7 @@ export async function humanPlatformContext(args: { trigger?: HumanTriggerDescrip
         }));
       }
     } catch (err) {
-      console.warn('[human-mcp] platform_context wiki packet build failed:', err);
+      console.warn('[human-mcp] platform_context wiki packet build failed:');
       wikiSnippets = [];
     }
   }
@@ -3655,7 +3655,7 @@ async function decideAsWebReviewer(
       : await rejectActionAsReviewer(c, reviewer, actionId, reason);
   } catch (error) {
     // As the web's error boundary: the failure is logged, never returned.
-    console.error('[mcp-human] approval decision failed', { actionId, error: error instanceof Error ? error.message : String(error) });
+    console.error('[mcp-human] approval decision failed');
     return errorResult('INTERNAL_ERROR: The approval request failed');
   }
   const body = await response.json().catch(() => ({})) as Record<string, unknown>;
@@ -3719,7 +3719,7 @@ async function decideApproval(
     return result;
   } catch (error) {
     // As the web's error boundary: the failure is logged, never returned.
-    console.error('[mcp-human] approval decision failed', { actionId, error: error instanceof Error ? error.message : String(error) });
+    console.error('[mcp-human] approval decision failed');
     return errorResult('INTERNAL_ERROR: The approval request failed');
   }
 }

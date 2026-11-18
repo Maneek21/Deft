@@ -21,7 +21,7 @@ function fail(c: any, error: unknown) {
     }, error.status);
   }
   if (error instanceof z.ZodError) return c.json({ error: 'Invalid developer request', code: 'VALIDATION_ERROR' }, 400);
-  console.error('[app-developer] request failed:', error);
+  console.error('[app-developer] request failed:');
   return c.json({ error: 'Developer request failed', code: 'INTERNAL_ERROR' }, 500);
 }
 

@@ -76,7 +76,7 @@ export async function dispatchAgentEmployeeTask(params: {
     }
     return { queued: false, reason: 'not_agent' };
   } catch (err) {
-    console.error('[dispatch-agent-task] enqueue failed:', err);
+    console.error('[dispatch-agent-task] enqueue failed:');
     return { queued: false, reason: 'enqueue_failed' };
   }
 }
@@ -166,6 +166,6 @@ export async function publishTaskChannelEventForAssignee(params: {
       },
     });
   } catch (err) {
-    console.error(`[dispatch-agent-task] failed to publish ${params.kind} for ${params.task.id}:`, err);
+    console.error("[dispatch-agent-task] failed to publish <redacted> for <redacted>:");
   }
 }

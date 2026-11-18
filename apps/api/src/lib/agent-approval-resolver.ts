@@ -297,7 +297,7 @@ async function publishApprovalResolution(actionId: string, actorUserId: string):
       },
     });
   } catch (error) {
-    console.error(`[agent-approval-resolver] failed to publish resolution for ${actionId}:`, error);
+    console.error("[agent-approval-resolver] failed to publish resolution for <redacted>:");
   }
 }
 
@@ -1733,7 +1733,7 @@ async function resolveRecordMirrorNominationAction(
       reason = rawReason;
     } else {
       reason = 'The approval could not be completed. Try again.';
-      console.error('[agent-approval-resolver] approveRecordMirrorNomination failed:', { actionId: row.id, name: error instanceof Error ? error.name : undefined, code: (error as { code?: unknown } | null)?.code });
+      console.error('[agent-approval-resolver] approveRecordMirrorNomination failed:');
     }
     const sanitized = reason.replace(/\s+/g, ' ').trim().slice(0, 500);
     const uncertain = !isReviewPhase || isAccessDenied;

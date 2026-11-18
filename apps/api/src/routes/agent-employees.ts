@@ -236,7 +236,7 @@ agentEmployeeRoutes.get('/', async (c) => {
 
     return c.json(enriched);
   } catch (err) {
-    console.error('Failed to list agent employees:', err);
+    console.error('Failed to list agent employees:');
     return c.json({ error: 'Failed to list agent employees', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -344,7 +344,7 @@ agentEmployeeRoutes.get('/:id/turns', async (c) => {
 
     return c.json({ turns: visibleTurns, limit });
   } catch (err) {
-    console.error('Failed to list employee turns:', err);
+    console.error('Failed to list employee turns:');
     return c.json({ error: 'Failed to list employee turns', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -427,7 +427,7 @@ agentEmployeeRoutes.get('/:id/heartbeats', async (c) => {
       cost_summary_24h: costSummary ?? { total_cents: 0, total_actions: 0, turn_count: 0 },
     });
   } catch (err) {
-    console.error('Failed to list heartbeat turns:', err);
+    console.error('Failed to list heartbeat turns:');
     return c.json({ error: 'Failed to list heartbeat turns', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -500,7 +500,7 @@ agentEmployeeRoutes.get('/:id/turns/:turn_id/receipt', async (c) => {
     const verified = await verifyReceipt(row as any);
     return c.json({ receipt: row, verified, action_id: row.action_id });
   } catch (err) {
-    console.error('Failed to fetch turn receipt:', err);
+    console.error('Failed to fetch turn receipt:');
     return c.json({ error: 'Failed to fetch turn receipt', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -525,7 +525,7 @@ agentEmployeeRoutes.get('/:id', async (c) => {
     const management = await agentManagementView({ userId: user.id, orgId: user.org_id, role: user.role }, employee.user_id);
     return c.json({ ...employee, management });
   } catch (err) {
-    console.error('Failed to get agent employee:', err);
+    console.error('Failed to get agent employee:');
     return c.json({ error: 'Failed to get agent employee', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1872,7 +1872,7 @@ agentEmployeeRoutes.post('/', async (c) => {
       201,
     );
   } catch (err) {
-    console.error('Failed to create agent employee:', err);
+    console.error('Failed to create agent employee:');
     return c.json({ error: 'Failed to create agent employee', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1984,7 +1984,7 @@ agentEmployeeRoutes.put('/:id', async (c) => {
     }
     return c.json(managed.value);
   } catch (err) {
-    console.error('Failed to update agent employee:', err);
+    console.error('Failed to update agent employee:');
     return c.json({ error: 'Failed to update agent employee', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -2206,13 +2206,13 @@ agentEmployeeRoutes.patch('/:id', async (c) => {
         const { rescheduleHeartbeat } = await import('../lib/job-scheduler.js');
         await rescheduleHeartbeat();
       } catch (err) {
-        console.warn('[agent-employees] rescheduleHeartbeat failed:', err);
+        console.warn('[agent-employees] rescheduleHeartbeat failed:');
       }
     }
 
     return c.json(updated);
   } catch (err) {
-    console.error('Failed to patch agent employee:', err);
+    console.error('Failed to patch agent employee:');
     return c.json({ error: 'Failed to update', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -2302,7 +2302,7 @@ agentEmployeeRoutes.post('/:id/action-budget/reset', async (c) => {
       action_id: reset.actionId,
     });
   } catch (err) {
-    console.error('Failed to reset agent action budget:', err);
+    console.error('Failed to reset agent action budget:');
     return c.json({ error: 'Failed to reset action budget', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -2489,7 +2489,7 @@ agentEmployeeRoutes.post('/:id/reassign-trigger', async (c) => {
       }
     }
   } catch (err) {
-    console.error('Failed to reassign trigger:', err);
+    console.error('Failed to reassign trigger:');
     return c.json({ error: 'Failed to reassign trigger', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -2577,7 +2577,7 @@ agentEmployeeRoutes.delete('/:id', async (c) => {
 
     return c.json({ success: true });
   } catch (err) {
-    console.error('Failed to delete agent employee:', err);
+    console.error('Failed to delete agent employee:');
     return c.json({ error: 'Failed to delete agent employee', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -2610,7 +2610,7 @@ agentEmployeeRoutes.post('/:id/pause', async (c) => {
 
     return c.json({ success: true, is_active: false });
   } catch (err) {
-    console.error('Failed to pause agent employee:', err);
+    console.error('Failed to pause agent employee:');
     return c.json({ error: 'Failed to pause agent employee', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -2643,7 +2643,7 @@ agentEmployeeRoutes.post('/:id/resume', async (c) => {
 
     return c.json({ success: true, is_active: true });
   } catch (err) {
-    console.error('Failed to resume agent employee:', err);
+    console.error('Failed to resume agent employee:');
     return c.json({ error: 'Failed to resume agent employee', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -2669,7 +2669,7 @@ agentEmployeeRoutes.get('/:id/activity', async (c) => {
     const limit = Math.min(Math.max(Number.parseInt(c.req.query('limit') ?? '50', 10) || 50, 1), 100);
     return c.json(await loadAgentActivity({ orgId: user.org_id, employeeId: id, viewer: user, limit }));
   } catch (err) {
-    console.error('Failed to get agent employee activity:', err);
+    console.error('Failed to get agent employee activity:');
     return c.json({ error: 'Failed to get activity', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -3095,7 +3095,7 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
       },
     });
   } catch (err) {
-    console.error('Failed to fetch developer credentials:', err);
+    console.error('Failed to fetch developer credentials:');
     return c.json({ error: 'Failed', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -3151,7 +3151,7 @@ agentEmployeeRoutes.post('/:id/channel-test/start', async (c) => {
       ],
     }, 201);
   } catch (err) {
-    console.error('Failed to start channel test:', err);
+    console.error('Failed to start channel test:');
     return c.json({ error: 'Failed to start channel test', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -3260,7 +3260,7 @@ agentEmployeeRoutes.post('/:id/certification/start', async (c) => {
       mcp_endpoint_url: mcpEndpointUrl(),
     }, 201);
   } catch (err) {
-    console.error('Failed to start agent certification:', err);
+    console.error('Failed to start agent certification:');
     return c.json({ error: 'Failed to start certification', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -3336,7 +3336,7 @@ agentEmployeeRoutes.get('/:id/certification', async (c) => {
       runtime_setup: buildRuntimeSetup(employee, challenge?.nonce ?? null),
     });
   } catch (err) {
-    console.error('Failed to fetch agent certification:', err);
+    console.error('Failed to fetch agent certification:');
     return c.json({ error: 'Failed to fetch certification', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -3525,7 +3525,7 @@ agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
       runtime_setup: buildRuntimeSetup(employee, challenge.nonce),
     });
   } catch (err) {
-    console.error('Failed to check agent certification:', err);
+    console.error('Failed to check agent certification:');
     return c.json({ error: 'Failed to check certification', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -3556,7 +3556,7 @@ agentEmployeeRoutes.post('/:id/certification/reset', async (c) => {
 
     return c.json({ ok: true });
   } catch (err) {
-    console.error('Failed to reset agent certification:', err);
+    console.error('Failed to reset agent certification:');
     return c.json({ error: 'Failed to reset certification', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -3610,7 +3610,7 @@ agentEmployeeRoutes.post('/:id/regenerate-token', async (c) => {
       mcp_scopes: issuedMcpToken.scopes,
     });
   } catch (err) {
-    console.error('Failed to regenerate agent employee token:', err);
+    console.error('Failed to regenerate agent employee token:');
     return c.json({ error: 'Failed to regenerate token', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -3652,7 +3652,7 @@ agentEmployeeRoutes.post('/:id/regenerate-channel-token', async (c) => {
       channel_token_prefix: channelToken.prefix,
     });
   } catch (err) {
-    console.error('Failed to regenerate agent employee channel token:', err);
+    console.error('Failed to regenerate agent employee channel token:');
     return c.json({ error: 'Failed to regenerate channel token', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -3763,7 +3763,7 @@ agentEmployeeRoutes.post('/:id/clone', async (c) => {
 
     return c.json({ employee: managed.value, cloned_from: id }, 201);
   } catch (err) {
-    console.error('Failed to clone agent employee:', err);
+    console.error('Failed to clone agent employee:');
     return c.json({ error: 'Failed to clone', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -3842,7 +3842,7 @@ agentEmployeeRoutes.post('/:id/save-as-template', async (c) => {
       throw err;
     }
   } catch (err) {
-    console.error('Failed to save as template:', err);
+    console.error('Failed to save as template:');
     return c.json({ error: 'Failed to save as template', code: 'INTERNAL_ERROR' }, 500);
   }
 });

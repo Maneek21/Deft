@@ -53,7 +53,7 @@ function failure(c: Context, error: unknown) {
       details: { issues: error.issues.map((issue) => ({ path: issue.path, message: issue.message })) },
     }, 400);
   }
-  console.error('[module-task-links] request failed:', error);
+  console.error('[module-task-links] request failed:');
   return c.json({ error: 'Module task link request failed', code: 'INTERNAL_ERROR' }, 500);
 }
 

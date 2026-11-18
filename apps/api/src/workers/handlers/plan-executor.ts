@@ -9,6 +9,6 @@ interface PlanExecutorData {
 
 export async function handlePlanExecutor(job: JobData): Promise<void> {
   const { planId, orgId, userId } = job.data as PlanExecutorData;
-  console.log(`[plan-executor] Executing plan ${planId} for org ${orgId}`);
+  console.log("[plan-executor] Executing plan <redacted> for org <redacted>");
   await executePlan(planId, orgId, userId);
 }

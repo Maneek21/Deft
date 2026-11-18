@@ -1377,7 +1377,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
     followed?: boolean;
   };
 
-  console.log(`[agent-reply] Processing agent reply for message ${messageId} in space ${spaceId}`);
+  console.log("[agent-reply] Processing agent reply for message <redacted> in space <redacted>");
 
   try {
     // Load space context — type drives both threading behavior and the
@@ -1682,7 +1682,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
           promptContent, sourceMessageId: requestMessageId, pendingDraft,
           callerName: callerUser?.name ?? null, spaceName: space.name });
       } catch (error) {
-        console.warn('[agent-reply] Pending clarification compiler failed; using the runner', error instanceof Error ? error.message : String(error));
+        console.warn('[agent-reply] Pending clarification compiler failed; using the runner');
       }
     }
     if (attachmentContextSections.length > 0 && !followed) {
@@ -1700,10 +1700,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
           promptContent,
         });
       } catch (err) {
-        console.warn('[agent-reply] Deterministic module CSV compiler failed; using the general reasoning path', {
-          messageId,
-          error: err instanceof Error ? err.message : String(err),
-        });
+        console.warn('[agent-reply] Deterministic module CSV compiler failed; using the general reasoning path');
       }
     }
     let recoveryPriorTaskReferences: Awaited<ReturnType<typeof collectRecentAgentTaskReferences>> | null = null;
@@ -1808,10 +1805,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
                 callerName: callerUser?.name ?? null,
               });
             } catch (err) {
-              console.warn('[agent-reply] Action draft compiler failed; using grounded runner result', {
-                messageId,
-                error: err instanceof Error ? err.message : String(err),
-              });
+              console.warn('[agent-reply] Action draft compiler failed; using grounded runner result');
               return null;
             }
           },
@@ -1833,10 +1827,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
         sourceMessageId: requestMessageId,
         sourceMessages: discussionSourceMessages,
       });
-      console.warn('[agent-reply] Falling back to deterministic discussion task proposal', {
-        messageId,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      console.warn('[agent-reply] Falling back to deterministic discussion task proposal');
       result = {
         text: 'I could not complete the full reasoning pass, so I prepared a conservative task proposal from the recent discussion for human review.',
         pendingActions: [fallbackAction],
@@ -1942,10 +1933,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
           allowedActionNames: runtimeResolvedWikiUpdate ? ['wiki_write'] : undefined,
         });
       } catch (err) {
-        console.warn('[agent-reply] Action draft compiler failed; falling back to deterministic extractors', {
-          messageId,
-          error: err instanceof Error ? err.message : String(err),
-        });
+        console.warn('[agent-reply] Action draft compiler failed; falling back to deterministic extractors');
       }
     }
     const fallbackStatusUpdate = allowDeterministicFallbacks && !wantsDiscussionTask
@@ -2056,30 +2044,16 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
       pendingActions = [];
     }
     if (fallbackCreateTask) {
-      console.warn('[agent-reply] Added deterministic create_task fallback for explicit task-create prompt', {
-        messageId,
-        title: fallbackCreateTask.params.title,
-      });
+      console.warn('[agent-reply] Added deterministic create_task fallback for explicit task-create prompt');
     }
     if (fallbackStatusUpdate) {
-      console.warn('[agent-reply] Added deterministic update_task_status fallback for explicit status prompt', {
-        messageId,
-        task_identifier: fallbackStatusUpdate.params.task_identifier,
-        new_status: fallbackStatusUpdate.params.new_status,
-      });
+      console.warn('[agent-reply] Added deterministic update_task_status fallback for explicit status prompt');
     }
     if (fallbackReferentialStatusUpdates) {
-      console.warn('[agent-reply] Added deterministic referential update_task_status fallback for prior task list', {
-        messageId,
-        task_identifiers: fallbackReferentialStatusUpdates.map((action: any) => action.params.task_identifier),
-        new_status: fallbackReferentialStatusUpdates[0]?.params?.new_status,
-      });
+      console.warn('[agent-reply] Added deterministic referential update_task_status fallback for prior task list');
     }
     if (fallbackPostMessage) {
-      console.warn('[agent-reply] Added deterministic post_message fallback for explicit message prompt', {
-        messageId,
-        space_name: fallbackPostMessage.params.space_name,
-      });
+      console.warn('[agent-reply] Added deterministic post_message fallback for explicit message prompt');
     }
     const targetClarificationMessage = buildTargetClarificationMessage(pendingActionTargetWarnings);
     const writeIntentClarificationMessage = !providerUnavailable && !readOnlyRequest && pendingActions.length === 0 && !wantsDiscussionTask
@@ -2160,13 +2134,13 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
         beforeCommit: (tx) => assertDeliveryOwnedBeforeCommit(tx, delivery),
       });
       if (persisted.replayed) {
-        console.log(`[agent-reply] Reply to ${messageId} already posted as ${persisted.message.id}; skipping`);
+        console.log("[agent-reply] Reply to <redacted> already posted as <redacted>; skipping");
         return;
       }
       agentMessage = persisted.message;
     } catch (err) {
       if (pendingActions.length === 0 || err instanceof DeftyDeliveryLostError || isDatabaseWaitTimeout(err)) throw err;
-      console.error('[agent-reply] Failed to persist agent reply with pending actions:', err);
+      console.error('[agent-reply] Failed to persist agent reply with pending actions:');
       const failedApprovalContent = [
         'I drafted the action, but I could not create the approval card.',
         'Please try again or create it manually.',
@@ -2200,15 +2174,12 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
     try {
       await broadcastAgentReply({ dependencies, agentUserId, agentMessage, spaceId, threadParentId });
     } catch (err) {
-      console.warn('[agent-reply] Reply committed but its broadcast failed', {
-        messageId: agentMessage.id,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      console.warn('[agent-reply] Reply committed but its broadcast failed');
     }
 
-    console.log(`[agent-reply] Posted agent reply ${agentMessage.id} in space ${spaceId}${threadParentId ? ` thread ${threadParentId}` : ' (flat)'}`);
+    console.log("[agent-reply] Posted agent reply <redacted> in space <redacted><redacted>");
   } catch (err) {
-    console.error('[agent-reply] Failed to generate agent reply:', err);
+    console.error('[agent-reply] Failed to generate agent reply:');
     throw err; // Re-throw so the PostgreSQL queue worker can retry.
   }
 }

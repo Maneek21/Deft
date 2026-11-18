@@ -30,11 +30,11 @@ export async function handleWikiLint(job: JobData): Promise<void> {
       totalLowConfidence += results.lowConfidence;
       totalContradictions += results.contradictions;
     } catch (err) {
-      console.error(`[wiki-lint] Error linting org ${org_id}:`, (err as Error).message);
+      console.error("[wiki-lint] Error linting org <redacted>:");
     }
   }
 
-  console.log(`[wiki-lint] Complete — orphaned: ${totalOrphaned}, stale: ${totalStale}, decayed: ${totalDecayed}, low-confidence: ${totalLowConfidence}, contradictions: ${totalContradictions}`);
+  console.log("[wiki-lint] Complete — orphaned: <redacted>, stale: <redacted>, decayed: <redacted>, low-confidence: <redacted>, contradictions: <redacted>");
 }
 
 async function lintOrg(orgId: string): Promise<{
@@ -232,7 +232,7 @@ Rules:
       }
     }
   } catch (err) {
-    console.warn('[wiki-lint] Contradiction detection failed:', (err as Error).message);
+    console.warn('[wiki-lint] Contradiction detection failed:');
   }
 
   return { orphaned, stale, decayed, lowConfidence, contradictions };

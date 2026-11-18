@@ -97,7 +97,7 @@ managerRoutes.post('/oneone-prep', async (c) => {
     const result = await generateOneOnePrep(user.id, body.report_id, user.org_id);
     return c.json(result);
   } catch (err) {
-    console.error('Failed to generate 1:1 prep:', err);
+    console.error('Failed to generate 1:1 prep:');
     return c.json({ error: 'Failed to generate 1:1 prep', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -121,7 +121,7 @@ managerRoutes.get('/oneone-preps', async (c) => {
 
     return c.json({ preps });
   } catch (err) {
-    console.error('Failed to list 1:1 preps:', err);
+    console.error('Failed to list 1:1 preps:');
     return c.json({ error: 'Failed to list 1:1 preps', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -172,7 +172,7 @@ managerRoutes.patch('/oneone-preps/:id', async (c) => {
 
     return c.json({ prep: updated });
   } catch (err) {
-    console.error('Failed to update 1:1 prep:', err);
+    console.error('Failed to update 1:1 prep:');
     return c.json({ error: 'Failed to update 1:1 prep', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -209,7 +209,7 @@ managerRoutes.get('/settings', async (c) => {
 
     return c.json({ settings });
   } catch (err) {
-    console.error('Failed to get manager settings:', err);
+    console.error('Failed to get manager settings:');
     return c.json({ error: 'Failed to get manager settings', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -272,7 +272,7 @@ managerRoutes.patch('/settings', async (c) => {
 
     return c.json({ settings });
   } catch (err) {
-    console.error('Failed to update manager settings:', err);
+    console.error('Failed to update manager settings:');
     return c.json({ error: 'Failed to update manager settings', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -300,7 +300,7 @@ managerRoutes.get('/team-health', async (c) => {
 
     return c.json({ snapshot: await sanitizeTeamHealthSnapshot(snapshot, user.org_id) });
   } catch (err) {
-    console.error('Failed to get team health:', err);
+    console.error('Failed to get team health:');
     return c.json({ error: 'Failed to get team health', code: 'INTERNAL_ERROR' }, 500);
   }
 });

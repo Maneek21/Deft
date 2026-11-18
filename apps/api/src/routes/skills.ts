@@ -85,7 +85,7 @@ skillsRoutes.get('/', async (c) => {
 
     return c.json(rows);
   } catch (err) {
-    console.error('Failed to list skills:', err);
+    console.error('Failed to list skills:');
     return c.json({ error: 'Failed to list skills', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -146,7 +146,7 @@ skillsRoutes.post('/', async (c) => {
 
     return c.json(created, 201);
   } catch (err) {
-    console.error('Failed to create skill:', err);
+    console.error('Failed to create skill:');
     return c.json({ error: 'Failed to create skill', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -201,7 +201,7 @@ skillsRoutes.get('/:slug', async (c) => {
 
     return c.json({ error: 'Skill not found', code: 'NOT_FOUND' }, 404);
   } catch (err) {
-    console.error('Failed to get skill:', err);
+    console.error('Failed to get skill:');
     return c.json({ error: 'Failed to get skill', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -247,7 +247,7 @@ skillsRoutes.get('/:slug/stats', async (c) => {
       attached_to_projects: 0, // project_skills table retired in Task 14
     });
   } catch (err) {
-    console.error('Failed to get skill stats:', err);
+    console.error('Failed to get skill stats:');
     return c.json({ error: 'Failed to get skill stats', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -310,7 +310,7 @@ skillsRoutes.patch('/:id', async (c) => {
 
     return c.json(updated);
   } catch (err) {
-    console.error('Failed to update skill:', err);
+    console.error('Failed to update skill:');
     return c.json({ error: 'Failed to update skill', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -346,7 +346,7 @@ skillsRoutes.delete('/:id', async (c) => {
 
     return c.json({ success: true });
   } catch (err) {
-    console.error('Failed to delete skill:', err);
+    console.error('Failed to delete skill:');
     return c.json({ error: 'Failed to delete skill', code: 'INTERNAL_ERROR' }, 500);
   }
 });

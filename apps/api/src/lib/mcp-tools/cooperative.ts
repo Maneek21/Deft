@@ -321,7 +321,7 @@ export async function recordProgress(args: ProgressArgs, ctx: ToolContext): Prom
             : status,
       });
     } catch (error) {
-      console.warn('[record_progress] progress broadcast failed', error instanceof Error ? error.message : String(error));
+      console.warn('[record_progress] progress broadcast failed');
     }
   }
 

@@ -15,6 +15,6 @@ export async function handleChatObservationBackfill(_job: JobData): Promise<void
   }
 
   if (total > 0) {
-    console.log(`[chat-observation-backfill] queued ${total} missing observation job(s)`);
+    console.log("[chat-observation-backfill] queued <redacted> missing observation job(s)");
   }
 }

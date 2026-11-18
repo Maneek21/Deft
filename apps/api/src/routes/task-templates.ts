@@ -43,7 +43,7 @@ taskTemplateRoutes.get('/', async (c) => {
       );
     return c.json({ templates: rows });
   } catch (err) {
-    console.error('Failed to list task templates:', err);
+    console.error('Failed to list task templates:');
     return c.json({ error: 'Failed to list templates', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -72,7 +72,7 @@ taskTemplateRoutes.get('/:id', async (c) => {
     }
     return c.json({ template: row });
   } catch (err) {
-    console.error('Failed to get task template:', err);
+    console.error('Failed to get task template:');
     return c.json({ error: 'Failed to get template', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -200,7 +200,7 @@ taskTemplateRoutes.post('/:id/apply-template', async (c) => {
       201,
     );
   } catch (err) {
-    console.error('Failed to apply template:', err);
+    console.error('Failed to apply template:');
     return c.json({ error: 'Failed to apply template', code: 'INTERNAL_ERROR' }, 500);
   }
 });

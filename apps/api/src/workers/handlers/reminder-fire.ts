@@ -119,8 +119,7 @@ export async function rehydratePendingReminders(): Promise<number> {
   }
 
   if (pending.length > 0) {
-    console.log(
-      `[reminder-fire] rehydrated ${pending.length} pending reminder(s) on boot`,
+    console.log("[reminder-fire] rehydrated <redacted> pending reminder(s) on boot"
     );
   }
   return pending.length;

@@ -207,7 +207,7 @@ export async function buildInteractionMatrix(orgId: string): Promise<void> {
       });
   }
 
-  console.log(`[people-graph] Interaction matrix built for org ${orgId}: ${deltas.size} pairs updated`);
+  console.log("[people-graph] Interaction matrix built for org <redacted>: <redacted> pairs updated");
 }
 
 // ═══ EXPERTISE EXTRACTION ═══
@@ -291,7 +291,7 @@ If a message has no clear expertise topic, use an empty topics array.`;
         }
       }
     } catch (err) {
-      console.error(`[people-graph] Expertise extraction LLM error for batch at ${i}:`, err);
+      console.error("[people-graph] Expertise extraction LLM error for batch at <redacted>:");
       // Continue with next batch
     }
   }
@@ -383,7 +383,7 @@ Respond ONLY with valid JSON array. Each element: { "idx": number, "topics": str
           }
         }
       } catch (err) {
-        console.error(`[people-graph] Task expertise extraction error:`, err);
+        console.error(`[people-graph] Task expertise extraction error:`);
       }
     }
   }
@@ -538,7 +538,7 @@ Respond ONLY with valid JSON array. Each element: { "idx": number, "topics": str
       });
   }
 
-  console.log(`[people-graph] Expertise extracted for org ${orgId}: ${expertiseDeltas.size} topic-user pairs; wiki signal applied for ${wikiScoreDeltas.size} topic-user pairs; task-completion label signal applied for ${taskLabelScoreDeltas.size} topic-user pairs`);
+  console.log("[people-graph] Expertise extracted for org <redacted>: <redacted> topic-user pairs; wiki signal applied for <redacted> topic-user pairs; task-completion label signal applied for <redacted> topic-user pairs");
 }
 
 // ═══ PATTERN ANALYSIS ═══
@@ -909,12 +909,12 @@ export async function analyzePatterns(orgId: string): Promise<void> {
           },
         });
     } catch (err) {
-      console.error(`[people-graph] Pattern analysis error for user ${userId}:`, err);
+      console.error("[people-graph] Pattern analysis error for user <redacted>:");
       // Continue to next user
     }
   }
 
-  console.log(`[people-graph] Patterns analyzed for org ${orgId}: ${orgUsers.length} users`);
+  console.log("[people-graph] Patterns analyzed for org <redacted>: <redacted> users");
 }
 
 // ═══ RELATIONSHIP DETECTION ═══
@@ -1301,7 +1301,7 @@ export async function detectRelationships(orgId: string): Promise<void> {
   // communicators. Stubbed until a higher-quality signal is available (e.g. LLM
   // sentiment on sampled message pairs or explicit "block/mute" events).
 
-  console.log(`[people-graph] Relationships detected for org ${orgId}: ${strongPairs.length} strong pairs analyzed, ${citationPairs.length} knowledge_dependency edges, ${delegationEdges} delegation_chain edges`);
+  console.log("[people-graph] Relationships detected for org <redacted>: <redacted> strong pairs analyzed, <redacted> knowledge_dependency edges, <redacted> delegation_chain edges");
 }
 
 // ═══ FULL PIPELINE ═══
@@ -1312,7 +1312,7 @@ export async function detectRelationships(orgId: string): Promise<void> {
  */
 export async function runFullPeopleGraph(orgId: string): Promise<void> {
   const start = Date.now();
-  console.log(`[people-graph] Starting full pipeline for org ${orgId}`);
+  console.log("[people-graph] Starting full pipeline for org <redacted>");
 
   await buildInteractionMatrix(orgId);
   await extractExpertise(orgId);
@@ -1320,5 +1320,5 @@ export async function runFullPeopleGraph(orgId: string): Promise<void> {
   await detectRelationships(orgId);
 
   const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-  console.log(`[people-graph] Full pipeline completed for org ${orgId} in ${elapsed}s`);
+  console.log("[people-graph] Full pipeline completed for org <redacted> in <redacted>s");
 }

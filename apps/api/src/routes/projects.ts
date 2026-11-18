@@ -98,7 +98,7 @@ projectRoutes.get('/', async (c) => {
 
     return c.json(result);
   } catch (err) {
-    console.error('Failed to fetch projects:', err);
+    console.error('Failed to fetch projects:');
     return c.json({ error: 'Failed to fetch projects', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -130,7 +130,7 @@ projectRoutes.get('/recently-deleted', async (c) => {
 
     return c.json(result);
   } catch (err) {
-    console.error('Failed to fetch recently-deleted projects:', err);
+    console.error('Failed to fetch recently-deleted projects:');
     return c.json({ error: 'Failed to fetch recently-deleted', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -181,7 +181,7 @@ projectRoutes.post('/', async (c) => {
 
     return c.json(project, 201);
   } catch (err) {
-    console.error('Failed to create project:', err);
+    console.error('Failed to create project:');
     return c.json({ error: 'Failed to create project', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -238,7 +238,7 @@ projectRoutes.get('/:id', async (c) => {
 
     return c.json({ ...project, task_counts });
   } catch (err) {
-    console.error('Failed to fetch project:', err);
+    console.error('Failed to fetch project:');
     return c.json({ error: 'Failed to fetch project', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -277,7 +277,7 @@ projectRoutes.get('/:id/velocity', async (c) => {
 
     return c.json({ velocity, average: avg, weeks });
   } catch (err) {
-    console.error('Failed to fetch velocity:', err);
+    console.error('Failed to fetch velocity:');
     return c.json({ error: 'Failed to fetch velocity', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -338,7 +338,7 @@ projectRoutes.patch('/:id', async (c) => {
 
     return c.json(updated);
   } catch (err) {
-    console.error('Failed to update project:', err);
+    console.error('Failed to update project:');
     return c.json({ error: 'Failed to update project', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -373,7 +373,7 @@ projectRoutes.delete('/:id', async (c) => {
 
     return c.body(null, 204);
   } catch (err) {
-    console.error('Failed to delete project:', err);
+    console.error('Failed to delete project:');
     return c.json({ error: 'Failed to delete project', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -410,7 +410,7 @@ projectRoutes.post('/:id/restore', async (c) => {
 
     return c.json(restored);
   } catch (err) {
-    console.error('Failed to restore project:', err);
+    console.error('Failed to restore project:');
     return c.json({ error: 'Failed to restore project', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -577,7 +577,7 @@ async function listProjectTasks(c: any) {
 
     return c.json(tasksWithExtras);
   } catch (err) {
-    console.error('Failed to fetch project tasks:', err);
+    console.error('Failed to fetch project tasks:');
     return c.json({ error: 'Failed to fetch tasks', code: 'INTERNAL_ERROR' }, 500);
   }
 }
@@ -702,7 +702,7 @@ projectRoutes.post('/:id/tasks', async (c) => {
         orgId: user.org_id,
       });
     } catch (err) {
-      console.error('Failed to enqueue duplicate-detect:', err);
+      console.error('Failed to enqueue duplicate-detect:');
     }
 
     return c.json({
@@ -712,7 +712,7 @@ projectRoutes.post('/:id/tasks', async (c) => {
     }, 201);
   } catch (err) {
     if (err instanceof NativeCreateError) return c.json({ error: err.message, code: err.code }, err.status);
-    console.error('Failed to create task:', err);
+    console.error('Failed to create task:');
     return c.json({ error: 'Failed to create task', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -740,7 +740,7 @@ projectRoutes.get('/:id/resolved-config', async (c) => {
     const resolved = await getProjectResolvedConfig(projectId);
     return c.json(resolved);
   } catch (err) {
-    console.error('Failed to fetch resolved config:', err);
+    console.error('Failed to fetch resolved config:');
     return c.json({ error: 'Failed to fetch resolved config', code: 'INTERNAL_ERROR' }, 500);
   }
 });

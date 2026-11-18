@@ -683,7 +683,7 @@ export async function invalidateModuleCatalogCaches(orgId: string): Promise<void
     const { invalidatePlatformContextCacheFor } = await import('./mcp-tools/context.js');
     for (const employee of employees) invalidatePlatformContextCacheFor(employee.id);
   } catch (error) {
-    console.warn('[modules] failed to invalidate agent catalog caches:', error);
+    console.warn('[modules] failed to invalidate agent catalog caches:');
   }
 }
 

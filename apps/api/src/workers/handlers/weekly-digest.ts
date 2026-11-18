@@ -79,18 +79,15 @@ export async function handleWeeklyDigest(job: JobData): Promise<void> {
             emitToUser(notification.org_id, manager.userId, 'notification:new', notification);
           }
 
-          console.log(
-            `[weekly-digest] Generated digest for manager ${manager.userId} in org ${org.id}`,
+          console.log("[weekly-digest] Generated digest for manager <redacted> in org <redacted>"
           );
         } catch (err) {
-          console.error(
-            `[weekly-digest] Failed for manager ${manager.userId}:`,
-            err,
+          console.error("[weekly-digest] Failed for manager <redacted>:"
           );
         }
       }
     } catch (err) {
-      console.error(`[weekly-digest] Failed for org ${org.id}:`, err);
+      console.error("[weekly-digest] Failed for org <redacted>:");
     }
   }
 

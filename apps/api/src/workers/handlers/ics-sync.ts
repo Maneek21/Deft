@@ -34,7 +34,7 @@ export async function handleIcsSync(_job: JobData): Promise<void> {
     ?? (due as unknown as Array<Record<string, unknown>>);
 
   if (rows.length === 0) return;
-  console.log(`[ics-sync] ${rows.length} subscription(s) due`);
+  console.log("[ics-sync] <redacted> subscription(s) due");
 
   for (const row of rows) {
     const sub = row as {
@@ -47,7 +47,7 @@ export async function handleIcsSync(_job: JobData): Promise<void> {
     };
     await syncOne(sub).catch(async (err) => {
       const msg = humanizeIcsError(err);
-      console.warn(`[ics-sync] sub ${sub.id} failed: ${msg}`);
+      console.warn("[ics-sync] sub <redacted> failed: <redacted>");
       await db
         .update(icsSubscriptions)
         .set({ last_error: msg, last_synced_at: new Date() })
@@ -127,7 +127,7 @@ export async function syncOne(sub: {
     .set({ last_synced_at: new Date(), last_error: null, last_event_count: count })
     .where(eq(icsSubscriptions.id, sub.id));
 
-  console.log(`[ics-sync] sub ${sub.id} synced ${count} event(s) from host ${feedHost(sub.ics_url)}`);
+  console.log("[ics-sync] sub <redacted> synced <redacted> event(s) from host <redacted>");
   return { count };
 }
 

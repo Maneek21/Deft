@@ -178,8 +178,7 @@ const databaseMcpCapabilityRuntime: McpCapabilityRuntime = {
 };
 
 function defaultSnapshotWarningSink(warning: CapabilitySnapshotWarning): void {
-  console.warn(
-    `[capability-service] ${warning.code} for ${warning.provider_kind} provider ${warning.provider_instance_id} in org ${warning.org_id}`,
+  console.warn("[capability-service] <redacted> for <redacted> provider <redacted> in org <redacted>"
   );
 }
 

@@ -107,7 +107,7 @@ async function notifyAdminsOfQueuedRuntime(orgId: string, employeeId: string, em
 export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
   const { messageId, spaceId, orgId, employeeId, isDM } = job.data as AgentEmployeeMessageData;
 
-  console.log(`[agent-employee-message] Processing ${isDM ? 'DM' : '@mention'} for employee ${employeeId} in space ${spaceId}`);
+  console.log("[agent-employee-message] Processing <redacted> for employee <redacted> in space <redacted>");
 
   // Block agent→agent mentions (prevent loops)
   const [triggerMsg] = await db.select().from(messages)
@@ -136,11 +136,11 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
     .limit(1);
 
   if (!employee) {
-    console.warn(`[agent-employee-message] Employee ${employeeId} not found or inactive, skipping`);
+    console.warn("[agent-employee-message] Employee <redacted> not found or inactive, skipping");
     return;
   }
   if (!(await employeeCanAccessSpace(employeeId, orgId, spaceId))) {
-    console.warn(`[agent-employee-message] Employee ${employeeId} cannot access space ${spaceId}, skipping`);
+    console.warn("[agent-employee-message] Employee <redacted> cannot access space <redacted>, skipping");
     return;
   }
 
@@ -198,9 +198,7 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
       },
     });
   } catch (err) {
-    console.error(
-      `[agent-employee-message] failed to queue BYOA mention for ${employeeId}:`,
-      err instanceof Error ? err.message : err,
+    console.error("[agent-employee-message] failed to queue BYOA mention for <redacted>:"
     );
   }
 
@@ -238,9 +236,7 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
       try {
         await notifyAdminsOfQueuedRuntime(orgId, employeeId, employee.name);
       } catch (alertError) {
-        console.warn(
-          '[agent-employee-message] offline runtime alert failed:',
-          alertError instanceof Error ? alertError.message : alertError,
+        console.warn('[agent-employee-message] offline runtime alert failed:'
         );
       }
     }
@@ -270,9 +266,7 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
       await emitCurrentMessageToSpaceViewers(io, spaceId, 'message:new', sysMsg);
     }
   } catch (err) {
-    console.warn(
-      `[agent-employee-message] BYOA system-note post failed:`,
-      err instanceof Error ? err.message : err,
+    console.warn(`[agent-employee-message] BYOA system-note post failed:`
     );
   }
 }

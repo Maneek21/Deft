@@ -326,10 +326,7 @@ export async function finalizeApprovalOutcome(params: {
         action: row.action,
       });
     } catch (err) {
-      console.warn('[agent-approval] Failed to post approval confirmation', {
-        actionId: row.id,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      console.warn('[agent-approval] Failed to post approval confirmation');
     }
   }
   return true;
@@ -612,10 +609,7 @@ export async function recoverInterruptedApprovals(options: {
       if (!held.acquired) result.live += 1;
       else if (held.value) result.recovered += 1;
     } catch (err) {
-      console.warn('[agent-approval] interrupted approval recovery failed', {
-        actionId: candidate.id,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      console.warn('[agent-approval] interrupted approval recovery failed');
     }
   }
   if (!result.poolBusy && options.resumeResolverModuleAction) {
@@ -728,10 +722,7 @@ async function finaliseUnfinishedApprovals(options: {
       if (!held.acquired && held.reason === 'pool_busy') return { finalised, poolBusy: true };
       if (held.acquired && held.value) finalised += 1;
     } catch (err) {
-      console.warn('[agent-approval] approval bookkeeping repair failed', {
-        actionId: candidate.id,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      console.warn('[agent-approval] approval bookkeeping repair failed');
     }
   }
   return { finalised, poolBusy: false };
@@ -779,10 +770,7 @@ async function resumeApprovedModuleActions(options: {
         });
       }
     } catch (err) {
-      console.warn('[agent-approval] module approval resume failed', {
-        actionId: candidate.id,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      console.warn('[agent-approval] module approval resume failed');
     }
   }
   return { resumed, live, poolBusy: false };

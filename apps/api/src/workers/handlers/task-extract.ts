@@ -137,16 +137,16 @@ async function queueTaskCreateApproval(params: {
   });
 
   if (!queued.queued && queued.skippedReason === 'project_missing') {
-    console.warn(`[task-extract] No project found for create-task capture in org ${orgId}`);
+    console.warn("[task-extract] No project found for create-task capture in org <redacted>");
     return false;
   }
 
   if (!queued.queued && queued.skippedReason === 'duplicate') {
-    console.log(`[task-extract] Create-task capture already queued for message ${messageId}`);
+    console.log("[task-extract] Create-task capture already queued for message <redacted>");
     return true;
   }
 
-  console.log(`[task-extract] Queued ${extraction} Defty task capture "${title}" for message ${messageId}`);
+  console.log("[task-extract] Queued <redacted> Defty task capture \"<redacted>\" for message <redacted>");
   return queued.queued;
 }
 
@@ -186,7 +186,7 @@ export async function handleTaskExtract(job: JobData): Promise<void> {
   const { messageId, spaceId, content, orgId, userId, classification } = job.data as TaskExtractJobData;
 
   if (!ENABLE_BACKGROUND_TASK_CAPTURE) {
-    console.log(`[task-extract] Background chat-to-task capture disabled; skipping ${messageId}`);
+    console.log("[task-extract] Background chat-to-task capture disabled; skipping <redacted>");
     return;
   }
 
@@ -197,7 +197,7 @@ export async function handleTaskExtract(job: JobData): Promise<void> {
   if (!(await sourceIsLive())) return;
 
   if (hasNoTaskDirective(content)) {
-    console.log(`[task-extract] Skipped message ${messageId} due to explicit no-task directive`);
+    console.log("[task-extract] Skipped message <redacted> due to explicit no-task directive");
     return;
   }
 
@@ -246,8 +246,7 @@ export async function handleTaskExtract(job: JobData): Promise<void> {
       'employee-trigger',
       invocation as unknown as Record<string, unknown>,
     );
-    console.log(
-      `[task-extract] Routed event:task-extract to ${subscribed.slug} for message ${messageId}`,
+    console.log("[task-extract] Routed event:task-extract to <redacted> for message <redacted>"
     );
     return;
   }
@@ -298,7 +297,7 @@ export async function handleTaskExtract(job: JobData): Promise<void> {
     try {
       extracted = JSON.parse(text);
     } catch {
-      console.error('[task-extract] Failed to parse LLM response:', text);
+      console.error('[task-extract] Failed to parse LLM response:');
       if (classification.intent === 'task_create') {
         await queueDeterministicTaskCreateApproval({
           orgId,
@@ -313,7 +312,7 @@ export async function handleTaskExtract(job: JobData): Promise<void> {
     }
 
     if (extracted.skip) {
-      console.log(`[task-extract] Skipped message ${messageId} — not a clear task`);
+      console.log("[task-extract] Skipped message <redacted> — not a clear task");
       if (classification.intent === 'task_create') {
         await queueDeterministicTaskCreateApproval({
           orgId,
@@ -359,15 +358,14 @@ export async function handleTaskExtract(job: JobData): Promise<void> {
         messageId,
         spaceId,
       });
-      console.log(
-        `[task-extract] Auto-accepted task created from message ${messageId}`,
+      console.log("[task-extract] Auto-accepted task created from message <redacted>"
       );
       return;
     }
 
-    console.log(`[task-extract] Captured possible task "${extracted.title}" for message ${messageId}`);
+    console.log("[task-extract] Captured possible task \"<redacted>\" for message <redacted>");
   } catch (err) {
-    console.error('[task-extract] Extraction failed:', (err as Error).message);
+    console.error('[task-extract] Extraction failed:');
     if (classification.intent === 'task_create') {
       await queueDeterministicTaskCreateApproval({
         orgId,
@@ -435,9 +433,7 @@ export async function postAutoAcceptedExtractComment(params: {
       content: body,
     });
   } catch (err) {
-    console.error(
-      `[task-extract] Failed to post auto-accept comment on task ${params.taskId}:`,
-      (err as Error).message,
+    console.error("[task-extract] Failed to post auto-accept comment on task <redacted>:"
     );
   }
 }

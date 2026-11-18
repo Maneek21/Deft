@@ -58,7 +58,7 @@ metricsRoutes.get('/', async (c) => {
       headers: { 'Content-Type': 'text/plain; version=0.0.4' },
     });
   } catch (err) {
-    console.error('[metrics] collectMetrics failed:', err);
+    console.error('[metrics] collectMetrics failed:');
     return c.json({ error: 'Failed to collect metrics', code: 'INTERNAL_ERROR' }, 500);
   }
 });

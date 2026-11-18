@@ -162,8 +162,7 @@ export async function handleCrossReference(job: JobData): Promise<void> {
         .limit(1);
 
       if (!task) {
-        console.warn(
-          `[cross-reference] unresolved-ref ${sourceType}=${sourceId} prefix=${prefix} number=${number}`,
+        console.warn("[cross-reference] unresolved-ref <redacted>=<redacted> prefix=<redacted> number=<redacted>"
         );
         continue;
       }
@@ -209,9 +208,9 @@ export async function handleCrossReference(job: JobData): Promise<void> {
         content: commentLabel,
       });
 
-      console.log(`[cross-reference] Linked ${sourceType} ${sourceId} -> task ${ref} (${task.id})`);
+      console.log("[cross-reference] Linked <redacted> <redacted> -> task <redacted> (<redacted>)");
     } catch (err) {
-      console.error(`[cross-reference] Failed to process ref ${ref}:`, (err as Error).message);
+      console.error("[cross-reference] Failed to process ref <redacted>:");
     }
   }
 }

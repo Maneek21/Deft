@@ -565,7 +565,7 @@ async function auditMcpCall(params: {
         AND org_id = ${params.ctx.org_id}
     `);
   } catch (err) {
-    console.warn('[mcp-v1] auditMcpCall failed:', err);
+    console.warn('[mcp-v1] auditMcpCall failed:');
   }
 }
 
@@ -598,7 +598,7 @@ async function auditMcpDiscovery(params: {
       `);
     }
   } catch (err) {
-    console.warn('[mcp-v1] auditMcpDiscovery failed:', err);
+    console.warn('[mcp-v1] auditMcpDiscovery failed:');
   }
 }
 

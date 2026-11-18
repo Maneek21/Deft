@@ -10,7 +10,7 @@ import { DrizzleQueryError } from 'drizzle-orm';
  * A database error is not: Drizzle's message is `Failed query: <SQL>
  * params: <values>`, and a driver error can name tables, columns and
  * constraints. Those are replaced with a fixed message and a reference id;
- * the detail is logged on the server under the same id.
+ * the same id is logged on the server without the database detail.
  */
 export const SERVER_ERROR_MESSAGE = 'The action could not be completed because of a server error.';
 
@@ -45,7 +45,7 @@ export function looksLikeDatabaseErrorText(text: string): boolean {
 
 function serverErrorWithReference(detail: unknown, context: string): string {
   const reference = randomUUID().slice(0, 8);
-  console.error(`[client-safe-error] ${context} failed (ref ${reference})`, detail);
+  console.error('[client-safe-error] Action failed; reference:', reference);
   return `${SERVER_ERROR_MESSAGE} Reference: ${reference}`;
 }
 

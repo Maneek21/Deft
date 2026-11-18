@@ -1156,10 +1156,7 @@ async function persistModuleMutationAction(
     // mutation receipt. Never reinterpret a failure to stamp the broad action
     // history as a failed mutation. The same-key retry can recover the exact
     // PII-free outcome through module_mutation_receipts.agent_action_id.
-    console.error('[agent-actions] module mutation committed but action history stamp failed', {
-      actionId,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    console.error('[agent-actions] module mutation committed but action history stamp failed');
   }
 }
 
@@ -2117,7 +2114,7 @@ export async function executeAction(
             }
           }
         } catch (err) {
-          console.error('Failed to post status change in chat:', err);
+          console.error('Failed to post status change in chat:');
         }
 
         await logAuditEvent({
@@ -3821,10 +3818,7 @@ async function executeActionDirectLocked(
         const { syncApprovalToAttention } = await import('./attention.js');
         await syncApprovalToAttention(actionRecord);
       } catch (syncError) {
-        console.warn('[agent-actions] Failed to surface re-gated module action in attention inbox', {
-          actionId: actionRecord.id,
-          error: syncError instanceof Error ? syncError.message : String(syncError),
-        });
+        console.warn('[agent-actions] Failed to surface re-gated module action in attention inbox');
       }
     }
     return {
@@ -3849,10 +3843,7 @@ async function executeActionDirectLocked(
         const { syncApprovalToAttention } = await import('./attention.js');
         await syncApprovalToAttention(actionRecord);
       } catch (syncError) {
-        console.warn('[agent-actions] Failed to surface re-gated module task-link action', {
-          actionId: actionRecord.id,
-          error: syncError instanceof Error ? syncError.message : String(syncError),
-        });
+        console.warn('[agent-actions] Failed to surface re-gated module task-link action');
       }
     }
     return {
@@ -4027,10 +4018,7 @@ async function executeActionDirectLocked(
       const { syncApprovalToAttention } = await import('./attention.js');
       await syncApprovalToAttention(actionRecord);
     } catch (syncError) {
-      console.warn('[agent-actions] Failed to surface re-gated action in attention inbox', {
-        actionId: actionRecord.id,
-        error: syncError instanceof Error ? syncError.message : String(syncError),
-      });
+      console.warn('[agent-actions] Failed to surface re-gated action in attention inbox');
     }
     return {
       actionId: actionRecord.id,

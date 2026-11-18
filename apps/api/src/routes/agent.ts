@@ -1285,10 +1285,7 @@ export async function approveActionAsReviewer(c: Context, user: ActionReviewer, 
       try {
         await recordApprovedActionExecutionContext(action, user.id, result.result);
       } catch (err) {
-        console.warn('[agent-routes] Failed to record approved action result context', {
-          actionId,
-          error: err instanceof Error ? err.message : String(err),
-        });
+        console.warn('[agent-routes] Failed to record approved action result context');
       }
     }
     try {
@@ -1298,10 +1295,7 @@ export async function approveActionAsReviewer(c: Context, user: ActionReviewer, 
         actorUserId: action.user_id,
       });
     } catch (err) {
-      console.warn('[agent-routes] Failed to post approval confirmation', {
-        actionId,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      console.warn('[agent-routes] Failed to post approval confirmation');
     }
     await resolveAttentionBySource({
       orgId: user.org_id,
@@ -1509,10 +1503,7 @@ async function ownedApprovalResponse(
     try {
       await recordApprovedActionExecutionContext(action, actorUserId, execResult.result);
     } catch (err) {
-      console.warn('[agent-routes] Failed to record approved action result context', {
-        actionId: action.id,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      console.warn('[agent-routes] Failed to record approved action result context');
     }
   } else if (action.tool_use_id && action.conversation_id) {
     const preservedToolFailure = execResult.result
@@ -1625,10 +1616,7 @@ export async function rejectActionAsReviewer(
         actorUserId: action.user_id,
       });
     } catch (err) {
-      console.warn('[agent-routes] Failed to post approval confirmation', {
-        actionId,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      console.warn('[agent-routes] Failed to post approval confirmation');
     }
     await resolveAttentionBySource({
       orgId: user.org_id,
@@ -1747,10 +1735,7 @@ export async function rejectActionAsReviewer(
       action: action.action,
     });
   } catch (err) {
-    console.warn('[agent-routes] Failed to post approval confirmation', {
-      actionId,
-      error: err instanceof Error ? err.message : String(err),
-    });
+    console.warn('[agent-routes] Failed to post approval confirmation');
   }
   return c.json({ success: true });
 }
@@ -2003,7 +1988,7 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
     if (err instanceof UndoRefusal) {
       return c.json({ error: err.message, code: err.code }, err.status);
     }
-    console.error('[undo] Failed to reverse action:', err);
+    console.error('[undo] Failed to reverse action:');
     return c.json({ error: 'Failed to undo action', code: 'UNDO_FAILED' }, 500);
   }
 

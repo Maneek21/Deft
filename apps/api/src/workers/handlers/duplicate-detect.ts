@@ -34,7 +34,7 @@ function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
 
 export async function handleDuplicateDetect(job: JobData): Promise<void> {
   const { taskId, title, projectId, orgId } = job.data;
-  console.log('[duplicate-detect] Checking for duplicates of task', taskId);
+  console.log('[duplicate-detect] Checking for duplicates of task');
 
   try {
     // Get the creator of the new task
@@ -117,8 +117,7 @@ export async function handleDuplicateDetect(job: JobData): Promise<void> {
           .returning({ id: duplicateFlags.id });
 
         if (flagInsert.length === 0) {
-          console.log(
-            `[duplicate-detect] Pair ${newIdentifier} ↔ ${existingIdentifier} already flagged, skipping notification`,
+          console.log("[duplicate-detect] Pair <redacted> ↔ <redacted> already flagged, skipping notification"
           );
           break;
         }
@@ -145,8 +144,7 @@ export async function handleDuplicateDetect(job: JobData): Promise<void> {
           emitToUser(notification.org_id, newTask.created_by, 'notification:new', notification);
         }
 
-        console.log(
-          `[duplicate-detect] Found potential duplicate: ${newIdentifier} ↔ ${existingIdentifier} (${Math.round(similarity * 100)}% overlap)`,
+        console.log("[duplicate-detect] Found potential duplicate: <redacted> ↔ <redacted> (<redacted>% overlap)"
         );
 
         // Only flag the best match (first one over threshold)
@@ -154,7 +152,7 @@ export async function handleDuplicateDetect(job: JobData): Promise<void> {
       }
     }
   } catch (err) {
-    console.error('[duplicate-detect] Error:', err);
+    console.error('[duplicate-detect] Error:');
     throw err;
   }
 }

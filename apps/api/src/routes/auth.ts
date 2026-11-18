@@ -190,7 +190,7 @@ authRoutes.post('/signup', async (c) => {
   try {
     await ensureDeftyMembership(org.id);
   } catch (err) {
-    console.error('[ensureDeftyMembership] failed for org', org.id, err);
+    console.error('[ensureDeftyMembership] failed for org');
   }
 
   // Materialize Defty's 1:1 DM so the user sees it in the sidebar
@@ -198,7 +198,7 @@ authRoutes.post('/signup', async (c) => {
   try {
     await ensureDeftyDm(org.id, user.id);
   } catch (err) {
-    console.error('[ensureDeftyDm] failed for org', org.id, 'user', user.id, err);
+    console.error('[ensureDeftyDm] failed for org', 'user');
   }
 
   // In hosted mode the first owner gets an enrol-only token here, not a session.

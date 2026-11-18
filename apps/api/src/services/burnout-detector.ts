@@ -343,7 +343,7 @@ ${publicMessages.map((m, i) => `${i + 1}. ${m.content}`).join('\n')}`;
             }
           }
         } catch (err) {
-          console.error(`[burnout-detect] Sentiment analysis failed for ${member.userId}:`, err);
+          console.error("[burnout-detect] Sentiment analysis failed for <redacted>:");
           sentimentDetail = 'Sentiment analysis unavailable';
         }
       }
@@ -569,7 +569,7 @@ RULES:
 
         alertMessage = alertResponse.text;
       } catch (err) {
-        console.error(`[burnout-detect] LLM alert generation failed for ${member.userId}:`, err);
+        console.error("[burnout-detect] LLM alert generation failed for <redacted>:");
         const detectedSignals = signals.filter((s) => s.detected).map((s) => s.detail);
         alertMessage = `${member.name} is showing changes in work patterns that may indicate strain: ${detectedSignals.join('; ')}. Consider scheduling a casual check-in to see how they're doing.`;
       }
@@ -627,11 +627,10 @@ RULES:
         });
       }
 
-      console.log(
-        `[burnout-detect] Alert created for ${member.name} (score: ${burnoutScore.toFixed(2)}) — notified manager ${managerId}`,
+      console.log("[burnout-detect] Alert created for <redacted> (score: <redacted>) — notified manager <redacted>"
       );
     } catch (err) {
-      console.error(`[burnout-detect] Error processing member ${member.userId}:`, err);
+      console.error("[burnout-detect] Error processing member <redacted>:");
       // Continue to next member
     }
   }

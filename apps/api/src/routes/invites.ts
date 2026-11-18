@@ -223,12 +223,12 @@ inviteRoutes.post('/accept', async (c) => {
   try {
     await ensureDeftyMembership(payload.org_id);
   } catch (err) {
-    console.error('[ensureDeftyMembership] failed for org', payload.org_id, err);
+    console.error('[ensureDeftyMembership] failed for org');
   }
   try {
     await ensureDeftyDm(payload.org_id, payload.user_id);
   } catch (err) {
-    console.error('[ensureDeftyDm] failed for org', payload.org_id, 'user', payload.user_id, err);
+    console.error('[ensureDeftyDm] failed for org', 'user');
   }
 
   // Fire member.joined trigger now that the user has actually joined.
@@ -243,10 +243,10 @@ inviteRoutes.post('/accept', async (c) => {
         role: payload.role,
       });
       if (count > 0) {
-        console.log(`[invites] Fired member.joined trigger to ${count} employee(s)`);
+        console.log("[invites] Fired member.joined trigger to <redacted> employee(s)");
       }
     } catch (err) {
-      console.warn('[invites] member.joined trigger failed:', (err as Error).message);
+      console.warn('[invites] member.joined trigger failed:');
     }
   })();
 

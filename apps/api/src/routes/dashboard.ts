@@ -441,7 +441,7 @@ dashboardRoutes.get('/', async (c) => {
       github_activity: [],
     });
   } catch (err) {
-    console.error('Dashboard error:', err);
+    console.error('Dashboard error:');
     return c.json({ error: 'Failed to load dashboard', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -481,7 +481,7 @@ dashboardRoutes.post('/standup', async (c) => {
       already_existed: result.alreadyExisted,
     });
   } catch (err) {
-    console.error('[standup] unexpected error:', err);
+    console.error('[standup] unexpected error:');
     return c.json({ error: 'Failed to generate standup', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -634,7 +634,7 @@ dashboardRoutes.get('/my-insights', async (c) => {
       pace,
     });
   } catch (err) {
-    console.error('My insights error:', err);
+    console.error('My insights error:');
     return c.json({ error: 'Failed to load insights', code: 'INTERNAL_ERROR' }, 500);
   }
 });

@@ -508,7 +508,7 @@ Rules:
     const parsed = JSON.parse(cleaned) as Partial<EpisodeClassification>;
     return coerceEpisodeClassification(parsed, fallback, episode);
   } catch (err) {
-    console.warn('[chat-knowledge-batch] Episode classifier failed, using deterministic fallback:', (err as Error).message);
+    console.warn('[chat-knowledge-batch] Episode classifier failed, using deterministic fallback:');
     return fallback;
   }
 }
@@ -748,5 +748,5 @@ export async function handleChatKnowledgeBatch(job: JobData): Promise<void> {
     }
   }
 
-  console.log(`[chat-knowledge-batch] processed ${rows.length} messages, queued ${queuedCount}, skipped ${skippedCount}`);
+  console.log("[chat-knowledge-batch] processed <redacted> messages, queued <redacted>, skipped <redacted>");
 }

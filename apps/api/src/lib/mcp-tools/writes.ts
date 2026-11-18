@@ -101,7 +101,7 @@ async function insertAutoExecActionRow(
       .returning({ id: agentActions.id });
     return row?.id ?? null;
   } catch (err) {
-    console.error('[writes] insertAutoExecActionRow failed:', err);
+    console.error('[writes] insertAutoExecActionRow failed:');
     return null;
   }
 }
@@ -121,7 +121,7 @@ async function patchActionResult(
       .set({ result: result as any })
       .where(eq(agentActions.id, actionId));
   } catch (err) {
-    console.error('[writes] patchActionResult failed:', err);
+    console.error('[writes] patchActionResult failed:');
   }
 }
 
@@ -532,7 +532,7 @@ export async function executeTaskCreate(
         orgId: ctx.org_id,
       });
     } catch (err) {
-      console.error('[mcp task_create] Failed to enqueue duplicate-detect:', err);
+      console.error('[mcp task_create] Failed to enqueue duplicate-detect:');
     }
 
     invalidatePlatformContextCacheFor(ctx.employee_id);
@@ -858,7 +858,7 @@ export async function executeTaskUpdate(
           });
         }
       } catch (err) {
-        console.error('[mcp task_update] Failed to enqueue workflow-execute:', (err as Error).message);
+        console.error('[mcp task_update] Failed to enqueue workflow-execute:');
       }
 
       try {

@@ -63,7 +63,7 @@ export async function emitMemberJoinedTrigger(event: MemberJoinedEvent): Promise
         goal: `A new ${event.role} "${newUser?.name ?? 'New member'}" just joined the org. Run your onboarding playbook: create their welcome task list, add them to the right spaces, and post a welcome message.`,
       });
     } catch (err) {
-      console.warn(`[member-joined-trigger] failed to enqueue for employee ${emp.id}: ${(err as Error).message}`);
+      console.warn("[member-joined-trigger] failed to enqueue for employee <redacted>: <redacted>");
     }
   }
   return subscribers.length;

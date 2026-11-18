@@ -61,6 +61,6 @@ export function appHttpFailure(
       details: { issues: error.issues.map((issue) => ({ path: issue.path, message: issue.message })) },
     }, 400);
   }
-  console.error(`[${logLabel}] request failed:`, error);
+  console.error("[<redacted>] request failed:");
   return c.json({ error: `${requestLabel} request failed`, code: 'INTERNAL_ERROR' }, 500);
 }

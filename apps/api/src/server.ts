@@ -22,7 +22,7 @@ assertPausedStartSettingValid();
 const startupPlan = serverStartupPlan();
 workerStartup.require();
 const server = serve({ fetch: app.fetch, port }, async (info) => {
-  console.log(`Deft API running on http://localhost:${info.port}`);
+  console.log("Deft API running on http://localhost:<redacted>");
   logPausedStart();
   if (!process.env.DEFT_INVITE_TRUSTED_PROXIES?.trim()) {
     console.warn('[startup] DEFT_INVITE_TRUSTED_PROXIES is unset: IP rate limits use socket peers. Behind a custom proxy, visitors share its bucket; configure trusted proxy peers for per-visitor limits.');
@@ -41,18 +41,17 @@ const server = serve({ fetch: app.fetch, port }, async (info) => {
     const { migrateLegacyMcpConnectionCredentials } = await import('./lib/mcp-credential-migration.js');
     const result = await migrateLegacyMcpConnectionCredentials();
     if (result.migrated > 0) {
-      console.log(`[startup] Encrypted ${result.migrated} legacy MCP credential row(s)`);
+      console.log("[startup] Encrypted <redacted> legacy MCP credential row(s)");
     }
     if (result.disabledUnsupportedAuth > 0) {
-      console.warn(
-        `[startup] Disabled ${result.disabledUnsupportedAuth} MCP connection(s) using unsupported external OAuth`,
+      console.warn("[startup] Disabled <redacted> MCP connection(s) using unsupported external OAuth"
       );
     }
     if (result.disabledUnsafeTarget > 0) {
-      console.warn(`[startup] Disabled ${result.disabledUnsafeTarget} MCP connection(s) blocked by host transport policy`);
+      console.warn("[startup] Disabled <redacted> MCP connection(s) blocked by host transport policy");
     }
   } catch (err) {
-    console.warn('[startup] MCP credential migration failed:', (err as Error).message);
+    console.warn('[startup] MCP credential migration failed:');
   }
 
   // Startup maintenance is idempotent. A transient database outage must not
@@ -67,7 +66,7 @@ const server = serve({ fetch: app.fetch, port }, async (info) => {
     if (shuttingDown) { await stopWorkers({ timeoutMs: 10_000 }); throw Error('Server stopping'); }
     if (startupPlan.initScheduler) await initScheduler();
     if (shuttingDown) { await stopWorkers({ timeoutMs: 10_000 }); throw Error('Server stopping'); }
-  }, { onFailure: (attempt, error) => console.warn(`[startup] Job workers attempt ${attempt}/5 failed:`, (error as Error).message) });
+  }, { onFailure: (attempt, error) => console.warn("[startup] Job workers attempt <redacted>/5 failed:") });
   if (shuttingDown) return;
   if (workersReady && !startupPlan.initScheduler) console.log('[startup] Paused: job workers idle, scheduler not started');
   else if (workersReady) console.log('[startup] Job workers and scheduler started');
@@ -81,15 +80,14 @@ const server = serve({ fetch: app.fetch, port }, async (info) => {
     const { countOrgs } = await import('./lib/single-org-guard.js');
     const count = await countOrgs();
     if (count > 1) {
-      console.warn(
-        `[startup] This Deft instance has ${count} workspaces. The ` +
-          'self-hosted v1 product supports one workspace per deployment. ' +
-          'Consolidate before opening signup to external users, or use a ' +
-          'deployment architecture that explicitly supports multiple workspaces.',
+      console.warn('[startup] This Deft instance has multiple workspaces. The ' +
+        'self-hosted v1 product supports one workspace per deployment. ' +
+        'Consolidate before opening signup to external users, or use a ' +
+        'deployment architecture that explicitly supports multiple workspaces.'
       );
     }
   } catch (err) {
-    console.warn('[startup] single-org check skipped:', (err as Error).message);
+    console.warn('[startup] single-org check skipped:');
   }
 });
 
@@ -100,7 +98,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   shuttingDown = true;
   workerStartup.stop();
   void import('./lib/seat-limit.js').then(({ stopSeatStatementRefresher }) => stopSeatStatementRefresher());
-  console.log(`[shutdown] ${signal} received; draining HTTP and job workers`);
+  console.log("[shutdown] <redacted> received; draining HTTP and job workers");
 
   const httpServer = server as unknown as Server;
   const socketClosed = getIO()?.close() ?? Promise.resolve();
@@ -130,7 +128,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
     await closeDb();
   } catch (err) {
     process.exitCode = 1;
-    console.error('[shutdown] Graceful shutdown failed:', (err as Error).message);
+    console.error('[shutdown] Graceful shutdown failed:');
   } finally {
     clearTimeout(forceHttpClose);
     clearTimeout(forceProcessExit);

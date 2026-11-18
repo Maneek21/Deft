@@ -673,7 +673,7 @@ memberRoutes.get('/', async (c) => {
 
     return c.json(result);
   } catch (err) {
-    console.error('Failed to fetch members:', err);
+    console.error('Failed to fetch members:');
     return c.json({ error: 'Failed to fetch members', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -811,7 +811,7 @@ memberRoutes.get('/directory', async (c) => {
       },
     });
   } catch (err) {
-    console.error('Failed to fetch people directory:', err);
+    console.error('Failed to fetch people directory:');
     return c.json({ error: 'Failed to fetch people directory', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -828,7 +828,7 @@ memberRoutes.get('/seats', async (c) => {
     }
     return c.json(await getSeatStatus(currentUser.org_id));
   } catch (err) {
-    console.error('Failed to read seat status:', err);
+    console.error('Failed to read seat status:');
     return c.json({ error: 'Failed to read seat status', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -845,7 +845,7 @@ memberRoutes.get('/invites', async (c) => {
 
     return c.json({ invites: await listOrgInvites(user.org_id) });
   } catch (err) {
-    console.error('Failed to fetch invites:', err);
+    console.error('Failed to fetch invites:');
     return c.json({ error: 'Failed to fetch invites', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1051,7 +1051,7 @@ memberRoutes.get('/:id/detail', async (c) => {
       })),
     });
   } catch (err) {
-    console.error('Failed to fetch member detail:', err);
+    console.error('Failed to fetch member detail:');
     return c.json({ error: 'Failed to fetch member detail', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1086,7 +1086,7 @@ memberRoutes.get('/:id/offboarding-preview', async (c) => {
 
     return c.json(await buildOffboardingPreview(currentUser.org_id, memberId));
   } catch (err) {
-    console.error('Failed to build offboarding preview:', err);
+    console.error('Failed to build offboarding preview:');
     return c.json({ error: 'Failed to build offboarding preview', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1127,7 +1127,7 @@ memberRoutes.get('/:id', async (c) => {
 
     return c.json(member);
   } catch (err) {
-    console.error('Failed to fetch member:', err);
+    console.error('Failed to fetch member:');
     return c.json({ error: 'Failed to fetch member', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1274,7 +1274,7 @@ memberRoutes.post('/invite', async (c) => {
     // first's account (unique email) and is told so.
     const code = (err as { code?: string; cause?: { code?: string } })?.code ?? (err as { cause?: { code?: string } })?.cause?.code;
     if (code === '23505') return c.json({ error: 'User is already a member', code: 'ALREADY_MEMBER' }, 409);
-    console.error('Failed to invite member:', err);
+    console.error('Failed to invite member:');
     return c.json({ error: 'Failed to invite member', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1345,7 +1345,7 @@ memberRoutes.post('/invites/:id/reissue', async (c) => {
       expires_at: result.expiresAtDate?.toISOString() ?? null,
     });
   } catch (err) {
-    console.error('Failed to reissue invite:', err);
+    console.error('Failed to reissue invite:');
     return c.json({ error: 'Failed to reissue invite', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1417,7 +1417,7 @@ memberRoutes.delete('/invites/:id', async (c) => {
 
     return c.json({ success: true });
   } catch (err) {
-    console.error('Failed to revoke invite:', err);
+    console.error('Failed to revoke invite:');
     return c.json({ error: 'Failed to revoke invite', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1466,7 +1466,7 @@ memberRoutes.post('/:id/recovery-url', async (c) => {
       expires_at: expiresAt,
     });
   } catch (err) {
-    console.error('Failed to generate recovery URL:', err);
+    console.error('Failed to generate recovery URL:');
     return c.json({ error: 'Failed to generate recovery URL', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1562,7 +1562,7 @@ memberRoutes.patch('/:id', async (c) => {
 
     return c.json({ success: true });
   } catch (err) {
-    console.error('Failed to update member role:', err);
+    console.error('Failed to update member role:');
     return c.json({ error: 'Failed to update role', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1638,7 +1638,7 @@ memberRoutes.delete('/:id', async (c) => {
       },
     });
   } catch (err) {
-    console.error('Failed to remove member:', err);
+    console.error('Failed to remove member:');
     return c.json({ error: 'Failed to remove member', code: 'INTERNAL_ERROR' }, 500);
   }
 });

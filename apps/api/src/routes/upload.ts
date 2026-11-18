@@ -128,7 +128,7 @@ uploadRoutes.post('/', async (c) => {
       processing_error: inserted!.processing_error,
     }, 201);
   } catch (err) {
-    console.error('Failed to upload file:', err instanceof Error ? err.message : err, err instanceof Error ? err.stack : '');
+    console.error('Failed to upload file:');
     return c.json({ error: 'Failed to upload file', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -162,7 +162,7 @@ fileServingRoutes.delete('/:id', async (c) => {
     await localFileStore.delete(deleted.storage_key);
     return c.json({ success: true, storage_cleanup: 'complete' });
   } catch (error) {
-    console.warn('Attachment row deleted but storage cleanup must be retried:', error);
+    console.warn('Attachment row deleted but storage cleanup must be retried:');
     return c.json({ success: true, storage_cleanup: 'pending' }, 202);
   }
 });
@@ -211,7 +211,7 @@ fileServingRoutes.get('/:id', async (c) => {
       return c.json({ error: 'File not found on disk', code: 'FILE_MISSING' }, 404);
     }
   } catch (err) {
-    console.error('Failed to serve file:', err);
+    console.error('Failed to serve file:');
     return c.json({ error: 'Failed to serve file', code: 'INTERNAL_ERROR' }, 500);
   }
 });

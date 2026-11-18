@@ -63,7 +63,7 @@ export async function handleWorkflowExecute(job: JobData): Promise<void> {
   if (!task) return;
 
   if (!actor_user_id || !(await isActiveMember(rule.org_id, actor_user_id))) {
-    console.warn(`[workflow-execute] actor for rule ${rule.id} is not an active member; not run`);
+    console.warn("[workflow-execute] actor for rule <redacted> is not an active member; not run");
     return;
   }
 
@@ -204,7 +204,6 @@ export async function handleWorkflowExecute(job: JobData): Promise<void> {
     status: allOk ? 'success' : 'failed',
   });
 
-  console.log(
-    `[workflow-execute] rule=${rule.id} task=${task.id} actions=${results.length} ok=${allOk}`,
+  console.log("[workflow-execute] rule=<redacted> task=<redacted> actions=<redacted> ok=<redacted>"
   );
 }

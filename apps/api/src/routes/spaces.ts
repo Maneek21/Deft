@@ -84,7 +84,7 @@ spaceRoutes.post('/', async (c) => {
     const body = await c.req.json();
     const parsed = createSpaceSchema.safeParse(body);
     if (!parsed.success) {
-      console.error('Create space validation error:', parsed.error.format());
+      console.error('Create space validation error:');
       return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
     }
 
@@ -186,7 +186,7 @@ spaceRoutes.post('/', async (c) => {
 
     return c.json(space, 201);
   } catch (err) {
-    console.error('Failed to create space:', err);
+    console.error('Failed to create space:');
     return c.json({ error: 'Failed to create space', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -255,7 +255,7 @@ spaceRoutes.get('/', async (c) => {
 
     return c.json(enriched);
   } catch (err) {
-    console.error('Failed to fetch spaces:', err);
+    console.error('Failed to fetch spaces:');
     return c.json({ error: 'Failed to fetch spaces', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -301,7 +301,7 @@ spaceRoutes.get('/unread', async (c) => {
 
     return c.json(counts);
   } catch (err) {
-    console.error('Failed to fetch unread counts:', err);
+    console.error('Failed to fetch unread counts:');
     return c.json({ error: 'Failed to fetch unread counts', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -357,7 +357,7 @@ spaceRoutes.get('/browse', async (c) => {
 
     return c.json({ spaces: rows });
   } catch (err) {
-    console.error('Failed to browse spaces:', err);
+    console.error('Failed to browse spaces:');
     return c.json({ error: 'Failed to browse spaces', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -409,7 +409,7 @@ spaceRoutes.post('/:id/join', async (c) => {
 
     return c.json({ space_id: space.id, already_member: inserted.length === 0 });
   } catch (err) {
-    console.error('Failed to join space:', err);
+    console.error('Failed to join space:');
     return c.json({ error: 'Failed to join space', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -434,7 +434,7 @@ spaceRoutes.get('/:id', async (c) => {
 
     return c.json(space);
   } catch (err) {
-    console.error('Failed to fetch space:', err);
+    console.error('Failed to fetch space:');
     return c.json({ error: 'Failed to fetch space', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -479,7 +479,7 @@ spaceRoutes.patch('/:id', async (c) => {
 
     return c.json(updated);
   } catch (err) {
-    console.error('Failed to update space:', err);
+    console.error('Failed to update space:');
     return c.json({ error: 'Failed to update space', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -518,7 +518,7 @@ spaceRoutes.get('/:id/members', async (c) => {
 
     return c.json(members);
   } catch (err) {
-    console.error('Failed to fetch space members:', err);
+    console.error('Failed to fetch space members:');
     return c.json({ error: 'Failed to fetch space members', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -577,7 +577,7 @@ spaceRoutes.post('/:id/members', async (c) => {
 
     return c.json(member, 201);
   } catch (err) {
-    console.error('Failed to add space member:', err);
+    console.error('Failed to add space member:');
     return c.json({ error: 'Failed to add member', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -603,7 +603,7 @@ spaceRoutes.patch('/:id/mute', async (c) => {
 
     return c.json({ success: true, muted: !!muted });
   } catch (err) {
-    console.error('Failed to toggle mute:', err);
+    console.error('Failed to toggle mute:');
     return c.json({ error: 'Failed to toggle mute', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -643,7 +643,7 @@ spaceRoutes.post('/:id/read', async (c) => {
 
     return c.json({ success: true });
   } catch (err) {
-    console.error('Failed to mark space as read:', err);
+    console.error('Failed to mark space as read:');
     return c.json({ error: 'Failed to mark space as read', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -673,7 +673,7 @@ spaceRoutes.delete('/:id/members/me', async (c) => {
 
     return c.json({ success: true });
   } catch (err) {
-    console.error('Failed to leave space:', err);
+    console.error('Failed to leave space:');
     return c.json({ error: 'Failed to leave space', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -713,7 +713,7 @@ spaceRoutes.delete('/:id/members/:userId', async (c) => {
 
     return c.json({ success: true });
   } catch (err) {
-    console.error('Failed to remove space member:', err);
+    console.error('Failed to remove space member:');
     return c.json({ error: 'Failed to remove member', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -758,7 +758,7 @@ spaceRoutes.delete('/:id', async (c) => {
 
     return c.json({ success: true });
   } catch (err) {
-    console.error('Failed to delete space:', err);
+    console.error('Failed to delete space:');
     return c.json({ error: 'Failed to delete space', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -801,7 +801,7 @@ spaceRoutes.post('/:id/mark-unread', async (c) => {
 
     return c.json({ success: true });
   } catch (err) {
-    console.error('Failed to mark unread:', err);
+    console.error('Failed to mark unread:');
     return c.json({ error: 'Failed to mark unread', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -829,7 +829,7 @@ spaceRoutes.patch('/:id/notification-level', async (c) => {
 
     return c.json({ success: true, level });
   } catch (err) {
-    console.error('Failed to set notification level:', err);
+    console.error('Failed to set notification level:');
     return c.json({ error: 'Failed to set notification level', code: 'INTERNAL_ERROR' }, 500);
   }
 });

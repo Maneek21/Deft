@@ -124,7 +124,7 @@ export async function dispatchAgentEmployeeMessage(params: TargetParams & {
     return { queuedEmployeeIds: targets.employeeIds, isDirect: targets.isDirect };
   } catch (err) {
     if (params.throwOnFailure) throw err;
-    console.error('[dispatch-agent-message] enqueue failed:', err);
+    console.error('[dispatch-agent-message] enqueue failed:');
     return { queuedEmployeeIds: [], isDirect: false };
   }
 }

@@ -5,7 +5,7 @@ import { orgs } from '@deft/db/schema';
 import { detectBurnout } from '../../services/burnout-detector.js';
 
 export async function handleBurnoutDetect(job: JobData): Promise<void> {
-  console.log(`[burnout-detect] Running burnout detection check (job ${job.id})`);
+  console.log("[burnout-detect] Running burnout detection check (job <redacted>)");
 
   // Query all orgs
   const allOrgs = await db.select().from(orgs);
@@ -13,11 +13,9 @@ export async function handleBurnoutDetect(job: JobData): Promise<void> {
   for (const org of allOrgs) {
     try {
       await detectBurnout(org.id);
-      console.log(`[burnout-detect] Burnout detection completed for org "${org.name}"`);
+      console.log("[burnout-detect] Burnout detection completed for org \"<redacted>\"");
     } catch (err) {
-      console.error(
-        `[burnout-detect] Error processing org ${org.id}:`,
-        (err as Error).message,
+      console.error("[burnout-detect] Error processing org <redacted>:"
       );
       // Continue to next org
     }

@@ -220,7 +220,7 @@ export async function bulkUpdateTasks(input: BulkTaskUpdateInput, actor: BulkTas
       }, { channel: 'tasks' });
       if (notification) emitToUser(notification.org_id, nextAssigneeId, 'notification:new', notification);
     } catch (err) {
-      console.error('Failed to write grouped bulk-assign notification:', err);
+      console.error('Failed to write grouped bulk-assign notification:');
     }
   }
 

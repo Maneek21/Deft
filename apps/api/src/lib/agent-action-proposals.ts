@@ -212,11 +212,7 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
     } catch (error) {
       if (!isModuleWriteAction(proposal.action) && !isModuleRecordBulkCreateAction(proposal.action)) throw error;
       rejectedModuleActions.push(proposal.action);
-      console.warn('[agent-action-proposals] Rejected module proposal before persistence', {
-        action: proposal.action,
-        orgId: params.orgId,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      console.warn('[agent-action-proposals] Rejected module proposal before persistence');
     }
   }
 
@@ -304,11 +300,7 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
         if (isDatabaseError(error)) throw error;
         rejectedAtBoundary.add(proposal);
         rejectedModuleActions.push(proposal.action);
-        console.warn('[agent-action-proposals] Rejected module proposal at transaction boundary', {
-          action: proposal.action,
-          orgId: params.orgId,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        console.warn('[agent-action-proposals] Rejected module proposal at transaction boundary');
       }
     }
     const readyActions = preparedPendingActions.filter(
@@ -516,10 +508,7 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
   const reviewers = await loadActionReviewers(persisted.actions).catch(() => null);
   await Promise.all(persisted.actions.map((action) =>
     syncApprovalToAttention(action, reviewers?.has(action.id) ? { reviewers: reviewers.get(action.id)! } : undefined).catch((error) => {
-      console.warn('[agent-action-proposals] Approval attention dual-write failed', {
-        actionId: action.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      console.warn('[agent-action-proposals] Approval attention dual-write failed');
     })
   ));
   return persisted;
@@ -832,12 +821,7 @@ export async function compileDeftyActionDraft(params: CompileDeftyActionDraftPar
   const pendingActions = rawNormalized.pendingActions?.length ? rawNormalized.pendingActions
     : rawNormalized.actions.length ? rawNormalized.actions
     : clarificationDrafts?.pendingActions?.length ? clarificationDrafts.pendingActions : clarificationDrafts?.actions;
-  console.info('[agent-action-compiler] outcome', {
-    reason: intentOutcome.substitutionRejected ? 'unrequested_task_substitution' : clarification ? 'clarification' : 'actions',
-    raw_action_count: rawNormalized.actions.length, accepted_action_count: normalized.actions.length,
-    tool_names: [...new Set((result.toolCalls ?? []).map((call) => call.name).filter((name) => typeof name === 'string' && (ACTION_TOOLS.has(name) || name === CLARIFICATION_TOOL.name)))].slice(0, 12),
-    grounded_read_counts: { module_record_query: groundedReadFacts.facts.filter((fact) => fact.tool === 'module_record_query').length, module_record_get: groundedReadFacts.facts.filter((fact) => fact.tool === 'module_record_get').length, wiki_read: groundedReadFacts.facts.filter((fact) => fact.tool === 'wiki_read').length },
-  });
+  console.info('[agent-action-compiler] outcome');
   const concreteSummary = formatDeftyApprovalReply(normalized.actions, params.priorTaskCandidates);
   const summary = concreteSummary ?? (clarificationInput && typeof clarificationInput.summary === 'string'
     ? truncatePlainText(clarificationInput.summary.trim(), 300)

@@ -93,7 +93,7 @@ agentPlanRoutes.get('/', async (c) => {
 
     return c.json(await Promise.all(plans.map((plan) => withDestructiveMarks(plan))));
   } catch (err) {
-    console.error('Failed to list plans:', err);
+    console.error('Failed to list plans:');
     return c.json({ error: 'Failed to list plans', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -116,7 +116,7 @@ agentPlanRoutes.get('/:id', async (c) => {
 
     return c.json(await withDestructiveMarks(plan));
   } catch (err) {
-    console.error('Failed to get plan:', err);
+    console.error('Failed to get plan:');
     return c.json({ error: 'Failed to get plan', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -162,7 +162,7 @@ agentPlanRoutes.post('/', async (c) => {
   } catch (err) {
     const refusal = planAccessRefusal(err);
     if (refusal) return c.json(refusal.body, refusal.status);
-    console.error('Failed to create plan:', err);
+    console.error('Failed to create plan:');
     return c.json({ error: 'Failed to create plan', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -213,7 +213,7 @@ agentPlanRoutes.put('/:id', async (c) => {
   } catch (err) {
     const refusal = planAccessRefusal(err);
     if (refusal) return c.json(refusal.body, refusal.status);
-    console.error('Failed to update plan:', err);
+    console.error('Failed to update plan:');
     return c.json({ error: 'Failed to update plan', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -253,7 +253,7 @@ agentPlanRoutes.post('/:id/approve', async (c) => {
   } catch (err) {
     const refusal = planAccessRefusal(err);
     if (refusal) return c.json(refusal.body, refusal.status);
-    console.error('Failed to approve plan:', err);
+    console.error('Failed to approve plan:');
     return c.json({ error: 'Failed to approve plan', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -289,7 +289,7 @@ agentPlanRoutes.post('/:id/execute', async (c) => {
 
     return c.json({ message: 'Plan execution enqueued', planId });
   } catch (err) {
-    console.error('Failed to enqueue plan execution:', err);
+    console.error('Failed to enqueue plan execution:');
     return c.json({ error: 'Failed to enqueue plan execution', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -325,7 +325,7 @@ agentPlanRoutes.post('/:id/pause', async (c) => {
 
     return c.json(await withDestructiveMarks(updated));
   } catch (err) {
-    console.error('Failed to pause plan:', err);
+    console.error('Failed to pause plan:');
     return c.json({ error: 'Failed to pause plan', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -374,7 +374,7 @@ agentPlanRoutes.post('/:id/resume', async (c) => {
 
     return c.json({ message: 'Plan resumed and execution enqueued', planId });
   } catch (err) {
-    console.error('Failed to resume plan:', err);
+    console.error('Failed to resume plan:');
     return c.json({ error: 'Failed to resume plan', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -410,7 +410,7 @@ agentPlanRoutes.post('/:id/abort', async (c) => {
 
     return c.json(await withDestructiveMarks(updated));
   } catch (err) {
-    console.error('Failed to abort plan:', err);
+    console.error('Failed to abort plan:');
     return c.json({ error: 'Failed to abort plan', code: 'INTERNAL_ERROR' }, 500);
   }
 });

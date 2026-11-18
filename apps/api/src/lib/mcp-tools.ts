@@ -187,9 +187,7 @@ export async function discoverMcpToolsForConnections(
         });
       }
     } catch (err) {
-      console.warn(
-        `[mcp-tools] Failed to discover tools for connection "${conn.slug}" (${conn.id}):`,
-        err instanceof Error ? err.message : err,
+      console.warn("[mcp-tools] Failed to discover tools for connection \"<redacted>\" (<redacted>):"
       );
     }
   }

@@ -78,7 +78,7 @@ async function logHeartbeatTurn(params: {
       });
     }
   } catch (err) {
-    console.error('[heartbeat] logHeartbeatTurn failed:', err);
+    console.error('[heartbeat] logHeartbeatTurn failed:');
   }
 }
 
@@ -152,7 +152,7 @@ async function detectActionLoop(
     }
     return { loop: false };
   } catch (err) {
-    console.warn('[heartbeat] detectActionLoop failed:', err);
+    console.warn('[heartbeat] detectActionLoop failed:');
     return { loop: false };
   }
 }
@@ -189,8 +189,7 @@ export async function handleAgentEmployeeHeartbeat(_job: JobData): Promise<void>
       ),
     );
 
-  console.log(
-    `[heartbeat] found ${dueEmployees.length} employee(s) due`,
+  console.log("[heartbeat] found <redacted> employee(s) due"
   );
 
   for (const employee of dueEmployees) {
@@ -302,9 +301,7 @@ export async function handleAgentEmployeeHeartbeat(_job: JobData): Promise<void>
           approval_status: 'pending',
         });
       } catch (err) {
-        console.error(
-          `[heartbeat] failed to queue heartbeat_tick for ${employee.slug}:`,
-          err instanceof Error ? err.message : err,
+        console.error("[heartbeat] failed to queue heartbeat_tick for <redacted>:"
         );
       }
 
@@ -330,8 +327,7 @@ export async function handleAgentEmployeeHeartbeat(_job: JobData): Promise<void>
             unhealthy_reason: loop.reason,
           })
           .where(eq(agentEmployees.id, employee.id));
-        console.warn(
-          `[heartbeat] ${employee.slug}: ${loop.reason}`,
+        console.warn("[heartbeat] <redacted>: <redacted>"
         );
       }
 
@@ -341,7 +337,7 @@ export async function handleAgentEmployeeHeartbeat(_job: JobData): Promise<void>
         .where(eq(agentEmployees.id, employee.id));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[heartbeat] Error for ${employee.slug}:`, msg);
+      console.error("[heartbeat] Error for <redacted>:");
       await logHeartbeatTurn({
         orgId: employee.org_id,
         employeeId: employee.id,

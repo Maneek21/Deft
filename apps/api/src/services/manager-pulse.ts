@@ -310,7 +310,7 @@ Be direct and helpful. Use a warm but professional tone.`;
 
     summary = response.text || buildFallbackSummary(healthCards, actionItems, wins);
   } catch (err) {
-    console.error('[manager-pulse] LLM error, using fallback summary:', err);
+    console.error('[manager-pulse] LLM error, using fallback summary:');
     summary = buildFallbackSummary(healthCards, actionItems, wins);
   }
 

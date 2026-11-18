@@ -6,6 +6,7 @@ import 'dotenv/config';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { requestLogger } from './lib/request-logger.js';
+import { contentFreeErrorHandler } from './lib/content-free-error-handler.js';
 import { secureHeaders } from 'hono/secure-headers';
 import { sql } from 'drizzle-orm';
 import { db } from './lib/db.js';
@@ -138,6 +139,7 @@ import { githubWebhookRoutes } from './routes/webhooks/github.js';
 import { corsAllowedWebOrigins } from './lib/web-origins.js';
 
 const app = new Hono();
+app.onError(contentFreeErrorHandler);
 
 const corsPolicy = cors({
   // Self-hosted: the configured web address plus the two local addresses.
