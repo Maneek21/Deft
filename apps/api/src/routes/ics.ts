@@ -19,16 +19,10 @@ export const icsRoutes = new Hono();
 
 // Any failure in these handlers is answered and logged without the error
 // object or request input: database errors can carry statement parameters
-// (the feed URL or publish token). Only the route and server-issued ids (the
-// user, and a subscription row already loaded or created) are logged; request
-// path input is never logged.
-const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/;
-function logRouteFailure(c: Context, route: string, err: unknown, subscriptionId?: string): void {
-  const user = c.get('user') as { id?: string } | undefined;
-  const parts = [`[ics] ${route} failed`];
-  if (user?.id && SAFE_ID.test(user.id)) parts.push(`user=${user.id}`);
-  if (subscriptionId && SAFE_ID.test(subscriptionId)) parts.push(`subscription=${subscriptionId}`);
-  console.error("<redacted>: <redacted>");
+// (the feed URL or publish token). The fixed event identifies the failing
+// subsystem without copying identifiers, paths or exception text.
+function logRouteFailure(): void {
+  console.error('[ics] Calendar feed request failed');
 }
 
 function guarded(route: string, handler: (c: Context) => Promise<Response>) {
@@ -36,7 +30,7 @@ function guarded(route: string, handler: (c: Context) => Promise<Response>) {
     try {
       return await handler(c);
     } catch (err) {
-      logRouteFailure(c, route, err);
+      logRouteFailure();
       return c.json({ error: 'Calendar feed request failed', code: 'ICS_ROUTE_FAILED' }, 500);
     }
   };
@@ -239,7 +233,7 @@ icsRoutes.post('/preview', guarded('POST /preview', async (c) => {
       upcoming,
     });
   } catch (err) {
-    logRouteFailure(c, 'POST /preview', err);
+    logRouteFailure();
     return c.json({
       error: 'Preview failed',
       code: 'PREVIEW_FAILED',
@@ -281,7 +275,7 @@ icsRoutes.post('/subscriptions', guarded('POST /subscriptions', async (c) => {
       label: created.label,
     });
   } catch (err) {
-    logRouteFailure(c, 'POST /subscriptions (initial sync)', err, created.id);
+    logRouteFailure();
     await db
       .update(icsSubscriptions)
       .set({ last_error: humanizeIcsError(err), last_synced_at: new Date() })
@@ -359,7 +353,7 @@ icsRoutes.post('/subscriptions/:id/sync', guarded('POST /subscriptions/:id/sync'
       .limit(1);
     return c.json({ ok: true, count, subscription: refreshed });
   } catch (err) {
-    logRouteFailure(c, 'POST /subscriptions/:id/sync', err, sub.id);
+    logRouteFailure();
     const msg = humanizeIcsError(err);
     await db
       .update(icsSubscriptions)

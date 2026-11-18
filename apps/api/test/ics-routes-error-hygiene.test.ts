@@ -61,7 +61,8 @@ test('calendar feed route failures return and log a neutral message', async () =
     const all = JSON.stringify(logged.map((l) => l.map((x) => (x instanceof Error ? `${x.message}${x.stack}` : x))));
     assert.ok(logged.length >= calls.length, 'failures are logged');
     assert.doesNotMatch(all, /SECRETTOKEN123|QUERYSECRET456|PUBLISHTOKEN|PUBTOK-|calendar\.example\.test/);
-    assert.match(all, /user-1/);
+    assert.match(all, /\[ics\] Calendar feed request failed/);
+    assert.doesNotMatch(all, /user-1|org-1|sub-1/);
   } finally {
     Object.assign(console, { error: origs.error, warn: origs.warn, log: origs.log });
     (db as any).insert = origs.insert; (db as any).update = origs.update; (db as any).delete = origs.del; (db as any).select = origs.select;
