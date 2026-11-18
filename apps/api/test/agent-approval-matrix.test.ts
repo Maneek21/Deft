@@ -17,6 +17,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { shouldAutoExecute, isDestructiveAction, getApprovalTier, TOOL_APPROVAL_TIERS } from '../src/lib/agent-approval.js';
+import { SUPERINTENDENT_TOOLS, SUPERINTENDENT_ACTION_TOOLS } from '../src/lib/agent-tools.js';
+
+test('Defty does not offer agent management without an executor', () => {
+  assert.equal(SUPERINTENDENT_TOOLS.some((tool) => tool.name === 'manage_agent_employee'), false);
+  assert.equal(SUPERINTENDENT_ACTION_TOOLS.has('manage_agent_employee'), false);
+});
 
 // ─── 1. Trust × tier matrix ──────────────────────────────────────────────────
 // We use real tool names from TOOL_APPROVAL_TIERS:

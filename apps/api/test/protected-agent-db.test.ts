@@ -31,13 +31,14 @@ test('agents that are or were owner or admin are managed only by the owner', { s
   const { db, closeDb } = await import('../src/lib/db.js');
   const {
     users, orgs, orgMembers, agentEmployees, apiKeys, mcpTokens, agentChannelTokens, agentWebhooks, agentChannelEvents,
-    agentCertificationChallenges, skills,
+    agentCertificationChallenges, agentEmployeeSkills, skills,
   } = await import('@deft/db/schema');
   const { authRoutes } = await import('../src/routes/auth.js');
   const { memberRoutes } = await import('../src/routes/members.js');
   const { agentEmployeeRoutes } = await import('../src/routes/agent-employees.js');
   const { apiKeyRoutes } = await import('../src/routes/api-keys.js');
   const { agentWebhookRoutes } = await import('../src/routes/agent-webhooks.js');
+  const { skillsRoutes } = await import('../src/routes/skills.js');
   const { authMiddleware } = await import('../src/middleware/auth.js');
   const { humanAgentEmployeeUpdateState } = await import('../src/lib/mcp-tools/human.js');
 
@@ -54,6 +55,7 @@ test('agents that are or were owner or admin are managed only by the owner', { s
   app.route('/api/agent-employees', agentEmployeeRoutes);
   app.route('/api/api-keys', apiKeyRoutes);
   app.route('/api/agent-webhooks', agentWebhookRoutes);
+  app.route('/api/skills', skillsRoutes);
 
   const request = async (method: string, path: string, body: unknown, bearer: string) => {
     const res = await app.request(path, {
@@ -164,6 +166,61 @@ test('agents that are or were owner or admin are managed only by the owner', { s
       }
     }
     assert.equal(cases, 2 * 3 * PROTECTED_AGENT_ROUTES.length);
+  });
+
+  await t.test('org skill config edits manage every installed agent, including paused and former admins', async () => {
+    for (const state of ['member', 'admin', 'demoted_admin'] as const) {
+      const target = await agent(state);
+      const id = randomUUID();
+      const original = { triggers: ['member.joined'], heartbeat_checklist: ['Original instructions'] };
+      await db.insert(skills).values({ id, name: 'Editable skill', slug: `editable-${id}`, source: 'org', org_id: orgId, agent_config: original });
+      await db.insert(agentEmployeeSkills).values({ agent_employee_id: target.employeeId, skill_id: id, installed_version: '1.0.0' });
+      const peer = await agent('member');
+      await db.insert(agentEmployeeSkills).values({ agent_employee_id: peer.employeeId, skill_id: id, installed_version: '1.0.0' });
+      // Pausing does not make changing its future wake-ups safe.
+      await db.update(agentEmployees).set({ is_active: false }).where(eq(agentEmployees.id, target.employeeId));
+      const config = { triggers: ['cron:standup'], heartbeat_checklist: ['Changed instructions'] };
+      const edit = await call(admin)('PATCH', `/api/skills/${id}`, { name: 'Combined edit', agent_config: config });
+      assert.equal(edit.status, state === 'member' ? 200 : 403, `${state}: ${JSON.stringify(edit.json)}`);
+      const [after] = await db.select().from(skills).where(eq(skills.id, id));
+      assert.deepEqual(after!.agent_config, state === 'member' ? config : original);
+      assert.equal(after!.name, state === 'member' ? 'Combined edit' : 'Editable skill', 'refusal is atomic');
+      assert.equal((await call(admin)('PATCH', `/api/skills/${id}`, { name: 'Metadata edit' })).status, 200);
+      assert.equal((await call(owner)('PATCH', `/api/skills/${id}`, { agent_config: config })).status, 200);
+    }
+    const id = randomUUID();
+    await db.insert(skills).values({ id, name: 'Uninstalled', slug: `uninstalled-${id}`, source: 'org', org_id: orgId, agent_config: {} });
+    assert.equal((await call(admin)('PATCH', `/api/skills/${id}`, { agent_config: { triggers: ['member.joined'] } })).status, 200);
+    const target = await agent('member');
+    await db.insert(agentEmployeeSkills).values({ agent_employee_id: target.employeeId, skill_id: id, installed_version: '1.0.0' });
+    // More concurrent edits than ordinary pool connections must finish.
+    const edits = await Promise.all(Array.from({ length: 8 }, () => call(admin)('PATCH', `/api/skills/${id}`, { agent_config: {} })));
+    assert.deepEqual(edits.map((r) => r.status), edits.map(() => 200));
+  });
+
+  await t.test('a skill config edit and an installed agent promotion serialize', async () => {
+    const target = await agent('member');
+    const id = randomUUID();
+    await db.insert(skills).values({ id, name: 'Racing skill', slug: `racing-${id}`, source: 'org', org_id: orgId, agent_config: {} });
+    await db.insert(agentEmployeeSkills).values({ agent_employee_id: target.employeeId, skill_id: id, installed_version: '1.0.0' });
+    const holder = new pg.Client({ connectionString: databaseUrl! });
+    await holder.connect();
+    const order: string[] = [];
+    try {
+      await holder.query('BEGIN');
+      await holder.query('SELECT 1 FROM skills WHERE id = $1 FOR UPDATE', [id]);
+      const edit = call(admin)('PATCH', `/api/skills/${id}`, { agent_config: { triggers: ['member.joined'] } }).then((r) => { order.push('edit'); return r; });
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const promotion = call(owner)('PATCH', `/api/members/${target.userId}`, { role: 'admin' }).then((r) => { order.push('promotion'); return r; });
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      assert.deepEqual(order, [], 'promotion waits for the skill edit membership locks');
+      await holder.query('COMMIT');
+      const results = await Promise.all([edit, promotion]);
+      assert.deepEqual(results.map((r) => r.status), [200, 200]);
+    } finally {
+      await holder.end();
+    }
+    assert.equal((await call(admin)('PATCH', `/api/skills/${id}`, { agent_config: {} })).status, 403);
   });
 
   await t.test('round 7 to 9 reproductions are refused', async () => {

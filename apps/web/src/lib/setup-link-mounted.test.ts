@@ -20,13 +20,13 @@ const NEXT_STUBS: Record<string, string> = {
 
 async function mountSignup(hash: string) {
   const page = path.join(web, 'src/app/signup/page.tsx');
-  const auth = path.join(web, 'src/lib/auth-context.tsx');
+  const auth = path.join(web, 'src/app/providers.tsx');
   const bundle = await build({
     stdin: {
       contents: `import { createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import SignupPage from ${JSON.stringify(page)};
-import { AuthProvider } from ${JSON.stringify(auth)};
+import { Providers as AuthProvider } from ${JSON.stringify(auth)};
 createRoot(document.getElementById('root')).render(createElement(AuthProvider, null, createElement(SignupPage)));`,
       resolveDir: web,
       loader: 'tsx',
@@ -62,7 +62,7 @@ createRoot(document.getElementById('root')).render(createElement(AuthProvider, n
     if (url.pathname === '/api/auth/has-workspace') return route.fulfill({ contentType: 'application/json', body: '{"hasWorkspace":false}' });
     if (url.pathname === '/api/auth/signup') {
       signupBodies.push(JSON.parse(request.postData() ?? 'null'));
-      return route.fulfill({ status: 403, contentType: 'application/json', body: '{"error":"stopped by the test","code":"TEST_STOP"}' });
+      return route.fulfill({ status: 502, contentType: 'application/json', body: '{"error":"stopped by the test","code":"TEST_STOP"}' });
     }
     return route.abort();
   });
@@ -118,4 +118,15 @@ test('a setup link opened into an already open signup page is read too', async (
   } finally {
     await f.close();
   }
+});
+
+test('a failed signup retains its setup token for retry through production providers', async () => {
+  const f = await mountSignup('#setup=retry-secret');
+  try {
+    await submit(f.tab);
+    await submit(f.tab);
+    assert.equal(f.signupBodies.length, 2);
+    for (const body of f.signupBodies) assert.equal((body as { setup_token?: string }).setup_token, 'retry-secret');
+    assert.equal(await f.tab.evaluate(() => window.location.hash), '');
+  } finally { await f.close(); }
 });
