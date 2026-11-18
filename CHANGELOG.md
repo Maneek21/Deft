@@ -10,6 +10,15 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### Paused workspaces explain themselves
+
+- While `DEFT_PAUSED_START=true`, the web app shows a banner saying the
+  workspace can be read but not changed, and why: `DEFT_PAUSED_REASON` is
+  `restore_review` (default) or `billing`; any other value refuses to start.
+  Refused changes show one calm message instead of a generic error, and the
+  realtime client stops retrying. Nothing changes when the install is not
+  paused.
+
 ### Security: trusted proxy peers for API rate limits (operator action)
 
 - General API IP limits now ignore forwarding headers unless the socket peer

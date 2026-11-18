@@ -8,6 +8,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { disconnectSocket } from './socket';
 import { createSessionCacheScope, setActiveSessionCacheScope } from './session-cache';
 import { signupRequestBody } from './setup-link';
+import { parsePausedNotice, type PausedNotice } from './paused-notice';
 
 type NotificationPreferences = {
   keywords: string[];
@@ -57,6 +58,8 @@ type Org = {
 type AuthContextType = {
   user: User | null;
   org: Org | null;
+  /** Set while the workspace is paused (read-only), from GET /api/auth/me. */
+  paused: PausedNotice | null;
   loading: boolean;
   sessionCacheScope: string | null;
   /** Resolves with a challenge when the account still needs its code. */
@@ -205,6 +208,7 @@ export function useAuth() {
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [org, setOrg] = useState<Org | null>(null);
+  const [paused, setPaused] = useState<PausedNotice | null>(null);
   const [loading, setLoading] = useState(true);
   const [connectionInterrupted, setConnectionInterrupted] = useState(false);
   const [sessionCacheScope, setSessionCacheScope] = useState<string | null>(null);
@@ -242,6 +246,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setSessionCacheScope(cacheScope);
         setUser(data.user);
         setOrg(data.org);
+        setPaused(parsePausedNotice(data.paused));
         setConnectionInterrupted(false);
         // Use browser timezone if DB has default 'UTC' (means not yet auto-detected)
         const storedTz = data.user.timezone;
@@ -252,6 +257,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         clearSessionCacheScope();
         setUser(null);
         setOrg(null);
+        setPaused(null);
       } else {
         setConnectionInterrupted(true);
       }
@@ -302,6 +308,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         clearSessionCacheScope();
         setUser(null);
         setOrg(null);
+        setPaused(null);
         setLoading(false);
         router.replace('/login');
         return;
@@ -317,6 +324,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       clearSessionCacheScope();
       setUser(null);
       setOrg(null);
+      setPaused(null);
       setLoading(true);
       void fetchMe();
     };
@@ -335,6 +343,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     clearSessionCacheScope();
     setUser(null);
     setOrg(null);
+    setPaused(null);
     setLoading(true);
     try {
       const res = await api.post('/api/auth/login', { email, password });
@@ -371,6 +380,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         clearSessionCacheScope();
         setUser(null);
         setOrg(null);
+        setPaused(null);
         setLoading(false);
       }
       throw error;
@@ -409,6 +419,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     clearSessionCacheScope();
     setUser(null);
     setOrg(null);
+    setPaused(null);
     setLoading(true);
     try {
       // Hosted workspaces: the one-time setup token goes in the body, never in a URL.
@@ -438,6 +449,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         clearSessionCacheScope();
         setUser(null);
         setOrg(null);
+        setPaused(null);
         setLoading(false);
       }
       throw error;
@@ -455,6 +467,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     clearSessionCacheScope();
     setUser(null);
     setOrg(null);
+    setPaused(null);
     router.replace(options.destination ?? '/login');
     if (refreshToken && options.revokeServer !== false) {
       await revokeWebSessionBestEffort(refreshToken);
@@ -469,7 +482,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, org, loading, sessionCacheScope, login, verifyTwoStep, signup, logout, replaceUser, refreshUser: fetchMe, sessionTicket, adoptSession }}>
+    <AuthContext.Provider value={{ user, org, paused, loading, sessionCacheScope, login, verifyTwoStep, signup, logout, replaceUser, refreshUser: fetchMe, sessionTicket, adoptSession }}>
       {connectionInterrupted && !credentialPage ? <main className="min-h-dvh flex items-center justify-center bg-[var(--background)] p-6 text-[var(--on-surface)]">
         <div className="max-w-sm space-y-4 text-center" role="status">
           <h1 className="text-xl font-semibold">Reconnecting to Deft</h1>

@@ -1,10 +1,15 @@
 import { io, Socket } from 'socket.io-client';
 import { refreshAccessToken, SessionRefreshUnavailableError } from './api';
+import { reportPausedRefusal } from './paused-notice';
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:3001';
 
 let socket: Socket | null = null;
 let connectionListeners: Array<(connected: boolean) => void> = [];
+// Set when the server refused realtime because the workspace is paused. A
+// paused server refuses every attempt, so retrying is only noise until the
+// page is reloaded.
+let refusedWhilePaused = false;
 
 export function onConnectionChange(listener: (connected: boolean) => void) {
   connectionListeners.push(listener);
@@ -26,9 +31,22 @@ export function prepareSocketForUse(existing: Socket, token: string): Socket {
   // `active` means Socket.IO is connected or will reconnect automatically.
   // An inactive socket (for example after a denied namespace connection) needs
   // an explicit connect, while calling connect during backoff would race it.
-  if (!existing.active) existing.connect();
+  if (!existing.active && !refusedWhilePaused) existing.connect();
 
   return existing;
+}
+
+/**
+ * The server refuses realtime with the error `PAUSED` while the workspace is
+ * paused (the banner says so). Stop reconnecting quietly instead of retrying
+ * and logging; later `getSocket` calls do not restart it until a reload.
+ */
+export function stopIfPaused(target: Socket, message: string): boolean {
+  if (message !== 'PAUSED') return false;
+  refusedWhilePaused = true;
+  target.disconnect();
+  reportPausedRefusal({ write: false });
+  return true;
 }
 
 export function getSocket(token: string): Socket {
@@ -70,6 +88,7 @@ export function getSocket(token: string): Socket {
 
   createdSocket.on('connect_error', async (err) => {
     const msg = err?.message ?? '';
+    if (stopIfPaused(createdSocket, msg)) return;
     if (/invalid token|expired|unauthori[sz]ed/i.test(msg)) {
       // Auth-shaped error: attempt a silent token refresh and reconnect once.
       // The server key for socket auth is `token` (confirmed via socket.handshake.auth.token).
@@ -108,6 +127,7 @@ export function getSocket(token: string): Socket {
 }
 
 export function disconnectSocket() {
+  refusedWhilePaused = false;
   if (socket) {
     socket.disconnect();
     socket = null;

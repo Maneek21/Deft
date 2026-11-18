@@ -3,20 +3,45 @@ import assert from 'node:assert/strict';
 import {
   _setPausedStartForTest, assertPausedStartSettingValid, isRefusedWhilePaused,
   parsePausedStartSetting, pausedGuardedFetch, PausedStartError, serverStartupPlan,
-  PAUSED_ALLOWED_WRITES,
+  PAUSED_ALLOWED_WRITES, pausedNotice,
 } from '../src/lib/paused-start.js';
 
 afterEach(() => _setPausedStartForTest(false));
 after(async () => { const { closeDb } = await import('../src/lib/db.js'); await closeDb(); });
 
 test('the start-time setting accepts only unset, true and false; malformed values fail closed', () => {
-  for (const raw of [undefined, 'false']) assert.deepEqual(parsePausedStartSetting(raw), { paused: false, invalid: null });
-  assert.deepEqual(parsePausedStartSetting('true'), { paused: true, invalid: null });
+  for (const raw of [undefined, 'false']) assert.deepEqual(parsePausedStartSetting(raw), { paused: false, invalid: null, reason: 'restore_review', invalidReason: null });
+  assert.deepEqual(parsePausedStartSetting('true'), { paused: true, invalid: null, reason: 'restore_review', invalidReason: null });
   for (const raw of ['', 'TRUE', '1', ' true', 'true\r', 'false ']) {
     const parsed = parsePausedStartSetting(raw);
     assert.equal(parsed.paused, true);
     assert.throws(() => assertPausedStartSettingValid(parsed), /Refusing to start/);
   }
+});
+
+test('DEFT_PAUSED_REASON defaults to restore_review and accepts only restore_review or billing', () => {
+  assert.equal(parsePausedStartSetting('true').reason, 'restore_review');
+  assert.equal(parsePausedStartSetting('true', undefined).reason, 'restore_review');
+  for (const reason of ['restore_review', 'billing'] as const) {
+    const parsed = parsePausedStartSetting('true', reason);
+    assert.equal(parsed.reason, reason);
+    assert.doesNotThrow(() => assertPausedStartSettingValid(parsed));
+  }
+  // A bad reason stops startup, paused or not, like the other strict settings.
+  for (const start of ['true', 'false', undefined]) {
+    for (const raw of ['', 'Billing', 'billing ', 'restore', 'overdue', 'billing\r']) {
+      assert.throws(() => assertPausedStartSettingValid(parsePausedStartSetting(start, raw)), /DEFT_PAUSED_REASON must be one of/);
+    }
+  }
+});
+
+test('the notice for signed-in people is null unless paused, and names the reason', () => {
+  _setPausedStartForTest(false, 'billing');
+  assert.equal(pausedNotice(), null);
+  _setPausedStartForTest(true);
+  assert.deepEqual(pausedNotice(), { reason: 'restore_review' });
+  _setPausedStartForTest(true, 'billing');
+  assert.deepEqual(pausedNotice(), { reason: 'billing' });
 });
 
 test('paused startup skips credential migration and scheduling', () => {

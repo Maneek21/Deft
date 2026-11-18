@@ -23,6 +23,7 @@ import { HuddleErrorToast, HuddleRingToast } from '@/components/huddle-ring-toas
 import { HUDDLES_ENABLED } from '@/lib/feature-flags';
 import { Logo } from '@/components/brand/logo';
 import { IosInstallHint } from '@/components/ios-install-hint';
+import { PausedBannerHost } from '@/components/paused-banner';
 
 type Space = {
   id: string;
@@ -501,6 +502,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             setMobileOpen={setMobileMenuOpen}
           />
           <main className="min-h-0 min-w-0 flex-1 overflow-hidden flex flex-col">
+            <PausedBannerHost />
             <AppHeaderHost onMenuClick={() => setMobileMenuOpen(true)} />
             <div className="min-h-0 min-w-0 flex-1 overflow-hidden">{children}</div>
           </main>

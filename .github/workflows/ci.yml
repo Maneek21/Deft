@@ -171,6 +171,7 @@ jobs:
           src/lib/huddle-state.test.ts
           src/lib/content-security-policy.test.ts
           src/lib/socket.test.ts
+          src/lib/paused-notice.test.tsx
           src/lib/space-socket.test.ts
           src/lib/module-collection-nav.test.ts
           src/lib/apps.test.ts

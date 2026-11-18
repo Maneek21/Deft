@@ -147,7 +147,7 @@ test('fatal exceptions and rejections exit without Node printing customer-bearin
 
 test('startup hints retain closed remediation and never echo supplied values or unknown codes', () => {
   const marker = `PRIVATE-${randomUUID()}`;
-  for (const prefix of ['DEFT_HOSTED must be exactly', 'DEFT_PAUSED_START must be exactly',
+  for (const prefix of ['DEFT_HOSTED must be exactly', 'DEFT_PAUSED_START must be exactly', 'DEFT_PAUSED_REASON must be one of',
     'JWT_SECRET must be', 'JWT_REFRESH_SECRET must be', 'ENCRYPTION_KEY must be',
     'DEFT_SETUP_TOKEN_SHA256 must be', 'DEFT_SETUP_TOKEN_EXPIRES_AT must be',
     'Hosted mode needs a usable seat statement setup:']) {
@@ -173,6 +173,8 @@ test('server import order preserves startup setting diagnostics without their su
   const cases: Array<[Record<string, string>, RegExp]> = [
     [{ DEFT_HOSTED: marker }, /Invalid DEFT_HOSTED/],
     [{ DEFT_PAUSED_START: marker }, /Invalid DEFT_PAUSED_START/],
+    [{ DEFT_PAUSED_START: 'true', DEFT_PAUSED_REASON: marker }, /Invalid DEFT_PAUSED_REASON/],
+    [{ DEFT_PAUSED_REASON: marker }, /Invalid DEFT_PAUSED_REASON/],
     [{ NODE_ENV: 'production', JWT_SECRET: `${marker} ` }, /Invalid JWT_SECRET/],
     [{ NODE_ENV: 'production', JWT_SECRET: 's'.repeat(48), JWT_REFRESH_SECRET: 's'.repeat(48) }, /must be different/],
     [{ NODE_ENV: 'production', ENCRYPTION_KEY: 'short' }, /Invalid ENCRYPTION_KEY/],
@@ -183,7 +185,7 @@ test('server import order preserves startup setting diagnostics without their su
   ];
   for (const [settings, expected] of cases) {
     const env = { ...process.env };
-    for (const key of ['DEFT_SETUP_TOKEN_SHA256', 'DEFT_SETUP_TOKEN_EXPIRES_AT', 'DEFT_CELL_ID',
+    for (const key of ['DEFT_SETUP_TOKEN_SHA256', 'DEFT_SETUP_TOKEN_EXPIRES_AT', 'DEFT_CELL_ID', 'DEFT_PAUSED_REASON',
       'DEFT_SEAT_PUBLIC_KEYS', 'DEFT_SEAT_STATEMENT_URL', 'DEFT_SEAT_FETCH_TOKEN']) delete env[key];
     Object.assign(env, { NODE_ENV: 'test', DEFT_HOSTED: 'false', DEFT_PAUSED_START: 'false',
       JWT_SECRET: 'a'.repeat(48), JWT_REFRESH_SECRET: 'b'.repeat(48), ENCRYPTION_KEY: 'c'.repeat(48),

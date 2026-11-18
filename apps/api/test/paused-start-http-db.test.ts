@@ -102,6 +102,36 @@ test('the refusal rule: writes refused everywhere except login, refresh, logout 
   assert.equal(isRefusedWhilePaused('POST', '/api/tasks'), false);
 });
 
+test('the paused reason reaches only signed-in people, through GET /api/auth/me', async () => {
+  const { accessToken } = await login();
+  const me = async (token?: string) => app.request('/api/auth/me', token ? { headers: { Authorization: `Bearer ${token}` } } : {});
+
+  // Not paused: the session response is unchanged (no paused field).
+  const live = await me(accessToken);
+  assert.equal(live.status, 200);
+  assert.equal('paused' in (await live.json()), false);
+
+  for (const reason of ['restore_review', 'billing'] as const) {
+    _setPausedStartForTest(true, reason);
+    const res = await me(accessToken);
+    assert.equal(res.status, 200);
+    assert.deepEqual((await res.json()).paused, { reason });
+
+    // Signed out or with a bad token: no reason, and no public route names it.
+    for (const token of [undefined, 'not-a-token']) {
+      const anon = await me(token);
+      assert.equal(anon.status, 401);
+      assert.doesNotMatch(await anon.text(), /restore_review|billing/);
+    }
+    for (const path of ['/health', '/health/ready']) {
+      assert.doesNotMatch(await (await app.request(path)).text(), /restore_review|billing|reason/, path);
+    }
+    const refused = await app.request('/api/tasks', json({ title: 'x' }));
+    assert.equal(refused.status, 503);
+    assert.doesNotMatch(await refused.text(), /restore_review|billing|reason/);
+  }
+});
+
 test('paused: ordinary and MCP writes get 503 PAUSED; login, refresh, logout and reads work; health says paused', async () => {
   _setPausedStartForTest(true);
   const { accessToken, refreshToken } = await login();

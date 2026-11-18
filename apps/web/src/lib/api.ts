@@ -1,3 +1,4 @@
+import { calmPausedRefusal } from './paused-notice';
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 const SESSION_REFRESH_EXEMPT_PATHS = new Set([
   '/api/auth/login',
@@ -205,7 +206,7 @@ class ApiClient {
       }
     }
 
-    return response;
+    return calmPausedRefusal(response, method);
   }
 
   async get(path: string) {
@@ -301,7 +302,7 @@ class ApiClient {
       }
     }
 
-    return response;
+    return calmPausedRefusal(response, 'POST');
   }
 }
 
