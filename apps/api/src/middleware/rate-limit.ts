@@ -1,6 +1,5 @@
 // In-memory store — fine for single-instance self-host. If we ever ship
 // multi-instance, swap to the hono-rate-limiter Redis store.
-import { getConnInfo } from '@hono/node-server/conninfo';
 import { rateLimiter } from 'hono-rate-limiter';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { Context, MiddlewareHandler } from 'hono';
@@ -132,16 +131,14 @@ export const inviteLimiter = withAuditBypass(rateLimiter({
 }));
 
 // A normal Runtime action performs repeated fenced payload reads before its
-// durable result. Give it a separate peer budget; never key unauthenticated
-// traffic by nominated session IDs, credentials, or forwarding headers.
+// durable result. Give it a separate client-address budget; never key
+// unauthenticated traffic by nominated session IDs or credentials. Forwarded
+// addresses count only from a configured trusted proxy (see ipKey).
 export const appRuntimeLimiter = withAuditBypass(rateLimiter({
   windowMs: 60 * 1000,
   limit: APP_RUNTIME_LIMIT_PER_MINUTE,
   standardHeaders: 'draft-7',
-  keyGenerator: (c) => {
-    try { return getConnInfo(c).remote.address ?? 'unknown'; }
-    catch { return 'unknown'; }
-  },
+  keyGenerator: ipKey,
   handler: (c) => c.json({ error: 'Too many requests. Try again in a minute.', code: 'RATE_LIMITED' }, 429),
 }));
 

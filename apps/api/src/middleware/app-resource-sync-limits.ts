@@ -1,6 +1,6 @@
 import { isIP } from 'node:net';
-import { getConnInfo } from '@hono/node-server/conninfo';
 import type { Context, MiddlewareHandler } from 'hono';
+import { createInviteClientKey } from '../lib/invite-client-ip.js';
 
 type Bucket = { window_start: number; generation: number; count: number; in_flight: number };
 const authenticatedHeartbeats = new WeakSet<Context>();
@@ -13,8 +13,9 @@ export function markAuthenticatedResourceSyncHeartbeat(c: Context): void {
   if (isHeartbeat(c)) authenticatedHeartbeats.add(c);
 }
 export type AppResourceSyncLimitsOptions = Readonly<{
-  /** Only the socket peer or an explicitly trusted host-proxy result. */
-  peerAddress?: (c: Context) => string | null | undefined;
+  /** Only the socket peer or an explicitly trusted host-proxy result.
+   * Defaults to the shared trusted-proxy client address (invite-client-ip). */
+  peerAddress?: (c: Context) => string | null | undefined | Promise<string | null | undefined>;
   now?: () => number;
   globalPerMinute?: number;
   peerPerMinute?: number;
@@ -25,10 +26,6 @@ export type AppResourceSyncLimitsOptions = Readonly<{
 
 function positive(value: number | undefined, fallback: number) {
   return value !== undefined && Number.isSafeInteger(value) && value > 0 ? value : fallback;
-}
-function socketPeer(c: Context): string | null {
-  try { return getConnInfo(c).remote.address ?? null; }
-  catch { return null; }
 }
 function peerKey(value: string | null | undefined) {
   const candidate = value?.trim();
@@ -47,13 +44,14 @@ function unavailable(c: Context, status: 429 | 503, retryAfter: string) {
 }
 
 /** Process-local bound ahead of the v2 JSON reader and session DB lookup.
- * Forwarding headers are never consulted. Invalid/unknown peers share a
- * bucket and every request is charged to the global bucket. */
+ * Peers are keyed by the shared client-address policy: X-Forwarded-For is read
+ * only when the socket peer is listed in DEFT_INVITE_TRUSTED_PROXIES. Invalid/
+ * unknown peers share a bucket and every request is charged to the global bucket. */
 export function createAppResourceSyncLimits(
   options: AppResourceSyncLimitsOptions = {},
 ): MiddlewareHandler {
   const clock = options.now ?? Date.now;
-  const resolvePeer = options.peerAddress ?? socketPeer;
+  const resolvePeer = options.peerAddress ?? createInviteClientKey();
   const globalPerMinute = positive(options.globalPerMinute, 600);
   const peerPerMinute = positive(options.peerPerMinute, 60);
   const globalConcurrent = positive(options.globalConcurrent, 32);
@@ -65,11 +63,14 @@ export function createAppResourceSyncLimits(
   const peers = new Map<string, Bucket>();
   let admissions = 0;
   return async (c, next) => {
-    const now = clock();
-    tick(global, now);
+    // Global admission first, so an exhausted budget starts no address lookup.
+    tick(global, clock());
     global.count += 1;
     if (global.count > globalPerMinute) return unavailable(c, 429, '60');
-    const key = peerKey(resolvePeer(c));
+    // Fresh timestamp after the lookup: peer accounting below is synchronous,
+    // so a slow lookup cannot rewind a bucket another request advanced.
+    const key = peerKey(await resolvePeer(c));
+    const now = clock();
     let peer = key === 'unknown' ? unknown : peers.get(key);
     if (!peer) {
       admissions += 1;
