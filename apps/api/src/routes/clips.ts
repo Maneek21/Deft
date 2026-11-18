@@ -296,7 +296,7 @@ clipRoutes.post('/', async (c) => {
       status: 'transcribing',
     }, 201);
   } catch (err) {
-    console.error('[clips] Upload failed:', err);
+    console.error('[clips] Upload failed:');
     return c.json({ error: 'Failed to upload clip', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -318,7 +318,7 @@ clipRoutes.get('/:id', async (c) => {
 
     return c.json(await serializeClipForViewer(clip, user.org_id, user.id));
   } catch (err) {
-    console.error('[clips] Get failed:', err);
+    console.error('[clips] Get failed:');
     return c.json({ error: 'Failed to get clip', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -355,7 +355,7 @@ clipRoutes.get('/:id/audio', async (c) => {
       return c.json({ error: 'Clip file not found on disk', code: 'FILE_MISSING' }, 404);
     }
   } catch (err) {
-    console.error('[clips] Audio serve failed:', err);
+    console.error('[clips] Audio serve failed:');
     return c.json({ error: 'Failed to serve clip', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -388,7 +388,7 @@ clipRoutes.get('/space/:spaceId', async (c) => {
       result.map((clip) => serializeClipForViewer(clip, user.org_id, user.id)),
     ));
   } catch (err) {
-    console.error('[clips] List failed:', err);
+    console.error('[clips] List failed:');
     return c.json({ error: 'Failed to list clips', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -418,7 +418,7 @@ clipRoutes.delete('/:id', async (c) => {
 
     return c.json({ ok: true });
   } catch (err) {
-    console.error('[clips] Delete failed:', err);
+    console.error('[clips] Delete failed:');
     return c.json({ error: 'Failed to delete clip', code: 'INTERNAL_ERROR' }, 500);
   }
 });

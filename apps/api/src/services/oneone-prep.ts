@@ -306,7 +306,7 @@ Return the response as valid JSON with keys: summary, wins, currentFocus, concer
       };
     }
   } catch (err) {
-    console.error('[oneone-prep] LLM error, using fallback:', err);
+    console.error('[oneone-prep] LLM error, using fallback:');
     prepContent = {
       summary: `${reportName} completed ${completedTasks.length} tasks, has ${inProgressTasks.length} in progress, and ${overdueTasks.length} overdue since ${collectedData.periodSince}.`,
       wins: completedTasks.map((t) => `Completed: ${t.title} (#${t.number})`),

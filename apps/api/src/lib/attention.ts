@@ -325,7 +325,7 @@ async function emitAttention(event: 'attention:new' | 'attention:updated', item:
     if (!current) return;
     emitToUser(current.org_id, current.user_id, event, projectAttentionItem(current));
   } catch (error) {
-    console.warn('[attention] realtime delivery skipped:', error instanceof Error ? error.message : error);
+    console.warn('[attention] realtime delivery skipped:');
   }
 }
 
@@ -424,7 +424,7 @@ export async function upsertAttentionItem(
       try {
         await scheduleAttentionDelivery(item);
       } catch (error) {
-        console.warn('[attention] push scheduling failed:', error instanceof Error ? error.message : error);
+        console.warn('[attention] push scheduling failed:');
       }
     }
   };
@@ -593,7 +593,7 @@ export async function syncNotificationsToAttention(
   });
 
   const visible = await filterVisibleAttentionItemsForDelivery(items).catch((error) => {
-    console.warn('[attention] visibility check failed:', error instanceof Error ? error.message : error);
+    console.warn('[attention] visibility check failed:');
     return [];
   });
   const projectedIds = new Set(projected.map((item) => item.id));
@@ -604,7 +604,7 @@ export async function syncNotificationsToAttention(
   }
   if (options.deliver !== false) {
     await scheduleAttentionDeliveries(visible).catch((error) => {
-      console.warn('[attention] push scheduling failed:', error instanceof Error ? error.message : error);
+      console.warn('[attention] push scheduling failed:');
       return [];
     });
   }
@@ -613,7 +613,7 @@ export async function syncNotificationsToAttention(
 
 async function scheduleVisibleNotificationItems(items: Array<typeof attentionItems.$inferSelect>) {
   await filterVisibleAttentionItemsForDelivery(items).then(scheduleAttentionDeliveries).catch((error) => {
-    console.warn('[attention] push scheduling failed:', error instanceof Error ? error.message : error);
+    console.warn('[attention] push scheduling failed:');
   });
 }
 

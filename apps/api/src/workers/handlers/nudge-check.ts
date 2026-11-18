@@ -1,3 +1,4 @@
+import { logId, logNumber } from '../../lib/log-metadata.js';
 // Handler: find overdue/stalled tasks and send nudges
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
@@ -92,9 +93,7 @@ export async function postProactiveAgentComment(params: {
       content: body,
     });
   } catch (err) {
-    console.error(
-      `[nudge-check] Failed to post proactive comment on task ${taskId}:`,
-      (err as Error).message,
+    console.error(`[nudge-check] Failed to post proactive comment on task ${logId(taskId)}:`
     );
   }
 }
@@ -326,11 +325,10 @@ export async function handleNudgeCheck(_job: JobData): Promise<void> {
     // 4. Workload imbalance detection
     await checkWorkloadImbalance();
 
-    console.log(
-      `[nudge-check] Processed ${stalledTasks.length} stalled, ${overdueTasks.length} overdue, and ${upcomingTasks.length} upcoming due tasks`,
+    console.log(`[nudge-check] Processed ${logNumber(stalledTasks.length)} stalled, ${logNumber(overdueTasks.length)} overdue, and ${logNumber(upcomingTasks.length)} upcoming due tasks`
     );
   } catch (err) {
-    console.error('[nudge-check] Error during nudge check:', err);
+    console.error('[nudge-check] Error during nudge check:');
     throw err;
   }
 }
@@ -425,9 +423,9 @@ async function processNudge(params: NudgeParams): Promise<void> {
       emitToUser(notification.org_id, targetUserId, 'notification:new', notification);
     }
 
-    console.log(`[nudge-check] Sent ${nudgeType} nudge for ${taskIdentifier} to user ${targetUserId}`);
+    console.log(`[nudge-check] Sent <redacted> nudge for <redacted> to user ${logId(targetUserId)}`);
   } catch (err) {
-    console.error(`[nudge-check] Error processing nudge for task ${taskId}:`, err);
+    console.error(`[nudge-check] Error processing nudge for task ${logId(taskId)}:`);
     // Don't throw — continue processing other tasks
   }
 }
@@ -576,8 +574,7 @@ export async function checkWorkloadImbalance(): Promise<void> {
             emitToUser(notification.org_id, admin.user_id, 'notification:new', notification);
           }
 
-          console.log(
-            `[nudge-check] Sent workload imbalance alert for ${person.assignee_name} to admin ${admin.user_id} in org ${orgId}`,
+          console.log(`[nudge-check] Sent workload imbalance alert for <redacted> to admin ${logId(admin.user_id)} in org ${logId(orgId)}`
           );
         }
 
@@ -625,7 +622,7 @@ export async function checkWorkloadImbalance(): Promise<void> {
       }
     }
   } catch (err) {
-    console.error('[nudge-check] Error during workload imbalance check:', err);
+    console.error('[nudge-check] Error during workload imbalance check:');
     // Don't throw — this is a supplementary check
   }
 }

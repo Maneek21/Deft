@@ -213,7 +213,6 @@ async function fanOutTrigger(params: {
     enqueued += 1;
   }
 
-  console.log(
-    `[trigger-dispatch] kind=${triggerKind} enqueued=${enqueued} skipped=${skipped}`,
+  console.log("[trigger-dispatch] kind=<redacted> enqueued=<redacted> skipped=<redacted>"
   );
 }

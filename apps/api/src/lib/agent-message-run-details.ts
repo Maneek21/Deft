@@ -317,7 +317,7 @@ export async function emitMessageToSpaceViewers(io: SpaceEmitter, input: {
   } catch (error) {
     // Resolution failed before any socket was sent to: the space still gets
     // the message, without details, and the caller's later emits still run.
-    console.warn('[agent-message-run-details] per-viewer delivery unavailable; sending without details', error instanceof Error ? error.message : String(error));
+    console.warn('[agent-message-run-details] per-viewer delivery unavailable; sending without details');
     if (await unchanged()) io.to(room).emit(input.event, redacted);
     return;
   }

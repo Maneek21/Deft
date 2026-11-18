@@ -400,8 +400,7 @@ export class PostgresAppRunApprovalResolver {
         action.approval_status,
       );
     } catch (error) {
-      console.warn('[app-runs] approval Attention resolution failed:',
-        error instanceof Error ? error.message : 'unknown error');
+      console.warn('[app-runs] approval Attention resolution failed:');
     }
   }
 }

@@ -339,7 +339,7 @@ inboxRoutes.get('/', async (c) => {
       next_cursor: nextCursor,
     });
   } catch (err) {
-    console.error('Failed to fetch inbox:', err);
+    console.error('Failed to fetch inbox:');
     return c.json({ error: 'Failed to fetch inbox', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -393,7 +393,7 @@ inboxRoutes.post('/read', async (c) => {
 
     return c.json({ success: true, updated: updated.length });
   } catch (err) {
-    console.error('Failed to mark inbox read:', err);
+    console.error('Failed to mark inbox read:');
     return c.json({ error: 'Failed to mark read', code: 'INTERNAL_ERROR' }, 500);
   }
 });

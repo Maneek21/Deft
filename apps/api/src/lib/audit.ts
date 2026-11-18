@@ -25,6 +25,6 @@ export async function logAuditEvent(params: {
       metadata: params.metadata ?? null,
     });
   } catch (err) {
-    console.error('[audit] Failed to log audit event:', err);
+    console.error('[audit] Failed to log audit event:');
   }
 }

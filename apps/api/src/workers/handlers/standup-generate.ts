@@ -1,3 +1,4 @@
+import { logId } from '../../lib/log-metadata.js';
 import { orgs } from '@deft/db/schema';
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
@@ -13,10 +14,10 @@ export async function handleStandupGenerate(job: JobData): Promise<void> {
     try {
       const result = await generateDailyStandup({ orgId: org.id, now });
       if (!result.alreadyExisted) {
-        console.log(`[standup-generate] Delivered ${due.dateKey} standup for ${org.name} (job ${job.id})`);
+        console.log(`[standup-generate] Delivered <redacted> standup for <redacted> (job ${logId(job.id)})`);
       }
     } catch (error) {
-      console.error(`[standup-generate] Failed for org ${org.id}:`, error);
+      console.error(`[standup-generate] Failed for org ${logId(org.id)}:`);
     }
   }
 }

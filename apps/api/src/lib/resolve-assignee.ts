@@ -1,3 +1,4 @@
+import { logId } from './log-metadata.js';
 /**
  * Canonical user/agent-employee lookup helper for agent tool calls.
  *
@@ -66,10 +67,7 @@ export async function resolveAssignee(
   const exactMatches = candidates.filter((c) => normalizeAssigneeLookup(c.name) === normalizedInput);
   if (exactMatches.length === 1) return toResolved(exactMatches[0]!);
   if (exactMatches.length > 1) {
-    console.warn(
-      `[resolveAssignee] ambiguous exact match for "${input}" in org ${orgId}: ${exactMatches
-        .map((c) => c.name)
-        .join(', ')}`,
+    console.warn(`[resolveAssignee] ambiguous exact match for "<redacted>" in org ${logId(orgId)}: <redacted>`
     );
     return null;
   }
@@ -80,10 +78,7 @@ export async function resolveAssignee(
   );
   if (partialMatches.length === 1) return toResolved(partialMatches[0]!);
   if (partialMatches.length > 1) {
-    console.warn(
-      `[resolveAssignee] ambiguous partial match for "${input}" in org ${orgId}: ${partialMatches
-        .map((c) => c.name)
-        .join(', ')}`,
+    console.warn(`[resolveAssignee] ambiguous partial match for "<redacted>" in org ${logId(orgId)}: <redacted>`
     );
     return null;
   }

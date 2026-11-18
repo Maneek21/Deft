@@ -43,7 +43,7 @@ export async function notifyCapturePolicyRetired(policy:{org_id:string;user_id:s
    metadata:{kind:'app_integration_capture_retired',installation_id:policy.installation_id,account_ref:policy.account_ref,store_key:policy.store_key,capture_policy_id:policy.id,retired_reason:reason},
   },{bypassUserPreferences:true});
  }catch(error){
-  console.warn('[app-integration-capture] Retirement notice failed',{policy_id:policy.id,error:error instanceof Error?error.message:String(error)});
+  console.warn('[app-integration-capture] Retirement notice failed');
  }
 }
 export function createAppIntegrationCaptureRuntime(input:{transaction<T>(fn:(tx:Tx)=>Promise<T>):Promise<T>;keys:AppRunKeyProvider;

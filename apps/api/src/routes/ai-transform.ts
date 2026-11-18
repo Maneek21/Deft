@@ -125,7 +125,7 @@ aiTransformRoutes.post('/transform', async (c) => {
 
     return c.json({ output: result.text || '', model: result.model });
   } catch (err) {
-    console.error('[ai-transform] LLM call failed:', err);
+    console.error('[ai-transform] LLM call failed:');
     return c.json(
       { error: 'AI transform failed', code: 'INTERNAL_ERROR' },
       500,

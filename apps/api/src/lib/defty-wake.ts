@@ -316,7 +316,7 @@ export async function enqueueDeftyWake(
       return { woke: true, providerReason: plan.providerReason, providerReady: plan.providerReady };
     });
   } catch (err) {
-    console.error('Failed to enqueue agent reply (thread follow):', err);
+    console.error('Failed to enqueue agent reply (thread follow):');
     return none;
   }
 }
@@ -329,7 +329,7 @@ export async function finishDeftyWake(
 ): Promise<void> {
   if (!outcome?.woke || outcome.providerReady || !outcome.providerReason) return;
   await postProviderUnavailableReply(outcome.providerReason, input).catch((err) => {
-    console.error('Failed to post Defty provider-unavailable reply:', err);
+    console.error('Failed to post Defty provider-unavailable reply:');
   });
 }
 

@@ -36,7 +36,7 @@ export class AppExperienceResourceContentService {
     // content disclosure policy from a native product's account tables.
     private readonly readingPolicy: SourceReadingPolicy = async () => 'ask',
     private readonly observe: (timing: AttachmentTiming) => void = timing => {
-      if (process.env.NODE_ENV === 'production') console.info(JSON.stringify({ event: 'app_data_timing', operation: 'attachment', ...timing }));
+      if (process.env.NODE_ENV === 'production') console.info("[app-experience-resource-content] Runtime diagnostic (details omitted)");
     }) {
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000) throw new TypeError('Invalid content timeout');
   }

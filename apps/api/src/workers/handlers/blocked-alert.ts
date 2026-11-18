@@ -1,3 +1,4 @@
+import { logId } from '../../lib/log-metadata.js';
 // Handler: detect blocked users and alert project leads
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
@@ -17,7 +18,7 @@ import { createNotificationIfAllowed } from '../../lib/notification-policy.js';
 
 export async function handleBlockedAlert(job: JobData): Promise<void> {
   const { messageId, spaceId, orgId, userId } = job.data;
-  console.log('[blocked-alert] Processing blocked signal from user', userId);
+  console.log('[blocked-alert] Processing blocked signal from user');
 
   const now = new Date();
   const fourHoursAgo = new Date(now.getTime() - 4 * 60 * 60 * 1000);
@@ -160,15 +161,14 @@ export async function handleBlockedAlert(job: JobData): Promise<void> {
         await emitVisibleNotification(notification);
       }
 
-      console.log(
-        `[blocked-alert] Sent blocked alert for ${taskIdentifier} to lead ${targetUserId}`,
+      console.log(`[blocked-alert] Sent blocked alert for <redacted> to lead ${logId(targetUserId)}`
       );
 
       // Only send one notification per blocked signal (avoid spam)
       break;
     }
   } catch (err) {
-    console.error('[blocked-alert] Error processing blocked alert:', err);
+    console.error('[blocked-alert] Error processing blocked alert:');
     throw err;
   }
 }

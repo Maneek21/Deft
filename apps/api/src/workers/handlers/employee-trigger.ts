@@ -1,3 +1,4 @@
+import { logId } from '../../lib/log-metadata.js';
 /**
  * Handler: employee-trigger — trigger dispatcher.
  *
@@ -44,12 +45,11 @@ export async function handleEmployeeTrigger(job: JobData): Promise<void> {
   const { employee_id, trigger_kind, context, goal, target_space_id } = invocation;
   const orgId = jobOrgId(job);
   if (!orgId || !employee_id) {
-    console.warn(`[employee-trigger] ${trigger_kind} job without a workspace; not delivered`);
+    console.warn("[employee-trigger] <redacted> job without a workspace; not delivered");
     return;
   }
 
-  console.log(
-    `[employee-trigger] Queueing ${trigger_kind} for employee ${employee_id}`,
+  console.log(`[employee-trigger] Queueing <redacted> for employee ${logId(employee_id)}`
   );
 
   // 1. Load the employee from the job's org and verify it is active.
@@ -64,8 +64,7 @@ export async function handleEmployeeTrigger(job: JobData): Promise<void> {
     .limit(1);
 
   if (!employee) {
-    console.warn(
-      `[employee-trigger] Employee ${employee_id} not found or inactive, skipping`,
+    console.warn(`[employee-trigger] Employee ${logId(employee_id)} not found or inactive, skipping`
     );
     return;
   }
@@ -77,15 +76,14 @@ export async function handleEmployeeTrigger(job: JobData): Promise<void> {
       .where(and(eq(spaces.id, target_space_id), eq(spaces.org_id, orgId)))
       .limit(1);
     if (!space) {
-      console.warn(`[employee-trigger] target space for ${trigger_kind} not found; skipping`);
+      console.warn("[employee-trigger] target space for <redacted> not found; skipping");
       return;
     }
   }
 
   // 2. Action budget gate — matches the existing chat-mention behavior.
   if (employee.daily_action_count >= employee.max_daily_actions) {
-    console.warn(
-      `[employee-trigger] Employee ${employee.slug} has exhausted daily action budget`,
+    console.warn("[employee-trigger] Employee <redacted> has exhausted daily action budget"
     );
     return;
   }
@@ -131,9 +129,7 @@ export async function handleEmployeeTrigger(job: JobData): Promise<void> {
       approval_status: 'pending',
     });
   } catch (err) {
-    console.error(
-      `[employee-trigger] failed to queue ${trigger_kind} for ${employee.slug}:`,
-      err instanceof Error ? err.message : err,
+    console.error("[employee-trigger] failed to queue <redacted> for <redacted>:"
     );
   }
 }

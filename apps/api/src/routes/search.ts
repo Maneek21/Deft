@@ -233,7 +233,7 @@ searchRoutes.get('/', async (c) => {
       },
     });
   } catch (err) {
-    console.error('Search error:', err);
+    console.error('Search error:');
     return c.json({ error: 'Search failed', code: 'INTERNAL_ERROR' }, 500);
   }
 });

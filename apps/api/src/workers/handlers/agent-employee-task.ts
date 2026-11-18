@@ -1,3 +1,4 @@
+import { logId } from '../../lib/log-metadata.js';
 // Handler: agent-employee-task — processes task assignments to agent employees.
 //
 // Every employee is BYOA. Task assignments publish to the durable Agent
@@ -27,7 +28,7 @@ interface AgentEmployeeTaskData {
 export async function handleAgentEmployeeTask(job: JobData): Promise<void> {
   const { taskId, orgId, employeeId, assignedBy } = job.data as AgentEmployeeTaskData;
 
-  console.log(`[agent-employee-task] Queueing task ${taskId} for employee ${employeeId}`);
+  console.log(`[agent-employee-task] Queueing task ${logId(taskId)} for employee ${logId(employeeId)}`);
 
   // 1. Load employee and verify it's active
   const [employee] = await db.select()
@@ -41,7 +42,7 @@ export async function handleAgentEmployeeTask(job: JobData): Promise<void> {
     .limit(1);
 
   if (!employee) {
-    console.warn(`[agent-employee-task] Employee ${employeeId} not found or inactive, skipping`);
+    console.warn(`[agent-employee-task] Employee ${logId(employeeId)} not found or inactive, skipping`);
     return;
   }
 
@@ -68,14 +69,14 @@ export async function handleAgentEmployeeTask(job: JobData): Promise<void> {
     .limit(1);
 
   if (!task) {
-    console.warn(`[agent-employee-task] Task ${taskId} not found, skipping`);
+    console.warn(`[agent-employee-task] Task ${logId(taskId)} not found, skipping`);
     return;
   }
 
   // Re-check the live employee boundary at execution time. A queued handoff
   // must not survive an operator narrowing project scope before the worker runs.
   if (!(await employeeCanAccessProject({ org_id: orgId, employee_id: employeeId }, task.project_id))) {
-    console.warn(`[agent-employee-task] Task ${taskId} is outside employee ${employeeId}'s project scope, skipping`);
+    console.warn(`[agent-employee-task] Task ${logId(taskId)} is outside employee ${logId(employeeId)}'s project scope, skipping`);
     return;
   }
 
@@ -147,9 +148,7 @@ export async function handleAgentEmployeeTask(job: JobData): Promise<void> {
       ));
     }
   } catch (err) {
-    console.error(
-      `[agent-employee-task] failed to queue task ${taskId} for ${employeeId}:`,
-      err instanceof Error ? err.message : err,
+    console.error(`[agent-employee-task] failed to queue task ${logId(taskId)} for ${logId(employeeId)}:`
     );
   }
 

@@ -150,7 +150,7 @@ export async function embedQuiet(text: string, orgId: string | null | undefined)
   try {
     return await embed(text, orgId);
   } catch (err) {
-    console.warn('[embed] quiet failure — falling back:', (err as Error).message);
+    console.warn('[embed] quiet failure — falling back:');
     return null;
   }
 }

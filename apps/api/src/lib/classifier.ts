@@ -350,7 +350,7 @@ export async function classifyMessage(
     }, localHints);
     return applyMemorySuppression(applyBlockedSuppression(merged, content), content);
   } catch (err) {
-    console.error('[classifier] Classification failed:', (err as Error).message);
+    console.error('[classifier] Classification failed:');
     return classifyMessageLocally(content);
   }
 }

@@ -1,3 +1,4 @@
+import { logId } from '../../lib/log-metadata.js';
 // Handler: agent-employee-trigger — fires when events occur and evaluates
 // per-employee trigger conditions, then queues a pending `agent_actions`
 // row so the BYOA client picks the work up via `poll_pending_work`.
@@ -28,7 +29,7 @@ export async function handleAgentEmployeeTrigger(job: JobData): Promise<void> {
     return;
   }
 
-  console.log(`[agent-employee-trigger] Processing trigger ${triggerId} for event ${eventType}`);
+  console.log(`[agent-employee-trigger] Processing trigger ${logId(triggerId)} for event <redacted>`);
 
   // 1. Load the job org's trigger and verify it's active
   const [trigger] = await db.select()
@@ -37,7 +38,7 @@ export async function handleAgentEmployeeTrigger(job: JobData): Promise<void> {
     .limit(1);
 
   if (!trigger || !trigger.agent_employee_id) {
-    console.warn(`[agent-employee-trigger] Trigger ${triggerId} not found, inactive, or has no agent employee`);
+    console.warn(`[agent-employee-trigger] Trigger ${logId(triggerId)} not found, inactive, or has no agent employee`);
     return;
   }
 
@@ -52,13 +53,13 @@ export async function handleAgentEmployeeTrigger(job: JobData): Promise<void> {
     .limit(1);
 
   if (!employee) {
-    console.warn(`[agent-employee-trigger] Agent employee ${trigger.agent_employee_id} not found or inactive`);
+    console.warn(`[agent-employee-trigger] Agent employee ${logId(trigger.agent_employee_id)} not found or inactive`);
     return;
   }
 
   // 3. Check daily action budget
   if (employee.daily_action_count >= employee.max_daily_actions) {
-    console.warn(`[agent-employee-trigger] Agent employee ${employee.name} has exhausted daily action budget`);
+    console.warn("[agent-employee-trigger] Agent employee <redacted> has exhausted daily action budget");
     return;
   }
 
@@ -69,11 +70,11 @@ export async function handleAgentEmployeeTrigger(job: JobData): Promise<void> {
       const actual = eventData[field];
       if (Array.isArray(expected)) {
         if (!expected.includes(actual)) {
-          console.log(`[agent-employee-trigger] Condition not met: ${field}=${actual} not in ${JSON.stringify(expected)}`);
+          console.log("[agent-employee-trigger] Condition not met: <redacted>=<redacted> not in <redacted>");
           return;
         }
       } else if (actual !== expected) {
-        console.log(`[agent-employee-trigger] Condition not met: ${field}=${actual} !== ${expected}`);
+        console.log("[agent-employee-trigger] Condition not met: <redacted>=<redacted> !== <redacted>");
         return;
       }
     }
@@ -108,9 +109,7 @@ export async function handleAgentEmployeeTrigger(job: JobData): Promise<void> {
       });
       queued += 1;
     } catch (err) {
-      console.error(
-        `[agent-employee-trigger] failed to queue trigger ${triggerId}:`,
-        err instanceof Error ? err.message : err,
+      console.error(`[agent-employee-trigger] failed to queue trigger ${logId(triggerId)}:`
       );
     }
   }
@@ -125,5 +124,5 @@ export async function handleAgentEmployeeTrigger(job: JobData): Promise<void> {
     }).where(eq(triggers.id, triggerId));
   }
 
-  console.log(`[agent-employee-trigger] Trigger ${triggerId} (${trigger.name}) queued ${queued} action(s) for event ${eventType}`);
+  console.log(`[agent-employee-trigger] Trigger ${logId(triggerId)} (<redacted>) queued <redacted> action(s) for event <redacted>`);
 }

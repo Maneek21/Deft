@@ -120,7 +120,7 @@ agentWebhookRoutes.post('/', async (c) => {
       post_url: `/api/agent-webhooks/${slug}`,
     }, 201);
   } catch (err) {
-    console.error('Failed to create agent webhook:', err);
+    console.error('Failed to create agent webhook:');
     return c.json({ error: 'Failed to create', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -151,7 +151,7 @@ agentWebhookRoutes.get('/', async (c) => {
       .orderBy(desc(agentWebhooks.created_at));
     return c.json({ webhooks: rows });
   } catch (err) {
-    console.error('Failed to list agent webhooks:', err);
+    console.error('Failed to list agent webhooks:');
     return c.json({ error: 'Failed', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -174,7 +174,7 @@ agentWebhookRoutes.delete('/:id', async (c) => {
     if (managed.value.length === 0) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
     return c.json({ revoked: true });
   } catch (err) {
-    console.error('Failed to revoke webhook:', err);
+    console.error('Failed to revoke webhook:');
     return c.json({ error: 'Failed', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -237,7 +237,7 @@ publicAgentWebhookRoutes.post('/:slug', async (c) => {
           authMethod = 'hmac';
         }
       } catch (err) {
-        console.error('[agent-webhook] HMAC verify failed:', err);
+        console.error('[agent-webhook] HMAC verify failed:');
       }
     }
 
@@ -245,9 +245,8 @@ publicAgentWebhookRoutes.post('/:slug', async (c) => {
       if (verifySecret(legacySecret, hook.secret_hash)) {
         authed = true;
         authMethod = 'legacy';
-        console.warn(
-          `[agent-webhook] DEPRECATED auth: webhook ${slug} authenticated via x-deft-webhook-secret. ` +
-            'Migrate to x-deft-webhook-signature with HMAC-SHA256 using the per-webhook hmac_key.',
+        console.warn('[agent-webhook] DEPRECATED auth: webhook authenticated via x-deft-webhook-secret. ' +
+          'Migrate to x-deft-webhook-signature with HMAC-SHA256 using the per-webhook hmac_key.'
         );
       }
     }
@@ -288,7 +287,7 @@ publicAgentWebhookRoutes.post('/:slug', async (c) => {
 
     return c.json({ accepted: true, webhook_id: hook.id, auth_method: authMethod });
   } catch (err) {
-    console.error('Failed to dispatch webhook:', err);
+    console.error('Failed to dispatch webhook:');
     return c.json({ error: 'Failed', code: 'INTERNAL_ERROR' }, 500);
   }
 });

@@ -238,7 +238,7 @@ async function synthesizeStandup(
     );
     return { draft, generator: 'agent' as const, model: response.model };
   } catch (error) {
-    console.error('[standup-automation] Grounded synthesis failed; using fallback:', error);
+    console.error('[standup-automation] Grounded synthesis failed; using fallback:');
     return { draft: fallback, generator: 'fallback' as const, model: null };
   }
 }

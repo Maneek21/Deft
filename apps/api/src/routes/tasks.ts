@@ -278,7 +278,7 @@ async function dispatchMentionNotifications(params: {
         emitToUser(notification.org_id, userId, 'notification:new', notification);
       }
     } catch (err) {
-      console.error('Failed to create mention notification:', err);
+      console.error('Failed to create mention notification:');
     }
   }
 }
@@ -376,7 +376,7 @@ taskRoutes.get('/my', async (c) => {
 
     return c.json(tasksWithLabels);
   } catch (err) {
-    console.error('Failed to fetch my tasks:', err);
+    console.error('Failed to fetch my tasks:');
     return c.json({ error: 'Failed to fetch tasks', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -445,7 +445,7 @@ taskRoutes.get('/search', async (c) => {
 
     return c.json(result);
   } catch (err) {
-    console.error('Failed to search tasks:', err);
+    console.error('Failed to search tasks:');
     return c.json({ error: 'Failed to search tasks', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -457,7 +457,7 @@ taskRoutes.get('/labels', async (c) => {
     const result = await db.select().from(labels).where(eq(labels.org_id, user.org_id)).orderBy(labels.name);
     return c.json(result);
   } catch (err) {
-    console.error('Failed to fetch labels:', err);
+    console.error('Failed to fetch labels:');
     return c.json({ error: 'Failed to fetch labels', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -471,7 +471,7 @@ taskRoutes.post('/labels', async (c) => {
     const [label] = await db.insert(labels).values({ org_id: user.org_id, name: parsed.data.name, color: parsed.data.color }).returning();
     return c.json(label, 201);
   } catch (err) {
-    console.error('Failed to create label:', err);
+    console.error('Failed to create label:');
     return c.json({ error: 'Failed to create label', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -494,7 +494,7 @@ taskRoutes.patch('/bulk', async (c) => {
     if (err instanceof BulkTaskUpdateError) {
       return c.json({ error: err.message, code: err.code }, err.status);
     }
-    console.error('Failed to bulk update tasks:', err);
+    console.error('Failed to bulk update tasks:');
     return c.json({ error: 'Failed to bulk update tasks', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -533,7 +533,7 @@ taskRoutes.post('/bulk-delete', async (c) => {
 
     return c.json({ success: true, deleted: taskIds.length, deleted_ids: taskIds });
   } catch (err) {
-    console.error('Failed to bulk delete tasks:', err);
+    console.error('Failed to bulk delete tasks:');
     return c.json({ error: 'Failed to bulk delete tasks', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -776,7 +776,7 @@ taskRoutes.get('/table', async (c) => {
         : null,
     });
   } catch (err) {
-    console.error('Failed to query task table:', err);
+    console.error('Failed to query task table:');
     return c.json({ error: 'Failed to query task table', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -796,7 +796,7 @@ taskRoutes.get('/templates', async (c) => {
       .orderBy(tasks.title);
     return c.json({ templates: rows });
   } catch (err) {
-    console.error('Failed to fetch templates:', err);
+    console.error('Failed to fetch templates:');
     return c.json({ error: 'Failed to fetch templates', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -818,7 +818,7 @@ taskRoutes.get('/saved-views', async (c) => {
       .orderBy(desc(savedViews.created_at));
     return c.json(views);
   } catch (err) {
-    console.error('Failed to fetch saved views:', err);
+    console.error('Failed to fetch saved views:');
     return c.json({ error: 'Failed to fetch saved views', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -836,7 +836,7 @@ taskRoutes.post('/saved-views', async (c) => {
     }).returning();
     return c.json(view, 201);
   } catch (err) {
-    console.error('Failed to create saved view:', err);
+    console.error('Failed to create saved view:');
     return c.json({ error: 'Failed to create saved view', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -860,7 +860,7 @@ taskRoutes.patch('/saved-views/:id', async (c) => {
     if (!view) return c.json({ error: 'View not found', code: 'NOT_FOUND' }, 404);
     return c.json(view);
   } catch (err) {
-    console.error('Failed to update saved view:', err);
+    console.error('Failed to update saved view:');
     return c.json({ error: 'Failed to update saved view', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -875,7 +875,7 @@ taskRoutes.delete('/saved-views/:id', async (c) => {
     await db.delete(savedViews).where(eq(savedViews.id, viewId));
     return c.json({ success: true });
   } catch (err) {
-    console.error('Failed to delete saved view:', err);
+    console.error('Failed to delete saved view:');
     return c.json({ error: 'Failed to delete saved view', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -899,7 +899,7 @@ taskRoutes.get('/:id/watchers', async (c) => {
       .where(eq(taskWatchers.task_id, taskId));
     return c.json({ watchers });
   } catch (err) {
-    console.error('Failed to fetch watchers:', err);
+    console.error('Failed to fetch watchers:');
     return c.json({ error: 'Failed to fetch watchers', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -915,7 +915,7 @@ taskRoutes.post('/:id/watch', async (c) => {
     }).onConflictDoNothing();
     return c.json({ success: true });
   } catch (err) {
-    console.error('Failed to watch task:', err);
+    console.error('Failed to watch task:');
     return c.json({ error: 'Failed to watch task', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -929,7 +929,7 @@ taskRoutes.delete('/:id/watch', async (c) => {
       .where(and(eq(taskWatchers.task_id, taskId), eq(taskWatchers.user_id, user.id)));
     return c.json({ success: true });
   } catch (err) {
-    console.error('Failed to unwatch task:', err);
+    console.error('Failed to unwatch task:');
     return c.json({ error: 'Failed to unwatch task', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -964,7 +964,7 @@ taskRoutes.post('/:id/assignees', async (c) => {
     }).onConflictDoNothing();
     return c.json({ success: true });
   } catch (err) {
-    console.error('Failed to add assignee:', err);
+    console.error('Failed to add assignee:');
     return c.json({ error: 'Failed to add assignee', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -988,7 +988,7 @@ taskRoutes.delete('/:id/assignees/:userId', async (c) => {
     }
     return c.json({ success: true });
   } catch (err) {
-    console.error('Failed to remove assignee:', err);
+    console.error('Failed to remove assignee:');
     return c.json({ error: 'Failed to remove assignee', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1011,7 +1011,7 @@ taskRoutes.get('/:id/assignees', async (c) => {
       .where(eq(taskAssignees.task_id, taskId));
     return c.json({ assignees });
   } catch (err) {
-    console.error('Failed to fetch assignees:', err);
+    console.error('Failed to fetch assignees:');
     return c.json({ error: 'Failed to fetch assignees', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1084,7 +1084,7 @@ taskRoutes.post('/:id/agent-handoff', async (c) => {
       },
     });
   } catch (err) {
-    console.error('Failed to queue task agent handoff:', err);
+    console.error('Failed to queue task agent handoff:');
     return c.json({ error: 'Failed to queue agent handoff', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1330,7 +1330,7 @@ taskRoutes.get('/:id', async (c) => {
       } : null,
     });
   } catch (err) {
-    console.error('Failed to fetch task:', err);
+    console.error('Failed to fetch task:');
     return c.json({ error: 'Failed to fetch task', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1369,7 +1369,7 @@ taskRoutes.get('/:id/comments', async (c) => {
 
     return c.json(result);
   } catch (err) {
-    console.error('Failed to fetch task comments:', err);
+    console.error('Failed to fetch task comments:');
     return c.json({ error: 'Failed to fetch comments', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1455,7 +1455,7 @@ taskRoutes.post('/:id/comments', async (c) => {
         });
       }
     } catch (err) {
-      console.error('Comment notification error:', err);
+      console.error('Comment notification error:');
     }
 
     await publishTaskChannelEventForAssignee({
@@ -1479,7 +1479,7 @@ taskRoutes.post('/:id/comments', async (c) => {
     }, 201);
   } catch (err) {
     if (err instanceof NativeMentionLimitError) return c.json({ error: err.message, code: 'NATIVE_MENTION_LIMIT' }, 400);
-    console.error('Failed to create task comment:', err);
+    console.error('Failed to create task comment:');
     return c.json({ error: 'Failed to create comment', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1520,7 +1520,7 @@ taskRoutes.get('/:id/activity', async (c) => {
 
     return c.json(result);
   } catch (err) {
-    console.error('Failed to fetch task activity:', err);
+    console.error('Failed to fetch task activity:');
     return c.json({ error: 'Failed to fetch activity', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1567,7 +1567,7 @@ taskRoutes.post('/:id/labels', async (c) => {
     if (err?.code === '23505') {
       return c.json({ error: 'Label already attached', code: 'CONFLICT' }, 409);
     }
-    console.error('Failed to add label to task:', err);
+    console.error('Failed to add label to task:');
     return c.json({ error: 'Failed to add label', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1599,7 +1599,7 @@ taskRoutes.delete('/:id/labels/:labelId', async (c) => {
 
     return c.json({ success: true });
   } catch (err) {
-    console.error('Failed to remove label from task:', err);
+    console.error('Failed to remove label from task:');
     return c.json({ error: 'Failed to remove label', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1617,7 +1617,7 @@ taskRoutes.get('/labels', async (c) => {
 
     return c.json(result);
   } catch (err) {
-    console.error('Failed to fetch labels:', err);
+    console.error('Failed to fetch labels:');
     return c.json({ error: 'Failed to fetch labels', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1641,7 +1641,7 @@ taskRoutes.post('/labels', async (c) => {
 
     return c.json(label, 201);
   } catch (err) {
-    console.error('Failed to create label:', err);
+    console.error('Failed to create label:');
     return c.json({ error: 'Failed to create label', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1756,7 +1756,7 @@ taskRoutes.get('/project/:projectId', async (c) => {
 
     return c.json(tasksWithExtras);
   } catch (err) {
-    console.error('Failed to fetch project tasks:', err);
+    console.error('Failed to fetch project tasks:');
     return c.json({ error: 'Failed to fetch tasks', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1849,7 +1849,7 @@ async function createTaskForProject(
         orgId,
       });
     } catch (err) {
-      console.error('Failed to enqueue duplicate-detect:', err);
+      console.error('Failed to enqueue duplicate-detect:');
     }
   }
 
@@ -1899,7 +1899,7 @@ taskRoutes.post('/', async (c) => {
     }
   } catch (err) {
     if (err instanceof NativeCreateError) return c.json({ error: err.message, code: err.code }, err.status);
-    console.error('Failed to create task:', err);
+    console.error('Failed to create task:');
     return c.json({ error: 'Failed to create task', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1931,7 +1931,7 @@ taskRoutes.post('/project/:projectId', async (c) => {
     }
   } catch (err) {
     if (err instanceof NativeCreateError) return c.json({ error: err.message, code: err.code }, err.status);
-    console.error('Failed to create task:', err);
+    console.error('Failed to create task:');
     return c.json({ error: 'Failed to create task', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -2223,7 +2223,7 @@ taskRoutes.patch('/:id', async (c) => {
           surface: 'description',
         });
       } catch (err) {
-        console.error('Description mention dispatch error:', err);
+        console.error('Description mention dispatch error:');
       }
     }
 
@@ -2396,7 +2396,7 @@ taskRoutes.patch('/:id', async (c) => {
           });
         }
       } catch (err) {
-        console.error('Failed to enqueue workflow-execute:', (err as Error).message);
+        console.error('Failed to enqueue workflow-execute:');
       }
 
       // Post system message in linked spaces
@@ -2442,7 +2442,7 @@ taskRoutes.patch('/:id', async (c) => {
       project_name: project?.name ?? null,
     });
   } catch (err) {
-    console.error('Failed to update task:', err);
+    console.error('Failed to update task:');
     return c.json({ error: 'Failed to update task', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -2483,7 +2483,7 @@ taskRoutes.delete('/:id', async (c) => {
 
     return c.json({ success: true });
   } catch (err) {
-    console.error('Failed to delete task:', err);
+    console.error('Failed to delete task:');
     return c.json({ error: 'Failed to delete task', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -2535,7 +2535,7 @@ taskRoutes.post('/:id/duplicate', async (c) => {
       labels: originalLabels.length > 0 ? [] : [],
     }, 201);
   } catch (err) {
-    console.error('Failed to duplicate task:', err);
+    console.error('Failed to duplicate task:');
     return c.json({ error: 'Failed to duplicate task', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -2644,7 +2644,7 @@ taskRoutes.get('/:id/dependencies', async (c) => {
 
     return c.json({ blocks, blocked_by, relates_to });
   } catch (err) {
-    console.error('Failed to fetch dependencies:', err);
+    console.error('Failed to fetch dependencies:');
     return c.json({ error: 'Failed to fetch dependencies', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -2710,7 +2710,7 @@ taskRoutes.post('/:id/dependencies', async (c) => {
     if (err?.code === '23505') {
       return c.json({ error: 'Dependency already exists', code: 'CONFLICT' }, 409);
     }
-    console.error('Failed to create dependency:', err);
+    console.error('Failed to create dependency:');
     return c.json({ error: 'Failed to create dependency', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -2745,7 +2745,7 @@ taskRoutes.delete('/:id/dependencies/:relationId', async (c) => {
 
     return c.json({ success: true });
   } catch (err) {
-    console.error('Failed to delete dependency:', err);
+    console.error('Failed to delete dependency:');
     return c.json({ error: 'Failed to delete dependency', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -2796,7 +2796,7 @@ taskRoutes.get('/:id/attachments', async (c) => {
 
     return c.json(results);
   } catch (err) {
-    console.error('Failed to fetch task attachments:', err);
+    console.error('Failed to fetch task attachments:');
     return c.json({ error: 'Failed to fetch attachments', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -2829,7 +2829,7 @@ taskRoutes.get('/:id/wiki-links', async (c) => {
       ));
     return c.json({ wiki_links: links });
   } catch (err) {
-    console.error('Failed to fetch task wiki links:', err);
+    console.error('Failed to fetch task wiki links:');
     return c.json({ error: 'Failed to fetch wiki links', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -2865,7 +2865,7 @@ taskRoutes.post('/:id/wiki-links', async (c) => {
 
     return c.json({ success: true });
   } catch (err) {
-    console.error('Failed to link task to wiki:', err);
+    console.error('Failed to link task to wiki:');
     return c.json({ error: 'Failed to link', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -2887,7 +2887,7 @@ taskRoutes.delete('/:id/wiki-links/:citationId', async (c) => {
     );
     return c.json({ success: true });
   } catch (err) {
-    console.error('Failed to unlink task from wiki:', err);
+    console.error('Failed to unlink task from wiki:');
     return c.json({ error: 'Failed to unlink', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -2916,7 +2916,7 @@ taskRoutes.get('/:id/subtree', async (c) => {
     const rows = (result as any).rows ?? result;
     return c.json({ subtasks: Array.isArray(rows) ? rows : [] });
   } catch (err) {
-    console.error('Failed to fetch subtree:', err);
+    console.error('Failed to fetch subtree:');
     return c.json({ error: 'Failed to fetch subtree', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -2957,7 +2957,7 @@ taskRoutes.get('/:id/reactions', async (c) => {
     }
     return c.json(Array.from(byEmoji.values()));
   } catch (err) {
-    console.error('Failed to list task reactions:', err);
+    console.error('Failed to list task reactions:');
     return c.json({ error: 'Failed to list reactions', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -2989,7 +2989,7 @@ taskRoutes.post('/:id/reactions', async (c) => {
 
     return c.json({ ok: true }, 201);
   } catch (err) {
-    console.error('Failed to add task reaction:', err);
+    console.error('Failed to add task reaction:');
     return c.json({ error: 'Failed to add reaction', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -3016,7 +3016,7 @@ taskRoutes.delete('/:id/reactions/:emoji', async (c) => {
 
     return c.json({ ok: true });
   } catch (err) {
-    console.error('Failed to remove task reaction:', err);
+    console.error('Failed to remove task reaction:');
     return c.json({ error: 'Failed to remove reaction', code: 'INTERNAL_ERROR' }, 500);
   }
 });

@@ -4,9 +4,9 @@ import {appIntegrationToolRoutes} from './routes/app-integration-tools.js';
 import {appLocalJobRoutes} from './routes/app-local-jobs.js';
 import 'dotenv/config';
 import { Hono } from 'hono';
-import { HTTPException } from 'hono/http-exception';
 import { cors } from 'hono/cors';
 import { requestLogger } from './lib/request-logger.js';
+import { contentFreeErrorHandler } from './lib/content-free-error-handler.js';
 import { secureHeaders } from 'hono/secure-headers';
 import { sql } from 'drizzle-orm';
 import { db } from './lib/db.js';
@@ -139,16 +139,7 @@ import { githubWebhookRoutes } from './routes/webhooks/github.js';
 import { corsAllowedWebOrigins } from './lib/web-origins.js';
 
 const app = new Hono();
-app.onError((error, c) => {
-  if (error instanceof HTTPException) return error.getResponse();
-  // HTTP failures stay responses; no process-wide exception/rejection handler.
-  const cause = error.cause instanceof Error ? error.cause : error;
-  const code = (cause as Error & { code?: string }).code;
-  // SQL messages and query parameters can contain customer data. Keep stack
-  // locations and driver codes, excluding the stack's message line.
-  console.error('[api] Request failed:', c.req.method, c.req.routePath, code ?? error.name, error.stack?.split('\n').filter(line => /^\s+at /.test(line)).join('\n'));
-  return c.json({ error: 'Request failed', code: 'INTERNAL_ERROR' }, 500);
-});
+app.onError(contentFreeErrorHandler);
 
 const corsPolicy = cors({
   // Self-hosted: the configured web address plus the two local addresses.
@@ -167,7 +158,7 @@ const corsPolicy = cors({
     'Mcp-Name',
   ],
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  exposeHeaders: ['Content-Disposition', 'X-Content-Type-Options'],
+  exposeHeaders: ['Content-Disposition', 'X-Content-Type-Options', 'X-Deft-Error-Reference'],
 });
 
 // Task 4 (private-alpha): security headers. Browsers loading API responses

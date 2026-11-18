@@ -137,7 +137,7 @@ crossReferenceRoutes.get('/tasks/:taskId/references', async (c) => {
 
     return c.json({ references: result });
   } catch (err) {
-    console.error('Failed to fetch task references:', err);
+    console.error('Failed to fetch task references:');
     return c.json({ error: 'Failed to fetch references', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -212,7 +212,7 @@ crossReferenceRoutes.get('/notes/:noteId/references', async (c) => {
 
     return c.json({ references: result });
   } catch (err) {
-    console.error('Failed to fetch note references:', err);
+    console.error('Failed to fetch note references:');
     return c.json({ error: 'Failed to fetch references', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -295,7 +295,7 @@ crossReferenceRoutes.get('/messages/:messageId/references', async (c) => {
 
     return c.json({ references: result });
   } catch (err) {
-    console.error('Failed to fetch message references:', err);
+    console.error('Failed to fetch message references:');
     return c.json({ error: 'Failed to fetch references', code: 'INTERNAL_ERROR' }, 500);
   }
 });

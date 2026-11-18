@@ -196,7 +196,7 @@ test('link previews never use the calendar allowlist', async () => {
   assert.equal(requests.length, 0);
 });
 
-test('the sync worker logs only the subscription id and host, and stores the humanised error', async () => {
+test('the sync worker logs fixed events without feed metadata, and stores the humanised error', async () => {
   const sets: Array<Record<string, unknown>> = [];
   const chain = {
     set(value: Record<string, unknown>) { sets.push(value); return chain; },
@@ -215,7 +215,9 @@ test('the sync worker logs only the subscription id and host, and stores the hum
     await syncOne({ ...subRow, ics_url: FEED });
     await handleIcsSync({} as never);
     const printed = [...log.mock.calls, ...warn.mock.calls].map((c) => c.arguments.map(String).join(' ')).join('\n');
-    assert.match(printed, /sub sub-1 synced 1 event\(s\) from host cal\.lan\.test/);
+    assert.match(printed, /\[ics-sync\] Subscription sync completed/);
+    assert.match(printed, /\[ics-sync\] Subscription sync failed/);
+    assert.doesNotMatch(printed, /sub-1|cal\.lan\.test/);
     assert.ok(!printed.includes('/dav') && !printed.includes('s3cret') && !printed.includes('export'), printed);
     assert.equal(sets.at(-1)!.last_error, 'Could not reach the feed URL.');
   } finally {

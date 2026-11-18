@@ -1,3 +1,4 @@
+import { logId, logNumber } from '../../lib/log-metadata.js';
 // Handler: wiki-lint — daily health check for wiki pages
 // Detects orphaned pages, stale content, low-confidence entries, and contradictions.
 import type { JobData } from '../types.js';
@@ -30,11 +31,11 @@ export async function handleWikiLint(job: JobData): Promise<void> {
       totalLowConfidence += results.lowConfidence;
       totalContradictions += results.contradictions;
     } catch (err) {
-      console.error(`[wiki-lint] Error linting org ${org_id}:`, (err as Error).message);
+      console.error(`[wiki-lint] Error linting org ${logId(org_id)}:`);
     }
   }
 
-  console.log(`[wiki-lint] Complete — orphaned: ${totalOrphaned}, stale: ${totalStale}, decayed: ${totalDecayed}, low-confidence: ${totalLowConfidence}, contradictions: ${totalContradictions}`);
+  console.log(`[wiki-lint] Complete — orphaned: ${logNumber(totalOrphaned)}, stale: ${logNumber(totalStale)}, decayed: ${logNumber(totalDecayed)}, low-confidence: ${logNumber(totalLowConfidence)}, contradictions: ${logNumber(totalContradictions)}`);
 }
 
 async function lintOrg(orgId: string): Promise<{
@@ -232,7 +233,7 @@ Rules:
       }
     }
   } catch (err) {
-    console.warn('[wiki-lint] Contradiction detection failed:', (err as Error).message);
+    console.warn('[wiki-lint] Contradiction detection failed:');
   }
 
   return { orphaned, stale, decayed, lowConfidence, contradictions };

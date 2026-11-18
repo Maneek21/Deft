@@ -5,7 +5,7 @@ import { redactLogTarget, requestLogger } from '../src/lib/request-logger.js';
 
 const TOKEN = 'eyJhbGciOiJIUzI1NiJ9.eyJzZWNyZXQiOiJ5ZXMifQ.c2lnbmF0dXJlLXNlY3JldA';
 
-test('redactLogTarget hides legacy invite preview tokens and keeps other paths', () => {
+test('redactLogTarget hides credential paths and arbitrary customer targets', () => {
   const encodedFirst = `%${TOKEN.charCodeAt(0).toString(16)}${TOKEN.slice(1)}`;
   for (const target of [
     `/api/invites/preview/${TOKEN}`,
@@ -18,10 +18,10 @@ test('redactLogTarget hides legacy invite preview tokens and keeps other paths',
   ]) {
     assert.equal(redactLogTarget(target), '/api/invites/preview/<redacted>', target);
   }
-  assert.equal(redactLogTarget('/api/invites/preview'), '/api/invites/preview');
-  assert.equal(redactLogTarget('/api/invites/accept'), '/api/invites/accept');
+  assert.equal(redactLogTarget('/api/invites/preview'), '<redacted>');
+  assert.equal(redactLogTarget('/api/invites/accept'), '<redacted>');
   assert.equal(redactLogTarget('/api/ics/feed/abc'), '/api/ics/feed/<redacted>');
-  assert.equal(redactLogTarget('/api/other/abc?q=1'), '/api/other/abc?q=1');
+  assert.equal(redactLogTarget('/api/other/abc?q=1'), '<redacted>');
 });
 
 test('request log lines for the legacy invite preview never contain the token', async () => {
@@ -46,5 +46,5 @@ test('request log lines for the legacy invite preview never contain the token', 
   assert.ok(!all.includes(TOKEN.slice(4)), all);
   assert.ok(!all.includes('c2lnbmF0dXJl'), all);
   for (const line of logged.slice(0, 4)) assert.match(line, /^(<--|-->) GET \/api\/invites\/preview\/<redacted>( |$)/, line);
-  for (const line of logged.slice(4)) assert.match(line, /^(<--|-->) POST \/api\/invites\/preview( |$)/, line);
+  for (const line of logged.slice(4)) assert.match(line, /^(<--|-->) POST <redacted>( |$)/, line);
 });

@@ -1,3 +1,4 @@
+import { logId } from '../log-metadata.js';
 import {
   CAPABILITY_CONTRACT_VERSIONS,
   CAPABILITY_LIMITS,
@@ -178,8 +179,7 @@ const databaseMcpCapabilityRuntime: McpCapabilityRuntime = {
 };
 
 function defaultSnapshotWarningSink(warning: CapabilitySnapshotWarning): void {
-  console.warn(
-    `[capability-service] ${warning.code} for ${warning.provider_kind} provider ${warning.provider_instance_id} in org ${warning.org_id}`,
+  console.warn(`[capability-service] <redacted> for <redacted> provider ${logId(warning.provider_instance_id)} in org ${logId(warning.org_id)}`
   );
 }
 

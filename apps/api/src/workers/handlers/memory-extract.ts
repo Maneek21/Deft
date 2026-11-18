@@ -1,3 +1,4 @@
+import { logId } from '../../lib/log-metadata.js';
 // Handler: memory-extract — extracts memorable facts and decisions from classified messages
 // and stores them as wiki pages (LLM Wiki pattern).
 import type { JobData } from '../types.js';
@@ -228,7 +229,7 @@ For CREATE: {"action":"create","title":"Page Title","slug":"page-slug","type":"f
     // Try to extract JSON even if wrapped in code fences
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
-      console.warn('[memory-extract] LLM returned non-JSON, falling back to create:', text.slice(0, 100));
+      console.warn('[memory-extract] LLM returned non-JSON, falling back to create:');
       return fallbackCreate(fact, isDecision);
     }
 
@@ -244,7 +245,7 @@ For CREATE: {"action":"create","title":"Page Title","slug":"page-slug","type":"f
 
     return result;
   } catch (err) {
-    console.error('[memory-extract] LLM call failed, using fallback:', (err as Error).message);
+    console.error('[memory-extract] LLM call failed, using fallback:');
     return fallbackCreate(fact, isDecision);
   }
 }
@@ -309,7 +310,7 @@ async function executeWikiIngest(
 
     if (!existing) {
       // Page not found — fall back to create
-      console.warn(`[memory-extract] Page "${result.slug}" not found for update, creating instead`);
+      console.warn("[memory-extract] Page \"<redacted>\" not found for update, creating instead");
       result.action = 'create';
       result.title = result.title || result.slug.replace(/-/g, ' ');
       result.type = result.type || 'fact';
@@ -363,7 +364,7 @@ async function executeWikiIngest(
         performed_by: 'system',
       });
 
-      console.log(`[memory-extract] Updated wiki page "${existing.slug}" (v${existing.version + 1})`);
+      console.log("[memory-extract] Updated wiki page \"<redacted>\" (v<redacted>)");
       emitKnowledgeChange('knowledge:updated', {
         ...existing,
         content: updatedContent,
@@ -376,7 +377,7 @@ async function executeWikiIngest(
       try {
         await enqueue(QUEUE_NAMES.AGENT_JOBS, 'embed-content', { source_type: 'wiki_page', source_id: existing.id });
       } catch (err) {
-        console.warn(`[memory-extract] failed to enqueue embed-content for wiki_page ${existing.id} (message ${messageId})`, err);
+        console.warn(`[memory-extract] failed to enqueue embed-content for wiki_page ${logId(existing.id)} (message ${logId(messageId)})`);
       }
 
       return;
@@ -465,14 +466,14 @@ async function executeWikiIngest(
       performed_by: 'system',
     });
 
-    console.log(`[memory-extract] Created wiki page "${slug}" (type: ${pageType})`);
+    console.log("[memory-extract] Created wiki page \"<redacted>\" (type: <redacted>)");
     emitKnowledgeChange('knowledge:created', page!, messageId, spaceId);
 
     // Enqueue embedding generation for the new page.
     try {
       await enqueue(QUEUE_NAMES.AGENT_JOBS, 'embed-content', { source_type: 'wiki_page', source_id: page!.id });
     } catch (err) {
-      console.warn(`[memory-extract] failed to enqueue embed-content for wiki_page ${page!.id} (message ${messageId})`, err);
+      console.warn(`[memory-extract] failed to enqueue embed-content for wiki_page <redacted> (message ${logId(messageId)})`);
     }
   }
 }
@@ -610,18 +611,18 @@ Return [] if no updates needed.`;
         performed_by: 'system',
       });
 
-      console.log(`[cascade-ingest] Updated "${page.slug}" (triggered by "${triggerPageSlug}")`);
+      console.log("[cascade-ingest] Updated \"<redacted>\" (triggered by \"<redacted>\")");
 
       // Enqueue embedding regeneration for the cascade-updated page.
       try {
         await enqueue(QUEUE_NAMES.AGENT_JOBS, 'embed-content', { source_type: 'wiki_page', source_id: page.id });
       } catch (err) {
-        console.warn(`[cascade-ingest] failed to enqueue embed-content for wiki_page ${page.id} (message ${messageId})`, err);
+        console.warn(`[cascade-ingest] failed to enqueue embed-content for wiki_page ${logId(page.id)} (message ${logId(messageId)})`);
       }
     }
   } catch (err) {
     // Non-critical: cascade failure shouldn't block the main ingest
-    console.warn('[cascade-ingest] Failed:', (err as Error).message);
+    console.warn('[cascade-ingest] Failed:');
   }
 }
 
@@ -681,7 +682,7 @@ export async function handleMemoryExtract(job: JobData): Promise<void> {
       }
 
     } catch (err) {
-      console.error(`[memory-extract] Failed to process "${item.text.slice(0, 50)}":`, (err as Error).message);
+      console.error("[memory-extract] Failed to process \"<redacted>\":");
     }
   }
 

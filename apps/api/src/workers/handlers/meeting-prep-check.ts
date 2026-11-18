@@ -1,3 +1,4 @@
+import { logId, logNumber } from '../../lib/log-metadata.js';
 import { and, eq, gte, inArray, lt } from 'drizzle-orm';
 import { events, orgMembers } from '@deft/db/schema';
 import type { JobData } from '../types.js';
@@ -21,12 +22,12 @@ export async function handleMeetingPrepCheck(_job: JobData): Promise<void> {
     lt(events.timestamp, window.to),
   ));
 
-  console.log(`[meeting-prep-check] Found ${upcoming.length} meeting(s) in the next 30 minutes`);
+  console.log(`[meeting-prep-check] Found ${logNumber(upcoming.length)} meeting(s) in the next 30 minutes`);
   for (const meeting of upcoming) {
     try {
       await generateMeetingPrep(meeting.id, now);
     } catch (error) {
-      console.error(`[meeting-prep-check] Failed for event ${meeting.id}:`, error);
+      console.error(`[meeting-prep-check] Failed for event ${logId(meeting.id)}:`);
     }
   }
 }

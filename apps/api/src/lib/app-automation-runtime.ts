@@ -130,7 +130,7 @@ export async function runAppAutomationScan(now = new Date(), signal?: AbortSigna
         saved++;
       },
     }, initial, { now: currentTime, signal: scanSignal, deadline });
-    if (result.errors > 0) console.warn('[app-automations] scan item failures', result);
+    if (result.errors > 0) console.warn('[app-automations] scan item failures');
   } catch (error) {
     signal?.throwIfAborted();
     if (budget.signal.aborted && saved > 0) return;

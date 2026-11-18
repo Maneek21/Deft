@@ -1,3 +1,4 @@
+import { logId, logNumber } from '../lib/log-metadata.js';
 // People Graph — nightly processing service for Deft Manager Intelligence
 // Builds interaction matrices, extracts expertise, analyzes patterns, detects relationships
 import { db } from '../lib/db.js';
@@ -207,7 +208,7 @@ export async function buildInteractionMatrix(orgId: string): Promise<void> {
       });
   }
 
-  console.log(`[people-graph] Interaction matrix built for org ${orgId}: ${deltas.size} pairs updated`);
+  console.log(`[people-graph] Interaction matrix built for org ${logId(orgId)}: ${logNumber(deltas.size)} pairs updated`);
 }
 
 // ═══ EXPERTISE EXTRACTION ═══
@@ -291,7 +292,7 @@ If a message has no clear expertise topic, use an empty topics array.`;
         }
       }
     } catch (err) {
-      console.error(`[people-graph] Expertise extraction LLM error for batch at ${i}:`, err);
+      console.error("[people-graph] Expertise extraction LLM error for batch at <redacted>:");
       // Continue with next batch
     }
   }
@@ -383,7 +384,7 @@ Respond ONLY with valid JSON array. Each element: { "idx": number, "topics": str
           }
         }
       } catch (err) {
-        console.error(`[people-graph] Task expertise extraction error:`, err);
+        console.error(`[people-graph] Task expertise extraction error:`);
       }
     }
   }
@@ -538,7 +539,7 @@ Respond ONLY with valid JSON array. Each element: { "idx": number, "topics": str
       });
   }
 
-  console.log(`[people-graph] Expertise extracted for org ${orgId}: ${expertiseDeltas.size} topic-user pairs; wiki signal applied for ${wikiScoreDeltas.size} topic-user pairs; task-completion label signal applied for ${taskLabelScoreDeltas.size} topic-user pairs`);
+  console.log(`[people-graph] Expertise extracted for org ${logId(orgId)}: ${logNumber(expertiseDeltas.size)} topic-user pairs; wiki signal applied for ${logNumber(wikiScoreDeltas.size)} topic-user pairs; task-completion label signal applied for ${logNumber(taskLabelScoreDeltas.size)} topic-user pairs`);
 }
 
 // ═══ PATTERN ANALYSIS ═══
@@ -909,12 +910,12 @@ export async function analyzePatterns(orgId: string): Promise<void> {
           },
         });
     } catch (err) {
-      console.error(`[people-graph] Pattern analysis error for user ${userId}:`, err);
+      console.error(`[people-graph] Pattern analysis error for user ${logId(userId)}:`);
       // Continue to next user
     }
   }
 
-  console.log(`[people-graph] Patterns analyzed for org ${orgId}: ${orgUsers.length} users`);
+  console.log(`[people-graph] Patterns analyzed for org ${logId(orgId)}: ${logNumber(orgUsers.length)} users`);
 }
 
 // ═══ RELATIONSHIP DETECTION ═══
@@ -1301,7 +1302,7 @@ export async function detectRelationships(orgId: string): Promise<void> {
   // communicators. Stubbed until a higher-quality signal is available (e.g. LLM
   // sentiment on sampled message pairs or explicit "block/mute" events).
 
-  console.log(`[people-graph] Relationships detected for org ${orgId}: ${strongPairs.length} strong pairs analyzed, ${citationPairs.length} knowledge_dependency edges, ${delegationEdges} delegation_chain edges`);
+  console.log(`[people-graph] Relationships detected for org ${logId(orgId)}: ${logNumber(strongPairs.length)} strong pairs analyzed, ${logNumber(citationPairs.length)} knowledge_dependency edges, <redacted> delegation_chain edges`);
 }
 
 // ═══ FULL PIPELINE ═══
@@ -1312,7 +1313,7 @@ export async function detectRelationships(orgId: string): Promise<void> {
  */
 export async function runFullPeopleGraph(orgId: string): Promise<void> {
   const start = Date.now();
-  console.log(`[people-graph] Starting full pipeline for org ${orgId}`);
+  console.log(`[people-graph] Starting full pipeline for org ${logId(orgId)}`);
 
   await buildInteractionMatrix(orgId);
   await extractExpertise(orgId);
@@ -1320,5 +1321,5 @@ export async function runFullPeopleGraph(orgId: string): Promise<void> {
   await detectRelationships(orgId);
 
   const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-  console.log(`[people-graph] Full pipeline completed for org ${orgId} in ${elapsed}s`);
+  console.log(`[people-graph] Full pipeline completed for org ${logId(orgId)} in <redacted>s`);
 }

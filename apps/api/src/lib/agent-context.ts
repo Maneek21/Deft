@@ -462,7 +462,7 @@ export async function executeToolCall(
           }
         } catch (err) {
           // Non-fatal: semantic search is a best-effort enhancement.
-          console.warn('[search_tasks] retrieveContext failed, falling back to SQL-only:', (err as Error).message);
+          console.warn('[search_tasks] retrieveContext failed, falling back to SQL-only:');
         }
       }
 

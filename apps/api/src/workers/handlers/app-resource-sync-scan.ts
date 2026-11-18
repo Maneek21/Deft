@@ -16,5 +16,5 @@ export async function handleAppResourceSyncScan(job: JobData): Promise<void> {
   }
   const result = await scanAppResourceSyncBindings({ id: job.id,
     lockToken: job.lockToken, signal: job.signal }, runtime.resourceSyncAdmission,observation?.admission);
-  console.info('[app-resource-sync] scan', result);
+  console.info('[app-resource-sync] scan');
 }

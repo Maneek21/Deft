@@ -1,3 +1,4 @@
+import { logNumber } from '../../lib/log-metadata.js';
 import { orgs } from '@deft/db/schema';
 import { db } from '../../lib/db.js';
 import { enqueueMissingChatObservations } from '../../lib/chat-observation.js';
@@ -15,6 +16,6 @@ export async function handleChatObservationBackfill(_job: JobData): Promise<void
   }
 
   if (total > 0) {
-    console.log(`[chat-observation-backfill] queued ${total} missing observation job(s)`);
+    console.log(`[chat-observation-backfill] queued ${logNumber(total)} missing observation job(s)`);
   }
 }

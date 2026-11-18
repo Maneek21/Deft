@@ -182,7 +182,7 @@ function moduleFailure(c: Context, error: unknown) {
       details: { issues: error.issues.map((issue) => ({ path: issue.path, message: issue.message })) },
     }, 400);
   }
-  console.error('[modules] request failed:', error);
+  console.error('[modules] request failed:');
   return c.json({ error: 'Module request failed', code: 'INTERNAL_ERROR' }, 500);
 }
 

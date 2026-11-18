@@ -510,12 +510,12 @@ async function fetchWiki(
         );
         return [...mapped, ...fallback];
       } catch (ftsErr) {
-        console.warn('[retrieveContext] wiki branch failed (FTS fallback):', (ftsErr as Error).message);
+        console.warn('[retrieveContext] wiki branch failed (FTS fallback):');
         return [];
       }
     }
 
-    console.warn('[retrieveContext] wiki branch failed:', (err as Error).message);
+    console.warn('[retrieveContext] wiki branch failed:');
     return [];
   }
 }
@@ -737,12 +737,12 @@ async function fetchDecisions(
         const rows = await buildQuery(ftsScoreExpr(forFTS));
         return await recallEmpty(rows);
       } catch (ftsErr) {
-        console.warn('[retrieveContext] decisions branch failed (FTS fallback):', (ftsErr as Error).message);
+        console.warn('[retrieveContext] decisions branch failed (FTS fallback):');
         return [];
       }
     }
 
-    console.warn('[retrieveContext] decisions branch failed:', (err as Error).message);
+    console.warn('[retrieveContext] decisions branch failed:');
     return [];
   }
 }
@@ -823,7 +823,7 @@ async function fetchMemory(
       scope: row.scope,
     }));
   } catch (err) {
-    console.warn('[retrieveContext] memory branch failed:', (err as Error).message);
+    console.warn('[retrieveContext] memory branch failed:');
     return [];
   }
 }
@@ -890,7 +890,7 @@ async function fetchNotes(
       };
     });
   } catch (err) {
-    console.warn('[retrieveContext] notes branch failed:', (err as Error).message);
+    console.warn('[retrieveContext] notes branch failed:');
     return [];
   }
 }
@@ -983,12 +983,12 @@ async function fetchTasks(
         const rows = await buildQuery(taskFtsScore(forFTS));
         return mapRows(rows);
       } catch (ftsErr) {
-        console.warn('[retrieveContext] tasks branch failed (FTS fallback):', (ftsErr as Error).message);
+        console.warn('[retrieveContext] tasks branch failed (FTS fallback):');
         return [];
       }
     }
 
-    console.warn('[retrieveContext] tasks branch failed:', (err as Error).message);
+    console.warn('[retrieveContext] tasks branch failed:');
     return [];
   }
 }

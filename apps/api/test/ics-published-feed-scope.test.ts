@@ -137,11 +137,11 @@ test('request log lines for a feed fetch never contain the token', async () => {
     for (const line of logged) assert.match(line, /^(<--|-->) (GET|HEAD|POST) \/api\/ics\/feed\/<redacted>( |$)/, line);
     logged.length = 0;
     await logApp.request('/api/other/abc123?q=1');
-    assert.equal(logged[0], '<-- GET /api/other/abc123?q=1');
-    assert.match(logged[1] ?? '', /^--> GET \/api\/other\/abc123\?q=1 /);
+    assert.equal(logged[0], '<-- GET <redacted>');
+    assert.match(logged[1] ?? '', /^--> GET <redacted> /);
     logged.length = 0;
     await logApp.request('/api/files/%2Fics%2Ffeed%2Fexample');
-    assert.equal(logged[0], '<-- GET /api/files/%2Fics%2Ffeed%2Fexample');
+    assert.equal(logged[0], '<-- GET <redacted>');
   } finally {
     console.log = orig;
   }

@@ -108,7 +108,7 @@ export async function closeTasksForMergedPR(input: MergedPRInput): Promise<Merge
     // No actor available — we can't attribute the activity/comment. Logging
     // here matches the guidance in Task 5.6: prefer an agent user, fall back
     // to org owner; if neither exists we skip rather than fabricate data.
-    console.warn('[github-sync] cannot close tasks for PR', input.pr_number, 'in org', input.org_id, '— no eligible actor user');
+    console.warn('[github-sync] cannot close tasks for PR', 'in org', '— no eligible actor user');
     return result;
   }
 
@@ -298,7 +298,7 @@ export async function syncGitHubForUser(accountId: string, options: GitHubSyncOp
     return await runGitHubSync(account, lease.id, signal, run);
   } finally {
     await finishSync(account.id, account.org_id, lease.id, run.outcome).catch((err) => {
-      console.warn('[github-sync] could not record the sync outcome of', account.id, (err as Error).name);
+      console.warn('[github-sync] could not record the sync outcome of');
     });
   }
 }
@@ -461,7 +461,7 @@ async function runGitHubSync(
             });
           } catch (err) {
             const msg = err instanceof Error ? err.message : 'Unknown error';
-            console.error('[github-sync] closeTasksForMergedPR failed for PR', pr.number, msg);
+            console.error('[github-sync] closeTasksForMergedPR failed for PR');
           }
         }
       }

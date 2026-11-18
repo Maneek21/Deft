@@ -232,7 +232,7 @@ export async function generateReceipt(
   } catch (err) {
     // AUDIT OVERLAY: never let a receipt failure crash the caller. Log +
     // continue. Ops will reconcile via a gap report later.
-    console.error('[receipts] generation failed:', err);
+    console.error('[receipts] generation failed:');
     return null;
   }
 }
@@ -279,7 +279,7 @@ export async function verifyReceipt(
     if (a.length !== b.length) return false;
     return crypto.timingSafeEqual(a, b);
   } catch (err) {
-    console.error('[receipts] verification failed:', err);
+    console.error('[receipts] verification failed:');
     return false;
   }
 }

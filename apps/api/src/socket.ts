@@ -162,7 +162,7 @@ export function revokeRealtimeAccess(
   } catch (error) {
     // The access mutation has already committed. Realtime cleanup is best
     // effort and must not change the route's persistence/error semantics.
-    console.error('Failed to revoke realtime socket access:', error);
+    console.error('Failed to revoke realtime socket access:');
   }
 }
 
@@ -194,7 +194,7 @@ export async function evictActiveHuddleParticipants(scope: HuddleEvictionScope):
         try {
           await participantSocket?.leave(`huddle:${roomId}`);
         } catch (error) {
-          console.warn('Failed to remove revoked participant from socket room:', error);
+          console.warn('Failed to remove revoked participant from socket room:');
         }
 
         io?.to(participantSocketId).emit('huddle:ended', {
@@ -225,7 +225,7 @@ export async function evictActiveHuddleParticipants(scope: HuddleEvictionScope):
     } catch (error) {
       // Revocation already succeeded in the database. Realtime cleanup must not
       // change the route's persistence/error semantics or abort other rooms.
-      console.error('Failed to evict revoked huddle participant:', error);
+      console.error('Failed to evict revoked huddle participant:');
     }
   }
 
@@ -436,7 +436,7 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
       if (user.role !== 'guest') dataRooms.push(`org-members:${user.org_id}`);
       await socket.join(dataRooms);
     } catch (error) {
-      console.error('Failed to initialize socket rooms:', error);
+      console.error('Failed to initialize socket rooms:');
       settleInitialization(false);
       socket.disconnect(true);
       return;
@@ -598,7 +598,7 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
           huddles: huddle.getActiveRoomSnapshots(user.org_id, allowedSpaceIds),
         });
       } catch (error) {
-        console.error('Failed to list huddles:', error);
+        console.error('Failed to list huddles:');
         emitHuddleError('huddle:list', 'INTERNAL_ERROR', 'Unable to list active huddles');
       }
     });
@@ -615,7 +615,7 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
       try {
         access = await getSpaceAccess(data.space_id, user);
       } catch (error) {
-        console.error('Failed to authorize huddle creation:', error);
+        console.error('Failed to authorize huddle creation:');
         emitHuddleError('huddle:create', 'INTERNAL_ERROR', 'Unable to start huddle');
         return;
       }
@@ -673,7 +673,7 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
         await socket.join(`huddle:${id}`);
       } catch (error) {
         rollbackReservation();
-        console.error('Failed to join newly created huddle socket room:', error);
+        console.error('Failed to join newly created huddle socket room:');
         emitHuddleError('huddle:create', 'INTERNAL_ERROR', 'Unable to start huddle');
         return;
       }
@@ -741,7 +741,7 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
             emitToUser(user.org_id, recipientId, 'notification:new', notification);
           }
         } catch (err) {
-          console.error('Failed to send huddle rings:', err);
+          console.error('Failed to send huddle rings:');
         }
       })();
     });
@@ -763,7 +763,7 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
       try {
         access = await getSpaceAccess(room.space_id, user);
       } catch (error) {
-        console.error('Failed to authorize huddle join:', error);
+        console.error('Failed to authorize huddle join:');
         emitHuddleError('huddle:join', 'INTERNAL_ERROR', 'Unable to join huddle');
         return;
       }
@@ -793,7 +793,7 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
       try {
         await socket.join(`huddle:${data.huddle_id}`);
       } catch (error) {
-        console.error('Failed to join huddle socket room:', error);
+        console.error('Failed to join huddle socket room:');
         emitHuddleError('huddle:join', 'INTERNAL_ERROR', 'Unable to join huddle');
         return;
       }

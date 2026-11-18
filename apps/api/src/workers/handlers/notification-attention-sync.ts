@@ -1,3 +1,4 @@
+import { logCapacityProfile } from '../../lib/log-metadata.js';
 import { and, eq, inArray } from 'drizzle-orm';
 import { notifications } from '@deft/db/schema';
 import { db } from '../../lib/db.js';
@@ -32,13 +33,12 @@ export async function handleNotificationAttentionSync(job: JobData): Promise<voi
   const projected = await syncNotificationsToAttention(rows);
   const projectionMs = performance.now() - startedAt;
   if (process.env.DEFT_CAPACITY_TRACE === '1') {
-    console.info(`[capacity-profile] ${JSON.stringify({
-      event: 'attention_projection',
+    console.info(logCapacityProfile('attention_projection', {
       notifications: rows.length,
       projected_items: projected.length,
       queue_delay_ms: queueDelayMs === null ? null : Math.round(queueDelayMs * 10) / 10,
       projection_ms: Math.round(projectionMs * 10) / 10,
-      end_to_end_ms: queueDelayMs === null ? null : Math.round((queueDelayMs + projectionMs) * 10) / 10,
-    })}`);
+      end_to_end_ms: queueDelayMs === null ? null : Math.round((queueDelayMs + projectionMs) * 10) / 10
+    }));
   }
 }

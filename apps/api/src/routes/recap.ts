@@ -129,7 +129,7 @@ recapRoutes.post('/:spaceId/recap', async (c) => {
       time_range: { from: firstTime, to: lastTime },
     });
   } catch (err) {
-    console.error('Recap generation error:', err);
+    console.error('Recap generation error:');
     return c.json({ error: 'Failed to generate recap', code: 'INTERNAL_ERROR' }, 500);
   }
 });

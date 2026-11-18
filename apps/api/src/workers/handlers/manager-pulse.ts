@@ -1,3 +1,4 @@
+import { logId } from '../../lib/log-metadata.js';
 // Handler: manager-pulse — generates daily team health pulse for managers
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
@@ -12,7 +13,7 @@ import { generateManagerPulse } from '../../services/manager-pulse.js';
 import { emitToUser } from '../../socket.js';
 
 export async function handleManagerPulse(job: JobData): Promise<void> {
-  console.log(`[manager-pulse] Running manager pulse generation (job ${job.id})`);
+  console.log(`[manager-pulse] Running manager pulse generation (job ${logId(job.id)})`);
 
   // Query all orgs
   const allOrgs = await db.select().from(orgs);
@@ -46,7 +47,7 @@ export async function handleManagerPulse(job: JobData): Promise<void> {
             .limit(1);
 
           if (settings?.team_pulse_frequency === 'off') {
-            console.log(`[manager-pulse] Skipping ${manager.userId} — pulse disabled`);
+            console.log(`[manager-pulse] Skipping ${logId(manager.userId)} — pulse disabled`);
             continue;
           }
 
@@ -87,20 +88,15 @@ export async function handleManagerPulse(job: JobData): Promise<void> {
             body: result.summary,
           });
 
-          console.log(
-            `[manager-pulse] Pulse generated for manager ${manager.userId} in org "${org.name}"`,
+          console.log(`[manager-pulse] Pulse generated for manager ${logId(manager.userId)} in org "<redacted>"`
           );
         } catch (err) {
-          console.error(
-            `[manager-pulse] Error generating pulse for manager ${manager.userId}:`,
-            (err as Error).message,
+          console.error(`[manager-pulse] Error generating pulse for manager ${logId(manager.userId)}:`
           );
         }
       }
     } catch (err) {
-      console.error(
-        `[manager-pulse] Error processing org ${org.id}:`,
-        (err as Error).message,
+      console.error(`[manager-pulse] Error processing org ${logId(org.id)}:`
       );
     }
   }

@@ -1955,8 +1955,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     try {
       await this.attention.projectRunState(run, kind);
     } catch (error) {
-      console.warn('[app-runs] terminal Attention projection failed:',
-        error instanceof Error ? error.message : 'unknown error');
+      console.warn('[app-runs] terminal Attention projection failed:');
     }
   }
 }

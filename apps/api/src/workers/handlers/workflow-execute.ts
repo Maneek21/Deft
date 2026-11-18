@@ -1,3 +1,4 @@
+import { logId, logNumber } from '../../lib/log-metadata.js';
 // Handler: workflow-execute — runs a single workflow_rule's actions against
 // a task. Enqueued by task PATCH when a status change matches a stored
 // task.status_changed trigger with matching to_status filter.
@@ -63,7 +64,7 @@ export async function handleWorkflowExecute(job: JobData): Promise<void> {
   if (!task) return;
 
   if (!actor_user_id || !(await isActiveMember(rule.org_id, actor_user_id))) {
-    console.warn(`[workflow-execute] actor for rule ${rule.id} is not an active member; not run`);
+    console.warn(`[workflow-execute] actor for rule ${logId(rule.id)} is not an active member; not run`);
     return;
   }
 
@@ -204,7 +205,6 @@ export async function handleWorkflowExecute(job: JobData): Promise<void> {
     status: allOk ? 'success' : 'failed',
   });
 
-  console.log(
-    `[workflow-execute] rule=${rule.id} task=${task.id} actions=${results.length} ok=${allOk}`,
+  console.log(`[workflow-execute] rule=${logId(rule.id)} task=${logId(task.id)} actions=${logNumber(results.length)} ok=<redacted>`
   );
 }

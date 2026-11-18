@@ -161,7 +161,7 @@ knowledgeAggRoutes.get('/', async (c) => {
       limit,
     });
   } catch (err) {
-    console.error('Failed to fetch knowledge:', err);
+    console.error('Failed to fetch knowledge:');
     return c.json({ error: 'Failed to fetch knowledge', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -231,7 +231,7 @@ knowledgeRoutes.get('/:spaceId/knowledge', async (c) => {
 
     return c.json({ entries: entries.map(toKnowledgeEntry) });
   } catch (err) {
-    console.error('Failed to fetch knowledge:', err);
+    console.error('Failed to fetch knowledge:');
     return c.json({ error: 'Failed to fetch knowledge', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -267,7 +267,7 @@ knowledgeRoutes.post('/:spaceId/knowledge/capture-discussion', async (c) => {
       message: 'Recent discussion capture queued',
     });
   } catch (err) {
-    console.error('Failed to queue discussion capture:', err);
+    console.error('Failed to queue discussion capture:');
     return c.json({ error: 'Failed to queue discussion capture', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -349,7 +349,7 @@ knowledgeRoutes.post('/:spaceId/knowledge', async (c) => {
     try {
       await enqueue(QUEUE_NAMES.AGENT_JOBS, 'embed-content', { source_type: 'wiki_page', source_id: entry.id });
     } catch (err) {
-      console.warn('[knowledge] failed to enqueue embed-content for new page', entry.id, err);
+      console.warn('[knowledge] failed to enqueue embed-content for new page');
     }
 
     const result = toKnowledgeEntry({
@@ -372,7 +372,7 @@ knowledgeRoutes.post('/:spaceId/knowledge', async (c) => {
 
     return c.json(result, 201);
   } catch (err) {
-    console.error('Failed to create knowledge entry:', err);
+    console.error('Failed to create knowledge entry:');
     return c.json({ error: 'Failed to create entry', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -420,7 +420,7 @@ knowledgeRoutes.patch('/:spaceId/knowledge/:id', async (c) => {
       try {
         await enqueue(QUEUE_NAMES.AGENT_JOBS, 'embed-content', { source_type: 'wiki_page', source_id: updated.id });
       } catch (err) {
-        console.warn('[knowledge] failed to enqueue embed-content for updated page', updated.id, err);
+        console.warn('[knowledge] failed to enqueue embed-content for updated page');
       }
     }
 
@@ -440,7 +440,7 @@ knowledgeRoutes.patch('/:spaceId/knowledge/:id', async (c) => {
 
     return c.json(result);
   } catch (err) {
-    console.error('Failed to update knowledge entry:', err);
+    console.error('Failed to update knowledge entry:');
     return c.json({ error: 'Failed to update entry', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -478,7 +478,7 @@ knowledgeRoutes.delete('/:spaceId/knowledge/:id', async (c) => {
 
     return c.json({ success: true });
   } catch (err) {
-    console.error('Failed to delete knowledge entry:', err);
+    console.error('Failed to delete knowledge entry:');
     return c.json({ error: 'Failed to delete entry', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -539,7 +539,7 @@ knowledgeRoutes.get('/knowledge/search', async (c) => {
 
     return c.json({ entries: entries.map(toKnowledgeEntry) });
   } catch (err) {
-    console.error('Failed to search knowledge:', err);
+    console.error('Failed to search knowledge:');
     return c.json({ error: 'Failed to search', code: 'INTERNAL_ERROR' }, 500);
   }
 });

@@ -1,3 +1,4 @@
+import { logId } from '../../lib/log-metadata.js';
 // Handler: cross-reference — scans messages or notes for task identifiers
 // (e.g. PROJ-42) and creates cross_references + task comments linking them.
 import type { JobData } from '../types.js';
@@ -162,8 +163,7 @@ export async function handleCrossReference(job: JobData): Promise<void> {
         .limit(1);
 
       if (!task) {
-        console.warn(
-          `[cross-reference] unresolved-ref ${sourceType}=${sourceId} prefix=${prefix} number=${number}`,
+        console.warn(`[cross-reference] unresolved-ref <redacted>=${logId(sourceId)} prefix=<redacted> number=<redacted>`
         );
         continue;
       }
@@ -209,9 +209,9 @@ export async function handleCrossReference(job: JobData): Promise<void> {
         content: commentLabel,
       });
 
-      console.log(`[cross-reference] Linked ${sourceType} ${sourceId} -> task ${ref} (${task.id})`);
+      console.log(`[cross-reference] Linked <redacted> ${logId(sourceId)} -> task <redacted> (${logId(task.id)})`);
     } catch (err) {
-      console.error(`[cross-reference] Failed to process ref ${ref}:`, (err as Error).message);
+      console.error("[cross-reference] Failed to process ref <redacted>:");
     }
   }
 }

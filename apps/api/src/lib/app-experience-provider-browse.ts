@@ -44,7 +44,7 @@ export class AppExperienceProviderBrowseService {
     private readonly handles: ExperienceProviderHandles = experienceProviderHandles,
     private readonly now = Date.now, private readonly timeoutMs = 60000,
     private readonly observe: (timing: BrowseTiming) => void = timing => {
-      if (process.env.NODE_ENV === 'production') console.info(JSON.stringify({ event: 'app_resource_browse_timing', ...timing }));
+      if (process.env.NODE_ENV === 'production') console.info("[app-experience-provider-browse] Runtime diagnostic (details omitted)");
     }) {
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000) throw new TypeError('Invalid provider page deadline');
   }

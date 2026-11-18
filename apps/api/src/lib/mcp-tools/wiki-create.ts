@@ -224,7 +224,7 @@ async function insertAutoExecActionRow(
       .returning({ id: agentActions.id });
     return row?.id ?? null;
   } catch (err) {
-    console.error('[wiki] insertAutoExecActionRow failed:', err);
+    console.error('[wiki] insertAutoExecActionRow failed:');
     return null;
   }
 }
@@ -237,7 +237,7 @@ async function patchActionResult(actionId: string | null, result: unknown): Prom
       .set({ result: result as any })
       .where(eq(agentActions.id, actionId));
   } catch (err) {
-    console.error('[wiki-create] patchActionResult failed:', err);
+    console.error('[wiki-create] patchActionResult failed:');
   }
 }
 
@@ -441,7 +441,7 @@ export async function executeWikiCreate(
         source_id: page.id,
       });
     } catch (err) {
-      console.warn('[wiki-create] failed to enqueue embed-content:', err);
+      console.warn('[wiki-create] failed to enqueue embed-content:');
     }
 
     invalidatePlatformContextCacheFor(ctx.employee_id);
@@ -1016,7 +1016,7 @@ export async function executeWikiUpdate(
         source_id: page.id,
       });
     } catch (err) {
-      console.warn('[wiki-update] failed to enqueue embed-content:', err);
+      console.warn('[wiki-update] failed to enqueue embed-content:');
     }
 
     invalidatePlatformContextCacheFor(ctx.employee_id);

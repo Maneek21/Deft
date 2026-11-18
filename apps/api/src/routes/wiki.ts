@@ -206,7 +206,7 @@ wikiRoutes.get('/', async (c) => {
       search_mode: searchMode,
     });
   } catch (err) {
-    console.error('Failed to fetch wiki pages:', err);
+    console.error('Failed to fetch wiki pages:');
     return c.json({ error: 'Failed to fetch wiki pages', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -301,7 +301,7 @@ wikiRoutes.get('/graph', async (c) => {
       edges,
     });
   } catch (err) {
-    console.error('Failed to fetch wiki graph:', err);
+    console.error('Failed to fetch wiki graph:');
     return c.json({ error: 'Failed to fetch graph', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -345,7 +345,7 @@ wikiRoutes.get('/log', async (c) => {
 
     return c.json({ entries, total: Number(countResult?.count || 0), page, limit });
   } catch (err) {
-    console.error('Failed to fetch wiki log:', err);
+    console.error('Failed to fetch wiki log:');
     return c.json({ error: 'Failed to fetch log', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -426,7 +426,7 @@ wikiRoutes.get('/stats', async (c) => {
       recent_ops: Object.fromEntries(recentOps.map(r => [r.operation, Number(r.count)])),
     });
   } catch (err) {
-    console.error('Failed to fetch wiki stats:', err);
+    console.error('Failed to fetch wiki stats:');
     return c.json({ error: 'Failed to fetch stats', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -452,7 +452,7 @@ wikiRoutes.get('/contradictions', async (c) => {
 
     return c.json({ contradictions: entries });
   } catch (err) {
-    console.error('Failed to fetch contradictions:', err);
+    console.error('Failed to fetch contradictions:');
     return c.json({ error: 'Failed to fetch contradictions', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -491,7 +491,7 @@ wikiRoutes.get('/export', async (c) => {
     // Default: JSON
     return c.json({ pages, exported_at: new Date().toISOString(), count: pages.length });
   } catch (err) {
-    console.error('Failed to export wiki:', err);
+    console.error('Failed to export wiki:');
     return c.json({ error: 'Failed to export', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -639,7 +639,7 @@ wikiRoutes.get('/doctor', async (c) => {
       },
     });
   } catch (err) {
-    console.error('Failed to run wiki doctor:', err);
+    console.error('Failed to run wiki doctor:');
     return c.json({ error: 'Failed to run knowledge doctor', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -735,7 +735,7 @@ wikiRoutes.post('/ask', async (c) => {
         answer_context_coverage: answerContext.coverage,
       });
     } catch (err) {
-      console.warn('[wiki/ask] reasoning call failed:', err);
+      console.warn('[wiki/ask] reasoning call failed:');
       return c.json({
         answer: askKnowledgeFallback(query, sources.length, true),
         mode: 'retrieval_only',
@@ -745,7 +745,7 @@ wikiRoutes.post('/ask', async (c) => {
       });
     }
   } catch (err) {
-    console.error('Failed to ask wiki:', err);
+    console.error('Failed to ask wiki:');
     return c.json({ error: 'Failed to ask knowledge', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -841,7 +841,7 @@ wikiRoutes.get('/:slug', async (c) => {
       citations: sourceCitations,
     });
   } catch (err) {
-    console.error('Failed to fetch wiki page:', err);
+    console.error('Failed to fetch wiki page:');
     return c.json({ error: 'Failed to fetch page', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -952,7 +952,7 @@ wikiRoutes.post('/', async (c) => {
 
     return c.json(page, 201);
   } catch (err) {
-    console.error('Failed to create wiki page:', err);
+    console.error('Failed to create wiki page:');
     return c.json({ error: 'Failed to create page', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1063,7 +1063,7 @@ wikiRoutes.patch('/:slug', async (c) => {
 
     return c.json({ success: true, slug });
   } catch (err) {
-    console.error('Failed to update wiki page:', err);
+    console.error('Failed to update wiki page:');
     return c.json({ error: 'Failed to update page', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1094,7 +1094,7 @@ wikiRoutes.delete('/:slug', async (c) => {
 
     return c.json({ success: true });
   } catch (err) {
-    console.error('Failed to delete wiki page:', err);
+    console.error('Failed to delete wiki page:');
     return c.json({ error: 'Failed to delete page', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1121,7 +1121,7 @@ wikiRoutes.get('/:slug/history', async (c) => {
 
     return c.json({ versions });
   } catch (err) {
-    console.error('Failed to fetch version history:', err);
+    console.error('Failed to fetch version history:');
     return c.json({ error: 'Failed to fetch history', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -1153,7 +1153,7 @@ wikiRoutes.get('/:slug/history/:version', async (c) => {
 
     return c.json(version);
   } catch (err) {
-    console.error('Failed to fetch version:', err);
+    console.error('Failed to fetch version:');
     return c.json({ error: 'Failed to fetch version', code: 'INTERNAL_ERROR' }, 500);
   }
 });

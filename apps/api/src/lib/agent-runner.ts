@@ -1,3 +1,4 @@
+import { logNumber } from './log-metadata.js';
 import { NATIVE_MENTION_AGENT_GUIDANCE } from './native-mention-agent-contract.js';
 import { nativeMentionsEnabled } from './native-mentions.js';
 import { validateNativeAgentMentionWrite } from './native-mention-agent-writes.js';
@@ -282,7 +283,7 @@ The response field must answer the user directly. Never put reviewer commentary,
 
     return selectVerifiedResponse(response, verificationResult.text ?? '');
   } catch (err) {
-    console.warn('[agent-runner] Verification failed:', err);
+    console.warn('[agent-runner] Verification failed:');
     return response;
   }
 }
@@ -409,7 +410,7 @@ export async function runAgentQuery(params: {
       }
     });
   } catch (err) {
-    console.warn('[agent-runner] Failed to load MCP tools:', err instanceof Error ? err.message : err);
+    console.warn('[agent-runner] Failed to load MCP tools:');
   }
 
   let connectionInfo = '\nYou can read native Deft calendar events and imported ICS calendar feeds with check_calendar.';
@@ -539,7 +540,7 @@ export async function runAgentQuery(params: {
     }
   } catch (err) {
     // Non-critical: don't fail the agent reply if wiki auto-load errors
-    console.warn('[agent-runner] Wiki auto-load failed:', (err as Error).message);
+    console.warn('[agent-runner] Wiki auto-load failed:');
   }
   const retrievalMs = Date.now() - retrievalStartedAt;
 
@@ -677,8 +678,7 @@ export async function runAgentQuery(params: {
       const cacheRead = response.usage.cache_read ?? 0;
       const cacheWrite = response.usage.cache_write ?? 0;
       if (cacheRead > 0 || cacheWrite > 0) {
-        console.log(
-          `[agent-runner] cache: read=${cacheRead} write=${cacheWrite} fresh=${response.usage.input_tokens}`,
+        console.log(`[agent-runner] cache: read=${logNumber(cacheRead)} write=${logNumber(cacheWrite)} fresh=${logNumber(response.usage.input_tokens)}`
         );
       }
       totalTokensIn += response.usage.input_tokens ?? 0;
@@ -979,7 +979,7 @@ export async function runAgentQuery(params: {
         value: responseText.slice(0, 500),
       }).onConflictDoNothing();
     } catch (err) {
-      console.warn('[agent-runner] Durable notes failed:', err);
+      console.warn('[agent-runner] Durable notes failed:');
     }
   }
 

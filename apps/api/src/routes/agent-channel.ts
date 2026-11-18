@@ -178,7 +178,7 @@ function emitTaskProgress(event: typeof agentChannelEvents.$inferSelect, employe
       status: normalized,
     });
   } catch (error) {
-    console.warn('[agent-channel] task progress broadcast failed', error instanceof Error ? error.message : String(error));
+    console.warn('[agent-channel] task progress broadcast failed');
   }
 }
 
@@ -344,7 +344,7 @@ async function resolveChannelPrincipal(c: Context, callerSlug?: string | null): 
     if (err instanceof McpAuthError) {
       return errorResponse(c, err.status as 401 | 403 | 400, err.code.toUpperCase(), err.message);
     }
-    console.error('[agent-channel] auth error:', err);
+    console.error('[agent-channel] auth error:');
     return errorResponse(c, 500, 'INTERNAL_ERROR', 'Agent channel auth failed');
   }
 }

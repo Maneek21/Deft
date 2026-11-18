@@ -1,3 +1,4 @@
+import { logNumber } from './log-metadata.js';
 import { sql } from 'drizzle-orm';
 import { APP_RUNS_ENABLED, env } from './env.js';
 import { createAppRunMaintenanceDatabase, APP_RUN_MAINTENANCE_LIMITS } from './app-run-maintenance-db.js';
@@ -40,7 +41,7 @@ export class AppRunMaintenance {
       if (this.pending === pending) this.pending = undefined;
       const next = this.waitingMode; this.waitingMode = undefined; this.activeMode = undefined;
       if (next && !this.stopped) void this.run(next).then(result => {
-        if (result.failed) console.warn(`[app-runs] queued maintenance ${next}: ${result.failed} item(s) require retry or repair`);
+        if (result.failed) console.warn(`[app-runs] queued maintenance <redacted>: ${logNumber(result.failed)} item(s) require retry or repair`);
       }).catch(() => console.warn('[app-runs] queued maintenance requires retry'));
     });
     this.pending = pending; return pending;
@@ -112,6 +113,6 @@ export async function runAppRunMaintenance(mode: Mode) {
   // A paused start must not settle or re-arm Runs left over from a backup.
   if (!APP_RUNS_ENABLED || isPausedStart()) return;
   const result = await (maintenance ??= new AppRunMaintenance()).run(mode);
-  if (result.failed) console.warn(`[app-runs] maintenance ${mode}: ${result.failed} item(s) require retry or key/receipt repair`);
+  if (result.failed) console.warn(`[app-runs] maintenance <redacted>: ${logNumber(result.failed)} item(s) require retry or key/receipt repair`);
 }
 export async function stopAppRunMaintenance() { await maintenance?.stop(); maintenance = undefined; }

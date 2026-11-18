@@ -100,9 +100,6 @@ export async function recordDirectActionReceipt(input: {
       resultJson: input.outcome.success ? input.outcome.result : null,
     });
   } catch (error) {
-    console.warn('[direct-action-receipt] receipt not recorded', {
-      actionId: input.actionId,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    console.warn('[direct-action-receipt] receipt not recorded');
   }
 }

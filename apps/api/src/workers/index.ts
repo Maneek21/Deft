@@ -1,3 +1,4 @@
+import { logId, logJobName, logNumber, logQueueName } from '../lib/log-metadata.js';
 // PostgreSQL job workers — poll job_queue and dispatch leased jobs to handlers.
 import {
   dequeueJob,
@@ -173,7 +174,7 @@ async function runClaimedWork<T>(
         }
       })
       .catch((err) => {
-        console.warn(`[worker] Lease renewal failed for ${label}:`, (err as Error).message);
+        console.warn(`[worker] Lease renewal failed for ${logJobName(jobs[0]?.name)} (${logNumber(jobs.length)} jobs)`);
       })
       .finally(() => {
         renewalInFlight = false;
@@ -470,7 +471,7 @@ async function processDequeuedJob(
       const reason = `Unknown ${queueName} job: ${job.name}`;
       const settled = await failJob(job.id, job.lockToken, reason, { terminal: true });
       settledOwned = settled;
-      if (settled) console.error(`[worker] ${reason}; terminal-failed ${job.id.slice(0, 8)}`);
+      if (settled) console.error(`[worker] Unknown ${logQueueName(queueName)} job ${logJobName(job.name)}; terminal-failed ${logId(job.id.slice(0, 8))}`);
       return;
     }
 
@@ -498,15 +499,15 @@ async function processDequeuedJob(
     settledOwned = settled;
     succeeded = settled;
     if (settled) {
-      console.log(`[worker] Job ${job.name} (${job.id.slice(0, 8)}) completed`);
+      console.log(`[worker] Job ${logJobName(job.name)} (${logId(job.id.slice(0, 8))}) completed`);
     } else {
-      console.warn(`[worker] Job ${job.name} (${job.id.slice(0, 8)}) finished after losing its lease`);
+      console.warn(`[worker] Job ${logJobName(job.name)} (${logId(job.id.slice(0, 8))}) finished after losing its lease`);
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (err instanceof RetryLaterJobError) {
       const settled = await deferJob(job.id, job.lockToken, message, err.delayMs);
-      if (settled) console.warn(`[worker] Job ${job.name} deferred:`, message);
+      if (settled) console.warn(`[worker] Job ${logJobName(job.name)} deferred:`);
       return;
     }
     // Until every handler cooperatively cancels its I/O, retrying immediately
@@ -516,7 +517,7 @@ async function processDequeuedJob(
       terminal: err instanceof JobTimeoutError,
     });
     settledOwned = settled;
-    if (settled) console.error(`[worker] Job ${job.name} failed:`, message);
+    if (settled) console.error(`[worker] Job ${logJobName(job.name)} failed:`);
   } finally {
     if (job.name === 'app-automation-scan' && job.cronKey === APP_AUTOMATION_SCAN_CRON) {
       if (settledOwned) {
@@ -548,7 +549,7 @@ async function processDequeuedJob(
           recurrence.delayMs,
         );
       } catch (err) {
-        console.warn(`[worker] Could not schedule the next ${job.name} occurrence:`, (err as Error).message);
+        console.warn(`[worker] Could not schedule the next ${logJobName(job.name)} occurrence:`);
       }
     }
   }
@@ -600,13 +601,13 @@ async function processAttentionProjectionGroup(
     );
     const settled = await Promise.all(jobs.map((job) => completeJob(job.id, job.lockToken)));
     const settledCount = settled.filter(Boolean).length;
-    console.log(`[worker] Job group ${merged.name} settled ${settledCount}/${jobs.length} jobs`);
+    console.log(`[worker] Job group ${logJobName(merged.name)} settled ${logNumber(settledCount)}/${logNumber(jobs.length)} jobs`);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await Promise.all(jobs.map((job) => failJob(job.id, job.lockToken, message, {
       terminal: err instanceof JobTimeoutError,
     })));
-    console.error(`[worker] Job group ${merged.name} failed:`, message);
+    console.error(`[worker] Job group ${logJobName(merged.name)} failed:`);
   }
 }
 
@@ -626,7 +627,7 @@ function launchClaimedGroup(queueName: QueueName, jobs: DequeuedJob[], grouped: 
   const processing = (grouped
     ? processAttentionProjectionGroup(queueName, jobs, overrides, track)
     : processDequeuedJob(queueName, jobs[0]!, overrides, track))
-    .catch(error => { console.warn(`[workers] ${queueName} settlement failed:`, error instanceof Error ? error.message : String(error)); });
+    .catch(error => { console.warn(`[workers] ${logQueueName(queueName)} settlement failed:`); });
   // Timeout may settle a delivery before its handler cooperates. Capacity is
   // retained until BOTH queue settlement and all underlying work settle.
   const lifecycle = processing.then(async () => { await Promise.all(executions); }).finally(() => {
@@ -743,13 +744,13 @@ async function runStaleMaintenance(): Promise<void> {
   await Promise.all([
     (async () => {
       const count = await cleanupStaleJobs();
-      if (count > 0) console.log(`[workers] Recovered ${count} expired job lease(s)`);
+      if (count > 0) console.log(`[workers] Recovered ${logNumber(count)} expired job lease(s)`);
       // Repair a recurring occurrence after its durable queue settlement.
       await reconcileRecurringJobs();
     })(),
     import('../lib/app-private-state-retention.js').then(mod => mod.purgeExpiredPrivateAppState()),
     APP_RUNS_ENABLED ? import('../lib/app-run-maintenance.js').then(mod => mod.runAppRunMaintenance('recovery')) : Promise.resolve(),
-    import('../routes/agent.js').then(mod => mod.recoverInterruptedApprovalsNow()).then(() => undefined, (err) => console.warn('[workers] interrupted approval recovery failed:', (err as Error).message)),
+    import('../routes/agent.js').then(mod => mod.recoverInterruptedApprovalsNow()).then(() => undefined, (err) => console.warn('[workers] interrupted approval recovery failed:')),
   ]);
 }
 
@@ -760,16 +761,15 @@ async function runRetentionMaintenance(): Promise<void> {
     APP_RUNS_ENABLED ? import('../lib/app-run-maintenance.js').then(mod => mod.runAppRunMaintenance('retention')) : Promise.resolve(),
     isAppAttachmentBrokerEnabled()?import('../lib/app-attachment-cleanup.js').then(async mod=>{
       const result=await mod.appAttachmentCleanup.run();
-      if(result.failed)console.warn(`[app-attachments] ${result.failed} retained stage(s) require purge retry`);
+      if(result.failed)console.warn(`[app-attachments] ${logNumber(result.failed)} retained stage(s) require purge retry`);
     }):Promise.resolve(),
   ]);
-  if (pruned > 0) console.log(`[workers] Pruned ${pruned} expired terminal job(s)`);
+  if (pruned > 0) console.log(`[workers] Pruned ${logNumber(pruned)} expired terminal job(s)`);
   if (attachments.deletedRows > 0) {
-    console.log(`[workers] Pruned ${attachments.deletedRows} expired staged attachment(s)`);
+    console.log(`[workers] Pruned ${logNumber(attachments.deletedRows)} expired staged attachment(s)`);
   }
   if (attachments.orphanedStorageKeys.length > 0) {
-    console.warn(
-      `[workers] ${attachments.orphanedStorageKeys.length} attachment storage object(s) need cleanup retry`,
+    console.warn(`[workers] ${logNumber(attachments.orphanedStorageKeys.length)} attachment storage object(s) need cleanup retry`
     );
   }
 }
@@ -781,7 +781,7 @@ function dispatchPolls(): void {
     let promise!: Promise<void>;
     promise = pollQueueBatch(queueName, { backgroundDispatch: true })
       .catch((err) => {
-        console.warn(`[workers] ${queueName} poll failed:`, (err as Error).message);
+        console.warn(`[workers] ${logQueueName(queueName)} poll failed:`);
       })
       .finally(() => {
         if (pollInFlight.get(queueName) === promise) pollInFlight.delete(queueName);
@@ -819,7 +819,7 @@ async function startWorkersInternal(opts?: {
   // terminal-failed after the scheduler has already moved on.
   if (!opts?.skipStartupWork) {
     const recovered = await cleanupStaleJobs();
-    if (recovered > 0) console.log(`[workers] Recovered ${recovered} stale job(s) on startup`);
+    if (recovered > 0) console.log(`[workers] Recovered ${logNumber(recovered)} stale job(s) on startup`);
     await runRetentionMaintenance();
 
     const hydrationResults = await Promise.allSettled([
@@ -829,7 +829,7 @@ async function startWorkersInternal(opts?: {
     ]);
     for (const result of hydrationResults) {
       if (result.status === 'rejected') {
-        console.warn('[workers] scheduled work rehydrate failed:', result.reason);
+        console.warn('[workers] scheduled work rehydrate failed:');
       }
     }
 
@@ -837,8 +837,8 @@ async function startWorkersInternal(opts?: {
     // (lib/heartbeat-tick-scrub.ts). Runs in the background, never blocks start.
     void trackBackground(import('../lib/heartbeat-tick-scrub.js')
       .then((mod) => mod.scrubLegacyHeartbeatTicks())
-      .then((count) => { if (count > 0) console.log(`[workers] Scrubbed ${count} older heartbeat tick(s)`); })
-      .catch((err) => console.warn('[workers] heartbeat tick scrub failed:', (err as Error).message)));
+      .then((count) => { if (count > 0) console.log(`[workers] Scrubbed ${logNumber(count)} older heartbeat tick(s)`); })
+      .catch((err) => console.warn('[workers] heartbeat tick scrub failed:')));
   }
 
   workersRunning = true;
@@ -848,7 +848,7 @@ async function startWorkersInternal(opts?: {
   staleCleanupInterval = setInterval(() => {
     if (opts?.disableWorkDispatch) return;
     void trackBackground(runStaleMaintenance().catch((err) => {
-      console.warn('[workers] stale lease maintenance failed:', (err as Error).message);
+      console.warn('[workers] stale lease maintenance failed:');
     }));
   }, STALE_CLEANUP_INTERVAL_MS);
   staleCleanupInterval.unref?.();
@@ -856,7 +856,7 @@ async function startWorkersInternal(opts?: {
   retentionInterval = setInterval(() => {
     if (opts?.disableWorkDispatch) return;
     void trackBackground(runRetentionMaintenance()
-      .catch((err) => console.warn('[workers] retention sweep failed:', (err as Error).message)));
+      .catch((err) => console.warn('[workers] retention sweep failed:')));
   }, RETENTION_SWEEP_INTERVAL_MS);
   retentionInterval.unref?.();
 
@@ -866,8 +866,7 @@ async function startWorkersInternal(opts?: {
   pollingInterval.unref?.();
   if (!opts?.disableWorkDispatch) dispatchPolls();
 
-  console.log(
-    `[workers] PostgreSQL job poller started (${WORKER_POLL_INTERVAL_MS}ms interval, batch ${WORKER_BATCH_SIZE})`,
+  console.log(`[workers] PostgreSQL job poller started (${logNumber(WORKER_POLL_INTERVAL_MS)}ms interval, batch ${logNumber(WORKER_BATCH_SIZE)})`
   );
 }
 
@@ -944,7 +943,7 @@ export async function stopWorkers(opts?: { timeoutMs?: number }): Promise<void> 
     if (!await drainUntil(started + Math.max(1, Math.floor(timeoutMs * 0.8)))) {
       const reason = new Error(`Worker shutdown exceeded ${timeoutMs}ms`);
       if (!await drainUntil(started + timeoutMs, reason)) {
-        console.warn(`[workers] Shutdown deadline reached with ${activeControllers.size} execution(s) and ${pollInFlight.size} claim poll(s) still active`);
+        console.warn(`[workers] Shutdown deadline reached with ${logNumber(activeControllers.size)} execution(s) and ${logNumber(pollInFlight.size)} claim poll(s) still active`);
       }
     }
     workerStartedAt = null;

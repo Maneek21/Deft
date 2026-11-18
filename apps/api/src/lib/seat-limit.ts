@@ -358,7 +358,7 @@ export function startSeatStatementRefresher(): void {
   if (isPausedStart() || !isHostedMode() || refreshTimer) return;
   const run = () => {
     void refreshSeatStatement().then((result) => {
-      if (!result.ok) console.warn(`[seats] Seat statement not refreshed: ${result.reason}`);
+      if (!result.ok) console.warn("[seats] Seat statement not refreshed: <redacted>");
     });
   };
   run();

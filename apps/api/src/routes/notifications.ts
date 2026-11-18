@@ -43,7 +43,7 @@ notificationRoutes.get('/', async (c) => {
       unread_count: unreadResult?.count ?? 0,
     });
   } catch (err) {
-    console.error('Failed to fetch notifications:', err);
+    console.error('Failed to fetch notifications:');
     return c.json({ error: 'Failed to fetch notifications', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -79,7 +79,7 @@ notificationRoutes.patch('/:id/read', async (c) => {
     if (!updated) return c.json({ error: 'Notification not found', code: 'NOT_FOUND' }, 404);
     return c.json(withoutUnverifiableReplyText(updated));
   } catch (err) {
-    console.error('Failed to mark notification as read:', err);
+    console.error('Failed to mark notification as read:');
     return c.json({ error: 'Failed to update notification', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -102,7 +102,7 @@ notificationRoutes.post('/read-all', async (c) => {
 
     return c.json({ success: true });
   } catch (err) {
-    console.error('Failed to mark all notifications as read:', err);
+    console.error('Failed to mark all notifications as read:');
     return c.json({ error: 'Failed to update notifications', code: 'INTERNAL_ERROR' }, 500);
   }
 });

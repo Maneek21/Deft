@@ -264,8 +264,7 @@ export class AppRunOperationsService {
         );
       }
     } catch (error) {
-      console.warn('[app-runs] repair Attention projection failed:',
-        error instanceof Error ? error.message : 'unknown error');
+      console.warn('[app-runs] repair Attention projection failed:');
     }
     return gaps;
   }
