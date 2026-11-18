@@ -19,8 +19,8 @@ export const PAUSED_WRITE_MESSAGE = 'Nothing was changed: this workspace is paus
 /** Shown when a read is refused (a few reads would change shared state). */
 export const PAUSED_READ_MESSAGE = 'This is not available while the workspace is paused. See the notice at the top of the page.';
 
+/** Fired on window whenever the API or realtime refuses something as paused. */
 export const PAUSED_REFUSED_EVENT = 'deft:paused-refused';
-export type PausedRefusedDetail = { write: boolean };
 
 /** Accepts only the shape the API sends; anything else is "not paused". */
 export function parsePausedNotice(value: unknown): PausedNotice | null {
@@ -31,16 +31,16 @@ export function parsePausedNotice(value: unknown): PausedNotice | null {
   return { reason: 'restore_review' };
 }
 
-export function reportPausedRefusal(detail: PausedRefusedDetail): void {
+export function reportPausedRefusal(): void {
   if (typeof window === 'undefined') return;
-  window.dispatchEvent(new CustomEvent<PausedRefusedDetail>(PAUSED_REFUSED_EVENT, { detail }));
+  window.dispatchEvent(new Event(PAUSED_REFUSED_EVENT));
 }
 
 const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 /**
  * When the API refused a request because the workspace is paused, report it
- * (the banner reacts) and hand callers a calm message in place of the
+ * (the session is rechecked if needed) and hand callers a calm message in place of the
  * server's operator wording. Any other response passes through untouched.
  */
 export async function calmPausedRefusal(response: Response, method: string): Promise<Response> {
@@ -48,7 +48,7 @@ export async function calmPausedRefusal(response: Response, method: string): Pro
   const body: unknown = await response.clone().json().catch(() => null);
   if (!body || typeof body !== 'object' || (body as { code?: unknown }).code !== 'PAUSED') return response;
   const write = !READ_METHODS.has(method.toUpperCase());
-  reportPausedRefusal({ write });
+  reportPausedRefusal();
   return new Response(JSON.stringify({ error: write ? PAUSED_WRITE_MESSAGE : PAUSED_READ_MESSAGE, code: 'PAUSED' }), {
     status: 503,
     statusText: response.statusText,

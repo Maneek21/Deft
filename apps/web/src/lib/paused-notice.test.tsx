@@ -11,7 +11,6 @@ import {
   PAUSED_REFUSED_EVENT,
   PAUSED_WRITE_MESSAGE,
   parsePausedNotice,
-  type PausedRefusedDetail,
 } from './paused-notice';
 import { prepareSocketForUse, stopIfPaused } from './socket';
 
@@ -19,7 +18,7 @@ const render = (props: Parameters<typeof PausedBanner>[0]) => renderToStaticMark
 
 test('billing: the banner says payment is overdue, what still works and who can restore it', () => {
   const html = render({ notice: { reason: 'billing' } });
-  assert.match(html, /aria-label="Workspace paused"/);
+  assert.match(html, /role="region" aria-label="Workspace paused"/);
   assert.match(html, /This workspace is paused because a payment is overdue\. You can read everything, but nothing can be changed, and AI, notifications and live updates are off\. The workspace owner can restore it by paying the outstanding invoice\./);
   assert.doesNotMatch(html, /restore\b(?! it)|<a\b/);
 });
@@ -32,14 +31,6 @@ test('restore review: the banner says the workspace is being checked', () => {
 
 test('not paused: no banner at all', () => {
   assert.equal(render({ notice: null }), '');
-  assert.equal(render({ notice: null, refused: true }), '');
-});
-
-test('a refused change adds one calm line in a polite live region', () => {
-  assert.match(render({ notice: { reason: 'billing' } }), /<p role="status"[^>]*><\/p>/);
-  const html = render({ notice: { reason: 'billing' }, refused: true });
-  assert.ok(html.includes(`role="status"`));
-  assert.ok(html.includes(PAUSED_WRITE_MESSAGE));
 });
 
 test('the session field is read strictly; absent means not paused', () => {
@@ -51,10 +42,10 @@ test('the session field is read strictly; absent means not paused', () => {
   assert.equal(PAUSED_BANNER_TEXT.billing.includes('http'), false);
 });
 
-function withWindowEvents(run: (events: PausedRefusedDetail[]) => Promise<void>) {
+function withWindowEvents(run: (events: string[]) => Promise<void>) {
   const target = new EventTarget();
-  const events: PausedRefusedDetail[] = [];
-  target.addEventListener(PAUSED_REFUSED_EVENT, (event) => events.push((event as CustomEvent<PausedRefusedDetail>).detail));
+  const events: string[] = [];
+  target.addEventListener(PAUSED_REFUSED_EVENT, (event) => events.push(event.type));
   const previous = (globalThis as { window?: unknown }).window;
   (globalThis as { window?: unknown }).window = target;
   return run(events).finally(() => { (globalThis as { window?: unknown }).window = previous; });
@@ -65,13 +56,13 @@ test('a 503 PAUSED write is reported and its body replaced by the calm message',
   const calmed = await calmPausedRefusal(refused, 'post');
   assert.equal(calmed.status, 503);
   assert.deepEqual(await calmed.json(), { error: PAUSED_WRITE_MESSAGE, code: 'PAUSED' });
-  assert.deepEqual(events, [{ write: true }]);
+  assert.deepEqual(events, [PAUSED_REFUSED_EVENT]);
 }));
 
-test('a 503 PAUSED read gets the read wording and is not a refused change', () => withWindowEvents(async (events) => {
+test('a 503 PAUSED read gets the read wording', () => withWindowEvents(async (events) => {
   const calmed = await calmPausedRefusal(new Response(JSON.stringify({ code: 'PAUSED', error: 'x' }), { status: 503 }), 'GET');
   assert.deepEqual(await calmed.json(), { error: PAUSED_READ_MESSAGE, code: 'PAUSED' });
-  assert.deepEqual(events, [{ write: false }]);
+  assert.deepEqual(events, [PAUSED_REFUSED_EVENT]);
 }));
 
 test('every other response passes through untouched', () => withWindowEvents(async (events) => {
@@ -98,7 +89,7 @@ test('realtime refused as PAUSED stops reconnecting and later uses do not restar
   assert.equal(disconnects, 0);
   assert.equal(stopIfPaused(socket, 'PAUSED'), true);
   assert.equal(disconnects, 1);
-  assert.deepEqual(events, [{ write: false }]);
+  assert.deepEqual(events, [PAUSED_REFUSED_EVENT]);
   prepareSocketForUse(socket, 'fresh');
   assert.equal(connects, 0);
 }));

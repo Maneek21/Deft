@@ -45,7 +45,7 @@ export function stopIfPaused(target: Socket, message: string): boolean {
   if (message !== 'PAUSED') return false;
   refusedWhilePaused = true;
   target.disconnect();
-  reportPausedRefusal({ write: false });
+  reportPausedRefusal();
   return true;
 }
 
