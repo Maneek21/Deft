@@ -59,6 +59,10 @@ export function createAppPublicLimits(options: AppPublicLimitsOptions = {}): Mid
   let admissions = 0;
 
   return async (c, next) => {
+    // Resolve the client address before reading the clock: everything after
+    // this await is synchronous, so a slow proxy-name lookup cannot apply an
+    // older timestamp to a bucket a later request already advanced.
+    const key = peerKey(await resolvePeer(c));
     const current = now();
     tick(global, current);
     // Charge every request, including rejected identities, to the global
@@ -69,7 +73,6 @@ export function createAppPublicLimits(options: AppPublicLimitsOptions = {}): Mid
       return c.json({ error: 'Public request rate limit reached', code: 'PUBLIC_RATE_LIMITED' }, 429);
     }
 
-    const key = peerKey(await resolvePeer(c));
     let peer: Bucket;
     if (key === UNKNOWN_PEER) {
       peer = unknown;

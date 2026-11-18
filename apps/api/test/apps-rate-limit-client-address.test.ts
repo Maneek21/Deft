@@ -69,3 +69,26 @@ for (const [name, build] of factories) {
     assert.equal(await send('10.0.0.7', '198.51.100.2'), 200);
   });
 }
+
+for (const [name, create] of [
+  ['app public limits', createAppPublicLimits],
+  ['app resource sync limits', createAppResourceSyncLimits],
+] as const) {
+  test(`${name}: a slow address lookup cannot rewind a bucket another request advanced`, async () => {
+    let clock = 0;
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let calls = 0;
+    const app = new Hono();
+    app.use('*', create({
+      peerPerMinute: 1, globalPerMinute: 100, now: () => clock,
+      peerAddress: async () => { if (calls++ === 0) await held; return '198.51.100.1'; },
+    }));
+    app.post('*', c => c.text('ok'));
+    const slow = app.request('http://api.test/x', { method: 'POST' });
+    clock = 1_000;
+    assert.equal((await app.request('http://api.test/x', { method: 'POST' })).status, 200);
+    release();
+    assert.equal((await slow).status, 429, 'the same client gets one request a minute, whatever the lookup order');
+  });
+}
