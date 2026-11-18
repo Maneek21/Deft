@@ -10,7 +10,7 @@ test('storage failures do not deny access or refresh credentials', async t => {
   const originalSelect = db.select;
   const originalTransaction = db.transaction;
   t.after(async () => { db.select = originalSelect; db.transaction = originalTransaction; await closeDb(); });
-  const offline = () => { throw Object.assign(new Error('offline'), { code: 'ECONNREFUSED' }); };
+  const offline = () => { throw new Error('Failed query: rollback', { cause: new Error('Client has encountered a connection error and is not queryable') }); };
   db.select = offline;
   db.transaction = offline;
   const identity = { id: 'user', org_id: 'org', email: 'user@example.test', sid: randomUUID(), jti: randomUUID() };

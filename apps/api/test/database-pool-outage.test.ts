@@ -44,7 +44,7 @@ test('a lost advisory connection cannot report successful work', async t => {
   const admin = new pg.Pool({ connectionString: process.env.DATABASE_URL });
   t.after(() => admin.end());
   await assert.rejects(withDbAdvisoryLock('outage-test', async () => {
-    await admin.query("select pg_terminate_backend(pid) from pg_stat_activity where pid <> pg_backend_pid() and query like 'SELECT pg_advisory_lock%'");
+    await admin.query("select pg_terminate_backend(pid) from pg_stat_activity where datname = current_database() and application_name = 'deft-advisory' and pid <> pg_backend_pid() and query like 'SELECT pg_advisory_lock%'");
     // Wait for the server to observe connection loss before the callback settles.
     await new Promise(resolve => setTimeout(resolve, 100));
   }));
@@ -85,4 +85,35 @@ test('disconnecting a query in flight rejects it without crashing the process', 
     await interrupted;
   } finally { client.release(true); }
   assert.equal((await pool.query('select 1 as recovered')).rows[0].recovered, 1);
+});
+
+test('server statement cancellation rolls back before the next checkout', async () => {
+  await assert.rejects(db.transaction(async tx => {
+    await tx.execute(sql`set local statement_timeout = '50ms'`);
+    await tx.execute(sql`select pg_sleep(1)`);
+  }), (error: any) => error.cause?.code === '57014');
+  const result = await db.execute(sql`select current_setting('statement_timeout') as timeout, 1 as recovered`);
+  assert.equal(result.rows[0].timeout, '30s');
+  assert.equal(result.rows[0].recovered, 1);
+});
+
+test('advisory callers wait behind two long holders instead of exhausting retries', async () => {
+  let release!: () => void;
+  const hold = new Promise<void>(resolve => { release = resolve; });
+  let entered = 0;
+  let ready!: () => void;
+  const both = new Promise<void>(resolve => { ready = resolve; });
+  const work = async () => { if (++entered === 2) ready(); await hold; };
+  const first = withDbAdvisoryLock('outage-test-holder-a', work);
+  const second = withDbAdvisoryLock('outage-test-holder-b', work);
+  await both;
+  let ran = false;
+  const third = withDbAdvisoryLock('outage-test-waiter', async () => { ran = true; });
+  const observed = third.then(() => null, error => error);
+  try {
+    await new Promise(resolve => setTimeout(resolve, 5_200));
+    assert.equal(ran, false);
+  } finally { release(); await Promise.all([first, second]); }
+  assert.equal(await observed, null);
+  assert.equal(ran, true);
 });

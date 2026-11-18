@@ -14,7 +14,8 @@ const pool = new Pool({
   connectionString: env.DATABASE_URL,
   max: APP_DATABASE_POOL_BUDGET.ordinary,
   connectionTimeoutMillis: 5_000,
-  query_timeout: 30_000,
+  statement_timeout: 30_000,
+  idle_in_transaction_session_timeout: 60_000,
   keepAlive: true,
   keepAliveInitialDelayMillis: 10_000,
 });
@@ -24,9 +25,8 @@ const pool = new Pool({
 // connection while each waits for another query connection.
 const advisoryPool = new Pool({
   connectionString: env.DATABASE_URL,
+  application_name: 'deft-advisory',
   max: APP_DATABASE_POOL_BUDGET.advisory,
-  connectionTimeoutMillis: 5_000,
-  query_timeout: 30_000,
   keepAlive: true,
   keepAliveInitialDelayMillis: 10_000,
 });
@@ -46,16 +46,23 @@ export async function withDbAdvisoryLock<T>(
   run: () => Promise<T>,
 ): Promise<T> {
   const client = await advisoryPool.connect();
+  let operationError: Error | undefined;
   try {
     await client.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [key]);
     const result = await run();
     if (connectionFailure(client)) throw connectionFailure(client);
     return result;
+  } catch (error) {
+    operationError = error instanceof Error ? error : new Error(String(error));
+    throw error;
   } finally {
     try {
-      if (!connectionFailure(client)) await client.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [key]);
+      if (!operationError && !connectionFailure(client)) await client.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [key]);
+    } catch (error) {
+      operationError = error instanceof Error ? error : new Error(String(error));
+      throw error;
     } finally {
-      client.release(connectionFailure(client));
+      client.release(operationError ?? connectionFailure(client));
     }
   }
 }
@@ -134,6 +141,9 @@ export async function withDbAdvisoryLease<T>(
     if (!acquired) return { acquired: false, reason: 'held' };
     const lease: DbAdvisoryLease = { get lost() { return lostError !== null; } };
     return { acquired: true, value: await run(lease) };
+  } catch (error) {
+    lostError = error instanceof Error ? error : new Error(String(error));
+    throw error;
   } finally {
     let releaseError: Error | undefined = lostError ?? undefined;
     if (acquired && !releaseError) {
