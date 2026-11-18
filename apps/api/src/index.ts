@@ -158,7 +158,7 @@ const corsPolicy = cors({
     'Mcp-Name',
   ],
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  exposeHeaders: ['Content-Disposition', 'X-Content-Type-Options'],
+  exposeHeaders: ['Content-Disposition', 'X-Content-Type-Options', 'X-Deft-Error-Reference'],
 });
 
 // Task 4 (private-alpha): security headers. Browsers loading API responses

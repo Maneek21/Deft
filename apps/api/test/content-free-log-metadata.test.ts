@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { format } from 'node:util';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { logCapacityProfile, logId, logJobName, logNumber, logQueueName, logSignal } from '../src/lib/log-metadata.js';
+import { logCapacityProfile, logId, logJobName, logNumber, logQueueName, logSignal, logStartupHint } from '../src/lib/log-metadata.js';
 import { createAgentMessage } from '../src/lib/agent-llm.js';
 import { llm } from '../src/lib/llm.js';
 import { printRequestLogLine } from '../src/lib/request-logger.js';
@@ -116,6 +116,84 @@ test('fatal exceptions and rejections exit without Node printing customer-bearin
     });
     assert.equal(child.status, 1, child.stderr);
     assert.match(child.stderr, /\[process\] Un(?:caught exception|handled rejection); exiting/);
+    assert.ok(!(child.stdout + child.stderr).includes(marker));
+  }
+});
+
+test('startup hints retain closed remediation and never echo supplied values or unknown codes', () => {
+  const marker = `PRIVATE-${randomUUID()}`;
+  for (const prefix of ['DEFT_HOSTED must be exactly', 'DEFT_PAUSED_START must be exactly',
+    'JWT_SECRET must be', 'JWT_REFRESH_SECRET must be', 'ENCRYPTION_KEY must be',
+    'DEFT_SETUP_TOKEN_SHA256 must be', 'DEFT_SETUP_TOKEN_EXPIRES_AT must be',
+    'Hosted mode needs a usable seat statement setup:', 'DEFT_APP_RUN_APP_ORIGIN_ENABLED=true requires']) {
+    const hint = logStartupHint(new Error(`${prefix} ${marker}`));
+    assert.notEqual(hint, 'Unclassified fatal error');
+    assert.ok(!hint.includes(marker));
+  }
+  assert.equal(logStartupHint(Object.assign(new Error(marker), { code: marker })), 'Unclassified fatal error');
+  assert.equal(logStartupHint({ get code() { throw new Error(marker); } }), 'Unclassified fatal error');
+  assert.match(logStartupHint(Object.assign(new Error(marker), { code: 'EADDRINUSE' })), /EADDRINUSE/);
+});
+
+test('server import order preserves startup setting diagnostics without their supplied values', () => {
+  const bootstrap = new URL('../src/lib/content-free-process-errors.ts', import.meta.url).href;
+  const envModule = new URL('../src/lib/env.ts', import.meta.url).href;
+  const pausedModule = new URL('../src/lib/paused-start.ts', import.meta.url).href;
+  const marker = `PRIVATE-${randomUUID()}`;
+  const cases: Array<[Record<string, string>, RegExp]> = [
+    [{ DEFT_HOSTED: marker }, /Invalid DEFT_HOSTED/],
+    [{ DEFT_PAUSED_START: marker }, /Invalid DEFT_PAUSED_START/],
+    [{ NODE_ENV: 'production', JWT_SECRET: `${marker} ` }, /Invalid JWT_SECRET/],
+    [{ NODE_ENV: 'production', JWT_SECRET: 's'.repeat(48), JWT_REFRESH_SECRET: 's'.repeat(48) }, /must be different/],
+    [{ NODE_ENV: 'production', ENCRYPTION_KEY: 'short' }, /Invalid ENCRYPTION_KEY/],
+    [{ DEFT_CELL_ID: marker }, /Hosted-only settings require DEFT_HOSTED=true/],
+  ];
+  for (const [settings, expected] of cases) {
+    const env = { ...process.env };
+    for (const key of ['DEFT_SETUP_TOKEN_SHA256', 'DEFT_SETUP_TOKEN_EXPIRES_AT', 'DEFT_CELL_ID',
+      'DEFT_SEAT_PUBLIC_KEYS', 'DEFT_SEAT_STATEMENT_URL', 'DEFT_SEAT_FETCH_TOKEN']) delete env[key];
+    Object.assign(env, { NODE_ENV: 'test', DEFT_HOSTED: 'false', DEFT_PAUSED_START: 'false',
+      JWT_SECRET: 'a'.repeat(48), JWT_REFRESH_SECRET: 'b'.repeat(48), ENCRYPTION_KEY: 'c'.repeat(48),
+      DEFT_APP_RUNS_ENABLED: 'false', DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED: 'false',
+      DEFT_APP_RUN_APP_ORIGIN_ENABLED: 'false', DEFT_APP_AUTOMATIONS_ENABLED: 'false' }, settings);
+    const code = `await import(${JSON.stringify(bootstrap)}); await import(${JSON.stringify(envModule)});
+      const paused = await import(${JSON.stringify(pausedModule)}); paused.assertPausedStartSettingValid();`;
+    const child = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', code], {
+      cwd: fileURLToPath(new URL('..', import.meta.url)), env, encoding: 'utf8', timeout: 30_000,
+    });
+    assert.equal(child.status, 1, child.stderr);
+    assert.match(child.stderr, expected);
+    assert.ok(!(child.stdout + child.stderr).includes(marker));
+  }
+});
+
+test('listen failures retain a safe system code without logging paths or error messages', () => {
+  const bootstrap = new URL('../src/lib/content-free-process-errors.ts', import.meta.url).href;
+  const code = `await import(${JSON.stringify(bootstrap)}); const net=await import('node:net');
+    const first=net.createServer(); await new Promise(resolve=>first.listen(0,'127.0.0.1',resolve));
+    net.createServer().listen(first.address().port,'127.0.0.1');`;
+  const child = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', code], {
+    cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8', timeout: 30_000,
+  });
+  assert.equal(child.status, 1, child.stderr);
+  assert.match(child.stderr, /EADDRINUSE: API listen port is already in use/);
+});
+
+test('Socket.IO debug opt-in cannot print emitted customer event payloads in the server bootstrap', () => {
+  const bootstrap = new URL('../src/lib/content-free-process-errors.ts', import.meta.url).href;
+  const marker = `PRIVATE-${randomUUID()}`;
+  for (const fromEnvironment of [true, false]) {
+    const env = { ...process.env };
+    if (fromEnvironment) env.DEBUG = 'socket.io*,engine*'; else delete env.DEBUG;
+    const code = `await import(${JSON.stringify(bootstrap)});
+      const dotenv=(await import('dotenv')).default;
+      dotenv.populate(process.env, {DEBUG:'socket.io*,engine*'});
+      const {Server}=await import('socket.io');
+      const io=new Server(); io.emit('message:new', ${JSON.stringify(marker)});`;
+    const child = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', code], {
+      cwd: fileURLToPath(new URL('..', import.meta.url)), env, encoding: 'utf8', timeout: 30_000,
+    });
+    assert.equal(child.status, 0, child.stderr);
     assert.ok(!(child.stdout + child.stderr).includes(marker));
   }
 });

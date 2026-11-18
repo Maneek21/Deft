@@ -38,13 +38,22 @@ test('API and workers never pass customer-controlled values to console', () => {
         && join(file, '..', statement.moduleSpecifier.text).replace(/\.js$/, '.ts') === join(root, 'lib/log-metadata.ts')) {
         const bindings = statement.importClause?.namedBindings;
         if (bindings && ts.isNamedImports(bindings)) for (const spec of bindings.elements) {
-          if (!spec.propertyName && ['logNumber', 'logId', 'logJobName', 'logQueueName', 'logSignal', 'logCapacityProfile'].includes(spec.name.text)) {
+          if (!spec.propertyName && ['logNumber', 'logId', 'logJobName', 'logQueueName', 'logSignal', 'logCapacityProfile', 'logStartupHint'].includes(spec.name.text)) {
             helpers.add(spec.name.text);
           }
         }
       }
     }
     const visit = (node: ts.Node) => {
+      if (ts.isIdentifier(node) && node.text === 'console'
+        && !(ts.isPropertyAccessExpression(node.parent) && node.parent.expression === node)) {
+        leaks.push(`${relative(root, file)}:bare or global console reference`);
+      }
+      if (ts.isIdentifier(node) && helpers.has(node.text)
+        && ((ts.isParameter(node.parent) || ts.isVariableDeclaration(node.parent)
+          || ts.isFunctionDeclaration(node.parent) || ts.isBindingElement(node.parent)) && node.parent.name === node)) {
+        leaks.push(`${relative(root, file)}:shadowed metadata helper`);
+      }
       if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
         && node.expression.expression.getText(source) === 'console'
         && node.arguments.some(arg => !literal(arg, helpers))) {

@@ -61,3 +61,36 @@ export function logCapacityProfile(event: keyof typeof CAPACITY_FIELDS, measurem
   }
   return `[capacity-profile] ${JSON.stringify(output)}`;
 }
+
+// Only code-defined remediation strings are emitted; never the original
+// message, environment value, path, or a free-form system error code.
+const STARTUP_HINTS: ReadonlyArray<readonly [string, string]> = [
+  ['DEFT_HOSTED must be exactly', 'Invalid DEFT_HOSTED: use exactly true or false, or leave it unset.'],
+  ['DEFT_PAUSED_START must be exactly', 'Invalid DEFT_PAUSED_START: use exactly true or false, or leave it unset.'],
+  ['JWT_SECRET and JWT_REFRESH_SECRET must be different', 'JWT_SECRET and JWT_REFRESH_SECRET must be different in production.'],
+  ['JWT_SECRET must be', 'Invalid JWT_SECRET: use a non-template secret of at least 32 characters without surrounding whitespace.'],
+  ['JWT_REFRESH_SECRET must be', 'Invalid JWT_REFRESH_SECRET: use a non-template secret of at least 32 characters without surrounding whitespace.'],
+  ['ENCRYPTION_KEY must be', 'Invalid ENCRYPTION_KEY: use a non-default secret of at least 32 characters in production.'],
+  ['DEFT_SETUP_TOKEN_SHA256 must be', 'Invalid DEFT_SETUP_TOKEN_SHA256: use a SHA-256 hash in 64 lowercase hex characters.'],
+  ['DEFT_SETUP_TOKEN_EXPIRES_AT must be', 'Invalid DEFT_SETUP_TOKEN_EXPIRES_AT: use a real ISO 8601 timestamp with a zone.'],
+  ['DEFT_SETUP_TOKEN_EXPIRES_AT is required', 'DEFT_SETUP_TOKEN_EXPIRES_AT is required when DEFT_SETUP_TOKEN_SHA256 is set.'],
+  ['Hosted mode needs a usable seat statement setup:', 'Invalid hosted seat setup: check DEFT_CELL_ID, DEFT_SEAT_PUBLIC_KEYS, DEFT_SEAT_STATEMENT_URL and DEFT_SEAT_FETCH_TOKEN.'],
+  ['DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED=true requires', 'DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED requires DEFT_APP_RUNS_ENABLED=true.'],
+  ['DEFT_APP_RUN_APP_ORIGIN_ENABLED=true requires', 'DEFT_APP_RUN_APP_ORIGIN_ENABLED requires DEFT_APP_RUNS_ENABLED=true and DEFT_APPS_ENABLED=true.'],
+  ['DEFT_APP_AUTOMATIONS_ENABLED=true requires', 'DEFT_APP_AUTOMATIONS_ENABLED requires DEFT_APPS_ENABLED=true, DEFT_APP_RUNS_ENABLED=true and DEFT_APP_RUN_APP_ORIGIN_ENABLED=true.'],
+];
+
+export function logStartupHint(error: unknown): string {
+  try {
+    if (error && typeof error === 'object' && 'code' in error) {
+      if (error.code === 'EADDRINUSE') return 'EADDRINUSE: API listen port is already in use; check PORT or API_PORT.';
+      if (error.code === 'EACCES') return 'EACCES: access denied; check the API listen port and filesystem permissions.';
+      if (error.code === 'APP_RUN_KEYRING_INVALID') return 'Invalid App Run keyring configuration; check the App Run keyring setting.';
+    }
+    const message = error instanceof Error ? error.message : undefined;
+    if (typeof message !== 'string') return 'Unclassified fatal error';
+    for (const [prefix, hint] of STARTUP_HINTS) if (message.startsWith(prefix)) return hint;
+    if (message.includes('hosted-only setting')) return 'Hosted-only settings require DEFT_HOSTED=true; otherwise remove DEFT_SETUP_TOKEN_* and DEFT_SEAT_* / DEFT_CELL_ID settings.';
+  } catch { /* Malformed error objects must not break the fatal handler. */ }
+  return 'Unclassified fatal error';
+}
