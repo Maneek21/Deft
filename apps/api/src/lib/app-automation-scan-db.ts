@@ -1,3 +1,4 @@
+import { handleDatabaseConnectionErrors } from './database-connection-errors.js';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
 import * as schema from '@deft/db/schema';
@@ -27,6 +28,7 @@ export function createAppAutomationScanDatabase(connectionString: string) {
     lock_timeout: APP_AUTOMATION_SCAN_DB_LIMITS.lock_ms,
     application_name: 'deft-app-automation-scanner',
   });
+  handleDatabaseConnectionErrors(pool);
   return {
     close: () => pool.end(),
     async transaction<T>(

@@ -1,3 +1,4 @@
+import { isDatabaseFailure } from '../lib/database-connection-errors.js';
 import { createMiddleware } from 'hono/factory';
 import type { MiddlewareHandler } from 'hono';
 import { verifyWebAccess } from '../lib/web-sessions.js';
@@ -20,7 +21,7 @@ declare module 'hono' {
 
 export type WebAuthResult =
   | { ok: true; user: AuthUser }
-  | { ok: false; status: 401 | 403; error: string; code: string };
+  | { ok: false; status: 401 | 403 | 503; error: string; code: string };
 
 // Holds a result only while one request is being answered (see
 // releaseWebRequest), and only for the Authorization value it was computed from.
@@ -34,6 +35,7 @@ async function verifyRequest(request: Request): Promise<WebAuthResult> {
   try {
     return { ok: true, user: await verifyWebAccess(authHeader.slice(7)) };
   } catch (err) {
+    if (isDatabaseFailure(err)) return { ok: false, status: 503, error: 'Session verification unavailable', code: 'DATABASE_UNAVAILABLE' };
     if (err instanceof OrgMembershipError) {
       return { ok: false, status: err.status as 403, error: err.message, code: err.code };
     }

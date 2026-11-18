@@ -142,7 +142,11 @@ const app = new Hono();
 app.onError((error, c) => {
   if (error instanceof HTTPException) return error.getResponse();
   // HTTP failures stay responses; no process-wide exception/rejection handler.
-  console.error('[api] Request failed:', error.name);
+  const cause = error.cause instanceof Error ? error.cause : error;
+  const code = (cause as Error & { code?: string }).code;
+  // SQL messages and query parameters can contain customer data. Keep stack
+  // locations and driver codes, excluding the stack's message line.
+  console.error('[api] Request failed:', c.req.method, c.req.routePath, code ?? error.name, error.stack?.split('\n').filter(line => /^\s+at /.test(line)).join('\n'));
   return c.json({ error: 'Request failed', code: 'INTERNAL_ERROR' }, 500);
 });
 

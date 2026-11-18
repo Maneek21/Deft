@@ -1,3 +1,4 @@
+import { handleDatabaseConnectionErrors } from './database-connection-errors.js';
 import type { CoreDatabaseTransaction } from './database-transaction.js';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
@@ -45,6 +46,8 @@ export function createExperienceExposureDatabase(connectionString: string) {
     max: APP_EXPERIENCE_EXPOSURE_DB_LIMITS.human_action_connections,
     application_name: 'deft-experience-human-action',
   });
+  handleDatabaseConnectionErrors(pool);
+  handleDatabaseConnectionErrors(humanActionPool);
   return {
     close: async () => { await Promise.all([pool.end(), humanActionPool.end()]); },
     async transaction<T>(

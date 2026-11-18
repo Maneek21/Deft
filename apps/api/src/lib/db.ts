@@ -1,3 +1,4 @@
+import { handleDatabaseConnectionErrors, connectionFailure } from './database-connection-errors.js';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
 import * as schema from '@deft/db/schema';
@@ -12,6 +13,10 @@ const { Pool } = pg;
 const pool = new Pool({
   connectionString: env.DATABASE_URL,
   max: APP_DATABASE_POOL_BUDGET.ordinary,
+  connectionTimeoutMillis: 5_000,
+  query_timeout: 30_000,
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10_000,
 });
 
 // Session-scoped advisory locks must not consume the ordinary query pool;
@@ -20,13 +25,14 @@ const pool = new Pool({
 const advisoryPool = new Pool({
   connectionString: env.DATABASE_URL,
   max: APP_DATABASE_POOL_BUDGET.advisory,
+  connectionTimeoutMillis: 5_000,
+  query_timeout: 30_000,
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10_000,
 });
 
-// pg removes failed idle clients before emitting this pool event. Active
-// query failures still reject normally; subsequent checkouts reconnect.
-for (const connectionPool of [pool, advisoryPool]) {
-  connectionPool.on('error', () => console.warn('[database] Idle connection lost; reconnecting on next checkout'));
-}
+handleDatabaseConnectionErrors(pool);
+handleDatabaseConnectionErrors(advisoryPool);
 
 export const db = drizzle(pool, { schema });
 
@@ -42,12 +48,14 @@ export async function withDbAdvisoryLock<T>(
   const client = await advisoryPool.connect();
   try {
     await client.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [key]);
-    return await run();
+    const result = await run();
+    if (connectionFailure(client)) throw connectionFailure(client);
+    return result;
   } finally {
     try {
-      await client.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [key]);
+      if (!connectionFailure(client)) await client.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [key]);
     } finally {
-      client.release();
+      client.release(connectionFailure(client));
     }
   }
 }
