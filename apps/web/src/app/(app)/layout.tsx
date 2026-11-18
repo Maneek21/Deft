@@ -23,6 +23,7 @@ import { HuddleErrorToast, HuddleRingToast } from '@/components/huddle-ring-toas
 import { HUDDLES_ENABLED } from '@/lib/feature-flags';
 import { Logo } from '@/components/brand/logo';
 import { IosInstallHint } from '@/components/ios-install-hint';
+import { PausedBannerHost } from '@/components/paused-banner';
 
 type Space = {
   id: string;
@@ -40,7 +41,7 @@ function AppHeaderHost({ onMenuClick }: { onMenuClick?: () => void }) {
 }
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useAuth();
+  const { user, loading, paused } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
   const [spaces, setSpaces] = useState<Space[]>([]);
@@ -84,6 +85,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   // flows through /welcome. Skip if we're already there to avoid loops.
   useEffect(() => {
     if (!user) return;
+    // Paused: onboarding cannot be saved, so /welcome would loop back here,
+    // and it has no paused banner. Stay in the shell, which explains it.
+    if (paused) return;
     const role = (user as { role?: string }).role;
     if (role === 'owner') return; // owners use /setup, not /welcome
     if (pathname === '/welcome' || pathname === '/setup') return;
@@ -94,7 +98,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         router.replace('/welcome');
       }
     }).catch(() => {});
-  }, [user, pathname, router]);
+  }, [user, paused, pathname, router]);
 
   // Auto-detect and save timezone if not set or still default 'UTC'
   useEffect(() => {
@@ -501,6 +505,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             setMobileOpen={setMobileMenuOpen}
           />
           <main className="min-h-0 min-w-0 flex-1 overflow-hidden flex flex-col">
+            <PausedBannerHost />
             <AppHeaderHost onMenuClick={() => setMobileMenuOpen(true)} />
             <div className="min-h-0 min-w-0 flex-1 overflow-hidden">{children}</div>
           </main>

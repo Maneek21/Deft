@@ -42,6 +42,7 @@ import { stripHtml } from '@/lib/strip-html';
 import { NoteSaveCoordinator, type NoteSaveStatus } from './note-save-coordinator';
 import { noteImageAttributes, ProtectedNoteImage } from './protected-note-image';
 import { noteLoadFailureState, type NoteLoadState } from './note-load-state';
+import { PausedBanner } from '@/components/paused-banner';
 
 // Register built-in slash menu commands (idempotent).
 registerBuiltInCommands();
@@ -202,7 +203,7 @@ function NoteCard({ note, onClick }: { note: Note; onClick: () => void }) {
 
 // ── Note Editor ────────────────────────────────────────────
 function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () => void; onDeleted: () => void }) {
-  const { user } = useAuth();
+  const { user, paused } = useAuth();
   const [note, setNote] = useState<Note | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadState, setLoadState] = useState<'loading' | 'loaded' | NoteLoadState>('loading');
@@ -611,6 +612,13 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
   return (
     <div className={`h-full overflow-y-auto ${focusMode ? 'fixed inset-0 z-[90]' : ''}`}
       style={focusMode ? { background: 'var(--background)', padding: '2rem 0' } : undefined}>
+      {/* Focus mode covers the app shell, so it carries the paused notice itself,
+          pinned to the top while the note scrolls. */}
+      {focusMode && paused && (
+        <div className="sticky -top-8 z-10">
+          <PausedBanner notice={paused} />
+        </div>
+      )}
 
       {/* Undo-delete toast */}
       {pendingDelete && (

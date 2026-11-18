@@ -31,6 +31,7 @@ export function useAuth(): ReturnType<typeof realUseAuth> {
   return {
     user,
     org: { id: 'org-1', name: 'Deft', slug: 'deft' },
+    paused: null,
     loading: false,
     sessionCacheScope: 'mounted-session',
     login: async () => {},

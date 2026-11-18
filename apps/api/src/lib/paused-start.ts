@@ -29,32 +29,73 @@
  *   legacy GitHub sync is unreachable behind the request and worker gates;
  * - realtime connections are refused before presence is broadcast.
  */
-export type PausedStartSetting = { paused: boolean; invalid: string | null };
+/**
+ * DEFT_PAUSED_REASON says why a paused install is paused, so the signed-in
+ * web app can explain it. It is read with DEFT_PAUSED_START, at process start:
+ * - unset: `restore_review` (the original use: a restored copy waiting for an
+ *   operator);
+ * - `restore_review` or `billing` (a hosted workspace whose payment is
+ *   overdue);
+ * - anything else stops startup, like a malformed DEFT_PAUSED_START.
+ * It changes nothing that is refused; it is only shown to signed-in people
+ * (`pausedNotice`, in GET /api/auth/me), never on a public route.
+ */
+export const PAUSED_REASONS = ['restore_review', 'billing'] as const;
+export type PausedReason = (typeof PAUSED_REASONS)[number];
 
-export function parsePausedStartSetting(raw: string | undefined): PausedStartSetting {
-  if (raw === undefined || raw === 'false') return { paused: false, invalid: null };
-  if (raw === 'true') return { paused: true, invalid: null };
-  return { paused: true, invalid: raw };
+export type PausedStartSetting = {
+  paused: boolean;
+  invalid: string | null;
+  reason: PausedReason;
+  invalidReason: string | null;
+};
+
+function parsePausedReason(raw: string | undefined): { reason: PausedReason; invalidReason: string | null } {
+  if (raw === undefined) return { reason: 'restore_review', invalidReason: null };
+  if ((PAUSED_REASONS as readonly string[]).includes(raw)) return { reason: raw as PausedReason, invalidReason: null };
+  return { reason: 'restore_review', invalidReason: raw };
 }
 
-let setting = parsePausedStartSetting(process.env.DEFT_PAUSED_START);
+export function parsePausedStartSetting(raw: string | undefined, rawReason?: string): PausedStartSetting {
+  const reason = parsePausedReason(rawReason);
+  if (raw === undefined || raw === 'false') return { paused: false, invalid: null, ...reason };
+  if (raw === 'true') return { paused: true, invalid: null, ...reason };
+  return { paused: true, invalid: raw, ...reason };
+}
+
+let setting = parsePausedStartSetting(process.env.DEFT_PAUSED_START, process.env.DEFT_PAUSED_REASON);
 
 export function isPausedStart(): boolean {
   return setting.paused;
 }
 
-/** Throws when DEFT_PAUSED_START holds anything but exactly "true" or "false". */
+/** What the signed-in web app is told: why this install is paused, or null. */
+export function pausedNotice(): { reason: PausedReason } | null {
+  return setting.paused ? { reason: setting.reason } : null;
+}
+
+/**
+ * Throws when DEFT_PAUSED_START holds anything but exactly "true" or "false",
+ * or DEFT_PAUSED_REASON is set to anything outside PAUSED_REASONS.
+ */
 export function assertPausedStartSettingValid(current: PausedStartSetting = setting): void {
-  if (current.invalid === null) return;
-  throw new Error(
-    `DEFT_PAUSED_START must be exactly "true" or "false" (or unset); got ${JSON.stringify(current.invalid)}. ` +
-      'Refusing to start, because a restored copy must not start live by mistake.',
-  );
+  if (current.invalid !== null) {
+    throw new Error(
+      `DEFT_PAUSED_START must be exactly "true" or "false" (or unset); got ${JSON.stringify(current.invalid)}. ` +
+        'Refusing to start, because a restored copy must not start live by mistake.',
+    );
+  }
+  if (current.invalidReason !== null) {
+    throw new Error(
+      `DEFT_PAUSED_REASON must be one of ${PAUSED_REASONS.map((r) => `"${r}"`).join(', ')} (or unset); ` +
+        `got ${JSON.stringify(current.invalidReason)}. Refusing to start.`,
+    );
+  }
 }
 
 /** Test seam only. Production reads the setting once at process start. */
-export function _setPausedStartForTest(value: boolean): void {
-  setting = { paused: value, invalid: null };
+export function _setPausedStartForTest(value: boolean, reason: PausedReason = 'restore_review'): void {
+  setting = { paused: value, invalid: null, reason, invalidReason: null };
 }
 
 export const PAUSED_ERROR = {

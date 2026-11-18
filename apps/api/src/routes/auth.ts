@@ -26,6 +26,7 @@ import { OrgMembershipError, requireActiveOrgMembership } from '../lib/org-membe
 import { revokeWebSession, changeWebPassword, verifyWebAccess, WebCredentialsChangedError } from '../lib/web-sessions.js';
 import { issueSession, issuedSessionBody } from '../lib/session-issuance.js';
 import { SecondStepRequiredError } from '../lib/two-step-policy.js';
+import { pausedNotice } from '../lib/paused-start.js';
 
 export const authRoutes = new Hono();
 authRoutes.use('*', bodyLimit({ maxSize: 64 * 1024, onError: (c) => c.json({ error: 'Request body is too large', code: 'VALIDATION_ERROR' }, 413) }));
@@ -349,7 +350,9 @@ authRoutes.get('/me', async (c) => {
       slug: orgs.slug,
     }).from(orgs).where(eq(orgs.id, payload.org_id)).limit(1);
 
-    return c.json({ user: { ...user, role: membership.role }, org });
+    // A paused install tells its signed-in people why, so the app can say so.
+    const paused = pausedNotice();
+    return c.json({ user: { ...user, role: membership.role }, org, ...(paused ? { paused } : {}) });
   } catch (err) {
     if (isDatabaseFailure(err)) return c.json({ error: 'Database unavailable', code: 'DATABASE_UNAVAILABLE' }, 503);
     if (err instanceof OrgMembershipError) {
