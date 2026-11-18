@@ -29,7 +29,7 @@
  * runs for them.
  */
 import { mkdir, open, stat, unlink } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { localFileStore } from './file-store.js';
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
@@ -105,7 +105,10 @@ export async function markSetupTokenUsed(hashHex: string, now: Date = new Date()
     } finally {
       await handle.close();
     }
+    // The marker's entry in its directory, and the directory's own entry in
+    // the uploads root (the first signup creates it), must both reach disk.
     await syncDirectory(setupTokenUseStore.dir);
+    await syncDirectory(dirname(setupTokenUseStore.dir));
   } catch {
     await unlink(path).catch(() => undefined);
     throw new SetupTokenUseError('storage');
@@ -113,7 +116,7 @@ export async function markSetupTokenUsed(hashHex: string, now: Date = new Date()
 }
 
 /**
- * Flush the directory entry so the new file survives a power cut. Windows
+ * Flush a directory's entries so a new file or folder in it survives a power cut. Windows
  * cannot open a directory for fsync; hosted cells run Linux, so on Windows
  * (development only) this step is skipped.
  */

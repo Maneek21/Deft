@@ -72,7 +72,7 @@ test('two marks at once: exactly one succeeds', async () => {
   });
 });
 
-test('a marker that cannot be written fails as storage and leaves no marker', async () => {
+test('when the marker directory cannot be made, marking and checking fail as storage', async () => {
   await withDir(async () => {
     // A regular file where the marker directory should be: mkdir fails.
     await mkdir(dirname(setupTokenUseStore.dir), { recursive: true });
