@@ -19,7 +19,7 @@ import { Hono, type MiddlewareHandler } from 'hono';
 
 export type GateAuthResult =
   | { ok: true }
-  | { ok: false; status: 401 | 403; error: string; code: string };
+  | { ok: false; status: 401 | 403 | 503; error: string; code: string };
 
 export type GateAuthenticate = (request: Request) => Promise<GateAuthResult>;
 export type GateIsPublic = (method: string, path: string) => boolean;

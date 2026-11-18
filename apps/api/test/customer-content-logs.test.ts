@@ -109,11 +109,13 @@ test('unhandled errors omit messages, causes and properties while retaining HTTP
     const app = new Hono();
     app.onError(contentFreeErrorHandler);
     app.get('/fail', () => {
-      throw Object.assign(new Error(marker, { cause: new Error(marker) }), { query: marker });
+      throw Object.assign(new Error(marker, { cause: new Error(marker) }), {
+        query: marker, name: marker, stack: `Error: ${marker}\n    at ${marker}`,
+      });
     });
     const response = await app.request('/fail');
     assert.equal(response.status, 500);
-    assert.equal(await response.text(), 'Internal Server Error');
+    assert.deepEqual(await response.json(), { error: 'Request failed', code: 'INTERNAL_ERROR' });
     const reference = response.headers.get('X-Deft-Error-Reference');
     assert.match(reference ?? '', /^[a-f0-9-]{36}$/);
     assert.ok(output.some(args => args.includes(reference)), 'support can correlate the client reference');

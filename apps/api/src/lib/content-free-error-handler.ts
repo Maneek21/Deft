@@ -13,5 +13,6 @@ export const contentFreeErrorHandler: ErrorHandler = (error, c) => {
   const reference = randomUUID();
   console.error('[http] Unhandled request error; reference:', logId(reference));
   c.header('X-Deft-Error-Reference', reference);
-  return c.text('Internal Server Error', 500);
+  // Preserve the neutral JSON failure contract added by the DB-recovery lane.
+  return c.json({ error: 'Request failed', code: 'INTERNAL_ERROR' }, 500);
 };

@@ -21,6 +21,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, or, isNull, ne, desc, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
+import { AgentSetGrew, manageAgents } from '../lib/agent-management.js';
 import {
   skills,
   agentEmployees,
@@ -300,6 +301,36 @@ skillsRoutes.patch('/:id', async (c) => {
 
     if (Object.keys(updates).length === 0) {
       return c.json(existing);
+    }
+
+    if (parsed.data.agent_config !== undefined) {
+      // Installed config is read live for triggers and heartbeat instructions:
+      // changing it manages every installed employee, even a paused one.
+      const installed = async (reader: Pick<typeof db, 'select'>) => (await reader
+        .select({ id: agentEmployees.id })
+        .from(agentEmployeeSkills)
+        .innerJoin(agentEmployees, eq(agentEmployees.id, agentEmployeeSkills.agent_employee_id))
+        .where(and(eq(agentEmployeeSkills.skill_id, id), eq(agentEmployees.org_id, user.org_id))))
+        .map((row) => row.id);
+      let employeeIds = await installed(db);
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          const managed = await manageAgents({ userId: user.id, orgId: user.org_id }, employeeIds, async (tx) => {
+            const current = await installed(tx);
+            if (current.some((employeeId) => !employeeIds.includes(employeeId))) {
+              throw new AgentSetGrew([...employeeIds, ...current]);
+            }
+            const [updated] = await tx.update(skills).set(updates)
+              .where(and(eq(skills.id, id), eq(skills.org_id, user.org_id))).returning();
+            return updated;
+          });
+          if (!managed.ok) return c.json({ error: managed.error, code: managed.code }, managed.status);
+          return c.json(managed.value);
+        } catch (err) {
+          if (!(err instanceof AgentSetGrew) || attempt >= 3) throw err;
+          employeeIds = err.employeeIds;
+        }
+      }
     }
 
     const [updated] = await db

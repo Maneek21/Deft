@@ -121,7 +121,7 @@ test('a dropped idle maintenance socket cannot terminate the process and the nex
   try {
     const exit = await new Promise<number | null>((resolve, reject) => { child.once('error', reject); child.once('exit', resolve); });
     assert.equal(exit, 0, stderr);
-    assert.equal(stderr.trim(), '[app-runs] bounded database idle connection closed');
+    assert.match(stderr, /\[database\] Idle connection lost; reconnecting on next checkout/);
     assert.equal(accepted, 2, 'pg must remove the dead idle client before the next pass checks out a replacement');
     assert.equal(transactionOpen, false);
     for (let i = 0; i < 100 && sockets.size; i++) await delay(5);

@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth-context';
-import { takeSetupTokenFromAddress } from '@/lib/setup-link';
+import { useLinkToken } from '@/lib/use-link-token';
 import Link from 'next/link';
 import { Eye, EyeOff } from 'lucide-react';
 import { Logo } from '@/components/brand/logo';
@@ -19,22 +19,8 @@ export default function SignupPage() {
 
   const [passwordError, setPasswordError] = useState('');
 
-  // Hosted workspaces: the setup link is /signup#setup=<token>. The token is
-  // read from the part after # (never the query string), taken out of the
-  // address bar, and kept in memory only until it is sent in the signup body.
-  const [setupToken, setSetupToken] = useState('');
-
-  useEffect(() => {
-    const take = () => {
-      const token = takeSetupTokenFromAddress(window.location, window.history);
-      if (token) setSetupToken(token);
-    };
-    take();
-    // A link opened into an already open signup page changes only the part
-    // after #, so the page stays mounted; read the token then too.
-    window.addEventListener('hashchange', take);
-    return () => window.removeEventListener('hashchange', take);
-  }, []);
+  // Memory belongs above the theme hydration remount; failures retain it.
+  const setupToken = useLinkToken();
 
   // Pre-check: does a workspace already exist?
   const [workspaceCheck, setWorkspaceCheck] = useState<'loading' | 'exists' | 'free'>('loading');

@@ -9,6 +9,9 @@ import { logCapacityProfile, logId, logJobName, logNumber, logQueueName, logSign
 import { createAgentMessage } from '../src/lib/agent-llm.js';
 import { llm } from '../src/lib/llm.js';
 import { printRequestLogLine } from '../src/lib/request-logger.js';
+import { EventEmitter } from 'node:events';
+import type pg from 'pg';
+import { handleDatabaseConnectionErrors, connectionFailure } from '../src/lib/database-connection-errors.js';
 
 test('metadata formatters retain counts, known jobs, queues and generated IDs without coercing text', () => {
   const marker = `PRIVATE-${randomUUID()}`;
@@ -27,6 +30,28 @@ test('metadata formatters retain counts, known jobs, queues and generated IDs wi
   assert.equal(logSignal('SIGTERM'), 'SIGTERM');
   const registry = readFileSync(new URL('../src/workers/index.ts', import.meta.url), 'utf8');
   for (const [, name] of registry.matchAll(/case '([^']+)'/g)) assert.equal(logJobName(name), name, `Register diagnostic name: ${name}`);
+});
+
+test('database outage diagnostics omit driver content while releasing failed checkouts', t => {
+  const marker = `PRIVATE-${randomUUID()}-database-outage`;
+  const error = Object.assign(new Error(marker, { cause: new Error(marker) }), {
+    code: marker, detail: marker, query: marker, stack: `Error: ${marker}\n    at ${marker}`,
+  });
+  const lines: string[] = [];
+  t.mock.method(console, 'warn', (...args: unknown[]) => { lines.push(format(...args)); });
+  const pool = new EventEmitter();
+  let released: Error | undefined;
+  const client = Object.assign(new EventEmitter(), { release(failure?: Error) { released = failure; } });
+  handleDatabaseConnectionErrors(pool as unknown as pg.Pool);
+  pool.emit('error', error);
+  pool.emit('connect', client);
+  pool.emit('acquire', client);
+  client.emit('error', error);
+  assert.equal(released, error, 'recovery still destroys the failed checked-out connection');
+  assert.equal(connectionFailure(client as unknown as pg.PoolClient), error);
+  assert.ok(lines.some(line => line.includes('Idle connection lost')));
+  assert.ok(lines.some(line => line.includes('Checked-out connection lost')));
+  assert.ok(!lines.join('\n').includes(marker), lines.join('\n'));
 });
 
 test('capacity events remain parseable by the certifier and reject text or extra fields', () => {
@@ -125,7 +150,7 @@ test('startup hints retain closed remediation and never echo supplied values or 
   for (const prefix of ['DEFT_HOSTED must be exactly', 'DEFT_PAUSED_START must be exactly',
     'JWT_SECRET must be', 'JWT_REFRESH_SECRET must be', 'ENCRYPTION_KEY must be',
     'DEFT_SETUP_TOKEN_SHA256 must be', 'DEFT_SETUP_TOKEN_EXPIRES_AT must be',
-    'Hosted mode needs a usable seat statement setup:', 'DEFT_APP_RUN_APP_ORIGIN_ENABLED=true requires']) {
+    'Hosted mode needs a usable seat statement setup:']) {
     const hint = logStartupHint(new Error(`${prefix} ${marker}`));
     assert.notEqual(hint, 'Unclassified fatal error');
     assert.ok(!hint.includes(marker));
@@ -133,6 +158,11 @@ test('startup hints retain closed remediation and never echo supplied values or 
   assert.equal(logStartupHint(Object.assign(new Error(marker), { code: marker })), 'Unclassified fatal error');
   assert.equal(logStartupHint({ get code() { throw new Error(marker); } }), 'Unclassified fatal error');
   assert.match(logStartupHint(Object.assign(new Error(marker), { code: 'EADDRINUSE' })), /EADDRINUSE/);
+  for (const code of ['APP_RUN_LEGACY_ROLLOUT_INVALID', 'APP_RUN_ORIGIN_ROLLOUT_INVALID', 'APP_AUTOMATION_ROLLOUT_INVALID']) {
+    const hint = logStartupHint(Object.assign(new Error(marker), { code }));
+    assert.notEqual(hint, 'Unclassified fatal error');
+    assert.ok(!hint.includes(marker));
+  }
 });
 
 test('server import order preserves startup setting diagnostics without their supplied values', () => {
@@ -147,6 +177,9 @@ test('server import order preserves startup setting diagnostics without their su
     [{ NODE_ENV: 'production', JWT_SECRET: 's'.repeat(48), JWT_REFRESH_SECRET: 's'.repeat(48) }, /must be different/],
     [{ NODE_ENV: 'production', ENCRYPTION_KEY: 'short' }, /Invalid ENCRYPTION_KEY/],
     [{ DEFT_CELL_ID: marker }, /Hosted-only settings require DEFT_HOSTED=true/],
+    [{ DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED: 'true' }, /Legacy MCP cutover needs Run execution enabled/],
+    [{ DEFT_APP_RUN_APP_ORIGIN_ENABLED: 'true' }, /App-origin Run intake needs Run execution and Apps enabled/],
+    [{ DEFT_APP_AUTOMATIONS_ENABLED: 'true' }, /App automations need Apps, Run execution and app-origin intake enabled/],
   ];
   for (const [settings, expected] of cases) {
     const env = { ...process.env };
@@ -154,7 +187,7 @@ test('server import order preserves startup setting diagnostics without their su
       'DEFT_SEAT_PUBLIC_KEYS', 'DEFT_SEAT_STATEMENT_URL', 'DEFT_SEAT_FETCH_TOKEN']) delete env[key];
     Object.assign(env, { NODE_ENV: 'test', DEFT_HOSTED: 'false', DEFT_PAUSED_START: 'false',
       JWT_SECRET: 'a'.repeat(48), JWT_REFRESH_SECRET: 'b'.repeat(48), ENCRYPTION_KEY: 'c'.repeat(48),
-      DEFT_APP_RUNS_ENABLED: 'false', DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED: 'false',
+      DEFT_APPS_ENABLED: 'false', DEFT_APP_RUNS_ENABLED: 'false', DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED: 'false',
       DEFT_APP_RUN_APP_ORIGIN_ENABLED: 'false', DEFT_APP_AUTOMATIONS_ENABLED: 'false' }, settings);
     const code = `await import(${JSON.stringify(bootstrap)}); await import(${JSON.stringify(envModule)});
       const paused = await import(${JSON.stringify(pausedModule)}); paused.assertPausedStartSettingValid();`;

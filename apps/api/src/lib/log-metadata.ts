@@ -75,9 +75,6 @@ const STARTUP_HINTS: ReadonlyArray<readonly [string, string]> = [
   ['DEFT_SETUP_TOKEN_EXPIRES_AT must be', 'Invalid DEFT_SETUP_TOKEN_EXPIRES_AT: use a real ISO 8601 timestamp with a zone.'],
   ['DEFT_SETUP_TOKEN_EXPIRES_AT is required', 'DEFT_SETUP_TOKEN_EXPIRES_AT is required when DEFT_SETUP_TOKEN_SHA256 is set.'],
   ['Hosted mode needs a usable seat statement setup:', 'Invalid hosted seat setup: check DEFT_CELL_ID, DEFT_SEAT_PUBLIC_KEYS, DEFT_SEAT_STATEMENT_URL and DEFT_SEAT_FETCH_TOKEN.'],
-  ['DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED=true requires', 'DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED requires DEFT_APP_RUNS_ENABLED=true.'],
-  ['DEFT_APP_RUN_APP_ORIGIN_ENABLED=true requires', 'DEFT_APP_RUN_APP_ORIGIN_ENABLED requires DEFT_APP_RUNS_ENABLED=true and DEFT_APPS_ENABLED=true.'],
-  ['DEFT_APP_AUTOMATIONS_ENABLED=true requires', 'DEFT_APP_AUTOMATIONS_ENABLED requires DEFT_APPS_ENABLED=true, DEFT_APP_RUNS_ENABLED=true and DEFT_APP_RUN_APP_ORIGIN_ENABLED=true.'],
 ];
 
 export function logStartupHint(error: unknown): string {
@@ -86,6 +83,9 @@ export function logStartupHint(error: unknown): string {
       if (error.code === 'EADDRINUSE') return 'EADDRINUSE: API listen port is already in use; check PORT or API_PORT.';
       if (error.code === 'EACCES') return 'EACCES: access denied; check the API listen port and filesystem permissions.';
       if (error.code === 'APP_RUN_KEYRING_INVALID') return 'Invalid App Run keyring configuration; check the App Run keyring setting.';
+      if (error.code === 'APP_RUN_LEGACY_ROLLOUT_INVALID') return 'Legacy MCP cutover needs Run execution enabled.';
+      if (error.code === 'APP_RUN_ORIGIN_ROLLOUT_INVALID') return 'App-origin Run intake needs Run execution and Apps enabled.';
+      if (error.code === 'APP_AUTOMATION_ROLLOUT_INVALID') return 'App automations need Apps, Run execution and app-origin intake enabled.';
     }
     const message = error instanceof Error ? error.message : undefined;
     if (typeof message !== 'string') return 'Unclassified fatal error';
