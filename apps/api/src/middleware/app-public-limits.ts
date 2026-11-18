@@ -59,19 +59,20 @@ export function createAppPublicLimits(options: AppPublicLimitsOptions = {}): Mid
   let admissions = 0;
 
   return async (c, next) => {
-    // Resolve the client address before reading the clock: everything after
-    // this await is synchronous, so a slow proxy-name lookup cannot apply an
-    // older timestamp to a bucket a later request already advanced.
-    const key = peerKey(await resolvePeer(c));
-    const current = now();
-    tick(global, current);
+    tick(global, now());
     // Charge every request, including rejected identities, to the global
-    // budget so rotating peers cannot bypass the process ceiling.
+    // budget so rotating peers cannot bypass the process ceiling. This runs
+    // before the address lookup, so an exhausted budget starts no lookups.
     global.count += 1;
     if (global.count > globalPerMinute) {
       c.header('Retry-After', '60');
       return c.json({ error: 'Public request rate limit reached', code: 'PUBLIC_RATE_LIMITED' }, 429);
     }
+    // Read the clock again after the lookup: peer accounting below is
+    // synchronous, so a slow proxy-name lookup cannot apply an older timestamp
+    // to a bucket a later request already advanced.
+    const key = peerKey(await resolvePeer(c));
+    const current = now();
 
     let peer: Bucket;
     if (key === UNKNOWN_PEER) {

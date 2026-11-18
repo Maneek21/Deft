@@ -63,13 +63,14 @@ export function createAppResourceSyncLimits(
   const peers = new Map<string, Bucket>();
   let admissions = 0;
   return async (c, next) => {
-    // Resolve first; all accounting below is synchronous on one timestamp, so
-    // a slow proxy-name lookup cannot rewind a bucket another request advanced.
-    const key = peerKey(await resolvePeer(c));
-    const now = clock();
-    tick(global, now);
+    // Global admission first, so an exhausted budget starts no address lookup.
+    tick(global, clock());
     global.count += 1;
     if (global.count > globalPerMinute) return unavailable(c, 429, '60');
+    // Fresh timestamp after the lookup: peer accounting below is synchronous,
+    // so a slow lookup cannot rewind a bucket another request advanced.
+    const key = peerKey(await resolvePeer(c));
+    const now = clock();
     let peer = key === 'unknown' ? unknown : peers.get(key);
     if (!peer) {
       admissions += 1;

@@ -92,3 +92,23 @@ for (const [name, create] of [
     assert.equal((await slow).status, 429, 'the same client gets one request a minute, whatever the lookup order');
   });
 }
+
+for (const [name, create] of [
+  ['app public limits', createAppPublicLimits],
+  ['app resource sync limits', createAppResourceSyncLimits],
+] as const) {
+  test(`${name}: an exhausted global budget rejects without starting an address lookup`, async () => {
+    let lookups = 0;
+    const app = new Hono();
+    app.use('*', create({
+      globalPerMinute: 1, peerPerMinute: 100,
+      peerAddress: async () => { lookups += 1; return '198.51.100.1'; },
+    }));
+    app.post('*', c => c.text('ok'));
+    assert.equal((await app.request('http://api.test/x', { method: 'POST' })).status, 200);
+    for (let i = 0; i < 20; i++) {
+      assert.equal((await app.request('http://api.test/x', { method: 'POST' })).status, 429);
+    }
+    assert.equal(lookups, 1);
+  });
+}
