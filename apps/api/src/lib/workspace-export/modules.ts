@@ -3,10 +3,20 @@ import { digestSupportedModuleManifest, parseSupportedDeftModuleManifest } from 
 import { assertInstallationAccess } from '../module-access-policy.js';
 import type { ExportContext } from './scope.js';
 import type { Snapshot } from './snapshot.js';
-import type { ArchiveWriter, JsonlFile } from './writer.js';
+import { assertArchivePath, type ArchiveWriter, type JsonlFile } from './writer.js';
 import type { DatasetSummary } from './format.js';
 
 const SAFE_KEY = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+/** A module or collection key as an archive file name; a name Windows reserves (con, nul, com1, …) gets a leading underscore. */
+function storable(key: string): string {
+  try {
+    assertArchivePath(key);
+    return key;
+  } catch {
+    return `_${key}`;
+  }
+}
 /** Field types whose values are written from a record's data. Relations come from their own table. */
 const DATA_FIELD_TYPES = new Set(['text', 'long_text', 'email', 'url', 'date', 'datetime', 'number', 'boolean',
   'single_select', 'multi_select', 'member', 'tags']);
@@ -89,7 +99,7 @@ export async function exportModules(snapshot: Snapshot, writer: ArchiveWriter, c
       await writer.omit({ kind: 'module', id: installation.id, reason: 'The module has no active version, so Deft does not show its records.' });
       continue;
     }
-    const folder = `data/modules/${SAFE_KEY.test(installation.slug) ? installation.slug : installation.id}`;
+    const folder = `data/modules/${storable(SAFE_KEY.test(installation.slug) ? installation.slug : installation.id)}`;
     // Field allowlists per manifest version, since each record was validated against its own version.
     const versions = new Map<string, Map<string, Collection>>();
     let verified = true;
@@ -113,7 +123,7 @@ export async function exportModules(snapshot: Snapshot, writer: ArchiveWriter, c
     const closeCurrent = async () => {
       if (!open.current) return;
       await open.current.file.close();
-      summaries.push({ path: `${folder}/collections/${open.current.key}.jsonl`, records: open.current.file.records });
+      summaries.push({ path: `${folder}/collections/${storable(open.current.key)}.jsonl`, records: open.current.file.records });
       open.current = null;
     };
     for await (const record of snapshot.rows<{ id: string; collection_key: string; validated_version_id: string; data: Record<string, unknown>;
@@ -126,7 +136,7 @@ export async function exportModules(snapshot: Snapshot, writer: ArchiveWriter, c
       }
       if (open.current?.key !== record.collection_key) {
         await closeCurrent();
-        open.current = { key: record.collection_key, file: await writer.jsonl(`${folder}/collections/${record.collection_key}.jsonl`) };
+        open.current = { key: record.collection_key, file: await writer.jsonl(`${folder}/collections/${storable(record.collection_key)}.jsonl`) };
       }
       const target = open.current!;
       const collection = versions.get(record.validated_version_id)?.get(record.collection_key);
