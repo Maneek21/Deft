@@ -19,7 +19,7 @@ import { runInNewContext } from 'node:vm';
 
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 import { B_MARKER, SECRET_MARKER, dropExportWorld, seedExportWorld, type ExportWorld } from './fixtures/workspace-export-fixture.js';
-import { DATASETS, exportWorkspace, type ExportOptions } from '../src/lib/workspace-export/export.js';
+import { DATASETS, EXPORT_TABLES, exportWorkspace, type ExportOptions } from '../src/lib/workspace-export/export.js';
 import { Snapshot } from '../src/lib/workspace-export/snapshot.js';
 import { canReadSpace } from '../src/lib/space-membership.js';
 import { memberRoutes } from '../src/routes/members.js';
@@ -725,3 +725,27 @@ test('attachments: the shared-database decision counts any trace of another work
   }
 });
 
+
+test('attachments: even when the scan would call the database single, nothing is copied without the declaration', { skip }, async () => {
+  const reads: string[] = [];
+  const exported = await runExport({ scope: { kind: 'workspace' }, singleWorkspaceDatabase: false,
+    hooks: { sharedDatabase: () => false, beforeFileRead: async (fileId) => { reads.push(fileId); } } });
+  assert.deepEqual(reads, [], 'no stored file is even looked at');
+  assert.deepEqual(exported.manifest.attachments, { single_workspace_declared: false, files_copied: 0 });
+  assert.ok(rows(exported, 'data/files.jsonl').every((row) => row.included === false));
+  assert.ok(![...exported.files.keys()].some((path) => path.startsWith('attachments/')));
+});
+
+test('the export refuses a schema whose tables are views over the real ones, before writing anything', { skip }, async () => {
+  const schema = `ex1_views_${randomUUID().slice(0, 8).replace(/-/g, '')}`;
+  await client.query(`CREATE SCHEMA ${schema}`);
+  try {
+    for (const table of EXPORT_TABLES) await client.query(`CREATE VIEW ${schema}.${table} AS SELECT * FROM public.${table}`);
+    const outDir = join(scratch, `export-${++counter}`);
+    await assert.rejects(exportWorkspace({ databaseUrl: databaseUrl!, workspace: world.a.slug, scope: { kind: 'workspace' }, outDir,
+      uploadsDir: world.uploadsDir, singleWorkspaceDatabase: true, databaseSchema: schema }), /not all plain tables in the schema/);
+    await assert.rejects(readdir(outDir), /ENOENT/);
+  } finally {
+    await client.query(`DROP SCHEMA ${schema} CASCADE`);
+  }
+});
