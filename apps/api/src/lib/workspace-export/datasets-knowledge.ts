@@ -43,11 +43,12 @@ function scalar(object: SQL, key: string): SQL {
  * The metadata keys core Deft writes on events: native and assistant-created
  * events (native-calendar.ts, mcp-tools/human.ts), ICS subscriptions
  * (ics-sync.ts), app calendar sources (native-calendar-source-model.ts) and
- * GitHub sync. An event with any other key was written by another part of
+ * GitHub pull-request events (workers/github-sync.ts). An event with any other key was written by another part of
  * Deft and is left out of the member scope.
  */
 const CORE_EVENT_KEYS = ['start', 'end', 'location', 'attendees', 'hangoutLink', 'status', 'allDay', 'all_day',
-  'ics_uid', 'ics_subscription_id', 'ics_label', 'app_calendar_source', 'github_sync'];
+  'ics_uid', 'ics_subscription_id', 'ics_label', 'app_calendar_source',
+  'repo', 'number', 'state', 'merged', 'head_branch', 'additions', 'deletions', 'draft', 'labels', 'requested_reviewers'];
 
 /** One calendar time from the stored calendar model, field by field. */
 function calendarTime(ref: SQL): SQL {
