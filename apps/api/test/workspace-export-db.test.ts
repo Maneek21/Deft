@@ -98,7 +98,8 @@ test('nothing from another workspace reaches the archive, in any scope', { skip 
   const sharedIds = new Set([world.shared]);
   const bIds = [world.b.orgId, world.b.owner, world.b.member, world.b.other, world.b.guest, world.b.former,
     world.b.agentUser, world.b.agentEmployee, ...Object.values(world.b.spaces), ...Object.values(world.b.messages),
-    ...Object.values(world.b.tasks), ...Object.values(world.b.projects), ...Object.values(world.b.labels)].filter((id) => !sharedIds.has(id));
+    ...Object.values(world.b.tasks), ...Object.values(world.b.projects), ...Object.values(world.b.labels),
+    ...Object.values(world.b.notes), ...Object.values(world.b.wiki), ...Object.values(world.b.events), ...Object.values(world.b.folders)].filter((id) => !sharedIds.has(id));
   for (const scope of allScopes()) {
     const exported = await runExport({ scope });
     for (const [path, bytes] of exported.files) {
@@ -348,4 +349,64 @@ test('tasks: member scope equals the product task check; links and comments foll
   assert.deepEqual(rows(whole, 'data/task_labels.jsonl'), [{ task_id: world.a.tasks.open, label_id: world.a.labels.bug }]);
   const comments = rows(whole, 'data/task_comments.jsonl');
   assert.equal(comments.length, 2, 'comments on open and restricted; not the deleted comment or the deleted task');
+});
+
+function productApp() {
+  const app = new Hono();
+  app.use('*', async (c, next) => {
+    c.set('user', { id: c.req.header('x-test-user')!, org_id: world.a.orgId } as any);
+    await next();
+  });
+  return app;
+}
+
+test('notes, folders, wiki and events: member scope equals what the product routes return', { skip }, async () => {
+  const { dailyNoteRoutes } = await import('../src/routes/daily-notes.js');
+  const { wikiRoutes } = await import('../src/routes/wiki.js');
+  const { calendarRoutes } = await import('../src/routes/calendar.js');
+  const app = productApp().route('/api/daily-notes', dailyNoteRoutes).route('/api/wiki', wikiRoutes).route('/api/calendar', calendarRoutes);
+  const as = async (userId: string, path: string) => { const r = await app.request(path, { headers: { "x-test-user": userId } }); if (r.status >= 500) throw new Error(`${path} -> ${r.status}: ${await r.text()}`); return r; };
+  const day = 86_400_000;
+  const calendarPath = `/api/calendar?from=${new Date(Date.now() - day).toISOString()}&to=${new Date(Date.now() + 10 * day).toISOString()}`;
+  for (const userId of [world.a.owner, world.a.member, world.a.guest, world.a.other]) {
+    const exported = await runExport({ scope: { kind: 'member', member: userId } });
+    // Notes: exactly those GET /api/daily-notes/:id opens, with the same title and body.
+    const noteRows = new Map(rows(exported, 'data/notes.jsonl').map((row) => [row.id, row]));
+    for (const noteId of Object.values(world.a.notes)) {
+      const response = await as(userId, `/api/daily-notes/${noteId}`);
+      assert.equal(noteRows.has(noteId), response.status === 200, `note ${noteId} for ${userId}`);
+      if (response.status === 200) {
+        const product = await response.json() as any;
+        assert.equal(noteRows.get(noteId)!.content, product.content);
+        assert.equal(noteRows.get(noteId)!.title, product.title);
+      }
+    }
+    // Folders: the member's own, as GET /folders lists them.
+    const folders = await (await as(userId, '/api/daily-notes/folders')).json() as any;
+    assert.deepEqual(rows(exported, 'data/note_folders.jsonl').map((row) => row.id).sort(), folders.folders.map((row: any) => row.id).sort());
+    // Wiki: exactly GET /api/wiki/export's pages.
+    const wiki = await (await as(userId, '/api/wiki/export')).json() as any;
+    assert.deepEqual(rows(exported, 'data/wiki_pages.jsonl').map((row) => row.id).sort(), wiki.pages.map((row: any) => row.id).sort(), `wiki for ${userId}`);
+    const pages = new Set(wiki.pages.map((row: any) => row.id));
+    for (const row of rows(exported, 'data/wiki_links.jsonl')) assert.ok(pages.has(row.source_page_id) && pages.has(row.target_page_id));
+    // Events: the Calendar's events.
+    const calendar = await (await as(userId, calendarPath)).json() as any;
+    assert.deepEqual(rows(exported, 'data/events.jsonl').map((row) => row.id).sort(),
+      calendar.events.map((row: any) => row.id).sort(), `events for ${userId}`);
+    // Spaces named by notes and pages are spaces in the export.
+    const spaces = new Set(rows(exported, 'data/spaces.jsonl').map((row) => row.id));
+    for (const row of [...noteRows.values(), ...rows(exported, 'data/wiki_pages.jsonl')]) {
+      const spaceId = row.visibility_space_id ?? row.space_id;
+      assert.ok(spaceId == null || spaces.has(spaceId));
+    }
+  }
+  const whole = await runExport({ scope: { kind: 'workspace' } });
+  const events = new Map(rows(whole, 'data/events.jsonl').map((row) => [row.id, row]));
+  assert.equal(events.get(world.a.events.noOwner!)?.user_id, null);
+  const member = events.get(world.a.events.member!)!;
+  assert.deepEqual(member.attendees, [{ email: 'guest@example.test', name: 'attendee' }]);
+  assert.equal(member.recurrence.rrule, 'FREQ=WEEKLY;COUNT=4');
+  assert.equal(member.recurrence.start.time_zone, 'Europe/London');
+  assert.ok(!rows(whole, 'data/wiki_pages.jsonl').some((row) => row.id === world.a.wiki.deleted));
+  assert.ok(!rows(whole, 'data/notes.jsonl').some((row) => row.id === world.a.notes.deleted));
 });

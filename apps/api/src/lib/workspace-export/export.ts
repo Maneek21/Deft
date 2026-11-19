@@ -4,6 +4,7 @@ import { Snapshot } from './snapshot.js';
 import { resolveScope, resolveWorkspace, type ExportContext } from './scope.js';
 import { PEOPLE_AND_SPACES, type Dataset } from './datasets.js';
 import { MESSAGES_AND_TASKS } from './datasets-content.js';
+import { NOTES_WIKI_EVENTS } from './datasets-knowledge.js';
 
 export type ExportOptions = Readonly<{
   databaseUrl: string;
@@ -23,7 +24,7 @@ export type ExportOptions = Readonly<{
 
 export type ExportResult = Readonly<{ root: string; manifest: ExportManifest }>;
 
-export const DATASETS: readonly Dataset[] = [...PEOPLE_AND_SPACES, ...MESSAGES_AND_TASKS];
+export const DATASETS: readonly Dataset[] = [...PEOPLE_AND_SPACES, ...MESSAGES_AND_TASKS, ...NOTES_WIKI_EVENTS];
 
 /**
  * Writes one workspace's content, for the given scope, into a new folder.

@@ -43,6 +43,7 @@ export type WorkspaceIds = {
 
 export type ContentIds = {
   messages: Record<string, string>; tasks: Record<string, string>; projects: Record<string, string>; labels: Record<string, string>;
+  notes: Record<string, string>; wiki: Record<string, string>; events: Record<string, string>; folders: Record<string, string>;
 };
 
 export type ExportWorld = {
@@ -201,7 +202,64 @@ async function seedContent(s: Seeder, ws: WorkspaceIds, isB: boolean, ids: strin
     await s.insert('task_comments', { id: id(), org_id: ws.orgId, task_id: tasks[key], user_id: ws.other, content: text(isB, `comment on ${key}`) });
   }
   await s.insert('task_comments', { id: id(), org_id: ws.orgId, task_id: tasks.open, user_id: ws.other, content: text(isB, 'deleted comment'), is_deleted: true });
-  return { messages, tasks, projects, labels };
+
+  // Notes: private, workspace-wide, shared, visible to a space, deleted.
+  const folders = { owner: id(), other: id() };
+  await s.insert('note_folders', { id: folders.owner, org_id: ws.orgId, user_id: ws.owner, name: text(isB, 'owner folder') });
+  await s.insert('note_folders', { id: folders.other, org_id: ws.orgId, user_id: ws.other, name: text(isB, 'other folder') });
+  const notes: Record<string, string> = {};
+  const note = async (key: string, userId: string, extra: Row = {}) => {
+    notes[key] = id();
+    await s.insert('notes', { id: notes[key], org_id: ws.orgId, user_id: userId, title: text(isB, `note ${key}`),
+      content: `<p>${text(isB, `note body ${key}`)}</p>`, ...extra });
+  };
+  await note('privateOther', ws.other, { folder_id: folders.other });
+  await note('orgWide', ws.other, { visibility: 'org', folder_id: folders.other });
+  await note('sharedWithMember', ws.other);
+  await note('spacePrivateWithMember', ws.other, { visibility: 'space', visibility_space_id: ws.spaces.privateWithMember });
+  await note('spacePrivateOthers', ws.owner, { visibility: 'space', visibility_space_id: ws.spaces.privateOthers });
+  await note('ownerPrivate', ws.owner, { folder_id: folders.owner });
+  await note('deleted', ws.member, { is_deleted: true });
+  await s.insert('note_shares', { id: id(), note_id: notes.sharedWithMember, shared_with_user_id: ws.member });
+
+  // Wiki: workspace, personal, space, deleted, and a page routed from mail to one person.
+  const wiki: Record<string, string> = {};
+  const page = async (key: string, extra: Row) => {
+    wiki[key] = id();
+    await s.insert('wiki_pages', { id: wiki[key], org_id: ws.orgId, type: 'concept', title: text(isB, `wiki ${key}`),
+      slug: `${key.toLowerCase()}-${wiki[key]!.slice(0, 8)}`, content: text(isB, `wiki body ${key}`),
+      metadata: { private_note: s.secret('wiki_pages.metadata') }, previous_content: s.secret('wiki_pages.previous_content'), ...extra });
+  };
+  await page('org', { scope: 'org', user_id: ws.owner });
+  await page('personalOther', { scope: 'user', user_id: ws.other });
+  await page('spacePrivateOthers', { scope: 'space', space_id: ws.spaces.privateOthers });
+  await page('spacePrivateWithMember', { scope: 'space', space_id: ws.spaces.privateWithMember });
+  await page('deleted', { scope: 'org', is_deleted: true });
+  await page('routedToMember', { scope: 'user', user_id: ws.member, created_via: 'app_integration_capture' });
+  await s.insert('wiki_links', { id: id(), org_id: ws.orgId, source_page_id: wiki.org, target_page_id: wiki.personalOther });
+  await s.insert('wiki_links', { id: id(), org_id: ws.orgId, source_page_id: wiki.org, target_page_id: wiki.spacePrivateWithMember });
+
+  // Events, all tomorrow so the Calendar route can be asked about them.
+  const events: Record<string, string> = {};
+  const tomorrow = new Date(Date.now() + 86_400_000);
+  const event = async (key: string, userId: string | null, extra: Row = {}) => {
+    events[key] = id();
+    await s.insert('events', { id: events[key], org_id: ws.orgId, source: 'native', event_type: 'calendar_event', title: text(isB, `event ${key}`),
+      body: text(isB, `event body ${key}`), timestamp: tomorrow, user_id: userId, metadata: {
+        start: tomorrow.toISOString(), end: new Date(tomorrow.getTime() + 3_600_000).toISOString(), location: text(isB, 'room'),
+        attendees: [{ email: 'guest@example.test', displayName: text(isB, 'attendee'), token: s.secret('events.attendee') }],
+        hangoutLink: `https://meet.example.test/${s.secret('events.hangoutLink')}`, status: 'confirmed', allDay: false,
+        app_calendar_source: { source_scope_key: s.secret('events.app_calendar_source'), event: {
+          start: { value: '20261201T090000', value_type: 'date_time', time_zone: 'Europe/London', instant: '2026-12-01T09:00:00.000Z' },
+          end: { value: '20261201T100000', value_type: 'date_time', time_zone: 'Europe/London', instant: '2026-12-01T10:00:00.000Z' },
+          rrule: 'FREQ=WEEKLY;COUNT=4', exdates: [], recurrence_id: null, uid: s.secret('events.uid') } },
+      }, ...extra });
+  };
+  await event('member', ws.member);
+  await event('other', ws.other);
+  await event('noOwner', null, { source: 'github', event_type: 'pr_merged' });
+
+  return { messages, tasks, projects, labels, notes, wiki, events, folders };
 }
 
 /** Seeds A and B, a person who belongs to both, and malformed cross-workspace links. */
@@ -236,6 +294,10 @@ export async function seedExportWorld(client: pg.Client): Promise<ExportWorld> {
   await s.insert('task_watchers', { id: randomUUID(), task_id: a.tasks.open, user_id: b.owner });
   await client.query('UPDATE tasks SET parent_task_id = $2 WHERE id = $1', [a.tasks.restricted, b.tasks.open]);
   await client.query('UPDATE messages SET parent_id = $2 WHERE id = $1', [a.messages.byFormer, b.messages.general]);
+  await s.insert('note_shares', { id: randomUUID(), note_id: a.notes.sharedWithMember, shared_with_user_id: b.owner });
+  await s.insert('wiki_links', { id: randomUUID(), org_id: a.orgId, source_page_id: a.wiki.org, target_page_id: b.wiki.org });
+  await client.query('UPDATE notes SET folder_id = $2, visibility_space_id = $3 WHERE id = $1', [a.notes.orgWide, b.folders.other, b.spaces.general]);
+  await client.query('UPDATE events SET user_id = $2 WHERE id = $1', [a.events.noOwner, b.owner]);
   return { a, b, shared, ids, forbidden };
 }
 
@@ -250,6 +312,12 @@ export async function dropExportWorld(client: pg.Client, world: ExportWorld): Pr
   const users = (await client.query<{ user_id: string }>(`SELECT m.user_id FROM org_members m JOIN users u ON u.id = m.user_id
     WHERE m.org_id = ANY($1) AND u.email IS DISTINCT FROM 'deft-agent@system.local'`, [orgs])).rows.map((row) => row.user_id);
   for (const statement of [
+    'DELETE FROM note_shares WHERE note_id IN (SELECT id FROM notes WHERE org_id = ANY($1))',
+    'DELETE FROM notes WHERE org_id = ANY($1)',
+    'DELETE FROM note_folders WHERE org_id = ANY($1)',
+    'DELETE FROM wiki_links WHERE org_id = ANY($1)',
+    'DELETE FROM wiki_pages WHERE org_id = ANY($1)',
+    'DELETE FROM events WHERE org_id = ANY($1)',
     'DELETE FROM reactions WHERE message_id IN (SELECT id FROM messages WHERE org_id = ANY($1))',
     'DELETE FROM task_comments WHERE org_id = ANY($1)',
     'DELETE FROM task_reactions WHERE org_id = ANY($1)',
