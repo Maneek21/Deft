@@ -43,6 +43,8 @@ export type WorkspaceIds = {
 
 export type ContentIds = {
   messages: Record<string, string>; tasks: Record<string, string>; projects: Record<string, string>; labels: Record<string, string>;
+  /** The private assistant conversation, owned by the workspace owner. */
+  sealedSpace: string;
   notes: Record<string, string>; wiki: Record<string, string>; events: Record<string, string>; folders: Record<string, string>;
 };
 
@@ -259,7 +261,7 @@ async function seedContent(s: Seeder, ws: WorkspaceIds, isB: boolean, ids: strin
   await event('other', ws.other);
   await event('noOwner', null, { source: 'github', event_type: 'pr_merged' });
 
-  return { messages, tasks, projects, labels, notes, wiki, events, folders };
+  return { messages, tasks, projects, labels, notes, wiki, events, folders, sealedSpace };
 }
 
 /** Seeds A and B, a person who belongs to both, and malformed cross-workspace links. */

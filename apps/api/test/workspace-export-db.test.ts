@@ -159,7 +159,7 @@ test('member scope: spaces match a hand-written expectation, independent of the 
   // own spaces (archived too) and public unarchived ones; guests only their own.
   const s = world.a.spaces;
   const expected: Record<string, string[]> = {
-    [world.a.owner]: [s.general, s.publicUnjoined, s.privateOthers, s.dmOwnerOther, s.groupDm],
+    [world.a.owner]: [s.general, s.publicUnjoined, s.privateOthers, s.dmOwnerOther, s.groupDm, world.a.sealedSpace],
     [world.a.member]: [s.general, s.publicUnjoined, s.privateWithMember, s.dmMemberOther, s.archivedPrivateWithMember, s.groupDm],
     [world.a.guest]: [s.general, s.privateWithMember, s.groupDm],
     [world.a.other]: [s.general, s.publicUnjoined, s.privateOthers, s.privateWithMember, s.dmMemberOther, s.dmOwnerOther,
