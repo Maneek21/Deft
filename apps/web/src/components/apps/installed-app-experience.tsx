@@ -320,6 +320,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       if (!openingCurrent() || openingRequest) return;
       if (document.hidden) { setSuspended(true); return; }
       openingRequest = true; deadline = setTimeout(() => abort.abort(), 15_000);
+      let accountless = false;
       try {
         // Effect replay can deactivate this owner before any request is needed.
         await Promise.resolve();
@@ -349,6 +350,9 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
         const selectedTarget=targetPreference.select(preferenceScope,targets.targets,openingCurrent,
           targetNomination.current?.scope===preferenceKey?targetNomination.current.target:undefined);
         if(!selectedTarget)return;
+        // An empty catalog still opens the legacy default target. When it has no
+        // resource, this person has no account yet: offer account setup instead.
+        accountless = !parsedTargets.length;
         const response = await api.fetch(`${root}/${encodeURIComponent(installationId)}/${encodeURIComponent(experienceKey)}/sessions`, {
           method: 'POST', signal: abort.signal, body: JSON.stringify({ resource_target_key: selectedTarget }),
         });
@@ -381,6 +385,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
         }
       } catch (cause) {
         retireOwnedSession();
+        if (accountless && cause instanceof AppRequestError && cause.code === 'APP_EXPERIENCE_RESOURCE_UNAVAILABLE') { if (openingCurrent()) { setExposureBusy(false); setAccountSetupPending(false); } return; }
         if (openingCurrent()) {
           setAccountSetupPending(false);
           setError(appRequestFailureMessage(cause,'The app could not open.'));
