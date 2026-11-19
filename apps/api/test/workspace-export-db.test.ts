@@ -996,3 +996,71 @@ test('modules: a module whose slug Windows reserves is stored under a safe folde
   assert.deepEqual(rows(exported, 'data/modules/_con/collections/items.jsonl').map((row) => row.fields), [{ name: 'kept' }]);
   assert.ok(exported.files.has('data/modules/_con/schema.json'));
 });
+
+/** Adds a file of this workspace, attached to nothing, with real bytes under storage. */
+async function addFile(filename: string, storage: string, bytes: Buffer | null): Promise<string> {
+  const fileId = randomUUID();
+  if (bytes) await writeFile(join(world.uploadsDir, storage), bytes);
+  await client.query(`INSERT INTO files (id, org_id, uploaded_by, filename, mime_type, size_bytes, storage_key)
+    VALUES ($1, $2, $3, $4, 'application/octet-stream', $5, $6)`, [fileId, world.a.orgId, world.a.member, filename, bytes?.length ?? 1, storage]);
+  return fileId;
+}
+
+test('attachments: a long multi-byte name is written, cut at a whole character, and the original kept', { skip }, async () => {
+  const filename = `${'報告書の最終版'.repeat(43)}.pdf`;
+  const storage = `${randomUUID()}-long.bin`;
+  const fileId = await addFile(filename, storage, Buffer.from('long name bytes'));
+  try {
+    const exported = await runExport({ scope: { kind: 'workspace' } });
+    const row = rows(exported, 'data/files.jsonl').find((candidate) => candidate.id === fileId)!;
+    assert.equal(row.included, true);
+    assert.equal(row.filename, filename);
+    const name = row.archive_path.split('/').at(-1);
+    assert.ok(Buffer.byteLength(name, 'utf8') <= 181 && name.endsWith('.pdf') && filename.startsWith(name.slice(0, -4)), name);
+    assert.deepEqual(exported.files.get(row.archive_path), Buffer.from('long name bytes'));
+  } finally {
+    await client.query('DELETE FROM files WHERE id = $1', [fileId]);
+    await rm(join(world.uploadsDir, storage), { force: true });
+  }
+});
+
+test('attachments: a name the file system refuses is omitted and the export completes; a full disk still stops it', { skip }, async () => {
+  const refused = await addFile('refused.txt', `${randomUUID()}-a.bin`, Buffer.from('a'));
+  const secondChoice = await addFile('second choice.txt', `${randomUUID()}-b.bin`, Buffer.from('b'));
+  const nameError = () => Object.assign(new Error('name too long'), { code: 'ENAMETOOLONG' });
+  const badCharacters = () => Object.assign(new Error('invalid argument'), { code: 'EINVAL' });
+  try {
+    const exported = await runExport({ scope: { kind: 'workspace' }, hooks: { beforeWrite: async (fileId, path) => {
+      if (fileId === refused) throw badCharacters();
+      if (fileId === secondChoice && !path.endsWith('/file.txt')) throw nameError();
+    } } });
+    const list = new Map(rows(exported, 'data/files.jsonl').map((row) => [row.id, row]));
+    assert.equal(list.get(refused)?.included, false);
+    assert.match(rows(exported, 'omissions.jsonl').find((row) => row.id === refused)!.reason, /refused the characters/);
+    assert.equal(list.get(secondChoice)?.archive_path, `attachments/${secondChoice}/file.txt`);
+    assert.deepEqual(exported.files.get(`attachments/${secondChoice}/file.txt`), Buffer.from('b'));
+    assert.equal(exported.manifest.complete, false);
+    assert.ok([...list.values()].some((row) => row.included && row.id !== secondChoice), 'the other files are still copied');
+    await assert.rejects(runExport({ scope: { kind: 'workspace' }, hooks: { beforeWrite: async (fileId) => {
+      if (fileId === refused) throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
+    } } }), /no space left/);
+    // Even the short plain name too long: the output path is at fault, not the file, so the export stops.
+    await assert.rejects(runExport({ scope: { kind: 'workspace' }, hooks: { beforeWrite: async (fileId) => {
+      if (fileId === refused) throw nameError();
+    } } }), /output path is too long/);
+  } finally {
+    await client.query('DELETE FROM files WHERE id = ANY($1)', [[refused, secondChoice]]);
+  }
+});
+
+test('attachments: a stored file whose name the uploads file system refuses is reported, not a failed export', { skip }, async () => {
+  // Longer than any file system allows: Linux refuses it (ENAMETOOLONG), Windows reports it missing.
+  const fileId = await addFile('unreadable.txt', 'k'.repeat(300), null);
+  try {
+    const exported = await runExport({ scope: { kind: 'workspace' } });
+    assert.equal(rows(exported, 'data/files.jsonl').find((row) => row.id === fileId)?.included, false);
+    assert.match(rows(exported, 'omissions.jsonl').find((row) => row.id === fileId)!.reason, /cannot be read|missing/);
+  } finally {
+    await client.query('DELETE FROM files WHERE id = $1', [fileId]);
+  }
+});

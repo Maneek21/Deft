@@ -90,7 +90,12 @@ export runs is reported as not included rather than copied.
 ```
 
 The format is `deft.workspace_export.v1`. Times are ISO 8601 in UTC. Ids are
-Deft's own, so records refer to each other by id. Text is exactly as it was
+Deft's own, so records refer to each other by id. An attachment's file name in
+`attachments/` is its original name, with characters no file system accepts
+replaced and, past 180 bytes, cut at a whole character with its extension
+kept; if the file system still refuses it, `file` and the extension are used.
+`files.jsonl` keeps the original name in `filename` and the name used in
+`archive_path`. Text is exactly as it was
 written: message text in Markdown, note bodies in the editor's HTML, wiki
 pages in Markdown.
 
@@ -165,6 +170,8 @@ An attachment is left out, with its reason in `omissions.jsonl` and
 - it is missing from the uploads folder;
 - its bytes do not match the recorded size or checksum;
 - it is not a regular file inside the uploads folder;
+- the stored file cannot be read (for example, its permissions forbid it);
+- the file system the export is written to refuses the characters of its name, even as a plain `file` name. An output path too long to hold attachment files stops the export instead;
 - its stored name is also used by another workspace;
 - it is linked to more than one item.
 

@@ -132,6 +132,14 @@ export class ArchiveWriter {
 
   get omissions(): number { return this.omissionsFile.records; }
 
+  /** Creates a folder inside the archive; any failure is the output's, not an item's. */
+  async makeFolder(path: string): Promise<void> {
+    assertArchivePath(path);
+    const absolute = join(this.root, ...path.split('/'));
+    if (!absolute.startsWith(this.root + sep)) throw new Error(`Archive path escapes the folder: ${path}`);
+    await mkdir(absolute, { recursive: true });
+  }
+
   async open(path: string): Promise<ArchiveFile> {
     assertArchivePath(path);
     if (path === 'SHA256SUMS' || path === 'SHA256SUMS.partial') throw new Error('Reserved archive path');
