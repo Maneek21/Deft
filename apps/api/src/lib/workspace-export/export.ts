@@ -6,6 +6,7 @@ import { PEOPLE_AND_SPACES, type Dataset } from './datasets.js';
 import { MESSAGES_AND_TASKS } from './datasets-content.js';
 import { NOTES_WIKI_EVENTS } from './datasets-knowledge.js';
 import { exportAttachments, type CopyHooks } from './attachments.js';
+import { exportModules } from './modules.js';
 
 export type ExportOptions = Readonly<{
   databaseUrl: string;
@@ -39,7 +40,8 @@ export type ExportOptions = Readonly<{
 export const EXPORT_TABLES: readonly string[] = ['orgs', 'users', 'org_members', 'agent_employees', 'spaces', 'space_members',
   'messages', 'reactions', 'canvases', 'projects', 'labels', 'tasks', 'task_assignees', 'task_watchers', 'task_labels',
   'task_relationships', 'task_reactions', 'task_comments', 'note_folders', 'notes', 'note_shares', 'wiki_pages', 'wiki_links',
-  'events', 'files', 'message_attachments', 'task_attachments'];
+  'events', 'files', 'message_attachments', 'task_attachments', 'module_installations', 'module_versions', 'module_records',
+  'module_record_relations'];
 
 export type ExportResult = Readonly<{ root: string; manifest: ExportManifest }>;
 
@@ -80,6 +82,7 @@ export async function exportWorkspace(options: ExportOptions): Promise<ExportRes
       const attachments = await exportAttachments(snapshot, writer, ctx, options.uploadsDir,
         { hooks: options.hooks, singleWorkspaceDatabase: options.singleWorkspaceDatabase });
       datasets.push({ path: attachments.path, records: attachments.records });
+      datasets.push(...await exportModules(snapshot, writer, ctx));
 
       let manifest!: ExportManifest;
       await writer.finish(async () => {

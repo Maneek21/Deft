@@ -51,7 +51,8 @@ export type ContentIds = {
 };
 
 export type ExportWorld = {
-  a: WorkspaceIds & ContentIds & { files: Record<string, string> }; b: WorkspaceIds & ContentIds & { files: Record<string, string> };
+  a: WorkspaceIds & ContentIds & { files: Record<string, string>; contacts: ModuleIds };
+  b: WorkspaceIds & ContentIds & { files: Record<string, string>; contacts: ModuleIds };
   shared: string; ids: string[];
   /** The uploads folder both workspaces store their attachment bytes in. */
   uploadsDir: string;
@@ -277,6 +278,10 @@ async function seedContent(s: Seeder, ws: WorkspaceIds, isB: boolean, ids: strin
     external_id: `pr-${events.githubForMember}`, title: text(isB, 'PR merged'), timestamp: tomorrow, user_id: ws.member,
     metadata: { repo: 'acme/app', number: 7, state: 'closed', merged: true, head_branch: 'feature', additions: 1, deletions: 2,
       draft: false, labels: ['x'], requested_reviewers: [] } });
+  // Only GitHub's general key names, but not a GitHub event: not core-written for the member scope.
+  events.githubKeysElsewhere = id();
+  await s.insert('events', { id: events.githubKeysElsewhere, org_id: ws.orgId, source: 'native', event_type: 'calendar_event',
+    title: text(isB, 'looks like github'), timestamp: tomorrow, user_id: ws.member, metadata: { state: 'open', labels: ['x'] } });
   await event('otherWriter', ws.member);
   await s.client.query(`UPDATE events SET metadata = metadata || '{"written_elsewhere": {"series": "x"}}'::jsonb WHERE id = $1`, [events.otherWriter]);
   await s.client.query(`UPDATE events SET metadata = jsonb_set(metadata, '{location}', jsonb_build_object('hidden', $2::text)) WHERE id = $1`,
@@ -334,6 +339,37 @@ async function seedFiles(s: Seeder, ws: WorkspaceIds & ContentIds, isB: boolean,
   await file('stagedByMember', { uploadedBy: ws.member, extra: { staged_expires_at: new Date(Date.now() + 3_600_000) } });
   await file('noRecordedHash', { message: [ws.messages.general!], recordedHash: null });
   return files;
+}
+
+export type ModuleIds = { installation: string; version: string; records: Record<string, string> };
+
+/**
+ * Contacts, installed the way the product installs it, with records written
+ * directly so one can carry a data key its manifest does not declare.
+ */
+async function seedContacts(s: Seeder, ws: WorkspaceIds, isB: boolean, ids: string[]): Promise<ModuleIds> {
+  const { installBundledModule } = await import('../../src/lib/module-service.js');
+  await installBundledModule({ kind: 'human', org_id: ws.orgId, actor_id: ws.owner, role: 'owner', source: 'ui', scopes: [] }, 'contacts');
+  const installed = (await s.client.query<{ installation: string; version: string }>(`SELECT i.id AS installation, v.id AS version
+    FROM module_installations i JOIN module_versions v ON v.installation_id = i.id AND v.is_active
+    WHERE i.org_id = $1 AND i.slug = 'contacts'`, [ws.orgId])).rows[0]!;
+  const records: Record<string, string> = {};
+  const actor = { created_by_actor_type: 'human', created_by_actor_id: ws.owner, updated_by_actor_type: 'human', updated_by_actor_id: ws.owner };
+  const record = async (key: string, collection: string, data: Row, extra: Row = {}) => {
+    records[key] = randomUUID(); ids.push(records[key]!);
+    await s.insert('module_records', { id: records[key], org_id: ws.orgId, installation_id: installed.installation, collection_key: collection,
+      validated_version_id: installed.version, data, search_title: String(data.name ?? key), ...actor, ...extra });
+  };
+  await record('company', 'companies', { name: text(isB, 'Acme'), domain: 'acme.example', owner: ws.member, tags: ['key'] });
+  await record('contact', 'contacts', { name: text(isB, 'Ada'), email: 'ada@acme.example', phone: '+1 555', status: 'active',
+    owner: ws.other, notes: text(isB, 'met at the fair'), undeclared_secret: s.secret('module_records.data') });
+  await record('deletedContact', 'contacts', { name: text(isB, 'Gone') }, { is_deleted: true, deleted_at: new Date(),
+    deleted_by_actor_type: 'human', deleted_by_actor_id: ws.owner });
+  await s.insert('module_record_relations', { id: randomUUID(), org_id: ws.orgId, installation_id: installed.installation, field_key: 'company_id',
+    source_record_id: records.contact, target_record_id: records.company, ...actor });
+  await s.insert('module_record_relations', { id: randomUUID(), org_id: ws.orgId, installation_id: installed.installation, field_key: 'company_id',
+    source_record_id: records.deletedContact, target_record_id: records.company, ...actor });
+  return { ...installed, records };
 }
 
 /**
@@ -412,7 +448,11 @@ export async function seedExportWorld(client: pg.Client, uploadsDir: string): Pr
   await s.insert('message_attachments', { org_id: a.orgId, message_id: a.messages.general, file_id: aFiles.namesBStorage, position: 9 });
   await client.query('UPDATE files SET message_id = $2 WHERE id = $1', [bFiles.unattachedOther, a.messages.general]);
   await seedFileAliases(s, a, aFiles, bFiles, uploadsDir, ids);
-  return { a: { ...a, files: aFiles }, b: { ...b, files: bFiles }, shared, ids, forbidden, uploadsDir };
+  const aContacts = await seedContacts(s, a, false, ids);
+  const bContacts = await seedContacts(s, b, true, ids);
+  // A Contacts record naming a B person as its owner.
+  await client.query(`UPDATE module_records SET data = jsonb_set(data, '{owner}', to_jsonb($2::text)) WHERE id = $1`, [aContacts.records.company, b.owner]);
+  return { a: { ...a, files: aFiles, contacts: aContacts }, b: { ...b, files: bFiles, contacts: bContacts }, shared, ids, forbidden, uploadsDir };
 }
 
 /**
@@ -426,6 +466,11 @@ export async function dropExportWorld(client: pg.Client, world: ExportWorld): Pr
   const users = (await client.query<{ user_id: string }>(`SELECT m.user_id FROM org_members m JOIN users u ON u.id = m.user_id
     WHERE m.org_id = ANY($1) AND u.email IS DISTINCT FROM 'deft-agent@system.local'`, [orgs])).rows.map((row) => row.user_id);
   for (const statement of [
+    'DELETE FROM module_record_relations WHERE org_id = ANY($1)',
+    'DELETE FROM module_records WHERE org_id = ANY($1)',
+    'DELETE FROM module_mutation_receipts WHERE org_id = ANY($1)',
+    'DELETE FROM module_versions WHERE org_id = ANY($1)',
+    'DELETE FROM module_installations WHERE org_id = ANY($1)',
     'DELETE FROM message_attachments WHERE org_id = ANY($1)',
     'DELETE FROM task_attachments WHERE org_id = ANY($1)',
     'DELETE FROM files WHERE org_id = ANY($1)',

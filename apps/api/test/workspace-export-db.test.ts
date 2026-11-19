@@ -106,7 +106,7 @@ test('nothing from another workspace reaches the archive, in any scope', { skip 
     world.b.agentUser, world.b.agentEmployee, ...Object.values(world.b.spaces), ...Object.values(world.b.messages),
     ...Object.values(world.b.tasks), ...Object.values(world.b.projects), ...Object.values(world.b.labels),
     ...Object.values(world.b.notes), ...Object.values(world.b.wiki), ...Object.values(world.b.events), ...Object.values(world.b.folders),
-    ...Object.values(world.b.files)].filter((id) => !sharedIds.has(id));
+    ...Object.values(world.b.files), world.b.contacts.installation, world.b.contacts.version, ...Object.values(world.b.contacts.records)].filter((id) => !sharedIds.has(id));
   for (const scope of allScopes()) {
     const exported = await runExport({ scope });
     for (const [path, bytes] of exported.files) {
@@ -410,7 +410,7 @@ test('notes, folders, wiki and events: member scope equals what the product rout
     const calendarIds = new Set(calendar.events.map((row: any) => row.id));
     const exportedEvents = rows(exported, 'data/events.jsonl').map((row) => row.id);
     for (const id of exportedEvents) assert.ok(calendarIds.has(id), `event ${id} exported but not on the Calendar for ${userId}`);
-    const leftOut = new Set([world.a.events.memberCanceled, world.a.events.otherWriter]);
+    const leftOut = new Set([world.a.events.memberCanceled, world.a.events.otherWriter, world.a.events.githubKeysElsewhere]);
     assert.deepEqual(exportedEvents.sort(), calendar.events.map((row: any) => row.id).filter((id: string) => !leftOut.has(id)).sort(), `events for ${userId}`);
     // Note shares: exactly what GET /api/daily-notes/:id/shares lists for the member's own notes.
     const ownNotes = (await client.query<{ id: string }>('SELECT id FROM notes WHERE org_id = $1 AND user_id = $2 AND NOT is_deleted',
@@ -434,6 +434,7 @@ test('notes, folders, wiki and events: member scope equals what the product rout
   assert.equal(events.get(world.a.events.noOwner!)?.user_id, null);
   assert.ok(events.has(world.a.events.memberCanceled!), 'the whole workspace keeps cancelled events');
   assert.ok(events.has(world.a.events.otherWriter!), 'the whole workspace keeps events other parts of Deft wrote');
+  assert.ok(events.has(world.a.events.githubKeysElsewhere!));
   assert.equal(events.get(world.a.events.nested!)?.location, null, 'an object in place of text is not written');
   // Positive sets, so an empty dataset cannot pass.
   assert.deepEqual(rows(whole, 'data/note_shares.jsonl').map((row) => `${row.note_id}:${row.shared_with_user_id}`),
@@ -612,6 +613,87 @@ test('attachments: a large file is streamed, not held in memory', { skip }, asyn
   assert.ok(peak < size / 2, `peak memory growth ${Math.round(peak / 1048576)} MiB for a ${size / 1048576} MiB file`);
 });
 
+test('Contacts: records with declared fields only, relations between live records, and the product read rule', { skip }, async () => {
+  const whole = await runExport({ scope: { kind: 'workspace' } });
+  const schema = JSON.parse(whole.files.get('data/modules/contacts/schema.json')!.toString('utf8'));
+  assert.deepEqual(schema.collections.map((collection: any) => collection.key).sort(), ['activities', 'companies', 'contacts', 'deals', 'outreach']);
+  assert.ok(schema.collections.every((collection: any) => collection.fields.every((field: any) => !('default' in field))));
+  const contacts = rows(whole, 'data/modules/contacts/collections/contacts.jsonl');
+  assert.deepEqual(contacts.map((row) => row.id), [world.a.contacts.records.contact]);
+  assert.deepEqual(Object.keys(contacts[0]!.fields).sort(), ['email', 'name', 'notes', 'owner', 'phone', 'status']);
+  const companies = rows(whole, 'data/modules/contacts/collections/companies.jsonl');
+  assert.equal(companies[0]!.fields.owner, null, 'an owner from another workspace is not named');
+  assert.deepEqual(rows(whole, 'data/modules/contacts/relations.jsonl').map(({ field, source_record_id, target_record_id }) =>
+    ({ field, source_record_id, target_record_id })),
+  [{ field: 'company_id', source_record_id: world.a.contacts.records.contact, target_record_id: world.a.contacts.records.company }]);
+
+  // The member scope follows assertInstallationAccess: members read Contacts; guests never; nobody reads a disabled module.
+  const member = await runExport({ scope: { kind: 'member', member: world.a.member } });
+  assert.equal(rows(member, 'data/modules.jsonl').length, 1);
+  assert.equal(rows(member, 'data/modules/contacts/collections/contacts.jsonl').length, 1);
+  const guest = await runExport({ scope: { kind: 'member', member: world.a.guest } });
+  assert.equal(rows(guest, 'data/modules.jsonl').length, 0);
+  assert.ok(![...guest.files.keys()].some((path) => path.startsWith('data/modules/')));
+  await client.query('UPDATE module_installations SET is_enabled = false, disabled_at = now() WHERE id = $1', [world.a.contacts.installation]);
+  try {
+    const disabled = await runExport({ scope: { kind: 'member', member: world.a.owner } });
+    assert.equal(rows(disabled, 'data/modules.jsonl').length, 0);
+    const wholeDisabled = await runExport({ scope: { kind: 'workspace' } });
+    assert.equal(rows(wholeDisabled, 'data/modules.jsonl')[0]!.is_enabled, false);
+  } finally {
+    await client.query('UPDATE module_installations SET is_enabled = true, disabled_at = NULL WHERE id = $1', [world.a.contacts.installation]);
+  }
+});
+
+test('modules: a custom module whose collection is named like an export file still exports, records and relations apart', { skip }, async () => {
+  const { installModuleFromManifest } = await import('../src/lib/module-service.js');
+  const slug = `ex1custom${randomUUID().slice(0, 6)}`;
+  await installModuleFromManifest({ kind: 'human', org_id: world.a.orgId, actor_id: world.a.owner, role: 'owner', source: 'ui', scopes: [] }, {
+    schema_version: '1', id: `com.example.${slug}`, slug, name: 'Custom', version: '1.0.0', icon: 'contact', description: 'Export collision test.',
+    navigation: { default_collection: 'relations', default_view: 'table' },
+    collections: [{
+      key: 'relations', name: 'Relations', singular_name: 'Relation',
+      fields: [{ key: 'name', label: 'Name', type: 'text', required: true }],
+      search: { fields: ['name'], title_field: 'name' },
+      views: [{ key: 'table', name: 'Table', type: 'table', fields: ['name'] }],
+    }, {
+      key: 'con', name: 'Device name', singular_name: 'Device',
+      fields: [{ key: 'name', label: 'Name', type: 'text', required: true }],
+      search: { fields: ['name'], title_field: 'name' },
+      views: [{ key: 'table', name: 'Table', type: 'table', fields: ['name'] }],
+    }],
+  }, { source: 'sideloaded' });
+  const installed = (await client.query<{ installation: string; version: string }>(`SELECT i.id AS installation, v.id AS version
+    FROM module_installations i JOIN module_versions v ON v.installation_id = i.id AND v.is_active WHERE i.org_id = $1 AND i.slug = $2`,
+  [world.a.orgId, slug])).rows[0]!;
+  await client.query(`INSERT INTO module_records (id, org_id, installation_id, collection_key, validated_version_id, data, search_title,
+      created_by_actor_type, created_by_actor_id, updated_by_actor_type, updated_by_actor_id)
+    VALUES ($1, $2, $3, 'relations', $4, '{"name":"kept"}', 'kept', 'human', $5, 'human', $5)`,
+  [randomUUID(), world.a.orgId, installed.installation, installed.version, world.a.owner]);
+  await client.query(`INSERT INTO module_records (id, org_id, installation_id, collection_key, validated_version_id, data, search_title,
+      created_by_actor_type, created_by_actor_id, updated_by_actor_type, updated_by_actor_id)
+    VALUES ($1, $2, $3, 'con', $4, '{"name":"device"}', 'device', 'human', $5, 'human', $5)`,
+  [randomUUID(), world.a.orgId, installed.installation, installed.version, world.a.owner]);
+  const exported = await runExport({ scope: { kind: 'workspace' } });
+  // A collection named like a Windows device is stored under a safe name, not an aborted export.
+  assert.deepEqual(rows(exported, `data/modules/${slug}/collections/_con.jsonl`).map((row) => row.fields), [{ name: 'device' }]);
+  assert.deepEqual(rows(exported, `data/modules/${slug}/collections/relations.jsonl`).map((row) => row.fields), [{ name: 'kept' }]);
+  assert.deepEqual(rows(exported, `data/modules/${slug}/relations.jsonl`), []);
+});
+
+test('modules: a manifest that fails its integrity check is never used to choose fields', async () => {
+  const { verifiedManifest } = await import('../src/lib/workspace-export/modules.js');
+  const { digestSupportedModuleManifest } = await import('@deft/shared/modules');
+  const manifest = JSON.parse(await readFile(join(import.meta.dirname, '..', '..', '..', 'modules', 'bundled', 'contacts', 'deft.module.json'), 'utf8'));
+  const digest = await digestSupportedModuleManifest(manifest);
+  assert.ok(await verifiedManifest({ manifest, manifest_digest: digest }));
+  // A field added to the stored manifest after it was recorded: the digest no longer matches.
+  const tampered = structuredClone(manifest);
+  tampered.collections[0].fields.push({ key: 'undeclared_secret', label: 'Secret', type: 'text', required: false });
+  assert.equal(await verifiedManifest({ manifest: tampered, manifest_digest: digest }), null);
+  assert.equal(await verifiedManifest({ manifest: { not: 'a manifest' }, manifest_digest: digest }), null);
+});
+
 test('attachments: without the operator declaring a one-workspace database, no bytes are copied', { skip }, async () => {
   // Called directly, with the option left out entirely: the default must not copy.
   const result = await exportWorkspace({ databaseUrl: databaseUrl!, workspace: world.a.slug, scope: { kind: 'workspace' },
@@ -748,4 +830,44 @@ test('the export refuses a schema whose tables are views over the real ones, bef
   } finally {
     await client.query(`DROP SCHEMA ${schema} CASCADE`);
   }
+});
+
+test('modules: each module table must be a plain table in the schema; a view in its place is refused', { skip }, async () => {
+  const moduleTables = ['module_installations', 'module_versions', 'module_records', 'module_record_relations'];
+  for (const viewed of moduleTables) {
+    const schema = `ex1_mod_${randomUUID().slice(0, 8).replace(/-/g, '')}`;
+    await client.query(`CREATE SCHEMA ${schema}`);
+    try {
+      for (const table of EXPORT_TABLES) {
+        await client.query(table === viewed
+          ? `CREATE VIEW ${schema}.${table} AS SELECT * FROM public.${table}`
+          : `CREATE TABLE ${schema}.${table} (LIKE public.${table})`);
+      }
+      await assert.rejects(exportWorkspace({ databaseUrl: databaseUrl!, workspace: world.a.slug, scope: { kind: 'workspace' },
+        outDir: join(scratch, `export-${++counter}`), uploadsDir: world.uploadsDir, databaseSchema: schema }),
+      (error: Error) => error.message.includes(`(not found there: ${viewed})`));
+    } finally {
+      await client.query(`DROP SCHEMA ${schema} CASCADE`);
+    }
+  }
+});
+
+test('modules: a module whose slug Windows reserves is stored under a safe folder name', { skip }, async () => {
+  const { installModuleFromManifest } = await import('../src/lib/module-service.js');
+  await installModuleFromManifest({ kind: 'human', org_id: world.a.orgId, actor_id: world.a.owner, role: 'owner', source: 'ui', scopes: [] }, {
+    schema_version: '1', id: `com.example.device${randomUUID().slice(0, 6)}`, slug: 'con', name: 'Device', version: '1.0.0', icon: 'contact',
+    description: 'Reserved slug test.', navigation: { default_collection: 'items', default_view: 'table' },
+    collections: [{ key: 'items', name: 'Items', singular_name: 'Item', fields: [{ key: 'name', label: 'Name', type: 'text', required: true }],
+      search: { fields: ['name'], title_field: 'name' }, views: [{ key: 'table', name: 'Table', type: 'table', fields: ['name'] }] }],
+  }, { source: 'sideloaded' });
+  const installed = (await client.query<{ installation: string; version: string }>(`SELECT i.id AS installation, v.id AS version
+    FROM module_installations i JOIN module_versions v ON v.installation_id = i.id AND v.is_active WHERE i.org_id = $1 AND i.slug = 'con'`,
+  [world.a.orgId])).rows[0]!;
+  await client.query(`INSERT INTO module_records (id, org_id, installation_id, collection_key, validated_version_id, data, search_title,
+      created_by_actor_type, created_by_actor_id, updated_by_actor_type, updated_by_actor_id)
+    VALUES ($1, $2, $3, 'items', $4, '{"name":"kept"}', 'kept', 'human', $5, 'human', $5)`,
+  [randomUUID(), world.a.orgId, installed.installation, installed.version, world.a.owner]);
+  const exported = await runExport({ scope: { kind: 'workspace' } });
+  assert.deepEqual(rows(exported, 'data/modules/_con/collections/items.jsonl').map((row) => row.fields), [{ name: 'kept' }]);
+  assert.ok(exported.files.has('data/modules/_con/schema.json'));
 });
