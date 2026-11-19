@@ -610,10 +610,10 @@ test('Contacts: records with declared fields only, relations between live record
   const schema = JSON.parse(whole.files.get('data/modules/contacts/schema.json')!.toString('utf8'));
   assert.deepEqual(schema.collections.map((collection: any) => collection.key).sort(), ['activities', 'companies', 'contacts', 'deals', 'outreach']);
   assert.ok(schema.collections.every((collection: any) => collection.fields.every((field: any) => !('default' in field))));
-  const contacts = rows(whole, 'data/modules/contacts/contacts.jsonl');
+  const contacts = rows(whole, 'data/modules/contacts/collections/contacts.jsonl');
   assert.deepEqual(contacts.map((row) => row.id), [world.a.contacts.records.contact]);
   assert.deepEqual(Object.keys(contacts[0]!.fields).sort(), ['email', 'name', 'notes', 'owner', 'phone', 'status']);
-  const companies = rows(whole, 'data/modules/contacts/companies.jsonl');
+  const companies = rows(whole, 'data/modules/contacts/collections/companies.jsonl');
   assert.equal(companies[0]!.fields.owner, null, 'an owner from another workspace is not named');
   assert.deepEqual(rows(whole, 'data/modules/contacts/relations.jsonl').map(({ field, source_record_id, target_record_id }) =>
     ({ field, source_record_id, target_record_id })),
@@ -622,7 +622,7 @@ test('Contacts: records with declared fields only, relations between live record
   // The member scope follows assertInstallationAccess: members read Contacts; guests never; nobody reads a disabled module.
   const member = await runExport({ scope: { kind: 'member', member: world.a.member } });
   assert.equal(rows(member, 'data/modules.jsonl').length, 1);
-  assert.equal(rows(member, 'data/modules/contacts/contacts.jsonl').length, 1);
+  assert.equal(rows(member, 'data/modules/contacts/collections/contacts.jsonl').length, 1);
   const guest = await runExport({ scope: { kind: 'member', member: world.a.guest } });
   assert.equal(rows(guest, 'data/modules.jsonl').length, 0);
   assert.ok(![...guest.files.keys()].some((path) => path.startsWith('data/modules/')));
@@ -656,28 +656,108 @@ test('readable: README states scope, counts, omissions and what is not included;
 });
 
 test('readable: one escaped transcript per exported space, holding exactly the exported messages', { skip }, async () => {
-  for (const scope of [{ kind: 'workspace' as const }, { kind: 'member' as const, member: world.a.member }, { kind: 'member' as const, member: world.a.guest }]) {
-    const exported = await runExport({ scope });
-    const messages = rows(exported, 'data/messages.jsonl');
-    const spaceIds = new Set(rows(exported, 'data/spaces.jsonl').map((row) => row.id));
-    const transcriptIds: string[] = [];
-    for (const [path, bytes] of exported.files) {
-      const match = /^conversations\/([^/]+)\.html$/.exec(path);
-      if (!match || match[1] === 'index') continue;
-      assert.ok(spaceIds.has(match[1]!), `transcript for a space not in the export: ${path}`);
-      const html = bytes.toString('utf8');
-      assert.ok(!/<script|<img/i.test(html), `${path} contains active markup`);
-      transcriptIds.push(...[...html.matchAll(/id="m-([^"]+)"/g)].map((found) => found[1]!));
-      for (const link of html.matchAll(/href="\.\.\/(attachments\/[^"]+)"/g)) {
-        assert.ok(exported.files.has(decodeURIComponent(link[1]!)), `${path} links to a missing file ${link[1]}`);
+  // A space with a hostile name, an attachment with a hostile file name, and an empty space.
+  const hostile = randomUUID();
+  const empty = randomUUID();
+  const hostileMessage = randomUUID();
+  const hostileFile = randomUUID();
+  const hostileStorage = `${hostileFile}-hostile.bin`;
+  await client.query(`INSERT INTO spaces (id, org_id, name, type) VALUES ($1, $3, '<img src=x onerror=alert(1)>"&', 'public'),
+    ($2, $3, 'empty space', 'public')`, [hostile, empty, world.a.orgId]);
+  await client.query(`INSERT INTO messages (id, org_id, space_id, user_id, content) VALUES ($1, $2, $3, $4, 'hello')`,
+    [hostileMessage, world.a.orgId, hostile, world.a.member]);
+  await writeFile(join(world.uploadsDir, hostileStorage), 'hostile bytes');
+  await client.query(`INSERT INTO files (id, org_id, uploaded_by, filename, mime_type, size_bytes, storage_key)
+    VALUES ($1, $2, $3, '"><script>alert(1)</script>.txt', 'text/plain', 13, $4)`, [hostileFile, world.a.orgId, world.a.member, hostileStorage]);
+  await client.query('INSERT INTO message_attachments (org_id, message_id, file_id, position) VALUES ($1, $2, $3, 0)',
+    [world.a.orgId, hostileMessage, hostileFile]);
+  try {
+    for (const scope of [{ kind: 'workspace' as const }, { kind: 'member' as const, member: world.a.member }, { kind: 'member' as const, member: world.a.guest }]) {
+      const exported = await runExport({ scope });
+      const messages = rows(exported, 'data/messages.jsonl');
+      const spaceIds = rows(exported, 'data/spaces.jsonl').map((row) => row.id).sort();
+      const fileRows = rows(exported, 'data/files.jsonl');
+      const transcriptSpaces: string[] = [];
+      const transcriptIds: string[] = [];
+      const index = exported.files.get('conversations/index.html')!.toString('utf8');
+      assert.equal(index.match(/<\/body>/g)?.length, 1, 'index has one end of body');
+      assert.ok(index.trimEnd().endsWith('</ul></body></html>'), 'the index list closes before the document');
+      for (const [path, bytes] of exported.files) {
+        const match = /^conversations\/([^/]+)\.html$/.exec(path);
+        if (!match || match[1] === 'index') continue;
+        transcriptSpaces.push(match[1]!);
+        const html = bytes.toString('utf8');
+        assert.ok(!/<script|<img/i.test(html), `${path} contains active markup`);
+        assert.equal(html.match(/<\/body>/g)?.length, 1, `${path} has one end of body`);
+        assert.ok(html.includes(`href="${match[1]}.html"`) || index.includes(`href="${match[1]}.html"`), `${path} is in the index`);
+        // Each message's attachment links are exactly its included files.
+        for (const block of html.split('<div class="message').slice(1)) {
+          const messageId = /id="m-([^"]+)"/.exec(block)![1]!;
+          const linked = [...block.matchAll(/href="\.\.\/(attachments\/[^"]+)"/g)].map((found) => decodeURIComponent(found[1]!)).sort();
+          const expected = fileRows.filter((file) => file.attached_to?.message_id === messageId && file.included)
+            .map((file) => file.archive_path).sort();
+          assert.deepEqual(linked, expected, `attachment links of ${messageId}`);
+          for (const target of linked) assert.ok(exported.files.has(target), `${path} links to a missing file ${target}`);
+          transcriptIds.push(messageId);
+        }
       }
+      assert.deepEqual(transcriptSpaces.sort(), spaceIds, 'one transcript for every exported space');
+      assert.deepEqual(transcriptIds.sort(), messages.map((row) => row.id).sort());
+      assert.equal((index.match(/<li>/g) ?? []).length, spaceIds.length);
     }
-    assert.deepEqual(transcriptIds.sort(), messages.map((row) => row.id).sort());
+    const whole = await runExport({ scope: { kind: 'workspace' } });
+    const general = whole.files.get(`conversations/${world.a.spaces.general}.html`)!.toString('utf8');
+    assert.ok(general.includes('&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;&lt;img src=x onerror=alert(1)&gt; &amp; done'));
+    assert.match(general, /missing\.txt <span class="muted">\(not included; see omissions\)/);
+    assert.match(whole.files.get(`conversations/${empty}.html`)!.toString('utf8'), /No messages\./);
+    const hostilePage = whole.files.get(`conversations/${hostile}.html`)!.toString('utf8');
+    assert.ok(hostilePage.includes('&lt;img src=x onerror=alert(1)&gt;&quot;&amp;'));
+    assert.ok(hostilePage.includes('&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;.txt'));
+  } finally {
+    await client.query('DELETE FROM message_attachments WHERE file_id = $1', [hostileFile]);
+    await client.query('DELETE FROM files WHERE id = $1', [hostileFile]);
+    await client.query('DELETE FROM messages WHERE id = $1', [hostileMessage]);
+    await client.query('DELETE FROM spaces WHERE id = ANY($1)', [[hostile, empty]]);
+    await rm(join(world.uploadsDir, hostileStorage), { force: true });
   }
-  const whole = await runExport({ scope: { kind: 'workspace' } });
-  const general = whole.files.get(`conversations/${world.a.spaces.general}.html`)!.toString('utf8');
-  assert.ok(general.includes('&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;&lt;img src=x onerror=alert(1)&gt; &amp; done'));
-  assert.match(general, /missing\.txt <span class="muted">\(not included; see omissions\)/);
+});
+
+test('modules: a custom module whose collection is named like an export file still exports, records and relations apart', { skip }, async () => {
+  const { installModuleFromManifest } = await import('../src/lib/module-service.js');
+  const slug = `ex1custom${randomUUID().slice(0, 6)}`;
+  await installModuleFromManifest({ kind: 'human', org_id: world.a.orgId, actor_id: world.a.owner, role: 'owner', source: 'ui', scopes: [] }, {
+    schema_version: '1', id: `com.example.${slug}`, slug, name: 'Custom', version: '1.0.0', icon: 'contact', description: 'Export collision test.',
+    navigation: { default_collection: 'relations', default_view: 'table' },
+    collections: [{
+      key: 'relations', name: 'Relations', singular_name: 'Relation',
+      fields: [{ key: 'name', label: 'Name', type: 'text', required: true }],
+      search: { fields: ['name'], title_field: 'name' },
+      views: [{ key: 'table', name: 'Table', type: 'table', fields: ['name'] }],
+    }],
+  }, { source: 'sideloaded' });
+  const installed = (await client.query<{ installation: string; version: string }>(`SELECT i.id AS installation, v.id AS version
+    FROM module_installations i JOIN module_versions v ON v.installation_id = i.id AND v.is_active WHERE i.org_id = $1 AND i.slug = $2`,
+  [world.a.orgId, slug])).rows[0]!;
+  await client.query(`INSERT INTO module_records (id, org_id, installation_id, collection_key, validated_version_id, data, search_title,
+      created_by_actor_type, created_by_actor_id, updated_by_actor_type, updated_by_actor_id)
+    VALUES ($1, $2, $3, 'relations', $4, '{"name":"kept"}', 'kept', 'human', $5, 'human', $5)`,
+  [randomUUID(), world.a.orgId, installed.installation, installed.version, world.a.owner]);
+  const exported = await runExport({ scope: { kind: 'workspace' } });
+  assert.deepEqual(rows(exported, `data/modules/${slug}/collections/relations.jsonl`).map((row) => row.fields), [{ name: 'kept' }]);
+  assert.deepEqual(rows(exported, `data/modules/${slug}/relations.jsonl`), []);
+});
+
+test('modules: a manifest that fails its integrity check is never used to choose fields', async () => {
+  const { verifiedManifest } = await import('../src/lib/workspace-export/modules.js');
+  const { digestSupportedModuleManifest } = await import('@deft/shared/modules');
+  const manifest = JSON.parse(await readFile(join(import.meta.dirname, '..', '..', '..', 'modules', 'bundled', 'contacts', 'deft.module.json'), 'utf8'));
+  const digest = await digestSupportedModuleManifest(manifest);
+  assert.ok(await verifiedManifest({ manifest, manifest_digest: digest }));
+  // A field added to the stored manifest after it was recorded: the digest no longer matches.
+  const tampered = structuredClone(manifest);
+  tampered.collections[0].fields.push({ key: 'undeclared_secret', label: 'Secret', type: 'text', required: false });
+  assert.equal(await verifiedManifest({ manifest: tampered, manifest_digest: digest }), null);
+  assert.equal(await verifiedManifest({ manifest: { not: 'a manifest' }, manifest_digest: digest }), null);
 });
 
 test('the command writes one tar that extracts, verifies against SHA256SUMS, and holds no secret or other workspace', { skip }, async () => {

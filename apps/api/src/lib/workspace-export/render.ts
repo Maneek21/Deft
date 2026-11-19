@@ -94,7 +94,8 @@ ${manifest.complete ? 'Everything in scope is included.' : `<strong>${manifest.o
   ].join('\n'));
 }
 
-type TranscriptRow = { id: string; space_id: string; space_name: string; space_type: string; is_reply: boolean; author: string | null;
+/** One row per message, or a single row with a null id for a space with none. */
+type TranscriptRow = { id: string | null; space_id: string; space_name: string; space_type: string; is_reply: boolean; author: string | null;
   content: string | null; content_omitted: boolean; created_at: Date; files: { id: string; filename: string }[] | null };
 
 /**
@@ -104,21 +105,23 @@ type TranscriptRow = { id: string; space_id: string; space_name: string; space_t
  */
 export async function writeTranscripts(snapshot: Snapshot, writer: ArchiveWriter, ctx: ExportContext): Promise<number> {
   const query = sql`WITH visible_files AS (${visibleFilesSql(ctx)})
-    SELECT m.id, m.space_id, s.name AS space_name, s.type AS space_type, (root.id IS NOT NULL) AS is_reply,
+    SELECT s.id AS space_id, s.name AS space_name, s.type AS space_type, m.id, (root.id IS NOT NULL) AS is_reply,
       coalesce(u.name, 'Unknown person') AS author,
       CASE WHEN m.metadata->>'schema_version' = 'deft.private_defty_message.v1' THEN NULL ELSE m.content END AS content,
       (m.metadata->>'schema_version' = 'deft.private_defty_message.v1') IS TRUE AS content_omitted, m.created_at,
       (SELECT json_agg(json_build_object('id', vf.id, 'filename', vf.filename) ORDER BY vf.created_at, vf.id) FROM visible_files vf
         WHERE vf.attached_as = 'message' AND vf.link_message_id = m.id) AS files
-    FROM messages m
-    JOIN spaces s ON s.id = m.space_id AND s.org_id = ${ctx.orgId}
+    FROM spaces s
+    LEFT JOIN messages m ON m.space_id = s.id AND m.org_id = ${ctx.orgId} AND ${exportableMessage(ctx, col('m.id'))}
     LEFT JOIN messages root ON root.id = m.parent_id AND root.space_id = m.space_id AND ${exportableMessage(ctx, col('root.id'))}
     LEFT JOIN users u ON u.id = m.user_id AND EXISTS (SELECT 1 FROM org_members om WHERE om.org_id = ${ctx.orgId} AND om.user_id = m.user_id)
-    WHERE m.org_id = ${ctx.orgId} AND ${exportableMessage(ctx, col('m.id'))}
-      AND ${spaceReadable(ctx, col('s.id'), col('s.org_id'))}
-    ORDER BY m.space_id, coalesce(root.created_at, m.created_at), coalesce(root.id, m.id), (root.id IS NOT NULL), m.created_at, m.id`;
+    WHERE s.org_id = ${ctx.orgId} AND ${spaceReadable(ctx, col('s.id'), col('s.org_id'))}
+    ORDER BY s.id, coalesce(root.created_at, m.created_at), coalesce(root.id, m.id), (root.id IS NOT NULL), m.created_at, m.id`;
+  // Every exported space gets a page, even one with no messages; the index
+  // document stays open until its list is complete.
   const index = await writer.open('conversations/index.html');
-  await index.write(page('Conversations', '<h1>Conversations</h1><p><a href="../README.html">Back to the export</a></p><ul>'));
+  await index.write(page('Conversations', '<h1>Conversations</h1><p><a href="../README.html">Back to the export</a></p><ul>')
+    .replace('</body></html>\n', ''));
   const open: { current: { spaceId: string; file: ArchiveFile } | null } = { current: null };
   let spaces = 0;
   const finish = async () => {
@@ -135,6 +138,10 @@ export async function writeTranscripts(snapshot: Snapshot, writer: ArchiveWriter
       await index.write(`<li><a href="${href(`${row.space_id}.html`, 0)}">${escapeHtml(row.space_name)}</a> <span class="muted">${escapeHtml(row.space_type)}</span></li>`);
       await open.current.file.write(page(row.space_name, `<h1>${escapeHtml(row.space_name)}</h1><p class="muted">${escapeHtml(row.space_type)} · <a href="index.html">All conversations</a></p>`)
         .replace('</body></html>\n', ''));
+    }
+    if (row.id === null) {
+      await open.current!.file.write('<p class="muted">No messages.</p>\n');
+      continue;
     }
     const files = [];
     for (const file of row.files ?? []) {
