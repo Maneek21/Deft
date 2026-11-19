@@ -158,7 +158,9 @@ icsPublicRoutes.get('/feed/:token', guarded('GET /feed', async (c) => {
     headers: {
       'Content-Type': 'text/calendar; charset=utf-8',
       'Content-Disposition': 'inline; filename="deft.ics"',
-      'Cache-Control': 'private, max-age=300',
+      // The person's tasks and events: no browser or proxy may keep them
+      // (check 14.3). Calendar apps poll on their own schedule regardless.
+      'Cache-Control': 'private, no-store',
     },
   });
 }));

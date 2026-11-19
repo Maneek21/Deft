@@ -1059,6 +1059,8 @@ agentRoutes.get('/conversations/:id/trace.json', async (c) => {
     headers: {
       'content-type': 'application/json; charset=utf-8',
       'content-disposition': `attachment; filename="${filename}"`,
+      // The whole conversation: no browser or proxy may keep it (check 14.3).
+      'cache-control': 'private, no-store',
     },
   });
 });
