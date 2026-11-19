@@ -56,6 +56,7 @@ export async function writeReadme(writer: ArchiveWriter, manifest: ExportManifes
     `As of: ${manifest.as_of} (UTC)`,
     `Complete: ${manifest.complete ? 'yes' : `no, ${manifest.omissions} item(s) could not be included (see below and omissions.jsonl)`}`,
     `Attachment files included: ${filesIncluded}`,
+    `Workspace key: ${manifest.workspace_key === 'not_supplied' ? 'not supplied' : 'supplied, but this version does not decrypt'}; encrypted private assistant conversations are listed without their text.`,
     '',
     'Open README.html in a web browser to read the conversations. Every data file is listed in manifest.json and',
     'described in Deft\'s documentation (docs/workspace-export.md). SHA256SUMS lets you check that no file has changed:',

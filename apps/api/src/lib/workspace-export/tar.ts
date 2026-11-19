@@ -1,0 +1,98 @@
+import { createReadStream, createWriteStream, type WriteStream } from 'node:fs';
+import { readdir, rename, rm, stat } from 'node:fs/promises';
+import { once } from 'node:events';
+import { join } from 'node:path';
+
+/**
+ * Packs a folder into one POSIX tar file (pax format), streamed file by file
+ * so memory does not grow with the archive. Pax records carry any path that
+ * is long or not ASCII, and any size ustar cannot hold. Opens with the
+ * built-in archive tools of Windows 11, macOS and Linux.
+ */
+const BLOCK = 512;
+const USTAR_MAX_SIZE = 0o77777777777;
+
+function octal(value: number, length: number): string {
+  return `${value.toString(8).padStart(length - 1, '0')}\0`;
+}
+
+function header(name: string, size: number, type: '0' | 'x', mtime: number): Buffer {
+  const block = Buffer.alloc(BLOCK);
+  block.write(name, 0, 100, 'utf8');
+  block.write(octal(0o644, 8), 100, 'ascii');
+  block.write(octal(0, 8), 108, 'ascii');
+  block.write(octal(0, 8), 116, 'ascii');
+  block.write(octal(Math.min(size, USTAR_MAX_SIZE), 12), 124, 'ascii');
+  block.write(octal(mtime, 12), 136, 'ascii');
+  block.write('        ', 148, 'ascii');
+  block.write(type, 156, 'ascii');
+  block.write('ustar\0', 257, 'ascii');
+  block.write('00', 263, 'ascii');
+  let checksum = 0;
+  for (const byte of block) checksum += byte;
+  block.write(`${checksum.toString(8).padStart(6, '0')}\0 `, 148, 'ascii');
+  return block;
+}
+
+/** One pax record: "<length> <key>=<value>\n", where length counts its own digits. */
+function paxRecord(key: string, value: string): string {
+  const body = ` ${key}=${value}\n`;
+  let length = Buffer.byteLength(body) + 1;
+  while (String(length).length + Buffer.byteLength(body) !== length) length = String(length).length + Buffer.byteLength(body);
+  return `${length}${body}`;
+}
+
+async function write(stream: WriteStream, chunk: Buffer): Promise<void> {
+  if (!stream.write(chunk)) await once(stream, 'drain');
+}
+
+async function listFiles(root: string, prefix = ''): Promise<string[]> {
+  const entries = (await readdir(join(root, prefix), { withFileTypes: true })).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const files: string[] = [];
+  for (const entry of entries) {
+    const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) files.push(...await listFiles(root, path));
+    else if (entry.isFile()) files.push(path);
+    else throw new Error(`Not a regular file: ${path}`);
+  }
+  return files;
+}
+
+/** Writes `folder` into `tarPath` under the top-level directory `topName`. The tar appears only when complete. */
+export async function packTar(folder: string, tarPath: string, topName: string, mtime = Math.floor(Date.now() / 1000)): Promise<void> {
+  const partial = `${tarPath}.partial`;
+  const out = createWriteStream(partial, { flags: 'wx' });
+  await once(out, 'open');
+  try {
+    for (const relative of await listFiles(folder)) {
+      const name = `${topName}/${relative}`;
+      const { size } = await stat(join(folder, ...relative.split('/')));
+      const records = [
+        ...(/^[\x20-\x7e]{1,99}$/.test(name) ? [] : [paxRecord('path', name)]),
+        ...(size > USTAR_MAX_SIZE ? [paxRecord('size', String(size))] : []),
+      ].join('');
+      if (records) {
+        const pax = Buffer.from(records, 'utf8');
+        await write(out, header('PaxHeader/entry', pax.length, 'x', mtime));
+        await write(out, Buffer.concat([pax, Buffer.alloc((BLOCK - (pax.length % BLOCK)) % BLOCK)]));
+      }
+      await write(out, header(/^[\x20-\x7e]{1,99}$/.test(name) ? name : `${topName}/entry`, size, '0', mtime));
+      let written = 0;
+      for await (const chunk of createReadStream(join(folder, ...relative.split('/')))) {
+        written += (chunk as Buffer).length;
+        await write(out, chunk as Buffer);
+      }
+      if (written !== size) throw new Error(`File changed while packing: ${relative}`);
+      const padding = (BLOCK - (size % BLOCK)) % BLOCK;
+      if (padding) await write(out, Buffer.alloc(padding));
+    }
+    await write(out, Buffer.alloc(BLOCK * 2));
+    out.end();
+    await once(out, 'close');
+    await rename(partial, tarPath);
+  } catch (error) {
+    out.destroy();
+    await rm(partial, { force: true });
+    throw error;
+  }
+}

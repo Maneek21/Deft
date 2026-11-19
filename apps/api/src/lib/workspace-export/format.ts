@@ -43,6 +43,12 @@ export type ExportManifest = Readonly<{
   scope: Readonly<{ kind: 'workspace' } | { kind: 'member'; user_id: string; role: string }>;
   /** Start time of the single database snapshot every dataset was read from. */
   as_of: string;
+  /**
+   * Whether the workspace's key for encrypted private assistant conversations
+   * was given. This version never decrypts: with or without it, those
+   * conversations are listed in omissions.jsonl without their text.
+   */
+  workspace_key: 'not_supplied' | 'supplied_not_used';
   /** False when anything in scope could not be included; see omissions.jsonl. */
   complete: boolean;
   omissions: number;
