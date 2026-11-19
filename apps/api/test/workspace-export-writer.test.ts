@@ -24,12 +24,12 @@ test('a disk failure after a write was accepted rejects the next step instead of
   try {
     // A stream that accepts each write, then fails it on the next turn, as a full disk does.
     const failing = new Writable({ highWaterMark: 1 << 20, write(_chunk, _encoding, callback) { setImmediate(() => callback(new Error('ENOSPC: no space left'))); } });
-    const file = new ArchiveFile('data/x.jsonl', failing, async () => undefined);
+    const file = new ArchiveFile('data/x.jsonl', 'unused-x', failing, async () => undefined);
     await file.write('first line\n');
     await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
     await assert.rejects(file.write('second line\n'), /ENOSPC/);
-    await assert.rejects(new ArchiveFile('data/y.jsonl', failing, async () => undefined).close(), /ENOSPC|closed|destroyed/);
+    await assert.rejects(new ArchiveFile('data/y.jsonl', 'unused-y', failing, async () => undefined).close(), /ENOSPC|closed|destroyed/);
     assert.deepEqual(uncaught, []);
   } finally {
     process.off('uncaughtException', onUncaught);
