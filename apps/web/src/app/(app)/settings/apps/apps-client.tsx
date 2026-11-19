@@ -11,6 +11,7 @@ import { attachmentUpgradeInspectionTarget,attachmentUpgradeStageRequest,parseAt
 import { ConnectedAppManagement } from '@/components/apps/connected-app-management';
 import { ResourceAppReview } from '@/components/apps/resource-app-review';
 import { AttachmentAppReview } from '@/components/apps/attachment-app-review';
+import { AccountOperatorAdmission } from '@/components/apps/account-operator-admission';
 import { RuntimeAppSetup } from '@/components/apps/runtime-app-setup';
 import { AppInstallationStatus } from '@/components/apps/app-management-summary';
 import { PublicCancellationOwnerPanel } from '@/components/apps/public-cancellation-owner-panel';
@@ -216,6 +217,7 @@ function AppCard({ app, canManage, busy, onActivate, onEnable, onDisable, onChoo
     </div>}
     {canManage && APP_RESOURCE_SYNC_ENABLED && ['staged', 'disabled'].includes(app.state) && app.manifest.schema_version === '5' && app.manifest.runtime_actions.length === 0 && app.manifest.sync_descriptors.length > 0 && <ResourceAppReview app={app} />}
     {canManage && APP_ATTACHMENT_BROKER_ENABLED && ['staged', 'disabled'].includes(app.state) && app.manifest.schema_version === '7' && <AttachmentAppReview app={app} />}
+    {APP_ATTACHMENT_BROKER_ENABLED && app.state === 'active' && app.manifest.schema_version === '7' && <AccountOperatorAdmission app={app} />}
     {runtime && canManage && app.state === 'active' && <details className="mt-4 border-t pt-2"><summary className="min-h-11 cursor-pointer py-3 text-sm font-medium">App administration</summary><div className="space-y-3 pt-2">
       <p className="text-xs" style={{ color: 'var(--on-surface-variant)' }}>Connection and sync status are shown inside the app. Use these controls to manage actions and installed updates.</p>
       <div className="flex flex-wrap gap-2">{APP_ATTACHMENT_BROKER_ENABLED && app.manifest.schema_version==='7' && <button type="button" className="deft-pill min-h-11" disabled={busy} onClick={onChooseUpgrade}><FileUp size={13}/> Stage upgrade</button>}
