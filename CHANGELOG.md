@@ -10,13 +10,30 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
-### Release candidate `0.3.0-preview.144` — publication pending
+### Notice: Kit `0.1.0-alpha.44` removes deprecated Email compatibility
 
-The `0.3.0-preview.144` host is a release preparation candidate. No release tag or
-image is implied by this entry. Public installation instructions remain pinned to the
-published `0.3.0-preview.142` release; they move after `0.3.0-preview.144` is published
-and verified. Release scope `core` (no Hermes compatibility claim). Changes since
-`v0.3.0-preview.143`.
+Not before 2026-11-25, and never fewer than 14 days after this notice merged.
+No code changes here and alpha.43 is unchanged. Alpha.44 is the "next breaking Kit
+alpha" the existing `@deprecated` notices name. It removes the 26 deprecated
+compose, address-list and raster names from the root and `/experience` entry
+points, the 9 sandbox names re-exported from the root, the root override of
+`checkDeftAppDeveloperContract`, and the `safe-compose-html`, `mailbox-list` and
+`native-compose-raster` modules under `@deft/app-kit/examples/email`. Importing only
+the root will no longer register the sandbox profile; the `sandbox`, `templates`,
+`register` and `cli` modules and the three `examples/email` subpath exports stay,
+opt-in. Use `@deft/app-kit/core` and the `deft-email` `runtime/domain` modules, or
+keep pinning alpha.43. Names and plan are listed in the Kit README and
+`docs/superpowers/plans/2026-11-06-email-host-kit-shrink.md`.
+
+- App-boundary gate: `scripts/app-boundary-ceiling.json` caps the exception count
+  at 1,277 (it may only be lowered), each exception's `milestone` now starts with
+  its burn-down bucket, and `node scripts/check-app-boundary.mjs --summary` prints
+  the counts per milestone. No finding changed.
+
+## [0.3.0-preview.144] — 2026-11-19 (prerelease)
+
+Changes since `v0.3.0-preview.143`. Release scope `core` (no Hermes compatibility
+claim).
 
 Upgrade notes:
 
@@ -311,26 +328,6 @@ Database and restore:
   changes, narrowing constraints, data rewrites, function defaults on existing tables,
   and any statement it cannot classify, and requires released upgrade files to stay
   unchanged.
-
-### Notice: Kit `0.1.0-alpha.44` removes deprecated Email compatibility
-
-Not before 2026-11-25, and never fewer than 14 days after this notice merged.
-No code changes here and alpha.43 is unchanged. Alpha.44 is the "next breaking Kit
-alpha" the existing `@deprecated` notices name. It removes the 26 deprecated
-compose, address-list and raster names from the root and `/experience` entry
-points, the 9 sandbox names re-exported from the root, the root override of
-`checkDeftAppDeveloperContract`, and the `safe-compose-html`, `mailbox-list` and
-`native-compose-raster` modules under `@deft/app-kit/examples/email`. Importing only
-the root will no longer register the sandbox profile; the `sandbox`, `templates`,
-`register` and `cli` modules and the three `examples/email` subpath exports stay,
-opt-in. Use `@deft/app-kit/core` and the `deft-email` `runtime/domain` modules, or
-keep pinning alpha.43. Names and plan are listed in the Kit README and
-`docs/superpowers/plans/2026-11-06-email-host-kit-shrink.md`.
-
-- App-boundary gate: `scripts/app-boundary-ceiling.json` caps the exception count
-  at 1,277 (it may only be lowered), each exception's `milestone` now starts with
-  its burn-down bucket, and `node scripts/check-app-boundary.mjs --summary` prints
-  the counts per milestone. No finding changed.
 
 ## [0.3.0-preview.143] — 2026-11-14 (prerelease)
 
@@ -1463,7 +1460,8 @@ The `0.1.0-alpha` tag was originally published under BSL 1.1. The current
 codebase has since been relicensed under [GNU AGPL v3.0 only](LICENSE); consult
 the license file present in the exact revision you use.
 
-[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.143...HEAD
+[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.144...HEAD
+[0.3.0-preview.144]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.144
 [0.3.0-preview.143]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.143
 [0.3.0-preview.142]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.142
 [0.3.0-preview.15]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.15
