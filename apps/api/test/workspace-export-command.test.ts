@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -79,9 +79,17 @@ test('the tar never replaces an existing file, and refuses a top-level name that
     await writeFile(join(folder, 'a.txt'), 'a');
     const existing = join(dir, 'taken.tar');
     await writeFile(existing, 'keep me');
+    // Another export's staging file, at the name an earlier version used: never touched.
+    await writeFile(`${existing}.partial`, 'not ours');
+    await writeFile(join(dir, 'fresh.tar.partial'), 'not ours either');
     await assert.rejects(packTar(folder, existing, 'taken'), /EEXIST/);
     assert.equal(await readFile(existing, 'utf8'), 'keep me');
-    await assert.rejects(stat(`${existing}.partial`));
+    assert.equal(await readFile(`${existing}.partial`, 'utf8'), 'not ours');
+    await packTar(folder, join(dir, 'fresh.tar'), 'fresh');
+    assert.equal(await readFile(join(dir, 'fresh.tar.partial'), 'utf8'), 'not ours either');
+    // This run's own staging files are gone, whether it failed or succeeded.
+    const leftovers = (await readdir(dir)).filter((name) => name.endsWith('.partial'));
+    assert.deepEqual(leftovers.sort(), ['fresh.tar.partial', 'taken.tar.partial']);
     for (const unsafe of ['..', '.', 'a/b', 'CON']) await assert.rejects(packTar(folder, join(dir, 'x.tar'), unsafe), /Invalid archive path/);
     await assert.rejects(runCommand({ databaseUrl: 'postgres://localhost/x', workspace: 'w', uploads: dir, out: join(dir, '..tar'),
       folder: false, scope: { kind: 'workspace' }, workspaceKeyFile: null }), UsageError);

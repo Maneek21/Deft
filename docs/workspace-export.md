@@ -59,7 +59,15 @@ it. With the flag, the export first checks every table of the schema for any
 trace of another workspace and stops, before copying anything, if it finds
 one. That check cannot tell who wrote bytes on disk that no row describes, so
 the statement is the operator's: use the flag only when the uploads folder
-serves this database alone. Without the flag, every attachment is listed in
+serves this database alone.
+
+What you assert with the flag, and what can go wrong if it is false: you say
+that every file in the uploads folder belongs to this database's one
+workspace. If another workspace once shared the folder and its rows were
+removed from the database, its leftover files cannot be told apart. A file
+this workspace's rows name would then be copied even if another workspace
+wrote it. If another workspace still has rows in the database, the export
+stops instead of copying. Without the flag, every attachment is listed in
 `files.jsonl` and `omissions.jsonl` with the reason, and the README says so.
 A database holding several workspaces is exported without attachment files.
 

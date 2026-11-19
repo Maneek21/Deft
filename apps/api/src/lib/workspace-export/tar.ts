@@ -1,5 +1,6 @@
 import { constants, createReadStream, createWriteStream, type WriteStream } from 'node:fs';
 import { copyFile, link, readdir, rm, stat } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { finished } from 'node:stream/promises';
 import { join } from 'node:path';
 import { assertArchivePath } from './writer.js';
@@ -90,8 +91,11 @@ async function listFiles(root: string, prefix = ''): Promise<string[]> {
 export async function packTar(folder: string, tarPath: string, topName: string, mtime = Math.floor(Date.now() / 1000)): Promise<void> {
   assertArchivePath(topName);
   if (topName.includes('/')) throw new Error(`Invalid archive path: ${JSON.stringify(topName)}`);
-  const partial = `${tarPath}.partial`;
+  // A staging name of this run's own, so a failure never removes another export's staging file.
+  const partial = `${tarPath}.${randomUUID()}.partial`;
   const out = createWriteStream(partial, { flags: 'wx' });
+  let created = false;
+  out.once('open', () => { created = true; });
   out.on('error', () => undefined);
   try {
     for (const relative of await listFiles(folder)) {
@@ -121,7 +125,7 @@ export async function packTar(folder: string, tarPath: string, topName: string, 
   } catch (error) {
     out.destroy();
     await finished(out).catch(() => undefined);
-    await rm(partial, { force: true });
+    if (created) await rm(partial, { force: true });
     throw error;
   }
 }
