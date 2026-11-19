@@ -355,6 +355,7 @@ async function seedContacts(s: Seeder, ws: WorkspaceIds, isB: boolean, ids: stri
   await s.insert('module_record_relations', { id: randomUUID(), org_id: ws.orgId, installation_id: installed.installation, field_key: 'company_id',
     source_record_id: records.deletedContact, target_record_id: records.company, ...actor });
   return { ...installed, records };
+}
 
 /**
  * A rows that reach B's bytes through another name for the same file: a
