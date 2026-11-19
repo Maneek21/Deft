@@ -621,14 +621,50 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
       await unlock();
       assert.equal((await wrongRecovery(second.json.two_step.token, 101 + attempt)).status, 401);
     }
-    assert.equal((await lockNotices()).length, 1, 'once per run of wrong codes, not once per attempt or lock');
+    assert.equal((await lockNotices()).length, 1, 'at most one notice a day, not one per attempt or lock');
 
-    // A right code ends the run; a later run tells the person again.
+    // A notice whose write was lost is written on the next wrong code.
+    await db.delete(notifications).where(eq(notifications.id, notice!.id));
+    await unlock();
+    const retry = await login(who.email);
+    assert.equal((await wrongRecovery(retry.json.two_step.token, 120)).status, 401);
+    assert.equal((await lockNotices()).length, 1, 'the lost notice is written again');
+
+    // A day later, a new run of wrong codes tells the person again.
+    await db.update(notifications).set({ created_at: new Date(Date.now() - service.LOCK_NOTICE_INTERVAL_MS - 60_000) })
+      .where(eq(notifications.user_id, who.id));
     await unlock();
     await loginWithCode(who);
     const third = await login(who.email);
     for (let attempt = 1; attempt <= service.ACCOUNT_FREE_FAILURES; attempt += 1) await wrongRecovery(third.json.two_step.token, attempt);
     assert.equal((await lockNotices()).length, 2);
+  });
+
+  await t.test('15.8: a lock notice never deadlocks with enrolment confirmation holding the account row', async () => {
+    const who = await enrolledPerson();
+    await db.update(userTwoStep).set({ failed_attempts: service.ACCOUNT_FREE_FAILURES - 1 }).where(eq(userTwoStep.user_id, who.id));
+    // Another transaction takes the rows the way confirmTwoStepEnrolment does:
+    // the account row first, then the two-step row.
+    const other = new pg.Client({ connectionString: databaseUrl! });
+    await other.connect();
+    try {
+      await other.query('BEGIN');
+      await other.query('SET LOCAL lock_timeout = 5000');
+      await other.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [who.id]);
+      // The fifth wrong code, which writes a lock notice, starts meanwhile.
+      const locking = service.regenerateRecoveryCodes(who.id, wrongCode(who.secret));
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await other.query('SELECT user_id FROM user_two_step WHERE user_id=$1 FOR UPDATE', [who.id]);
+      await other.query('COMMIT');
+      const result = await locking;
+      assert.equal(result.ok, false);
+    } finally {
+      await other.query('ROLLBACK').catch(() => undefined);
+      await other.end();
+    }
+    const { notifications } = await import('@deft/db/schema');
+    const rows = await db.select().from(notifications).where(eq(notifications.user_id, who.id));
+    assert.equal(rows.filter((row) => (row.metadata as Json | null)?.kind === 'two_step_locked').length, 1, 'the notice was written');
   });
 
   await t.test('an expired challenge is refused', async () => {
