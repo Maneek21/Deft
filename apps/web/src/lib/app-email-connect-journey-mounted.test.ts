@@ -10,8 +10,7 @@ import path from 'node:path';
 // installed App page, mounted in Chromium. Every API answer is a real answer
 // recorded from a local hosted-mode Deft cell walking the real Email package
 // (see the fixture's `source`), so the field names are the server's, not ours.
-// The one step without a screen, admitting the account operator, happened on
-// the server before the recording and appears here as its result.
+// No step is done by API: admitting the account connection is a screen too.
 const web = fileURLToPath(new URL('../..', import.meta.url));
 const require = createRequire(path.join(web, 'package.json'));
 const { chromium } = require('playwright');
@@ -72,7 +71,7 @@ test('Email App: an owner gets from upload to the Connect account button with sc
   const script = await bundle();
   const browser = await chromium.launch({ headless: true, ...(process.env.DEFT_TEST_BROWSER_EXECUTABLE ? { executablePath: process.env.DEFT_TEST_BROWSER_EXECUTABLE } : {}) });
   // What the recorded workspace had done so far. Answers follow it, as the server's did.
-  const state = { phase: 'empty' as 'empty' | 'staged' | 'active', account: false };
+  const state = { phase: 'empty' as 'empty' | 'staged' | 'active', admitted: false, account: false };
   const posted: Array<{ path: string; body: any }> = [];
   const unrecorded: string[] = [];
   try {
@@ -110,7 +109,10 @@ test('Email App: an owner gets from upload to the Connect account button with sc
       if (p === `${experience}/sessions`) return reply(body?.resource_target_key === 'personal' ? answers.session_personal : answers.session_primary);
       if (method === 'DELETE' && /^\/api\/app-experiences\/sessions\/[^/]+$/.test(p)) return reply(answers.session_retire);
       if (/^\/api\/app-experiences\/sessions\/[^/]+\/access\/acquire$/.test(p)) return reply(state.account ? answers.acquire_review_required : answers.acquire_unavailable);
-      if (p === `/api/app-owner-connections/${installation}/context`) return reply(state.account ? answers.owner_context_bound : answers.owner_context_admitted);
+      if (p === `/api/app-owner-connections/${installation}/context`)
+        return reply(state.account ? answers.owner_context_bound : state.admitted ? answers.owner_context_admitted : answers.owner_context_unadmitted);
+      if (p === '/api/app-owner-connections/admissions/review') return reply(answers.admission_review);
+      if (p === '/api/app-owner-connections/admissions/activate') { state.admitted = true; return reply(answers.admission_activate); }
       if (p === `/api/app-owner-connections/${installation}/connections`) return reply(answers.owner_connections_list);
       if (p === `/api/app-connection-forms/installations/${installation}/context`) return reply(state.account ? answers.forms_context_connectable : answers.forms_context_none);
       if (p === `/api/app-connection-sessions/installations/${installation}/context`) return reply(answers.connection_context);
@@ -146,6 +148,24 @@ test('Email App: an owner gets from upload to the Connect account button with sc
     await tab.getByText('Declared actions: mirror_drafts, organize_messages, send_message.', { exact: false }).waitFor();
     await tab.getByRole('button', { name: 'Accept review and activate' }).click();
     await tab.getByText('Enabled · approved for use').waitFor();
+
+    // Admit the recorded account connection on the App's own settings screen.
+    const reviewed = (answers.admission_review.body as { review: { snapshot: { policy: { key: string; resource_key: string };
+      connection_profile: { provider_id: string; authorization_origin: string } } } }).review.snapshot;
+    const policyLabel = reviewed.policy.key.replaceAll('_', ' ');
+    const connections = tab.getByLabel('Account connections');
+    await connections.getByText('A connection profile is', { exact: false }).waitFor();
+    await connections.getByRole('button', { name: `Review admitting ${policyLabel}` }).click();
+    const admission = connections.getByLabel(`Review ${policyLabel}`);
+    await admission.getByText(`connect their own ${reviewed.policy.resource_key} account to Email`, { exact: false }).waitFor();
+    await admission.getByText(`through ${reviewed.connection_profile.provider_id} at ${reviewed.connection_profile.authorization_origin}`, { exact: false }).waitFor();
+    await admission.getByText('It does not connect any account or read anything.', { exact: false }).waitFor();
+    await admission.getByText('each of those needs its own approval and is not allowed by admitting', { exact: false }).waitFor();
+    await connections.getByRole('button', { name: `Admit ${policyLabel}` }).click();
+    await connections.getByText('Admitted. Account operator: Olive Owner.').waitFor();
+    const admitted = posted.find(item => item.path === '/api/app-owner-connections/admissions/activate');
+    assert.equal(admitted?.body.policy_key, reviewed.policy.key);
+    assert.equal(admitted?.body.accept_host_policy, true);
 
     // A new owner opening the Inbox is offered account setup, not a dead end.
     await tab.getByText('Open Inbox', { exact: true }).first().click();

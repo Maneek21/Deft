@@ -15,7 +15,7 @@ const empty = () => null;
 const app = { id: 'app', name: 'Example app', app_id: 'io.example.app', version: '1.2.3', state: 'active', manifest: { schema_version: '7', compatibility: { app_protocol: '7' }, modules: [], license: 'AGPL-3.0-only', experiences: [{ key: 'home', label: 'Home' }], sync_descriptors: [{}], runtime_actions: [{}] } };
 function card(canManage: boolean, state = 'active') {
   const context = { globalThis: {} as { AppCard?: React.ElementType }, React, AppInstallationStatus, AppWindow: empty, ShieldCheck: empty, Power: empty, Loader2: empty, FileUp: empty,
-    Link: ({ children, ...props }: any) => <a {...props}>{children}</a>, RuntimeAppSetup: () => <p>Action setup</p>, AttachmentAppUpgrade: () => <p>Update review</p>, AttachmentAppReview: () => <p>Access review</p>, ResourceAppReview: empty, ConnectedAppManagement: empty,
+    Link: ({ children, ...props }: any) => <a {...props}>{children}</a>, RuntimeAppSetup: () => <p>Action setup</p>, AttachmentAppUpgrade: () => <p>Update review</p>, AttachmentAppReview: () => <p>Access review</p>, AccountOperatorAdmission: empty, ResourceAppReview: empty, ConnectedAppManagement: empty,
     isConnectedAppManifest: () => false, canStageConnectedUpgrade: () => false, canEnableAppWithoutReview: () => false, APP_ATTACHMENT_BROKER_ENABLED: true, APP_RESOURCE_SYNC_ENABLED: true };
   vm.runInNewContext(code, context);
   return renderToStaticMarkup(React.createElement(context.globalThis.AppCard!, { app: { ...app, state }, canManage, busy: false }));
