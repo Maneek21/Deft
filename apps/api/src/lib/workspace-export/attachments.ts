@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { lstat, open, realpath } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { basename, dirname } from 'node:path';
 import { sql, type SQL } from 'drizzle-orm';
 import { localStorageKeyPath } from '../file-store.js';
 import { readableSpaceSql } from '../space-visibility.js';
@@ -30,7 +30,8 @@ export function visibleFilesSql(ctx: ExportContext): SQL {
   const userId = memberId(ctx);
   return sql`SELECT * FROM (SELECT f.id, f.filename, f.mime_type, f.size_bytes, f.content_sha256, f.storage_key, f.processing_status,
       ${workspaceAuthor(ctx, col('f.uploaded_by'))} AS uploaded_by, f.created_at,
-      EXISTS (SELECT 1 FROM files other WHERE other.storage_key = f.storage_key AND other.org_id <> f.org_id) AS storage_shared,
+      EXISTS (SELECT 1 FROM files other WHERE lower(btrim(other.storage_key)) = lower(btrim(f.storage_key))
+        AND other.org_id <> f.org_id) AS storage_shared,
       CASE
         WHEN typed.message_links + typed.task_links > 1 THEN 'ambiguous'
         WHEN typed.message_links = 1 THEN CASE WHEN ${attachableMessage(ctx, col('typed.message_id'))} THEN 'message' END
@@ -74,28 +75,64 @@ export function archiveFileName(id: string, filename: string): string {
   return `attachments/${safeId}/${name || 'file'}`;
 }
 
-export type CopyHooks = Readonly<{ beforeFileRead?: (fileId: string) => Promise<void> }>;
+/** Test seams around each attachment read; none runs in normal use. */
+export type CopyHooks = Readonly<{
+  /** Before the stored file is first looked at. */
+  beforeFileRead?: (fileId: string) => Promise<void>;
+  /** After the checks, before the file is opened. */
+  beforeOpen?: (fileId: string) => Promise<void>;
+  /** After the first chunk has been copied. */
+  duringRead?: (fileId: string) => Promise<void>;
+}>;
+
+const MISSING = { reason: 'The file is missing from the uploads folder (deleted, or never stored).' };
+const CHANGED = { reason: 'The file changed or was removed while it was being read.' };
+
+const missingAsNull = <T>(promise: Promise<T>) => promise.catch((error: NodeJS.ErrnoException) => {
+  if (error.code === 'ENOENT') return null;
+  throw error;
+});
 
 /**
  * Copies one file's bytes into the archive, or says why not. Bytes are taken
- * only from a regular file directly inside the uploads folder, whose storage
- * name no other workspace uses, and only when they match the recorded size and
- * (when recorded) SHA-256. Bytes are streamed in 64 KiB chunks.
+ * only from a regular file directly inside the uploads folder:
+ * - its real on-disk name must be exactly the stored name, so a padded,
+ *   differently cased, short (8.3) or trailing-dot alias is refused;
+ * - no other workspace's row may use that name in any case;
+ * - it must have exactly one link, so a hard link to another file is refused;
+ * - the file read must be the file checked, unchanged from before the read to
+ *   after it;
+ * - its bytes must match the recorded size and (when recorded) SHA-256.
+ * Bytes are streamed in 64 KiB chunks.
  */
 async function copyFile(writer: ArchiveWriter, uploadsRoot: string, row: FileRow, hooks: CopyHooks): Promise<{ path: string } | { reason: string }> {
   if (row.processing_status === 'blocked') return { reason: 'Blocked by the attachment safety check; bytes not included.' };
   if (row.storage_shared) return { reason: 'Its stored file name is also used by another workspace, so its owner cannot be established.' };
   let source: string;
-  try { source = localStorageKeyPath(uploadsRoot, row.storage_key); } catch { return { reason: 'Invalid stored file name.' }; }
+  try {
+    if (row.storage_key !== row.storage_key.trim() || row.storage_key.includes(':')) throw new Error('alias');
+    source = localStorageKeyPath(uploadsRoot, row.storage_key);
+  } catch {
+    return { reason: 'Invalid stored file name.' };
+  }
   await hooks.beforeFileRead?.(row.id);
-  const linkStat = await lstat(source).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error; });
-  if (!linkStat) return { reason: 'The file is missing from the uploads folder (deleted, or never stored).' };
-  if (!linkStat.isFile() || linkStat.isSymbolicLink()) return { reason: 'Not a regular file in the uploads folder.' };
-  if (dirname(await realpath(source)) !== uploadsRoot) return { reason: 'The stored file resolves outside the uploads folder.' };
-  const handle = await open(source, 'r');
+  const before = await missingAsNull(lstat(source));
+  if (!before) return MISSING;
+  if (!before.isFile() || before.isSymbolicLink()) return { reason: 'Not a regular file in the uploads folder.' };
+  if (before.nlink !== 1) return { reason: 'The stored file has more than one name (a hard link), so its owner cannot be established.' };
+  const real = await missingAsNull(realpath(source));
+  if (!real) return MISSING;
+  if (dirname(real) !== uploadsRoot || basename(real) !== row.storage_key) {
+    return { reason: 'The stored file name does not match a file in the uploads folder exactly.' };
+  }
+  await hooks.beforeOpen?.(row.id);
+  const handle = await missingAsNull(open(source, 'r'));
+  if (!handle) return MISSING;
   try {
     const opened = await handle.stat();
-    if (opened.ino !== linkStat.ino || opened.dev !== linkStat.dev) return { reason: 'The file changed while it was being read.' };
+    const same = (other: { ino: number; dev: number; size: number; mtimeMs: number; nlink: number }) =>
+      other.ino === before.ino && other.dev === before.dev && other.size === before.size && other.mtimeMs === before.mtimeMs && other.nlink === 1;
+    if (!same(opened)) return CHANGED;
     if (opened.size !== row.size_bytes) return { reason: 'The stored bytes differ from the recorded size.' };
     const path = archiveFileName(row.id, row.filename);
     const file = await writer.open(path);
@@ -106,10 +143,18 @@ async function copyFile(writer: ArchiveWriter, uploadsRoot: string, row: FileRow
         hash.update(chunk as Buffer);
         bytes += (chunk as Buffer).length;
         await file.write(chunk as Buffer);
+        if (bytes === (chunk as Buffer).length) await hooks.duringRead?.(row.id);
       }
     } catch (error) {
       await writer.discard(file);
       throw error;
+    }
+    // The same file, still in place and unmodified, after the last byte.
+    const after = await handle.stat();
+    const stillThere = await missingAsNull(lstat(source));
+    if (!same(after) || !stillThere || !same(stillThere)) {
+      await writer.discard(file);
+      return CHANGED;
     }
     const digest = `sha256:${hash.digest('hex')}`;
     if (bytes !== row.size_bytes || (row.content_sha256 && row.content_sha256 !== digest)) {

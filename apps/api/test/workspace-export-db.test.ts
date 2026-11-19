@@ -7,7 +7,7 @@
  */
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import test, { after, before } from 'node:test';
@@ -354,6 +354,15 @@ test('tasks: member scope equals the product task check; links and comments foll
   assert.equal(tasks.get(world.a.tasks.subtask!)?.parent_task_id, world.a.tasks.open);
   assert.equal(tasks.get(world.a.tasks.restricted!)?.visibility, 'restricted');
   assert.deepEqual(rows(whole, 'data/task_labels.jsonl'), [{ task_id: world.a.tasks.open, label_id: world.a.labels.bug }]);
+  // Positive sets, so an empty dataset cannot pass.
+  const pairs = (path: string, a: string, b: string) => rows(whole, path).map((row) => `${row[a]}:${row[b]}`).sort();
+  assert.deepEqual(pairs('data/task_assignees.jsonl', 'task_id', 'user_id'),
+    [`${world.a.tasks.restrictedAssigned}:${world.a.guest}`, `${world.a.tasks.open}:${world.a.other}`].sort());
+  assert.deepEqual(pairs('data/task_watchers.jsonl', 'task_id', 'user_id'), [`${world.a.tasks.restrictedWatched}:${world.a.member}`]);
+  assert.deepEqual(pairs('data/task_reactions.jsonl', 'task_id', 'user_id'), [`${world.a.tasks.open}:${world.a.member}`]);
+  assert.deepEqual(pairs('data/task_relationships.jsonl', 'source_task_id', 'target_task_id'), [`${world.a.tasks.open}:${world.a.tasks.restricted}`]);
+  assert.deepEqual(pairs('data/reactions.jsonl', 'message_id', 'user_id'), [`${world.a.messages.general}:${world.a.member}`]);
+  assert.deepEqual(rows(whole, 'data/canvases.jsonl').map((row) => row.space_id), [world.a.spaces.privateOthers]);
   const comments = rows(whole, 'data/task_comments.jsonl');
   assert.equal(comments.length, 2, 'comments on open and restricted; not the deleted comment or the deleted task');
 });
@@ -396,10 +405,20 @@ test('notes, folders, wiki and events: member scope equals what the product rout
     assert.deepEqual(rows(exported, 'data/wiki_pages.jsonl').map((row) => row.id).sort(), wiki.pages.map((row: any) => row.id).sort(), `wiki for ${userId}`);
     const pages = new Set(wiki.pages.map((row: any) => row.id));
     for (const row of rows(exported, 'data/wiki_links.jsonl')) assert.ok(pages.has(row.source_page_id) && pages.has(row.target_page_id));
-    // Events: the Calendar's events.
+    // Events: the Calendar's events, less cancelled ones (never more than the Calendar).
     const calendar = await (await as(userId, calendarPath)).json() as any;
     assert.deepEqual(rows(exported, 'data/events.jsonl').map((row) => row.id).sort(),
-      calendar.events.map((row: any) => row.id).sort(), `events for ${userId}`);
+      calendar.events.filter((row: any) => row.metadata?.status !== 'canceled').map((row: any) => row.id).sort(), `events for ${userId}`);
+    // Note shares: exactly what GET /api/daily-notes/:id/shares lists for the member's own notes.
+    const ownNotes = (await client.query<{ id: string }>('SELECT id FROM notes WHERE org_id = $1 AND user_id = $2 AND NOT is_deleted',
+      [world.a.orgId, userId])).rows;
+    const productShares: string[] = [];
+    for (const { id } of ownNotes) {
+      const shares = await (await as(userId, `/api/daily-notes/${id}/shares`)).json() as any;
+      productShares.push(...shares.shares.map((share: any) => `${id}:${share.user_id}`));
+    }
+    assert.deepEqual(rows(exported, 'data/note_shares.jsonl').map((row) => `${row.note_id}:${row.shared_with_user_id}`).sort(),
+      productShares.sort(), `note shares for ${userId}`);
     // Spaces named by notes and pages are spaces in the export.
     const spaces = new Set(rows(exported, 'data/spaces.jsonl').map((row) => row.id));
     for (const row of [...noteRows.values(), ...rows(exported, 'data/wiki_pages.jsonl')]) {
@@ -410,6 +429,16 @@ test('notes, folders, wiki and events: member scope equals what the product rout
   const whole = await runExport({ scope: { kind: 'workspace' } });
   const events = new Map(rows(whole, 'data/events.jsonl').map((row) => [row.id, row]));
   assert.equal(events.get(world.a.events.noOwner!)?.user_id, null);
+  assert.ok(events.has(world.a.events.memberCanceled!), 'the whole workspace keeps cancelled events');
+  assert.equal(events.get(world.a.events.nested!)?.location, null, 'an object in place of text is not written');
+  // Positive sets, so an empty dataset cannot pass.
+  assert.deepEqual(rows(whole, 'data/note_shares.jsonl').map((row) => `${row.note_id}:${row.shared_with_user_id}`),
+    [`${world.a.notes.sharedWithMember}:${world.a.member}`], 'only shares to active members of this workspace');
+  assert.deepEqual(rows(whole, 'data/wiki_links.jsonl').map((row) => row.target_page_id).sort(),
+    [world.a.wiki.personalOther, world.a.wiki.spacePrivateWithMember].sort());
+  const folders = rows(whole, 'data/note_folders.jsonl');
+  assert.equal(folders.length, 3);
+  assert.equal(folders.filter((row) => row.user_id === null).length, 1, 'a folder owner from another workspace is not named');
   const member = events.get(world.a.events.member!)!;
   assert.deepEqual(member.attendees, [{ email: 'guest@example.test', name: 'attendee' }]);
   assert.equal(member.recurrence.rrule, 'FREQ=WEEKLY;COUNT=4');
@@ -441,7 +470,11 @@ test('attachments: included bytes are exact and checksummed; every other file sa
   }
   assert.deepEqual(files.get(world.a.files.legacyTaskBeforeMessage!)!.attached_to, { task_id: world.a.tasks.restricted });
   assert.ok(!files.has(world.a.files.onDeletedMessage!), 'a file on a deleted message is not exported');
-  for (const key of ['ambiguous', 'blocked', 'missing', 'sizeMismatch', 'hashMismatch', 'namesBStorage']) {
+  assert.ok(!files.has(world.a.files.onDeletedTask!), 'a file on a deleted task is not exported');
+  assert.deepEqual(files.get(world.a.files.typedOverLegacy!)!.attached_to, { message_id: world.a.messages.privateOthers });
+  assert.equal(files.get(world.a.files.stagedByMember!)!.included, true);
+  for (const key of ['ambiguous', 'messageAndTask', 'blocked', 'missing', 'sizeMismatch', 'hashMismatch', 'namesBStorage',
+    'paddedAlias', 'caseAlias', 'hardLink']) {
     const row = files.get(world.a.files[key]!)!;
     assert.equal(row.included, false, key);
     assert.equal(row.archive_path, null, key);
@@ -465,6 +498,72 @@ test('attachments: a file deleted after the snapshot is reported, never referenc
     assert.match(rows(exported, 'omissions.jsonl').find((omission) => omission.id === victim)!.reason, /missing/);
   } finally {
     await writeFile(join(world.uploadsDir, storage), saved);
+  }
+});
+
+test('attachments: a file replaced, rewritten or removed during the read is reported, never included', { skip }, async () => {
+  // Files without a recorded checksum, so only the identity checks can notice the change.
+  const make = async (label: string) => {
+    const fileId = randomUUID();
+    const storage = `${fileId}-race.bin`;
+    const bytes = Buffer.alloc(200 * 1024, 1);
+    await writeFile(join(world.uploadsDir, storage), bytes);
+    await client.query(`INSERT INTO files (id, org_id, uploaded_by, filename, mime_type, size_bytes, storage_key)
+      VALUES ($1, $2, $3, $4, 'application/octet-stream', $5, $6)`, [fileId, world.a.orgId, world.a.member, `${label}.bin`, bytes.length, storage]);
+    return { fileId, path: join(world.uploadsDir, storage), size: bytes.length };
+  };
+  const replaced = await make('replaced');
+  const rewritten = await make('rewritten');
+  const removed = await make('removed');
+  try {
+    const exported = await runExport({ scope: { kind: 'workspace' }, hooks: {
+      beforeOpen: async (fileId) => {
+        if (fileId !== replaced.fileId) return;
+        await rm(replaced.path);
+        await writeFile(replaced.path, Buffer.alloc(replaced.size, 2));
+      },
+      duringRead: async (fileId) => {
+        if (fileId === rewritten.fileId) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          await writeFile(rewritten.path, Buffer.alloc(rewritten.size, 3));
+        }
+        if (fileId === removed.fileId) await rm(removed.path);
+      },
+    } });
+    const list = new Map(rows(exported, 'data/files.jsonl').map((row) => [row.id, row]));
+    const reasons = new Map(rows(exported, 'omissions.jsonl').map((row) => [row.id, row.reason]));
+    for (const { fileId } of [replaced, rewritten, removed]) {
+      assert.equal(list.get(fileId)?.included, false, fileId);
+      assert.match(reasons.get(fileId) ?? '', /changed|missing/);
+      assert.ok(![...exported.files.keys()].some((path) => path.startsWith(`attachments/${fileId}/`)));
+    }
+  } finally {
+    for (const { fileId, path } of [replaced, rewritten, removed]) {
+      await client.query('DELETE FROM files WHERE id = $1', [fileId]);
+      await rm(path, { force: true });
+    }
+  }
+});
+
+test('attachments: a symbolic link in the uploads folder is never followed', { skip }, async () => {
+  const fileId = randomUUID();
+  const storage = `${fileId}-symlink.bin`;
+  const outside = join(scratch, `outside-${fileId}.txt`);
+  await writeFile(outside, `outside ${SECRET_MARKER}`);
+  try {
+    await symlink(outside, join(world.uploadsDir, storage));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EPERM') return; // Windows without the privilege to create symlinks.
+    throw error;
+  }
+  try {
+    await client.query(`INSERT INTO files (id, org_id, uploaded_by, filename, mime_type, size_bytes, storage_key)
+      VALUES ($1, $2, $3, 'link.txt', 'text/plain', $4, $5)`, [fileId, world.a.orgId, world.a.member, `outside ${SECRET_MARKER}`.length, storage]);
+    const exported = await runExport({ scope: { kind: 'workspace' } });
+    assert.equal(rows(exported, 'data/files.jsonl').find((row) => row.id === fileId)?.included, false);
+  } finally {
+    await client.query('DELETE FROM files WHERE id = $1', [fileId]);
+    await rm(join(world.uploadsDir, storage), { force: true });
   }
 });
 
