@@ -681,6 +681,32 @@ test('attachments: the shared-database decision counts any trace of another work
     assert.equal(await decide(), true, 'a file row left by a deleted workspace');
     await scratchDb.query(`DELETE FROM files WHERE org_id = 'gone'; INSERT INTO orgs VALUES ('other')`);
     assert.equal(await decide(), true, 'another workspace with no members or content');
+
+    // The search path of the role or connection cannot change what is read:
+    // a decoy schema first in the path, holding a one-row orgs table and no
+    // workspace columns, is ignored; the pinned schema is scanned and read.
+    await scratchDb.query(`DELETE FROM orgs WHERE id = 'other'; INSERT INTO notes VALUES ('n3', 'gone');
+      CREATE SCHEMA personal; CREATE TABLE personal.orgs (id text); INSERT INTO personal.orgs VALUES ('ours')`);
+    const decoyUrl = new URL(url.toString());
+    decoyUrl.searchParams.set('options', '-c search_path=personal,public');
+    const pinned = await Snapshot.open({ databaseUrl: decoyUrl.toString() });
+    try {
+      assert.equal((await pinned.all<{ search_path: string }>(sql`SHOW search_path`))[0]!.search_path, 'pg_catalog, public');
+      assert.equal(await databaseIsShared(pinned, 'ours'), true, 'the note left in public is found despite the decoy');
+      await assert.rejects(pinned.requireTables(['orgs', 'missing_table']), /not found there: missing_table/);
+    } finally {
+      await pinned.close();
+    }
+    // Deft's tables are not in the schema asked for: refused, naming what is missing.
+    const wrongSchema = await Snapshot.open({ databaseUrl: url.toString(), schema: 'personal' });
+    try {
+      await assert.rejects(wrongSchema.requireTables(['orgs', 'files', 'notes']), /schema "personal" \(not found there: files, notes\)/);
+    } finally {
+      await wrongSchema.close();
+    }
+    // A workspace column whose name differs only in case would escape the scan: refused.
+    await scratchDb.query(`DELETE FROM notes WHERE org_id = 'gone'; CREATE TABLE odd ("Org_Id" text)`);
+    await assert.rejects(decide(), /not named exactly org_id in: odd/);
   } finally {
     await scratchDb.end();
     await client.query(`DROP DATABASE IF EXISTS ${name}`);

@@ -17,6 +17,8 @@ export type ExportOptions = Readonly<{
   /** Folder to create; it must not exist or be empty. */
   outDir: string;
   deftVersion?: string | null;
+  /** The schema Deft's tables are in (default "public"). The export reads that schema alone. */
+  databaseSchema?: string;
   batchSize?: number;
   onFetch?: (rows: number) => void;
   /** Test seam: called after each JSON Lines record is written. */
@@ -32,6 +34,12 @@ export type ExportOptions = Readonly<{
   allowSharedUploads?: boolean;
 }>;
 
+/** Every table the export reads, directly or through the product's visibility rules. All must be in the pinned schema. */
+export const EXPORT_TABLES: readonly string[] = ['orgs', 'users', 'org_members', 'agent_employees', 'spaces', 'space_members',
+  'messages', 'reactions', 'canvases', 'projects', 'labels', 'tasks', 'task_assignees', 'task_watchers', 'task_labels',
+  'task_relationships', 'task_reactions', 'task_comments', 'note_folders', 'notes', 'note_shares', 'wiki_pages', 'wiki_links',
+  'events', 'files', 'message_attachments', 'task_attachments'];
+
 export type ExportResult = Readonly<{ root: string; manifest: ExportManifest }>;
 
 export const DATASETS: readonly Dataset[] = [...PEOPLE_AND_SPACES, ...MESSAGES_AND_TASKS, ...NOTES_WIKI_EVENTS];
@@ -42,8 +50,10 @@ export const DATASETS: readonly Dataset[] = [...PEOPLE_AND_SPACES, ...MESSAGES_A
  * A folder without SHA256SUMS is an export that did not finish.
  */
 export async function exportWorkspace(options: ExportOptions): Promise<ExportResult> {
-  const snapshot = await Snapshot.open({ databaseUrl: options.databaseUrl, batchSize: options.batchSize, onFetch: options.onFetch });
+  const snapshot = await Snapshot.open({ databaseUrl: options.databaseUrl, batchSize: options.batchSize, onFetch: options.onFetch,
+    schema: options.databaseSchema });
   try {
+    await snapshot.requireTables(EXPORT_TABLES);
     const workspace = await resolveWorkspace(snapshot, options.workspace);
     const scope = await resolveScope(snapshot, workspace.id, options.scope);
     const ctx: ExportContext = { orgId: workspace.id, scope };
@@ -79,6 +89,7 @@ export async function exportWorkspace(options: ExportOptions): Promise<ExportRes
           workspace: { id: workspace.id, slug: workspace.slug, name: workspace.name },
           scope: scope.kind === 'workspace' ? { kind: 'workspace' } : { kind: 'member', user_id: scope.user_id, role: scope.role },
           as_of: snapshot.asOf.toISOString(),
+          database_schema: snapshot.schema,
           attachments: { shared_database: attachments.shared_database, shared_uploads_allowed: options.allowSharedUploads === true,
             copy_allowed: attachments.copy_allowed, files_copied: attachments.files_copied },
           complete: writer.omissions === 0,

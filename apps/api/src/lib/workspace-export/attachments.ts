@@ -114,14 +114,18 @@ const identity = (info: { dev: number; ino: number }) => `${info.dev}:${info.ino
  * file is trusted as this workspace's.
  */
 export async function databaseIsShared(snapshot: Snapshot, orgId: string): Promise<boolean> {
+  // The scan reads the same pinned schema every export query reads (Snapshot), named explicitly here.
   const [base] = await snapshot.all<{ shared: boolean }>(sql`SELECT ((SELECT count(*) FROM orgs) <> 1
     OR NOT EXISTS (SELECT 1 FROM orgs WHERE id = ${orgId})) AS shared`);
   if (base?.shared !== false) return true;
+  const mixedCase = await snapshot.all<{ table_name: string }>(sql`SELECT table_name FROM information_schema.columns
+    WHERE table_schema = ${snapshot.schema} AND lower(column_name) = 'org_id' AND column_name <> 'org_id'`);
+  if (mixedCase.length) throw new Error(`A workspace column is not named exactly org_id in: ${mixedCase.map((row) => row.table_name).join(', ')}; export stopped.`);
   const tables = await snapshot.all<{ table_name: string }>(sql`SELECT c.table_name FROM information_schema.columns c
     JOIN information_schema.tables t ON t.table_schema = c.table_schema AND t.table_name = c.table_name AND t.table_type = 'BASE TABLE'
-    WHERE c.table_schema = current_schema() AND c.column_name = 'org_id' ORDER BY c.table_name`);
+    WHERE c.table_schema = ${snapshot.schema} AND c.column_name = 'org_id' ORDER BY c.table_name`);
   for (const { table_name: table } of tables) {
-    const [found] = await snapshot.all<{ other: boolean }>(sql`SELECT EXISTS (SELECT 1 FROM ${sql.identifier(table)}
+    const [found] = await snapshot.all<{ other: boolean }>(sql`SELECT EXISTS (SELECT 1 FROM ${sql.identifier(snapshot.schema)}.${sql.identifier(table)}
       WHERE org_id IS NOT NULL AND org_id::text <> ${orgId}) AS other`);
     if (found?.other !== false) return true;
   }

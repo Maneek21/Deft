@@ -43,6 +43,8 @@ export type ExportManifest = Readonly<{
   scope: Readonly<{ kind: 'workspace' } | { kind: 'member'; user_id: string; role: string }>;
   /** Start time of the single database snapshot every dataset was read from. */
   as_of: string;
+  /** The one database schema every query of the export read from. */
+  database_schema: string;
   /** False when anything in scope could not be included; see omissions.jsonl. */
   /**
    * shared_database: this database holds, or held, another workspace (see
