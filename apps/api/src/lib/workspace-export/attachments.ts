@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { lstat, open, realpath } from 'node:fs/promises';
+import { lstat, open, realpath, stat } from 'node:fs/promises';
 import { basename, dirname } from 'node:path';
 import { sql, type SQL } from 'drizzle-orm';
 import { localStorageKeyPath } from '../file-store.js';
@@ -8,7 +8,7 @@ import { col } from './datasets.js';
 import { exportableTask } from './datasets-content.js';
 import { memberId, workspaceAuthor, type ExportContext } from './scope.js';
 import type { Snapshot } from './snapshot.js';
-import type { ArchiveWriter } from './writer.js';
+import { assertArchivePath, type ArchiveWriter } from './writer.js';
 
 const CHUNK_BYTES = 64 * 1024;
 
@@ -30,7 +30,7 @@ function attachmentsQuery(ctx: ExportContext): SQL {
   const userId = memberId(ctx);
   return sql`SELECT * FROM (SELECT f.id, f.filename, f.mime_type, f.size_bytes, f.content_sha256, f.storage_key, f.processing_status,
       ${workspaceAuthor(ctx, col('f.uploaded_by'))} AS uploaded_by, f.created_at,
-      EXISTS (SELECT 1 FROM files other WHERE lower(btrim(other.storage_key)) = lower(btrim(f.storage_key))
+      EXISTS (SELECT 1 FROM files other WHERE lower(other.storage_key) = lower(f.storage_key)
         AND other.org_id <> f.org_id) AS storage_shared,
       CASE
         WHEN typed.message_links + typed.task_links > 1 THEN 'ambiguous'
@@ -62,14 +62,21 @@ type FileRow = {
 /** A readable file name for the archive: the original name, with characters no file system accepts replaced. */
 export function archiveFileName(id: string, filename: string): string {
   const safeId = /^[A-Za-z0-9_-]{1,128}$/.test(id) ? id : createHash('sha256').update(id).digest('hex');
-  let name = filename.normalize('NFC').replace(/[\u0000-\u001f\u007f<>:"/\\|?*]/gu, '_').replace(/[. ]+$/u, '').trim();
-  if (/^(con|prn|aux|nul|com\d|lpt\d)(\..*)?$/iu.test(name)) name = `_${name}`;
+  let name = filename.normalize('NFC').replace(/[\u0000-\u001f\u007f<>:"/\\|?*]/gu, '_');
   if (name.length > 150) {
     const dot = name.lastIndexOf('.');
     const extension = dot > 0 && name.length - dot <= 16 ? name.slice(dot) : '';
     name = name.slice(0, 150 - extension.length) + extension;
   }
-  return `attachments/${safeId}/${name || 'file'}`;
+  // After shortening: no trailing dot or space, and never a device name.
+  name = name.replace(/[. ]+$/u, '').trim();
+  const path = `attachments/${safeId}/${name || 'file'}`;
+  try {
+    assertArchivePath(path);
+    return path;
+  } catch {
+    return `attachments/${safeId}/_${name || 'file'}`.replace(/[. ]+$/u, '');
+  }
 }
 
 /** Test seams around each attachment read; none runs in normal use. */
@@ -81,6 +88,34 @@ export type CopyHooks = Readonly<{
   /** After the first chunk has been copied. */
   duringRead?: (fileId: string) => Promise<void>;
 }>;
+
+const SHARED = { reason: 'Its stored file is also named by another workspace, so its owner cannot be established.' };
+
+/** A plain stored name: ASCII letters, digits, dot, dash, underscore and inner spaces, as Deft itself creates. */
+const REGULAR_KEY = '^[A-Za-z0-9_-]([A-Za-z0-9._ -]*[A-Za-z0-9_-])?$';
+
+const identity = (info: { dev: number; ino: number }) => `${info.dev}:${info.ino}`;
+
+/**
+ * Every file that another workspace reaches through an irregular stored name
+ * (surrounding or unusual whitespace, a trailing dot, a short 8.3 name, a
+ * stream suffix, non-ASCII letters), identified by the file itself rather than
+ * its name. Regular names are compared in SQL, ignoring case; irregular ones
+ * are resolved here exactly as the file store would resolve them, so no alias
+ * on either side can claim the same bytes. Deft never creates irregular
+ * names, so this set stays small.
+ */
+async function foreignAliasIdentities(snapshot: Snapshot, ctx: ExportContext, uploadsRoot: string): Promise<Set<string>> {
+  const identities = new Set<string>();
+  for await (const row of snapshot.rows<{ storage_key: string }>(sql`SELECT DISTINCT storage_key FROM files
+      WHERE org_id <> ${ctx.orgId} AND storage_key !~ ${REGULAR_KEY}`)) {
+    let source: string;
+    try { source = localStorageKeyPath(uploadsRoot, row.storage_key); } catch { continue; }
+    const info = await stat(source).catch(() => null);
+    if (info) identities.add(identity(info));
+  }
+  return identities;
+}
 
 const MISSING = { reason: 'The file is missing from the uploads folder (deleted, or never stored).' };
 const CHANGED = { reason: 'The file changed or was removed while it was being read.' };
@@ -102,9 +137,9 @@ const missingAsNull = <T>(promise: Promise<T>) => promise.catch((error: NodeJS.E
  * - its bytes must match the recorded size and (when recorded) SHA-256.
  * Bytes are streamed in 64 KiB chunks.
  */
-async function copyFile(writer: ArchiveWriter, uploadsRoot: string, row: FileRow, hooks: CopyHooks): Promise<{ path: string } | { reason: string }> {
+async function copyFile(writer: ArchiveWriter, uploadsRoot: string, row: FileRow, hooks: CopyHooks, foreign: ReadonlySet<string>): Promise<{ path: string } | { reason: string }> {
   if (row.processing_status === 'blocked') return { reason: 'Blocked by the attachment safety check; bytes not included.' };
-  if (row.storage_shared) return { reason: 'Its stored file name is also used by another workspace, so its owner cannot be established.' };
+  if (row.storage_shared) return SHARED;
   let source: string;
   try {
     if (row.storage_key !== row.storage_key.trim() || row.storage_key.includes(':')) throw new Error('alias');
@@ -117,6 +152,7 @@ async function copyFile(writer: ArchiveWriter, uploadsRoot: string, row: FileRow
   if (!before) return MISSING;
   if (!before.isFile() || before.isSymbolicLink()) return { reason: 'Not a regular file in the uploads folder.' };
   if (before.nlink !== 1) return { reason: 'The stored file has more than one name (a hard link), so its owner cannot be established.' };
+  if (foreign.has(identity(before))) return SHARED;
   const real = await missingAsNull(realpath(source));
   if (!real) return MISSING;
   if (dirname(real) !== uploadsRoot || basename(real) !== row.storage_key) {
@@ -168,11 +204,12 @@ async function copyFile(writer: ArchiveWriter, uploadsRoot: string, row: FileRow
 /** Writes data/files.jsonl and the attachment bytes. Every file not included is listed in omissions.jsonl. */
 export async function exportAttachments(snapshot: Snapshot, writer: ArchiveWriter, ctx: ExportContext, uploadsDir: string, hooks: CopyHooks = {}) {
   const uploadsRoot = await realpath(uploadsDir);
+  const foreign = await foreignAliasIdentities(snapshot, ctx, uploadsRoot);
   const list = await writer.jsonl('data/files.jsonl');
   for await (const row of snapshot.rows<FileRow>(attachmentsQuery(ctx))) {
     const result = row.attached_as === 'ambiguous'
       ? { reason: 'Linked to more than one message or task, so Deft shows it to nobody.' }
-      : await copyFile(writer, uploadsRoot, row, hooks);
+      : await copyFile(writer, uploadsRoot, row, hooks, foreign);
     await list.write({
       id: row.id, filename: row.filename, mime_type: row.mime_type, size_bytes: row.size_bytes,
       sha256: row.content_sha256?.replace(/^sha256:/, '') ?? null, uploaded_by: row.uploaded_by, created_at: row.created_at,

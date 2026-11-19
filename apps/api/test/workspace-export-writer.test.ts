@@ -68,3 +68,13 @@ test('the writer refuses a non-empty folder and the reserved checksum names', as
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('attachment names in the archive are always storable, even after shortening or when they spell a device', async () => {
+  const { archiveFileName } = await import('../src/lib/workspace-export/attachments.js');
+  for (const filename of [`${'a'.repeat(149)}.${'b'.repeat(20)}`, 'COM¹.txt', 'con', 'NUL.tar.gz', 'name. ', '...', '', 'a/b\c:d', `${'é'.repeat(300)}.pdf`]) {
+    const path = archiveFileName('f1', filename);
+    assertArchivePath(path);
+    assert.ok(path.startsWith('attachments/f1/'), path);
+  }
+  assert.equal(archiveFileName('f1', 'Report final.pdf'), 'attachments/f1/Report final.pdf');
+});

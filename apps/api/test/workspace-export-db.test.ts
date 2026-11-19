@@ -471,7 +471,7 @@ test('attachments: included bytes are exact and checksummed; every other file sa
   assert.deepEqual(files.get(world.a.files.typedOverLegacy!)!.attached_to, { message_id: world.a.messages.privateOthers });
   assert.equal(files.get(world.a.files.stagedByMember!)!.included, true);
   for (const key of ['ambiguous', 'messageAndTask', 'blocked', 'missing', 'sizeMismatch', 'hashMismatch', 'namesBStorage',
-    'paddedAlias', 'caseAlias', 'hardLink']) {
+    'paddedAlias', 'caseAlias', 'hardLink', 'reverseAlias']) {
     const row = files.get(world.a.files[key]!)!;
     assert.equal(row.included, false, key);
     assert.equal(row.archive_path, null, key);
@@ -512,9 +512,12 @@ test('attachments: a file replaced, rewritten or removed during the read is repo
   const replaced = await make('replaced');
   const rewritten = await make('rewritten');
   const removed = await make('removed');
+  const vanished = await make('vanished');
   try {
     const exported = await runExport({ scope: { kind: 'workspace' }, hooks: {
       beforeOpen: async (fileId) => {
+        // Removed after the checks, before the open: reported missing, not an aborted export.
+        if (fileId === vanished.fileId) await rm(vanished.path);
         if (fileId !== replaced.fileId) return;
         await rm(replaced.path);
         await writeFile(replaced.path, Buffer.alloc(replaced.size, 2));
@@ -529,13 +532,13 @@ test('attachments: a file replaced, rewritten or removed during the read is repo
     } });
     const list = new Map(rows(exported, 'data/files.jsonl').map((row) => [row.id, row]));
     const reasons = new Map(rows(exported, 'omissions.jsonl').map((row) => [row.id, row.reason]));
-    for (const { fileId } of [replaced, rewritten, removed]) {
+    for (const { fileId } of [replaced, rewritten, removed, vanished]) {
       assert.equal(list.get(fileId)?.included, false, fileId);
       assert.match(reasons.get(fileId) ?? '', /changed|missing/);
       assert.ok(![...exported.files.keys()].some((path) => path.startsWith(`attachments/${fileId}/`)));
     }
   } finally {
-    for (const { fileId, path } of [replaced, rewritten, removed]) {
+    for (const { fileId, path } of [replaced, rewritten, removed, vanished]) {
       await client.query('DELETE FROM files WHERE id = $1', [fileId]);
       await rm(path, { force: true });
     }
