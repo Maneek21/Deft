@@ -120,7 +120,13 @@ export class ArchiveWriter {
     if ((await readdir(absolute)).length > 0) throw new Error(`Output folder is not empty: ${absolute}`);
     const writer = new ArchiveWriter(absolute);
     writer.sums = guard(createWriteStream(join(absolute, 'SHA256SUMS.partial'), { flags: 'wx' }));
-    writer.omissionsFile = new JsonlFile(await writer.open('omissions.jsonl'));
+    try {
+      writer.omissionsFile = new JsonlFile(await writer.open('omissions.jsonl'));
+    } catch (error) {
+      // The caller never gets this writer, so close what it already opened.
+      await writer.abort();
+      throw error;
+    }
     return writer;
   }
 
