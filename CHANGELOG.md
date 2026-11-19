@@ -13,9 +13,10 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 ### Release candidate `0.3.0-preview.144` — publication pending
 
 The `0.3.0-preview.144` host is a release preparation candidate. No release tag or
-image is implied by this entry, and public installation instructions continue to use
-the latest published release. Release scope `core` (no Hermes compatibility claim).
-Changes since `v0.3.0-preview.143`.
+image is implied by this entry. Public installation instructions remain pinned to the
+published `0.3.0-preview.142` release; they move after `0.3.0-preview.144` is published
+and verified. Release scope `core` (no Hermes compatibility claim). Changes since
+`v0.3.0-preview.143`.
 
 Upgrade notes:
 
@@ -169,8 +170,9 @@ Assistant and approvals:
   failure is a normal result with `status: "pending"` and `retryable: true`.
 - Error text from a failed action is no longer passed through when it is a database or
   driver error (which carries SQL and bound values): the answer, the stored action
-  error and the MCP result carry a fixed message with a reference id, and the detail is
-  logged on the server under that id.
+  error and the MCP result carry a fixed message with a reference id. The server logs
+  the same reference with a fixed failure message; database error details are not
+  logged.
 - One assistant reply per space at a time: the job queue no longer starts an
   `agent-reply` while another for the same workspace and space is running with a live
   lease, or is older and due. An expired lease never blocks. This assumes a single API
@@ -212,9 +214,10 @@ Reliability and health:
 - When job workers or the scheduler fail to start, the API keeps retrying (after 1, 2,
   4, then every 8 seconds) until they start or shutdown begins, instead of giving up
   after five attempts.
-- `/health` stays a liveness check (200, `status: ok`). `/health/ready` answers 503
-  `DATABASE_NOT_READY` when the database query fails, and 503 with
-  `checks.job_workers` until job startup has succeeded.
+- `/health` and `/health/ready` now report `paused` (`true` under a paused start, when
+  both still answer 200). Unchanged from 143: `/health` is a liveness check, and
+  `/health/ready` answers 503 until the database and the job workers are ready. See
+  "Health checks and a paused start" in `docs/self-hosting.md`.
 
 Logs:
 
@@ -247,8 +250,7 @@ Notifications and the web app:
   recognises this browser's own subscription, so a subscription on another device no
   longer hides the Enable button.
 - Queued chat notifications are delivered even when an Inbox check found them first,
-  and access and preferences are checked again before sending. A subscription is
-  removed when the push service answers 404 or 410.
+  and access and preferences are checked again before sending.
 
 Hosted mode (`DEFT_HOSTED=true` only; self-hosted installs are unaffected):
 
@@ -294,8 +296,9 @@ Security and dependencies:
   the configured API and realtime origins, and adds `form-action 'self'` and
   `base-uri 'self'`.
 - Next.js 16.4.6 (advisory GHSA-mfr8-8qww-v76h).
-- The dependency audit temporarily ignores picomatch advisory GHSA-fc5q-39xc-vjpf,
-  which has no patched release yet; to be revisited by 2 December 2026.
+- The dependency audit configuration carries a temporary ignore for picomatch advisory
+  GHSA-fc5q-39xc-vjpf, which GitHub withdrew on 18 November 2026; the exception is
+  reviewed by 2 December 2026.
 
 Database and restore:
 
