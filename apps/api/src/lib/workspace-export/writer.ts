@@ -106,6 +106,8 @@ export class ArchiveWriter {
   private sums!: Writable;
   private omissionsFile!: JsonlFile;
   private readonly openFiles = new Set<ArchiveFile>();
+  /** How many omissions of each kind and reason; reasons are a fixed set, so this stays small. */
+  readonly omissionSummary = new Map<string, { kind: string; reason: string; count: number }>();
   /** Test seam: called after every JSON Lines record is written. */
   onRecord?: () => void;
 
@@ -162,6 +164,10 @@ export class ArchiveWriter {
   }
 
   async omit(omission: Omission): Promise<void> {
+    const key = `${omission.kind}|${omission.reason}`;
+    const entry = this.omissionSummary.get(key) ?? { kind: omission.kind, reason: omission.reason, count: 0 };
+    entry.count += 1;
+    this.omissionSummary.set(key, entry);
     await this.omissionsFile.write(omission);
   }
 

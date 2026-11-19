@@ -534,3 +534,46 @@ test('Contacts: records with declared fields only, relations between live record
     await client.query('UPDATE module_installations SET is_enabled = true, disabled_at = NULL WHERE id = $1', [world.a.contacts.installation]);
   }
 });
+
+test('readable: README states scope, counts, omissions and what is not included; mail has a reserved place', { skip }, async () => {
+  for (const scope of [{ kind: 'workspace' as const }, { kind: 'member' as const, member: world.a.member }]) {
+    const exported = await runExport({ scope });
+    const readme = exported.files.get('README.txt')!.toString('utf8');
+    assert.match(readme, scope.kind === 'workspace' ? /including private spaces and direct messages/ : /Only what a member can see/);
+    const countLines = readme.split('\n').filter((line) => line.endsWith(')') && line.startsWith('  '));
+    for (const dataset of exported.manifest.datasets) {
+      assert.ok(countLines.some((line) => line.trim().startsWith(`${dataset.records}  `) && line.endsWith(`(${dataset.path})`)), dataset.path);
+    }
+    assert.match(readme, /Mail and mail attachments: not included/);
+    assert.match(readme, /Could not be included:/);
+    assert.match(exported.files.get('mail/README.txt')!.toString('utf8'), /Mail is not included by this export command/);
+    const html = exported.files.get('README.html')!.toString('utf8');
+    assert.match(html, /<a href="conversations\/index.html">/);
+    assert.ok(!html.includes('<script'));
+  }
+});
+
+test('readable: one escaped transcript per exported space, holding exactly the exported messages', { skip }, async () => {
+  for (const scope of [{ kind: 'workspace' as const }, { kind: 'member' as const, member: world.a.member }, { kind: 'member' as const, member: world.a.guest }]) {
+    const exported = await runExport({ scope });
+    const messages = rows(exported, 'data/messages.jsonl');
+    const spaceIds = new Set(rows(exported, 'data/spaces.jsonl').map((row) => row.id));
+    const transcriptIds: string[] = [];
+    for (const [path, bytes] of exported.files) {
+      const match = /^conversations\/([^/]+)\.html$/.exec(path);
+      if (!match || match[1] === 'index') continue;
+      assert.ok(spaceIds.has(match[1]!), `transcript for a space not in the export: ${path}`);
+      const html = bytes.toString('utf8');
+      assert.ok(!/<script|<img/i.test(html), `${path} contains active markup`);
+      transcriptIds.push(...[...html.matchAll(/id="m-([^"]+)"/g)].map((found) => found[1]!));
+      for (const link of html.matchAll(/href="\.\.\/(attachments\/[^"]+)"/g)) {
+        assert.ok(exported.files.has(decodeURIComponent(link[1]!)), `${path} links to a missing file ${link[1]}`);
+      }
+    }
+    assert.deepEqual(transcriptIds.sort(), messages.map((row) => row.id).sort());
+  }
+  const whole = await runExport({ scope: { kind: 'workspace' } });
+  const general = whole.files.get(`conversations/${world.a.spaces.general}.html`)!.toString('utf8');
+  assert.ok(general.includes('&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;&lt;img src=x onerror=alert(1)&gt; &amp; done'));
+  assert.match(general, /missing\.txt <span class="muted">\(not included; see omissions\)/);
+});

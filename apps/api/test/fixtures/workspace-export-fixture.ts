@@ -155,6 +155,7 @@ async function seedContent(s: Seeder, ws: WorkspaceIds, isB: boolean, ids: strin
   await message('toolResult', ws.spaces.agentConversation, ws.agentUser, { metadata: { kind: 'tool_result' } });
   await message('hidden', ws.spaces.agentConversation, ws.agentUser, { metadata: { hidden: true } });
   await message('byFormer', ws.spaces.general, ws.former);
+  await message('html', ws.spaces.general, ws.member, { content: text(isB, '<script>alert("x")</script><img src=x onerror=alert(1)> & done') });
   await s.insert('reactions', { id: id(), message_id: messages.general, user_id: ws.member, emoji: '👍' });
   await s.insert('canvases', { id: id(), org_id: ws.orgId, space_id: ws.spaces.privateOthers, title: text(isB, 'canvas'),
     content: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: text(isB, 'canvas text') }] }] }, last_edited_by: ws.other });
