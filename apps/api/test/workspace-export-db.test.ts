@@ -7,13 +7,15 @@
  */
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import test, { after, before } from 'node:test';
 import { Hono } from 'hono';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 import { B_MARKER, SECRET_MARKER, dropExportWorld, seedExportWorld, type ExportWorld } from './fixtures/workspace-export-fixture.js';
@@ -33,8 +35,9 @@ before(async () => {
   if (skip) return;
   client = new pg.Client({ connectionString: databaseUrl });
   await client.connect();
-  world = await seedExportWorld(client);
   scratch = await mkdtemp(join(tmpdir(), 'deft-export-test-'));
+  await mkdir(join(scratch, 'uploads'));
+  world = await seedExportWorld(client, join(scratch, 'uploads'));
 });
 
 after(async () => {
@@ -55,7 +58,7 @@ async function listFiles(root: string, dir = root): Promise<string[]> {
 
 async function runExport(options: Partial<ExportOptions> & Pick<ExportOptions, 'scope'>, orgSlug = world.a.slug): Promise<Exported> {
   const outDir = join(scratch, `export-${++counter}`);
-  const result = await exportWorkspace({ databaseUrl: databaseUrl!, workspace: orgSlug, outDir, ...options });
+  const result = await exportWorkspace({ databaseUrl: databaseUrl!, workspace: orgSlug, outDir, uploadsDir: world.uploadsDir, ...options });
   const files = new Map<string, Buffer>();
   for (const path of await listFiles(result.root)) files.set(path, await readFile(join(result.root, path)));
   return { root: result.root, files, manifest: JSON.parse(files.get('manifest.json')!.toString('utf8')) };
@@ -99,7 +102,8 @@ test('nothing from another workspace reaches the archive, in any scope', { skip 
   const bIds = [world.b.orgId, world.b.owner, world.b.member, world.b.other, world.b.guest, world.b.former,
     world.b.agentUser, world.b.agentEmployee, ...Object.values(world.b.spaces), ...Object.values(world.b.messages),
     ...Object.values(world.b.tasks), ...Object.values(world.b.projects), ...Object.values(world.b.labels),
-    ...Object.values(world.b.notes), ...Object.values(world.b.wiki), ...Object.values(world.b.events), ...Object.values(world.b.folders)].filter((id) => !sharedIds.has(id));
+    ...Object.values(world.b.notes), ...Object.values(world.b.wiki), ...Object.values(world.b.events), ...Object.values(world.b.folders),
+    ...Object.values(world.b.files)].filter((id) => !sharedIds.has(id));
   for (const scope of allScopes()) {
     const exported = await runExport({ scope });
     for (const [path, bytes] of exported.files) {
@@ -409,4 +413,92 @@ test('notes, folders, wiki and events: member scope equals what the product rout
   assert.equal(member.recurrence.start.time_zone, 'Europe/London');
   assert.ok(!rows(whole, 'data/wiki_pages.jsonl').some((row) => row.id === world.a.wiki.deleted));
   assert.ok(!rows(whole, 'data/notes.jsonl').some((row) => row.id === world.a.notes.deleted));
+});
+
+test('attachments: member scope equals getVisibleAttachment for every file', { skip }, async () => {
+  const { getVisibleAttachment } = await import('../src/lib/attachment-access.js');
+  for (const userId of [world.a.owner, world.a.member, world.a.guest, world.a.other, world.shared]) {
+    const exported = await runExport({ scope: { kind: 'member', member: userId } });
+    const allowed: string[] = [];
+    for (const fileId of Object.values(world.a.files)) if (await getVisibleAttachment(fileId, world.a.orgId, userId)) allowed.push(fileId);
+    assert.deepEqual(rows(exported, 'data/files.jsonl').map((row) => row.id).sort(), allowed.sort(), `files for ${userId}`);
+  }
+});
+
+test('attachments: included bytes are exact and checksummed; every other file says why it is missing', { skip }, async () => {
+  const exported = await runExport({ scope: { kind: 'workspace' } });
+  const files = new Map(rows(exported, 'data/files.jsonl').map((row) => [row.id, row]));
+  const sums = exported.files.get('SHA256SUMS')!.toString('utf8');
+  const omitted = new Map(rows(exported, 'omissions.jsonl').filter((row) => row.kind === 'file').map((row) => [row.id, row.reason]));
+  for (const key of ['onGeneral', 'onPrivateOthers', 'onOpenTask', 'legacyWatchedTask', 'legacyTaskBeforeMessage', 'unattachedOther']) {
+    const row = files.get(world.a.files[key]!)!;
+    assert.equal(row.included, true, key);
+    assert.equal(exported.files.get(row.archive_path)!.toString('utf8'), `bytes of ${key}`);
+    assert.ok(sums.includes(`  ${row.archive_path}\n`), key);
+  }
+  assert.deepEqual(files.get(world.a.files.legacyTaskBeforeMessage!)!.attached_to, { task_id: world.a.tasks.restricted });
+  assert.ok(!files.has(world.a.files.onDeletedMessage!), 'a file on a deleted message is not exported');
+  for (const key of ['ambiguous', 'blocked', 'missing', 'sizeMismatch', 'hashMismatch', 'namesBStorage']) {
+    const row = files.get(world.a.files[key]!)!;
+    assert.equal(row.included, false, key);
+    assert.equal(row.archive_path, null, key);
+    assert.ok(omitted.get(world.a.files[key]!), `omission for ${key}`);
+    assert.ok(![...exported.files.keys()].some((path) => path.startsWith(`attachments/${world.a.files[key]}/`)), `no bytes for ${key}`);
+  }
+  assert.equal(exported.manifest.complete, false);
+});
+
+test('attachments: a file deleted after the snapshot is reported, never referenced as present', { skip }, async () => {
+  const victim = world.a.files.onGeneral2!;
+  const storage = (await client.query<{ storage_key: string }>('SELECT storage_key FROM files WHERE id = $1', [victim])).rows[0]!.storage_key;
+  const saved = await readFile(join(world.uploadsDir, storage));
+  try {
+    const exported = await runExport({ scope: { kind: 'workspace' }, hooks: { beforeFileRead: async (fileId) => {
+      if (fileId === victim) await rm(join(world.uploadsDir, storage));
+    } } });
+    const row = rows(exported, 'data/files.jsonl').find((candidate) => candidate.id === victim)!;
+    assert.equal(row.included, false);
+    assert.equal(row.archive_path, null);
+    assert.match(rows(exported, 'omissions.jsonl').find((omission) => omission.id === victim)!.reason, /missing/);
+  } finally {
+    await writeFile(join(world.uploadsDir, storage), saved);
+  }
+});
+
+test('attachments: a large file is streamed, not held in memory', { skip }, async () => {
+  const size = 64 * 1024 * 1024;
+  const fileId = randomUUID();
+  const storage = `${fileId}.bin`;
+  const chunk = Buffer.alloc(1024 * 1024, 7);
+  const hash = createHash('sha256');
+  const handle = await open(join(world.uploadsDir, storage), 'w');
+  for (let written = 0; written < size; written += chunk.length) { await handle.write(chunk); hash.update(chunk); }
+  await handle.close();
+  await client.query(`INSERT INTO files (id, org_id, uploaded_by, filename, mime_type, size_bytes, storage_key, content_sha256)
+    VALUES ($1, $2, $3, 'big.bin', 'application/octet-stream', $4, $5, $6)`, [fileId, world.a.orgId, world.a.member, size, storage, `sha256:${hash.digest('hex')}`]);
+  // Measure live memory, not garbage waiting for collection: collect before each sample.
+  setFlagsFromString('--expose-gc');
+  const gc = runInNewContext('gc') as () => void;
+  gc();
+  const baseline = process.memoryUsage();
+  let peak = 0;
+  const sampler = setInterval(() => {
+    gc();
+    const now = process.memoryUsage();
+    peak = Math.max(peak, now.heapUsed + now.arrayBuffers - baseline.heapUsed - baseline.arrayBuffers);
+  }, 100);
+  try {
+    // Not runExport: it reads every output file back into memory.
+    const result = await exportWorkspace({ databaseUrl: databaseUrl!, workspace: world.a.slug, scope: { kind: 'workspace' },
+      outDir: join(scratch, `export-${++counter}`), uploadsDir: world.uploadsDir });
+    clearInterval(sampler);
+    const list = (await readFile(join(result.root, 'data', 'files.jsonl'), 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    assert.equal(list.find((row) => row.id === fileId)?.included, true);
+    await rm(result.root, { recursive: true, force: true });
+  } finally {
+    clearInterval(sampler);
+    await client.query('DELETE FROM files WHERE id = $1', [fileId]);
+    await rm(join(world.uploadsDir, storage), { force: true });
+  }
+  assert.ok(peak < size / 2, `peak memory growth ${Math.round(peak / 1048576)} MiB for a ${size / 1048576} MiB file`);
 });

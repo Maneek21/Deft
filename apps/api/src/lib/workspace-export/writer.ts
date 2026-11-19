@@ -1,6 +1,6 @@
 import { createHash, type Hash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
-import { mkdir, readdir, rename } from 'node:fs/promises';
+import { mkdir, readdir, rename, rm } from 'node:fs/promises';
 import type { Writable } from 'node:stream';
 import { finished } from 'node:stream/promises';
 import { dirname, join, resolve, sep } from 'node:path';
@@ -52,7 +52,7 @@ export class ArchiveFile {
   private bytes = 0;
   private closed = false;
 
-  constructor(readonly path: string, private readonly stream: Writable,
+  constructor(readonly path: string, readonly absolutePath: string, private readonly stream: Writable,
     private readonly onClose: (file: ArchiveFile, sha256: string) => Promise<void>) {
     guard(stream);
   }
@@ -130,7 +130,7 @@ export class ArchiveWriter {
     const absolute = join(this.root, ...path.split('/'));
     if (!absolute.startsWith(this.root + sep)) throw new Error(`Archive path escapes the folder: ${path}`);
     await mkdir(dirname(absolute), { recursive: true });
-    const file = new ArchiveFile(path, createWriteStream(absolute, { flags: 'wx' }), async (closedFile, sha256) => {
+    const file = new ArchiveFile(path, absolute, createWriteStream(absolute, { flags: 'wx' }), async (closedFile, sha256) => {
       this.openFiles.delete(closedFile);
       await writeTo(this.sums, Buffer.from(`${sha256}  ${closedFile.path}\n`, 'utf8'));
     });
@@ -152,6 +152,13 @@ export class ArchiveWriter {
     const file = await this.open(path);
     await file.write(text);
     await file.close();
+  }
+
+  /** Drops a partly written file: it is removed and never listed in SHA256SUMS. */
+  async discard(file: ArchiveFile): Promise<void> {
+    this.openFiles.delete(file);
+    await file.abandon();
+    await rm(file.absolutePath, { force: true });
   }
 
   async omit(omission: Omission): Promise<void> {

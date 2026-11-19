@@ -20,6 +20,15 @@ function isMissing(error: unknown): boolean {
     && error.code === 'ENOENT';
 }
 
+/** Where a storage key lives under an uploads folder. A key is one plain file name; anything else is refused. */
+export function localStorageKeyPath(rootDir: string, key: string): string {
+  const normalized = key.trim();
+  if (!normalized || normalized === '.' || normalized === '..' || /[\\/]/.test(normalized)) {
+    throw new Error('Invalid storage key');
+  }
+  return join(rootDir, normalized);
+}
+
 export class LocalFileStore implements FileStore {
   readonly rootDir: string;
 
@@ -28,11 +37,7 @@ export class LocalFileStore implements FileStore {
   }
 
   private pathFor(key: string): string {
-    const normalized = key.trim();
-    if (!normalized || normalized === '.' || normalized === '..' || /[\\/]/.test(normalized)) {
-      throw new Error('Invalid storage key');
-    }
-    return join(this.rootDir, normalized);
+    return localStorageKeyPath(this.rootDir, key);
   }
 
   async put(key: string, bytes: Uint8Array): Promise<void> {

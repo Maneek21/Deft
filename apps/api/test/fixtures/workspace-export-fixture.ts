@@ -7,7 +7,9 @@
  * secret-bearing column we know of, in both workspaces, holds a value
  * containing SECRET_MARKER, which must never appear in any export.
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import pg from 'pg';
 
 export const B_MARKER = 'BWORKSPACEMARK';
@@ -49,7 +51,10 @@ export type ContentIds = {
 };
 
 export type ExportWorld = {
-  a: WorkspaceIds & ContentIds; b: WorkspaceIds & ContentIds; shared: string; ids: string[];
+  a: WorkspaceIds & ContentIds & { files: Record<string, string> }; b: WorkspaceIds & ContentIds & { files: Record<string, string> };
+  shared: string; ids: string[];
+  /** The uploads folder both workspaces store their attachment bytes in. */
+  uploadsDir: string;
   /** Exact strings (beyond SECRET_MARKER) that must never appear in an export, such as base64 ciphertext. */
   forbidden: string[];
 };
@@ -264,8 +269,51 @@ async function seedContent(s: Seeder, ws: WorkspaceIds, isB: boolean, ids: strin
   return { messages, tasks, projects, labels, notes, wiki, events, folders, sealedSpace };
 }
 
+/**
+ * Attachments of every link kind and every failure the exporter must report,
+ * stored in one uploads folder shared by both workspaces.
+ */
+async function seedFiles(s: Seeder, ws: WorkspaceIds & ContentIds, isB: boolean, ids: string[], uploadsDir: string): Promise<Record<string, string>> {
+  const files: Record<string, string> = {};
+  const file = async (key: string, options: { bytes?: string | null; message?: string[]; task?: string[]; legacyMessage?: string; legacyTask?: string;
+    uploadedBy?: string; extra?: Row; recordedSize?: number; recordedHash?: string | null; storageKey?: string } = {}) => {
+    const fileId = randomUUID(); ids.push(fileId); files[key] = fileId;
+    const bytes = Buffer.from(options.bytes ?? text(isB, `bytes of ${key}`));
+    const storageKey = options.storageKey ?? `${fileId}.bin`;
+    if (options.bytes !== null && !options.storageKey) await writeFile(join(uploadsDir, storageKey), bytes);
+    await s.insert('files', { id: fileId, org_id: ws.orgId, uploaded_by: options.uploadedBy ?? ws.other, filename: text(isB, `${key}.txt`),
+      mime_type: 'text/plain', size_bytes: options.recordedSize ?? bytes.length, storage_key: storageKey,
+      content_sha256: options.recordedHash === undefined ? `sha256:${createHash('sha256').update(bytes).digest('hex')}` : options.recordedHash,
+      message_id: options.legacyMessage ?? null, task_id: options.legacyTask ?? null, ...options.extra });
+    for (const [position, messageId] of (options.message ?? []).entries()) {
+      await s.insert('message_attachments', { org_id: ws.orgId, message_id: messageId, file_id: fileId, position });
+    }
+    for (const [position, taskId] of (options.task ?? []).entries()) {
+      await s.insert('task_attachments', { org_id: ws.orgId, task_id: taskId, file_id: fileId, position });
+    }
+  };
+  await file('onGeneral', { message: [ws.messages.general!] });
+  await file('onGeneral2', { message: [ws.messages['general-reply']!] });
+  await file('onPrivateOthers', { message: [ws.messages.privateOthers!] });
+  await file('onDm', { message: [ws.messages.dmMemberOther!] });
+  await file('onOpenTask', { task: [ws.tasks.open!] });
+  await file('onRestrictedTask', { task: [ws.tasks.restricted!] });
+  await file('legacyWatchedTask', { legacyTask: ws.tasks.restrictedWatched! });
+  await file('legacyDm', { legacyMessage: ws.messages.dmOwnerOther! });
+  await file('legacyTaskBeforeMessage', { legacyTask: ws.tasks.restricted!, legacyMessage: ws.messages.general! });
+  await file('unattachedMember', { uploadedBy: ws.member });
+  await file('unattachedOther', { uploadedBy: ws.other });
+  await file('ambiguous', { message: [ws.messages.general!, ws.messages['general-reply']!] });
+  await file('blocked', { message: [ws.messages.general!], extra: { processing_status: 'blocked' } });
+  await file('onDeletedMessage', { message: [ws.messages.deleted!] });
+  await file('missing', { bytes: null, message: [ws.messages.general!], recordedSize: 10, recordedHash: null });
+  await file('sizeMismatch', { message: [ws.messages.general!], recordedSize: 3, recordedHash: null });
+  await file('hashMismatch', { message: [ws.messages.general!], recordedHash: `sha256:${'0'.repeat(64)}` });
+  return files;
+}
+
 /** Seeds A and B, a person who belongs to both, and malformed cross-workspace links. */
-export async function seedExportWorld(client: pg.Client): Promise<ExportWorld> {
+export async function seedExportWorld(client: pg.Client, uploadsDir: string): Promise<ExportWorld> {
   const s = new Seeder(client);
   const ids: string[] = [];
   const forbidden: string[] = [];
@@ -300,7 +348,19 @@ export async function seedExportWorld(client: pg.Client): Promise<ExportWorld> {
   await s.insert('wiki_links', { id: randomUUID(), org_id: a.orgId, source_page_id: a.wiki.org, target_page_id: b.wiki.org });
   await client.query('UPDATE notes SET folder_id = $2, visibility_space_id = $3 WHERE id = $1', [a.notes.orgWide, b.folders.other, b.spaces.general]);
   await client.query('UPDATE events SET user_id = $2 WHERE id = $1', [a.events.noOwner, b.owner]);
-  return { a, b, shared, ids, forbidden };
+  const aFiles = await seedFiles(s, a, false, ids, uploadsDir);
+  const bFiles = await seedFiles(s, b, true, ids, uploadsDir);
+  // An A row that names B's stored bytes, and a B file whose legacy column points at an A message.
+  // Same name, size and checksum as B's file, so only the ownership check can keep B's bytes out.
+  const bFile = (await client.query<{ storage_key: string; size_bytes: number; content_sha256: string }>(
+    'SELECT storage_key, size_bytes, content_sha256 FROM files WHERE id = $1', [bFiles.onGeneral])).rows[0]!;
+  aFiles.namesBStorage = randomUUID();
+  ids.push(aFiles.namesBStorage);
+  await s.insert('files', { id: aFiles.namesBStorage, org_id: a.orgId, uploaded_by: a.member, filename: 'stolen.txt', mime_type: 'text/plain',
+    size_bytes: bFile.size_bytes, storage_key: bFile.storage_key, content_sha256: bFile.content_sha256 });
+  await s.insert('message_attachments', { org_id: a.orgId, message_id: a.messages.general, file_id: aFiles.namesBStorage, position: 9 });
+  await client.query('UPDATE files SET message_id = $2 WHERE id = $1', [bFiles.unattachedOther, a.messages.general]);
+  return { a: { ...a, files: aFiles }, b: { ...b, files: bFiles }, shared, ids, forbidden, uploadsDir };
 }
 
 /**
@@ -314,6 +374,9 @@ export async function dropExportWorld(client: pg.Client, world: ExportWorld): Pr
   const users = (await client.query<{ user_id: string }>(`SELECT m.user_id FROM org_members m JOIN users u ON u.id = m.user_id
     WHERE m.org_id = ANY($1) AND u.email IS DISTINCT FROM 'deft-agent@system.local'`, [orgs])).rows.map((row) => row.user_id);
   for (const statement of [
+    'DELETE FROM message_attachments WHERE org_id = ANY($1)',
+    'DELETE FROM task_attachments WHERE org_id = ANY($1)',
+    'DELETE FROM files WHERE org_id = ANY($1)',
     'DELETE FROM note_shares WHERE note_id IN (SELECT id FROM notes WHERE org_id = ANY($1))',
     'DELETE FROM notes WHERE org_id = ANY($1)',
     'DELETE FROM note_folders WHERE org_id = ANY($1)',

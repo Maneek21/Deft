@@ -5,12 +5,15 @@ import { resolveScope, resolveWorkspace, type ExportContext } from './scope.js';
 import { PEOPLE_AND_SPACES, type Dataset } from './datasets.js';
 import { MESSAGES_AND_TASKS } from './datasets-content.js';
 import { NOTES_WIKI_EVENTS } from './datasets-knowledge.js';
+import { exportAttachments, type CopyHooks } from './attachments.js';
 
 export type ExportOptions = Readonly<{
   databaseUrl: string;
   /** Workspace id or slug. */
   workspace: string;
   scope: ExportScope;
+  /** The uploads folder holding the workspace's attachment bytes (Deft's local file store). */
+  uploadsDir: string;
   /** Folder to create; it must not exist or be empty. */
   outDir: string;
   deftVersion?: string | null;
@@ -20,6 +23,8 @@ export type ExportOptions = Readonly<{
   onRecord?: () => void;
   /** Test seam: runs after each dataset file is complete. */
   afterDataset?: (path: string) => Promise<void>;
+  /** Test seam: runs just before each attachment's bytes are read. */
+  hooks?: CopyHooks;
 }>;
 
 export type ExportResult = Readonly<{ root: string; manifest: ExportManifest }>;
@@ -56,6 +61,7 @@ export async function exportWorkspace(options: ExportOptions): Promise<ExportRes
         datasets.push({ path: dataset.path, records: file.records });
         await options.afterDataset?.(dataset.path);
       }
+      datasets.push(await exportAttachments(snapshot, writer, ctx, options.uploadsDir, options.hooks));
 
       let manifest!: ExportManifest;
       await writer.finish(async () => {
