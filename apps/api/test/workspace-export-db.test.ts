@@ -398,10 +398,13 @@ test('notes, folders, wiki and events: member scope equals what the product rout
     assert.deepEqual(rows(exported, 'data/wiki_pages.jsonl').map((row) => row.id).sort(), wiki.pages.map((row: any) => row.id).sort(), `wiki for ${userId}`);
     const pages = new Set(wiki.pages.map((row: any) => row.id));
     for (const row of rows(exported, 'data/wiki_links.jsonl')) assert.ok(pages.has(row.source_page_id) && pages.has(row.target_page_id));
-    // Events: the Calendar's events, less cancelled ones (never more than the Calendar).
+    // Events: never more than the Calendar shows; less only for cancelled events and events another part of Deft wrote.
     const calendar = await (await as(userId, calendarPath)).json() as any;
-    assert.deepEqual(rows(exported, 'data/events.jsonl').map((row) => row.id).sort(),
-      calendar.events.filter((row: any) => row.metadata?.status !== 'canceled').map((row: any) => row.id).sort(), `events for ${userId}`);
+    const calendarIds = new Set(calendar.events.map((row: any) => row.id));
+    const exportedEvents = rows(exported, 'data/events.jsonl').map((row) => row.id);
+    for (const id of exportedEvents) assert.ok(calendarIds.has(id), `event ${id} exported but not on the Calendar for ${userId}`);
+    const leftOut = new Set([world.a.events.memberCanceled, world.a.events.otherWriter]);
+    assert.deepEqual(exportedEvents.sort(), calendar.events.map((row: any) => row.id).filter((id: string) => !leftOut.has(id)).sort(), `events for ${userId}`);
     // Note shares: exactly what GET /api/daily-notes/:id/shares lists for the member's own notes.
     const ownNotes = (await client.query<{ id: string }>('SELECT id FROM notes WHERE org_id = $1 AND user_id = $2 AND NOT is_deleted',
       [world.a.orgId, userId])).rows;
@@ -423,6 +426,7 @@ test('notes, folders, wiki and events: member scope equals what the product rout
   const events = new Map(rows(whole, 'data/events.jsonl').map((row) => [row.id, row]));
   assert.equal(events.get(world.a.events.noOwner!)?.user_id, null);
   assert.ok(events.has(world.a.events.memberCanceled!), 'the whole workspace keeps cancelled events');
+  assert.ok(events.has(world.a.events.otherWriter!), 'the whole workspace keeps events other parts of Deft wrote');
   assert.equal(events.get(world.a.events.nested!)?.location, null, 'an object in place of text is not written');
   // Positive sets, so an empty dataset cannot pass.
   assert.deepEqual(rows(whole, 'data/note_shares.jsonl').map((row) => `${row.note_id}:${row.shared_with_user_id}`),

@@ -264,6 +264,10 @@ async function seedContent(s: Seeder, ws: WorkspaceIds, isB: boolean, ids: strin
   await s.client.query(`UPDATE events SET metadata = jsonb_set(metadata, '{status}', '"canceled"') WHERE id = $1`, [events.memberCanceled]);
   // Malformed metadata: an object where text is expected must not be written out.
   await event('nested', ws.member);
+  // An event another part of Deft wrote (such as an exception of a cancelled
+  // invitation series): it carries a key core Deft does not write.
+  await event('otherWriter', ws.member);
+  await s.client.query(`UPDATE events SET metadata = metadata || '{"written_elsewhere": {"series": "x"}}'::jsonb WHERE id = $1`, [events.otherWriter]);
   await s.client.query(`UPDATE events SET metadata = jsonb_set(metadata, '{location}', jsonb_build_object('hidden', $2::text)) WHERE id = $1`,
     [events.nested, s.secret('events.location_object')]);
   // A share kept after its recipient left the workspace.

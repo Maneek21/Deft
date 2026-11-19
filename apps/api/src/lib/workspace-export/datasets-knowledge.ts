@@ -39,6 +39,16 @@ function scalar(object: SQL, key: string): SQL {
   return sql`CASE WHEN jsonb_typeof(${object}->${key}) IN ('string', 'number', 'boolean') THEN ${object}->>${key} END`;
 }
 
+/**
+ * The metadata keys core Deft writes on events: native and assistant-created
+ * events (native-calendar.ts, mcp-tools/human.ts), ICS subscriptions
+ * (ics-sync.ts), app calendar sources (native-calendar-source-model.ts) and
+ * GitHub sync. An event with any other key was written by another part of
+ * Deft and is left out of the member scope.
+ */
+const CORE_EVENT_KEYS = ['start', 'end', 'location', 'attendees', 'hangoutLink', 'status', 'allDay', 'all_day',
+  'ics_uid', 'ics_subscription_id', 'ics_label', 'app_calendar_source', 'github_sync'];
+
 /** One calendar time from the stored calendar model, field by field. */
 function calendarTime(ref: SQL): SQL {
   return sql`CASE WHEN jsonb_typeof(${ref}) = 'object' THEN jsonb_build_object('value', ${scalar(ref, 'value')},
@@ -104,9 +114,12 @@ export const NOTES_WIKI_EVENTS: readonly Dataset[] = [
   },
   {
     // Calendar and connected-tool events, with named fields only. The member
-    // scope sees their own events, as the Calendar does, without cancelled ones:
-    // the Calendar hides some cancelled events, and the member scope must never
-    // show more than the product, so it leaves every cancelled event out.
+    // scope must never show more than the Calendar shows them. The Calendar
+    // hides some events by rules that belong to other parts of Deft (whole
+    // series of cancelled invitations, for one), which core code may not
+    // name. So the member scope keeps only the member's own events that core
+    // Deft wrote entirely (every metadata key is a core key) and that are not
+    // cancelled. It may show less than the Calendar, never more.
     path: 'data/events.jsonl',
     query: (ctx) => {
       const userId = memberId(ctx);
@@ -131,7 +144,10 @@ export const NOTES_WIKI_EVENTS: readonly Dataset[] = [
           event.created_at, event.updated_at
         FROM events event
         WHERE event.org_id = ${ctx.orgId}
-          AND ${userId ? sql`event.user_id = ${userId} AND event.metadata->>'status' IS DISTINCT FROM 'canceled'` : sql`true`}
+          AND ${userId ? sql`event.user_id = ${userId} AND event.metadata->>'status' IS DISTINCT FROM 'canceled'
+            AND NOT EXISTS (SELECT 1 FROM jsonb_object_keys(CASE WHEN jsonb_typeof(event.metadata) = 'object'
+              THEN event.metadata ELSE '{}'::jsonb END) metadata_key
+              WHERE metadata_key <> ALL (ARRAY[${sql.join(CORE_EVENT_KEYS.map((key) => sql`${key}`), sql`, `)}]::text[]))` : sql`true`}
         ORDER BY event.timestamp, event.id`;
     },
   },
