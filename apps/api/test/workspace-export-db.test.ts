@@ -7,7 +7,7 @@
  */
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import test, { after, before } from 'node:test';
@@ -467,7 +467,11 @@ test('attachments: included bytes are exact and checksummed; every other file sa
   }
   assert.deepEqual(files.get(world.a.files.legacyTaskBeforeMessage!)!.attached_to, { task_id: world.a.tasks.restricted });
   assert.ok(!files.has(world.a.files.onDeletedMessage!), 'a file on a deleted message is not exported');
-  for (const key of ['ambiguous', 'blocked', 'missing', 'sizeMismatch', 'hashMismatch', 'namesBStorage']) {
+  assert.ok(!files.has(world.a.files.onDeletedTask!), 'a file on a deleted task is not exported');
+  assert.deepEqual(files.get(world.a.files.typedOverLegacy!)!.attached_to, { message_id: world.a.messages.privateOthers });
+  assert.equal(files.get(world.a.files.stagedByMember!)!.included, true);
+  for (const key of ['ambiguous', 'messageAndTask', 'blocked', 'missing', 'sizeMismatch', 'hashMismatch', 'namesBStorage',
+    'paddedAlias', 'caseAlias', 'hardLink']) {
     const row = files.get(world.a.files[key]!)!;
     assert.equal(row.included, false, key);
     assert.equal(row.archive_path, null, key);
@@ -491,6 +495,72 @@ test('attachments: a file deleted after the snapshot is reported, never referenc
     assert.match(rows(exported, 'omissions.jsonl').find((omission) => omission.id === victim)!.reason, /missing/);
   } finally {
     await writeFile(join(world.uploadsDir, storage), saved);
+  }
+});
+
+test('attachments: a file replaced, rewritten or removed during the read is reported, never included', { skip }, async () => {
+  // Files without a recorded checksum, so only the identity checks can notice the change.
+  const make = async (label: string) => {
+    const fileId = randomUUID();
+    const storage = `${fileId}-race.bin`;
+    const bytes = Buffer.alloc(200 * 1024, 1);
+    await writeFile(join(world.uploadsDir, storage), bytes);
+    await client.query(`INSERT INTO files (id, org_id, uploaded_by, filename, mime_type, size_bytes, storage_key)
+      VALUES ($1, $2, $3, $4, 'application/octet-stream', $5, $6)`, [fileId, world.a.orgId, world.a.member, `${label}.bin`, bytes.length, storage]);
+    return { fileId, path: join(world.uploadsDir, storage), size: bytes.length };
+  };
+  const replaced = await make('replaced');
+  const rewritten = await make('rewritten');
+  const removed = await make('removed');
+  try {
+    const exported = await runExport({ scope: { kind: 'workspace' }, hooks: {
+      beforeOpen: async (fileId) => {
+        if (fileId !== replaced.fileId) return;
+        await rm(replaced.path);
+        await writeFile(replaced.path, Buffer.alloc(replaced.size, 2));
+      },
+      duringRead: async (fileId) => {
+        if (fileId === rewritten.fileId) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          await writeFile(rewritten.path, Buffer.alloc(rewritten.size, 3));
+        }
+        if (fileId === removed.fileId) await rm(removed.path);
+      },
+    } });
+    const list = new Map(rows(exported, 'data/files.jsonl').map((row) => [row.id, row]));
+    const reasons = new Map(rows(exported, 'omissions.jsonl').map((row) => [row.id, row.reason]));
+    for (const { fileId } of [replaced, rewritten, removed]) {
+      assert.equal(list.get(fileId)?.included, false, fileId);
+      assert.match(reasons.get(fileId) ?? '', /changed|missing/);
+      assert.ok(![...exported.files.keys()].some((path) => path.startsWith(`attachments/${fileId}/`)));
+    }
+  } finally {
+    for (const { fileId, path } of [replaced, rewritten, removed]) {
+      await client.query('DELETE FROM files WHERE id = $1', [fileId]);
+      await rm(path, { force: true });
+    }
+  }
+});
+
+test('attachments: a symbolic link in the uploads folder is never followed', { skip }, async () => {
+  const fileId = randomUUID();
+  const storage = `${fileId}-symlink.bin`;
+  const outside = join(scratch, `outside-${fileId}.txt`);
+  await writeFile(outside, `outside ${SECRET_MARKER}`);
+  try {
+    await symlink(outside, join(world.uploadsDir, storage));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EPERM') return; // Windows without the privilege to create symlinks.
+    throw error;
+  }
+  try {
+    await client.query(`INSERT INTO files (id, org_id, uploaded_by, filename, mime_type, size_bytes, storage_key)
+      VALUES ($1, $2, $3, 'link.txt', 'text/plain', $4, $5)`, [fileId, world.a.orgId, world.a.member, `outside ${SECRET_MARKER}`.length, storage]);
+    const exported = await runExport({ scope: { kind: 'workspace' } });
+    assert.equal(rows(exported, 'data/files.jsonl').find((row) => row.id === fileId)?.included, false);
+  } finally {
+    await client.query('DELETE FROM files WHERE id = $1', [fileId]);
+    await rm(join(world.uploadsDir, storage), { force: true });
   }
 });
 
