@@ -741,6 +741,11 @@ test('modules: a custom module whose collection is named like an export file sti
       fields: [{ key: 'name', label: 'Name', type: 'text', required: true }],
       search: { fields: ['name'], title_field: 'name' },
       views: [{ key: 'table', name: 'Table', type: 'table', fields: ['name'] }],
+    }, {
+      key: 'con', name: 'Device name', singular_name: 'Device',
+      fields: [{ key: 'name', label: 'Name', type: 'text', required: true }],
+      search: { fields: ['name'], title_field: 'name' },
+      views: [{ key: 'table', name: 'Table', type: 'table', fields: ['name'] }],
     }],
   }, { source: 'sideloaded' });
   const installed = (await client.query<{ installation: string; version: string }>(`SELECT i.id AS installation, v.id AS version
@@ -750,7 +755,13 @@ test('modules: a custom module whose collection is named like an export file sti
       created_by_actor_type, created_by_actor_id, updated_by_actor_type, updated_by_actor_id)
     VALUES ($1, $2, $3, 'relations', $4, '{"name":"kept"}', 'kept', 'human', $5, 'human', $5)`,
   [randomUUID(), world.a.orgId, installed.installation, installed.version, world.a.owner]);
+  await client.query(`INSERT INTO module_records (id, org_id, installation_id, collection_key, validated_version_id, data, search_title,
+      created_by_actor_type, created_by_actor_id, updated_by_actor_type, updated_by_actor_id)
+    VALUES ($1, $2, $3, 'con', $4, '{"name":"device"}', 'device', 'human', $5, 'human', $5)`,
+  [randomUUID(), world.a.orgId, installed.installation, installed.version, world.a.owner]);
   const exported = await runExport({ scope: { kind: 'workspace' } });
+  // A collection named like a Windows device is stored under a safe name, not an aborted export.
+  assert.deepEqual(rows(exported, `data/modules/${slug}/collections/_con.jsonl`).map((row) => row.fields), [{ name: 'device' }]);
   assert.deepEqual(rows(exported, `data/modules/${slug}/collections/relations.jsonl`).map((row) => row.fields), [{ name: 'kept' }]);
   assert.deepEqual(rows(exported, `data/modules/${slug}/relations.jsonl`), []);
 });
@@ -914,4 +925,44 @@ test('readable: the README says plainly when attachment files were not copied, a
   assert.match(notCopied.files.get('README.html')!.toString('utf8'), /<strong>Attachment files were not copied/);
   const copied = await runExport({ scope: { kind: 'workspace' } });
   assert.doesNotMatch(copied.files.get('README.txt')!.toString('utf8'), /were not copied/);
+});
+
+test('modules: each module table must be a plain table in the schema; a view in its place is refused', { skip }, async () => {
+  const moduleTables = ['module_installations', 'module_versions', 'module_records', 'module_record_relations'];
+  for (const viewed of moduleTables) {
+    const schema = `ex1_mod_${randomUUID().slice(0, 8).replace(/-/g, '')}`;
+    await client.query(`CREATE SCHEMA ${schema}`);
+    try {
+      for (const table of EXPORT_TABLES) {
+        await client.query(table === viewed
+          ? `CREATE VIEW ${schema}.${table} AS SELECT * FROM public.${table}`
+          : `CREATE TABLE ${schema}.${table} (LIKE public.${table})`);
+      }
+      await assert.rejects(exportWorkspace({ databaseUrl: databaseUrl!, workspace: world.a.slug, scope: { kind: 'workspace' },
+        outDir: join(scratch, `export-${++counter}`), uploadsDir: world.uploadsDir, databaseSchema: schema }),
+      (error: Error) => error.message.includes(`(not found there: ${viewed})`));
+    } finally {
+      await client.query(`DROP SCHEMA ${schema} CASCADE`);
+    }
+  }
+});
+
+test('modules: a module whose slug Windows reserves is stored under a safe folder name', { skip }, async () => {
+  const { installModuleFromManifest } = await import('../src/lib/module-service.js');
+  await installModuleFromManifest({ kind: 'human', org_id: world.a.orgId, actor_id: world.a.owner, role: 'owner', source: 'ui', scopes: [] }, {
+    schema_version: '1', id: `com.example.device${randomUUID().slice(0, 6)}`, slug: 'con', name: 'Device', version: '1.0.0', icon: 'contact',
+    description: 'Reserved slug test.', navigation: { default_collection: 'items', default_view: 'table' },
+    collections: [{ key: 'items', name: 'Items', singular_name: 'Item', fields: [{ key: 'name', label: 'Name', type: 'text', required: true }],
+      search: { fields: ['name'], title_field: 'name' }, views: [{ key: 'table', name: 'Table', type: 'table', fields: ['name'] }] }],
+  }, { source: 'sideloaded' });
+  const installed = (await client.query<{ installation: string; version: string }>(`SELECT i.id AS installation, v.id AS version
+    FROM module_installations i JOIN module_versions v ON v.installation_id = i.id AND v.is_active WHERE i.org_id = $1 AND i.slug = 'con'`,
+  [world.a.orgId])).rows[0]!;
+  await client.query(`INSERT INTO module_records (id, org_id, installation_id, collection_key, validated_version_id, data, search_title,
+      created_by_actor_type, created_by_actor_id, updated_by_actor_type, updated_by_actor_id)
+    VALUES ($1, $2, $3, 'items', $4, '{"name":"kept"}', 'kept', 'human', $5, 'human', $5)`,
+  [randomUUID(), world.a.orgId, installed.installation, installed.version, world.a.owner]);
+  const exported = await runExport({ scope: { kind: 'workspace' } });
+  assert.deepEqual(rows(exported, 'data/modules/_con/collections/items.jsonl').map((row) => row.fields), [{ name: 'kept' }]);
+  assert.ok(exported.files.has('data/modules/_con/schema.json'));
 });
