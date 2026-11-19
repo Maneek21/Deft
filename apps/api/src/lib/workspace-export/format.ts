@@ -44,6 +44,12 @@ export type ExportManifest = Readonly<{
   /** Start time of the single database snapshot every dataset was read from. */
   as_of: string;
   /** False when anything in scope could not be included; see omissions.jsonl. */
+  /**
+   * shared_database: this database holds, or held, another workspace. Then
+   * attachment bytes are copied only when an operator allowed it
+   * (shared_uploads_allowed); bytes_copied says whether they were.
+   */
+  attachments: Readonly<{ shared_database: boolean; shared_uploads_allowed: boolean; bytes_copied: boolean }>;
   complete: boolean;
   omissions: number;
   datasets: readonly DatasetSummary[];

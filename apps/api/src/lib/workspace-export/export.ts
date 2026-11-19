@@ -23,8 +23,13 @@ export type ExportOptions = Readonly<{
   onRecord?: () => void;
   /** Test seam: runs after each dataset file is complete. */
   afterDataset?: (path: string) => Promise<void>;
-  /** Test seam: runs just before each attachment's bytes are read. */
+  /** Test seams around each attachment read. */
   hooks?: CopyHooks;
+  /**
+   * Copy attachment bytes even when this database holds more than one
+   * workspace. Off by default: an operator chooses it and the manifest says so.
+   */
+  allowSharedUploads?: boolean;
 }>;
 
 export type ExportResult = Readonly<{ root: string; manifest: ExportManifest }>;
@@ -61,7 +66,9 @@ export async function exportWorkspace(options: ExportOptions): Promise<ExportRes
         datasets.push({ path: dataset.path, records: file.records });
         await options.afterDataset?.(dataset.path);
       }
-      datasets.push(await exportAttachments(snapshot, writer, ctx, options.uploadsDir, options.hooks));
+      const attachments = await exportAttachments(snapshot, writer, ctx, options.uploadsDir,
+        { hooks: options.hooks, allowSharedUploads: options.allowSharedUploads });
+      datasets.push({ path: attachments.path, records: attachments.records });
 
       let manifest!: ExportManifest;
       await writer.finish(async () => {
@@ -72,6 +79,8 @@ export async function exportWorkspace(options: ExportOptions): Promise<ExportRes
           workspace: { id: workspace.id, slug: workspace.slug, name: workspace.name },
           scope: scope.kind === 'workspace' ? { kind: 'workspace' } : { kind: 'member', user_id: scope.user_id, role: scope.role },
           as_of: snapshot.asOf.toISOString(),
+          attachments: { shared_database: attachments.shared_database, shared_uploads_allowed: options.allowSharedUploads === true,
+            bytes_copied: attachments.bytes_copied },
           complete: writer.omissions === 0,
           omissions: writer.omissions,
           datasets,

@@ -87,31 +87,46 @@ export type CopyHooks = Readonly<{
   beforeOpen?: (fileId: string) => Promise<void>;
   /** After the first chunk has been copied. */
   duringRead?: (fileId: string) => Promise<void>;
+  /**
+   * Test seam: replaces the shared-database decision, so the one-workspace
+   * path can be tested in a database that holds several workspaces.
+   */
+  sharedDatabase?: () => boolean;
 }>;
 
 const SHARED = { reason: 'Its stored file is also named by another workspace, so its owner cannot be established.' };
-
-/** A plain stored name: ASCII letters, digits, dot, dash, underscore and inner spaces, as Deft itself creates. */
-const REGULAR_KEY = '^[A-Za-z0-9_-]([A-Za-z0-9._ -]*[A-Za-z0-9_-])?$';
+const NOT_COPIED = { reason: 'This database holds more than one workspace, so attachment files were not copied. An operator can copy them with --allow-shared-uploads.' };
 
 const identity = (info: { dev: number; ino: number }) => `${info.dev}:${info.ino}`;
 
 /**
- * Every file that another workspace reaches through an irregular stored name
- * (surrounding or unusual whitespace, a trailing dot, a short 8.3 name, a
- * stream suffix, non-ASCII letters), identified by the file itself rather than
- * its name. Regular names are compared in SQL, ignoring case; irregular ones
- * are resolved here exactly as the file store would resolve them, so no alias
- * on either side can claim the same bytes. Deft never creates irregular
- * names, so this set stays small.
+ * True unless this database plainly holds only this workspace: any other
+ * workspace row, in any state, or any file row of another workspace id
+ * (including rows left by a workspace that no longer exists) counts as shared.
  */
-async function foreignAliasIdentities(snapshot: Snapshot, ctx: ExportContext, uploadsRoot: string): Promise<Set<string>> {
+async function databaseIsShared(snapshot: Snapshot, ctx: ExportContext): Promise<boolean> {
+  const [row] = await snapshot.all<{ shared: boolean }>(sql`SELECT ((SELECT count(*) FROM orgs) <> 1
+    OR NOT EXISTS (SELECT 1 FROM orgs WHERE id = ${ctx.orgId})
+    OR EXISTS (SELECT 1 FROM files WHERE org_id IS DISTINCT FROM ${ctx.orgId})) AS shared`);
+  return row?.shared !== false;
+}
+
+/**
+ * Every file another workspace's stored name reaches, resolved the way the
+ * file store resolves names (following symbolic links), and identified by the
+ * file itself. A name that cannot be resolved for any reason other than "no
+ * such file" stops the export. Only used with --allow-shared-uploads.
+ */
+async function foreignFileIdentities(snapshot: Snapshot, ctx: ExportContext, uploadsRoot: string): Promise<Set<string>> {
   const identities = new Set<string>();
   for await (const row of snapshot.rows<{ storage_key: string }>(sql`SELECT DISTINCT storage_key FROM files
-      WHERE org_id <> ${ctx.orgId} AND storage_key !~ ${REGULAR_KEY}`)) {
+      WHERE org_id IS DISTINCT FROM ${ctx.orgId}`)) {
     let source: string;
-    try { source = localStorageKeyPath(uploadsRoot, row.storage_key); } catch { continue; }
-    const info = await stat(source).catch(() => null);
+    try { source = localStorageKeyPath(uploadsRoot, row.storage_key); } catch { continue; } // the file store cannot reach it either
+    const info = await stat(source).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null;
+      throw new Error(`Cannot establish which file another workspace's stored name reaches (${error.code ?? 'error'}); export stopped.`);
+    });
     if (info) identities.add(identity(info));
   }
   return identities;
@@ -137,7 +152,7 @@ const missingAsNull = <T>(promise: Promise<T>) => promise.catch((error: NodeJS.E
  * - its bytes must match the recorded size and (when recorded) SHA-256.
  * Bytes are streamed in 64 KiB chunks.
  */
-async function copyFile(writer: ArchiveWriter, uploadsRoot: string, row: FileRow, hooks: CopyHooks, foreign: ReadonlySet<string>): Promise<{ path: string } | { reason: string }> {
+async function copyFile(writer: ArchiveWriter, uploadsRoot: string, row: FileRow, hooks: CopyHooks, foreign: ReadonlySet<string>): Promise<{ path: string; sha256: string } | { reason: string }> {
   if (row.processing_status === 'blocked') return { reason: 'Blocked by the attachment safety check; bytes not included.' };
   if (row.storage_shared) return SHARED;
   let source: string;
@@ -195,24 +210,51 @@ async function copyFile(writer: ArchiveWriter, uploadsRoot: string, row: FileRow
       return { reason: 'The stored bytes differ from the recorded size or checksum.' };
     }
     await file.close();
-    return { path };
+    return { path, sha256: digest.slice('sha256:'.length) };
   } finally {
     await handle.close();
   }
 }
 
-/** Writes data/files.jsonl and the attachment bytes. Every file not included is listed in omissions.jsonl. */
-export async function exportAttachments(snapshot: Snapshot, writer: ArchiveWriter, ctx: ExportContext, uploadsDir: string, hooks: CopyHooks = {}) {
+export type AttachmentOptions = Readonly<{
+  hooks?: CopyHooks;
+  /** Copy attachment bytes even when this database holds more than one workspace (operator's decision). */
+  allowSharedUploads?: boolean;
+}>;
+
+export type AttachmentSummary = Readonly<{
+  path: string; records: number;
+  /** This database holds, or held, another workspace. */
+  shared_database: boolean;
+  /** Whether attachment bytes were copied at all. */
+  bytes_copied: boolean;
+}>;
+
+/**
+ * Writes data/files.jsonl and the attachment bytes. Every file not included
+ * is listed in omissions.jsonl. In a database shared with other workspaces no
+ * bytes are copied unless the operator allows it; then every other
+ * workspace's stored name is resolved first, and any of our files that is one
+ * of those files is refused.
+ */
+export async function exportAttachments(snapshot: Snapshot, writer: ArchiveWriter, ctx: ExportContext, uploadsDir: string,
+  options: AttachmentOptions = {}): Promise<AttachmentSummary> {
   const uploadsRoot = await realpath(uploadsDir);
-  const foreign = await foreignAliasIdentities(snapshot, ctx, uploadsRoot);
+  const shared = options.hooks?.sharedDatabase ? options.hooks.sharedDatabase() : await databaseIsShared(snapshot, ctx);
+  const copy = !shared || options.allowSharedUploads === true;
+  const foreign = shared && copy ? await foreignFileIdentities(snapshot, ctx, uploadsRoot) : new Set<string>();
   const list = await writer.jsonl('data/files.jsonl');
   for await (const row of snapshot.rows<FileRow>(attachmentsQuery(ctx))) {
     const result = row.attached_as === 'ambiguous'
       ? { reason: 'Linked to more than one message or task, so Deft shows it to nobody.' }
-      : await copyFile(writer, uploadsRoot, row, hooks, foreign);
+      : !copy ? NOT_COPIED
+        : await copyFile(writer, uploadsRoot, row, options.hooks ?? {}, foreign);
     await list.write({
       id: row.id, filename: row.filename, mime_type: row.mime_type, size_bytes: row.size_bytes,
-      sha256: row.content_sha256?.replace(/^sha256:/, '') ?? null, uploaded_by: row.uploaded_by, created_at: row.created_at,
+      // The digest of the bytes in this archive; and, separately, the checksum Deft recorded (may be null).
+      sha256: 'sha256' in result ? result.sha256 : null,
+      recorded_sha256: row.content_sha256?.replace(/^sha256:/, '') ?? null,
+      uploaded_by: row.uploaded_by, created_at: row.created_at,
       attached_to: row.attached_as === 'message' ? { message_id: row.link_message_id }
         : row.attached_as === 'task' ? { task_id: row.link_task_id } : null,
       included: 'path' in result, archive_path: 'path' in result ? result.path : null,
@@ -220,5 +262,5 @@ export async function exportAttachments(snapshot: Snapshot, writer: ArchiveWrite
     if ('reason' in result) await writer.omit({ kind: 'file', id: row.id, reason: result.reason });
   }
   await list.close();
-  return { path: 'data/files.jsonl', records: list.records };
+  return { path: 'data/files.jsonl', records: list.records, shared_database: shared, bytes_copied: copy };
 }

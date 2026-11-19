@@ -58,7 +58,9 @@ async function listFiles(root: string, dir = root): Promise<string[]> {
 
 async function runExport(options: Partial<ExportOptions> & Pick<ExportOptions, 'scope'>, orgSlug = world.a.slug): Promise<Exported> {
   const outDir = join(scratch, `export-${++counter}`);
-  const result = await exportWorkspace({ databaseUrl: databaseUrl!, workspace: orgSlug, outDir, uploadsDir: world.uploadsDir, ...options });
+  // The test database holds many workspaces; most tests exercise the copying path, so they allow it.
+  const result = await exportWorkspace({ databaseUrl: databaseUrl!, workspace: orgSlug, outDir, uploadsDir: world.uploadsDir,
+    allowSharedUploads: true, ...options });
   const files = new Map<string, Buffer>();
   for (const path of await listFiles(result.root)) files.set(path, await readFile(join(result.root, path)));
   return { root: result.root, files, manifest: JSON.parse(files.get('manifest.json')!.toString('utf8')) };
@@ -596,7 +598,7 @@ test('attachments: a large file is streamed, not held in memory', { skip }, asyn
   try {
     // Not runExport: it reads every output file back into memory.
     const result = await exportWorkspace({ databaseUrl: databaseUrl!, workspace: world.a.slug, scope: { kind: 'workspace' },
-      outDir: join(scratch, `export-${++counter}`), uploadsDir: world.uploadsDir });
+      outDir: join(scratch, `export-${++counter}`), uploadsDir: world.uploadsDir, allowSharedUploads: true });
     clearInterval(sampler);
     const list = (await readFile(join(result.root, 'data', 'files.jsonl'), 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line));
     assert.equal(list.find((row) => row.id === fileId)?.included, true);
@@ -607,4 +609,84 @@ test('attachments: a large file is streamed, not held in memory', { skip }, asyn
     await rm(join(world.uploadsDir, storage), { force: true });
   }
   assert.ok(peak < size / 2, `peak memory growth ${Math.round(peak / 1048576)} MiB for a ${size / 1048576} MiB file`);
+});
+
+test('attachments: a database shared with other workspaces copies no bytes unless the operator allows it', { skip }, async () => {
+  const exported = await runExport({ scope: { kind: 'workspace' }, allowSharedUploads: false });
+  const files = rows(exported, 'data/files.jsonl');
+  assert.ok(files.length > 10);
+  assert.ok(files.every((row) => row.included === false && row.archive_path === null && row.sha256 === null));
+  const reasons = new Map(rows(exported, 'omissions.jsonl').map((row) => [row.id, row.reason]));
+  for (const row of files) assert.ok(reasons.get(row.id), `omission for ${row.id}`);
+  assert.ok(files.some((row) => /more than one workspace.*--allow-shared-uploads/.test(reasons.get(row.id))));
+  assert.ok(![...exported.files.keys()].some((path) => path.startsWith('attachments/')));
+  assert.deepEqual(exported.manifest.attachments, { shared_database: true, shared_uploads_allowed: false, bytes_copied: false });
+  const allowed = await runExport({ scope: { kind: 'workspace' } });
+  assert.deepEqual(allowed.manifest.attachments, { shared_database: true, shared_uploads_allowed: true, bytes_copied: true });
+});
+
+test('attachments: a one-workspace database copies with no flag, keeping the checks that need no other workspace', { skip }, async () => {
+  const exported = await runExport({ scope: { kind: 'workspace' }, allowSharedUploads: false, hooks: { sharedDatabase: () => false } });
+  assert.deepEqual(exported.manifest.attachments, { shared_database: false, shared_uploads_allowed: false, bytes_copied: true });
+  const files = new Map(rows(exported, 'data/files.jsonl').map((row) => [row.id, row]));
+  const onGeneral = files.get(world.a.files.onGeneral!)!;
+  assert.equal(onGeneral.included, true);
+  assert.equal(onGeneral.sha256, createHash('sha256').update(exported.files.get(onGeneral.archive_path)!).digest('hex'));
+  // The digest of the copied bytes, and separately the checksum Deft recorded: equal when one was recorded.
+  const sizeOnly = files.get(world.a.files.typedOverLegacy!)!;
+  assert.ok(sizeOnly.sha256 && sizeOnly.recorded_sha256 && sizeOnly.sha256 === sizeOnly.recorded_sha256);
+  for (const key of ['missing', 'sizeMismatch', 'hashMismatch', 'hardLink', 'blocked']) {
+    assert.equal(files.get(world.a.files[key]!)!.included, false, key);
+  }
+});
+
+test('attachments: with the operator flag, a plain-named foreign symlink to one of our files makes it refused', { skip }, async () => {
+  const ours = `${randomUUID()}-ours.bin`;
+  const theirs = `${randomUUID()}-theirs.bin`;
+  const bytes = Buffer.from(`linked bytes ${B_MARKER}`);
+  await writeFile(join(world.uploadsDir, ours), bytes);
+  try {
+    await symlink(join(world.uploadsDir, ours), join(world.uploadsDir, theirs));
+  } catch (error) {
+    await rm(join(world.uploadsDir, ours), { force: true });
+    if ((error as NodeJS.ErrnoException).code === 'EPERM') return; // Windows without the privilege to create symlinks.
+    throw error;
+  }
+  const aFile = randomUUID();
+  const bFile = randomUUID();
+  const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+  try {
+    await client.query(`INSERT INTO files (id, org_id, uploaded_by, filename, mime_type, size_bytes, storage_key, content_sha256)
+      VALUES ($1, $2, $3, 'b.bin', 'text/plain', $4, $5, $6), ($7, $8, $9, 'a.bin', 'text/plain', $4, $10, $6)`,
+    [bFile, world.b.orgId, world.b.member, bytes.length, theirs, digest, aFile, world.a.orgId, world.a.member, ours]);
+    const exported = await runExport({ scope: { kind: 'workspace' } });
+    const row = rows(exported, 'data/files.jsonl').find((candidate) => candidate.id === aFile)!;
+    assert.equal(row.included, false);
+    assert.match(rows(exported, 'omissions.jsonl').find((omission) => omission.id === aFile)!.reason, /another workspace/);
+  } finally {
+    await client.query('DELETE FROM files WHERE id = ANY($1)', [[aFile, bFile]]);
+    await rm(join(world.uploadsDir, theirs), { force: true });
+    await rm(join(world.uploadsDir, ours), { force: true });
+  }
+});
+
+test('attachments: with the operator flag, a foreign name that cannot be resolved stops the export', { skip }, async () => {
+  const loop = `${randomUUID()}-loop.bin`;
+  try {
+    await symlink(join(world.uploadsDir, loop), join(world.uploadsDir, loop));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EPERM') return;
+    throw error;
+  }
+  const bFile = randomUUID();
+  try {
+    await client.query(`INSERT INTO files (id, org_id, uploaded_by, filename, mime_type, size_bytes, storage_key)
+      VALUES ($1, $2, $3, 'loop.bin', 'text/plain', 1, $4)`, [bFile, world.b.orgId, world.b.member, loop]);
+    await assert.rejects(runExport({ scope: { kind: 'workspace' } }), /Cannot establish which file/);
+    // Without the flag nothing is resolved or copied, so the export still completes.
+    await runExport({ scope: { kind: 'workspace' }, allowSharedUploads: false });
+  } finally {
+    await client.query('DELETE FROM files WHERE id = $1', [bFile]);
+    await rm(join(world.uploadsDir, loop), { force: true });
+  }
 });
