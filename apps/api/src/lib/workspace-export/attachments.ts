@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { lstat, open, realpath } from 'node:fs/promises';
-import { basename, dirname } from 'node:path';
+import { basename, dirname, posix } from 'node:path';
 import { sql, type SQL } from 'drizzle-orm';
 import { localStorageKeyPath } from '../file-store.js';
 import { readableSpaceSql } from '../space-visibility.js';
@@ -65,8 +65,10 @@ type FileRow = {
 /**
  * The longest archive file name, in UTF-8 bytes. Linux file systems (ext4, XFS,
  * Btrfs, ZFS) and APFS allow 255 bytes; NTFS and exFAT allow 255 UTF-16 units,
- * which a UTF-8 byte count also bounds. The margin covers the `_` prefix below
- * and decomposition on file systems that store names decomposed.
+ * which a UTF-8 byte count also bounds; HFS+ stores names decomposed but counts
+ * UTF-16 units, which decomposition keeps under the cap. A file system that
+ * decomposes names and counts bytes (ZFS with normalization=formD) may still
+ * refuse a long Hangul name: the plain name then takes its place.
  */
 export const MAX_NAME_BYTES = 180;
 const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
@@ -123,8 +125,10 @@ export function plainArchiveFileName(id: string, filename: string): string {
   return storableIn(archiveFolder(id), `file${extension}`);
 }
 
-/** Errors that mean this one name cannot exist on the output file system; any other write error stops the export. */
+/** Errors that mean the output file system refuses this one name; any other write error stops the export. */
 const NAME_ERRORS = new Set(['ENAMETOOLONG', 'EINVAL', 'EILSEQ']);
+/** Errors that mean a name's characters are refused, not its length. */
+const CHARACTER_ERRORS = new Set(['EINVAL', 'EILSEQ']);
 /** Errors that mean this one stored file cannot be looked at or opened; it is reported, the export goes on. */
 const UNREADABLE_ERRORS = new Set(['EACCES', 'EPERM', 'ELOOP', 'ENAMETOOLONG', 'EINVAL', 'EILSEQ', 'ENOTDIR']);
 
@@ -201,22 +205,29 @@ const sourceStep = <T>(promise: Promise<T>) => missingAsNull(promise).catch((err
 
 /**
  * Opens the archive file for an attachment: its readable name, then the plain
- * one. If the output file system refuses both names, the file is reported, not
- * the export stopped. Any other write error (a full disk, a folder that cannot
- * be written) stops the export.
+ * one. The folder is made first, so a failure there (an output path that is
+ * too long, a full disk, a folder that cannot be written) stops the export.
+ * The plain name is at most 24 ASCII bytes: if the file system says even that
+ * is too long, the output path is at fault and the export stops; if it refuses
+ * its characters, the file is reported and the export goes on.
  */
 async function openArchiveFile(writer: ArchiveWriter, row: FileRow, hooks: CopyHooks): Promise<{ file: ArchiveFile; path: string } | { reason: string }> {
   const readable = archiveFileName(row.id, row.filename);
   const plain = plainArchiveFileName(row.id, row.filename);
+  await writer.makeFolder(posix.dirname(readable));
   for (const path of readable === plain ? [readable] : [readable, plain]) {
     try {
       await hooks.beforeWrite?.(row.id, path);
       return { file: await writer.open(path), path };
     } catch (error) {
-      if (!NAME_ERRORS.has((error as NodeJS.ErrnoException).code ?? '')) throw error;
+      const code = (error as NodeJS.ErrnoException).code ?? '';
+      if (!NAME_ERRORS.has(code)) throw error;
+      if (path === plain && !CHARACTER_ERRORS.has(code)) {
+        throw new Error(`The output path is too long to hold attachment files (${code}); export stopped. Write the export to a shorter path.`);
+      }
     }
   }
-  return { reason: 'The file system the export was written to refused its name, even shortened; bytes not included.' };
+  return { reason: 'The file system the export was written to refused the characters of its name, even as a plain name; bytes not included.' };
 }
 
 /**

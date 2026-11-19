@@ -171,7 +171,7 @@ An attachment is left out, with its reason in `omissions.jsonl` and
 - its bytes do not match the recorded size or checksum;
 - it is not a regular file inside the uploads folder;
 - the stored file cannot be read (for example, its permissions forbid it);
-- the file system the export is written to refuses its name, even shortened;
+- the file system the export is written to refuses the characters of its name, even as a plain `file` name. An output path too long to hold attachment files stops the export instead;
 - its stored name is also used by another workspace;
 - it is linked to more than one item.
 

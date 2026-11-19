@@ -1028,14 +1028,15 @@ test('attachments: a name the file system refuses is omitted and the export comp
   const refused = await addFile('refused.txt', `${randomUUID()}-a.bin`, Buffer.from('a'));
   const secondChoice = await addFile('second choice.txt', `${randomUUID()}-b.bin`, Buffer.from('b'));
   const nameError = () => Object.assign(new Error('name too long'), { code: 'ENAMETOOLONG' });
+  const badCharacters = () => Object.assign(new Error('invalid argument'), { code: 'EINVAL' });
   try {
     const exported = await runExport({ scope: { kind: 'workspace' }, hooks: { beforeWrite: async (fileId, path) => {
-      if (fileId === refused) throw nameError();
+      if (fileId === refused) throw badCharacters();
       if (fileId === secondChoice && !path.endsWith('/file.txt')) throw nameError();
     } } });
     const list = new Map(rows(exported, 'data/files.jsonl').map((row) => [row.id, row]));
     assert.equal(list.get(refused)?.included, false);
-    assert.match(rows(exported, 'omissions.jsonl').find((row) => row.id === refused)!.reason, /refused its name/);
+    assert.match(rows(exported, 'omissions.jsonl').find((row) => row.id === refused)!.reason, /refused the characters/);
     assert.equal(list.get(secondChoice)?.archive_path, `attachments/${secondChoice}/file.txt`);
     assert.deepEqual(exported.files.get(`attachments/${secondChoice}/file.txt`), Buffer.from('b'));
     assert.equal(exported.manifest.complete, false);
@@ -1043,6 +1044,10 @@ test('attachments: a name the file system refuses is omitted and the export comp
     await assert.rejects(runExport({ scope: { kind: 'workspace' }, hooks: { beforeWrite: async (fileId) => {
       if (fileId === refused) throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
     } } }), /no space left/);
+    // Even the short plain name too long: the output path is at fault, not the file, so the export stops.
+    await assert.rejects(runExport({ scope: { kind: 'workspace' }, hooks: { beforeWrite: async (fileId) => {
+      if (fileId === refused) throw nameError();
+    } } }), /output path is too long/);
   } finally {
     await client.query('DELETE FROM files WHERE id = ANY($1)', [[refused, secondChoice]]);
   }
