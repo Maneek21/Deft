@@ -607,10 +607,10 @@ test('Contacts: records with declared fields only, relations between live record
   const schema = JSON.parse(whole.files.get('data/modules/contacts/schema.json')!.toString('utf8'));
   assert.deepEqual(schema.collections.map((collection: any) => collection.key).sort(), ['activities', 'companies', 'contacts', 'deals', 'outreach']);
   assert.ok(schema.collections.every((collection: any) => collection.fields.every((field: any) => !('default' in field))));
-  const contacts = rows(whole, 'data/modules/contacts/contacts.jsonl');
+  const contacts = rows(whole, 'data/modules/contacts/collections/contacts.jsonl');
   assert.deepEqual(contacts.map((row) => row.id), [world.a.contacts.records.contact]);
   assert.deepEqual(Object.keys(contacts[0]!.fields).sort(), ['email', 'name', 'notes', 'owner', 'phone', 'status']);
-  const companies = rows(whole, 'data/modules/contacts/companies.jsonl');
+  const companies = rows(whole, 'data/modules/contacts/collections/companies.jsonl');
   assert.equal(companies[0]!.fields.owner, null, 'an owner from another workspace is not named');
   assert.deepEqual(rows(whole, 'data/modules/contacts/relations.jsonl').map(({ field, source_record_id, target_record_id }) =>
     ({ field, source_record_id, target_record_id })),
@@ -619,7 +619,7 @@ test('Contacts: records with declared fields only, relations between live record
   // The member scope follows assertInstallationAccess: members read Contacts; guests never; nobody reads a disabled module.
   const member = await runExport({ scope: { kind: 'member', member: world.a.member } });
   assert.equal(rows(member, 'data/modules.jsonl').length, 1);
-  assert.equal(rows(member, 'data/modules/contacts/contacts.jsonl').length, 1);
+  assert.equal(rows(member, 'data/modules/contacts/collections/contacts.jsonl').length, 1);
   const guest = await runExport({ scope: { kind: 'member', member: world.a.guest } });
   assert.equal(rows(guest, 'data/modules.jsonl').length, 0);
   assert.ok(![...guest.files.keys()].some((path) => path.startsWith('data/modules/')));
@@ -675,4 +675,41 @@ test('readable: one escaped transcript per exported space, holding exactly the e
   const general = whole.files.get(`conversations/${world.a.spaces.general}.html`)!.toString('utf8');
   assert.ok(general.includes('&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;&lt;img src=x onerror=alert(1)&gt; &amp; done'));
   assert.match(general, /missing\.txt <span class="muted">\(not included; see omissions\)/);
+
+test('modules: a custom module whose collection is named like an export file still exports, records and relations apart', { skip }, async () => {
+  const { installModuleFromManifest } = await import('../src/lib/module-service.js');
+  const slug = `ex1custom${randomUUID().slice(0, 6)}`;
+  await installModuleFromManifest({ kind: 'human', org_id: world.a.orgId, actor_id: world.a.owner, role: 'owner', source: 'ui', scopes: [] }, {
+    schema_version: '1', id: `com.example.${slug}`, slug, name: 'Custom', version: '1.0.0', icon: 'contact', description: 'Export collision test.',
+    navigation: { default_collection: 'relations', default_view: 'table' },
+    collections: [{
+      key: 'relations', name: 'Relations', singular_name: 'Relation',
+      fields: [{ key: 'name', label: 'Name', type: 'text', required: true }],
+      search: { fields: ['name'], title_field: 'name' },
+      views: [{ key: 'table', name: 'Table', type: 'table', fields: ['name'] }],
+    }],
+  }, { source: 'sideloaded' });
+  const installed = (await client.query<{ installation: string; version: string }>(`SELECT i.id AS installation, v.id AS version
+    FROM module_installations i JOIN module_versions v ON v.installation_id = i.id AND v.is_active WHERE i.org_id = $1 AND i.slug = $2`,
+  [world.a.orgId, slug])).rows[0]!;
+  await client.query(`INSERT INTO module_records (id, org_id, installation_id, collection_key, validated_version_id, data, search_title,
+      created_by_actor_type, created_by_actor_id, updated_by_actor_type, updated_by_actor_id)
+    VALUES ($1, $2, $3, 'relations', $4, '{"name":"kept"}', 'kept', 'human', $5, 'human', $5)`,
+  [randomUUID(), world.a.orgId, installed.installation, installed.version, world.a.owner]);
+  const exported = await runExport({ scope: { kind: 'workspace' } });
+  assert.deepEqual(rows(exported, `data/modules/${slug}/collections/relations.jsonl`).map((row) => row.fields), [{ name: 'kept' }]);
+  assert.deepEqual(rows(exported, `data/modules/${slug}/relations.jsonl`), []);
+});
+
+test('modules: a manifest that fails its integrity check is never used to choose fields', async () => {
+  const { verifiedManifest } = await import('../src/lib/workspace-export/modules.js');
+  const { digestSupportedModuleManifest } = await import('@deft/shared/modules');
+  const manifest = JSON.parse(await readFile(join(import.meta.dirname, '..', '..', '..', 'modules', 'bundled', 'contacts', 'deft.module.json'), 'utf8'));
+  const digest = await digestSupportedModuleManifest(manifest);
+  assert.ok(await verifiedManifest({ manifest, manifest_digest: digest }));
+  // A field added to the stored manifest after it was recorded: the digest no longer matches.
+  const tampered = structuredClone(manifest);
+  tampered.collections[0].fields.push({ key: 'undeclared_secret', label: 'Secret', type: 'text', required: false });
+  assert.equal(await verifiedManifest({ manifest: tampered, manifest_digest: digest }), null);
+  assert.equal(await verifiedManifest({ manifest: { not: 'a manifest' }, manifest_digest: digest }), null);
 });

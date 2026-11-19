@@ -1,4 +1,5 @@
 import { sql } from 'drizzle-orm';
+import { digestSupportedModuleManifest, parseSupportedDeftModuleManifest } from '@deft/shared/modules';
 import { assertInstallationAccess } from '../module-access-policy.js';
 import type { ExportContext } from './scope.js';
 import type { Snapshot } from './snapshot.js';
@@ -43,6 +44,16 @@ function collectionsOf(manifest: unknown): Collection[] {
   });
 }
 
+/** The manifest when it parses and matches its recorded digest, as module-service.ts verifyManifest requires; otherwise null. */
+export async function verifiedManifest(version: { manifest: unknown; manifest_digest: string }): Promise<unknown | null> {
+  try {
+    const manifest = parseSupportedDeftModuleManifest(version.manifest);
+    return (await digestSupportedModuleManifest(manifest)) === version.manifest_digest ? manifest : null;
+  } catch {
+    return null;
+  }
+}
+
 type Installation = { id: string; module_id: string; slug: string; source: string; is_enabled: boolean; agent_access: 'none' | 'read' | 'write';
   active_version_id: string | null; version: string | null; created_at: Date };
 
@@ -72,14 +83,27 @@ export async function exportModules(snapshot: Snapshot, writer: ArchiveWriter, c
         continue;
       }
     }
+    // As the product's record reads: the module needs an active version, and
+    // every manifest used must parse and match its recorded digest.
+    if (!installation.active_version_id) {
+      await writer.omit({ kind: 'module', id: installation.id, reason: 'The module has no active version, so Deft does not show its records.' });
+      continue;
+    }
     const folder = `data/modules/${SAFE_KEY.test(installation.slug) ? installation.slug : installation.id}`;
     // Field allowlists per manifest version, since each record was validated against its own version.
     const versions = new Map<string, Map<string, Collection>>();
-    for (const version of await snapshot.all<{ id: string; manifest: unknown }>(sql`SELECT id, manifest FROM module_versions
-        WHERE org_id = ${ctx.orgId} AND installation_id = ${installation.id}`)) {
-      versions.set(version.id, new Map(collectionsOf(version.manifest).map((collection) => [collection.key, collection])));
+    let verified = true;
+    for (const version of await snapshot.all<{ id: string; manifest: unknown; manifest_digest: string }>(sql`SELECT id, manifest, manifest_digest
+        FROM module_versions WHERE org_id = ${ctx.orgId} AND installation_id = ${installation.id}`)) {
+      const manifest = await verifiedManifest(version);
+      if (!manifest) { verified = false; break; }
+      versions.set(version.id, new Map(collectionsOf(manifest).map((collection) => [collection.key, collection])));
     }
-    const active = installation.active_version_id ? [...(versions.get(installation.active_version_id)?.values() ?? [])] : [];
+    if (!verified || !versions.has(installation.active_version_id)) {
+      await writer.omit({ kind: 'module', id: installation.id, reason: 'A stored manifest of this module fails its integrity check, so its records are withheld.' });
+      continue;
+    }
+    const active = [...versions.get(installation.active_version_id)!.values()];
     await writer.writeJson(`${folder}/schema.json`, { module_id: installation.module_id, slug: installation.slug, version: installation.version, collections: active });
     await listed.write({ id: installation.id, module_id: installation.module_id, slug: installation.slug, source: installation.source,
       is_enabled: installation.is_enabled, version: installation.version, folder, created_at: installation.created_at });
@@ -89,7 +113,7 @@ export async function exportModules(snapshot: Snapshot, writer: ArchiveWriter, c
     const closeCurrent = async () => {
       if (!open.current) return;
       await open.current.file.close();
-      summaries.push({ path: `${folder}/${open.current.key}.jsonl`, records: open.current.file.records });
+      summaries.push({ path: `${folder}/collections/${open.current.key}.jsonl`, records: open.current.file.records });
       open.current = null;
     };
     for await (const record of snapshot.rows<{ id: string; collection_key: string; validated_version_id: string; data: Record<string, unknown>;
@@ -102,7 +126,7 @@ export async function exportModules(snapshot: Snapshot, writer: ArchiveWriter, c
       }
       if (open.current?.key !== record.collection_key) {
         await closeCurrent();
-        open.current = { key: record.collection_key, file: await writer.jsonl(`${folder}/${record.collection_key}.jsonl`) };
+        open.current = { key: record.collection_key, file: await writer.jsonl(`${folder}/collections/${record.collection_key}.jsonl`) };
       }
       const target = open.current!;
       const collection = versions.get(record.validated_version_id)?.get(record.collection_key);
