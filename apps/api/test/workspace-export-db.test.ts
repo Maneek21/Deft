@@ -6,17 +6,19 @@
  *   pnpm --filter @deft/api test test/workspace-export-db.test.ts
  */
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import test, { after, before } from 'node:test';
 import { Hono } from 'hono';
 import pg from 'pg';
+import { sql } from 'drizzle-orm';
 
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 import { B_MARKER, SECRET_MARKER, dropExportWorld, seedExportWorld, type ExportWorld } from './fixtures/workspace-export-fixture.js';
-import { exportWorkspace, type ExportOptions } from '../src/lib/workspace-export/export.js';
+import { DATASETS, exportWorkspace, type ExportOptions } from '../src/lib/workspace-export/export.js';
+import { Snapshot } from '../src/lib/workspace-export/snapshot.js';
 import { canReadSpace } from '../src/lib/space-membership.js';
 import { memberRoutes } from '../src/routes/members.js';
 
@@ -143,10 +145,24 @@ test('member scope: exactly the spaces canReadSpace allows, including archived o
     }
     assert.equal(exported.manifest.scope.user_id, userId);
   }
-  // The private space of two other people is never in the member's export.
-  const member = await runExport({ scope: { kind: 'member', member: world.a.member } });
-  assert.ok(!rows(member, 'data/spaces.jsonl').some((row) => row.id === world.a.spaces.privateOthers));
-  assert.ok(rows(member, 'data/spaces.jsonl').some((row) => row.id === world.a.spaces.archivedPrivateWithMember));
+});
+
+test('member scope: spaces match a hand-written expectation, independent of the product code', { skip }, async () => {
+  // Written from the product's rules, not computed by them: members see their
+  // own spaces (archived too) and public unarchived ones; guests only their own.
+  const s = world.a.spaces;
+  const expected: Record<string, string[]> = {
+    [world.a.owner]: [s.general, s.publicUnjoined, s.privateOthers, s.dmOwnerOther, s.groupDm],
+    [world.a.member]: [s.general, s.publicUnjoined, s.privateWithMember, s.dmMemberOther, s.archivedPrivateWithMember, s.groupDm],
+    [world.a.guest]: [s.general, s.privateWithMember, s.groupDm],
+    [world.a.other]: [s.general, s.publicUnjoined, s.privateOthers, s.privateWithMember, s.dmMemberOther, s.dmOwnerOther,
+      s.archivedPublic, s.agentConversation],
+    [world.shared]: [s.general, s.publicUnjoined, s.privateWithMember],
+  };
+  for (const [userId, spaceIds] of Object.entries(expected)) {
+    const exported = await runExport({ scope: { kind: 'member', member: userId } });
+    assert.deepEqual(rows(exported, 'data/spaces.jsonl').map((row) => row.id).sort(), [...spaceIds].sort(), `spaces for ${userId}`);
+  }
 });
 
 test('member scope: the member list equals GET /api/members, field by field', { skip }, async () => {
@@ -159,11 +175,14 @@ test('member scope: the member list equals GET /api/members, field by field', { 
   for (const userId of [world.a.member, world.a.guest]) {
     const response = await app.request('/api/members', { headers: { 'x-test-user': userId } });
     assert.equal(response.status, 200);
-    const product = (await response.json() as any[]).map((row) => ({ user_id: row.id, name: row.name, email: row.email, kind: row.kind, role: row.role }));
-    const exported = rows(await runExport({ scope: { kind: 'member', member: userId } }), 'data/members.jsonl')
-      .map(({ user_id, name, email, kind, role }) => ({ user_id, name, email, kind, role }));
+    const product = (await response.json() as any[]).map((row) => ({ user_id: row.id, name: row.name, email: row.email, kind: row.kind, role: row.role, is_active: true }));
+    const exported = rows(await runExport({ scope: { kind: 'member', member: userId } }), 'data/members.jsonl');
+    // Exactly these fields, and exactly the product's values for them.
+    for (const row of exported) assert.deepEqual(Object.keys(row).sort(), ['email', 'is_active', 'kind', 'name', 'role', 'user_id']);
     const byId = (list: any[]) => [...list].sort((x, y) => x.user_id.localeCompare(y.user_id));
     assert.deepEqual(byId(exported), byId(product));
+    // Independently: the former member and other workspaces' people are never listed.
+    assert.ok(!exported.some((row) => row.user_id === world.a.former || row.user_id === world.b.owner));
   }
 });
 
@@ -186,11 +205,70 @@ test('scope arguments are refused unless they name exactly one active person of 
   await assert.rejects(runExport({ scope: { kind: 'workspace' } }, 'no-such-workspace'), /No such workspace/);
 });
 
-test('rows are read in bounded batches', { skip }, async () => {
+test('rows are read in bounded batches and written before the next batch is fetched', { skip }, async () => {
   const fetches: number[] = [];
-  await runExport({ scope: { kind: 'workspace' }, batchSize: 2, onFetch: (count) => fetches.push(count) });
+  let fetched = 0;
+  let written = 0;
+  let inDatasets = true;
+  const lastDataset = DATASETS[DATASETS.length - 1]!.path;
+  await runExport({
+    scope: { kind: 'workspace' }, batchSize: 2,
+    onFetch: (count) => {
+      // Every row of the previous batches is already written: nothing accumulates.
+      if (inDatasets) assert.equal(written, fetched, 'rows held back across a fetch');
+      fetches.push(count);
+      fetched += count;
+    },
+    onRecord: () => { written += 1; },
+    afterDataset: async (path) => { if (path === lastDataset) inDatasets = false; },
+  });
   assert.ok(fetches.length > 5);
   assert.ok(fetches.every((count) => count <= 2));
+});
+
+test('every dataset reads one snapshot, even when the workspace changes during the export', { skip }, async () => {
+  const other = new pg.Client({ connectionString: databaseUrl });
+  await other.connect();
+  const added = randomUUID();
+  const original = (await client.query<{ name: string }>('SELECT name FROM spaces WHERE id = $1', [world.a.spaces.general])).rows[0]!.name;
+  try {
+    const exported = await runExport({ scope: { kind: 'workspace' }, afterDataset: async (path) => {
+      if (path !== 'data/members.jsonl') return;
+      // Committed by another connection after the export began, before spaces are read.
+      await other.query("INSERT INTO spaces (id, org_id, name, type) VALUES ($1, $2, 'added during export', 'public')", [added, world.a.orgId]);
+      await other.query("UPDATE spaces SET name = 'renamed during export' WHERE id = $1", [world.a.spaces.general]);
+    } });
+    const spaces = rows(exported, 'data/spaces.jsonl');
+    assert.ok(!spaces.some((row) => row.id === added));
+    assert.equal(spaces.find((row) => row.id === world.a.spaces.general)?.name, original);
+  } finally {
+    await other.query('DELETE FROM spaces WHERE id = $1', [added]);
+    await other.query('UPDATE spaces SET name = $2 WHERE id = $1', [world.a.spaces.general, original]);
+    await other.end();
+  }
+});
+
+test('cursors are closed when reading stops early or fails, and the first error is the one reported', { skip }, async () => {
+  const snapshot = await Snapshot.open({ databaseUrl: databaseUrl!, batchSize: 1 });
+  const openCursors = async () => Number((await snapshot.all<{ n: string }>(sql`SELECT count(*) AS n FROM pg_cursors`))[0]!.n);
+  try {
+    for await (const _row of snapshot.rows(sql`SELECT g FROM generate_series(1, 5) g`)) break;
+    assert.equal(await openCursors(), 0);
+    await assert.rejects((async () => {
+      for await (const _row of snapshot.rows(sql`SELECT g FROM generate_series(1, 5) g`)) throw new Error('consumer failed');
+    })(), /consumer failed/);
+    assert.equal(await openCursors(), 0);
+  } finally {
+    await snapshot.close();
+  }
+  const broken = await Snapshot.open({ databaseUrl: databaseUrl!, batchSize: 1 });
+  try {
+    await assert.rejects((async () => {
+      for await (const _row of broken.rows(sql`SELECT 1 / (g - 3) FROM generate_series(1, 5) g`)) { /* reads until the error */ }
+    })(), /division by zero/);
+  } finally {
+    await broken.close();
+  }
 });
 
 test('the exporter never loads the app database client or app configuration', async () => {

@@ -1,17 +1,49 @@
 import { createHash, type Hash } from 'node:crypto';
-import { createWriteStream, type WriteStream } from 'node:fs';
+import { createWriteStream } from 'node:fs';
 import { mkdir, readdir, rename } from 'node:fs/promises';
-import { once } from 'node:events';
+import type { Writable } from 'node:stream';
+import { finished } from 'node:stream/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 import type { Omission } from './format.js';
 
+const WINDOWS_DEVICE = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\..*)?$/iu;
+
 /** A path inside the archive: forward slashes, no empty, `.` or `..` segments,
- * no control characters or characters Windows cannot store. */
+ * no control characters, characters or device names Windows cannot store. */
 export function assertArchivePath(path: string): void {
   const segments = path.split('/');
   const bad = segments.some((part) => !part || part === '.' || part === '..' || part.length > 200
-    || /[\u0000-\u001f\u007f<>:"\\|?*]/u.test(part) || /[. ]$/u.test(part));
+    || /[\u0000-\u001f\u007f<>:"\\|?*]/u.test(part) || /[. ]$/u.test(part) || WINDOWS_DEVICE.test(part));
   if (bad || path.length > 1000) throw new Error(`Invalid archive path: ${JSON.stringify(path)}`);
+}
+
+/**
+ * Keeps a stream's asynchronous failure instead of letting it escape as an
+ * uncaught exception: it is reported by the next write, drain or close.
+ */
+function guard<T extends Writable>(stream: T): T {
+  stream.on('error', () => undefined);
+  return stream;
+}
+
+function failure(stream: Writable): Error | null {
+  return stream.errored ?? (stream.destroyed && !stream.writableFinished ? new Error('Archive stream closed') : null);
+}
+
+/** Writes and, when the buffer is full, waits for it to empty; rejects on any stream failure. */
+async function writeTo(stream: Writable, chunk: Uint8Array): Promise<void> {
+  const before = failure(stream);
+  if (before) throw before;
+  if (stream.write(chunk)) return;
+  await new Promise<void>((resolveDrain, reject) => {
+    const cleanup = () => { stream.off('drain', drained); stream.off('error', failed); stream.off('close', closed); };
+    const drained = () => { cleanup(); resolveDrain(); };
+    const failed = (error: Error) => { cleanup(); reject(error); };
+    const closed = () => { cleanup(); reject(failure(stream) ?? new Error('Archive stream closed')); };
+    stream.on('drain', drained);
+    stream.on('error', failed);
+    stream.on('close', closed);
+  });
 }
 
 /** One archive file being written: every byte is hashed on its way to disk. */
@@ -20,7 +52,10 @@ export class ArchiveFile {
   private bytes = 0;
   private closed = false;
 
-  constructor(readonly path: string, private readonly stream: WriteStream, private readonly onClose: (path: string, sha256: string, bytes: number) => Promise<void>) {}
+  constructor(readonly path: string, private readonly stream: Writable,
+    private readonly onClose: (file: ArchiveFile, sha256: string) => Promise<void>) {
+    guard(stream);
+  }
 
   /** Waits for the disk to catch up when the stream buffer is full, so memory stays bounded. */
   async write(chunk: string | Uint8Array): Promise<void> {
@@ -28,34 +63,35 @@ export class ArchiveFile {
     const buffer = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
     this.hash.update(buffer);
     this.bytes += buffer.length;
-    if (!this.stream.write(buffer)) await once(this.stream, 'drain');
+    await writeTo(this.stream, buffer);
   }
 
   async close(): Promise<{ sha256: string; bytes: number }> {
     if (this.closed) throw new Error(`Archive file already closed: ${this.path}`);
     this.closed = true;
     this.stream.end();
-    await once(this.stream, 'close');
+    await finished(this.stream);
     const sha256 = this.hash.digest('hex');
-    await this.onClose(this.path, sha256, this.bytes);
+    await this.onClose(this, sha256);
     return { sha256, bytes: this.bytes };
   }
 
-  /** Stops writing and leaves the partial file out of SHA256SUMS. The caller removes it. */
+  /** Stops writing and leaves the partial file out of SHA256SUMS. */
   async abandon(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
     this.stream.destroy();
-    await once(this.stream, 'close').catch(() => undefined);
+    await finished(this.stream).catch(() => undefined);
   }
 }
 
 export class JsonlFile {
   records = 0;
-  constructor(private readonly file: ArchiveFile) {}
+  constructor(private readonly file: ArchiveFile, private readonly onRecord?: () => void) {}
   async write(record: unknown): Promise<void> {
     this.records += 1;
     await this.file.write(`${JSON.stringify(record)}\n`);
+    this.onRecord?.();
   }
   close() { return this.file.close(); }
 }
@@ -63,10 +99,15 @@ export class JsonlFile {
 /**
  * Writes an archive folder. SHA256SUMS and omissions.jsonl are appended as
  * each file closes, so nothing in the writer grows with the workspace's size.
+ * On any failure, abort() stops every stream; a folder without SHA256SUMS is
+ * an export that did not finish.
  */
 export class ArchiveWriter {
-  private sums!: WriteStream;
+  private sums!: Writable;
   private omissionsFile!: JsonlFile;
+  private readonly openFiles = new Set<ArchiveFile>();
+  /** Test seam: called after every JSON Lines record is written. */
+  onRecord?: () => void;
 
   private constructor(readonly root: string) {}
 
@@ -76,7 +117,7 @@ export class ArchiveWriter {
     await mkdir(absolute, { recursive: true });
     if ((await readdir(absolute)).length > 0) throw new Error(`Output folder is not empty: ${absolute}`);
     const writer = new ArchiveWriter(absolute);
-    writer.sums = createWriteStream(join(absolute, 'SHA256SUMS.partial'), { flags: 'wx' });
+    writer.sums = guard(createWriteStream(join(absolute, 'SHA256SUMS.partial'), { flags: 'wx' }));
     writer.omissionsFile = new JsonlFile(await writer.open('omissions.jsonl'));
     return writer;
   }
@@ -89,15 +130,16 @@ export class ArchiveWriter {
     const absolute = join(this.root, ...path.split('/'));
     if (!absolute.startsWith(this.root + sep)) throw new Error(`Archive path escapes the folder: ${path}`);
     await mkdir(dirname(absolute), { recursive: true });
-    const stream = createWriteStream(absolute, { flags: 'wx' });
-    await once(stream, 'open');
-    return new ArchiveFile(path, stream, async (closedPath, sha256) => {
-      if (!this.sums.write(`${sha256}  ${closedPath}\n`)) await once(this.sums, 'drain');
+    const file = new ArchiveFile(path, createWriteStream(absolute, { flags: 'wx' }), async (closedFile, sha256) => {
+      this.openFiles.delete(closedFile);
+      await writeTo(this.sums, Buffer.from(`${sha256}  ${closedFile.path}\n`, 'utf8'));
     });
+    this.openFiles.add(file);
+    return file;
   }
 
   async jsonl(path: string): Promise<JsonlFile> {
-    return new JsonlFile(await this.open(path));
+    return new JsonlFile(await this.open(path), () => this.onRecord?.());
   }
 
   async writeJson(path: string, value: unknown): Promise<void> {
@@ -121,7 +163,15 @@ export class ArchiveWriter {
     await this.omissionsFile.close();
     await writeManifest();
     this.sums.end();
-    await once(this.sums, 'close');
+    await finished(this.sums);
     await rename(join(this.root, 'SHA256SUMS.partial'), join(this.root, 'SHA256SUMS'));
+  }
+
+  /** Stops every stream after a failure. SHA256SUMS is never published. */
+  async abort(): Promise<void> {
+    for (const file of this.openFiles) await file.abandon();
+    this.openFiles.clear();
+    this.sums.destroy();
+    await finished(this.sums).catch(() => undefined);
   }
 }

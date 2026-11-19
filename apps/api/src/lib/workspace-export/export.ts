@@ -14,6 +14,10 @@ export type ExportOptions = Readonly<{
   deftVersion?: string | null;
   batchSize?: number;
   onFetch?: (rows: number) => void;
+  /** Test seam: called after each JSON Lines record is written. */
+  onRecord?: () => void;
+  /** Test seam: runs after each dataset file is complete. */
+  afterDataset?: (path: string) => Promise<void>;
 }>;
 
 export type ExportResult = Readonly<{ root: string; manifest: ExportManifest }>;
@@ -32,36 +36,43 @@ export async function exportWorkspace(options: ExportOptions): Promise<ExportRes
     const scope = await resolveScope(snapshot, workspace.id, options.scope);
     const ctx: ExportContext = { orgId: workspace.id, scope };
     const writer = await ArchiveWriter.create(options.outDir);
+    writer.onRecord = options.onRecord;
+    try {
+      await writer.writeJson('data/workspace.json', {
+        id: workspace.id, name: workspace.name, slug: workspace.slug, timezone: workspace.timezone, created_at: workspace.created_at,
+      });
+      const datasets: DatasetSummary[] = [{ path: 'data/workspace.json', records: 1 }];
+      for (const dataset of DATASETS) {
+        if (dataset.scopes && !dataset.scopes.includes(scope.kind)) continue;
+        const file = await writer.jsonl(dataset.path);
+        for await (const row of snapshot.rows(dataset.query(ctx))) await file.write(row);
+        await file.close();
+        datasets.push({ path: dataset.path, records: file.records });
+        await options.afterDataset?.(dataset.path);
+      }
 
-    await writer.writeJson('data/workspace.json', {
-      id: workspace.id, name: workspace.name, slug: workspace.slug, timezone: workspace.timezone, created_at: workspace.created_at,
-    });
-    const datasets: DatasetSummary[] = [{ path: 'data/workspace.json', records: 1 }];
-    for (const dataset of DATASETS) {
-      if (dataset.scopes && !dataset.scopes.includes(scope.kind)) continue;
-      const file = await writer.jsonl(dataset.path);
-      for await (const row of snapshot.rows(dataset.query(ctx))) await file.write(row);
-      await file.close();
-      datasets.push({ path: dataset.path, records: file.records });
+      let manifest!: ExportManifest;
+      await writer.finish(async () => {
+        manifest = {
+          format: EXPORT_FORMAT,
+          format_version: EXPORT_FORMAT_VERSION,
+          generator: { name: 'deft workspace export', deft_version: options.deftVersion ?? null },
+          workspace: { id: workspace.id, slug: workspace.slug, name: workspace.name },
+          scope: scope.kind === 'workspace' ? { kind: 'workspace' } : { kind: 'member', user_id: scope.user_id, role: scope.role },
+          as_of: snapshot.asOf.toISOString(),
+          complete: writer.omissions === 0,
+          omissions: writer.omissions,
+          datasets,
+          not_included: NOT_INCLUDED,
+        };
+        await writer.writeJson('manifest.json', manifest);
+      });
+      return { root: writer.root, manifest };
+    } catch (error) {
+      // Every stream stops and SHA256SUMS is never published.
+      await writer.abort();
+      throw error;
     }
-
-    let manifest!: ExportManifest;
-    await writer.finish(async () => {
-      manifest = {
-        format: EXPORT_FORMAT,
-        format_version: EXPORT_FORMAT_VERSION,
-        generator: { name: 'deft workspace export', deft_version: options.deftVersion ?? null },
-        workspace: { id: workspace.id, slug: workspace.slug, name: workspace.name },
-        scope: scope.kind === 'workspace' ? { kind: 'workspace' } : { kind: 'member', user_id: scope.user_id, role: scope.role },
-        as_of: snapshot.asOf.toISOString(),
-        complete: writer.omissions === 0,
-        omissions: writer.omissions,
-        datasets,
-        not_included: NOT_INCLUDED,
-      };
-      await writer.writeJson('manifest.json', manifest);
-    });
-    return { root: writer.root, manifest };
   } finally {
     await snapshot.close();
   }

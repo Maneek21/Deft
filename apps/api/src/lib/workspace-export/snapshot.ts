@@ -63,6 +63,7 @@ export class Snapshot {
     const { sql, params } = dialect.sqlToQuery(query);
     const cursor = `deft_export_${++this.cursorCounter}`;
     await this.client.query(`DECLARE ${cursor} NO SCROLL CURSOR FOR ${sql}`, params);
+    let failed = false;
     try {
       for (;;) {
         const batch = await this.client.query<T>(`FETCH ${this.batchSize} FROM ${cursor}`);
@@ -70,8 +71,17 @@ export class Snapshot {
         for (const row of batch.rows) yield row;
         if (batch.rows.length < this.batchSize) break;
       }
+    } catch (error) {
+      failed = true;
+      throw error;
     } finally {
-      await this.client.query(`CLOSE ${cursor}`);
+      // Also runs when the consumer stops early. After a failed statement the
+      // transaction is aborted and CLOSE fails too; the first error wins.
+      try {
+        await this.client.query(`CLOSE ${cursor}`);
+      } catch (closeError) {
+        if (!failed) throw closeError;
+      }
     }
   }
 

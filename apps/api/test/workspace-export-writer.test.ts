@@ -1,16 +1,53 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Writable } from 'node:stream';
 import test from 'node:test';
 
-import { ArchiveWriter, assertArchivePath } from '../src/lib/workspace-export/writer.js';
+import { ArchiveFile, ArchiveWriter, assertArchivePath } from '../src/lib/workspace-export/writer.js';
 
 test('archive paths cannot escape the folder or use names Windows cannot store', () => {
-  for (const bad of ['../x', 'a/../b', '/abs', 'a//b', 'a\\b', 'con:x', 'trailing.', 'tab\tname', '', 'a/./b']) {
+  for (const bad of ['../x', 'a/../b', '/abs', 'a//b', 'a\\b', 'con:x', 'trailing.', 'tab\tname', '', 'a/./b',
+    'CON', 'nul.txt', 'attachments/AUX.pdf', 'x/com1', 'LPT9.log', 'prn.tar.gz']) {
     assert.throws(() => assertArchivePath(bad), /Invalid archive path/, bad);
   }
-  for (const good of ['data/spaces.jsonl', 'attachments/abc/Résumé final (2).pdf', 'conversations/x.html']) assertArchivePath(good);
+  for (const good of ['data/spaces.jsonl', 'attachments/abc/Résumé final (2).pdf', 'conversations/x.html', 'console.txt', 'com10', 'nullable.json']) {
+    assertArchivePath(good);
+  }
+});
+
+test('a disk failure after a write was accepted rejects the next step instead of crashing the process', async () => {
+  const uncaught: unknown[] = [];
+  const onUncaught = (error: unknown) => uncaught.push(error);
+  process.on('uncaughtException', onUncaught);
+  try {
+    // A stream that accepts each write, then fails it on the next turn, as a full disk does.
+    const failing = new Writable({ highWaterMark: 1 << 20, write(_chunk, _encoding, callback) { setImmediate(() => callback(new Error('ENOSPC: no space left'))); } });
+    const file = new ArchiveFile('data/x.jsonl', failing, async () => undefined);
+    await file.write('first line\n');
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    await assert.rejects(file.write('second line\n'), /ENOSPC/);
+    await assert.rejects(new ArchiveFile('data/y.jsonl', failing, async () => undefined).close(), /ENOSPC|closed|destroyed/);
+    assert.deepEqual(uncaught, []);
+  } finally {
+    process.off('uncaughtException', onUncaught);
+  }
+});
+
+test('an aborted export never publishes SHA256SUMS and releases its files', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'deft-export-abort-'));
+  try {
+    const writer = await ArchiveWriter.create(join(dir, 'out'));
+    const open = await writer.open('data/partial.jsonl');
+    await open.write('{"a":1}\n');
+    await writer.abort();
+    await assert.rejects(open.write('more'), /closed/);
+    assert.deepEqual((await readdir(join(dir, 'out'))).filter((name) => name.startsWith('SHA256SUMS') && name !== 'SHA256SUMS.partial'), []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test('the writer refuses a non-empty folder and the reserved checksum names', async () => {
