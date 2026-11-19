@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Writable } from 'node:stream';
@@ -77,4 +77,23 @@ test('attachment names in the archive are always storable, even after shortening
     assert.ok(path.startsWith('attachments/f1/'), path);
   }
   assert.equal(archiveFileName('f1', 'Report final.pdf'), 'attachments/f1/Report final.pdf');
+});
+
+test('the writer never deletes or replaces a file it did not create', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'deft-export-owned-'));
+  try {
+    const writer = await ArchiveWriter.create(join(dir, 'out'));
+    // Someone else creates a file at a path the export is about to write.
+    await mkdir(join(dir, 'out', 'attachments', 'f1'), { recursive: true });
+    await writeFile(join(dir, 'out', 'attachments', 'f1', 'a.txt'), 'theirs');
+    await assert.rejects(writer.open('attachments/f1/a.txt'), /EEXIST/);
+    assert.equal(await readFile(join(dir, 'out', 'attachments', 'f1', 'a.txt'), 'utf8'), 'theirs');
+    // And a SHA256SUMS appears before the export publishes its own.
+    await writer.writeText('README.txt', 'hello');
+    await writeFile(join(dir, 'out', 'SHA256SUMS'), 'theirs too');
+    await assert.rejects(writer.finish(async () => writer.writeJson('manifest.json', {})), /EEXIST/);
+    assert.equal(await readFile(join(dir, 'out', 'SHA256SUMS'), 'utf8'), 'theirs too');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
