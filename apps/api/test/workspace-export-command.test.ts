@@ -32,7 +32,8 @@ test('the tar file extracts with the system tar to exactly the folder, long and 
   const dir = await mkdtemp(join(tmpdir(), 'deft-export-tar-'));
   try {
     const folder = join(dir, 'in');
-    const longName = `${'Résumé-ünïcødé-'.repeat(12)}.txt`;
+    // 235 bytes: past the 100-byte ustar field, within the 255-byte name limit of Linux file systems.
+    const longName = `${'Résumé-ünïcødé-'.repeat(11)}.txt`;
     const files: Record<string, Buffer> = {
       'README.txt': Buffer.from('hello\n'),
       'empty.txt': Buffer.alloc(0),
