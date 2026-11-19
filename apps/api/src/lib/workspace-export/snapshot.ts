@@ -11,12 +11,21 @@ export type SnapshotOptions = Readonly<{
   batchSize?: number;
   /** Test seam: called with the number of rows each FETCH returned. */
   onFetch?: (rows: number) => void;
+  /** The one schema Deft's tables live in. Every query of the export reads from it alone. */
+  schema?: string;
 }>;
+
+const SCHEMA_NAME = /^[a-z_][a-z0-9_]{0,62}$/;
 
 /**
  * One read-only REPEATABLE READ transaction on one connection. Every dataset
  * is read through it, so all of them describe the same moment. Deft stores
  * `timestamp` columns in UTC; they are read as UTC whatever the local zone.
+ *
+ * Before any other query the transaction pins its search path to pg_catalog
+ * and one named schema, so no setting of the database, the role or the
+ * connection can make a query read a table from anywhere else. Every query
+ * of the export goes through this one transaction.
  */
 export class Snapshot {
   private cursorCounter = 0;
@@ -25,10 +34,13 @@ export class Snapshot {
     private readonly batchSize: number,
     private readonly onFetch: ((rows: number) => void) | undefined,
     readonly asOf: Date,
+    readonly schema: string,
   ) {}
 
   static async open(options: SnapshotOptions): Promise<Snapshot> {
     const batchSize = options.batchSize ?? 500;
+    const schema = options.schema ?? 'public';
+    if (!SCHEMA_NAME.test(schema)) throw new Error(`Invalid schema name: ${JSON.stringify(schema)}`);
     if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 10_000) throw new Error('Invalid batch size');
     const client = new pg.Client({
       connectionString: options.databaseUrl,
@@ -42,13 +54,33 @@ export class Snapshot {
     await client.connect();
     try {
       await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      await client.query(`SET LOCAL search_path TO pg_catalog, "${schema}"`);
       await client.query("SET LOCAL TIME ZONE 'UTC'");
       // The snapshot is taken by the first statement; now() is the transaction start.
       const result = await client.query<{ as_of: Date }>('SELECT now() AS as_of');
-      return new Snapshot(client, batchSize, options.onFetch, result.rows[0]!.as_of);
+      return new Snapshot(client, batchSize, options.onFetch, result.rows[0]!.as_of, schema);
     } catch (error) {
       await client.end().catch(() => undefined);
       throw error;
+    }
+  }
+
+  /**
+   * Refuses unless every named table exists in the pinned schema as an
+   * ordinary or partitioned table (not a view or foreign table) and an
+   * unqualified name resolves to exactly that table.
+   */
+  async requireTables(tables: readonly string[]): Promise<void> {
+    const wrong: string[] = [];
+    for (const table of tables) {
+      const { rows } = await this.client.query<{ ok: boolean }>(
+        `SELECT to_regclass(quote_ident($2)) IS NOT NULL AND to_regclass(quote_ident($2)) = to_regclass(quote_ident($1) || '.' || quote_ident($2))
+          AND (SELECT relkind FROM pg_class WHERE oid = to_regclass(quote_ident($2))) IN ('r', 'p') AS ok`,
+        [this.schema, table]);
+      if (!rows[0]?.ok) wrong.push(table);
+    }
+    if (wrong.length) {
+      throw new Error(`Deft's tables are not all plain tables in the schema "${this.schema}" (not found there: ${wrong.join(', ')}). Pass the schema Deft is installed in.`);
     }
   }
 
