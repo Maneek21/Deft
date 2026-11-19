@@ -61,6 +61,7 @@ export function admissionReview(value: unknown, request: AdmissionRequest): Admi
     || snapshot.schema_version !== 'deft.owner_connection_admission.v1' || snapshot.installation_id !== request.installation_id
     || snapshot.app_version_id !== request.expected_app_version_id || snapshot.operator_user_id !== request.operator_user_id
     || snapshot.package_digest !== request.expected_package_digest || snapshot.grant_snapshot_digest !== request.expected_grant_snapshot_digest
+    || snapshot.lifecycle_epoch !== request.expected_lifecycle_epoch || snapshot.grant_epoch !== request.expected_grant_epoch
     || snapshot.policy?.key !== request.policy_key || typeof snapshot.policy?.resource_key !== 'string'
     || !Array.isArray(snapshot.policy?.action_keys) || !snapshot.limits || !same(snapshot.limits, request.limits)) return fail();
   const profile = snapshot.connection_profile;

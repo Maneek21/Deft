@@ -48,6 +48,7 @@ test("the server's real review is accepted, and one for another operator, policy
   const changed = (edit: (snapshot: any) => void) => { const copy = structuredClone(real); edit(copy.review.snapshot); return copy; };
   for (const edit of [(s: any) => { s.operator_user_id = '00000000-0000-4000-8000-000000000001'; },
     (s: any) => { s.policy.key = policies.find(row => row.key !== policy.key)!.key; }, (s: any) => { s.limits.max_retained_records += 1; },
+    (s: any) => { s.lifecycle_epoch += 1; }, (s: any) => { s.grant_epoch += 1; },
     (s: any) => { s.connection_profile.operator_user_id = '00000000-0000-4000-8000-000000000001'; }])
     assert.throws(() => admissionReview(changed(edit), request), /changed/);
 });
