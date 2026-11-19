@@ -96,6 +96,7 @@ import { db } from './db.js';
 import { getIO } from '../socket.js';
 import { getBundledModule, listBundledModules } from './bundled-modules.js';
 import { ModuleError } from './module-errors.js';
+import { assertBaseReadAccess, assertBaseWriteAccess, assertInstallationAccess, isAdmin } from './module-access-policy.js';
 import { planModuleRecordMerge } from './module-merge-plan.js';
 import { visibleTaskCondition } from './task-visibility.js';
 import { isAgentToolDisabled } from './agent-tool-policy.js';
@@ -177,61 +178,6 @@ function validatedActor(value: ModuleActor): ModuleActor {
 
 function actorMetadata(actor: ModuleActor): { type: string; id: string } {
   return { type: actor.kind, id: actor.actor_id };
-}
-
-function isAdmin(actor: ModuleActor): boolean {
-  return actor.kind === 'human' && (actor.role === 'owner' || actor.role === 'admin');
-}
-
-function assertBaseReadAccess(actor: ModuleActor): void {
-  if ((actor.kind === 'human' || actor.kind === 'defty') && actor.role === 'guest') {
-    throw new ModuleError('Guests cannot access workspace modules', 'MODULE_ACCESS_DENIED', 403);
-  }
-  if (
-    actor.kind === 'human'
-    && actor.source === 'mcp'
-    && !actor.scopes.includes('read:modules')
-  ) {
-    throw new ModuleError('Missing MCP scope: read:modules', 'MODULE_SCOPE_REQUIRED', 403);
-  }
-}
-
-function assertBaseWriteAccess(actor: ModuleActor): void {
-  if ((actor.kind === 'human' || actor.kind === 'defty') && actor.role === 'guest') {
-    throw new ModuleError('Guests cannot access workspace modules', 'MODULE_ACCESS_DENIED', 403);
-  }
-  if (
-    actor.kind === 'human'
-    && actor.source === 'mcp'
-    && !actor.scopes.includes('write:modules')
-  ) {
-    throw new ModuleError('Missing MCP scope: write:modules', 'MODULE_SCOPE_REQUIRED', 403);
-  }
-}
-
-function assertInstallationAccess(
-  actor: ModuleActor,
-  installation: InstallationRow,
-  mode: AccessMode,
-  options?: { allowDisabledForAdmin?: boolean },
-): void {
-  if (mode === 'write') assertBaseWriteAccess(actor);
-  else assertBaseReadAccess(actor);
-
-  if (!installation.is_enabled) {
-    if (!(options?.allowDisabledForAdmin && isAdmin(actor))) {
-      throw new ModuleError('Module is disabled', 'MODULE_DISABLED', 409);
-    }
-  }
-
-  if (actor.kind === 'defty' || actor.kind === 'agent_employee') {
-    if (installation.agent_access === 'none') {
-      throw new ModuleError('Agent access is not enabled for this module', 'MODULE_ACCESS_DENIED', 403);
-    }
-    if (mode === 'write' && installation.agent_access !== 'write') {
-      throw new ModuleError('Agent write access is not enabled for this module', 'MODULE_ACCESS_DENIED', 403);
-    }
-  }
 }
 
 function assertLifecycleAccess(actor: ModuleActor): void {

@@ -103,7 +103,7 @@ test('nothing from another workspace reaches the archive, in any scope', { skip 
     world.b.agentUser, world.b.agentEmployee, ...Object.values(world.b.spaces), ...Object.values(world.b.messages),
     ...Object.values(world.b.tasks), ...Object.values(world.b.projects), ...Object.values(world.b.labels),
     ...Object.values(world.b.notes), ...Object.values(world.b.wiki), ...Object.values(world.b.events), ...Object.values(world.b.folders),
-    ...Object.values(world.b.files)].filter((id) => !sharedIds.has(id));
+    ...Object.values(world.b.files), world.b.contacts.installation, world.b.contacts.version, ...Object.values(world.b.contacts.records)].filter((id) => !sharedIds.has(id));
   for (const scope of allScopes()) {
     const exported = await runExport({ scope });
     for (const [path, bytes] of exported.files) {
@@ -501,4 +501,36 @@ test('attachments: a large file is streamed, not held in memory', { skip }, asyn
     await rm(join(world.uploadsDir, storage), { force: true });
   }
   assert.ok(peak < size / 2, `peak memory growth ${Math.round(peak / 1048576)} MiB for a ${size / 1048576} MiB file`);
+});
+
+test('Contacts: records with declared fields only, relations between live records, and the product read rule', { skip }, async () => {
+  const whole = await runExport({ scope: { kind: 'workspace' } });
+  const schema = JSON.parse(whole.files.get('data/modules/contacts/schema.json')!.toString('utf8'));
+  assert.deepEqual(schema.collections.map((collection: any) => collection.key).sort(), ['activities', 'companies', 'contacts', 'deals', 'outreach']);
+  assert.ok(schema.collections.every((collection: any) => collection.fields.every((field: any) => !('default' in field))));
+  const contacts = rows(whole, 'data/modules/contacts/contacts.jsonl');
+  assert.deepEqual(contacts.map((row) => row.id), [world.a.contacts.records.contact]);
+  assert.deepEqual(Object.keys(contacts[0]!.fields).sort(), ['email', 'name', 'notes', 'owner', 'phone', 'status']);
+  const companies = rows(whole, 'data/modules/contacts/companies.jsonl');
+  assert.equal(companies[0]!.fields.owner, null, 'an owner from another workspace is not named');
+  assert.deepEqual(rows(whole, 'data/modules/contacts/relations.jsonl').map(({ field, source_record_id, target_record_id }) =>
+    ({ field, source_record_id, target_record_id })),
+  [{ field: 'company_id', source_record_id: world.a.contacts.records.contact, target_record_id: world.a.contacts.records.company }]);
+
+  // The member scope follows assertInstallationAccess: members read Contacts; guests never; nobody reads a disabled module.
+  const member = await runExport({ scope: { kind: 'member', member: world.a.member } });
+  assert.equal(rows(member, 'data/modules.jsonl').length, 1);
+  assert.equal(rows(member, 'data/modules/contacts/contacts.jsonl').length, 1);
+  const guest = await runExport({ scope: { kind: 'member', member: world.a.guest } });
+  assert.equal(rows(guest, 'data/modules.jsonl').length, 0);
+  assert.ok(![...guest.files.keys()].some((path) => path.startsWith('data/modules/')));
+  await client.query('UPDATE module_installations SET is_enabled = false, disabled_at = now() WHERE id = $1', [world.a.contacts.installation]);
+  try {
+    const disabled = await runExport({ scope: { kind: 'member', member: world.a.owner } });
+    assert.equal(rows(disabled, 'data/modules.jsonl').length, 0);
+    const wholeDisabled = await runExport({ scope: { kind: 'workspace' } });
+    assert.equal(rows(wholeDisabled, 'data/modules.jsonl')[0]!.is_enabled, false);
+  } finally {
+    await client.query('UPDATE module_installations SET is_enabled = true, disabled_at = NULL WHERE id = $1', [world.a.contacts.installation]);
+  }
 });

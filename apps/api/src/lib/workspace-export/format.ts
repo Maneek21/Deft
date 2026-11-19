@@ -58,4 +58,5 @@ export const NOT_INCLUDED: readonly string[] = [
   'Notifications, agent actions and approvals, agent run history, AI memory, generated briefings and standups.',
   'Integration settings, connected accounts, and every credential or secret Deft stores (passwords, sessions, tokens, keys, invite and recovery links, two-step secrets).',
   'Personal preferences (bookmarks, saved views, favorites) and version history.',
+  'Links from module records (such as Contacts) to other Deft items, such as tasks. Links between records of the same module are included.',
 ];

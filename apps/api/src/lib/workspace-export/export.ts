@@ -6,6 +6,7 @@ import { PEOPLE_AND_SPACES, type Dataset } from './datasets.js';
 import { MESSAGES_AND_TASKS } from './datasets-content.js';
 import { NOTES_WIKI_EVENTS } from './datasets-knowledge.js';
 import { exportAttachments, type CopyHooks } from './attachments.js';
+import { exportModules } from './modules.js';
 
 export type ExportOptions = Readonly<{
   databaseUrl: string;
@@ -62,6 +63,7 @@ export async function exportWorkspace(options: ExportOptions): Promise<ExportRes
         await options.afterDataset?.(dataset.path);
       }
       datasets.push(await exportAttachments(snapshot, writer, ctx, options.uploadsDir, options.hooks));
+      datasets.push(...await exportModules(snapshot, writer, ctx));
 
       let manifest!: ExportManifest;
       await writer.finish(async () => {
