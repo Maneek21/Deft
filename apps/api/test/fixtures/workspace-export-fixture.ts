@@ -269,6 +269,16 @@ async function seedContent(s: Seeder, ws: WorkspaceIds, isB: boolean, ids: strin
   await s.client.query(`UPDATE events SET metadata = jsonb_set(metadata, '{status}', '"canceled"') WHERE id = $1`, [events.memberCanceled]);
   // Malformed metadata: an object where text is expected must not be written out.
   await event('nested', ws.member);
+  // An event another part of Deft wrote (such as an exception of a cancelled
+  // invitation series): it carries a key core Deft does not write.
+  // A GitHub pull-request event, with exactly the metadata github-sync writes.
+  events.githubForMember = id();
+  await s.insert('events', { id: events.githubForMember, org_id: ws.orgId, source: 'github', event_type: 'pr_merged',
+    external_id: `pr-${events.githubForMember}`, title: text(isB, 'PR merged'), timestamp: tomorrow, user_id: ws.member,
+    metadata: { repo: 'acme/app', number: 7, state: 'closed', merged: true, head_branch: 'feature', additions: 1, deletions: 2,
+      draft: false, labels: ['x'], requested_reviewers: [] } });
+  await event('otherWriter', ws.member);
+  await s.client.query(`UPDATE events SET metadata = metadata || '{"written_elsewhere": {"series": "x"}}'::jsonb WHERE id = $1`, [events.otherWriter]);
   await s.client.query(`UPDATE events SET metadata = jsonb_set(metadata, '{location}', jsonb_build_object('hidden', $2::text)) WHERE id = $1`,
     [events.nested, s.secret('events.location_object')]);
   // A share kept after its recipient left the workspace.
