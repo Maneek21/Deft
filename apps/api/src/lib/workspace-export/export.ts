@@ -20,15 +20,30 @@ export type ExportOptions = Readonly<{
   /** Folder to create; it must not exist or be empty. */
   outDir: string;
   deftVersion?: string | null;
+  /** The schema Deft's tables are in (default "public"). The export reads that schema alone. */
+  databaseSchema?: string;
   batchSize?: number;
   onFetch?: (rows: number) => void;
   /** Test seam: called after each JSON Lines record is written. */
   onRecord?: () => void;
   /** Test seam: runs after each dataset file is complete. */
   afterDataset?: (path: string) => Promise<void>;
-  /** Test seam: runs just before each attachment's bytes are read. */
+  /** Test seams around each attachment read. */
   hooks?: CopyHooks;
+  /**
+   * The operator states that this database holds exactly one workspace. Only
+   * then are attachment bytes copied; the export stops if the database shows
+   * another workspace. A hosted workspace's database always holds one.
+   */
+  singleWorkspaceDatabase?: boolean;
 }>;
+
+/** Every table the export reads, directly or through the product's visibility rules. All must be in the pinned schema. */
+export const EXPORT_TABLES: readonly string[] = ['orgs', 'users', 'org_members', 'agent_employees', 'spaces', 'space_members',
+  'messages', 'reactions', 'canvases', 'projects', 'labels', 'tasks', 'task_assignees', 'task_watchers', 'task_labels',
+  'task_relationships', 'task_reactions', 'task_comments', 'note_folders', 'notes', 'note_shares', 'wiki_pages', 'wiki_links',
+  'events', 'files', 'message_attachments', 'task_attachments', 'module_installations', 'module_versions', 'module_records',
+  'module_record_relations'];
 
 export type ExportResult = Readonly<{ root: string; manifest: ExportManifest }>;
 
@@ -40,8 +55,10 @@ export const DATASETS: readonly Dataset[] = [...PEOPLE_AND_SPACES, ...MESSAGES_A
  * A folder without SHA256SUMS is an export that did not finish.
  */
 export async function exportWorkspace(options: ExportOptions): Promise<ExportResult> {
-  const snapshot = await Snapshot.open({ databaseUrl: options.databaseUrl, batchSize: options.batchSize, onFetch: options.onFetch });
+  const snapshot = await Snapshot.open({ databaseUrl: options.databaseUrl, batchSize: options.batchSize, onFetch: options.onFetch,
+    schema: options.databaseSchema });
   try {
+    await snapshot.requireTables(EXPORT_TABLES);
     const workspace = await resolveWorkspace(snapshot, options.workspace);
     const scope = await resolveScope(snapshot, workspace.id, options.scope);
     const ctx: ExportContext = { orgId: workspace.id, scope };
@@ -64,8 +81,9 @@ export async function exportWorkspace(options: ExportOptions): Promise<ExportRes
         datasets.push({ path: dataset.path, records: file.records });
         await options.afterDataset?.(dataset.path);
       }
-      const attachments = await exportAttachments(snapshot, writer, ctx, options.uploadsDir, options.hooks);
-      datasets.push(attachments.summary);
+      const attachments = await exportAttachments(snapshot, writer, ctx, options.uploadsDir,
+        { hooks: options.hooks, singleWorkspaceDatabase: options.singleWorkspaceDatabase });
+      datasets.push({ path: attachments.path, records: attachments.records });
       datasets.push(...await exportModules(snapshot, writer, ctx));
       await writeTranscripts(snapshot, writer, ctx);
       const memberName = scope.kind === 'member'
@@ -80,12 +98,14 @@ export async function exportWorkspace(options: ExportOptions): Promise<ExportRes
           workspace: { id: workspace.id, slug: workspace.slug, name: workspace.name },
           scope: scope.kind === 'workspace' ? { kind: 'workspace' } : { kind: 'member', user_id: scope.user_id, role: scope.role },
           as_of: snapshot.asOf.toISOString(),
+          database_schema: snapshot.schema,
+          attachments: { single_workspace_declared: attachments.single_workspace_declared, files_copied: attachments.files_copied },
           complete: writer.omissions === 0,
           omissions: writer.omissions,
           datasets,
           not_included: NOT_INCLUDED,
         };
-        await writeReadme(writer, manifest, memberName, attachments.included);
+        await writeReadme(writer, manifest, memberName, attachments.files_copied);
         await writer.writeJson('manifest.json', manifest);
       });
       return { root: writer.root, manifest };

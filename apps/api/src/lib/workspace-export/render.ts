@@ -38,6 +38,8 @@ const LABELS: Record<string, string> = {
   'data/events.jsonl': 'Calendar and tool events', 'data/files.jsonl': 'Attachments listed', 'data/modules.jsonl': 'Installed modules (such as Contacts)',
 };
 
+const ATTACHMENTS_NOT_COPIED = 'Attachment files were not copied: they are copied only when the operator states that this database holds exactly one workspace (--single-workspace-database). Each file is still listed in data/files.jsonl, with the reason in omissions.jsonl.';
+
 function scopeSentence(manifest: ExportManifest, memberName: string | null): string {
   return manifest.scope.kind === 'workspace'
     ? 'Everything in the workspace, including private spaces and direct messages.'
@@ -56,6 +58,8 @@ export async function writeReadme(writer: ArchiveWriter, manifest: ExportManifes
     `As of: ${manifest.as_of} (UTC)`,
     `Complete: ${manifest.complete ? 'yes' : `no, ${manifest.omissions} item(s) could not be included (see below and omissions.jsonl)`}`,
     `Attachment files included: ${filesIncluded}`,
+    ...(manifest.attachments.single_workspace_declared ? [] : [ATTACHMENTS_NOT_COPIED]),
+    `Database schema read: ${manifest.database_schema}`,
     '',
     'Open README.html in a web browser to read the conversations. Every data file is listed in manifest.json and',
     'described in Deft\'s documentation (docs/workspace-export.md). SHA256SUMS lets you check that no file has changed:',
@@ -77,6 +81,7 @@ export async function writeReadme(writer: ArchiveWriter, manifest: ExportManifes
 <p>${escapeHtml(scopeSentence(manifest, memberName))}<br>As of ${escapeHtml(manifest.as_of)} (UTC).
 ${manifest.complete ? 'Everything in scope is included.' : `<strong>${manifest.omissions} item(s) could not be included</strong>; see below.`}</p>
 <p><a href="conversations/index.html">Read the conversations</a> · ${filesIncluded} attachment files are in the <code>attachments</code> folder.</p>
+${manifest.attachments.single_workspace_declared ? '' : `<p><strong>${escapeHtml(ATTACHMENTS_NOT_COPIED)}</strong></p>`}
 <h2>What is in it</h2><table><tr><th>Kind</th><th>Count</th><th>File</th></tr>${counts.map(([label, records, path]) =>
   `<tr><td>${escapeHtml(label)}</td><td>${records}</td><td><a href="${href(path, 0)}">${escapeHtml(path)}</a></td></tr>`).join('')}</table>
 <h2>Not included</h2><ul>${manifest.not_included.map((line) => `<li>${escapeHtml(line)}</li>`).join('')}</ul>
