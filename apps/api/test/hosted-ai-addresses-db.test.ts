@@ -131,8 +131,10 @@ test('hosted: local transcription cannot be saved; an unknown stored provider do
       ai_models: { reason: { provider: 'azure', model: 'x', baseUrl: 'http://10.0.0.5' } },
       transcription: { provider: 'local' },
     })]);
+    // The settings page is read by someone who can change it (check 12.5.4).
+    const { rows: [owner] } = await client.query("SELECT user_id FROM org_members WHERE org_id=$1 AND role='owner'", [orgId]);
     const app = new Hono();
-    app.use('*', async (c, next) => { c.set('user', { id: 'u', org_id: orgId } as never); await next(); });
+    app.use('*', async (c, next) => { c.set('user', { id: owner.user_id, org_id: orgId } as never); await next(); });
     app.route('/api/org', orgRoutes);
     const res = await app.request('/api/org/ai-config');
     assert.equal(res.status, 200);
