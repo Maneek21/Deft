@@ -38,14 +38,14 @@ docker compose run --rm --no-deps --entrypoint sh -v "$PWD/exports:/exports" def
 | `--uploads <folder>` | Deft's uploads folder (`/app/uploads` in the container). |
 | `--member <user id or email>` | Export exactly what this active person can see in Deft. |
 | `--whole-workspace` | Export everything, including every private space and direct message. It must be given explicitly. |
-| `--out <file.tar>` | The tar file to write. It must not exist. Add `--folder` to write a folder instead. |
+| `--out <file.tar>` | The tar file to write: an ordinary file name ending in `.tar`, which also names the folder inside it. It must not exist, and the command never replaces a file that appears while it runs. Add `--folder` to write a folder instead. |
 | `--workspace-key-file <path>` | Optional. Says that the workspace's key is available. This version records that fact in the manifest but does not decrypt. |
 | `--database-url <url>` | Instead of `DATABASE_URL`. A URL on the command line is visible to other users of the machine. |
 
 Exactly one of `--member` and `--whole-workspace` is required. The command
 reads one consistent snapshot of the database. It needs free disk space for
 the archive twice over while it packs the tar. It exits 2 for a usage error and
-1 for a failed export, and leaves no partial tar behind.
+1 for a failed export, and leaves no partial tar behind. Error messages never repeat a URL, so a database password passed by mistake is not printed.
 
 Run it against a stopped app when you can. Against a running app the database
 rows still describe one moment, but a file deleted or replaced while the
@@ -99,7 +99,7 @@ pages in Markdown.
 | `files.jsonl` | attachment | `id`, `filename`, `mime_type`, `size_bytes`, `sha256`, `uploaded_by`, `created_at`, `attached_to` (`{message_id}`, `{task_id}` or null), `included`, `archive_path` |
 | `modules.jsonl` | installed module (such as Contacts) | `id`, `module_id`, `slug`, `source`, `is_enabled`, `version`, `folder`, `created_at` |
 | `modules/<slug>/schema.json` | (one object) | the module's collections and their fields: `key`, `label`, `type`, `required`, `multiple`, `options`, `target_collection` |
-| `modules/<slug>/<collection>.jsonl` | record | `id`, `collection`, `revision`, `fields` (only fields the module declares), `created_at`, `updated_at` |
+| `modules/<slug>/collections/<collection>.jsonl` | record | `id`, `collection`, `revision`, `fields` (only fields the module declares), `created_at`, `updated_at` |
 | `modules/<slug>/relations.jsonl` | link between records | `field`, `source_record_id`, `target_record_id`, `position`, `created_at` |
 
 A user id names someone in the workspace; an id that would name anyone else is
@@ -126,6 +126,9 @@ many), `datasets` (each file and its record count) and `not_included`.
   content is exported as written, even if it contains a password.
 - Personal preferences and version history.
 - Links from module records to other Deft items, such as tasks.
+- The records of a module that has no active version, or whose stored
+  manifests fail their integrity check, as Deft would not show them either.
+  Such a module is listed in `omissions.jsonl`.
 - The text of private assistant conversations, which is encrypted with the
   workspace's key. They are listed in `omissions.jsonl`.
 

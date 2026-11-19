@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { packTar } from '../src/lib/workspace-export/tar.js';
-import { UsageError, parseCommand } from '../src/scripts/export-workspace.js';
+import { entryHeaders, packTar, paxRecord } from '../src/lib/workspace-export/tar.js';
+import { UsageError, parseCommand, runCommand } from '../src/scripts/export-workspace.js';
 
 /** The operating system's own tar (Windows ships bsdtar as tar.exe; a Git Bash tar on PATH reads C: as a host). */
 const systemTar = process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
@@ -54,4 +54,47 @@ test('the tar file extracts with the system tar to exactly the folder, long and 
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test('pax records count their own length at every digit boundary, and sizes over 8 GiB go in a pax record', () => {
+  for (let length = 1; length < 1200; length += 1) {
+    const record = paxRecord('path', 'x'.repeat(length));
+    assert.equal(Number(record.split(' ')[0]), Buffer.byteLength(record), `value length ${length}`);
+  }
+  const big = entryHeaders('top/huge.bin', 9_000_000_000, 0);
+  assert.ok(big.toString('latin1').includes('size=9000000000\n'));
+  assert.equal(big.length % 512, 0);
+  assert.equal(big.subarray(big.length - 512 + 124, big.length - 512 + 135).toString('ascii'), '77777777777');
+});
+
+test('the tar never replaces an existing file, and refuses a top-level name that is not one safe segment', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'deft-export-tar-safe-'));
+  try {
+    const folder = join(dir, 'in');
+    await mkdir(folder);
+    await writeFile(join(folder, 'a.txt'), 'a');
+    const existing = join(dir, 'taken.tar');
+    await writeFile(existing, 'keep me');
+    await assert.rejects(packTar(folder, existing, 'taken'), /EEXIST/);
+    assert.equal(await readFile(existing, 'utf8'), 'keep me');
+    await assert.rejects(stat(`${existing}.partial`));
+    for (const unsafe of ['..', '.', 'a/b', 'CON']) await assert.rejects(packTar(folder, join(dir, 'x.tar'), unsafe), /Invalid archive path/);
+    await assert.rejects(runCommand({ databaseUrl: 'postgres://localhost/x', workspace: 'w', uploads: dir, out: join(dir, '..tar'),
+      folder: false, scope: { kind: 'workspace' }, workspaceKeyFile: null }), UsageError);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('the command exits 2 on a usage error, 1 on a failed export, and never prints a URL it was given', () => {
+  const script = join(import.meta.dirname, '..', 'src', 'scripts', 'export-workspace.ts');
+  const run = (args: string[], databaseUrl: string) => spawnSync(process.execPath, ['--import', 'tsx', script, ...args],
+    { encoding: 'utf8', cwd: join(import.meta.dirname, '..'), env: { ...process.env, DATABASE_URL: databaseUrl }, timeout: 60_000 });
+  const secret = 'postgres://exporter:SECRETPASSWORD@127.0.0.1:1/nowhere';
+  const usage = run(['--workspace', 'w', '--uploads', '.', '--out', 'x.tar', '--whole-workspace', secret], secret);
+  assert.equal(usage.status, 2, usage.stderr);
+  assert.ok(!`${usage.stdout}${usage.stderr}`.includes('SECRETPASSWORD'));
+  const failed = run(['--workspace', 'w', '--uploads', '.', '--out', join(tmpdir(), `deft-export-${Date.now()}.tar`), '--whole-workspace'], secret);
+  assert.equal(failed.status, 1, failed.stderr);
+  assert.ok(!`${failed.stdout}${failed.stderr}`.includes('SECRETPASSWORD'));
 });

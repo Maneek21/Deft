@@ -1,7 +1,8 @@
-import { createReadStream, createWriteStream, type WriteStream } from 'node:fs';
-import { readdir, rename, rm, stat } from 'node:fs/promises';
-import { once } from 'node:events';
+import { constants, createReadStream, createWriteStream, type WriteStream } from 'node:fs';
+import { copyFile, link, readdir, rm, stat } from 'node:fs/promises';
+import { finished } from 'node:stream/promises';
 import { join } from 'node:path';
+import { assertArchivePath } from './writer.js';
 
 /**
  * Packs a folder into one POSIX tar file (pax format), streamed file by file
@@ -11,6 +12,7 @@ import { join } from 'node:path';
  */
 const BLOCK = 512;
 const USTAR_MAX_SIZE = 0o77777777777;
+const PLAIN_NAME = /^[\x20-\x7e]{1,99}$/;
 
 function octal(value: number, length: number): string {
   return `${value.toString(8).padStart(length - 1, '0')}\0`;
@@ -35,15 +37,38 @@ function header(name: string, size: number, type: '0' | 'x', mtime: number): Buf
 }
 
 /** One pax record: "<length> <key>=<value>\n", where length counts its own digits. */
-function paxRecord(key: string, value: string): string {
+export function paxRecord(key: string, value: string): string {
   const body = ` ${key}=${value}\n`;
   let length = Buffer.byteLength(body) + 1;
   while (String(length).length + Buffer.byteLength(body) !== length) length = String(length).length + Buffer.byteLength(body);
   return `${length}${body}`;
 }
 
+/** The header blocks for one file: a pax header when needed, then the ustar header. */
+export function entryHeaders(name: string, size: number, mtime: number): Buffer {
+  const records = [
+    ...(PLAIN_NAME.test(name) ? [] : [paxRecord('path', name)]),
+    ...(size > USTAR_MAX_SIZE ? [paxRecord('size', String(size))] : []),
+  ].join('');
+  const blocks: Buffer[] = [];
+  if (records) {
+    const pax = Buffer.from(records, 'utf8');
+    blocks.push(header('PaxHeader/entry', pax.length, 'x', mtime), pax, Buffer.alloc((BLOCK - (pax.length % BLOCK)) % BLOCK));
+  }
+  blocks.push(header(PLAIN_NAME.test(name) ? name : 'entry', size, '0', mtime));
+  return Buffer.concat(blocks);
+}
+
+/** Writes with backpressure; a failure of the output stream at any moment is reported here, never left uncaught. */
 async function write(stream: WriteStream, chunk: Buffer): Promise<void> {
-  if (!stream.write(chunk)) await once(stream, 'drain');
+  if (stream.errored) throw stream.errored;
+  if (stream.write(chunk)) return;
+  await new Promise<void>((resolve, reject) => {
+    const done = () => { stream.off('error', failed); resolve(); };
+    const failed = (error: Error) => { stream.off('drain', done); reject(error); };
+    stream.once('drain', done);
+    stream.once('error', failed);
+  });
 }
 
 async function listFiles(root: string, prefix = ''): Promise<string[]> {
@@ -58,25 +83,20 @@ async function listFiles(root: string, prefix = ''): Promise<string[]> {
   return files;
 }
 
-/** Writes `folder` into `tarPath` under the top-level directory `topName`. The tar appears only when complete. */
+/**
+ * Writes `folder` into `tarPath` under the top-level directory `topName`.
+ * The tar appears only when complete, and never replaces an existing file.
+ */
 export async function packTar(folder: string, tarPath: string, topName: string, mtime = Math.floor(Date.now() / 1000)): Promise<void> {
+  assertArchivePath(topName);
+  if (topName.includes('/')) throw new Error(`Invalid archive path: ${JSON.stringify(topName)}`);
   const partial = `${tarPath}.partial`;
   const out = createWriteStream(partial, { flags: 'wx' });
-  await once(out, 'open');
+  out.on('error', () => undefined);
   try {
     for (const relative of await listFiles(folder)) {
-      const name = `${topName}/${relative}`;
       const { size } = await stat(join(folder, ...relative.split('/')));
-      const records = [
-        ...(/^[\x20-\x7e]{1,99}$/.test(name) ? [] : [paxRecord('path', name)]),
-        ...(size > USTAR_MAX_SIZE ? [paxRecord('size', String(size))] : []),
-      ].join('');
-      if (records) {
-        const pax = Buffer.from(records, 'utf8');
-        await write(out, header('PaxHeader/entry', pax.length, 'x', mtime));
-        await write(out, Buffer.concat([pax, Buffer.alloc((BLOCK - (pax.length % BLOCK)) % BLOCK)]));
-      }
-      await write(out, header(/^[\x20-\x7e]{1,99}$/.test(name) ? name : `${topName}/entry`, size, '0', mtime));
+      await write(out, entryHeaders(`${topName}/${relative}`, size, mtime));
       let written = 0;
       for await (const chunk of createReadStream(join(folder, ...relative.split('/')))) {
         written += (chunk as Buffer).length;
@@ -88,10 +108,19 @@ export async function packTar(folder: string, tarPath: string, topName: string, 
     }
     await write(out, Buffer.alloc(BLOCK * 2));
     out.end();
-    await once(out, 'close');
-    await rename(partial, tarPath);
+    await finished(out);
+    // Publish without ever replacing a file that appeared in the meantime.
+    try {
+      await link(partial, tarPath);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EPERM' && code !== 'ENOTSUP' && code !== 'EXDEV' && code !== 'ENOSYS') throw error;
+      await copyFile(partial, tarPath, constants.COPYFILE_EXCL);
+    }
+    await rm(partial, { force: true });
   } catch (error) {
     out.destroy();
+    await finished(out).catch(() => undefined);
     await rm(partial, { force: true });
     throw error;
   }

@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { exportWorkspace } from '../lib/workspace-export/export.js';
 import { packTar } from '../lib/workspace-export/tar.js';
+import { assertArchivePath } from '../lib/workspace-export/writer.js';
 
 const USAGE = `Usage: export-workspace --workspace <id|slug> --uploads <folder> --out <file.tar | folder>
   (--whole-workspace | --member <user id or email>) [--folder] [--workspace-key-file <path>] [--database-url <url>]`;
@@ -28,16 +29,30 @@ export type CommandOptions = {
   scope: { kind: 'workspace' } | { kind: 'member'; member: string }; workspaceKeyFile: string | null;
 };
 
+function parse(argv: string[]) {
+  try {
+    return parseArgs({
+      args: argv,
+      strict: true,
+      options: {
+        workspace: { type: 'string' }, uploads: { type: 'string' }, out: { type: 'string' }, folder: { type: 'boolean', default: false },
+        'whole-workspace': { type: 'boolean', default: false }, member: { type: 'string' },
+        'workspace-key-file': { type: 'string' }, 'database-url': { type: 'string' },
+      },
+    });
+  } catch {
+    // The parser's own message can repeat an argument, which may be a secret such as a database URL.
+    throw new UsageError('Unknown, misplaced or incomplete argument.');
+  }
+}
+
+/** Replaces anything that looks like a URL, which may carry a password, before a message is printed. */
+export function redact(message: string): string {
+  return message.replace(/[a-z][a-z0-9+.-]*:\/\/\S+/gi, '<url>');
+}
+
 export function parseCommand(argv: string[], env: NodeJS.ProcessEnv): CommandOptions {
-  const { values } = parseArgs({
-    args: argv,
-    strict: true,
-    options: {
-      workspace: { type: 'string' }, uploads: { type: 'string' }, out: { type: 'string' }, folder: { type: 'boolean', default: false },
-      'whole-workspace': { type: 'boolean', default: false }, member: { type: 'string' },
-      'workspace-key-file': { type: 'string' }, 'database-url': { type: 'string' },
-    },
-  });
+  const { values } = parse(argv);
   const databaseUrl = values['database-url'] ?? env.DATABASE_URL;
   if (!databaseUrl) throw new UsageError('Set DATABASE_URL or pass --database-url.');
   if (!values.workspace || !values.uploads || !values.out) throw new UsageError('--workspace, --uploads and --out are required.');
@@ -69,11 +84,18 @@ export async function runCommand(options: CommandOptions): Promise<string> {
     return options.out;
   }
   if (!options.out.endsWith('.tar')) throw new UsageError('--out must name a .tar file (or add --folder to write a folder).');
-  if (await stat(options.out).then(() => true, () => false)) throw new UsageError(`${options.out} already exists.`);
+  // The file's name becomes the folder inside the tar, so it must be one safe name.
+  const topName = basename(options.out, '.tar');
+  try {
+    assertArchivePath(topName);
+  } catch {
+    throw new UsageError('--out must be a .tar file with an ordinary name, such as acme-export.tar.');
+  }
+  if (await stat(options.out).then(() => true, () => false)) throw new UsageError('The --out file already exists.');
   const staging = await mkdtemp(join(dirname(options.out), '.deft-export-'));
   try {
     const result = await exportWorkspace({ ...common, outDir: join(staging, 'export') });
-    await packTar(result.root, options.out, basename(options.out, '.tar'), Math.floor(Date.parse(result.manifest.as_of) / 1000));
+    await packTar(result.root, options.out, topName, Math.floor(Date.parse(result.manifest.as_of) / 1000));
     return options.out;
   } finally {
     await rm(staging, { recursive: true, force: true });
@@ -85,7 +107,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const written = await runCommand(parseCommand(process.argv.slice(2), process.env));
     console.log(`Export written: ${written}`);
   } catch (error) {
-    console.error(error instanceof UsageError ? `${error.message}\n${USAGE}` : `Export failed: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(redact(error instanceof UsageError ? `${error.message}\n${USAGE}` : `Export failed: ${error instanceof Error ? error.message : String(error)}`));
     process.exit(error instanceof UsageError ? 2 : 1);
   }
 }
