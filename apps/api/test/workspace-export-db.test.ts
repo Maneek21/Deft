@@ -347,6 +347,15 @@ test('tasks: member scope equals the product task check; links and comments foll
   assert.equal(tasks.get(world.a.tasks.subtask!)?.parent_task_id, world.a.tasks.open);
   assert.equal(tasks.get(world.a.tasks.restricted!)?.visibility, 'restricted');
   assert.deepEqual(rows(whole, 'data/task_labels.jsonl'), [{ task_id: world.a.tasks.open, label_id: world.a.labels.bug }]);
+  // Positive sets, so an empty dataset cannot pass.
+  const pairs = (path: string, a: string, b: string) => rows(whole, path).map((row) => `${row[a]}:${row[b]}`).sort();
+  assert.deepEqual(pairs('data/task_assignees.jsonl', 'task_id', 'user_id'),
+    [`${world.a.tasks.restrictedAssigned}:${world.a.guest}`, `${world.a.tasks.open}:${world.a.other}`].sort());
+  assert.deepEqual(pairs('data/task_watchers.jsonl', 'task_id', 'user_id'), [`${world.a.tasks.restrictedWatched}:${world.a.member}`]);
+  assert.deepEqual(pairs('data/task_reactions.jsonl', 'task_id', 'user_id'), [`${world.a.tasks.open}:${world.a.member}`]);
+  assert.deepEqual(pairs('data/task_relationships.jsonl', 'source_task_id', 'target_task_id'), [`${world.a.tasks.open}:${world.a.tasks.restricted}`]);
+  assert.deepEqual(pairs('data/reactions.jsonl', 'message_id', 'user_id'), [`${world.a.messages.general}:${world.a.member}`]);
+  assert.deepEqual(rows(whole, 'data/canvases.jsonl').map((row) => row.space_id), [world.a.spaces.privateOthers]);
   const comments = rows(whole, 'data/task_comments.jsonl');
   assert.equal(comments.length, 2, 'comments on open and restricted; not the deleted comment or the deleted task');
 });
@@ -389,10 +398,20 @@ test('notes, folders, wiki and events: member scope equals what the product rout
     assert.deepEqual(rows(exported, 'data/wiki_pages.jsonl').map((row) => row.id).sort(), wiki.pages.map((row: any) => row.id).sort(), `wiki for ${userId}`);
     const pages = new Set(wiki.pages.map((row: any) => row.id));
     for (const row of rows(exported, 'data/wiki_links.jsonl')) assert.ok(pages.has(row.source_page_id) && pages.has(row.target_page_id));
-    // Events: the Calendar's events.
+    // Events: the Calendar's events, less cancelled ones (never more than the Calendar).
     const calendar = await (await as(userId, calendarPath)).json() as any;
     assert.deepEqual(rows(exported, 'data/events.jsonl').map((row) => row.id).sort(),
-      calendar.events.map((row: any) => row.id).sort(), `events for ${userId}`);
+      calendar.events.filter((row: any) => row.metadata?.status !== 'canceled').map((row: any) => row.id).sort(), `events for ${userId}`);
+    // Note shares: exactly what GET /api/daily-notes/:id/shares lists for the member's own notes.
+    const ownNotes = (await client.query<{ id: string }>('SELECT id FROM notes WHERE org_id = $1 AND user_id = $2 AND NOT is_deleted',
+      [world.a.orgId, userId])).rows;
+    const productShares: string[] = [];
+    for (const { id } of ownNotes) {
+      const shares = await (await as(userId, `/api/daily-notes/${id}/shares`)).json() as any;
+      productShares.push(...shares.shares.map((share: any) => `${id}:${share.user_id}`));
+    }
+    assert.deepEqual(rows(exported, 'data/note_shares.jsonl').map((row) => `${row.note_id}:${row.shared_with_user_id}`).sort(),
+      productShares.sort(), `note shares for ${userId}`);
     // Spaces named by notes and pages are spaces in the export.
     const spaces = new Set(rows(exported, 'data/spaces.jsonl').map((row) => row.id));
     for (const row of [...noteRows.values(), ...rows(exported, 'data/wiki_pages.jsonl')]) {
@@ -403,6 +422,16 @@ test('notes, folders, wiki and events: member scope equals what the product rout
   const whole = await runExport({ scope: { kind: 'workspace' } });
   const events = new Map(rows(whole, 'data/events.jsonl').map((row) => [row.id, row]));
   assert.equal(events.get(world.a.events.noOwner!)?.user_id, null);
+  assert.ok(events.has(world.a.events.memberCanceled!), 'the whole workspace keeps cancelled events');
+  assert.equal(events.get(world.a.events.nested!)?.location, null, 'an object in place of text is not written');
+  // Positive sets, so an empty dataset cannot pass.
+  assert.deepEqual(rows(whole, 'data/note_shares.jsonl').map((row) => `${row.note_id}:${row.shared_with_user_id}`),
+    [`${world.a.notes.sharedWithMember}:${world.a.member}`], 'only shares to active members of this workspace');
+  assert.deepEqual(rows(whole, 'data/wiki_links.jsonl').map((row) => row.target_page_id).sort(),
+    [world.a.wiki.personalOther, world.a.wiki.spacePrivateWithMember].sort());
+  const folders = rows(whole, 'data/note_folders.jsonl');
+  assert.equal(folders.length, 3);
+  assert.equal(folders.filter((row) => row.user_id === null).length, 1, 'a folder owner from another workspace is not named');
   const member = events.get(world.a.events.member!)!;
   assert.deepEqual(member.attendees, [{ email: 'guest@example.test', name: 'attendee' }]);
   assert.equal(member.recurrence.rrule, 'FREQ=WEEKLY;COUNT=4');
