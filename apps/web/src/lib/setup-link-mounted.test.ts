@@ -18,7 +18,7 @@ const NEXT_STUBS: Record<string, string> = {
   'next/image': "import { createElement } from 'react'; export default function Image({ priority, ...rest }) { return createElement('img', rest); }",
 };
 
-async function mountSignup(hash: string) {
+async function mountSignup(hash: string, options: { hasWorkspace?: boolean } = {}) {
   const page = path.join(web, 'src/app/signup/page.tsx');
   const auth = path.join(web, 'src/app/providers.tsx');
   const bundle = await build({
@@ -59,7 +59,7 @@ createRoot(document.getElementById('root')).render(createElement(AuthProvider, n
     const url = new URL(request.url());
     if (url.origin !== 'http://127.0.0.1') return route.abort();
     if (url.pathname === '/signup') return route.fulfill({ contentType: 'text/html', body: '<div id="root"></div>' });
-    if (url.pathname === '/api/auth/has-workspace') return route.fulfill({ contentType: 'application/json', body: '{"hasWorkspace":false}' });
+    if (url.pathname === '/api/auth/has-workspace') return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ hasWorkspace: options.hasWorkspace === true }) });
     if (url.pathname === '/api/auth/signup') {
       signupBodies.push(JSON.parse(request.postData() ?? 'null'));
       return route.fulfill({ status: 502, contentType: 'application/json', body: '{"error":"stopped by the test","code":"TEST_STOP"}' });
@@ -128,5 +128,16 @@ test('a failed signup retains its setup token for retry through production provi
     assert.equal(f.signupBodies.length, 2);
     for (const body of f.signupBodies) assert.equal((body as { setup_token?: string }).setup_token, 'retry-secret');
     assert.equal(await f.tab.evaluate(() => window.location.hash), '');
+  } finally { await f.close(); }
+});
+
+test('a used setup link on a workspace that exists says what happened and what to do, in hosted words', async () => {
+  const f = await mountSignup('#setup=already-used', { hasWorkspace: true });
+  try {
+    await f.tab.getByText('This workspace has already been set up.').waitFor();
+    const text = await f.tab.evaluate(() => document.body.innerText);
+    assert.match(text, /If you set it up, sign in\. Otherwise, ask the workspace owner for an invite\./);
+    assert.equal(await f.tab.getByRole('link', { name: 'sign in', exact: true }).getAttribute('href'), '/login');
+    assert.doesNotMatch(text, /self-hosted/i);
   } finally { await f.close(); }
 });

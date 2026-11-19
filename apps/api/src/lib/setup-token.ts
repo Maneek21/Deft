@@ -51,12 +51,15 @@ export const SETUP_TOKEN_MAX_LENGTH = 512;
 /**
  * One public answer for every refusal (no hash configured, no token sent,
  * wrong token, expired token, token already used), so a caller learns nothing about how close a
- * guess was or how the cell is configured.
+ * guess was or how the cell is configured. It names the next step: the setup
+ * link arrives by email from the hosted service, and replies to that email
+ * reach its support address (check 12.2.9). The cell itself knows no support
+ * address, so none is named here.
  */
 export const SETUP_TOKEN_ERROR = {
   error:
-    'This workspace can only be created from its setup link. ' +
-    'The link is missing, incorrect, expired, or already used.',
+    "This setup link can't be used. It may be incomplete, expired, already used, or for a different workspace. " +
+    'To get a new link, reply to the email your setup link came in.',
   code: 'SETUP_TOKEN_INVALID',
 } as const;
 

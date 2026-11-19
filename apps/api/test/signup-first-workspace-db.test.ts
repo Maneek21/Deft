@@ -51,7 +51,9 @@ const HASH = sha256(TOKEN);
 const inOneHour = () => new Date(Date.now() + 3_600_000).toISOString();
 const oneMinuteAgo = () => new Date(Date.now() - 60_000).toISOString();
 const SETUP_REFUSAL = {
-  error: 'This workspace can only be created from its setup link. The link is missing, incorrect, expired, or already used.',
+  // Check 12.2.9: every refusal says what happened and what to do next.
+  error: "This setup link can't be used. It may be incomplete, expired, already used, or for a different workspace. "
+    + 'To get a new link, reply to the email your setup link came in.',
   code: 'SETUP_TOKEN_INVALID',
 };
 const SETUP_UNAVAILABLE = {
