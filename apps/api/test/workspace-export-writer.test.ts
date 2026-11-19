@@ -97,3 +97,52 @@ test('the writer never deletes or replaces a file it did not create', async () =
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+const longNames = {
+  cjk: `${'報告書の最終版'.repeat(43)}.pdf`,
+  korean: `${'최종보고서'.repeat(60)}.docx`,
+  accents: `${'é'.repeat(300)}.txt`,
+  emoji: `${'👨‍👩‍👧‍👦'.repeat(20)}.png`,
+  combining: `a${'́'.repeat(500)}.txt`,
+  loneSurrogate: 'a\uD800b.txt',
+};
+
+test('a long attachment name is cut in bytes, at a whole character, keeping its extension', async () => {
+  const { archiveFileName, MAX_NAME_BYTES } = await import('../src/lib/workspace-export/attachments.js');
+  const nameOf = (filename: string) => archiveFileName('f1', filename).slice('attachments/f1/'.length);
+  for (const [label, filename] of Object.entries(longNames)) {
+    const name = nameOf(filename);
+    assert.ok(Buffer.byteLength(name, 'utf8') <= MAX_NAME_BYTES + 1, `${label}: ${Buffer.byteLength(name, 'utf8')} bytes`);
+    assert.ok(!name.includes('�') && !/\p{Cs}/u.test(name), `${label}: no replacement character or lone surrogate`);
+    assert.equal(Buffer.from(name, 'utf8').toString('utf8'), name, `${label}: survives UTF-8 unchanged`);
+  }
+  const cjk = nameOf(longNames.cjk);
+  assert.ok(cjk.endsWith('.pdf') && longNames.cjk.startsWith(cjk.slice(0, -4)), cjk);
+  // Whole family emoji only: never a part of the joined sequence.
+  const emoji = nameOf(longNames.emoji);
+  assert.match(emoji, /^(?:👨‍👩‍👧‍👦)+\.png$/u);
+  // One character too long to keep at all gives way to a plain name.
+  assert.equal(nameOf(longNames.combining), 'file.txt');
+  assert.equal(nameOf(longNames.loneSurrogate), 'a_b.txt');
+  // A hashed folder can never be the folder of another id.
+  assert.match(archiveFileName('not a plain id', 'x.txt'), /^attachments\/h\.[0-9a-f]{64}\/x\.txt$/);
+});
+
+test('long multi-byte attachment names are really written on this file system', async () => {
+  const { archiveFileName, plainArchiveFileName } = await import('../src/lib/workspace-export/attachments.js');
+  const dir = await mkdtemp(join(tmpdir(), 'deft-export-names-'));
+  try {
+    const writer = await ArchiveWriter.create(join(dir, 'out'));
+    let index = 0;
+    for (const filename of Object.values(longNames)) {
+      for (const path of [archiveFileName(`f${++index}`, filename), plainArchiveFileName(`p${index}`, filename)]) {
+        const file = await writer.open(path);
+        await file.write('bytes');
+        await file.close();
+        assert.equal(await readFile(join(dir, 'out', ...path.split('/')), 'utf8'), 'bytes');
+      }
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

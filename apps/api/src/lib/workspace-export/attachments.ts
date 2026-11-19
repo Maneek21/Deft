@@ -8,7 +8,7 @@ import { col } from './datasets.js';
 import { exportableTask } from './datasets-content.js';
 import { memberId, workspaceAuthor, type ExportContext } from './scope.js';
 import type { Snapshot } from './snapshot.js';
-import { assertArchivePath, type ArchiveWriter } from './writer.js';
+import { assertArchivePath, type ArchiveFile, type ArchiveWriter } from './writer.js';
 
 const CHUNK_BYTES = 64 * 1024;
 
@@ -62,25 +62,71 @@ type FileRow = {
   attached_as: 'message' | 'task' | 'unattached' | 'ambiguous'; link_message_id: string | null; link_task_id: string | null;
 };
 
-/** A readable file name for the archive: the original name, with characters no file system accepts replaced. */
-export function archiveFileName(id: string, filename: string): string {
-  const safeId = /^[A-Za-z0-9_-]{1,128}$/.test(id) ? id : createHash('sha256').update(id).digest('hex');
-  let name = filename.normalize('NFC').replace(/[\u0000-\u001f\u007f<>:"/\\|?*]/gu, '_');
-  if (name.length > 150) {
-    const dot = name.lastIndexOf('.');
-    const extension = dot > 0 && name.length - dot <= 16 ? name.slice(dot) : '';
-    name = name.slice(0, 150 - extension.length) + extension;
+/**
+ * The longest archive file name, in UTF-8 bytes. Linux file systems (ext4, XFS,
+ * Btrfs, ZFS) and APFS allow 255 bytes; NTFS and exFAT allow 255 UTF-16 units,
+ * which a UTF-8 byte count also bounds. The margin covers the `_` prefix below
+ * and decomposition on file systems that store names decomposed.
+ */
+export const MAX_NAME_BYTES = 180;
+const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
+/** The longest run of whole characters (grapheme clusters) from the start of text that fits in budget bytes. */
+function fitBytes(text: string, budget: number): string {
+  let kept = '';
+  let used = 0;
+  for (const { segment } of graphemes.segment(text)) {
+    const size = Buffer.byteLength(segment, 'utf8');
+    if (used + size > budget) break;
+    kept += segment;
+    used += size;
   }
-  // After shortening: no trailing dot or space, and never a device name.
-  name = name.replace(/[. ]+$/u, '').trim();
-  const path = `attachments/${safeId}/${name || 'file'}`;
+  return kept;
+}
+
+/** Each attachment has its own folder, named by its id. A hashed id starts with `h.`, which no plain id can. */
+function archiveFolder(id: string): string {
+  return `attachments/${/^[A-Za-z0-9_-]{1,128}$/.test(id) ? id : `h.${createHash('sha256').update(id).digest('hex')}`}`;
+}
+
+/** No trailing dot or space, never empty, and never a device name. */
+function storableIn(folder: string, name: string): string {
+  const cleaned = name.replace(/[. ]+$/u, '').trim() || 'file';
   try {
-    assertArchivePath(path);
-    return path;
+    assertArchivePath(`${folder}/${cleaned}`);
+    return `${folder}/${cleaned}`;
   } catch {
-    return `attachments/${safeId}/_${name || 'file'}`.replace(/[. ]+$/u, '');
+    return `${folder}/_${cleaned}`.replace(/[. ]+$/u, '');
   }
 }
+
+/**
+ * A readable file name for the archive: the original name, with characters no
+ * file system accepts replaced, cut to MAX_NAME_BYTES at a character boundary
+ * and keeping its extension. files.jsonl keeps the full original name.
+ */
+export function archiveFileName(id: string, filename: string): string {
+  // Lone surrogates (\p{Cs}) cannot be written as UTF-8; they would become U+FFFD.
+  let name = filename.normalize('NFC').replace(/[\u0000-\u001f\u007f<>:"/\\|?*]|\p{Cs}/gu, '_');
+  if (Buffer.byteLength(name, 'utf8') > MAX_NAME_BYTES) {
+    const dot = name.lastIndexOf('.');
+    const extension = dot > 0 && Buffer.byteLength(name.slice(dot), 'utf8') <= 16 ? name.slice(dot).replace(/[. ]+$/u, '') : '';
+    const base = fitBytes(extension ? name.slice(0, dot) : name, MAX_NAME_BYTES - Buffer.byteLength(extension, 'utf8'));
+    name = (base.replace(/[. ]+$/u, '') || 'file') + extension;
+  }
+  return storableIn(archiveFolder(id), name);
+}
+
+/** The second choice when a file system refuses the readable name: `file` and a plain ASCII extension. */
+export function plainArchiveFileName(id: string, filename: string): string {
+  const extension = /\.[A-Za-z0-9]{1,15}$/u.exec(filename)?.[0] ?? '';
+  return storableIn(archiveFolder(id), `file${extension}`);
+}
+
+/** Errors that mean this one name cannot exist on the output file system; any other write error stops the export. */
+const NAME_ERRORS = new Set(['ENAMETOOLONG', 'EINVAL', 'EILSEQ']);
+/** Errors that mean this one stored file cannot be looked at or opened; it is reported, the export goes on. */
+const UNREADABLE_ERRORS = new Set(['EACCES', 'EPERM', 'ELOOP', 'ENAMETOOLONG', 'EINVAL', 'EILSEQ', 'ENOTDIR']);
 
 /** Test seams around each attachment read; none runs in normal use. */
 export type CopyHooks = Readonly<{
@@ -90,6 +136,8 @@ export type CopyHooks = Readonly<{
   beforeOpen?: (fileId: string) => Promise<void>;
   /** After the first chunk has been copied. */
   duringRead?: (fileId: string) => Promise<void>;
+  /** Before each archive name is tried; may throw as the file system would. */
+  beforeWrite?: (fileId: string, path: string) => Promise<void>;
   /**
    * Test seam: replaces the scan's answer, so the copying path can be tested
    * in a database that holds several workspaces. The command cannot set it.
@@ -141,6 +189,36 @@ const missingAsNull = <T>(promise: Promise<T>) => promise.catch((error: NodeJS.E
   throw error;
 });
 
+class Unreadable extends Error {
+  constructor(readonly code: string) { super(code); }
+}
+
+/** Missing becomes null; a stored file that cannot be looked at or opened becomes Unreadable, reported for that file alone. */
+const sourceStep = <T>(promise: Promise<T>) => missingAsNull(promise).catch((error: NodeJS.ErrnoException) => {
+  if (error.code && UNREADABLE_ERRORS.has(error.code)) throw new Unreadable(error.code);
+  throw error;
+});
+
+/**
+ * Opens the archive file for an attachment: its readable name, then the plain
+ * one. If the output file system refuses both names, the file is reported, not
+ * the export stopped. Any other write error (a full disk, a folder that cannot
+ * be written) stops the export.
+ */
+async function openArchiveFile(writer: ArchiveWriter, row: FileRow, hooks: CopyHooks): Promise<{ file: ArchiveFile; path: string } | { reason: string }> {
+  const readable = archiveFileName(row.id, row.filename);
+  const plain = plainArchiveFileName(row.id, row.filename);
+  for (const path of readable === plain ? [readable] : [readable, plain]) {
+    try {
+      await hooks.beforeWrite?.(row.id, path);
+      return { file: await writer.open(path), path };
+    } catch (error) {
+      if (!NAME_ERRORS.has((error as NodeJS.ErrnoException).code ?? '')) throw error;
+    }
+  }
+  return { reason: 'The file system the export was written to refused its name, even shortened; bytes not included.' };
+}
+
 /**
  * Copies one file's bytes into the archive, or says why not. Bytes are taken
  * only from a regular file directly inside the uploads folder:
@@ -154,6 +232,15 @@ const missingAsNull = <T>(promise: Promise<T>) => promise.catch((error: NodeJS.E
  * Bytes are streamed in 64 KiB chunks.
  */
 async function copyFile(writer: ArchiveWriter, uploadsRoot: string, row: FileRow, hooks: CopyHooks): Promise<{ path: string; sha256: string } | { reason: string }> {
+  try {
+    return await copyFileChecked(writer, uploadsRoot, row, hooks);
+  } catch (error) {
+    if (error instanceof Unreadable) return { reason: `The stored file cannot be read (${error.code}); bytes not included.` };
+    throw error;
+  }
+}
+
+async function copyFileChecked(writer: ArchiveWriter, uploadsRoot: string, row: FileRow, hooks: CopyHooks): Promise<{ path: string; sha256: string } | { reason: string }> {
   if (row.processing_status === 'blocked') return { reason: 'Blocked by the attachment safety check; bytes not included.' };
   if (row.storage_shared) return SHARED;
   let source: string;
@@ -164,17 +251,17 @@ async function copyFile(writer: ArchiveWriter, uploadsRoot: string, row: FileRow
     return { reason: 'Invalid stored file name.' };
   }
   await hooks.beforeFileRead?.(row.id);
-  const before = await missingAsNull(lstat(source));
+  const before = await sourceStep(lstat(source));
   if (!before) return MISSING;
   if (!before.isFile() || before.isSymbolicLink()) return { reason: 'Not a regular file in the uploads folder.' };
   if (before.nlink !== 1) return { reason: 'The stored file has more than one name (a hard link), so its owner cannot be established.' };
-  const real = await missingAsNull(realpath(source));
+  const real = await sourceStep(realpath(source));
   if (!real) return MISSING;
   if (dirname(real) !== uploadsRoot || basename(real) !== row.storage_key) {
     return { reason: 'The stored file name does not match a file in the uploads folder exactly.' };
   }
   await hooks.beforeOpen?.(row.id);
-  const handle = await missingAsNull(open(source, 'r'));
+  const handle = await sourceStep(open(source, 'r'));
   if (!handle) return MISSING;
   try {
     const opened = await handle.stat();
@@ -182,8 +269,9 @@ async function copyFile(writer: ArchiveWriter, uploadsRoot: string, row: FileRow
       other.ino === before.ino && other.dev === before.dev && other.size === before.size && other.mtimeMs === before.mtimeMs && other.nlink === 1;
     if (!same(opened)) return CHANGED;
     if (opened.size !== row.size_bytes) return { reason: 'The stored bytes differ from the recorded size.' };
-    const path = archiveFileName(row.id, row.filename);
-    const file = await writer.open(path);
+    const target = await openArchiveFile(writer, row, hooks);
+    if ('reason' in target) return target;
+    const { file, path } = target;
     const hash = createHash('sha256');
     let bytes = 0;
     try {
