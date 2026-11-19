@@ -5,6 +5,7 @@
  *   node --import tsx src/scripts/export-workspace.ts \
  *     --workspace <id or slug> --uploads <folder> --out <file.tar> \
  *     (--whole-workspace | --member <user id or email>) \
+ *     [--single-workspace-database] [--database-schema <name>] \
  *     [--folder] [--workspace-key-file <path>]
  *
  * The database is read from DATABASE_URL (or --database-url). The whole
@@ -20,12 +21,16 @@ import { packTar } from '../lib/workspace-export/tar.js';
 import { assertArchivePath } from '../lib/workspace-export/writer.js';
 
 const USAGE = `Usage: export-workspace --workspace <id|slug> --uploads <folder> --out <file.tar | folder>
-  (--whole-workspace | --member <user id or email>) [--folder] [--workspace-key-file <path>] [--database-url <url>]`;
+  (--whole-workspace | --member <user id or email>) [--single-workspace-database] [--database-schema <name>]
+  [--folder] [--workspace-key-file <path>] [--database-url <url>]`;
 
 export class UsageError extends Error {}
 
 export type CommandOptions = {
   databaseUrl: string; workspace: string; uploads: string; out: string; folder: boolean;
+  /** The operator states this database holds exactly one workspace; only then are attachment bytes copied. */
+  singleWorkspaceDatabase?: boolean;
+  databaseSchema?: string;
   scope: { kind: 'workspace' } | { kind: 'member'; member: string }; workspaceKeyFile: string | null;
 };
 
@@ -37,6 +42,7 @@ function parse(argv: string[]) {
       options: {
         workspace: { type: 'string' }, uploads: { type: 'string' }, out: { type: 'string' }, folder: { type: 'boolean', default: false },
         'whole-workspace': { type: 'boolean', default: false }, member: { type: 'string' },
+        'single-workspace-database': { type: 'boolean', default: false }, 'database-schema': { type: 'string' },
         'workspace-key-file': { type: 'string' }, 'database-url': { type: 'string' },
       },
     });
@@ -61,6 +67,7 @@ export function parseCommand(argv: string[], env: NodeJS.ProcessEnv): CommandOpt
   }
   return {
     databaseUrl, workspace: values.workspace, uploads: resolve(values.uploads), out: resolve(values.out), folder: values.folder,
+    singleWorkspaceDatabase: values['single-workspace-database'], databaseSchema: values['database-schema'],
     scope: values.member ? { kind: 'member', member: values.member } : { kind: 'workspace' },
     workspaceKeyFile: values['workspace-key-file'] ? resolve(values['workspace-key-file']) : null,
   };
@@ -78,6 +85,7 @@ async function deftVersion(): Promise<string | null> {
 export async function runCommand(options: CommandOptions): Promise<string> {
   if (options.workspaceKeyFile && !((await stat(options.workspaceKeyFile)).size > 0)) throw new UsageError('The workspace key file is empty.');
   const common = { databaseUrl: options.databaseUrl, workspace: options.workspace, scope: options.scope, uploadsDir: options.uploads,
+    singleWorkspaceDatabase: options.singleWorkspaceDatabase === true, databaseSchema: options.databaseSchema,
     deftVersion: await deftVersion(), workspaceKeySupplied: Boolean(options.workspaceKeyFile) };
   if (options.folder) {
     await exportWorkspace({ ...common, outDir: options.out });

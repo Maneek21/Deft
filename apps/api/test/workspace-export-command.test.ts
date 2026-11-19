@@ -19,6 +19,10 @@ test('the command needs exactly one scope, and the whole workspace only by its e
   assert.throws(() => parseCommand([...base, '--whole-workspace', '--member', 'a@example.test'], env), UsageError);
   assert.deepEqual(parseCommand([...base, '--member', 'a@example.test'], env).scope, { kind: 'member', member: 'a@example.test' });
   assert.deepEqual(parseCommand([...base, '--whole-workspace'], env).scope, { kind: 'workspace' });
+  assert.equal(parseCommand([...base, '--whole-workspace'], env).singleWorkspaceDatabase, false, 'attachments are copied only when declared');
+  const declared = parseCommand([...base, '--whole-workspace', '--single-workspace-database', '--database-schema', 'deft'], env);
+  assert.equal(declared.singleWorkspaceDatabase, true);
+  assert.equal(declared.databaseSchema, 'deft');
   assert.throws(() => parseCommand([...base, '--whole-workspace'], {}), /DATABASE_URL/);
   assert.throws(() => parseCommand(['--workspace', 'w', '--whole-workspace'], env), /required/);
   assert.throws(() => parseCommand([...base, '--whole-workspace', '--scope', 'all'], env));

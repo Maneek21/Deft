@@ -20,6 +20,7 @@ DATABASE_URL=postgres://... node --import tsx src/scripts/export-workspace.ts \
   --workspace acme \
   --uploads /app/uploads \
   --member owner@example.com \
+  --single-workspace-database \
   --out /exports/acme-2026-12-01.tar
 ```
 
@@ -29,7 +30,7 @@ With Docker Compose, the database must be running; the app need not be:
 docker compose up -d postgres
 docker compose run --rm --no-deps --entrypoint sh -v "$PWD/exports:/exports" deft -c \
   "cd /app/apps/api && node --import tsx src/scripts/export-workspace.ts \
-   --workspace acme --uploads /app/uploads --member owner@example.com --out /exports/acme.tar"
+   --workspace acme --uploads /app/uploads --member owner@example.com --single-workspace-database --out /exports/acme.tar"
 ```
 
 | Option | Meaning |
@@ -39,6 +40,8 @@ docker compose run --rm --no-deps --entrypoint sh -v "$PWD/exports:/exports" def
 | `--member <user id or email>` | Export exactly what this active person can see in Deft. |
 | `--whole-workspace` | Export everything, including every private space and direct message. It must be given explicitly. |
 | `--out <file.tar>` | The tar file to write: an ordinary file name ending in `.tar`, which also names the folder inside it. It must not exist, and the command never replaces a file that appears while it runs. Add `--folder` to write a folder instead. |
+| `--single-workspace-database` | States that this database holds exactly one workspace. Only then are attachment files copied, and the export stops if the database shows any other workspace. Without it, attachments are listed without their bytes. |
+| `--database-schema <name>` | The schema Deft's tables are in (default `public`). The export reads that schema alone and refuses to run unless every table it reads is a plain table there. |
 | `--workspace-key-file <path>` | Optional. Says that the workspace's key is available. This version records that fact in the manifest but does not decrypt. |
 | `--database-url <url>` | Instead of `DATABASE_URL`. A URL on the command line is visible to other users of the machine. |
 
@@ -46,6 +49,19 @@ Exactly one of `--member` and `--whole-workspace` is required. The command
 reads one consistent snapshot of the database. It needs free disk space for
 the archive twice over while it packs the tar. It exits 2 for a usage error and
 1 for a failed export, and leaves no partial tar behind. Error messages never repeat a URL, so a database password passed by mistake is not printed.
+
+### Attachment files
+
+Attachment bytes are copied only with `--single-workspace-database`: the
+operator states that this database, and its uploads folder, serve exactly one
+workspace. A hosted workspace always does, so the hosted export always passes
+it. With the flag, the export first checks every table of the schema for any
+trace of another workspace and stops, before copying anything, if it finds
+one. That check cannot tell who wrote bytes on disk that no row describes, so
+the statement is the operator's: use the flag only when the uploads folder
+serves this database alone. Without the flag, every attachment is listed in
+`files.jsonl` and `omissions.jsonl` with the reason, and the README says so.
+A database holding several workspaces is exported without attachment files.
 
 Run it against a stopped app when you can. Against a running app the database
 rows still describe one moment, but a file deleted or replaced while the
@@ -96,7 +112,7 @@ pages in Markdown.
 | `wiki_pages.jsonl` | page | `id`, `scope`, `space_id`, `type`, `title`, `slug`, `summary`, `content`, `tags`, `user_id`, `created_via`, `version`, `created_at`, `updated_at` |
 | `wiki_links.jsonl` | link | `source_page_id`, `target_page_id`, `context`, `created_at` |
 | `events.jsonl` | event | `id`, `source`, `event_type`, `title`, `body`, `url`, `actor`, `timestamp`, `user_id`, `start`, `end`, `all_day`, `location`, `status`, `attendees` (`email`, `name`), `recurrence` (`start`, `end`, `rrule`, `recurrence_id`, `exdates`), `created_at`, `updated_at` |
-| `files.jsonl` | attachment | `id`, `filename`, `mime_type`, `size_bytes`, `sha256`, `uploaded_by`, `created_at`, `attached_to` (`{message_id}`, `{task_id}` or null), `included`, `archive_path` |
+| `files.jsonl` | attachment | `id`, `filename`, `mime_type`, `size_bytes`, `sha256` (of the bytes in this archive, or null), `recorded_sha256` (Deft's own, may be null), `uploaded_by`, `created_at`, `attached_to` (`{message_id}`, `{task_id}` or null), `included`, `archive_path` |
 | `modules.jsonl` | installed module (such as Contacts) | `id`, `module_id`, `slug`, `source`, `is_enabled`, `version`, `folder`, `created_at` |
 | `modules/<slug>/schema.json` | (one object) | the module's collections and their fields: `key`, `label`, `type`, `required`, `multiple`, `options`, `target_collection` |
 | `modules/<slug>/collections/<collection>.jsonl` | record | `id`, `collection`, `revision`, `fields` (only fields the module declares), `created_at`, `updated_at` |
@@ -110,9 +126,11 @@ or is outside the scope.
 
 `format`, `format_version`, `generator`, `workspace`, `scope` (`{kind:
 "workspace"}` or `{kind: "member", user_id, role}`), `as_of` (the start of the
-database snapshot), `workspace_key` (`not_supplied` or `supplied_not_used`),
-`complete` (false when anything in scope was left out), `omissions` (how
-many), `datasets` (each file and its record count) and `not_included`.
+database snapshot), `database_schema` (the one schema read), `workspace_key`
+(`not_supplied` or `supplied_not_used`), `attachments`
+(`single_workspace_declared`, `files_copied`), `complete` (false when anything
+in scope was left out), `omissions` (how many), `datasets` (each file and its
+record count) and `not_included`.
 
 ## What is not in it
 
@@ -134,6 +152,7 @@ many), `datasets` (each file and its record count) and `not_included`.
 
 An attachment is left out, with its reason in `omissions.jsonl` and
 `included: false` in `files.jsonl`, when:
+- the export was run without `--single-workspace-database`;
 - the safety check blocked it;
 - it is missing from the uploads folder;
 - its bytes do not match the recorded size or checksum;
