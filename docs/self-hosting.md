@@ -605,6 +605,43 @@ can supply its own AI independently of Deft's provider configuration.
 | `GITHUB_WEBHOOK_SECRET` | No | Secret for `POST /api/webhooks/github`; unset disables that endpoint (503). GitHub PR-to-Done runs through the scheduled per-workspace GitHub sync and does not use it | none |
 | `DEFT_GITHUB_SYNC_INTERVAL_MIN` | No | Minutes between scheduled syncs of each connected GitHub account (at most 10 connections queued per minute; failures back off, rate limits wait for GitHub's reset). `0` or `off` disables the schedule; manual sync still works | `10` |
 | `METRICS_SCRAPE_TOKEN` | No | Bearer token for `/api/metrics` and `/health/queue`; unset disables detailed telemetry | none |
+| `DEFT_PAUSED_START` | No | Exactly `true` starts Deft read-only, for example to look at a restored copy before releasing it; see "Health checks and a paused start" below. Any value other than exactly `true` or `false` stops startup | unset (normal start) |
+| `DEFT_PAUSED_REASON` | No | Why a paused install is paused, shown to signed-in people: `restore_review` or `billing`. Any other value stops startup. It changes nothing that is refused | `restore_review` |
+| `DEFT_HOSTED` and the hosted-only settings | Leave unset | For the hosted Deft service only. Unset `DEFT_HOSTED` means self-hosted; when set it must be exactly `true` or `false`, or startup stops. `DEFT_SETUP_TOKEN_SHA256`, `DEFT_SETUP_TOKEN_EXPIRES_AT`, `DEFT_CELL_ID`, `DEFT_SEAT_PUBLIC_KEYS`, `DEFT_SEAT_STATEMENT_URL` and `DEFT_SEAT_FETCH_TOKEN` stop startup when they are defined, even empty, without `DEFT_HOSTED=true`: remove them from a self-hosted environment | unset |
+
+### Health checks and a paused start
+
+- `/health` is a liveness check. It answers 200 with `status: "ok"` while the API
+  process is up, and reports `release`, `schema_head`, `schema_applied` and `paused`.
+- `/health/ready` is the readiness check. It answers 200 with `status: "ready"` when
+  the database query succeeds, the agent-channel claim and lease columns and the
+  `wiki_memory_syncs` table exist, and job-worker startup has completed. Otherwise it
+  answers 503 with `status: "not_ready"` (`code: "DATABASE_NOT_READY"` when the
+  database cannot be read). It does not compare the upgrade ledger with `schema_head`;
+  read `schema_applied` on `/health` for that. It also reports `paused`.
+- Route traffic only when `/health/ready` returns 200 and `paused` is `false`. A paused
+  install reports `"paused": true` on both endpoints: `/health` returns 200, and
+  `/health/ready` returns 200 once its normal readiness checks pass, so that an
+  operator can reach it. A load balancer must read that field and must not treat a
+  paused install as serving.
+
+`DEFT_PAUSED_START=true` starts Deft so an operator can look at it, without letting it
+work. The setting is read once, when the API process starts. While paused:
+
+- the scheduler and the background jobs do not run, and startup work that writes or
+  re-queues is skipped;
+- every request other than `GET`, `HEAD` and `OPTIONS` is refused with 503 and
+  `code: "PAUSED"`, except sign-in (including two-step verification and, where it is
+  required, enrolment), token refresh and logout;
+- the agent channel (except its static contract), the calendar feeds and the few reads
+  that change shared state are refused, and realtime connections are refused;
+- the API process makes no outbound call: AI and embedding providers, transcription,
+  outside tool servers, the App Runtime, URL fetches and web push are all refused;
+- signed-in people see a notice with the reason from `DEFT_PAUSED_REASON`.
+
+To resume, remove `DEFT_PAUSED_START` (or set it to exactly `false`) and restart the
+API. Leave it unset in normal operation. The pause covers the API process only: if you
+run the separate Email helper, stop it yourself before you restore.
 
 ### Apps feature flags
 

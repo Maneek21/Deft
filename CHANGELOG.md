@@ -10,131 +10,307 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
-### Paused workspaces explain themselves
+### Release candidate `0.3.0-preview.144` — publication pending
 
-- While `DEFT_PAUSED_START=true`, the web app shows a banner saying the
-  workspace can be read but not changed, and why: `DEFT_PAUSED_REASON` is
-  `restore_review` (default) or `billing`; any other value refuses to start.
-  Refused changes show one calm message instead of a generic error, and the
-  realtime client stops retrying. Nothing changes when the install is not
-  paused.
+The `0.3.0-preview.144` host is a release preparation candidate. No release tag or
+image is implied by this entry. Public installation instructions remain pinned to the
+published `0.3.0-preview.142` release; they move after `0.3.0-preview.144` is published
+and verified. Release scope `core` (no Hermes compatibility claim). Changes since
+`v0.3.0-preview.143`.
 
-### Security: trusted proxy peers for API rate limits (operator action)
+Upgrade notes:
 
-- General API IP limits now ignore forwarding headers unless the socket peer
-  matches `DEFT_INVITE_TRUSTED_PROXIES`. The bundled Caddy overlay already sets
-  this. Custom-proxy operators must set it to their proxy's exact peer IPs or
-  controlled DNS names; otherwise visitors share the proxy's rate-limit bucket,
-  including the production 10/minute auth budget used by refresh. Direct API
-  installs need no setting. Startup warns when the setting is absent.
+- Schema head moves to `0.3.0-preview.149`. Stop Deft, back up the database and the
+  uploads volume, and run `pnpm db:upgrade` (check first with `pnpm db:upgrade --status`
+  and `--dry-run`) before starting the new version. It records three new ledger
+  entries, all add-only:
+  - `.144` creates `seat_statements` (used only in hosted mode);
+  - `.148` gives the helper functions behind the App connection and consent CHECK
+    constraints their own `search_path`, so a dump holding those rows restores;
+  - `.149` creates `user_two_step`, `user_two_step_recovery_codes`,
+    `two_step_challenges` and `org_member_privilege_history`.
 
-### Changed: one assistant reply per space at a time
+  Sign-in and refresh read `user_two_step` on every install, so the new version
+  started on a database that has not been upgraded cannot sign anyone in.
+- Behind a reverse proxy other than the bundled Caddy overlay, set
+  `DEFT_INVITE_TRUSTED_PROXIES` to the exact peer IP addresses, or DNS names you
+  control, of that proxy. Every address-based API rate limit now counts the client
+  address from forwarding headers only when the socket peer is a trusted proxy.
+  Without the setting, all visitors behind your proxy share one bucket, including the
+  production limit of 10 requests a minute for sign-in and refresh. The bundled Caddy
+  overlay already sets it, and an API reached directly needs nothing. Startup warns
+  while it is unset.
+- New optional settings, off unless set: `DEFT_PAUSED_START`, `DEFT_PAUSED_REASON`
+  and `PUSH_MESSAGE_PREVIEWS_ENABLED` (API), and `NEXT_PUBLIC_FEATURE_WEB_APP_INSTALL`
+  (web build). See `.env.example`.
+- The API now refuses to start when `DEFT_HOSTED` or `DEFT_PAUSED_START` is set to
+  anything but exactly `true` or `false`, or `DEFT_PAUSED_REASON` to anything but
+  `restore_review` or `billing` (an empty value, `TRUE`, `1` or a trailing space all
+  refuse). Unset `DEFT_HOSTED` means self-hosted, as before.
+- The hosted-only settings `DEFT_SETUP_TOKEN_SHA256`, `DEFT_SETUP_TOKEN_EXPIRES_AT`,
+  `DEFT_CELL_ID`, `DEFT_SEAT_PUBLIC_KEYS`, `DEFT_SEAT_STATEMENT_URL` and
+  `DEFT_SEAT_FETCH_TOKEN` stop startup when they are defined, even empty, without
+  `DEFT_HOSTED=true`. Remove them from a self-hosted environment.
+- A pending admin invite that an admin (not the owner) made before this release stops
+  working; the owner re-sends it. Recovery links made before this release are
+  refused. Any older invite link stops working at the first change to that person's
+  role or active state.
+- Admins can no longer change, remove or recover a person or agent who is or was an
+  owner or admin; the owner does that now (see "Members, admins and agents" below).
+- Outside agents that read the heartbeat prompt: new prompts list recent messages by
+  reference (author, space, message id) instead of copying their text. Read the text
+  with the MCP tools `fetch_unread` or `thread_fetch`. Older stored heartbeat prompts
+  lose their copied text when the workers start.
+- Load balancers: send traffic on `/health/ready`, not on `/health` answering 200, and
+  never to an install that reports `paused: true`.
+- Log alerts that match raw exception text, stacks, SQL or request paths need
+  updating: API and worker logs now carry fixed event text, status codes and error
+  references instead (see "Logs" below).
+- Browser push subscriptions and deliveries need a public HTTPS address on port 443
+  with no credentials in the URL. A custom push service that does not meet this stops
+  receiving notifications.
+- If browser requests to the API fail after upgrading, check `NEXT_PUBLIC_API_URL` and
+  `NEXT_PUBLIC_WS_URL`: the web app's `connect-src` now allows only the page itself and
+  those two origins.
+- After upgrading, take a new backup and rehearse restoring it. A dump taken before
+  schema `.148` that holds App connection or consent rows needs the repair under
+  "Dumps taken before schema `0.3.0-preview.148`" in `docs/self-hosting.md`.
+- Author Kit stays `0.1.0-alpha.43`; its source is unchanged since
+  `v0.3.0-preview.143`.
 
-- The job queue no longer starts an `agent-reply` while another for the same
-  workspace and space is running with a live lease, or is older and due. An
-  expired lease never blocks. This assumes a single API process claims jobs:
-  replies can still overlap with more than one process, or when a reply
-  handler keeps running after its job timeout (120 s by default) settled the
-  row. With general timeouts disabled (or invalid), assistant replies retain
-  the 120-second default so a hung occurrence stops holding its space.
+Sign-in and recovery:
 
-### Changed: approving an action that then fails
+- Two-step verification and recovery codes. Anyone can turn it on from Settings ->
+  Profile -> Security: an authenticator app (time-based 6-digit codes, RFC 6238) plus
+  ten single-use recovery codes, shown once and stored as hashes. With it on, signing
+  in needs the password and then a code. A password reset or recovery link does not
+  remove it, and signing in with a recovery code signs out every other session.
+  Self-hosted installs require it of nobody. If someone loses both their
+  authenticator and their recovery codes there is no way back into that account; the
+  setup screen says so.
+- Invite and password-recovery links carry their one-time secret after `#`, which the
+  browser does not send to a server. The pages remove it from the address bar, send
+  it in the request body, and answer with `Referrer-Policy: no-referrer`. Links in the
+  old form are redirected to the new one; their first request still carries the
+  secret to the server and to any proxy in front of it. Invite tokens are accepted
+  only when signed with HS256. Public invite routes have their own production limit
+  of 10 requests a minute.
+- An owner who has forgotten their password gets a recovery link from the server:
+  `node --import tsx src/scripts/make-recovery-url.ts <email>` in `apps/api` (see
+  `docs/self-hosting.md`). The link sets a new password only.
+- A database outage while a session is checked or refreshed answers 503
+  `DATABASE_UNAVAILABLE` instead of treating the credentials as invalid, so people are
+  not signed out by it.
 
-- `POST /api/agent/actions/:id/approve` no longer answers HTTP 500 when the
-  approved action fails. A final failure answers 200 with
-  `{ status: "failed", message: "approved, but it did not complete", error }`
-  (plus `code` for a typed refusal). A failure that can be retried answers 200
-  with `{ status: "pending", retryable: true, message, error }`: the action did
-  not complete and is still pending. The approval card shows both in plain words.
+Members, admins and agents:
+
+- Admins can still make new admins: invite a new person as admin, promote a member or
+  guest, or invite as admin someone who has never been an owner or admin. Everything
+  else about someone who is or ever was an owner or admin, a pending admin invite
+  included, is the owner's alone: demoting, removing or deactivating them,
+  re-inviting or reactivating them, reissuing or revoking their invite, and making a
+  recovery link. "Was" is recorded from this release on
+  (`org_member_privilege_history`); someone demoted before it is treated like any
+  member. Self-hosted installs included.
+- The same holds for an agent employee whose membership is, or ever was, owner or
+  admin. Admins can no longer, for such an agent: reset its MCP or channel key;
+  create, change or revoke an API key bound to it; create or revoke its webhooks;
+  pause, resume or mark it healthy (in Settings or through the MCP tool
+  `agent_employee_update_state`); reset its action budget; reassign a trigger to or
+  away from it; start, check or reset its certification; retry, cancel or send test
+  deliveries; edit, clone or delete it; or demote, remove or make a recovery link for
+  its membership. Those calls answer 403 `FORBIDDEN`, and the settings pages disable
+  the controls. Agents that are and always were member-level are managed by admins as
+  before. Keys and webhooks that already exist keep working; the owner can rotate or
+  revoke them.
+- Changing the agent configuration of an installed workspace skill needs the owner when
+  any agent with that skill installed, paused ones included, is or was an admin. An
+  admin's edit that changes the configuration is refused as a whole; an edit to the
+  skill's other details follows the existing rules.
+- Any change to a person's role or active state ends every invite and recovery link
+  made for them before it, whoever made it, and removing someone deletes their pending
+  invites. A link made by an admin who has since lost the authority to make it stops
+  working. Removing an agent through Members also revokes its MCP tokens, API keys and
+  channel tokens and pauses it.
+- Creating an API key bound to an agent in another workspace answers 404.
+- Defty no longer offers the unimplemented agent-management tool; manage agents from
+  their settings pages.
+
+Spaces, messages and privacy:
+
+- Owners, admins and members can read an active public space before joining it.
+  Posting needs membership, an archived public space needs membership to read, and
+  guests still see only the spaces they belong to.
+- A deleted message can still appear as a placeholder, but its text, attachments,
+  reactions, content-bearing metadata and link previews are gone from every answer:
+  edit history, pins, search, saved messages, notifications that point at it, audit
+  previews, agent message reads and reply replays. Deletion is still a soft delete.
+  Text already copied elsewhere (briefs, digests, wiki pages, approved tasks, explicit
+  forwards) is not removed with it.
+- Notifications, Inbox items and agent activity from a private space follow current
+  read access, so leaving or being removed from the space takes them away. Leaving or
+  being removed also cancels your pending scheduled messages in that space (public
+  spaces too), and the send worker checks membership again before sending.
+- Tag counts and tagged-item lists leave out what the caller cannot read, clips follow
+  the access of their source, and only owners and admins can delete a workspace tag.
+- Queued assistant replies and capture proposals that cite a message check that
+  message again before they are published.
+
+Assistant and approvals:
+
+- `POST /api/agent/actions/:id/approve` no longer answers HTTP 500 when the approved
+  action fails. A final failure answers 200 with
+  `{ status: "failed", message: "approved, but it did not complete", error }` (plus
+  `code` for a typed refusal). A failure that can be retried answers 200 with
+  `{ status: "pending", retryable: true, message, error }`. The approval card shows
+  both in plain words.
 - Personal MCP `approval_approve`: a final failure is still an MCP error
-  (`isError: true`), now with the structured outcome above as its content. This
-  now also applies to typed wiki refusals, which were returned as a normal
-  result. A retryable failure is a normal result with `status: "pending"`,
-  `retryable: true` and a message saying the action did not complete and can be
-  approved again.
-- Error text from a failed action is no longer passed through when it is a
-  database or driver error (which carries SQL and bound values): the answer,
-  the stored action error and the MCP result carry a fixed message with a
-  reference id, and the detail is logged on the server under that id.
+  (`isError: true`), now with the structured outcome above as its content; typed wiki
+  refusals, which were returned as a normal result, now do the same. A retryable
+  failure is a normal result with `status: "pending"` and `retryable: true`.
+- Error text from a failed action is no longer passed through when it is a database or
+  driver error (which carries SQL and bound values): the answer, the stored action
+  error and the MCP result carry a fixed message with a reference id. The server logs
+  the same reference with a fixed failure message; database error details are not
+  logged.
+- One assistant reply per space at a time: the job queue no longer starts an
+  `agent-reply` while another for the same workspace and space is running with a live
+  lease, or is older and due. An expired lease never blocks. This assumes a single API
+  process claims jobs. With general job timeouts disabled or invalid, assistant replies
+  keep a 120-second timeout so a hung reply stops holding its space.
+- Native actions the assistant runs directly now leave a signed receipt. Personal MCP
+  and API-key calls name the user behind the credential; employee calls name the
+  employee. Plan approve/resume records the reviewer in each step's
+  `approved_by_user_id`, which its receipt names as approver.
 
-### Changed: receipts for direct native actions
+Paused start:
 
-- Ordinary native actions run directly by the assistant now leave a signed
-  receipt. Personal MCP and API-key calls name the user behind the credential;
-  employee calls name the employee. Plan approve/resume records the reviewer
-  in each step's `approved_by_user_id` metadata, which its receipt names as
-  approver. Result context remains available for every step ID, including
-  `approved_by_user_id`.
+- `DEFT_PAUSED_START=true` starts an install read-only, for example to review a
+  restored copy: no scheduler, no background jobs, no startup recovery work, no
+  outbound calls, the agent channel and calendar feeds closed, realtime connections
+  refused, and every change except login, the sign-in second step, refresh, logout and
+  private onboarding bookkeeping answered 503 `PAUSED`. Restart without it (or with
+  `false`) to resume. Stopping a separately run Email helper is still the operator's
+  job.
+- While paused, signed-in people see a banner saying the workspace can be read but not
+  changed, and why: `DEFT_PAUSED_REASON` is `restore_review` (the default) or
+  `billing`. The reason only chooses the text; it does not pause anything. Refused
+  changes and reads show one plain message pointing at the banner instead of a generic
+  error (still 503 `PAUSED`), and the realtime client stops reconnecting; reload after
+  the install is resumed.
+- `/health` and `/health/ready` now always include `paused`. `/health` adds
+  `schema_applied` (the newest version in the upgrade ledger, cached) and
+  `schema_applied_state` (`ok`, `no_ledger` or `unavailable`) beside the unchanged
+  `schema_head`.
 
-### Paused start and applied schema on /health
+Reliability and health:
 
-- `DEFT_PAUSED_START=true` starts an install read-only for review after a
-  restore or upgrade: no scheduler, no background jobs, no startup recovery
-  work, no outbound call, the agent channel and calendar feeds closed, and
-  every other change except login, refresh and logout answered 503 `PAUSED`.
-  Any value other than exactly `true` or `false` refuses to start.
-- `/health` and `/health/ready` now always include `paused` (`false` on a
-  normal start). A load balancer must not treat `paused: true` as serving.
-- `/health` adds `schema_applied` (newest version in the upgrade ledger) and
-  `schema_applied_state` (`ok`, `no_ledger` or `unavailable`) beside the
-  unchanged `schema_head`.
-- Realtime connections and GETs that mutate shared state are refused too;
-  only private onboarding bookkeeping remains writable alongside authentication.
-  Stopping the separate Email helper remains a deployment dependency.
+- Losing the PostgreSQL connection no longer stops the API. Idle and checked-out
+  connection errors are handled, a failed connection is discarded, and the next
+  checkout reconnects once PostgreSQL is reachable. A transaction that was interrupted
+  still fails its caller; it is not retried for it.
+- The ordinary database pool has fixed limits: 5 seconds to get a connection, 30-second
+  statement timeout, 60-second idle-in-transaction timeout, and TCP keepalive.
+- When job workers or the scheduler fail to start, the API keeps retrying (after 1, 2,
+  4, then every 8 seconds) until they start or shutdown begins, instead of giving up
+  after five attempts.
+- `/health` and `/health/ready` now report `paused` (`true` under a paused start:
+  `/health` still answers 200, and `/health/ready` answers 200 once its normal checks
+  pass). Unchanged from 143: `/health` is a liveness check, and
+  `/health/ready` answers 503 until the database and the job workers are ready. See
+  "Health checks and a paused start" in `docs/self-hosting.md`.
 
-### Changed: agents that are or were admins are the owner's to manage (self-hosted installs too)
+Logs:
 
-An agent employee whose membership is, or ever was, owner or admin is now managed
-only by the workspace owner, like a person who is or was an admin. Admins can no
-longer, for such an agent: reset its MCP or channel key; create, change or revoke an
-API key bound to it; create or revoke its webhooks; pause, resume or mark it healthy
-(in Settings or through the MCP tool `agent_employee_update_state`); reset its action
-budget; reassign a trigger to or away from it; start, check or reset its
-certification; retry, cancel or send test deliveries; edit, clone or delete it; or
-demote, remove or make a recovery link for its membership. Those calls answer 403
-`FORBIDDEN`, and the settings pages disable the controls. Agents that are and
-always were member-level are managed by admins as before. Keys and webhooks that
-already exist keep working; the owner can rotate or revoke them. "Was" counts from
-schema `0.3.0-preview.149` (agents demoted before it are treated as member-level).
-Creating an API key bound to an agent in another workspace now answers 404.
+- API and worker logs no longer carry customer content or raw errors: no exception
+  messages, causes or stacks, chat text, task or note content, prompts, provider
+  replies or SQL parameters. They keep fixed event text and checked metadata (job
+  names, ids, counts, status, timings).
+- Request logs keep method, status and duration; paths and query strings are shown as
+  `<redacted>`.
+- An unhandled request error still answers 500 `INTERNAL_ERROR`, now with a
+  `X-Deft-Error-Reference` header; search the logs for that value. A failed action's
+  `Reference: <8 hex>` matches a `[client-safe-error]` log line.
+- Fatal errors still exit with code 1 but log a fixed line
+  (`[process] Uncaught exception; exiting` or `[process] Unhandled rejection; exiting`)
+  instead of the raw exception. `ANTHROPIC_LOG=debug` no longer turns on SDK request
+  logging, and `DEBUG` no longer prints Socket.IO or engine packet traces.
 
-### Added: two-step verification and recovery codes
+Notifications and the web app:
 
-Anyone can turn on two-step verification from Settings -> Profile -> Security: an
-authenticator app (time-based 6-digit codes, RFC 6238) plus ten single-use recovery
-codes, shown once. With it on, signing in needs the password and then a code; a
-password reset does not remove it, and a recovery code signs out every other session.
-Self-hosted installs require it of nobody. On the hosted service (`DEFT_HOSTED=true`)
-owners and admins must set it up before they get a session and cannot turn it off.
-Making someone an admin there is refused until that person has turned it on.
-If someone loses both their authenticator and their recovery codes there is no way
-back into that account; the setup screen says so. Schema `0.3.0-preview.149`
-(`user_two_step`, `user_two_step_recovery_codes`, `two_step_challenges`).
+- Deft can be installed from a phone or desktop browser as a web app when the web image
+  is built with `NEXT_PUBLIC_FEATURE_WEB_APP_INSTALL=true`: a manifest with square and
+  maskable icons, and on iPhone Safari a dismissible "Share, then Add to Home Screen"
+  hint. Without it the manifest is empty.
+- With `PUSH_MESSAGE_PREVIEWS_ENABLED=true` at API start, chat push notifications show
+  the sender, the space and up to 100 characters of plain text, rebuilt at send time
+  from what the recipient can still read. Turning it on changes the text existing
+  subscribers see too. Private assistant conversations, other kinds of item and
+  anything that cannot be shown safely keep "Open Deft to review."
+- Enabling notifications on a phone waits for the notification worker to be ready and
+  recognises this browser's own subscription, so a subscription on another device no
+  longer hides the Enable button.
+- Queued chat notifications are delivered even when an Inbox check found them first,
+  and access and preferences are checked again before sending.
 
-### Changed: only the owner can change, remove or recover an admin (self-hosted installs too)
+Hosted mode (`DEFT_HOSTED=true` only; self-hosted installs are unaffected):
 
-Admins can still make new admins: invite a new person as admin, promote a member or
-guest, or invite as admin someone who has never been an owner or admin. Everything
-else about someone who is or ever was an owner or admin, a pending admin invite
-included, is the owner's alone: demoting, removing or deactivating them, re-inviting
-or reactivating them, reissuing or revoking their invite, and making a recovery link.
-The same holds for an agent's membership, and for its keys, state and settings (see
-"agents that are or were admins" above). "Was" is recorded from this release on
-(`org_member_privilege_history`, schema `0.3.0-preview.149`); someone demoted before
-it is treated like any member.
+- The first signup on an empty hosted install needs a one-time setup link
+  (`/signup#setup=<token>`). The install holds only the token's SHA-256 hash and an
+  expiry (`DEFT_SETUP_TOKEN_SHA256`, `DEFT_SETUP_TOKEN_EXPIRES_AT`); a missing, wrong,
+  expired or used token answers 403 `SETUP_TOKEN_INVALID`. Signup creates the user,
+  workspace, owner membership, #general and onboarding state in one locked
+  transaction on every install.
+- A setup link works once, even if the database is later replaced by an empty one: a
+  successful signup leaves a marker at `.setup-token-used/<hash>` on the uploads
+  volume. If the marker cannot be checked or written, signup answers 503
+  `SETUP_UNAVAILABLE` and creates nothing. Keep the uploads volume, including that
+  directory, when recovering a database; a link whose marker was lost or that is
+  marked without an owner needs a new token. A failed first signup request keeps the
+  token in the page so it can be retried.
+- Owners and admins must set up two-step verification before they get a session and
+  cannot turn it off; making someone an admin is refused until they have turned it on.
+- People added past the seat limit are refused. The install fetches a signed seat
+  statement (`DEFT_CELL_ID`, `DEFT_SEAT_PUBLIC_KEYS`, `DEFT_SEAT_STATEMENT_URL`,
+  `DEFT_SEAT_FETCH_TOKEN`, all required in hosted mode) and stores the newest in
+  `seat_statements`. Active human owners, admins and members count, pending invites
+  included; guests and agents do not. Without a valid statement nobody new can be
+  added and nobody is removed. The Members page shows seats in use.
+- Custom AI provider addresses, Ollama and local transcription are refused; named
+  providers use their standard hosts. Push subscriptions must use a known browser push
+  service. Browser origins for the API, realtime and MCP come from
+  `NEXT_PUBLIC_APP_URL`, `NEXT_PUBLIC_API_URL` and `DEFT_PUBLIC_URL` without local
+  development defaults.
+- The App connections file (`DEFT_APP_CONNECTION_HTTP_CONFIG`) may carry up to four
+  `hosted_templates` for `credential_form.v1` connection profiles, matched by profile
+  and the caller's own authority; an exact entry always wins. A self-hosted install
+  refuses a file that contains `hosted_templates`, even an empty list.
 
-Any change to a person's role or active state ends every invite link and recovery
-link made for them before it, whoever made it, and removing someone deletes their
-pending invites. A link made by an admin who has since been removed stops working.
-A recovery link made before this release records no maker and is refused (they last 24
-hours). Removing an agent through Members also ends its own keys and pauses it.
-At upgrade: a pending admin invite that an admin (not the owner) made before this
-release stops working, because it cannot be shown to be that person's first grant;
-the owner re-sends it. An invite link made before this release also stops working at
-the first change to that person's role or active state.
-An owner who has forgotten their password gets a link from the server:
-`node --import tsx src/scripts/make-recovery-url.ts <email>` in `apps/api` (see
-docs/self-hosting.md). A recovery link never removes two-step verification.
+Security and dependencies:
+
+- Apps rate limits (the App runtime channel, public App routes, resource sync, App
+  connection forms and sessions, App data, integration tools, local jobs and resource
+  observations) now count the trusted client address instead of the raw socket peer,
+  like every other address-based limit. An IPv4-mapped IPv6 peer counts as its IPv4
+  address. `X-Real-IP` is ignored everywhere.
+- The web app's Content-Security-Policy narrows `connect-src` to the page itself and
+  the configured API and realtime origins, and adds `form-action 'self'` and
+  `base-uri 'self'`.
+- Next.js 16.4.6 (advisory GHSA-mfr8-8qww-v76h).
+- The dependency audit configuration carries a temporary ignore for picomatch advisory
+  GHSA-fc5q-39xc-vjpf, which GitHub withdrew on 18 November 2026; the exception is
+  reviewed by 2 December 2026.
+
+Database and restore:
+
+- `docs/self-hosting.md` lists the two supported restore commands: `psql -v
+  ON_ERROR_STOP=1` for a plain SQL dump, and `pg_restore --no-owner --no-privileges
+  --exit-on-error` for a custom-format dump, plus what a restore does not cover.
+- Pull requests now fail when a new upgrade file is not add-only:
+  `pnpm --filter @deft/db check:add-only-upgrades` refuses drops, renames, type
+  changes, narrowing constraints, data rewrites, function defaults on existing tables,
+  and any statement it cannot classify, and requires released upgrade files to stay
+  unchanged.
 
 ### Notice: Kit `0.1.0-alpha.44` removes deprecated Email compatibility
 
