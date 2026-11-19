@@ -8,7 +8,7 @@ import { col } from './datasets.js';
 import { exportableTask } from './datasets-content.js';
 import { memberId, workspaceAuthor, type ExportContext } from './scope.js';
 import type { Snapshot } from './snapshot.js';
-import type { ArchiveWriter } from './writer.js';
+import { assertArchivePath, type ArchiveWriter } from './writer.js';
 
 const CHUNK_BYTES = 64 * 1024;
 
@@ -30,7 +30,7 @@ export function visibleFilesSql(ctx: ExportContext): SQL {
   const userId = memberId(ctx);
   return sql`SELECT * FROM (SELECT f.id, f.filename, f.mime_type, f.size_bytes, f.content_sha256, f.storage_key, f.processing_status,
       ${workspaceAuthor(ctx, col('f.uploaded_by'))} AS uploaded_by, f.created_at,
-      EXISTS (SELECT 1 FROM files other WHERE lower(btrim(other.storage_key)) = lower(btrim(f.storage_key))
+      EXISTS (SELECT 1 FROM files other WHERE lower(other.storage_key) = lower(f.storage_key)
         AND other.org_id <> f.org_id) AS storage_shared,
       CASE
         WHEN typed.message_links + typed.task_links > 1 THEN 'ambiguous'
@@ -65,14 +65,21 @@ type FileRow = {
 /** A readable file name for the archive: the original name, with characters no file system accepts replaced. */
 export function archiveFileName(id: string, filename: string): string {
   const safeId = /^[A-Za-z0-9_-]{1,128}$/.test(id) ? id : createHash('sha256').update(id).digest('hex');
-  let name = filename.normalize('NFC').replace(/[\u0000-\u001f\u007f<>:"/\\|?*]/gu, '_').replace(/[. ]+$/u, '').trim();
-  if (/^(con|prn|aux|nul|com\d|lpt\d)(\..*)?$/iu.test(name)) name = `_${name}`;
+  let name = filename.normalize('NFC').replace(/[\u0000-\u001f\u007f<>:"/\\|?*]/gu, '_');
   if (name.length > 150) {
     const dot = name.lastIndexOf('.');
     const extension = dot > 0 && name.length - dot <= 16 ? name.slice(dot) : '';
     name = name.slice(0, 150 - extension.length) + extension;
   }
-  return `attachments/${safeId}/${name || 'file'}`;
+  // After shortening: no trailing dot or space, and never a device name.
+  name = name.replace(/[. ]+$/u, '').trim();
+  const path = `attachments/${safeId}/${name || 'file'}`;
+  try {
+    assertArchivePath(path);
+    return path;
+  } catch {
+    return `attachments/${safeId}/_${name || 'file'}`.replace(/[. ]+$/u, '');
+  }
 }
 
 /** Test seams around each attachment read; none runs in normal use. */
@@ -83,7 +90,48 @@ export type CopyHooks = Readonly<{
   beforeOpen?: (fileId: string) => Promise<void>;
   /** After the first chunk has been copied. */
   duringRead?: (fileId: string) => Promise<void>;
+  /**
+   * Test seam: replaces the scan's answer, so the copying path can be tested
+   * in a database that holds several workspaces. The command cannot set it.
+   */
+  sharedDatabase?: () => boolean;
 }>;
+
+const SHARED = { reason: 'Its stored file is also named by another workspace, so its owner cannot be established.' };
+const NOT_COPIED = { reason: 'Attachment files are copied only when the operator states that this database holds exactly one workspace (--single-workspace-database).' };
+
+/**
+ * True unless this database plainly holds only this workspace. Shared means:
+ * - any other workspace row, in any state; or
+ * - this workspace's own row missing; or
+ * - any row, in any table with an org_id column, that names another
+ *   workspace id (including rows left by a workspace that no longer exists).
+ * Anything unexpected counts as shared.
+ *
+ * This is a check, not the decision: attachment bytes are copied only when
+ * the operator states that the database holds exactly one workspace, and this
+ * scan then stops the export if it sees any other. It reads base tables of the
+ * pinned schema; Snapshot.requireTables refuses views and other relation kinds
+ * for the tables the export reads.
+ */
+export async function databaseIsShared(snapshot: Snapshot, orgId: string): Promise<boolean> {
+  // The scan reads the same pinned schema every export query reads (Snapshot), named explicitly here.
+  const [base] = await snapshot.all<{ shared: boolean }>(sql`SELECT ((SELECT count(*) FROM orgs) <> 1
+    OR NOT EXISTS (SELECT 1 FROM orgs WHERE id = ${orgId})) AS shared`);
+  if (base?.shared !== false) return true;
+  const mixedCase = await snapshot.all<{ table_name: string }>(sql`SELECT table_name FROM information_schema.columns
+    WHERE table_schema = ${snapshot.schema} AND lower(column_name) = 'org_id' AND column_name <> 'org_id'`);
+  if (mixedCase.length) throw new Error(`A workspace column is not named exactly org_id in: ${mixedCase.map((row) => row.table_name).join(', ')}; export stopped.`);
+  const tables = await snapshot.all<{ table_name: string }>(sql`SELECT c.table_name FROM information_schema.columns c
+    JOIN information_schema.tables t ON t.table_schema = c.table_schema AND t.table_name = c.table_name AND t.table_type = 'BASE TABLE'
+    WHERE c.table_schema = ${snapshot.schema} AND c.column_name = 'org_id' ORDER BY c.table_name`);
+  for (const { table_name: table } of tables) {
+    const [found] = await snapshot.all<{ other: boolean }>(sql`SELECT EXISTS (SELECT 1 FROM ${sql.identifier(snapshot.schema)}.${sql.identifier(table)}
+      WHERE org_id IS NOT NULL AND org_id::text <> ${orgId}) AS other`);
+    if (found?.other !== false) return true;
+  }
+  return false;
+}
 
 const MISSING = { reason: 'The file is missing from the uploads folder (deleted, or never stored).' };
 const CHANGED = { reason: 'The file changed or was removed while it was being read.' };
@@ -105,9 +153,9 @@ const missingAsNull = <T>(promise: Promise<T>) => promise.catch((error: NodeJS.E
  * - its bytes must match the recorded size and (when recorded) SHA-256.
  * Bytes are streamed in 64 KiB chunks.
  */
-async function copyFile(writer: ArchiveWriter, uploadsRoot: string, row: FileRow, hooks: CopyHooks): Promise<{ path: string } | { reason: string }> {
+async function copyFile(writer: ArchiveWriter, uploadsRoot: string, row: FileRow, hooks: CopyHooks): Promise<{ path: string; sha256: string } | { reason: string }> {
   if (row.processing_status === 'blocked') return { reason: 'Blocked by the attachment safety check; bytes not included.' };
-  if (row.storage_shared) return { reason: 'Its stored file name is also used by another workspace, so its owner cannot be established.' };
+  if (row.storage_shared) return SHARED;
   let source: string;
   try {
     if (row.storage_key !== row.storage_key.trim() || row.storage_key.includes(':')) throw new Error('alias');
@@ -162,31 +210,66 @@ async function copyFile(writer: ArchiveWriter, uploadsRoot: string, row: FileRow
       return { reason: 'The stored bytes differ from the recorded size or checksum.' };
     }
     await file.close();
-    return { path };
+    return { path, sha256: digest.slice('sha256:'.length) };
   } finally {
     await handle.close();
   }
 }
 
-/** Writes data/files.jsonl and the attachment bytes. Every file not included is listed in omissions.jsonl. */
-export async function exportAttachments(snapshot: Snapshot, writer: ArchiveWriter, ctx: ExportContext, uploadsDir: string, hooks: CopyHooks = {}) {
+export type AttachmentOptions = Readonly<{
+  hooks?: CopyHooks;
+  /**
+   * The operator states that this database holds exactly one workspace (a
+   * hosted workspace always does). Only then are attachment bytes copied, and
+   * the export stops if the database shows any other workspace.
+   */
+  singleWorkspaceDatabase?: boolean;
+}>;
+
+export type AttachmentSummary = Readonly<{
+  path: string; records: number;
+  /** The operator stated this database holds exactly one workspace, and the scan found no other. */
+  single_workspace_declared: boolean;
+  /** How many attachment files were actually copied into the archive. */
+  files_copied: number;
+}>;
+
+/**
+ * Writes data/files.jsonl and the attachment bytes. Every file not included
+ * is listed in omissions.jsonl. Bytes are copied only when the operator states
+ * that this database holds exactly one workspace; the export stops if the
+ * database shows another.
+ */
+export async function exportAttachments(snapshot: Snapshot, writer: ArchiveWriter, ctx: ExportContext, uploadsDir: string,
+  options: AttachmentOptions = {}): Promise<AttachmentSummary> {
   const uploadsRoot = await realpath(uploadsDir);
+  const copy = options.singleWorkspaceDatabase === true;
+  if (copy) {
+    const shared = options.hooks?.sharedDatabase ? options.hooks.sharedDatabase() : await databaseIsShared(snapshot, ctx.orgId);
+    if (shared) {
+      throw new Error('This database shows another workspace, so it is not a one-workspace database; attachment files cannot be copied. Export without --single-workspace-database to list them without their bytes.');
+    }
+  }
   const list = await writer.jsonl('data/files.jsonl');
-  let included = 0;
+  let filesCopied = 0;
   for await (const row of snapshot.rows<FileRow>(attachmentsQuery(ctx))) {
     const result = row.attached_as === 'ambiguous'
       ? { reason: 'Linked to more than one message or task, so Deft shows it to nobody.' }
-      : await copyFile(writer, uploadsRoot, row, hooks);
+      : !copy ? NOT_COPIED
+        : await copyFile(writer, uploadsRoot, row, options.hooks ?? {});
     await list.write({
       id: row.id, filename: row.filename, mime_type: row.mime_type, size_bytes: row.size_bytes,
-      sha256: row.content_sha256?.replace(/^sha256:/, '') ?? null, uploaded_by: row.uploaded_by, created_at: row.created_at,
+      // The digest of the bytes in this archive; and, separately, the checksum Deft recorded (may be null).
+      sha256: 'sha256' in result ? result.sha256 : null,
+      recorded_sha256: row.content_sha256?.replace(/^sha256:/, '') ?? null,
+      uploaded_by: row.uploaded_by, created_at: row.created_at,
       attached_to: row.attached_as === 'message' ? { message_id: row.link_message_id }
         : row.attached_as === 'task' ? { task_id: row.link_task_id } : null,
       included: 'path' in result, archive_path: 'path' in result ? result.path : null,
     });
     if ('reason' in result) await writer.omit({ kind: 'file', id: row.id, reason: result.reason });
-    else included += 1;
+    else filesCopied += 1;
   }
   await list.close();
-  return { summary: { path: 'data/files.jsonl', records: list.records }, included };
+  return { path: 'data/files.jsonl', records: list.records, single_workspace_declared: copy, files_copied: filesCopied };
 }

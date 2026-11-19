@@ -19,7 +19,7 @@ import { runInNewContext } from 'node:vm';
 
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 import { B_MARKER, SECRET_MARKER, dropExportWorld, seedExportWorld, type ExportWorld } from './fixtures/workspace-export-fixture.js';
-import { DATASETS, exportWorkspace, type ExportOptions } from '../src/lib/workspace-export/export.js';
+import { DATASETS, EXPORT_TABLES, exportWorkspace, type ExportOptions } from '../src/lib/workspace-export/export.js';
 import { Snapshot } from '../src/lib/workspace-export/snapshot.js';
 import { canReadSpace } from '../src/lib/space-membership.js';
 import { memberRoutes } from '../src/routes/members.js';
@@ -61,7 +61,10 @@ async function listFiles(root: string, dir = root): Promise<string[]> {
 
 async function runExport(options: Partial<ExportOptions> & Pick<ExportOptions, 'scope'>, orgSlug = world.a.slug): Promise<Exported> {
   const outDir = join(scratch, `export-${++counter}`);
-  const result = await exportWorkspace({ databaseUrl: databaseUrl!, workspace: orgSlug, outDir, uploadsDir: world.uploadsDir, ...options });
+  // The test database holds many workspaces. Most tests exercise the copying path, so they declare a one-workspace
+  // database and bypass the scan through its test seam; tests of the real decision pass hooks: { sharedDatabase: undefined }.
+  const result = await exportWorkspace({ databaseUrl: databaseUrl!, workspace: orgSlug, outDir, uploadsDir: world.uploadsDir,
+    singleWorkspaceDatabase: true, ...options, hooks: { sharedDatabase: () => false, ...options.hooks } });
   const files = new Map<string, Buffer>();
   for (const path of await listFiles(result.root)) files.set(path, await readFile(join(result.root, path)));
   return { root: result.root, files, manifest: JSON.parse(files.get('manifest.json')!.toString('utf8')) };
@@ -405,10 +408,13 @@ test('notes, folders, wiki and events: member scope equals what the product rout
     assert.deepEqual(rows(exported, 'data/wiki_pages.jsonl').map((row) => row.id).sort(), wiki.pages.map((row: any) => row.id).sort(), `wiki for ${userId}`);
     const pages = new Set(wiki.pages.map((row: any) => row.id));
     for (const row of rows(exported, 'data/wiki_links.jsonl')) assert.ok(pages.has(row.source_page_id) && pages.has(row.target_page_id));
-    // Events: the Calendar's events, less cancelled ones (never more than the Calendar).
+    // Events: never more than the Calendar shows; less only for cancelled events and events another part of Deft wrote.
     const calendar = await (await as(userId, calendarPath)).json() as any;
-    assert.deepEqual(rows(exported, 'data/events.jsonl').map((row) => row.id).sort(),
-      calendar.events.filter((row: any) => row.metadata?.status !== 'canceled').map((row: any) => row.id).sort(), `events for ${userId}`);
+    const calendarIds = new Set(calendar.events.map((row: any) => row.id));
+    const exportedEvents = rows(exported, 'data/events.jsonl').map((row) => row.id);
+    for (const id of exportedEvents) assert.ok(calendarIds.has(id), `event ${id} exported but not on the Calendar for ${userId}`);
+    const leftOut = new Set([world.a.events.memberCanceled, world.a.events.otherWriter, world.a.events.githubKeysElsewhere]);
+    assert.deepEqual(exportedEvents.sort(), calendar.events.map((row: any) => row.id).filter((id: string) => !leftOut.has(id)).sort(), `events for ${userId}`);
     // Note shares: exactly what GET /api/daily-notes/:id/shares lists for the member's own notes.
     const ownNotes = (await client.query<{ id: string }>('SELECT id FROM notes WHERE org_id = $1 AND user_id = $2 AND NOT is_deleted',
       [world.a.orgId, userId])).rows;
@@ -430,6 +436,8 @@ test('notes, folders, wiki and events: member scope equals what the product rout
   const events = new Map(rows(whole, 'data/events.jsonl').map((row) => [row.id, row]));
   assert.equal(events.get(world.a.events.noOwner!)?.user_id, null);
   assert.ok(events.has(world.a.events.memberCanceled!), 'the whole workspace keeps cancelled events');
+  assert.ok(events.has(world.a.events.otherWriter!), 'the whole workspace keeps events other parts of Deft wrote');
+  assert.ok(events.has(world.a.events.githubKeysElsewhere!));
   assert.equal(events.get(world.a.events.nested!)?.location, null, 'an object in place of text is not written');
   // Positive sets, so an empty dataset cannot pass.
   assert.deepEqual(rows(whole, 'data/note_shares.jsonl').map((row) => `${row.note_id}:${row.shared_with_user_id}`),
@@ -515,9 +523,12 @@ test('attachments: a file replaced, rewritten or removed during the read is repo
   const replaced = await make('replaced');
   const rewritten = await make('rewritten');
   const removed = await make('removed');
+  const vanished = await make('vanished');
   try {
     const exported = await runExport({ scope: { kind: 'workspace' }, hooks: {
       beforeOpen: async (fileId) => {
+        // Removed after the checks, before the open: reported missing, not an aborted export.
+        if (fileId === vanished.fileId) await rm(vanished.path);
         if (fileId !== replaced.fileId) return;
         await rm(replaced.path);
         await writeFile(replaced.path, Buffer.alloc(replaced.size, 2));
@@ -532,13 +543,13 @@ test('attachments: a file replaced, rewritten or removed during the read is repo
     } });
     const list = new Map(rows(exported, 'data/files.jsonl').map((row) => [row.id, row]));
     const reasons = new Map(rows(exported, 'omissions.jsonl').map((row) => [row.id, row.reason]));
-    for (const { fileId } of [replaced, rewritten, removed]) {
+    for (const { fileId } of [replaced, rewritten, removed, vanished]) {
       assert.equal(list.get(fileId)?.included, false, fileId);
       assert.match(reasons.get(fileId) ?? '', /changed|missing/);
       assert.ok(![...exported.files.keys()].some((path) => path.startsWith(`attachments/${fileId}/`)));
     }
   } finally {
-    for (const { fileId, path } of [replaced, rewritten, removed]) {
+    for (const { fileId, path } of [replaced, rewritten, removed, vanished]) {
       await client.query('DELETE FROM files WHERE id = $1', [fileId]);
       await rm(path, { force: true });
     }
@@ -592,7 +603,7 @@ test('attachments: a large file is streamed, not held in memory', { skip }, asyn
   try {
     // Not runExport: it reads every output file back into memory.
     const result = await exportWorkspace({ databaseUrl: databaseUrl!, workspace: world.a.slug, scope: { kind: 'workspace' },
-      outDir: join(scratch, `export-${++counter}`), uploadsDir: world.uploadsDir });
+      outDir: join(scratch, `export-${++counter}`), uploadsDir: world.uploadsDir, singleWorkspaceDatabase: true, hooks: { sharedDatabase: () => false } });
     clearInterval(sampler);
     const list = (await readFile(join(result.root, 'data', 'files.jsonl'), 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line));
     assert.equal(list.find((row) => row.id === fileId)?.included, true);
@@ -786,4 +797,151 @@ test('the command writes one tar that extracts, verifies against SHA256SUMS, and
     assert.equal(manifest.workspace_key, scope.kind === 'workspace' ? 'supplied_not_used' : 'not_supplied');
     assert.equal(manifest.scope.kind, scope.kind);
   }
+});
+test('attachments: without the operator declaring a one-workspace database, no bytes are copied', { skip }, async () => {
+  // Called directly, with the option left out entirely: the default must not copy.
+  const result = await exportWorkspace({ databaseUrl: databaseUrl!, workspace: world.a.slug, scope: { kind: 'workspace' },
+    outDir: join(scratch, `export-${++counter}`), uploadsDir: world.uploadsDir });
+  assert.deepEqual(result.manifest.attachments, { single_workspace_declared: false, files_copied: 0 });
+  const files = (await readFile(join(result.root, 'data', 'files.jsonl'), 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  assert.ok(files.length > 10);
+  assert.ok(files.every((row) => row.included === false && row.archive_path === null && row.sha256 === null));
+  const reasons = new Map((await readFile(join(result.root, 'omissions.jsonl'), 'utf8')).split('\n').filter(Boolean)
+    .map((line) => JSON.parse(line)).map((row) => [row.id, row.reason]));
+  for (const row of files) assert.ok(reasons.get(row.id), `omission for ${row.id}`);
+  assert.ok(files.some((row) => /exactly one workspace \(--single-workspace-database\)/.test(reasons.get(row.id) ?? '')));
+  await assert.rejects(readdir(join(result.root, 'attachments')), /ENOENT/);
+});
+
+test('attachments: declaring a one-workspace database that shows another workspace stops the export before any byte', { skip }, async () => {
+  const outDir = join(scratch, `export-${++counter}`);
+  await assert.rejects(exportWorkspace({ databaseUrl: databaseUrl!, workspace: world.a.slug, scope: { kind: 'workspace' }, outDir,
+    uploadsDir: world.uploadsDir, singleWorkspaceDatabase: true }), /shows another workspace/);
+  await assert.rejects(readdir(join(outDir, 'attachments')), /ENOENT/);
+  await assert.rejects(readFile(join(outDir, 'SHA256SUMS')), /ENOENT/);
+});
+
+test('attachments: a declared one-workspace database copies, keeping the checks that need no other workspace', { skip }, async () => {
+  const exported = await runExport({ scope: { kind: 'workspace' } });
+  assert.equal(exported.manifest.attachments.single_workspace_declared, true);
+  const files = new Map(rows(exported, 'data/files.jsonl').map((row) => [row.id, row]));
+  assert.equal(exported.manifest.attachments.files_copied, [...files.values()].filter((row) => row.included).length);
+  const actual = (row: any) => createHash('sha256').update(exported.files.get(row.archive_path)!).digest('hex');
+  const onGeneral = files.get(world.a.files.onGeneral!)!;
+  assert.equal(onGeneral.sha256, actual(onGeneral));
+  assert.equal(onGeneral.recorded_sha256, onGeneral.sha256);
+  // A file Deft recorded no checksum for: the archive still carries the digest of the bytes it copied.
+  const unrecorded = files.get(world.a.files.noRecordedHash!)!;
+  assert.equal(unrecorded.included, true);
+  assert.equal(unrecorded.recorded_sha256, null);
+  assert.equal(unrecorded.sha256, actual(unrecorded));
+  for (const key of ['missing', 'sizeMismatch', 'hashMismatch', 'hardLink', 'blocked', 'paddedAlias', 'caseAlias', 'namesBStorage']) {
+    assert.equal(files.get(world.a.files[key]!)!.included, false, key);
+  }
+});
+
+test('attachments: the shared-database decision counts any trace of another workspace', { skip }, async () => {
+  // A throwaway database holding only the tables the decision reads.
+  const name = `deft_test_ex1_classify_${randomUUID().slice(0, 8)}`;
+  try {
+    await client.query(`CREATE DATABASE ${name}`);
+  } catch (error) {
+    if ((error as { code?: string }).code === '42501') return; // no CREATEDB privilege in this environment
+    throw error;
+  }
+  const url = new URL(databaseUrl!);
+  url.pathname = `/${name}`;
+  const scratchDb = new pg.Client({ connectionString: url.toString() });
+  await scratchDb.connect();
+  try {
+    await scratchDb.query(`CREATE TABLE orgs (id text PRIMARY KEY); CREATE TABLE files (id text, org_id text);
+      CREATE TABLE notes (id text, org_id text); CREATE TABLE skills (id text, org_id text)`);
+    const { databaseIsShared } = await import('../src/lib/workspace-export/attachments.js');
+    const decide = async () => {
+      const snapshot = await Snapshot.open({ databaseUrl: url.toString() });
+      try { return await databaseIsShared(snapshot, 'ours'); } finally { await snapshot.close(); }
+    };
+    assert.equal(await decide(), true, 'this workspace is missing');
+    await scratchDb.query(`INSERT INTO orgs VALUES ('ours'); INSERT INTO files VALUES ('f1', 'ours'); INSERT INTO notes VALUES ('n1', 'ours');
+      INSERT INTO skills VALUES ('bundled', NULL)`);
+    assert.equal(await decide(), false, 'only this workspace (and shared rows with no workspace)');
+    await scratchDb.query(`INSERT INTO notes VALUES ('n2', 'gone')`);
+    assert.equal(await decide(), true, 'a note left by a deleted workspace');
+    await scratchDb.query(`DELETE FROM notes WHERE org_id = 'gone'; INSERT INTO files VALUES ('f2', 'gone')`);
+    assert.equal(await decide(), true, 'a file row left by a deleted workspace');
+    await scratchDb.query(`DELETE FROM files WHERE org_id = 'gone'; INSERT INTO orgs VALUES ('other')`);
+    assert.equal(await decide(), true, 'another workspace with no members or content');
+
+    // The search path of the role or connection cannot change what is read:
+    // a decoy schema first in the path, holding a one-row orgs table and no
+    // workspace columns, is ignored; the pinned schema is scanned and read.
+    await scratchDb.query(`DELETE FROM orgs WHERE id = 'other'; INSERT INTO notes VALUES ('n3', 'gone');
+      CREATE SCHEMA personal; CREATE TABLE personal.orgs (id text); INSERT INTO personal.orgs VALUES ('ours')`);
+    const decoyUrl = new URL(url.toString());
+    decoyUrl.searchParams.set('options', '-c search_path=personal,public');
+    const pinned = await Snapshot.open({ databaseUrl: decoyUrl.toString() });
+    try {
+      assert.equal((await pinned.all<{ search_path: string }>(sql`SHOW search_path`))[0]!.search_path, 'pg_catalog, public');
+      assert.equal(await databaseIsShared(pinned, 'ours'), true, 'the note left in public is found despite the decoy');
+      await assert.rejects(pinned.requireTables(['orgs', 'missing_table']), /not found there: missing_table/);
+    } finally {
+      await pinned.close();
+    }
+    // Deft's tables are not in the schema asked for: refused, naming what is missing.
+    const wrongSchema = await Snapshot.open({ databaseUrl: url.toString(), schema: 'personal' });
+    try {
+      await assert.rejects(wrongSchema.requireTables(['orgs', 'files', 'notes']), /schema "personal" \(not found there: files, notes\)/);
+    } finally {
+      await wrongSchema.close();
+    }
+    // A workspace column whose name differs only in case would escape the scan: refused.
+    await scratchDb.query(`DELETE FROM notes WHERE org_id = 'gone'; CREATE TABLE odd ("Org_Id" text)`);
+    await assert.rejects(decide(), /not named exactly org_id in: odd/);
+    // A view standing in for one of Deft's tables is refused, so a view cannot hide rows from the scan.
+    await scratchDb.query('DROP TABLE odd; CREATE VIEW files_view AS SELECT * FROM files');
+    const viewCheck = await Snapshot.open({ databaseUrl: url.toString() });
+    try {
+      await assert.rejects(viewCheck.requireTables(['orgs', 'files_view']), /not found there: files_view/);
+    } finally {
+      await viewCheck.close();
+    }
+  } finally {
+    await scratchDb.end();
+    await client.query(`DROP DATABASE IF EXISTS ${name}`);
+  }
+});
+
+
+test('attachments: even when the scan would call the database single, nothing is copied without the declaration', { skip }, async () => {
+  const reads: string[] = [];
+  const exported = await runExport({ scope: { kind: 'workspace' }, singleWorkspaceDatabase: false,
+    hooks: { sharedDatabase: () => false, beforeFileRead: async (fileId) => { reads.push(fileId); } } });
+  assert.deepEqual(reads, [], 'no stored file is even looked at');
+  assert.deepEqual(exported.manifest.attachments, { single_workspace_declared: false, files_copied: 0 });
+  assert.ok(rows(exported, 'data/files.jsonl').every((row) => row.included === false));
+  assert.ok(![...exported.files.keys()].some((path) => path.startsWith('attachments/')));
+});
+
+test('the export refuses a schema whose tables are views over the real ones, before writing anything', { skip }, async () => {
+  const schema = `ex1_views_${randomUUID().slice(0, 8).replace(/-/g, '')}`;
+  await client.query(`CREATE SCHEMA ${schema}`);
+  try {
+    for (const table of EXPORT_TABLES) await client.query(`CREATE VIEW ${schema}.${table} AS SELECT * FROM public.${table}`);
+    const outDir = join(scratch, `export-${++counter}`);
+    await assert.rejects(exportWorkspace({ databaseUrl: databaseUrl!, workspace: world.a.slug, scope: { kind: 'workspace' }, outDir,
+      uploadsDir: world.uploadsDir, singleWorkspaceDatabase: true, databaseSchema: schema }), /not all plain tables in the schema/);
+    await assert.rejects(readdir(outDir), /ENOENT/);
+  } finally {
+    await client.query(`DROP SCHEMA ${schema} CASCADE`);
+  }
+});
+
+test('readable: the README says plainly when attachment files were not copied, and why', { skip }, async () => {
+  const notCopied = await runExport({ scope: { kind: 'workspace' }, singleWorkspaceDatabase: false });
+  const text = notCopied.files.get('README.txt')!.toString('utf8');
+  assert.match(text, /Attachment files were not copied: .*exactly one workspace \(--single-workspace-database\)/);
+  assert.match(text, /Database schema read: public/);
+  assert.match(notCopied.files.get('README.html')!.toString('utf8'), /<strong>Attachment files were not copied/);
+  const copied = await runExport({ scope: { kind: 'workspace' } });
+  assert.doesNotMatch(copied.files.get('README.txt')!.toString('utf8'), /were not copied/);
 });

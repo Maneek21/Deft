@@ -49,7 +49,15 @@ export type ExportManifest = Readonly<{
    * conversations are listed in omissions.jsonl without their text.
    */
   workspace_key: 'not_supplied' | 'supplied_not_used';
+  /** The one database schema every query of the export read from. */
+  database_schema: string;
   /** False when anything in scope could not be included; see omissions.jsonl. */
+  /**
+   * single_workspace_declared: the operator stated that this database holds
+   * exactly one workspace, and the scan found no other; only then are
+   * attachment bytes copied. files_copied: how many files were copied.
+   */
+  attachments: Readonly<{ single_workspace_declared: boolean; files_copied: number }>;
   complete: boolean;
   omissions: number;
   datasets: readonly DatasetSummary[];
