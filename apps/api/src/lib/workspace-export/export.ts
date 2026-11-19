@@ -28,10 +28,11 @@ export type ExportOptions = Readonly<{
   /** Test seams around each attachment read. */
   hooks?: CopyHooks;
   /**
-   * Copy attachment bytes even when this database holds more than one
-   * workspace. Off by default: an operator chooses it and the manifest says so.
+   * The operator states that this database holds exactly one workspace. Only
+   * then are attachment bytes copied; the export stops if the database shows
+   * another workspace. A hosted workspace's database always holds one.
    */
-  allowSharedUploads?: boolean;
+  singleWorkspaceDatabase?: boolean;
 }>;
 
 /** Every table the export reads, directly or through the product's visibility rules. All must be in the pinned schema. */
@@ -77,7 +78,7 @@ export async function exportWorkspace(options: ExportOptions): Promise<ExportRes
         await options.afterDataset?.(dataset.path);
       }
       const attachments = await exportAttachments(snapshot, writer, ctx, options.uploadsDir,
-        { hooks: options.hooks, allowSharedUploads: options.allowSharedUploads });
+        { hooks: options.hooks, singleWorkspaceDatabase: options.singleWorkspaceDatabase });
       datasets.push({ path: attachments.path, records: attachments.records });
 
       let manifest!: ExportManifest;
@@ -90,8 +91,7 @@ export async function exportWorkspace(options: ExportOptions): Promise<ExportRes
           scope: scope.kind === 'workspace' ? { kind: 'workspace' } : { kind: 'member', user_id: scope.user_id, role: scope.role },
           as_of: snapshot.asOf.toISOString(),
           database_schema: snapshot.schema,
-          attachments: { shared_database: attachments.shared_database, shared_uploads_allowed: options.allowSharedUploads === true,
-            copy_allowed: attachments.copy_allowed, files_copied: attachments.files_copied },
+          attachments: { single_workspace_declared: attachments.single_workspace_declared, files_copied: attachments.files_copied },
           complete: writer.omissions === 0,
           omissions: writer.omissions,
           datasets,

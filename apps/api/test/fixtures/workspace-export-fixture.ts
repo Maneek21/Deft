@@ -355,14 +355,6 @@ async function seedFileAliases(s: Seeder, a: WorkspaceIds & ContentIds, aFiles: 
   const padded = await source(bFiles.onOpenTask!);
   await alias('paddedAlias', ` ${padded.storage_key} `, padded);
   await alias('caseAlias', padded.storage_key.toUpperCase(), padded);
-  // The other direction: B's row holds the irregular name (tab-padded), A's row the plain one.
-  const plainName = `${randomUUID()}-reverse.bin`;
-  const bBytes = Buffer.from(`reverse alias bytes ${B_MARKER}`);
-  await writeFile(join(uploadsDir, plainName), bBytes);
-  const bOrg = (await s.client.query<{ org_id: string; uploaded_by: string }>('SELECT org_id, uploaded_by FROM files WHERE id = $1', [bFiles.onDm])).rows[0]!;
-  await s.insert('files', { id: randomUUID(), org_id: bOrg.org_id, uploaded_by: bOrg.uploaded_by, filename: 'b.bin', mime_type: 'text/plain',
-    size_bytes: bBytes.length, storage_key: `\t${plainName}\t`, content_sha256: `sha256:${createHash('sha256').update(bBytes).digest('hex')}` });
-  await alias('reverseAlias', plainName, { size_bytes: bBytes.length, content_sha256: `sha256:${createHash('sha256').update(bBytes).digest('hex')}` });
   const linked = await source(bFiles.onDm!);
   const linkName = `${randomUUID()}-link.bin`;
   await link(join(uploadsDir, linked.storage_key), join(uploadsDir, linkName));

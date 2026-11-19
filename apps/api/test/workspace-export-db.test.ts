@@ -58,9 +58,10 @@ async function listFiles(root: string, dir = root): Promise<string[]> {
 
 async function runExport(options: Partial<ExportOptions> & Pick<ExportOptions, 'scope'>, orgSlug = world.a.slug): Promise<Exported> {
   const outDir = join(scratch, `export-${++counter}`);
-  // The test database holds many workspaces; most tests exercise the copying path, so they allow it.
+  // The test database holds many workspaces. Most tests exercise the copying path, so they declare a one-workspace
+  // database and bypass the scan through its test seam; tests of the real decision pass hooks: { sharedDatabase: undefined }.
   const result = await exportWorkspace({ databaseUrl: databaseUrl!, workspace: orgSlug, outDir, uploadsDir: world.uploadsDir,
-    allowSharedUploads: true, ...options });
+    singleWorkspaceDatabase: true, ...options, hooks: { sharedDatabase: () => false, ...options.hooks } });
   const files = new Map<string, Buffer>();
   for (const path of await listFiles(result.root)) files.set(path, await readFile(join(result.root, path)));
   return { root: result.root, files, manifest: JSON.parse(files.get('manifest.json')!.toString('utf8')) };
@@ -477,7 +478,7 @@ test('attachments: included bytes are exact and checksummed; every other file sa
   assert.deepEqual(files.get(world.a.files.typedOverLegacy!)!.attached_to, { message_id: world.a.messages.privateOthers });
   assert.equal(files.get(world.a.files.stagedByMember!)!.included, true);
   for (const key of ['ambiguous', 'messageAndTask', 'blocked', 'missing', 'sizeMismatch', 'hashMismatch', 'namesBStorage',
-    'paddedAlias', 'caseAlias', 'hardLink', 'reverseAlias']) {
+    'paddedAlias', 'caseAlias', 'hardLink']) {
     const row = files.get(world.a.files[key]!)!;
     assert.equal(row.included, false, key);
     assert.equal(row.archive_path, null, key);
@@ -598,7 +599,7 @@ test('attachments: a large file is streamed, not held in memory', { skip }, asyn
   try {
     // Not runExport: it reads every output file back into memory.
     const result = await exportWorkspace({ databaseUrl: databaseUrl!, workspace: world.a.slug, scope: { kind: 'workspace' },
-      outDir: join(scratch, `export-${++counter}`), uploadsDir: world.uploadsDir, allowSharedUploads: true });
+      outDir: join(scratch, `export-${++counter}`), uploadsDir: world.uploadsDir, singleWorkspaceDatabase: true, hooks: { sharedDatabase: () => false } });
     clearInterval(sampler);
     const list = (await readFile(join(result.root, 'data', 'files.jsonl'), 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line));
     assert.equal(list.find((row) => row.id === fileId)?.included, true);
@@ -611,29 +612,32 @@ test('attachments: a large file is streamed, not held in memory', { skip }, asyn
   assert.ok(peak < size / 2, `peak memory growth ${Math.round(peak / 1048576)} MiB for a ${size / 1048576} MiB file`);
 });
 
-test('attachments: a database shared with other workspaces copies no bytes unless the operator allows it', { skip }, async () => {
+test('attachments: without the operator declaring a one-workspace database, no bytes are copied', { skip }, async () => {
   // Called directly, with the option left out entirely: the default must not copy.
   const result = await exportWorkspace({ databaseUrl: databaseUrl!, workspace: world.a.slug, scope: { kind: 'workspace' },
     outDir: join(scratch, `export-${++counter}`), uploadsDir: world.uploadsDir });
-  assert.deepEqual(result.manifest.attachments, { shared_database: true, shared_uploads_allowed: false, copy_allowed: false, files_copied: 0 });
+  assert.deepEqual(result.manifest.attachments, { single_workspace_declared: false, files_copied: 0 });
   const files = (await readFile(join(result.root, 'data', 'files.jsonl'), 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line));
   assert.ok(files.length > 10);
   assert.ok(files.every((row) => row.included === false && row.archive_path === null && row.sha256 === null));
   const reasons = new Map((await readFile(join(result.root, 'omissions.jsonl'), 'utf8')).split('\n').filter(Boolean)
     .map((line) => JSON.parse(line)).map((row) => [row.id, row.reason]));
   for (const row of files) assert.ok(reasons.get(row.id), `omission for ${row.id}`);
-  assert.ok(files.some((row) => /more than one workspace.*--allow-shared-uploads/.test(reasons.get(row.id) ?? '')));
+  assert.ok(files.some((row) => /exactly one workspace \(--single-workspace-database\)/.test(reasons.get(row.id) ?? '')));
   await assert.rejects(readdir(join(result.root, 'attachments')), /ENOENT/);
-  const allowed = await runExport({ scope: { kind: 'workspace' } });
-  assert.equal(allowed.manifest.attachments.shared_database, true);
-  assert.equal(allowed.manifest.attachments.shared_uploads_allowed, true);
-  assert.ok(allowed.manifest.attachments.files_copied > 5);
 });
 
-test('attachments: a one-workspace database copies with no flag, keeping the checks that need no other workspace', { skip }, async () => {
-  const exported = await runExport({ scope: { kind: 'workspace' }, allowSharedUploads: false, hooks: { sharedDatabase: () => false } });
-  assert.equal(exported.manifest.attachments.shared_database, false);
-  assert.equal(exported.manifest.attachments.copy_allowed, true);
+test('attachments: declaring a one-workspace database that shows another workspace stops the export before any byte', { skip }, async () => {
+  const outDir = join(scratch, `export-${++counter}`);
+  await assert.rejects(exportWorkspace({ databaseUrl: databaseUrl!, workspace: world.a.slug, scope: { kind: 'workspace' }, outDir,
+    uploadsDir: world.uploadsDir, singleWorkspaceDatabase: true }), /shows another workspace/);
+  await assert.rejects(readdir(join(outDir, 'attachments')), /ENOENT/);
+  await assert.rejects(readFile(join(outDir, 'SHA256SUMS')), /ENOENT/);
+});
+
+test('attachments: a declared one-workspace database copies, keeping the checks that need no other workspace', { skip }, async () => {
+  const exported = await runExport({ scope: { kind: 'workspace' } });
+  assert.equal(exported.manifest.attachments.single_workspace_declared, true);
   const files = new Map(rows(exported, 'data/files.jsonl').map((row) => [row.id, row]));
   assert.equal(exported.manifest.attachments.files_copied, [...files.values()].filter((row) => row.included).length);
   const actual = (row: any) => createHash('sha256').update(exported.files.get(row.archive_path)!).digest('hex');
@@ -645,7 +649,7 @@ test('attachments: a one-workspace database copies with no flag, keeping the che
   assert.equal(unrecorded.included, true);
   assert.equal(unrecorded.recorded_sha256, null);
   assert.equal(unrecorded.sha256, actual(unrecorded));
-  for (const key of ['missing', 'sizeMismatch', 'hashMismatch', 'hardLink', 'blocked']) {
+  for (const key of ['missing', 'sizeMismatch', 'hashMismatch', 'hardLink', 'blocked', 'paddedAlias', 'caseAlias', 'namesBStorage']) {
     assert.equal(files.get(world.a.files[key]!)!.included, false, key);
   }
 });
@@ -707,64 +711,17 @@ test('attachments: the shared-database decision counts any trace of another work
     // A workspace column whose name differs only in case would escape the scan: refused.
     await scratchDb.query(`DELETE FROM notes WHERE org_id = 'gone'; CREATE TABLE odd ("Org_Id" text)`);
     await assert.rejects(decide(), /not named exactly org_id in: odd/);
+    // A view standing in for one of Deft's tables is refused, so a view cannot hide rows from the scan.
+    await scratchDb.query('DROP TABLE odd; CREATE VIEW files_view AS SELECT * FROM files');
+    const viewCheck = await Snapshot.open({ databaseUrl: url.toString() });
+    try {
+      await assert.rejects(viewCheck.requireTables(['orgs', 'files_view']), /not found there: files_view/);
+    } finally {
+      await viewCheck.close();
+    }
   } finally {
     await scratchDb.end();
     await client.query(`DROP DATABASE IF EXISTS ${name}`);
   }
 });
 
-test('attachments: with the operator flag, a plain-named foreign symlink to one of our files makes it refused', { skip }, async () => {
-  const ours = `${randomUUID()}-ours.bin`;
-  const theirs = `${randomUUID()}-theirs.bin`;
-  const bytes = Buffer.from(`linked bytes ${B_MARKER}`);
-  await writeFile(join(world.uploadsDir, ours), bytes);
-  try {
-    await symlink(join(world.uploadsDir, ours), join(world.uploadsDir, theirs));
-  } catch (error) {
-    await rm(join(world.uploadsDir, ours), { force: true });
-    if ((error as NodeJS.ErrnoException).code === 'EPERM') return; // Windows without the privilege to create symlinks.
-    throw error;
-  }
-  const aFile = randomUUID();
-  const bFile = randomUUID();
-  const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-  try {
-    await client.query(`INSERT INTO files (id, org_id, uploaded_by, filename, mime_type, size_bytes, storage_key, content_sha256)
-      VALUES ($1, $2, $3, 'b.bin', 'text/plain', $4, $5, $6), ($7, $8, $9, 'a.bin', 'text/plain', $4, $10, $6)`,
-    [bFile, world.b.orgId, world.b.member, bytes.length, theirs, digest, aFile, world.a.orgId, world.a.member, ours]);
-    const exported = await runExport({ scope: { kind: 'workspace' } });
-    const row = rows(exported, 'data/files.jsonl').find((candidate) => candidate.id === aFile)!;
-    assert.equal(row.included, false);
-    assert.match(rows(exported, 'omissions.jsonl').find((omission) => omission.id === aFile)!.reason, /another workspace/);
-  } finally {
-    await client.query('DELETE FROM files WHERE id = ANY($1)', [[aFile, bFile]]);
-    await rm(join(world.uploadsDir, theirs), { force: true });
-    await rm(join(world.uploadsDir, ours), { force: true });
-  }
-});
-
-test('attachments: with the operator flag, a foreign name that cannot be resolved stops the export before any byte is copied', { skip }, async () => {
-  const loop = `${randomUUID()}-loop.bin`;
-  try {
-    await symlink(join(world.uploadsDir, loop), join(world.uploadsDir, loop));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EPERM') return;
-    throw error;
-  }
-  const bFile = randomUUID();
-  try {
-    await client.query(`INSERT INTO files (id, org_id, uploaded_by, filename, mime_type, size_bytes, storage_key)
-      VALUES ($1, $2, $3, 'loop.bin', 'text/plain', 1, $4)`, [bFile, world.b.orgId, world.b.member, loop]);
-    const outDir = join(scratch, `export-${++counter}`);
-    await assert.rejects(exportWorkspace({ databaseUrl: databaseUrl!, workspace: world.a.slug, scope: { kind: 'workspace' }, outDir,
-      uploadsDir: world.uploadsDir, allowSharedUploads: true }), /Cannot establish which file/);
-    // Every foreign name is resolved before the first copy: no attachment bytes, no SHA256SUMS.
-    await assert.rejects(readdir(join(outDir, 'attachments')), /ENOENT/);
-    await assert.rejects(readFile(join(outDir, 'SHA256SUMS')), /ENOENT/);
-    // Without the flag nothing is resolved or copied, so the export still completes.
-    await runExport({ scope: { kind: 'workspace' }, allowSharedUploads: false });
-  } finally {
-    await client.query('DELETE FROM files WHERE id = $1', [bFile]);
-    await rm(join(world.uploadsDir, loop), { force: true });
-  }
-});

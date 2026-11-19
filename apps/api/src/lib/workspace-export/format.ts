@@ -47,12 +47,11 @@ export type ExportManifest = Readonly<{
   database_schema: string;
   /** False when anything in scope could not be included; see omissions.jsonl. */
   /**
-   * shared_database: this database holds, or held, another workspace (see
-   * databaseIsShared). Then attachment bytes are copied only when an operator
-   * allowed it (shared_uploads_allowed). copy_allowed says whether copying was
-   * allowed at all, and files_copied how many files were copied.
+   * single_workspace_declared: the operator stated that this database holds
+   * exactly one workspace, and the scan found no other; only then are
+   * attachment bytes copied. files_copied: how many files were copied.
    */
-  attachments: Readonly<{ shared_database: boolean; shared_uploads_allowed: boolean; copy_allowed: boolean; files_copied: number }>;
+  attachments: Readonly<{ single_workspace_declared: boolean; files_copied: number }>;
   complete: boolean;
   omissions: number;
   datasets: readonly DatasetSummary[];

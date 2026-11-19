@@ -66,19 +66,21 @@ export class Snapshot {
   }
 
   /**
-   * Refuses unless every named table exists in the pinned schema and an
+   * Refuses unless every named table exists in the pinned schema as an
+   * ordinary or partitioned table (not a view or foreign table) and an
    * unqualified name resolves to exactly that table.
    */
   async requireTables(tables: readonly string[]): Promise<void> {
     const wrong: string[] = [];
     for (const table of tables) {
       const { rows } = await this.client.query<{ ok: boolean }>(
-        'SELECT to_regclass(quote_ident($2)) IS NOT NULL AND to_regclass(quote_ident($2)) = to_regclass(quote_ident($1) || \'.\' || quote_ident($2)) AS ok',
+        `SELECT to_regclass(quote_ident($2)) IS NOT NULL AND to_regclass(quote_ident($2)) = to_regclass(quote_ident($1) || '.' || quote_ident($2))
+          AND (SELECT relkind FROM pg_class WHERE oid = to_regclass(quote_ident($2))) IN ('r', 'p') AS ok`,
         [this.schema, table]);
       if (!rows[0]?.ok) wrong.push(table);
     }
     if (wrong.length) {
-      throw new Error(`Deft's tables are not all in the schema "${this.schema}" (not found there: ${wrong.join(', ')}). Pass the schema Deft is installed in.`);
+      throw new Error(`Deft's tables are not all plain tables in the schema "${this.schema}" (not found there: ${wrong.join(', ')}). Pass the schema Deft is installed in.`);
     }
   }
 
