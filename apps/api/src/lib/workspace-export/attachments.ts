@@ -100,15 +100,32 @@ const NOT_COPIED = { reason: 'This database holds more than one workspace, so at
 const identity = (info: { dev: number; ino: number }) => `${info.dev}:${info.ino}`;
 
 /**
- * True unless this database plainly holds only this workspace: any other
- * workspace row, in any state, or any file row of another workspace id
- * (including rows left by a workspace that no longer exists) counts as shared.
+ * True unless this database plainly holds only this workspace. Shared means:
+ * - any other workspace row, in any state; or
+ * - this workspace's own row missing; or
+ * - any row, in any table with an org_id column, that names another
+ *   workspace id (including rows left by a workspace that no longer exists).
+ * Anything unexpected counts as shared.
+ *
+ * This is evidence from the database only. Bytes on disk that no row
+ * describes cannot be attributed by it. Automatic copying therefore assumes
+ * the uploads folder serves this database alone, which holds by
+ * construction in a hosted cell. A row of this workspace that names such a
+ * file is trusted as this workspace's.
  */
-async function databaseIsShared(snapshot: Snapshot, ctx: ExportContext): Promise<boolean> {
-  const [row] = await snapshot.all<{ shared: boolean }>(sql`SELECT ((SELECT count(*) FROM orgs) <> 1
-    OR NOT EXISTS (SELECT 1 FROM orgs WHERE id = ${ctx.orgId})
-    OR EXISTS (SELECT 1 FROM files WHERE org_id IS DISTINCT FROM ${ctx.orgId})) AS shared`);
-  return row?.shared !== false;
+export async function databaseIsShared(snapshot: Snapshot, orgId: string): Promise<boolean> {
+  const [base] = await snapshot.all<{ shared: boolean }>(sql`SELECT ((SELECT count(*) FROM orgs) <> 1
+    OR NOT EXISTS (SELECT 1 FROM orgs WHERE id = ${orgId})) AS shared`);
+  if (base?.shared !== false) return true;
+  const tables = await snapshot.all<{ table_name: string }>(sql`SELECT c.table_name FROM information_schema.columns c
+    JOIN information_schema.tables t ON t.table_schema = c.table_schema AND t.table_name = c.table_name AND t.table_type = 'BASE TABLE'
+    WHERE c.table_schema = current_schema() AND c.column_name = 'org_id' ORDER BY c.table_name`);
+  for (const { table_name: table } of tables) {
+    const [found] = await snapshot.all<{ other: boolean }>(sql`SELECT EXISTS (SELECT 1 FROM ${sql.identifier(table)}
+      WHERE org_id IS NOT NULL AND org_id::text <> ${orgId}) AS other`);
+    if (found?.other !== false) return true;
+  }
+  return false;
 }
 
 /**
@@ -226,8 +243,10 @@ export type AttachmentSummary = Readonly<{
   path: string; records: number;
   /** This database holds, or held, another workspace. */
   shared_database: boolean;
-  /** Whether attachment bytes were copied at all. */
-  bytes_copied: boolean;
+  /** Whether copying was allowed at all (one-workspace database, or the operator's flag). */
+  copy_allowed: boolean;
+  /** How many attachment files were actually copied into the archive. */
+  files_copied: number;
 }>;
 
 /**
@@ -240,10 +259,11 @@ export type AttachmentSummary = Readonly<{
 export async function exportAttachments(snapshot: Snapshot, writer: ArchiveWriter, ctx: ExportContext, uploadsDir: string,
   options: AttachmentOptions = {}): Promise<AttachmentSummary> {
   const uploadsRoot = await realpath(uploadsDir);
-  const shared = options.hooks?.sharedDatabase ? options.hooks.sharedDatabase() : await databaseIsShared(snapshot, ctx);
+  const shared = options.hooks?.sharedDatabase ? options.hooks.sharedDatabase() : await databaseIsShared(snapshot, ctx.orgId);
   const copy = !shared || options.allowSharedUploads === true;
   const foreign = shared && copy ? await foreignFileIdentities(snapshot, ctx, uploadsRoot) : new Set<string>();
   const list = await writer.jsonl('data/files.jsonl');
+  let filesCopied = 0;
   for await (const row of snapshot.rows<FileRow>(attachmentsQuery(ctx))) {
     const result = row.attached_as === 'ambiguous'
       ? { reason: 'Linked to more than one message or task, so Deft shows it to nobody.' }
@@ -260,7 +280,8 @@ export async function exportAttachments(snapshot: Snapshot, writer: ArchiveWrite
       included: 'path' in result, archive_path: 'path' in result ? result.path : null,
     });
     if ('reason' in result) await writer.omit({ kind: 'file', id: row.id, reason: result.reason });
+    else filesCopied += 1;
   }
   await list.close();
-  return { path: 'data/files.jsonl', records: list.records, shared_database: shared, bytes_copied: copy };
+  return { path: 'data/files.jsonl', records: list.records, shared_database: shared, copy_allowed: copy, files_copied: filesCopied };
 }

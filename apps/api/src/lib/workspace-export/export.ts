@@ -80,7 +80,7 @@ export async function exportWorkspace(options: ExportOptions): Promise<ExportRes
           scope: scope.kind === 'workspace' ? { kind: 'workspace' } : { kind: 'member', user_id: scope.user_id, role: scope.role },
           as_of: snapshot.asOf.toISOString(),
           attachments: { shared_database: attachments.shared_database, shared_uploads_allowed: options.allowSharedUploads === true,
-            bytes_copied: attachments.bytes_copied },
+            copy_allowed: attachments.copy_allowed, files_copied: attachments.files_copied },
           complete: writer.omissions === 0,
           omissions: writer.omissions,
           datasets,

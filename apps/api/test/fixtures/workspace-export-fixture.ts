@@ -332,6 +332,7 @@ async function seedFiles(s: Seeder, ws: WorkspaceIds & ContentIds, isB: boolean,
   await file('messageAndTask', { message: [ws.messages.general!], task: [ws.tasks.open!] });
   await file('onDeletedTask', { task: [ws.tasks.deleted!] });
   await file('stagedByMember', { uploadedBy: ws.member, extra: { staged_expires_at: new Date(Date.now() + 3_600_000) } });
+  await file('noRecordedHash', { message: [ws.messages.general!], recordedHash: null });
   return files;
 }
 

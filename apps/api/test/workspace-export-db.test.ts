@@ -612,31 +612,78 @@ test('attachments: a large file is streamed, not held in memory', { skip }, asyn
 });
 
 test('attachments: a database shared with other workspaces copies no bytes unless the operator allows it', { skip }, async () => {
-  const exported = await runExport({ scope: { kind: 'workspace' }, allowSharedUploads: false });
-  const files = rows(exported, 'data/files.jsonl');
+  // Called directly, with the option left out entirely: the default must not copy.
+  const result = await exportWorkspace({ databaseUrl: databaseUrl!, workspace: world.a.slug, scope: { kind: 'workspace' },
+    outDir: join(scratch, `export-${++counter}`), uploadsDir: world.uploadsDir });
+  assert.deepEqual(result.manifest.attachments, { shared_database: true, shared_uploads_allowed: false, copy_allowed: false, files_copied: 0 });
+  const files = (await readFile(join(result.root, 'data', 'files.jsonl'), 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line));
   assert.ok(files.length > 10);
   assert.ok(files.every((row) => row.included === false && row.archive_path === null && row.sha256 === null));
-  const reasons = new Map(rows(exported, 'omissions.jsonl').map((row) => [row.id, row.reason]));
+  const reasons = new Map((await readFile(join(result.root, 'omissions.jsonl'), 'utf8')).split('\n').filter(Boolean)
+    .map((line) => JSON.parse(line)).map((row) => [row.id, row.reason]));
   for (const row of files) assert.ok(reasons.get(row.id), `omission for ${row.id}`);
-  assert.ok(files.some((row) => /more than one workspace.*--allow-shared-uploads/.test(reasons.get(row.id))));
-  assert.ok(![...exported.files.keys()].some((path) => path.startsWith('attachments/')));
-  assert.deepEqual(exported.manifest.attachments, { shared_database: true, shared_uploads_allowed: false, bytes_copied: false });
+  assert.ok(files.some((row) => /more than one workspace.*--allow-shared-uploads/.test(reasons.get(row.id) ?? '')));
+  await assert.rejects(readdir(join(result.root, 'attachments')), /ENOENT/);
   const allowed = await runExport({ scope: { kind: 'workspace' } });
-  assert.deepEqual(allowed.manifest.attachments, { shared_database: true, shared_uploads_allowed: true, bytes_copied: true });
+  assert.equal(allowed.manifest.attachments.shared_database, true);
+  assert.equal(allowed.manifest.attachments.shared_uploads_allowed, true);
+  assert.ok(allowed.manifest.attachments.files_copied > 5);
 });
 
 test('attachments: a one-workspace database copies with no flag, keeping the checks that need no other workspace', { skip }, async () => {
   const exported = await runExport({ scope: { kind: 'workspace' }, allowSharedUploads: false, hooks: { sharedDatabase: () => false } });
-  assert.deepEqual(exported.manifest.attachments, { shared_database: false, shared_uploads_allowed: false, bytes_copied: true });
+  assert.equal(exported.manifest.attachments.shared_database, false);
+  assert.equal(exported.manifest.attachments.copy_allowed, true);
   const files = new Map(rows(exported, 'data/files.jsonl').map((row) => [row.id, row]));
+  assert.equal(exported.manifest.attachments.files_copied, [...files.values()].filter((row) => row.included).length);
+  const actual = (row: any) => createHash('sha256').update(exported.files.get(row.archive_path)!).digest('hex');
   const onGeneral = files.get(world.a.files.onGeneral!)!;
-  assert.equal(onGeneral.included, true);
-  assert.equal(onGeneral.sha256, createHash('sha256').update(exported.files.get(onGeneral.archive_path)!).digest('hex'));
-  // The digest of the copied bytes, and separately the checksum Deft recorded: equal when one was recorded.
-  const sizeOnly = files.get(world.a.files.typedOverLegacy!)!;
-  assert.ok(sizeOnly.sha256 && sizeOnly.recorded_sha256 && sizeOnly.sha256 === sizeOnly.recorded_sha256);
+  assert.equal(onGeneral.sha256, actual(onGeneral));
+  assert.equal(onGeneral.recorded_sha256, onGeneral.sha256);
+  // A file Deft recorded no checksum for: the archive still carries the digest of the bytes it copied.
+  const unrecorded = files.get(world.a.files.noRecordedHash!)!;
+  assert.equal(unrecorded.included, true);
+  assert.equal(unrecorded.recorded_sha256, null);
+  assert.equal(unrecorded.sha256, actual(unrecorded));
   for (const key of ['missing', 'sizeMismatch', 'hashMismatch', 'hardLink', 'blocked']) {
     assert.equal(files.get(world.a.files[key]!)!.included, false, key);
+  }
+});
+
+test('attachments: the shared-database decision counts any trace of another workspace', { skip }, async () => {
+  // A throwaway database holding only the tables the decision reads.
+  const name = `deft_test_ex1_classify_${randomUUID().slice(0, 8)}`;
+  try {
+    await client.query(`CREATE DATABASE ${name}`);
+  } catch (error) {
+    if ((error as { code?: string }).code === '42501') return; // no CREATEDB privilege in this environment
+    throw error;
+  }
+  const url = new URL(databaseUrl!);
+  url.pathname = `/${name}`;
+  const scratchDb = new pg.Client({ connectionString: url.toString() });
+  await scratchDb.connect();
+  try {
+    await scratchDb.query(`CREATE TABLE orgs (id text PRIMARY KEY); CREATE TABLE files (id text, org_id text);
+      CREATE TABLE notes (id text, org_id text); CREATE TABLE skills (id text, org_id text)`);
+    const { databaseIsShared } = await import('../src/lib/workspace-export/attachments.js');
+    const decide = async () => {
+      const snapshot = await Snapshot.open({ databaseUrl: url.toString() });
+      try { return await databaseIsShared(snapshot, 'ours'); } finally { await snapshot.close(); }
+    };
+    assert.equal(await decide(), true, 'this workspace is missing');
+    await scratchDb.query(`INSERT INTO orgs VALUES ('ours'); INSERT INTO files VALUES ('f1', 'ours'); INSERT INTO notes VALUES ('n1', 'ours');
+      INSERT INTO skills VALUES ('bundled', NULL)`);
+    assert.equal(await decide(), false, 'only this workspace (and shared rows with no workspace)');
+    await scratchDb.query(`INSERT INTO notes VALUES ('n2', 'gone')`);
+    assert.equal(await decide(), true, 'a note left by a deleted workspace');
+    await scratchDb.query(`DELETE FROM notes WHERE org_id = 'gone'; INSERT INTO files VALUES ('f2', 'gone')`);
+    assert.equal(await decide(), true, 'a file row left by a deleted workspace');
+    await scratchDb.query(`DELETE FROM files WHERE org_id = 'gone'; INSERT INTO orgs VALUES ('other')`);
+    assert.equal(await decide(), true, 'another workspace with no members or content');
+  } finally {
+    await scratchDb.end();
+    await client.query(`DROP DATABASE IF EXISTS ${name}`);
   }
 });
 
@@ -670,7 +717,7 @@ test('attachments: with the operator flag, a plain-named foreign symlink to one 
   }
 });
 
-test('attachments: with the operator flag, a foreign name that cannot be resolved stops the export', { skip }, async () => {
+test('attachments: with the operator flag, a foreign name that cannot be resolved stops the export before any byte is copied', { skip }, async () => {
   const loop = `${randomUUID()}-loop.bin`;
   try {
     await symlink(join(world.uploadsDir, loop), join(world.uploadsDir, loop));
@@ -682,7 +729,12 @@ test('attachments: with the operator flag, a foreign name that cannot be resolve
   try {
     await client.query(`INSERT INTO files (id, org_id, uploaded_by, filename, mime_type, size_bytes, storage_key)
       VALUES ($1, $2, $3, 'loop.bin', 'text/plain', 1, $4)`, [bFile, world.b.orgId, world.b.member, loop]);
-    await assert.rejects(runExport({ scope: { kind: 'workspace' } }), /Cannot establish which file/);
+    const outDir = join(scratch, `export-${++counter}`);
+    await assert.rejects(exportWorkspace({ databaseUrl: databaseUrl!, workspace: world.a.slug, scope: { kind: 'workspace' }, outDir,
+      uploadsDir: world.uploadsDir, allowSharedUploads: true }), /Cannot establish which file/);
+    // Every foreign name is resolved before the first copy: no attachment bytes, no SHA256SUMS.
+    await assert.rejects(readdir(join(outDir, 'attachments')), /ENOENT/);
+    await assert.rejects(readFile(join(outDir, 'SHA256SUMS')), /ENOENT/);
     // Without the flag nothing is resolved or copied, so the export still completes.
     await runExport({ scope: { kind: 'workspace' }, allowSharedUploads: false });
   } finally {
