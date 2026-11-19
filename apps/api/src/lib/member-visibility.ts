@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { agentEmployees, users } from '@deft/db/schema';
-import { DEFTY_EMAIL } from './ensure-defty-membership.js';
+import { DEFTY_EMAIL } from './defty-identity.js';
 
 /** Keep member list and resource projections aligned on live agent visibility. */
 export function visibleLiveMemberForOrg(orgIdRef: unknown) {
