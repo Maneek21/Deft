@@ -985,10 +985,15 @@ consent: each restored it with the row intact.
 
 ### Content exports
 
-Available exports include wiki JSON/Markdown/CSV (`GET /api/wiki/export`, with
-`format=md` or `format=csv`), note Markdown download, and calendar ICS feeds.
-These are content exports, not a complete restorable workspace archive. Use
-Postgres, uploads, and configuration backups for recovery.
+To export a whole workspace's content (spaces, messages, attachments, tasks,
+notes, wiki, events, Contacts and members) as a portable archive, run the
+workspace export command; it works while the app is stopped. See
+[workspace export](workspace-export.md).
+
+Smaller exports also exist: wiki JSON/Markdown/CSV (`GET /api/wiki/export`,
+with `format=md` or `format=csv`), note Markdown download, and calendar ICS
+feeds. None of these is a restorable backup. Use Postgres, uploads, and
+configuration backups for recovery.
 
 ## Upgrading
 

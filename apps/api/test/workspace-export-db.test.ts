@@ -24,6 +24,9 @@ import { Snapshot } from '../src/lib/workspace-export/snapshot.js';
 import { canReadSpace } from '../src/lib/space-membership.js';
 import { memberRoutes } from '../src/routes/members.js';
 
+/** The operating system's own tar (Windows ships bsdtar as tar.exe; a Git Bash tar on PATH reads C: as a host). */
+const systemTar = process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
+
 const databaseUrl = safeTestDatabaseUrl();
 const skip = !databaseUrl;
 let client: pg.Client;
@@ -779,6 +782,33 @@ test('modules: a manifest that fails its integrity check is never used to choose
   assert.equal(await verifiedManifest({ manifest: { not: 'a manifest' }, manifest_digest: digest }), null);
 });
 
+test('the command writes one tar that extracts, verifies against SHA256SUMS, and holds no secret or other workspace', { skip }, async () => {
+  const { runCommand } = await import('../src/scripts/export-workspace.js');
+  const { spawnSync } = await import('node:child_process');
+  for (const scope of [{ kind: 'workspace' as const }, { kind: 'member' as const, member: world.a.member }]) {
+    const tarPath = join(scratch, `command-${++counter}.tar`);
+    const keyFile = join(scratch, `key-${counter}`);
+    await writeFile(keyFile, 'not a real key');
+    await runCommand({ databaseUrl: databaseUrl!, workspace: world.a.slug, uploads: world.uploadsDir, out: tarPath, folder: false,
+      scope, workspaceKeyFile: scope.kind === 'workspace' ? keyFile : null });
+    const raw = (await readFile(tarPath)).toString('latin1');
+    for (const needle of [SECRET_MARKER, B_MARKER, ...world.forbidden]) assert.ok(!raw.includes(needle), `tar contains ${needle}`);
+    const out = join(scratch, `extract-${counter}`);
+    await mkdir(out);
+    assert.equal(spawnSync(systemTar, ['-xf', tarPath, '-C', out]).status, 0);
+    const root = join(out, `command-${counter}`);
+    const sums = (await readFile(join(root, 'SHA256SUMS'), 'utf8')).split('\n').filter(Boolean);
+    assert.ok(sums.length > 20);
+    for (const line of sums) {
+      const [hash, ...rest] = line.split('  ');
+      const bytes = await readFile(join(root, ...rest.join('  ').split('/')));
+      assert.equal(createHash('sha256').update(bytes).digest('hex'), hash, rest.join('  '));
+    }
+    const manifest = JSON.parse(await readFile(join(root, 'manifest.json'), 'utf8'));
+    assert.equal(manifest.workspace_key, scope.kind === 'workspace' ? 'supplied_not_used' : 'not_supplied');
+    assert.equal(manifest.scope.kind, scope.kind);
+  }
+});
 test('attachments: without the operator declaring a one-workspace database, no bytes are copied', { skip }, async () => {
   // Called directly, with the option left out entirely: the default must not copy.
   const result = await exportWorkspace({ databaseUrl: databaseUrl!, workspace: world.a.slug, scope: { kind: 'workspace' },

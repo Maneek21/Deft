@@ -1,6 +1,6 @@
 import { createHash, type Hash } from 'node:crypto';
-import { createWriteStream } from 'node:fs';
-import { mkdir, readdir, rename, rm } from 'node:fs/promises';
+import { constants, createWriteStream } from 'node:fs';
+import { copyFile, link, mkdir, readdir, rm } from 'node:fs/promises';
 import type { Writable } from 'node:stream';
 import { finished } from 'node:stream/promises';
 import { dirname, join, resolve, sep } from 'node:path';
@@ -120,7 +120,13 @@ export class ArchiveWriter {
     if ((await readdir(absolute)).length > 0) throw new Error(`Output folder is not empty: ${absolute}`);
     const writer = new ArchiveWriter(absolute);
     writer.sums = guard(createWriteStream(join(absolute, 'SHA256SUMS.partial'), { flags: 'wx' }));
-    writer.omissionsFile = new JsonlFile(await writer.open('omissions.jsonl'));
+    try {
+      writer.omissionsFile = new JsonlFile(await writer.open('omissions.jsonl'));
+    } catch (error) {
+      // The caller never gets this writer, so close what it already opened.
+      await writer.abort();
+      throw error;
+    }
     return writer;
   }
 
@@ -132,7 +138,13 @@ export class ArchiveWriter {
     const absolute = join(this.root, ...path.split('/'));
     if (!absolute.startsWith(this.root + sep)) throw new Error(`Archive path escapes the folder: ${path}`);
     await mkdir(dirname(absolute), { recursive: true });
-    const file = new ArchiveFile(path, absolute, createWriteStream(absolute, { flags: 'wx' }), async (closedFile, sha256) => {
+    // Wait until the file is really created (exclusively), so a file someone else put here is never ours to delete.
+    const stream = createWriteStream(absolute, { flags: 'wx' });
+    await new Promise<void>((resolveOpen, rejectOpen) => {
+      stream.once('open', () => { stream.off('error', rejectOpen); resolveOpen(); });
+      stream.once('error', rejectOpen);
+    });
+    const file = new ArchiveFile(path, absolute, stream, async (closedFile, sha256) => {
       this.openFiles.delete(closedFile);
       await writeTo(this.sums, Buffer.from(`${sha256}  ${closedFile.path}\n`, 'utf8'));
     });
@@ -177,7 +189,16 @@ export class ArchiveWriter {
     await writeManifest();
     this.sums.end();
     await finished(this.sums);
-    await rename(join(this.root, 'SHA256SUMS.partial'), join(this.root, 'SHA256SUMS'));
+    // Publish without ever replacing a SHA256SUMS that appeared in the meantime.
+    const partial = join(this.root, 'SHA256SUMS.partial');
+    try {
+      await link(partial, join(this.root, 'SHA256SUMS'));
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EPERM' && code !== 'ENOTSUP' && code !== 'EXDEV' && code !== 'ENOSYS') throw error;
+      await copyFile(partial, join(this.root, 'SHA256SUMS'), constants.COPYFILE_EXCL);
+    }
+    await rm(partial, { force: true });
   }
 
   /** Stops every stream after a failure. SHA256SUMS is never published. */

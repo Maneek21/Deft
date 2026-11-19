@@ -20,6 +20,12 @@ export type ExportOptions = Readonly<{
   /** Folder to create; it must not exist or be empty. */
   outDir: string;
   deftVersion?: string | null;
+  /**
+   * True when the caller holds the workspace's key. Recorded in the manifest so
+   * a later version can decrypt private assistant conversations without a
+   * format change. Not used to decrypt anything yet.
+   */
+  workspaceKeySupplied?: boolean;
   /** The schema Deft's tables are in (default "public"). The export reads that schema alone. */
   databaseSchema?: string;
   batchSize?: number;
@@ -98,6 +104,7 @@ export async function exportWorkspace(options: ExportOptions): Promise<ExportRes
           workspace: { id: workspace.id, slug: workspace.slug, name: workspace.name },
           scope: scope.kind === 'workspace' ? { kind: 'workspace' } : { kind: 'member', user_id: scope.user_id, role: scope.role },
           as_of: snapshot.asOf.toISOString(),
+          workspace_key: options.workspaceKeySupplied ? 'supplied_not_used' : 'not_supplied',
           database_schema: snapshot.schema,
           attachments: { single_workspace_declared: attachments.single_workspace_declared, files_copied: attachments.files_copied },
           complete: writer.omissions === 0,

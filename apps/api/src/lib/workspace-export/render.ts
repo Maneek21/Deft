@@ -58,6 +58,7 @@ export async function writeReadme(writer: ArchiveWriter, manifest: ExportManifes
     `As of: ${manifest.as_of} (UTC)`,
     `Complete: ${manifest.complete ? 'yes' : `no, ${manifest.omissions} item(s) could not be included (see below and omissions.jsonl)`}`,
     `Attachment files included: ${filesIncluded}`,
+    `Workspace key: ${manifest.workspace_key === 'not_supplied' ? 'not supplied' : 'supplied, but this version does not decrypt'}; encrypted private assistant conversations are listed without their text.`,
     ...(manifest.attachments.single_workspace_declared ? [] : [ATTACHMENTS_NOT_COPIED]),
     `Database schema read: ${manifest.database_schema}`,
     '',

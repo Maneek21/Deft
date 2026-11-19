@@ -48,7 +48,7 @@ export const MESSAGES_AND_TASKS: readonly Dataset[] = [
       WHERE export_message.org_id = ${ctx.orgId} AND ${exportableMessage(ctx, col('export_message.id'))}
       ORDER BY export_message.space_id, export_message.created_at, export_message.id`,
     omission: (row) => row.content_omitted
-      ? { kind: 'message', id: String(row.id), reason: 'Encrypted private assistant conversation; its text needs the workspace key, which this export was not given.' }
+      ? { kind: 'message', id: String(row.id), reason: 'Encrypted private assistant conversation; this version of the export does not decrypt it.' }
       : null,
   },
   {
