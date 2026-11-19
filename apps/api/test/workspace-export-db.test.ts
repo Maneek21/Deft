@@ -656,6 +656,11 @@ test('modules: a custom module whose collection is named like an export file sti
       fields: [{ key: 'name', label: 'Name', type: 'text', required: true }],
       search: { fields: ['name'], title_field: 'name' },
       views: [{ key: 'table', name: 'Table', type: 'table', fields: ['name'] }],
+    }, {
+      key: 'con', name: 'Device name', singular_name: 'Device',
+      fields: [{ key: 'name', label: 'Name', type: 'text', required: true }],
+      search: { fields: ['name'], title_field: 'name' },
+      views: [{ key: 'table', name: 'Table', type: 'table', fields: ['name'] }],
     }],
   }, { source: 'sideloaded' });
   const installed = (await client.query<{ installation: string; version: string }>(`SELECT i.id AS installation, v.id AS version
@@ -665,7 +670,13 @@ test('modules: a custom module whose collection is named like an export file sti
       created_by_actor_type, created_by_actor_id, updated_by_actor_type, updated_by_actor_id)
     VALUES ($1, $2, $3, 'relations', $4, '{"name":"kept"}', 'kept', 'human', $5, 'human', $5)`,
   [randomUUID(), world.a.orgId, installed.installation, installed.version, world.a.owner]);
+  await client.query(`INSERT INTO module_records (id, org_id, installation_id, collection_key, validated_version_id, data, search_title,
+      created_by_actor_type, created_by_actor_id, updated_by_actor_type, updated_by_actor_id)
+    VALUES ($1, $2, $3, 'con', $4, '{"name":"device"}', 'device', 'human', $5, 'human', $5)`,
+  [randomUUID(), world.a.orgId, installed.installation, installed.version, world.a.owner]);
   const exported = await runExport({ scope: { kind: 'workspace' } });
+  // A collection named like a Windows device is stored under a safe name, not an aborted export.
+  assert.deepEqual(rows(exported, `data/modules/${slug}/collections/_con.jsonl`).map((row) => row.fields), [{ name: 'device' }]);
   assert.deepEqual(rows(exported, `data/modules/${slug}/collections/relations.jsonl`).map((row) => row.fields), [{ name: 'kept' }]);
   assert.deepEqual(rows(exported, `data/modules/${slug}/relations.jsonl`), []);
 });
