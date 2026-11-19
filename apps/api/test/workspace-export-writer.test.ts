@@ -24,12 +24,12 @@ test('a disk failure after a write was accepted rejects the next step instead of
   try {
     // A stream that accepts each write, then fails it on the next turn, as a full disk does.
     const failing = new Writable({ highWaterMark: 1 << 20, write(_chunk, _encoding, callback) { setImmediate(() => callback(new Error('ENOSPC: no space left'))); } });
-    const file = new ArchiveFile('data/x.jsonl', failing, async () => undefined);
+    const file = new ArchiveFile('data/x.jsonl', 'unused-x', failing, async () => undefined);
     await file.write('first line\n');
     await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
     await assert.rejects(file.write('second line\n'), /ENOSPC/);
-    await assert.rejects(new ArchiveFile('data/y.jsonl', failing, async () => undefined).close(), /ENOSPC|closed|destroyed/);
+    await assert.rejects(new ArchiveFile('data/y.jsonl', 'unused-y', failing, async () => undefined).close(), /ENOSPC|closed|destroyed/);
     assert.deepEqual(uncaught, []);
   } finally {
     process.off('uncaughtException', onUncaught);
@@ -67,4 +67,14 @@ test('the writer refuses a non-empty folder and the reserved checksum names', as
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test('attachment names in the archive are always storable, even after shortening or when they spell a device', async () => {
+  const { archiveFileName } = await import('../src/lib/workspace-export/attachments.js');
+  for (const filename of [`${'a'.repeat(149)}.${'b'.repeat(20)}`, 'COM¹.txt', 'con', 'NUL.tar.gz', 'name. ', '...', '', 'a/b\c:d', `${'é'.repeat(300)}.pdf`]) {
+    const path = archiveFileName('f1', filename);
+    assertArchivePath(path);
+    assert.ok(path.startsWith('attachments/f1/'), path);
+  }
+  assert.equal(archiveFileName('f1', 'Report final.pdf'), 'attachments/f1/Report final.pdf');
 });
