@@ -26,7 +26,7 @@ function attachableMessage(ctx: ExportContext, ref: SQL): SQL {
  * legacy task column, then the legacy message column; a file attached to
  * nothing belongs to its uploader.
  */
-function attachmentsQuery(ctx: ExportContext): SQL {
+export function visibleFilesSql(ctx: ExportContext): SQL {
   const userId = memberId(ctx);
   return sql`SELECT * FROM (SELECT f.id, f.filename, f.mime_type, f.size_bytes, f.content_sha256, f.storage_key, f.processing_status,
       ${workspaceAuthor(ctx, col('f.uploaded_by'))} AS uploaded_by, f.created_at,
@@ -49,8 +49,11 @@ function attachmentsQuery(ctx: ExportContext): SQL {
         (SELECT count(*) FROM task_attachments link WHERE link.org_id = ${ctx.orgId} AND link.file_id = f.id) AS task_links,
         (SELECT min(link.task_id) FROM task_attachments link WHERE link.org_id = ${ctx.orgId} AND link.file_id = f.id) AS task_id) typed
     WHERE f.org_id = ${ctx.orgId}) candidate
-  WHERE candidate.attached_as IS NOT NULL ${userId ? sql`AND candidate.attached_as <> 'ambiguous'` : sql``}
-  ORDER BY candidate.created_at, candidate.id`;
+  WHERE candidate.attached_as IS NOT NULL ${userId ? sql`AND candidate.attached_as <> 'ambiguous'` : sql``}`;
+}
+
+function attachmentsQuery(ctx: ExportContext): SQL {
+  return sql`${visibleFilesSql(ctx)} ORDER BY candidate.created_at, candidate.id`;
 }
 
 type FileRow = {

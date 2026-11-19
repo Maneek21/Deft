@@ -6,7 +6,9 @@ import { PEOPLE_AND_SPACES, type Dataset } from './datasets.js';
 import { MESSAGES_AND_TASKS } from './datasets-content.js';
 import { NOTES_WIKI_EVENTS } from './datasets-knowledge.js';
 import { exportAttachments, type CopyHooks } from './attachments.js';
+import { sql } from 'drizzle-orm';
 import { exportModules } from './modules.js';
+import { writeReadme, writeTranscripts } from './render.js';
 
 export type ExportOptions = Readonly<{
   databaseUrl: string;
@@ -83,6 +85,9 @@ export async function exportWorkspace(options: ExportOptions): Promise<ExportRes
         { hooks: options.hooks, singleWorkspaceDatabase: options.singleWorkspaceDatabase });
       datasets.push({ path: attachments.path, records: attachments.records });
       datasets.push(...await exportModules(snapshot, writer, ctx));
+      await writeTranscripts(snapshot, writer, ctx);
+      const memberName = scope.kind === 'member'
+        ? (await snapshot.all<{ name: string }>(sql`SELECT name FROM users WHERE id = ${scope.user_id}`))[0]?.name ?? null : null;
 
       let manifest!: ExportManifest;
       await writer.finish(async () => {
@@ -100,6 +105,7 @@ export async function exportWorkspace(options: ExportOptions): Promise<ExportRes
           datasets,
           not_included: NOT_INCLUDED,
         };
+        await writeReadme(writer, manifest, memberName, attachments.files_copied);
         await writer.writeJson('manifest.json', manifest);
       });
       return { root: writer.root, manifest };
