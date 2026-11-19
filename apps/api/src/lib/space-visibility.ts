@@ -1,4 +1,5 @@
 import { sql, type SQL, type SQLWrapper } from 'drizzle-orm';
+import { orgMembers, spaceMembers, spaces } from '@deft/db/schema';
 
 /**
  * True when the space is public and `userId` may see it without being a
@@ -18,4 +19,31 @@ export function publicSpaceVisibleSql(spaceType: SQLWrapper, spaceOrgId: SQLWrap
       AND public_space_guest.user_id = ${userId}
       AND public_space_guest.role = 'guest'
       AND public_space_guest_user.kind = 'human'))`;
+}
+
+/**
+ * For a query that selects from `spaces`: true when `userId` may read the
+ * space without having joined it. The space is public and not archived, and
+ * the reader is an active member of the space's workspace who is not a guest
+ * (publicSpaceVisibleSql, the check the assistant's and outside agents' tools
+ * use). Combine it with the membership check: `<is a member> OR this`.
+ */
+export function unjoinedPublicSpaceReadableSql(userId: string | SQL): SQL {
+  return sql`(${spaces.is_archived} = false
+    AND ${publicSpaceVisibleSql(spaces.type, spaces.org_id, userId)}
+    AND EXISTS (SELECT 1 FROM ${orgMembers}
+      WHERE ${orgMembers.org_id} = ${spaces.org_id} AND ${orgMembers.user_id} = ${userId} AND ${orgMembers.is_active} = true))`;
+}
+
+/**
+ * `canReadSpace` as a condition for any query: the space `spaceId` of `orgId`
+ * is one `userId` can read today. They are in it (archived or not), or it is
+ * a public, unarchived space and they are a member of the workspace who is
+ * not a guest.
+ */
+export function readableSpaceSql(userId: string | SQL, spaceId: SQLWrapper, orgId: SQLWrapper): SQL {
+  return sql`EXISTS (SELECT 1 FROM ${spaces} WHERE ${spaces.id} = ${spaceId} AND ${spaces.org_id} = ${orgId}
+    AND (EXISTS (SELECT 1 FROM ${spaceMembers}
+        WHERE ${spaceMembers.space_id} = ${spaces.id} AND ${spaceMembers.user_id} = ${userId})
+      OR ${unjoinedPublicSpaceReadableSql(userId)}))`;
 }
