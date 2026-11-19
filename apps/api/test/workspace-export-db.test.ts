@@ -67,6 +67,10 @@ function rows(exported: Exported, path: string): Record<string, any>[] {
   return bytes.toString('utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
 }
 
+async function spacesOf(orgId: string): Promise<string[]> {
+  return (await client.query<{ id: string }>('SELECT id FROM spaces WHERE org_id = $1', [orgId])).rows.map((row) => row.id);
+}
+
 const allScopes = () => [
   { kind: 'workspace' as const },
   ...[world.a.owner, world.a.member, world.a.guest, world.a.other, world.shared].map((member) => ({ kind: 'member' as const, member })),
@@ -93,7 +97,9 @@ test('the archive is verifiable: SHA256SUMS lists every other file with its hash
 test('nothing from another workspace reaches the archive, in any scope', { skip }, async () => {
   const sharedIds = new Set([world.shared]);
   const bIds = [world.b.orgId, world.b.owner, world.b.member, world.b.other, world.b.guest, world.b.former,
-    world.b.agentUser, world.b.agentEmployee, ...Object.values(world.b.spaces)].filter((id) => !sharedIds.has(id));
+    world.b.agentUser, world.b.agentEmployee, ...Object.values(world.b.spaces), ...Object.values(world.b.messages),
+    ...Object.values(world.b.tasks), ...Object.values(world.b.projects), ...Object.values(world.b.labels),
+    ...Object.values(world.b.notes), ...Object.values(world.b.wiki), ...Object.values(world.b.events), ...Object.values(world.b.folders)].filter((id) => !sharedIds.has(id));
   for (const scope of allScopes()) {
     const exported = await runExport({ scope });
     for (const [path, bytes] of exported.files) {
@@ -108,7 +114,8 @@ test('no stored credential or secret reaches the archive, in any scope or worksp
   for (const scope of allScopes()) {
     const exported = await runExport({ scope });
     for (const [path, bytes] of exported.files) {
-      assert.ok(!bytes.toString('utf8').includes(SECRET_MARKER), `${path} (${JSON.stringify(scope)}) contains a secret`);
+      const content = bytes.toString('utf8');
+      for (const secret of [SECRET_MARKER, ...world.forbidden]) assert.ok(!content.includes(secret), `${path} (${JSON.stringify(scope)}) contains a secret`);
     }
   }
   const exportedB = await runExport({ scope: { kind: 'workspace' } }, world.b.slug);
@@ -133,7 +140,7 @@ test('member scope: exactly the spaces canReadSpace allows, including archived o
     const exported = await runExport({ scope: { kind: 'member', member: userId } });
     const exportedIds = rows(exported, 'data/spaces.jsonl').map((row) => row.id).sort();
     const allowed: string[] = [];
-    for (const spaceId of Object.values(world.a.spaces)) {
+    for (const spaceId of await spacesOf(world.a.orgId)) {
       if (await canReadSpace(spaceId, userId, world.a.orgId)) allowed.push(spaceId);
     }
     assert.deepEqual(exportedIds, allowed.sort(), `spaces for ${userId}`);
@@ -152,7 +159,7 @@ test('member scope: spaces match a hand-written expectation, independent of the 
   // own spaces (archived too) and public unarchived ones; guests only their own.
   const s = world.a.spaces;
   const expected: Record<string, string[]> = {
-    [world.a.owner]: [s.general, s.publicUnjoined, s.privateOthers, s.dmOwnerOther, s.groupDm],
+    [world.a.owner]: [s.general, s.publicUnjoined, s.privateOthers, s.dmOwnerOther, s.groupDm, world.a.sealedSpace],
     [world.a.member]: [s.general, s.publicUnjoined, s.privateWithMember, s.dmMemberOther, s.archivedPrivateWithMember, s.groupDm],
     [world.a.guest]: [s.general, s.privateWithMember, s.groupDm],
     [world.a.other]: [s.general, s.publicUnjoined, s.privateOthers, s.privateWithMember, s.dmMemberOther, s.dmOwnerOther,
@@ -188,7 +195,7 @@ test('member scope: the member list equals GET /api/members, field by field', { 
 
 test('whole-workspace scope: every space and person, former members flagged, agents described without secrets', { skip }, async () => {
   const exported = await runExport({ scope: { kind: 'workspace' } });
-  assert.deepEqual(rows(exported, 'data/spaces.jsonl').map((row) => row.id).sort(), Object.values(world.a.spaces).sort());
+  assert.deepEqual(rows(exported, 'data/spaces.jsonl').map((row) => row.id).sort(), (await spacesOf(world.a.orgId)).sort());
   const members = rows(exported, 'data/members.jsonl');
   assert.equal(members.find((row) => row.user_id === world.a.former)?.is_active, false);
   assert.ok(members.some((row) => row.user_id === world.shared));
@@ -284,4 +291,155 @@ test('the exporter never loads the app database client or app configuration', as
   };
   for (const entry of await readdir(join(root, 'workspace-export'))) await visit(join(root, 'workspace-export', entry));
   for (const forbidden of ['db.ts', 'env.ts']) assert.ok(![...seen].some((file) => file === join(root, forbidden)), `imports lib/${forbidden}`);
+});
+
+test('messages: member scope equals loadMessagesForReader; plumbing, hidden and deleted rows never exported', { skip }, async () => {
+  const { loadMessagesForReader } = await import('../src/lib/space-membership.js');
+  const allA = (await client.query<{ id: string; metadata: any }>('SELECT id, metadata FROM messages WHERE org_id = $1', [world.a.orgId])).rows;
+  const plumbing = new Set(allA.filter((row) => row.metadata?.kind === 'tool_result' || row.metadata?.hidden === true).map((row) => row.id));
+  for (const userId of [world.a.owner, world.a.member, world.a.guest, world.a.other, world.shared]) {
+    const exported = await runExport({ scope: { kind: 'member', member: userId } });
+    const readable = await loadMessagesForReader(allA.map((row) => row.id), userId, world.a.orgId);
+    const expected = [...readable.keys()].filter((id) => !plumbing.has(id)).sort();
+    assert.deepEqual(rows(exported, 'data/messages.jsonl').map((row) => row.id).sort(), expected, `messages for ${userId}`);
+    const messageIds = new Set(expected);
+    for (const row of rows(exported, 'data/reactions.jsonl')) assert.ok(messageIds.has(row.message_id));
+    const spaceIds = new Set(rows(exported, 'data/spaces.jsonl').map((row) => row.id));
+    for (const row of rows(exported, 'data/canvases.jsonl')) assert.ok(spaceIds.has(row.space_id));
+  }
+  const whole = await runExport({ scope: { kind: 'workspace' } });
+  const messages = new Map(rows(whole, 'data/messages.jsonl').map((row) => [row.id, row]));
+  for (const key of ['deleted', 'toolResult', 'hidden']) assert.ok(!messages.has(world.a.messages[key]!), key);
+  assert.equal(messages.get(world.a.messages.replyToDeleted!)?.parent_missing, true);
+  assert.equal(messages.get(world.a.messages.replyToDeleted!)?.parent_id, world.a.messages.deleted);
+  assert.equal(messages.get(world.a.messages.byFormer!)?.user_id, world.a.former);
+  assert.equal(messages.get(world.a.messages.byFormer!)?.parent_id, null);
+  assert.equal(messages.get(world.a.messages['general-reply']!)?.parent_missing, false);
+  const sealed = messages.get(world.a.messages.privateAssistant!);
+  assert.equal(sealed?.content, null);
+  assert.equal(sealed?.content_omitted, true);
+  const omissions = rows(whole, 'omissions.jsonl');
+  assert.ok(omissions.some((row) => row.kind === 'message' && row.id === world.a.messages.privateAssistant));
+  assert.equal(whole.manifest.complete, false);
+  assert.ok(!rows(whole, 'data/reactions.jsonl').some((row) => row.user_id === world.b.owner));
+});
+
+test('tasks: member scope equals the product task check; links and comments follow both ends', { skip }, async () => {
+  const { canAccessAttachmentTask } = await import('../src/lib/attachment-access.js');
+  for (const userId of [world.a.owner, world.a.member, world.a.guest, world.a.other, world.shared]) {
+    const exported = await runExport({ scope: { kind: 'member', member: userId } });
+    const allowed: string[] = [];
+    for (const taskId of Object.values(world.a.tasks)) if (await canAccessAttachmentTask(taskId, world.a.orgId, userId)) allowed.push(taskId);
+    const taskIds = rows(exported, 'data/tasks.jsonl').map((row) => row.id).sort();
+    assert.deepEqual(taskIds, allowed.sort(), `tasks for ${userId}`);
+    const visible = new Set(taskIds);
+    for (const path of ['data/task_comments.jsonl', 'data/task_assignees.jsonl', 'data/task_watchers.jsonl', 'data/task_labels.jsonl', 'data/task_reactions.jsonl']) {
+      for (const row of rows(exported, path)) assert.ok(visible.has(row.task_id), `${path} ${row.task_id}`);
+    }
+    for (const row of rows(exported, 'data/task_relationships.jsonl')) assert.ok(visible.has(row.source_task_id) && visible.has(row.target_task_id));
+    for (const row of rows(exported, 'data/tasks.jsonl')) assert.ok(row.parent_task_id === null || visible.has(row.parent_task_id));
+  }
+  const whole = await runExport({ scope: { kind: 'workspace' } });
+  const tasks = new Map(rows(whole, 'data/tasks.jsonl').map((row) => [row.id, row]));
+  assert.ok(!tasks.has(world.a.tasks.deleted!));
+  assert.ok(tasks.has(world.a.tasks.inDeletedProject!));
+  assert.equal(rows(whole, 'data/projects.jsonl').find((row) => row.id === world.a.projects.deleted)?.is_deleted, true);
+  assert.equal(tasks.get(world.a.tasks.subtask!)?.parent_task_id, world.a.tasks.open);
+  assert.equal(tasks.get(world.a.tasks.restricted!)?.visibility, 'restricted');
+  assert.deepEqual(rows(whole, 'data/task_labels.jsonl'), [{ task_id: world.a.tasks.open, label_id: world.a.labels.bug }]);
+  // Positive sets, so an empty dataset cannot pass.
+  const pairs = (path: string, a: string, b: string) => rows(whole, path).map((row) => `${row[a]}:${row[b]}`).sort();
+  assert.deepEqual(pairs('data/task_assignees.jsonl', 'task_id', 'user_id'),
+    [`${world.a.tasks.restrictedAssigned}:${world.a.guest}`, `${world.a.tasks.open}:${world.a.other}`].sort());
+  assert.deepEqual(pairs('data/task_watchers.jsonl', 'task_id', 'user_id'), [`${world.a.tasks.restrictedWatched}:${world.a.member}`]);
+  assert.deepEqual(pairs('data/task_reactions.jsonl', 'task_id', 'user_id'), [`${world.a.tasks.open}:${world.a.member}`]);
+  assert.deepEqual(pairs('data/task_relationships.jsonl', 'source_task_id', 'target_task_id'), [`${world.a.tasks.open}:${world.a.tasks.restricted}`]);
+  assert.deepEqual(pairs('data/reactions.jsonl', 'message_id', 'user_id'), [`${world.a.messages.general}:${world.a.member}`]);
+  assert.deepEqual(rows(whole, 'data/canvases.jsonl').map((row) => row.space_id), [world.a.spaces.privateOthers]);
+  const comments = rows(whole, 'data/task_comments.jsonl');
+  assert.equal(comments.length, 2, 'comments on open and restricted; not the deleted comment or the deleted task');
+});
+
+function productApp() {
+  const app = new Hono();
+  app.use('*', async (c, next) => {
+    c.set('user', { id: c.req.header('x-test-user')!, org_id: world.a.orgId } as any);
+    await next();
+  });
+  return app;
+}
+
+test('notes, folders, wiki and events: member scope equals what the product routes return', { skip }, async () => {
+  const { dailyNoteRoutes } = await import('../src/routes/daily-notes.js');
+  const { wikiRoutes } = await import('../src/routes/wiki.js');
+  const { calendarRoutes } = await import('../src/routes/calendar.js');
+  const app = productApp().route('/api/daily-notes', dailyNoteRoutes).route('/api/wiki', wikiRoutes).route('/api/calendar', calendarRoutes);
+  const as = async (userId: string, path: string) => { const r = await app.request(path, { headers: { "x-test-user": userId } }); if (r.status >= 500) throw new Error(`${path} -> ${r.status}: ${await r.text()}`); return r; };
+  const day = 86_400_000;
+  const calendarPath = `/api/calendar?from=${new Date(Date.now() - day).toISOString()}&to=${new Date(Date.now() + 10 * day).toISOString()}`;
+  for (const userId of [world.a.owner, world.a.member, world.a.guest, world.a.other]) {
+    const exported = await runExport({ scope: { kind: 'member', member: userId } });
+    // Notes: exactly those GET /api/daily-notes/:id opens, with the same title and body.
+    const noteRows = new Map(rows(exported, 'data/notes.jsonl').map((row) => [row.id, row]));
+    for (const noteId of Object.values(world.a.notes)) {
+      const response = await as(userId, `/api/daily-notes/${noteId}`);
+      assert.equal(noteRows.has(noteId), response.status === 200, `note ${noteId} for ${userId}`);
+      if (response.status === 200) {
+        const product = await response.json() as any;
+        assert.equal(noteRows.get(noteId)!.content, product.content);
+        assert.equal(noteRows.get(noteId)!.title, product.title);
+      }
+    }
+    // Folders: the member's own, as GET /folders lists them.
+    const folders = await (await as(userId, '/api/daily-notes/folders')).json() as any;
+    assert.deepEqual(rows(exported, 'data/note_folders.jsonl').map((row) => row.id).sort(), folders.folders.map((row: any) => row.id).sort());
+    // Wiki: exactly GET /api/wiki/export's pages.
+    const wiki = await (await as(userId, '/api/wiki/export')).json() as any;
+    assert.deepEqual(rows(exported, 'data/wiki_pages.jsonl').map((row) => row.id).sort(), wiki.pages.map((row: any) => row.id).sort(), `wiki for ${userId}`);
+    const pages = new Set(wiki.pages.map((row: any) => row.id));
+    for (const row of rows(exported, 'data/wiki_links.jsonl')) assert.ok(pages.has(row.source_page_id) && pages.has(row.target_page_id));
+    // Events: never more than the Calendar shows; less only for cancelled events and events another part of Deft wrote.
+    const calendar = await (await as(userId, calendarPath)).json() as any;
+    const calendarIds = new Set(calendar.events.map((row: any) => row.id));
+    const exportedEvents = rows(exported, 'data/events.jsonl').map((row) => row.id);
+    for (const id of exportedEvents) assert.ok(calendarIds.has(id), `event ${id} exported but not on the Calendar for ${userId}`);
+    const leftOut = new Set([world.a.events.memberCanceled, world.a.events.otherWriter]);
+    assert.deepEqual(exportedEvents.sort(), calendar.events.map((row: any) => row.id).filter((id: string) => !leftOut.has(id)).sort(), `events for ${userId}`);
+    // Note shares: exactly what GET /api/daily-notes/:id/shares lists for the member's own notes.
+    const ownNotes = (await client.query<{ id: string }>('SELECT id FROM notes WHERE org_id = $1 AND user_id = $2 AND NOT is_deleted',
+      [world.a.orgId, userId])).rows;
+    const productShares: string[] = [];
+    for (const { id } of ownNotes) {
+      const shares = await (await as(userId, `/api/daily-notes/${id}/shares`)).json() as any;
+      productShares.push(...shares.shares.map((share: any) => `${id}:${share.user_id}`));
+    }
+    assert.deepEqual(rows(exported, 'data/note_shares.jsonl').map((row) => `${row.note_id}:${row.shared_with_user_id}`).sort(),
+      productShares.sort(), `note shares for ${userId}`);
+    // Spaces named by notes and pages are spaces in the export.
+    const spaces = new Set(rows(exported, 'data/spaces.jsonl').map((row) => row.id));
+    for (const row of [...noteRows.values(), ...rows(exported, 'data/wiki_pages.jsonl')]) {
+      const spaceId = row.visibility_space_id ?? row.space_id;
+      assert.ok(spaceId == null || spaces.has(spaceId));
+    }
+  }
+  const whole = await runExport({ scope: { kind: 'workspace' } });
+  const events = new Map(rows(whole, 'data/events.jsonl').map((row) => [row.id, row]));
+  assert.equal(events.get(world.a.events.noOwner!)?.user_id, null);
+  assert.ok(events.has(world.a.events.memberCanceled!), 'the whole workspace keeps cancelled events');
+  assert.ok(events.has(world.a.events.otherWriter!), 'the whole workspace keeps events other parts of Deft wrote');
+  assert.equal(events.get(world.a.events.nested!)?.location, null, 'an object in place of text is not written');
+  // Positive sets, so an empty dataset cannot pass.
+  assert.deepEqual(rows(whole, 'data/note_shares.jsonl').map((row) => `${row.note_id}:${row.shared_with_user_id}`),
+    [`${world.a.notes.sharedWithMember}:${world.a.member}`], 'only shares to active members of this workspace');
+  assert.deepEqual(rows(whole, 'data/wiki_links.jsonl').map((row) => row.target_page_id).sort(),
+    [world.a.wiki.personalOther, world.a.wiki.spacePrivateWithMember].sort());
+  const folders = rows(whole, 'data/note_folders.jsonl');
+  assert.equal(folders.length, 3);
+  assert.equal(folders.filter((row) => row.user_id === null).length, 1, 'a folder owner from another workspace is not named');
+  const member = events.get(world.a.events.member!)!;
+  assert.deepEqual(member.attendees, [{ email: 'guest@example.test', name: 'attendee' }]);
+  assert.equal(member.recurrence.rrule, 'FREQ=WEEKLY;COUNT=4');
+  assert.equal(member.recurrence.start.time_zone, 'Europe/London');
+  assert.ok(!rows(whole, 'data/wiki_pages.jsonl').some((row) => row.id === world.a.wiki.deleted));
+  assert.ok(!rows(whole, 'data/notes.jsonl').some((row) => row.id === world.a.notes.deleted));
 });

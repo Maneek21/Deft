@@ -1,4 +1,5 @@
 import { sql, type SQL } from 'drizzle-orm';
+import type { Omission } from './format.js';
 import { visibleLiveMemberForOrg } from '../member-visibility.js';
 import { spaceReadable, workspaceUser, userKnown, type ExportContext } from './scope.js';
 
@@ -14,9 +15,11 @@ export type Dataset = Readonly<{
   /** Datasets that only make sense for one scope. */
   scopes?: readonly ('workspace' | 'member')[];
   query: (ctx: ExportContext) => SQL;
+  /** Something in this row that could not be included, recorded in omissions.jsonl. */
+  omission?: (row: Record<string, unknown>) => Omission | null;
 }>;
 
-const col = (ref: string) => sql.raw(ref);
+export const col = (ref: string) => sql.raw(ref);
 
 export const PEOPLE_AND_SPACES: readonly Dataset[] = [
   {
