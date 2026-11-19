@@ -8,7 +8,7 @@
  * containing SECRET_MARKER, which must never appear in any export.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { writeFile } from 'node:fs/promises';
+import { link, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import pg from 'pg';
 
@@ -266,6 +266,14 @@ async function seedContent(s: Seeder, ws: WorkspaceIds, isB: boolean, ids: strin
   await event('member', ws.member);
   await event('other', ws.other);
   await event('noOwner', null, { source: 'github', event_type: 'pr_merged' });
+  await event('memberCanceled', ws.member);
+  await s.client.query(`UPDATE events SET metadata = jsonb_set(metadata, '{status}', '"canceled"') WHERE id = $1`, [events.memberCanceled]);
+  // Malformed metadata: an object where text is expected must not be written out.
+  await event('nested', ws.member);
+  await s.client.query(`UPDATE events SET metadata = jsonb_set(metadata, '{location}', jsonb_build_object('hidden', $2::text)) WHERE id = $1`,
+    [events.nested, s.secret('events.location_object')]);
+  // A share kept after its recipient left the workspace.
+  await s.insert('note_shares', { id: id(), note_id: notes.orgWide, shared_with_user_id: ws.former });
 
   return { messages, tasks, projects, labels, notes, wiki, events, folders, sealedSpace };
 }
@@ -310,6 +318,11 @@ async function seedFiles(s: Seeder, ws: WorkspaceIds & ContentIds, isB: boolean,
   await file('missing', { bytes: null, message: [ws.messages.general!], recordedSize: 10, recordedHash: null });
   await file('sizeMismatch', { message: [ws.messages.general!], recordedSize: 3, recordedHash: null });
   await file('hashMismatch', { message: [ws.messages.general!], recordedHash: `sha256:${'0'.repeat(64)}` });
+  // The typed link decides even when the legacy column names something else.
+  await file('typedOverLegacy', { message: [ws.messages.privateOthers!], legacyTask: ws.tasks.open! });
+  await file('messageAndTask', { message: [ws.messages.general!], task: [ws.tasks.open!] });
+  await file('onDeletedTask', { task: [ws.tasks.deleted!] });
+  await file('stagedByMember', { uploadedBy: ws.member, extra: { staged_expires_at: new Date(Date.now() + 3_600_000) } });
   return files;
 }
 
@@ -342,6 +355,30 @@ async function seedContacts(s: Seeder, ws: WorkspaceIds, isB: boolean, ids: stri
   await s.insert('module_record_relations', { id: randomUUID(), org_id: ws.orgId, installation_id: installed.installation, field_key: 'company_id',
     source_record_id: records.deletedContact, target_record_id: records.company, ...actor });
   return { ...installed, records };
+
+/**
+ * A rows that reach B's bytes through another name for the same file: a
+ * padded name, a differently cased name, and a hard link. Each copies B's
+ * size and checksum, so only the provenance checks can keep B's bytes out.
+ */
+async function seedFileAliases(s: Seeder, a: WorkspaceIds & ContentIds, aFiles: Record<string, string>, bFiles: Record<string, string>,
+  uploadsDir: string, ids: string[]): Promise<void> {
+  const source = async (fileId: string) => (await s.client.query<{ storage_key: string; size_bytes: number; content_sha256: string }>(
+    'SELECT storage_key, size_bytes, content_sha256 FROM files WHERE id = $1', [fileId])).rows[0]!;
+  const alias = async (key: string, storageKey: string, from: { size_bytes: number; content_sha256: string }) => {
+    aFiles[key] = randomUUID();
+    ids.push(aFiles[key]!);
+    await s.insert('files', { id: aFiles[key], org_id: a.orgId, uploaded_by: a.member, filename: `${key}.txt`, mime_type: 'text/plain',
+      size_bytes: from.size_bytes, storage_key: storageKey, content_sha256: from.content_sha256 });
+    await s.insert('message_attachments', { org_id: a.orgId, message_id: a.messages.general, file_id: aFiles[key], position: 10 });
+  };
+  const padded = await source(bFiles.onOpenTask!);
+  await alias('paddedAlias', ` ${padded.storage_key} `, padded);
+  await alias('caseAlias', padded.storage_key.toUpperCase(), padded);
+  const linked = await source(bFiles.onDm!);
+  const linkName = `${randomUUID()}-link.bin`;
+  await link(join(uploadsDir, linked.storage_key), join(uploadsDir, linkName));
+  await alias('hardLink', linkName, linked);
 }
 
 /** Seeds A and B, a person who belongs to both, and malformed cross-workspace links. */
@@ -377,6 +414,8 @@ export async function seedExportWorld(client: pg.Client, uploadsDir: string): Pr
   await client.query('UPDATE tasks SET parent_task_id = $2 WHERE id = $1', [a.tasks.restricted, b.tasks.open]);
   await client.query('UPDATE messages SET parent_id = $2 WHERE id = $1', [a.messages.byFormer, b.messages.general]);
   await s.insert('note_shares', { id: randomUUID(), note_id: a.notes.sharedWithMember, shared_with_user_id: b.owner });
+  // An A note folder owned by a B person.
+  await s.insert('note_folders', { id: randomUUID(), org_id: a.orgId, user_id: b.owner, name: 'misfiled folder' });
   await s.insert('wiki_links', { id: randomUUID(), org_id: a.orgId, source_page_id: a.wiki.org, target_page_id: b.wiki.org });
   await client.query('UPDATE notes SET folder_id = $2, visibility_space_id = $3 WHERE id = $1', [a.notes.orgWide, b.folders.other, b.spaces.general]);
   await client.query('UPDATE events SET user_id = $2 WHERE id = $1', [a.events.noOwner, b.owner]);
@@ -392,6 +431,7 @@ export async function seedExportWorld(client: pg.Client, uploadsDir: string): Pr
     size_bytes: bFile.size_bytes, storage_key: bFile.storage_key, content_sha256: bFile.content_sha256 });
   await s.insert('message_attachments', { org_id: a.orgId, message_id: a.messages.general, file_id: aFiles.namesBStorage, position: 9 });
   await client.query('UPDATE files SET message_id = $2 WHERE id = $1', [bFiles.unattachedOther, a.messages.general]);
+  await seedFileAliases(s, a, aFiles, bFiles, uploadsDir, ids);
   const aContacts = await seedContacts(s, a, false, ids);
   const bContacts = await seedContacts(s, b, true, ids);
   // A Contacts record naming a B person as its owner.

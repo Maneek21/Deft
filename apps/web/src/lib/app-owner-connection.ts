@@ -115,8 +115,9 @@ export function ownerActionRequest(policy: OwnerPolicy, binding: OwnerBinding, a
 export function ownerConnectionReview(value: unknown, input: { installationId: string; ownerId: string; orgId: string; policy: OwnerPolicy;
   kind: 'resources' | 'actions'; request: OwnerResourceRequest | ReturnType<typeof ownerActionRequest> }) {
   const envelope = object(value); keys(envelope, 'review'); const review = object(envelope.review), request = input.request;
+  // The host leaves `target_key` out of a review for the default account `primary`.
   if (review.installation_id !== input.installationId || review.org_id !== input.orgId || review.operator_user_id !== input.policy.admission?.operator_user_id
-    || !equal(review.owner_connection_admission, reference(request)) || review.target_key !== ('target_key' in request ? request.target_key
+    || !equal(review.owner_connection_admission, reference(request)) || (review.target_key ?? 'primary') !== ('target_key' in request ? request.target_key
       : input.policy.bindings.find(binding => binding.binding_id === request.owner_resource_binding_id)?.target_key)) fail();
   const host = object(review.host_policy);
   if (host.retry_class !== 'unsafe_or_unknown' || host.retention_class !== 'standard') fail();
