@@ -67,6 +67,10 @@ function rows(exported: Exported, path: string): Record<string, any>[] {
   return bytes.toString('utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
 }
 
+async function spacesOf(orgId: string): Promise<string[]> {
+  return (await client.query<{ id: string }>('SELECT id FROM spaces WHERE org_id = $1', [orgId])).rows.map((row) => row.id);
+}
+
 const allScopes = () => [
   { kind: 'workspace' as const },
   ...[world.a.owner, world.a.member, world.a.guest, world.a.other, world.shared].map((member) => ({ kind: 'member' as const, member })),
@@ -93,7 +97,8 @@ test('the archive is verifiable: SHA256SUMS lists every other file with its hash
 test('nothing from another workspace reaches the archive, in any scope', { skip }, async () => {
   const sharedIds = new Set([world.shared]);
   const bIds = [world.b.orgId, world.b.owner, world.b.member, world.b.other, world.b.guest, world.b.former,
-    world.b.agentUser, world.b.agentEmployee, ...Object.values(world.b.spaces)].filter((id) => !sharedIds.has(id));
+    world.b.agentUser, world.b.agentEmployee, ...Object.values(world.b.spaces), ...Object.values(world.b.messages),
+    ...Object.values(world.b.tasks), ...Object.values(world.b.projects), ...Object.values(world.b.labels)].filter((id) => !sharedIds.has(id));
   for (const scope of allScopes()) {
     const exported = await runExport({ scope });
     for (const [path, bytes] of exported.files) {
@@ -108,7 +113,8 @@ test('no stored credential or secret reaches the archive, in any scope or worksp
   for (const scope of allScopes()) {
     const exported = await runExport({ scope });
     for (const [path, bytes] of exported.files) {
-      assert.ok(!bytes.toString('utf8').includes(SECRET_MARKER), `${path} (${JSON.stringify(scope)}) contains a secret`);
+      const content = bytes.toString('utf8');
+      for (const secret of [SECRET_MARKER, ...world.forbidden]) assert.ok(!content.includes(secret), `${path} (${JSON.stringify(scope)}) contains a secret`);
     }
   }
   const exportedB = await runExport({ scope: { kind: 'workspace' } }, world.b.slug);
@@ -133,7 +139,7 @@ test('member scope: exactly the spaces canReadSpace allows, including archived o
     const exported = await runExport({ scope: { kind: 'member', member: userId } });
     const exportedIds = rows(exported, 'data/spaces.jsonl').map((row) => row.id).sort();
     const allowed: string[] = [];
-    for (const spaceId of Object.values(world.a.spaces)) {
+    for (const spaceId of await spacesOf(world.a.orgId)) {
       if (await canReadSpace(spaceId, userId, world.a.orgId)) allowed.push(spaceId);
     }
     assert.deepEqual(exportedIds, allowed.sort(), `spaces for ${userId}`);
@@ -188,7 +194,7 @@ test('member scope: the member list equals GET /api/members, field by field', { 
 
 test('whole-workspace scope: every space and person, former members flagged, agents described without secrets', { skip }, async () => {
   const exported = await runExport({ scope: { kind: 'workspace' } });
-  assert.deepEqual(rows(exported, 'data/spaces.jsonl').map((row) => row.id).sort(), Object.values(world.a.spaces).sort());
+  assert.deepEqual(rows(exported, 'data/spaces.jsonl').map((row) => row.id).sort(), (await spacesOf(world.a.orgId)).sort());
   const members = rows(exported, 'data/members.jsonl');
   assert.equal(members.find((row) => row.user_id === world.a.former)?.is_active, false);
   assert.ok(members.some((row) => row.user_id === world.shared));
@@ -284,4 +290,62 @@ test('the exporter never loads the app database client or app configuration', as
   };
   for (const entry of await readdir(join(root, 'workspace-export'))) await visit(join(root, 'workspace-export', entry));
   for (const forbidden of ['db.ts', 'env.ts']) assert.ok(![...seen].some((file) => file === join(root, forbidden)), `imports lib/${forbidden}`);
+});
+
+test('messages: member scope equals loadMessagesForReader; plumbing, hidden and deleted rows never exported', { skip }, async () => {
+  const { loadMessagesForReader } = await import('../src/lib/space-membership.js');
+  const allA = (await client.query<{ id: string; metadata: any }>('SELECT id, metadata FROM messages WHERE org_id = $1', [world.a.orgId])).rows;
+  const plumbing = new Set(allA.filter((row) => row.metadata?.kind === 'tool_result' || row.metadata?.hidden === true).map((row) => row.id));
+  for (const userId of [world.a.owner, world.a.member, world.a.guest, world.a.other, world.shared]) {
+    const exported = await runExport({ scope: { kind: 'member', member: userId } });
+    const readable = await loadMessagesForReader(allA.map((row) => row.id), userId, world.a.orgId);
+    const expected = [...readable.keys()].filter((id) => !plumbing.has(id)).sort();
+    assert.deepEqual(rows(exported, 'data/messages.jsonl').map((row) => row.id).sort(), expected, `messages for ${userId}`);
+    const messageIds = new Set(expected);
+    for (const row of rows(exported, 'data/reactions.jsonl')) assert.ok(messageIds.has(row.message_id));
+    const spaceIds = new Set(rows(exported, 'data/spaces.jsonl').map((row) => row.id));
+    for (const row of rows(exported, 'data/canvases.jsonl')) assert.ok(spaceIds.has(row.space_id));
+  }
+  const whole = await runExport({ scope: { kind: 'workspace' } });
+  const messages = new Map(rows(whole, 'data/messages.jsonl').map((row) => [row.id, row]));
+  for (const key of ['deleted', 'toolResult', 'hidden']) assert.ok(!messages.has(world.a.messages[key]!), key);
+  assert.equal(messages.get(world.a.messages.replyToDeleted!)?.parent_missing, true);
+  assert.equal(messages.get(world.a.messages.replyToDeleted!)?.parent_id, world.a.messages.deleted);
+  assert.equal(messages.get(world.a.messages.byFormer!)?.user_id, world.a.former);
+  assert.equal(messages.get(world.a.messages.byFormer!)?.parent_id, null);
+  assert.equal(messages.get(world.a.messages['general-reply']!)?.parent_missing, false);
+  const sealed = messages.get(world.a.messages.privateAssistant!);
+  assert.equal(sealed?.content, null);
+  assert.equal(sealed?.content_omitted, true);
+  const omissions = rows(whole, 'omissions.jsonl');
+  assert.ok(omissions.some((row) => row.kind === 'message' && row.id === world.a.messages.privateAssistant));
+  assert.equal(whole.manifest.complete, false);
+  assert.ok(!rows(whole, 'data/reactions.jsonl').some((row) => row.user_id === world.b.owner));
+});
+
+test('tasks: member scope equals the product task check; links and comments follow both ends', { skip }, async () => {
+  const { canAccessAttachmentTask } = await import('../src/lib/attachment-access.js');
+  for (const userId of [world.a.owner, world.a.member, world.a.guest, world.a.other, world.shared]) {
+    const exported = await runExport({ scope: { kind: 'member', member: userId } });
+    const allowed: string[] = [];
+    for (const taskId of Object.values(world.a.tasks)) if (await canAccessAttachmentTask(taskId, world.a.orgId, userId)) allowed.push(taskId);
+    const taskIds = rows(exported, 'data/tasks.jsonl').map((row) => row.id).sort();
+    assert.deepEqual(taskIds, allowed.sort(), `tasks for ${userId}`);
+    const visible = new Set(taskIds);
+    for (const path of ['data/task_comments.jsonl', 'data/task_assignees.jsonl', 'data/task_watchers.jsonl', 'data/task_labels.jsonl', 'data/task_reactions.jsonl']) {
+      for (const row of rows(exported, path)) assert.ok(visible.has(row.task_id), `${path} ${row.task_id}`);
+    }
+    for (const row of rows(exported, 'data/task_relationships.jsonl')) assert.ok(visible.has(row.source_task_id) && visible.has(row.target_task_id));
+    for (const row of rows(exported, 'data/tasks.jsonl')) assert.ok(row.parent_task_id === null || visible.has(row.parent_task_id));
+  }
+  const whole = await runExport({ scope: { kind: 'workspace' } });
+  const tasks = new Map(rows(whole, 'data/tasks.jsonl').map((row) => [row.id, row]));
+  assert.ok(!tasks.has(world.a.tasks.deleted!));
+  assert.ok(tasks.has(world.a.tasks.inDeletedProject!));
+  assert.equal(rows(whole, 'data/projects.jsonl').find((row) => row.id === world.a.projects.deleted)?.is_deleted, true);
+  assert.equal(tasks.get(world.a.tasks.subtask!)?.parent_task_id, world.a.tasks.open);
+  assert.equal(tasks.get(world.a.tasks.restricted!)?.visibility, 'restricted');
+  assert.deepEqual(rows(whole, 'data/task_labels.jsonl'), [{ task_id: world.a.tasks.open, label_id: world.a.labels.bug }]);
+  const comments = rows(whole, 'data/task_comments.jsonl');
+  assert.equal(comments.length, 2, 'comments on open and restricted; not the deleted comment or the deleted task');
 });

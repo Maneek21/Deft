@@ -3,6 +3,7 @@ import { ArchiveWriter } from './writer.js';
 import { Snapshot } from './snapshot.js';
 import { resolveScope, resolveWorkspace, type ExportContext } from './scope.js';
 import { PEOPLE_AND_SPACES, type Dataset } from './datasets.js';
+import { MESSAGES_AND_TASKS } from './datasets-content.js';
 
 export type ExportOptions = Readonly<{
   databaseUrl: string;
@@ -22,7 +23,7 @@ export type ExportOptions = Readonly<{
 
 export type ExportResult = Readonly<{ root: string; manifest: ExportManifest }>;
 
-export const DATASETS: readonly Dataset[] = [...PEOPLE_AND_SPACES];
+export const DATASETS: readonly Dataset[] = [...PEOPLE_AND_SPACES, ...MESSAGES_AND_TASKS];
 
 /**
  * Writes one workspace's content, for the given scope, into a new folder.
@@ -45,7 +46,11 @@ export async function exportWorkspace(options: ExportOptions): Promise<ExportRes
       for (const dataset of DATASETS) {
         if (dataset.scopes && !dataset.scopes.includes(scope.kind)) continue;
         const file = await writer.jsonl(dataset.path);
-        for await (const row of snapshot.rows(dataset.query(ctx))) await file.write(row);
+        for await (const row of snapshot.rows(dataset.query(ctx))) {
+          await file.write(row);
+          const omission = dataset.omission?.(row);
+          if (omission) await writer.omit(omission);
+        }
         await file.close();
         datasets.push({ path: dataset.path, records: file.records });
         await options.afterDataset?.(dataset.path);

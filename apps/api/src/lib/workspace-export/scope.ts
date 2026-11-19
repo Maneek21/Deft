@@ -64,3 +64,13 @@ export function userKnown(ctx: ExportContext, userIdColumn: SQL): SQL {
     WHERE org_members.org_id = ${ctx.orgId} AND org_members.user_id = ${userIdColumn}
       AND org_members.is_active = true AND ${visibleLiveMemberForOrg(sql`org_members.org_id`)})`;
 }
+
+/**
+ * The author of content that is itself in the export (a message, a comment, a
+ * reaction): named when they belong to this workspace, including people who
+ * have since left, as the product shows them on that content.
+ */
+export function workspaceAuthor(ctx: ExportContext, userIdColumn: SQL): SQL {
+  return sql`CASE WHEN EXISTS (SELECT 1 FROM org_members author_member
+    WHERE author_member.org_id = ${ctx.orgId} AND author_member.user_id = ${userIdColumn}) THEN ${userIdColumn} END`;
+}

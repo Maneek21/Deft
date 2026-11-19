@@ -41,7 +41,15 @@ export type WorkspaceIds = {
     | 'archivedPrivateWithMember' | 'archivedPublic' | 'groupDm' | 'agentConversation', string>;
 };
 
-export type ExportWorld = { a: WorkspaceIds; b: WorkspaceIds; shared: string; ids: string[] };
+export type ContentIds = {
+  messages: Record<string, string>; tasks: Record<string, string>; projects: Record<string, string>; labels: Record<string, string>;
+};
+
+export type ExportWorld = {
+  a: WorkspaceIds & ContentIds; b: WorkspaceIds & ContentIds; shared: string; ids: string[];
+  /** Exact strings (beyond SECRET_MARKER) that must never appear in an export, such as base64 ciphertext. */
+  forbidden: string[];
+};
 
 const text = (isB: boolean, value: string) => (isB ? `${value} ${B_MARKER}` : value);
 
@@ -114,12 +122,97 @@ async function seedWorkspace(s: Seeder, label: string, isB: boolean, ids: string
   return { orgId, slug, owner, member, other, guest, former, agentUser, agentEmployee, spaces };
 }
 
+/**
+ * Messages and tasks for one workspace. A private assistant conversation is
+ * sealed the way the product seals one, so its ciphertext is real.
+ */
+async function seedContent(s: Seeder, ws: WorkspaceIds, isB: boolean, ids: string[], forbidden: string[]): Promise<ContentIds> {
+  const id = () => { const value = randomUUID(); ids.push(value); return value; };
+  const messages: Record<string, string> = {};
+  const message = async (key: string, spaceId: string, userId: string, extra: Row = {}) => {
+    messages[key] = id();
+    await s.insert('messages', { id: messages[key], org_id: ws.orgId, space_id: spaceId, user_id: userId,
+      content: text(isB, `message ${key}`), ...extra });
+    return messages[key]!;
+  };
+  for (const [key, spaceId] of Object.entries(ws.spaces)) {
+    if (key === 'agentConversation') continue;
+    const root = await message(key, spaceId, ws.other);
+    await message(`${key}-reply`, spaceId, ws.other, { parent_id: root });
+  }
+  await message('linkPreview', ws.spaces.general, ws.member, { metadata: { link_previews: [{ url: `https://x.test/${s.secret('messages.metadata')}` }] } });
+  await message('deleted', ws.spaces.general, ws.member, { is_deleted: true });
+  await message('replyToDeleted', ws.spaces.general, ws.other, { parent_id: messages.deleted });
+  await message('toolResult', ws.spaces.agentConversation, ws.agentUser, { metadata: { kind: 'tool_result' } });
+  await message('hidden', ws.spaces.agentConversation, ws.agentUser, { metadata: { hidden: true } });
+  await message('byFormer', ws.spaces.general, ws.former);
+  await s.insert('reactions', { id: id(), message_id: messages.general, user_id: ws.member, emoji: '👍' });
+  await s.insert('canvases', { id: id(), org_id: ws.orgId, space_id: ws.spaces.privateOthers, title: text(isB, 'canvas'),
+    content: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: text(isB, 'canvas text') }] }] }, last_edited_by: ws.other });
+
+  // A private assistant conversation, sealed exactly as the product does.
+  const { ensureDeftyEmployee } = await import('../../src/lib/ensure-defty-membership.js');
+  const defty = await ensureDeftyEmployee(ws.orgId);
+  const sealedSpace = id();
+  await s.insert('spaces', { id: sealedSpace, org_id: ws.orgId, name: text(isB, 'private assistant'), type: 'agent_conversation', created_by: ws.owner });
+  for (const userId of [ws.owner, defty.userId]) await s.insert('space_members', { id: id(), space_id: sealedSpace, user_id: userId });
+  const sealId = id();
+  await s.insert('app_private_defty_seals', { id: sealId, org_id: ws.orgId, space_id: sealedSpace, owner_user_id: ws.owner, defty_user_id: defty.userId });
+  const ciphertext = Buffer.from(s.secret('private_defty.ciphertext')).toString('base64');
+  forbidden.push(ciphertext);
+  messages.privateAssistant = id();
+  await s.client.query('BEGIN');
+  await s.client.query("SELECT set_config('deft.private_defty_write', $1, true)", [sealId]);
+  await s.insert('messages', { id: messages.privateAssistant, org_id: ws.orgId, space_id: sealedSpace, user_id: ws.owner,
+    content: '[Private context prompt]', metadata: { schema_version: 'deft.private_defty_message.v1', seal_id: sealId, grant_id: id(),
+      request_id: randomUUID(), role: 'user', envelope: { schema_version: 'deft.secret.v1', algorithm: 'aes-256-gcm', key_version: 'k1',
+        nonce_b64: Buffer.alloc(12, 1).toString('base64'), ciphertext_b64: ciphertext, auth_tag_b64: Buffer.alloc(16, 2).toString('base64') } } });
+  await s.client.query('COMMIT');
+
+  const projects = { live: id(), deleted: id() };
+  const prefix = ws.orgId.replace(/[^a-z]/g, '').slice(0, 4).toUpperCase() || 'X';
+  await s.insert('projects', { id: projects.live, org_id: ws.orgId, name: text(isB, 'project'), prefix: `P${prefix}`, lead_id: ws.owner });
+  await s.insert('projects', { id: projects.deleted, org_id: ws.orgId, name: text(isB, 'deleted project'), prefix: `D${prefix}`,
+    is_deleted: true, deleted_at: new Date() });
+  const labels = { bug: id() };
+  await s.insert('labels', { id: labels.bug, org_id: ws.orgId, name: text(isB, 'bug'), color: '#f00' });
+  const tasks: Record<string, string> = {};
+  let number = 0;
+  const task = async (key: string, extra: Row = {}, projectId = projects.live) => {
+    tasks[key] = id();
+    await s.insert('tasks', { id: tasks[key], org_id: ws.orgId, project_id: projectId, number: ++number, title: text(isB, `task ${key}`),
+      description: text(isB, `description ${key}`), created_by: ws.owner, ...extra });
+    return tasks[key]!;
+  };
+  await task('open', { assignee_id: ws.member, metadata: { custom: s.secret('tasks.metadata') } });
+  await task('subtask', { parent_task_id: tasks.open });
+  await task('restricted', { metadata: { visibility: 'restricted', visible_user_ids: [ws.other] } });
+  await task('restrictedWatched', { metadata: { visibility: 'restricted' } });
+  await task('restrictedAssigned', { metadata: { visibility: 'restricted' } });
+  await task('deleted', { is_deleted: true });
+  await task('inDeletedProject', {}, projects.deleted);
+  await s.insert('task_watchers', { id: id(), task_id: tasks.restrictedWatched, user_id: ws.member });
+  await s.insert('task_assignees', { id: id(), task_id: tasks.restrictedAssigned, user_id: ws.guest });
+  await s.insert('task_assignees', { id: id(), task_id: tasks.open, user_id: ws.other });
+  await s.insert('task_labels', { task_id: tasks.open, label_id: labels.bug });
+  await s.insert('task_relationships', { id: id(), source_task_id: tasks.open, target_task_id: tasks.restricted, type: 'blocks' });
+  await s.insert('task_reactions', { id: id(), org_id: ws.orgId, task_id: tasks.open, user_id: ws.member, emoji: '🎉' });
+  for (const key of ['open', 'restricted', 'deleted']) {
+    await s.insert('task_comments', { id: id(), org_id: ws.orgId, task_id: tasks[key], user_id: ws.other, content: text(isB, `comment on ${key}`) });
+  }
+  await s.insert('task_comments', { id: id(), org_id: ws.orgId, task_id: tasks.open, user_id: ws.other, content: text(isB, 'deleted comment'), is_deleted: true });
+  return { messages, tasks, projects, labels };
+}
+
 /** Seeds A and B, a person who belongs to both, and malformed cross-workspace links. */
 export async function seedExportWorld(client: pg.Client): Promise<ExportWorld> {
   const s = new Seeder(client);
   const ids: string[] = [];
-  const a = await seedWorkspace(s, 'a', false, ids);
-  const b = await seedWorkspace(s, 'b', true, ids);
+  const forbidden: string[] = [];
+  const aIds = await seedWorkspace(s, 'a', false, ids);
+  const bIds = await seedWorkspace(s, 'b', true, ids);
+  const a = { ...aIds, ...await seedContent(s, aIds, false, ids, forbidden) };
+  const b = { ...bIds, ...await seedContent(s, bIds, true, ids, forbidden) };
   // A person in both workspaces, a member of a private space in each.
   const shared = randomUUID();
   ids.push(shared);
@@ -134,14 +227,43 @@ export async function seedExportWorld(client: pg.Client): Promise<ExportWorld> {
   await s.insert('space_members', { id: randomUUID(), space_id: b.spaces.general, user_id: a.member });
   // A space created by a B person.
   await client.query('UPDATE spaces SET created_by = $2 WHERE id = $1', [a.spaces.publicUnjoined, b.owner]);
-  return { a, b, shared, ids };
+  // Malformed links from A content to B rows or B people.
+  await s.insert('reactions', { id: randomUUID(), message_id: a.messages.general, user_id: b.owner, emoji: '👎' });
+  await s.insert('task_labels', { task_id: a.tasks.open, label_id: b.labels.bug });
+  await s.insert('task_relationships', { id: randomUUID(), source_task_id: a.tasks.open, target_task_id: b.tasks.open, type: 'relates_to' });
+  await s.insert('task_relationships', { id: randomUUID(), source_task_id: b.tasks.open, target_task_id: a.tasks.open, type: 'relates_to' });
+  await s.insert('task_comments', { id: randomUUID(), org_id: a.orgId, task_id: b.tasks.open, user_id: b.owner, content: `misfiled ${B_MARKER}` });
+  await s.insert('task_watchers', { id: randomUUID(), task_id: a.tasks.open, user_id: b.owner });
+  await client.query('UPDATE tasks SET parent_task_id = $2 WHERE id = $1', [a.tasks.restricted, b.tasks.open]);
+  await client.query('UPDATE messages SET parent_id = $2 WHERE id = $1', [a.messages.byFormer, b.messages.general]);
+  return { a, b, shared, ids, forbidden };
 }
 
-/** Deletes everything the world created (children first). */
+/**
+ * Deletes what the world created, children first, best effort: a sealed
+ * private assistant conversation is permanent by design, so its space, its
+ * workspace and its people stay behind in the disposable test database.
+ * The shared Defty system user is never deleted.
+ */
 export async function dropExportWorld(client: pg.Client, world: ExportWorld): Promise<void> {
   const orgs = [world.a.orgId, world.b.orgId];
-  const users = (await client.query<{ user_id: string }>('SELECT user_id FROM org_members WHERE org_id = ANY($1)', [orgs])).rows.map((row) => row.user_id);
+  const users = (await client.query<{ user_id: string }>(`SELECT m.user_id FROM org_members m JOIN users u ON u.id = m.user_id
+    WHERE m.org_id = ANY($1) AND u.email IS DISTINCT FROM 'deft-agent@system.local'`, [orgs])).rows.map((row) => row.user_id);
   for (const statement of [
+    'DELETE FROM reactions WHERE message_id IN (SELECT id FROM messages WHERE org_id = ANY($1))',
+    'DELETE FROM task_comments WHERE org_id = ANY($1)',
+    'DELETE FROM task_reactions WHERE org_id = ANY($1)',
+    'DELETE FROM task_relationships WHERE source_task_id IN (SELECT id FROM tasks WHERE org_id = ANY($1)) OR target_task_id IN (SELECT id FROM tasks WHERE org_id = ANY($1))',
+    'DELETE FROM task_labels WHERE task_id IN (SELECT id FROM tasks WHERE org_id = ANY($1))',
+    'DELETE FROM task_watchers WHERE task_id IN (SELECT id FROM tasks WHERE org_id = ANY($1))',
+    'DELETE FROM task_assignees WHERE task_id IN (SELECT id FROM tasks WHERE org_id = ANY($1))',
+    'UPDATE tasks SET parent_task_id = NULL WHERE org_id = ANY($1)',
+    'DELETE FROM tasks WHERE org_id = ANY($1)',
+    'DELETE FROM projects WHERE org_id = ANY($1)',
+    'DELETE FROM labels WHERE org_id = ANY($1)',
+    'DELETE FROM canvases WHERE org_id = ANY($1)',
+    'UPDATE messages SET parent_id = NULL WHERE org_id = ANY($1) AND space_id NOT IN (SELECT space_id FROM app_private_defty_seals)',
+    'DELETE FROM messages WHERE org_id = ANY($1) AND space_id NOT IN (SELECT space_id FROM app_private_defty_seals)',
     'DELETE FROM user_two_step_recovery_codes WHERE user_id = ANY($2)',
     'DELETE FROM user_two_step WHERE user_id = ANY($2)',
     'DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id = ANY($1))',
@@ -159,6 +281,6 @@ export async function dropExportWorld(client: pg.Client, world: ExportWorld): Pr
     'DELETE FROM users WHERE id = ANY($2)',
     'DELETE FROM orgs WHERE id = ANY($1)',
   ]) {
-    await client.query(statement.replace('$2', '$1'), [statement.includes('$2') ? users : orgs]);
+    await client.query(statement.replace('$2', '$1'), [statement.includes('$2') ? users : orgs]).catch(() => undefined);
   }
 }
