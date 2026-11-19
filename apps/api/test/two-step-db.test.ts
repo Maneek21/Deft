@@ -589,6 +589,48 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     await loginWithCode(bystander);
   });
 
+  await t.test('15.8: the account holder is told once when wrong recovery codes lock the account', async () => {
+    const { notifications } = await import('@deft/db/schema');
+    const who = await enrolledPerson('owner');
+    const notices = () => db.select().from(notifications).where(eq(notifications.user_id, who.id));
+    const lockNotices = async () => (await notices()).filter((row) => (row.metadata as Json | null)?.kind === 'two_step_locked');
+    const unlock = () => db.update(userTwoStep).set({ locked_until: new Date(Date.now() - 1000) }).where(eq(userTwoStep.user_id, who.id));
+    const wrongRecovery = (challenge: string, attempt: number) => post('/api/auth/two-step/verify',
+      { challenge_token: challenge, recovery_code: 'AAAA-BBBB-CCCC-DDDD' }, undefined, { 'X-Forwarded-For': `203.0.113.${attempt}` });
+
+    const first = await login(who.email);
+    for (let attempt = 1; attempt < service.ACCOUNT_FREE_FAILURES; attempt += 1) {
+      assert.equal((await wrongRecovery(first.json.two_step.token, attempt)).status, 401);
+    }
+    assert.equal((await lockNotices()).length, 0, 'no notice before the account locks');
+    // The wrong code that locks the account: the answer to the guesser is unchanged.
+    const locking = await wrongRecovery(first.json.two_step.token, 99);
+    assert.equal(locking.status, 401);
+    assert.doesNotMatch(JSON.stringify(locking.json), /notif|told|owner/i);
+    const [notice, ...more] = await lockNotices();
+    assert.equal(more.length, 0);
+    assert.equal(notice!.org_id, who.org_id);
+    assert.equal(notice!.type, 'system');
+    assert.equal(notice!.title, 'Wrong sign-in codes on your account');
+    assert.doesNotMatch(`${notice!.title} ${notice!.body}`, /203\.0\.113|\d{2}:\d{2}|AAAA/, 'nothing about the attempts');
+
+    // More wrong codes while locked, and after each lock ends, add no notice.
+    const second = await login(who.email);
+    assert.equal((await wrongRecovery(second.json.two_step.token, 100)).status, 429);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await unlock();
+      assert.equal((await wrongRecovery(second.json.two_step.token, 101 + attempt)).status, 401);
+    }
+    assert.equal((await lockNotices()).length, 1, 'once per run of wrong codes, not once per attempt or lock');
+
+    // A right code ends the run; a later run tells the person again.
+    await unlock();
+    await loginWithCode(who);
+    const third = await login(who.email);
+    for (let attempt = 1; attempt <= service.ACCOUNT_FREE_FAILURES; attempt += 1) await wrongRecovery(third.json.two_step.token, attempt);
+    assert.equal((await lockNotices()).length, 2);
+  });
+
   await t.test('an expired challenge is refused', async () => {
     const who = await enrolledPerson();
     const first = await login(who.email);
