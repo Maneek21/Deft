@@ -100,3 +100,28 @@ test('api.openai.com without any key still fails before sending audio', async (t
   await assert.rejects(transcribe(clip), /OPENAI_API_KEY not set for transcription/);
   assert.equal(calls.length, 0);
 });
+
+test('a refused transcription never carries the provider response, which can quote part of the key (12.5.4)', async (t) => {
+  // The failure message is stored on the clip, which every viewer of the clip
+  // can read. OpenAI's answer to a rejected key quotes the key's last characters.
+  const clip = await withClip(t, { OPENAI_API_KEY: 'sk-proj-secretQ7xZ' });
+  t.mock.method(globalThis, 'fetch', async () => Response.json(
+    { error: { message: 'Incorrect API key provided: sk-proj-********Q7xZ.', code: 'invalid_api_key' } },
+    { status: 401 },
+  ));
+  await assert.rejects(transcribe(clip), (error: Error) => {
+    assert.doesNotMatch(error.message, /Q7xZ|Incorrect API key/);
+    assert.match(error.message, /401/);
+    return true;
+  });
+  const saved = env.TRANSCRIPTION_PROVIDER;
+  t.after(() => { env.TRANSCRIPTION_PROVIDER = saved; });
+  const savedDeepgram = env.DEEPGRAM_API_KEY;
+  t.after(() => { env.DEEPGRAM_API_KEY = savedDeepgram; });
+  Object.assign(env, { TRANSCRIPTION_PROVIDER: 'deepgram', DEEPGRAM_API_KEY: 'dg-secretK3yQ' });
+  t.mock.method(globalThis, 'fetch', async () => new Response('{"err_msg":"Invalid credentials: dg-...K3yQ"}', { status: 401 }));
+  await assert.rejects(transcribe(clip), (error: Error) => {
+    assert.doesNotMatch(error.message, /K3yQ|Invalid credentials/);
+    return true;
+  });
+});

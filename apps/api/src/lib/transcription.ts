@@ -41,8 +41,10 @@ async function transcribeLocal(audioPath: string): Promise<TranscriptionResult> 
   });
 
   if (!res.ok) {
-    const errText = await res.text().catch(() => 'Unknown error');
-    throw new Error(`Local Whisper failed (${res.status}): ${errText}`);
+    // The status only: a provider's answer can quote part of the key, and this
+    // message is stored on the clip, where every viewer can read it.
+    await res.body?.cancel().catch(() => undefined);
+    throw new Error(`Local Whisper failed (${res.status})`);
   }
 
   const data = await res.json() as {
@@ -91,8 +93,10 @@ async function transcribeOpenAI(audioPath: string): Promise<TranscriptionResult>
   });
 
   if (!res.ok) {
-    const errText = await res.text().catch(() => 'Unknown error');
-    throw new Error(`OpenAI Whisper failed (${res.status}): ${errText}`);
+    // The status only: a provider's answer can quote part of the key, and this
+    // message is stored on the clip, where every viewer can read it.
+    await res.body?.cancel().catch(() => undefined);
+    throw new Error(`OpenAI Whisper failed (${res.status})`);
   }
 
   const data = await res.json() as {
@@ -132,8 +136,10 @@ async function transcribeDeepgram(audioPath: string): Promise<TranscriptionResul
   });
 
   if (!res.ok) {
-    const errText = await res.text().catch(() => 'Unknown error');
-    throw new Error(`Deepgram failed (${res.status}): ${errText}`);
+    // The status only: a provider's answer can quote part of the key, and this
+    // message is stored on the clip, where every viewer can read it.
+    await res.body?.cancel().catch(() => undefined);
+    throw new Error(`Deepgram failed (${res.status})`);
   }
 
   const data = await res.json() as any;
