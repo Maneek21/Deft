@@ -15,7 +15,7 @@ const localDate = (value: number) => { const date = new Date(value), pad = (v: n
  * Existing account permissions retain their separate explicit renewal journey. */
 export function ExperienceInitialConnectConsent(props: Props) {
   const [policies, setPolicies] = useState<OwnerPolicy[]>([]), [selected, setSelected] = useState('');
-  const [finite, setFinite] = useState(false), [until, setUntil] = useState(() => localDate(Date.now() + 86400000));
+  const [until, setUntil] = useState(() => localDate(Date.now() + 86400000));
   const [review, setReview] = useState<Review | null>(null), [notice, setNotice] = useState(''), [busy, setBusy] = useState(false);
   const active = useRef<AbortController | null>(null), working = useRef(false), notify = useRef(props.onBusy); notify.current = props.onBusy;
   useEffect(() => {
@@ -29,7 +29,6 @@ export function ExperienceInitialConnectConsent(props: Props) {
   }, [props.installationId, props.ownerId, props.orgId, props.sessionScope]);
   const available = policies.filter(policy => !!policy.record_store_keys?.length && policy.admission && !policy.bindings.some(binding => binding.target_key === (props.targetKey ?? policy.admission!.resource_request.target_key)));
   const policy = available.find(row => row.policy.key === selected) ?? available[0];
-  const persistent = policy?.policy.allow_until_revoked === true && !finite;
   async function act(accept: boolean) {
     if (!policy || working.current || props.disabled || document.hidden || active.current?.signal.aborted) return;
     const controller = active.current!, anchor = api.getAccessToken();
@@ -37,7 +36,9 @@ export function ExperienceInitialConnectConsent(props: Props) {
     working.current = true; setBusy(true); notify.current(true); setNotice('');
     try {
       if (!anchor || !current()) throw Error('Account setup session ended.');
-      const request = review?.request ?? (() => { const choice = initialConnectChoice(policy.policy.allow_until_revoked === true, persistent ? new Date(Date.now() + 86400000).toISOString() : new Date(until).toISOString(), finite);
+      // The host accepts only a dated first account permission. Until revoked is
+      // offered afterwards by the account permission renewal in settings.
+      const request = review?.request ?? (() => { const choice = initialConnectChoice(policy.policy.allow_until_revoked === true, new Date(until).toISOString(), true);
         const base = ownerResourceRequest(policy, Date.now(), props.targetKey);
         return { ...base, consent_expires_at: choice.expires_at, consent_lifetime: 'consent_lifetime' in choice ? choice.consent_lifetime : undefined }; })();
       if (accept) {
@@ -78,11 +79,8 @@ export function ExperienceInitialConnectConsent(props: Props) {
       <p>Allow ordinary account reads, the app&apos;s declared private records and drafts, and background metadata refresh with one permission lifetime. Private files use each declared store&apos;s size limits.</p>
       <p>Sending, organizing provider records, provider draft mirroring, and assistant access require their own permissions.</p>
       {!review ? <>
-        <label className="block">Permission lifetime<select className="mt-1 min-h-11 w-full rounded-xl bg-[var(--surface-container-high)] px-3" value={persistent ? 'until_revoked' : 'date'} disabled={busy || props.disabled} onChange={event => setFinite(event.target.value === 'date')}>
-          {policy.policy.allow_until_revoked && <option value="until_revoked">Until revoked</option>}<option value="date">Until date</option>
-        </select></label>
-        {!persistent && <label className="block">End date<input type="datetime-local" className="mt-1 min-h-11 rounded-xl border bg-transparent px-3" value={until} max={localDate(Date.now() + policy.policy.max_consent_seconds * 1000)} disabled={busy || props.disabled} onChange={event => setUntil(event.target.value)} /></label>}
-        {!persistent && <p>Automatic renewable background access is available with Until revoked. A date-limited permission keeps its selected end date.</p>}
+        <label className="block">End date<input type="datetime-local" className="mt-1 min-h-11 rounded-xl border bg-transparent px-3" value={until} max={localDate(Date.now() + policy.policy.max_consent_seconds * 1000)} disabled={busy || props.disabled} onChange={event => setUntil(event.target.value)} /></label>
+        <p>A first account permission needs an end date.{policy.policy.allow_until_revoked ? ' After the account is connected, you can renew it until revoked in account settings.' : ''}</p>
         <button className="deft-pill min-h-11" type="button" disabled={busy || props.disabled} onClick={() => void act(false)}>Review account permission</button>
       </> : <div aria-label="Review initial account permission" className="space-y-3">
         <p>Allow {review.policy.admission!.operator_label} to read and synchronize this account, and keep its declared private records and draft files {review.request.consent_lifetime === 'until_revoked' ? 'until revoked' : `until ${new Date(review.request.consent_expires_at!).toLocaleString()}`}.</p>

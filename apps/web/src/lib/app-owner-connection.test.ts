@@ -93,6 +93,19 @@ test('resource review must match exact member, admitted request and host private
     assert.throws(() => ownerConnectionReview({ review: changed }, input));
 });
 
+test('a review of the default account primary is matched although the host leaves its target_key out', () => {
+  const selected = ownerConnectionContext(context, installationId)[0]!, request = ownerResourceRequest(selected, now, 'primary');
+  const { target_key: _omitted, ...withoutTarget } = baseReview;
+  const review = { ...withoutTarget, schema_version: 'deft.app_attachment_consent_review.v1', owner_user_id: ownerId,
+    resource_key: 'inbox', consent_expires_at: request.consent_expires_at, limits, attachment_policy,
+    host_policy: { retry_class: 'unsafe_or_unknown', retention_class: 'standard', risk_class: 'internal_write', review_requirement: 'policy',
+      review_scope: 'reviewed_resource_sync', encrypted_custody: true, owner_only_binary: true, provider_url_fetch: false, irrecoverable_host_purge: true } };
+  const input = { installationId, ownerId, orgId, policy: selected, kind: 'resources' as const, request };
+  assert.deepEqual(ownerConnectionReview({ review }, input), { digest: review.review_digest });
+  // Leaving it out names primary only: a request for another account still needs its own key back.
+  assert.throws(() => ownerConnectionReview({ review }, { ...input, request: ownerResourceRequest(selected, now, 'personal') }));
+});
+
 test('action review remains bound to the admitted own account and per invocation confirmation', () => {
   const selected = ownerConnectionContext(context, installationId)[0]!, request = ownerActionRequest(selected, selected.bindings[0]!, 'send_message', now);
   const review = { ...baseReview, schema_version: 'deft.app_runtime_management_review.v1', action_key: 'send_message', owner_resource_binding_id: id(6),
