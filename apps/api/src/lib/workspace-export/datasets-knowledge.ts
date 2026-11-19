@@ -43,12 +43,15 @@ function scalar(object: SQL, key: string): SQL {
  * The metadata keys core Deft writes on events: native and assistant-created
  * events (native-calendar.ts, mcp-tools/human.ts), ICS subscriptions
  * (ics-sync.ts), app calendar sources (native-calendar-source-model.ts) and
- * GitHub pull-request events (workers/github-sync.ts). An event with any other key was written by another part of
- * Deft and is left out of the member scope.
+ * GitHub pull-request events (workers/github-sync.ts). An event with any other
+ * key was written by another part of Deft and is left out of the member scope.
  */
 const CORE_EVENT_KEYS = ['start', 'end', 'location', 'attendees', 'hangoutLink', 'status', 'allDay', 'all_day',
-  'ics_uid', 'ics_subscription_id', 'ics_label', 'app_calendar_source',
-  'repo', 'number', 'state', 'merged', 'head_branch', 'additions', 'deletions', 'draft', 'labels', 'requested_reviewers'];
+  'ics_uid', 'ics_subscription_id', 'ics_label', 'app_calendar_source'];
+/** The keys github-sync.ts writes. Accepted only on events whose source is GitHub, since the names are general. */
+const GITHUB_EVENT_KEYS = ['repo', 'number', 'state', 'merged', 'head_branch', 'additions', 'deletions', 'draft', 'labels', 'requested_reviewers'];
+
+const keyList = (keys: readonly string[]) => sql`ARRAY[${sql.join(keys.map((key) => sql`${key}`), sql`, `)}]::text[]`;
 
 /** One calendar time from the stored calendar model, field by field. */
 function calendarTime(ref: SQL): SQL {
@@ -148,7 +151,8 @@ export const NOTES_WIKI_EVENTS: readonly Dataset[] = [
           AND ${userId ? sql`event.user_id = ${userId} AND event.metadata->>'status' IS DISTINCT FROM 'canceled'
             AND NOT EXISTS (SELECT 1 FROM jsonb_object_keys(CASE WHEN jsonb_typeof(event.metadata) = 'object'
               THEN event.metadata ELSE '{}'::jsonb END) metadata_key
-              WHERE metadata_key <> ALL (ARRAY[${sql.join(CORE_EVENT_KEYS.map((key) => sql`${key}`), sql`, `)}]::text[]))` : sql`true`}
+              WHERE metadata_key <> ALL (${keyList(CORE_EVENT_KEYS)})
+                AND (event.source::text <> 'github' OR metadata_key <> ALL (${keyList(GITHUB_EVENT_KEYS)})))` : sql`true`}
         ORDER BY event.timestamp, event.id`;
     },
   },

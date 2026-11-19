@@ -410,7 +410,7 @@ test('notes, folders, wiki and events: member scope equals what the product rout
     const calendarIds = new Set(calendar.events.map((row: any) => row.id));
     const exportedEvents = rows(exported, 'data/events.jsonl').map((row) => row.id);
     for (const id of exportedEvents) assert.ok(calendarIds.has(id), `event ${id} exported but not on the Calendar for ${userId}`);
-    const leftOut = new Set([world.a.events.memberCanceled, world.a.events.otherWriter]);
+    const leftOut = new Set([world.a.events.memberCanceled, world.a.events.otherWriter, world.a.events.githubKeysElsewhere]);
     assert.deepEqual(exportedEvents.sort(), calendar.events.map((row: any) => row.id).filter((id: string) => !leftOut.has(id)).sort(), `events for ${userId}`);
     // Note shares: exactly what GET /api/daily-notes/:id/shares lists for the member's own notes.
     const ownNotes = (await client.query<{ id: string }>('SELECT id FROM notes WHERE org_id = $1 AND user_id = $2 AND NOT is_deleted',
@@ -434,6 +434,7 @@ test('notes, folders, wiki and events: member scope equals what the product rout
   assert.equal(events.get(world.a.events.noOwner!)?.user_id, null);
   assert.ok(events.has(world.a.events.memberCanceled!), 'the whole workspace keeps cancelled events');
   assert.ok(events.has(world.a.events.otherWriter!), 'the whole workspace keeps events other parts of Deft wrote');
+  assert.ok(events.has(world.a.events.githubKeysElsewhere!));
   assert.equal(events.get(world.a.events.nested!)?.location, null, 'an object in place of text is not written');
   // Positive sets, so an empty dataset cannot pass.
   assert.deepEqual(rows(whole, 'data/note_shares.jsonl').map((row) => `${row.note_id}:${row.shared_with_user_id}`),

@@ -40,7 +40,8 @@ export type ExportOptions = Readonly<{
 export const EXPORT_TABLES: readonly string[] = ['orgs', 'users', 'org_members', 'agent_employees', 'spaces', 'space_members',
   'messages', 'reactions', 'canvases', 'projects', 'labels', 'tasks', 'task_assignees', 'task_watchers', 'task_labels',
   'task_relationships', 'task_reactions', 'task_comments', 'note_folders', 'notes', 'note_shares', 'wiki_pages', 'wiki_links',
-  'events', 'files', 'message_attachments', 'task_attachments'];
+  'events', 'files', 'message_attachments', 'task_attachments', 'module_installations', 'module_versions', 'module_records',
+  'module_record_relations'];
 
 export type ExportResult = Readonly<{ root: string; manifest: ExportManifest }>;
 

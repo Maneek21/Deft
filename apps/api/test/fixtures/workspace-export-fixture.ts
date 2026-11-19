@@ -278,6 +278,10 @@ async function seedContent(s: Seeder, ws: WorkspaceIds, isB: boolean, ids: strin
     external_id: `pr-${events.githubForMember}`, title: text(isB, 'PR merged'), timestamp: tomorrow, user_id: ws.member,
     metadata: { repo: 'acme/app', number: 7, state: 'closed', merged: true, head_branch: 'feature', additions: 1, deletions: 2,
       draft: false, labels: ['x'], requested_reviewers: [] } });
+  // Only GitHub's general key names, but not a GitHub event: not core-written for the member scope.
+  events.githubKeysElsewhere = id();
+  await s.insert('events', { id: events.githubKeysElsewhere, org_id: ws.orgId, source: 'native', event_type: 'calendar_event',
+    title: text(isB, 'looks like github'), timestamp: tomorrow, user_id: ws.member, metadata: { state: 'open', labels: ['x'] } });
   await event('otherWriter', ws.member);
   await s.client.query(`UPDATE events SET metadata = metadata || '{"written_elsewhere": {"series": "x"}}'::jsonb WHERE id = $1`, [events.otherWriter]);
   await s.client.query(`UPDATE events SET metadata = jsonb_set(metadata, '{location}', jsonb_build_object('hidden', $2::text)) WHERE id = $1`,
