@@ -613,14 +613,17 @@ can supply its own AI independently of Deft's provider configuration.
 
 - `/health` is a liveness check. It answers 200 with `status: "ok"` while the API
   process is up, and reports `release`, `schema_head`, `schema_applied` and `paused`.
-- `/health/ready` is the readiness check. It answers 200 with `status: "ready"` once
-  the database answers, the expected schema is present and the job workers have
-  started, and 503 with `status: "not_ready"` otherwise (`code: "DATABASE_NOT_READY"`
-  when the database cannot be read). It also reports `paused`.
+- `/health/ready` is the readiness check. It answers 200 with `status: "ready"` when
+  the database query succeeds, the agent-channel claim and lease columns and the
+  `wiki_memory_syncs` table exist, and job-worker startup has completed. Otherwise it
+  answers 503 with `status: "not_ready"` (`code: "DATABASE_NOT_READY"` when the
+  database cannot be read). It does not compare the upgrade ledger with `schema_head`;
+  read `schema_applied` on `/health` for that. It also reports `paused`.
 - Route traffic only when `/health/ready` returns 200 and `paused` is `false`. A paused
-  install answers 200 on both endpoints with `"paused": true`, so that an operator can
-  reach it. A load balancer must read that field and must not treat a paused install
-  as serving.
+  install reports `"paused": true` on both endpoints: `/health` returns 200, and
+  `/health/ready` returns 200 once its normal readiness checks pass, so that an
+  operator can reach it. A load balancer must read that field and must not treat a
+  paused install as serving.
 
 `DEFT_PAUSED_START=true` starts Deft so an operator can look at it, without letting it
 work. The setting is read once, when the API process starts. While paused:
@@ -628,9 +631,10 @@ work. The setting is read once, when the API process starts. While paused:
 - the scheduler and the background jobs do not run, and startup work that writes or
   re-queues is skipped;
 - every request other than `GET`, `HEAD` and `OPTIONS` is refused with 503 and
-  `code: "PAUSED"`, except login (with its two-step code), token refresh and logout;
-- the agent channel and the public calendar feed are closed, and realtime connections
-  are refused;
+  `code: "PAUSED"`, except sign-in (including two-step verification and, where it is
+  required, enrolment), token refresh and logout;
+- the agent channel (except its static contract), the calendar feeds and the few reads
+  that change shared state are refused, and realtime connections are refused;
 - the API process makes no outbound call: AI and embedding providers, transcription,
   outside tool servers, the App Runtime, URL fetches and web push are all refused;
 - signed-in people see a notice with the reason from `DEFT_PAUSED_REASON`.

@@ -214,8 +214,9 @@ Reliability and health:
 - When job workers or the scheduler fail to start, the API keeps retrying (after 1, 2,
   4, then every 8 seconds) until they start or shutdown begins, instead of giving up
   after five attempts.
-- `/health` and `/health/ready` now report `paused` (`true` under a paused start, when
-  both still answer 200). Unchanged from 143: `/health` is a liveness check, and
+- `/health` and `/health/ready` now report `paused` (`true` under a paused start:
+  `/health` still answers 200, and `/health/ready` answers 200 once its normal checks
+  pass). Unchanged from 143: `/health` is a liveness check, and
   `/health/ready` answers 503 until the database and the job workers are ready. See
   "Health checks and a paused start" in `docs/self-hosting.md`.
 
