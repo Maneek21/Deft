@@ -31,16 +31,24 @@ function exportableFolder(ctx: ExportContext, alias: string): SQL {
     AND ${userId ? sql`${col(`${alias}.user_id`)} = ${userId}` : sql`true`}`;
 }
 
+/**
+ * One named value from a JSON object, only when it is a plain string, number
+ * or boolean: an object or array in its place is never written out.
+ */
+function scalar(object: SQL, key: string): SQL {
+  return sql`CASE WHEN jsonb_typeof(${object}->${key}) IN ('string', 'number', 'boolean') THEN ${object}->>${key} END`;
+}
+
 /** One calendar time from the stored calendar model, field by field. */
 function calendarTime(ref: SQL): SQL {
-  return sql`CASE WHEN jsonb_typeof(${ref}) = 'object' THEN jsonb_build_object('value', ${ref}->>'value',
-    'value_type', ${ref}->>'value_type', 'time_zone', ${ref}->>'time_zone', 'instant', ${ref}->>'instant') END`;
+  return sql`CASE WHEN jsonb_typeof(${ref}) = 'object' THEN jsonb_build_object('value', ${scalar(ref, 'value')},
+    'value_type', ${scalar(ref, 'value_type')}, 'time_zone', ${scalar(ref, 'time_zone')}, 'instant', ${scalar(ref, 'instant')}) END`;
 }
 
 export const NOTES_WIKI_EVENTS: readonly Dataset[] = [
   {
     path: 'data/note_folders.jsonl',
-    query: (ctx) => sql`SELECT folder.id, folder.user_id, folder.name, folder.icon,
+    query: (ctx) => sql`SELECT folder.id, ${workspaceAuthor(ctx, col('folder.user_id'))} AS user_id, folder.name, folder.icon,
         CASE WHEN EXISTS (SELECT 1 FROM note_folders parent WHERE parent.id = folder.parent_folder_id AND ${exportableFolder(ctx, 'parent')})
           THEN folder.parent_folder_id END AS parent_folder_id,
         folder.sort_order, folder.created_at, folder.updated_at
@@ -61,15 +69,17 @@ export const NOTES_WIKI_EVENTS: readonly Dataset[] = [
       ORDER BY export_note.created_at, export_note.id`,
   },
   {
-    // Who a note is shared with: every share for the whole workspace; only
-    // the member's own notes' shares for the member scope.
+    // Who a note is shared with, as GET /api/daily-notes/:id/shares lists it:
+    // recipients who are active members of this workspace. The member scope
+    // sees only the shares of the member's own notes.
     path: 'data/note_shares.jsonl',
     query: (ctx) => {
       const userId = memberId(ctx);
       return sql`SELECT share.note_id, share.shared_with_user_id, share.permission, share.created_at
         FROM note_shares share JOIN notes shared_note ON shared_note.id = share.note_id
         WHERE shared_note.org_id = ${ctx.orgId} AND ${exportableNote(ctx, col('share.note_id'))}
-          AND ${workspaceAuthor(ctx, col('share.shared_with_user_id'))} IS NOT NULL
+          AND EXISTS (SELECT 1 FROM org_members recipient WHERE recipient.org_id = ${ctx.orgId}
+            AND recipient.user_id = share.shared_with_user_id AND recipient.is_active = true)
           AND ${userId ? sql`shared_note.user_id = ${userId}` : sql`true`}
         ORDER BY share.note_id, share.created_at, share.id`;
     },
@@ -94,28 +104,34 @@ export const NOTES_WIKI_EVENTS: readonly Dataset[] = [
   },
   {
     // Calendar and connected-tool events, with named fields only. The member
-    // scope sees the events the Calendar shows them: their own.
+    // scope sees their own events, as the Calendar does, without cancelled ones:
+    // the Calendar hides some cancelled events, and the member scope must never
+    // show more than the product, so it leaves every cancelled event out.
     path: 'data/events.jsonl',
     query: (ctx) => {
       const userId = memberId(ctx);
+      const meta = sql`event.metadata`;
       const model = sql`event.metadata->'app_calendar_source'->'event'`;
+      const attendee = sql`attendee.value`;
       return sql`SELECT event.id, event.source, event.event_type, event.title, event.body, event.url, event.actor,
           event.timestamp, ${workspaceAuthor(ctx, col('event.user_id'))} AS user_id,
-          event.metadata->>'start' AS start, event.metadata->>'end' AS "end",
-          coalesce(event.metadata->>'all_day', event.metadata->>'allDay') AS all_day,
-          event.metadata->>'location' AS location, event.metadata->>'status' AS status,
-          (SELECT jsonb_agg(jsonb_build_object('email', attendee->>'email', 'name', coalesce(attendee->>'displayName', attendee->>'name')))
+          ${scalar(meta, 'start')} AS start, ${scalar(meta, 'end')} AS "end",
+          coalesce(${scalar(meta, 'all_day')}, ${scalar(meta, 'allDay')}) AS all_day,
+          ${scalar(meta, 'location')} AS location, ${scalar(meta, 'status')} AS status,
+          (SELECT jsonb_agg(jsonb_build_object('email', ${scalar(attendee, 'email')},
+              'name', coalesce(${scalar(attendee, 'displayName')}, ${scalar(attendee, 'name')})))
             FROM jsonb_array_elements(CASE WHEN jsonb_typeof(event.metadata->'attendees') = 'array'
-              THEN event.metadata->'attendees' ELSE '[]'::jsonb END) attendee) AS attendees,
+              THEN event.metadata->'attendees' ELSE '[]'::jsonb END) attendee
+            WHERE jsonb_typeof(attendee.value) = 'object') AS attendees,
           CASE WHEN jsonb_typeof(${model}) = 'object' THEN jsonb_build_object(
             'start', ${calendarTime(sql`${model}->'start'`)}, 'end', ${calendarTime(sql`${model}->'end'`)},
-            'rrule', ${model}->>'rrule', 'recurrence_id', ${calendarTime(sql`${model}->'recurrence_id'`)},
+            'rrule', ${scalar(model, 'rrule')}, 'recurrence_id', ${calendarTime(sql`${model}->'recurrence_id'`)},
             'exdates', (SELECT jsonb_agg(${calendarTime(sql`exdate.value`)}) FROM jsonb_array_elements(
               CASE WHEN jsonb_typeof(${model}->'exdates') = 'array' THEN ${model}->'exdates' ELSE '[]'::jsonb END) exdate)) END AS recurrence,
           event.created_at, event.updated_at
         FROM events event
         WHERE event.org_id = ${ctx.orgId}
-          AND ${userId ? sql`event.user_id = ${userId}` : sql`true`}
+          AND ${userId ? sql`event.user_id = ${userId} AND event.metadata->>'status' IS DISTINCT FROM 'canceled'` : sql`true`}
         ORDER BY event.timestamp, event.id`;
     },
   },

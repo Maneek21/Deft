@@ -163,7 +163,7 @@ test('an existing connected account without an explicit initial Allow journal pe
   assert.equal(f.calls.length, 0);
 });
 
-test('the actual initial consent screen selects one durable lifetime, discloses purposes, and keeps finite existing accounts out', () => {
+test('the actual initial consent screen asks for a dated first permission, discloses purposes, and keeps existing accounts out', () => {
   const path = new URL('../components/apps/experience-initial-connect-consent.tsx', import.meta.url);
   const source = ts.createSourceFile(path.pathname, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const declaration = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'ExperienceInitialConnectConsent')!;
@@ -173,22 +173,23 @@ test('the actual initial consent screen selects one durable lifetime, discloses 
     limits: { max_records_per_page: 25, max_page_bytes: 65536, max_retained_records: 1000, max_retained_bytes: 1048576, min_interval_seconds: 900 },
     attachment_policy: { allowed_media_types: ['application/pdf'], max_attachment_bytes: 2048, max_attachments_per_record: 1,
       max_attachments_per_run: 1, max_attachment_bytes_per_run: 2048, retention_days: 7 } };
-  const render = (finite: boolean, existing: boolean) => {
+  const render = (existing: boolean) => {
     const policy = { record_store_keys: ['drafts','preferences'], policy: { key: 'provider', resource_key: 'records', action_keys: ['send', 'organize', 'mirror'], max_consent_seconds: 86400, allow_until_revoked: true },
       admission: { ...request, operator_label: 'Approved operator', resource_request: request },
       bindings: existing ? [{ target_key: 'personal', consent_expires_at: future() }] : [] };
-    const states = [[policy], 'provider', finite, '2030-01-01T12:00', null, '', false]; let index = 0;
+    const states = [[policy], 'provider', '2030-01-01T12:00', null, '', false]; let index = 0;
     const Component = runInNewContext(program, { React, localDate: () => '2030-01-01T12:00', useEffect: () => {}, useRef: (current: unknown) => ({ current }),
       useState: () => [states[index++], () => {}] });
     return renderToStaticMarkup(Component({ installationId: randomUUID(), ownerId: randomUUID(), orgId: randomUUID(),
       sessionScope: 'scope', disabled: false, onBusy: () => {}, onConfigured: () => {} }));
   };
-  const html = render(false, false);
-  assert.match(html, /value="until_revoked" selected=""/u);
-  assert.equal((html.match(/Permission lifetime/gu) ?? []).length, 1);
+  const html = render(false);
+  // The host refuses an initial until-revoked permission; it is offered by the renewal after connecting.
+  assert.match(html, /datetime-local/u);
+  assert.doesNotMatch(html, /until_revoked|Permission lifetime/u);
+  assert.match(html, /needs an end date/u); assert.match(html, /renew it until revoked in account settings/u);
   assert.match(html, /private records and drafts/u); assert.match(html, /background metadata refresh/u);
   assert.match(html, /provider draft mirroring/u); assert.match(html, /require their own permissions/u);
-  assert.doesNotMatch(html, /datetime-local|24 hours/u);
-  assert.match(render(true, false), /datetime-local/u);
-  assert.equal(render(false, true), '', 'loading an existing finite account never offers implicit initial permission');
+  assert.doesNotMatch(html, /24 hours/u);
+  assert.equal(render(true), '', 'loading an existing account never offers implicit initial permission');
 });

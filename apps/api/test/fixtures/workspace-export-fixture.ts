@@ -265,6 +265,14 @@ async function seedContent(s: Seeder, ws: WorkspaceIds, isB: boolean, ids: strin
   await event('member', ws.member);
   await event('other', ws.other);
   await event('noOwner', null, { source: 'github', event_type: 'pr_merged' });
+  await event('memberCanceled', ws.member);
+  await s.client.query(`UPDATE events SET metadata = jsonb_set(metadata, '{status}', '"canceled"') WHERE id = $1`, [events.memberCanceled]);
+  // Malformed metadata: an object where text is expected must not be written out.
+  await event('nested', ws.member);
+  await s.client.query(`UPDATE events SET metadata = jsonb_set(metadata, '{location}', jsonb_build_object('hidden', $2::text)) WHERE id = $1`,
+    [events.nested, s.secret('events.location_object')]);
+  // A share kept after its recipient left the workspace.
+  await s.insert('note_shares', { id: id(), note_id: notes.orgWide, shared_with_user_id: ws.former });
 
   return { messages, tasks, projects, labels, notes, wiki, events, folders, sealedSpace };
 }
@@ -345,6 +353,8 @@ export async function seedExportWorld(client: pg.Client, uploadsDir: string): Pr
   await client.query('UPDATE tasks SET parent_task_id = $2 WHERE id = $1', [a.tasks.restricted, b.tasks.open]);
   await client.query('UPDATE messages SET parent_id = $2 WHERE id = $1', [a.messages.byFormer, b.messages.general]);
   await s.insert('note_shares', { id: randomUUID(), note_id: a.notes.sharedWithMember, shared_with_user_id: b.owner });
+  // An A note folder owned by a B person.
+  await s.insert('note_folders', { id: randomUUID(), org_id: a.orgId, user_id: b.owner, name: 'misfiled folder' });
   await s.insert('wiki_links', { id: randomUUID(), org_id: a.orgId, source_page_id: a.wiki.org, target_page_id: b.wiki.org });
   await client.query('UPDATE notes SET folder_id = $2, visibility_space_id = $3 WHERE id = $1', [a.notes.orgWide, b.folders.other, b.spaces.general]);
   await client.query('UPDATE events SET user_id = $2 WHERE id = $1', [a.events.noOwner, b.owner]);

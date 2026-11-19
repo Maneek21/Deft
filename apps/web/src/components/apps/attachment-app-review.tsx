@@ -19,7 +19,7 @@ type Review = {schema_version:'deft.app_blob_review.v2';installation_id:string;r
     owner_connections?:AppOwnerConnectionPolicy[];
     resource_content?:AppResourceContentDeclaration[];
     modules:{module_id:string;version:string;manifest_path:string;manifest_digest:string}[];
-    runtime_actions:{key:string}[];experiences:{key:string;label:string}[];
+    runtime_actions:{action_key:string}[];experiences:{key:string;label:string}[];
     host_policy:{encrypted_custody:boolean;current_parent_required:boolean;provider_url_fetch:boolean;irrecoverable_host_purge:boolean;owner_only:boolean;stage_ceiling_seconds:number}}};
 const tap={minHeight:44};
 const consentDuration=(seconds:number)=>{
@@ -60,11 +60,13 @@ function Workspace({app}:{app:AppInstallation}){
         ||body.review.authority.host_policy.encrypted_custody!==true||body.review.authority.host_policy.current_parent_required!==true
         ||body.review.authority.host_policy.provider_url_fetch!==false||body.review.authority.host_policy.irrecoverable_host_purge!==true
         ||body.review.authority.host_policy.owner_only!==true||body.review.authority.host_policy.stage_ceiling_seconds!==3600)throw new Error('The App review changed. Refresh before activating.');
-      const states = body.review.authority.private_state === undefined ? undefined : normalizeAppPrivateState(body.review.authority.private_state, body.review.authority.runtime_actions);
+      // The server describes each reviewed action by `action_key`; the shared normalizers match on `key`.
+      const actions = body.review.authority.runtime_actions.map(action => ({ key: typeof action.action_key === 'string' ? action.action_key : '' }));
+      const states = body.review.authority.private_state === undefined ? undefined : normalizeAppPrivateState(body.review.authority.private_state, actions);
       const declared = app.manifest.schema_version === '7' ? app.manifest.private_state : undefined;
       if (canonicalCapabilityJson(states ?? []) !== canonicalCapabilityJson(declared ?? [])) throw new Error('The private storage review changed. Refresh before activating.');
       const owners = body.review.authority.owner_connections === undefined ? undefined
-        : normalizeAppOwnerConnections(body.review.authority.owner_connections, body.review.authority.sync_descriptors, body.review.authority.runtime_actions);
+        : normalizeAppOwnerConnections(body.review.authority.owner_connections, body.review.authority.sync_descriptors, actions);
       const declaredOwners = app.manifest.schema_version === '7' ? app.manifest.owner_connections : undefined;
       if (canonicalCapabilityJson(owners ?? []) !== canonicalCapabilityJson(declaredOwners ?? [])) throw new Error('The personal account setup review changed. Refresh before activating.');
       const content = normalizeAppResourceContentReview(body.review.authority.resource_content,
@@ -99,7 +101,7 @@ function Workspace({app}:{app:AppInstallation}){
         {state.files && <p>Files: up to {state.files.max_files_per_record} per record, {state.files.max_file_bytes.toLocaleString()} bytes each / {state.files.max_total_bytes_per_record.toLocaleString()} bytes per record. Types: {state.files.allowed_media_types.join(', ')}. Files cannot outlive their saved record.</p>}
         {state.action_payloads?.map(payload=><p key={payload.action_key}>Captured action payload: {payload.action_key} · up to {payload.max_payload_bytes.toLocaleString()} bytes. Each action still requires current operator authority and confirmation.</p>)}
       </div>)}
-      <p>Declared actions: {review.authority.runtime_actions.map(a=>a.key).join(', ')||'None'}. Every effect requires its reviewed operator binding and normal approval.</p>
+      <p>Declared actions: {review.authority.runtime_actions.map(a=>a.action_key).join(', ')||'None'}. Every effect requires its reviewed operator binding and normal approval.</p>
       <p>Activation installs or re-enables {review.authority.modules.length} declared workspace modules.</p>
       {review.authority.modules.length>0&&<ul>{review.authority.modules.map(m=><li key={m.module_id} className="break-words">{m.module_id} · version {m.version}<code className="block break-all text-xs">{m.manifest_digest}</code></li>)}</ul>}
       <p>Declared App interface: {review.authority.experiences.map(e=>`${e.label} (${e.key})`).join(', ')||'None'}.</p>
