@@ -1,7 +1,9 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 const root = process.cwd();
-const files = ['README.md','FEATURES.md','docs/README.md','docs/documentation-maintenance.md','docs/examples/README.md','docs/modules-and-apps.md','docs/product-status.md','docs/current-limitations.md','docs/getting-started.md','docs/connected-app-author-guide.md','docs/self-hosted-v1-contract.md', ...(await readdir('docs/tutorials')).filter(f=>f.endsWith('.md')).map(f=>`docs/tutorials/${f}`)];
+const defaultFiles = async () => ['README.md','FEATURES.md','docs/README.md','docs/documentation-maintenance.md','docs/examples/README.md','docs/modules-and-apps.md','docs/product-status.md','docs/current-limitations.md','docs/getting-started.md','docs/connected-app-author-guide.md','docs/self-hosted-v1-contract.md', ...(await readdir('docs/tutorials')).filter(f=>f.endsWith('.md')).map(f=>`docs/tutorials/${f}`)];
+// Optional file arguments narrow the check to specific Markdown files (used by the regression tests).
+const files = process.argv.length > 2 ? process.argv.slice(2) : await defaultFiles();
 const errors = [];
 for (const file of files) {
   const text = await readFile(file,'utf8');
