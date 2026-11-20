@@ -107,7 +107,16 @@ export default function SignupPage() {
           }}>
 
           {/* Workspace-exists banner */}
-          {workspaceCheck === 'exists' && (
+          {/* Opened from a hosted setup link: the self-hosted wording below would be wrong. */}
+          {workspaceCheck === 'exists' && setupToken && (
+            <div className="px-4 py-3 text-[0.8125rem] rounded-lg leading-relaxed"
+              style={{ background: 'rgba(80,80,120,0.25)', color: 'var(--on-surface-variant)', border: '1px solid var(--ghost-border)' }}>
+              <strong style={{ color: 'var(--on-surface)' }}>This workspace has already been set up.</strong>
+              {' '}If you set it up, <Link href="/login" className="underline underline-offset-4">sign in</Link>.
+              {' '}Otherwise, ask the workspace owner for an invite.
+            </div>
+          )}
+          {workspaceCheck === 'exists' && !setupToken && (
             <div className="px-4 py-3 text-[0.8125rem] rounded-lg leading-relaxed"
               style={{ background: 'rgba(80,80,120,0.25)', color: 'var(--on-surface-variant)', border: '1px solid var(--ghost-border)' }}>
               <strong style={{ color: 'var(--on-surface)' }}>This Deft workspace is already set up.</strong>

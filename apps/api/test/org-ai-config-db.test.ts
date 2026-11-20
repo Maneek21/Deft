@@ -68,3 +68,53 @@ test('AI settings preserve reasoning effort through PUT, GET and runtime resolut
     await client.end();
   }
 });
+
+test('12.5.4: only people who can change AI settings see any part of a stored key', { skip: !canRun }, async () => {
+  const client = new pg.Client({ connectionString: databaseUrl });
+  await client.connect();
+  const orgId = `ai-key-view-${randomUUID()}`;
+  const people = { owner: randomUUID(), admin: randomUUID(), member: randomUUID(), guest: randomUUID() };
+  const key = `sk-ant-test-${randomUUID()}-Z9q4`;
+  try {
+    await client.query('INSERT INTO orgs (id, name, slug) VALUES ($1, $1, $1)', [orgId]);
+    for (const [role, id] of Object.entries(people)) {
+      await client.query('INSERT INTO users (id, name, email) VALUES ($1, $1, $2)', [id, `${id}@example.test`]);
+      await client.query('INSERT INTO org_members (id, org_id, user_id, role) VALUES ($1,$2,$3,$4)', [randomUUID(), orgId, id, role]);
+    }
+    // Every caller claims to be an owner: only the stored membership counts.
+    const appFor = (id: string) => {
+      const app = new Hono();
+      app.use('*', async (c, next) => {
+        c.set('user', { id, org_id: orgId, role: 'owner', email: `${id}@example.test`, name: id });
+        await next();
+      });
+      app.route('/api/org', orgRoutes);
+      return app;
+    };
+    const saved = await appFor(people.owner).request('/api/org/ai-config', {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ api_keys: { anthropic: key } }),
+    });
+    assert.equal(saved.status, 200);
+
+    for (const id of [people.member, people.guest]) {
+      const response = await appFor(id).request('/api/org/ai-config');
+      assert.equal(response.status, 200);
+      const text = await response.text();
+      assert.ok(!text.includes('Z9q4'), 'no part of the key reaches a member or guest');
+      assert.deepEqual(Object.keys(JSON.parse(text)).sort(), ['can_manage', 'has_provider', 'has_reason_provider', 'hosted'],
+        'a member or guest learns whether AI is usable, and nothing about providers or keys');
+      assert.equal(JSON.parse(text).has_provider, true);
+      assert.equal(JSON.parse(text).can_manage, false);
+    }
+    for (const id of [people.owner, people.admin]) {
+      const body = await (await appFor(id).request('/api/org/ai-config')).json();
+      assert.equal(body.can_manage, true);
+      assert.deepEqual(body.api_keys.anthropic, { configured: true, mask: '…Z9q4' }, 'people who can change the key still see its mask');
+    }
+  } finally {
+    await client.query('DELETE FROM org_members WHERE org_id=$1', [orgId]);
+    await client.query('DELETE FROM orgs WHERE id=$1', [orgId]);
+    await client.query('DELETE FROM users WHERE id=ANY($1::text[])', [Object.values(people)]);
+    await client.end();
+  }
+});

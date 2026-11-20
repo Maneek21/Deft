@@ -88,6 +88,7 @@ test('the feed lists only live tasks the owner may see', async () => {
   const res = await fetchFeed(ownerToken);
   assert.equal(res.status, 200);
   assert.match(res.body, /LIVE-A-TASK/);
+  assert.equal(new Map(res.headers).get('cache-control'), 'private, no-store', 'check 14.3: the feed is never kept by a browser or proxy');
   assert.match(res.body, /EVENT-A/);
   assert.match(res.body, /RESTRICTED-OWNER-TASK/, 'assignee may see a restricted task under the current rule');
   for (const absent of ['SOFTDELETED-A-TASK', 'TEMPLATE-A-TASK', 'RESTRICTED-HIDDEN-TASK', 'ARCHIVEDPROJ-A-TASK', 'DELETEDPROJ-A-TASK', 'MISMATCHED-PROJECT-TASK', 'FOREIGN-ORG-TASK', 'FOREIGN-ORG-LOCAL-PROJECT-TASK']) {

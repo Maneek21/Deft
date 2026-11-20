@@ -457,8 +457,10 @@ wikiRoutes.get('/contradictions', async (c) => {
   }
 });
 
-// GET /api/wiki/export — export wiki pages
+// GET /api/wiki/export — export wiki pages. The export is the caller's
+// private content, so no browser or proxy may keep it (check 14.3).
 wikiRoutes.get('/export', async (c) => {
+  c.header('Cache-Control', 'private, no-store');
   try {
     const user = c.get('user');
     const format = c.req.query('format') || 'json';
@@ -473,7 +475,7 @@ wikiRoutes.get('/export', async (c) => {
         `# ${p.title}\n\n> Type: ${p.type} | Scope: ${p.scope} | Confidence: ${Math.round(p.confidence * 100)}% | v${p.version}\n\n${p.summary ? `*${p.summary}*\n\n` : ''}${p.content}\n\n---\n`
       ).join('\n');
       return new Response(md, {
-        headers: { 'Content-Type': 'text/markdown', 'Content-Disposition': 'attachment; filename="wiki-export.md"' },
+        headers: { 'Content-Type': 'text/markdown', 'Content-Disposition': 'attachment; filename="wiki-export.md"', 'Cache-Control': 'private, no-store' },
       });
     }
 
@@ -484,7 +486,7 @@ wikiRoutes.get('/export', async (c) => {
         return `${p.id},${escape(p.title)},${p.type},${p.scope},${p.confidence},${p.version},${escape(p.summary)},${escape(p.content)},${p.created_at?.toISOString?.() || p.created_at},${p.updated_at?.toISOString?.() || p.updated_at}`;
       }).join('\n');
       return new Response(header + rows, {
-        headers: { 'Content-Type': 'text/csv', 'Content-Disposition': 'attachment; filename="wiki-export.csv"' },
+        headers: { 'Content-Type': 'text/csv', 'Content-Disposition': 'attachment; filename="wiki-export.csv"', 'Cache-Control': 'private, no-store' },
       });
     }
 

@@ -1,11 +1,13 @@
 import bcrypt from 'bcryptjs';
 import { and, count, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
-import { orgMembers, users, webSessions } from '@deft/db/schema';
+import { notifications, orgMembers, users, webSessions } from '@deft/db/schema';
 import { twoStepChallenges, userTwoStep, userTwoStepRecoveryCodes } from '@deft/db/two-step';
 import { db } from './db.js';
 import { decrypt, encrypt } from './encryption.js';
 import { isHostedMode } from './hosted-mode.js';
 import { emitWebSessionRevocations } from './web-sessions.js';
+import { notificationChannelForType } from './notification-policy.js';
+import { syncNotificationToAttention } from './attention.js';
 import {
   buildOtpauthUrl,
   generateRecoveryCodes,
@@ -55,6 +57,85 @@ type CheckOptions = { secret: 'confirmed' | 'pending'; allowRecoveryCode: boolea
  * the account's row lock, so two requests cannot use the same code, and
  * counts a wrong code against the account whatever route it arrived by.
  */
+type LockNotice = typeof notifications.$inferSelect;
+/** Lock notices written inside a transaction run by twoStepTransaction. */
+const lockNoticesIn = new WeakMap<object, LockNotice[]>();
+
+/**
+ * db.transaction for every path that checks a code. A lock notice written by
+ * checkSecondStep commits with the lock itself, so it is never lost and never
+ * sent for a rolled-back attempt; its copy into the attention feed follows the
+ * commit, best effort, like every other notification.
+ */
+async function twoStepTransaction<T>(run: (tx: Tx) => Promise<T>): Promise<T> {
+  const written: LockNotice[] = [];
+  const result = await db.transaction(async (tx) => {
+    lockNoticesIn.set(tx, written);
+    return run(tx);
+  });
+  for (const notice of written) {
+    await syncNotificationToAttention(notice).catch(() => console.warn('[two-step] lock notice attention copy failed'));
+  }
+  return result;
+}
+
+/**
+ * Tells the account holder, in each workspace they belong to, that wrong codes
+ * locked their account (check 15.8). Every wrong code that meets a lock asks
+ * for it, and it is written unless one was written in the last day, so
+ * someone guessing cannot flood the person, and a notice whose write failed
+ * is written on the next wrong code. It says
+ * nothing about the attempts (no address, time, count or which code was
+ * tried), and it is shown only to the account holder, never in a response to
+ * the person guessing. Delivered whatever the person's notification
+ * preferences. Written in a savepoint: if writing it fails, the wrong code is
+ * still counted and the answer to the code check is unchanged.
+ */
+/** At most one lock notice per account in this time. */
+export const LOCK_NOTICE_INTERVAL_MS = 24 * 60 * 60_000;
+
+/**
+ * Takes the account row before any two-step row, the order enrolment
+ * confirmation and membership changes take them in. A lock notice's
+ * foreign key needs the account row, so without this a code check holding
+ * the two-step row could deadlock with enrolment confirmation.
+ */
+async function lockAccountRow(tx: Tx, userId: string): Promise<void> {
+  await tx.select({ id: users.id }).from(users).where(eq(users.id, userId)).for('key share');
+}
+
+async function writeTwoStepLockNotice(tx: Tx, userId: string, now: Date): Promise<void> {
+  try {
+    const rows = await tx.transaction(async (savepoint) => {
+      const [recent] = await savepoint.select({ id: notifications.id }).from(notifications).where(and(
+        eq(notifications.user_id, userId),
+        sql`${notifications.metadata}->>'kind' = 'two_step_locked'`,
+        sql`${notifications.created_at} > ${new Date(now.getTime() - LOCK_NOTICE_INTERVAL_MS)}`,
+      )).limit(1);
+      if (recent) return [];
+      const memberships = await savepoint.select({ org_id: orgMembers.org_id }).from(orgMembers)
+        .where(and(eq(orgMembers.user_id, userId), eq(orgMembers.is_active, true)));
+      if (memberships.length === 0) return [];
+      return savepoint.insert(notifications).values(memberships.map(({ org_id }) => ({
+        org_id,
+        user_id: userId,
+        type: 'system' as const,
+        title: 'Wrong sign-in codes on your account',
+        body: 'Several wrong two-step or recovery codes were entered for your account, so codes are refused for a while. '
+          + 'If this was not you, change your password.',
+        link: '/settings/profile',
+        metadata: {
+          kind: 'two_step_locked',
+          delivery_policy: { status: 'delivered', reason: 'allowed', channel: notificationChannelForType('system'), evaluated_at: now.toISOString() },
+        },
+      }))).returning();
+    });
+    lockNoticesIn.get(tx)?.push(...rows);
+  } catch {
+    console.warn('[two-step] lock notice failed');
+  }
+}
+
 async function checkSecondStep(tx: Tx, userId: string, proof: SecondStepProof, options: CheckOptions): Promise<SecondStepCheck & { step?: number }> {
   const [row] = await tx.select().from(userTwoStep).where(eq(userTwoStep.user_id, userId)).for('update');
   if (!row) return { ok: false, reason: 'not_enrolled' };
@@ -100,6 +181,8 @@ async function checkSecondStep(tx: Tx, userId: string, proof: SecondStepProof, o
   await tx.update(userTwoStep)
     .set({ failed_attempts: failedAttempts, locked_until: delay > 0 ? new Date(now.getTime() + delay) : null })
     .where(eq(userTwoStep.user_id, userId));
+  // A wrong code that meets a lock: the person is told (at most once a day).
+  if (delay > 0) await writeTwoStepLockNotice(tx, userId, now);
   return { ok: false, reason: 'invalid' };
 }
 
@@ -163,7 +246,8 @@ export type EnrolmentProof = SecondStepProof & {
  * authenticator on an account, whichever way a concurrent turn-off lands.
  */
 export async function startTwoStepEnrolment(user: { id: string; email: string; sid: string | null }, proof: EnrolmentProof = {}, now = new Date()): Promise<EnrolmentStart> {
-  const result = await db.transaction(async (tx) => {
+  const result = await twoStepTransaction(async (tx) => {
+    await lockAccountRow(tx, user.id);
     await tx.insert(userTwoStep).values({ user_id: user.id }).onConflictDoNothing();
     const [row] = await tx.select({ confirmed_at: userTwoStep.confirmed_at }).from(userTwoStep).where(eq(userTwoStep.user_id, user.id)).for('update');
     let revoked: string[] = [];
@@ -213,7 +297,7 @@ export type EnrolAuthority = { sid: string } | { challengeToken: string };
  * issued without a code survives. The caller then issues a fresh session.
  */
 export async function confirmTwoStepEnrolment(userId: string, code: string, authority: EnrolAuthority, now = new Date()): Promise<EnrolmentConfirm> {
-  const result = await db.transaction(async (tx) => {
+  const result = await twoStepTransaction(async (tx) => {
     // Same row session creation and password changes lock: enrolment,
     // issuance and a password reset are serialized.
     const [user] = await tx.select({ id: users.id, password_version: users.password_version }).from(users).where(eq(users.id, userId)).for('update');
@@ -261,7 +345,8 @@ export type CodeGatedResult<T> = ({ ok: true } & T) | { ok: false; check: Exclud
 
 /** New recovery codes; the old ones stop working. Needs a current code. */
 export async function regenerateRecoveryCodes(userId: string, code: string, now = new Date()): Promise<CodeGatedResult<{ recoveryCodes: string[] }>> {
-  return db.transaction(async (tx) => {
+  return twoStepTransaction(async (tx) => {
+    await lockAccountRow(tx, userId);
     const check = await checkSecondStep(tx, userId, { code }, { secret: 'confirmed', allowRecoveryCode: false, now });
     if (!check.ok) return { ok: false as const, check };
     return { ok: true as const, recoveryCodes: await replaceRecoveryCodes(tx, userId) };
@@ -272,7 +357,8 @@ export async function regenerateRecoveryCodes(userId: string, code: string, now 
  * and admins in hosted mode (twoStepIsMandatoryFor), checked under the row
  * lock a promotion to admin also takes (routes/members.ts). */
 export async function disableTwoStep(userId: string, code: string, now = new Date()): Promise<CodeGatedResult<object> | { ok: false; mandatory: true }> {
-  return db.transaction(async (tx) => {
+  return twoStepTransaction(async (tx) => {
+    await lockAccountRow(tx, userId);
     await tx.select({ user_id: userTwoStep.user_id }).from(userTwoStep).where(eq(userTwoStep.user_id, userId)).for('update');
     if (await twoStepIsMandatoryFor(userId, tx)) return { ok: false as const, mandatory: true as const };
     const check = await checkSecondStep(tx, userId, { code }, { secret: 'confirmed', allowRecoveryCode: false, now });
@@ -334,7 +420,7 @@ export type ChallengeExchange =
  * new login is needed. The caller creates the session.
  */
 export async function exchangeVerifyChallenge(token: string, proof: SecondStepProof, now = new Date()): Promise<ChallengeExchange> {
-  const result = await db.transaction(async (tx) => {
+  const result = await twoStepTransaction(async (tx) => {
     const challenge = await lockLiveChallenge(tx, token, 'verify', now);
     if (!challenge) return { ok: false as const, reason: 'challenge_invalid' as const };
     const check = await checkSecondStep(tx, challenge.user_id, proof, { secret: 'confirmed', allowRecoveryCode: true, now });

@@ -39,6 +39,11 @@ export default function SetupAIPage() {
     api.get('/api/org/ai-config').then(async (r) => {
       if (!r.ok) { setBootstrapped(true); return; }
       const data = await r.json();
+      // Only owners and admins can add a key; anyone else has nothing to do here.
+      if (data.can_manage === false) {
+        router.replace('/dashboard');
+        return;
+      }
       // Org-configured provider already exists — no reason to be here.
       const hasOrgKey = Object.values(data.api_keys ?? {}).some((k: any) => k?.configured);
       if (hasOrgKey) {

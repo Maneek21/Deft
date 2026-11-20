@@ -255,6 +255,7 @@ test('W1a kept reads: a real Defty conversation still lists, reads and exports',
   const trace = await request(`/conversations/${DEFTY_CONVO}/trace.json`);
   assert.equal(trace.status, 200);
   assert.equal(((await trace.json()) as { format: string }).format, 'deft.agent_trace.v1');
+  assert.equal(trace.headers.get('cache-control'), 'private, no-store', 'check 14.3: the trace download is never cacheable');
   as({ id: COLLEAGUE, org_id: ORG_A, role: 'member' });
   assert.equal((await request(`/conversations/${DEFTY_CONVO}/trace.json`)).status, 404);
   assert.equal((await request(`/conversations/${DEFTY_CONVO}/messages`)).status, 404);

@@ -345,10 +345,14 @@ clipRoutes.get('/:id/audio', async (c) => {
       return new Response(data, {
         headers: {
           'Content-Type': clip.mime_type,
-          'Content-Disposition': `inline; filename="clip-${clipId}.webm"`,
+          // Sent as a download like every other file route (check 14.3). The
+          // player fetches the bytes and plays them from memory, so this does
+          // not change playback.
+          'Content-Disposition': `attachment; filename="clip-${clipId}.webm"`,
           // Clip visibility follows mutable space membership. Never allow an
           // authenticated response to become a shared/public cache entry.
           'Cache-Control': 'private, no-store',
+          'X-Content-Type-Options': 'nosniff',
         },
       });
     } catch {

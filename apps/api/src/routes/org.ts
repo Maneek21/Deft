@@ -23,14 +23,19 @@ import { isHostedMode } from '../lib/hosted-mode.js';
 
 export const orgRoutes = new Hono();
 
-async function requireAdmin(c: Context): Promise<true | Response> {
+/** True when the caller's stored membership (never a supplied role) may change AI settings. */
+async function canManageAiSettings(c: Context): Promise<boolean> {
   const user = c.get('user') as { id: string; org_id: string };
   const [m] = await db
     .select({ role: orgMembers.role })
     .from(orgMembers)
     .where(and(eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, user.id)))
     .limit(1);
-  if (!m || (m.role !== 'owner' && m.role !== 'admin')) {
+  return Boolean(m && (m.role === 'owner' || m.role === 'admin'));
+}
+
+async function requireAdmin(c: Context): Promise<true | Response> {
+  if (!(await canManageAiSettings(c))) {
     return c.json({ error: 'Admin only', code: 'FORBIDDEN' }, 403);
   }
   return true;
@@ -47,9 +52,21 @@ async function readTranscriptionConfig(orgId: string): Promise<{ provider: 'loca
   };
 }
 
-// GET /api/org/ai-config — masked config + a summary of usable providers
+// GET /api/org/ai-config — masked config + a summary of usable providers.
+// Only people who can change the AI settings see the configuration. Everyone
+// else learns whether AI is usable and nothing more: no provider, no model,
+// and never any part of a stored key.
 orgRoutes.get('/ai-config', async (c) => {
   const user = c.get('user');
+  if (!(await canManageAiSettings(c))) {
+    const reason_provider = await getReasonProviderReadiness(user.org_id);
+    return c.json({
+      can_manage: false,
+      has_provider: await hasAnyAIProvider(user.org_id),
+      has_reason_provider: reason_provider.ready,
+      hosted: isHostedMode(),
+    });
+  }
   const masked = await getOrgAIConfigMasked(user.org_id);
   const has_provider = await hasAnyAIProvider(user.org_id);
   const reason_provider = await getReasonProviderReadiness(user.org_id);
@@ -57,6 +74,7 @@ orgRoutes.get('/ai-config', async (c) => {
   const transcription = await readTranscriptionConfig(user.org_id);
   return c.json({
     ...masked,
+    can_manage: true,
     has_provider,
     has_reason_provider: reason_provider.ready,
     reason_provider,
@@ -195,6 +213,7 @@ orgRoutes.put('/ai-config', async (c) => {
   const transcription = await readTranscriptionConfig(user.org_id);
   return c.json({
     ...masked,
+    can_manage: true,
     has_provider,
     has_reason_provider: reason_provider.ready,
     reason_provider,
