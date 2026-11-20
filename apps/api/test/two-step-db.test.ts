@@ -643,25 +643,46 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
   await t.test('15.8: a lock notice never deadlocks with enrolment confirmation holding the account row', async () => {
     const who = await enrolledPerson();
     await db.update(userTwoStep).set({ failed_attempts: service.ACCOUNT_FREE_FAILURES - 1 }).where(eq(userTwoStep.user_id, who.id));
+    const warn = t.mock.method(console, 'warn', () => undefined);
     // Another transaction takes the rows the way confirmTwoStepEnrolment does:
     // the account row first, then the two-step row.
     const other = new pg.Client({ connectionString: databaseUrl! });
     await other.connect();
+    let otherError: { code?: string } | undefined;
     try {
       await other.query('BEGIN');
-      await other.query('SET LOCAL lock_timeout = 5000');
+      await other.query('SET LOCAL lock_timeout = 20000');
+      const { rows: [{ pid }] } = await other.query('SELECT pg_backend_pid() AS pid');
       await other.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [who.id]);
       // The fifth wrong code, which writes a lock notice, starts meanwhile.
       const locking = service.regenerateRecoveryCodes(who.id, wrongCode(who.secret));
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      await other.query('SELECT user_id FROM user_two_step WHERE user_id=$1 FOR UPDATE', [who.id]);
-      await other.query('COMMIT');
-      const result = await locking;
-      assert.equal(result.ok, false);
+      // Go on only once that check is waiting on the account row this
+      // transaction holds. Taking the account row first, it waits before the
+      // two-step row; taking the two-step row first (the old order), it waits
+      // at the notice insert while holding the two-step row, and the next
+      // statement deadlocks. The check waits first, so Postgres's deadlock
+      // timer fires in its backend, and its notice insert is the one aborted.
+      for (let waited = 0; ; waited += 50) {
+        const { rowCount } = await other.query('SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))', [pid]);
+        if (rowCount) break;
+        assert.ok(waited < 15_000, 'the code check never waited on the account row');
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      try {
+        await other.query('SELECT user_id FROM user_two_step WHERE user_id=$1 FOR UPDATE', [who.id]);
+        await other.query('COMMIT');
+      } catch (error) {
+        otherError = error as { code?: string };
+      }
+      assert.equal((await locking).ok, false);
     } finally {
       await other.query('ROLLBACK').catch(() => undefined);
       await other.end();
+      warn.mock.restore();
     }
+    assert.equal(otherError?.code, undefined, `deadlock: the other transaction failed with ${otherError?.code}`);
+    assert.ok(!warn.mock.calls.some((call) => String(call.arguments[0]).includes('lock notice failed')),
+      'deadlock: the notice insert failed (40P01) and the notice was lost');
     const { notifications } = await import('@deft/db/schema');
     const rows = await db.select().from(notifications).where(eq(notifications.user_id, who.id));
     assert.equal(rows.filter((row) => (row.metadata as Json | null)?.kind === 'two_step_locked').length, 1, 'the notice was written');
