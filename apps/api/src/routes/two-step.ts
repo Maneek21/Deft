@@ -7,8 +7,9 @@ import { users } from '@deft/db/schema';
 import { db } from '../lib/db.js';
 import { OrgMembershipError } from '../lib/org-membership.js';
 import { verifyWebAccess, WebCredentialsChangedError } from '../lib/web-sessions.js';
-import { issueSession } from '../lib/session-issuance.js';
+import { issueSession, issuedSessionBody } from '../lib/session-issuance.js';
 import { SecondStepRequiredError } from '../lib/two-step-policy.js';
+import { isRecoveryResetToken, isTwoStepToken, RECOVERY_RESET_REFUSAL } from '../lib/two-step.js';
 import { isPausedStart, PAUSED_ERROR } from '../lib/paused-start.js';
 import {
   confirmTwoStepEnrolment,
@@ -24,7 +25,9 @@ import {
 /**
  * Two-step verification, mounted at /api/auth/two-step.
  *
- *   POST /verify           challenge + code (or recovery code) -> session
+ *   POST /verify           challenge + code -> session; challenge + recovery
+ *                          code -> an enrol-only token (a new authenticator
+ *                          must be set up first, check 15.1)
  *   GET  /                 status
  *   POST /enrol/start      -> secret + otpauth:// address (the password too, the
  *                             first time someone signed in sets it up)
@@ -60,7 +63,11 @@ const startSchema = z.object({
 
 const codeSchema = z.object({ code: codeField });
 
-type Caller = { id: string; email: string; org_id: string; restricted: boolean; sid: string | null; challengeToken: string | null };
+type Caller = {
+  id: string; email: string; org_id: string; restricted: boolean; sid: string | null; challengeToken: string | null;
+  /** The enrol-only token was earned with a recovery code. */
+  recoveryReset: boolean;
+};
 
 function refuse(c: Context, check: Exclude<SecondStepCheck, { ok: true }> | { ok: false; reason: 'proof_required' }) {
   if (check.reason === 'locked') {
@@ -81,14 +88,16 @@ async function authenticate(c: Context, allowRestricted: boolean): Promise<Calle
   const header = c.req.header('Authorization');
   if (!header?.startsWith('Bearer ')) return c.json({ error: 'Unauthorized', code: 'NO_TOKEN' }, 401);
   const token = header.slice(7);
-  if (token.startsWith('tsc_')) {
-    const identity = allowRestricted ? await resolveEnrolChallenge(token) : null;
-    if (!identity) return c.json({ error: 'Invalid or expired token', code: 'INVALID_TOKEN' }, 401);
-    return { ...identity, restricted: true, sid: null, challengeToken: token };
+  if (isTwoStepToken(token)) {
+    if (!allowRestricted && isRecoveryResetToken(token)) return c.json(RECOVERY_RESET_REFUSAL, 401);
+    const resolved = allowRestricted ? await resolveEnrolChallenge(token) : null;
+    if (!resolved) return c.json({ error: 'Invalid or expired token', code: 'INVALID_TOKEN' }, 401);
+    const { recovery_reset: recoveryReset, ...identity } = resolved;
+    return { ...identity, restricted: true, sid: null, challengeToken: token, recoveryReset };
   }
   try {
     const payload = await verifyWebAccess(token);
-    return { id: payload.id, email: payload.email, org_id: payload.org_id, restricted: false, sid: payload.sid, challengeToken: null };
+    return { id: payload.id, email: payload.email, org_id: payload.org_id, restricted: false, sid: payload.sid, challengeToken: null, recoveryReset: false };
   } catch (err) {
     if (err instanceof OrgMembershipError) return c.json({ error: err.message, code: err.code }, err.status as 403);
     if (err instanceof SecondStepRequiredError) return c.json({ error: err.message, code: err.code }, 401);
@@ -122,6 +131,8 @@ twoStepRoutes.post('/verify', async (c) => {
     if (exchange.reason === 'challenge_dead') return c.json({ error: 'Too many wrong codes. Sign in again.', code: 'TWO_STEP_CHALLENGE_DEAD' }, 401);
     return c.json({ error: 'Sign in again', code: 'TWO_STEP_CHALLENGE_INVALID' }, 401);
   }
+  // A recovery code: no session, only the token that sets up a new authenticator.
+  if (issued.status === 'enrolment_required' && issued.reason === 'recovery_code') return c.json(issuedSessionBody(issued));
   if (issued.status !== 'session') return c.json({ error: 'Sign in again', code: 'TWO_STEP_CHALLENGE_INVALID' }, 401);
   return c.json({ accessToken: issued.accessToken, refreshToken: issued.refreshToken });
 });
@@ -153,14 +164,17 @@ twoStepRoutes.post('/enrol/start', async (c) => {
   if (!parsed.success) return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
   // The service decides which proof is needed under its row lock: the
   // password when not enrolled (an enrol-only token was earned with it a
-  // moment ago), a current code when replacing an enrolment.
+  // moment ago), a current code when replacing an enrolment, or nothing more
+  // for the token a recovery-code sign-in earned.
   const started = await startTwoStepEnrolment(caller, {
     code: parsed.data.code,
     recoveryCode: parsed.data.recovery_code,
     currentPassword: parsed.data.current_password,
     passwordProven: caller.restricted,
+    recoveryResetToken: caller.recoveryReset ? caller.challengeToken! : undefined,
   });
   if (!started.ok) {
+    if ('reason' in started) return c.json({ error: 'Sign in again', code: 'INVALID_TOKEN' }, 401);
     const check = started.check;
     if (check.reason === 'password_required') {
       return c.json({ error: 'Enter your current password to set up two-step verification', code: 'INVALID_CREDENTIALS' }, 403);

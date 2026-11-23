@@ -2,12 +2,16 @@ import { api } from './api';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 const ENROL_TOKEN_KEY = 'deft-two-step-enrol-token';
+const ENROL_REASON_KEY = 'deft-two-step-enrol-reason';
 
-/** What a sign-in returns instead of a session when a second step is due. */
+/** What a sign-in returns instead of a session when a second step is due.
+ * `reason: 'recovery_code'`: the person signed in with a recovery code and
+ * must set up a new authenticator before anything else. */
 export type TwoStepPending = {
   status: 'code_required' | 'enrolment_required';
   token: string;
   expires_at: string;
+  reason?: 'recovery_code';
 };
 
 export type TwoStepStatus = {
@@ -24,18 +28,33 @@ export function readTwoStepPending(data: unknown): TwoStepPending | null {
   const value = (data as { two_step?: Partial<TwoStepPending> } | null)?.two_step;
   if (!value || typeof value.token !== 'string') return null;
   if (value.status !== 'code_required' && value.status !== 'enrolment_required') return null;
-  return { status: value.status, token: value.token, expires_at: String(value.expires_at ?? '') };
+  return {
+    status: value.status, token: value.token, expires_at: String(value.expires_at ?? ''),
+    ...(value.status === 'enrolment_required' && value.reason === 'recovery_code' ? { reason: 'recovery_code' as const } : {}),
+  };
 }
 
 /** The enrol-only token lives for this tab only and is never a session. */
-export function storeEnrolToken(token: string): void {
+export function storeEnrolToken(token: string, reason?: TwoStepPending['reason']): void {
   sessionStorage.setItem(ENROL_TOKEN_KEY, token);
+  if (reason) sessionStorage.setItem(ENROL_REASON_KEY, reason);
+  else sessionStorage.removeItem(ENROL_REASON_KEY);
 }
 export function takeEnrolToken(): string | null {
   return sessionStorage.getItem(ENROL_TOKEN_KEY);
 }
+/** Why the stored enrol-only token was issued, if it was a recovery code. */
+export function takeEnrolReason(): TwoStepPending['reason'] {
+  return sessionStorage.getItem(ENROL_REASON_KEY) === 'recovery_code' ? 'recovery_code' : undefined;
+}
+/** Where a signed-out workspace page sends this tab: back to setup while it
+ * holds an enrol-only token (a sign-in would throw that away), else sign-in. */
+export function signedOutDestination(): '/two-step-setup' | '/login' {
+  return takeEnrolToken() ? '/two-step-setup' : '/login';
+}
 export function clearEnrolToken(): void {
   sessionStorage.removeItem(ENROL_TOKEN_KEY);
+  sessionStorage.removeItem(ENROL_REASON_KEY);
 }
 
 export class TwoStepError extends Error {
@@ -94,14 +113,20 @@ export const twoStepApi = {
   disable: (code: string) => request<{ success: true }>('POST', '/disable', { code }),
 };
 
-/** The second call of a sign-in: challenge plus a code or a recovery code. */
-export async function exchangeTwoStepChallenge(challengeToken: string, proof: { code: string } | { recovery_code: string }): Promise<TwoStepSession> {
+/**
+ * The second call of a sign-in: challenge plus a code or a recovery code. A
+ * code gives a session; a recovery code gives only an enrol-only token, for
+ * setting up a new authenticator first.
+ */
+export async function exchangeTwoStepChallenge(challengeToken: string, proof: { code: string } | { recovery_code: string }): Promise<TwoStepSession | TwoStepPending> {
   const res = await fetch(`${API_URL}/api/auth/two-step/verify`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ challenge_token: challengeToken, ...proof }),
   });
   const data = await res.json().catch(() => ({}));
+  const pending = res.ok ? readTwoStepPending(data) : null;
+  if (pending?.status === 'enrolment_required') return pending;
   if (!res.ok || typeof data.accessToken !== 'string' || typeof data.refreshToken !== 'string') {
     throw new TwoStepError(twoStepMessage(data?.code, data?.error, data?.retry_after_seconds), String(data?.code ?? 'ERROR'), res.status);
   }

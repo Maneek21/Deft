@@ -9,6 +9,9 @@ import {
   generateRecoveryCodes,
   generateTwoStepSecret,
   generateTwoStepToken,
+  hashTwoStepToken,
+  isRecoveryResetToken,
+  isTwoStepToken,
   hashRecoveryCode,
   matchTwoStepCode,
   normalizeRecoveryCode,
@@ -103,6 +106,18 @@ test('challenge tokens are opaque, not JWTs', () => {
   assert.match(token, /^tsc_[A-Za-z0-9_-]{43}$/);
   assert.equal(token.split('.').length, 1);
   assert.notEqual(generateTwoStepToken(), token);
+});
+
+test('a recovery-reset token is its own kind, told apart only by its prefix, which its hash covers', () => {
+  const reset = generateTwoStepToken('recovery_reset');
+  const challenge = generateTwoStepToken();
+  assert.match(reset, /^tsr_[A-Za-z0-9_-]{43}$/);
+  assert.equal(isRecoveryResetToken(reset), true);
+  assert.equal(isRecoveryResetToken(challenge), false);
+  assert.equal(isTwoStepToken(reset) && isTwoStepToken(challenge), true);
+  assert.equal(isTwoStepToken('eyJhbGciOiJIUzI1NiJ9.e30.x'), false);
+  // Renaming the prefix gives a token whose hash matches no stored challenge.
+  assert.notEqual(hashTwoStepToken(`tsc_${reset.slice(4)}`), hashTwoStepToken(reset));
 });
 
 // One policy at every place a session is issued: only the two session modules

@@ -19,7 +19,8 @@
  *   credential migration) is skipped;
  * - every request other than GET, HEAD and OPTIONS is refused with 503
  *   `{ code: 'PAUSED' }`, except login (with its two-step code and, for an
- *   owner or admin who must still set it up, the enrol-only calls), token
+ *   owner or admin who must still set it up or anyone who signed in with a
+ *   recovery code, the enrol-only calls), token
  *   refresh and logout; the agent
  *   channel (except its static contract), the public calendar feed and the
  *   feed-address route are refused for every method;

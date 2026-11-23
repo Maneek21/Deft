@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
-import { clearEnrolToken, twoStepApi } from '@/lib/two-step';
+import { clearEnrolToken, takeEnrolToken, TwoStepError, twoStepApi } from '@/lib/two-step';
 
 const inputStyle = {
   background: 'var(--surface-container)',
@@ -35,7 +35,7 @@ export function RecoveryCodesOnce({ codes, onSaved, doneLabel = 'Continue' }: { 
     <div className="flex flex-col gap-4">
       <h2 className="text-[1rem] font-semibold" style={{ color: 'var(--foreground)' }}>Save your recovery codes</h2>
       <p className="text-[0.8125rem]" style={mutedText}>
-        Each code signs you in once if you do not have your authenticator. They are shown only now.
+        Each code works once if you lose your authenticator: it lets you sign in and set up a new one. They are shown only now.
         If you lose both your authenticator and these codes, there is no way back into this account.
       </p>
       <pre className="p-4 text-[0.875rem] leading-6 select-all overflow-x-auto" data-testid="two-step-recovery-codes"
@@ -83,7 +83,17 @@ export function TwoStepEnrolment({ enrolToken = null, replacing = false, onFinis
   const [code, setCode] = useState('');
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
   const [error, setError] = useState('');
+  // The enrol-only token died (expired, used elsewhere, or the password
+  // changed): this tab starts again from sign-in.
+  const [signInAgain, setSignInAgain] = useState(false);
   const [busy, setBusy] = useState(false);
+  const fail = (err: unknown) => {
+    if (enrolToken && err instanceof TwoStepError && err.status === 401) {
+      if (takeEnrolToken() === enrolToken) clearEnrolToken();
+      setSignInAgain(true);
+    }
+    setError(err instanceof Error ? err.message : 'Something went wrong. Try again.');
+  };
 
   const start = async () => {
     setError('');
@@ -97,7 +107,7 @@ export function TwoStepEnrolment({ enrolToken = null, replacing = false, onFinis
       setOtpauthUrl(started.otpauth_url);
       setStep('secret');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Something went wrong. Try again.');
+      fail(err);
     } finally {
       setBusy(false);
     }
@@ -123,7 +133,7 @@ export function TwoStepEnrolment({ enrolToken = null, replacing = false, onFinis
       setRecoveryCodes(confirmed.recovery_codes);
       setStep('codes');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Something went wrong. Try again.');
+      fail(err);
     } finally {
       setBusy(false);
     }
@@ -136,6 +146,7 @@ export function TwoStepEnrolment({ enrolToken = null, replacing = false, onFinis
       {error && (
         <div className="px-4 py-3 text-[0.8125rem] rounded-lg" role="alert" style={{ background: 'rgba(147,0,10,0.3)', color: 'var(--error)' }}>
           {error}
+          {signInAgain && <> <a href="/login" className="underline underline-offset-4">Sign in</a></>}
         </div>
       )}
       {step === 'intro' && (

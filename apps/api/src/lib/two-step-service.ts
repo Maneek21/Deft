@@ -15,6 +15,7 @@ import {
   generateTwoStepToken,
   hashRecoveryCode,
   hashTwoStepToken,
+  isRecoveryResetToken,
   matchTwoStepCode,
 } from './two-step.js';
 
@@ -57,42 +58,68 @@ type CheckOptions = { secret: 'confirmed' | 'pending'; allowRecoveryCode: boolea
  * the account's row lock, so two requests cannot use the same code, and
  * counts a wrong code against the account whatever route it arrived by.
  */
-type LockNotice = typeof notifications.$inferSelect;
-/** Lock notices written inside a transaction run by twoStepTransaction. */
-const lockNoticesIn = new WeakMap<object, LockNotice[]>();
+type AccountNoticeRow = typeof notifications.$inferSelect;
+/** Notices written inside a transaction run by twoStepTransaction. */
+const noticesIn = new WeakMap<object, AccountNoticeRow[]>();
 
 /**
- * db.transaction for every path that checks a code. A lock notice written by
- * checkSecondStep commits with the lock itself, so it is never lost and never
- * sent for a rolled-back attempt; its copy into the attention feed follows the
- * commit, best effort, like every other notification.
+ * db.transaction for every path that checks a code. A notice written by
+ * checkSecondStep or enrolment commits with the change it reports, so it is
+ * never lost and never sent for a rolled-back attempt. After the commit, the
+ * sessions the transaction ended (a result's `revoked`) are cut off first,
+ * then the notices are copied into the attention feed, best effort, like
+ * every other notification, so an ended session never receives them.
  */
 async function twoStepTransaction<T>(run: (tx: Tx) => Promise<T>): Promise<T> {
-  const written: LockNotice[] = [];
+  const written: AccountNoticeRow[] = [];
   const result = await db.transaction(async (tx) => {
-    lockNoticesIn.set(tx, written);
+    noticesIn.set(tx, written);
     return run(tx);
   });
+  const revoked = (result as { revoked?: unknown } | null)?.revoked;
+  if (Array.isArray(revoked)) emitWebSessionRevocations(revoked as string[]);
   for (const notice of written) {
-    await syncNotificationToAttention(notice).catch(() => console.warn('[two-step] lock notice attention copy failed'));
+    await syncNotificationToAttention(notice).catch(() => console.warn('[two-step] notice attention copy failed'));
   }
   return result;
 }
 
-/**
- * Tells the account holder, in each workspace they belong to, that wrong codes
- * locked their account (check 15.8). Every wrong code that meets a lock asks
- * for it, and it is written unless one was written in the last day, so
- * someone guessing cannot flood the person, and a notice whose write failed
- * is written on the next wrong code. It says
- * nothing about the attempts (no address, time, count or which code was
- * tried), and it is shown only to the account holder, never in a response to
- * the person guessing. Delivered whatever the person's notification
- * preferences. Written in a savepoint: if writing it fails, the wrong code is
- * still counted and the answer to the code check is unchanged.
- */
 /** At most one lock notice per account in this time. */
 export const LOCK_NOTICE_INTERVAL_MS = 24 * 60 * 60_000;
+
+type AccountNotice = { kind: string; title: string; body: string; onceWithinMs?: number };
+
+/**
+ * Wrong codes locked the account (check 15.8). Every wrong code that meets a
+ * lock asks for it, and it is written unless one was written in the last
+ * day, so someone guessing cannot flood the person, and a notice whose write
+ * failed is written on the next wrong code.
+ */
+const LOCK_NOTICE: AccountNotice = {
+  kind: 'two_step_locked',
+  title: 'Wrong sign-in codes on your account',
+  body: 'Several wrong two-step or recovery codes were entered for your account, so codes are refused for a while. '
+    + 'If this was not you, change your password.',
+  onceWithinMs: LOCK_NOTICE_INTERVAL_MS,
+};
+
+/** A recovery code was spent (check 15.1). Each needs a valid unused code,
+ * so there are never more than the person has codes. */
+const RECOVERY_CODE_USED_NOTICE: AccountNotice = {
+  kind: 'two_step_recovery_code_used',
+  title: 'A recovery code was used on your account',
+  body: 'A recovery code was used on your account, and every other session was signed out. '
+    + 'Until a new authenticator is set up, your current one still works. '
+    + 'If this was not you, change your password and replace your recovery codes.',
+};
+
+/** The second step was set up again after a recovery-code sign-in (check 15.1). */
+const RECOVERY_RESET_NOTICE: AccountNotice = {
+  kind: 'two_step_reset',
+  title: 'Two-step verification was reset',
+  body: 'A recovery code was used to sign in to your account, and two-step verification was set up again on a new authenticator. '
+    + 'The old authenticator and the old recovery codes no longer work, and every other session was signed out.',
+};
 
 /**
  * Takes the account row before any two-step row, the order enrolment
@@ -104,15 +131,26 @@ async function lockAccountRow(tx: Tx, userId: string): Promise<void> {
   await tx.select({ id: users.id }).from(users).where(eq(users.id, userId)).for('key share');
 }
 
-async function writeTwoStepLockNotice(tx: Tx, userId: string, now: Date): Promise<void> {
+/**
+ * Tells the account holder, in each workspace they belong to, about a change
+ * to their second step. A notice says nothing about the attempt (no address,
+ * time, count or which code was tried), and it is shown only to the account
+ * holder, never in a response to the caller. Delivered whatever the person's
+ * notification preferences. Written in a savepoint: if writing it fails, the
+ * code check and its answer are unchanged. The caller holds the account row
+ * (see lockAccountRow).
+ */
+async function writeTwoStepNotice(tx: Tx, userId: string, now: Date, notice: AccountNotice): Promise<void> {
   try {
     const rows = await tx.transaction(async (savepoint) => {
-      const [recent] = await savepoint.select({ id: notifications.id }).from(notifications).where(and(
-        eq(notifications.user_id, userId),
-        sql`${notifications.metadata}->>'kind' = 'two_step_locked'`,
-        sql`${notifications.created_at} > ${new Date(now.getTime() - LOCK_NOTICE_INTERVAL_MS)}`,
-      )).limit(1);
-      if (recent) return [];
+      if (notice.onceWithinMs !== undefined) {
+        const [recent] = await savepoint.select({ id: notifications.id }).from(notifications).where(and(
+          eq(notifications.user_id, userId),
+          sql`${notifications.metadata}->>'kind' = ${notice.kind}`,
+          sql`${notifications.created_at} > ${new Date(now.getTime() - notice.onceWithinMs)}`,
+        )).limit(1);
+        if (recent) return [];
+      }
       const memberships = await savepoint.select({ org_id: orgMembers.org_id }).from(orgMembers)
         .where(and(eq(orgMembers.user_id, userId), eq(orgMembers.is_active, true)));
       if (memberships.length === 0) return [];
@@ -120,19 +158,19 @@ async function writeTwoStepLockNotice(tx: Tx, userId: string, now: Date): Promis
         org_id,
         user_id: userId,
         type: 'system' as const,
-        title: 'Wrong sign-in codes on your account',
-        body: 'Several wrong two-step or recovery codes were entered for your account, so codes are refused for a while. '
-          + 'If this was not you, change your password.',
+        title: notice.title,
+        body: notice.body,
         link: '/settings/profile',
         metadata: {
-          kind: 'two_step_locked',
+          kind: notice.kind,
           delivery_policy: { status: 'delivered', reason: 'allowed', channel: notificationChannelForType('system'), evaluated_at: now.toISOString() },
         },
       }))).returning();
     });
-    lockNoticesIn.get(tx)?.push(...rows);
+    noticesIn.get(tx)?.push(...rows);
   } catch {
-    console.warn('[two-step] lock notice failed');
+    if (notice === LOCK_NOTICE) console.warn('[two-step] lock notice failed');
+    else console.warn('[two-step] account notice failed');
   }
 }
 
@@ -171,6 +209,7 @@ async function checkSecondStep(tx: Tx, userId: string, proof: SecondStepProof, o
         .returning({ id: userTwoStepRecoveryCodes.id });
       if (used.length === 1) {
         await tx.update(userTwoStep).set({ failed_attempts: 0, locked_until: null }).where(eq(userTwoStep.user_id, userId));
+        await writeTwoStepNotice(tx, userId, now, RECOVERY_CODE_USED_NOTICE);
         return { ok: true, method: 'recovery_code' };
       }
     }
@@ -182,7 +221,7 @@ async function checkSecondStep(tx: Tx, userId: string, proof: SecondStepProof, o
     .set({ failed_attempts: failedAttempts, locked_until: delay > 0 ? new Date(now.getTime() + delay) : null })
     .where(eq(userTwoStep.user_id, userId));
   // A wrong code that meets a lock: the person is told (at most once a day).
-  if (delay > 0) await writeTwoStepLockNotice(tx, userId, now);
+  if (delay > 0) await writeTwoStepNotice(tx, userId, now, LOCK_NOTICE);
   return { ok: false, reason: 'invalid' };
 }
 
@@ -222,7 +261,8 @@ export async function twoStepIsMandatoryFor(userId: string, reader: Pick<Tx, 'se
 
 export type EnrolmentStart =
   | { ok: true; secret: string; otpauth_url: string }
-  | { ok: false; check: Exclude<SecondStepCheck, { ok: true }> | { ok: false; reason: 'proof_required' } | { ok: false; reason: 'password_required' } };
+  | { ok: false; check: Exclude<SecondStepCheck, { ok: true }> | { ok: false; reason: 'proof_required' } | { ok: false; reason: 'password_required' } }
+  | { ok: false; reason: 'authority_lost' };
 
 /** Rolls back the enrolment start's row insert when the password is refused. */
 class PasswordRequired extends Error {}
@@ -233,6 +273,10 @@ export type EnrolmentProof = SecondStepProof & {
   currentPassword?: string | undefined;
   /** The caller holds an enrol-only token, earned with the password a moment ago. */
   passwordProven?: boolean;
+  /** The caller's enrol-only token, when a recovery-code sign-in earned it:
+   * that sign-in already proved the second step (and ended every other
+   * session), so it stands in for a current code. Checked again here. */
+  recoveryResetToken?: string | undefined;
 };
 
 /**
@@ -240,13 +284,19 @@ export type EnrolmentProof = SecondStepProof & {
  * once. The proof required is decided here, from the state read under the
  * row lock (never from an earlier read by the caller):
  *   - already enrolled: a current code or a recovery code (replacing the
- *     authenticator);
+ *     authenticator), or the live enrol-only token a recovery-code sign-in
+ *     earned (check 15.1: that sign-in may only set up a new authenticator);
  *   - not enrolled: the password, typed now or proven by an enrol-only token.
  * A stolen access token alone must not be enough to put someone else's
  * authenticator on an account, whichever way a concurrent turn-off lands.
  */
 export async function startTwoStepEnrolment(user: { id: string; email: string; sid: string | null }, proof: EnrolmentProof = {}, now = new Date()): Promise<EnrolmentStart> {
   const result = await twoStepTransaction(async (tx) => {
+    // The token before the two-step row: the order confirmation takes them in.
+    if (proof.recoveryResetToken !== undefined) {
+      const reset = await lockLiveChallenge(tx, proof.recoveryResetToken, 'enrol', now);
+      if (reset?.user_id !== user.id || !reset.recovery_reset) return { ok: false as const, reason: 'authority_lost' as const };
+    }
     await lockAccountRow(tx, user.id);
     await tx.insert(userTwoStep).values({ user_id: user.id }).onConflictDoNothing();
     const [row] = await tx.select({ confirmed_at: userTwoStep.confirmed_at }).from(userTwoStep).where(eq(userTwoStep.user_id, user.id)).for('update');
@@ -257,7 +307,7 @@ export async function startTwoStepEnrolment(user: { id: string; email: string; s
         throw new PasswordRequired();
       }
     }
-    if (row?.confirmed_at) {
+    if (row?.confirmed_at && proof.recoveryResetToken === undefined) {
       if (!proof.code && !proof.recoveryCode) return { ok: false as const, check: { ok: false as const, reason: 'proof_required' as const } };
       const check = await checkSecondStep(tx, user.id, proof, { secret: 'confirmed', allowRecoveryCode: true, now });
       if (!check.ok) return { ok: false as const, check };
@@ -275,7 +325,6 @@ export async function startTwoStepEnrolment(user: { id: string; email: string; s
     throw err;
   });
   if (!result.ok) return result;
-  emitWebSessionRevocations(result.revoked);
   return { ok: true, secret: result.secret, otpauth_url: result.otpauth_url };
 }
 
@@ -295,9 +344,12 @@ export type EnrolAuthority = { sid: string } | { challengeToken: string };
  * transaction it activates the secret, replaces the recovery codes, ends
  * every existing session and kills every outstanding challenge, so no session
  * issued without a code survives. The caller then issues a fresh session.
+ * Finishing the setup a recovery-code sign-in asked for also tells the account
+ * holder the second step was reset (check 15.1).
  */
 export async function confirmTwoStepEnrolment(userId: string, code: string, authority: EnrolAuthority, now = new Date()): Promise<EnrolmentConfirm> {
   const result = await twoStepTransaction(async (tx) => {
+    let afterRecoveryCode = false;
     // Same row session creation and password changes lock: enrolment,
     // issuance and a password reset are serialized.
     const [user] = await tx.select({ id: users.id, password_version: users.password_version }).from(users).where(eq(users.id, userId)).for('update');
@@ -310,6 +362,7 @@ export async function confirmTwoStepEnrolment(userId: string, code: string, auth
     } else {
       const challenge = await lockLiveChallenge(tx, authority.challengeToken, 'enrol', now);
       if (challenge?.user_id !== userId) return { ok: false as const, reason: 'authority_lost' as const };
+      afterRecoveryCode = challenge.recovery_reset;
     }
     const check = await checkSecondStep(tx, userId, { code }, { secret: 'pending', allowRecoveryCode: false, now });
     if (!check.ok) return { ok: false as const, check };
@@ -333,11 +386,11 @@ export async function confirmTwoStepEnrolment(userId: string, code: string, auth
     if (keptSid) await tx.update(webSessions).set({ created_at: sql`clock_timestamp()` }).where(eq(webSessions.id, keptSid));
     await tx.update(twoStepChallenges).set({ consumed_at: now })
       .where(and(eq(twoStepChallenges.user_id, userId), isNull(twoStepChallenges.consumed_at)));
+    if (afterRecoveryCode) await writeTwoStepNotice(tx, userId, now, RECOVERY_RESET_NOTICE);
     const credentials = { passwordVersion: user.password_version, confirmedAt: confirmed!.confirmed_at! };
     return { ok: true as const, recoveryCodes, revoked, credentials, keptSession: keptSid !== null };
   });
   if (!result.ok) return result;
-  emitWebSessionRevocations(result.revoked);
   return { ok: true, recoveryCodes: result.recoveryCodes, credentials: result.credentials, keptSession: result.keptSession };
 }
 
@@ -376,18 +429,28 @@ export async function disableTwoStep(userId: string, code: string, now = new Dat
 
 export type TwoStepChallenge = { token: string; expires_at: string };
 
-/** Issues the single-purpose token a correct password earns instead of a session. */
-export async function createTwoStepChallenge(input: { userId: string; orgId: string; kind: 'verify' | 'enrol'; passwordVersion: number }, now = new Date()): Promise<TwoStepChallenge> {
-  const token = generateTwoStepToken();
+type ChallengeInput = { userId: string; orgId: string; kind: 'verify' | 'enrol'; passwordVersion: number };
+
+async function insertTwoStepChallenge(executor: Pick<Tx, 'insert'>, input: ChallengeInput, now: Date, purpose: 'challenge' | 'recovery_reset' = 'challenge'): Promise<TwoStepChallenge> {
+  const token = generateTwoStepToken(purpose);
   const expiresAt = new Date(now.getTime() + (input.kind === 'verify' ? VERIFY_CHALLENGE_TTL_MS : ENROL_CHALLENGE_TTL_MS));
-  await db.insert(twoStepChallenges).values({
+  await executor.insert(twoStepChallenges).values({
     user_id: input.userId, org_id: input.orgId, kind: input.kind,
     token_hash: hashTwoStepToken(token), password_version: input.passwordVersion, expires_at: expiresAt,
   });
   return { token, expires_at: expiresAt.toISOString() };
 }
 
-type LiveChallenge = { id: string; user_id: string; org_id: string; email: string; failed_attempts: number; password_version: number };
+/** Issues the single-purpose token a correct password earns instead of a session. */
+export async function createTwoStepChallenge(input: ChallengeInput, now = new Date()): Promise<TwoStepChallenge> {
+  return insertTwoStepChallenge(db, input, now);
+}
+
+type LiveChallenge = {
+  id: string; user_id: string; org_id: string; email: string; failed_attempts: number; password_version: number;
+  /** An enrol-only token earned with a recovery code (two-step.ts generateTwoStepToken). */
+  recovery_reset: boolean;
+};
 
 /** The challenge, locked, if it is live: right kind, unused, unexpired, the
  * password unchanged since it was issued, and the membership still active. */
@@ -404,20 +467,32 @@ async function lockLiveChallenge(tx: Tx, token: string, kind: 'verify' | 'enrol'
   const [membership] = await tx.select({ id: orgMembers.id }).from(orgMembers)
     .where(and(eq(orgMembers.org_id, challenge.org_id), eq(orgMembers.user_id, challenge.user_id), eq(orgMembers.is_active, true))).limit(1);
   if (!membership) return null;
-  return { id: challenge.id, user_id: challenge.user_id, org_id: challenge.org_id, email: user.email, failed_attempts: challenge.failed_attempts, password_version: challenge.password_version };
+  return {
+    id: challenge.id, user_id: challenge.user_id, org_id: challenge.org_id, email: user.email,
+    failed_attempts: challenge.failed_attempts, password_version: challenge.password_version,
+    // The stored hash covers the prefix, so the token that matched it is the one issued.
+    recovery_reset: challenge.kind === 'enrol' && isRecoveryResetToken(token),
+  };
 }
 
 export type ChallengeIdentity = { id: string; email: string; org_id: string };
 export type ChallengeExchange =
-  | { ok: true; identity: ChallengeIdentity; method: 'code' | 'recovery_code'; credentials: VerifiedCredentials }
+  | { ok: true; identity: ChallengeIdentity; method: 'code'; credentials: VerifiedCredentials }
+  | { ok: true; identity: ChallengeIdentity; method: 'recovery_code'; resetChallenge: TwoStepChallenge }
   | { ok: false; reason: 'challenge_invalid' | 'invalid' | 'challenge_dead' }
   | { ok: false; reason: 'locked'; retryAfterSeconds: number };
 
 /**
  * Checks a login challenge plus a code (or recovery code). On success the
- * challenge is used up; a recovery code also ends every session the person
- * has. After CHALLENGE_MAX_FAILURES wrong codes the challenge is dead and a
- * new login is needed. The caller creates the session.
+ * challenge is used up. After CHALLENGE_MAX_FAILURES wrong codes the
+ * challenge is dead and a new login is needed. After a code the caller
+ * creates the session.
+ *
+ * A recovery code gives no session (check 15.1). It ends every session the
+ * person has and earns only an enrol-only token that may set up a new
+ * authenticator; confirming that replaces the old one and the recovery codes.
+ * Until then nothing else changes: the old authenticator and the unused
+ * recovery codes still sign in, under the same attempt limits.
  */
 export async function exchangeVerifyChallenge(token: string, proof: SecondStepProof, now = new Date()): Promise<ChallengeExchange> {
   const result = await twoStepTransaction(async (tx) => {
@@ -426,10 +501,17 @@ export async function exchangeVerifyChallenge(token: string, proof: SecondStepPr
     const check = await checkSecondStep(tx, challenge.user_id, proof, { secret: 'confirmed', allowRecoveryCode: true, now });
     if (check.ok) {
       await tx.update(twoStepChallenges).set({ consumed_at: now }).where(eq(twoStepChallenges.id, challenge.id));
-      const revoked = check.method === 'recovery_code' ? await revokeAllSessions(tx, challenge.user_id) : [];
+      const identity = { id: challenge.user_id, email: challenge.email, org_id: challenge.org_id };
+      if (check.method === 'recovery_code') {
+        const revoked = await revokeAllSessions(tx, challenge.user_id);
+        const resetChallenge = await insertTwoStepChallenge(tx, {
+          userId: challenge.user_id, orgId: challenge.org_id, kind: 'enrol', passwordVersion: challenge.password_version,
+        }, now, 'recovery_reset');
+        return { ok: true as const, identity, method: check.method, revoked, resetChallenge };
+      }
       const [row] = await tx.select({ confirmed_at: userTwoStep.confirmed_at }).from(userTwoStep).where(eq(userTwoStep.user_id, challenge.user_id)).limit(1);
       const credentials = { passwordVersion: challenge.password_version, confirmedAt: row!.confirmed_at! };
-      return { ok: true as const, identity: { id: challenge.user_id, email: challenge.email, org_id: challenge.org_id }, method: check.method, revoked, credentials };
+      return { ok: true as const, identity, method: check.method, revoked: [] as string[], credentials };
     }
     if (check.reason === 'locked') return check;
     if (check.reason === 'not_enrolled') {
@@ -444,7 +526,7 @@ export async function exchangeVerifyChallenge(token: string, proof: SecondStepPr
     return { ok: false as const, reason: dead ? 'challenge_dead' as const : 'invalid' as const };
   });
   if (result.ok) {
-    emitWebSessionRevocations(result.revoked);
+    if (result.method === 'recovery_code') return { ok: true, identity: result.identity, method: result.method, resetChallenge: result.resetChallenge };
     return { ok: true, identity: result.identity, method: result.method, credentials: result.credentials };
   }
   return result;
@@ -452,9 +534,9 @@ export async function exchangeVerifyChallenge(token: string, proof: SecondStepPr
 
 /** Who an enrol-only token belongs to, or null. It is not used up here: the
  * person needs it for both enrolment calls. Confirming enrolment kills it. */
-export async function resolveEnrolChallenge(token: string, now = new Date()): Promise<ChallengeIdentity | null> {
+export async function resolveEnrolChallenge(token: string, now = new Date()): Promise<(ChallengeIdentity & { recovery_reset: boolean }) | null> {
   return db.transaction(async (tx) => {
     const challenge = await lockLiveChallenge(tx, token, 'enrol', now);
-    return challenge ? { id: challenge.user_id, email: challenge.email, org_id: challenge.org_id } : null;
+    return challenge ? { id: challenge.user_id, email: challenge.email, org_id: challenge.org_id, recovery_reset: challenge.recovery_reset } : null;
   });
 }

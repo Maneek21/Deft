@@ -134,7 +134,34 @@ export function hashTwoStepToken(token: string): string {
   return createHash('sha256').update(`deft-two-step-token:${token}`).digest('hex');
 }
 
-/** Opaque challenge token. It is not a JWT, so no session check accepts it. */
-export function generateTwoStepToken(): string {
-  return `tsc_${randomBytes(32).toString('base64url')}`;
+const CHALLENGE_TOKEN_PREFIX = 'tsc_';
+const RECOVERY_RESET_TOKEN_PREFIX = 'tsr_';
+
+/**
+ * Opaque challenge token. It is not a JWT, so no session check accepts it.
+ * `recovery_reset` is the enrol-only token a recovery-code sign-in earns: it
+ * may set up a new authenticator without a further code. Its prefix is part
+ * of the hashed token, so a holder cannot turn one kind into the other: a
+ * changed prefix matches no stored challenge.
+ */
+export function generateTwoStepToken(purpose: 'challenge' | 'recovery_reset' = 'challenge'): string {
+  const prefix = purpose === 'recovery_reset' ? RECOVERY_RESET_TOKEN_PREFIX : CHALLENGE_TOKEN_PREFIX;
+  return `${prefix}${randomBytes(32).toString('base64url')}`;
 }
+
+export function isTwoStepToken(token: string): boolean {
+  return token.startsWith(CHALLENGE_TOKEN_PREFIX) || token.startsWith(RECOVERY_RESET_TOKEN_PREFIX);
+}
+
+/** Only meaningful for a token that matched a stored challenge (see above). */
+export function isRecoveryResetToken(token: string): boolean {
+  return token.startsWith(RECOVERY_RESET_TOKEN_PREFIX);
+}
+
+/** The answer a recovery-reset token gets anywhere but the two enrolment
+ * calls (check 15.1). It is refused like any other non-session token; this
+ * only says why. */
+export const RECOVERY_RESET_REFUSAL = {
+  error: 'You signed in with a recovery code. Set up a new authenticator before doing anything else.',
+  code: 'TWO_STEP_ENROLMENT_REQUIRED',
+} as const;
