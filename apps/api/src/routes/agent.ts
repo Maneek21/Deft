@@ -71,6 +71,7 @@ import {
 import { WIKI_PROPOSAL_REFUSALS, wikiProposalRefusal, wikiProposalRefusalCode } from '../lib/wiki-proposal-target.js';
 import {
   isModuleWriteActionName,
+  sourceMessageRoomSql,
   visibleAgentActionSourceSql,
   visibleModuleActionSql,
 } from '../lib/module-action-visibility.js';
@@ -923,6 +924,7 @@ agentRoutes.get('/actions/pending-by-space', async (c) => {
       AND EXISTS (
         SELECT 1 FROM agent_actions WHERE agent_actions.id = a.id
           AND ${visibleAgentActionSourceSql({ userId: user.id, orgId: user.org_id })}
+          AND ${sourceMessageRoomSql(user.id)}
       )
       AND (${user.role !== 'guest'} OR a.action NOT IN (
         'module_record_create',

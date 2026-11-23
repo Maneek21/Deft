@@ -2,13 +2,14 @@ import { Hono } from 'hono';
 import { eq, and, inArray, or, sql } from 'drizzle-orm';
 import bcrypt from 'bcryptjs';
 import { db } from '../lib/db.js';
-import { apiKeys, agentEmployees, agentActions, spaceMembers, spaces } from '@deft/db/schema';
+import { apiKeys, agentEmployees, agentActions, orgMembers, spaceMembers, spaces } from '@deft/db/schema';
 import { executeToolCall } from '../lib/agent-context.js';
 import { shouldAutoExecute, getApprovalTier } from '../lib/agent-approval.js';
 import { executeActionDirect } from '../lib/agent-actions.js';
 import { ACTION_TOOLS } from '../lib/agent-tools.js';
 import { isAgentToolDisabled } from '../lib/agent-tool-policy.js';
-import { visibleAgentActionSourceSql } from '../lib/module-action-visibility.js';
+import { sourceMessageRoomSql, visibleAgentActionSourceSql } from '../lib/module-action-visibility.js';
+import { visibleCaptureActionSql } from '../lib/agent-action-visibility.js';
 import { resolveSpaceTargetFromRows } from '../lib/resolve-space-target.js';
 import { employeeCanAccessSpace } from '../lib/mcp-tools/employee-space-access.js';
 import { messagePost } from '../lib/mcp-tools/writes.js';
@@ -412,6 +413,12 @@ mcpServerRoutes.get('/actions/:id/status', async (c) => {
   }
 
   const actionId = c.req.param('id');
+  // A person's own key: owners/admins keep their action history as on the
+  // web; a member or guest reads an action only while they can still read
+  // the rooms it came from (check 13). The role is read in the same statement.
+  const keepsHistory = sql`EXISTS (SELECT 1 FROM ${orgMembers}
+    WHERE ${orgMembers.org_id} = ${keyRecord.org_id} AND ${orgMembers.user_id} = ${actor.userId}
+      AND ${orgMembers.is_active} = true AND ${orgMembers.role} IN ('owner', 'admin'))`;
   const [action] = await db
     .select({
       id: agentActions.id,
@@ -430,6 +437,8 @@ mcpServerRoutes.get('/actions/:id/status', async (c) => {
         ? eq(agentActions.agent_employee_id, actor.agentEmployeeId)
         : eq(agentActions.user_id, actor.userId),
       visibleAgentActionSourceSql({ userId: actor.userId, orgId: keyRecord.org_id }),
+      actor.agentEmployeeId ? undefined : visibleCaptureActionSql({ id: actor.userId, org_id: keyRecord.org_id }),
+      actor.agentEmployeeId ? undefined : or(keepsHistory, sourceMessageRoomSql(actor.userId, 'history')),
     ))
     .limit(1);
 
