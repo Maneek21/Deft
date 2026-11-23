@@ -35,7 +35,9 @@ Upgrade notes:
   action or a message that carries a test marker. A marker in the action's proposed
   parameters (`deft-test-fail-final`, `deft-test-fail-retryable`) makes it fail without
   running, finally or once; a retryable one stays pending and runs normally the next time
-  it is approved. A message containing `deft-test-hang-reply` makes the assistant's reply
+  it is approved. This is tested for a posted-message action (`post_message`); other
+  action kinds are not covered (a wiki page proposal may still run, and a task link
+  fails finally even with the retryable marker). A message containing `deft-test-hang-reply` makes the assistant's reply
   wait until the worker's job timeout (120 seconds unless `DEFT_JOB_TIMEOUT_MS` says otherwise). Nothing else changes.
 - No other setting is changed or removed. Author Kit stays `0.1.0-alpha.43`; its source
   is unchanged since `v0.3.0-preview.143`.
