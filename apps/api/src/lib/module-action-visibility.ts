@@ -1,6 +1,6 @@
 import { inArray, notInArray, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { agentActionApprovers, agentActions, attentionItems } from '@deft/db/schema';
-import { currentAgentActionSourceAuthoritySql } from './agent-channel-authority.js';
+import { currentAgentActionSourceAuthoritySql, currentUserSpaceAuthoritySql } from './agent-channel-authority.js';
 import { actionRequesterIdSql, actionReviewerSql } from './agent-action-requester.js';
 import { DEFTY_SYSTEM_EMPLOYEE_SLUG, DEFTY_SYSTEM_RUNTIME_KIND } from './defty-identity.js';
 
@@ -13,6 +13,27 @@ export function canonicalDeftyActionSql(
     where internal_employee.id = ${employeeId} and internal_employee.org_id = ${orgId}
       and internal_employee.runtime_kind = ${DEFTY_SYSTEM_RUNTIME_KIND} and internal_employee.slug = ${DEFTY_SYSTEM_EMPLOYEE_SLUG}
       and internal_employee.is_byoa = false and internal_employee.is_active = true)`;
+}
+
+/**
+ * A Defty action (no employee, or the Defty envelope) that names a chat
+ * message of the workspace belongs to that message's room: only a user who
+ * can read the room now may review it, and a member or guest who is not an
+ * owner/admin sees it in any action list only while they can (check 13, fix
+ * 1: nothing of a space a person lost stays visible to them). Captures carry
+ * their room in params (`visibleCaptureActionSql`); employee actions follow
+ * their own source rule (`currentAgentActionSourceAuthoritySql`).
+ */
+export function sourceMessageRoomSql(userId: string | SQL): SQL {
+  return sql`(${agentActions.message_id} IS NULL
+    OR COALESCE(${agentActions.source} = 'defty_capture', false)
+    OR NOT (${agentActions.agent_employee_id} IS NULL OR ${canonicalDeftyActionSql()})
+    OR NOT EXISTS (
+      SELECT 1 FROM messages review_source
+      WHERE review_source.id = ${agentActions.message_id}
+        AND review_source.org_id = ${agentActions.org_id}
+        AND NOT ${currentUserSpaceAuthoritySql(sql`review_source.org_id`, sql`${userId}`, sql`review_source.space_id`)}
+    ))`;
 }
 
 /** Source snapshots remain governed by their canonical source's current audience. */
@@ -97,7 +118,9 @@ export function moduleRoleAudienceSql(
  * this predicate (action history, recent, pending, dashboard feeds, inbox,
  * MCP approval reads) the row is visible only to its requester, an assigned
  * approver who is a reviewer of it (lib/agent-action-requester.ts), and org
- * owners/admins; a guest only ever sees rows it requested.
+ * owners/admins; a guest only ever sees rows it requested. A requester or
+ * approver who is not an owner/admin also needs to read, now, the room of the
+ * chat message the action came from (`sourceMessageRoomSql`).
  * Every other member and guest does not receive the row. BYOA employee actions keep their source-audience rule.
  */
 function privateDeftyActionAudienceSql(
@@ -110,9 +133,12 @@ function privateDeftyActionAudienceSql(
   const audience = role === 'guest'
     ? requesterSql(options)
     : requesterOrReviewerSql(options);
+  // Read at query time: a member who lost the action's room (removed, or left)
+  // stops seeing it, while owners/admins keep the whole history above.
+  const room = options?.userId ? sourceMessageRoomSql(options.userId) : sql`true`;
   return sql`(
     NOT (${agentActions.agent_employee_id} IS NULL OR ${canonicalDeftyActionSql()})
-    OR ${audience}
+    OR (${audience} AND ${room})
   )`;
 }
 

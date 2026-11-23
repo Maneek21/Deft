@@ -3,8 +3,10 @@ import { agentActions, orgMembers } from '@deft/db/schema';
 import { db } from './db.js';
 import { visibleCaptureActionSql } from './agent-action-visibility.js';
 import { actionReviewAssignmentSql } from './agent-action-requester.js';
-import { canonicalDeftyActionSql, moduleRoleAudienceSql, visibleAgentActionSourceSql, visibleModuleActionSql } from './module-action-visibility.js';
-import { currentUserSpaceAuthoritySql } from './agent-channel-authority.js';
+import { moduleRoleAudienceSql, sourceMessageRoomSql, visibleAgentActionSourceSql, visibleModuleActionSql } from './module-action-visibility.js';
+
+// The room rule now lives with the read audience, which applies it too.
+export { sourceMessageRoomSql };
 
 type UserRef = string | SQL;
 
@@ -24,24 +26,6 @@ export function reviewableActionSql(user: { id: UserRef; org_id: UserRef; role?:
     sourceMessageRoomSql(user.id),
     actionReviewAssignmentSql(user.id),
   )!;
-}
-
-/**
- * A Defty action (no employee, or the Defty envelope) that names a chat
- * message of the workspace is reviewed only by a user who can still read
- * that message's room. Captures carry their room in params
- * (`visibleCaptureActionSql`); employee actions follow their own source rule.
- */
-export function sourceMessageRoomSql(userId: UserRef): SQL {
-  return sql`(${agentActions.message_id} IS NULL
-    OR COALESCE(${agentActions.source} = 'defty_capture', false)
-    OR NOT (${agentActions.agent_employee_id} IS NULL OR ${canonicalDeftyActionSql()})
-    OR NOT EXISTS (
-      SELECT 1 FROM messages review_source
-      WHERE review_source.id = ${agentActions.message_id}
-        AND review_source.org_id = ${agentActions.org_id}
-        AND NOT ${currentUserSpaceAuthoritySql(sql`review_source.org_id`, sql`${userId}`, sql`review_source.space_id`)}
-    ))`;
 }
 
 /**
