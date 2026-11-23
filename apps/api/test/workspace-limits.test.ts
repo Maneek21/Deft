@@ -170,6 +170,20 @@ test('disk: a write that settles while the volume is being measured is not misse
   assert.equal(reads, 2);
 });
 
+test('disk: when every measurement overlaps another write settling, the write is refused as unmeasurable (never a stale sample)', async () => {
+  hosted();
+  _setVolumeStatsForTest(volume(10 * GB, 1 * GB));
+  const pending = await Promise.all(Array.from({ length: 5 }, () => reserveStorage('/uploads', 1 * MB)));
+  let reads = 0;
+  _setVolumeStatsForTest(async () => {
+    pending[reads]?.();
+    reads += 1;
+    return volume(10 * GB, 1 * GB)();
+  });
+  await assert.rejects(reserveStorage('/uploads', 1 * MB), (error: unknown) => error instanceof WorkspaceLimitError && error.code === 'WORKSPACE_STORAGE_UNAVAILABLE');
+  assert.equal(reads, 5);
+});
+
 test('disk: a volume that cannot be measured refuses the write on a hosted cell (and says so)', async () => {
   hosted();
   _setVolumeStatsForTest(async () => { throw new Error('EIO'); });

@@ -96,6 +96,8 @@ export function CommandPalette() {
   const [activePrompt, setActivePrompt] = useState<{ label: string; placeholder: string; submit: (args: string) => Promise<void> | void } | null>(null);
   const [promptError, setPromptError] = useState<string | null>(null);
   const promptSubmission = useRef(0);
+  const openRef = useRef(false);
+  useEffect(() => { openRef.current = open; }, [open]);
   const inputRef = useRef<HTMLInputElement>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
   const searchRequestRef = useRef(0);
@@ -182,21 +184,14 @@ export function CommandPalette() {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
-        setOpen((prev) => {
-          if (prev) {
-            // closing
-            searchRequestRef.current += 1;
-            setQuery('');
-            setResults({ spaces: [], tasks: [], people: [], messages: [], tags: [], modules: [], wiki: [], privateNotes: [], decisions: [] });
-            setSelectedIndex(0);
-          }
-          return !prev;
-        });
+        // Closing goes through close(): the prompt, its error and any answer still on its way are dropped too.
+        if (openRef.current) close();
+        else setOpen(true);
       }
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, []);
+  }, [close]);
 
   useEffect(() => {
     const openHandler = () => {

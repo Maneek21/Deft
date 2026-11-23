@@ -557,16 +557,14 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
   };
 
   const handlePaste = async (e: React.ClipboardEvent) => {
-    const items = Array.from(e.clipboardData.items);
-    for (const item of items) {
-      if (item.type.startsWith('image/')) {
-        const file = item.getAsFile();
-        if (file) {
-          const result = await uploadFile(file);
-          if (result) setPendingFiles((prev) => [...prev, result]);
-        }
-      }
+    // Every pasted image in one batch, so a refusal for one is still shown when another succeeds.
+    const images = Array.from(e.clipboardData.items).filter((item) => item.type.startsWith('image/'));
+    const files = images.map((item) => item.getAsFile()).filter((file): file is File => file !== null);
+    if (images.length > 0) {
     }
+    if (files.length === 0) return;
+    const results = await uploadFiles(files);
+    if (results.length > 0) setPendingFiles((prev) => [...prev, ...results]);
   };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {

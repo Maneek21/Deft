@@ -246,19 +246,21 @@ export function storageLimitApplies(): boolean {
 export async function reserveStorage(dir: string, incomingBytes: number, now = Date.now()): Promise<() => void> {
   const limits = workspaceLimits();
   if (limits === null) return () => undefined;
+  const unavailable = (): WorkspaceLimitError => new WorkspaceLimitError('WORKSPACE_STORAGE_UNAVAILABLE', 503, 'The file could not be saved because the file storage could not be checked. Try again in a moment.', 30);
   let stats: VolumeStats | null = null;
-  for (let attempt = 0; attempt < 5; attempt += 1) {
+  for (let attempt = 0; attempt < 5 && stats === null; attempt += 1) {
     const seen = releases;
+    let sample: VolumeStats;
     try {
-      stats = await readVolume(dir);
+      sample = await readVolume(dir);
     } catch {
       console.warn('[workspace-limit] the file storage could not be measured');
-      throw new WorkspaceLimitError('WORKSPACE_STORAGE_UNAVAILABLE', 503, 'The file could not be saved because the file storage could not be checked. Try again in a moment.', 30);
+      throw unavailable();
     }
-    if (releases === seen) break;
-    // Still changing after five looks: what follows counts a released write twice at most, which errs toward refusing.
+    // A sample taken while another write settled may predate that write: it is never used.
+    if (releases === seen) stats = sample;
   }
-  if (stats === null) throw new WorkspaceLimitError('WORKSPACE_STORAGE_UNAVAILABLE', 503, 'The file could not be saved because the file storage could not be checked. Try again in a moment.', 30);
+  if (stats === null) throw unavailable();
   // As `df` counts it: what is used, and what the volume can hold for Deft (root's reserve left out). A write takes whole blocks.
   const bsize = Math.max(1, stats.bsize);
   const incoming = Math.ceil(Math.max(0, incomingBytes) / bsize) * bsize;

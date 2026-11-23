@@ -56,16 +56,17 @@ export function useFileUpload() {
     }
   }, []);
 
+  // A refusal stays shown until it is dismissed: an upload that succeeds after it (even one started before it) does not hide it.
+  const keep = useCallback((message: string) => setError((shown) => (shown ? `${shown} · ${message}` : message)), []);
+
   const uploadFile = useCallback(async (file: File): Promise<UploadResult | null> => {
-    setError(null);
     const { data, message } = await send(file);
-    if (message !== null) setError(message);
+    if (message !== null) keep(message);
     return data;
-  }, [send]);
+  }, [send, keep]);
 
   /** Several files one after another; every refusal is kept, by file name, and shown once the batch is done. */
   const uploadFiles = useCallback(async (files: File[]): Promise<UploadResult[]> => {
-    setError(null);
     const done: UploadResult[] = [];
     const refused: string[] = [];
     for (const file of files) {
@@ -73,9 +74,9 @@ export function useFileUpload() {
       if (data) done.push(data);
       if (message !== null) refused.push(files.length > 1 ? `${file.name}: ${message}` : message);
     }
-    setError(refused.length > 0 ? refused.join(' · ') : null);
+    if (refused.length > 0) keep(refused.join(' · '));
     return done;
-  }, [send]);
+  }, [send, keep]);
 
   return { uploadFile, uploadFiles, uploading, progress, error, setError };
 }

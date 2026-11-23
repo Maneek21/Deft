@@ -29,6 +29,7 @@ export async function handleIcsSync(_job: JobData): Promise<void> {
         last_synced_at IS NULL
         OR last_synced_at < (now() - (sync_interval_min || ' minutes')::interval)
       )
+    ORDER BY updated_at ASC
     LIMIT 50
   `);
   const rows = (due as unknown as { rows?: Array<Record<string, unknown>> }).rows
