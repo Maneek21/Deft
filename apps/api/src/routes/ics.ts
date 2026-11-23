@@ -9,6 +9,7 @@ import { syncOne } from '../workers/handlers/ics-sync.js';
 import { env } from '../lib/env.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
 import { PublicFetchError, fetchCalendarFeedText } from '../lib/public-http-fetch.js';
+import { WorkspaceLimitError } from '../lib/workspace-limits.js';
 
 // Two routers: one public (the feed) mounted before authMiddleware, one
 // authenticated for management. Both export from the same module so the
@@ -235,6 +236,7 @@ icsRoutes.post('/preview', guarded('POST /preview', async (c) => {
       upcoming,
     });
   } catch (err) {
+    if (err instanceof WorkspaceLimitError) return c.json({ error: err.message, code: err.code }, err.status);
     logRouteFailure();
     return c.json({
       error: 'Preview failed',

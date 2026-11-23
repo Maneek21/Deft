@@ -13,6 +13,7 @@
 import { randomBytes } from 'node:crypto';
 import nodeIcal from 'node-ical';
 import { PublicFetchError } from './public-http-fetch.js';
+import { WorkspaceLimitError } from './workspace-limits.js';
 
 export type ParsedEvent = {
   uid: string;
@@ -196,6 +197,7 @@ export function newPublishToken(): string {
 
 /** Neutral, fixed message for a failed feed fetch or import (shown, stored and logged). */
 export function humanizeIcsError(err: unknown): string {
+  if (err instanceof WorkspaceLimitError) return 'This workspace reached its limit of outside requests; the feed syncs again on its next turn.';
   if (err instanceof PublicFetchError) {
     if (err.kind === 'too_large') return 'Feed is too large to import.';
     if (err.kind === 'timeout') return 'Feed request timed out.';

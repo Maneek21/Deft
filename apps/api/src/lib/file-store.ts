@@ -1,5 +1,6 @@
 import { mkdir, open, readFile, stat as fsStat, unlink, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { assertStorageRoom, isDiskFullError, storageFullError } from './workspace-limits.js';
 
 export type StoredFileStat = {
   size: number;
@@ -40,9 +41,22 @@ export class LocalFileStore implements FileStore {
     return localStorageKeyPath(this.rootDir, key);
   }
 
+  /**
+   * Refused with a WorkspaceLimitError (WORKSPACE_STORAGE_FULL) when a hosted
+   * workspace is at its storage limit, or when the disk itself refuses the
+   * write; a partly written file is removed.
+   */
   async put(key: string, bytes: Uint8Array): Promise<void> {
     await mkdir(this.rootDir, { recursive: true });
-    await writeFile(this.pathFor(key), bytes);
+    const path = this.pathFor(key);
+    await assertStorageRoom(this.rootDir, bytes.byteLength);
+    try {
+      await writeFile(path, bytes);
+    } catch (error) {
+      if (!isDiskFullError(error)) throw error;
+      await unlink(path).catch(() => undefined);
+      throw storageFullError(null);
+    }
   }
 
   async get(key: string, options?: Readonly<{ signal?: AbortSignal; maxBytes: number }>): Promise<Buffer> {

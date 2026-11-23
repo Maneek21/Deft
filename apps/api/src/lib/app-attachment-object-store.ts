@@ -2,6 +2,7 @@ import { mkdir, open, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { RESOURCE_ATTACHMENT_LIMITS } from '@deft/app-kit/core';
 import { LocalFileStore } from './file-store.js';
+import { assertStorageRoom } from './workspace-limits.js';
 
 export interface AppAttachmentObjectStore {
   putExclusive(objectId: string, ciphertext: Uint8Array, signal: AbortSignal): Promise<void>;
@@ -28,6 +29,7 @@ export class LocalAppAttachmentObjectStore implements AppAttachmentObjectStore {
     const key = this.#key(objectId);
     if (ciphertext.byteLength > RESOURCE_ATTACHMENT_LIMITS.attachment_bytes) throw new TypeError('Attachment exceeds host limit');
     signal.throwIfAborted(); await mkdir(this.#files.rootDir, { recursive: true }); signal.throwIfAborted();
+    await assertStorageRoom(this.#files.rootDir, ciphertext.byteLength); signal.throwIfAborted();
     const handle = await open(join(this.#files.rootDir, key), 'wx');
     try {
       await handle.writeFile(ciphertext, { signal });

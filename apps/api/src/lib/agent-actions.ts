@@ -38,6 +38,7 @@ import { detectBlocksCycle } from './task-dependency.js';
 import { dispatchAgentEmployeeTask } from './dispatch-agent-task.js';
 import { checkReplyStorm, STORM_THRESHOLD } from './storm-detector.js';
 import { DEFTY_NAME } from './ensure-defty-membership.js';
+import { WorkspaceLimitError, assertScheduleRoom } from './workspace-limits.js';
 import { resolveSpaceTarget } from './resolve-space-target.js';
 import { createTaskBundle } from './task-bundle.js';
 import { bulkUpdateTasks, BulkTaskUpdateError } from './task-bulk-update.js';
@@ -2913,7 +2914,10 @@ export async function executeAction(
           };
         }
 
-        const inserted = await db.transaction(async (tx) => {
+        let inserted: typeof reminders.$inferSelect;
+        try {
+        inserted = await db.transaction(async (tx) => {
+          await assertScheduleRoom(tx, orgId, 'reminders');
           const [created] = await tx
             .insert(reminders)
             .values({
@@ -2940,6 +2944,10 @@ export async function executeAction(
 
           return created;
         });
+        } catch (error) {
+          if (error instanceof WorkspaceLimitError) return { success: false, result: null, error: error.message };
+          throw error;
+        }
 
         await db
           .update(agentActions)
