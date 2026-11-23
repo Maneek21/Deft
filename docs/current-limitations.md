@@ -1,6 +1,6 @@
 # Current limitations
 
-This page describes `v0.3.0-preview.144`, the latest published prerelease (November 19, 2026), plus changes merged to `master` since; the [changelog](../CHANGELOG.md) lists those under Unreleased. The standalone Email App and its Runtime are released separately: use the `compatibility.json` attached to the Email release you install, the [current author guide](connected-app-author-guide.md) and the [Email limitations](https://github.com/Maneek21/deft-email/blob/main/docs/limitations.md). The preview.144 image is built with the Apps-enabled browser profile; the API flags that turn Apps on stay off until an operator sets them.
+This page describes `v0.3.0-preview.147`, the latest published prerelease (November 23, 2026), plus changes merged to `master` since; the [changelog](../CHANGELOG.md) lists those under Unreleased. The standalone Email App and its Runtime are released separately: use the `compatibility.json` attached to the Email release you install, the [current author guide](connected-app-author-guide.md) and the [Email limitations](https://github.com/Maneek21/deft-email/blob/main/docs/limitations.md). The preview.147 image is built with the Apps-enabled browser profile; the API flags that turn Apps on stay off until an operator sets them.
 
 Last reconciled on November 11, 2026.
 
@@ -61,7 +61,7 @@ Deft is an alpha. It is suitable for technical evaluation, internal use, and con
 [Modules and Apps](modules-and-apps.md) use different packaging and installation paths. Standalone Modules do not require the experimental Apps flags. Module v1 records are organization-wide for owners, admins, and members; guests are denied, and private rows, collections, and fields are not supported.
 
 - Apps are disabled by default. The API requires `DEFT_APPS_ENABLED=true`, and the web build requires `NEXT_PUBLIC_FEATURE_APPS=true`.
-- Connected App execution and bounded automations add further flags and operator review. They are included in preview.144, experimental, and disabled by default.
+- Connected App execution and bounded automations add further flags and operator review. They are included in preview.147, experimental, and disabled by default.
 - Internal Apps provide declarative records and native views. The Apps developer preview adds bounded trusted UI, external Runtime and governed source-sync contracts that need reviewed setup. Arbitrary custom UI, public portals and self-granted execution are not provided.
 - A package's requested permissions are review input. The host owns installation, grants, connector binding, activation, and execution authority.
 

@@ -1,6 +1,6 @@
 # Governed App Run operations
 
-> **Experimental in preview.144:** these operations are included in the published `v0.3.0-preview.144` core release. They are experimental and disabled by default.
+> **Experimental in preview.147:** these operations are included in the published `v0.3.0-preview.147` core release. They are experimental and disabled by default.
 
 Governed App Runs are a disabled-by-default self-host opt-in with three controls.
 Exact `DEFT_APP_RUNS_ENABLED=true` enables key access, runtime composition, and
