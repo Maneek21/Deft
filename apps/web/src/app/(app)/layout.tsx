@@ -12,7 +12,6 @@ import { AppHeader } from '@/components/app-header';
 import { AppHeaderProvider, useAppHeaderContext } from '@/components/app-header-context';
 import { ExperienceNavigationProvider } from '@/components/apps/experience-navigation-context';
 import { api } from '@/lib/api';
-import { takeEnrolToken } from '@/lib/two-step';
 import { getSocket } from '@/lib/socket';
 import { onMemberJoined } from '@/lib/public-spaces';
 import { applyPresenceSnapshot, applyPresenceUpdate } from '@/lib/presence-state';
@@ -77,9 +76,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!loading && !user) {
-      // Mid-setup in this tab (a recovery-code sign-in, or an owner or admin
-      // who must enrol): the enrol-only token can only set it up.
-      router.push(takeEnrolToken() ? '/two-step-setup' : '/login');
+      router.push('/login');
     }
   }, [user, loading, router]);
 

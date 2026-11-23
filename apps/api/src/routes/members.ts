@@ -830,7 +830,9 @@ memberRoutes.get('/seats', async (c) => {
     } catch (err) {
       return adminForbidden(c, err);
     }
-    return c.json({ ...(await getSeatStatus(currentUser.org_id)), buy_seats_url: buySeatsUrlFor(callerRole) });
+    const status = await getSeatStatus(currentUser.org_id);
+    // Buying seats does not unfreeze growth, so a frozen cell shows no link.
+    return c.json({ ...status, buy_seats_url: status.growth_frozen ? null : buySeatsUrlFor(callerRole) });
   } catch (err) {
     console.error('Failed to read seat status:');
     return c.json({ error: 'Failed to read seat status', code: 'INTERNAL_ERROR' }, 500);

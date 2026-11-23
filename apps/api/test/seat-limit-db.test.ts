@@ -460,6 +460,9 @@ test('"Buy more seats": only the owner of a hosted cell with the purchase page s
     const frozen = await invite(`buy-frozen-${s}@test.local`);
     assert.equal(frozen.body.code, 'SEAT_GROWTH_FROZEN');
     assert.equal('buy_seats_url' in frozen.body, false);
+    const frozenStatus = await seats();
+    assert.equal(frozenStatus.body.growth_frozen, true);
+    assert.equal(frozenStatus.body.buy_seats_url, null);
     fetchFails = false;
 
     // A hosted cell without the setting shows none.

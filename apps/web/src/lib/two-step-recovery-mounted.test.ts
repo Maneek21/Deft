@@ -22,7 +22,7 @@ const NEXT_STUBS: Record<string, string> = {
 };
 const RESET_TOKEN = `tsr_${'r'.repeat(43)}`;
 
-async function mount(pagePath: string, url: string, seen: Array<{ path: string; authorization: string | null; body: unknown }>, setup?: (tab: any) => Promise<void>) {
+async function mount(pagePath: string, url: string, seen: Array<{ path: string; authorization: string | null; body: unknown }>, setup?: (tab: any) => Promise<void>, tokenDead = false) {
   const auth = path.join(web, 'src/lib/auth-context.tsx');
   const bundle = await build({
     stdin: {
@@ -70,6 +70,7 @@ createRoot(document.getElementById('root')).render(createElement(AuthProvider, n
     if (target.pathname === '/api/auth/two-step/verify') {
       return json({ two_step: { status: 'enrolment_required', token: RESET_TOKEN, expires_at: '2026-11-23T12:30:00.000Z', reason: 'recovery_code' } });
     }
+    if (target.pathname === '/api/auth/two-step/enrol/start' && tokenDead) return json({ error: 'Invalid or expired token', code: 'INVALID_TOKEN' }, 401);
     if (target.pathname === '/api/auth/two-step/enrol/start') return json({ secret: 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP', otpauth_url: 'otpauth://totp/Deft:a@example.test' });
     return route.abort();
   });
@@ -123,6 +124,25 @@ test('15.1: the setup screen says why, and starts setup with only the recovery-r
     const start = seen.find((call) => call.path === '/api/auth/two-step/enrol/start');
     assert.equal(start?.authorization, `Bearer ${RESET_TOKEN}`);
     assert.deepEqual(start?.body, {}, 'no code or password is asked for again');
+  } finally {
+    await f.close();
+  }
+});
+
+test('15.1: a setup token that died (expired, or the password changed) leaves a way back to sign-in', async () => {
+  const seen: Array<{ path: string; authorization: string | null; body: unknown }> = [];
+  const f = await mount(path.join(web, 'src/app/two-step-setup/page.tsx'), 'http://127.0.0.1/two-step-setup', seen, async (tab) => {
+    await tab.evaluate((token: string) => {
+      sessionStorage.setItem('deft-two-step-enrol-token', token);
+      sessionStorage.setItem('deft-two-step-enrol-reason', 'recovery_code');
+    }, RESET_TOKEN);
+  }, true);
+  try {
+    await f.tab.getByRole('button', { name: 'Set up two-step verification' }).click();
+    await f.tab.getByRole('alert').getByRole('link', { name: 'Sign in' }).waitFor();
+    assert.equal(await f.tab.getByRole('alert').getByRole('link', { name: 'Sign in' }).getAttribute('href'), '/login');
+    const stored = await f.tab.evaluate(() => [sessionStorage.getItem('deft-two-step-enrol-token'), sessionStorage.getItem('deft-two-step-enrol-reason')]);
+    assert.deepEqual(stored, [null, null], 'the dead token is forgotten');
   } finally {
     await f.close();
   }

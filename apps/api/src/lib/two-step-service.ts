@@ -65,9 +65,10 @@ const noticesIn = new WeakMap<object, AccountNoticeRow[]>();
 /**
  * db.transaction for every path that checks a code. A notice written by
  * checkSecondStep or enrolment commits with the change it reports, so it is
- * never lost and never sent for a rolled-back attempt; its copy into the
- * attention feed follows the commit, best effort, like every other
- * notification.
+ * never lost and never sent for a rolled-back attempt. After the commit, the
+ * sessions the transaction ended (a result's `revoked`) are cut off first,
+ * then the notices are copied into the attention feed, best effort, like
+ * every other notification, so an ended session never receives them.
  */
 async function twoStepTransaction<T>(run: (tx: Tx) => Promise<T>): Promise<T> {
   const written: AccountNoticeRow[] = [];
@@ -75,6 +76,8 @@ async function twoStepTransaction<T>(run: (tx: Tx) => Promise<T>): Promise<T> {
     noticesIn.set(tx, written);
     return run(tx);
   });
+  const revoked = (result as { revoked?: unknown } | null)?.revoked;
+  if (Array.isArray(revoked)) emitWebSessionRevocations(revoked as string[]);
   for (const notice of written) {
     await syncNotificationToAttention(notice).catch(() => console.warn('[two-step] notice attention copy failed'));
   }
@@ -166,7 +169,8 @@ async function writeTwoStepNotice(tx: Tx, userId: string, now: Date, notice: Acc
     });
     noticesIn.get(tx)?.push(...rows);
   } catch {
-    console.warn(`[two-step] ${notice.kind} notice failed`);
+    if (notice === LOCK_NOTICE) console.warn('[two-step] lock notice failed');
+    else console.warn('[two-step] account notice failed');
   }
 }
 
@@ -321,7 +325,6 @@ export async function startTwoStepEnrolment(user: { id: string; email: string; s
     throw err;
   });
   if (!result.ok) return result;
-  emitWebSessionRevocations(result.revoked);
   return { ok: true, secret: result.secret, otpauth_url: result.otpauth_url };
 }
 
@@ -388,7 +391,6 @@ export async function confirmTwoStepEnrolment(userId: string, code: string, auth
     return { ok: true as const, recoveryCodes, revoked, credentials, keptSession: keptSid !== null };
   });
   if (!result.ok) return result;
-  emitWebSessionRevocations(result.revoked);
   return { ok: true, recoveryCodes: result.recoveryCodes, credentials: result.credentials, keptSession: result.keptSession };
 }
 
@@ -524,7 +526,6 @@ export async function exchangeVerifyChallenge(token: string, proof: SecondStepPr
     return { ok: false as const, reason: dead ? 'challenge_dead' as const : 'invalid' as const };
   });
   if (result.ok) {
-    emitWebSessionRevocations(result.revoked);
     if (result.method === 'recovery_code') return { ok: true, identity: result.identity, method: result.method, resetChallenge: result.resetChallenge };
     return { ok: true, identity: result.identity, method: result.method, credentials: result.credentials };
   }

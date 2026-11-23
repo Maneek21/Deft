@@ -851,7 +851,7 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
       warn.mock.restore();
     }
     assert.equal(otherError?.code, undefined, `deadlock: the other transaction failed with ${otherError?.code}`);
-    assert.ok(!warn.mock.calls.some((call) => String(call.arguments[0]).includes('two_step_locked notice failed')),
+    assert.ok(!warn.mock.calls.some((call) => String(call.arguments[0]).includes('lock notice failed')),
       'deadlock: the notice insert failed (40P01) and the notice was lost');
     const { notifications } = await import('@deft/db/schema');
     const rows = await db.select().from(notifications).where(eq(notifications.user_id, who.id));

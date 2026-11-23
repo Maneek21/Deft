@@ -1,4 +1,5 @@
 import { Hono, type MiddlewareHandler } from 'hono';
+import { isRecoveryResetToken, RECOVERY_RESET_REFUSAL } from '../lib/two-step.js';
 
 /**
  * Request gate that runs before routing. It holds two invariants that do not
@@ -12,6 +13,10 @@ import { Hono, type MiddlewareHandler } from 'hono';
  *
  * 3. When a `refuse` check is given (the paused start), a request it names is
  *    refused before routing, whatever the path and whether or not it is public.
+ *
+ * 4. A request under `/api` carrying the token a recovery-code sign-in earns
+ *    is refused with 401 TWO_STEP_ENROLMENT_REQUIRED, public routes included,
+ *    except the two calls that set up the new authenticator (check 15.1).
  *
  * Responses the gate produces pass through the same edge middleware as the
  * app (logging, CORS, security headers), so browsers can read them.
@@ -88,6 +93,15 @@ export function isPublicApiRequest(method: string, path: string): boolean {
     (!route.methods || route.methods.includes(verb)) && matchesTemplate(route.path, path));
 }
 
+/** The only calls the token from a recovery-code sign-in may make. */
+const RECOVERY_RESET_ROUTES = new Set(['/api/auth/two-step/enrol/start', '/api/auth/two-step/enrol/confirm']);
+
+export function refusesRecoveryResetToken(request: Request, path: string): boolean {
+  const authorization = request.headers.get('Authorization');
+  if (!isGatedApiPath(path) || !authorization?.startsWith('Bearer ') || !isRecoveryResetToken(authorization.slice(7))) return false;
+  return !(request.method === 'POST' && RECOVERY_RESET_ROUTES.has(path));
+}
+
 export function hasForbiddenPathCharacters(rawPathname: string, routedPath: string): boolean {
   return DECODED_FORBIDDEN.test(routedPath) || ENCODED_FORBIDDEN.test(rawPathname);
 }
@@ -138,6 +152,7 @@ export function installRequestGate(
       }
       const refusal = options.refuse?.(request.method, path);
       if (refusal) return await deny(request, refusal);
+      if (refusesRecoveryResetToken(request, path)) return await deny(request, { ...RECOVERY_RESET_REFUSAL, status: 401 });
       gated = isGatedApiPath(path) && !options.isPublic(request.method, path);
       if (gated && request.method === 'OPTIONS') {
         // Preflight is answered by the CORS policy alone; it never reaches a route.

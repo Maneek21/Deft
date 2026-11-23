@@ -150,3 +150,26 @@ test('the gate ends per-request reuse of the auth result once the request is ans
   assert.equal((await app.fetch(request)).status, 200);
   assert.deepEqual(released, [request]);
 });
+
+test('15.1: the token from a recovery-code sign-in reaches only the two enrolment calls, and every refusal says why', async () => {
+  const { app, ran } = buildApp();
+  app.post('/api/auth/two-step/enrol/start', (c) => { ran.push(c.req.path); return c.json({ ok: true }); });
+  app.post('/api/auth/two-step/enrol/confirm', (c) => { ran.push(c.req.path); return c.json({ ok: true }); });
+  app.get('/api/auth/me', (c) => { ran.push(c.req.path); return c.json({ ok: true }); });
+  const headers = { authorization: `Bearer tsr_${'a'.repeat(43)}` };
+  for (const [method, path] of [
+    ['GET', '/api/auth/me'], ['GET', '/api/tasks/t1'], ['GET', '/api/invites/preview/x'], ['GET', '/api/ics/feed/x'],
+    ['GET', '/api/auth/two-step/enrol/start'], ['POST', '/api/auth/two-step/verify'], ['POST', '/api/auth/two-step/disable'],
+  ] as const) {
+    const res = await app.request(path, { method, headers });
+    assert.equal(res.status, 401, `${method} ${path}`);
+    assert.equal((await res.json() as { code: string }).code, 'TWO_STEP_ENROLMENT_REQUIRED', `${method} ${path}`);
+  }
+  assert.deepEqual(ran, []);
+  for (const path of ['/api/auth/two-step/enrol/start', '/api/auth/two-step/enrol/confirm']) {
+    assert.equal((await app.request(path, { method: 'POST', headers })).status, 200, path);
+  }
+  assert.deepEqual(ran, ['/api/auth/two-step/enrol/start', '/api/auth/two-step/enrol/confirm']);
+  // Outside /api nothing changes.
+  assert.equal((await app.request('/health', { headers })).status, 200);
+});

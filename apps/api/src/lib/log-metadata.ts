@@ -75,7 +75,7 @@ const STARTUP_HINTS: ReadonlyArray<readonly [string, string]> = [
   ['DEFT_SETUP_TOKEN_SHA256 must be', 'Invalid DEFT_SETUP_TOKEN_SHA256: use a SHA-256 hash in 64 lowercase hex characters.'],
   ['DEFT_SETUP_TOKEN_EXPIRES_AT must be', 'Invalid DEFT_SETUP_TOKEN_EXPIRES_AT: use a real ISO 8601 timestamp with a zone.'],
   ['DEFT_SETUP_TOKEN_EXPIRES_AT is required', 'DEFT_SETUP_TOKEN_EXPIRES_AT is required when DEFT_SETUP_TOKEN_SHA256 is set.'],
-  ['Hosted mode needs a usable seat statement setup:', 'Invalid hosted seat setup: check DEFT_CELL_ID, DEFT_SEAT_PUBLIC_KEYS, DEFT_SEAT_STATEMENT_URL and DEFT_SEAT_FETCH_TOKEN.'],
+  ['Hosted mode needs a usable seat statement setup:', 'Invalid hosted seat setup: check DEFT_CELL_ID, DEFT_SEAT_PUBLIC_KEYS, DEFT_SEAT_STATEMENT_URL, DEFT_SEAT_FETCH_TOKEN and DEFT_HOSTED_SEATS_URL.'],
 ];
 
 export function logStartupHint(error: unknown): string {
@@ -91,7 +91,7 @@ export function logStartupHint(error: unknown): string {
     const message = error instanceof Error ? error.message : undefined;
     if (typeof message !== 'string') return 'Unclassified fatal error';
     for (const [prefix, hint] of STARTUP_HINTS) if (message.startsWith(prefix)) return hint;
-    if (message.includes('hosted-only setting')) return 'Hosted-only settings require DEFT_HOSTED=true; otherwise remove DEFT_SETUP_TOKEN_* and DEFT_SEAT_* / DEFT_CELL_ID settings.';
+    if (message.includes('hosted-only setting')) return 'Hosted-only settings require DEFT_HOSTED=true; otherwise remove DEFT_SETUP_TOKEN_*, DEFT_SEAT_* / DEFT_CELL_ID and DEFT_HOSTED_SEATS_URL settings.';
   } catch { /* Malformed error objects must not break the fatal handler. */ }
   return 'Unclassified fatal error';
 }
