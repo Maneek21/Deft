@@ -4,6 +4,7 @@ import type { MiddlewareHandler } from 'hono';
 import { verifyWebAccess } from '../lib/web-sessions.js';
 import { OrgMembershipError, type OrgRole } from '../lib/org-membership.js';
 import { SecondStepRequiredError } from '../lib/two-step-policy.js';
+import { isRecoveryResetToken, RECOVERY_RESET_REFUSAL } from '../lib/two-step.js';
 
 export type AuthUser = {
   id: string;
@@ -31,6 +32,12 @@ async function verifyRequest(request: Request): Promise<WebAuthResult> {
   const authHeader = request.headers.get('Authorization');
   if (!authHeader?.startsWith('Bearer ')) {
     return { ok: false, status: 401, error: 'Unauthorized', code: 'NO_TOKEN' };
+  }
+  // The token a recovery-code sign-in earns can only set up a new
+  // authenticator (routes/two-step.ts). Refused here like any other
+  // non-session token, with the reason.
+  if (isRecoveryResetToken(authHeader.slice(7))) {
+    return { ok: false, status: 401, ...RECOVERY_RESET_REFUSAL };
   }
   try {
     return { ok: true, user: await verifyWebAccess(authHeader.slice(7)) };

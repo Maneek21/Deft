@@ -35,7 +35,7 @@ import { seatStatements } from '@deft/db/seat-statements';
 import { db } from './db.js';
 import { isHostedMode } from './hosted-mode.js';
 import { assertNotPaused, isPausedStart } from './paused-start.js';
-import { parseSeatSettings, type SeatSettings } from './seat-settings.js';
+import { parseSeatSettings, parseSeatsPurchaseUrl, type SeatSettings } from './seat-settings.js';
 import {
   SEAT_STATEMENT_PREFIX,
   verifySeatStatement,
@@ -155,6 +155,18 @@ async function readPolicy(executor: Executor): Promise<SeatPolicy> {
   const limit = verified.statement.seats;
   if (!acceptedSinceStart) return { limit, frozen: 'not_fetched_since_start' };
   return { limit, frozen: null };
+}
+
+/**
+ * Where this person may buy more seats: the hosted purchase page
+ * (DEFT_HOSTED_SEATS_URL), for an owner only, since the owner holds the
+ * order. Null for everyone else, on a cell without the setting, and always
+ * on a self-hosted install.
+ */
+export function buySeatsUrlFor(role: string | null | undefined): string | null {
+  if (!isHostedMode() || role !== 'owner') return null;
+  const parsed = parseSeatsPurchaseUrl(process.env);
+  return parsed.ok ? parsed.url : null;
 }
 
 /** What the members page shows. */

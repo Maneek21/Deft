@@ -199,6 +199,7 @@ jobs:
           src/lib/ios-install-hint.test.ts
           src/lib/message-deep-link.test.ts
           src/lib/two-step.test.ts
+          src/lib/buy-seats.test.ts
       - name: Install locked browser for mounted App contracts
         run: pnpm exec playwright install --with-deps chromium
       - name: Test public space preview reads
@@ -232,6 +233,8 @@ jobs:
           src/lib/two-step-enrolment-mounted.test.ts
           src/lib/invite-two-step-mounted.test.ts
           src/lib/members-admin-actions-mounted.test.ts
+          src/lib/members-buy-seats-mounted.test.ts
+          src/lib/two-step-recovery-mounted.test.ts
           src/lib/agent-management-mounted.test.ts
       - name: Test bounded resource observation claim deadlines
         run: pnpm --filter @deft/api exec tsx --test src/lib/app-resource-sync-claim-budget.test.ts

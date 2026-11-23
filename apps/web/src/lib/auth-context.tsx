@@ -397,6 +397,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const generation = authGeneration.current.advance();
     const session = await exchangeTwoStepChallenge(challengeToken, proof);
     if (!authGeneration.current.isCurrent(generation)) return;
+    // A recovery code: no session yet. A new authenticator comes first.
+    if ('token' in session) {
+      storeEnrolToken(session.token, session.reason);
+      router.push('/two-step-setup');
+      return;
+    }
     sessionCacheEpoch.current += 1;
     api.setTokens(session.accessToken, session.refreshToken);
     setLoading(true);

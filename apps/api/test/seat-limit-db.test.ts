@@ -86,8 +86,10 @@ async function hostedWithSeats(seats: number) {
 }
 
 const app = new Hono();
+/** Who the requests come from; the owner unless a test says otherwise. */
+let actingUserId = ownerId;
 app.use('*', async (c, next) => {
-  c.set('user' as never, { id: ownerId, email: `owner-${s}@test.local`, org_id: orgId } as never);
+  c.set('user' as never, { id: actingUserId, email: `acting-${s}@test.local`, org_id: orgId } as never);
   await next();
 });
 
@@ -413,4 +415,68 @@ test('seat status route reports in use, the limit and frozen state', async () =>
   assert.equal(body.seat_limit, 40);
   assert.equal(body.seats_in_use, await used());
   assert.equal(body.growth_frozen, false);
+});
+
+test('"Buy more seats": only the owner of a hosted cell with the purchase page set gets the link', async () => {
+  const PAGE = 'https://control.test.invalid/seats';
+  const seats = async () => {
+    const res = await app.request('/api/members/seats');
+    return { status: res.status, body: await res.json() as Record<string, unknown> };
+  };
+  try {
+    process.env.DEFT_HOSTED_SEATS_URL = PAGE;
+    await hostedWithSeats(await used());
+
+    // The hosted owner: on the seat count and on each refusal for want of seats.
+    assert.equal((await seats()).body.buy_seats_url, PAGE);
+    const refused = await invite(`buy-owner-${s}@test.local`);
+    assert.equal(refused.status, 409);
+    assert.equal(refused.body.code, 'SEAT_LIMIT_REACHED');
+    assert.equal(refused.body.buy_seats_url, PAGE);
+    const guest = await addMember({ role: 'guest' });
+    const promoted = await setRole(guest, 'member');
+    assert.equal(promoted.status, 409);
+    assert.equal(promoted.body.buy_seats_url, PAGE);
+
+    // An admin may invite but does not buy seats: the same refusal, no link.
+    const adminId = await addMember({ role: 'admin' });
+    const memberId = await addMember({ role: 'member' });
+    actingUserId = adminId;
+    const asAdmin = await invite(`buy-admin-${s}@test.local`);
+    assert.equal(asAdmin.status, 409);
+    assert.equal(asAdmin.body.code, 'SEAT_LIMIT_REACHED');
+    assert.equal('buy_seats_url' in asAdmin.body, false);
+    assert.equal((await seats()).body.buy_seats_url, null);
+    // A member sees no seat count at all.
+    actingUserId = memberId;
+    const asMember = await seats();
+    assert.equal(asMember.status, 403);
+    assert.equal('buy_seats_url' in asMember.body, false);
+    actingUserId = ownerId;
+
+    // Growth frozen is not fixed by buying seats: no link.
+    _resetSeatProcessStateForTest();
+    fetchFails = true;
+    const frozen = await invite(`buy-frozen-${s}@test.local`);
+    assert.equal(frozen.body.code, 'SEAT_GROWTH_FROZEN');
+    assert.equal('buy_seats_url' in frozen.body, false);
+    fetchFails = false;
+
+    // A hosted cell without the setting shows none.
+    delete process.env.DEFT_HOSTED_SEATS_URL;
+    await hostedWithSeats(await used());
+    assert.equal((await seats()).body.buy_seats_url, null);
+    assert.equal('buy_seats_url' in (await invite(`buy-unset-${s}@test.local`)).body, false);
+
+    // Self-hosted: never, even with the setting present.
+    selfHostedEnv();
+    process.env.DEFT_HOSTED_SEATS_URL = PAGE;
+    const selfHosted = await seats();
+    assert.equal(selfHosted.body.hosted, false);
+    assert.equal(selfHosted.body.buy_seats_url, null);
+  } finally {
+    actingUserId = ownerId;
+    fetchFails = false;
+    delete process.env.DEFT_HOSTED_SEATS_URL;
+  }
 });

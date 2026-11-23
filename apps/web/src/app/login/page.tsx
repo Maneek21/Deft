@@ -123,6 +123,7 @@ function LoginContent() {
                 {useRecoveryCode && (
                   <p className="text-[0.75rem]" style={{ color: 'var(--on-surface-variant)' }}>
                     A recovery code works once, and using one signs you out everywhere else.
+                    You will then set up a new authenticator before you can continue.
                   </p>
                 )}
               </div>

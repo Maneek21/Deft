@@ -50,6 +50,18 @@ test('the code exchange sends only the challenge and the code, and never treats 
   await assert.rejects(() => exchangeTwoStepChallenge('tsc_challenge', { code: '123456' }), TwoStepError);
 });
 
+test('15.1: a recovery code is answered with an enrol-only token, never a session', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const body = { two_step: { status: 'enrolment_required', token: 'tsr_reset', expires_at: '2026-11-23T00:30:00.000Z', reason: 'recovery_code' } };
+  globalThis.fetch = (async () => new Response(JSON.stringify(body), { status: 200 })) as unknown as typeof fetch;
+  assert.deepEqual(await exchangeTwoStepChallenge('tsc_challenge', { recovery_code: 'ABCD-EFGH-JKMN-PQRS' }),
+    { status: 'enrolment_required', token: 'tsr_reset', expires_at: '2026-11-23T00:30:00.000Z', reason: 'recovery_code' });
+  // The reason is kept only on an enrolment answer, and only this one value.
+  assert.equal(readTwoStepPending({ two_step: { status: 'enrolment_required', token: 'tsc_b', reason: 'other' } })?.reason, undefined);
+  assert.equal(readTwoStepPending({ two_step: { status: 'code_required', token: 'tsc_b', reason: 'recovery_code' } })?.reason, undefined);
+});
+
 test('the enrolment screen is never a post-login destination', () => {
   assert.equal(safePostLoginDestination('/two-step-setup'), null);
   assert.equal(safePostLoginDestination('/settings/profile'), '/settings/profile');

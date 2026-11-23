@@ -33,8 +33,9 @@ export type IssuedSession =
   | { status: 'session'; accessToken: string; refreshToken: string }
   /** Has two-step verification: exchange this challenge plus a code. */
   | { status: 'code_required'; challenge: TwoStepChallenge }
-  /** Hosted owner or admin without it: this token can only enrol. */
-  | { status: 'enrolment_required'; challenge: TwoStepChallenge }
+  /** Hosted owner or admin without it, or (reason 'recovery_code') anyone who
+   * just signed in with a recovery code: this token can only enrol. */
+  | { status: 'enrolment_required'; challenge: TwoStepChallenge; reason?: 'recovery_code' }
   | { status: 'refused'; exchange: Exclude<ChallengeExchange, { ok: true }> };
 
 async function createOrChallenge(identity: Identity, expectedPasswordHash?: string): Promise<GrantedOrChallenged> {
@@ -69,6 +70,9 @@ export async function issueSession(request: SessionRequest): Promise<IssuedSessi
     case 'challenge': {
       const exchange = await exchangeVerifyChallenge(request.challengeToken, request.proof);
       if (!exchange.ok) return { status: 'refused', exchange };
+      // A recovery code means the authenticator is lost: no session until a
+      // new one is set up (check 15.1).
+      if (exchange.method === 'recovery_code') return { status: 'enrolment_required', challenge: exchange.resetChallenge, reason: 'recovery_code' };
       return { status: 'session', ...(await createWebSession(exchange.identity, undefined, { secondStep: 'verified', verified: exchange.credentials })) };
     }
     case 'enrolment':
@@ -79,5 +83,10 @@ export async function issueSession(request: SessionRequest): Promise<IssuedSessi
 /** The part of a login-style response that carries the outcome. */
 export function issuedSessionBody(issued: GrantedOrChallenged) {
   if (issued.status === 'session') return { accessToken: issued.accessToken, refreshToken: issued.refreshToken };
-  return { two_step: { status: issued.status, token: issued.challenge.token, expires_at: issued.challenge.expires_at } };
+  return {
+    two_step: {
+      status: issued.status, token: issued.challenge.token, expires_at: issued.challenge.expires_at,
+      ...(issued.status === 'enrolment_required' && issued.reason ? { reason: issued.reason } : {}),
+    },
+  };
 }

@@ -33,7 +33,7 @@ import { visibleLiveMemberForOrg } from '../lib/member-visibility.js';
 import { OrgMembershipError, requireOrgAdminOrOwner } from '../lib/org-membership.js';
 import { evictActiveHuddleParticipants } from '../socket.js';
 import { emitWebSessionRevocations } from '../lib/web-sessions.js';
-import { getSeatStatus, reserveSeat, withSeatRetry, type SeatReservation } from '../lib/seat-limit.js';
+import { buySeatsUrlFor, getSeatStatus, reserveSeat, withSeatRetry, type SeatReservation } from '../lib/seat-limit.js';
 import { buildInviteUrl as buildSecretInviteUrl, buildRecoveryUrl as buildSecretRecoveryUrl } from '../lib/secret-links.js';
 import { roleMustHaveSecondStep } from '../lib/two-step-policy.js';
 import { userTwoStep } from '@deft/db/two-step';
@@ -65,13 +65,16 @@ function adminForbidden(c: Context, err: unknown) {
   return c.json({ error: 'Only admins can perform this action', code: 'FORBIDDEN' }, 403);
 }
 
-function seatRefused(c: Context, refusal: Exclude<SeatReservation, { ok: true }>) {
+/** A refusal for want of seats carries the purchase page for an owner (buySeatsUrlFor). */
+function seatRefused(c: Context, refusal: Exclude<SeatReservation, { ok: true }>, callerRole: string) {
+  const buySeatsUrl = refusal.code === 'SEAT_LIMIT_REACHED' ? buySeatsUrlFor(callerRole) : null;
   return c.json({
     error: refusal.error,
     code: refusal.code,
     seat_limit: refusal.seat_limit,
     seats_in_use: refusal.seats_in_use,
     frozen_reason: refusal.frozen_reason,
+    ...(buySeatsUrl ? { buy_seats_url: buySeatsUrl } : {}),
   }, 409);
 }
 
@@ -821,12 +824,13 @@ memberRoutes.get('/directory', async (c) => {
 memberRoutes.get('/seats', async (c) => {
   try {
     const currentUser = c.get('user');
+    let callerRole: string;
     try {
-      await requireOrgAdminOrOwner(currentUser.org_id, currentUser.id);
+      callerRole = (await requireOrgAdminOrOwner(currentUser.org_id, currentUser.id)).role;
     } catch (err) {
       return adminForbidden(c, err);
     }
-    return c.json(await getSeatStatus(currentUser.org_id));
+    return c.json({ ...(await getSeatStatus(currentUser.org_id)), buy_seats_url: buySeatsUrlFor(callerRole) });
   } catch (err) {
     console.error('Failed to read seat status:');
     return c.json({ error: 'Failed to read seat status', code: 'INTERNAL_ERROR' }, 500);
@@ -1142,8 +1146,9 @@ memberRoutes.post('/invite', async (c) => {
   try {
     const currentUser = c.get('user');
 
+    let callerRole: string;
     try {
-      await requireOrgAdminOrOwner(currentUser.org_id, currentUser.id);
+      callerRole = (await requireOrgAdminOrOwner(currentUser.org_id, currentUser.id)).role;
     } catch (err) {
       return adminForbidden(c, err);
     }
@@ -1245,7 +1250,7 @@ memberRoutes.post('/invite', async (c) => {
       return c.json({ error: added.guardRefusal, code: 'FORBIDDEN' }, 403);
     }
     if ('seatRefusal' in added && added.seatRefusal) {
-      return seatRefused(c, added.seatRefusal);
+      return seatRefused(c, added.seatRefusal, callerRole);
     }
     // Add to all default (public) spaces
     const defaultSpaces = await db.select({ id: spaces.id })
@@ -1481,8 +1486,9 @@ memberRoutes.patch('/:id', async (c) => {
     const currentUser = c.get('user');
     const memberId = c.req.param('id');
 
+    let callerRole: string;
     try {
-      await requireOrgAdminOrOwner(currentUser.org_id, currentUser.id);
+      callerRole = (await requireOrgAdminOrOwner(currentUser.org_id, currentUser.id)).role;
     } catch (err) {
       return adminForbidden(c, err);
     }
@@ -1550,7 +1556,7 @@ memberRoutes.patch('/:id', async (c) => {
       return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
     }
     if ('seatRefusal' in changed && changed.seatRefusal) {
-      return seatRefused(c, changed.seatRefusal);
+      return seatRefused(c, changed.seatRefusal, callerRole);
     }
     if (changed.role !== changed.previousRole) {
       await evictActiveHuddleParticipants({

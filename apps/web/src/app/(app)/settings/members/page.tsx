@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { buySeatsHref, buySeatsHrefForRefusal } from '@/lib/buy-seats';
 
 const ROLE_OPTIONS = ['admin', 'member', 'guest'] as const;
 const FILTERS = ['all', 'humans', 'agents', 'pending', 'inactive'] as const;
@@ -256,7 +257,22 @@ type SeatStatus = {
   seat_limit: number | null;
   growth_frozen: boolean;
   frozen_reason: string | null;
+  /** Sent only to the owner of a hosted workspace whose seats page is set. */
+  buy_seats_url?: string | null;
 };
+
+/** Opens the control plane's seats page; renders nothing without an address. */
+function BuySeatsLink({ href }: { href: string | null }) {
+  if (!href) return null;
+  return (
+    <>
+      {' '}
+      <a href={href} target="_blank" rel="noopener noreferrer" className="font-semibold underline underline-offset-2" style={{ color: 'var(--accent)' }}>
+        Buy more seats
+      </a>
+    </>
+  );
+}
 
 const FROZEN_REASON_TEXT: Record<string, string> = {
   not_configured: 'seat settings are missing on this server',
@@ -290,6 +306,7 @@ export default function MembersPage() {
   const [inviteRole, setInviteRole] = useState<string>('member');
   const [inviteLoading, setInviteLoading] = useState(false);
   const [inviteError, setInviteError] = useState('');
+  const [inviteSeatsHref, setInviteSeatsHref] = useState<string | null>(null);
   const [shareLink, setShareLink] = useState<ShareLink | null>(null);
   const [copied, setCopied] = useState(false);
   const [roleDropdown, setRoleDropdown] = useState<string | null>(null);
@@ -303,8 +320,14 @@ export default function MembersPage() {
   const [recoveringId, setRecoveringId] = useState<string | null>(null);
   const [seatStatus, setSeatStatus] = useState<SeatStatus | null>(null);
   const [roleError, setRoleError] = useState('');
+  const [roleSeatsHref, setRoleSeatsHref] = useState<string | null>(null);
 
   const isAdmin = user?.role === 'owner' || user?.role === 'admin';
+
+  const showInviteError = (message: string, seatsHref: string | null = null) => {
+    setInviteError(message);
+    setInviteSeatsHref(seatsHref);
+  };
 
   const fetchDirectory = async (preferredId?: string | null) => {
     setLoading(true);
@@ -377,13 +400,16 @@ export default function MembersPage() {
 
   const handleInvite = async (e: React.FormEvent) => {
     e.preventDefault();
-    setInviteError('');
+    showInviteError('');
     setShareLink(null);
     setInviteLoading(true);
     try {
       const res = await api.post('/api/members/invite', { email: inviteEmail, role: inviteRole });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to create invite');
+      if (!res.ok) {
+        showInviteError(data.error || 'Failed to create invite', buySeatsHrefForRefusal(data));
+        return;
+      }
       setShareLink({
         url: data.invite_url,
         expiresAt: data.expires_at,
@@ -394,7 +420,7 @@ export default function MembersPage() {
       setShowInvite(false);
       await fetchDirectory(selectedId);
     } catch (err: any) {
-      setInviteError(err.message);
+      showInviteError(err.message);
     } finally {
       setInviteLoading(false);
     }
@@ -402,6 +428,7 @@ export default function MembersPage() {
 
   const handleRoleChange = async (memberId: string, newRole: string) => {
     setRoleError('');
+    setRoleSeatsHref(null);
     const res = await api.patch(`/api/members/${memberId}`, { role: newRole });
     if (res.ok) {
       await fetchDirectory(memberId);
@@ -409,6 +436,7 @@ export default function MembersPage() {
     } else {
       const data = await res.json().catch(() => ({}));
       setRoleError(data.error || 'Failed to change role');
+      setRoleSeatsHref(buySeatsHrefForRefusal(data));
     }
     setRoleDropdown(null);
   };
@@ -465,7 +493,7 @@ export default function MembersPage() {
   const handleRecoveryLink = async (m: DirectoryMember) => {
     setRecoveringId(m.id);
     setShareLink(null);
-    setInviteError('');
+    showInviteError('');
     try {
       const res = await api.post(`/api/members/${m.id}/recovery-url`, {});
       const data = await res.json();
@@ -476,7 +504,7 @@ export default function MembersPage() {
         context: `Password recovery link for ${m.name}`,
       });
     } catch (err: any) {
-      setInviteError(err.message);
+      showInviteError(err.message);
     } finally {
       setRecoveringId(null);
     }
@@ -485,7 +513,7 @@ export default function MembersPage() {
   const handleReissueInvite = async (invite: InviteRow) => {
     setWorkingInviteId(invite.id);
     setShareLink(null);
-    setInviteError('');
+    showInviteError('');
     try {
       const res = await api.post(`/api/members/invites/${invite.id}/reissue`, {});
       const data = await res.json();
@@ -497,7 +525,7 @@ export default function MembersPage() {
       });
       await fetchDirectory(selectedId);
     } catch (err: any) {
-      setInviteError(err.message);
+      showInviteError(err.message);
     } finally {
       setWorkingInviteId(null);
     }
@@ -505,7 +533,7 @@ export default function MembersPage() {
 
   const handleRevokeInvite = async (invite: InviteRow) => {
     setWorkingInviteId(invite.id);
-    setInviteError('');
+    showInviteError('');
     const res = await api.delete(`/api/members/invites/${invite.id}`);
     if (res.ok) {
       setShareLink(null);
@@ -515,7 +543,7 @@ export default function MembersPage() {
       }
     } else {
       const data = await res.json().catch(() => ({}));
-      setInviteError(data.error || 'Failed to revoke invite');
+      showInviteError(data.error || 'Failed to revoke invite');
     }
     setWorkingInviteId(null);
   };
@@ -539,7 +567,7 @@ export default function MembersPage() {
           </div>
           {isAdmin && (
             <button
-              onClick={() => { setShowInvite(!showInvite); setShareLink(null); setInviteError(''); }}
+              onClick={() => { setShowInvite(!showInvite); setShareLink(null); showInviteError(''); }}
               className="inline-flex h-9 shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-lg px-3 text-[12px] font-semibold"
               style={{ background: 'var(--accent)', color: 'white', fontFamily: 'var(--font-heading)' }}
             >
@@ -560,12 +588,14 @@ export default function MembersPage() {
         {isAdmin && seatStatus?.hosted && (
           <p className="text-[12px]" style={{ color: seatStatus.growth_frozen ? 'var(--error)' : 'var(--muted)' }}>
             {seatLine(seatStatus)}
+            <BuySeatsLink href={buySeatsHref(seatStatus.buy_seats_url)} />
           </p>
         )}
 
         {roleError && (
           <div className="rounded px-3 py-2 text-[12px]" style={{ background: 'rgba(147,0,10,0.2)', color: 'var(--error)' }}>
             {roleError}
+            <BuySeatsLink href={roleSeatsHref} />
           </div>
         )}
 
@@ -585,6 +615,7 @@ export default function MembersPage() {
             {inviteError && (
               <div className="mb-3 rounded px-3 py-2 text-[12px]" style={{ background: 'rgba(147,0,10,0.2)', color: 'var(--error)' }}>
                 {inviteError}
+                <BuySeatsLink href={inviteSeatsHref} />
               </div>
             )}
             <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_130px_auto]">

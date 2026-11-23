@@ -110,14 +110,14 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
   /** Enrols through the HTTP routes with whatever bearer the person holds. */
   async function enrol(bearer: string, refreshToken?: string) {
     // A signed-in person also gives their password; an enrol-only token does not.
-    const started = await post('/api/auth/two-step/enrol/start', bearer.startsWith('tsc_') ? {} : { current_password: PASSWORD }, bearer);
+    const enrolOnly = /^ts[cr]_/.test(bearer);
+    const started = await post('/api/auth/two-step/enrol/start', enrolOnly ? {} : { current_password: PASSWORD }, bearer);
     assert.equal(started.status, 200, JSON.stringify(started.json));
     const secret = started.json.secret as string;
     const confirmed = await post('/api/auth/two-step/enrol/confirm', { code: codeFor(secret) }, bearer);
     assert.equal(confirmed.status, 200, JSON.stringify(confirmed.json));
     // A signed-in caller keeps its session and gets no new tokens; the holder
     // of an enrol-only token gets a session issued now.
-    const enrolOnly = bearer.startsWith('tsc_');
     assert.equal(Boolean(confirmed.json.accessToken), enrolOnly);
     const session = enrolOnly ? confirmed.json : { ...confirmed.json, accessToken: bearer, refreshToken };
     return { secret, started: started.json, confirmed: session, recoveryCodes: confirmed.json.recovery_codes as string[] };
@@ -399,38 +399,208 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
     assert.equal((await post('/api/auth/two-step/enrol/start', { current_password: 'wrong-password' }, plainSession)).status, 403);
   });
 
-  await t.test('a recovery code works once and ends every other session', async () => {
+  /** Password, then a recovery code: the enrol-only token that answer carries. */
+  async function signInWithRecoveryCode(email: string, recoveryCode: string) {
+    const first = await login(email);
+    assert.equal(first.json.two_step?.status, 'code_required');
+    const used = await post('/api/auth/two-step/verify', { challenge_token: first.json.two_step.token, recovery_code: recoveryCode });
+    assert.equal(used.status, 200, JSON.stringify(used.json));
+    return used;
+  }
+  const noticesOf = async (userId: string, kind: string) => {
+    const { notifications } = await import('@deft/db/schema');
+    return (await db.select().from(notifications).where(eq(notifications.user_id, userId)))
+      .filter((row) => (row.metadata as Json | null)?.kind === kind);
+  };
+
+  await t.test('15.1: a recovery code works once, ends every other session and gives only a token that sets up a new authenticator', async () => {
     const who = await enrolledPerson();
     const elsewhere = await loginWithCode(who);
     assert.equal((await probe(who.accessToken)).status, 200);
     assert.equal((await probe(elsewhere.accessToken)).status, 200);
 
     const recovery = who.recoveryCodes[3]!;
-    const first = await login(who.email);
     const typed = recovery.toLowerCase().replace(/-/g, ' ');
-    const used = await post('/api/auth/two-step/verify', { challenge_token: first.json.two_step.token, recovery_code: typed });
-    assert.equal(used.status, 200, JSON.stringify(used.json));
-    assert.equal((await probe(used.json.accessToken)).status, 200);
+    const used = await signInWithRecoveryCode(who.email, typed);
+    // No session: the answer is the restricted enrol-only token.
+    assert.equal(used.json.accessToken, undefined);
+    assert.equal(used.json.refreshToken, undefined);
+    assert.equal(used.json.two_step.status, 'enrolment_required');
+    assert.equal(used.json.two_step.reason, 'recovery_code');
+    const restricted = used.json.two_step.token as string;
+    assert.match(restricted, /^tsr_[A-Za-z0-9_-]{43}$/);
 
-    // Every other session of the person is over.
+    // Every session of the person is over, and none was issued.
     assert.equal((await probe(who.accessToken)).status, 401);
     assert.equal((await probe(elsewhere.accessToken)).status, 401);
     assert.equal((await post('/api/auth/refresh', { refreshToken: elsewhere.refreshToken })).status, 401);
     const live = await db.select().from(webSessions).where(and(eq(webSessions.user_id, who.id), isNull(webSessions.revoked_at)));
-    assert.equal(live.length, 1);
+    assert.equal(live.length, 0);
 
+    // Nothing but enrolment accepts the token, and the refusal says why.
+    for (const res of [
+      await probe(restricted),
+      await call('GET', '/api/members', undefined, restricted),
+      await call('GET', '/api/auth/two-step', undefined, restricted),
+      await post('/api/auth/two-step/recovery-codes', { code: '123456' }, restricted),
+      await post('/api/auth/two-step/disable', { code: '123456' }, restricted),
+    ]) {
+      assert.equal(res.status, 401);
+      assert.equal(res.json.code, 'TWO_STEP_ENROLMENT_REQUIRED');
+      assert.match(String(res.json.error), /recovery code/);
+    }
+    assert.equal((await call('GET', '/api/auth/me', undefined, restricted)).status, 401);
+    assert.equal((await post('/api/auth/refresh', { refreshToken: restricted })).status, 401);
+    assert.equal((await post('/api/auth/two-step/verify', { challenge_token: restricted, code: codeFor(who.secret) })).status, 401);
+    await assert.rejects(() => verifyWebAccess(restricted));
+
+    // The used code is spent; the person was told it was used.
     const second = await login(who.email);
     const reused = await post('/api/auth/two-step/verify', { challenge_token: second.json.two_step.token, recovery_code: recovery });
     assert.equal(reused.status, 401);
     assert.equal(reused.json.code, 'TWO_STEP_CODE_INVALID');
+    const [usedNotice, ...moreUsed] = await noticesOf(who.id, 'two_step_recovery_code_used');
+    assert.equal(moreUsed.length, 0);
+    assert.equal(usedNotice!.org_id, who.org_id);
+    assert.equal(usedNotice!.type, 'system');
+    assert.equal(`${usedNotice!.title} ${usedNotice!.body}`.includes(recovery), false, 'never the code');
+    // Another unused code works the same way; someone else's does not.
     const another = await post('/api/auth/two-step/verify', { challenge_token: second.json.two_step.token, recovery_code: who.recoveryCodes[4] });
     assert.equal(another.status, 200);
-    const status = await call('GET', '/api/auth/two-step', undefined, another.json.accessToken);
-    assert.equal(status.json.recovery_codes_remaining, 8);
-    // Someone else's recovery code is no use.
+    assert.equal(another.json.two_step.status, 'enrolment_required');
     const stranger = await enrolledPerson();
     const third = await login(who.email);
     assert.equal((await post('/api/auth/two-step/verify', { challenge_token: third.json.two_step.token, recovery_code: stranger.recoveryCodes[0] })).status, 401);
+  });
+
+  await t.test('15.1: setting up the new authenticator replaces the old one and the codes, ends the token and tells the person', async () => {
+    const who = await enrolledPerson();
+    const used = await signInWithRecoveryCode(who.email, who.recoveryCodes[0]!);
+    const restricted = used.json.two_step.token as string;
+    // A code from the old authenticator or another recovery code is not asked for.
+    const { secret, confirmed, recoveryCodes } = await enrol(restricted);
+    assert.notEqual(secret, who.secret);
+    assert.equal(recoveryCodes.length, 10);
+    const full = await probe(confirmed.accessToken);
+    assert.equal(full.status, 200);
+    assert.equal((await post('/api/auth/two-step/enrol/start', {}, restricted)).status, 401, 'the token ended with the setup');
+
+    // The old authenticator and every old recovery code are gone.
+    await forgetUsedStep(who.id);
+    const oldCode = await login(who.email);
+    const refusedOld = await post('/api/auth/two-step/verify', { challenge_token: oldCode.json.two_step.token, code: codeFor(who.secret) });
+    assert.equal(refusedOld.status, 401);
+    assert.equal(refusedOld.json.code, 'TWO_STEP_CODE_INVALID');
+    assert.equal((await post('/api/auth/two-step/verify', { challenge_token: oldCode.json.two_step.token, recovery_code: who.recoveryCodes[1] })).status, 401);
+    await loginWithCode({ id: who.id, email: who.email, secret });
+    const status = await call('GET', '/api/auth/two-step', undefined, confirmed.accessToken);
+    assert.equal(status.json.enabled, true);
+    assert.equal(status.json.recovery_codes_remaining, 10);
+
+    // Told once, in the existing notice path, that a recovery code was used and the second step was reset.
+    const [reset, ...more] = await noticesOf(who.id, 'two_step_reset');
+    assert.equal(more.length, 0);
+    assert.equal(reset!.org_id, who.org_id);
+    assert.equal(reset!.type, 'system');
+    assert.equal(reset!.link, '/settings/profile');
+    assert.match(`${reset!.title} ${reset!.body}`, /recovery code/);
+    assert.match(`${reset!.title} ${reset!.body}`, /reset|set up again/);
+    assert.equal((await noticesOf(who.id, 'two_step_recovery_code_used')).length, 1);
+
+    // An ordinary enrolment or replacement tells nobody it was reset.
+    const plain = await enrolledPerson();
+    assert.equal((await noticesOf(plain.id, 'two_step_reset')).length, 0);
+    await post('/api/auth/two-step/enrol/start', { code: codeFor(plain.secret) }, plain.accessToken).then(async (started) => {
+      await forgetUsedStep(plain.id);
+      assert.equal((await post('/api/auth/two-step/enrol/confirm', { code: codeFor(started.json.secret) }, plain.accessToken)).status, 200);
+    });
+    assert.equal((await noticesOf(plain.id, 'two_step_reset')).length, 0);
+  });
+
+  await t.test('15.1: an abandoned setup changes nothing else: the next sign-in takes the old authenticator or another recovery code', async () => {
+    const who = await enrolledPerson();
+    const used = await signInWithRecoveryCode(who.email, who.recoveryCodes[0]!);
+    const restricted = used.json.two_step.token as string;
+    // Started, never confirmed, then the tab is closed.
+    const started = await post('/api/auth/two-step/enrol/start', {}, restricted);
+    assert.equal(started.status, 200);
+
+    const [row] = await db.select().from(userTwoStep).where(eq(userTwoStep.user_id, who.id));
+    assert.equal(decrypt(row!.secret_encrypted!), who.secret, 'the old authenticator is still the one in force');
+    // The password alone still gives no session.
+    const next = await login(who.email);
+    assert.equal(next.json.accessToken, undefined);
+    assert.equal(next.json.two_step.status, 'code_required');
+    // The old authenticator gives a full session, as before.
+    const session = await post('/api/auth/two-step/verify', { challenge_token: next.json.two_step.token, code: codeFor(who.secret) });
+    assert.equal(session.status, 200);
+    assert.equal((await probe(session.json.accessToken)).status, 200);
+    const status = await call('GET', '/api/auth/two-step', undefined, session.json.accessToken);
+    assert.equal(status.json.enabled, true);
+    assert.equal(status.json.recovery_codes_remaining, 9, 'the used code stays spent');
+    // Another recovery code asks for a new authenticator again.
+    const again = await signInWithRecoveryCode(who.email, who.recoveryCodes[1]!);
+    assert.equal(again.json.two_step.status, 'enrolment_required');
+    assert.equal(again.json.two_step.reason, 'recovery_code');
+    // The same attempt limits: wrong codes after an abandoned setup still lock the account.
+    const guess = await login(who.email);
+    for (let attempt = 1; attempt <= service.ACCOUNT_FREE_FAILURES; attempt += 1) {
+      await post('/api/auth/two-step/verify', { challenge_token: guess.json.two_step.token, recovery_code: 'AAAA-BBBB-CCCC-DDDD' });
+    }
+    const locked = await login(who.email);
+    assert.equal((await post('/api/auth/two-step/verify', { challenge_token: locked.json.two_step.token, recovery_code: who.recoveryCodes[2] })).status, 429);
+    assert.equal((await noticesOf(who.id, 'two_step_reset')).length, 0, 'nothing was reset');
+  });
+
+  await t.test('15.1: the enrol-only token of a password sign-in cannot stand in for a recovery code', async () => {
+    // Its prefix is part of the stored hash: renamed, it matches nothing.
+    const enrolled = await enrolledPerson();
+    const used = await signInWithRecoveryCode(enrolled.email, enrolled.recoveryCodes[0]!);
+    const genuine = used.json.two_step.token as string;
+    assert.equal((await post('/api/auth/two-step/enrol/start', {}, `tsc_${genuine.slice(4)}`)).status, 401);
+    hosted(true);
+    try {
+      const admin = await person('admin');
+      const first = await login(admin.email);
+      const enrolOnly = first.json.two_step.token as string;
+      assert.match(enrolOnly, /^tsc_/);
+      const forged = await post('/api/auth/two-step/enrol/start', {}, `tsr_${enrolOnly.slice(4)}`);
+      assert.equal(forged.status, 401);
+    } finally {
+      hosted(false);
+    }
+    // A token that was valid when checked but is used up before the start
+    // runs gives no new secret.
+    const token = (await signInWithRecoveryCode(enrolled.email, enrolled.recoveryCodes[1]!)).json.two_step.token as string;
+    const stillLive = await service.startTwoStepEnrolment({ id: enrolled.id, email: enrolled.email, sid: null }, { passwordProven: true, recoveryResetToken: genuine });
+    assert.equal(stillLive.ok, true, 'the first token is still live');
+    await db.update(twoStepChallenges).set({ consumed_at: new Date() }).where(eq(twoStepChallenges.user_id, enrolled.id));
+    const stale = await service.startTwoStepEnrolment({ id: enrolled.id, email: enrolled.email, sid: null }, { passwordProven: true, recoveryResetToken: token });
+    assert.deepEqual(stale, { ok: false, reason: 'authority_lost' });
+  });
+
+  await t.test('15.1, hosted: owners and admins cannot skip the new authenticator', async () => {
+    hosted(true);
+    try {
+      for (const role of ['owner', 'admin'] as const) {
+        const who = await enrolledPerson(role);
+        const used = await signInWithRecoveryCode(who.email, who.recoveryCodes[0]!);
+        assert.equal(used.json.accessToken, undefined);
+        const restricted = used.json.two_step.token as string;
+        for (const res of [await probe(restricted), await call('GET', '/api/members', undefined, restricted)]) {
+          assert.equal(res.status, 401);
+          assert.equal(res.json.code, 'TWO_STEP_ENROLMENT_REQUIRED');
+        }
+        // Not as a member they manage either: an owner or admin's role gives the token nothing more.
+        assert.equal((await post(`/api/members/${who.id}/recovery-url`, {}, restricted)).status, 401);
+        const { confirmed } = await enrol(restricted);
+        const full = await probe(confirmed.accessToken);
+        assert.equal(full.status, 200);
+        assert.equal(full.json.role, role);
+      }
+    } finally {
+      hosted(false);
+    }
   });
 
   await t.test('regenerating recovery codes and turning it off both need a current code', async () => {
@@ -681,7 +851,7 @@ test('two-step verification', { skip: !databaseUrl && 'needs DEFT_TEST_DATABASE_
       warn.mock.restore();
     }
     assert.equal(otherError?.code, undefined, `deadlock: the other transaction failed with ${otherError?.code}`);
-    assert.ok(!warn.mock.calls.some((call) => String(call.arguments[0]).includes('lock notice failed')),
+    assert.ok(!warn.mock.calls.some((call) => String(call.arguments[0]).includes('two_step_locked notice failed')),
       'deadlock: the notice insert failed (40P01) and the notice was lost');
     const { notifications } = await import('@deft/db/schema');
     const rows = await db.select().from(notifications).where(eq(notifications.user_id, who.id));

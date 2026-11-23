@@ -14,7 +14,7 @@
  * People who self-host never set any of these, so they are unaffected.
  */
 
-import { SEAT_SETTING_NAMES } from './seat-settings.js';
+import { SEAT_SETTING_NAMES, SEATS_PURCHASE_URL_SETTING } from './seat-settings.js';
 
 /**
  * Settings that only mean something on a hosted cell. A lane that adds a
@@ -24,6 +24,7 @@ export const HOSTED_ONLY_SETTINGS: readonly string[] = [
   'DEFT_SETUP_TOKEN_SHA256',
   'DEFT_SETUP_TOKEN_EXPIRES_AT',
   ...SEAT_SETTING_NAMES,
+  SEATS_PURCHASE_URL_SETTING,
 ];
 
 /**
