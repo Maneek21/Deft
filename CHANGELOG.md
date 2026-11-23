@@ -21,15 +21,15 @@ since `v0.3.0-preview.145`.
 Upgrade notes:
 
 - No migration. Schema head stays `0.3.0-preview.149`; `pnpm db:upgrade --status` on an
-  install already at `.145` has nothing to apply. An install on an older release
-  follows the earlier upgrade notes first (stop Deft, back up the database and the
+  install already at `.144` or `.145` has nothing to apply. An install on an older
+  release follows the earlier upgrade notes first (stop Deft, back up the database and the
   uploads volume, `pnpm db:upgrade`).
 - One new setting, `DEFT_HOSTED_SEATS_URL`, for the hosted Deft service only. A
   self-hosted install must leave it unset: with it defined (even empty) and without
   `DEFT_HOSTED=true`, startup is refused, like the other hosted-only settings listed
   in `docs/self-hosting.md`. If you copied a hosted environment file, remove it. On a
-  hosted cell it must be an `https` address without a user name or password, or
-  startup stops.
+  hosted cell, unset or blank means no link; any other value must be an `https`
+  address without a user name or password, or startup stops.
 - No setting is changed or removed. Author Kit stays `0.1.0-alpha.43`; its source is
   unchanged since `v0.3.0-preview.143`.
 - Anyone who has set up two-step verification (self-hosted installs included) and
@@ -40,13 +40,17 @@ Two-step verification (applies to self-hosted installs too):
 
 - Signing in with a recovery code no longer opens a session. It returns a token that can
   only set up a new authenticator (`POST /api/auth/two-step/enrol/start` and
-  `/enrol/confirm`); every other API call made with it is refused with 401
-  `TWO_STEP_ENROLMENT_REQUIRED`, a paused start and public routes included. The sign-in
+  `/enrol/confirm`); every other API call that sends it as a bearer token is refused
+  with 401 `TWO_STEP_ENROLMENT_REQUIRED`, a paused start and public routes included. The sign-in
   page sends the person to a "Set up a new authenticator" screen. Using the code signs
   out every session the person has. When setup is confirmed, the new authenticator and
-  a new set of recovery codes replace the old ones and the person is signed in. The
-  token lasts 30 minutes and is kept in that browser tab only, so closing the tab or
-  waiting too long means signing in again with another recovery code.
+  a new set of recovery codes replace the old ones, any session opened since (for
+  example with the old authenticator) is signed out, and the person is signed in. The
+  token lasts 30 minutes and is kept in that browser tab only. If it is lost or
+  expires, the person signs in again with the old authenticator, or with another
+  unused recovery code to restart setup. The recovery codes are shown once, in the
+  confirmation response; a client that gets them without a session token pair (the
+  password changed a moment before) must show them and then sign in again.
 - Until a new authenticator is confirmed, nothing is lost: the old authenticator and
   the recovery codes not yet used stay valid. The code that was spent stays spent.
 - The account holder gets an in-app notification, whatever their notification
