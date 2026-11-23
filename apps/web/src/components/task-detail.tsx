@@ -1278,7 +1278,13 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
           setUploadState({ status: 'error', filename: file.name, error: 'Bad server response' });
         }
       } else {
-        setUploadState({ status: 'error', filename: file.name, error: `Upload failed (${xhr.status})` });
+        // The server's reason when it gives one (a full workspace storage, a file too large), else the status.
+        let reason = `Upload failed (${xhr.status})`;
+        try {
+          const body = JSON.parse(xhr.responseText) as { error?: unknown };
+          if (typeof body.error === 'string' && body.error.trim()) reason = body.error;
+        } catch { /* not JSON: keep the status */ }
+        setUploadState({ status: 'error', filename: file.name, error: reason });
       }
     });
     xhr.addEventListener('error', () => {

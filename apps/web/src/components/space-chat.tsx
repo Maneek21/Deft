@@ -1444,7 +1444,7 @@ export function SpaceChat({
     : spaceName;
 
   return (
-    <FileDropZone onUploadComplete={handleFileUploadComplete}>
+    <FileDropZone onUploadComplete={handleFileUploadComplete} upload={uploadFile}>
       <div className="flex h-full" onClick={(event) => navigateMessageLink(event, href => {
         // Channel-message links own the URL; drop any open thread first so the
         // destination is not left behind the mobile thread overlay.
@@ -1987,12 +1987,14 @@ export function SpaceChat({
                                       const time = opt.mins
                                         ? new Date(Date.now() + opt.mins * 60000)
                                         : (() => { const d = new Date(); d.setDate(d.getDate()+1); d.setHours(9,0,0,0); return d; })();
-                                      await api.post('/api/reminders', {
+                                      const response = await api.post('/api/reminders', {
                                         remind_at: time.toISOString(),
                                         source_message_id: msg.id,
                                       });
                                       setMoreMenuId(null);
                                       setReminderMenuId(null);
+                                      // A refusal (the workspace's reminder limit) says why; nothing was set.
+                                      setCmdToast(response.ok ? `Reminder set: ${opt.label.toLowerCase()}` : await apiErrorMessage(response, 'Failed to set reminder'));
                                     }}
                                       className="w-full text-left px-3 py-1.5 text-[0.75rem]"
                                       style={{ color: 'var(--on-surface-variant)' }}>

@@ -57,6 +57,8 @@ export class AppAttachmentCustodyService {
     if (!identity) throw attachmentStale();
     let bytes: Buffer | undefined;
     try {
+      // Room checked before the stage is reserved, so a refusal leaves no stage to conflict with a later retry.
+      await this.objects.checkRoom?.(header.declared_size_bytes);
       const reserved = await this.database.transaction(tx => this.#reserve(tx,identity.org_id,tokenHash,header,signal),signal,deadline);
       signal.throwIfAborted();
       bytes = await readBytes(signal); signal.throwIfAborted();

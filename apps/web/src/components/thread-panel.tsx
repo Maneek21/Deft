@@ -19,7 +19,7 @@ import { X, Smile, ArrowLeft, FileText } from 'lucide-react';
 import { formatMessageTime } from '@/lib/time';
 import { EmojiPicker } from './emoji-picker';
 import { RichComposer } from './rich-composer';
-import { useFileUpload } from './file-upload';
+import { UploadProgress, useFileUpload } from './file-upload';
 import { ProtectedDownload } from './protected-file';
 import { AgentActionCard, type AgentAction } from './agent-action-card';
 import { useRetainedApprovalFailures } from '@/hooks/use-retained-approval-failures';
@@ -263,7 +263,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
   activeMessageIdRef.current = messageId;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const replyIntentRef = useRef<{ scope: string; intent: ReturnType<typeof createNativeCreateIntent> } | null>(null);
-  const { uploadFile, uploading, progress: uploadProgress } = useFileUpload();
+  const { uploadFile, uploading, progress: uploadProgress, error: uploadError, setError: setUploadError } = useFileUpload();
 
   const { retain: retainFailure, retainedFor: retainedFailures } = useRetainedApprovalFailures();
   const pendingBySpaceKey = spaceId
@@ -837,6 +837,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
           multiple
           onChange={handleFileSelect}
         />
+        <UploadProgress progress={uploadProgress} uploading={false} error={uploadError} onDismissError={() => setUploadError(null)} />
         <RichComposer
           key={messageId}
           placeholder="Reply..."

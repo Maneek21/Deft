@@ -4,24 +4,26 @@
  * workspace's count. Self-hosted installs have no limits: every function here
  * does nothing unless DEFT_HOSTED is exactly "true".
  *
- * - Disk: an upload is refused once files would use more than
- *   DEFT_HOSTED_LIMIT_STORAGE_PERCENT of the uploads volume (default 90), or
- *   leave less than 200 MB free. The limit follows the volume's real size, so
- *   a larger volume needs no new number. A write the disk refuses (ENOSPC) is
- *   removed and gets the same message, hosted or not.
- * - Outgoing requests: the addresses people make Deft fetch (link previews,
- *   calendar feeds) at most DEFT_HOSTED_LIMIT_OUTGOING_PER_MINUTE (60) a
- *   minute and DEFT_HOSTED_LIMIT_OUTGOING_PER_HOUR (1,000) an hour. Past
- *   that, a preview is skipped and a feed sync waits for its next turn; the
- *   workspace's owners and admins get one notice an hour.
+ * - Disk: a file write is refused once the files would use more than
+ *   DEFT_HOSTED_LIMIT_STORAGE_PERCENT of the volume (default 90), or leave
+ *   less than DEFT_HOSTED_LIMIT_STORAGE_FREE_MB free (default 200). The limit
+ *   follows the volume's real size. Writes still in progress count (a
+ *   reservation held until each write settles), so uploads arriving together
+ *   cannot pass it between them. A volume that cannot be measured refuses the
+ *   write. On a hosted cell a write the disk refuses (ENOSPC) is removed and
+ *   gets the same message.
+ * - Outgoing requests: the requests Deft makes to addresses people give it
+ *   (link previews, calendar feeds), each hop of a redirect counted, at most
+ *   DEFT_HOSTED_LIMIT_OUTGOING_PER_MINUTE (60) a minute and
+ *   DEFT_HOSTED_LIMIT_OUTGOING_PER_HOUR (1,000) an hour. Past that, a preview
+ *   is skipped and a feed sync waits; owners and admins get one notice an hour.
  * - Scheduled items: at most DEFT_HOSTED_LIMIT_SCHEDULED_MESSAGES (500)
  *   scheduled messages and DEFT_HOSTED_LIMIT_REMINDERS (2,000) reminders
  *   waiting at once.
  *
  * Each setting is hosted-only (hosted-settings.ts) and strict: anything but a
  * whole number in range stops startup (validateWorkspaceLimitEnvironment).
- * Pure apart from the file-system and database calls named below; it never
- * opens a database connection itself.
+ * It never opens a database connection itself.
  */
 import { statfs } from 'node:fs/promises';
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
@@ -29,11 +31,12 @@ import { reminders, scheduledMessages } from '@deft/db/schema';
 import { isHostedMode } from './hosted-mode.js';
 
 const SETTINGS = [
-  { key: 'outgoingPerMinute', name: 'DEFT_HOSTED_LIMIT_OUTGOING_PER_MINUTE', fallback: 60, min: 1, max: 100_000 },
-  { key: 'outgoingPerHour', name: 'DEFT_HOSTED_LIMIT_OUTGOING_PER_HOUR', fallback: 1_000, min: 1, max: 1_000_000 },
+  { key: 'outgoingPerMinute', name: 'DEFT_HOSTED_LIMIT_OUTGOING_PER_MINUTE', fallback: 60, min: 1, max: 10_000 },
+  { key: 'outgoingPerHour', name: 'DEFT_HOSTED_LIMIT_OUTGOING_PER_HOUR', fallback: 1_000, min: 1, max: 100_000 },
   { key: 'scheduledMessages', name: 'DEFT_HOSTED_LIMIT_SCHEDULED_MESSAGES', fallback: 500, min: 1, max: 1_000_000 },
   { key: 'reminders', name: 'DEFT_HOSTED_LIMIT_REMINDERS', fallback: 2_000, min: 1, max: 1_000_000 },
   { key: 'storagePercent', name: 'DEFT_HOSTED_LIMIT_STORAGE_PERCENT', fallback: 90, min: 1, max: 99 },
+  { key: 'storageFreeMb', name: 'DEFT_HOSTED_LIMIT_STORAGE_FREE_MB', fallback: 200, min: 1, max: 1_000_000 },
 ] as const;
 
 export type WorkspaceLimits = { readonly [K in (typeof SETTINGS)[number]['key']]: number };
@@ -45,9 +48,6 @@ export const WORKSPACE_LIMIT_SETTING_NAMES: readonly string[] = SETTINGS.map((se
 export const DEFAULT_WORKSPACE_LIMITS: WorkspaceLimits = Object.freeze(
   Object.fromEntries(SETTINGS.map((setting) => [setting.key, setting.fallback])) as WorkspaceLimits,
 );
-
-/** Below this much free space an upload is refused whatever the percentage. */
-export const STORAGE_FREE_FLOOR_BYTES = 200 * 1024 * 1024;
 
 /** The limits from the environment, or what is wrong with them. Problems name settings, never values. */
 export function parseWorkspaceLimits(
@@ -67,9 +67,6 @@ export function parseWorkspaceLimits(
       continue;
     }
     limits[setting.key] = value;
-  }
-  if (problems.length === 0 && (limits.outgoingPerHour ?? 0) < (limits.outgoingPerMinute ?? 0)) {
-    problems.push('DEFT_HOSTED_LIMIT_OUTGOING_PER_HOUR must be at least DEFT_HOSTED_LIMIT_OUTGOING_PER_MINUTE');
   }
   return problems.length > 0 ? { ok: false, problems } : { ok: true, limits: limits as WorkspaceLimits };
 }
@@ -92,19 +89,11 @@ export function workspaceLimits(): WorkspaceLimits | null {
   return current;
 }
 
-/** Test seam only: the limits to apply (null: none), and a fresh outgoing count. */
-export function _setWorkspaceLimitsForTest(limits: WorkspaceLimits | null | undefined): void {
-  current = limits;
-  outgoing.length = 0;
-  lastNoticeAt.clear();
-  lastLogAt.clear();
-}
-
 /** A request refused at a workspace limit; routes answer it with `status` and `{ error: message, code }`. */
 export class WorkspaceLimitError extends Error {
   constructor(
-    readonly code: 'WORKSPACE_STORAGE_FULL' | 'WORKSPACE_OUTGOING_LIMIT' | 'WORKSPACE_SCHEDULE_LIMIT',
-    readonly status: 409 | 413 | 429,
+    readonly code: 'WORKSPACE_STORAGE_FULL' | 'WORKSPACE_STORAGE_UNAVAILABLE' | 'WORKSPACE_OUTGOING_LIMIT' | 'WORKSPACE_SCHEDULE_LIMIT',
+    readonly status: 409 | 413 | 429 | 503,
     message: string,
     readonly retryAfterSeconds: number | null = null,
   ) {
@@ -113,73 +102,106 @@ export class WorkspaceLimitError extends Error {
   }
 }
 
+/** The JSON body and status a route answers a WorkspaceLimitError with; sets Retry-After when the refusal has one. */
+export function limitResponse(c: { json: (body: unknown, status: 409 | 413 | 429 | 503) => Response; header: (name: string, value: string) => void }, error: WorkspaceLimitError): Response {
+  if (error.retryAfterSeconds !== null) c.header('Retry-After', String(error.retryAfterSeconds));
+  return c.json({ error: error.message, code: error.code }, error.status);
+}
+
 const number = (value: number): string => value.toLocaleString('en-US');
 
 // ---- the operator's log and the admins' notice ------------------------------------------------
 
 type LimitKind = 'storage' | 'outgoing_requests' | 'scheduled_messages' | 'reminders';
+type Notice = { title: string; body: string };
 const LOG_EVERY_MS = 60_000;
 const NOTICE_EVERY_MS = 60 * 60_000;
 const lastLogAt = new Map<LimitKind, number>();
 const lastNoticeAt = new Map<LimitKind, number>();
 
+const realNotifier = (kind: LimitKind, notice: Notice): Promise<void> =>
+  // Loaded only when needed: this module must not open the database on import.
+  import('./workspace-limit-notice.js').then((module) => module.noticeWorkspaceAdmins(kind, notice));
+let notifier: (kind: LimitKind, notice: Notice) => Promise<void> = realNotifier;
+
 /** One log line a minute per limit, and one notice an hour to the workspace's owners and admins. Never throws. */
-function reached(kind: LimitKind, notice: { title: string; body: string } | null, now: number): void {
+function reached(kind: LimitKind, notice: Notice | null, now: number): void {
   if (now - (lastLogAt.get(kind) ?? -Infinity) >= LOG_EVERY_MS) {
     lastLogAt.set(kind, now);
     console.warn(`[workspace-limit] workspace_limit_reached kind=${kind}`);
   }
   if (notice === null || now - (lastNoticeAt.get(kind) ?? -Infinity) < NOTICE_EVERY_MS) return;
   lastNoticeAt.set(kind, now);
-  // Loaded only when needed: this module must not open the database on import.
-  void import('./workspace-limit-notice.js')
-    .then((module) => module.noticeWorkspaceAdmins(kind, notice))
-    .catch(() => console.warn('[workspace-limit] admin notice failed'));
+  void notifier(kind, notice).catch(() => console.warn('[workspace-limit] admin notice failed'));
+}
+
+/** Test seam only: the limits to apply (null: none; undefined: read again), a recording notifier, and fresh counts. */
+export function _setWorkspaceLimitsForTest(limits: WorkspaceLimits | null | undefined, notify?: (kind: string, notice: Notice) => void): void {
+  current = limits;
+  notifier = notify === undefined ? realNotifier : async (kind, notice) => notify(kind, notice);
+  outgoing.length = 0;
+  outgoingHead = 0;
+  reservedBytes = 0;
+  lastNoticeAt.clear();
+  lastLogAt.clear();
 }
 
 // ---- outgoing requests -------------------------------------------------------------------------
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
-/** When each fetch of the last hour was let through, oldest first. */
+/** When each request of the last hour was let through, oldest first, from `outgoingHead` on. */
 const outgoing: number[] = [];
+let outgoingHead = 0;
 
 /**
- * Count one fetch of an address a person supplied (a link preview, a calendar
- * feed), or refuse it with a WorkspaceLimitError when the workspace is at its
- * minute or hour limit. A refused fetch is not counted.
+ * Refuse with a WorkspaceLimitError when the workspace is at its minute or
+ * hour limit of outside requests; otherwise count one request, unless `peek`
+ * (a look before a lookup, which sends nothing). A refused request is not
+ * counted. Call it right before each request to an address a person supplied.
  */
-export function takeOutgoingRequest(now = Date.now()): void {
+export function takeOutgoingRequest(now = Date.now(), options: { readonly peek?: boolean } = {}): void {
   const limits = workspaceLimits();
   if (limits === null) return;
-  while (outgoing.length > 0 && (outgoing[0] ?? 0) <= now - HOUR) outgoing.shift();
+  while (outgoingHead < outgoing.length && (outgoing[outgoingHead] ?? 0) <= now - HOUR) outgoingHead += 1;
+  if (outgoingHead > 1024 && outgoingHead * 2 > outgoing.length) {
+    outgoing.splice(0, outgoingHead);
+    outgoingHead = 0;
+  }
+  const inHour = outgoing.length - outgoingHead;
   let inMinute = 0;
-  for (let i = outgoing.length - 1; i >= 0 && (outgoing[i] ?? 0) > now - MINUTE; i -= 1) inMinute += 1;
-  if (inMinute >= limits.outgoingPerMinute || outgoing.length >= limits.outgoingPerHour) {
-    const perMinute = inMinute >= limits.outgoingPerMinute;
-    const frees = perMinute ? (outgoing[outgoing.length - inMinute] ?? now) + MINUTE : (outgoing[0] ?? now) + HOUR;
-    const retryAfterSeconds = Math.max(1, Math.ceil((frees - now) / 1000));
+  for (let i = outgoing.length - 1; i >= outgoingHead && (outgoing[i] ?? 0) > now - MINUTE; i -= 1) inMinute += 1;
+  const minuteFull = inMinute >= limits.outgoingPerMinute;
+  const hourFull = inHour >= limits.outgoingPerHour;
+  if (minuteFull || hourFull) {
+    // The window that frees a place last decides when to try again.
+    const minuteFrees = minuteFull ? (outgoing[outgoing.length - inMinute] ?? now) + MINUTE : now;
+    const hourFrees = hourFull ? (outgoing[outgoingHead] ?? now) + HOUR : now;
+    const retryAfterSeconds = Math.max(1, Math.ceil((Math.max(minuteFrees, hourFrees) - now) / 1000));
+    const byHour = hourFull && hourFrees >= minuteFrees;
     reached('outgoing_requests', {
       title: 'Link previews and calendar feeds paused for a moment',
-      body: `This workspace reached its limit of ${perMinute ? `${number(limits.outgoingPerMinute)} outside requests a minute` : `${number(limits.outgoingPerHour)} outside requests an hour`}. ` +
+      body: `This workspace reached its limit of ${byHour ? `${number(limits.outgoingPerHour)} outside requests an hour` : `${number(limits.outgoingPerMinute)} outside requests a minute`}. ` +
         'Link previews are skipped and calendar feeds sync later until it is under the limit again. Chat and everything else work as usual.',
     }, now);
     throw new WorkspaceLimitError(
       'WORKSPACE_OUTGOING_LIMIT',
       429,
-      perMinute
-        ? `This workspace has made ${number(limits.outgoingPerMinute)} outside requests in the last minute, its limit. Try again in a minute.`
-        : `This workspace has made ${number(limits.outgoingPerHour)} outside requests in the last hour, its limit. Try again in ${Math.max(1, Math.ceil(retryAfterSeconds / 60))} minutes.`,
+      byHour
+        ? `This workspace has made ${number(limits.outgoingPerHour)} outside requests in the last hour, its limit. Try again in ${Math.max(1, Math.ceil(retryAfterSeconds / 60))} minutes.`
+        : `This workspace has made ${number(limits.outgoingPerMinute)} outside requests in the last minute, its limit. Try again in a minute.`,
       retryAfterSeconds,
     );
   }
-  outgoing.push(now);
+  if (options.peek !== true) outgoing.push(now);
 }
 
 // ---- disk ---------------------------------------------------------------------------------------
 
 type VolumeStats = { bsize: number; blocks: number; bfree: number; bavail: number };
 let readVolume: (dir: string) => Promise<VolumeStats> = (dir) => statfs(dir);
+/** Bytes of writes let through and not yet settled (one process per cell: this is the workspace's). */
+let reservedBytes = 0;
 
 /** Test seam only: what the volume reports (null: the real `statfs`). */
 export function _setVolumeStatsForTest(read: ((dir: string) => Promise<VolumeStats>) | null): void {
@@ -203,36 +225,51 @@ export function storageFullError(capacityBytes: number | null): WorkspaceLimitEr
   return new WorkspaceLimitError(
     'WORKSPACE_STORAGE_FULL',
     413,
-    `This workspace has used its file storage${size}. Delete files you no longer need, or ask the workspace owner about more space. Nothing else is affected.`,
+    `This workspace has used its file storage${size}, so this file was not saved. Ask the workspace owner about more space. Everything else works as usual.`,
   );
 }
 
+/** Whether a disk-full error from a write is to be answered as the workspace's storage limit (hosted cells only). */
+export function storageLimitApplies(): boolean {
+  return workspaceLimits() !== null;
+}
+
 /**
- * Refuse a write of `incomingBytes` into `dir` when it would take the volume
- * past the hosted storage limit. Does nothing on a self-hosted install, or when
- * the volume cannot be read (the write itself then decides).
+ * Reserve room for a write of `incomingBytes` into `dir`, or refuse it when it
+ * would take the volume past the hosted storage limit (or the volume cannot be
+ * measured). Returns the release to call once the write has settled, whatever
+ * its outcome. On a self-hosted install: nothing is checked or reserved.
  */
-export async function assertStorageRoom(dir: string, incomingBytes: number, now = Date.now()): Promise<void> {
+export async function reserveStorage(dir: string, incomingBytes: number, now = Date.now()): Promise<() => void> {
   const limits = workspaceLimits();
-  if (limits === null) return;
+  if (limits === null) return () => undefined;
   let stats: VolumeStats;
   try {
     stats = await readVolume(dir);
   } catch {
-    return;
+    console.warn('[workspace-limit] the file storage could not be measured');
+    throw new WorkspaceLimitError('WORKSPACE_STORAGE_UNAVAILABLE', 503, 'The file could not be saved because the file storage could not be checked. Try again in a moment.', 30);
   }
-  // As `df` counts it: what is used, and what the volume can hold for Deft (root's reserve left out).
-  const used = (stats.blocks - stats.bfree) * stats.bsize;
-  const capacity = used + stats.bavail * stats.bsize;
-  const free = stats.bavail * stats.bsize;
-  if (capacity <= 0) return;
-  if (used + incomingBytes > capacity * (limits.storagePercent / 100) || free - incomingBytes < STORAGE_FREE_FLOOR_BYTES) {
+  // As `df` counts it: what is used, and what the volume can hold for Deft (root's reserve left out). A write takes whole blocks.
+  const bsize = Math.max(1, stats.bsize);
+  const incoming = Math.ceil(Math.max(0, incomingBytes) / bsize) * bsize;
+  const used = (stats.blocks - stats.bfree) * bsize + reservedBytes;
+  const capacity = (stats.blocks - stats.bfree + stats.bavail) * bsize;
+  const free = stats.bavail * bsize - reservedBytes;
+  if (capacity <= 0 || used + incoming > capacity * (limits.storagePercent / 100) || free - incoming < limits.storageFreeMb * 1024 * 1024) {
     reached('storage', {
       title: 'File storage is full',
-      body: `This workspace has used ${limits.storagePercent}% of its file storage (${gigabytes(capacity)}). New uploads are refused until files are deleted. Everything else works as usual.`,
+      body: `This workspace's file storage (${gigabytes(capacity)}) is full, so new files are refused. Ask the workspace owner about more space. Everything else works as usual.`,
     }, now);
     throw storageFullError(capacity);
   }
+  reservedBytes += incoming;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    reservedBytes = Math.max(0, reservedBytes - incoming);
+  };
 }
 
 // ---- scheduled items ----------------------------------------------------------------------------
@@ -267,7 +304,7 @@ export async function assertScheduleRoom(tx: LimitExecutor, orgId: string, kind:
     'WORKSPACE_SCHEDULE_LIMIT',
     409,
     kind === 'scheduled_messages'
-      ? `This workspace already has ${number(limit)} scheduled messages waiting to be sent, its limit. Send or cancel some before scheduling more.`
-      : `This workspace already has ${number(limit)} reminders waiting, its limit. Remove some before adding more.`,
+      ? `This workspace already has ${number(limit)} scheduled messages waiting to be sent, its limit. More can be scheduled once some have been sent or cancelled.`
+      : `This workspace already has ${number(limit)} reminders waiting, its limit. More can be set once some have gone off or been removed.`,
   );
 }

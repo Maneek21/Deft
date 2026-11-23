@@ -333,8 +333,6 @@ async function fetchHttpText(
 ): Promise<{ text: string; contentType: string; url: string }> {
   // Link previews and calendar feeds: nothing is fetched while paused.
   assertNotPaused('a public URL fetch');
-  // A hosted workspace's limit on outside requests (workspace-limits.ts): refused before any lookup.
-  takeOutgoingRequest();
   const signal = AbortSignal.timeout(options.timeoutMs);
   let { url, listed } = parseTarget(rawUrl, undefined, allowlist);
   // A chain that starts at a listed URL may only continue to listed URLs; a
@@ -342,8 +340,11 @@ async function fetchHttpText(
   const listedChain = listed;
   for (let hop = 0; ; hop += 1) {
     let res: IncomingMessage | undefined;
+    // A hosted workspace's limit on outside requests (workspace-limits.ts): looked at before the lookup, and each request counted.
+    takeOutgoingRequest(Date.now(), { peek: true });
     for (const pinned of await resolvePinned(url, signal, listed)) {
       try {
+        takeOutgoingRequest();
         res = await requestOnce(url, pinned, options, signal);
         break;
       } catch (err) {

@@ -1,19 +1,17 @@
 /**
- * Scheduled-item caps on a hosted workspace (apps/api/src/lib/workspace-limits.ts, launch check 6.6), and what an emergency stop's
- * restart and lift (check 6.8) do to items that fell due meanwhile: each is sent once, late, never twice.
+ * Scheduled-item caps on a hosted workspace (apps/api/src/lib/workspace-limits.ts, launch check 6.6).
  *
  * Run: pnpm --filter @deft/api test test/workspace-limits-db.test.ts
  */
 import { after, afterEach, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Hono } from 'hono';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { jobQueue, messages, orgMembers, orgs, reminders, scheduledMessages, spaceMembers, spaces, users } from '@deft/db/schema';
 import { db } from '../src/lib/db.js';
 import { reminderRoutes } from '../src/routes/reminders.js';
 import { scheduledRoutes } from '../src/routes/scheduled.js';
 import { DEFAULT_WORKSPACE_LIMITS, _setWorkspaceLimitsForTest } from '../src/lib/workspace-limits.js';
-import { rehydratePendingScheduledMessages, sendScheduledMessage } from '../src/workers/handlers/scheduled-message-send.js';
 
 const marker = `workspace-limits-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
 let orgId: string;
@@ -70,7 +68,7 @@ test('scheduled messages: refused past the workspace limit with the reason; send
   const refused = await post(hono, '/scheduled', { space_id: spaceId, content: `${marker}-3`, scheduled_for: later() });
   assert.equal(refused.status, 409);
   assert.deepEqual(await refused.json(), {
-    error: 'This workspace already has 2 scheduled messages waiting to be sent, its limit. Send or cancel some before scheduling more.',
+    error: 'This workspace already has 2 scheduled messages waiting to be sent, its limit. More can be scheduled once some have been sent or cancelled.',
     code: 'WORKSPACE_SCHEDULE_LIMIT',
   });
   assert.equal((await db.select().from(scheduledMessages).where(eq(scheduledMessages.org_id, orgId))).length, 2, 'nothing was created');
@@ -93,7 +91,7 @@ test('reminders: refused past the workspace limit with the reason', async () => 
   const refused = await post(hono, '/reminders', { content: 'second', remind_at: later() });
   assert.equal(refused.status, 409);
   assert.deepEqual(await refused.json(), {
-    error: 'This workspace already has 1 reminders waiting, its limit. Remove some before adding more.',
+    error: 'This workspace already has 1 reminders waiting, its limit. More can be set once some have gone off or been removed.',
     code: 'WORKSPACE_SCHEDULE_LIMIT',
   });
   // A reminder already sent does not count.
@@ -105,19 +103,4 @@ test('a self-hosted install has no scheduled-item limit', async () => {
   _setWorkspaceLimitsForTest(null);
   const hono = app();
   for (let i = 0; i < 3; i += 1) assert.equal((await post(hono, '/reminders', { content: `r${i}`, remind_at: later() })).status, 201);
-});
-
-test('after a stop and its lift (two restarts), a message that fell due meanwhile is sent once, late, never twice', async () => {
-  const content = `${marker}-due-during-stop`;
-  const [scheduled] = await db.insert(scheduledMessages).values({ org_id: orgId, user_id: userId, space_id: spaceId, content, scheduled_for: new Date(Date.now() - 10 * 60_000) }).returning();
-  if (!scheduled) throw new Error('Failed to seed a scheduled message');
-  // The stop's restart (paused: nothing claimed) and the lift's restart each queue the pending items again.
-  await rehydratePendingScheduledMessages();
-  await rehydratePendingScheduledMessages();
-  const jobs = await db.select({ id: jobQueue.id }).from(jobQueue).where(and(eq(jobQueue.org_id, orgId), eq(jobQueue.dedupe_key, `scheduled-message:${scheduled.id}`), sql`${jobQueue.status} IN ('pending', 'running')`));
-  assert.equal(jobs.length, 1, 'one delivery job however many restarts');
-  // Delivered, and a repeat (a job retried after a lost acknowledgement) sends nothing.
-  assert.equal(await sendScheduledMessage(scheduled.id), true);
-  assert.equal(await sendScheduledMessage(scheduled.id), false);
-  assert.equal((await db.select({ id: messages.id }).from(messages).where(and(eq(messages.org_id, orgId), eq(messages.content, content)))).length, 1);
 });

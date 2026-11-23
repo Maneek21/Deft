@@ -15,6 +15,8 @@ type UploadResult = {
 type Props = {
   onUploadComplete: (file: UploadResult) => void;
   children: React.ReactNode;
+  /** The caller's own upload, so a refusal shows where the caller shows its upload errors; default: an upload of its own. */
+  upload?: (file: File) => Promise<UploadResult | null>;
 };
 
 export function useFileUpload() {
@@ -59,9 +61,10 @@ export function useFileUpload() {
   return { uploadFile, uploading, progress, error, setError };
 }
 
-export function FileDropZone({ onUploadComplete, children }: Props) {
+export function FileDropZone({ onUploadComplete, children, upload }: Props) {
   const [dragOver, setDragOver] = useState(false);
-  const { uploadFile } = useFileUpload();
+  const own = useFileUpload();
+  const uploadFile = upload ?? own.uploadFile;
   const dragCounter = useRef(0);
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {

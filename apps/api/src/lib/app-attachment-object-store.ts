@@ -2,10 +2,12 @@ import { mkdir, open, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { RESOURCE_ATTACHMENT_LIMITS } from '@deft/app-kit/core';
 import { LocalFileStore } from './file-store.js';
-import { assertStorageRoom } from './workspace-limits.js';
+import { isDiskFullError, reserveStorage, storageFullError, storageLimitApplies } from './workspace-limits.js';
 
 export interface AppAttachmentObjectStore {
   putExclusive(objectId: string, ciphertext: Uint8Array, signal: AbortSignal): Promise<void>;
+  /** Refuse (a WorkspaceLimitError) when a hosted workspace has no room for this many bytes; reserves nothing. */
+  checkRoom?(bytes: number): Promise<void>;
   get(objectId: string, signal: AbortSignal): Promise<Buffer>;
   delete(objectId: string): Promise<void>;
 }
@@ -29,12 +31,23 @@ export class LocalAppAttachmentObjectStore implements AppAttachmentObjectStore {
     const key = this.#key(objectId);
     if (ciphertext.byteLength > RESOURCE_ATTACHMENT_LIMITS.attachment_bytes) throw new TypeError('Attachment exceeds host limit');
     signal.throwIfAborted(); await mkdir(this.#files.rootDir, { recursive: true }); signal.throwIfAborted();
-    await assertStorageRoom(this.#files.rootDir, ciphertext.byteLength); signal.throwIfAborted();
-    const handle = await open(join(this.#files.rootDir, key), 'wx');
+    const release = await reserveStorage(this.#files.rootDir, ciphertext.byteLength);
     try {
-      await handle.writeFile(ciphertext, { signal });
       signal.throwIfAborted();
-    } finally { await handle.close(); }
+      const handle = await open(join(this.#files.rootDir, key), 'wx');
+      try {
+        await handle.writeFile(ciphertext, { signal });
+        signal.throwIfAborted();
+      } finally { await handle.close(); }
+    } catch (error) {
+      // A partial object stays fenced as an uncertain write (its stage stays `uploading`); the reason is the storage limit.
+      if (isDiskFullError(error) && storageLimitApplies()) throw storageFullError(null);
+      throw error;
+    } finally { release(); }
+  }
+  async checkRoom(bytes: number): Promise<void> {
+    await mkdir(this.#files.rootDir, { recursive: true });
+    (await reserveStorage(this.#files.rootDir, bytes))();
   }
   get(objectId: string, signal: AbortSignal): Promise<Buffer> {
     return this.#files.get(this.#key(objectId), { signal, maxBytes: RESOURCE_ATTACHMENT_LIMITS.attachment_bytes });

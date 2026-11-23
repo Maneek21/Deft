@@ -8,7 +8,7 @@ import { requireSpaceMembership } from '../lib/space-membership.js';
 import { extractLegacyAttachmentIds, MAX_MESSAGE_ATTACHMENTS } from '../lib/message-attachments.js';
 import { stagedAttachmentExpiry } from '../lib/attachment-retention.js';
 import { releaseScheduledMessageAttachments } from '../lib/scheduled-message-cancel.js';
-import { WorkspaceLimitError, assertScheduleRoom } from '../lib/workspace-limits.js';
+import { WorkspaceLimitError, assertScheduleRoom, limitResponse } from '../lib/workspace-limits.js';
 
 export const scheduledRoutes = new Hono();
 
@@ -114,7 +114,7 @@ scheduledRoutes.post('/', async (c) => {
     return created;
   });
   } catch (error) {
-    if (error instanceof WorkspaceLimitError) return c.json({ error: error.message, code: error.code }, error.status);
+    if (error instanceof WorkspaceLimitError) return limitResponse(c, error);
     throw error;
   }
 

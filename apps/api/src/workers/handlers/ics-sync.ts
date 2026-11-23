@@ -15,6 +15,7 @@ import { db } from '../../lib/db.js';
 import { icsSubscriptions, events } from '@deft/db/schema';
 import { humanizeIcsError, parseICS } from '../../lib/ics.js';
 import { fetchCalendarFeedText } from '../../lib/public-http-fetch.js';
+import { WorkspaceLimitError } from '../../lib/workspace-limits.js';
 import type { JobData } from '../types.js';
 
 export async function handleIcsSync(_job: JobData): Promise<void> {
@@ -46,6 +47,8 @@ export async function handleIcsSync(_job: JobData): Promise<void> {
       sync_interval_min: number;
     };
     await syncOne(sub).catch(async (err) => {
+      // At the workspace's limit of outside requests nothing was fetched: the feed is tried again on the next scan.
+      if (err instanceof WorkspaceLimitError) return;
       const msg = humanizeIcsError(err);
       console.warn('[ics-sync] Subscription sync failed');
       await db

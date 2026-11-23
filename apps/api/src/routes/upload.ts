@@ -15,7 +15,7 @@ import { localFileStore } from '../lib/file-store.js';
 import { MAX_ATTACHMENT_BYTES, processAttachment } from '../lib/attachment-processor.js';
 import { stagedAttachmentExpiry } from '../lib/attachment-retention.js';
 import { verifyWebAccess } from '../lib/web-sessions.js';
-import { WorkspaceLimitError } from '../lib/workspace-limits.js';
+import { WorkspaceLimitError, limitResponse } from '../lib/workspace-limits.js';
 
 export const uploadRoutes = new Hono();
 export const fileServingRoutes = new Hono();
@@ -129,7 +129,7 @@ uploadRoutes.post('/', async (c) => {
       processing_error: inserted!.processing_error,
     }, 201);
   } catch (err) {
-    if (err instanceof WorkspaceLimitError) return c.json({ error: err.message, code: err.code }, err.status);
+    if (err instanceof WorkspaceLimitError) return limitResponse(c, err);
     console.error('Failed to upload file:');
     return c.json({ error: 'Failed to upload file', code: 'INTERNAL_ERROR' }, 500);
   }

@@ -2,9 +2,10 @@ import { Hono } from 'hono';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { customEmoji } from '@deft/db/schema';
-import { writeFile, mkdir } from 'node:fs/promises';
+import { writeFile, mkdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { WorkspaceLimitError, isDiskFullError, limitResponse, reserveStorage, storageFullError, storageLimitApplies } from '../lib/workspace-limits.js';
 
 export const emojiRoutes = new Hono();
 
@@ -63,7 +64,19 @@ emojiRoutes.post('/', async (c) => {
   const ext = file.name?.split('.').pop() || 'png';
   const filename = `${randomUUID()}.${ext}`;
   const buffer = Buffer.from(await file.arrayBuffer());
-  await writeFile(join(EMOJI_DIR, filename), buffer);
+  // The hosted storage limit applies (workspace-limits.ts).
+  let release = (): void => undefined;
+  try {
+    release = await reserveStorage(EMOJI_DIR, buffer.byteLength);
+    await writeFile(join(EMOJI_DIR, filename), buffer);
+  } catch (error) {
+    if (error instanceof WorkspaceLimitError) return limitResponse(c, error);
+    if (!isDiskFullError(error) || !storageLimitApplies()) throw error;
+    await unlink(join(EMOJI_DIR, filename)).catch(() => undefined);
+    return limitResponse(c, storageFullError(null));
+  } finally {
+    release();
+  }
 
   const imageUrl = `/api/files/emoji/${filename}`;
 

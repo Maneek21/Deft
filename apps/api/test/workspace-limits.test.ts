@@ -1,7 +1,7 @@
 /**
  * Per-workspace limits on a hosted cell (apps/api/src/lib/workspace-limits.ts, launch check 6.6): the settings, the limit on
- * outside requests (link previews and calendar feeds), and the disk. No database (the scheduled-item caps are in
- * workspace-limits-db.test.ts).
+ * outside requests (link previews and calendar feeds), and the disk. No database: the admins' notice is recorded by a test notifier
+ * (the scheduled-item caps are in workspace-limits-db.test.ts).
  *
  * Run: pnpm --filter @deft/api exec tsx --test test/workspace-limits.test.ts
  */
@@ -16,14 +16,13 @@ import { fetchPublicHttpText, publicFetchDeps } from '../src/lib/public-http-fet
 import { humanizeIcsError } from '../src/lib/ics.js';
 import {
   DEFAULT_WORKSPACE_LIMITS,
-  STORAGE_FREE_FLOOR_BYTES,
   WORKSPACE_LIMIT_SETTING_NAMES,
   WorkspaceLimitError,
   _setVolumeStatsForTest,
   _setWorkspaceLimitsForTest,
-  assertStorageRoom,
   isDiskFullError,
   parseWorkspaceLimits,
+  reserveStorage,
   takeOutgoingRequest,
   validateWorkspaceLimitEnvironment,
   type WorkspaceLimits,
@@ -31,18 +30,23 @@ import {
 
 const realLookup = publicFetchDeps.lookup;
 const limits = (overrides: Partial<WorkspaceLimits> = {}): WorkspaceLimits => ({ ...DEFAULT_WORKSPACE_LIMITS, ...overrides });
+const notices: Array<{ kind: string; title: string }> = [];
+const hosted = (overrides: Partial<WorkspaceLimits> = {}) => _setWorkspaceLimitsForTest(limits(overrides), (kind, notice) => notices.push({ kind, title: notice.title }));
 
 afterEach(() => {
   _setWorkspaceLimitsForTest(undefined);
   _setVolumeStatsForTest(null);
   publicFetchDeps.lookup = realLookup;
+  notices.length = 0;
 });
 
-test('the launch defaults, and every setting strict: a whole number in range or startup stops', () => {
-  assert.deepEqual(DEFAULT_WORKSPACE_LIMITS, { outgoingPerMinute: 60, outgoingPerHour: 1_000, scheduledMessages: 500, reminders: 2_000, storagePercent: 90 });
+test('the launch defaults, and every setting strict on its own: a whole number in range or startup stops', () => {
+  assert.deepEqual(DEFAULT_WORKSPACE_LIMITS, { outgoingPerMinute: 60, outgoingPerHour: 1_000, scheduledMessages: 500, reminders: 2_000, storagePercent: 90, storageFreeMb: 200 });
   assert.deepEqual(parseWorkspaceLimits({}), { ok: true, limits: DEFAULT_WORKSPACE_LIMITS });
-  assert.deepEqual(parseWorkspaceLimits({ DEFT_HOSTED_LIMIT_OUTGOING_PER_MINUTE: '10', DEFT_HOSTED_LIMIT_STORAGE_PERCENT: '80' }),
-    { ok: true, limits: limits({ outgoingPerMinute: 10, storagePercent: 80 }) });
+  assert.deepEqual(parseWorkspaceLimits({ DEFT_HOSTED_LIMIT_OUTGOING_PER_MINUTE: '10', DEFT_HOSTED_LIMIT_STORAGE_PERCENT: '80', DEFT_HOSTED_LIMIT_STORAGE_FREE_MB: '500' }),
+    { ok: true, limits: limits({ outgoingPerMinute: 10, storagePercent: 80, storageFreeMb: 500 }) });
+  // Each limit holds on its own: an hourly limit below the minute's is a valid (strict) choice.
+  assert.equal(parseWorkspaceLimits({ DEFT_HOSTED_LIMIT_OUTGOING_PER_HOUR: '30' }).ok, true);
   for (const name of WORKSPACE_LIMIT_SETTING_NAMES) {
     for (const bad of ['', ' 5', '5 ', '0', '-1', '1.5', '1e3', 'ten', '05', '99999999999']) {
       const parsed = parseWorkspaceLimits({ [name]: bad });
@@ -53,11 +57,10 @@ test('the launch defaults, and every setting strict: a whole number in range or 
     }
   }
   assert.equal(parseWorkspaceLimits({ DEFT_HOSTED_LIMIT_STORAGE_PERCENT: '100' }).ok, false);
-  assert.equal(parseWorkspaceLimits({ DEFT_HOSTED_LIMIT_OUTGOING_PER_MINUTE: '100', DEFT_HOSTED_LIMIT_OUTGOING_PER_HOUR: '50' }).ok, false);
 });
 
-test('outside requests: the minute limit, then the hour limit; a refusal says why, when, and is not counted', () => {
-  _setWorkspaceLimitsForTest(limits({ outgoingPerMinute: 3, outgoingPerHour: 5 }));
+test('outside requests: the minute limit, then the hour limit; a refusal says why and when, and is not counted', () => {
+  hosted({ outgoingPerMinute: 3, outgoingPerHour: 5 });
   const t0 = 1_000_000_000;
   for (let i = 0; i < 3; i += 1) takeOutgoingRequest(t0 + i);
   assert.throws(() => takeOutgoingRequest(t0 + 10), (error: unknown) => {
@@ -68,13 +71,19 @@ test('outside requests: the minute limit, then the hour limit; a refusal says wh
     assert.equal(error.retryAfterSeconds, 60);
     return true;
   });
-  // A minute later the minute window is free again; the hour still counts the three.
   takeOutgoingRequest(t0 + 60_001);
   takeOutgoingRequest(t0 + 60_002);
   assert.throws(() => takeOutgoingRequest(t0 + 60_003), (error: unknown) => error instanceof WorkspaceLimitError
     && /5 outside requests in the last hour, its limit\. Try again in 59 minutes\./.test(error.message));
-  // An hour after the first, its place is free.
   takeOutgoingRequest(t0 + 60 * 60_000 + 1);
+  assert.deepEqual(notices.map((notice) => notice.kind), ['outgoing_requests'], 'one notice to the admins within the hour');
+});
+
+test('outside requests: with both windows full, the refusal names the one that frees last', () => {
+  hosted({ outgoingPerMinute: 1, outgoingPerHour: 1 });
+  takeOutgoingRequest(1_000_000);
+  assert.throws(() => takeOutgoingRequest(1_000_500), (error: unknown) => error instanceof WorkspaceLimitError
+    && /in the last hour, its limit\. Try again in 60 minutes\./.test(error.message) && (error.retryAfterSeconds ?? 0) > 3_500);
 });
 
 test('outside requests on a self-hosted install are never limited', () => {
@@ -82,8 +91,8 @@ test('outside requests on a self-hosted install are never limited', () => {
   for (let i = 0; i < 5_000; i += 1) takeOutgoingRequest(1_000 + i);
 });
 
-test('past the limit a link preview is skipped before any lookup (chat goes on), and a feed is told to wait', async () => {
-  _setWorkspaceLimitsForTest(limits({ outgoingPerMinute: 1, outgoingPerHour: 1 }));
+test('past the limit nothing is looked up or fetched: a link preview is skipped (chat goes on), a feed is told it waits', async () => {
+  hosted({ outgoingPerMinute: 1, outgoingPerHour: 1 });
   const lookups: string[] = [];
   publicFetchDeps.lookup = async (hostname: string) => {
     lookups.push(hostname);
@@ -93,8 +102,15 @@ test('past the limit a link preview is skipped before any lookup (chat goes on),
   assert.equal(await fetchLinkPreview('https://example.com/page'), null);
   await assert.rejects(fetchPublicHttpText('https://example.com/page', { maxBytes: 1024, timeoutMs: 1_000, accept: 'text/html', userAgent: 'test' }),
     (error: unknown) => error instanceof WorkspaceLimitError && error.code === 'WORKSPACE_OUTGOING_LIMIT');
-  assert.deepEqual(lookups, [], 'nothing was looked up or fetched');
+  assert.deepEqual(lookups, [], 'nothing was looked up');
   assert.match(humanizeIcsError(new WorkspaceLimitError('WORKSPACE_OUTGOING_LIMIT', 429, 'x')), /limit of outside requests; the feed syncs again on its next turn/);
+});
+
+test('outside requests: an address refused before any request is not counted', async () => {
+  hosted({ outgoingPerMinute: 1, outgoingPerHour: 10 });
+  await assert.rejects(fetchPublicHttpText('http://10.0.0.1/page', { maxBytes: 1024, timeoutMs: 1_000, accept: 'text/html', userAgent: 'test' }),
+    (error: unknown) => !(error instanceof WorkspaceLimitError));
+  takeOutgoingRequest(); // the one place of the minute is still free
 });
 
 const volume = (sizeBytes: number, usedBytes: number) => async () => {
@@ -104,35 +120,49 @@ const volume = (sizeBytes: number, usedBytes: number) => async () => {
   return { bsize, blocks, bfree, bavail: bfree };
 };
 const GB = 1024 ** 3;
+const MB = 1024 ** 2;
 
-test('disk: an upload that would pass 90% of the volume, or leave under 200 MB, is refused with the reason', async () => {
-  _setWorkspaceLimitsForTest(limits());
+test('disk: a write that would pass 90% of the volume, or leave under the free-space floor, is refused with the reason', async () => {
+  hosted();
   _setVolumeStatsForTest(volume(10 * GB, 8.9 * GB));
-  await assertStorageRoom('/uploads', 50 * 1024 * 1024);
-  await assert.rejects(assertStorageRoom('/uploads', 200 * 1024 * 1024), (error: unknown) => {
+  (await reserveStorage('/uploads', 50 * MB))();
+  await assert.rejects(reserveStorage('/uploads', 200 * MB), (error: unknown) => {
     assert.ok(error instanceof WorkspaceLimitError);
     assert.equal(error.code, 'WORKSPACE_STORAGE_FULL');
     assert.equal(error.status, 413);
-    assert.equal(error.message, 'This workspace has used its file storage (10 GB). Delete files you no longer need, or ask the workspace owner about more space. Nothing else is affected.');
+    assert.equal(error.message, 'This workspace has used its file storage (10 GB), so this file was not saved. Ask the workspace owner about more space. Everything else works as usual.');
     return true;
   });
-  // A small volume (today's 1 GB): the free-space floor holds below the percentage.
-  _setWorkspaceLimitsForTest(limits({ storagePercent: 99 }));
-  _setVolumeStatsForTest(volume(1 * GB, 1 * GB - STORAGE_FREE_FLOOR_BYTES - 10 * 1024 * 1024));
-  await assert.rejects(assertStorageRoom('/uploads', 20 * 1024 * 1024), /used its file storage \(1 GB\)/);
-  // Self-hosted: no limit; an unreadable volume: the write decides.
+  assert.deepEqual(notices.map((notice) => notice.kind), ['storage']);
+  // A small volume (today's 1 GB): the free-space floor (200 MB) holds below the percentage.
+  hosted({ storagePercent: 99 });
+  _setVolumeStatsForTest(volume(1 * GB, 1 * GB - 210 * MB));
+  await assert.rejects(reserveStorage('/uploads', 20 * MB), /used its file storage \(1 GB\)/);
+  // Self-hosted: no limit.
   _setWorkspaceLimitsForTest(null);
-  await assertStorageRoom('/uploads', 5 * GB);
-  _setWorkspaceLimitsForTest(limits());
-  _setVolumeStatsForTest(async () => { throw new Error('EACCES'); });
-  await assertStorageRoom('/uploads', 5 * GB);
+  (await reserveStorage('/uploads', 5 * GB))();
+});
+
+test('disk: writes in progress count, so uploads arriving together cannot pass the limit between them', async () => {
+  hosted();
+  _setVolumeStatsForTest(volume(10 * GB, 8 * GB)); // 1 GB left under 90%
+  const first = await reserveStorage('/uploads', 600 * MB);
+  await assert.rejects(reserveStorage('/uploads', 600 * MB), (error: unknown) => error instanceof WorkspaceLimitError && error.code === 'WORKSPACE_STORAGE_FULL');
+  first();
+  (await reserveStorage('/uploads', 600 * MB))();
+});
+
+test('disk: a volume that cannot be measured refuses the write on a hosted cell (and says so)', async () => {
+  hosted();
+  _setVolumeStatsForTest(async () => { throw new Error('EIO'); });
+  await assert.rejects(reserveStorage('/uploads', 1024), (error: unknown) => error instanceof WorkspaceLimitError && error.code === 'WORKSPACE_STORAGE_UNAVAILABLE' && error.status === 503);
 });
 
 test('disk: the file store refuses at the limit and leaves no file behind', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'deft-limits-'));
   try {
     const store = new LocalFileStore(dir);
-    _setWorkspaceLimitsForTest(limits());
+    hosted();
     _setVolumeStatsForTest(volume(1 * GB, 0.95 * GB));
     await assert.rejects(store.put('refused.bin', Buffer.alloc(1024)), (error: unknown) => error instanceof WorkspaceLimitError && error.code === 'WORKSPACE_STORAGE_FULL');
     assert.deepEqual(await readdir(dir), []);

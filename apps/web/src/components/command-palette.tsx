@@ -94,6 +94,7 @@ export function CommandPalette() {
   const [selectedIndex, setSelectedIndex] = useState(0);
   // When set, the palette is in "args prompt" sub-mode for the picked command.
   const [activePrompt, setActivePrompt] = useState<{ label: string; placeholder: string; submit: (args: string) => Promise<void> | void } | null>(null);
+  const [promptError, setPromptError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
   const searchRequestRef = useRef(0);
@@ -105,6 +106,7 @@ export function CommandPalette() {
     setResults({ spaces: [], tasks: [], people: [], messages: [], tags: [], modules: [], wiki: [], privateNotes: [], decisions: [] });
     setSelectedIndex(0);
     setActivePrompt(null);
+    setPromptError(null);
   }, []);
 
   const mode = activePrompt ? 'prompt' : query.startsWith('/') ? 'commands' : 'search';
@@ -311,7 +313,9 @@ export function CommandPalette() {
         if (activePrompt) {
           const args = query.trim();
           if (!args) return; // require at least something
-          void Promise.resolve(activePrompt.submit(args)).finally(close);
+          // A refused action stays open and says why (for example the workspace's reminder limit).
+          setPromptError(null);
+          void Promise.resolve().then(() => activePrompt.submit(args)).then(close, (error: unknown) => setPromptError(error instanceof Error ? error.message : 'That did not work'));
           return;
         }
         const selected = flatItems[selectedIndex];
@@ -419,6 +423,7 @@ export function CommandPalette() {
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={activePrompt ? activePrompt.placeholder : 'Search anything...'}
+            aria-describedby={promptError ? 'command-palette-prompt-error' : undefined}
             className="flex-1 bg-transparent text-[13px] outline-none"
             style={{
               color: 'var(--on-surface)',
@@ -441,6 +446,11 @@ export function CommandPalette() {
             </kbd>
           </button>
         </div>
+        {promptError && (
+          <p id="command-palette-prompt-error" role="alert" className="px-4 py-2 text-[12px]" style={{ color: 'var(--error)' }}>
+            {promptError}
+          </p>
+        )}
 
         {/* Results */}
         <div

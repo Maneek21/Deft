@@ -5,7 +5,7 @@ import { db } from '../lib/db.js';
 import { reminders } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { loadVisibleReminderSource } from '../lib/reminder-source.js';
-import { WorkspaceLimitError, assertScheduleRoom } from '../lib/workspace-limits.js';
+import { WorkspaceLimitError, assertScheduleRoom, limitResponse } from '../lib/workspace-limits.js';
 
 export const reminderRoutes = new Hono();
 
@@ -79,7 +79,7 @@ reminderRoutes.post('/', async (c) => {
     return created;
   });
   } catch (error) {
-    if (error instanceof WorkspaceLimitError) return c.json({ error: error.message, code: error.code }, error.status);
+    if (error instanceof WorkspaceLimitError) return limitResponse(c, error);
     throw error;
   }
 
