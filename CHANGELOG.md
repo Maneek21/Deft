@@ -49,8 +49,11 @@ Workspace export (new command):
   rows are read in batches and attachment bytes are streamed, but the set of member
   ids and the list of archive paths are held in memory, so memory still grows with
   the size of the workspace. Packing the tar needs free disk space of about twice the
-  archive size.
-- The archive is one tar, written only when complete (`--folder` writes a folder).
+  archive size, and up to about three times on a file system that cannot make hard
+  links.
+- The archive is one tar, written only when complete (`--folder` writes a folder);
+  on a file system without hard links the final file can be seen while it is still
+  being copied, so use it only after the command exits 0.
   Inside: `manifest.json` (scope, snapshot time, counts, whether it is complete, what
   is not included), `omissions.jsonl`, `SHA256SUMS` (from the extracted archive's
   root, `sha256sum -c SHA256SUMS`), `README.html` and `README.txt`, one HTML
@@ -90,8 +93,8 @@ Hosted launch fixes (also apply to self-hosted installs):
   plus `can_manage: true`. `/setup-ai` sends everyone else to the dashboard. A
   refused transcription no longer stores the provider's answer on the clip (it can
   quote the last characters of the key); only the status code is kept. Errors stored
-  on clips before this release are not cleaned: review older failed clips if you
-  used OpenAI transcription.
+  on clips before this release are not cleaned and can hold the provider's full
+  answer: review older failed clips, whichever transcription provider you use.
 - The wiki export (`md`, `csv`, `json`), the agent trace download and the calendar feed
   send `Cache-Control: private, no-store`. Clip audio is sent as an attachment with
   `nosniff`; the player fetches it into a blob so playback is unchanged.
