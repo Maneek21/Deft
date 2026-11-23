@@ -7,6 +7,7 @@ import { isHostedMode } from './hosted-mode.js';
 import { validateHostedModeEnvironment } from './hosted-settings.js';
 import { validateSetupTokenEnvironment } from './setup-token.js';
 import { validateSeatEnvironment } from './seat-settings.js';
+import { testFailureSwitchesEnabled, validateTestFailureSwitchesEnvironment } from './test-failure-switches.js';
 
 // Resolve .env from the repo root via the source file's location, NOT
 // process.cwd() — when this module loads under tsx / pnpm --filter / docker /
@@ -172,6 +173,14 @@ validateSetupTokenEnvironment(
 // does not start. Without them the cell could never learn its seat limit and
 // would refuse every new member (lib/seat-settings.ts).
 validateSeatEnvironment(isHostedMode());
+
+// Test failure switches (check 13) are operator-only and off unless
+// DEFT_TEST_FAILURE_SWITCHES names this install exactly; a wrong value stops
+// the API. See lib/test-failure-switches.ts.
+validateTestFailureSwitchesEnvironment(isHostedMode());
+if (testFailureSwitchesEnabled()) {
+  console.warn('[env] DEFT_TEST_FAILURE_SWITCHES is on: approvals and assistant replies carrying a test marker will fail or hang on purpose. Test installs only.');
+}
 
 // App Protocol v0 is opt-in while the first vertical slice is certified.
 // Absence and every value except the exact string "true" fail closed.

@@ -1,4 +1,5 @@
 import { logId } from '../../lib/log-metadata.js';
+import { hangReplyForTestSwitch } from '../../lib/test-failure-switches.js';
 import { projectAgentReadDiagnostics } from '../../lib/agent-read-diagnostics.js';
 // Handler: process @agent/@deft mentions in chat and generate AI replies in-thread
 import type { JobData } from '../types.js';
@@ -1401,6 +1402,9 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
     // committed stops here; the insert re-checks under a lock (claimDeftyReplySlot).
     const replyTrigger = { orgId, spaceId, agentUserId, triggerMessageId: messageId, triggerCreatedAt: trigger.created_at };
     if (await findExistingDeftyReply(db, replyTrigger)) return;
+    // Test failure switch (operator-only, off by default): hold this reply
+    // until the worker's job timeout aborts it.
+    await hangReplyForTestSwitch(content, job.signal);
     // A09: a cancelled delivery, or one that lost its queue lease, must not publish.
     const delivery: DeftyReplyDelivery = {
       signal: job.signal,
