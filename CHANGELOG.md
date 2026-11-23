@@ -10,6 +10,112 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### Release candidate `0.3.0-preview.145` — publication pending
+
+The `0.3.0-preview.145` host is a release preparation candidate. No release tag or
+image is implied by this entry. Public installation instructions remain pinned to the
+published `0.3.0-preview.144` release; they move after `0.3.0-preview.145` is
+published and verified. Release scope `core` (no Hermes compatibility claim). Changes
+since `v0.3.0-preview.144`.
+
+Upgrade notes:
+
+- No new migration. Schema head stays `0.3.0-preview.149`; `pnpm db:upgrade --status`
+  on an install already at `.144` has nothing to apply. An install on an older
+  release follows the `.144` upgrade notes first (stop Deft, back up the database and
+  the uploads volume, `pnpm db:upgrade`).
+- No new or changed settings and no setting is removed.
+- Author Kit stays `0.1.0-alpha.43`; its source is unchanged since
+  `v0.3.0-preview.143`.
+- Anything that relied on the old behavior of the four fixes under "Hosted launch
+  fixes" below: a member or guest no longer sees the workspace's AI provider, model
+  or key (`GET /api/org/ai-config`), the wiki export, agent trace and calendar feed
+  downloads are no longer cacheable, and clip audio is downloaded as an attachment.
+
+Workspace export (new command):
+
+- A new command exports one workspace's content as a portable archive a person can
+  open without Deft. It reads the database and the uploads folder directly, so it
+  works while the app is stopped. It is an operator tool run from `apps/api`
+  (`node --import tsx src/scripts/export-workspace.ts`), not a screen, and not a
+  backup: to restore a server, use the complete recovery set in
+  `docs/self-hosting.md#backups` (database, uploads and your `.env`; objects in
+  external storage such as R2 too). The guide and format specification are in
+  `docs/workspace-export.md` in the source tree; the standalone `self-hosting.md`
+  release asset links to it, but the release does not attach it as its own file.
+- Exactly one scope is required: `--member <id|email>` for exactly what that active
+  person can see, or `--whole-workspace` for everything, private spaces and direct
+  messages included. The export reads one consistent read-only snapshot. Database
+  rows are read in batches and attachment bytes are streamed, but the set of member
+  ids and the list of archive paths are held in memory, so memory still grows with
+  the size of the workspace. Packing the tar needs free disk space of about twice the
+  archive size, and up to about three times on a file system that cannot make hard
+  links.
+- The archive is one tar, written only when complete (`--folder` writes a folder);
+  on a file system without hard links the final file can be seen while it is still
+  being copied, so use it only after the command exits 0.
+  Inside: `manifest.json` (scope, snapshot time, counts, whether it is complete, what
+  is not included), `omissions.jsonl`, `SHA256SUMS` (from the extracted archive's
+  root, `sha256sum -c SHA256SUMS`), `README.html` and `README.txt`, one HTML
+  transcript per space, JSON Lines data files, and attachment files. Attachment
+  bytes are copied only with `--single-workspace-database`, which states that this
+  database **and its uploads folder** serve exactly one workspace: the command
+  cannot tell leftover files of a workspace that once shared the folder from this
+  workspace's own, so use the flag only when that is true. Every copied file is
+  checked against its recorded size, and against its SHA-256 when Deft stored one.
+- Data included: members, agents, spaces and space members; messages, replies,
+  reactions and canvases; projects, labels, tasks and their comments, watchers and
+  relationships; notes, folders and shares; wiki pages and links; calendar events;
+  attachments; and Contacts and any other installed module, with only the fields the
+  module's manifest declares.
+- Not included, and listed in the archive: mail, private-assistant conversations
+  (listed without text; decrypting them with `--workspace-key-file` is not built
+  yet, the manifest records `supplied_not_used`), and links from module records to
+  other items. Deft's own credential stores (password hashes, sessions, API and
+  invite tokens, AI keys, two-step secrets) and raw metadata are not exported, but
+  content people typed or attached, such as messages, notes, module fields and
+  files, is exported as written. If someone pasted a password into a message, it is
+  in the archive. Treat the archive as sensitive data.
+- A file whose name cannot be written (long non-Latin names are cut to 180 bytes at a
+  whole character) is omitted with a reason and the export carries on, marked
+  incomplete. A full disk or an unwritable output still stops it.
+- Not verified here: running the command inside the release container. The guide's
+  `docker compose` line uses the source checkout's Compose file; on a release-assets
+  install use the same `-f docker-compose.yml -f compose.prod.yml -f
+  compose.release.yml` set as the rest of `docs/self-hosting.md`. Try it on a copy
+  first.
+
+Hosted launch fixes (also apply to self-hosted installs):
+
+- `GET /api/org/ai-config` answers people who cannot change the AI settings with only
+  `has_provider`, `has_reason_provider`, `hosted` and `can_manage: false`: no
+  provider, model or any part of a key. Owners and admins see what they saw before,
+  plus `can_manage: true`. `/setup-ai` sends everyone else to the dashboard. A
+  refused transcription no longer stores the provider's answer on the clip (it can
+  quote the last characters of the key); only the status code is kept. Errors stored
+  on clips before this release are not cleaned and can hold the provider's full
+  answer: review older failed clips, whichever transcription provider you use.
+- The wiki export (`md`, `csv`, `json`), the agent trace download and the calendar feed
+  send `Cache-Control: private, no-store`. Clip audio is sent as an attachment with
+  `nosniff`; the player fetches it into a blob so playback is unchanged.
+- Hosted first-workspace setup: every refused setup link (incomplete, expired, already
+  used or for another workspace) still gets the same answer, which now says to reply to
+  the email the link came in. A setup link opened on a workspace that is already set
+  up no longer shows the self-hosted wording.
+- When wrong two-step or recovery codes lock an account, the account holder gets an
+  in-app notification, at most one a day, whatever their notification preferences are.
+  The guesser's response does not change.
+
+Apps (developer preview):
+
+- Once the Email App's connection profile has been admitted (still done outside the
+  screens), a workspace owner can get from "Email App uploaded" to the mailbox
+  **Connect account** button with the screens only. The activation review reads the server's
+  `action_key`; a new owner with no account yet sees the "Set up account" screen
+  instead of a dead end; the first account permission asks for an end date (the server
+  refuses "Until revoked" for a first enrolment) and a missing `target_key` counts as
+  `primary`. The server's rules are unchanged.
+
 ### Notice: Kit `0.1.0-alpha.44` removes deprecated Email compatibility
 
 Not before 2026-11-25, and never fewer than 14 days after this notice merged.
