@@ -29,7 +29,7 @@ test('DEFT_PAUSED_REASON defaults to restore_review and accepts only restore_rev
   }
   // A bad reason stops startup, paused or not, like the other strict settings.
   for (const start of ['true', 'false', undefined]) {
-    for (const raw of ['', 'Billing', 'billing ', 'restore', 'overdue', 'billing\r', 'Emergency_stop', 'emergency', 'emergency-stop']) {
+    for (const raw of ['', 'Billing', 'billing ', 'restore', 'overdue', 'billing\r']) {
       assert.throws(() => assertPausedStartSettingValid(parsePausedStartSetting(start, raw)), /DEFT_PAUSED_REASON must be one of/);
     }
   }

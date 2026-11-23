@@ -13,9 +13,9 @@ export const PAUSED_BANNER_TEXT: Record<PausedReason, string> = {
   restore_review:
     'This workspace is being checked after a restore. You can read everything, but nothing can be changed yet.',
   emergency_stop:
-    'Outgoing activity in this workspace is stopped while a problem is looked into. You can sign in and read everything, ' +
-    'but nothing can be changed, and link previews, email, notifications and AI are off. Nothing scheduled is lost: ' +
-    'it goes out once the stop is lifted.',
+    'Outgoing activity in this workspace is stopped while a problem is looked into. You can still sign in and read ' +
+    'messages and tasks, but nothing can be changed, and link previews, notifications and AI are off. Scheduled ' +
+    'messages and reminders wait until the stop is lifted.',
 };
 
 /** Shown in place of the server's operator wording when a change is refused. */

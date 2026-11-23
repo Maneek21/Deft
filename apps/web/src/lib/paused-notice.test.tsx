@@ -29,10 +29,10 @@ test('restore review: the banner says the workspace is being checked', () => {
   assert.doesNotMatch(html, /payment|invoice|<a\b/);
 });
 
-test('emergency stop: the banner says outgoing activity is stopped, what still works and that nothing scheduled is lost', () => {
+test('emergency stop: the banner says outgoing activity is stopped, what still works and that scheduled items wait', () => {
   const html = render({ notice: { reason: 'emergency_stop' } });
   assert.match(html, /data-paused-reason="emergency_stop"/);
-  assert.match(html, /Outgoing activity in this workspace is stopped while a problem is looked into\. You can sign in and read everything, but nothing can be changed, and link previews, email, notifications and AI are off\. Nothing scheduled is lost: it goes out once the stop is lifted\./);
+  assert.match(html, /Outgoing activity in this workspace is stopped while a problem is looked into\. You can still sign in and read messages and tasks, but nothing can be changed, and link previews, notifications and AI are off\. Scheduled messages and reminders wait until the stop is lifted\./);
   assert.doesNotMatch(html, /payment|invoice|restore|<a\b/);
 });
 
