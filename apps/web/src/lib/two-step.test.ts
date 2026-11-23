@@ -3,7 +3,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { exchangeTwoStepChallenge, readTwoStepPending, TwoStepError, twoStepMessage } from './two-step';
+import { clearEnrolToken, exchangeTwoStepChallenge, readTwoStepPending, signedOutDestination, storeEnrolToken, TwoStepError, twoStepMessage } from './two-step';
 import { safePostLoginDestination } from './auth-context';
 
 test('a sign-in answer is a pending second step only when it carries a challenge', () => {
@@ -65,4 +65,22 @@ test('15.1: a recovery code is answered with an enrol-only token, never a sessio
 test('the enrolment screen is never a post-login destination', () => {
   assert.equal(safePostLoginDestination('/two-step-setup'), null);
   assert.equal(safePostLoginDestination('/settings/profile'), '/settings/profile');
+});
+
+test('15.1: a signed-out tab still holding a setup token goes back to setup, not to a sign-in that would discard it', (t) => {
+  const store = new Map<string, string>();
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage');
+  Object.defineProperty(globalThis, 'sessionStorage', {
+    configurable: true,
+    value: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => { store.set(k, v); }, removeItem: (k: string) => { store.delete(k); } },
+  });
+  t.after(() => {
+    if (original) Object.defineProperty(globalThis, 'sessionStorage', original);
+    else delete (globalThis as { sessionStorage?: unknown }).sessionStorage;
+  });
+  assert.equal(signedOutDestination(), '/login');
+  storeEnrolToken('tsr_live', 'recovery_code');
+  assert.equal(signedOutDestination(), '/two-step-setup');
+  clearEnrolToken();
+  assert.equal(signedOutDestination(), '/login');
 });

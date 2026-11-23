@@ -47,6 +47,11 @@ export function takeEnrolToken(): string | null {
 export function takeEnrolReason(): TwoStepPending['reason'] {
   return sessionStorage.getItem(ENROL_REASON_KEY) === 'recovery_code' ? 'recovery_code' : undefined;
 }
+/** Where a signed-out workspace page sends this tab: back to setup while it
+ * holds an enrol-only token (a sign-in would throw that away), else sign-in. */
+export function signedOutDestination(): '/two-step-setup' | '/login' {
+  return takeEnrolToken() ? '/two-step-setup' : '/login';
+}
 export function clearEnrolToken(): void {
   sessionStorage.removeItem(ENROL_TOKEN_KEY);
   sessionStorage.removeItem(ENROL_REASON_KEY);

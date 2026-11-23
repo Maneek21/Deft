@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
-import { clearEnrolToken, TwoStepError, twoStepApi } from '@/lib/two-step';
+import { clearEnrolToken, takeEnrolToken, TwoStepError, twoStepApi } from '@/lib/two-step';
 
 const inputStyle = {
   background: 'var(--surface-container)',
@@ -89,7 +89,7 @@ export function TwoStepEnrolment({ enrolToken = null, replacing = false, onFinis
   const [busy, setBusy] = useState(false);
   const fail = (err: unknown) => {
     if (enrolToken && err instanceof TwoStepError && err.status === 401) {
-      clearEnrolToken();
+      if (takeEnrolToken() === enrolToken) clearEnrolToken();
       setSignInAgain(true);
     }
     setError(err instanceof Error ? err.message : 'Something went wrong. Try again.');

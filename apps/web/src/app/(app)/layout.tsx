@@ -12,6 +12,7 @@ import { AppHeader } from '@/components/app-header';
 import { AppHeaderProvider, useAppHeaderContext } from '@/components/app-header-context';
 import { ExperienceNavigationProvider } from '@/components/apps/experience-navigation-context';
 import { api } from '@/lib/api';
+import { signedOutDestination } from '@/lib/two-step';
 import { getSocket } from '@/lib/socket';
 import { onMemberJoined } from '@/lib/public-spaces';
 import { applyPresenceSnapshot, applyPresenceUpdate } from '@/lib/presence-state';
@@ -76,7 +77,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!loading && !user) {
-      router.push('/login');
+      // Mid-setup (a recovery-code sign-in, or an owner or admin who must
+      // enrol): back to setup. A dead token there offers sign-in.
+      router.push(signedOutDestination());
     }
   }, [user, loading, router]);
 

@@ -15,8 +15,9 @@ import { isRecoveryResetToken, RECOVERY_RESET_REFUSAL } from '../lib/two-step.js
  *    refused before routing, whatever the path and whether or not it is public.
  *
  * 4. A request under `/api` carrying the token a recovery-code sign-in earns
- *    is refused with 401 TWO_STEP_ENROLMENT_REQUIRED, public routes included,
- *    except the two calls that set up the new authenticator (check 15.1).
+ *    is refused with 401 TWO_STEP_ENROLMENT_REQUIRED, public routes and a
+ *    paused start included, except the two calls that set up the new
+ *    authenticator (check 15.1), which go on to the checks above.
  *
  * Responses the gate produces pass through the same edge middleware as the
  * app (logging, CORS, security headers), so browsers can read them.
@@ -150,9 +151,9 @@ export function installRequestGate(
         const target = request.method === 'OPTIONS' ? new Request(request.url, { headers: request.headers }) : request;
         return await deny(target, { error: 'Invalid request path', code: 'INVALID_PATH', status: 400 });
       }
+      if (refusesRecoveryResetToken(request, path)) return await deny(request, { ...RECOVERY_RESET_REFUSAL, status: 401 });
       const refusal = options.refuse?.(request.method, path);
       if (refusal) return await deny(request, refusal);
-      if (refusesRecoveryResetToken(request, path)) return await deny(request, { ...RECOVERY_RESET_REFUSAL, status: 401 });
       gated = isGatedApiPath(path) && !options.isPublic(request.method, path);
       if (gated && request.method === 'OPTIONS') {
         // Preflight is answered by the CORS policy alone; it never reaches a route.

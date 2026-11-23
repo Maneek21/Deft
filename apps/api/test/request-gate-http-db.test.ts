@@ -129,6 +129,17 @@ test('15.1: the token from a recovery-code sign-in is refused, with the reason, 
   const start = await app.request('/api/auth/two-step/enrol/start', { method: 'POST', headers, body: '{}' });
   assert.equal(start.status, 401);
   assert.equal((await start.json() as { code: string }).code, 'INVALID_TOKEN');
+  // A paused start gives the same answer to a write that carries the token.
+  const { _setPausedStartForTest } = await import('../src/lib/paused-start.js');
+  _setPausedStartForTest(true);
+  try {
+    const write = await app.request('/api/tasks', { method: 'POST', headers, body: '{}' });
+    assert.equal(write.status, 401);
+    assert.equal((await write.json() as { code: string }).code, 'TWO_STEP_ENROLMENT_REQUIRED');
+    assert.equal((await app.request('/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 503);
+  } finally {
+    _setPausedStartForTest(false);
+  }
 });
 
 

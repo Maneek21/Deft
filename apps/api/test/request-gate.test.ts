@@ -172,4 +172,17 @@ test('15.1: the token from a recovery-code sign-in reaches only the two enrolmen
   assert.deepEqual(ran, ['/api/auth/two-step/enrol/start', '/api/auth/two-step/enrol/confirm']);
   // Outside /api nothing changes.
   assert.equal((await app.request('/health', { headers })).status, 200);
+
+  // A paused start refuses writes first for everyone else; the token's answer stays the same.
+  const paused = new Hono();
+  paused.post('/api/tasks/:id/comments', (c) => c.json({ ok: true }, 201));
+  installRequestGate(paused, {
+    isPublic: isPublicApiRequest,
+    authenticate: async () => ({ ok: true }),
+    refuse: (method) => (method === 'GET' ? null : { error: 'Paused', code: 'PAUSED', status: 503 }),
+  });
+  const write = await paused.request('/api/tasks/t1/comments', { method: 'POST', headers });
+  assert.equal(write.status, 401);
+  assert.equal((await write.json() as { code: string }).code, 'TWO_STEP_ENROLMENT_REQUIRED');
+  assert.equal((await paused.request('/api/tasks/t1/comments', { method: 'POST' })).status, 503);
 });
