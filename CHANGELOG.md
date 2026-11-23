@@ -10,6 +10,65 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### Release candidate `0.3.0-preview.146` — publication pending
+
+The `0.3.0-preview.146` host is a release preparation candidate. No release tag or
+image is implied by this entry. Public installation instructions remain pinned to the
+published `0.3.0-preview.144` release; they move after `0.3.0-preview.146` is
+published and verified. Release scope `core` (no Hermes compatibility claim). Changes
+since `v0.3.0-preview.145`.
+
+Upgrade notes:
+
+- No migration. Schema head stays `0.3.0-preview.149`; `pnpm db:upgrade --status` on an
+  install already at `.144` or `.145` has nothing to apply. An install on an older
+  release follows the earlier upgrade notes first (stop Deft, back up the database and the
+  uploads volume, `pnpm db:upgrade`).
+- One new setting, `DEFT_HOSTED_SEATS_URL`, for the hosted Deft service only. A
+  self-hosted install must leave it unset: with it defined (even empty) and without
+  `DEFT_HOSTED=true`, startup is refused, like the other hosted-only settings listed
+  in `docs/self-hosting.md`. If you copied a hosted environment file, remove it. On a
+  hosted cell, unset or blank means no link; any other value must be an `https`
+  address without a user name or password, or startup stops.
+- No setting is changed or removed. Author Kit stays `0.1.0-alpha.43`; its source is
+  unchanged since `v0.3.0-preview.143`.
+- Anyone who has set up two-step verification (self-hosted installs included) and
+  signs in with a recovery code must now set up a new authenticator before anything
+  else works; see below. Tell the people who hold recovery codes.
+
+Two-step verification (applies to self-hosted installs too):
+
+- Signing in with a recovery code no longer opens a session. It returns a token that can
+  only set up a new authenticator (`POST /api/auth/two-step/enrol/start` and
+  `/enrol/confirm`); every other API call that sends it as a bearer token is refused
+  with 401 `TWO_STEP_ENROLMENT_REQUIRED`, a paused start and public routes included. The sign-in
+  page sends the person to a "Set up a new authenticator" screen. Using the code signs
+  out every session the person has. When setup is confirmed, the new authenticator and
+  a new set of recovery codes replace the old ones, any session opened since (for
+  example with the old authenticator) is signed out, and the person is signed in. The
+  token lasts 30 minutes and is kept in that browser tab only. If it is lost or
+  expires, the person signs in again with the old authenticator, or with another
+  unused recovery code to restart setup. The recovery codes are shown once, in the
+  confirmation response; a client that gets them without a session token pair must
+  show them and then sign in again.
+- Until a new authenticator is confirmed, nothing is lost: the old authenticator and
+  the recovery codes not yet used stay valid. The code that was spent stays spent.
+- The account holder gets an in-app notification, whatever their notification
+  preferences are, when a recovery code is used ("A recovery code was used on your
+  account") and when the second step is set up again after one ("Two-step verification
+  was reset"). Neither says anything about the address or time of the attempt.
+- Scripts or clients that sign in with a recovery code and expected a session in the
+  same response must handle the enrol-only token (`two_step.status`
+  `enrolment_required`, `two_step.reason` `recovery_code`).
+
+Hosted service:
+
+- Owners of a hosted cell that sets `DEFT_HOSTED_SEATS_URL` see a "Buy more seats" link
+  next to the seat count in Settings, Members, and on the answer to a refusal for want
+  of seats (`buy_seats_url` on `SEAT_LIMIT_REACHED`). Admins, guests and members see no
+  link, and there is none on a cell that does not set it, a cell whose growth is frozen
+  (buying seats would not lift the freeze), or any self-hosted install.
+
 ### Release candidate `0.3.0-preview.145` — publication pending
 
 The `0.3.0-preview.145` host is a release preparation candidate. No release tag or
