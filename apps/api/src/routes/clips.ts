@@ -222,13 +222,16 @@ clipRoutes.post('/', async (c) => {
     const fileKey = `${randomUUID()}.webm`;
 
     // Ensure clips directory exists; the hosted storage limit applies (workspace-limits.ts).
-    await mkdir(CLIP_DIR, { recursive: true });
-    const release = await reserveStorage(CLIP_DIR, buffer.byteLength);
+    let release = (): void => undefined;
+    let opened = false;
     try {
+      await mkdir(CLIP_DIR, { recursive: true });
+      release = await reserveStorage(CLIP_DIR, buffer.byteLength);
+      opened = true;
       await writeFile(join(CLIP_DIR, fileKey), buffer);
     } catch (error) {
       if (!isDiskFullError(error) || !storageLimitApplies()) throw error;
-      await unlink(join(CLIP_DIR, fileKey)).catch(() => undefined);
+      if (opened) await unlink(join(CLIP_DIR, fileKey)).catch(() => undefined);
       throw storageFullError(null);
     } finally {
       release();

@@ -619,7 +619,7 @@ export function SpaceChat({
   const [recapLoading, setRecapLoading] = useState(false);
   const [showScheduled, setShowScheduled] = useState(false);
   const [clipRecording, setClipRecording] = useState(false);
-  const { uploadFile, uploading, progress, error: uploadError, setError: setUploadError } = useFileUpload();
+  const { uploadFile, uploadFiles, uploading, progress, error: uploadError, setError: setUploadError } = useFileUpload();
   const [savedMessageIds, setSavedMessageIds] = useState<Set<string>>(new Set());
   const [memberCount, setMemberCount] = useState(0);
   const [pinCount, setPinCount] = useState(0);
@@ -1407,12 +1407,8 @@ export function SpaceChat({
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
-    for (const file of files) {
-      const result = await uploadFile(file);
-      if (result) {
-        setPendingFiles((prev) => [...prev, result]);
-      }
-    }
+    const results = await uploadFiles(files);
+    if (results.length > 0) setPendingFiles((prev) => [...prev, ...results]);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -1444,7 +1440,7 @@ export function SpaceChat({
     : spaceName;
 
   return (
-    <FileDropZone onUploadComplete={handleFileUploadComplete} upload={uploadFile}>
+    <FileDropZone onUploadComplete={handleFileUploadComplete} uploadFiles={uploadFiles}>
       <div className="flex h-full" onClick={(event) => navigateMessageLink(event, href => {
         // Channel-message links own the URL; drop any open thread first so the
         // destination is not left behind the mobile thread overlay.

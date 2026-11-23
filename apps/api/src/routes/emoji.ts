@@ -59,20 +59,22 @@ emojiRoutes.post('/', async (c) => {
   }
 
   // Save file
-  await mkdir(EMOJI_DIR, { recursive: true });
 
   const ext = file.name?.split('.').pop() || 'png';
   const filename = `${randomUUID()}.${ext}`;
   const buffer = Buffer.from(await file.arrayBuffer());
   // The hosted storage limit applies (workspace-limits.ts).
   let release = (): void => undefined;
+  let opened = false;
   try {
+    await mkdir(EMOJI_DIR, { recursive: true });
     release = await reserveStorage(EMOJI_DIR, buffer.byteLength);
+    opened = true;
     await writeFile(join(EMOJI_DIR, filename), buffer);
   } catch (error) {
     if (error instanceof WorkspaceLimitError) return limitResponse(c, error);
     if (!isDiskFullError(error) || !storageLimitApplies()) throw error;
-    await unlink(join(EMOJI_DIR, filename)).catch(() => undefined);
+    if (opened) await unlink(join(EMOJI_DIR, filename)).catch(() => undefined);
     return limitResponse(c, storageFullError(null));
   } finally {
     release();

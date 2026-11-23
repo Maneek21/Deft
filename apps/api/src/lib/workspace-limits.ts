@@ -142,6 +142,7 @@ export function _setWorkspaceLimitsForTest(limits: WorkspaceLimits | null | unde
   outgoing.length = 0;
   outgoingHead = 0;
   reservedBytes = 0;
+  releases = 0;
   lastNoticeAt.clear();
   lastLogAt.clear();
 }
@@ -202,6 +203,8 @@ type VolumeStats = { bsize: number; blocks: number; bfree: number; bavail: numbe
 let readVolume: (dir: string) => Promise<VolumeStats> = (dir) => statfs(dir);
 /** Bytes of writes let through and not yet settled (one process per cell: this is the workspace's). */
 let reservedBytes = 0;
+/** Counts releases: a measurement taken while one happened may already include those bytes on disk, and is taken again. */
+let releases = 0;
 
 /** Test seam only: what the volume reports (null: the real `statfs`). */
 export function _setVolumeStatsForTest(read: ((dir: string) => Promise<VolumeStats>) | null): void {
@@ -243,13 +246,19 @@ export function storageLimitApplies(): boolean {
 export async function reserveStorage(dir: string, incomingBytes: number, now = Date.now()): Promise<() => void> {
   const limits = workspaceLimits();
   if (limits === null) return () => undefined;
-  let stats: VolumeStats;
-  try {
-    stats = await readVolume(dir);
-  } catch {
-    console.warn('[workspace-limit] the file storage could not be measured');
-    throw new WorkspaceLimitError('WORKSPACE_STORAGE_UNAVAILABLE', 503, 'The file could not be saved because the file storage could not be checked. Try again in a moment.', 30);
+  let stats: VolumeStats | null = null;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const seen = releases;
+    try {
+      stats = await readVolume(dir);
+    } catch {
+      console.warn('[workspace-limit] the file storage could not be measured');
+      throw new WorkspaceLimitError('WORKSPACE_STORAGE_UNAVAILABLE', 503, 'The file could not be saved because the file storage could not be checked. Try again in a moment.', 30);
+    }
+    if (releases === seen) break;
+    // Still changing after five looks: what follows counts a released write twice at most, which errs toward refusing.
   }
+  if (stats === null) throw new WorkspaceLimitError('WORKSPACE_STORAGE_UNAVAILABLE', 503, 'The file could not be saved because the file storage could not be checked. Try again in a moment.', 30);
   // As `df` counts it: what is used, and what the volume can hold for Deft (root's reserve left out). A write takes whole blocks.
   const bsize = Math.max(1, stats.bsize);
   const incoming = Math.ceil(Math.max(0, incomingBytes) / bsize) * bsize;
@@ -269,6 +278,7 @@ export async function reserveStorage(dir: string, incomingBytes: number, now = D
     if (released) return;
     released = true;
     reservedBytes = Math.max(0, reservedBytes - incoming);
+    releases += 1;
   };
 }
 

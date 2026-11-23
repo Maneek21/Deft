@@ -614,6 +614,17 @@ can supply its own AI independently of Deft's provider configuration.
 | `DEFT_HOSTED` and the hosted-only settings | Leave unset | For the hosted Deft service only. Unset `DEFT_HOSTED` means self-hosted; when set it must be exactly `true` or `false`, or startup stops. `DEFT_SETUP_TOKEN_SHA256`, `DEFT_SETUP_TOKEN_EXPIRES_AT`, `DEFT_CELL_ID`, `DEFT_SEAT_PUBLIC_KEYS`, `DEFT_SEAT_STATEMENT_URL`, `DEFT_SEAT_FETCH_TOKEN`, `DEFT_HOSTED_SEATS_URL` and the per-workspace limits (`DEFT_HOSTED_LIMIT_OUTGOING_PER_MINUTE`, `DEFT_HOSTED_LIMIT_OUTGOING_PER_HOUR`, `DEFT_HOSTED_LIMIT_SCHEDULED_MESSAGES`, `DEFT_HOSTED_LIMIT_REMINDERS`, `DEFT_HOSTED_LIMIT_STORAGE_PERCENT`, `DEFT_HOSTED_LIMIT_STORAGE_FREE_MB`) stop startup when they are defined, even empty, without `DEFT_HOSTED=true`: remove them from a self-hosted environment | unset |
 | `DEFT_TEST_FAILURE_SWITCHES` | Leave unset | For test installs only: it lets a tester make an approved assistant action fail, or an assistant reply hang, so failure handling can be checked. Never set it on an install people use. Only the process environment can set it (no screen or API can). Self-hosted, the value must be exactly `on`; any other value stops startup. With it on, startup logs a warning and only actions or messages that carry a test marker are affected: for a posted-message action (`post_message`), `deft-test-fail-final` or `deft-test-fail-retryable` in its proposed parameters makes its approval fail without running (the retryable one stays pending and runs normally on the next approval); other action kinds can behave differently, for example a wiki page proposal may still run, and `deft-test-hang-reply` in a message makes the assistant's reply wait until the worker job timeout (120 seconds by default). Remove the variable from any environment file you copy to another install | unset |
 
+The hosted service's per-workspace limits (hosted only; each a whole number, anything else stops startup):
+
+| Setting | Default | Range | What it limits |
+|---|---|---|---|
+| `DEFT_HOSTED_LIMIT_OUTGOING_PER_MINUTE` | `60` | 1 to 10000 | Requests to addresses people give (link previews, calendar feeds) a minute |
+| `DEFT_HOSTED_LIMIT_OUTGOING_PER_HOUR` | `1000` | 1 to 100000 | The same, an hour |
+| `DEFT_HOSTED_LIMIT_SCHEDULED_MESSAGES` | `500` | 1 to 1000000 | Scheduled messages waiting at once |
+| `DEFT_HOSTED_LIMIT_REMINDERS` | `2000` | 1 to 1000000 | Reminders waiting at once |
+| `DEFT_HOSTED_LIMIT_STORAGE_PERCENT` | `90` | 1 to 99 | How full the uploads volume may get before a file is refused |
+| `DEFT_HOSTED_LIMIT_STORAGE_FREE_MB` | `200` | 1 to 1000000 | The free space a file write must leave |
+
 ### Health checks and a paused start
 
 - `/health` is a liveness check. It answers 200 with `status: "ok"` while the API

@@ -15,8 +15,8 @@ type UploadResult = {
 type Props = {
   onUploadComplete: (file: UploadResult) => void;
   children: React.ReactNode;
-  /** The caller's own upload, so a refusal shows where the caller shows its upload errors; default: an upload of its own. */
-  upload?: (file: File) => Promise<UploadResult | null>;
+  /** The caller's own batch upload, so refusals show where the caller shows its upload errors; default: an upload of its own. */
+  uploadFiles?: (files: File[]) => Promise<UploadResult[]>;
 };
 
 export function useFileUpload() {
@@ -24,10 +24,10 @@ export function useFileUpload() {
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
-  const uploadFile = useCallback(async (file: File): Promise<UploadResult | null> => {
+  // One file, without touching the error shown: its result, or why it was refused (the server's words when it gives them).
+  const send = useCallback(async (file: File): Promise<{ data: UploadResult | null; message: string | null }> => {
     setUploading(true);
     setProgress(0);
-    setError(null);
 
     // Simulate progress since fetch doesn't support progress natively
     const progressInterval = setInterval(() => {
@@ -47,24 +47,43 @@ export function useFileUpload() {
       const data = await res.json();
       setUploading(false);
       setProgress(0);
-      return data;
+      return { data, message: null };
     } catch (err) {
       clearInterval(progressInterval);
-      const message = err instanceof Error ? err.message : 'Upload failed';
-      setError(message);
       setUploading(false);
       setProgress(0);
-      return null;
+      return { data: null, message: err instanceof Error ? err.message : 'Upload failed' };
     }
   }, []);
 
-  return { uploadFile, uploading, progress, error, setError };
+  const uploadFile = useCallback(async (file: File): Promise<UploadResult | null> => {
+    setError(null);
+    const { data, message } = await send(file);
+    if (message !== null) setError(message);
+    return data;
+  }, [send]);
+
+  /** Several files one after another; every refusal is kept, by file name, and shown once the batch is done. */
+  const uploadFiles = useCallback(async (files: File[]): Promise<UploadResult[]> => {
+    setError(null);
+    const done: UploadResult[] = [];
+    const refused: string[] = [];
+    for (const file of files) {
+      const { data, message } = await send(file);
+      if (data) done.push(data);
+      if (message !== null) refused.push(files.length > 1 ? `${file.name}: ${message}` : message);
+    }
+    setError(refused.length > 0 ? refused.join(' · ') : null);
+    return done;
+  }, [send]);
+
+  return { uploadFile, uploadFiles, uploading, progress, error, setError };
 }
 
-export function FileDropZone({ onUploadComplete, children, upload }: Props) {
+export function FileDropZone({ onUploadComplete, children, uploadFiles }: Props) {
   const [dragOver, setDragOver] = useState(false);
   const own = useFileUpload();
-  const uploadFile = upload ?? own.uploadFile;
+  const uploadMany = uploadFiles ?? own.uploadFiles;
   const dragCounter = useRef(0);
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
@@ -98,12 +117,9 @@ export function FileDropZone({ onUploadComplete, children, upload }: Props) {
       dragCounter.current = 0;
 
       const files = Array.from(e.dataTransfer.files);
-      for (const file of files) {
-        const result = await uploadFile(file);
-        if (result) onUploadComplete(result);
-      }
+      for (const result of await uploadMany(files)) onUploadComplete(result);
     },
-    [uploadFile, onUploadComplete]
+    [uploadMany, onUploadComplete]
   );
 
   return (

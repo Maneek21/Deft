@@ -263,7 +263,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
   activeMessageIdRef.current = messageId;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const replyIntentRef = useRef<{ scope: string; intent: ReturnType<typeof createNativeCreateIntent> } | null>(null);
-  const { uploadFile, uploading, progress: uploadProgress, error: uploadError, setError: setUploadError } = useFileUpload();
+  const { uploadFile, uploadFiles, uploading, progress: uploadProgress, error: uploadError, setError: setUploadError } = useFileUpload();
 
   const { retain: retainFailure, retainedFor: retainedFailures } = useRetainedApprovalFailures();
   const pendingBySpaceKey = spaceId
@@ -571,10 +571,8 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
-    for (const file of files) {
-      const result = await uploadFile(file);
-      if (result) setPendingFiles((prev) => [...prev, result]);
-    }
+    const results = await uploadFiles(files);
+    if (results.length > 0) setPendingFiles((prev) => [...prev, ...results]);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 

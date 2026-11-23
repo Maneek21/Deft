@@ -152,6 +152,24 @@ test('disk: writes in progress count, so uploads arriving together cannot pass t
   (await reserveStorage('/uploads', 600 * MB))();
 });
 
+test('disk: a write that settles while the volume is being measured is not missed (the volume is measured again)', async () => {
+  hosted();
+  _setVolumeStatsForTest(volume(10 * GB, 8 * GB));
+  const landing = await reserveStorage('/uploads', 600 * MB);
+  let reads = 0;
+  // The first reading is taken just before the 600 MB write lands; its reservation is let go while the reading is in flight.
+  _setVolumeStatsForTest(async () => {
+    reads += 1;
+    if (reads === 1) {
+      landing();
+      return volume(10 * GB, 8 * GB)();
+    }
+    return volume(10 * GB, 8 * GB + 600 * MB)();
+  });
+  await assert.rejects(reserveStorage('/uploads', 600 * MB), (error: unknown) => error instanceof WorkspaceLimitError && error.code === 'WORKSPACE_STORAGE_FULL');
+  assert.equal(reads, 2);
+});
+
 test('disk: a volume that cannot be measured refuses the write on a hosted cell (and says so)', async () => {
   hosted();
   _setVolumeStatsForTest(async () => { throw new Error('EIO'); });

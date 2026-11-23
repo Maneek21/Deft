@@ -46,10 +46,16 @@ export async function handleIcsSync(_job: JobData): Promise<void> {
       label: string | null;
       sync_interval_min: number;
     };
+    let limited = false;
     await syncOne(sub).catch(async (err) => {
-      // At the workspace's limit of outside requests nothing was fetched: the feed is tried again on the next scan.
-      if (err instanceof WorkspaceLimitError) return;
       const msg = humanizeIcsError(err);
+      if (err instanceof WorkspaceLimitError) {
+        // At the workspace's limit of outside requests: the reason is shown, the feed stays due (its last sync time is kept), and
+        // the rest of this scan waits too (nothing more can be fetched now).
+        limited = true;
+        await db.update(icsSubscriptions).set({ last_error: msg }).where(eq(icsSubscriptions.id, sub.id)).catch(() => {});
+        return;
+      }
       console.warn('[ics-sync] Subscription sync failed');
       await db
         .update(icsSubscriptions)
@@ -57,6 +63,7 @@ export async function handleIcsSync(_job: JobData): Promise<void> {
         .where(eq(icsSubscriptions.id, sub.id))
         .catch(() => {});
     });
+    if (limited) break;
   }
 }
 
