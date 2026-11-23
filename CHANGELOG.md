@@ -49,8 +49,8 @@ Two-step verification (applies to self-hosted installs too):
   token lasts 30 minutes and is kept in that browser tab only. If it is lost or
   expires, the person signs in again with the old authenticator, or with another
   unused recovery code to restart setup. The recovery codes are shown once, in the
-  confirmation response; a client that gets them without a session token pair (the
-  password changed a moment before) must show them and then sign in again.
+  confirmation response; a client that gets them without a session token pair must
+  show them and then sign in again.
 - Until a new authenticator is confirmed, nothing is lost: the old authenticator and
   the recovery codes not yet used stay valid. The code that was spent stays spent.
 - The account holder gets an in-app notification, whatever their notification
