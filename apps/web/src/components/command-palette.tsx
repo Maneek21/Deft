@@ -94,6 +94,10 @@ export function CommandPalette() {
   const [selectedIndex, setSelectedIndex] = useState(0);
   // When set, the palette is in "args prompt" sub-mode for the picked command.
   const [activePrompt, setActivePrompt] = useState<{ label: string; placeholder: string; submit: (args: string) => Promise<void> | void } | null>(null);
+  const [promptError, setPromptError] = useState<string | null>(null);
+  const promptSubmission = useRef(0);
+  const openRef = useRef(false);
+  useEffect(() => { openRef.current = open; }, [open]);
   const inputRef = useRef<HTMLInputElement>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
   const searchRequestRef = useRef(0);
@@ -105,6 +109,8 @@ export function CommandPalette() {
     setResults({ spaces: [], tasks: [], people: [], messages: [], tags: [], modules: [], wiki: [], privateNotes: [], decisions: [] });
     setSelectedIndex(0);
     setActivePrompt(null);
+    setPromptError(null);
+    promptSubmission.current += 1;
   }, []);
 
   const mode = activePrompt ? 'prompt' : query.startsWith('/') ? 'commands' : 'search';
@@ -178,21 +184,14 @@ export function CommandPalette() {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
-        setOpen((prev) => {
-          if (prev) {
-            // closing
-            searchRequestRef.current += 1;
-            setQuery('');
-            setResults({ spaces: [], tasks: [], people: [], messages: [], tags: [], modules: [], wiki: [], privateNotes: [], decisions: [] });
-            setSelectedIndex(0);
-          }
-          return !prev;
-        });
+        // Closing goes through close(): the prompt, its error and any answer still on its way are dropped too.
+        if (openRef.current) close();
+        else setOpen(true);
       }
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, []);
+  }, [close]);
 
   useEffect(() => {
     const openHandler = () => {
@@ -287,6 +286,8 @@ export function CommandPalette() {
         // way out — gives the user a way to cancel without re-typing `>`.
         if (activePrompt) {
           setActivePrompt(null);
+          setPromptError(null);
+          promptSubmission.current += 1;
           setQuery('/');
           return;
         }
@@ -311,7 +312,14 @@ export function CommandPalette() {
         if (activePrompt) {
           const args = query.trim();
           if (!args) return; // require at least something
-          void Promise.resolve(activePrompt.submit(args)).finally(close);
+          // A refused action stays open and says why (for example the workspace's reminder limit); a late answer for a prompt that
+          // was left meanwhile is dropped.
+          setPromptError(null);
+          const submission = ++promptSubmission.current;
+          void Promise.resolve().then(() => activePrompt.submit(args)).then(
+            () => { if (submission === promptSubmission.current) close(); },
+            (error: unknown) => { if (submission === promptSubmission.current) setPromptError(error instanceof Error ? error.message : 'That did not work'); },
+          );
           return;
         }
         const selected = flatItems[selectedIndex];
@@ -321,6 +329,7 @@ export function CommandPalette() {
           if (cmd.prompt) {
             // Enter sub-mode: blank the input, swap to prompt placeholder.
             setActivePrompt({ label: cmd.label, placeholder: cmd.prompt.placeholder, submit: cmd.prompt.submit });
+            setPromptError(null);
             setQuery('');
             return;
           }
@@ -419,6 +428,7 @@ export function CommandPalette() {
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={activePrompt ? activePrompt.placeholder : 'Search anything...'}
+            aria-describedby={promptError ? 'command-palette-prompt-error' : undefined}
             className="flex-1 bg-transparent text-[13px] outline-none"
             style={{
               color: 'var(--on-surface)',
@@ -441,6 +451,11 @@ export function CommandPalette() {
             </kbd>
           </button>
         </div>
+        {promptError && (
+          <p id="command-palette-prompt-error" role="alert" className="px-4 py-2 text-[12px]" style={{ color: 'var(--error)' }}>
+            {promptError}
+          </p>
+        )}
 
         {/* Results */}
         <div
@@ -482,6 +497,7 @@ export function CommandPalette() {
                     onClick={() => {
                       if (cmd.prompt) {
                         setActivePrompt({ label: cmd.label, placeholder: cmd.prompt.placeholder, submit: cmd.prompt.submit });
+            setPromptError(null);
                         setQuery('');
                       } else if (cmd.action) {
                         void Promise.resolve(cmd.action());

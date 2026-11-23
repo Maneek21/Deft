@@ -5,6 +5,7 @@ import { db } from '../lib/db.js';
 import { reminders } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { loadVisibleReminderSource } from '../lib/reminder-source.js';
+import { WorkspaceLimitError, assertScheduleRoom, limitResponse } from '../lib/workspace-limits.js';
 
 export const reminderRoutes = new Hono();
 
@@ -45,7 +46,10 @@ reminderRoutes.post('/', async (c) => {
     reminderContent = parsed.data.content!;
   }
 
-  const reminder = await db.transaction(async (tx) => {
+  let reminder: typeof reminders.$inferSelect;
+  try {
+  reminder = await db.transaction(async (tx) => {
+    await assertScheduleRoom(tx, user.org_id, 'reminders');
     const [created] = await tx.insert(reminders).values({
       org_id: user.org_id,
       user_id: user.id,
@@ -74,6 +78,10 @@ reminderRoutes.post('/', async (c) => {
 
     return created;
   });
+  } catch (error) {
+    if (error instanceof WorkspaceLimitError) return limitResponse(c, error);
+    throw error;
+  }
 
   return c.json({ ...reminder, message: reminderContent }, 201);
 });

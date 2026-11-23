@@ -26,6 +26,7 @@ import {
   normalizeMappedIPv4,
 } from '@deft/mcp';
 import { assertNotPaused } from './paused-start.js';
+import { takeOutgoingRequest } from './workspace-limits.js';
 
 export const PUBLIC_FETCH_MAX_REDIRECTS = 3;
 const ALLOWED_PORTS = new Set([80, 443]);
@@ -339,8 +340,11 @@ async function fetchHttpText(
   const listedChain = listed;
   for (let hop = 0; ; hop += 1) {
     let res: IncomingMessage | undefined;
+    // A hosted workspace's limit on outside requests (workspace-limits.ts): looked at before the lookup, and each request counted.
+    takeOutgoingRequest(Date.now(), { peek: true });
     for (const pinned of await resolvePinned(url, signal, listed)) {
       try {
+        takeOutgoingRequest();
         res = await requestOnce(url, pinned, options, signal);
         break;
       } catch (err) {

@@ -7,6 +7,7 @@ import { AppError } from '../lib/app-errors.js';
 import { APP_RESOURCE_SYNC_CHANNEL_VERSION_V3 } from '@deft/app-kit/core';
 import { markAuthenticatedResourceSyncHeartbeat } from '../middleware/app-resource-sync-limits.js';
 import { RESOURCE_SYNC_CLAIM_BUDGET_MS } from '../lib/app-resource-sync-claim-budget.js';
+import { WorkspaceLimitError, limitResponse } from '../lib/workspace-limits.js';
 const APP_RESOURCE_SYNC_AUDIENCE='app_resource_sync' as const;
 const APP_RESOURCE_SYNC_CHANNEL_VERSION=APP_RESOURCE_SYNC_CHANNEL_VERSION_V3;
 
@@ -74,6 +75,7 @@ async function request(c: Context, maxBytes: number): Promise<Record<string, unk
 }
 
 function failure(c: Context, error: unknown) {
+  if (error instanceof WorkspaceLimitError) return limitResponse(c, error);
   if(error instanceof AppError) return c.json({error:error.message,code:error.code},error.status as 400|403|409|503);
   if (error instanceof z.ZodError || error instanceof SyntaxError
     || error instanceof TypeError || (error instanceof Error && ['JSON', 'SIZE'].includes(error.message))) {

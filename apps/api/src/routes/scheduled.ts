@@ -8,6 +8,7 @@ import { requireSpaceMembership } from '../lib/space-membership.js';
 import { extractLegacyAttachmentIds, MAX_MESSAGE_ATTACHMENTS } from '../lib/message-attachments.js';
 import { stagedAttachmentExpiry } from '../lib/attachment-retention.js';
 import { releaseScheduledMessageAttachments } from '../lib/scheduled-message-cancel.js';
+import { WorkspaceLimitError, assertScheduleRoom, limitResponse } from '../lib/workspace-limits.js';
 
 export const scheduledRoutes = new Hono();
 
@@ -55,7 +56,9 @@ scheduledRoutes.post('/', async (c) => {
     }
   }
 
-  const scheduled = await db.transaction(async (tx) => {
+  let scheduled: typeof scheduledMessages.$inferSelect | null;
+  try {
+  scheduled = await db.transaction(async (tx) => {
     // Hold the caller's membership row until this transaction commits. A
     // removal that is in flight either finishes first (no row: refused) or
     // waits for this message and then cancels it (routes/spaces.ts).
@@ -67,6 +70,7 @@ scheduledRoutes.post('/', async (c) => {
       FOR SHARE OF ${spaceMembers}`);
     const held = (membership as { rows?: unknown[] }).rows ?? (Array.isArray(membership) ? membership : []);
     if (held.length === 0) return null;
+    await assertScheduleRoom(tx, user.org_id, 'scheduled_messages');
 
     const [created] = await tx.insert(scheduledMessages).values({
       org_id: user.org_id,
@@ -109,6 +113,10 @@ scheduledRoutes.post('/', async (c) => {
 
     return created;
   });
+  } catch (error) {
+    if (error instanceof WorkspaceLimitError) return limitResponse(c, error);
+    throw error;
+  }
 
   if (!scheduled) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
   return c.json(scheduled, 201);

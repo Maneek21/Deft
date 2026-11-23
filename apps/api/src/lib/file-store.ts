@@ -1,5 +1,6 @@
 import { mkdir, open, readFile, stat as fsStat, unlink, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { isDiskFullError, reserveStorage, storageFullError, storageLimitApplies } from './workspace-limits.js';
 
 export type StoredFileStat = {
   size: number;
@@ -40,9 +41,28 @@ export class LocalFileStore implements FileStore {
     return localStorageKeyPath(this.rootDir, key);
   }
 
+  /**
+   * On a hosted cell: refused with a WorkspaceLimitError when the workspace is
+   * at its storage limit (workspace-limits.ts), and a write the disk refuses
+   * (ENOSPC) is removed and answered the same way. Self-hosted: as before.
+   */
   async put(key: string, bytes: Uint8Array): Promise<void> {
-    await mkdir(this.rootDir, { recursive: true });
-    await writeFile(this.pathFor(key), bytes);
+    const path = this.pathFor(key);
+    let release = (): void => undefined;
+    let opened = false;
+    try {
+      await mkdir(this.rootDir, { recursive: true });
+      release = await reserveStorage(this.rootDir, bytes.byteLength);
+      opened = true;
+      await writeFile(path, bytes);
+    } catch (error) {
+      if (!isDiskFullError(error) || !storageLimitApplies()) throw error;
+      console.warn('[workspace-limit] the disk refused a file write (ENOSPC)');
+      if (opened) await unlink(path).catch(() => undefined);
+      throw storageFullError(null);
+    } finally {
+      release();
+    }
   }
 
   async get(key: string, options?: Readonly<{ signal?: AbortSignal; maxBytes: number }>): Promise<Buffer> {

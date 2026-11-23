@@ -6,12 +6,13 @@ import { db } from '../lib/db.js';
 import { clips, messages, projects, spaceMembers, spaces, tasks, users } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { getIO } from '../socket.js';
-import { writeFile, mkdir } from 'node:fs/promises';
+import { writeFile, mkdir, unlink } from 'node:fs/promises';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
 import { unjoinedPublicSpaceReadableSql } from '../lib/space-membership.js';
+import { WorkspaceLimitError, isDiskFullError, limitResponse, reserveStorage, storageFullError, storageLimitApplies } from '../lib/workspace-limits.js';
 
 export const clipRoutes = new Hono();
 
@@ -220,9 +221,21 @@ clipRoutes.post('/', async (c) => {
     const buffer = Buffer.from(await file.arrayBuffer());
     const fileKey = `${randomUUID()}.webm`;
 
-    // Ensure clips directory exists
-    await mkdir(CLIP_DIR, { recursive: true });
-    await writeFile(join(CLIP_DIR, fileKey), buffer);
+    // Ensure clips directory exists; the hosted storage limit applies (workspace-limits.ts).
+    let release = (): void => undefined;
+    let opened = false;
+    try {
+      await mkdir(CLIP_DIR, { recursive: true });
+      release = await reserveStorage(CLIP_DIR, buffer.byteLength);
+      opened = true;
+      await writeFile(join(CLIP_DIR, fileKey), buffer);
+    } catch (error) {
+      if (!isDiskFullError(error) || !storageLimitApplies()) throw error;
+      if (opened) await unlink(join(CLIP_DIR, fileKey)).catch(() => undefined);
+      throw storageFullError(null);
+    } finally {
+      release();
+    }
 
     // Create clip record
     const [clip] = await db.insert(clips).values({
@@ -296,6 +309,7 @@ clipRoutes.post('/', async (c) => {
       status: 'transcribing',
     }, 201);
   } catch (err) {
+    if (err instanceof WorkspaceLimitError) return limitResponse(c, err);
     console.error('[clips] Upload failed:');
     return c.json({ error: 'Failed to upload clip', code: 'INTERNAL_ERROR' }, 500);
   }

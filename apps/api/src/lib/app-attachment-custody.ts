@@ -56,8 +56,12 @@ export class AppAttachmentCustodyService {
     },signal,deadline);
     if (!identity) throw attachmentStale();
     let bytes: Buffer | undefined;
+    // Room on a hosted workspace's volume, reserved inside the stage's transaction (after its authority and a replay are told apart,
+    // before the stage exists) and held until this request has settled: a refusal leaves no stage behind, and no other write can take
+    // the room between the stage and its object.
+    const room: { release: (() => void) | null } = { release: null };
     try {
-      const reserved = await this.database.transaction(tx => this.#reserve(tx,identity.org_id,tokenHash,header,signal),signal,deadline);
+      const reserved = await this.database.transaction(tx => this.#reserve(tx,identity.org_id,tokenHash,header,signal,room),signal,deadline);
       signal.throwIfAborted();
       bytes = await readBytes(signal); signal.throwIfAborted();
       if (bytes.length !== header.declared_size_bytes) throw new TypeError('Attachment declared length mismatch');
@@ -116,6 +120,7 @@ export class AppAttachmentCustodyService {
         },signal,deadline);
       } finally { encrypted?.ciphertext.fill(0); }
     } finally {
+      room.release?.();
       bytes?.fill(0);
     }
   }
@@ -123,7 +128,7 @@ export class AppAttachmentCustodyService {
     return AttachmentStagedReplySchema.parse({ schema_version:'deft.app_sync_attachment_staged.v1',
       staging_id:row.id,state:row.state === 'ready' ? 'ready' : 'blocked',size_bytes:row.declared_size_bytes });
   }
-  async #reserve(tx: AppRunTransaction,orgId:string,tokenHash:string,header:AttachmentStageHeader,signal:AbortSignal) {
+  async #reserve(tx: AppRunTransaction,orgId:string,tokenHash:string,header:AttachmentStageHeader,signal:AbortSignal,room:{ release: (() => void) | null }) {
     const current = await loadAttachmentStageAuthority(tx,{ org_id:orgId,token_hash:tokenHash,header,clock:this.clock });
     const { checkpoint,intent,authority,run } = current;
     const policy = parseAttachmentConsentPolicy(authority.descriptor.attachments,authority.binding.attachment_policy);
@@ -163,6 +168,8 @@ export class AppAttachmentCustodyService {
     if (retained.count >= APP_ATTACHMENT_RETAINED_STAGE_LIMIT
       || checkpoint.retained_bytes + checkpoint.cursor_bytes + retained.bytes
       + header.declared_size_bytes + metadataBytes > authority.binding.max_retained_bytes) throw conflict();
+    // A new object only (a replay returned above): a refusal here rolls the transaction back, so no stage is left behind.
+    if (room.release === null && this.objects.reserveRoom) room.release = await this.objects.reserveRoom(header.declared_size_bytes);
     const {staging_id:_stagingId,...databaseContext}=context;
     const [row] = await tx.insert(appAttachmentStages).values({ ...databaseContext,id,
       claim_token:header.claim_token,reservation_sequence:header.sequence,declared_size_bytes:header.declared_size_bytes,

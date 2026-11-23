@@ -7,6 +7,7 @@ import { isHostedMode } from './hosted-mode.js';
 import { validateHostedModeEnvironment } from './hosted-settings.js';
 import { validateSetupTokenEnvironment } from './setup-token.js';
 import { validateSeatEnvironment } from './seat-settings.js';
+import { validateWorkspaceLimitEnvironment } from './workspace-limits.js';
 import { testFailureSwitchesEnabled, validateTestFailureSwitchesEnvironment } from './test-failure-switches.js';
 
 // Resolve .env from the repo root via the source file's location, NOT
@@ -173,6 +174,7 @@ validateSetupTokenEnvironment(
 // does not start. Without them the cell could never learn its seat limit and
 // would refuse every new member (lib/seat-settings.ts).
 validateSeatEnvironment(isHostedMode());
+validateWorkspaceLimitEnvironment(isHostedMode());
 
 // Test failure switches (check 13) are operator-only and off unless
 // DEFT_TEST_FAILURE_SWITCHES names this install exactly; a wrong value stops

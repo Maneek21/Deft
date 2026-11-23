@@ -15,6 +15,7 @@ import { db } from '../../lib/db.js';
 import { icsSubscriptions, events } from '@deft/db/schema';
 import { humanizeIcsError, parseICS } from '../../lib/ics.js';
 import { fetchCalendarFeedText } from '../../lib/public-http-fetch.js';
+import { WorkspaceLimitError } from '../../lib/workspace-limits.js';
 import type { JobData } from '../types.js';
 
 export async function handleIcsSync(_job: JobData): Promise<void> {
@@ -28,6 +29,7 @@ export async function handleIcsSync(_job: JobData): Promise<void> {
         last_synced_at IS NULL
         OR last_synced_at < (now() - (sync_interval_min || ' minutes')::interval)
       )
+    ORDER BY updated_at ASC
     LIMIT 50
   `);
   const rows = (due as unknown as { rows?: Array<Record<string, unknown>> }).rows
@@ -45,8 +47,16 @@ export async function handleIcsSync(_job: JobData): Promise<void> {
       label: string | null;
       sync_interval_min: number;
     };
+    let limited = false;
     await syncOne(sub).catch(async (err) => {
       const msg = humanizeIcsError(err);
+      if (err instanceof WorkspaceLimitError) {
+        // At the workspace's limit of outside requests: the reason is shown, the feed stays due (its last sync time is kept), and
+        // the rest of this scan waits too (nothing more can be fetched now).
+        limited = true;
+        await db.update(icsSubscriptions).set({ last_error: msg }).where(eq(icsSubscriptions.id, sub.id)).catch(() => {});
+        return;
+      }
       console.warn('[ics-sync] Subscription sync failed');
       await db
         .update(icsSubscriptions)
@@ -54,6 +64,7 @@ export async function handleIcsSync(_job: JobData): Promise<void> {
         .where(eq(icsSubscriptions.id, sub.id))
         .catch(() => {});
     });
+    if (limited) break;
   }
 }
 

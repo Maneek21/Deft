@@ -119,7 +119,12 @@ export async function createReminderFromArgs(
   const ms = parsed?.ms || 20 * 60_000;
   const label = parsed?.label || 'in 20m';
   const remindAt = new Date(Date.now() + ms).toISOString();
-  await api.post('/api/reminders', { content: text, remind_at: remindAt });
+  const response = await api.post('/api/reminders', { content: text, remind_at: remindAt });
+  if (!response.ok) {
+    // A refusal (the workspace's reminder limit) says why, in the server's words.
+    const body = await response.json().catch(() => null) as { error?: unknown } | null;
+    throw new Error(body && typeof body.error === 'string' && body.error.trim() ? body.error : 'Failed to set reminder');
+  }
   return { ms, label, text };
 }
 

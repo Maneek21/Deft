@@ -43,7 +43,8 @@ test('the switch may be unset, "true" or "false", and nothing else', () => {
 });
 
 test('a hosted-only setting needs hosted mode, whatever its value', () => {
-  assert.deepEqual([...HOSTED_ONLY_SETTINGS], ['DEFT_SETUP_TOKEN_SHA256', 'DEFT_SETUP_TOKEN_EXPIRES_AT', ...Object.keys(SEATS), 'DEFT_HOSTED_SEATS_URL']);
+  assert.deepEqual([...HOSTED_ONLY_SETTINGS], ['DEFT_SETUP_TOKEN_SHA256', 'DEFT_SETUP_TOKEN_EXPIRES_AT', ...Object.keys(SEATS), 'DEFT_HOSTED_SEATS_URL',
+    'DEFT_HOSTED_LIMIT_OUTGOING_PER_MINUTE', 'DEFT_HOSTED_LIMIT_OUTGOING_PER_HOUR', 'DEFT_HOSTED_LIMIT_SCHEDULED_MESSAGES', 'DEFT_HOSTED_LIMIT_REMINDERS', 'DEFT_HOSTED_LIMIT_STORAGE_PERCENT', 'DEFT_HOSTED_LIMIT_STORAGE_FREE_MB']);
   for (const off of [{}, { DEFT_HOSTED: 'false' }]) {
     for (const name of HOSTED_ONLY_SETTINGS) {
       for (const value of [HASH, EXPIRES_AT, 'anything', '']) {

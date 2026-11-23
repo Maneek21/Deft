@@ -44,6 +44,12 @@ import { noteImageAttributes, ProtectedNoteImage } from './protected-note-image'
 import { noteLoadFailureState, type NoteLoadState } from './note-load-state';
 import { PausedBanner } from '@/components/paused-banner';
 
+/** Why an image upload was refused, in the server's words when it gives them. */
+async function uploadRefusal(res: Response): Promise<string> {
+  const body = await res.json().catch(() => null) as { error?: unknown } | null;
+  return body && typeof body.error === 'string' && body.error.trim() ? body.error : `The image could not be uploaded (${res.status}).`;
+}
+
 // Register built-in slash menu commands (idempotent).
 registerBuiltInCommands();
 registerAICommands();
@@ -308,6 +314,8 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
                     imgNode.create(noteImageAttributes({ id: data.id, name: file.name }))
                   ));
                 }
+              } else {
+                window.alert(await uploadRefusal(res));
               }
             });
             return true;
@@ -345,6 +353,8 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
             type: 'protectedNoteImage',
             attrs: noteImageAttributes({ id: data.id, name: file.name }),
           }).run();
+        } else {
+          window.alert(await uploadRefusal(res));
         }
       } catch {}
     };

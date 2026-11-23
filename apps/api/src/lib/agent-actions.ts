@@ -38,6 +38,7 @@ import { detectBlocksCycle } from './task-dependency.js';
 import { dispatchAgentEmployeeTask } from './dispatch-agent-task.js';
 import { checkReplyStorm, STORM_THRESHOLD } from './storm-detector.js';
 import { DEFTY_NAME } from './ensure-defty-membership.js';
+import { assertScheduleRoom } from './workspace-limits.js';
 import { resolveSpaceTarget } from './resolve-space-target.js';
 import { createTaskBundle } from './task-bundle.js';
 import { bulkUpdateTasks, BulkTaskUpdateError } from './task-bulk-update.js';
@@ -2914,6 +2915,7 @@ export async function executeAction(
         }
 
         const inserted = await db.transaction(async (tx) => {
+          await assertScheduleRoom(tx, orgId, 'reminders');
           const [created] = await tx
             .insert(reminders)
             .values({

@@ -619,7 +619,7 @@ export function SpaceChat({
   const [recapLoading, setRecapLoading] = useState(false);
   const [showScheduled, setShowScheduled] = useState(false);
   const [clipRecording, setClipRecording] = useState(false);
-  const { uploadFile, uploading, progress, error: uploadError, setError: setUploadError } = useFileUpload();
+  const { uploadFile, uploadFiles, uploading, progress, error: uploadError, setError: setUploadError } = useFileUpload();
   const [savedMessageIds, setSavedMessageIds] = useState<Set<string>>(new Set());
   const [memberCount, setMemberCount] = useState(0);
   const [pinCount, setPinCount] = useState(0);
@@ -1407,12 +1407,8 @@ export function SpaceChat({
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
-    for (const file of files) {
-      const result = await uploadFile(file);
-      if (result) {
-        setPendingFiles((prev) => [...prev, result]);
-      }
-    }
+    const results = await uploadFiles(files);
+    if (results.length > 0) setPendingFiles((prev) => [...prev, ...results]);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -1421,17 +1417,15 @@ export function SpaceChat({
   };
 
   const handlePaste = async (e: React.ClipboardEvent) => {
-    const items = Array.from(e.clipboardData.items);
-    for (const item of items) {
-      if (item.type.startsWith('image/')) {
-        e.preventDefault();
-        const file = item.getAsFile();
-        if (file) {
-          const result = await uploadFile(file);
-          if (result) setPendingFiles((prev) => [...prev, result]);
-        }
-      }
+    // Every pasted image in one batch, so a refusal for one is still shown when another succeeds.
+    const images = Array.from(e.clipboardData.items).filter((item) => item.type.startsWith('image/'));
+    const files = images.map((item) => item.getAsFile()).filter((file): file is File => file !== null);
+    if (images.length > 0) {
+      e.preventDefault();
     }
+    if (files.length === 0) return;
+    const results = await uploadFiles(files);
+    if (results.length > 0) setPendingFiles((prev) => [...prev, ...results]);
   };
 
   const typingText = Array.from(typingUsers.values());
@@ -1444,7 +1438,7 @@ export function SpaceChat({
     : spaceName;
 
   return (
-    <FileDropZone onUploadComplete={handleFileUploadComplete}>
+    <FileDropZone onUploadComplete={handleFileUploadComplete} uploadFiles={uploadFiles}>
       <div className="flex h-full" onClick={(event) => navigateMessageLink(event, href => {
         // Channel-message links own the URL; drop any open thread first so the
         // destination is not left behind the mobile thread overlay.
@@ -1987,12 +1981,14 @@ export function SpaceChat({
                                       const time = opt.mins
                                         ? new Date(Date.now() + opt.mins * 60000)
                                         : (() => { const d = new Date(); d.setDate(d.getDate()+1); d.setHours(9,0,0,0); return d; })();
-                                      await api.post('/api/reminders', {
+                                      const response = await api.post('/api/reminders', {
                                         remind_at: time.toISOString(),
                                         source_message_id: msg.id,
                                       });
                                       setMoreMenuId(null);
                                       setReminderMenuId(null);
+                                      // A refusal (the workspace's reminder limit) says why; nothing was set.
+                                      setCmdToast(response.ok ? `Reminder set: ${opt.label.toLowerCase()}` : await apiErrorMessage(response, 'Failed to set reminder'));
                                     }}
                                       className="w-full text-left px-3 py-1.5 text-[0.75rem]"
                                       style={{ color: 'var(--on-surface-variant)' }}>
