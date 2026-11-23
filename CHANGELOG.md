@@ -27,34 +27,42 @@ Upgrade notes:
 - One new setting, `DEFT_TEST_FAILURE_SWITCHES`, for operators' test installs and test
   cells only. Never set it on a workspace people use. It is off unless it is defined in
   the process environment (no screen, route or table can set it). Self-hosted, the value
-  must be exactly `on`. On a hosted cell it must be exactly `cell:<this cell's
-  DEFT_CELL_ID>`. Any other value, even empty, stops the API at startup, so a value copied
-  from another cell or install cannot turn it on. If you copied a test environment file,
-  remove it. When it is on, startup logs a warning, and it affects only an approved
-  assistant action or a message that carries a test marker: it makes that action fail
-  (finally, or once and then retryable) or makes that assistant reply wait until the job
-  timeout. Nothing else changes.
+  must be exactly `on`; on a hosted cell it must be exactly `cell:<this cell's
+  DEFT_CELL_ID>`. Any other value, even empty, stops the API at startup. On a hosted cell
+  that means a value copied from another cell cannot turn it on; a self-hosted `on` works
+  on any install it is copied to, so remove the variable from any environment file you
+  copy. When it is on, startup logs a warning, and it affects only an approved assistant
+  action or a message that carries a test marker. A marker in the action's proposed
+  parameters (`deft-test-fail-final`, `deft-test-fail-retryable`) makes it fail without
+  running, finally or once; a retryable one stays pending and runs normally the next time
+  it is approved. A message containing `deft-test-hang-reply` makes the assistant's reply
+  wait until the worker's job timeout (120 seconds unless `DEFT_JOB_TIMEOUT_MS` says otherwise). Nothing else changes.
 - No other setting is changed or removed. Author Kit stays `0.1.0-alpha.43`; its source
   is unchanged since `v0.3.0-preview.143`.
-- Anything that relied on a member still seeing an assistant action from a space they
-  were removed from: see below.
+- Anything that relied on a member still seeing an assistant action from a room they
+  can no longer read: see below.
 
 Privacy fix (applies to self-hosted installs too):
 
-- A person who loses a space or a group message (removed, or left it) no longer sees the
-  assistant's actions from it. This covers the Action Log in Settings, Agent, the recent
-  and pending lists, the Inbox list and counts, an action's receipt and undo, the
-  conversation and trace views, the dashboard feeds, agent activity, run details and
-  the status read an agent makes with its own key. Before, the Action Log could still
-  list a pending action from such a space with the space's name and the message text.
-- The rule applies to a member or guest while they cannot read every room the action came
-  from: its conversation, the room of the message it is attached to, and the room of the
-  message it was drafted from. Members of an archived space keep its history, but nothing
-  in it can be approved.
-- Approving such an action is still refused. The answer is now a plain 404 `NOT_FOUND`
-  that says nothing about the room.
-- Owners and admins keep the full assistant action history. Actions that are still
-  pending stay pending: they are not cancelled when a person loses the room.
+- A member or guest who can no longer read a space or group message the assistant (Defty)
+  proposed an action from (removed, or left a private space or group message) no longer
+  sees that action. Before, the Action Log, which returns the action's proposed
+  parameters including message text, could still list a pending action from such a space,
+  and Settings, Agent showed the space's name. The rule now applies to the Action Log
+  (Settings, Agent and its API), the recent and pending lists, the Inbox list and counts,
+  an action's receipt and undo, the conversation and trace views, the dashboard feeds,
+  agent activity, run details, and the status read a person makes with their own API key.
+  A person who leaves a public space they can still read keeps seeing its actions.
+- The rule covers every room the action came from: its conversation, the room of the
+  message it is attached to, and the room of the message it was drafted from. Members of
+  an archived space keep reading its history, but nothing in it can be approved.
+- Approving was already refused with a plain 404 `NOT_FOUND` when the attached message's
+  room was unreadable. It is now refused the same way when the conversation or the
+  drafted-from message's room is unreadable.
+- Owners and admins keep the assistant's action history in these views, as before. Other
+  action kinds (for example records of what an agent captured from a source) keep their
+  own source rules. Actions that are still pending stay pending: they are not cancelled
+  when a person loses the room.
 
 ### Release candidate `0.3.0-preview.146` — publication pending
 
