@@ -415,13 +415,10 @@ mcpServerRoutes.get('/actions/:id/status', async (c) => {
   const actionId = c.req.param('id');
   // A person's own key: owners/admins keep their action history as on the
   // web; a member or guest reads an action only while they can still read
-  // the rooms it came from (check 13).
-  const [keyHolder] = actor.agentEmployeeId ? [] : await db
-    .select({ role: orgMembers.role })
-    .from(orgMembers)
-    .where(and(eq(orgMembers.org_id, keyRecord.org_id), eq(orgMembers.user_id, actor.userId), eq(orgMembers.is_active, true)))
-    .limit(1);
-  const keepsHistory = keyHolder?.role === 'owner' || keyHolder?.role === 'admin';
+  // the rooms it came from (check 13). The role is read in the same statement.
+  const keepsHistory = sql`EXISTS (SELECT 1 FROM ${orgMembers}
+    WHERE ${orgMembers.org_id} = ${keyRecord.org_id} AND ${orgMembers.user_id} = ${actor.userId}
+      AND ${orgMembers.is_active} = true AND ${orgMembers.role} IN ('owner', 'admin'))`;
   const [action] = await db
     .select({
       id: agentActions.id,
@@ -441,7 +438,7 @@ mcpServerRoutes.get('/actions/:id/status', async (c) => {
         : eq(agentActions.user_id, actor.userId),
       visibleAgentActionSourceSql({ userId: actor.userId, orgId: keyRecord.org_id }),
       actor.agentEmployeeId ? undefined : visibleCaptureActionSql({ id: actor.userId, org_id: keyRecord.org_id }),
-      actor.agentEmployeeId || keepsHistory ? undefined : sourceMessageRoomSql(actor.userId, 'history'),
+      actor.agentEmployeeId ? undefined : or(keepsHistory, sourceMessageRoomSql(actor.userId, 'history')),
     ))
     .limit(1);
 
