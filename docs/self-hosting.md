@@ -399,7 +399,11 @@ docker compose exec deft sh -c "cd /app/apps/api && node --import tsx src/script
 
 A recovery URL sets a new password only. It never removes two-step
 verification: the person still needs a code from their authenticator app or one
-of their recovery codes.
+of their recovery codes. Signing in with a recovery code signs out every session that
+person has and gives no session of its own: they must first set up a new authenticator
+(30 minutes from the sign-in, in the same browser tab), which replaces the old one and
+their recovery codes. Until then the old authenticator and the unused recovery codes
+still work.
 
 ## MCP Access And Agents
 
