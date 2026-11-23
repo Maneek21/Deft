@@ -119,10 +119,18 @@ const NOTICE_EVERY_MS = 60 * 60_000;
 const lastLogAt = new Map<LimitKind, number>();
 const lastNoticeAt = new Map<LimitKind, number>();
 
-const realNotifier = (kind: LimitKind, notice: Notice): Promise<void> =>
-  // Loaded only when needed: this module must not open the database on import.
-  import('./workspace-limit-notice.js').then((module) => module.noticeWorkspaceAdmins(kind, notice));
-let notifier: (kind: LimitKind, notice: Notice) => Promise<void> = realNotifier;
+/**
+ * The admins' notice, registered by the API at start (index.ts: workspace-limit-notice.ts). Not imported here: this module is used by
+ * the file store, which the workspace exporter loads without the app's database client.
+ */
+let registered: ((kind: LimitKind, notice: Notice) => Promise<void>) | null = null;
+let notifier: ((kind: LimitKind, notice: Notice) => Promise<void>) | null = null;
+
+/** Called once by the API at start with the admins' notice. */
+export function setWorkspaceLimitNotifier(notify: (kind: string, notice: Notice) => Promise<void>): void {
+  registered = notify;
+  notifier = notify;
+}
 
 /** The operator's log line for a limit reached: fixed text per kind (the log carries no value, customer's or other). */
 function logReached(kind: LimitKind): void {
@@ -142,13 +150,14 @@ function reached(kind: LimitKind, notice: Notice | null, now: number): void {
   }
   if (notice === null || now - (lastNoticeAt.get(kind) ?? -Infinity) < NOTICE_EVERY_MS) return;
   lastNoticeAt.set(kind, now);
+  if (notifier === null) return;
   void notifier(kind, notice).catch(() => console.warn('[workspace-limit] admin notice failed'));
 }
 
 /** Test seam only: the limits to apply (null: none; undefined: read again), a recording notifier, and fresh counts. */
 export function _setWorkspaceLimitsForTest(limits: WorkspaceLimits | null | undefined, notify?: (kind: string, notice: Notice) => void): void {
   current = limits;
-  notifier = notify === undefined ? realNotifier : async (kind, notice) => notify(kind, notice);
+  notifier = notify === undefined ? registered : async (kind, notice) => notify(kind, notice);
   outgoing.length = 0;
   outgoingHead = 0;
   reservedBytes = 0;

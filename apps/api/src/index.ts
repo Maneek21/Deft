@@ -1,4 +1,6 @@
 import { workerStartup } from './lib/worker-startup.js';
+import { setWorkspaceLimitNotifier } from './lib/workspace-limits.js';
+import { noticeWorkspaceAdmins } from './lib/workspace-limit-notice.js';
 import {createNativeAdoptionSourceRoutes} from './routes/email-native-adoption-source.js';
 import {appIntegrationToolRoutes} from './routes/app-integration-tools.js';
 import {appLocalJobRoutes} from './routes/app-local-jobs.js';
@@ -137,6 +139,9 @@ import {
 } from './middleware/rate-limit.js';
 import { githubWebhookRoutes } from './routes/webhooks/github.js';
 import { corsAllowedWebOrigins } from './lib/web-origins.js';
+
+// The admins' notice when a hosted workspace reaches a limit (workspace-limits.ts does not import it: see there).
+setWorkspaceLimitNotifier(noticeWorkspaceAdmins);
 
 const app = new Hono();
 app.onError(contentFreeErrorHandler);
