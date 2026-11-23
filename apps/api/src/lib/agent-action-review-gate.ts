@@ -3,10 +3,7 @@ import { agentActions, orgMembers } from '@deft/db/schema';
 import { db } from './db.js';
 import { visibleCaptureActionSql } from './agent-action-visibility.js';
 import { actionReviewAssignmentSql } from './agent-action-requester.js';
-import { moduleRoleAudienceSql, sourceMessageRoomSql, visibleAgentActionSourceSql, visibleModuleActionSql } from './module-action-visibility.js';
-
-// The room rule now lives with the read audience, which applies it too.
-export { sourceMessageRoomSql };
+import { moduleRoleAudienceSql, sourceMessageRoomSql, visibleAgentActionSourceSql } from './module-action-visibility.js';
 
 type UserRef = string | SQL;
 
@@ -22,7 +19,10 @@ export function reviewableActionSql(user: { id: UserRef; org_id: UserRef; role?:
   return and(
     sql`${agentActions.org_id} = ${user.org_id}`,
     visibleCaptureActionSql(user),
-    visibleModuleActionSql(user.role, { userId: user.id, orgId: user.org_id }),
+    // `visibleModuleActionSql` without its history room rule: the gate's own
+    // room rule below is the stricter one.
+    visibleAgentActionSourceSql({ userId: user.id, orgId: user.org_id }),
+    moduleRoleAudienceSql(user.role, { userId: user.id, orgId: user.org_id }),
     sourceMessageRoomSql(user.id),
     actionReviewAssignmentSql(user.id),
   )!;

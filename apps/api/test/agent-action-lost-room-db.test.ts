@@ -1,10 +1,12 @@
 // Check 13, fix 1 (cases 13.1 and 13.2): an assistant action that came from a
 // room a person lost — removed by the creator, or left by themselves — leaves
 // every list, count and detail view of theirs, and approving it is refused
-// without naming the room. Owners/admins keep the action history.
+// without naming the room. Owners/admins keep the action history, and a member
+// of an archived room keeps its history.
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test, { after, before } from 'node:test';
+import bcrypt from 'bcryptjs';
 import { Hono } from 'hono';
 import pg from 'pg';
 import { closeDb } from '../src/lib/db.js';
@@ -17,21 +19,27 @@ const ids = { mia: randomUUID(), olive: randomUUID(), adam: randomUUID(), gus: r
 const roles: Record<string, 'member' | 'owner' | 'admin' | 'guest'> = {
   [ids.mia]: 'member', [ids.olive]: 'owner', [ids.adam]: 'admin', [ids.gus]: 'guest',
 };
-const rooms = { removed: randomUUID(), left: randomUUID(), groupDm: randomUUID(), kept: randomUUID() };
+const rooms = { removed: randomUUID(), left: randomUUID(), groupDm: randomUUID(), kept: randomUUID(), archived: randomUUID() };
+const lostRooms = [rooms.removed, rooms.left, rooms.groupDm];
 const roomNames: Record<string, string> = {
-  [rooms.removed]: 'lostroom-removed', [rooms.left]: 'lostroom-left',
-  [rooms.groupDm]: 'lostroom-group-dm', [rooms.kept]: 'keptroom',
+  [rooms.removed]: 'lostroom-removed', [rooms.left]: 'lostroom-left', [rooms.groupDm]: 'lostroom-group-dm',
+  [rooms.kept]: 'keptroom', [rooms.archived]: 'archivedroom',
 };
-// Per room: a pending Defty proposal (no employee), a pending proposal in the
-// Defty envelope, an approved one (for the single-action receipt read), and a
-// pending one the guest asked for.
-type RoomActions = { pending: string; envelope: string; approved: string; guest: string };
+// Per room, Mia's Defty actions:
+// - pending: a proposal attached to her message in the room;
+// - envelope: the same in the Defty envelope;
+// - approved: an approved one, for the single-action reads;
+// - plan: a plan step, which carries only the room as its conversation;
+// - cross: attached to her message in the kept room, drafted from a message of this room.
+// And one pending proposal Gus (guest) asked for.
+type RoomActions = { pending: string; envelope: string; approved: string; plan: string; cross: string; guest: string };
 const actions = Object.fromEntries(Object.values(rooms).map((room) => [room, {
-  pending: randomUUID(), envelope: randomUUID(), approved: randomUUID(), guest: randomUUID(),
+  pending: randomUUID(), envelope: randomUUID(), approved: randomUUID(), plan: randomUUID(), cross: randomUUID(), guest: randomUUID(),
 }])) as Record<string, RoomActions>;
+const miaToken = `dft_${randomUUID().replaceAll('-', '')}`;
 let client: pg.Client | undefined;
 let seeded = false;
-let routes: { agent?: Hono; inbox?: Hono; spaces?: Hono } = {};
+let routes: { agent?: Hono; inbox?: Hono; spaces?: Hono; mcp?: Hono } = {};
 
 function app(viewer: string) {
   const hono = new Hono();
@@ -57,6 +65,13 @@ async function listIds(viewer: string, path: string): Promise<Set<string>> {
   return new Set((Array.isArray(body) ? body : body.actions).map((row) => row.id));
 }
 
+async function inboxApprovalIds(viewer: string): Promise<Set<string>> {
+  const { status, text } = await json(viewer, '/api/inbox?kind=pending_approval&limit=100');
+  assert.equal(status, 200, text);
+  const body = JSON.parse(text) as { items: Array<{ approval?: { action_id: string } }> };
+  return new Set(body.items.flatMap((item) => item.approval ? [item.approval.action_id] : []));
+}
+
 async function approvalCount(viewer: string): Promise<number> {
   const { status, text } = await json(viewer, '/api/inbox?kind=pending_approval&count_only=1');
   assert.equal(status, 200, text);
@@ -69,23 +84,39 @@ async function receiptError(viewer: string, actionId: string): Promise<string> {
   return (JSON.parse(text) as { error: string }).error;
 }
 
-/** Every read surface of `viewer`'s for the room's actions. */
-async function views(viewer: string, room: string) {
+async function mcpStatus(actionId: string): Promise<number> {
+  const hono = new Hono();
+  hono.route('/api/mcp', routes.mcp!);
+  const response = await hono.request(`/api/mcp/actions/${actionId}/status`, { headers: { authorization: `Bearer ${miaToken}` } });
+  return response.status;
+}
+
+function owned(viewer: string, room: string) {
   const own = actions[room]!;
-  const mine = viewer === ids.gus ? [own.guest] : [own.pending, own.envelope, own.approved];
+  return viewer === ids.gus
+    ? { all: [own.guest], pending: [own.guest] }
+    : { all: [own.pending, own.envelope, own.approved, own.plan, own.cross], pending: [own.pending, own.envelope, own.plan, own.cross] };
+}
+
+/** How many of the viewer's actions from the room each read surface returns. */
+async function views(viewer: string, room: string) {
+  const mine = owned(viewer, room);
   const list = await listIds(viewer, '/api/agent/actions');
   const recent = await listIds(viewer, '/api/agent/actions/recent?limit=50');
   const pending = await listIds(viewer, '/api/agent/actions/pending');
+  const inbox = await inboxApprovalIds(viewer);
   return {
-    list: mine.filter((id) => list.has(id)).length,
-    recent: mine.filter((id) => recent.has(id)).length,
-    pending: mine.filter((id) => pending.has(id)).length,
+    list: mine.all.filter((id) => list.has(id)).length,
+    recent: mine.all.filter((id) => recent.has(id)).length,
+    pending: mine.pending.filter((id) => pending.has(id)).length,
+    inbox: mine.pending.filter((id) => inbox.has(id)).length,
   };
 }
 
 async function assertNothingLeaks(viewer: string, room: string) {
   for (const path of ['/api/agent/actions', '/api/agent/actions/recent?limit=50', '/api/agent/actions/pending', '/api/inbox?kind=pending_approval']) {
-    const { text } = await json(viewer, path);
+    const { status, text } = await json(viewer, path);
+    assert.equal(status, 200, text);
     assert.ok(!text.includes(roomNames[room]!), `${path} names the lost room`);
     assert.ok(!text.includes(`CANARY-${room}`), `${path} carries the lost room's content`);
   }
@@ -101,8 +132,16 @@ before(async () => {
     await client.query("INSERT INTO users(id,email,name,kind,is_agent) VALUES($1,$2,$3,'human',false)", [id, `${id}@example.test`, name]);
     await client.query('INSERT INTO org_members(id,org_id,user_id,role) VALUES($1,$2,$3,$4)', [randomUUID(), orgId, id, roles[id]]);
   }
+  await client.query(`INSERT INTO api_keys(id,org_id,name,key_hash,key_prefix,permissions,created_by)
+    VALUES($1,$2,'lost room',$3,$4,ARRAY['read'],$5)`, [randomUUID(), orgId, await bcrypt.hash(miaToken, 4), miaToken.slice(0, 12), ids.mia]);
   const { ensureDeftyEmployee } = await import('../src/lib/ensure-defty-membership.js');
   const deftyEmployeeId = (await ensureDeftyEmployee(orgId)).employeeId;
+  const message = async (room: string, author: string) => {
+    const id = randomUUID();
+    await client!.query("INSERT INTO messages(id,org_id,space_id,user_id,content) VALUES($1,$2,$3,$4,'@Defty post the summary here')",
+      [id, orgId, room, author]);
+    return id;
+  };
   for (const room of Object.values(rooms)) {
     const type = room === rooms.groupDm ? 'group_dm' : 'private';
     await client.query('INSERT INTO spaces(id,org_id,name,type,created_by) VALUES($1,$2,$3,$4,$5)', [room, orgId, roomNames[room], type, ids.olive]);
@@ -110,32 +149,40 @@ before(async () => {
     for (const user of members) {
       await client.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), room, user]);
     }
-    const insert = async (id: string, requester: string, employee: string | null, status: 'pending' | 'approved') => {
-      const message = randomUUID();
-      await client!.query("INSERT INTO messages(id,org_id,space_id,user_id,content) VALUES($1,$2,$3,$4,'@Defty post the summary here')",
-        [message, orgId, room, requester]);
-      await client!.query(`INSERT INTO agent_actions(id,org_id,user_id,agent_employee_id,message_id,source,action,params,approval_tier,approval_status)
-        VALUES($1,$2,$3,$4,$5,'mention','post_message',$6,'quick',$7)`,
-      [id, orgId, requester, employee, message,
-        JSON.stringify({ space_id: room, space_name: roomNames[room], content: `CANARY-${room}` }), status]);
-    };
+  }
+  for (const room of Object.values(rooms)) {
+    const insert = async (
+      id: string, requester: string, employee: string | null, status: 'pending' | 'approved',
+      anchor: { message?: string; conversation?: string; source?: string },
+    ) => client!.query(`INSERT INTO agent_actions(id,org_id,user_id,agent_employee_id,conversation_id,message_id,source,action,params,approval_tier,approval_status)
+        VALUES($1,$2,$3,$4,$5,$6,'mention','post_message',$7,'quick',$8)`,
+    [id, orgId, requester, employee, anchor.conversation ?? null, anchor.message ?? null,
+      JSON.stringify({
+        space_id: room, space_name: roomNames[room], content: `CANARY-${room}`,
+        ...(anchor.source ? { source_message_id: anchor.source } : {}),
+      }), status]);
     const own = actions[room]!;
-    await insert(own.pending, ids.mia, null, 'pending');
-    await insert(own.envelope, ids.mia, deftyEmployeeId, 'pending');
-    await insert(own.approved, ids.mia, null, 'approved');
-    if (room !== rooms.groupDm) await insert(own.guest, ids.gus, null, 'pending');
+    await insert(own.pending, ids.mia, null, 'pending', { message: await message(room, ids.mia), conversation: room });
+    await insert(own.envelope, ids.mia, deftyEmployeeId, 'pending', { message: await message(room, ids.mia) });
+    await insert(own.approved, ids.mia, null, 'approved', { message: await message(room, ids.mia) });
+    await insert(own.plan, ids.mia, null, 'pending', { conversation: room });
+    await insert(own.cross, ids.mia, null, 'pending', {
+      message: await message(rooms.kept, ids.mia), conversation: rooms.kept, source: await message(room, ids.olive),
+    });
+    if (room !== rooms.groupDm) await insert(own.guest, ids.gus, null, 'pending', { message: await message(room, ids.gus) });
   }
   routes = {
     agent: (await import('../src/routes/agent.js')).agentRoutes,
     inbox: (await import('../src/routes/inbox.js')).inboxRoutes,
     spaces: (await import('../src/routes/spaces.js')).spaceRoutes,
+    mcp: (await import('../src/routes/mcp-server.js')).mcpServerRoutes,
   };
 });
 
 after(async () => {
   try {
     if (seeded && client) {
-      for (const table of ['agent_action_approvers', 'agent_actions', 'messages']) {
+      for (const table of ['api_keys', 'agent_action_approvers', 'agent_actions', 'messages']) {
         await client.query(`DELETE FROM ${table} WHERE org_id=$1`, [orgId]);
       }
       await client.query('DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id=$1)', [orgId]);
@@ -153,15 +200,15 @@ after(async () => {
 
 test('a lost room takes its assistant actions out of every list, count and detail view, and approval is refused cleanly', async (t) => {
   if (unavailable) return t.skip(unavailable);
-  const everything = { list: 3, recent: 3, pending: 2 };
-  const nothing = { list: 0, recent: 0, pending: 0 };
+  const everything = { list: 5, recent: 5, pending: 4, inbox: 4 };
+  const nothing = { list: 0, recent: 0, pending: 0, inbox: 0 };
 
   // While a member of every room, the requester sees each room's actions.
   for (const room of Object.values(rooms)) assert.deepEqual(await views(ids.mia, room), everything, roomNames[room]);
-  assert.deepEqual(await views(ids.gus, rooms.removed), { list: 1, recent: 1, pending: 1 });
+  assert.deepEqual(await views(ids.gus, rooms.removed), { list: 1, recent: 1, pending: 1, inbox: 1 });
   assert.equal(await receiptError(ids.mia, actions[rooms.removed]!.approved), 'no receipt for action');
-  const countBefore = await approvalCount(ids.mia);
-  assert.equal(countBefore, 8, 'two pending approvals in each of four rooms');
+  assert.equal(await mcpStatus(actions[rooms.removed]!.approved), 200);
+  assert.equal(await approvalCount(ids.mia), 20, 'four pending approvals in each of five rooms');
 
   // 13.1: the creator removes Mia and Gus from a private room and Mia from a group DM.
   for (const [room, user] of [[rooms.removed, ids.mia], [rooms.removed, ids.gus], [rooms.groupDm, ids.mia]] as const) {
@@ -171,12 +218,15 @@ test('a lost room takes its assistant actions out of every list, count and detai
   // 13.2: Mia leaves the other private room herself.
   const left = await json(ids.mia, `/api/spaces/${rooms.left}/members/me`, { method: 'DELETE' });
   assert.equal(left.status, 200, left.text);
+  // A room Mia stays in is archived.
+  await client!.query('UPDATE spaces SET is_archived=true WHERE id=$1', [rooms.archived]);
 
-  for (const room of [rooms.removed, rooms.left, rooms.groupDm]) {
-    assert.deepEqual(await views(ids.mia, room), nothing, `${roomNames[room]}: lists, recent and pending`);
+  for (const room of lostRooms) {
+    assert.deepEqual(await views(ids.mia, room), nothing, `${roomNames[room]}: lists, recent, pending and Inbox`);
     await assertNothingLeaks(ids.mia, room);
     assert.equal(await receiptError(ids.mia, actions[room]!.approved), 'action not found', 'single-action read');
-    for (const id of [actions[room]!.pending, actions[room]!.envelope]) {
+    assert.equal(await mcpStatus(actions[room]!.approved), 404, 'legacy MCP status read');
+    for (const id of owned(ids.mia, room).pending) {
       const refused = await json(ids.mia, `/api/agent/actions/${id}/approve`, { method: 'POST' });
       assert.equal(refused.status, 404, refused.text);
       assert.deepEqual(JSON.parse(refused.text), { error: 'Not found', code: 'NOT_FOUND' });
@@ -184,26 +234,28 @@ test('a lost room takes its assistant actions out of every list, count and detai
   }
   assert.deepEqual(await views(ids.gus, rooms.removed), nothing, 'a guest removed from the room');
   await assertNothingLeaks(ids.gus, rooms.removed);
-  assert.equal(await approvalCount(ids.mia), 2, 'the Inbox approval count keeps only the room Mia is still in');
 
   // A room the requester still belongs to is unchanged.
   assert.deepEqual(await views(ids.mia, rooms.kept), everything);
   assert.equal(await receiptError(ids.mia, actions[rooms.kept]!.approved), 'no receipt for action');
+  assert.equal(await mcpStatus(actions[rooms.kept]!.approved), 200);
+  // An archived room keeps its history for its members; nothing in it is reviewable.
+  assert.deepEqual(await views(ids.mia, rooms.archived), { list: 5, recent: 5, pending: 0, inbox: 0 });
+  assert.equal(await receiptError(ids.mia, actions[rooms.archived]!.approved), 'no receipt for action');
+  assert.equal(await approvalCount(ids.mia), 4, 'the Inbox approval count keeps only the room Mia is still in');
 
   // Refused approvals changed nothing.
-  const { rows } = await client!.query('SELECT approval_status FROM agent_actions WHERE id=ANY($1::text[])',
-    [[rooms.removed, rooms.left, rooms.groupDm].flatMap((room) => [actions[room]!.pending, actions[room]!.envelope])]);
-  assert.deepEqual(rows.map((row) => row.approval_status), Array(6).fill('pending'));
+  const refusedIds = lostRooms.flatMap((room) => owned(ids.mia, room).pending);
+  const { rows } = await client!.query('SELECT approval_status FROM agent_actions WHERE id=ANY($1::text[])', [refusedIds]);
+  assert.deepEqual(rows.map((row) => row.approval_status), Array(refusedIds.length).fill('pending'));
 
   // Owners and admins keep the whole action history, whatever rooms they are in.
   const removedAdmin = await json(ids.olive, `/api/spaces/${rooms.removed}/members/${ids.adam}`, { method: 'DELETE' });
   assert.equal(removedAdmin.status, 200, removedAdmin.text);
   for (const viewer of [ids.olive, ids.adam]) {
     const list = await listIds(viewer, '/api/agent/actions');
-    for (const room of [rooms.removed, rooms.left, rooms.groupDm]) {
-      for (const id of [actions[room]!.pending, actions[room]!.envelope, actions[room]!.approved]) {
-        assert.ok(list.has(id), `${roles[viewer]} keeps ${roomNames[room]} history`);
-      }
+    for (const room of lostRooms) {
+      for (const id of owned(ids.mia, room).all) assert.ok(list.has(id), `${roles[viewer]} keeps ${roomNames[room]} history`);
     }
   }
 });

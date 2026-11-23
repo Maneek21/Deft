@@ -43,6 +43,7 @@ import {
   wikiPages,
 } from '@deft/db/schema';
 import { visibleModuleActionSql } from '../lib/module-action-visibility.js';
+import { visibleCaptureActionSql } from '../lib/agent-action-visibility.js';
 import type { SkillAgentConfig } from '../lib/skill-config.js';
 import {
   AGENT_CHANNEL_PROTOCOL_VERSION,
@@ -485,6 +486,7 @@ agentEmployeeRoutes.get('/:id/turns/:turn_id/receipt', async (c) => {
       WHERE agent_actions.agent_employee_id = ${id}
         AND agent_actions.org_id = ${user.org_id}
         AND ${visibleModuleActionSql(user.role, { userId: user.id, orgId: user.org_id })}
+        AND ${visibleCaptureActionSql({ id: user.id, org_id: user.org_id })}
         AND r.created_at BETWEEN ${turn.created_at}::timestamp - interval '5 seconds'
                              AND ${turn.created_at}::timestamp + interval '30 seconds'
       ORDER BY r.created_at DESC

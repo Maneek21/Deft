@@ -8,7 +8,8 @@ import { shouldAutoExecute, getApprovalTier } from '../lib/agent-approval.js';
 import { executeActionDirect } from '../lib/agent-actions.js';
 import { ACTION_TOOLS } from '../lib/agent-tools.js';
 import { isAgentToolDisabled } from '../lib/agent-tool-policy.js';
-import { visibleAgentActionSourceSql } from '../lib/module-action-visibility.js';
+import { sourceMessageRoomSql, visibleAgentActionSourceSql } from '../lib/module-action-visibility.js';
+import { visibleCaptureActionSql } from '../lib/agent-action-visibility.js';
 import { resolveSpaceTargetFromRows } from '../lib/resolve-space-target.js';
 import { employeeCanAccessSpace } from '../lib/mcp-tools/employee-space-access.js';
 import { messagePost } from '../lib/mcp-tools/writes.js';
@@ -430,6 +431,10 @@ mcpServerRoutes.get('/actions/:id/status', async (c) => {
         ? eq(agentActions.agent_employee_id, actor.agentEmployeeId)
         : eq(agentActions.user_id, actor.userId),
       visibleAgentActionSourceSql({ userId: actor.userId, orgId: keyRecord.org_id }),
+      // A person's own key: only while they can still read the rooms the
+      // action came from (check 13), whatever their role.
+      actor.agentEmployeeId ? undefined : visibleCaptureActionSql({ id: actor.userId, org_id: keyRecord.org_id }),
+      actor.agentEmployeeId ? undefined : sourceMessageRoomSql(actor.userId, 'history'),
     ))
     .limit(1);
 
