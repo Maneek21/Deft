@@ -67,7 +67,7 @@ export function logCapacityProfile(event: keyof typeof CAPACITY_FIELDS, measurem
 const STARTUP_HINTS: ReadonlyArray<readonly [string, string]> = [
   ['DEFT_HOSTED must be exactly', 'Invalid DEFT_HOSTED: use exactly true or false, or leave it unset.'],
   ['DEFT_PAUSED_START must be exactly', 'Invalid DEFT_PAUSED_START: use exactly true or false, or leave it unset.'],
-  ['DEFT_PAUSED_REASON must be one of', 'Invalid DEFT_PAUSED_REASON: use exactly restore_review or billing, or leave it unset.'],
+  ['DEFT_PAUSED_REASON must be one of', 'Invalid DEFT_PAUSED_REASON: use exactly restore_review, billing or emergency_stop, or leave it unset.'],
   ['JWT_SECRET and JWT_REFRESH_SECRET must be different', 'JWT_SECRET and JWT_REFRESH_SECRET must be different in production.'],
   ['JWT_SECRET must be', 'Invalid JWT_SECRET: use a non-template secret of at least 32 characters without surrounding whitespace.'],
   ['JWT_REFRESH_SECRET must be', 'Invalid JWT_REFRESH_SECRET: use a non-template secret of at least 32 characters without surrounding whitespace.'],

@@ -3,7 +3,7 @@
  * but not changed. GET /api/auth/me reports `paused: { reason }` to signed-in
  * people; every refused request answers 503 `{ code: 'PAUSED' }`.
  */
-export type PausedReason = 'restore_review' | 'billing';
+export type PausedReason = 'restore_review' | 'billing' | 'emergency_stop';
 export type PausedNotice = { reason: PausedReason };
 
 export const PAUSED_BANNER_TEXT: Record<PausedReason, string> = {
@@ -12,6 +12,10 @@ export const PAUSED_BANNER_TEXT: Record<PausedReason, string> = {
     'and AI, notifications and live updates are off. The workspace owner can restore it by paying the outstanding invoice.',
   restore_review:
     'This workspace is being checked after a restore. You can read everything, but nothing can be changed yet.',
+  emergency_stop:
+    'Outgoing activity in this workspace is stopped while a problem is looked into. You can sign in and read everything, ' +
+    'but nothing can be changed, and link previews, email, notifications and AI are off. Nothing scheduled is lost: ' +
+    'it goes out once the stop is lifted.',
 };
 
 /** Shown in place of the server's operator wording when a change is refused. */
@@ -30,7 +34,7 @@ export const PAUSED_REFUSED_EVENT = 'deft:paused-refused';
 export function parsePausedNotice(value: unknown): PausedNotice | null {
   if (!value || typeof value !== 'object') return null;
   const reason = (value as { reason?: unknown }).reason;
-  if (reason === 'billing' || reason === 'restore_review') return { reason };
+  if (reason === 'billing' || reason === 'restore_review' || reason === 'emergency_stop') return { reason };
   // A paused install with an unknown reason still gets the neutral notice.
   return { reason: 'restore_review' };
 }

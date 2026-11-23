@@ -19,17 +19,17 @@ test('the start-time setting accepts only unset, true and false; malformed value
   }
 });
 
-test('DEFT_PAUSED_REASON defaults to restore_review and accepts only restore_review or billing', () => {
+test('DEFT_PAUSED_REASON defaults to restore_review and accepts only restore_review, billing or emergency_stop', () => {
   assert.equal(parsePausedStartSetting('true').reason, 'restore_review');
   assert.equal(parsePausedStartSetting('true', undefined).reason, 'restore_review');
-  for (const reason of ['restore_review', 'billing'] as const) {
+  for (const reason of ['restore_review', 'billing', 'emergency_stop'] as const) {
     const parsed = parsePausedStartSetting('true', reason);
     assert.equal(parsed.reason, reason);
     assert.doesNotThrow(() => assertPausedStartSettingValid(parsed));
   }
   // A bad reason stops startup, paused or not, like the other strict settings.
   for (const start of ['true', 'false', undefined]) {
-    for (const raw of ['', 'Billing', 'billing ', 'restore', 'overdue', 'billing\r']) {
+    for (const raw of ['', 'Billing', 'billing ', 'restore', 'overdue', 'billing\r', 'Emergency_stop', 'emergency', 'emergency-stop']) {
       assert.throws(() => assertPausedStartSettingValid(parsePausedStartSetting(start, raw)), /DEFT_PAUSED_REASON must be one of/);
     }
   }
@@ -42,6 +42,8 @@ test('the notice for signed-in people is null unless paused, and names the reaso
   assert.deepEqual(pausedNotice(), { reason: 'restore_review' });
   _setPausedStartForTest(true, 'billing');
   assert.deepEqual(pausedNotice(), { reason: 'billing' });
+  _setPausedStartForTest(true, 'emergency_stop');
+  assert.deepEqual(pausedNotice(), { reason: 'emergency_stop' });
 });
 
 test('paused startup skips credential migration and scheduling', () => {

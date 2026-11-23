@@ -35,13 +35,14 @@
  * web app can explain it. It is read with DEFT_PAUSED_START, at process start:
  * - unset: `restore_review` (the original use: a restored copy waiting for an
  *   operator);
- * - `restore_review` or `billing` (a hosted workspace whose payment is
- *   overdue);
+ * - `restore_review`, `billing` (a hosted workspace whose payment is
+ *   overdue) or `emergency_stop` (an operator stopped a hosted workspace's
+ *   outgoing activity while a problem is looked into);
  * - anything else stops startup, like a malformed DEFT_PAUSED_START.
  * It changes nothing that is refused; it is only shown to signed-in people
  * (`pausedNotice`, in GET /api/auth/me), never on a public route.
  */
-export const PAUSED_REASONS = ['restore_review', 'billing'] as const;
+export const PAUSED_REASONS = ['restore_review', 'billing', 'emergency_stop'] as const;
 export type PausedReason = (typeof PAUSED_REASONS)[number];
 
 export type PausedStartSetting = {
