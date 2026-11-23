@@ -50,6 +50,7 @@ import {
 } from './workspace-plan-import.js';
 import { DOCUMENT_SEND_ACTION, sanitizeDocumentSendParams } from './document-send.js';
 import { markWorkIntentConvertedForAction, markWorkIntentFailedForAction } from './work-intents.js';
+import { forcedApprovalFailure } from './test-failure-switches.js';
 import { isTerminalRefusalResult, wikiProposalRefusal, wikiProposalRefusalCode } from './wiki-proposal-target.js';
 import { CONNECTED_TOOL_UNAVAILABLE_ERROR } from './connected-tool-access.js';
 import { MODULE_OPERATION_DEFINITIONS, MODULE_OPERATION_NAMES } from '@deft/shared/modules';
@@ -357,7 +358,8 @@ export async function executeClaimedApproval(
   lease: DbAdvisoryLease = HELD_LEASE,
 ): Promise<OwnedExecutionOutcome> {
   // The executor receives the ORIGINAL proposer's user id, never the approver's.
-  const execResult = await executeAction(
+  // A test failure switch (operator-only, off by default) fails it without running it.
+  const execResult = forcedApprovalFailure(row) ?? await executeAction(
     row.id,
     row.action,
     row.params as any,

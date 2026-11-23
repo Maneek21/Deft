@@ -65,7 +65,7 @@ test('a hosted-only setting needs hosted mode, whatever its value', () => {
   assert.deepEqual(presentHostedOnlySettings({ OTHER: 'x' }), []);
 });
 
-const GUARDED = ['DEFT_HOSTED', ...HOSTED_ONLY_SETTINGS];
+const GUARDED = ['DEFT_TEST_FAILURE_SWITCHES', 'DEFT_HOSTED', ...HOSTED_ONLY_SETTINGS];
 function start(overrides: Record<string, string>) {
   const source = new URL('../src/lib/env.ts', import.meta.url).href;
   const script = `await import(${JSON.stringify(source)}); console.log('started');`;
@@ -120,4 +120,22 @@ test('env import: self-hosted (unset or "false") and hosted ("true") installs st
     assert.equal(child.status, 0, `${label}: ${child.stderr}`);
     assert.equal(child.stdout.trim(), 'started', label);
   }
+});
+
+test('env import: a test failure switch that does not name this install stops startup', () => {
+  for (const [label, overrides] of [
+    ['self-hosted, "true"', { DEFT_TEST_FAILURE_SWITCHES: 'true' }],
+    ['hosted, "on"', { DEFT_HOSTED: 'true', ...SEATS, DEFT_TEST_FAILURE_SWITCHES: 'on' }],
+    ['hosted, another cell', { DEFT_HOSTED: 'true', ...SEATS, DEFT_TEST_FAILURE_SWITCHES: 'cell:cell-other' }],
+  ] as const) {
+    const child = start(overrides);
+    assert.equal(child.status, 1, `${label}: env import must fail before startup`);
+    assert.match(child.stderr, /DEFT_TEST_FAILURE_SWITCHES/, label);
+    assert.equal(child.stdout, '', `${label}: no successful startup marker`);
+  }
+  const self = start({ DEFT_TEST_FAILURE_SWITCHES: 'on' });
+  assert.equal(self.status, 0, self.stderr);
+  const cell = start({ DEFT_HOSTED: 'true', ...SEATS, DEFT_TEST_FAILURE_SWITCHES: `cell:${SEATS.DEFT_CELL_ID}` });
+  assert.equal(cell.status, 0, cell.stderr);
+  assert.match(cell.stderr, /DEFT_TEST_FAILURE_SWITCHES is on/);
 });
