@@ -236,6 +236,33 @@
       "fingerprint_v2": "55eb7ed8d1ce21cfe432cca5906022d2d1b521cb28deb61f40d55fe06bb2e6b7",
       "disposition": "false_positive",
       "justification": "This regex is an assertion over a fixed returned OAuth fixture URL, not the authorization-origin allowlist. Production connection begin parses URL and requires exact reviewed origin and callback state; the current production flow source is pinned below. Persistent durable scope parsing does not loosen OAuth navigation: Begin and callback deadlines remain finite, and exact parsed authorization origin plus a single exact callback-state parameter are still required. Re-reviewed for PR #424 against raw CodeQL run 41879227567: the fingerprint and location are unchanged. app-connection-session-flow.ts adds beginAppConnection, a thin wrapper that loads the flow and returns flow.begin(targetKey); begin still parses the URL and requires the exact reviewed authorization origin and a single exact callback-state parameter. The test regex remains an assertion over a fixed fixture URL."
+    },
+    {
+      "id": "FP-028",
+      "rule": "js/insufficient-password-hash",
+      "path": "apps/api/src/lib/app-authority-content-cache.ts",
+      "line": 11,
+      "fingerprint_v2": "114c2ca4b8a7e06c976548700040eb22810e70bc83e83ac86b3fba26a9829c8c",
+      "disposition": "false_positive",
+      "justification": "Reported only by CodeQL 2.27.5 / queries 2.5.1 (CodeQL 2.27.4 / queries 2.5.0 did not report it). This SHA-256 is an in-memory lookup key for App authority content: it hashes the organization id, the App version id and the bounded JSON.stringify output of the evidence. The cache holds the digest as a Map key and the async path recomputes it to detect that the evidence changed before inserting. No password, secret or credential is hashed, and the digest is not used to verify or protect a secret. Authenticator return-object taint reaches the key through public identity fields."
+    },
+    {
+      "id": "FP-029",
+      "rule": "js/insufficient-password-hash",
+      "path": "apps/api/src/lib/app-grant-service.ts",
+      "line": 58,
+      "fingerprint_v2": "e5c10df24f29393f2eac5504796ddd383f9a03aedfa61045237ecfcb4c6a91db",
+      "disposition": "false_positive",
+      "justification": "Reported only by CodeQL 2.27.5 / queries 2.5.1 (CodeQL 2.27.4 / queries 2.5.0 did not report it). In the reported flows this SHA-256 is the equality digest of a canonicalized requested or effective App grant snapshot, which carries the authenticated organization id and grant metadata. It is compared to detect grant changes and is not a password verifier: no secret is hashed or stored for authentication. The helper is also used elsewhere for module-record content fingerprints (app-automation-management-service.ts), which are likewise equality digests, not credential verifiers. Authenticator return-object taint reaches it through public identity fields."
+    },
+    {
+      "id": "FP-030",
+      "rule": "js/insufficient-password-hash",
+      "path": "apps/api/src/lib/module-service.ts",
+      "line": 535,
+      "fingerprint_v2": "f6d062b2941d6408c9c06bca3416eb847bbac31dc69554caf374a5df9fa8147a",
+      "disposition": "false_positive",
+      "justification": "Reported only by CodeQL 2.27.5 / queries 2.5.1 (CodeQL 2.27.4 / queries 2.5.0 did not report it). This SHA-256 is the retry-domain digest of organization, actor kind, actor id and a caller-supplied idempotency key. It is not a password verifier, and the key is not a secret. Authenticator return-object taint reaches it through public identity fields, as for the existing agent-actions idempotency digest."
     }
   ]
 }
