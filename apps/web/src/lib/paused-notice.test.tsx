@@ -29,6 +29,13 @@ test('restore review: the banner says the workspace is being checked', () => {
   assert.doesNotMatch(html, /payment|invoice|<a\b/);
 });
 
+test('emergency stop: the banner says outgoing activity is stopped, what still works and that scheduled items wait', () => {
+  const html = render({ notice: { reason: 'emergency_stop' } });
+  assert.match(html, /data-paused-reason="emergency_stop"/);
+  assert.match(html, /Outgoing activity in this workspace is stopped while a problem is looked into\. You can still sign in and read messages and tasks, but nothing can be changed, and link previews, notifications and AI are off\. Scheduled messages and reminders wait until the stop is lifted\./);
+  assert.doesNotMatch(html, /payment|invoice|restore|<a\b/);
+});
+
 test('not paused: no banner at all', () => {
   assert.equal(render({ notice: null }), '');
 });
@@ -38,6 +45,7 @@ test('absent means not paused; an unknown reason still shows the neutral notice'
   assert.equal(parsePausedNotice(null), null);
   assert.deepEqual(parsePausedNotice({ reason: 'billing' }), { reason: 'billing' });
   assert.deepEqual(parsePausedNotice({ reason: 'restore_review' }), { reason: 'restore_review' });
+  assert.deepEqual(parsePausedNotice({ reason: 'emergency_stop' }), { reason: 'emergency_stop' });
   assert.deepEqual(parsePausedNotice({ reason: 'something-new' }), { reason: 'restore_review' });
   assert.equal(PAUSED_BANNER_TEXT.billing.includes('http'), false);
 });

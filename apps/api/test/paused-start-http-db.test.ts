@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import pg from 'pg';
-import { _setPausedStartForTest, isRefusedWhilePaused } from '../src/lib/paused-start.js';
+import { PAUSED_REASONS, _setPausedStartForTest, isRefusedWhilePaused } from '../src/lib/paused-start.js';
 
 const DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 const RUN = crypto.randomUUID();
@@ -111,7 +111,7 @@ test('the paused reason reaches only signed-in people, through GET /api/auth/me'
   assert.equal(live.status, 200);
   assert.equal('paused' in (await live.json()), false);
 
-  for (const reason of ['restore_review', 'billing'] as const) {
+  for (const reason of PAUSED_REASONS) {
     _setPausedStartForTest(true, reason);
     const res = await me(accessToken);
     assert.equal(res.status, 200);
@@ -121,14 +121,14 @@ test('the paused reason reaches only signed-in people, through GET /api/auth/me'
     for (const token of [undefined, 'not-a-token']) {
       const anon = await me(token);
       assert.equal(anon.status, 401);
-      assert.doesNotMatch(await anon.text(), /restore_review|billing/);
+      assert.doesNotMatch(await anon.text(), /restore_review|billing|emergency_stop/);
     }
     for (const path of ['/health', '/health/ready']) {
-      assert.doesNotMatch(await (await app.request(path)).text(), /restore_review|billing|reason/, path);
+      assert.doesNotMatch(await (await app.request(path)).text(), /restore_review|billing|emergency_stop|reason/, path);
     }
     const refused = await app.request('/api/tasks', json({ title: 'x' }));
     assert.equal(refused.status, 503);
-    assert.doesNotMatch(await refused.text(), /restore_review|billing|reason/);
+    assert.doesNotMatch(await refused.text(), /restore_review|billing|emergency_stop|reason/);
   }
 });
 
