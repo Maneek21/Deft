@@ -244,7 +244,7 @@
       "line": 11,
       "fingerprint_v2": "114c2ca4b8a7e06c976548700040eb22810e70bc83e83ac86b3fba26a9829c8c",
       "disposition": "false_positive",
-      "justification": "Reported only by CodeQL 2.27.5 / queries 2.5.1 (CodeQL 2.27.4 / queries 2.5.0 did not report it). This SHA-256 is the in-memory cache key for App authority content: it hashes the organization id, the App version id and the bounded canonical JSON of the evidence. No password, secret or credential is hashed, and the digest is never stored or used to verify anything. Authenticator return-object taint reaches the key through public identity fields."
+      "justification": "Reported only by CodeQL 2.27.5 / queries 2.5.1 (CodeQL 2.27.4 / queries 2.5.0 did not report it). This SHA-256 is an in-memory lookup key for App authority content: it hashes the organization id, the App version id and the bounded JSON.stringify output of the evidence. The cache holds the digest as a Map key and the async path recomputes it to detect that the evidence changed before inserting. No password, secret or credential is hashed, and the digest is not used to verify or protect a secret. Authenticator return-object taint reaches the key through public identity fields."
     },
     {
       "id": "FP-029",
@@ -253,7 +253,7 @@
       "line": 58,
       "fingerprint_v2": "e5c10df24f29393f2eac5504796ddd383f9a03aedfa61045237ecfcb4c6a91db",
       "disposition": "false_positive",
-      "justification": "Reported only by CodeQL 2.27.5 / queries 2.5.1 (CodeQL 2.27.4 / queries 2.5.0 did not report it). This SHA-256 is the content digest of a canonicalized App grant value (memoized in digestMemo), used to compare grants for equality. It is not a password verifier: the input is grant metadata, and no secret is hashed or stored for authentication. Authenticator return-object taint reaches it through public identity fields."
+      "justification": "Reported only by CodeQL 2.27.5 / queries 2.5.1 (CodeQL 2.27.4 / queries 2.5.0 did not report it). In the reported flows this SHA-256 is the equality digest of a canonicalized requested or effective App grant snapshot, which carries the authenticated organization id and grant metadata. It is compared to detect grant changes and is not a password verifier: no secret is hashed or stored for authentication. The helper is also used elsewhere for module-record content fingerprints (app-automation-management-service.ts), which are likewise equality digests, not credential verifiers. Authenticator return-object taint reaches it through public identity fields."
     },
     {
       "id": "FP-030",
