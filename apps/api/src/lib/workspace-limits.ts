@@ -124,11 +124,21 @@ const realNotifier = (kind: LimitKind, notice: Notice): Promise<void> =>
   import('./workspace-limit-notice.js').then((module) => module.noticeWorkspaceAdmins(kind, notice));
 let notifier: (kind: LimitKind, notice: Notice) => Promise<void> = realNotifier;
 
+/** The operator's log line for a limit reached: fixed text per kind (the log carries no value, customer's or other). */
+function logReached(kind: LimitKind): void {
+  switch (kind) {
+    case 'storage': console.warn('[workspace-limit] workspace_limit_reached kind=storage'); return;
+    case 'outgoing_requests': console.warn('[workspace-limit] workspace_limit_reached kind=outgoing_requests'); return;
+    case 'scheduled_messages': console.warn('[workspace-limit] workspace_limit_reached kind=scheduled_messages'); return;
+    case 'reminders': console.warn('[workspace-limit] workspace_limit_reached kind=reminders'); return;
+  }
+}
+
 /** One log line a minute per limit, and one notice an hour to the workspace's owners and admins. Never throws. */
 function reached(kind: LimitKind, notice: Notice | null, now: number): void {
   if (now - (lastLogAt.get(kind) ?? -Infinity) >= LOG_EVERY_MS) {
     lastLogAt.set(kind, now);
-    console.warn(`[workspace-limit] workspace_limit_reached kind=${kind}`);
+    logReached(kind);
   }
   if (notice === null || now - (lastNoticeAt.get(kind) ?? -Infinity) < NOTICE_EVERY_MS) return;
   lastNoticeAt.set(kind, now);
