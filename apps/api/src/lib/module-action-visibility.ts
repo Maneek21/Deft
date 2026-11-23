@@ -3,7 +3,7 @@ import { agentActionApprovers, agentActions, attentionItems } from '@deft/db/sch
 import { currentAgentActionSourceAuthoritySql, currentUserSpaceAuthoritySql } from './agent-channel-authority.js';
 import { actionRequesterIdSql, actionReviewerSql } from './agent-action-requester.js';
 import { DEFTY_SYSTEM_EMPLOYEE_SLUG, DEFTY_SYSTEM_RUNTIME_KIND } from './defty-identity.js';
-import { publicSpaceVisibleSql } from './space-visibility.js';
+import { readableSpaceSql } from './space-visibility.js';
 
 /** The internal Defty action envelope has a different, established source contract. */
 export function canonicalDeftyActionSql(
@@ -29,18 +29,15 @@ export function canonicalDeftyActionSql(
  *
  * `review` (the default) is the review gate's rule: the room is active and
  * the user a member, or it is public and they may read it unjoined.
- * `history` also lets a member read an archived room, as the room itself does
- * (`readableSpaceSql`), so archiving a room does not empty its members'
+ * `history` is the room's own read rule (`readableSpaceSql`): a member reads
+ * it archived or not, so archiving a room does not empty its members'
  * action history. Captures carry their room in params
  * (`visibleCaptureActionSql`); employee actions follow their own source rule
  * (`currentAgentActionSourceAuthoritySql`).
  */
 export function sourceMessageRoomSql(userId: string | SQL, rule: 'review' | 'history' = 'review'): SQL {
   const readable = (room: string) => rule === 'history'
-    ? sql`(EXISTS (SELECT 1 FROM space_members ${sql.raw(room)}_member
-          WHERE ${sql.raw(room)}_member.space_id = ${sql.raw(room)}.id AND ${sql.raw(room)}_member.user_id = ${userId})
-        OR (${sql.raw(room)}.is_archived = false
-          AND ${publicSpaceVisibleSql(sql.raw(`${room}.type`), sql.raw(`${room}.org_id`), userId)}))`
+    ? readableSpaceSql(userId, sql.raw(`${room}.id`), sql.raw(`${room}.org_id`))
     : currentUserSpaceAuthoritySql(sql.raw(`${room}.org_id`), sql`${userId}`, sql.raw(`${room}.id`));
   // CASE keeps the order: rows without a room reference, captures and
   // employee actions never run the room lookups.
@@ -57,11 +54,12 @@ export function sourceMessageRoomSql(userId: string | SQL, rule: 'review' | 'his
       )
       AND NOT EXISTS (
         SELECT 1 FROM messages room_message
-        INNER JOIN spaces message_room ON message_room.id = room_message.space_id
+        -- A message whose room is missing or in another workspace fails closed.
+        LEFT JOIN spaces message_room
+          ON message_room.id = room_message.space_id AND message_room.org_id = room_message.org_id
         WHERE room_message.id IN (${agentActions.message_id}, ${agentActions.params}->>'source_message_id')
           AND room_message.org_id = ${agentActions.org_id}
-          AND message_room.org_id = ${agentActions.org_id}
-          AND NOT ${readable('message_room')}
+          AND NOT COALESCE(${readable('message_room')}, false)
       )
     END)`;
 }

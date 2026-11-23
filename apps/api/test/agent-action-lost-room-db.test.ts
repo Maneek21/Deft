@@ -36,7 +36,9 @@ type RoomActions = { pending: string; envelope: string; approved: string; plan: 
 const actions = Object.fromEntries(Object.values(rooms).map((room) => [room, {
   pending: randomUUID(), envelope: randomUUID(), approved: randomUUID(), plan: randomUUID(), cross: randomUUID(), guest: randomUUID(),
 }])) as Record<string, RoomActions>;
-const miaToken = `dft_${randomUUID().replaceAll('-', '')}`;
+const tokens = { [ids.mia]: `dft_${randomUUID().replaceAll('-', '')}`, [ids.olive]: `dft_${randomUUID().replaceAll('-', '')}` };
+// An approved Defty action Olive (owner) asked for in the room she later leaves.
+const oliveAction = randomUUID();
 let client: pg.Client | undefined;
 let seeded = false;
 let routes: { agent?: Hono; inbox?: Hono; spaces?: Hono; mcp?: Hono } = {};
@@ -84,11 +86,16 @@ async function receiptError(viewer: string, actionId: string): Promise<string> {
   return (JSON.parse(text) as { error: string }).error;
 }
 
-async function mcpStatus(actionId: string): Promise<number> {
+async function mcpStatus(actionId: string, holder = ids.mia): Promise<number> {
   const hono = new Hono();
   hono.route('/api/mcp', routes.mcp!);
-  const response = await hono.request(`/api/mcp/actions/${actionId}/status`, { headers: { authorization: `Bearer ${miaToken}` } });
+  const response = await hono.request(`/api/mcp/actions/${actionId}/status`, { headers: { authorization: `Bearer ${tokens[holder]}` } });
   return response.status;
+}
+
+/** The kept room's inline approval cards for Mia. */
+async function keptRoomCards(): Promise<Set<string>> {
+  return listIds(ids.mia, `/api/agent/actions/pending-by-space?space_id=${rooms.kept}`);
 }
 
 function owned(viewer: string, room: string) {
@@ -132,8 +139,10 @@ before(async () => {
     await client.query("INSERT INTO users(id,email,name,kind,is_agent) VALUES($1,$2,$3,'human',false)", [id, `${id}@example.test`, name]);
     await client.query('INSERT INTO org_members(id,org_id,user_id,role) VALUES($1,$2,$3,$4)', [randomUUID(), orgId, id, roles[id]]);
   }
-  await client.query(`INSERT INTO api_keys(id,org_id,name,key_hash,key_prefix,permissions,created_by)
-    VALUES($1,$2,'lost room',$3,$4,ARRAY['read'],$5)`, [randomUUID(), orgId, await bcrypt.hash(miaToken, 4), miaToken.slice(0, 12), ids.mia]);
+  for (const [holder, token] of Object.entries(tokens)) {
+    await client.query(`INSERT INTO api_keys(id,org_id,name,key_hash,key_prefix,permissions,created_by)
+      VALUES($1,$2,'lost room',$3,$4,ARRAY['read'],$5)`, [randomUUID(), orgId, await bcrypt.hash(token, 4), token.slice(0, 12), holder]);
+  }
   const { ensureDeftyEmployee } = await import('../src/lib/ensure-defty-membership.js');
   const deftyEmployeeId = (await ensureDeftyEmployee(orgId)).employeeId;
   const message = async (room: string, author: string) => {
@@ -170,6 +179,7 @@ before(async () => {
       message: await message(rooms.kept, ids.mia), conversation: rooms.kept, source: await message(room, ids.olive),
     });
     if (room !== rooms.groupDm) await insert(own.guest, ids.gus, null, 'pending', { message: await message(room, ids.gus) });
+    if (room === rooms.removed) await insert(oliveAction, ids.olive, null, 'approved', { message: await message(room, ids.olive), conversation: room });
   }
   routes = {
     agent: (await import('../src/routes/agent.js')).agentRoutes,
@@ -209,6 +219,11 @@ test('a lost room takes its assistant actions out of every list, count and detai
   assert.equal(await receiptError(ids.mia, actions[rooms.removed]!.approved), 'no receipt for action');
   assert.equal(await mcpStatus(actions[rooms.removed]!.approved), 200);
   assert.equal(await approvalCount(ids.mia), 20, 'four pending approvals in each of five rooms');
+  const keptOwn = [actions[rooms.kept]!.pending, actions[rooms.kept]!.envelope];
+  const lostCross = lostRooms.map((room) => actions[room]!.cross);
+  const cardsBefore = await keptRoomCards();
+  for (const id of [...keptOwn, ...lostCross]) assert.ok(cardsBefore.has(id), 'kept room cards before');
+  assert.equal(await mcpStatus(oliveAction, ids.olive), 200);
 
   // 13.1: the creator removes Mia and Gus from a private room and Mia from a group DM.
   for (const [room, user] of [[rooms.removed, ids.mia], [rooms.removed, ids.gus], [rooms.groupDm, ids.mia]] as const) {
@@ -235,6 +250,11 @@ test('a lost room takes its assistant actions out of every list, count and detai
   assert.deepEqual(await views(ids.gus, rooms.removed), nothing, 'a guest removed from the room');
   await assertNothingLeaks(ids.gus, rooms.removed);
 
+  // The kept room's inline cards drop the actions drafted from a lost room.
+  const cardsAfter = await keptRoomCards();
+  for (const id of keptOwn) assert.ok(cardsAfter.has(id), 'kept room cards stay');
+  for (const id of lostCross) assert.ok(!cardsAfter.has(id), 'a card drafted from a lost room is gone');
+
   // A room the requester still belongs to is unchanged.
   assert.deepEqual(await views(ids.mia, rooms.kept), everything);
   assert.equal(await receiptError(ids.mia, actions[rooms.kept]!.approved), 'no receipt for action');
@@ -252,6 +272,9 @@ test('a lost room takes its assistant actions out of every list, count and detai
   // Owners and admins keep the whole action history, whatever rooms they are in.
   const removedAdmin = await json(ids.olive, `/api/spaces/${rooms.removed}/members/${ids.adam}`, { method: 'DELETE' });
   assert.equal(removedAdmin.status, 200, removedAdmin.text);
+  const ownerLeft = await json(ids.olive, `/api/spaces/${rooms.removed}/members/me`, { method: 'DELETE' });
+  assert.equal(ownerLeft.status, 200, ownerLeft.text);
+  assert.equal(await mcpStatus(oliveAction, ids.olive), 200, 'an owner keeps the status of her own action');
   for (const viewer of [ids.olive, ids.adam]) {
     const list = await listIds(viewer, '/api/agent/actions');
     for (const room of lostRooms) {

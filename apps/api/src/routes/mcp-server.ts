@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { eq, and, inArray, or, sql } from 'drizzle-orm';
 import bcrypt from 'bcryptjs';
 import { db } from '../lib/db.js';
-import { apiKeys, agentEmployees, agentActions, spaceMembers, spaces } from '@deft/db/schema';
+import { apiKeys, agentEmployees, agentActions, orgMembers, spaceMembers, spaces } from '@deft/db/schema';
 import { executeToolCall } from '../lib/agent-context.js';
 import { shouldAutoExecute, getApprovalTier } from '../lib/agent-approval.js';
 import { executeActionDirect } from '../lib/agent-actions.js';
@@ -413,6 +413,15 @@ mcpServerRoutes.get('/actions/:id/status', async (c) => {
   }
 
   const actionId = c.req.param('id');
+  // A person's own key: owners/admins keep their action history as on the
+  // web; a member or guest reads an action only while they can still read
+  // the rooms it came from (check 13).
+  const [keyHolder] = actor.agentEmployeeId ? [] : await db
+    .select({ role: orgMembers.role })
+    .from(orgMembers)
+    .where(and(eq(orgMembers.org_id, keyRecord.org_id), eq(orgMembers.user_id, actor.userId), eq(orgMembers.is_active, true)))
+    .limit(1);
+  const keepsHistory = keyHolder?.role === 'owner' || keyHolder?.role === 'admin';
   const [action] = await db
     .select({
       id: agentActions.id,
@@ -431,10 +440,8 @@ mcpServerRoutes.get('/actions/:id/status', async (c) => {
         ? eq(agentActions.agent_employee_id, actor.agentEmployeeId)
         : eq(agentActions.user_id, actor.userId),
       visibleAgentActionSourceSql({ userId: actor.userId, orgId: keyRecord.org_id }),
-      // A person's own key: only while they can still read the rooms the
-      // action came from (check 13), whatever their role.
       actor.agentEmployeeId ? undefined : visibleCaptureActionSql({ id: actor.userId, org_id: keyRecord.org_id }),
-      actor.agentEmployeeId ? undefined : sourceMessageRoomSql(actor.userId, 'history'),
+      actor.agentEmployeeId || keepsHistory ? undefined : sourceMessageRoomSql(actor.userId, 'history'),
     ))
     .limit(1);
 
