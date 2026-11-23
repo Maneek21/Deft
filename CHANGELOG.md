@@ -10,13 +10,29 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
-### Release candidate `0.3.0-preview.147` — publication pending
+### Notice: Kit `0.1.0-alpha.44` removes deprecated Email compatibility
 
-The `0.3.0-preview.147` host is a release preparation candidate. No release tag or
-image is implied by this entry. Public installation instructions remain pinned to the
-published `0.3.0-preview.144` release; they move after `0.3.0-preview.147` is
-published and verified. Release scope `core` (no Hermes compatibility claim). Changes
-since `v0.3.0-preview.146`.
+Not before 2026-11-25, and never fewer than 14 days after this notice merged.
+No code changes here and alpha.43 is unchanged. Alpha.44 is the "next breaking Kit
+alpha" the existing `@deprecated` notices name. It removes the 26 deprecated
+compose, address-list and raster names from the root and `/experience` entry
+points, the 9 sandbox names re-exported from the root, the root override of
+`checkDeftAppDeveloperContract`, and the `safe-compose-html`, `mailbox-list` and
+`native-compose-raster` modules under `@deft/app-kit/examples/email`. Importing only
+the root will no longer register the sandbox profile; the `sandbox`, `templates`,
+`register` and `cli` modules and the three `examples/email` subpath exports stay,
+opt-in. Use `@deft/app-kit/core` and the `deft-email` `runtime/domain` modules, or
+keep pinning alpha.43. Names and plan are listed in the Kit README and
+`docs/superpowers/plans/2026-11-06-email-host-kit-shrink.md`.
+
+- App-boundary gate: `scripts/app-boundary-ceiling.json` caps the exception count
+  at 1,277 (it may only be lowered), each exception's `milestone` now starts with
+  its burn-down bucket, and `node scripts/check-app-boundary.mjs --summary` prints
+  the counts per milestone. No finding changed.
+
+## [0.3.0-preview.147] — 2026-11-23 (prerelease)
+
+Changes since `v0.3.0-preview.146`. Release scope `core` (no Hermes compatibility claim).
 
 Upgrade notes:
 
@@ -66,13 +82,9 @@ Privacy fix (applies to self-hosted installs too):
   own source rules. Actions that are still pending stay pending: they are not cancelled
   when a person loses the room.
 
-### Release candidate `0.3.0-preview.146` — publication pending
+## [0.3.0-preview.146] — 2026-11-23 (prerelease)
 
-The `0.3.0-preview.146` host is a release preparation candidate. No release tag or
-image is implied by this entry. Public installation instructions remain pinned to the
-published `0.3.0-preview.144` release; they move after `0.3.0-preview.146` is
-published and verified. Release scope `core` (no Hermes compatibility claim). Changes
-since `v0.3.0-preview.145`.
+Changes since `v0.3.0-preview.145`. Release scope `core` (no Hermes compatibility claim).
 
 Upgrade notes:
 
@@ -125,13 +137,9 @@ Hosted service:
   link, and there is none on a cell that does not set it, a cell whose growth is frozen
   (buying seats would not lift the freeze), or any self-hosted install.
 
-### Release candidate `0.3.0-preview.145` — publication pending
+## [0.3.0-preview.145] — 2026-11-23 (prerelease)
 
-The `0.3.0-preview.145` host is a release preparation candidate. No release tag or
-image is implied by this entry. Public installation instructions remain pinned to the
-published `0.3.0-preview.144` release; they move after `0.3.0-preview.145` is
-published and verified. Release scope `core` (no Hermes compatibility claim). Changes
-since `v0.3.0-preview.144`.
+Changes since `v0.3.0-preview.144`. Release scope `core` (no Hermes compatibility claim).
 
 Upgrade notes:
 
@@ -230,26 +238,6 @@ Apps (developer preview):
   instead of a dead end; the first account permission asks for an end date (the server
   refuses "Until revoked" for a first enrolment) and a missing `target_key` counts as
   `primary`. The server's rules are unchanged.
-
-### Notice: Kit `0.1.0-alpha.44` removes deprecated Email compatibility
-
-Not before 2026-11-25, and never fewer than 14 days after this notice merged.
-No code changes here and alpha.43 is unchanged. Alpha.44 is the "next breaking Kit
-alpha" the existing `@deprecated` notices name. It removes the 26 deprecated
-compose, address-list and raster names from the root and `/experience` entry
-points, the 9 sandbox names re-exported from the root, the root override of
-`checkDeftAppDeveloperContract`, and the `safe-compose-html`, `mailbox-list` and
-`native-compose-raster` modules under `@deft/app-kit/examples/email`. Importing only
-the root will no longer register the sandbox profile; the `sandbox`, `templates`,
-`register` and `cli` modules and the three `examples/email` subpath exports stay,
-opt-in. Use `@deft/app-kit/core` and the `deft-email` `runtime/domain` modules, or
-keep pinning alpha.43. Names and plan are listed in the Kit README and
-`docs/superpowers/plans/2026-11-06-email-host-kit-shrink.md`.
-
-- App-boundary gate: `scripts/app-boundary-ceiling.json` caps the exception count
-  at 1,277 (it may only be lowered), each exception's `milestone` now starts with
-  its burn-down bucket, and `node scripts/check-app-boundary.mjs --summary` prints
-  the counts per milestone. No finding changed.
 
 ## [0.3.0-preview.144] — 2026-11-19 (prerelease)
 
@@ -1681,7 +1669,10 @@ The `0.1.0-alpha` tag was originally published under BSL 1.1. The current
 codebase has since been relicensed under [GNU AGPL v3.0 only](LICENSE); consult
 the license file present in the exact revision you use.
 
-[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.144...HEAD
+[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.147...HEAD
+[0.3.0-preview.147]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.147
+[0.3.0-preview.146]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.146
+[0.3.0-preview.145]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.145
 [0.3.0-preview.144]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.144
 [0.3.0-preview.143]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.143
 [0.3.0-preview.142]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.142
