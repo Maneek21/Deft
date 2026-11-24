@@ -32,8 +32,11 @@ export function documentServedWithoutCoop(): boolean {
   if (typeof window === 'undefined') return false;
   const entry = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
   const first = new URL(entry?.name || window.location.href);
-  return first.pathname === '/oauth/authorize'
-    || (OAUTH_SIGN_IN_PATHS.has(first.pathname) && first.searchParams.getAll('from').at(-1) === 'oauth');
+  // Next matches header paths without regard to case (and a variant of an
+  // exempt path serves the not-found page), so compare the same way.
+  const path = first.pathname.toLowerCase();
+  return path === '/oauth/authorize'
+    || (OAUTH_SIGN_IN_PATHS.has(path) && first.searchParams.getAll('from').at(-1) === 'oauth');
 }
 
 /**
@@ -50,7 +53,7 @@ export function followLinksWithFullLoads(): () => void {
     if (url.origin !== window.location.origin) return;
     event.preventDefault();
     event.stopPropagation();
-    if (OAUTH_SIGN_IN_PATHS.has(url.pathname) && returnsToOAuthAuthorize()) url.searchParams.set('from', 'oauth');
+    if (OAUTH_SIGN_IN_PATHS.has(url.pathname.toLowerCase()) && returnsToOAuthAuthorize()) url.searchParams.set('from', 'oauth');
     window.location.assign(`${url.pathname}${url.search}${url.hash}`);
   };
   document.addEventListener('click', onClick, true);

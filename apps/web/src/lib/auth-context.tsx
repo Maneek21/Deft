@@ -311,7 +311,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setOrg(null);
         setPaused(null);
         setLoading(false);
-        router.replace('/login');
+        // Keeps an outside client's OAuth pop-up opener (lib/oauth-popup-marker.ts).
+        router.replace(`/login${oauthMarkerQuery()}`);
         return;
       }
       const accessToken = localStorage.getItem('deft-access-token');

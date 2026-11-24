@@ -93,6 +93,17 @@ async function checkOAuthPopupOpener(browser, signedInContext) {
       if ((await license).headers()['cross-origin-opener-policy'] !== 'same-origin') {
         throw new Error('A link out of the OAuth sign-in page stayed in a document without COOP');
       }
+      // Next matches header paths without regard to case: a case variant of
+      // the exempt path is a not-found page without COOP, and its link must
+      // still be a full load.
+      await page.close();
+      page = await direct.newPage();
+      await page.goto(`${webUrl}/OAuth/Authorize`);
+      const dashboard = navigatedTo('/dashboard');
+      await page.getByRole('link', { name: 'Go to Dashboard' }).click();
+      if ((await dashboard).headers()['cross-origin-opener-policy'] !== 'same-origin') {
+        throw new Error('A link out of a case variant of the authorization page stayed in a document without COOP');
+      }
     } finally {
       await direct.close();
     }
