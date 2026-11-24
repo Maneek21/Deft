@@ -39,7 +39,8 @@ const expiresAtSchema = z.string()
 
 const createKeySchema = z.object({
   name: text().min(1),
-  agent_employee_id: text().nullable().optional(),
+  // An empty id would store a key bound to nothing that no route could find again.
+  agent_employee_id: text().min(1).nullable().optional(),
   permissions: z.array(text()).min(1),
   rate_limit_per_minute: rateLimit(),
   rate_limit_per_day: rateLimit(),

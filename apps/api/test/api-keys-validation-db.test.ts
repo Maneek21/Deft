@@ -58,6 +58,8 @@ const MALFORMED: Array<[string, string]> = [
   ['a NUL in the name', JSON.stringify({ name: 'a\u0000b', permissions: ['read'] })],
   ['a NUL in a permission', JSON.stringify({ name: 'k', permissions: ['re\u0000ad'] })],
   ['a NUL in the agent id', JSON.stringify({ name: 'k', permissions: ['read'], agent_employee_id: 'x\u0000' })],
+  // An empty id would store a key bound to nothing that PUT and DELETE could not find.
+  ['an empty agent id', JSON.stringify({ name: 'k', permissions: ['read'], agent_employee_id: '' })],
 ];
 
 async function assertValidationError(res: Response, label: string) {
