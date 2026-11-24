@@ -17,7 +17,7 @@ import { logId } from './log-metadata.js';
  * Returns null if no match found or match is ambiguous.
  */
 import { db } from './db.js';
-import { peopleViewer, personVisibleSql } from './people-visibility.js';
+import { canSeePerson, peopleViewer, personVisibleSql, visiblePersonIds } from './people-visibility.js';
 import { users, orgMembers, agentEmployees } from '@deft/db/schema';
 import { and, or, sql } from 'drizzle-orm';
 
@@ -154,9 +154,13 @@ export async function resolveAssigneeWithMatches(
 export async function resolveAssignableAssigneeId(
   userId: string,
   orgId: string,
+  /** The person assigning: a guest may assign only people who share a space with them; anyone else reads as unknown. */
+  options: { visibleTo?: string } = {},
 ): Promise<ResolvedAssignee | null> {
   const resolved = await resolveAssignee(userId, orgId);
-  return resolved?.id === userId ? resolved : null;
+  if (resolved?.id !== userId) return null;
+  if (options.visibleTo && !canSeePerson(await visiblePersonIds(await peopleViewer(orgId, options.visibleTo)), userId)) return null;
+  return resolved;
 }
 
 function toResolved(row: { id: string; name: string; is_agent: boolean }): ResolvedAssignee {

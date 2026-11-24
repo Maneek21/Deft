@@ -364,6 +364,8 @@ async function readPlanAttachment(params: {
 async function resolveWorkspacePlan(params: {
   orgId: string;
   employeeId?: string;
+  /** The person importing: a guest's plan names only people who share a space with them. */
+  actorUserId: string;
   sourceSeed: string;
   table: ParsedPlanTable;
 }): Promise<WorkspacePlanProject[]> {
@@ -382,7 +384,7 @@ async function resolveWorkspacePlan(params: {
 
   const assignees = new Map<string, { id: string; name: string }>();
   for (const name of [...new Set(params.table.rows.map((row) => row.assigneeName).filter((name): name is string => Boolean(name)))]) {
-    const resolved = await resolveAssigneeWithMatches(name, params.orgId);
+    const resolved = await resolveAssigneeWithMatches(name, params.orgId, { visibleTo: params.actorUserId });
     if (!resolved.ok) {
       throw new Error(resolved.ambiguous
         ? `Assignee '${name}' is ambiguous: ${resolved.matches.map((match) => match.name).join(', ')}`
@@ -505,6 +507,7 @@ export async function compileMessageWorkspacePlanImport(params: {
     const planProjects = await resolveWorkspacePlan({
       orgId: params.orgId,
       employeeId: params.employeeId,
+      actorUserId: params.actorUserId,
       sourceSeed,
       table,
     });

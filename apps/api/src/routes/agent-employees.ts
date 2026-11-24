@@ -1,6 +1,7 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, sql, or, isNull, asc, gte, lt, inArray, notInArray } from 'drizzle-orm';
+import { peopleViewer, personVisibleSql } from '../lib/people-visibility.js';
 import crypto from 'node:crypto';
 import { db } from '../lib/db.js';
 import { AgentSetGrew, agentManagementView, manageAgent, manageAgents, managementFor, ownerOnlyAgentUsers, type AgentManagementRefusal } from '../lib/agent-management.js';
@@ -117,6 +118,9 @@ agentEmployeeRoutes.get('/', async (c) => {
     const user = c.get('user');
     const expand = c.req.query('expand') ?? '';
     const wantsStats = expand.split(',').map(s => s.trim()).includes('stats');
+    // Agents are workspace participants: a guest sees only those they share
+    // a space with (lib/people-visibility.ts).
+    const viewer = await peopleViewer(user.org_id, user.id);
 
     const employees = await db
       .select()
@@ -125,6 +129,7 @@ agentEmployeeRoutes.get('/', async (c) => {
         and(
           eq(agentEmployees.org_id, user.org_id),
           eq(agentEmployees.is_deleted, false),
+          personVisibleSql(viewer, agentEmployees.user_id),
         ),
       )
       .orderBy(desc(agentEmployees.created_at))
@@ -512,11 +517,13 @@ agentEmployeeRoutes.get('/:id', async (c) => {
   try {
     const user = c.get('user');
     const id = c.req.param('id');
+    // A guest reaches only agents they share a space with (lib/people-visibility.ts).
+    const viewer = await peopleViewer(user.org_id, user.id);
 
     const [employee] = await db
       .select()
       .from(agentEmployees)
-      .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)))
+      .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id), personVisibleSql(viewer, agentEmployees.user_id)))
       .limit(1);
 
     if (!employee) {

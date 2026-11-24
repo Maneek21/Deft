@@ -15,7 +15,7 @@ import { explainNotificationPolicy } from './notification-policy.js';
 import { upsertAttentionItem } from './attention.js';
 import { emitToUser } from '../socket.js';
 import { nativeSourceAccessSql, nativeTaskAccessSql, nativeDeliveryAccessSql } from './native-mention-visibility.js';
-import { peopleViewer, personVisibleSql } from './people-visibility.js';
+import { canSeePerson, peopleViewer, personVisibleSql, visiblePersonIds } from './people-visibility.js';
 
 const canonicalDeftySql = sql`(ae.runtime_kind = ${DEFTY_SYSTEM_RUNTIME_KIND} AND ae.slug = ${DEFTY_SYSTEM_EMPLOYEE_SLUG} AND ae.is_byoa = false)`;
 
@@ -165,8 +165,11 @@ export async function publishNativeMentions(ctx: NativeMentionContext, source: N
     const additions = currentIds.filter(id => !oldIds.includes(id));
     const eligible: string[] = [];
     let blocked = 0;
+    // A guest's mention of someone they share no space with is blocked, the
+    // same as an unknown id (lib/people-visibility.ts).
+    const visible = additions.length ? await visiblePersonIds(await peopleViewer(ctx.orgId, ctx.userId)) : null;
     for (const id of additions) {
-      if (await loadNativeSource({ orgId: ctx.orgId, userId: id }, source, tx)) eligible.push(id);
+      if (canSeePerson(visible, id) && await loadNativeSource({ orgId: ctx.orgId, userId: id }, source, tx)) eligible.push(id);
       else blocked++;
     }
     const publishedIds = currentIds.filter(id => oldIds.includes(id) || eligible.includes(id));

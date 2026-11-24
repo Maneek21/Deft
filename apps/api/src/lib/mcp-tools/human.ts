@@ -435,6 +435,37 @@ function normalizeIdempotencyKey(value: unknown): string | null {
   return key.slice(0, 160);
 }
 
+/**
+ * A replayed result may have been stored before the caller became a guest
+ * (and, for OAuth, under another token of the same client). It is shown as
+ * the caller may see it now: for a guest, every email field but their own is
+ * blanked (lib/people-visibility.ts).
+ */
+async function redactReplayForViewer(result: ToolResult, ctx: HumanToolContext): Promise<ToolResult> {
+  const viewer = await peopleViewer(ctx.org_id, ctx.user_id);
+  if (!viewer.guest) return result;
+  const [me] = await db.select({ email: users.email }).from(users).where(eq(users.id, ctx.user_id)).limit(1);
+  const own = me?.email?.toLowerCase() ?? null;
+  const redact = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(redact);
+    if (!value || typeof value !== 'object') return value;
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+      key,
+      /email$/i.test(key) && typeof item === 'string' && item.toLowerCase() !== own ? null : redact(item),
+    ]));
+  };
+  return {
+    ...result,
+    content: result.content.map((item) => {
+      try {
+        return { ...item, text: JSON.stringify(redact(JSON.parse(item.text))) };
+      } catch {
+        return item;
+      }
+    }),
+  };
+}
+
 function storedToolResult(value: unknown): ToolResult | null {
   if (!value || typeof value !== 'object') return null;
   const maybe = value as Partial<ToolResult>;
@@ -573,7 +604,7 @@ async function withIdempotency(
       .orderBy(desc(oauthAuditEvents.created_at))
       .limit(1);
     const replay = storedToolResult(existing?.metadata?.result);
-    if (replay) return replay;
+    if (replay) return redactReplayForViewer(replay, ctx);
   }
 
   const result = await execute();

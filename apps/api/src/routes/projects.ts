@@ -460,12 +460,15 @@ const createTaskSchema = z.object({
   metadata: z.record(z.string(), z.any()).nullable().optional(),
 });
 
-async function validateAssignableAssigneeId(assigneeId: unknown, orgId: string): Promise<string | null | undefined> {
+// `actorId`: the person assigning. A guest may assign only people who share
+// a space with them; anyone else is refused like an unknown id
+// (lib/people-visibility.ts).
+async function validateAssignableAssigneeId(assigneeId: unknown, orgId: string, actorId: string): Promise<string | null | undefined> {
   if (assigneeId === undefined) return undefined;
   if (assigneeId === null || assigneeId === '') return null;
   if (typeof assigneeId !== 'string' || assigneeId.trim().length === 0) return null;
   const trimmed = assigneeId.trim();
-  const resolved = await resolveAssignableAssigneeId(trimmed, orgId);
+  const resolved = await resolveAssignableAssigneeId(trimmed, orgId, { visibleTo: actorId });
   return resolved ? resolved.id : undefined;
 }
 
@@ -609,7 +612,7 @@ projectRoutes.post('/:id/tasks', async (c) => {
       return c.json({ error: 'Project not found', code: 'NOT_FOUND' }, 404);
     }
 
-    const assigneeId = await validateAssignableAssigneeId(parsed.data.assignee_id, user.org_id);
+    const assigneeId = await validateAssignableAssigneeId(parsed.data.assignee_id, user.org_id, user.id);
     if (parsed.data.assignee_id !== undefined && assigneeId === undefined) {
       return c.json({ error: 'Assignee must be an active user or healthy agent in this organization', code: 'INVALID_ASSIGNEE' }, 400);
     }

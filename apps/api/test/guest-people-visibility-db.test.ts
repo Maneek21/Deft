@@ -10,6 +10,9 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { Hono } from 'hono';
+import { createServer } from 'node:http';
+import { createRequire } from 'node:module';
+import { setupSocket } from '../src/socket.js';
 import { memberRoutes } from '../src/routes/members.js';
 import { searchRoutes } from '../src/routes/search.js';
 import { spaceRoutes } from '../src/routes/spaces.js';
@@ -17,6 +20,10 @@ import { groupRoutes } from '../src/routes/groups.js';
 import { teamRoutes } from '../src/routes/teams.js';
 import { dailyNoteRoutes } from '../src/routes/daily-notes.js';
 import { managerRoutes } from '../src/routes/manager.js';
+import { taskRoutes } from '../src/routes/tasks.js';
+import { agentRoutes } from '../src/routes/agent.js';
+import { agentEmployeeRoutes } from '../src/routes/agent-employees.js';
+import { sendMessage } from '../src/lib/mcp-tools/writes.js';
 import { executeToolCall } from '../src/lib/agent-context.js';
 import { searchNativeMentions, resolveNativeMentions } from '../src/lib/native-mentions.js';
 import { nativeMentionRef } from '@deft/shared';
@@ -41,6 +48,8 @@ const org = randomUUID(), otherOrg = randomUUID();
 const owner = randomUUID(), admin = randomUUID(), sharer = randomUUID(), stranger = randomUUID();
 const guest = randomUUID(), removed = randomUUID(), friend = randomUUID(), archivedPal = randomUUID();
 const agentUser = randomUUID(), agentEmployee = randomUUID();
+// An agent no guest shares a space with.
+const hiddenAgentUser = randomUUID(), hiddenAgentEmployee = randomUUID();
 const sharedRoom = randomUUID(), privateRoom = randomUUID(), strangerRoom = randomUUID();
 const dmRoom = randomUUID(), archivedRoom = randomUUID(), otherOrgRoom = randomUUID();
 const group = randomUUID(), team = randomUUID(), project = randomUUID(), task = randomUUID(), note = randomUUID();
@@ -55,6 +64,7 @@ const people: Array<[string, string, string, boolean, 'human' | 'agent']> = [
   [friend, 'Stella Friend', 'member', true, 'human'],
   [archivedPal, 'Archie Pal', 'member', true, 'human'],
   [agentUser, 'Agatha Agent', 'guest', true, 'agent'],
+  [hiddenAgentUser, 'Hector Agent', 'member', true, 'agent'],
 ];
 const emailOf = (id: string) => `gpv-${run}-${id}@test.local`;
 const nameOf = (id: string) => `${people.find(([pid]) => pid === id)![1]} ${run}`;
@@ -72,6 +82,8 @@ before(async () => {
   // The agent is a BYOA employee an owner made a guest.
   await c.query(`INSERT INTO agent_employees (id, org_id, user_id, slug, name, system_prompt, is_byoa, trust_level, runtime_kind, role, created_by)
     VALUES ($1, $2, $3, $4, 'Agatha Agent', 'test', true, 'standard', 'custom_mcp', 'custom', $5)`, [agentEmployee, org, agentUser, `gpv-agent-${run}`, owner]);
+  await c.query(`INSERT INTO agent_employees (id, org_id, user_id, slug, name, system_prompt, is_byoa, trust_level, runtime_kind, role, created_by)
+    VALUES ($1, $2, $3, $4, 'Hector Agent', 'test', true, 'standard', 'custom_mcp', 'custom', $5)`, [hiddenAgentEmployee, org, hiddenAgentUser, `gpv-hidden-agent-${run}`, owner]);
   // In another workspace the guest and Stella share a room: that must not
   // make Stella visible to the guest here.
   for (const id of [guest, stranger]) {
@@ -148,6 +160,9 @@ function app(viewer: string) {
   hono.route('/api/teams', teamRoutes);
   hono.route('/api/daily-notes', dailyNoteRoutes);
   hono.route('/api/manager', managerRoutes);
+  hono.route('/api/tasks', taskRoutes);
+  hono.route('/api/agent', agentRoutes);
+  hono.route('/api/agent-employees', agentEmployeeRoutes);
   return hono;
 }
 
@@ -175,7 +190,7 @@ const ids = (rows: Array<{ id?: string; user_id?: string }>) => rows.map(personI
 const sorted = (...list: string[]) => [...list].sort();
 
 const GUEST_SEES = sorted(guest, admin, sharer, friend, archivedPal, agentUser);
-const MEMBER_SEES = sorted(owner, admin, sharer, stranger, guest, friend, archivedPal, agentUser);
+const MEMBER_SEES = sorted(owner, admin, sharer, stranger, guest, friend, archivedPal, agentUser, hiddenAgentUser);
 
 function assertGuestEmails(rows: Array<{ id?: string; user_id?: string; email?: string | null }>, self = guest) {
   for (const row of rows) {
@@ -412,7 +427,8 @@ test('Defty, asked by a guest: search_members filters before matching, and peopl
   assert.equal((await executeToolCall('search_members', { query: 'Stella' }, org, sharer)).result.code, 'MEMBER_AMBIGUOUS');
   assert.equal((await executeToolCall('search_members', { query: nameOf(stranger) }, org, sharer)).result.member.id, stranger);
 
-  for (const tool of ['get_team_workload', 'get_user_activity', 'get_workload_balance', 'find_expert', 'get_team_dynamics']) {
+  for (const tool of ['get_team_workload', 'get_user_activity', 'get_workload_balance', 'find_expert', 'get_team_dynamics',
+    'get_team_performance', 'analyze_skills_gap', 'list_agent_employees', 'get_agent_economics']) {
     const refused = await executeToolCall(tool, { user_name: 'Stella', topic: 'launch' }, org, guest);
     assert.equal(refused.result.code, 'NOT_AVAILABLE_TO_GUESTS', tool);
   }
@@ -426,4 +442,98 @@ test('1:1 prep: a guest, and a report from another workspace, get "member not fo
   assert.equal(fromGuest.status, 404);
   const outsider = await call(admin, '/api/manager/oneone-prep', { method: 'POST', body: { report_id: stranger.replace(/./, '0') } });
   assert.deepEqual(fromGuest, outsider);
+});
+
+const { io: connectSocket } = createRequire(new URL('../../web/package.json', import.meta.url))('socket.io-client');
+
+test('presence: a guest is told only about people who share a space with them; members about everyone', async () => {
+  const exp = Math.floor(Date.now() / 1000) + 600;
+  const tokens: Record<string, string> = { guest, sharer, stranger, owner };
+  const server = createServer();
+  const sockets = setupSocket(server, {
+    verifyAccess: async (token: string) => {
+      const id = tokens[token];
+      if (!id) throw new Error('unknown token');
+      return { id, org_id: org, email: emailOf(id), sid: `gpv-${token}`, exp } as never;
+    },
+    // The role comes from org_members, as in production.
+    requireMembership: async (_org: string, userId: string) => ({ role: people.find(([id]) => id === userId)![2] }) as never,
+    getSpaceAccess: async () => undefined,
+    recordLastSeen: () => {},
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+  const clients: any[] = [];
+  const open = async (token: string) => {
+    const client = connectSocket(`http://127.0.0.1:${port}`, { auth: { token }, transports: ['websocket'], reconnection: false });
+    clients.push(client);
+    const events: Array<{ event: string; data: any }> = [];
+    client.onAny((event: string, data: unknown) => events.push({ event, data }));
+    const init = await new Promise<Array<{ user_id: string }>>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`presence:init timed out for ${token}`)), 5_000);
+      client.once('presence:init', (value: Array<{ user_id: string }>) => { clearTimeout(timer); resolve(value); });
+    });
+    return { client, events, init };
+  };
+  const onlineSeen = (events: Array<{ event: string; data: any }>, id: string) =>
+    events.some((e) => e.event === 'presence:update' && e.data?.user_id === id);
+  try {
+    const watchingGuest = await open('guest');
+    const watchingMember = await open('owner');
+    await open('sharer');
+    await open('stranger');
+    const deadline = Date.now() + 5_000;
+    while (!(onlineSeen(watchingMember.events, sharer) && onlineSeen(watchingMember.events, stranger)) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    await new Promise((r) => setTimeout(r, 200));
+    assert.ok(onlineSeen(watchingMember.events, stranger), 'a member sees everyone come online');
+    assert.ok(onlineSeen(watchingGuest.events, sharer), 'the guest sees a person they share a space with');
+    assert.equal(onlineSeen(watchingGuest.events, stranger), false, 'the guest is not told about a hidden person');
+    assert.equal(onlineSeen(watchingGuest.events, owner), false);
+
+    const lateGuest = await open('guest');
+    const listed = lateGuest.init.map((entry) => entry.user_id);
+    assert.ok(listed.includes(sharer));
+    assert.equal(listed.includes(stranger), false, 'presence:init omits hidden people');
+    assert.equal(listed.includes(owner), false);
+    const lateMember = await open('sharer');
+    assert.ok(lateMember.init.map((entry) => entry.user_id).includes(stranger));
+  } finally {
+    for (const client of clients) client.close();
+    await new Promise<void>((resolve) => sockets.close(() => resolve()));
+  }
+});
+
+test('a guest cannot assign a hidden person, or start a conversation with a hidden agent; the agent list follows the rule', async () => {
+  const unknown = randomUUID();
+  const assignHidden = await call(guest, `/api/tasks/${task}/assignees`, { method: 'POST', body: { user_id: stranger } });
+  const assignUnknown = await call(guest, `/api/tasks/${task}/assignees`, { method: 'POST', body: { user_id: unknown } });
+  assert.equal(assignHidden.status, 400);
+  assert.deepEqual(assignHidden, assignUnknown);
+  const patchHidden = await call(guest, `/api/tasks/${task}`, { method: 'PATCH', body: { assignee_id: stranger } });
+  const patchUnknown = await call(guest, `/api/tasks/${task}`, { method: 'PATCH', body: { assignee_id: unknown } });
+  assert.equal(patchHidden.status, 400);
+  assert.deepEqual(patchHidden, patchUnknown);
+
+  const talkHidden = await call(guest, '/api/agent/conversations', { method: 'POST', body: { agent_employee_id: hiddenAgentEmployee } });
+  const talkUnknown = await call(guest, '/api/agent/conversations', { method: 'POST', body: { agent_employee_id: randomUUID() } });
+  assert.equal(talkHidden.status, 404);
+  assert.deepEqual(talkHidden, talkUnknown);
+
+  const agentsForGuest = await get(guest, '/api/agent-employees');
+  assert.equal(agentsForGuest.status, 200);
+  const listedAgents = agentsForGuest.body.map((row: any) => row.id).filter((id: string) => [agentEmployee, hiddenAgentEmployee].includes(id));
+  assert.deepEqual(listedAgents, [agentEmployee]);
+  assert.equal((await get(guest, `/api/agent-employees/${hiddenAgentEmployee}`)).status, 404);
+  const agentsForMember = (await get(sharer, '/api/agent-employees')).body.map((row: any) => row.id);
+  assert.ok(agentsForMember.includes(hiddenAgentEmployee));
+});
+
+test('an agent an owner made a guest cannot message a hidden person: answered like an unknown id', async () => {
+  const ctx = { org_id: org, employee_id: agentEmployee, employee_slug: `gpv-agent-${run}`, trust_level: 'standard' } as never;
+  const hidden = await sendMessage({ content: 'hi', target: { user_id: stranger } } as never, ctx);
+  const unknown = await sendMessage({ content: 'hi', target: { user_id: randomUUID() } } as never, ctx);
+  assert.equal(hidden.isError, true);
+  assert.deepEqual(hidden, unknown);
 });

@@ -13,6 +13,7 @@ import { parseModuleRecordResourceId } from '@deft/shared/modules';
 import { appHttpFailure } from './app-http-errors.js';
 import { randomUUID } from 'node:crypto';
 import { eq, and, asc, desc, sql, inArray, isNull, notInArray } from 'drizzle-orm';
+import { peopleViewer, personVisibleSql } from '../lib/people-visibility.js';
 import { ADVISORY_LEASE_ACQUIRE_TIMEOUT_MS, db, type DbAdvisoryLease } from '../lib/db.js';
 import {
   agentActions,
@@ -702,7 +703,10 @@ agentRoutes.post('/conversations', async (c) => {
   const conversationId = randomUUID();
   let agentUserId: string;
   if (body.agent_employee_id) {
-    // Only an active employee of the caller's own org can join the new space.
+    // Only an active employee of the caller's own org can join the new space,
+    // and, for a guest, only one they already share a space with
+    // (lib/people-visibility.ts); any other is answered like an unknown id.
+    const viewer = await peopleViewer(user.org_id, user.id);
     const [emp] = await db.select({ user_id: agentEmployees.user_id })
       .from(agentEmployees)
       .where(and(
@@ -710,6 +714,7 @@ agentRoutes.post('/conversations', async (c) => {
         eq(agentEmployees.org_id, user.org_id),
         eq(agentEmployees.is_active, true),
         eq(agentEmployees.is_deleted, false),
+        personVisibleSql(viewer, agentEmployees.user_id),
       ))
       .limit(1);
     if (!emp) {

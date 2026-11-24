@@ -47,10 +47,6 @@ import { generateOneOnePrep } from '../services/oneone-prep.js';
 import { createPlanRow } from './agent-plans.js';
 import { resolveAssigneeWithMatches } from './resolve-assignee.js';
 import { peopleViewer } from './people-visibility.js';
-
-const GUEST_REFUSED_PEOPLE_TOOLS = new Set([
-  'get_team_workload', 'get_user_activity', 'get_workload_balance', 'find_expert', 'get_team_dynamics',
-]);
 import { visibleTaskCondition } from './task-visibility.js';
 import { allowedNextStatuses } from './task-status-machine.js';
 import { getProjectResolvedConfig } from './project-resolved-config.js';
@@ -78,6 +74,13 @@ import { buildNativeAppActionActor } from './agent-app-action-actor.js';
 import { resolveNativeWikiReader, readNativeWiki, searchNativeWiki } from './native-wiki-owner.js';
 import { liveHumanCalendarEventCondition, liveEmployeeCalendarEventCondition } from './calendar-event-visibility.js';
 import { deftyMessageCitation } from './defty-message-source.js';
+
+// Workspace-wide views of people and of the agent roster: a guest sees only
+// the people who share a space with them, so Defty does not run these for one.
+const GUEST_REFUSED_PEOPLE_TOOLS = new Set([
+  'get_team_workload', 'get_user_activity', 'get_workload_balance', 'find_expert', 'get_team_dynamics',
+  'get_team_performance', 'analyze_skills_gap', 'list_agent_employees', 'get_agent_economics',
+]);
 
 type Citation = { type: string; id: string; title: string; url?: string };
 
