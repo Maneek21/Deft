@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { z } from 'zod';
 import { eq, and, isNull } from 'drizzle-orm';
 import bcrypt from 'bcryptjs';
@@ -17,23 +18,54 @@ async function keyAgent(orgId: string, keyId: string): Promise<string | null> {
   return key?.agent_employee_id ?? null;
 }
 
+// Every value here must be one the database accepts; anything it would refuse
+// is a 400 here, never a 500 there.
+// Text: PostgreSQL text cannot hold a NUL character.
+const text = () => z.string().refine((value) => !value.includes('\u0000'), 'Must not contain a NUL character');
+// Rate limits are PostgreSQL integer columns.
+const POSTGRES_INTEGER_MAX = 2_147_483_647;
+const rateLimit = () => z.number().int().positive().max(POSTGRES_INTEGER_MAX).optional();
+// A date the server can read, in years 1 to 9999 (PostgreSQL timestamps span
+// more, but JavaScript dates outside that range are not ones it can store).
+const expiresAtSchema = z.string()
+  .refine((value) => {
+    const time = Date.parse(value);
+    if (Number.isNaN(time)) return false;
+    const year = new Date(time).getUTCFullYear();
+    return year >= 1 && year <= 9999;
+  }, 'Must be a date between the years 1 and 9999')
+  .nullable()
+  .optional();
+
 const createKeySchema = z.object({
-  name: z.string().min(1),
-  agent_employee_id: z.string().nullable().optional(),
-  permissions: z.array(z.string()).min(1),
-  rate_limit_per_minute: z.number().int().positive().optional(),
-  rate_limit_per_day: z.number().int().positive().optional(),
-  expires_at: z.string().nullable().optional(),
+  name: text().min(1),
+  // An empty id would store a key bound to nothing that no route could find again.
+  agent_employee_id: text().min(1).nullable().optional(),
+  permissions: z.array(text()).min(1),
+  rate_limit_per_minute: rateLimit(),
+  rate_limit_per_day: rateLimit(),
+  expires_at: expiresAtSchema,
 });
 
 const updateKeySchema = z.object({
-  name: z.string().min(1).optional(),
-  permissions: z.array(z.string()).min(1).optional(),
-  rate_limit_per_minute: z.number().int().positive().optional(),
-  rate_limit_per_day: z.number().int().positive().optional(),
+  name: text().min(1).optional(),
+  permissions: z.array(text()).min(1).optional(),
+  rate_limit_per_minute: rateLimit(),
+  rate_limit_per_day: rateLimit(),
   is_active: z.boolean().optional(),
-  expires_at: z.string().nullable().optional(),
-});
+  expires_at: expiresAtSchema,
+})
+  // Unknown fields are dropped, so `{}` and `{"typo": true}` would change nothing.
+  .refine((body) => Object.values(body).some((value) => value !== undefined), 'Nothing to change');
+
+// A body that is not JSON reads as `undefined`, which the schema refuses.
+async function readJsonBody(c: Context): Promise<unknown> {
+  return c.req.json().catch(() => undefined);
+}
+
+function invalidInput(c: Context, error: z.ZodError) {
+  return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR', details: error.flatten() }, 400);
+}
 
 apiKeyRoutes.use('*', async (c, next) => {
   const user = c.get('user');
@@ -91,7 +123,9 @@ apiKeyRoutes.post('/', async (c) => {
   const denied = requireOrgAdmin(c);
   if (denied) return denied;
   const user = c.get('user');
-  const body = createKeySchema.parse(await c.req.json());
+  const parsed = createKeySchema.safeParse(await readJsonBody(c));
+  if (!parsed.success) return invalidInput(c, parsed.error);
+  const body = parsed.data;
 
   // Generate raw key: deft_ + random UUID (no dashes) for compactness
   const rawKey = `deft_${crypto.randomUUID().replace(/-/g, '')}`;
@@ -131,7 +165,9 @@ apiKeyRoutes.put('/:id', async (c) => {
   if (denied) return denied;
   const user = c.get('user');
   const keyId = c.req.param('id');
-  const body = updateKeySchema.parse(await c.req.json());
+  const parsed = updateKeySchema.safeParse(await readJsonBody(c));
+  if (!parsed.success) return invalidInput(c, parsed.error);
+  const body = parsed.data;
   const boundTo = await keyAgent(user.org_id, keyId);
 
   const changed = await manageAgentIfBound({ userId: user.id, orgId: user.org_id }, boundTo, (tx) => tx
