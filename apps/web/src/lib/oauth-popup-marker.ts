@@ -21,6 +21,42 @@ export function oauthMarkerQuery(): string {
   return returnsToOAuthAuthorize() ? `?${OAUTH_MARKER_QUERY}` : '';
 }
 
+const OAUTH_SIGN_IN_PATHS = new Set(['/login', '/two-step-setup']);
+
+/**
+ * True when this document was served without COOP: its first URL was the
+ * authorization page or a marked sign-in step. Soft navigations keep the
+ * first response's headers, so this holds for the document's whole life.
+ */
+export function documentServedWithoutCoop(): boolean {
+  if (typeof window === 'undefined') return false;
+  const entry = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+  const first = new URL(entry?.name || window.location.href);
+  return first.pathname === '/oauth/authorize'
+    || (OAUTH_SIGN_IN_PATHS.has(first.pathname) && first.searchParams.getAll('from').at(-1) === 'oauth');
+}
+
+/**
+ * In a document served without COOP, every link to another page of this
+ * origin is followed by a full load, so the destination's own COOP applies
+ * (a sign-in step keeps the marker while it is backed). Returns the cleanup.
+ */
+export function followLinksWithFullLoads(): () => void {
+  const onClick = (event: MouseEvent) => {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const anchor = event.target instanceof Element ? event.target.closest('a[href]') : null;
+    if (!(anchor instanceof HTMLAnchorElement) || (anchor.target && anchor.target !== '_self') || anchor.hasAttribute('download')) return;
+    const url = new URL(anchor.href, window.location.href);
+    if (url.origin !== window.location.origin) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (OAUTH_SIGN_IN_PATHS.has(url.pathname) && returnsToOAuthAuthorize()) url.searchParams.set('from', 'oauth');
+    window.location.assign(`${url.pathname}${url.search}${url.hash}`);
+  };
+  document.addEventListener('click', onClick, true);
+  return () => document.removeEventListener('click', onClick, true);
+}
+
 /**
  * On a page that may carry the marker: when it does but nothing backs it,
  * load the same page without it (a full load, so COOP applies). Returns true

@@ -4,6 +4,7 @@ import { ThemeProvider } from '@/components/theme-provider';
 import { AuthProvider } from '@/lib/auth-context';
 import { LinkTokenBoundary } from '@/lib/use-link-token';
 import { useEffect } from 'react';
+import { documentServedWithoutCoop, followLinksWithFullLoads } from '@/lib/oauth-popup-marker';
 import { APPS_ENABLED, APP_RESOURCE_SYNC_ENABLED, APP_ATTACHMENT_BROKER_ENABLED } from '@/lib/feature-flags';
 
 export function Providers({ children }: { children: React.ReactNode }) {
@@ -17,6 +18,9 @@ export function Providers({ children }: { children: React.ReactNode }) {
     }));
     return () => document.documentElement.removeAttribute('data-deft-browser-features');
   }, []);
+  // A document served without COOP (an outside client's OAuth pop-up) leaves
+  // by full loads only, so no other page of the app runs inside it.
+  useEffect(() => (documentServedWithoutCoop() ? followLinksWithFullLoads() : undefined), []);
 
   return (
     <LinkTokenBoundary>

@@ -71,12 +71,27 @@ async function checkOAuthPopupOpener(browser, signedInContext) {
     // full load, so ordinary sign-in keeps COOP.
     const direct = await browser.newContext();
     try {
-      const page = await direct.newPage();
+      let page = await direct.newPage();
+      // A navigation request for the unmarked page (a new document), not a URL rewrite.
+      const navigatedTo = (pathname) => page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return response.request().isNavigationRequest() && url.pathname === pathname && !url.searchParams.has('from');
+      }, { timeout: 15_000 });
+      const cleaned = navigatedTo('/login');
       await page.goto(`${webUrl}/login?from=oauth`);
-      await page.waitForURL((url) => url.pathname === '/login' && !url.searchParams.has('from'), { timeout: 15_000 });
-      const response = await page.reload({ waitUntil: 'domcontentloaded' });
-      if (response?.headers()['cross-origin-opener-policy'] !== 'same-origin') {
+      if ((await cleaned).headers()['cross-origin-opener-policy'] !== 'same-origin') {
         throw new Error('A direct /login?from=oauth visit kept a page without COOP');
+      }
+      // From the marked sign-in page of a real authorization, a link to
+      // another page is a full load that brings that page's COOP.
+      await page.close();
+      page = await direct.newPage();
+      await page.goto(`${webUrl}/oauth/authorize?${query}`);
+      await page.waitForURL((url) => url.pathname === '/login' && url.searchParams.get('from') === 'oauth', { timeout: 15_000 });
+      const license = navigatedTo('/license');
+      await page.getByRole('link', { name: 'License & source' }).click();
+      if ((await license).headers()['cross-origin-opener-policy'] !== 'same-origin') {
+        throw new Error('A link out of the OAuth sign-in page stayed in a document without COOP');
       }
     } finally {
       await direct.close();
