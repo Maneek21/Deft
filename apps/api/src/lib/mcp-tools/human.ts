@@ -52,7 +52,7 @@ import {
   ensureAttentionBackfillForUser,
   filterVisibleAttentionItems,
   projectAttentionItem,
-  attentionSourceTypesWhere,
+  readAttentionWithSourceTypes,
   visibleAttentionCondition,
   transitionAttentionItem,
   type AttentionLane,
@@ -3446,41 +3446,35 @@ export async function humanAttentionList(args: { lane?: string; state?: string; 
   if (!states) return errorResult('state must be open, all, or a valid attention lifecycle state');
 
   await ensureAttentionBackfillForUser({ orgId: ctx.org_id, userId: ctx.user_id, role: ctx.role });
-  // The source types the list and the counts can meet: their visibility
-  // condition plans only those types' rules (lib/attention.ts).
-  const sourceTypes = await attentionSourceTypesWhere(and(
+  // The list and the counts each read their items' source types on their own
+  // snapshot, so their visibility condition plans only those types' rules
+  // (lib/attention.ts, readAttentionWithSourceTypes).
+  const listWhere = and(
     eq(attentionItems.org_id, ctx.org_id),
     eq(attentionItems.user_id, ctx.user_id),
-    inArray(attentionItems.state, [...new Set([...states, ...MCP_OPEN_ATTENTION_STATES])]),
-  ));
-  const rows = await db
+    lane === 'all' ? sql`true` : eq(attentionItems.lane, lane),
+    inArray(attentionItems.state, states),
+  );
+  const rows = await readAttentionWithSourceTypes(listWhere, (tx, sourceTypes) => tx
     .select()
     .from(attentionItems)
-    .where(and(
-      eq(attentionItems.org_id, ctx.org_id),
-      eq(attentionItems.user_id, ctx.user_id),
-      lane === 'all' ? sql`true` : eq(attentionItems.lane, lane),
-      inArray(attentionItems.state, states),
-      visibleAttentionCondition(ctx.user_id, sourceTypes),
-      visibleModuleAttentionScopeSql(ctx.scopes, 'read'),
-    ))
+    .where(and(listWhere, visibleAttentionCondition(ctx.user_id, sourceTypes), visibleModuleAttentionScopeSql(ctx.scopes, 'read')))
     .orderBy(desc(attentionItems.last_event_at))
-    .limit(Math.min(Math.max(1, args.limit ?? 50), 100));
-  const counts = await db
+    .limit(Math.min(Math.max(1, args.limit ?? 50), 100)));
+  const openWhere = and(
+    eq(attentionItems.org_id, ctx.org_id),
+    eq(attentionItems.user_id, ctx.user_id),
+    inArray(attentionItems.state, MCP_OPEN_ATTENTION_STATES),
+  );
+  const counts = await readAttentionWithSourceTypes(openWhere, (tx, sourceTypes) => tx
     .select({
       lane: attentionItems.lane,
       count: sql<number>`count(*)::int`,
       unseen: sql<number>`count(*) FILTER (WHERE ${attentionItems.state} = 'open_unseen')::int`,
     })
     .from(attentionItems)
-    .where(and(
-      eq(attentionItems.org_id, ctx.org_id),
-      eq(attentionItems.user_id, ctx.user_id),
-      inArray(attentionItems.state, MCP_OPEN_ATTENTION_STATES),
-      visibleAttentionCondition(ctx.user_id, sourceTypes),
-      visibleModuleAttentionScopeSql(ctx.scopes, 'read'),
-    ))
-    .groupBy(attentionItems.lane);
+    .where(and(openWhere, visibleAttentionCondition(ctx.user_id, sourceTypes), visibleModuleAttentionScopeSql(ctx.scopes, 'read')))
+    .groupBy(attentionItems.lane));
   const visibleRows = await filterVisibleAttentionItems(ctx.user_id, rows);
   return textResult({
     items: visibleRows.map((row) => ({ ...projectAttentionItem(row), url: row.link ?? `/inbox?lane=${row.lane}` })),
@@ -3497,15 +3491,15 @@ export async function humanAttentionGet(args: { attention_id?: string }, ctx: Hu
     eq(attentionItems.org_id, ctx.org_id),
     eq(attentionItems.user_id, ctx.user_id),
   );
-  const [row] = await db
+  const [row] = await readAttentionWithSourceTypes(itemWhere, (tx, sourceTypes) => tx
     .select()
     .from(attentionItems)
     .where(and(
       itemWhere,
-      visibleAttentionCondition(ctx.user_id, await attentionSourceTypesWhere(itemWhere)),
+      visibleAttentionCondition(ctx.user_id, sourceTypes),
       visibleModuleAttentionScopeSql(ctx.scopes, 'read'),
     ))
-    .limit(1);
+    .limit(1));
   if (!row) return errorResult('Attention item not found');
   const visible = await filterVisibleAttentionItems(ctx.user_id, [row]);
   return visible[0]
@@ -3531,15 +3525,15 @@ async function transitionHumanAttention(
     eq(attentionItems.org_id, ctx.org_id),
     eq(attentionItems.user_id, ctx.user_id),
   );
-  const visible = async () => (await db
+  const visible = async () => (await readAttentionWithSourceTypes(itemWhere, (tx, sourceTypes) => tx
     .select()
     .from(attentionItems)
     .where(and(
       itemWhere,
-      visibleAttentionCondition(ctx.user_id, await attentionSourceTypesWhere(itemWhere)),
+      visibleAttentionCondition(ctx.user_id, sourceTypes),
       visibleModuleAttentionScopeSql(ctx.scopes, 'write'),
     ))
-    .limit(1))[0];
+    .limit(1)))[0];
   if (!await visible()) return errorResult('Attention item not found');
   // A stored result answers only a call for the same item, and the item is
   // checked again before anything is returned.

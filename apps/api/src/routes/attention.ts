@@ -9,14 +9,15 @@ import {
 } from '@deft/db/schema';
 import { db } from '../lib/db.js';
 import {
-  attentionSourceTypesWhere,
   currentApprovalRecipientSql,
   ensureAttentionBackfillForUser,
   filterVisibleAttentionItems,
   projectAttentionItem,
   recordAttentionFeedback,
   transitionAttentionItem,
+  readAttentionWithSourceTypes,
   visibleAttentionCondition,
+  writeAttentionWithSourceTypes,
   type AttentionLane,
   type AttentionState,
 } from '../lib/attention.js';
@@ -70,11 +71,11 @@ async function hasVisibleItem(orgId: string, userId: string, itemId: string) {
     eq(attentionItems.org_id, orgId),
     eq(attentionItems.user_id, userId),
   );
-  const [item] = await db
+  const [item] = await readAttentionWithSourceTypes(itemWhere, (tx, sourceTypes) => tx
     .select({ id: attentionItems.id })
     .from(attentionItems)
-    .where(and(itemWhere, visibleAttentionCondition(userId, await attentionSourceTypesWhere(itemWhere))))
-    .limit(1);
+    .where(and(itemWhere, visibleAttentionCondition(userId, sourceTypes)))
+    .limit(1));
   return Boolean(item);
 }
 
@@ -142,47 +143,43 @@ attentionRoutes.get('/', async (c) => {
 
   await ensureAttentionBackfillForUser({ orgId: user.org_id, userId: user.id, role: user.role });
 
-  // The source types the page and the counts below can meet, so their
-  // visibility condition plans only those types' rules (lib/attention.ts).
-  const sourceTypes = await attentionSourceTypesWhere(and(
+  // The page and the counts below each read their items' source types on
+  // their own snapshot, so their visibility condition plans only those
+  // types' rules (lib/attention.ts, readAttentionWithSourceTypes).
+  const pageWhere = and(
     eq(attentionItems.org_id, user.org_id),
     eq(attentionItems.user_id, user.id),
-    inArray(attentionItems.state, [...new Set([...states, ...OPEN_STATES])]),
-  ));
-  const rows = await db
+    lane ? eq(attentionItems.lane, lane) : sql`true`,
+    inArray(attentionItems.state, states),
+    cursor
+      ? sql`(${attentionItems.last_event_at}, ${attentionItems.id}) < (${cursor.at}, ${cursor.id})`
+      : sql`true`,
+  );
+  const rows = await readAttentionWithSourceTypes(pageWhere, (tx, sourceTypes) => tx
     .select()
     .from(attentionItems)
-    .where(and(
-      eq(attentionItems.org_id, user.org_id),
-      eq(attentionItems.user_id, user.id),
-      lane ? eq(attentionItems.lane, lane) : sql`true`,
-      inArray(attentionItems.state, states),
-      visibleAttentionCondition(user.id, sourceTypes),
-      cursor
-        ? sql`(${attentionItems.last_event_at}, ${attentionItems.id}) < (${cursor.at}, ${cursor.id})`
-        : sql`true`,
-    ))
+    .where(and(pageWhere, visibleAttentionCondition(user.id, sourceTypes)))
     .orderBy(desc(attentionItems.last_event_at), desc(attentionItems.id))
-    .limit(limit + 1);
+    .limit(limit + 1));
 
   const visibleRows = await filterVisibleAttentionItems(user.id, rows);
   const hasMore = visibleRows.length > limit;
   const page = visibleRows.slice(0, limit);
   const hydrated = await hydrateApprovals(user, page);
-  const counts = await db
+  const openWhere = and(
+    eq(attentionItems.org_id, user.org_id),
+    eq(attentionItems.user_id, user.id),
+    inArray(attentionItems.state, OPEN_STATES),
+  );
+  const counts = await readAttentionWithSourceTypes(openWhere, (tx, sourceTypes) => tx
     .select({
       lane: attentionItems.lane,
       count: sql<number>`count(*)::int`,
       unseen: sql<number>`count(*) FILTER (WHERE ${attentionItems.state} = 'open_unseen')::int`,
     })
     .from(attentionItems)
-    .where(and(
-      eq(attentionItems.org_id, user.org_id),
-      eq(attentionItems.user_id, user.id),
-      inArray(attentionItems.state, OPEN_STATES),
-      visibleAttentionCondition(user.id, sourceTypes),
-    ))
-    .groupBy(attentionItems.lane);
+    .where(and(openWhere, visibleAttentionCondition(user.id, sourceTypes)))
+    .groupBy(attentionItems.lane));
   const byLane = Object.fromEntries(counts.map((row) => [row.lane, {
     count: Number(row.count),
     unseen: Number(row.unseen),
@@ -206,11 +203,11 @@ attentionRoutes.get('/:id', async (c) => {
     eq(attentionItems.org_id, user.org_id),
     eq(attentionItems.user_id, user.id),
   );
-  const [item] = await db
+  const [item] = await readAttentionWithSourceTypes(itemWhere, (tx, sourceTypes) => tx
     .select()
     .from(attentionItems)
-    .where(and(itemWhere, visibleAttentionCondition(user.id, await attentionSourceTypesWhere(itemWhere))))
-    .limit(1);
+    .where(and(itemWhere, visibleAttentionCondition(user.id, sourceTypes)))
+    .limit(1));
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
   const visible = await filterVisibleAttentionItems(user.id, [item]);
   if (visible.length === 0) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
@@ -325,8 +322,9 @@ attentionRoutes.post('/mark-all-seen', async (c) => {
     eq(attentionItems.state, 'open_unseen'),
     lane ? eq(attentionItems.lane, lane) : sql`true`,
   );
-  const sourceTypes = await attentionSourceTypesWhere(unseen);
-  const updated = await db
+  // The unseen items are locked first, so none changes source type before the
+  // update reads it (lib/attention.ts, writeAttentionWithSourceTypes).
+  const updated = await writeAttentionWithSourceTypes(unseen, (tx, sourceTypes) => tx
     .update(attentionItems)
     .set({
       state: 'open_seen',
@@ -335,7 +333,7 @@ attentionRoutes.post('/mark-all-seen', async (c) => {
       updated_at: now,
     })
     .where(and(unseen, visibleAttentionCondition(user.id, sourceTypes)))
-    .returning({ id: attentionItems.id, version: attentionItems.version });
+    .returning({ id: attentionItems.id, version: attentionItems.version }));
   if (updated.length > 0) {
     await db.insert(attentionEvents).values(updated.map((item) => ({
       org_id: user.org_id,

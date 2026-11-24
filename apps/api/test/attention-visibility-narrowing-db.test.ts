@@ -32,15 +32,18 @@ import { closeDb, db } from '../src/lib/db.js';
 import {
   ATTENTION_SOURCE_TYPES,
   ATTENTION_SOURCE_TYPES_WITH_ACCESS_RULE,
-  attentionSourceTypesWhere,
   filterVisibleAttentionItems,
+  readAttentionWithSourceTypes,
   visibleAttentionCondition,
+  writeAttentionWithSourceTypes,
   type AttentionSourceScope,
 } from '../src/lib/attention.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 
 const url = safeTestDatabaseUrl();
 let unavailable = url ? '' : 'Set DEFT_TEST_DATABASE_URL to a disposable test database';
+/** In CI the database is there: a failure to reach it, or to read /proc on its Linux image, fails instead of skipping. */
+const inCi = process.env.CI === 'true';
 const orgId = randomUUID();
 const people = {
   owner: randomUUID(), admin: randomUUID(), member: randomUUID(), guest: randomUUID(), removed: randomUUID(),
@@ -55,6 +58,8 @@ const messagesByRoom: Record<string, string> = {};
 let deletedMessage = '';
 const actions: string[] = [];
 const deliveries: string[] = [];
+/** `${person}|${type}|${source}|${metadata variant}` → item id; variant 0 has empty metadata. */
+const itemIds = new Map<string, string>();
 let client: pg.Client | undefined;
 let seeded = false;
 
@@ -96,7 +101,11 @@ test('every attention source type the code writes is listed, with a decided acce
 before(async () => {
   if (unavailable) return;
   client = new pg.Client({ connectionString: url, connectionTimeoutMillis: 3000 });
-  try { await client.connect(); } catch (error) { unavailable = String(error); return; }
+  try { await client.connect(); } catch (error) {
+    if (inCi) throw error;
+    unavailable = String(error);
+    return;
+  }
   await q('INSERT INTO orgs(id,name,slug) VALUES($1,$2,$3)', [orgId, 'Attention narrowing', `attention-narrowing-${orgId}`]);
   seeded = true;
   for (const [name, id] of Object.entries(people)) {
@@ -173,9 +182,15 @@ before(async () => {
   const rows: unknown[][] = [];
   for (const person of Object.values(people)) {
     for (const type of ATTENTION_SOURCE_TYPES) {
-      for (const source of sourcesOf(type)) {
-        const variants = sourcesOf(type).length > 1 && source !== sourcesOf(type)[0] ? [{}] : legacy(person);
-        for (const metadata of variants) rows.push([randomUUID(), orgId, person, type, source, JSON.stringify(metadata)]);
+      const sources = sourcesOf(type);
+      for (const source of sources) {
+        // The first source of each type also gets every legacy-notification variant.
+        const variants = source === sources[0] ? legacy(person) : [{}];
+        variants.forEach((metadata, variant) => {
+          const id = randomUUID();
+          itemIds.set(`${person}|${type}|${source}|${variant}`, id);
+          rows.push([id, orgId, person, type, source, JSON.stringify(metadata)]);
+        });
       }
     }
   }
@@ -234,10 +249,13 @@ test('the rule narrowed to the types a statement meets shows exactly what the wh
       tally.hidden += ofType.size - expected.size;
       outcomes.set(type, tally);
     }
-    // A list reads its rows' types first (routes/attention.ts, the MCP tools).
-    const types = await attentionSourceTypesWhere(and(eq(attentionItems.org_id, orgId), eq(attentionItems.user_id, person)));
-    assert.deepEqual([...types].sort(), [...ATTENTION_SOURCE_TYPES].sort(), `${name}: every type read first`);
-    assert.deepEqual(sorted(await visibleIds(person, types)), sorted(whole), `${name}: the types read first`);
+    // A list reads its rows' types first, on the same snapshot (routes/attention.ts, the MCP tools).
+    const mine = and(eq(attentionItems.org_id, orgId), eq(attentionItems.user_id, person));
+    const listed = await readAttentionWithSourceTypes(mine, async (tx, types) => {
+      assert.deepEqual([...types].sort(), [...ATTENTION_SOURCE_TYPES].sort(), `${name}: every type read first`);
+      return tx.select({ id: attentionItems.id }).from(attentionItems).where(and(mine, visibleAttentionCondition(person, types)));
+    });
+    assert.deepEqual(sorted(new Set(listed.map((row) => row.id))), sorted(whole), `${name}: the types read first`);
     // Fail closed: a ruled type that was not asked for shows nothing, and nothing the whole rule hides appears.
     const messageOnly = await visibleIds(person, ['message']);
     for (const id of messageOnly) assert.ok(whole.has(id), `${name}: the message-only rule shows nothing the whole rule hides`);
@@ -252,6 +270,51 @@ test('the rule narrowed to the types a statement meets shows exactly what the wh
   }
   const unruled = outcomes.get('task')!;
   assert.ok(unruled.shown > 0 && unruled.hidden > 0, `legacy check: shown ${unruled.shown}, hidden ${unruled.hidden}`);
+});
+
+test('each access rule shows and hides the items it should, under the whole rule and narrowed (empty metadata)', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const delivery = (state: number, person: string) => deliveries[state * 5 + Object.values(people).indexOf(person)]!;
+  /** The item of `person` and `type` from `source` (any source when omitted) with legacy-metadata `variant`. */
+  const item = (person: string, type: string, source: string | null, variant = 0) => {
+    const found = [...itemIds.entries()].find(([key]) => {
+      const [p, ty, src, v] = key.split('|');
+      return p === person && ty === type && (source === null || src === source) && v === String(variant);
+    });
+    assert.ok(found, `fixture ${person} ${type} ${source} ${variant}`);
+    return found[1];
+  };
+  const { owner, member, guest } = people;
+  // [label, person, item id, shown]
+  const expectations: Array<[string, string, string, boolean]> = [
+    ['member, message in their private room', member, item(member, 'message', messagesByRoom[rooms.priv]!), true],
+    ['member, message in the admin-only room', member, item(member, 'message', messagesByRoom[rooms.adminOnly]!), false],
+    ['member, deleted message', member, item(member, 'message', deletedMessage), false],
+    ['guest, message in a public room they joined', guest, item(guest, 'message', messagesByRoom[rooms.pubGuest]!), true],
+    ['guest, message in a public room they did not join', guest, item(guest, 'message', messagesByRoom[rooms.pub]!), false],
+    ['member, their private room', member, item(member, 'space', rooms.priv), true],
+    ['member, a public room they did not join', member, item(member, 'space', rooms.pub), true],
+    ['member, the admin-only room', member, item(member, 'space', rooms.adminOnly), false],
+    ['guest, a public room they joined', guest, item(guest, 'space', rooms.pubGuest), true],
+    ['guest, a public room they did not join', guest, item(guest, 'space', rooms.pub), false],
+    ['member, their mention in their private room', member, item(member, 'native_mention', delivery(0, member)), true],
+    ['member, their mention in the admin-only room', member, item(member, 'native_mention', delivery(1, member)), false],
+    ['member, their mention whose source was deleted', member, item(member, 'native_mention', delivery(2, member)), false],
+    ["member, the owner's mention", member, item(member, 'native_mention', delivery(0, owner)), false],
+    ['member, the approval they asked for', member, item(member, 'agent_action', actions[0]!), true],
+    ["guest, the member's approval", guest, item(guest, 'agent_action', actions[0]!), false],
+    // The legacy-notification check, on a type with no rule of its own (variants: see `legacy`).
+    ['member, task item, no metadata', member, item(member, 'task', null, 0), true],
+    ['member, task item, legacy notice of their private room', member, item(member, 'task', null, 2), true],
+    ['member, task item, legacy notice of the admin-only room', member, item(member, 'task', null, 3), false],
+    ['member, task item, legacy notice of an admin-only message', member, item(member, 'task', null, 5), false],
+    ['guest, task item, legacy notice of a public room they did not join', guest, item(guest, 'task', null, 4), false],
+  ];
+  for (const [label, person, id, shown] of expectations) {
+    const type = [...itemIds.entries()].find(([, value]) => value === id)![0].split('|')[1]!;
+    assert.equal((await visibleIds(person, 'all')).has(id), shown, `${label}: ${shown ? 'shown' : 'hidden'} (whole rule)`);
+    assert.equal((await visibleIds(person, [type], type)).has(id), shown, `${label}: ${shown ? 'shown' : 'hidden'} (narrowed)`);
+  }
 });
 
 test('the delivery and list filter (filterVisibleAttentionItems) keeps exactly the items the whole rule shows', async (t) => {
@@ -291,8 +354,8 @@ async function planningGrowth(scope: AttentionSourceScope): Promise<Growth | nul
       return rows[0]?.anon == null || rows[0]?.peak == null ? null : { anon: rows[0].anon, peak: rows[0].peak };
     };
     let before: Growth | null;
-    try { before = await read(); } catch { return null; }
-    if (before == null) return null;
+    try { before = await read(); } catch (error) { if (inCi) throw error; return null; }
+    if (before == null) { if (inCi) throw new Error('/proc/self/status gave no RssAnon or VmHWM'); return null; }
     const query = db.select({ id: attentionItems.id }).from(attentionItems).where(and(
       eq(attentionItems.org_id, orgId), eq(attentionItems.user_id, people.member), visibleAttentionCondition(people.member, scope),
     )).toSQL();
@@ -316,4 +379,45 @@ test('planning the rule for message items costs a backend a few MB, not the whol
   assert.ok(message.peak < 48 * 1024, `message-only rule, peak: ${message.peak} kB`);
   assert.ok(message.anon * 4 < Math.max(whole.anon, whole.peak),
     `message-only ${message.anon} kB is a small part of the whole rule's ${Math.max(whole.anon, whole.peak)} kB`);
+});
+
+test('a read takes the item types and the items from one snapshot: a type change committed in between changes nothing', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  // A member's own task item (no legacy metadata), turned into a readable space item by a concurrent upsert.
+  const [id] = [...itemIds.entries()].find(([key]) => key.startsWith(`${people.member}|task|`) && key.endsWith('|0'))!.slice(1);
+  const where = and(eq(attentionItems.org_id, orgId), eq(attentionItems.user_id, people.member), eq(attentionItems.id, id!));
+  try {
+    const seen = await readAttentionWithSourceTypes(where, async (tx, types) => {
+      assert.deepEqual(types, ['task']);
+      await q("UPDATE attention_items SET source_type='space', source_id=$2, version=version+1 WHERE id=$1", [id, rooms.priv]);
+      return tx.select({ id: attentionItems.id, source_type: attentionItems.source_type }).from(attentionItems)
+        .where(and(where, visibleAttentionCondition(people.member, types)));
+    });
+    assert.deepEqual(seen, [{ id, source_type: 'task' }], 'the item as it was when its type was read');
+    assert.ok((await visibleIds(people.member, ['space'], 'space')).has(id!), 'and afterwards, as a space item');
+  } finally {
+    await q("UPDATE attention_items SET source_type='task', source_id=$2 WHERE id=$1",
+      [id, [...itemIds.keys()].find((key) => itemIds.get(key) === id)!.split('|')[2]]);
+  }
+});
+
+test('a change takes the item types under a row lock: no type change can commit before it does', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const [id] = [...itemIds.entries()].find(([key]) => key.startsWith(`${people.member}|task|`) && key.endsWith('|0'))!.slice(1);
+  const where = and(eq(attentionItems.org_id, orgId), eq(attentionItems.user_id, people.member), eq(attentionItems.id, id!));
+  const other = new pg.Client({ connectionString: url, connectionTimeoutMillis: 3000 });
+  await other.connect();
+  try {
+    await other.query("SET lock_timeout = '300ms'");
+    const changed = await writeAttentionWithSourceTypes(where, async (tx, types) => {
+      assert.deepEqual(types, ['task']);
+      await assert.rejects(other.query("UPDATE attention_items SET source_type='space' WHERE id=$1", [id]), /lock timeout/,
+        'a concurrent type change waits for the lock');
+      return tx.update(attentionItems).set({ title: 'changed under lock' })
+        .where(and(where, visibleAttentionCondition(people.member, types))).returning({ id: attentionItems.id });
+    });
+    assert.deepEqual(changed, [{ id }]);
+  } finally {
+    await other.end();
+  }
 });
