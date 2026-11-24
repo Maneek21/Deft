@@ -18,29 +18,44 @@ async function keyAgent(orgId: string, keyId: string): Promise<string | null> {
   return key?.agent_employee_id ?? null;
 }
 
-// A date the server can read; anything else would fail at the database.
+// Every value here must be one the database accepts; anything it would refuse
+// is a 400 here, never a 500 there.
+// Text: PostgreSQL text cannot hold a NUL character.
+const text = () => z.string().refine((value) => !value.includes('\u0000'), 'Must not contain a NUL character');
+// Rate limits are PostgreSQL integer columns.
+const POSTGRES_INTEGER_MAX = 2_147_483_647;
+const rateLimit = () => z.number().int().positive().max(POSTGRES_INTEGER_MAX).optional();
+// A date the server can read, in years 1 to 9999 (PostgreSQL timestamps span
+// more, but JavaScript dates outside that range are not ones it can store).
 const expiresAtSchema = z.string()
-  .refine((value) => !Number.isNaN(Date.parse(value)), 'Must be a date')
+  .refine((value) => {
+    const time = Date.parse(value);
+    if (Number.isNaN(time)) return false;
+    const year = new Date(time).getUTCFullYear();
+    return year >= 1 && year <= 9999;
+  }, 'Must be a date between the years 1 and 9999')
   .nullable()
   .optional();
 
 const createKeySchema = z.object({
-  name: z.string().min(1),
-  agent_employee_id: z.string().nullable().optional(),
-  permissions: z.array(z.string()).min(1),
-  rate_limit_per_minute: z.number().int().positive().optional(),
-  rate_limit_per_day: z.number().int().positive().optional(),
+  name: text().min(1),
+  agent_employee_id: text().nullable().optional(),
+  permissions: z.array(text()).min(1),
+  rate_limit_per_minute: rateLimit(),
+  rate_limit_per_day: rateLimit(),
   expires_at: expiresAtSchema,
 });
 
 const updateKeySchema = z.object({
-  name: z.string().min(1).optional(),
-  permissions: z.array(z.string()).min(1).optional(),
-  rate_limit_per_minute: z.number().int().positive().optional(),
-  rate_limit_per_day: z.number().int().positive().optional(),
+  name: text().min(1).optional(),
+  permissions: z.array(text()).min(1).optional(),
+  rate_limit_per_minute: rateLimit(),
+  rate_limit_per_day: rateLimit(),
   is_active: z.boolean().optional(),
   expires_at: expiresAtSchema,
-});
+})
+  // Unknown fields are dropped, so `{}` and `{"typo": true}` would change nothing.
+  .refine((body) => Object.values(body).some((value) => value !== undefined), 'Nothing to change');
 
 // A body that is not JSON reads as `undefined`, which the schema refuses.
 async function readJsonBody(c: Context): Promise<unknown> {
