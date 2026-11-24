@@ -28,22 +28,27 @@ const PAGES = [
 ];
 
 // Every face and weight the app uses (app/layout.tsx).
-const FACES = ['400 16px Inter', '500 16px Inter', '600 16px Inter', '700 16px Inter',
-  '400 16px "JetBrains Mono"', '500 16px "JetBrains Mono"'];
+const FACES = [['Inter', '400'], ['Inter', '500'], ['Inter', '600'], ['Inter', '700'],
+  ['JetBrains Mono', '400'], ['JetBrains Mono', '500']];
 
-async function freePort() {
-  const allocator = createServer();
-  await new Promise(resolve => allocator.listen(0, '127.0.0.1', resolve));
-  const { port } = allocator.address();
-  await new Promise(resolve => allocator.close(resolve));
-  return port;
+/** Distinct free ports: every listener stays open until all are allocated. */
+async function freePorts(count) {
+  const allocators = [];
+  for (let i = 0; i < count; i += 1) {
+    const allocator = createServer();
+    await new Promise(resolve => allocator.listen(0, '127.0.0.1', resolve));
+    allocators.push(allocator);
+  }
+  const ports = allocators.map(allocator => allocator.address().port);
+  await Promise.all(allocators.map(allocator => new Promise(resolve => allocator.close(resolve))));
+  return ports;
 }
 
 test('signup, setup and credential pages request nothing from a third party, and fonts come from the app', { timeout: 300000 }, async () => {
-  const port = await freePort();
+  const [port, apiPort] = await freePorts(2);
   const origin = `http://127.0.0.1:${port}`;
   // Nothing listens here: every API request is answered by the route below.
-  const apiOrigin = `http://127.0.0.1:${await freePort()}`;
+  const apiOrigin = `http://127.0.0.1:${apiPort}`;
   const firstParty = new Set([origin, apiOrigin]);
   const nextEnvPath = join(web, 'next-env.d.ts');
   const originalNextEnv = await readFile(nextEnvPath);
@@ -85,7 +90,7 @@ test('signup, setup and credential pages request nothing from a third party, and
       await context.route(url => !firstParty.has(new URL(url).origin), route => route.abort());
       await context.route(url => new URL(url).origin === apiOrigin, async route => {
         const pathname = new URL(route.request().url()).pathname;
-        if (pathname === '/api/auth/has-workspace') await route.fulfill({ json: { has_workspace: false } });
+        if (pathname === '/api/auth/has-workspace') await route.fulfill({ json: { hasWorkspace: false } });
         else if (pathname === '/api/invites/preview') {
           await route.fulfill({ json: { org_name: 'Fixture Workspace', email: 'new@example.test', inviter_name: 'Admin', role: 'member', already_accepted: false } });
         } else await route.fulfill({ status: 401, json: { error: 'Unauthorized', code: 'NO_TOKEN' } });
@@ -98,14 +103,18 @@ test('signup, setup and credential pages request nothing from a third party, and
         if (marker.text) await page.getByText(marker.text, { exact: false }).first().waitFor();
         else await page.locator(marker.css).first().waitFor();
         assert.equal(new URL(page.url()).pathname, pathname, `${path} stayed on its page`);
-        // Load every face and weight the app uses, then wait for the network to settle.
-        const loaded = await page.evaluate(async faces => Promise.all(faces.map(async face => {
-          await document.fonts.load(face, 'Aa');
-          return document.fonts.check(face, 'Aa');
+        // Load every face and weight the app uses and record what each load
+        // actually matched (a missing weight would fall back to another).
+        const loaded = await page.evaluate(async faces => Promise.all(faces.map(async ([family, weight]) => {
+          const matched = await document.fonts.load(`${weight} 16px "${family}"`, 'Aa');
+          return matched.map(face => [face.family.replace(/^["']|["']$/g, ''), String(face.weight), face.status]);
         })), FACES);
         await page.waitForLoadState('networkidle');
         assert.deepEqual(thirdParty, [], `${path} made a third-party request`);
-        assert.deepEqual(loaded, FACES.map(() => true), `${path}: every face loads`);
+        FACES.forEach(([family, weight], index) => {
+          assert.ok(loaded[index].some(([f, w, status]) => f === family && w === weight && status === 'loaded'),
+            `${path}: ${family} ${weight} loads itself, got ${JSON.stringify(loaded[index])}`);
+        });
         const fontUrls = new Set(fontResponses.map(font => font.url));
         assert.ok(fontUrls.size >= FACES.length, `${path}: one file per face at least, got ${[...fontUrls].join(', ')}`);
         for (const font of fontResponses) {
