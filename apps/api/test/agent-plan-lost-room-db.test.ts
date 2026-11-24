@@ -27,7 +27,7 @@ const plans = {
 const title = (plan: string) => `Plan task ${plan}`;
 let client: pg.Client | undefined;
 let seeded = false;
-let routes: { plans?: Hono; spaces?: Hono; members?: Hono; agent?: Hono } = {};
+let routes: { plans?: Hono; spaces?: Hono; members?: Hono; agent?: Hono; inbox?: Hono } = {};
 const departedStepAction = randomUUID();
 const twoRoomsStep = randomUUID();
 
@@ -41,6 +41,7 @@ function app(viewer: string) {
   hono.route('/api/spaces', routes.spaces!);
   hono.route('/api/members', routes.members!);
   hono.route('/api/agent', routes.agent!);
+  hono.route('/api/inbox', routes.inbox!);
   return hono;
 }
 
@@ -124,6 +125,7 @@ before(async () => {
     spaces: (await import('../src/routes/spaces.js')).spaceRoutes,
     members: (await import('../src/routes/members.js')).memberRoutes,
     agent: (await import('../src/routes/agent.js')).agentRoutes,
+    inbox: (await import('../src/routes/inbox.js')).inboxRoutes,
   };
 });
 
@@ -131,7 +133,7 @@ after(async () => {
   try {
     if (seeded && client) {
       await client.query('DELETE FROM job_queue WHERE payload::text LIKE $1', [`%${orgId}%`]).catch(() => {});
-      for (const table of ['agent_actions', 'action_receipts', 'tasks', 'agent_plans', 'projects', 'messages']) {
+      for (const table of ['agent_actions', 'action_receipts', 'tasks', 'agent_plans', 'projects', 'messages', 'agent_employees']) {
         await client.query(`DELETE FROM ${table} WHERE org_id=$1`, [orgId]).catch(() => {});
       }
       await client.query('DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id=$1)', [orgId]);
@@ -290,4 +292,63 @@ test('a step claim waits for an archive of its public room in progress, then the
   assert.equal(await tasksCreated(plans.archiveRace), 0);
   const { rows: [plan] } = await client!.query('SELECT status, error FROM agent_plans WHERE id=$1', [plans.archiveRace]);
   assert.deepEqual(plan, { status: 'paused', error: PLAN_ROOM_LOST_ERROR });
+});
+
+test('a plan step leaves the review gate once its creator loses a room of its plan: pending, employee-run and finished steps', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const kept = randomUUID();
+  const source = randomUUID();
+  for (const room of [kept, source]) {
+    await client!.query("INSERT INTO spaces(id,org_id,name,type,created_by) VALUES($1,$2,$3,'private',$4)", [room, orgId, `gate-${room.slice(0, 8)}`, ids.olive]);
+    for (const user of [ids.mia, ids.olive]) await client!.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), room, user]);
+  }
+  const sourceMessage = randomUUID();
+  await client!.query("INSERT INTO messages(id,org_id,space_id,user_id,content) VALUES($1,$2,$3,$4,'@Defty plan this')", [sourceMessage, orgId, source, ids.mia]);
+  const plan = randomUUID();
+  await client!.query(`INSERT INTO agent_plans(id,org_id,user_id,conversation_id,title,steps,status,current_step,context)
+    VALUES($1,$2,$3,$4,'Gate plan','[]'::jsonb,'paused',0,$5::jsonb)`, [plan, orgId, ids.mia, kept, JSON.stringify({ source_message_id: sourceMessage })]);
+  // A Conservative BYOA employee the plan runs as (sol): its step waits for Mia.
+  const employee = randomUUID();
+  const shadow = randomUUID();
+  await client!.query("INSERT INTO users(id,email,name,kind,is_agent) VALUES($1,$2,'Gate agent','agent',true)", [shadow, `${shadow}@agents.example.test`]);
+  await client!.query(`INSERT INTO agent_employees (id, org_id, user_id, name, slug, role, system_prompt, trust_level, is_byoa, is_active, created_by)
+    VALUES ($1, $2, $3, 'Gate agent', $4, 'project_manager', 'Fixture', 'conservative', true, true, $5)`, [employee, orgId, shadow, `gate-${employee.slice(0, 8)}`, ids.mia]);
+  await client!.query('UPDATE users SET agent_employee_id = $2 WHERE id = $1', [shadow, employee]);
+  t.after(async () => {
+    await client!.query('UPDATE users SET agent_employee_id = NULL WHERE id = $1', [shadow]);
+    await client!.query('DELETE FROM agent_actions WHERE agent_employee_id = $1', [employee]);
+    await client!.query('DELETE FROM agent_employees WHERE id = $1', [employee]);
+    await client!.query('DELETE FROM users WHERE id = $1', [shadow]);
+  });
+  const step = async (id: string, status: string, extra: { employee?: string; result?: object } = {}) => client!.query(
+    `INSERT INTO agent_actions(id,org_id,user_id,agent_employee_id,conversation_id,source,plan_id,plan_step_id,action,params,approval_tier,approval_status,executed_at,result)
+      VALUES($1,$2,$3,$4,$5,'plan',$6,$1,'create_task',$7,'quick',$8,$9,$10)`,
+    [id, orgId, ids.mia, extra.employee ?? null, kept, plan, JSON.stringify({ title: `CANARY-gate-${id}`, resolved_project_id: projectId }),
+      status, status === 'approved' ? new Date() : null, extra.result ? JSON.stringify(extra.result) : null]);
+  const finished = randomUUID();
+  const byEmployee = randomUUID();
+  await step(finished, 'approved', { result: { note: 'CANARY-gate-result' } });
+  await step(byEmployee, 'pending', { employee });
+  const pendingText = async () => (await call(ids.mia, 'GET', '/api/agent/actions/pending')).text
+    + (await call(ids.mia, 'GET', '/api/inbox?kind=pending_approval')).text;
+  assert.ok((await pendingText()).includes(byEmployee), 'the employee step waits for Mia while she has both rooms');
+
+  const removed = await call(ids.olive, 'DELETE', `/api/spaces/${source}/members/${ids.mia}`);
+  assert.equal(removed.status, 200, removed.text);
+  // Queued after the loss (astra): its row names only the room she kept.
+  const late = randomUUID();
+  await step(late, 'pending');
+
+  const after = await pendingText();
+  const seen: string[] = [];
+  if (after.includes(byEmployee) || after.includes(`CANARY-gate-${byEmployee}`)) seen.push('employee step in pending list or Inbox');
+  if (after.includes(late) || after.includes(`CANARY-gate-${late}`)) seen.push('late step in pending list or Inbox');
+  const retry = await call(ids.mia, 'POST', `/api/agent/actions/${finished}/approve`);
+  if (retry.status !== 404 || retry.text.includes('CANARY-gate-result')) seen.push(`finished step retry ${retry.status}`);
+  for (const id of [byEmployee, late]) {
+    const approve = await call(ids.mia, 'POST', `/api/agent/actions/${id}/approve`);
+    if (approve.status === 200) seen.push(`approve ${id === late ? 'late' : 'employee'} step 200`);
+  }
+  assert.deepEqual(seen, [], 'nothing of the plan is seen or approvable after the loss');
+  assert.equal(await tasksCreated(`gate-${late}`), 0);
 });

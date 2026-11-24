@@ -9,7 +9,6 @@ import { executeActionDirect } from '../lib/agent-actions.js';
 import { ACTION_TOOLS } from '../lib/agent-tools.js';
 import { isAgentToolDisabled } from '../lib/agent-tool-policy.js';
 import { sourceMessageRoomSql, visibleAgentActionSourceSql } from '../lib/module-action-visibility.js';
-import { actionPlanRoomsReadableSql } from '../lib/plan-room-access.js';
 import { visibleCaptureActionSql } from '../lib/agent-action-visibility.js';
 import { resolveSpaceTargetFromRows } from '../lib/resolve-space-target.js';
 import { employeeCanAccessSpace } from '../lib/mcp-tools/employee-space-access.js';
@@ -439,7 +438,7 @@ mcpServerRoutes.get('/actions/:id/status', async (c) => {
         : eq(agentActions.user_id, actor.userId),
       visibleAgentActionSourceSql({ userId: actor.userId, orgId: keyRecord.org_id }),
       actor.agentEmployeeId ? undefined : visibleCaptureActionSql({ id: actor.userId, org_id: keyRecord.org_id }),
-      actor.agentEmployeeId ? undefined : or(keepsHistory, and(sourceMessageRoomSql(actor.userId, 'history'), actionPlanRoomsReadableSql(sql`${actor.userId}`))),
+      actor.agentEmployeeId ? undefined : or(keepsHistory, sourceMessageRoomSql(actor.userId, 'history')),
     ))
     .limit(1);
 
