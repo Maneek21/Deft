@@ -43,46 +43,59 @@ Upgrade notes:
   volume, `pnpm db:upgrade`).
 - No setting is added, changed or removed. Author Kit stays `0.1.0-alpha.43`.
 - Two changes reach every install, hosted or self-hosted: the web pages now send four
-  response headers, and the app's database connections turn Postgres JIT off. Both are
-  described below. If a reverse proxy in front of Deft sets any of those four headers
+  response headers, and the app's ordinary database connections turn Postgres JIT off.
+  Both are described below. If a reverse proxy in front of Deft sets any of those four headers
   itself, check that its value still suits the pages listed below.
 
 Security fix. Read this one first. On `.148` and every earlier release, a person who lost
 access to a room could still see and act on the assistant's work from it. This was a live
 gap, not a risk that needed an unusual setup:
 
-- **Assistant actions (#578).** A member who left a space or DM, was removed from it, was
-  made a guest, or was removed from the workspace kept their pending assistant actions
-  from that room. The member could not see them after `.148`'s hiding change, but they
+- **Assistant actions (#578).** A member who lost read access to a room (left a space or
+  DM, was removed from it, was made a guest, was removed from the workspace, or lost an
+  archived public room they had not joined) kept their pending assistant actions from
+  that room. Leaving an active public room does not by itself end a non-guest's read
+  access, so it cancels nothing. The member could not see them after `.148`'s hiding change, but they
   were never cancelled. A self-approval that started just before the loss could still
   run. After a member left the workspace, any owner or admin who could read the room could
   approve such an action, and it ran under the departed member's name. Now, when a person
-  loses a room, their pending assistant actions from it are cancelled with a recorded
-  reason, in the same transaction as the loss. A 15-minute sweep closes any the routes
-  did not cover. An approval is re-checked when it is claimed, so no approval runs such an
-  action whoever reviews it.
+  loses a room, their pending assistant actions from it are cancelled in the same
+  transaction as the loss: the audit row is kept, its `approval_status` becomes `expired`
+  and it records the reason, and a governed module write's proposed values are scrubbed.
+  A 15-minute sweep (at most 500 actions per workspace and 100 workspaces per pass) closes
+  any the routes did not cover. Every approval re-checks the room when it is claimed, so
+  while access is lost no approval runs such an action, whoever reviews it. An approval
+  claimed before the loss committed can stand.
 - **Defty plans (#579).** `.148` and earlier had no room check on Defty plans at all
   (plans exist since the first release). A member who lost a plan's room could still list
   and open the plan, whose steps carry that room's content, and could edit, approve, run
   and resume it. An owner or admin could approve and run a departed member's plan, and it
   ran as that member. Now a plan counts only while its creator can still read the plan's
   conversation room and the room of its source message, and is an active workspace
-  member. Listing, reading, editing, approving, running and resuming a plan that fails
-  this answer 404 (pause and abort still work and return only the plan's id and status).
+  member. A plan that fails this disappears from the plan list, and reading, editing,
+  approving, running and resuming it by id answer 404 (pause and abort still work and
+  return only the plan's id and status).
   A running plan pauses, with a reason, if its creator loses a room before a step starts.
   The same rule covers a plan's steps wherever they are read or approved: the pending
   list, Inbox, approval retries, history, an employee's activity and its queues.
-  Creating a plan in a room its creator cannot read is refused.
+  Creating a plan in a room its creator cannot read is refused. Two execution changes
+  apply to every plan, including those whose creators keep their rooms: recovery after a
+  failed step now returns a text recommendation without calling tools or saving a durable
+  employee note, and execution pauses on a step whose id is `source_message_id`,
+  `task_id` or `created_via`.
 - **Plans bound to no room (#580).** A recovery step in `.148` could create a plan that
   named no room, so it stayed readable and runnable after its creator lost the room it
   came from. A plan that names no room of the workspace now counts only for an owner or
-  admin, or for the person who made it through the plan route (marked from `.149` on). It
-  is never treated as allowed by default. This narrows one thing: **a member can no
-  longer see or run their own plans that have no room binding**, including plans they
-  made through the plan route before `.149` with no conversation. Owners and admins still
-  see them.
+  admin, or for the person who made it through the plan route (marked from `.149` on; plans
+  such a plan creates inherit the mark). It is never treated as allowed by default. This
+  narrows one thing: **a member may no longer see or run their own plans that have no
+  room binding and carry no route mark**, that is, plans they made through the plan route
+  before `.149` with no conversation, and any recovery draft from `.148`. Owners and
+  admins can.
 - Owners and admins keep the full history of assistant actions and plans, including rooms
-  they have left.
+  they have left. That is the action-history rows, plan steps included. It does not let
+  them open or run a plan whose creator lost a room, and captures from a private room they
+  are not in stay hidden from them as before.
 
 KNOWN LIMITS:
 
@@ -105,17 +118,18 @@ files. It applies to self-hosted installs as well. Exceptions, each found by a b
   sandboxed App frame has an opaque origin and could not load it otherwise. The script is
   fixed and public and carries no user data.
 
-Postgres JIT is off for the app's database connections (#579). The API sets `jit = off` on
-each new connection, hosted and self-hosted alike. With JIT on, Postgres spent seconds
+Postgres JIT is off for the app's ordinary database connections (#579). The API's main query
+pool sends `SET jit = off` when it opens a connection (an error from that statement is
+ignored; the pool for session advisory locks is not changed), hosted and self-hosted
+alike. With JIT on, Postgres spent seconds
 compiling some Inbox approval-count statements that run in milliseconds (2 to 28 s against
 5 ms, up to the 30 s statement timeout). Your database's own setting is unchanged for other
 clients.
 
-Named follow-ups, none of which lets a person who lost a room see its content or run
-something:
+Named follow-ups:
 
-- #578: a proposal committed while a loss is in flight stays pending until the next sweep
-  and cannot be approved; route-level contention tests; make `lockRoomAccessForClaim`'s
+- #578: a proposal committed while a loss is in flight stays pending until a later sweep
+  expires it (it cannot be approved while access is lost); route-level contention tests; make `lockRoomAccessForClaim`'s
   `actionId` required; a `lock_timeout` on waiting claims; record-mirror and App Run
   releases need the lock if their rows ever name a room; an approved action with no
   outcome whose requester lost the room stays approved (it cannot run); pending step rows
