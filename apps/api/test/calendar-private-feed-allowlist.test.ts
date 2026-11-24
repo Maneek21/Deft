@@ -7,6 +7,7 @@ import {
   PublicFetchError,
   fetchCalendarFeedText,
   fetchPublicHttpText,
+  isAllowedCalendarFeedAddress,
   publicFetchDeps,
 } from '../src/lib/public-http-fetch.js';
 
@@ -224,4 +225,17 @@ test('the sync worker logs fixed events without feed metadata, and stores the hu
     log.mock.restore();
     warn.mock.restore();
   }
+});
+
+test('saving a feed keeps the self-hosted allowlist exception, and only for listed URLs', async () => {
+  assert.equal(await isAllowedCalendarFeedAddress(FEED), true);
+  assert.equal(await isAllowedCalendarFeedAddress('webcal://cal.lan.test/secure.ics'), true);
+  assert.equal(await isAllowedCalendarFeedAddress(PORT_FEED), true);
+  assert.equal(await isAllowedCalendarFeedAddress('http://cal.lan.test/dav/other.ics'), false);
+  assert.equal(await isAllowedCalendarFeedAddress('http://cal.lan.test:8081/feed'), false);
+  assert.equal(await isAllowedCalendarFeedAddress('http://169.254.169.254/latest/meta-data/'), false);
+  assert.equal(await isAllowedCalendarFeedAddress('http://meta.test/feed'), false);
+  allow([FEED], null);
+  assert.equal(await isAllowedCalendarFeedAddress(FEED), false);
+  assert.equal(requests.length, 0);
 });

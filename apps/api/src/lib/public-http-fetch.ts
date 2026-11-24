@@ -373,8 +373,35 @@ async function fetchHttpText(
 }
 
 /** Calendar feeds: `webcal://` is fetched as `https://`. */
+export function calendarFeedFetchUrl(rawUrl: string): string {
+  return rawUrl.trim().replace(/^webcal:\/\//i, 'https://');
+}
+
+const CALENDAR_FEED_SAVE_CHECK_TIMEOUT_MS = 5_000;
+
+/**
+ * The calendar feed rule above, checked when a feed address is saved, before
+ * anything is stored (defence in depth: every fetch checks it again). True
+ * only when a fetch could start: http(s) or webcal, no credentials, port 80
+ * or 443, and the name resolves now and every answer is public. An address
+ * the operator listed in DEFT_CALENDAR_PRIVATE_URL_ALLOWLIST (self-hosted
+ * only) keeps its exception. A name that does not resolve, or not within the
+ * time limit, is refused like one that points inward, so the answer never
+ * tells which internal names exist. Nothing is fetched and no outside request
+ * is counted.
+ */
+export async function isAllowedCalendarFeedAddress(rawUrl: string): Promise<boolean> {
+  try {
+    const { url, listed } = parseTarget(calendarFeedFetchUrl(rawUrl), undefined, calendarPrivateUrlAllowlist());
+    await resolvePinned(url, AbortSignal.timeout(CALENDAR_FEED_SAVE_CHECK_TIMEOUT_MS), listed);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function fetchCalendarFeedText(rawUrl: string): Promise<string> {
-  const url = rawUrl.trim().replace(/^webcal:\/\//i, 'https://');
+  const url = calendarFeedFetchUrl(rawUrl);
   const { text } = await fetchHttpText(url, {
     maxBytes: CALENDAR_FEED_MAX_BYTES,
     timeoutMs: CALENDAR_FEED_TIMEOUT_MS,

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Hono } from 'hono';
 import { db } from '../src/lib/db.js';
+import { publicFetchDeps } from '../src/lib/public-http-fetch.js';
 import { icsPublicRoutes, icsRoutes } from '../src/routes/ics.js';
 
 const TOKEN_ID = 'PUBLISHTOKEN'.repeat(4);
@@ -28,7 +29,10 @@ function failingChain(): unknown {
 
 test('calendar feed route failures return and log a neutral message', async () => {
   const logged: unknown[][] = [];
-  const origs = { error: console.error, warn: console.warn, log: console.log, insert: db.insert, update: db.update, del: db.delete, select: db.select };
+  const origs = { error: console.error, warn: console.warn, log: console.log, insert: db.insert, update: db.update, del: db.delete, select: db.select, lookup: publicFetchDeps.lookup };
+  // The feed's name resolves to a public address, so saving it passes the
+  // address check and reaches the failing insert.
+  publicFetchDeps.lookup = async () => [{ address: '93.184.216.34', family: 4 }];
   console.error = (...a: unknown[]) => void logged.push(a);
   console.warn = (...a: unknown[]) => void logged.push(a);
   console.log = (...a: unknown[]) => void logged.push(a);
@@ -66,5 +70,6 @@ test('calendar feed route failures return and log a neutral message', async () =
   } finally {
     Object.assign(console, { error: origs.error, warn: origs.warn, log: origs.log });
     (db as any).insert = origs.insert; (db as any).update = origs.update; (db as any).delete = origs.del; (db as any).select = origs.select;
+    publicFetchDeps.lookup = origs.lookup;
   }
 });

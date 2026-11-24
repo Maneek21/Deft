@@ -8,7 +8,7 @@ import { generateICS, humanizeIcsError, newPublishToken, parseICS, extractICSCal
 import { syncOne } from '../workers/handlers/ics-sync.js';
 import { env } from '../lib/env.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
-import { PublicFetchError, fetchCalendarFeedText } from '../lib/public-http-fetch.js';
+import { PublicFetchError, calendarFeedFetchUrl, fetchCalendarFeedText, isAllowedCalendarFeedAddress } from '../lib/public-http-fetch.js';
 import { WorkspaceLimitError, limitResponse } from '../lib/workspace-limits.js';
 
 // Two routers: one public (the feed) mounted before authMiddleware, one
@@ -188,6 +188,15 @@ const icsUrlSchema = z.string().trim().min(1).max(2048).refine((value) => {
   }
 }, 'Must be an http, https, or webcal ICS URL');
 
+// A feed address no fetch could use is refused before it is stored, in the
+// shape the AI address fields use (routes/org.ts). Every fetch checks the
+// address again (lib/public-http-fetch.ts). Preview is not checked here: it
+// fetches at once, and answers a refused address exactly like a connection
+// failure.
+export const ICS_URL_NOT_PUBLIC = 'ICS_URL_NOT_PUBLIC';
+const ICS_URL_NOT_PUBLIC_MESSAGE = 'Calendar feeds must use a public internet address on port 80 or 443. '
+  + 'This address points to a private network, to this server or to another port, or its name could not be found.';
+
 // POST /api/ics/subscriptions
 const createSchema = z.object({
   ics_url: icsUrlSchema,
@@ -254,7 +263,11 @@ icsRoutes.post('/subscriptions', guarded('POST /subscriptions', async (c) => {
     return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR', detail: parsed.error.message }, 400);
   }
 
-  const url = parsed.data.ics_url.trim().replace(/^webcal:\/\//i, 'https://');
+  if (!(await isAllowedCalendarFeedAddress(parsed.data.ics_url))) {
+    return c.json({ error: ICS_URL_NOT_PUBLIC_MESSAGE, code: ICS_URL_NOT_PUBLIC }, 400);
+  }
+
+  const url = calendarFeedFetchUrl(parsed.data.ics_url);
 
   const [created] = await db
     .insert(icsSubscriptions)

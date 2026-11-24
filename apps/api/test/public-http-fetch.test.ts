@@ -9,10 +9,12 @@ import {
   PublicFetchError,
   fetchCalendarFeedText,
   fetchPublicHttpText,
+  isAllowedCalendarFeedAddress,
   isPublicFetchAddress,
   publicFetchDeps,
 } from '../src/lib/public-http-fetch.js';
-import { icsRoutes } from '../src/routes/ics.js';
+import { db } from '../src/lib/db.js';
+import { ICS_URL_NOT_PUBLIC, icsRoutes } from '../src/routes/ics.js';
 
 const PUBLIC_A = '93.184.216.34';
 const PUBLIC_DOWN = '93.184.216.35';
@@ -322,4 +324,71 @@ test('feed preview answers a refused address exactly like a connection failure',
   const ok = await preview('webcal://pub.test/feed');
   assert.equal(ok.status, 200);
   assert.equal(ok.body.calendar_name, 'Team');
+});
+
+// Saving a feed (SFX1 item 2): an address no fetch could use is refused with
+// 400 before anything is stored or fetched; the fetch rule still applies at use.
+test('saving a feed refuses an inward or unusable address before storing it', async (t) => {
+  const inserted: unknown[] = [];
+  const realInsert = db.insert;
+  // Stops the handler at the first write, so no database is needed.
+  (db as any).insert = (table: unknown) => {
+    inserted.push(table);
+    throw new Error('stop at the insert');
+  };
+  t.after(() => { (db as any).insert = realInsert; });
+  const app = new Hono();
+  app.use('*', async (c, next) => {
+    c.set('user' as never, { id: 'user-1', org_id: 'org-1' } as never);
+    await next();
+  });
+  app.route('/api/ics', icsRoutes);
+  const save = async (ics_url: string) => {
+    const res = await app.request('/api/ics/subscriptions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ics_url }),
+    });
+    return { status: res.status, body: await res.json() as { error: string; code: string } };
+  };
+
+  const inward = [
+    'http://169.254.169.254/latest/meta-data/', 'http://127.0.0.1/', 'http://2130706433/', 'http://[::1]/',
+    'http://[::ffff:127.0.0.1]/', 'http://10.0.0.1/', 'http://192.168.1.1/', 'http://172.16.0.1/',
+    'https://internal.test/feed', 'webcal://internal.test/feed', 'https://mixed.test/feed', 'https://mixed6.test/feed',
+    'http://127.0.0.1:5432/', 'https://pub.test:8443/feed', 'http://user:pw@pub.test/feed',
+    'https://nxdomain.test/feed', 'https://empty.test/feed', 'https://hang.test/feed',
+  ];
+  let first: { status: number; body: { error: string; code: string } } | null = null;
+  for (const url of inward) {
+    const res = await save(url);
+    assert.equal(res.status, 400, url);
+    assert.equal(res.body.code, ICS_URL_NOT_PUBLIC, url);
+    assert.deepEqual(Object.keys(res.body).sort(), ['code', 'error'], url);
+    // One answer for every refusal: a missing name looks like an inward one.
+    first ??= res;
+    assert.deepEqual(res, first, url);
+  }
+  assert.equal(inserted.length, 0, 'nothing is stored');
+  assert.equal(requests.length, 0, 'nothing is fetched');
+
+  // A public address passes the check and reaches the insert; still nothing fetched.
+  for (const url of ['https://pub.test/feed', 'webcal://pub.test/feed', ' http://down.test/feed ']) {
+    const before = inserted.length;
+    await save(url);
+    assert.equal(inserted.length, before + 1, url);
+  }
+  assert.equal(requests.length, 0);
+
+  // The fetch rule itself is unchanged: a public feed still fetches, an inward one is refused.
+  assert.equal(await fetchCalendarFeedText('webcal://pub.test/feed'), ICS);
+  await refused(fetchCalendarFeedText('https://internal.test/feed'));
+});
+
+test('the save check answers without fetching anything', async () => {
+  assert.equal(await isAllowedCalendarFeedAddress('https://pub.test/feed'), true);
+  assert.equal(await isAllowedCalendarFeedAddress('https://internal.test/feed'), false);
+  assert.equal(await isAllowedCalendarFeedAddress('ftp://pub.test/feed'), false);
+  assert.equal(await isAllowedCalendarFeedAddress('not a url'), false);
+  assert.equal(requests.length, 0);
 });
