@@ -71,7 +71,9 @@ function OAuthAuthorizeContent() {
     if (loading) return;
     if (!user) {
       sessionStorage.setItem('deft-redirect-after-login', `${window.location.pathname}${window.location.search}`);
-      router.replace('/login');
+      // `from=oauth` keeps a reload of the sign-in page inside an outside
+      // client's pop-up without COOP (next.config.ts), so its opener survives.
+      router.replace('/login?from=oauth');
     }
   }, [loading, router, user]);
 

@@ -5,6 +5,18 @@ const SESSION_REFRESH_EXEMPT_PATHS = new Set([
   '/api/auth/signup',
 ]);
 
+/**
+ * After a session ends: remember where to come back to and load the sign-in
+ * page. On the MCP authorization page the whole request (its query) is kept,
+ * and `from=oauth` keeps the sign-in page without COOP (next.config.ts), so
+ * an outside client's pop-up keeps its opener.
+ */
+function sendToLoginAfterExpiry() {
+  const oauth = window.location.pathname === '/oauth/authorize';
+  sessionStorage.setItem('deft-redirect-after-login', oauth ? `${window.location.pathname}${window.location.search}` : window.location.pathname);
+  window.location.href = oauth ? '/login?expired=1&from=oauth' : '/login?expired=1';
+}
+
 // ── Concurrency-guarded token refresh ────────────────────────────────────────
 // A burst of concurrent 401 responses must only trigger ONE refresh call.
 // Subsequent callers await the same in-flight promise and share the result.
@@ -199,9 +211,8 @@ class ApiClient {
         this.clearTokens();
         // Store current path for post-login redirect
         if (typeof window !== 'undefined') {
-          sessionStorage.setItem('deft-redirect-after-login', window.location.pathname);
           console.warn('[auth] Session expired, redirecting to login');
-          window.location.href = '/login?expired=1';
+          sendToLoginAfterExpiry();
         }
       }
     }
@@ -295,10 +306,7 @@ class ApiClient {
           return response;
         }
         this.clearTokens();
-        if (typeof window !== 'undefined') {
-          sessionStorage.setItem('deft-redirect-after-login', window.location.pathname);
-          window.location.href = '/login?expired=1';
-        }
+        if (typeof window !== 'undefined') sendToLoginAfterExpiry();
       }
     }
 

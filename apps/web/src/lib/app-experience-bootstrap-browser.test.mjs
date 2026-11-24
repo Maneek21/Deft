@@ -13,7 +13,7 @@ const fixture=new URL('../../../../scripts/gate-g/experiences/',import.meta.url)
 // Every header next.config.ts gives a path, merged as Next merges rows (a
 // later row overrides a key), so the frames run under the full page headers
 // (Cross-Origin-Opener/Resource-Policy, Origin-Agent-Cluster, ...), not CSP alone.
-const configHeaders=(rows,pathname)=>{const out={};for(const row of rows){const source=row.source;
+const configHeaders=(rows,pathname)=>{const out={};for(const row of rows){const source=row.source;if(row.has)continue;// query-conditioned rows never match these paths
  const hit=source==='/(.*)'||source===pathname||(source.endsWith('/:path*')&&pathname.startsWith(source.slice(0,-'/:path*'.length)+'/'));
  if(hit)for(const header of row.headers)out[header.key]=header.value;}return out;};
 const PAGE_ISOLATION={'Cross-Origin-Opener-Policy':'same-origin','Origin-Agent-Cluster':'?1','Cross-Origin-Resource-Policy':'same-origin','X-DNS-Prefetch-Control':'off'};

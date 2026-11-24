@@ -144,6 +144,15 @@ const nextConfig: NextConfig = {
         headers: [{ key: 'Cross-Origin-Opener-Policy', value: 'unsafe-none' }],
       },
       {
+        // The sign-in page that authorization sends a signed-out person to
+        // (`/login?from=oauth`, also after a session expires there). A reload
+        // of it in the pop-up must not cut the opener either. Ordinary sign-in
+        // keeps COOP.
+        source: '/login',
+        has: [{ type: 'query', key: 'from', value: 'oauth' }],
+        headers: [{ key: 'Cross-Origin-Opener-Policy', value: 'unsafe-none' }],
+      },
+      {
         // The only frameable page is the trusted, opaque Experience bootstrap.
         // Author bytes arrive only by checked parent-to-frame message.
         source: '/app-experience-bootstrap',
