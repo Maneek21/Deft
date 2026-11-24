@@ -333,6 +333,9 @@ async function priorEmployeeMutation(
       eq(agentActions.org_id, ctx.org_id),
       eq(agentActions.agent_employee_id, ctx.employee_id),
       eq(agentActions.action, operation),
+      // The employee's own calls only: a plan step bound to the employee is
+      // never adopted (or its result answered) by a direct call (DFX3).
+      sql`${agentActions.plan_id} IS NULL`,
       inArray(agentActions.approval_status, ['pending', 'approved']),
       or(
         sql`${agentActions.params}->>'idempotency_key' = ${idempotencyKey}`,

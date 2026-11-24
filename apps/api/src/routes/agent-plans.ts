@@ -1,17 +1,20 @@
 import { Hono } from 'hono';
-import { eq, and, desc, or, type SQL } from 'drizzle-orm';
+import { eq, and, desc, inArray, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { agentPlans } from '@deft/db/schema';
+import { readableSpaceSql } from '../lib/space-visibility.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import {
   assertPlanEmployeeBindable,
   assertPlanStepsAllowedFor,
   createPlanRow,
   PLAN_EMPLOYEE_UNAVAILABLE_ERROR,
+  planCreatorKeepsRoomsSql,
   PlanAccessError,
   type PlanStep,
 } from '../lib/agent-plans.js';
 import { getActiveOrgMembership } from '../lib/org-membership.js';
+import { lockPlanRoomAccess } from '../lib/room-access-lock.js';
 import { isDestructiveAction } from '../lib/agent-approval.js';
 import { getMCPToolsForAgent } from '../lib/mcp-tools.js';
 
@@ -34,6 +37,19 @@ async function planManagerScope(orgId: string, userId: string): Promise<SQL> {
  */
 function withPlanApprover(steps: PlanStep[], userId: string): PlanStep[] {
   return steps.map((step) => ({ ...step, approved_by_user_id: userId }));
+}
+
+/**
+ * Pause and abort stay open whoever lost what (stopping is always safe), but
+ * a plan whose creator lost one of its rooms is answered with its id and
+ * status only (check 13: nothing of the room is shown).
+ */
+async function stopReply(plan: typeof agentPlans.$inferSelect | undefined) {
+  if (!plan) return plan;
+  const [kept] = await db.select({ id: agentPlans.id }).from(agentPlans)
+    .where(and(eq(agentPlans.id, plan.id), eq(agentPlans.org_id, plan.org_id), planCreatorKeepsRoomsSql()))
+    .limit(1);
+  return kept ? withDestructiveMarks(plan) : { id: plan.id, status: plan.status };
 }
 
 function planAccessRefusal(err: unknown) {
@@ -76,7 +92,8 @@ agentPlanRoutes.get('/', async (c) => {
     const status = c.req.query('status');
     const employeeId = c.req.query('employee_id');
 
-    const conditions = [eq(agentPlans.org_id, user.org_id), eq(agentPlans.user_id, user.id)];
+    // Check 13: plans from a room the creator lost leave their list and views.
+    const conditions = [eq(agentPlans.org_id, user.org_id), eq(agentPlans.user_id, user.id), planCreatorKeepsRoomsSql()];
     if (status) {
       conditions.push(eq(agentPlans.status, status as any));
     }
@@ -107,7 +124,7 @@ agentPlanRoutes.get('/:id', async (c) => {
     const [plan] = await db
       .select()
       .from(agentPlans)
-      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, user.org_id), eq(agentPlans.user_id, user.id)))
+      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, user.org_id), eq(agentPlans.user_id, user.id), planCreatorKeepsRoomsSql()))
       .limit(1);
 
     if (!plan) {
@@ -134,6 +151,19 @@ agentPlanRoutes.post('/', async (c) => {
     if (body.agent_employee_id != null) {
       if (typeof body.agent_employee_id !== 'string') throw new PlanAccessError(PLAN_EMPLOYEE_UNAVAILABLE_ERROR);
       await assertPlanEmployeeBindable(user.org_id, body.agent_employee_id);
+    }
+
+    // A plan is bound only to a room its creator can read (DFX3): the read
+    // and run gates would refuse it anyway.
+    if (body.conversation_id != null) {
+      if (typeof body.conversation_id !== 'string') {
+        return c.json({ error: 'conversation_id must be a string', code: 'VALIDATION_ERROR' }, 400);
+      }
+      // readableSpaceSql reads the room itself (id and workspace given as values).
+      const readable = await db.execute(sql`SELECT ${readableSpaceSql(user.id, sql`${body.conversation_id}`, sql`${user.org_id}`)} AS ok`);
+      if ((readable.rows[0] as { ok?: boolean } | undefined)?.ok !== true) {
+        return c.json({ error: 'Space not found', code: 'NOT_FOUND' }, 404);
+      }
     }
 
     const { plan_id } = await createPlanRow({
@@ -177,7 +207,7 @@ agentPlanRoutes.put('/:id', async (c) => {
     const [existing] = await db
       .select()
       .from(agentPlans)
-      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, user.org_id), eq(agentPlans.user_id, user.id)))
+      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, user.org_id), eq(agentPlans.user_id, user.id), planCreatorKeepsRoomsSql()))
       .limit(1);
 
     if (!existing) {
@@ -203,11 +233,18 @@ agentPlanRoutes.put('/:id', async (c) => {
       }));
     }
 
-    const [updated] = await db
-      .update(agentPlans)
-      .set(updates)
-      .where(eq(agentPlans.id, planId))
-      .returning();
+    // The room rule and the state are part of the update itself, read under
+    // the creator's room-access lock and the plan's room-row locks (check 13).
+    const [updated] = await db.transaction(async (tx) => {
+      await lockPlanRoomAccess(tx, existing.org_id, existing.user_id, planId);
+      return tx
+        .update(agentPlans)
+        .set(updates)
+        .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, user.org_id),
+          inArray(agentPlans.status, ['draft', 'paused']), planCreatorKeepsRoomsSql()))
+        .returning();
+    });
+    if (!updated) return c.json({ error: 'Plan not found', code: 'NOT_FOUND' }, 404);
 
     return c.json(await withDestructiveMarks(updated));
   } catch (err) {
@@ -227,7 +264,7 @@ agentPlanRoutes.post('/:id/approve', async (c) => {
     const [plan] = await db
       .select()
       .from(agentPlans)
-      .where(and(eq(agentPlans.id, planId), await planManagerScope(user.org_id, user.id)))
+      .where(and(eq(agentPlans.id, planId), await planManagerScope(user.org_id, user.id), planCreatorKeepsRoomsSql()))
       .limit(1);
 
     if (!plan) {
@@ -243,11 +280,16 @@ agentPlanRoutes.post('/:id/approve', async (c) => {
 
     await assertPlanStepsAllowedFor(plan.org_id, plan.user_id, plan.steps);
 
-    const [updated] = await db
-      .update(agentPlans)
-      .set({ status: 'approved', steps: withPlanApprover(plan.steps as PlanStep[], user.id), updated_at: new Date() })
-      .where(eq(agentPlans.id, planId))
-      .returning();
+    const [updated] = await db.transaction(async (tx) => {
+      await lockPlanRoomAccess(tx, plan.org_id, plan.user_id, planId);
+      return tx
+        .update(agentPlans)
+        .set({ status: 'approved', steps: withPlanApprover(plan.steps as PlanStep[], user.id), updated_at: new Date() })
+        .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, plan.org_id),
+          inArray(agentPlans.status, ['draft', 'paused']), planCreatorKeepsRoomsSql()))
+        .returning();
+    });
+    if (!updated) return c.json({ error: 'Plan not found', code: 'NOT_FOUND' }, 404);
 
     return c.json(await withDestructiveMarks(updated));
   } catch (err) {
@@ -267,7 +309,7 @@ agentPlanRoutes.post('/:id/execute', async (c) => {
     const [plan] = await db
       .select()
       .from(agentPlans)
-      .where(and(eq(agentPlans.id, planId), await planManagerScope(user.org_id, user.id)))
+      .where(and(eq(agentPlans.id, planId), await planManagerScope(user.org_id, user.id), planCreatorKeepsRoomsSql()))
       .limit(1);
 
     if (!plan) {
@@ -323,7 +365,7 @@ agentPlanRoutes.post('/:id/pause', async (c) => {
       .where(eq(agentPlans.id, planId))
       .returning();
 
-    return c.json(await withDestructiveMarks(updated));
+    return c.json(await stopReply(updated));
   } catch (err) {
     console.error('Failed to pause plan:');
     return c.json({ error: 'Failed to pause plan', code: 'INTERNAL_ERROR' }, 500);
@@ -339,7 +381,7 @@ agentPlanRoutes.post('/:id/resume', async (c) => {
     const [plan] = await db
       .select()
       .from(agentPlans)
-      .where(and(eq(agentPlans.id, planId), await planManagerScope(user.org_id, user.id)))
+      .where(and(eq(agentPlans.id, planId), await planManagerScope(user.org_id, user.id), planCreatorKeepsRoomsSql()))
       .limit(1);
 
     if (!plan) {
@@ -361,10 +403,16 @@ agentPlanRoutes.post('/:id/resume', async (c) => {
       return step;
     });
 
-    await db
-      .update(agentPlans)
-      .set({ status: 'approved', steps: withPlanApprover(steps, user.id), updated_at: new Date() })
-      .where(eq(agentPlans.id, planId));
+    const [resumed] = await db.transaction(async (tx) => {
+      await lockPlanRoomAccess(tx, plan.org_id, plan.user_id, planId);
+      return tx
+        .update(agentPlans)
+        .set({ status: 'approved', steps: withPlanApprover(steps, user.id), updated_at: new Date() })
+        .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, plan.org_id),
+          eq(agentPlans.status, 'paused'), planCreatorKeepsRoomsSql()))
+        .returning({ id: agentPlans.id });
+    });
+    if (!resumed) return c.json({ error: 'Plan not found', code: 'NOT_FOUND' }, 404);
 
     await enqueue(QUEUE_NAMES.AGENT_JOBS, 'plan-executor', {
       planId,
@@ -408,7 +456,7 @@ agentPlanRoutes.post('/:id/abort', async (c) => {
       .where(eq(agentPlans.id, planId))
       .returning();
 
-    return c.json(await withDestructiveMarks(updated));
+    return c.json(await stopReply(updated));
   } catch (err) {
     console.error('Failed to abort plan:');
     return c.json({ error: 'Failed to abort plan', code: 'INTERNAL_ERROR' }, 500);

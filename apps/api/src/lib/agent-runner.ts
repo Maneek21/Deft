@@ -342,6 +342,8 @@ export async function runAgentQuery(params: {
    * run before any dispatch. Defaults to 'default'.
    */
   toolPolicy?: 'default' | 'none';
+  /** false: no durable note is saved from this run's answer (default: saved for an employee). */
+  durableNotes?: boolean;
 }): Promise<{
   text: string;
   citations: any[];
@@ -967,7 +969,7 @@ export async function runAgentQuery(params: {
   if (requestedSourceGrounding && !finalText) lastResponseContent = [{ type: 'text', text: responseText, citations: null }];
 
   // Persist durable notes for agent employees
-  if (agentEmployeeId && responseText && responseText.length > 100) {
+  if (params.durableNotes !== false && agentEmployeeId && responseText && responseText.length > 100) {
     try {
       const noteKey = `findings:${new Date().toISOString().slice(0, 10)}`;
       await db.insert(agentMemory).values({

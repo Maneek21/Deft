@@ -459,6 +459,56 @@ test('completed module update replay rechecks access without rejecting its consu
   assert.equal(scopedActions.rows[0]?.count, '0');
 });
 
+test('a plan step never takes over the module action of another plan through its idempotency key', { skip: !canRun }, async () => {
+  const defty = await ensureDeftyEmployee(orgId);
+  const owner = humanModuleActor({ orgId, userId: ownerId, role: 'owner', source: 'rest' });
+  // Contacts is installed by the replay test above.
+  const configured = await updateModuleInstallation(owner, 'contacts', { agent_access: 'write' });
+  const created = await createModuleRecord(owner, {
+    module_id: configured.module_id,
+    collection_key: 'contacts',
+    data: { name: `Plan takeover contact ${suffix}`, status: 'lead' },
+    expected_manifest_digest: configured.manifest_digest,
+    idempotency_key: `plan-takeover-create-${suffix}`,
+  });
+  assert.ok(created.record);
+  const step = {
+    id: 'update-contact',
+    description: 'Update a contact',
+    tool: 'module_record_update',
+    params: {
+      record_id: created.record.id,
+      patch: { status: 'active' },
+      expected_revision: created.record.revision,
+      expected_manifest_digest: configured.manifest_digest,
+      idempotency_key: `plan-takeover-update-${suffix}`,
+    },
+  };
+  // The first plan's step runs (after review when it asks for one).
+  const first = await createApprovedPlan(defty.employeeId, [step], { failFast: false });
+  await handlePlanExecutor(planJob(first));
+  const pending = await client.query<{ id: string }>(
+    "SELECT id FROM agent_actions WHERE org_id = $1 AND plan_id = $2 AND approval_status = 'pending'", [orgId, first]);
+  if (pending.rows[0]) {
+    const approval = await app.request(`/api/agent/actions/${pending.rows[0].id}/approve`, { method: 'POST' });
+    assert.equal(approval.status, 200, await approval.text());
+  }
+  const firstActions = await client.query<{ id: string; executed_at: Date | null }>(
+    'SELECT id, executed_at FROM agent_actions WHERE org_id = $1 AND plan_id = $2', [orgId, first]);
+  assert.equal(firstActions.rows.length, 1);
+  assert.ok(firstActions.rows[0]?.executed_at, 'the write of the first plan ran');
+
+  // Another plan with the same step and key: it must not answer with, or run
+  // under, the first plan's action.
+  const second = await createApprovedPlan(defty.employeeId, [step], { failFast: false });
+  await handlePlanExecutor(planJob(second));
+  const secondPlan = await client.query<{ steps: Array<{ status: string; error?: string; result?: unknown }> }>(
+    'SELECT steps FROM agent_plans WHERE id = $1', [second]);
+  const secondStep = secondPlan.rows[0]?.steps[0];
+  assert.notEqual(secondStep?.status, 'completed', JSON.stringify(secondStep));
+  assert.match(secondStep?.error ?? '', /different approval context/);
+});
+
 test('plan terminal state remains failed when processed steps contain failures', { skip: !canRun }, async () => {
   const defty = await ensureDeftyEmployee(orgId);
   const planId = await createApprovedPlan(defty.employeeId);

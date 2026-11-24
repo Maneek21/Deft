@@ -57,7 +57,33 @@ export async function lockRoomAccessForClaim(tx: Executor, orgId: string, reques
           JOIN agent_actions claimed ON claimed.id = ${actionId} AND claimed.org_id = ${orgId}
           WHERE source_message.org_id = ${orgId}
             AND source_message.id IN (claimed.message_id, claimed.params->>'source_message_id')
+        UNION
+        ${planRoomIdsSql(sql`(SELECT claimed.plan_id FROM agent_actions claimed WHERE claimed.id = ${actionId} AND claimed.org_id = ${orgId})`, orgId)}
       )
     ORDER BY source_room.id
     FOR SHARE OF source_room`);
+}
+
+/** The room ids of a plan: its conversation and its source message's room. */
+function planRoomIdsSql(planId: ReturnType<typeof sql>, orgId: string) {
+  return sql`SELECT locked_plan.conversation_id FROM agent_plans locked_plan
+          WHERE locked_plan.id = ${planId} AND locked_plan.org_id = ${orgId}
+        UNION
+        SELECT plan_source.space_id FROM messages plan_source
+          JOIN agent_plans locked_plan ON locked_plan.id = ${planId} AND locked_plan.org_id = ${orgId}
+          WHERE plan_source.org_id = ${orgId} AND plan_source.id = locked_plan.context->>'source_message_id'`;
+}
+
+/**
+ * DFX3: a plan's step claim or a guarded plan update, for the plan's
+ * creator: the creator's room-access lock (shared), then the plan's room rows
+ * FOR SHARE in id order. Losses and room changes wait for it, or it waits for
+ * them and the next statement reads them.
+ */
+export async function lockPlanRoomAccess(tx: Executor, orgId: string, creatorId: string, planId: string): Promise<void> {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock_shared(${roomAccessLockKey(orgId, creatorId)})`);
+  await tx.execute(sql`SELECT plan_room.id FROM spaces plan_room
+    WHERE plan_room.org_id = ${orgId} AND plan_room.id IN (${planRoomIdsSql(sql`${planId}`, orgId)})
+    ORDER BY plan_room.id
+    FOR SHARE OF plan_room`);
 }

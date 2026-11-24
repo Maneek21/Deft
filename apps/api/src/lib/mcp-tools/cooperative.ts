@@ -29,6 +29,7 @@
  */
 import { createHash } from 'node:crypto';
 import { and, desc, eq, sql } from 'drizzle-orm';
+import { actionPlanRoomsReadableSql } from '../plan-room-access.js';
 import { db } from '../db.js';
 import { currentAgentActionSourceAuthoritySql } from '../agent-channel-authority.js';
 import {
@@ -551,6 +552,9 @@ export async function pollPendingWork(
         eq(agentActions.agent_employee_id, ctx.employee_id),
         eq(agentActions.approval_status, 'pending'),
         currentAgentActionSourceAuthoritySql(),
+        // A step of a plan whose creator lost one of its rooms is not
+        // offered (DFX3), as a person no longer sees it.
+        actionPlanRoomsReadableSql(),
       ),
     )
     .orderBy(desc(agentActions.created_at))

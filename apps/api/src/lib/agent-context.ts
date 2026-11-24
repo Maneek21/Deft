@@ -58,7 +58,8 @@ import {
   employeeModuleActor,
 } from './module-service.js';
 import { requireActiveOrgMembership } from './org-membership.js';
-import { visibleModuleActionSql } from './module-action-visibility.js';
+import { sourceMessageRoomSql, visibleModuleActionSql } from './module-action-visibility.js';
+import { actionPlanRoomsReadableSql } from './plan-room-access.js';
 import { visibleCaptureActionSql } from './agent-action-visibility.js';
 import {
   loadEmployeeProjectAccess,
@@ -2405,6 +2406,26 @@ export async function executeToolCall(
       // Capture params copy chat text; they follow every evidence message,
       // as on the web activity routes.
       if (!agentEmployeeId) conditions.push(visibleCaptureActionSql({ id: _userId, org_id: orgId }));
+      // Read as an employee on a person's behalf (Defty or an employee
+      // answering them, or a plan of theirs run as an employee): the result
+      // reaches that person, so their own room rule applies too, unless they
+      // are an owner or admin (check 13, DFX3). A person no longer an active
+      // member reads nothing.
+      // An employee's read also leaves out the steps of a plan whose creator
+      // lost one of its rooms, as its queues do (DFX3): another member who
+      // shares the employee does not read them either.
+      if (agentEmployeeId) conditions.push(actionPlanRoomsReadableSql());
+      if (agentEmployeeId && _userId) {
+        const [person] = await db.select({ kind: users.kind, role: orgMembers.role, active: orgMembers.is_active })
+          .from(users)
+          .leftJoin(orgMembers, and(eq(orgMembers.user_id, users.id), eq(orgMembers.org_id, orgId)))
+          .where(eq(users.id, _userId))
+          .limit(1);
+        if (person?.kind === 'human') {
+          if (!person.active) conditions.push(sql`false`);
+          else if (person.role !== 'owner' && person.role !== 'admin') conditions.push(sourceMessageRoomSql(_userId, 'history'));
+        }
+      }
       if (employee_id) {
         conditions.push(eq(agentActions.agent_employee_id, employee_id));
       }
@@ -2483,6 +2504,11 @@ export async function executeToolCall(
         };
       }
 
+      // A plan made by a plan step keeps its parent's rooms: the executor
+      // passes the parent's source message (check 13, DFX3).
+      const sourceMessageId = typeof (params as { source_message_id?: unknown }).source_message_id === 'string'
+        ? (params as { source_message_id: string }).source_message_id
+        : undefined;
       const planResult = await createPlanRow({
         org_id: orgId,
         user_id: _userId,
@@ -2491,6 +2517,7 @@ export async function executeToolCall(
         title,
         description: description ?? null,
         steps,
+        ...(sourceMessageId ? { source_message_id: sourceMessageId } : {}),
       });
 
       return { result: planResult, citations: [] };

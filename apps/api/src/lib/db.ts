@@ -20,6 +20,17 @@ const pool = new Pool({
   keepAliveInitialDelayMillis: 10_000,
 });
 
+// No JIT: these are short OLTP statements. The review gate's estimated cost
+// (subplans per row) passes jit_above_cost, and Postgres then spends seconds
+// compiling a statement that runs in milliseconds (the Inbox approval count:
+// 2-28 s with JIT, 5 ms without), up to statement_timeout. Set per
+// connection, not as a startup `options`: that would replace PGOPTIONS, and a
+// pooler may refuse a startup parameter it does not know. The client runs
+// its queries in order, so this precedes the connection's first query.
+pool.on('connect', (client) => {
+  client.query('SET jit = off').catch(() => undefined);
+});
+
 // Session-scoped advisory locks must not consume the ordinary query pool;
 // otherwise enough concurrent long-running workflows could hold every query
 // connection while each waits for another query connection.
