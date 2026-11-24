@@ -6,6 +6,7 @@ import { spaces, spaceMembers, users, messages, agentEmployees, orgMembers } fro
 import { evictActiveHuddleParticipants, getIO } from '../socket.js';
 import { canReadSpace, canSelfJoinPublicSpaces, requireSpaceMembership } from '../lib/space-membership.js';
 import { DEFTY_EMAIL } from '../lib/ensure-defty-membership.js';
+import { peopleViewer, withoutHiddenEmails } from '../lib/people-visibility.js';
 import { cancelPendingScheduledMessagesForSpace } from '../lib/scheduled-message-cancel.js';
 import { closeLostRoomActionsInTx, finishLostRoomCancellations } from '../lib/lost-room-action-cancellation.js';
 import { lockRoomAccessChange } from '../lib/room-access-lock.js';
@@ -526,7 +527,10 @@ spaceRoutes.get('/:id/members', async (c) => {
         visibleLiveSpaceMemberForOrg(user.org_id),
       ));
 
-    return c.json(members);
+    // Everyone listed shares this space with the caller; a guest still sees
+    // no email address but their own (lib/people-visibility.ts).
+    const viewer = await peopleViewer(user.org_id, user.id);
+    return c.json(withoutHiddenEmails(viewer, members, (member) => member.id));
   } catch (err) {
     console.error('Failed to fetch space members:');
     return c.json({ error: 'Failed to fetch space members', code: 'INTERNAL_ERROR' }, 500);

@@ -5,6 +5,7 @@ import { db } from '../lib/db.js';
 import { orgMembers, userGroups, userGroupMembers, users } from '@deft/db/schema';
 import { OrgMembershipError, requireOrgAdminOrOwner } from '../lib/org-membership.js';
 import type { AuthUser } from '../middleware/auth.js';
+import { peopleViewer, personVisibleSql, withoutHiddenEmails } from '../lib/people-visibility.js';
 
 export const groupRoutes = new Hono();
 
@@ -103,7 +104,10 @@ groupRoutes.get('/:id', async (c) => {
     return c.json({ error: 'Group not found', code: 'NOT_FOUND' }, 404);
   }
 
-  const members = await db
+  // A guest sees only the members who share a space with them, without
+  // their email addresses (lib/people-visibility.ts).
+  const viewer = await peopleViewer(user.org_id, user.id);
+  const rows = await db
     .select({
       user_id: userGroupMembers.user_id,
       name: users.name,
@@ -117,7 +121,8 @@ groupRoutes.get('/:id', async (c) => {
       eq(orgMembers.org_id, group.org_id),
       eq(orgMembers.is_active, true),
     ))
-    .where(eq(userGroupMembers.group_id, id));
+    .where(and(eq(userGroupMembers.group_id, id), personVisibleSql(viewer, users.id)));
+  const members = withoutHiddenEmails(viewer, rows, (member) => member.user_id);
 
   return c.json({
     ...group,

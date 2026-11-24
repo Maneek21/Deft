@@ -52,6 +52,13 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
   instead of loading them from Google Fonts, so no page, the signup and setup pages
   included, makes a request to Google, and the page policy (CSP) no longer allows
   fonts.googleapis.com or fonts.gstatic.com.
+- Guests no longer see every member or any member's email address. A guest now sees only
+  the people who share at least one room, direct message or conversation with them, and no
+  email address but their own: in the member list and people directory, people search,
+  member profiles, room, group and team member lists, the MCP member, team and context
+  tools, and when they ask Defty to find someone. Owners, admins and members see what they
+  saw before.
+- People search no longer lists removed members, for anyone.
 
 ## [0.3.0-preview.150] — 2026-11-25 (prerelease)
 

@@ -26,6 +26,7 @@ import { ordinaryPendingApprovalSql, specialApprovalActionSql } from '../lib/pen
 import { actionRequesterIdSql } from '../lib/agent-action-requester.js';
 import { OrgMembershipError, requireOrgAdminOrOwner } from '../lib/org-membership.js';
 import type { AuthUser } from '../middleware/auth.js';
+import { canSeePerson, emailFor, peopleViewer, visiblePersonIds } from '../lib/people-visibility.js';
 
 export const teamRoutes = new Hono();
 
@@ -598,9 +599,14 @@ teamRoutes.get('/:id', async (c) => {
   const visible = await requireVisibleTeam(c, user, c.req.param('id'));
   if ('response' in visible) return visible.response;
 
-  const [lead] = visible.team.lead_user_id
+  // A guest sees only the people who share a space with them, without their
+  // email addresses (lib/people-visibility.ts).
+  const viewer = await peopleViewer(user.org_id, user.id);
+  const visiblePeople = await visiblePersonIds(viewer);
+  const [leadRow] = visible.team.lead_user_id && canSeePerson(visiblePeople, visible.team.lead_user_id)
     ? await db.select({ id: users.id, name: users.name, email: users.email, avatar_url: users.avatar_url }).from(users).where(eq(users.id, visible.team.lead_user_id)).limit(1)
     : [null];
+  const lead = leadRow ? { ...leadRow, email: emailFor(viewer, leadRow.id, leadRow.email) } : null;
 
   const members = await db
     .select({
@@ -636,8 +642,9 @@ teamRoutes.get('/:id', async (c) => {
   return c.json({
     team: visible.team,
     lead,
-    members: members.map((member) => ({
+    members: members.filter((member) => canSeePerson(visiblePeople, member.user_id)).map((member) => ({
       ...member,
+      email: emailFor(viewer, member.user_id, member.email),
       kind: member.kind === 'agent' || member.agent_employee_id ? 'agent' : member.kind,
     })),
     resources: decoratedResources,

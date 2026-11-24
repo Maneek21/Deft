@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, ilike } from 'drizzle-orm';
 import { db } from '../lib/db.js';
+import { emailFor, peopleViewer } from '../lib/people-visibility.js';
 import { notes, noteFolders, noteVersions, noteShares, users, orgMembers } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { requireSpaceMembership } from '../lib/space-membership.js';
@@ -450,7 +451,9 @@ dailyNoteRoutes.get('/:id/shares', async (c) => {
     ))
     .where(eq(noteShares.note_id, noteId));
 
-  return c.json({ shares });
+  // A guest sees no email address but their own (lib/people-visibility.ts).
+  const viewer = await peopleViewer(user.org_id, user.id);
+  return c.json({ shares: shares.map((share) => ({ ...share, user_email: emailFor(viewer, share.user_id, share.user_email) })) });
 });
 
 // POST /:id/shares — share note with a user

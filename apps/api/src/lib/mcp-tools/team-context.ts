@@ -19,6 +19,7 @@ import { db } from '../db.js';
 import { visibleTaskCondition } from '../task-visibility.js';
 import { visibleWikiPageCondition } from '../wiki-visibility.js';
 import { publicSpaceVisibleSql } from '../space-visibility.js';
+import { canSeePerson, emailFor, peopleViewer, visiblePersonIds, type PeopleViewer } from '../people-visibility.js';
 import { errorResult, textResult, type ToolContext, type ToolResult } from './types.js';
 import {
   loadEmployeeProjectAccess,
@@ -219,10 +220,13 @@ export async function listTeamSummaries(
 
   const visible = rows.filter((row) => canSeeTeam(access, row)).slice(0, limit);
   const counts = await resourceCounts(access, visible.map((row) => row.id));
+  const people = await visiblePeopleFor(access);
   return visible.map((row) => {
     const resourcesByType = counts.get(row.id) ?? {};
     return {
       ...row,
+      // A guest is not told the name of a lead they share no space with.
+      lead_name: canSeePerson(people, row.lead_user_id) ? row.lead_name : null,
       resource_count: Object.values(resourcesByType).reduce((sum, value) => sum + value, 0),
       resources_by_type: resourcesByType,
     };
@@ -267,6 +271,18 @@ async function resolveTeam(
     : { status: 'not_found', query, candidates: [] };
 }
 
+// A person calling through MCP: a guest sees only the people who share a
+// space with them, without their email addresses (lib/people-visibility.ts).
+// An agent employee's access is not a person's and is unchanged.
+async function personViewerFor(access: TeamAccessContext): Promise<PeopleViewer | null> {
+  return access.user_id && !access.employee_project_access ? peopleViewer(access.org_id, access.user_id) : null;
+}
+
+async function visiblePeopleFor(access: TeamAccessContext): Promise<ReadonlySet<string> | null> {
+  const viewer = await personViewerFor(access);
+  return viewer ? visiblePersonIds(viewer) : null;
+}
+
 async function teamMemberRows(access: TeamAccessContext, teamId: string) {
   const rows = await db
     .select({
@@ -296,12 +312,14 @@ async function teamMemberRows(access: TeamAccessContext, teamId: string) {
     ))
     .where(and(eq(teamMembers.org_id, access.org_id), eq(teamMembers.team_id, teamId)))
     .orderBy(teamMembers.role, users.name);
-  return rows.map((row) => ({
+  const viewer = await personViewerFor(access);
+  const visible = viewer ? await visiblePersonIds(viewer) : null;
+  return rows.filter((row) => canSeePerson(visible, row.user_id)).map((row) => ({
     user_id: row.user_id,
     role: row.role,
     joined_at: row.joined_at,
     name: row.name,
-    email: row.email,
+    email: viewer ? emailFor(viewer, row.user_id, row.email) : row.email,
     avatar_url: row.avatar_url,
     title: row.title,
     kind: row.kind === 'agent' || row.agent_employee_id ? 'agent' : row.kind,

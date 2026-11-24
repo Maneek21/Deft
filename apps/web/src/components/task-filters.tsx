@@ -41,7 +41,7 @@ type Props = {
   onApplyViewConfig: (config: TaskViewConfigV1) => void;
 };
 
-type Member = { id: string; name: string; email: string; avatar_url: string | null };
+type Member = { id: string; name: string; email: string | null; avatar_url: string | null };
 type Label = { id: string; name: string; color: string };
 type SavedView = { id: string; name: string; config: unknown; user_id: string; is_shared: boolean };
 
@@ -216,7 +216,8 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
 
   const filteredMembers = members.filter(m =>
     m.name.toLowerCase().includes(memberSearch.toLowerCase()) ||
-    m.email.toLowerCase().includes(memberSearch.toLowerCase())
+    // A guest receives no email addresses (null) for other people.
+    (m.email ?? '').toLowerCase().includes(memberSearch.toLowerCase())
   );
 
   const filteredLabels = availableLabels.filter(l =>

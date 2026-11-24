@@ -46,6 +46,7 @@ import { velocityCalculator, workloadAnalyzer, skillsGapAnalyzer } from '../serv
 import { generateOneOnePrep } from '../services/oneone-prep.js';
 import { createPlanRow } from './agent-plans.js';
 import { resolveAssigneeWithMatches } from './resolve-assignee.js';
+import { canSeePerson, peopleViewer, visiblePersonIds } from './people-visibility.js';
 import { visibleTaskCondition } from './task-visibility.js';
 import { allowedNextStatuses } from './task-status-machine.js';
 import { getProjectResolvedConfig } from './project-resolved-config.js';
@@ -337,9 +338,16 @@ export async function executeToolCall(
         return { result: { error: 'Provide one bounded member name or ID.', code: 'INVALID_MEMBER_QUERY' }, citations: [] };
       }
       const resolved = await resolveAssigneeWithMatches(params.query, orgId);
-      return { result: resolved.ok ? { member: resolved.value } : {
-        error: resolved.ambiguous ? 'Member name is ambiguous; ask which person.' : 'No active assignable member matched; ask for another name.',
-        code: resolved.ambiguous ? 'MEMBER_AMBIGUOUS' : 'MEMBER_NOT_FOUND', matches: resolved.matches.slice(0, 20),
+      // Asked by a guest, Defty finds only the people who share a space with
+      // that guest (lib/people-visibility.ts).
+      const visible = await visiblePersonIds(await peopleViewer(orgId, _userId));
+      if (resolved.ok && canSeePerson(visible, resolved.value.id)) return { result: { member: resolved.value }, citations: [] };
+      const matches = (resolved.ok ? [resolved.value] : resolved.matches).filter((match) => canSeePerson(visible, match.id));
+      const ambiguous = !resolved.ok && resolved.ambiguous && matches.length > 1;
+      if (!resolved.ok && resolved.ambiguous && matches.length === 1) return { result: { member: matches[0] }, citations: [] };
+      return { result: {
+        error: ambiguous ? 'Member name is ambiguous; ask which person.' : 'No active assignable member matched; ask for another name.',
+        code: ambiguous ? 'MEMBER_AMBIGUOUS' : 'MEMBER_NOT_FOUND', matches: ambiguous ? matches.slice(0, 20) : [],
       }, citations: [] };
     }
     case 'list_spaces': {
