@@ -81,9 +81,9 @@ Hosted service (limits apply only when `DEFT_HOSTED=true`; a self-hosted install
     `WORKSPACE_STORAGE_UNAVAILABLE` (try again shortly).
   - The person sees the reason (the server's words) where they upload, set a reminder or
     sync a feed. Owners and admins (active people) also get an in-app notice when the
-    outside-request limit is reached or a file is refused by the storage check before
-    writing, at most one an hour per limit and API process; a refusal that only comes
-    from the disk itself sends none, and neither do the two scheduled-item limits. The
+    outside-request limit is reached or the pre-write storage check refuses a file with
+    413 `WORKSPACE_STORAGE_FULL`, at most one an hour per limit and API process; a refusal that
+    only comes from the disk itself, a 503 `WORKSPACE_STORAGE_UNAVAILABLE`, and the two scheduled-item limits send none. The
     operator's log has at most one `workspace_limit_reached` line a minute per limit and
     process, with no values in it.
 - Emergency-stop banner: a workspace the operator stops with `DEFT_PAUSED_START=true` and
