@@ -29,6 +29,8 @@ export function attentionActionProposer(row:Parameters<typeof hasHumanMcpBulkPro
 }
 
 const OPEN_STATES: AttentionState[] = ['open_unseen', 'open_seen', 'acknowledged'];
+/** Events per insert in mark-all-seen (eight parameters each, at most 65,535 per statement). */
+export const MARK_ALL_SEEN_EVENT_BATCH = 1_000;
 const ALL_STATES: AttentionState[] = [
   ...OPEN_STATES,
   'snoozed',
@@ -326,27 +328,32 @@ attentionRoutes.post('/mark-all-seen', async (c) => {
   // The unseen items are locked first, so none changes source type before the
   // update reads it (lib/attention.ts, writeAttentionWithSourceTypes).
   // Only the locked items change: one that arrives or reopens meanwhile stays
-  // unseen, whole, as if it had arrived a moment later.
-  const updated = await writeAttentionWithSourceTypes(unseen, (tx, sourceTypes, lockedIds) => tx
-    .update(attentionItems)
-    .set({
-      state: 'open_seen',
-      seen_at: now,
-      version: sql`${attentionItems.version} + 1`,
-      updated_at: now,
-    })
-    .where(and(unseen, lockedAttentionIdsSql(lockedIds), visibleAttentionCondition(user.id, sourceTypes)))
-    .returning({ id: attentionItems.id, version: attentionItems.version }), []);
-  if (updated.length > 0) {
-    await db.insert(attentionEvents).values(updated.map((item) => ({
-      org_id: user.org_id,
-      attention_item_id: item.id,
-      user_id: user.id,
-      event_type: 'open_seen',
-      source_event_id: `mark-all-seen:${item.id}:${item.version}:${now.getTime()}`,
-      actor_user_id: user.id,
-      payload: { bulk: true },
-    })));
-  }
+  // unseen, whole, as if it had arrived a moment later. Their events commit
+  // with the change, in batches (a statement may have at most 65,535
+  // parameters, eight per event).
+  const updated = await writeAttentionWithSourceTypes(unseen, async (tx, sourceTypes, lockedIds) => {
+    const changed = await tx
+      .update(attentionItems)
+      .set({
+        state: 'open_seen',
+        seen_at: now,
+        version: sql`${attentionItems.version} + 1`,
+        updated_at: now,
+      })
+      .where(and(unseen, lockedAttentionIdsSql(lockedIds), visibleAttentionCondition(user.id, sourceTypes)))
+      .returning({ id: attentionItems.id, version: attentionItems.version });
+    for (let start = 0; start < changed.length; start += MARK_ALL_SEEN_EVENT_BATCH) {
+      await tx.insert(attentionEvents).values(changed.slice(start, start + MARK_ALL_SEEN_EVENT_BATCH).map((item) => ({
+        org_id: user.org_id,
+        attention_item_id: item.id,
+        user_id: user.id,
+        event_type: 'open_seen',
+        source_event_id: `mark-all-seen:${item.id}:${item.version}:${now.getTime()}`,
+        actor_user_id: user.id,
+        payload: { bulk: true },
+      })));
+    }
+    return changed;
+  }, []);
   return c.json({ updated: updated.length });
 });

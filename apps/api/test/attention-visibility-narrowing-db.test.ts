@@ -459,3 +459,31 @@ test('a gated change takes only the items it locked: items committed meanwhile s
   assert.deepEqual(await writeAttentionWithSourceTypes(and(unseen, eq(attentionItems.id, randomUUID())), async () => ['called'], []), [],
     'nothing locked: the change is not run');
 });
+
+test('mark-all-seen marks thousands of items and records an event for each, in one transaction', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const { Hono } = await import('hono');
+  const { attentionRoutes } = await import('../src/routes/attention.js');
+  const app = new Hono();
+  app.use('*', async (c, next) => {
+    c.set('user' as never, { id: people.owner, org_id: orgId, email: `${people.owner}@example.test`, role: 'owner' } as never);
+    await next();
+  });
+  app.route('/api/attention', attentionRoutes);
+  // More events than one insert can carry (eight parameters each, at most 65,535 per statement).
+  const many = 9_000;
+  await q(`INSERT INTO attention_items(id,org_id,user_id,kind,lane,dedupe_key,source_type,source_id,title)
+    SELECT 'bulk-' || n || '-' || $1, $1, $2, 'test', 'needs_you', 'bulk-' || n || '-' || $1, 'task', 'bulk-' || n, 'bulk'
+    FROM generate_series(1, $3::int) n`, [orgId, people.owner, many]);
+  const response = await app.request('/api/attention/mark-all-seen', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lane: 'needs_you' }),
+  });
+  assert.equal(response.status, 200);
+  const { updated } = await response.json() as { updated: number };
+  assert.equal(updated, many);
+  const { rows } = await q(`SELECT
+      (SELECT count(*)::int FROM attention_items WHERE org_id=$1 AND user_id=$2 AND id LIKE 'bulk-%' AND state='open_seen') AS seen,
+      (SELECT count(*)::int FROM attention_events WHERE org_id=$1 AND user_id=$2 AND event_type='open_seen' AND attention_item_id LIKE 'bulk-%') AS events`,
+  [orgId, people.owner]);
+  assert.deepEqual(rows[0], { seen: many, events: many });
+});
