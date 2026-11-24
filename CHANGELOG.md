@@ -30,6 +30,81 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
   its burn-down bucket, and `node scripts/check-app-boundary.mjs --summary` prints
   the counts per milestone. No finding changed.
 
+## [0.3.0-preview.148] — 2026-11-24 (prerelease)
+
+Changes since `v0.3.0-preview.147`. Release scope `core` (no Hermes compatibility claim).
+
+Upgrade notes:
+
+- No migration. Schema head stays `0.3.0-preview.149`; `pnpm db:upgrade --status` on an
+  install already at `.144` to `.147` has nothing to apply. An install on an older
+  release follows the earlier upgrade notes first (stop Deft, back up the database and the
+  uploads volume, `pnpm db:upgrade`).
+- Six new settings for the hosted Deft service only: `DEFT_HOSTED_LIMIT_OUTGOING_PER_MINUTE`,
+  `DEFT_HOSTED_LIMIT_OUTGOING_PER_HOUR`, `DEFT_HOSTED_LIMIT_SCHEDULED_MESSAGES`,
+  `DEFT_HOSTED_LIMIT_REMINDERS`, `DEFT_HOSTED_LIMIT_STORAGE_PERCENT` and
+  `DEFT_HOSTED_LIMIT_STORAGE_FREE_MB`. A self-hosted install must leave them unset: with
+  any of them defined (even empty) and without `DEFT_HOSTED=true`, startup is refused,
+  like the other hosted-only settings listed in `docs/self-hosting.md`. If you copied a
+  hosted environment file, remove them. On a hosted cell each is optional and must be a
+  whole number inside its range (listed in the settings table in `docs/self-hosting.md`),
+  or startup stops. The numbers below are the defaults.
+- `DEFT_PAUSED_REASON` accepts a third value, `emergency_stop`. Nothing else about a
+  paused start changes. Nothing sets it on a self-hosted install unless you do.
+- No other setting is changed or removed. Author Kit stays `0.1.0-alpha.43`; its source
+  is unchanged since `v0.3.0-preview.143`.
+
+Hosted service (limits apply only when `DEFT_HOSTED=true`; a self-hosted install has none):
+
+- Per-workspace limits. A hosted cell serves one workspace, so each is that workspace's:
+  - Outside requests (link previews and calendar feed previews and syncs; each redirect
+    hop counts): at most 60 a minute (`DEFT_HOSTED_LIMIT_OUTGOING_PER_MINUTE`) and 1,000
+    an hour (`DEFT_HOSTED_LIMIT_OUTGOING_PER_HOUR`). Past that, a link preview is skipped
+    and a scheduled feed sync waits (the feed stays due and shows the reason); a calendar
+    feed preview or manual sync answers 429 `WORKSPACE_OUTGOING_LIMIT` with a
+    `Retry-After`. Adding a feed at the limit still saves it and answers 201: its first
+    sync shows the reason and the next attempt waits for the feed's interval, so a
+    client should not retry the creation. Chat and everything else work as usual.
+  - Scheduled items: at most 500 scheduled messages
+    (`DEFT_HOSTED_LIMIT_SCHEDULED_MESSAGES`) and 2,000 reminders
+    (`DEFT_HOSTED_LIMIT_REMINDERS`) waiting at once. Past that, a new one is refused with
+    409 `WORKSPACE_SCHEDULE_LIMIT` and a message saying why, until some have been sent,
+    gone off, cancelled or removed. Reminders the assistant sets count too.
+  - File storage: a file is refused with 413 `WORKSPACE_STORAGE_FULL` once files would use
+    more than 90% of the uploads volume (`DEFT_HOSTED_LIMIT_STORAGE_PERCENT`) or leave
+    under 200 MiB free (`DEFT_HOSTED_LIMIT_STORAGE_FREE_MB`, counted in MiB). It covers
+    uploads, clips, custom emoji and files an App stages, and counts writes still in
+    progress. A write the disk itself refuses (full or over quota) gets the same answer;
+    uploads, clips and emoji then try to remove the partial file, but a failed App stage
+    can leave an inaccessible partial file behind (its stage stays `uploading`). If the
+    volume cannot be measured the file is refused with 503
+    `WORKSPACE_STORAGE_UNAVAILABLE` (try again shortly).
+  - The person sees the reason (the server's words) where they upload, set a reminder or
+    sync a feed. Owners and admins (active people) also get an in-app notice when the
+    outside-request limit is reached or the pre-write storage check refuses a file with
+    413 `WORKSPACE_STORAGE_FULL`, at most one an hour per limit and API process; a refusal that
+    only comes from the disk itself, a 503 `WORKSPACE_STORAGE_UNAVAILABLE`, and the two scheduled-item limits send none. The
+    operator's log has at most one `workspace_limit_reached` line a minute per limit and
+    process, with no values in it.
+- Emergency-stop banner: a workspace the operator stops with `DEFT_PAUSED_START=true` and
+  `DEFT_PAUSED_REASON=emergency_stop` shows signed-in people a banner that outgoing
+  activity is stopped while a problem is looked into, that they can still sign in and read
+  messages and tasks, that nothing can be changed, that link previews, notifications and
+  AI are off, and that scheduled messages and reminders wait until the stop is lifted. It
+  refuses exactly what any paused start refuses; the operator's stop is the only way a
+  workspace gets into it.
+
+Small changes that reach self-hosted installs too:
+
+- A refused upload or reminder now shows the server's reason (for example a file that is
+  too large): uploads in chat, threads, task attachments and note images; reminders in
+  chat and the command palette. Files dropped or selected together in chat, and images
+  pasted together in chat and threads, each report their own refusal.
+- Each scheduled calendar feed scan selects up to 50 due subscriptions (as before), least
+  recently updated first.
+- Docs only (#575): the installation guides now pin the published `.147` image instead of
+  `.144`, and this changelog records `.145` to `.147` as published.
+
 ## [0.3.0-preview.147] — 2026-11-23 (prerelease)
 
 Changes since `v0.3.0-preview.146`. Release scope `core` (no Hermes compatibility claim).
