@@ -16,18 +16,20 @@ const unavailable = url ? '' : 'Set DEFT_TEST_DATABASE_URL to a disposable test 
 const orgId = randomUUID();
 const ids = { mia: randomUUID(), olive: randomUUID(), adam: randomUUID(), rita: randomUUID() };
 const roles: Record<string, string> = { [ids.mia]: 'member', [ids.olive]: 'owner', [ids.adam]: 'admin', [ids.rita]: 'member' };
-const rooms = { lost: randomUUID(), kept: randomUUID(), team: randomUUID(), race: randomUUID() };
+const rooms = { lost: randomUUID(), kept: randomUUID(), team: randomUUID(), race: randomUUID(), msgOnly: randomUUID(), pubArc: randomUUID() };
 const projectId = randomUUID();
 const plans = {
   lostDraft: randomUUID(), lostByMessage: randomUUID(), lostApproved: randomUUID(),
   kept: randomUUID(), departedPaused: randomUUID(), departedApproved: randomUUID(),
   reserved: randomUUID(), raceApproved: randomUUID(),
+  twoRooms: randomUUID(), parent: randomUUID(), child: randomUUID(), oddBinding: randomUUID(), archiveRace: randomUUID(),
 };
 const title = (plan: string) => `Plan task ${plan}`;
 let client: pg.Client | undefined;
 let seeded = false;
 let routes: { plans?: Hono; spaces?: Hono; members?: Hono; agent?: Hono } = {};
 const departedStepAction = randomUUID();
+const twoRoomsStep = randomUUID();
 
 function app(viewer: string) {
   const hono = new Hono();
@@ -71,8 +73,9 @@ before(async () => {
     await client.query('INSERT INTO org_members(id,org_id,user_id,role) VALUES($1,$2,$3,$4)', [randomUUID(), orgId, id, roles[id]]);
   }
   for (const room of Object.values(rooms)) {
-    await client.query("INSERT INTO spaces(id,org_id,name,type,created_by) VALUES($1,$2,$3,'private',$4)", [room, orgId, `room-${room.slice(0, 8)}`, ids.olive]);
-    for (const user of Object.values(ids)) {
+    const type = room === rooms.pubArc ? 'public' : 'private';
+    await client.query('INSERT INTO spaces(id,org_id,name,type,created_by) VALUES($1,$2,$3,$4,$5)', [room, orgId, `room-${room.slice(0, 8)}`, type, ids.olive]);
+    for (const user of room === rooms.pubArc ? [ids.olive, ids.adam] : Object.values(ids)) {
       await client.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), room, user]);
     }
   }
@@ -93,6 +96,21 @@ before(async () => {
   await insertPlan(plans.departedPaused, ids.rita, 'paused', rooms.team);
   await insertPlan(plans.departedApproved, ids.rita, 'approved', rooms.team);
   await insertPlan(plans.raceApproved, ids.mia, 'approved', rooms.race);
+  // A plan in a room Mia keeps whose source message is in another room; its finished step's row names only the first.
+  const twoRoomsMessage = randomUUID();
+  await client.query("INSERT INTO messages(id,org_id,space_id,user_id,content) VALUES($1,$2,$3,$4,'@Defty plan across rooms')", [twoRoomsMessage, orgId, rooms.msgOnly, ids.mia]);
+  await insertPlan(plans.twoRooms, ids.mia, 'completed', rooms.kept, { source_message_id: twoRoomsMessage });
+  await client.query(`INSERT INTO agent_actions(id,org_id,user_id,conversation_id,source,plan_id,plan_step_id,action,params,approval_tier,approval_status,executed_at)
+    VALUES($1,$2,$3,$4,'plan',$5,'step-1','create_task',$6,'quick','approved',now())`, [
+    twoRoomsStep, orgId, ids.mia, rooms.kept, plans.twoRooms, JSON.stringify({ title: 'CANARY-two-rooms', resolved_project_id: projectId }),
+  ]);
+  // A child plan drafted (before this change) by a step of a plan bound only by its source message.
+  await insertPlan(plans.parent, ids.mia, 'completed', null, { source_message_id: twoRoomsMessage, 'make-child': { result: { plan_id: plans.child, status: 'draft' } } });
+  await insertPlan(plans.child, ids.mia, 'draft', null);
+  // A source binding that is not a string fails closed.
+  await insertPlan(plans.oddBinding, ids.mia, 'draft', null, { source_message_id: { result: 'overwritten' } });
+  // A plan in a public room Mia reads without joining.
+  await insertPlan(plans.archiveRace, ids.mia, 'approved', rooms.pubArc);
   // A step whose id is a reserved context key.
   await client.query(`INSERT INTO agent_plans(id,org_id,user_id,conversation_id,title,steps,status,current_step,context)
     VALUES($1,$2,$3,$4,'Reserved step',$5::jsonb,'approved',0,'{}'::jsonb)`, [plans.reserved, orgId, ids.mia, rooms.kept, JSON.stringify([
@@ -162,6 +180,8 @@ test('a plan from a room its creator lost leaves their views and cannot be edite
 test('a run approved before the loss stops before its next step', async (t) => {
   if (unavailable) return t.skip(unavailable);
   const { executePlan, PLAN_ROOM_LOST_ERROR } = await import('../src/lib/agent-plans.js');
+  // Independent of the test before: Mia is out of the room.
+  await client!.query('DELETE FROM space_members WHERE space_id=$1 AND user_id=$2', [rooms.lost, ids.mia]);
   await executePlan(plans.lostApproved, orgId, ids.mia);
   assert.equal(await tasksCreated(plans.lostApproved), 0, 'no step ran');
   const { rows: [plan] } = await client!.query('SELECT status, error FROM agent_plans WHERE id=$1', [plans.lostApproved]);
@@ -228,5 +248,52 @@ test('a step waits for a loss in progress and then does not run', async (t) => {
   }
   assert.equal(await tasksCreated(plans.raceApproved), 0, 'the step did not run');
   const { rows: [plan] } = await client!.query('SELECT status, error FROM agent_plans WHERE id=$1', [plans.raceApproved]);
+  assert.deepEqual(plan, { status: 'paused', error: PLAN_ROOM_LOST_ERROR });
+});
+
+test('a plan step whose own row omits a room of its plan leaves the member action history with that room', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const history = async () => (await call(ids.mia, 'GET', '/api/agent/actions?limit=200')).text;
+  assert.ok((await history()).includes(twoRoomsStep), 'visible while she has both rooms');
+  assert.equal((await call(ids.mia, 'GET', `/api/agent-plans/${plans.child}`)).status, 200, 'the child plan is readable while she has the room');
+  const removed = await call(ids.olive, 'DELETE', `/api/spaces/${rooms.msgOnly}/members/${ids.mia}`);
+  assert.equal(removed.status, 200, removed.text);
+  const after = await history();
+  assert.ok(!after.includes(twoRoomsStep) && !after.includes('CANARY-two-rooms'), 'hidden once she lost the source room');
+  assert.equal((await call(ids.mia, 'GET', `/api/agent-plans/${plans.twoRooms}`)).status, 404);
+  assert.equal((await call(ids.mia, 'GET', `/api/agent-plans/${plans.child}`)).status, 404, 'a child plan follows its parent');
+  assert.equal((await call(ids.mia, 'POST', `/api/agent-plans/${plans.child}/approve`)).status, 404);
+});
+
+test('a plan whose source binding is not a string fails closed', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  assert.equal((await call(ids.mia, 'GET', `/api/agent-plans/${plans.oddBinding}`)).status, 404);
+});
+
+test('a step claim waits for an archive of its public room in progress, then the step does not run', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const { executePlan, PLAN_ROOM_LOST_ERROR } = await import('../src/lib/agent-plans.js');
+  const holder = new pg.Client({ connectionString: url });
+  await holder.connect();
+  try {
+    await holder.query('BEGIN');
+    await holder.query('UPDATE spaces SET is_archived=true WHERE id=$1', [rooms.pubArc]);
+    const { rows: [{ pid }] } = await holder.query('SELECT pg_backend_pid() AS pid');
+    const run = executePlan(plans.archiveRace, orgId, ids.mia);
+    let waiting = false;
+    for (let attempt = 0; attempt < 200 && !waiting; attempt += 1) {
+      const { rows: [row] } = await client!.query('SELECT count(*)::int AS n FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))', [pid]);
+      waiting = row.n > 0;
+      if (!waiting) await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.ok(waiting, 'the step claim waited for the archive');
+    await holder.query('COMMIT');
+    await run;
+  } finally {
+    await holder.query('ROLLBACK').catch(() => {});
+    await holder.end();
+  }
+  assert.equal(await tasksCreated(plans.archiveRace), 0);
+  const { rows: [plan] } = await client!.query('SELECT status, error FROM agent_plans WHERE id=$1', [plans.archiveRace]);
   assert.deepEqual(plan, { status: 'paused', error: PLAN_ROOM_LOST_ERROR });
 });

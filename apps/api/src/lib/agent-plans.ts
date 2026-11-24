@@ -16,7 +16,7 @@ import { db, withDbAdvisoryLock } from './db.js';
 import { agentActions, agentPlans, orgs, tasks, messages } from '@deft/db/schema';
 import { eq, and, sql, type SQL } from 'drizzle-orm';
 import { planCreatorKeepsRoomsSql } from './plan-room-access.js';
-import { lockRoomAccessForClaim } from './room-access-lock.js';
+import { lockPlanRoomAccess } from './room-access-lock.js';
 
 export { planCreatorKeepsRoomsSql };
 import { executeToolCall } from './agent-context.js';
@@ -543,6 +543,17 @@ async function executePlanUnlocked(
     }
 
     const step = steps[i]!;
+    // A step's result is stored under its id; a reserved context key would
+    // overwrite what binds the plan to its rooms. Checked before anything
+    // else about the step can fail or store a result (DFX3).
+    if (RESERVED_PLAN_CONTEXT_KEYS.has(step.id)) {
+      const reserved = `Plan step id '${step.id}' is reserved`;
+      await db.update(agentPlans)
+        .set({ status: 'paused', error: reserved, updated_at: new Date() })
+        .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, orgId)));
+      onEvent?.({ type: 'plan:pause', stepId: step.id, data: { reason: 'approval_boundary_failed', error: reserved } });
+      return;
+    }
 
     // Check dependencies
     if (step.depends_on?.length) {
@@ -570,11 +581,9 @@ async function executePlanUnlocked(
       }
     }
 
-    // Mark step running
+    // Mark step running (announced only after the step's claim, below)
     step.status = 'running';
     await updatePlanProgress(planId, steps, context, i);
-    onEvent?.({ type: 'step:start', stepId: step.id });
-    emitTaskProgress(i, step.description, 'started');
 
     try {
       const resolvedParams = resolveStepReferences(step.params, context);
@@ -634,11 +643,6 @@ async function executePlanUnlocked(
       if (priorDecision && priorDecision.key === null && priorDecision.status !== 'pending') {
         throw new PlanApprovalBoundaryError(`Plan step '${step.id}' approval was ${priorDecision.status}`);
       }
-      // A step's result is stored under its id; a reserved context key would
-      // overwrite what binds the plan to its rooms.
-      if (RESERVED_PLAN_CONTEXT_KEYS.has(step.id)) {
-        throw new PlanApprovalBoundaryError(`Plan step id '${step.id}' is reserved`);
-      }
       // A plan made by this step keeps the parent's source message.
       if (step.tool === 'create_plan' && planSourceMessageId) resolvedParams.source_message_id = planSourceMessageId;
       // Check 13: the step starts only while the plan is executing and its
@@ -653,6 +657,8 @@ async function executePlanUnlocked(
         onEvent?.({ type: 'plan:pause', data: { reason: 'source_room_access_lost' } });
         return;
       }
+      onEvent?.({ type: 'step:start', stepId: step.id });
+      emitTaskProgress(i, step.description, 'started');
 
       if (!isWriteAction && !priorDecision) {
         // Read-only tool — execute directly
@@ -744,6 +750,14 @@ async function executePlanUnlocked(
 
     } catch (err) {
       const errorMsg = (err as Error).message;
+      // DFX3: nothing more happens for a plan whose creator lost a room (no
+      // progress, no recovery, no fail-fast rollback), even when the step
+      // failed before its claim.
+      const stillCurrent = await claimPlanStep(planId, orgId).catch(() => 'stopped' as const);
+      if (stillCurrent !== 'ok') {
+        onEvent?.({ type: 'plan:pause', stepId: step.id, data: { reason: stillCurrent === 'room_lost' ? 'source_room_access_lost' : 'externally paused' } });
+        return;
+      }
       emitTaskProgress(i, step.description, 'failed', errorMsg);
 
       if (err instanceof PlanApprovalBoundaryError) {
@@ -822,6 +836,8 @@ async function executePlanUnlocked(
           // Only the text recommendation is used: no tool runs from here
           // (check 13: nothing runs for a creator who lost the plan's room).
           toolPolicy: 'none',
+          // Nor is the answer, which can quote the step, kept as a note.
+          durableNotes: false,
         });
 
         if (recovery.text.includes('ESCALATE')) {
@@ -982,7 +998,7 @@ async function claimPlanStep(planId: string, orgId: string): Promise<'ok' | 'sto
     const [owner] = await tx.select({ userId: agentPlans.user_id }).from(agentPlans)
       .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, orgId))).limit(1);
     if (!owner) return 'stopped';
-    await lockRoomAccessForClaim(tx, orgId, owner.userId);
+    await lockPlanRoomAccess(tx, orgId, owner.userId, planId);
     const [current] = await tx
       .select({ status: agentPlans.status, keepsRooms: sql<boolean>`${planCreatorKeepsRoomsSql()}` })
       .from(agentPlans)

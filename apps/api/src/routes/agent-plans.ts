@@ -13,6 +13,7 @@ import {
   type PlanStep,
 } from '../lib/agent-plans.js';
 import { getActiveOrgMembership } from '../lib/org-membership.js';
+import { lockPlanRoomAccess } from '../lib/room-access-lock.js';
 import { isDestructiveAction } from '../lib/agent-approval.js';
 import { getMCPToolsForAgent } from '../lib/mcp-tools.js';
 
@@ -218,13 +219,17 @@ agentPlanRoutes.put('/:id', async (c) => {
       }));
     }
 
-    // The room rule and the state are part of the update itself (check 13).
-    const [updated] = await db
-      .update(agentPlans)
-      .set(updates)
-      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, user.org_id),
-        inArray(agentPlans.status, ['draft', 'paused']), planCreatorKeepsRoomsSql()))
-      .returning();
+    // The room rule and the state are part of the update itself, read under
+    // the creator's room-access lock and the plan's room-row locks (check 13).
+    const [updated] = await db.transaction(async (tx) => {
+      await lockPlanRoomAccess(tx, existing.org_id, existing.user_id, planId);
+      return tx
+        .update(agentPlans)
+        .set(updates)
+        .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, user.org_id),
+          inArray(agentPlans.status, ['draft', 'paused']), planCreatorKeepsRoomsSql()))
+        .returning();
+    });
     if (!updated) return c.json({ error: 'Plan not found', code: 'NOT_FOUND' }, 404);
 
     return c.json(await withDestructiveMarks(updated));
@@ -261,12 +266,15 @@ agentPlanRoutes.post('/:id/approve', async (c) => {
 
     await assertPlanStepsAllowedFor(plan.org_id, plan.user_id, plan.steps);
 
-    const [updated] = await db
-      .update(agentPlans)
-      .set({ status: 'approved', steps: withPlanApprover(plan.steps as PlanStep[], user.id), updated_at: new Date() })
-      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, plan.org_id),
-        inArray(agentPlans.status, ['draft', 'paused']), planCreatorKeepsRoomsSql()))
-      .returning();
+    const [updated] = await db.transaction(async (tx) => {
+      await lockPlanRoomAccess(tx, plan.org_id, plan.user_id, planId);
+      return tx
+        .update(agentPlans)
+        .set({ status: 'approved', steps: withPlanApprover(plan.steps as PlanStep[], user.id), updated_at: new Date() })
+        .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, plan.org_id),
+          inArray(agentPlans.status, ['draft', 'paused']), planCreatorKeepsRoomsSql()))
+        .returning();
+    });
     if (!updated) return c.json({ error: 'Plan not found', code: 'NOT_FOUND' }, 404);
 
     return c.json(await withDestructiveMarks(updated));
@@ -381,12 +389,15 @@ agentPlanRoutes.post('/:id/resume', async (c) => {
       return step;
     });
 
-    const [resumed] = await db
-      .update(agentPlans)
-      .set({ status: 'approved', steps: withPlanApprover(steps, user.id), updated_at: new Date() })
-      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, plan.org_id),
-        eq(agentPlans.status, 'paused'), planCreatorKeepsRoomsSql()))
-      .returning({ id: agentPlans.id });
+    const [resumed] = await db.transaction(async (tx) => {
+      await lockPlanRoomAccess(tx, plan.org_id, plan.user_id, planId);
+      return tx
+        .update(agentPlans)
+        .set({ status: 'approved', steps: withPlanApprover(steps, user.id), updated_at: new Date() })
+        .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, plan.org_id),
+          eq(agentPlans.status, 'paused'), planCreatorKeepsRoomsSql()))
+        .returning({ id: agentPlans.id });
+    });
     if (!resumed) return c.json({ error: 'Plan not found', code: 'NOT_FOUND' }, 404);
 
     await enqueue(QUEUE_NAMES.AGENT_JOBS, 'plan-executor', {

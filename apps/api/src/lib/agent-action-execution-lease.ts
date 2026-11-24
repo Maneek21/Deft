@@ -190,8 +190,13 @@ export async function settleInterruptedApproval(row: AgentActionRow, token: Clai
 }
 
 /** Take over an interrupted, re-executable approval. Returns the new claim. */
-export async function takeOverInterruptedApproval(row: AgentActionRow, token: ClaimToken): Promise<ClaimToken | null> {
-  const [taken] = await db
+export async function takeOverInterruptedApproval(
+  row: AgentActionRow,
+  token: ClaimToken,
+  executor: Pick<typeof db, 'update'> = db,
+  guard?: SQL,
+): Promise<ClaimToken | null> {
+  const [taken] = await executor
     .update(agentActions)
     .set({
       result: { lifecycle_state: 'executing', started_at: new Date().toISOString(), resumed: true },
@@ -204,6 +209,7 @@ export async function takeOverInterruptedApproval(row: AgentActionRow, token: Cl
       eq(agentActions.approval_status, 'approved'),
       isNull(agentActions.executed_at),
       ownsClaim(token),
+      guard,
     ))
     .returning({ token: claimTokenSql });
   return taken?.token ?? null;
@@ -516,14 +522,20 @@ export type InterruptedRecovery =
  * Recover one ordinary approval whose executor is gone. The caller must hold
  * the action's lease and must have authorized the call.
  */
-async function requesterStillKeepsRooms(row: AgentActionRow): Promise<boolean> {
+/**
+ * DFX3: the takeover of an interrupted approval is its new claim: under the
+ * requester's room-access lock and the source rooms' row locks, and only
+ * while the requester keeps every room the action (or its plan) came from.
+ */
+async function takeOverWhileRoomsKept(row: AgentActionRow, token: ClaimToken): Promise<ClaimToken | null | 'room_lost'> {
   const requesterId = await loadActionRequesterId(row);
   return db.transaction(async (tx) => {
-    await lockRoomAccessForClaim(tx, row.org_id, requesterId);
+    await lockRoomAccessForClaim(tx, row.org_id, requesterId, row.id);
     const [kept] = await tx.select({ id: agentActions.id }).from(agentActions)
       .where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id), requesterKeepsSourceRoomsSql()))
       .limit(1);
-    return Boolean(kept);
+    if (!kept) return 'room_lost';
+    return takeOverInterruptedApproval(row, token, tx, requesterKeepsSourceRoomsSql());
   });
 }
 
@@ -539,8 +551,10 @@ export async function recoverInterruptedApproval(
   if (!token) return { kind: 'raced' };
   // DFX3: an interrupted approval whose requester has since lost a room it
   // came from (or its plan's room) is settled as failed, never run again.
-  if (receipt === 'legacy' && isReexecutableAfterInterruption(row.action) && await requesterStillKeepsRooms(row)) {
-    const next = await takeOverInterruptedApproval(row, token);
+  const next = receipt === 'legacy' && isReexecutableAfterInterruption(row.action)
+    ? await takeOverWhileRoomsKept(row, token)
+    : 'room_lost';
+  if (next !== 'room_lost') {
     if (!next) return { kind: 'raced' };
     if (lease.lost) return { kind: 'lease_lost' };
     return { kind: 'reexecuted', outcome: await executeClaimedApproval(row, next, hooks, lease) };
@@ -779,6 +793,9 @@ async function resumeApprovedModuleActions(options: {
       isNull(agentActions.app_run_id),
       sql`${agentActions.action} IN (${sql.join(options.resumableNames.map((name) => sql`${name}`), sql`, `)})`,
       sql`${agentActions.approved_at} < now() - (${options.minimumAgeMs} * interval '1 millisecond')`,
+      // DFX3: a resume whose requester lost a room is refused; such rows
+      // cannot run, and must not fill the batch ahead of rows that can.
+      requesterKeepsSourceRoomsSql(),
     ))
     .orderBy(agentActions.approved_at)
     .limit(options.batchSize);

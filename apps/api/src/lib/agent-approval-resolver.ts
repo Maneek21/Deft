@@ -1521,13 +1521,20 @@ async function approveActionLocked(
         message: `action ${actionId} is no longer pending`,
       };
     }
-  } else if (reviewerGuard) {
-    // A reviewer's retry of an approved module write runs only while the
-    // caller still reviews the action, checked as late as the claim would be.
-    await reviewerRecheckPoint('before_decision', actionId);
-    const [stillReviewer] = await db.select({ id: agentActions.id }).from(agentActions)
-      .where(and(eq(agentActions.id, actionId), decisionSource)).limit(1);
-    if (!stillReviewer) return notReviewer();
+  } else {
+    // A reviewer's retry, or the maintenance resume, of an approved module
+    // write runs only while the caller still reviews the action and the
+    // requester keeps its rooms (DFX3), checked as late as the claim would be
+    // and under the same locks: the requester's room-access lock and the
+    // source rooms' row locks.
+    if (reviewerGuard) await reviewerRecheckPoint('before_decision', actionId);
+    const stillCurrent = await db.transaction(async (tx) => {
+      await lockRoomAccessForClaim(tx, row.org_id, requesterId, actionId);
+      const [current] = await tx.select({ id: agentActions.id }).from(agentActions)
+        .where(and(eq(agentActions.id, actionId), decisionSource)).limit(1);
+      return Boolean(current);
+    });
+    if (!stillCurrent) return reviewerGuard ? notReviewer() : sourceUnavailable();
   }
 
   let toolResult: ToolResult;

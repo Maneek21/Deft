@@ -4,7 +4,7 @@ import { currentAgentActionSourceAuthoritySql, currentUserSpaceAuthoritySql } fr
 import { actionRequesterIdSql, actionReviewerSql } from './agent-action-requester.js';
 import { DEFTY_SYSTEM_EMPLOYEE_SLUG, DEFTY_SYSTEM_RUNTIME_KIND } from './defty-identity.js';
 import { readableSpaceSql } from './space-visibility.js';
-import { planCreatorKeepsRoomsSql } from './plan-room-access.js';
+import { actionPlanRoomsReadableSql } from './plan-room-access.js';
 
 /** The internal Defty action envelope has a different, established source contract. */
 export function canonicalDeftyActionSql(
@@ -39,13 +39,15 @@ export function canonicalDeftyActionSql(
 export function sourceMessageRoomSql(userId: string | SQL, rule: 'review' | 'history' = 'review'): SQL {
   // CASE keeps the order: rows without a room reference, captures and
   // employee actions never run the room lookups.
-  return sql`(CASE
+  // DFX3: a plan step also needs `userId` to read its plan's rooms (the
+  // step's own row may name fewer), for every reader and the review gate.
+  return sql`((CASE
     WHEN ${agentActions.conversation_id} IS NULL AND ${agentActions.message_id} IS NULL
       AND (${agentActions.params}->>'source_message_id') IS NULL THEN true
     WHEN COALESCE(${agentActions.source} = 'defty_capture', false) THEN true
     WHEN ${agentActions.agent_employee_id} IS NOT NULL AND NOT ${canonicalDeftyActionSql()} THEN true
     ELSE ${referencedRoomsReadableSql(userId, rule)}
-    END)`;
+    END) AND ${actionPlanRoomsReadableSql(sql`${userId}`)})`;
 }
 
 /**
@@ -121,12 +123,7 @@ export function requesterKeepsSourceRoomsSql(): SQL {
         AND named_message.id IN (${agentActions.message_id}, ${agentActions.params}->>'source_message_id')))`;
   // A plan step also needs its plan's creator to keep the plan's rooms
   // (DFX3): its own row may name fewer rooms than the plan.
-  const planRoomsKept = sql`(${agentActions.plan_id} IS NULL OR NOT EXISTS (
-    SELECT 1 FROM agent_plans
-    WHERE agent_plans.id = ${agentActions.plan_id}
-      AND agent_plans.org_id = ${agentActions.org_id}
-      AND NOT ${planCreatorKeepsRoomsSql()}
-  ))`;
+  const planRoomsKept = actionPlanRoomsReadableSql();
   return sql`(${planRoomsKept} AND (CASE
     WHEN ${agentActions.agent_employee_id} IS NOT NULL AND NOT ${canonicalDeftyActionSql()} AND NOT ${isCapture} THEN true
     WHEN ${isCapture} THEN (${captureRoom} IS NULL AND NOT ${namesRoom})
