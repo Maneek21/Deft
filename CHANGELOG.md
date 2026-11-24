@@ -36,6 +36,8 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
   from it; now it is not stored either. A self-hosted install's
   `DEFT_CALENDAR_PRIVATE_URL_ALLOWLIST` entries are still accepted. Feeds already saved
   are unchanged.
+- Creating or changing an API key with a malformed request body, or with an expiry date
+  that is not a date, is now refused with 400 `VALIDATION_ERROR` instead of failing with 500.
 
 ## [0.3.0-preview.150] — 2026-11-25 (prerelease)
 

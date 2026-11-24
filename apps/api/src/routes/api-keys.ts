@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { z } from 'zod';
 import { eq, and, isNull } from 'drizzle-orm';
 import bcrypt from 'bcryptjs';
@@ -17,13 +18,19 @@ async function keyAgent(orgId: string, keyId: string): Promise<string | null> {
   return key?.agent_employee_id ?? null;
 }
 
+// A date the server can read; anything else would fail at the database.
+const expiresAtSchema = z.string()
+  .refine((value) => !Number.isNaN(Date.parse(value)), 'Must be a date')
+  .nullable()
+  .optional();
+
 const createKeySchema = z.object({
   name: z.string().min(1),
   agent_employee_id: z.string().nullable().optional(),
   permissions: z.array(z.string()).min(1),
   rate_limit_per_minute: z.number().int().positive().optional(),
   rate_limit_per_day: z.number().int().positive().optional(),
-  expires_at: z.string().nullable().optional(),
+  expires_at: expiresAtSchema,
 });
 
 const updateKeySchema = z.object({
@@ -32,8 +39,17 @@ const updateKeySchema = z.object({
   rate_limit_per_minute: z.number().int().positive().optional(),
   rate_limit_per_day: z.number().int().positive().optional(),
   is_active: z.boolean().optional(),
-  expires_at: z.string().nullable().optional(),
+  expires_at: expiresAtSchema,
 });
+
+// A body that is not JSON reads as `undefined`, which the schema refuses.
+async function readJsonBody(c: Context): Promise<unknown> {
+  return c.req.json().catch(() => undefined);
+}
+
+function invalidInput(c: Context, error: z.ZodError) {
+  return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR', details: error.flatten() }, 400);
+}
 
 apiKeyRoutes.use('*', async (c, next) => {
   const user = c.get('user');
@@ -91,7 +107,9 @@ apiKeyRoutes.post('/', async (c) => {
   const denied = requireOrgAdmin(c);
   if (denied) return denied;
   const user = c.get('user');
-  const body = createKeySchema.parse(await c.req.json());
+  const parsed = createKeySchema.safeParse(await readJsonBody(c));
+  if (!parsed.success) return invalidInput(c, parsed.error);
+  const body = parsed.data;
 
   // Generate raw key: deft_ + random UUID (no dashes) for compactness
   const rawKey = `deft_${crypto.randomUUID().replace(/-/g, '')}`;
@@ -131,7 +149,9 @@ apiKeyRoutes.put('/:id', async (c) => {
   if (denied) return denied;
   const user = c.get('user');
   const keyId = c.req.param('id');
-  const body = updateKeySchema.parse(await c.req.json());
+  const parsed = updateKeySchema.safeParse(await readJsonBody(c));
+  if (!parsed.success) return invalidInput(c, parsed.error);
+  const body = parsed.data;
   const boundTo = await keyAgent(user.org_id, keyId);
 
   const changed = await manageAgentIfBound({ userId: user.id, orgId: user.org_id }, boundTo, (tx) => tx
