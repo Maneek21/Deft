@@ -30,18 +30,58 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
   its burn-down bucket, and `node scripts/check-app-boundary.mjs --summary` prints
   the counts per milestone. No finding changed.
 
-### Fixed
+## [0.3.0-preview.150] — 2026-11-25 (prerelease)
 
-- A small workspace's database ran out of memory after a few chat messages. Each
-  Inbox visibility check (after every message, for each person it reaches, and on
-  every Inbox count poll) planned the whole rule, approval review included, and
-  each database connection kept ~85 MB afterwards; four at once filled a 512 MB
-  database machine, which then froze (seen on 145 through 149). The check now plans
-  only the rules of the item types it can meet: a message item costs a few MB. What
-  anyone sees in the Inbox is unchanged, proved item by item against the whole rule.
-  No migration. Not yet fixed: while a person has an open approval in their Inbox,
-  their checks still plan the approval review rule (~80 MB per connection); making
-  that rule smaller, and closing large pooled connections sooner, are follow-ups.
+Changes since `v0.3.0-preview.149`: #583. Release scope `core` (no Hermes compatibility
+claim).
+
+Upgrade notes:
+
+- No migration. Schema head stays `0.3.0-preview.149`; `pnpm db:upgrade --status` on an
+  install already at `.144` to `.149` has nothing to apply. An install on an older release
+  follows the earlier upgrade notes first (stop Deft, back up the database and the uploads
+  volume, `pnpm db:upgrade`).
+- No setting is added, changed or removed. Author Kit stays `0.1.0-alpha.43`.
+
+Fix: a few chat messages could run a small database out of memory (#583). Read this one
+first if Deft's Postgres runs on a small machine (512 MB).
+
+- **What happened.** In `.149` and earlier (at least back to `.145`), after a chat message
+  the server checked each recipient's attention (Inbox) item with one very large visibility
+  query. It covered every kind of item, including the approval review rule, whatever the
+  item was. Planning that query took each database connection to about 86 MB, and the
+  connection kept that memory until it closed. The same query also ran on every Inbox
+  count poll (every 15 seconds in each visible, online workspace tab). On a small
+  database machine a few connections doing it at once ran it out of memory. On three
+  test workspaces (512 MB database machines, Postgres's default settings), with messages
+  in rooms that had members: one machine froze after 26 messages and 2 uploads; one froze
+  during its fourth run of about 40 messages; on the third, after 14 messages, the
+  kernel's out-of-memory killer killed a Postgres backend and the postmaster reset all
+  backends.
+- **What changed.** The check now plans only the rules for the item types it can meet: for
+  a message item, a connection grows by a few MB. Lists, counts and lookups by id read the
+  item types and the items in one snapshot. Marking items seen, changing an item's state
+  and giving feedback lock the items first and change only those. Mark-all-seen now
+  records its events in the same transaction, in batches: before, marking 8,192 or more
+  items at once failed after the items were already marked.
+- **Visibility is unchanged.** A new equivalence test checks the narrowed query against the
+  whole one, item by item. It covers owners, admins, members, guests and removed members;
+  private, public, archived and joined rooms; approvals, mentions and every item type. It
+  also flags an item type named in the API code that is not listed (a direct insert into
+  the table is not covered).
+- **Self-hosters.** This matters most on a 512 MB database machine with the default
+  `shared_buffers` of 128 MB: four such connections (about 86 MB each) plus shared buffers
+  come to about 470 MB, leaving roughly 40 MB for the operating system and everything
+  else. A larger machine has more headroom.
+
+Not fixed yet (follow-ups):
+
+- While a person has an open approval in their Inbox, their checks still plan the approval
+  review rule, about 80 MB per connection. Making that rule smaller is a follow-up.
+- Pool recycling: the app's database pools never close a connection that grew large while
+  it stays busy. Giving connections a maximum lifetime is a follow-up.
+- Pool total against `max_connections`: the app's pools can open up to 18 connections, and
+  nothing checks that total against the database's `max_connections`.
 
 ## [0.3.0-preview.149] — 2026-11-24 (prerelease)
 
