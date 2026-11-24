@@ -39,15 +39,13 @@ export function canonicalDeftyActionSql(
 export function sourceMessageRoomSql(userId: string | SQL, rule: 'review' | 'history' = 'review'): SQL {
   // CASE keeps the order: rows without a room reference, captures and
   // employee actions never run the room lookups.
-  // DFX3: a plan step also needs `userId` to read its plan's rooms (the
-  // step's own row may name fewer), for every reader and the review gate.
-  return sql`((CASE
+  return sql`(CASE
     WHEN ${agentActions.conversation_id} IS NULL AND ${agentActions.message_id} IS NULL
       AND (${agentActions.params}->>'source_message_id') IS NULL THEN true
     WHEN COALESCE(${agentActions.source} = 'defty_capture', false) THEN true
     WHEN ${agentActions.agent_employee_id} IS NOT NULL AND NOT ${canonicalDeftyActionSql()} THEN true
     ELSE ${referencedRoomsReadableSql(userId, rule)}
-    END) AND ${actionPlanRoomsReadableSql(sql`${userId}`)})`;
+    END)`;
 }
 
 /**
@@ -200,9 +198,11 @@ export function visibleModuleActionSql(
   // Read at query time: a member or guest who lost a room a Defty action came
   // from (removed, or left) stops seeing it; owners/admins keep the history.
   // The review gate composes the first two parts with its own room rule.
+  // DFX3: a plan step also needs the reader to read its plan's rooms (the
+  // step's own row may name fewer).
   const room = role === 'owner' || role === 'admin' || !options?.userId
     ? sql`true`
-    : sourceMessageRoomSql(options.userId, 'history');
+    : sql`(${sourceMessageRoomSql(options.userId, 'history')} AND ${actionPlanRoomsReadableSql(sql`${options.userId}`)})`;
   return sql`${visibleAgentActionSourceSql(options)} and ${moduleRoleAudienceSql(role, options)} and ${room}`;
 }
 

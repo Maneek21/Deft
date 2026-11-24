@@ -65,10 +65,12 @@ export function planCreatorKeepsRoomsSql(): SQL {
  * own row may name fewer rooms than its plan.
  */
 export function actionPlanRoomsReadableSql(reader?: SQL): SQL {
-  return sql`(agent_actions.plan_id IS NULL OR NOT EXISTS (
-    SELECT 1 FROM agent_plans step_plan
+  // A scalar subquery per row with a plan (primary-key lookup), never a
+  // hashed subplan over every plan: most actions are not plan steps.
+  return sql`(CASE WHEN agent_actions.plan_id IS NULL THEN true ELSE COALESCE((
+    SELECT ${planRoomsReadableSql('step_plan', reader ?? sql.raw('step_plan.user_id'))}
+    FROM agent_plans step_plan
     WHERE step_plan.id = agent_actions.plan_id
       AND step_plan.org_id = agent_actions.org_id
-      AND NOT ${planRoomsReadableSql('step_plan', reader ?? sql.raw('step_plan.user_id'))}
-  ))`;
+  ), true) END)`;
 }
