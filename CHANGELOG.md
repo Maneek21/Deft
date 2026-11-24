@@ -71,7 +71,7 @@ first if Deft's Postgres runs on a small machine (512 MB).
 - **Self-hosters.** This matters most on a 512 MB database machine with the default
   `shared_buffers` of 128 MB: four such connections (about 86 MB each) plus shared buffers
   come to about 470 MB, leaving roughly 40 MB for the operating system and everything
-  else. A larger machine has more headroom; there it showed as higher memory use.
+  else. A larger machine has more headroom.
 
 Not fixed yet (follow-ups):
 
