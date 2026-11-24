@@ -26,7 +26,7 @@ import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test, { after, before } from 'node:test';
 import pg from 'pg';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { attentionItems } from '@deft/db/schema';
 import { closeDb, db } from '../src/lib/db.js';
 import {
@@ -413,9 +413,39 @@ test('a change takes the item types under a row lock: no type change can commit 
         'a concurrent type change waits for the lock');
       return tx.update(attentionItems).set({ title: 'changed under lock' })
         .where(and(where, visibleAttentionCondition(people.member, types))).returning({ id: attentionItems.id });
-    });
+    }, []);
     assert.deepEqual(changed, [{ id }]);
   } finally {
     await other.end();
   }
+});
+
+test('a gated change takes only the items it locked: items committed meanwhile stay out of it, whole, and it never waits on them', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  // Items on a lane of their own, so the matrix above is untouched.
+  const lane = `race-${randomUUID().slice(0, 8)}`;
+  const insert = (id: string, type: string, source: string) => q(`INSERT INTO attention_items(id,org_id,user_id,kind,lane,dedupe_key,source_type,source_id,title)
+    VALUES($1,$2,$3,'test',$4,$1,$5,$6,'race')`, [id, orgId, people.member, lane, type, source]);
+  const first = randomUUID();
+  await insert(first, 'task', randomUUID());
+  const unseen = and(eq(attentionItems.org_id, orgId), eq(attentionItems.user_id, people.member),
+    eq(attentionItems.lane, lane), eq(attentionItems.state, 'open_unseen'));
+  const [space, task] = [randomUUID(), randomUUID()];
+  const marked = await writeAttentionWithSourceTypes(unseen, async (tx, types, lockedIds) => {
+    assert.deepEqual(types, ['task']);
+    assert.deepEqual(lockedIds, [first]);
+    // A readable space item and a task item arrive in one commit after the lock (as an upsert batch would).
+    await q(`INSERT INTO attention_items(id,org_id,user_id,kind,lane,dedupe_key,source_type,source_id,title)
+      VALUES($1,$3,$4,'test',$5,$1,'space',$6,'race'), ($2,$3,$4,'test',$5,$2,'task',$7,'race')`,
+    [space, task, orgId, people.member, lane, rooms.priv, randomUUID()]);
+    await tx.execute(sql`SET LOCAL lock_timeout = '300ms'`);
+    return tx.update(attentionItems).set({ state: 'open_seen' })
+      .where(and(unseen, inArray(attentionItems.id, lockedIds), visibleAttentionCondition(people.member, types)))
+      .returning({ id: attentionItems.id });
+  }, []);
+  assert.deepEqual(marked, [{ id: first }], 'only the locked item changed');
+  const { rows } = await q('SELECT id, state FROM attention_items WHERE id = ANY($1::text[]) ORDER BY id', [[space, task]]);
+  assert.deepEqual(rows.map((row: { state: string }) => row.state), ['open_unseen', 'open_unseen'], 'the items that arrived meanwhile are both left unseen');
+  assert.deepEqual(await writeAttentionWithSourceTypes(and(unseen, eq(attentionItems.id, randomUUID())), async () => ['called'], []), [],
+    'nothing locked: the change is not run');
 });

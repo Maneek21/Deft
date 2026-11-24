@@ -324,7 +324,9 @@ attentionRoutes.post('/mark-all-seen', async (c) => {
   );
   // The unseen items are locked first, so none changes source type before the
   // update reads it (lib/attention.ts, writeAttentionWithSourceTypes).
-  const updated = await writeAttentionWithSourceTypes(unseen, (tx, sourceTypes) => tx
+  // Only the locked items change: one that arrives or reopens meanwhile stays
+  // unseen, whole, as if it had arrived a moment later.
+  const updated = await writeAttentionWithSourceTypes(unseen, (tx, sourceTypes, lockedIds) => tx
     .update(attentionItems)
     .set({
       state: 'open_seen',
@@ -332,8 +334,8 @@ attentionRoutes.post('/mark-all-seen', async (c) => {
       version: sql`${attentionItems.version} + 1`,
       updated_at: now,
     })
-    .where(and(unseen, visibleAttentionCondition(user.id, sourceTypes)))
-    .returning({ id: attentionItems.id, version: attentionItems.version }));
+    .where(and(unseen, inArray(attentionItems.id, lockedIds), visibleAttentionCondition(user.id, sourceTypes)))
+    .returning({ id: attentionItems.id, version: attentionItems.version }), []);
   if (updated.length > 0) {
     await db.insert(attentionEvents).values(updated.map((item) => ({
       org_id: user.org_id,

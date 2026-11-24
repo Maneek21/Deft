@@ -169,21 +169,40 @@ export async function readAttentionWithSourceTypes<T>(
 /**
  * For a change gated on visibility: locks the items `where` selects (FOR
  * UPDATE, in id order) and runs `write` in the same transaction with their
- * source types, so no locked item's type can change before `write`'s
- * statements read it. An item inserted after the lock, of a type with a rule
- * the lock did not see, is left out of the change (fail closed), as if it had
- * arrived a moment later. Run every statement of `write` on `tx`.
+ * source types and ids. `write` changes ONLY those locked ids (`lockedIds`),
+ * so no item's type can change before `write` reads it, and the change never
+ * waits on, or partly takes, an item that arrived or reopened after the lock:
+ * such an item is left out of it whole, as if it had arrived a moment later.
+ * `write` is not called when nothing was locked. A deadlock (another writer
+ * locking the same items in another order) retries the whole transaction, at
+ * most twice. Run every statement of `write` on `tx`.
  */
 export async function writeAttentionWithSourceTypes<T>(
   where: SQL | undefined,
-  write: (tx: AttentionTx, sourceTypes: string[]) => Promise<T>,
+  write: (tx: AttentionTx, sourceTypes: string[], lockedIds: string[]) => Promise<T>,
+  nothingLocked: T,
 ): Promise<T> {
   if (!where) throw new Error('writeAttentionWithSourceTypes needs a filter');
-  return db.transaction(async (tx) => {
-    const rows = await tx.select({ source_type: attentionItems.source_type }).from(attentionItems)
-      .where(where).orderBy(attentionItems.id).for('update');
-    return write(tx, attentionSourceTypesOf(rows));
-  });
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await db.transaction(async (tx) => {
+        const rows = await tx.select({ id: attentionItems.id, source_type: attentionItems.source_type }).from(attentionItems)
+          .where(where).orderBy(attentionItems.id).for('update');
+        if (rows.length === 0) return nothingLocked;
+        return write(tx, attentionSourceTypesOf(rows), rows.map((row) => row.id));
+      });
+    } catch (error) {
+      if (attempt >= 3 || !isDeadlock(error)) throw error;
+    }
+  }
+}
+
+function isDeadlock(error: unknown): boolean {
+  for (let current = error, depth = 0; current && typeof current === 'object' && depth < 4; depth += 1) {
+    if ((current as { code?: unknown }).code === '40P01') return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 /**
@@ -1008,7 +1027,7 @@ export async function transitionAttentionItem(params: {
   // A user's change applies only while they may still open the item; the
   // item is locked first so its source type cannot change before the update
   // reads it (writeAttentionWithSourceTypes).
-  const change = (executor: Pick<typeof db, 'update'>, viewerSourceTypes: AttentionSourceScope) => executor
+  const change = (executor: Pick<typeof db, 'update'>, viewerSourceTypes: AttentionSourceScope, lockedIds?: string[]) => executor
     .update(attentionItems)
     .set({
       state: params.state,
@@ -1024,13 +1043,14 @@ export async function transitionAttentionItem(params: {
     })
     .where(and(
       itemWhere,
+      lockedIds ? inArray(attentionItems.id, lockedIds) : undefined,
       inArray(attentionItems.state, allowedFrom[params.state]),
       params.viewerId ? visibleAttentionCondition(params.viewerId, viewerSourceTypes) : sql`true`,
       params.expectedVersion === undefined ? undefined : eq(attentionItems.version, params.expectedVersion),
     ))
     .returning();
   const [item] = params.viewerId
-    ? await writeAttentionWithSourceTypes(itemWhere, (tx, sourceTypes) => change(tx, sourceTypes))
+    ? await writeAttentionWithSourceTypes(itemWhere, (tx, sourceTypes, lockedIds) => change(tx, sourceTypes, lockedIds), [])
     : await change(db, 'all');
   if (!item) return null;
   await db.insert(attentionEvents).values({
@@ -1072,12 +1092,13 @@ export async function recordAttentionFeedback(params: {
   const now = new Date();
   // Locked first: the item's source type cannot change between the read and
   // the update (writeAttentionWithSourceTypes).
-  const item = await writeAttentionWithSourceTypes(itemWhere, async (tx, sourceTypes) => {
+  const item = await writeAttentionWithSourceTypes(itemWhere, async (tx, sourceTypes, lockedIds) => {
     const [current] = await tx
       .select()
       .from(attentionItems)
       .where(and(
         itemWhere,
+        inArray(attentionItems.id, lockedIds),
         inArray(attentionItems.state, ['open_unseen', 'open_seen', 'acknowledged']),
         visibleAttentionCondition(params.userId, sourceTypes),
       ))
@@ -1099,7 +1120,7 @@ export async function recordAttentionFeedback(params: {
       .where(and(eq(attentionItems.id, current.id), visibleAttentionCondition(params.userId, sourceTypes)))
       .returning();
     return updated ?? null;
-  });
+  }, null);
   if (!item) return null;
   await db.insert(attentionEvents).values({
     org_id: params.orgId,
