@@ -38,6 +38,7 @@ import { buildInviteUrl as buildSecretInviteUrl, buildRecoveryUrl as buildSecret
 import { roleMustHaveSecondStep } from '../lib/two-step-policy.js';
 import { userTwoStep } from '@deft/db/two-step';
 import { closeLostRoomActionsInTx, finishLostRoomCancellations } from '../lib/lost-room-action-cancellation.js';
+import { lockRoomAccessChange } from '../lib/room-access-lock.js';
 import {
   authorizeMembershipOperation, checkMembershipOperation, isProtectedMembership, lockMembership, MembershipGuardError, recordMembershipChange, recordPrivilege, type MembershipActor,
 } from '../lib/membership-guard.js';
@@ -245,6 +246,8 @@ async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, acto
   let reassigned: Reassigned = { replacement_user_id: replacementUserId, primary_open_tasks: 0, led_projects: 0, led_teams: 0 };
   const closedActions: string[] = [];
   const revokedSessionIds = await db.transaction(async (tx) => {
+    // DFX2: the person's room-access lock first (lib/room-access-lock.ts).
+    await lockRoomAccessChange(tx, orgId, memberId);
     const locked = await lockMembership(tx, { orgId, targetUserId: memberId });
     if (!locked.account || !locked.membership) return null;
     const refusal = await authorizeMembershipOperation(tx, { orgId, actor, locked });
@@ -1392,6 +1395,8 @@ memberRoutes.delete('/invites/:id', async (c) => {
           .where(eq(users.email, email)).limit(1);
         userId = byEmail?.id ?? null;
       }
+      // DFX2: the person's room-access lock first (lib/room-access-lock.ts).
+      if (userId) await lockRoomAccessChange(tx, currentUser.org_id, userId);
       // The one locked path: account, membership, invite; the owner-only rule.
       const locked = userId ? await lockMembership(tx, { orgId: currentUser.org_id, targetUserId: userId }) : null;
       const [invite] = await tx.select().from(invites)
@@ -1510,6 +1515,9 @@ memberRoutes.patch('/:id', async (c) => {
     // hosted cell, one seat lock): a guest becoming a member takes a seat.
     let closedOnRoleChange: string[] = [];
     const changed = await withSeatRetry(() => db.transaction(async (tx) => {
+      // DFX2: the person's room-access lock first (lib/room-access-lock.ts);
+      // a demotion to guest ends their unjoined public rooms.
+      await lockRoomAccessChange(tx, currentUser.org_id, memberId);
       // The one locked path (lib/membership-guard.ts): account, membership.
       const locked = await lockMembership(tx, { orgId: currentUser.org_id, targetUserId: memberId });
       // Can't change owner role

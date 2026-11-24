@@ -20,7 +20,7 @@ const orgId = randomUUID();
 const ids = {
   mia: randomUUID(), olive: randomUUID(), adam: randomUUID(), rita: randomUUID(),
   gina: randomUUID(), pam: randomUUID(), sam: randomUUID(), ray: randomUUID(), kay: randomUUID(),
-  cal: randomUUID(), pia: randomUUID(), dee: randomUUID(),
+  cal: randomUUID(), pia: randomUUID(), dee: randomUUID(), pat: randomUUID(), gil: randomUUID(),
 };
 const projectId = randomUUID();
 const planId = randomUUID();
@@ -29,7 +29,7 @@ const roles: Record<string, 'member' | 'owner' | 'admin' | 'guest'> = Object.fro
 );
 const rooms = {
   removed: randomUUID(), left: randomUUID(), dm: randomUUID(), open: randomUUID(),
-  kept: randomUUID(), archived: randomUUID(), guard: randomUUID(), race: randomUUID(),
+  kept: randomUUID(), archived: randomUUID(), guard: randomUUID(), race: randomUUID(), pub: randomUUID(),
 };
 const act = {
   removed: randomUUID(), capture: randomUUID(), approvedHistory: randomUUID(), left: randomUUID(), dm: randomUUID(),
@@ -107,10 +107,12 @@ before(async () => {
     [rooms.kept]: [ids.mia, ids.olive, ids.adam, ids.rita],
     [rooms.archived]: [ids.mia, ids.olive, ids.adam],
     [rooms.guard]: [ids.sam, ids.cal, ids.pia, ids.olive, ids.adam],
-    [rooms.race]: [ids.ray, ids.kay, ids.olive, ids.adam],
+    [rooms.race]: [ids.ray, ids.kay, ids.pat, ids.olive, ids.adam],
+    // Gil joined this public room; as a member of the workspace he could also read it unjoined.
+    [rooms.pub]: [ids.gil, ids.olive, ids.adam],
   };
   for (const [room, members] of Object.entries(roomMembers)) {
-    const type = room === rooms.dm ? 'group_dm' : room === rooms.open ? 'public' : 'private';
+    const type = room === rooms.dm ? 'group_dm' : room === rooms.open || room === rooms.pub ? 'public' : 'private';
     await client.query('INSERT INTO spaces(id,org_id,name,type,created_by) VALUES($1,$2,$3,$4,$5)', [room, orgId, `room-${room.slice(0, 8)}`, type, ids.olive]);
     for (const user of members) await client.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), room, user]);
   }
@@ -384,6 +386,66 @@ test('approval and loss together: the row lock orders them, and exactly one wins
       await holder.end();
     }
   }
+});
+
+/** An access change in progress on another connection: the person's room-access lock, then `change`, uncommitted. */
+async function accessChangeInProgress(userId: string, change: (holder: pg.Client) => Promise<void>) {
+  const holder = new pg.Client({ connectionString: url });
+  await holder.connect();
+  await holder.query('BEGIN');
+  await holder.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`deft-room-access:${orgId}:${userId}`]);
+  await change(holder);
+  const { rows: [{ pid }] } = await holder.query('SELECT pg_backend_pid() AS pid');
+  return { holder, pid: pid as number };
+}
+
+test('a claim waits for a loss in progress, then refuses, even for a proposal the loss never saw', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const { claimPendingApproval } = await import('../src/lib/agent-action-execution-lease.js');
+  const { cancelLostRoomActions } = await import('../src/lib/lost-room-action-cancellation.js');
+  // Pat is being removed from the room (uncommitted); a proposal of hers arrives meanwhile.
+  const { holder, pid } = await accessChangeInProgress(ids.pat, async (tx) => {
+    await tx.query('DELETE FROM space_members WHERE space_id=$1 AND user_id=$2', [rooms.race, ids.pat]);
+  });
+  const inflight = randomUUID();
+  try {
+    await client!.query(`INSERT INTO agent_actions(id,org_id,user_id,conversation_id,source,action,params,approval_tier,approval_status)
+      VALUES($1,$2,$3,$4,'mention','post_message','{"content":"late"}'::jsonb,'quick','pending')`, [inflight, orgId, ids.pat, rooms.race]);
+    // Her own approval starts while she still has the room in every snapshot.
+    const claim = claimPendingApproval(await loadRow(inflight), ids.pat);
+    await lockWaiters(pid, 1);
+    await holder.query('COMMIT');
+    assert.equal(await claim, null, 'the claim read access after the loss committed');
+  } finally {
+    await holder.query('ROLLBACK').catch(() => {});
+    await holder.end();
+  }
+  await assertPending(inflight, 'nothing ran');
+  assert.ok((await cancelLostRoomActions({ orgId })).includes(inflight), 'the sweep closes it');
+});
+
+test('a guest demotion and a public-room removal at the same time: the second sees the first', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const pubAction = randomUUID();
+  await client!.query(`INSERT INTO agent_actions(id,org_id,user_id,conversation_id,source,action,params,approval_tier,approval_status)
+    VALUES($1,$2,$3,$4,'mention','post_message','{"content":"pub"}'::jsonb,'quick','pending')`, [pubAction, orgId, ids.gil, rooms.pub]);
+  // The demotion is in progress (uncommitted). It saw Gil's room membership,
+  // so it closed nothing; the removal runs now.
+  const { holder, pid } = await accessChangeInProgress(ids.gil, async (tx) => {
+    await tx.query("UPDATE org_members SET role='guest' WHERE org_id=$1 AND user_id=$2", [orgId, ids.gil]);
+  });
+  try {
+    const removal = call(ids.olive, `/api/spaces/${rooms.pub}/members/${ids.gil}`, { method: 'DELETE' });
+    await lockWaiters(pid, 1);
+    await holder.query('COMMIT');
+    const removed = await removal;
+    assert.equal(removed.status, 200, removed.text);
+  } finally {
+    await holder.query('ROLLBACK').catch(() => {});
+    await holder.end();
+  }
+  roles[ids.gil] = 'guest';
+  await assertCancelled(pubAction, 'the removal ran after the demotion committed and saw it');
 });
 
 test('owners and admins keep the history of cancelled actions; the person who lost the room does not see it', async (t) => {

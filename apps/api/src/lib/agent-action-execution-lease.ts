@@ -40,6 +40,8 @@ import { resolveAttentionBySource } from './attention.js';
 import { generateReceipt, type GenerateReceiptParams } from './receipts.js';
 import { sanitizeModuleActionParamsForReceipt } from './receipt-params.js';
 import { isModuleWriteActionName, requesterKeepsSourceRoomsSql } from './module-action-visibility.js';
+import { loadActionRequesterId } from './agent-action-requester.js';
+import { lockRoomAccessForClaim } from './room-access-lock.js';
 import {
   isModuleRecordBulkCreateAction,
   sanitizeModuleBulkCreateParamsForHistory,
@@ -467,14 +469,19 @@ export async function executeClaimedApproval(
  * the approver still holds the review right it describes. The requester must
  * also still read every room the action came from (DFX2), in the same
  * statement: an action whose requester lost the room is never run, whoever
- * reviews it.
+ * reviews it. The claim holds the requester's room-access lock (shared) first,
+ * so its statement never reads access from before a loss that commits while
+ * it waits (lib/room-access-lock.ts).
  */
 export async function claimPendingApproval(
   row: AgentActionRow,
   approverUserId: string,
   reviewerGuard?: SQL,
 ): Promise<ClaimToken | null> {
-  const [claimed] = await db
+  const requesterId = await loadActionRequesterId(row);
+  return db.transaction(async (tx) => {
+  await lockRoomAccessForClaim(tx, row.org_id, requesterId);
+  const [claimed] = await tx
     .update(agentActions)
     .set({
       approval_status: 'approved',
@@ -492,6 +499,7 @@ export async function claimPendingApproval(
     ))
     .returning({ token: claimTokenSql });
   return claimed?.token ?? null;
+  });
 }
 
 export type InterruptedRecovery =

@@ -167,6 +167,7 @@ import { publishAgentChannelEvent } from './agent-channel.js';
 import { currentAgentActionSourceAuthoritySql } from './agent-channel-authority.js';
 import { canonicalDeftyActionSql, isModuleWriteActionName, requesterKeepsSourceRoomsSql } from './module-action-visibility.js';
 import { terminalModuleActionParams as sharedTerminalModuleActionParams } from './module-action-terminalization.js';
+import { lockRoomAccessForClaim } from './room-access-lock.js';
 import {
   wikiProposalRefusal,
   wikiProposalRefusalCode,
@@ -1452,7 +1453,12 @@ async function approveActionLocked(
   // returns zero rows, we lost the race and return the idempotent result.
   if (!resumesApprovedModule) {
     await reviewerRecheckPoint('before_decision', actionId);
-    const claimed = await db.execute(
+    // The requester's room-access lock (shared) first, so the claiming
+    // statement never reads access from before a loss that commits while it
+    // waits (lib/room-access-lock.ts).
+    const claimed = await db.transaction(async (tx) => {
+      await lockRoomAccessForClaim(tx, row.org_id, requesterId);
+      return tx.execute(
       // The executing marker is the one the ordinary approval claim writes:
       // approval surfaces show the row as executing until an outcome write
       // (or recovery) replaces `result`.
@@ -1464,7 +1470,8 @@ async function approveActionLocked(
            WHERE id = ${actionId} AND approval_status = 'pending'
              AND ${decisionSource}
            RETURNING approved_at::text AS token`,
-    );
+      );
+    });
     const claimedRows =
       (claimed as { rows?: any[] }).rows ?? (claimed as unknown as any[]);
     claimToken = typeof claimedRows[0]?.token === 'string' ? claimedRows[0].token : null;

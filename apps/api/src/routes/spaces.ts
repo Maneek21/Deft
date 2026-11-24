@@ -8,6 +8,7 @@ import { canReadSpace, canSelfJoinPublicSpaces, requireSpaceMembership } from '.
 import { DEFTY_EMAIL } from '../lib/ensure-defty-membership.js';
 import { cancelPendingScheduledMessagesForSpace } from '../lib/scheduled-message-cancel.js';
 import { closeLostRoomActionsInTx, finishLostRoomCancellations } from '../lib/lost-room-action-cancellation.js';
+import { lockRoomAccessChange } from '../lib/room-access-lock.js';
 
 export const spaceRoutes = new Hono();
 
@@ -38,6 +39,8 @@ async function canSeeSpaceForCreatorRoute(space: { id: string; created_by: strin
  */
 async function removeSpaceMember(orgId: string, spaceId: string, userId: string) {
   const { removed, closedActions } = await db.transaction(async (tx) => {
+    // DFX2: the person's room-access lock first (lib/room-access-lock.ts).
+    await lockRoomAccessChange(tx, orgId, userId);
     const removed = await tx.delete(spaceMembers)
       .where(and(eq(spaceMembers.space_id, spaceId), eq(spaceMembers.user_id, userId)))
       .returning();
