@@ -167,8 +167,10 @@ export async function readAttentionWithSourceTypes<T>(
 }
 
 /**
- * For a change gated on visibility: locks the items `where` selects (FOR
- * UPDATE, in id order) and runs `write` in the same transaction with their
+ * For a change gated on visibility: locks the items `where` selects (FOR NO
+ * KEY UPDATE, as the update itself would, in id order: an insert that only
+ * references an item, such as its events and deliveries, does not wait) and
+ * runs `write` in the same transaction with their
  * source types and ids. `write` changes ONLY those locked ids (`lockedIds`),
  * so no item's type can change before `write` reads it, and the change never
  * waits on, or partly takes, an item that arrived or reopened after the lock:
@@ -187,7 +189,7 @@ export async function writeAttentionWithSourceTypes<T>(
     try {
       return await db.transaction(async (tx) => {
         const rows = await tx.select({ id: attentionItems.id, source_type: attentionItems.source_type }).from(attentionItems)
-          .where(where).orderBy(attentionItems.id).for('update');
+          .where(where).orderBy(attentionItems.id).for('no key update');
         if (rows.length === 0) return nothingLocked;
         return write(tx, attentionSourceTypesOf(rows), rows.map((row) => row.id));
       });

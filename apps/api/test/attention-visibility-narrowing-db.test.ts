@@ -399,7 +399,7 @@ test('a read takes the item types and the items from one snapshot: a type change
   }
 });
 
-test('a change takes the item types under a row lock: no type change can commit before it does', async (t) => {
+test('a change takes the item types under a row lock: no type change can commit before it does, an event insert does not wait', async (t) => {
   if (unavailable) return t.skip(unavailable);
   const [id] = [...itemIds.entries()].find(([key]) => key.startsWith(`${people.member}|task|`) && key.endsWith('|0'))!.slice(1);
   const where = and(eq(attentionItems.org_id, orgId), eq(attentionItems.user_id, people.member), eq(attentionItems.id, id!));
@@ -411,6 +411,8 @@ test('a change takes the item types under a row lock: no type change can commit 
       assert.deepEqual(types, ['task']);
       await assert.rejects(other.query("UPDATE attention_items SET source_type='space' WHERE id=$1", [id]), /lock timeout/,
         'a concurrent type change waits for the lock');
+      await other.query(`INSERT INTO attention_events(id,org_id,attention_item_id,user_id,event_type,source_event_id)
+        VALUES($1,$2,$3,$4,'test',$1)`, [randomUUID(), orgId, id, people.member]);
       return tx.update(attentionItems).set({ title: 'changed under lock' })
         .where(and(where, visibleAttentionCondition(people.member, types))).returning({ id: attentionItems.id });
     }, []);
