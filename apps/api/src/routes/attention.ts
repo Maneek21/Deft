@@ -11,6 +11,7 @@ import { db } from '../lib/db.js';
 import {
   currentApprovalRecipientSql,
   ensureAttentionBackfillForUser,
+  lockedAttentionIdsSql,
   filterVisibleAttentionItems,
   projectAttentionItem,
   recordAttentionFeedback,
@@ -334,7 +335,7 @@ attentionRoutes.post('/mark-all-seen', async (c) => {
       version: sql`${attentionItems.version} + 1`,
       updated_at: now,
     })
-    .where(and(unseen, inArray(attentionItems.id, lockedIds), visibleAttentionCondition(user.id, sourceTypes)))
+    .where(and(unseen, lockedAttentionIdsSql(lockedIds), visibleAttentionCondition(user.id, sourceTypes)))
     .returning({ id: attentionItems.id, version: attentionItems.version }), []);
   if (updated.length > 0) {
     await db.insert(attentionEvents).values(updated.map((item) => ({

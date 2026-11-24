@@ -199,6 +199,14 @@ export async function writeAttentionWithSourceTypes<T>(
   }
 }
 
+/**
+ * `attention_items.id` is one of `lockedIds`, bound as ONE array parameter:
+ * a lock can hold more items than a statement may have parameters (65,535).
+ */
+export function lockedAttentionIdsSql(lockedIds: readonly string[]): SQL {
+  return sql`${attentionItems.id} = ANY(${sql.param([...lockedIds])}::text[])`;
+}
+
 function isDeadlock(error: unknown): boolean {
   for (let current = error, depth = 0; current && typeof current === 'object' && depth < 4; depth += 1) {
     if ((current as { code?: unknown }).code === '40P01') return true;
@@ -1045,7 +1053,7 @@ export async function transitionAttentionItem(params: {
     })
     .where(and(
       itemWhere,
-      lockedIds ? inArray(attentionItems.id, lockedIds) : undefined,
+      lockedIds ? lockedAttentionIdsSql(lockedIds) : undefined,
       inArray(attentionItems.state, allowedFrom[params.state]),
       params.viewerId ? visibleAttentionCondition(params.viewerId, viewerSourceTypes) : sql`true`,
       params.expectedVersion === undefined ? undefined : eq(attentionItems.version, params.expectedVersion),
@@ -1100,7 +1108,7 @@ export async function recordAttentionFeedback(params: {
       .from(attentionItems)
       .where(and(
         itemWhere,
-        inArray(attentionItems.id, lockedIds),
+        lockedAttentionIdsSql(lockedIds),
         inArray(attentionItems.state, ['open_unseen', 'open_seen', 'acknowledged']),
         visibleAttentionCondition(params.userId, sourceTypes),
       ))

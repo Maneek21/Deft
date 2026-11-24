@@ -26,13 +26,14 @@ import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test, { after, before } from 'node:test';
 import pg from 'pg';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { attentionItems } from '@deft/db/schema';
 import { closeDb, db } from '../src/lib/db.js';
 import {
   ATTENTION_SOURCE_TYPES,
   ATTENTION_SOURCE_TYPES_WITH_ACCESS_RULE,
   filterVisibleAttentionItems,
+  lockedAttentionIdsSql,
   readAttentionWithSourceTypes,
   visibleAttentionCondition,
   writeAttentionWithSourceTypes,
@@ -86,6 +87,13 @@ function writtenSourceTypes(): Map<string, string[]> {
   walk(root);
   return found;
 }
+
+test('the locked ids of a change are one statement parameter, however many there are', () => {
+  const ids = Array.from({ length: 70_000 }, (_, at) => `item-${at}`);
+  const query = db.select({ id: attentionItems.id }).from(attentionItems).where(lockedAttentionIdsSql(ids)).toSQL();
+  assert.equal(query.params.length, 1, 'one parameter (a statement may have at most 65,535)');
+  assert.deepEqual(query.params[0], ids);
+});
 
 test('every attention source type the code writes is listed, with a decided access rule', () => {
   const written = writtenSourceTypes();
@@ -442,7 +450,7 @@ test('a gated change takes only the items it locked: items committed meanwhile s
     [space, task, orgId, people.member, lane, rooms.priv, randomUUID()]);
     await tx.execute(sql`SET LOCAL lock_timeout = '300ms'`);
     return tx.update(attentionItems).set({ state: 'open_seen' })
-      .where(and(unseen, inArray(attentionItems.id, lockedIds), visibleAttentionCondition(people.member, types)))
+      .where(and(unseen, lockedAttentionIdsSql(lockedIds), visibleAttentionCondition(people.member, types)))
       .returning({ id: attentionItems.id });
   }, []);
   assert.deepEqual(marked, [{ id: first }], 'only the locked item changed');
