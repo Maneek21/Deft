@@ -15,14 +15,20 @@ const pool = new Pool({
   max: APP_DATABASE_POOL_BUDGET.ordinary,
   connectionTimeoutMillis: 5_000,
   statement_timeout: 30_000,
-  // No JIT: these are short OLTP statements. The review gate's estimated
-  // cost (subplans per row) passes jit_above_cost, and Postgres then spends
-  // seconds compiling a statement that runs in milliseconds (the Inbox
-  // approval count: 2-28 s with JIT, 5 ms without), up to statement_timeout.
-  options: '-c jit=off',
   idle_in_transaction_session_timeout: 60_000,
   keepAlive: true,
   keepAliveInitialDelayMillis: 10_000,
+});
+
+// No JIT: these are short OLTP statements. The review gate's estimated cost
+// (subplans per row) passes jit_above_cost, and Postgres then spends seconds
+// compiling a statement that runs in milliseconds (the Inbox approval count:
+// 2-28 s with JIT, 5 ms without), up to statement_timeout. Set per
+// connection, not as a startup `options`: that would replace PGOPTIONS, and a
+// pooler may refuse a startup parameter it does not know. The client runs
+// its queries in order, so this precedes the connection's first query.
+pool.on('connect', (client) => {
+  client.query('SET jit = off').catch(() => undefined);
 });
 
 // Session-scoped advisory locks must not consume the ordinary query pool;
