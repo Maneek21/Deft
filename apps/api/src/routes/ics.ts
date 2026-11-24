@@ -194,8 +194,9 @@ const icsUrlSchema = z.string().trim().min(1).max(2048).refine((value) => {
 // fetches at once, and answers a refused address exactly like a connection
 // failure.
 export const ICS_URL_NOT_PUBLIC = 'ICS_URL_NOT_PUBLIC';
-const ICS_URL_NOT_PUBLIC_MESSAGE = 'Calendar feeds must use a public internet address on port 80 or 443. '
-  + 'This address points to a private network, to this server or to another port, or its name could not be found.';
+const ICS_URL_NOT_PUBLIC_MESSAGE = 'Calendar feeds must use a public internet address on port 80 or 443, without a user name or password. '
+  + 'This address points to a private network, to this server or to another port, carries a user name or password, '
+  + 'or its name could not be found.';
 
 // POST /api/ics/subscriptions
 const createSchema = z.object({
@@ -263,9 +264,14 @@ icsRoutes.post('/subscriptions', guarded('POST /subscriptions', async (c) => {
     return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR', detail: parsed.error.message }, 400);
   }
 
-  if (!(await isAllowedCalendarFeedAddress(parsed.data.ics_url))) {
-    return c.json({ error: ICS_URL_NOT_PUBLIC_MESSAGE, code: ICS_URL_NOT_PUBLIC }, 400);
+  let allowed: boolean;
+  try {
+    allowed = await isAllowedCalendarFeedAddress(parsed.data.ics_url);
+  } catch (err) {
+    if (err instanceof WorkspaceLimitError) return limitResponse(c, err);
+    throw err;
   }
+  if (!allowed) return c.json({ error: ICS_URL_NOT_PUBLIC_MESSAGE, code: ICS_URL_NOT_PUBLIC }, 400);
 
   const url = calendarFeedFetchUrl(parsed.data.ics_url);
 

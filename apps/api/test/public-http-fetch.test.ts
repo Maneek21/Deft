@@ -15,6 +15,7 @@ import {
 } from '../src/lib/public-http-fetch.js';
 import { db } from '../src/lib/db.js';
 import { ICS_URL_NOT_PUBLIC, icsRoutes } from '../src/routes/ics.js';
+import { DEFAULT_WORKSPACE_LIMITS, _setWorkspaceLimitsForTest, takeOutgoingRequest } from '../src/lib/workspace-limits.js';
 
 const PUBLIC_A = '93.184.216.34';
 const PUBLIC_DOWN = '93.184.216.35';
@@ -390,5 +391,27 @@ test('the save check answers without fetching anything', async () => {
   assert.equal(await isAllowedCalendarFeedAddress('https://internal.test/feed'), false);
   assert.equal(await isAllowedCalendarFeedAddress('ftp://pub.test/feed'), false);
   assert.equal(await isAllowedCalendarFeedAddress('not a url'), false);
+  assert.equal(requests.length, 0);
+});
+
+test('saving a feed on a hosted workspace at its outside-request limit is refused before the name is looked up', async (t) => {
+  _setWorkspaceLimitsForTest({ ...DEFAULT_WORKSPACE_LIMITS, outgoingPerMinute: 1, outgoingPerHour: 10 }, () => {});
+  t.after(() => _setWorkspaceLimitsForTest(undefined));
+  takeOutgoingRequest();
+  const app = new Hono();
+  app.use('*', async (c, next) => {
+    c.set('user' as never, { id: 'user-1', org_id: 'org-1' } as never);
+    await next();
+  });
+  app.route('/api/ics', icsRoutes);
+  const res = await app.request('/api/ics/subscriptions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ics_url: 'https://pub.test/feed' }),
+  });
+  assert.equal(res.status, 429);
+  assert.equal((await res.json() as { code: string }).code, 'WORKSPACE_OUTGOING_LIMIT');
+  assert.ok(res.headers.get('retry-after'));
+  assert.deepEqual(lookups, [], 'the name is not looked up');
   assert.equal(requests.length, 0);
 });
