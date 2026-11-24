@@ -37,6 +37,7 @@ import { buySeatsUrlFor, getSeatStatus, reserveSeat, withSeatRetry, type SeatRes
 import { buildInviteUrl as buildSecretInviteUrl, buildRecoveryUrl as buildSecretRecoveryUrl } from '../lib/secret-links.js';
 import { roleMustHaveSecondStep } from '../lib/two-step-policy.js';
 import { userTwoStep } from '@deft/db/two-step';
+import { cancelLostRoomActionsAfterLoss } from '../lib/lost-room-action-cancellation.js';
 import {
   authorizeMembershipOperation, checkMembershipOperation, isProtectedMembership, lockMembership, MembershipGuardError, recordMembershipChange, recordPrivilege, type MembershipActor,
 } from '../lib/membership-guard.js';
@@ -225,6 +226,10 @@ async function afterWorkspaceAccessEnded(orgId: string, memberId: string, sessio
   if (still && !still.is_active) {
     await evictActiveHuddleParticipants({ orgId, userId: memberId, reason: 'org_membership_revoked' });
   }
+  // DFX2: every room went with the workspace; their pending assistant actions
+  // from rooms close with a reason. The rule is re-read, so a restored member
+  // keeps theirs.
+  await cancelLostRoomActionsAfterLoss(orgId, memberId);
 }
 
 type Reassigned = { replacement_user_id: string | null; primary_open_tasks: number; led_projects: number; led_teams: number };
@@ -1566,6 +1571,10 @@ memberRoutes.patch('/:id', async (c) => {
         userId: memberId,
         reason: 'org_role_changed',
       });
+    }
+    // DFX2: a guest reads no public room it has not joined.
+    if (changed.role === 'guest' && changed.previousRole !== 'guest') {
+      await cancelLostRoomActionsAfterLoss(currentUser.org_id, memberId);
     }
 
     return c.json({ success: true });

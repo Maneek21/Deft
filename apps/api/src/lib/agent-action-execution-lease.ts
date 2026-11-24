@@ -39,7 +39,7 @@ import {
 import { resolveAttentionBySource } from './attention.js';
 import { generateReceipt, type GenerateReceiptParams } from './receipts.js';
 import { sanitizeModuleActionParamsForReceipt } from './receipt-params.js';
-import { isModuleWriteActionName } from './module-action-visibility.js';
+import { isModuleWriteActionName, requesterKeepsSourceRoomsSql } from './module-action-visibility.js';
 import {
   isModuleRecordBulkCreateAction,
   sanitizeModuleBulkCreateParamsForHistory,
@@ -464,7 +464,10 @@ export async function executeClaimedApproval(
 /**
  * Claim a pending ordinary approval for `approverUserId`. `reviewerGuard`, when
  * given, is evaluated in the same statement, so the claim succeeds only while
- * the approver still holds the review right it describes.
+ * the approver still holds the review right it describes. The requester must
+ * also still read every room the action came from (DFX2), in the same
+ * statement: an action whose requester lost the room is never run, whoever
+ * reviews it.
  */
 export async function claimPendingApproval(
   row: AgentActionRow,
@@ -484,6 +487,7 @@ export async function claimPendingApproval(
       eq(agentActions.id, row.id),
       eq(agentActions.org_id, row.org_id),
       eq(agentActions.approval_status, 'pending'),
+      requesterKeepsSourceRoomsSql(),
       reviewerGuard,
     ))
     .returning({ token: claimTokenSql });

@@ -7,6 +7,7 @@ import {
   MODULE_WRITE_ACTION_NAMES,
 } from './module-action-visibility.js';
 import { terminalizePendingModuleActions } from './module-action-terminalization.js';
+import { cancelLostRoomActions } from './lost-room-action-cancellation.js';
 
 export const APPROVAL_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -14,6 +15,11 @@ export async function maintainAttentionSystem(
   now = new Date(),
 ): Promise<{ expired: number; unsnoozed: number; redacted: number; cleaned: number }> {
   const cutoff = new Date(now.getTime() - APPROVAL_TTL_MS);
+
+  // DFX2 sweep: pending assistant actions whose requester lost a room they
+  // came from close with that reason, whatever way the room was lost. Runs
+  // before the TTL pass so such a row records the specific reason.
+  await cancelLostRoomActions();
 
   // Module proposals carry record values until a reviewer decides. Their TTL
   // path therefore needs the same terminal sanitation, receipt, and lifecycle

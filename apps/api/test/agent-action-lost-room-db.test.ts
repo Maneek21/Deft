@@ -264,10 +264,11 @@ test('a lost room takes its assistant actions out of every list, count and detai
   assert.equal(await receiptError(ids.mia, actions[rooms.archived]!.approved), 'no receipt for action');
   assert.equal(await approvalCount(ids.mia), 4, 'the Inbox approval count keeps only the room Mia is still in');
 
-  // Refused approvals changed nothing.
+  // DFX2: losing the room cancelled them (with a reason); the refused
+  // approvals ran nothing.
   const refusedIds = lostRooms.flatMap((room) => owned(ids.mia, room).pending);
-  const { rows } = await client!.query('SELECT approval_status FROM agent_actions WHERE id=ANY($1::text[])', [refusedIds]);
-  assert.deepEqual(rows.map((row) => row.approval_status), Array(refusedIds.length).fill('pending'));
+  const { rows } = await client!.query('SELECT approval_status, approved_at, executed_at FROM agent_actions WHERE id=ANY($1::text[])', [refusedIds]);
+  assert.deepEqual(rows.map((row) => [row.approval_status, row.approved_at, row.executed_at]), Array(refusedIds.length).fill(['expired', null, null]));
 
   // Owners and admins keep the whole action history, whatever rooms they are in.
   const removedAdmin = await json(ids.olive, `/api/spaces/${rooms.removed}/members/${ids.adam}`, { method: 'DELETE' });

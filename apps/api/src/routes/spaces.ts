@@ -7,6 +7,7 @@ import { evictActiveHuddleParticipants, getIO } from '../socket.js';
 import { canReadSpace, canSelfJoinPublicSpaces, requireSpaceMembership } from '../lib/space-membership.js';
 import { DEFTY_EMAIL } from '../lib/ensure-defty-membership.js';
 import { cancelPendingScheduledMessagesForSpace } from '../lib/scheduled-message-cancel.js';
+import { cancelLostRoomActionsAfterLoss } from '../lib/lost-room-action-cancellation.js';
 
 export const spaceRoutes = new Hono();
 
@@ -36,13 +37,17 @@ async function canSeeSpaceForCreatorRoute(space: { id: string; created_by: strin
  * worker while the worker waits on the membership row.
  */
 async function removeSpaceMember(orgId: string, spaceId: string, userId: string) {
-  return db.transaction(async (tx) => {
+  const removed = await db.transaction(async (tx) => {
     const removed = await tx.delete(spaceMembers)
       .where(and(eq(spaceMembers.space_id, spaceId), eq(spaceMembers.user_id, userId)))
       .returning();
     await cancelPendingScheduledMessagesForSpace(tx, { orgId, spaceId, userId });
     return removed;
   });
+  // DFX2: their pending assistant actions from this room close with a reason
+  // (the approval claims already refuse them from the commit above).
+  if (removed.length) await cancelLostRoomActionsAfterLoss(orgId, userId);
+  return removed;
 }
 
 const VALID_SPACE_TYPES = ['public', 'private', 'dm', 'group_dm'] as const;

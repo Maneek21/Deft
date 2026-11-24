@@ -64,6 +64,38 @@ export function sourceMessageRoomSql(userId: string | SQL, rule: 'review' | 'his
     END)`;
 }
 
+/**
+ * True while the action's requester (`actionRequesterIdSql`) can still read,
+ * now, every room a Defty action came from: `sourceMessageRoomSql` with the
+ * history rule, and for a capture its captured room. False once they lost
+ * one: removed from it, left it, it was made private without them, or they
+ * left the workspace (that removes every room membership) or became a guest
+ * of it (no unjoined public rooms). Employee actions and actions with no
+ * room are true. A reference to a room that is not in the workspace adds no
+ * room. An archived room still counts as readable for its members.
+ *
+ * DFX2: the approval claims evaluate this inside the claiming statement, so
+ * no later approval runs such an action, whoever reviews it; and
+ * `cancelLostRoomActions` (lib/lost-room-action-cancellation.ts) closes the
+ * pending ones with a recorded reason.
+ */
+export function requesterKeepsSourceRoomsSql(): SQL {
+  const requester = actionRequesterIdSql();
+  const captureRoom = sql`COALESCE(
+    ${agentActions.params}->>'source_space_id',
+    ${agentActions.params}->>'origin_space_id',
+    ${agentActions.params}->>'space_id')`;
+  return sql`(CASE
+    WHEN COALESCE(${agentActions.source} = 'defty_capture', false) THEN NOT EXISTS (
+      SELECT 1 FROM spaces capture_room
+      WHERE capture_room.id = ${captureRoom}
+        AND capture_room.org_id = ${agentActions.org_id}
+        AND NOT ${readableSpaceSql(requester, sql.raw('capture_room.id'), sql.raw('capture_room.org_id'))}
+    )
+    ELSE ${sourceMessageRoomSql(requester, 'history')}
+  END)`;
+}
+
 /** Source snapshots remain governed by their canonical source's current audience. */
 export function visibleAgentActionSourceSql(options?: { userId?: string | SQL; orgId?: string | SQL; agentEmployeeId?: string }): SQL {
   const reader = options?.userId ? sql`${options.userId}` : options?.agentEmployeeId ? sql`(

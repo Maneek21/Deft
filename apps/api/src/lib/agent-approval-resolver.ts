@@ -165,7 +165,7 @@ import {
 import { resolveAttentionBySource } from './attention.js';
 import { publishAgentChannelEvent } from './agent-channel.js';
 import { currentAgentActionSourceAuthoritySql } from './agent-channel-authority.js';
-import { canonicalDeftyActionSql } from './module-action-visibility.js';
+import { canonicalDeftyActionSql, requesterKeepsSourceRoomsSql } from './module-action-visibility.js';
 import {
   wikiProposalRefusal,
   wikiProposalRefusalCode,
@@ -662,7 +662,10 @@ async function actionSourceIsCurrent(actionId: string, readerUserId?: string) {
 /**
  * The source boundary of a decision. On the internal path a Defty capture
  * also needs its requester (`requesterId`, its author) to still see the
- * captured room.
+ * captured room. On every path the requester must still read each room a
+ * Defty action came from (DFX2, `requesterKeepsSourceRoomsSql`); this is part
+ * of the claiming UPDATE, so no approval runs an action whose requester lost
+ * the room, whoever reviews it.
  */
 function decisionSourceSql(
   row: ReviewedActionRow,
@@ -670,9 +673,12 @@ function decisionSourceSql(
   readerUserId: string | undefined,
   internal: boolean | undefined,
 ) {
-  if (!internal || row.source !== CAPTURE_ACTION_SOURCE) return actionSourceAuthoritySql(readerUserId);
+  if (!internal || row.source !== CAPTURE_ACTION_SOURCE) {
+    return and(actionSourceAuthoritySql(readerUserId), requesterKeepsSourceRoomsSql())!;
+  }
   return and(
     actionSourceAuthoritySql(readerUserId),
+    requesterKeepsSourceRoomsSql(),
     visibleCaptureActionSql({ id: requesterId, org_id: row.org_id }),
   )!;
 }
@@ -1446,6 +1452,9 @@ async function approveActionLocked(
           message: `action ${actionId} has expired`,
         };
       }
+      // Still pending: the claim's source rule failed in the statement (for
+      // example the requester lost the room between the read and the claim).
+      if (winner?.approval_status === 'pending') return sourceUnavailable();
       return {
         status: 'error',
         code: 'INVALID_STATE',
