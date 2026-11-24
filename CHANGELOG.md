@@ -85,13 +85,14 @@ gap, not a risk that needed an unusual setup:
   `task_id` or `created_via`.
 - **Plans bound to no room (#580).** A recovery step in `.148` could create a plan that
   named no room, so it stayed readable and runnable after its creator lost the room it
-  came from. A plan that names no room of the workspace now counts only for an owner or
-  admin, or for the person who made it through the plan route (marked from `.149` on; plans
+  came from. A plan that names no room of the workspace now counts only when its creator
+  is an owner or admin, or when the person made it through the plan route (marked from `.149` on; plans
   such a plan creates inherit the mark). It is never treated as allowed by default. This
   narrows one thing: **a member may no longer see or run their own plans that have no
   room binding and carry no route mark**, that is, plans they made through the plan route
-  before `.149` with no conversation, and any recovery draft from `.148`. Owners and
-  admins can.
+  before `.149` with no conversation, and any recovery draft from `.148`. An owner or
+  admin can still open and run their own such plans; nobody else, including an owner or
+  admin, can open or run another member's.
 - Owners and admins keep the full history of assistant actions and plans, including rooms
   they have left. That is the action-history rows, plan steps included. It does not let
   them open or run a plan whose creator lost a room, and captures from a private room they
@@ -128,8 +129,8 @@ clients.
 
 Named follow-ups:
 
-- #578: a proposal committed while a loss is in flight stays pending until a later sweep
-  expires it (it cannot be approved while access is lost); route-level contention tests; make `lockRoomAccessForClaim`'s
+- #578: a proposal committed while a loss is in flight can remain pending; approval is
+  blocked while access is lost, and a later sweep expires it if access is still lost; route-level contention tests; make `lockRoomAccessForClaim`'s
   `actionId` required; a `lock_timeout` on waiting claims; record-mirror and App Run
   releases need the lock if their rows ever name a room; an approved action with no
   outcome whose requester lost the room stays approved (it cannot run); pending step rows
