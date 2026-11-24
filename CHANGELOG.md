@@ -47,7 +47,8 @@ Upgrade notes:
   any of them defined (even empty) and without `DEFT_HOSTED=true`, startup is refused,
   like the other hosted-only settings listed in `docs/self-hosting.md`. If you copied a
   hosted environment file, remove them. On a hosted cell each is optional and must be a
-  whole number in its range, or startup stops.
+  whole number inside its range (listed in the settings table in `docs/self-hosting.md`),
+  or startup stops. The numbers below are the defaults.
 - `DEFT_PAUSED_REASON` accepts a third value, `emergency_stop`. Nothing else about a
   paused start changes. Nothing sets it on a self-hosted install unless you do.
 - No other setting is changed or removed. Author Kit stays `0.1.0-alpha.43`; its source
@@ -61,7 +62,9 @@ Hosted service (limits apply only when `DEFT_HOSTED=true`; a self-hosted install
     an hour (`DEFT_HOSTED_LIMIT_OUTGOING_PER_HOUR`). Past that, a link preview is skipped
     and a scheduled feed sync waits (the feed stays due and shows the reason); a calendar
     feed preview or manual sync answers 429 `WORKSPACE_OUTGOING_LIMIT` with a
-    `Retry-After`. Chat and everything else work as usual.
+    `Retry-After`. Adding a feed at the limit still saves it and answers 201: its first
+    sync shows the reason and the next attempt waits for the feed's interval, so a
+    client should not retry the creation. Chat and everything else work as usual.
   - Scheduled items: at most 500 scheduled messages
     (`DEFT_HOSTED_LIMIT_SCHEDULED_MESSAGES`) and 2,000 reminders
     (`DEFT_HOSTED_LIMIT_REMINDERS`) waiting at once. Past that, a new one is refused with
@@ -69,16 +72,20 @@ Hosted service (limits apply only when `DEFT_HOSTED=true`; a self-hosted install
     gone off, cancelled or removed. Reminders the assistant sets count too.
   - File storage: a file is refused with 413 `WORKSPACE_STORAGE_FULL` once files would use
     more than 90% of the uploads volume (`DEFT_HOSTED_LIMIT_STORAGE_PERCENT`) or leave
-    under 200 MB free (`DEFT_HOSTED_LIMIT_STORAGE_FREE_MB`). It covers uploads, clips,
-    custom emoji and files an App stages, counts writes still in progress, and a write
-    the disk itself refuses (full or over quota) is removed and gets the same answer. If
-    the volume cannot be measured the file is refused with 503
+    under 200 MiB free (`DEFT_HOSTED_LIMIT_STORAGE_FREE_MB`, counted in MiB). It covers
+    uploads, clips, custom emoji and files an App stages, and counts writes still in
+    progress. A write the disk itself refuses (full or over quota) gets the same answer;
+    uploads, clips and emoji then try to remove the partial file, but a failed App stage
+    can leave an inaccessible partial file behind (its stage stays `uploading`). If the
+    volume cannot be measured the file is refused with 503
     `WORKSPACE_STORAGE_UNAVAILABLE` (try again shortly).
   - The person sees the reason (the server's words) where they upload, set a reminder or
-    sync a feed. Owners and admins also get an in-app notice, at most one an hour per
-    limit, when the outside-request limit or the file-storage limit is reached (none for
-    the two scheduled-item limits). The operator's log has one line a minute per limit,
-    with no values in it.
+    sync a feed. Owners and admins (active people) also get an in-app notice when the
+    outside-request limit is reached or a file is refused by the storage check before
+    writing, at most one an hour per limit and API process; a refusal that only comes
+    from the disk itself sends none, and neither do the two scheduled-item limits. The
+    operator's log has at most one `workspace_limit_reached` line a minute per limit and
+    process, with no values in it.
 - Emergency-stop banner: a workspace the operator stops with `DEFT_PAUSED_START=true` and
   `DEFT_PAUSED_REASON=emergency_stop` shows signed-in people a banner that outgoing
   activity is stopped while a problem is looked into, that they can still sign in and read
@@ -90,10 +97,13 @@ Hosted service (limits apply only when `DEFT_HOSTED=true`; a self-hosted install
 Small changes that reach self-hosted installs too:
 
 - A refused upload or reminder now shows the server's reason (for example a file that is
-  too large) in chat, the task panel and notes, and several files dropped or pasted
-  together each report their own refusal.
-- The scheduled calendar feed sync takes the feeds that have waited longest first (50 at a
-  time, as before).
+  too large): uploads in chat, threads, task attachments and note images; reminders in
+  chat and the command palette. Files dropped or selected together in chat, and images
+  pasted together in chat and threads, each report their own refusal.
+- Each scheduled calendar feed scan selects up to 50 due subscriptions (as before), least
+  recently updated first.
+- Docs only (#575): the installation guides now pin the published `.147` image instead of
+  `.144`, and this changelog records `.145` to `.147` as published.
 
 ## [0.3.0-preview.147] — 2026-11-23 (prerelease)
 
