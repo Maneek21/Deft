@@ -45,25 +45,56 @@ type Queryable = { query: (text: string) => Promise<{ rows: Array<Record<string,
  * 0.3.0-preview.117 (ics_publish_tokens, seat_statements, user_two_step, ...),
  * and the database looks usable. Read-only.
  */
+// Tables only upgrades after the bootstrap create, named when they are missing.
+const LATE_TABLES = ['ics_publish_tokens', 'seat_statements', 'user_two_step'] as const;
+
 export async function describeIncompleteFreshInit(client: Queryable, error: unknown): Promise<string[]> {
-  let recorded = new Set<string>();
+  let tableCount: number | null = null;
+  try {
+    const result = await client.query(`SELECT count(*)::int AS count FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`);
+    tableCount = Number(result.rows[0]?.count ?? 0);
+  } catch {
+    // Unknown: decided below by the ledger read.
+  }
+  if (tableCount === 0) {
+    return ['push-full stopped before it created any table: the database is still empty. Fix the cause below and run pnpm db:push-full again.'];
+  }
+  let recorded: Set<string> | null = new Set();
   try {
     const ledger = await client.query("SELECT to_regclass('public.deft_schema_migrations') IS NOT NULL AS present");
     if (ledger.rows[0]?.present) {
       recorded = new Set((await client.query('SELECT version FROM deft_schema_migrations')).rows.map((row) => String(row.version)));
     }
   } catch {
-    // Reported as "none recorded" below.
+    recorded = null;
+  }
+  if (recorded === null) {
+    return [
+      'push-full stopped before it finished, and its schema ledger could not be read (the connection may have dropped). Do not use this database yet.',
+      'Reconnect and run pnpm db:upgrade --status to see which upgrades it lacks; pnpm db:upgrade may finish it. '
+        + 'If it reports no ledger, drop the database, create an empty one and run pnpm db:push-full again.',
+    ];
   }
   // push-full builds the schema through the bootstrap directly; the upgrades
   // after it run only once that schema is recognized and recorded.
   const bootstrapEnd = upgradeManifest.migrations.findIndex((migration) => migration.version === FRESH_BOOTSTRAP_VERSION);
   const missing = upgradeManifest.migrations.slice(bootstrapEnd + 1).filter((migration) => !recorded.has(migration.version));
+  const absentTables: string[] = [];
+  for (const table of LATE_TABLES) {
+    try {
+      const present = await client.query(`SELECT to_regclass('public.${table}') IS NOT NULL AS present`);
+      if (!present.rows[0]?.present) absentTables.push(table);
+    } catch {
+      // Not named when it cannot be checked.
+    }
+  }
   const lines = [
     'push-full stopped before it finished. This database is INCOMPLETE: do not use it for tests, a stage or an install.',
     missing.length
-      ? `${missing.length} upgrade(s) after ${FRESH_BOOTSTRAP_VERSION} were not applied (${missing[0]!.version} to ${missing.at(-1)!.version}): `
-        + 'tables they create, for example ics_publish_tokens, seat_statements and user_two_step, are missing, so it does not match an install built by db:upgrade.'
+      ? `${missing.length} upgrade(s) after ${FRESH_BOOTSTRAP_VERSION} were not applied (${missing[0]!.version} to ${missing.at(-1)!.version}), `
+        + (absentTables.length ? `so tables they create are missing (among them ${absentTables.join(', ')}) and ` : 'so ')
+        + 'it does not match an install built by db:upgrade.'
       : 'Every upgrade was applied, but the final step failed.',
   ];
   if (error instanceof Error && /^E5_\w*CATALOG_UNRECOGNIZED/u.test(error.message)) {
