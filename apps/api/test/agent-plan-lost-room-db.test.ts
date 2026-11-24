@@ -104,9 +104,6 @@ before(async () => {
     VALUES($1,$2,$3,$4,'plan',$5,'step-1','create_task',$6,'quick','approved',now())`, [
     twoRoomsStep, orgId, ids.mia, rooms.kept, plans.twoRooms, JSON.stringify({ title: 'CANARY-two-rooms', resolved_project_id: projectId }),
   ]);
-  // A child plan drafted (before this change) by a step of a plan bound only by its source message.
-  await insertPlan(plans.parent, ids.mia, 'completed', null, { source_message_id: twoRoomsMessage, 'make-child': { result: { plan_id: plans.child, status: 'draft' } } });
-  await insertPlan(plans.child, ids.mia, 'draft', null);
   // A source binding that is not a string fails closed.
   await insertPlan(plans.oddBinding, ids.mia, 'draft', null, { source_message_id: { result: 'overwritten' } });
   // A plan in a public room Mia reads without joining.
@@ -255,14 +252,11 @@ test('a plan step whose own row omits a room of its plan leaves the member actio
   if (unavailable) return t.skip(unavailable);
   const history = async () => (await call(ids.mia, 'GET', '/api/agent/actions?limit=200')).text;
   assert.ok((await history()).includes(twoRoomsStep), 'visible while she has both rooms');
-  assert.equal((await call(ids.mia, 'GET', `/api/agent-plans/${plans.child}`)).status, 200, 'the child plan is readable while she has the room');
   const removed = await call(ids.olive, 'DELETE', `/api/spaces/${rooms.msgOnly}/members/${ids.mia}`);
   assert.equal(removed.status, 200, removed.text);
   const after = await history();
   assert.ok(!after.includes(twoRoomsStep) && !after.includes('CANARY-two-rooms'), 'hidden once she lost the source room');
   assert.equal((await call(ids.mia, 'GET', `/api/agent-plans/${plans.twoRooms}`)).status, 404);
-  assert.equal((await call(ids.mia, 'GET', `/api/agent-plans/${plans.child}`)).status, 404, 'a child plan follows its parent');
-  assert.equal((await call(ids.mia, 'POST', `/api/agent-plans/${plans.child}/approve`)).status, 404);
 });
 
 test('a plan whose source binding is not a string fails closed', async (t) => {

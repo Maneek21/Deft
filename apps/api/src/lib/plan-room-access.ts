@@ -11,20 +11,15 @@ import { readableSpaceSql } from './space-visibility.js';
  * of the workspace adds no room; a message whose room is missing fails
  * closed, and so does a source reference that is not a string.
  *
- * A plan made by another plan's step (its result names the new plan) also
- * needs the rooms of that parent plan (one level; the parent's own rule).
+ * A plan made by another plan's step carries that plan's conversation (the
+ * executor passes it to the `create_plan` tool) and source message, so it
+ * needs no link to its parent. No earlier release stored a source message on
+ * a plan (no `createPlanRow` caller set it), so no plan is bound by its
+ * source message alone.
  */
-function planRoomsReadableSql(alias: string, reader: SQL, withParents: boolean): SQL {
+function planRoomsReadableSql(alias: string, reader: SQL): SQL {
   const col = (name: string) => sql.raw(`${alias}.${name}`);
   const sourceMessageId = sql`(${col('context')}->>'source_message_id')`;
-  const parents = withParents ? sql`
-    AND NOT EXISTS (
-      SELECT 1 FROM agent_plans parent_plan
-      WHERE parent_plan.org_id = ${col('org_id')}
-        AND parent_plan.id <> ${col('id')}
-        AND jsonb_path_exists(parent_plan.context, '$.**.plan_id ? (@ == $id)', jsonb_build_object('id', ${col('id')}))
-        AND NOT ${planRoomsReadableSql('parent_plan', reader, false)}
-    )` : sql``;
   return sql`(
     COALESCE(jsonb_typeof(${col('context')}->'source_message_id'), 'string') = 'string'
     AND NOT EXISTS (
@@ -47,7 +42,7 @@ function planRoomsReadableSql(alias: string, reader: SQL, withParents: boolean):
       WHERE plan_reader_membership.org_id = ${col('org_id')}
         AND plan_reader_membership.user_id = ${reader}
         AND plan_reader_membership.is_active = true)
-    ${parents}
+
   )`;
 }
 
@@ -61,7 +56,7 @@ function planRoomsReadableSql(alias: string, reader: SQL, withParents: boolean):
  * visible or runnable for them, and an owner/admin cannot run it for them).
  */
 export function planCreatorKeepsRoomsSql(): SQL {
-  return planRoomsReadableSql('agent_plans', sql.raw('agent_plans.user_id'), true);
+  return planRoomsReadableSql('agent_plans', sql.raw('agent_plans.user_id'));
 }
 
 /**
@@ -74,6 +69,6 @@ export function actionPlanRoomsReadableSql(reader?: SQL): SQL {
     SELECT 1 FROM agent_plans step_plan
     WHERE step_plan.id = agent_actions.plan_id
       AND step_plan.org_id = agent_actions.org_id
-      AND NOT ${planRoomsReadableSql('step_plan', reader ?? sql.raw('step_plan.user_id'), true)}
+      AND NOT ${planRoomsReadableSql('step_plan', reader ?? sql.raw('step_plan.user_id'))}
   ))`;
 }
