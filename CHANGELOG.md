@@ -36,8 +36,11 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
   from it; now it is not stored either. A self-hosted install's
   `DEFT_CALENDAR_PRIVATE_URL_ALLOWLIST` entries are still accepted. Feeds already saved
   are unchanged.
-- Creating or changing an API key with a malformed request body, or with an expiry date
-  that is not a date, is now refused with 400 `VALIDATION_ERROR` instead of failing with 500.
+- Creating or changing an API key with a malformed request body is now refused with 400
+  `VALIDATION_ERROR` instead of failing with 500. So is a value the database cannot store
+  or that would leave the key unreachable: an expiry date that is not a date or falls
+  outside the years 1 to 9999, a rate limit above 2,147,483,647, a NUL character in the
+  text, an empty agent id, or a change request that changes nothing.
 
 ## [0.3.0-preview.150] — 2026-11-25 (prerelease)
 
