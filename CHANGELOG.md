@@ -30,6 +30,124 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
   its burn-down bucket, and `node scripts/check-app-boundary.mjs --summary` prints
   the counts per milestone. No finding changed.
 
+## [0.3.0-preview.149] — 2026-11-24 (prerelease)
+
+Changes since `v0.3.0-preview.148`: #577, #578, #579 and #580. Release scope `core` (no
+Hermes compatibility claim).
+
+Upgrade notes:
+
+- No migration. Schema head stays `0.3.0-preview.149`; `pnpm db:upgrade --status` on an
+  install already at `.144` to `.148` has nothing to apply. An install on an older release
+  follows the earlier upgrade notes first (stop Deft, back up the database and the uploads
+  volume, `pnpm db:upgrade`).
+- No setting is added, changed or removed. Author Kit stays `0.1.0-alpha.43`.
+- Two changes reach every install, hosted or self-hosted: the web pages now send four
+  response headers, and the app's ordinary database connections turn Postgres JIT off.
+  Both are described below. If a reverse proxy in front of Deft sets any of those four headers
+  itself, check that its value still suits the pages listed below.
+
+Security fix. Read this one first. On `.148` and every earlier release, a person who lost
+access to a room could still see and act on the assistant's work from it. This was a live
+gap, not a risk that needed an unusual setup:
+
+- **Assistant actions (#578).** A member who lost read access to a room (left a space or
+  DM, was removed from it, was made a guest, was removed from the workspace, or lost an
+  archived public room they had not joined) kept their pending assistant actions from
+  that room. Leaving an active public room does not by itself end a non-guest's read
+  access, so it cancels nothing. The member could not see them after `.148`'s hiding change, but they
+  were never cancelled. A self-approval that started just before the loss could still
+  run. After a member left the workspace, any owner or admin who could read the room could
+  approve such an action, and it ran under the departed member's name. Now, when a person
+  loses a room, their pending assistant actions from it are cancelled in the same
+  transaction as the loss: the audit row is kept, its `approval_status` becomes `expired`
+  and it records the reason, and a governed module write's proposed values are scrubbed.
+  A 15-minute sweep (at most 500 actions per workspace and 100 workspaces per pass) closes
+  any the routes did not cover. Every approval re-checks the room when it is claimed, so
+  while access is lost no approval runs such an action, whoever reviews it. An approval
+  claimed before the loss committed can stand.
+- **Defty plans (#579).** `.148` and earlier had no room check on Defty plans at all
+  (plans exist since the first release). A member who lost a plan's room could still list
+  and open the plan, whose steps carry that room's content, and could edit, approve, run
+  and resume it. An owner or admin could approve and run a departed member's plan, and it
+  ran as that member. Now a plan counts only while its creator can still read the plan's
+  conversation room and the room of its source message, and is an active workspace
+  member. A plan that fails this disappears from the plan list, and reading, editing,
+  approving, running and resuming it by id answer 404 (pause and abort still work and
+  return only the plan's id and status).
+  A running plan pauses, with a reason, if its creator loses a room before a step starts.
+  The same rule covers a plan's steps wherever they are read or approved: the pending
+  list, Inbox, approval retries, history, an employee's activity and its queues.
+  Creating a plan in a room its creator cannot read is refused. Two execution changes
+  apply to every plan, including those whose creators keep their rooms: recovery after a
+  failed step now returns a text recommendation without calling tools or saving a durable
+  employee note, and execution pauses on a step whose id is `source_message_id`,
+  `task_id` or `created_via`.
+- **Plans bound to no room (#580).** A recovery step in `.148` could create a plan that
+  named no room, so it stayed readable and runnable after its creator lost the room it
+  came from. A plan that names no room of the workspace now counts only when its creator
+  is an owner or admin, or when the person made it through the plan route (marked from `.149` on; plans
+  such a plan creates inherit the mark). It is never treated as allowed by default. This
+  narrows one thing: **a member may no longer see or run their own plans that have no
+  room binding and carry no route mark**, that is, plans they made through the plan route
+  before `.149` with no conversation, and any recovery draft from `.148`. An owner or
+  admin can still open and run their own such plans; nobody else, including an owner or
+  admin, can open or run another member's.
+- Owners and admins keep the full history of assistant actions and plans, including rooms
+  they have left. That is the action-history rows, plan steps included. It does not let
+  them open or run a plan whose creator lost a room, and captures from a private room they
+  are not in stay hidden from them as before.
+
+KNOWN LIMITS:
+
+- A plan's stored step results keep copies of what the assistant read when the step ran. A member who later loses access to a room still sees, in her own plans, copies of that room's content made while she had access. Tracking where each stored result came from is planned after launch.
+- This includes copies made on `.148` of a no-room plan's activity.
+
+Web pages send four isolation headers (#577). Every page response of the web app now carries
+`Cross-Origin-Opener-Policy: same-origin`, `Origin-Agent-Cluster: ?1`,
+`Cross-Origin-Resource-Policy: same-origin` and `X-DNS-Prefetch-Control: off`, matching what
+the API already sent. A page on another address that opens a workspace page in a new
+window no longer keeps a handle to it, and other addresses can no longer embed the app's
+files. It applies to self-hosted installs as well. Exceptions, each found by a browser test:
+
+- `/oauth/authorize`, `/login?from=oauth` and `/two-step-setup?from=oauth` send
+  `Cross-Origin-Opener-Policy: unsafe-none` (the other three headers still apply), so an
+  outside MCP client's sign-in pop-up keeps its window handle and the authorization code
+  reaches the client, including after a reload of the sign-in step. Plain `/login` keeps
+  `same-origin`.
+- `/app-experience-bootstrap.js` sends `Cross-Origin-Resource-Policy: cross-origin`: the
+  sandboxed App frame has an opaque origin and could not load it otherwise. The script is
+  fixed and public and carries no user data.
+
+Postgres JIT is off for the app's ordinary database connections (#579). The API's main query
+pool sends `SET jit = off` when it opens a connection (an error from that statement is
+ignored; the pool for session advisory locks is not changed), hosted and self-hosted
+alike. With JIT on, Postgres spent seconds
+compiling some Inbox approval-count statements that run in milliseconds (2 to 28 s against
+5 ms, up to the 30 s statement timeout). Your database's own setting is unchanged for other
+clients.
+
+Named follow-ups:
+
+- #578: a proposal committed while a loss is in flight can remain pending; approval is
+  blocked while access is lost, and a later sweep expires it if access is still lost; route-level contention tests; make `lockRoomAccessForClaim`'s
+  `actionId` required; a `lock_timeout` on waiting claims; record-mirror and App Run
+  releases need the lock if their rows ever name a room; an approved action with no
+  outcome whose requester lost the room stays approved (it cannot run); pending step rows
+  of a BYOA employee's plan are not drained (they cannot run).
+- #579: stored step results carry their source rooms; one central room check with an
+  inventory test of every reader; Agent Channel can deliver a retained `approval.resolved`
+  event for a step of an employee's own bound plan to that employee; an employee's direct
+  module call can get a receipt replay of its own bound plan's step result; plan creation
+  checks the room and inserts in two statements, so a removal in between stores a plan its
+  creator cannot read (it stays hidden from them); an approved plan step with no recorded
+  outcome stays approved after its requester loses the room (it cannot run); make the
+  Inbox approval count cheaper, then revisit JIT.
+- #580: an owner- or admin-made `.148` plan with no room stays visible to its own bound
+  employee's queues and status route.
+- #577: `deploy/demo/Caddyfile.example` sends `/oauth/authorize` to the API, which predates
+  the headers change.
+
 ## [0.3.0-preview.148] — 2026-11-24 (prerelease)
 
 Changes since `v0.3.0-preview.147`. Release scope `core` (no Hermes compatibility claim).
