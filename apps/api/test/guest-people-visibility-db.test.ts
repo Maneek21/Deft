@@ -577,9 +577,11 @@ test('MCP task_update, agent_employee_list/get and idempotent replays follow the
   const guestKey = `gpv-guest-replay-${run}`;
   assert.notEqual((await humanTaskUpdate({ task_id: task, patch: { priority: 'p2' }, idempotency_key: guestKey }, writer(guest))).isError, true);
   assert.equal(parse(await humanTaskUpdate({ task_id: task, patch: { priority: 'p2' }, idempotency_key: guestKey }, writer(guest))).status, 'already_completed');
-  // Re-sending the current assignee over MCP writes nothing for it and is not refused.
+  // Re-sending only the current assignee over MCP is not refused and writes nothing at all.
+  const before = (await c.query(`SELECT updated_at FROM tasks WHERE id = $1`, [task])).rows[0].updated_at.getTime();
   const unchanged = await humanTaskUpdate({ task_id: task, patch: { assignee_id: ` ${sharer} ` } }, writer(guest));
   assert.notEqual(unchanged.isError, true, unchanged.content[0]!.text);
+  assert.equal((await c.query(`SELECT updated_at FROM tasks WHERE id = $1`, [task])).rows[0].updated_at.getTime(), before);
   await c.query(`UPDATE tasks SET priority = 'p2' WHERE id = $1`, [task]);
 });
 

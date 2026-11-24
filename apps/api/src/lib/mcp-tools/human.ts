@@ -2297,7 +2297,9 @@ export async function humanTaskUpdate(args: { task_id?: string; patch?: Record<s
         .limit(1);
       if (!member) return errorResult('task_update: assignee is not an active org member');
     }
-    if (Object.keys(updates).length === 0) updates.updated_at = existingTask.updated_at;
+    // Nothing left to change (only the current assignee was re-sent): write
+    // nothing, so updated_at never moves and no concurrent edit is undone.
+    if (Object.keys(updates).length === 0) return textResult(existingTask);
     const [task] = await db.update(tasks).set(updates).where(and(eq(tasks.id, taskId), eq(tasks.org_id, ctx.org_id), eq(tasks.is_deleted, false))).returning();
     if (!task) return errorResult('task_update: task not found');
     const activityEntries: Array<{ action: string; field: string; old_value: string | null; new_value: string | null }> = [];
