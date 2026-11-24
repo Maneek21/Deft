@@ -2,7 +2,10 @@ import type { Metadata, Viewport } from 'next';
 // Inter and JetBrains Mono are served from this app (fonts bundled by Next
 // under /_next/static/media), never from Google: no page, the signup and
 // setup pages included, makes a request outside the app's origin for fonts.
-// Same faces, weights and subsets the Google Fonts link loaded.
+// The same faces and weights the Google Fonts link loaded, font-display swap,
+// and the same named subsets chosen by unicode-range (Fontsource's Latin-ext
+// range ends a few currency signs earlier than Google's; these fonts have no
+// glyphs for them).
 import '@fontsource/inter/400.css';
 import '@fontsource/inter/500.css';
 import '@fontsource/inter/600.css';

@@ -8,36 +8,51 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 
 // The signup page (with and without a setup link), the setup page and the
-// other credential pages make no request outside the app's origin: fonts are
-// served by the app itself, never by Google (SFX1 item 3). Real Next.js
-// server and root layout, real Chromium.
+// other credential pages make no request to a third party: every request
+// goes to the app itself or to its own API, and the fonts are served by the
+// app, never by Google (SFX1 item 3). Real Next.js server and root layout,
+// real Chromium. The API is given its own origin, as in the Compose setup
+// (web on :3000, API on :3001), so a request to it is told apart from one to
+// the app.
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
 const web = fileURLToPath(new URL('../../', import.meta.url));
 
 const PAGES = [
-  '/signup#setup=fixture-setup-token',
-  '/signup',
-  '/setup',
-  '/login',
-  '/invite#token=fixture-invite-token',
-  '/reset-password#token=fixture-reset-token',
+  { path: '/signup#setup=fixture-setup-token', pathname: '/signup', marker: { text: 'Create your workspace' } },
+  { path: '/signup', pathname: '/signup', marker: { text: 'Create your workspace' } },
+  { path: '/setup', pathname: '/setup', marker: { text: 'Welcome to Deft' } },
+  { path: '/login', pathname: '/login', marker: { text: 'Sign in to your workspace' } },
+  { path: '/invite#token=fixture-invite-token', pathname: '/invite', marker: { text: 'Join Fixture Workspace' } },
+  { path: '/reset-password#token=fixture-reset-token', pathname: '/reset-password', marker: { css: 'form input[type=password]' } },
 ];
 
-test('signup, setup and credential pages request nothing outside the app origin, fonts included', { timeout: 300000 }, async () => {
+// Every face and weight the app uses (app/layout.tsx).
+const FACES = ['400 16px Inter', '500 16px Inter', '600 16px Inter', '700 16px Inter',
+  '400 16px "JetBrains Mono"', '500 16px "JetBrains Mono"'];
+
+async function freePort() {
   const allocator = createServer();
   await new Promise(resolve => allocator.listen(0, '127.0.0.1', resolve));
-  const port = allocator.address().port;
+  const { port } = allocator.address();
   await new Promise(resolve => allocator.close(resolve));
+  return port;
+}
+
+test('signup, setup and credential pages request nothing from a third party, and fonts come from the app', { timeout: 300000 }, async () => {
+  const port = await freePort();
   const origin = `http://127.0.0.1:${port}`;
+  // Nothing listens here: every API request is answered by the route below.
+  const apiOrigin = `http://127.0.0.1:${await freePort()}`;
+  const firstParty = new Set([origin, apiOrigin]);
   const nextEnvPath = join(web, 'next-env.d.ts');
   const originalNextEnv = await readFile(nextEnvPath);
   const agentsPath = join(web, 'AGENTS.md'), originalAgents = await readFile(agentsPath);
   let logs = '', browser;
   const next = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'dev', '--webpack', '--hostname', '127.0.0.1', '--port', String(port)], {
     cwd: web, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, NEXT_TELEMETRY_DISABLED: '1', NEXT_PUBLIC_API_URL: origin, NEXT_PUBLIC_APP_URL: origin,
-      NEXT_PUBLIC_WS_URL: origin, NODE_OPTIONS: '--max-old-space-size=1024' },
+    env: { ...process.env, NEXT_TELEMETRY_DISABLED: '1', NEXT_PUBLIC_API_URL: apiOrigin, NEXT_PUBLIC_APP_URL: origin,
+      NEXT_PUBLIC_WS_URL: apiOrigin, NODE_OPTIONS: '--max-old-space-size=1024' },
   });
   const exited = new Promise(resolve => next.once('exit', resolve));
   next.stdout.on('data', chunk => { logs = (logs + chunk).slice(-12000); });
@@ -52,37 +67,54 @@ test('signup, setup and credential pages request nothing outside the app origin,
     }
     assert.ok(ready, `Next test server failed to start: ${logs}`);
     browser = await chromium.launch({ headless: true, ...(process.env.DEFT_TEST_BROWSER_EXECUTABLE ? { executablePath: process.env.DEFT_TEST_BROWSER_EXECUTABLE } : {}) });
-    for (const path of PAGES) {
+    for (const { path, pathname, marker } of PAGES) {
       const context = await browser.newContext();
       const page = await context.newPage();
-      const outside = [], fonts = [];
-      // Every request the page makes, on any frame or worker of this context.
+      const thirdParty = [], fontResponses = [];
+      // Every request of this context: page, frames and workers.
       context.on('request', request => {
         const url = request.url();
         if (url.startsWith('data:') || url.startsWith('blob:')) return;
-        if (new URL(url).origin !== origin) outside.push(url);
-        else if (request.resourceType() === 'font') fonts.push(url);
+        if (!firstParty.has(new URL(url).origin)) thirdParty.push(url);
       });
-      // Nothing may leave the machine: an outside request is recorded above,
-      // then refused here, so the test never depends on the network.
-      await context.route(url => new URL(url).origin !== origin, route => route.abort());
-      await context.route(`${origin}/api/**`, async route => {
+      context.on('response', response => {
+        if (response.request().resourceType() === 'font') fontResponses.push({ url: response.url(), status: response.status() });
+      });
+      // Nothing may leave the machine: a third-party request is recorded
+      // above, then refused here, so the test never depends on the network.
+      await context.route(url => !firstParty.has(new URL(url).origin), route => route.abort());
+      await context.route(url => new URL(url).origin === apiOrigin, async route => {
         const pathname = new URL(route.request().url()).pathname;
         if (pathname === '/api/auth/has-workspace') await route.fulfill({ json: { has_workspace: false } });
-        else await route.fulfill({ status: 401, json: { error: 'Unauthorized', code: 'NO_TOKEN' } });
+        else if (pathname === '/api/invites/preview') {
+          await route.fulfill({ json: { org_name: 'Fixture Workspace', email: 'new@example.test', inviter_name: 'Admin', role: 'member', already_accepted: false } });
+        } else await route.fulfill({ status: 401, json: { error: 'Unauthorized', code: 'NO_TOKEN' } });
       });
       page.setDefaultTimeout(30000);
       page.setDefaultNavigationTimeout(120000);
       try {
         await page.goto(`${origin}${path}`, { waitUntil: 'load' });
-        await page.evaluate(() => document.fonts.ready);
+        // The page asked for is the one that rendered (no redirect to another page).
+        if (marker.text) await page.getByText(marker.text, { exact: false }).first().waitFor();
+        else await page.locator(marker.css).first().waitFor();
+        assert.equal(new URL(page.url()).pathname, pathname, `${path} stayed on its page`);
+        // Load every face and weight the app uses, then wait for the network to settle.
+        const loaded = await page.evaluate(async faces => Promise.all(faces.map(async face => {
+          await document.fonts.load(face, 'Aa');
+          return document.fonts.check(face, 'Aa');
+        })), FACES);
         await page.waitForLoadState('networkidle');
-        assert.deepEqual(outside, [], `${path} requested outside the app origin`);
-        assert.ok(await page.evaluate(() => document.fonts.check('16px Inter')), `${path}: Inter is available`);
-        assert.ok(fonts.length > 0, `${path}: fonts load from the app`);
-        for (const font of fonts) assert.match(new URL(font).pathname, /^\/_next\/static\/media\/.+\.woff2$/, font);
+        assert.deepEqual(thirdParty, [], `${path} made a third-party request`);
+        assert.deepEqual(loaded, FACES.map(() => true), `${path}: every face loads`);
+        const fontUrls = new Set(fontResponses.map(font => font.url));
+        assert.ok(fontUrls.size >= FACES.length, `${path}: one file per face at least, got ${[...fontUrls].join(', ')}`);
+        for (const font of fontResponses) {
+          assert.equal(new URL(font.url).origin, origin, font.url);
+          assert.match(new URL(font.url).pathname, /^\/_next\/static\/media\/.+\.woff2$/, font.url);
+          assert.ok(font.status >= 200 && font.status < 300, `${font.url} answered ${font.status}`);
+        }
       } catch (error) {
-        throw new Error(`${error.message}\nPage: ${await page.locator('body').innerText().catch(() => 'unavailable')}\nNext log: ${logs}`, { cause: error });
+        throw new Error(`${error.message}\nURL: ${page.url()}\nPage: ${await page.locator('body').innerText().catch(() => 'unavailable')}\nNext log: ${logs}`, { cause: error });
       } finally { await context.close(); }
     }
   } finally {

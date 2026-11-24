@@ -223,7 +223,6 @@ jobs:
           src/lib/app-experience-bootstrap-browser.test.mjs
           src/lib/link-token-browser.test.mjs
           src/lib/link-token-next-browser.test.mjs
-          src/lib/no-outside-requests-next-browser.test.mjs
           src/lib/app-connection-reattachment.test.ts
           src/lib/app-runtime-setup.test.ts
           src/components/apps/runtime-app-setup-selection.test.mjs
@@ -237,6 +236,11 @@ jobs:
           src/lib/members-buy-seats-mounted.test.ts
           src/lib/two-step-recovery-mounted.test.ts
           src/lib/agent-management-mounted.test.ts
+      - name: Test that signup and setup pages request nothing from a third party
+        # Its own step: it starts next dev in apps/web, like
+        # link-token-next-browser above, and two dev servers cannot share
+        # the .next/dev lock at the same time.
+        run: pnpm --filter @deft/web exec tsx --test src/lib/no-outside-requests-next-browser.test.mjs
       - name: Test bounded resource observation claim deadlines
         run: pnpm --filter @deft/api exec tsx --test src/lib/app-resource-sync-claim-budget.test.ts
       - name: Type check API
