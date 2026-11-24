@@ -8,8 +8,8 @@
 // - `visiblePersonIds(viewer)` to filter rows already loaded (null: no filter);
 // - `emailFor(viewer, personId, email)` / `withoutHiddenEmails` on every email
 //   returned.
-import { and, eq } from 'drizzle-orm';
-import { orgMembers } from '@deft/db/schema';
+import { and, eq, sql } from 'drizzle-orm';
+import { agentEmployees, orgMembers, users } from '@deft/db/schema';
 import { db } from './db.js';
 import { isGuestRole, sharedSpacePeopleSql, type PeopleViewer } from './people-visibility-sql.js';
 
@@ -23,13 +23,26 @@ export {
   type PeopleViewer,
 } from './people-visibility-sql.js';
 
-/** The caller's view, from their active org_members role in this workspace (no membership: the guest view). */
+/**
+ * The caller's view, from their active org_members role in this workspace.
+ * A person with no active membership gets the guest view (the narrowest). An
+ * agent (an agent employee of this workspace, or a user of kind agent) is a
+ * guest only when its role says so: one without a membership row keeps the
+ * view it had before this rule.
+ */
 export async function peopleViewer(orgId: string, userId: string): Promise<PeopleViewer> {
-  const [membership] = await db.select({ role: orgMembers.role })
-    .from(orgMembers)
-    .where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, userId), eq(orgMembers.is_active, true)))
+  const [row] = await db.select({
+    role: orgMembers.role,
+    kind: users.kind,
+    employee: sql<boolean>`EXISTS (SELECT 1 FROM ${agentEmployees}
+      WHERE ${agentEmployees.user_id} = ${users.id} AND ${agentEmployees.org_id} = ${orgId})`,
+  })
+    .from(users)
+    .leftJoin(orgMembers, and(eq(orgMembers.user_id, users.id), eq(orgMembers.org_id, orgId), eq(orgMembers.is_active, true)))
+    .where(eq(users.id, userId))
     .limit(1);
-  return { orgId, userId, guest: isGuestRole(membership?.role) };
+  const guest = row?.role ? isGuestRole(row.role) : !(row?.kind === 'agent' || row?.employee === true);
+  return { orgId, userId, guest };
 }
 
 /** The people a guest may see, for rows already loaded; null when the viewer sees everyone. */

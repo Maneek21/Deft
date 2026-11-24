@@ -13,6 +13,7 @@ import { Hono } from 'hono';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { setupSocket } from '../src/socket.js';
+import { peopleViewer } from '../src/lib/people-visibility.js';
 import { memberRoutes } from '../src/routes/members.js';
 import { searchRoutes } from '../src/routes/search.js';
 import { spaceRoutes } from '../src/routes/spaces.js';
@@ -580,4 +581,21 @@ test('MCP task_update, agent_employee_list/get and idempotent replays follow the
   const unchanged = await humanTaskUpdate({ task_id: task, patch: { assignee_id: ` ${sharer} ` } }, writer(guest));
   assert.notEqual(unchanged.isError, true, unchanged.content[0]!.text);
   await c.query(`UPDATE tasks SET priority = 'p2' WHERE id = $1`, [task]);
+});
+
+test('no membership row: a person gets the guest view; an agent employee keeps the view it had', async () => {
+  const loneAgent = randomUUID(), loneEmployee = randomUUID(), lonePerson = randomUUID();
+  await c.query(`INSERT INTO users (id, email, name) VALUES ($1, $2, 'gpv lone agent'), ($3, $4, 'gpv lone person')`,
+    [loneAgent, `gpv-lone-agent-${run}@test.local`, lonePerson, `gpv-lone-person-${run}@test.local`]);
+  await c.query(`INSERT INTO agent_employees (id, org_id, user_id, slug, name, system_prompt, is_byoa, trust_level, runtime_kind, role, created_by)
+    VALUES ($1, $2, $3, $4, 'gpv lone agent', 'test', true, 'standard', 'custom_mcp', 'custom', $5)`, [loneEmployee, org, loneAgent, `gpv-lone-${run}`, owner]);
+  try {
+    assert.equal((await peopleViewer(org, loneAgent)).guest, false, 'an agent employee of the workspace without a membership row');
+    assert.equal((await peopleViewer(org, lonePerson)).guest, true, 'a person without a membership row');
+    assert.equal((await peopleViewer(org, agentUser)).guest, true, 'an agent whose role is guest');
+    assert.equal((await peopleViewer(org, sharer)).guest, false);
+  } finally {
+    await c.query(`DELETE FROM agent_employees WHERE id = $1`, [loneEmployee]);
+    await c.query(`DELETE FROM users WHERE id = ANY($1::text[])`, [[loneAgent, lonePerson]]);
+  }
 });
