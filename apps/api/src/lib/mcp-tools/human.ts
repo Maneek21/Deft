@@ -52,6 +52,7 @@ import {
   ensureAttentionBackfillForUser,
   filterVisibleAttentionItems,
   projectAttentionItem,
+  attentionSourceTypesWhere,
   visibleAttentionCondition,
   transitionAttentionItem,
   type AttentionLane,
@@ -3445,6 +3446,13 @@ export async function humanAttentionList(args: { lane?: string; state?: string; 
   if (!states) return errorResult('state must be open, all, or a valid attention lifecycle state');
 
   await ensureAttentionBackfillForUser({ orgId: ctx.org_id, userId: ctx.user_id, role: ctx.role });
+  // The source types the list and the counts can meet: their visibility
+  // condition plans only those types' rules (lib/attention.ts).
+  const sourceTypes = await attentionSourceTypesWhere(and(
+    eq(attentionItems.org_id, ctx.org_id),
+    eq(attentionItems.user_id, ctx.user_id),
+    inArray(attentionItems.state, [...new Set([...states, ...MCP_OPEN_ATTENTION_STATES])]),
+  ));
   const rows = await db
     .select()
     .from(attentionItems)
@@ -3453,7 +3461,7 @@ export async function humanAttentionList(args: { lane?: string; state?: string; 
       eq(attentionItems.user_id, ctx.user_id),
       lane === 'all' ? sql`true` : eq(attentionItems.lane, lane),
       inArray(attentionItems.state, states),
-      visibleAttentionCondition(ctx.user_id),
+      visibleAttentionCondition(ctx.user_id, sourceTypes),
       visibleModuleAttentionScopeSql(ctx.scopes, 'read'),
     ))
     .orderBy(desc(attentionItems.last_event_at))
@@ -3469,7 +3477,7 @@ export async function humanAttentionList(args: { lane?: string; state?: string; 
       eq(attentionItems.org_id, ctx.org_id),
       eq(attentionItems.user_id, ctx.user_id),
       inArray(attentionItems.state, MCP_OPEN_ATTENTION_STATES),
-      visibleAttentionCondition(ctx.user_id),
+      visibleAttentionCondition(ctx.user_id, sourceTypes),
       visibleModuleAttentionScopeSql(ctx.scopes, 'read'),
     ))
     .groupBy(attentionItems.lane);
@@ -3484,14 +3492,17 @@ export async function humanAttentionGet(args: { attention_id?: string }, ctx: Hu
   const scopeError = requireScope(ctx, 'read:workspace');
   if (scopeError) return scopeError;
   if (!args.attention_id) return errorResult('attention_id is required');
+  const itemWhere = and(
+    eq(attentionItems.id, args.attention_id),
+    eq(attentionItems.org_id, ctx.org_id),
+    eq(attentionItems.user_id, ctx.user_id),
+  );
   const [row] = await db
     .select()
     .from(attentionItems)
     .where(and(
-      eq(attentionItems.id, args.attention_id),
-      eq(attentionItems.org_id, ctx.org_id),
-      eq(attentionItems.user_id, ctx.user_id),
-      visibleAttentionCondition(ctx.user_id),
+      itemWhere,
+      visibleAttentionCondition(ctx.user_id, await attentionSourceTypesWhere(itemWhere)),
       visibleModuleAttentionScopeSql(ctx.scopes, 'read'),
     ))
     .limit(1);
@@ -3515,14 +3526,17 @@ async function transitionHumanAttention(
     return errorResult('until must be a future ISO timestamp');
   }
   const itemId = args.attention_id;
+  const itemWhere = and(
+    eq(attentionItems.id, itemId),
+    eq(attentionItems.org_id, ctx.org_id),
+    eq(attentionItems.user_id, ctx.user_id),
+  );
   const visible = async () => (await db
     .select()
     .from(attentionItems)
     .where(and(
-      eq(attentionItems.id, itemId),
-      eq(attentionItems.org_id, ctx.org_id),
-      eq(attentionItems.user_id, ctx.user_id),
-      visibleAttentionCondition(ctx.user_id),
+      itemWhere,
+      visibleAttentionCondition(ctx.user_id, await attentionSourceTypesWhere(itemWhere)),
       visibleModuleAttentionScopeSql(ctx.scopes, 'write'),
     ))
     .limit(1))[0];

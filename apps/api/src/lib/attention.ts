@@ -53,17 +53,23 @@ export type AttentionDraft = {
   occurredAt?: Date;
 };
 
-export function visibleAttentionCondition(userId: string) {
-  return sql<boolean>`(
-    (${attentionItems.metadata}->>'legacy_notification_id' IS NULL OR
-      ${nativeNotificationAccessSql(userId, sql`${attentionItems.metadata}`, sql`${attentionItems.org_id}`, sql`${attentionItems.link}`)})
-    AND (
-    ${attentionItems.source_type} NOT IN ('message', 'space', 'agent_action', 'native_mention')
-    OR (${attentionItems.source_type} = 'native_mention'
-      AND ${nativeDeliveryAccessSql(userId, sql`${attentionItems.source_id}`, sql`${attentionItems.org_id}`)})
-    OR (
-      ${attentionItems.source_type} = 'message'
-      AND EXISTS (
+/**
+ * Every `attention_items.source_type` the code writes (the column is free
+ * text). A type with an entry in `SOURCE_TYPE_ACCESS` is shown only while its
+ * source's own access rule passes; every other type is shown to the item's
+ * owner on the legacy-notification check alone. A new source type goes here,
+ * with a deliberate choice about whether it needs an access rule there;
+ * test/attention-visibility-narrowing-db.test.ts fails until it does.
+ */
+export const ATTENTION_SOURCE_TYPES = [
+  'agent', 'agent_action', 'agent_channel_event', 'app_integration_source', 'app_run', 'calendar',
+  'cross_reference', 'message', 'native_mention', 'note', 'notification', 'space', 'task', 'wiki_page',
+] as const;
+
+/** The access rule of each source type that has one, for reader `userId`. */
+const SOURCE_TYPE_ACCESS: Record<string, (userId: string) => SQL> = {
+  native_mention: (userId) => nativeDeliveryAccessSql(userId, sql`${attentionItems.source_id}`, sql`${attentionItems.org_id}`),
+  message: (userId) => sql`EXISTS (
         SELECT 1
         FROM ${messages}
         INNER JOIN ${spaces} ON ${spaces.id} = ${messages.space_id}
@@ -74,11 +80,8 @@ export function visibleAttentionCondition(userId: string) {
           AND ${messages.org_id} = ${attentionItems.org_id}
           AND ${messages.is_deleted} = false
           AND ((${spaces.is_archived} = false AND ${publicSpaceVisibleSql(spaces.type, spaces.org_id, userId)}) OR ${spaceMembers.id} IS NOT NULL)
-      )
-    )
-    OR (
-      ${attentionItems.source_type} = 'space'
-      AND EXISTS (
+      )`,
+  space: (userId) => sql`EXISTS (
         SELECT 1
         FROM ${spaces}
         LEFT JOIN ${spaceMembers}
@@ -87,20 +90,67 @@ export function visibleAttentionCondition(userId: string) {
         WHERE ${spaces.id} = ${attentionItems.source_id}
           AND ${spaces.org_id} = ${attentionItems.org_id}
           AND ((${spaces.is_archived} = false AND ${publicSpaceVisibleSql(spaces.type, spaces.org_id, userId)}) OR ${spaceMembers.id} IS NOT NULL)
-      )
-    )
-    OR (
-      ${attentionItems.source_type} = 'agent_action'
-      AND EXISTS (
+      )`,
+  agent_action: (userId) => sql`EXISTS (
         SELECT 1
         FROM ${agentActions}
         WHERE ${agentActions.id} = ${attentionItems.source_id}
           AND ${agentActions.org_id} = ${attentionItems.org_id}
           AND ${currentApprovalRecipientSql(userId)}
-      )
-    )
+      )`,
+};
+
+/** The source types with an access rule of their own. */
+export const ATTENTION_SOURCE_TYPES_WITH_ACCESS_RULE: readonly string[] = Object.keys(SOURCE_TYPE_ACCESS);
+
+/**
+ * Which source types a visibility condition must cover: `'all'`, or the types
+ * of the rows it will be evaluated on (`attentionSourceTypesOf`,
+ * `attentionSourceTypesWhere`).
+ */
+export type AttentionSourceScope = 'all' | readonly string[];
+
+/**
+ * Whether `userId` may see an attention item (the Inbox's visibility rule).
+ *
+ * PostgreSQL plans every branch of the condition whatever the row, and the
+ * approval branch (the review gate) is large: planning the whole condition
+ * takes a backend ~85 MB, which the backend keeps until its connection
+ * closes. Pass the source types the rows can have so only their rules are
+ * planned (a message item: a few MB). A row whose type has a rule that was not
+ * asked for is not visible (fail closed), so name every type the statement
+ * can meet; on rows of the named types and of types with no rule the result
+ * is exactly the `'all'` result.
+ */
+export function visibleAttentionCondition(userId: string, sourceTypes: AttentionSourceScope) {
+  const ruled = Object.keys(SOURCE_TYPE_ACCESS);
+  const planned = sourceTypes === 'all' ? ruled : ruled.filter((type) => sourceTypes.includes(type));
+  return sql<boolean>`(
+    (${attentionItems.metadata}->>'legacy_notification_id' IS NULL OR
+      ${nativeNotificationAccessSql(userId, sql`${attentionItems.metadata}`, sql`${attentionItems.org_id}`, sql`${attentionItems.link}`)})
+    AND (
+    ${attentionItems.source_type} NOT IN (${sql.join(ruled.map((type) => sql.raw(`'${type}'`)), sql`, `)})
+    ${sql.join(planned.map((type) => sql`OR (${attentionItems.source_type} = ${sql.raw(`'${type}'`)} AND ${SOURCE_TYPE_ACCESS[type]!(userId)})`), sql` `)}
     )
   )`;
+}
+
+/** The distinct source types of `rows`, for `visibleAttentionCondition`. */
+export function attentionSourceTypesOf(rows: ReadonlyArray<{ source_type: string }>): string[] {
+  return [...new Set(rows.map((row) => row.source_type))];
+}
+
+/**
+ * The distinct source types of the attention items `where` selects, read
+ * before a statement that cannot know its rows' types in advance (a list, a
+ * count, a lookup by id), so its visibility condition plans only those
+ * types' rules. An item of another ruled type that appears between the two
+ * statements is left out of that one answer (fail closed), as if it had
+ * arrived a moment later.
+ */
+export async function attentionSourceTypesWhere(where: SQL | undefined): Promise<string[]> {
+  const rows = await db.selectDistinct({ source_type: attentionItems.source_type }).from(attentionItems).where(where);
+  return rows.map((row) => row.source_type);
 }
 
 /**
@@ -629,7 +679,7 @@ async function filterVisibleAttentionItemsForDelivery(items: Array<typeof attent
     const versions = new Map(group.map((item) => [item.id, item.version]));
     const rows = await db.select().from(attentionItems).where(and(
       eq(attentionItems.org_id, first.org_id), eq(attentionItems.user_id, first.user_id),
-      inArray(attentionItems.id, group.map((item) => item.id)), visibleAttentionCondition(first.user_id),
+      inArray(attentionItems.id, group.map((item) => item.id)), visibleAttentionCondition(first.user_id, attentionSourceTypesOf(group)),
     ));
     visible.push(...rows.filter((item) => versions.get(item.id) === item.version));
   }
@@ -642,7 +692,7 @@ export async function filterVisibleAttentionItems<T extends typeof attentionItem
 ): Promise<T[]> {
   if (rows.length === 0) return [];
   const visible = await db.select().from(attentionItems).where(and(
-    inArray(attentionItems.id, rows.map((item) => item.id)), eq(attentionItems.user_id, userId), visibleAttentionCondition(userId),
+    inArray(attentionItems.id, rows.map((item) => item.id)), eq(attentionItems.user_id, userId), visibleAttentionCondition(userId, attentionSourceTypesOf(rows)),
   ));
   const allowed = new Set(visible.map((item) => item.id));
   const hidden = rows.filter((item) => !allowed.has(item.id));
@@ -665,7 +715,7 @@ export async function filterVisibleAttentionItems<T extends typeof attentionItem
     });
   }
   const finalRows = hidden.length ? await db.select().from(attentionItems).where(and(
-    inArray(attentionItems.id, rows.map((item) => item.id)), eq(attentionItems.user_id, userId), visibleAttentionCondition(userId),
+    inArray(attentionItems.id, rows.map((item) => item.id)), eq(attentionItems.user_id, userId), visibleAttentionCondition(userId, attentionSourceTypesOf(rows)),
   )) : visible;
   const currentById = new Map(finalRows.map((item) => [item.id, item]));
   // A thread can reuse its id for a newer reply while this read is in flight.
@@ -676,17 +726,17 @@ export async function filterVisibleAttentionItems<T extends typeof attentionItem
   });
 }
 
-async function loadVisibleAttentionSnapshot(item: { id: string; org_id: string; user_id: string; version: number }) {
+async function loadVisibleAttentionSnapshot(item: { id: string; org_id: string; user_id: string; version: number; source_type: string }) {
   const [row] = await db.select().from(attentionItems).where(and(
     eq(attentionItems.id, item.id), eq(attentionItems.org_id, item.org_id), eq(attentionItems.user_id, item.user_id),
     eq(attentionItems.version, item.version),
-    visibleAttentionCondition(item.user_id),
+    visibleAttentionCondition(item.user_id, [item.source_type]),
   )).limit(1);
   return row;
 }
 
 /** Whether this version is still readable, including immediately before a push. */
-export async function attentionItemStillVisible(item: { id: string; org_id: string; user_id: string; version: number }) {
+export async function attentionItemStillVisible(item: { id: string; org_id: string; user_id: string; version: number; source_type: string }) {
   const row = await loadVisibleAttentionSnapshot(item);
   return Boolean(row);
 }
@@ -917,6 +967,12 @@ export async function transitionAttentionItem(params: {
   };
   const marksSeen = ['open_seen', 'acknowledged', 'snoozed', 'resolved', 'expired', 'superseded'].includes(params.state);
   const terminal = ['resolved', 'expired', 'superseded'].includes(params.state);
+  const itemWhere = and(
+    eq(attentionItems.id, params.itemId),
+    eq(attentionItems.org_id, params.orgId),
+    eq(attentionItems.user_id, params.userId),
+  );
+  const viewerSourceTypes = params.viewerId ? await attentionSourceTypesWhere(itemWhere) : [];
   const [item] = await db
     .update(attentionItems)
     .set({
@@ -932,11 +988,9 @@ export async function transitionAttentionItem(params: {
       updated_at: now,
     })
     .where(and(
-      eq(attentionItems.id, params.itemId),
-      eq(attentionItems.org_id, params.orgId),
-      eq(attentionItems.user_id, params.userId),
+      itemWhere,
       inArray(attentionItems.state, allowedFrom[params.state]),
-      params.viewerId ? visibleAttentionCondition(params.viewerId) : sql`true`,
+      params.viewerId ? visibleAttentionCondition(params.viewerId, viewerSourceTypes) : sql`true`,
       params.expectedVersion === undefined ? undefined : eq(attentionItems.version, params.expectedVersion),
     ))
     .returning();
@@ -972,15 +1026,18 @@ export async function recordAttentionFeedback(params: {
     });
   }
 
+  const itemWhere = and(
+    eq(attentionItems.id, params.itemId),
+    eq(attentionItems.org_id, params.orgId),
+    eq(attentionItems.user_id, params.userId),
+  );
   const [current] = await db
     .select()
     .from(attentionItems)
     .where(and(
-      eq(attentionItems.id, params.itemId),
-      eq(attentionItems.org_id, params.orgId),
-      eq(attentionItems.user_id, params.userId),
+      itemWhere,
       inArray(attentionItems.state, ['open_unseen', 'open_seen', 'acknowledged']),
-      visibleAttentionCondition(params.userId),
+      visibleAttentionCondition(params.userId, await attentionSourceTypesWhere(itemWhere)),
     ))
     .limit(1);
   if (!current) return null;
@@ -998,7 +1055,7 @@ export async function recordAttentionFeedback(params: {
       version: sql`${attentionItems.version} + 1`,
       updated_at: now,
     })
-    .where(and(eq(attentionItems.id, current.id), visibleAttentionCondition(params.userId)))
+    .where(and(eq(attentionItems.id, current.id), visibleAttentionCondition(params.userId, [current.source_type])))
     .returning();
   if (!item) return null;
   await db.insert(attentionEvents).values({

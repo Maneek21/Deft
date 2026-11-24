@@ -9,6 +9,7 @@ import {
 } from '@deft/db/schema';
 import { db } from '../lib/db.js';
 import {
+  attentionSourceTypesWhere,
   currentApprovalRecipientSql,
   ensureAttentionBackfillForUser,
   filterVisibleAttentionItems,
@@ -64,15 +65,15 @@ function parseStates(value: string | undefined): AttentionState[] | null {
 }
 
 async function hasVisibleItem(orgId: string, userId: string, itemId: string) {
+  const itemWhere = and(
+    eq(attentionItems.id, itemId),
+    eq(attentionItems.org_id, orgId),
+    eq(attentionItems.user_id, userId),
+  );
   const [item] = await db
     .select({ id: attentionItems.id })
     .from(attentionItems)
-    .where(and(
-      eq(attentionItems.id, itemId),
-      eq(attentionItems.org_id, orgId),
-      eq(attentionItems.user_id, userId),
-      visibleAttentionCondition(userId),
-    ))
+    .where(and(itemWhere, visibleAttentionCondition(userId, await attentionSourceTypesWhere(itemWhere))))
     .limit(1);
   return Boolean(item);
 }
@@ -141,6 +142,13 @@ attentionRoutes.get('/', async (c) => {
 
   await ensureAttentionBackfillForUser({ orgId: user.org_id, userId: user.id, role: user.role });
 
+  // The source types the page and the counts below can meet, so their
+  // visibility condition plans only those types' rules (lib/attention.ts).
+  const sourceTypes = await attentionSourceTypesWhere(and(
+    eq(attentionItems.org_id, user.org_id),
+    eq(attentionItems.user_id, user.id),
+    inArray(attentionItems.state, [...new Set([...states, ...OPEN_STATES])]),
+  ));
   const rows = await db
     .select()
     .from(attentionItems)
@@ -149,7 +157,7 @@ attentionRoutes.get('/', async (c) => {
       eq(attentionItems.user_id, user.id),
       lane ? eq(attentionItems.lane, lane) : sql`true`,
       inArray(attentionItems.state, states),
-      visibleAttentionCondition(user.id),
+      visibleAttentionCondition(user.id, sourceTypes),
       cursor
         ? sql`(${attentionItems.last_event_at}, ${attentionItems.id}) < (${cursor.at}, ${cursor.id})`
         : sql`true`,
@@ -172,7 +180,7 @@ attentionRoutes.get('/', async (c) => {
       eq(attentionItems.org_id, user.org_id),
       eq(attentionItems.user_id, user.id),
       inArray(attentionItems.state, OPEN_STATES),
-      visibleAttentionCondition(user.id),
+      visibleAttentionCondition(user.id, sourceTypes),
     ))
     .groupBy(attentionItems.lane);
   const byLane = Object.fromEntries(counts.map((row) => [row.lane, {
@@ -193,15 +201,15 @@ attentionRoutes.get('/', async (c) => {
 
 attentionRoutes.get('/:id', async (c) => {
   const user = c.get('user') as { id: string; org_id: string; role?: string };
+  const itemWhere = and(
+    eq(attentionItems.id, c.req.param('id')),
+    eq(attentionItems.org_id, user.org_id),
+    eq(attentionItems.user_id, user.id),
+  );
   const [item] = await db
     .select()
     .from(attentionItems)
-    .where(and(
-      eq(attentionItems.id, c.req.param('id')),
-      eq(attentionItems.org_id, user.org_id),
-      eq(attentionItems.user_id, user.id),
-      visibleAttentionCondition(user.id),
-    ))
+    .where(and(itemWhere, visibleAttentionCondition(user.id, await attentionSourceTypesWhere(itemWhere))))
     .limit(1);
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
   const visible = await filterVisibleAttentionItems(user.id, [item]);
@@ -311,6 +319,13 @@ attentionRoutes.post('/mark-all-seen', async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const lane = parseLane(typeof body?.lane === 'string' ? body.lane : undefined);
   const now = new Date();
+  const unseen = and(
+    eq(attentionItems.org_id, user.org_id),
+    eq(attentionItems.user_id, user.id),
+    eq(attentionItems.state, 'open_unseen'),
+    lane ? eq(attentionItems.lane, lane) : sql`true`,
+  );
+  const sourceTypes = await attentionSourceTypesWhere(unseen);
   const updated = await db
     .update(attentionItems)
     .set({
@@ -319,13 +334,7 @@ attentionRoutes.post('/mark-all-seen', async (c) => {
       version: sql`${attentionItems.version} + 1`,
       updated_at: now,
     })
-    .where(and(
-      eq(attentionItems.org_id, user.org_id),
-      eq(attentionItems.user_id, user.id),
-      eq(attentionItems.state, 'open_unseen'),
-      lane ? eq(attentionItems.lane, lane) : sql`true`,
-      visibleAttentionCondition(user.id),
-    ))
+    .where(and(unseen, visibleAttentionCondition(user.id, sourceTypes)))
     .returning({ id: attentionItems.id, version: attentionItems.version });
   if (updated.length > 0) {
     await db.insert(attentionEvents).values(updated.map((item) => ({

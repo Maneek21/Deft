@@ -321,7 +321,7 @@ test('private source is hidden and resolved after membership is removed', async 
   assert.equal((await filterVisibleAttentionItems(recipientId, [item])).length, 1);
   assert.equal((await db.select({ id: attentionItems.id }).from(attentionItems).where(and(
     eq(attentionItems.id, item.id),
-    visibleAttentionCondition(recipientId),
+    visibleAttentionCondition(recipientId, 'all'),
   ))).length, 1);
   await db.delete(spaceMembers).where(and(
     eq(spaceMembers.space_id, privateSpaceId),
@@ -330,7 +330,7 @@ test('private source is hidden and resolved after membership is removed', async 
   assert.equal((await filterVisibleAttentionItems(recipientId, [item])).length, 0);
   assert.equal((await db.select({ id: attentionItems.id }).from(attentionItems).where(and(
     eq(attentionItems.id, item.id),
-    visibleAttentionCondition(recipientId),
+    visibleAttentionCondition(recipientId, 'all'),
   ))).length, 0);
   const [stored] = await db.select().from(attentionItems).where(eq(attentionItems.id, item.id));
   assert.equal(stored?.state, 'resolved');
@@ -353,7 +353,7 @@ test('deleted approval sources are hidden and resolved instead of leaving stale 
 
   assert.equal((await db.select({ id: attentionItems.id }).from(attentionItems).where(and(
     eq(attentionItems.id, item.id),
-    visibleAttentionCondition(recipientId),
+    visibleAttentionCondition(recipientId, 'all'),
   ))).length, 0);
   assert.equal((await filterVisibleAttentionItems(recipientId, [item])).length, 0);
   const [stored] = await db.select().from(attentionItems).where(eq(attentionItems.id, item.id));
