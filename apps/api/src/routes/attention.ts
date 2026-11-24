@@ -11,11 +11,14 @@ import { db } from '../lib/db.js';
 import {
   currentApprovalRecipientSql,
   ensureAttentionBackfillForUser,
+  lockedAttentionIdsSql,
   filterVisibleAttentionItems,
   projectAttentionItem,
   recordAttentionFeedback,
   transitionAttentionItem,
+  readAttentionWithSourceTypes,
   visibleAttentionCondition,
+  writeAttentionWithSourceTypes,
   type AttentionLane,
   type AttentionState,
 } from '../lib/attention.js';
@@ -26,6 +29,8 @@ export function attentionActionProposer(row:Parameters<typeof hasHumanMcpBulkPro
 }
 
 const OPEN_STATES: AttentionState[] = ['open_unseen', 'open_seen', 'acknowledged'];
+/** Events per insert in mark-all-seen (eight parameters each, at most 65,535 per statement). */
+export const MARK_ALL_SEEN_EVENT_BATCH = 1_000;
 const ALL_STATES: AttentionState[] = [
   ...OPEN_STATES,
   'snoozed',
@@ -64,16 +69,16 @@ function parseStates(value: string | undefined): AttentionState[] | null {
 }
 
 async function hasVisibleItem(orgId: string, userId: string, itemId: string) {
-  const [item] = await db
+  const itemWhere = and(
+    eq(attentionItems.id, itemId),
+    eq(attentionItems.org_id, orgId),
+    eq(attentionItems.user_id, userId),
+  );
+  const [item] = await readAttentionWithSourceTypes(itemWhere, (tx, sourceTypes) => tx
     .select({ id: attentionItems.id })
     .from(attentionItems)
-    .where(and(
-      eq(attentionItems.id, itemId),
-      eq(attentionItems.org_id, orgId),
-      eq(attentionItems.user_id, userId),
-      visibleAttentionCondition(userId),
-    ))
-    .limit(1);
+    .where(and(itemWhere, visibleAttentionCondition(userId, sourceTypes)))
+    .limit(1));
   return Boolean(item);
 }
 
@@ -141,40 +146,43 @@ attentionRoutes.get('/', async (c) => {
 
   await ensureAttentionBackfillForUser({ orgId: user.org_id, userId: user.id, role: user.role });
 
-  const rows = await db
+  // The page and the counts below each read their items' source types on
+  // their own snapshot, so their visibility condition plans only those
+  // types' rules (lib/attention.ts, readAttentionWithSourceTypes).
+  const pageWhere = and(
+    eq(attentionItems.org_id, user.org_id),
+    eq(attentionItems.user_id, user.id),
+    lane ? eq(attentionItems.lane, lane) : sql`true`,
+    inArray(attentionItems.state, states),
+    cursor
+      ? sql`(${attentionItems.last_event_at}, ${attentionItems.id}) < (${cursor.at}, ${cursor.id})`
+      : sql`true`,
+  );
+  const rows = await readAttentionWithSourceTypes(pageWhere, (tx, sourceTypes) => tx
     .select()
     .from(attentionItems)
-    .where(and(
-      eq(attentionItems.org_id, user.org_id),
-      eq(attentionItems.user_id, user.id),
-      lane ? eq(attentionItems.lane, lane) : sql`true`,
-      inArray(attentionItems.state, states),
-      visibleAttentionCondition(user.id),
-      cursor
-        ? sql`(${attentionItems.last_event_at}, ${attentionItems.id}) < (${cursor.at}, ${cursor.id})`
-        : sql`true`,
-    ))
+    .where(and(pageWhere, visibleAttentionCondition(user.id, sourceTypes)))
     .orderBy(desc(attentionItems.last_event_at), desc(attentionItems.id))
-    .limit(limit + 1);
+    .limit(limit + 1));
 
   const visibleRows = await filterVisibleAttentionItems(user.id, rows);
   const hasMore = visibleRows.length > limit;
   const page = visibleRows.slice(0, limit);
   const hydrated = await hydrateApprovals(user, page);
-  const counts = await db
+  const openWhere = and(
+    eq(attentionItems.org_id, user.org_id),
+    eq(attentionItems.user_id, user.id),
+    inArray(attentionItems.state, OPEN_STATES),
+  );
+  const counts = await readAttentionWithSourceTypes(openWhere, (tx, sourceTypes) => tx
     .select({
       lane: attentionItems.lane,
       count: sql<number>`count(*)::int`,
       unseen: sql<number>`count(*) FILTER (WHERE ${attentionItems.state} = 'open_unseen')::int`,
     })
     .from(attentionItems)
-    .where(and(
-      eq(attentionItems.org_id, user.org_id),
-      eq(attentionItems.user_id, user.id),
-      inArray(attentionItems.state, OPEN_STATES),
-      visibleAttentionCondition(user.id),
-    ))
-    .groupBy(attentionItems.lane);
+    .where(and(openWhere, visibleAttentionCondition(user.id, sourceTypes)))
+    .groupBy(attentionItems.lane));
   const byLane = Object.fromEntries(counts.map((row) => [row.lane, {
     count: Number(row.count),
     unseen: Number(row.unseen),
@@ -193,16 +201,16 @@ attentionRoutes.get('/', async (c) => {
 
 attentionRoutes.get('/:id', async (c) => {
   const user = c.get('user') as { id: string; org_id: string; role?: string };
-  const [item] = await db
+  const itemWhere = and(
+    eq(attentionItems.id, c.req.param('id')),
+    eq(attentionItems.org_id, user.org_id),
+    eq(attentionItems.user_id, user.id),
+  );
+  const [item] = await readAttentionWithSourceTypes(itemWhere, (tx, sourceTypes) => tx
     .select()
     .from(attentionItems)
-    .where(and(
-      eq(attentionItems.id, c.req.param('id')),
-      eq(attentionItems.org_id, user.org_id),
-      eq(attentionItems.user_id, user.id),
-      visibleAttentionCondition(user.id),
-    ))
-    .limit(1);
+    .where(and(itemWhere, visibleAttentionCondition(user.id, sourceTypes)))
+    .limit(1));
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
   const visible = await filterVisibleAttentionItems(user.id, [item]);
   if (visible.length === 0) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
@@ -311,32 +319,41 @@ attentionRoutes.post('/mark-all-seen', async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const lane = parseLane(typeof body?.lane === 'string' ? body.lane : undefined);
   const now = new Date();
-  const updated = await db
-    .update(attentionItems)
-    .set({
-      state: 'open_seen',
-      seen_at: now,
-      version: sql`${attentionItems.version} + 1`,
-      updated_at: now,
-    })
-    .where(and(
-      eq(attentionItems.org_id, user.org_id),
-      eq(attentionItems.user_id, user.id),
-      eq(attentionItems.state, 'open_unseen'),
-      lane ? eq(attentionItems.lane, lane) : sql`true`,
-      visibleAttentionCondition(user.id),
-    ))
-    .returning({ id: attentionItems.id, version: attentionItems.version });
-  if (updated.length > 0) {
-    await db.insert(attentionEvents).values(updated.map((item) => ({
-      org_id: user.org_id,
-      attention_item_id: item.id,
-      user_id: user.id,
-      event_type: 'open_seen',
-      source_event_id: `mark-all-seen:${item.id}:${item.version}:${now.getTime()}`,
-      actor_user_id: user.id,
-      payload: { bulk: true },
-    })));
-  }
+  const unseen = and(
+    eq(attentionItems.org_id, user.org_id),
+    eq(attentionItems.user_id, user.id),
+    eq(attentionItems.state, 'open_unseen'),
+    lane ? eq(attentionItems.lane, lane) : sql`true`,
+  );
+  // The unseen items are locked first, so none changes source type before the
+  // update reads it (lib/attention.ts, writeAttentionWithSourceTypes).
+  // Only the locked items change: one that arrives or reopens meanwhile stays
+  // unseen, whole, as if it had arrived a moment later. Their events commit
+  // with the change, in batches (a statement may have at most 65,535
+  // parameters, eight per event).
+  const updated = await writeAttentionWithSourceTypes(unseen, async (tx, sourceTypes, lockedIds) => {
+    const changed = await tx
+      .update(attentionItems)
+      .set({
+        state: 'open_seen',
+        seen_at: now,
+        version: sql`${attentionItems.version} + 1`,
+        updated_at: now,
+      })
+      .where(and(unseen, lockedAttentionIdsSql(lockedIds), visibleAttentionCondition(user.id, sourceTypes)))
+      .returning({ id: attentionItems.id, version: attentionItems.version });
+    for (let start = 0; start < changed.length; start += MARK_ALL_SEEN_EVENT_BATCH) {
+      await tx.insert(attentionEvents).values(changed.slice(start, start + MARK_ALL_SEEN_EVENT_BATCH).map((item) => ({
+        org_id: user.org_id,
+        attention_item_id: item.id,
+        user_id: user.id,
+        event_type: 'open_seen',
+        source_event_id: `mark-all-seen:${item.id}:${item.version}:${now.getTime()}`,
+        actor_user_id: user.id,
+        payload: { bulk: true },
+      })));
+    }
+    return changed;
+  }, []);
   return c.json({ updated: updated.length });
 });

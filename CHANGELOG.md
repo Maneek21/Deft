@@ -30,6 +30,19 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
   its burn-down bucket, and `node scripts/check-app-boundary.mjs --summary` prints
   the counts per milestone. No finding changed.
 
+### Fixed
+
+- A small workspace's database ran out of memory after a few chat messages. Each
+  Inbox visibility check (after every message, for each person it reaches, and on
+  every Inbox count poll) planned the whole rule, approval review included, and
+  each database connection kept ~85 MB afterwards; four at once filled a 512 MB
+  database machine, which then froze (seen on 145 through 149). The check now plans
+  only the rules of the item types it can meet: a message item costs a few MB. What
+  anyone sees in the Inbox is unchanged, proved item by item against the whole rule.
+  No migration. Not yet fixed: while a person has an open approval in their Inbox,
+  their checks still plan the approval review rule (~80 MB per connection); making
+  that rule smaller, and closing large pooled connections sooner, are follow-ups.
+
 ## [0.3.0-preview.149] — 2026-11-24 (prerelease)
 
 Changes since `v0.3.0-preview.148`: #577, #578, #579 and #580. Release scope `core` (no

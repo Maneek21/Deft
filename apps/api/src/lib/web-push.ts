@@ -224,7 +224,7 @@ export async function attentionPushPayload(item: AttentionItem): Promise<string>
         eq(attentionItems.user_id, item.user_id),
         eq(attentionItems.source_type, 'message'),
         eq(messages.is_deleted, false),
-        visibleAttentionCondition(item.user_id),
+        visibleAttentionCondition(item.user_id, ['message']),
       ))
       .limit(1);
     if (!row || row.sender_id === item.user_id || row.sender_kind === 'system') return generic;

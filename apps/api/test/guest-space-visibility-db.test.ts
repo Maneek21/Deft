@@ -243,7 +243,7 @@ test('attention items from an unjoined public space are hidden from a guest, kep
     };
   });
   const sqlVisible = async (user: string) => ((await db.execute(sql`SELECT id FROM attention_items
-    WHERE user_id = ${user} AND id LIKE 'gvis-att-%' AND ${visibleAttentionCondition(user)} ORDER BY id`)) as any).rows.map((r: any) => r.id);
+    WHERE user_id = ${user} AND id LIKE 'gvis-att-%' AND ${visibleAttentionCondition(user, 'all')} ORDER BY id`)) as any).rows.map((r: any) => r.id);
   assert.deepEqual(await sqlVisible(U.guest), ['gvis-att-g-j']);
   assert.deepEqual(await sqlVisible(U.member), ['gvis-att-m-m', 'gvis-att-m-s']);
   const guestVisible = await filterVisibleAttentionItems(U.guest, rows.guest as any);
