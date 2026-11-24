@@ -1205,7 +1205,11 @@ async function approveActionLocked(
 
   const sourceReaderId = options.internal ? undefined : approverUserId;
   const decisionSource = and(
-    decisionSourceSql(row, requesterId, sourceReaderId, options.internal, row.approval_status === 'pending'),
+    decisionSourceSql(row, requesterId, sourceReaderId, options.internal, 
+      // Every decision that still executes: a pending one, and the resume or
+      // retry of an approval that recorded no outcome (DFX3: nothing runs for
+      // a requester who lost the room). Terminal rows keep their answers.
+      row.approval_status === 'pending' || (row.approval_status === 'approved' && row.executed_at === null)),
     reviewerGuard,
   )!;
   const [sourceCurrent] = await db.select({ id: agentActions.id }).from(agentActions)

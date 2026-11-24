@@ -2483,6 +2483,11 @@ export async function executeToolCall(
         };
       }
 
+      // A plan made by a plan step keeps its parent's rooms: the executor
+      // passes the parent's source message (check 13, DFX3).
+      const sourceMessageId = typeof (params as { source_message_id?: unknown }).source_message_id === 'string'
+        ? (params as { source_message_id: string }).source_message_id
+        : undefined;
       const planResult = await createPlanRow({
         org_id: orgId,
         user_id: _userId,
@@ -2491,6 +2496,7 @@ export async function executeToolCall(
         title,
         description: description ?? null,
         steps,
+        ...(sourceMessageId ? { source_message_id: sourceMessageId } : {}),
       });
 
       return { result: planResult, citations: [] };

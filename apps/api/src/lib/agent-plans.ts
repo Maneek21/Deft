@@ -14,7 +14,11 @@ import { createHash } from 'node:crypto';
 import { canonicalCapabilityJson } from '@deft/shared';
 import { db, withDbAdvisoryLock } from './db.js';
 import { agentActions, agentPlans, orgs, tasks, messages } from '@deft/db/schema';
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, sql, type SQL } from 'drizzle-orm';
+import { planCreatorKeepsRoomsSql } from './plan-room-access.js';
+import { lockRoomAccessForClaim } from './room-access-lock.js';
+
+export { planCreatorKeepsRoomsSql };
 import { executeToolCall } from './agent-context.js';
 import { shouldAutoExecute, getApprovalTier, isDestructiveAction } from './agent-approval.js';
 import {
@@ -100,6 +104,10 @@ class PlanApprovalBoundaryError extends Error {}
 export class PlanAccessError extends Error {}
 
 export const PLAN_EMPLOYEE_UNAVAILABLE_ERROR = 'Agent employee is not available';
+
+/** Recorded on a plan stopped because its creator lost its conversation. Names no room. */
+export const PLAN_ROOM_LOST_ERROR = 'The person who asked no longer has access to the conversation this plan came from';
+
 
 /** A plan can be bound only to an active employee of its own workspace. */
 export async function assertPlanEmployeeBindable(orgId: string, agentEmployeeId: string): Promise<void> {
@@ -626,6 +634,25 @@ async function executePlanUnlocked(
       if (priorDecision && priorDecision.key === null && priorDecision.status !== 'pending') {
         throw new PlanApprovalBoundaryError(`Plan step '${step.id}' approval was ${priorDecision.status}`);
       }
+      // A step's result is stored under its id; a reserved context key would
+      // overwrite what binds the plan to its rooms.
+      if (RESERVED_PLAN_CONTEXT_KEYS.has(step.id)) {
+        throw new PlanApprovalBoundaryError(`Plan step id '${step.id}' is reserved`);
+      }
+      // A plan made by this step keeps the parent's source message.
+      if (step.tool === 'create_plan' && planSourceMessageId) resolvedParams.source_message_id = planSourceMessageId;
+      // Check 13: the step starts only while the plan is executing and its
+      // creator still reads its rooms, checked under the creator's room-access
+      // lock, so a loss cannot commit between this check and the start.
+      const claim = await claimPlanStep(planId, orgId);
+      if (claim === 'stopped') {
+        onEvent?.({ type: 'plan:pause', data: { reason: 'externally paused' } });
+        return;
+      }
+      if (claim === 'room_lost') {
+        onEvent?.({ type: 'plan:pause', data: { reason: 'source_room_access_lost' } });
+        return;
+      }
 
       if (!isWriteAction && !priorDecision) {
         // Read-only tool — execute directly
@@ -792,6 +819,9 @@ async function executePlanUnlocked(
           mode: 'background',
           agentEmployeeId: plan.agent_employee_id ?? undefined,
           trustLevelOverride: trustLevel,
+          // Only the text recommendation is used: no tool runs from here
+          // (check 13: nothing runs for a creator who lost the plan's room).
+          toolPolicy: 'none',
         });
 
         if (recovery.text.includes('ESCALATE')) {
@@ -934,6 +964,37 @@ async function rollbackCompletedSteps(
       );
     }
   }
+}
+
+/** Context keys that are not step results. */
+const RESERVED_PLAN_CONTEXT_KEYS = new Set(['source_message_id', 'task_id']);
+
+/**
+ * Check 13: whether the next step may start. Under the creator's room-access
+ * lock (shared; lib/room-access-lock.ts) the plan is read afresh: it must
+ * still be executing, and its creator must still read its rooms. A plan
+ * whose creator lost a room is paused with the reason (only while still
+ * executing, so an abort is never undone). A loss that commits after this
+ * returns lets this step finish, as an approval made before a loss does.
+ */
+async function claimPlanStep(planId: string, orgId: string): Promise<'ok' | 'stopped' | 'room_lost'> {
+  return db.transaction(async (tx) => {
+    const [owner] = await tx.select({ userId: agentPlans.user_id }).from(agentPlans)
+      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, orgId))).limit(1);
+    if (!owner) return 'stopped';
+    await lockRoomAccessForClaim(tx, orgId, owner.userId);
+    const [current] = await tx
+      .select({ status: agentPlans.status, keepsRooms: sql<boolean>`${planCreatorKeepsRoomsSql()}` })
+      .from(agentPlans)
+      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, orgId)))
+      .limit(1);
+    if (!current || current.status !== 'executing') return 'stopped';
+    if (current.keepsRooms) return 'ok';
+    await tx.update(agentPlans)
+      .set({ status: 'paused', error: PLAN_ROOM_LOST_ERROR, updated_at: new Date() })
+      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, orgId), eq(agentPlans.status, 'executing')));
+    return 'room_lost';
+  });
 }
 
 async function updatePlanProgress(

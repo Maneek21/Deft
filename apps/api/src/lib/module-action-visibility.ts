@@ -4,6 +4,7 @@ import { currentAgentActionSourceAuthoritySql, currentUserSpaceAuthoritySql } fr
 import { actionRequesterIdSql, actionReviewerSql } from './agent-action-requester.js';
 import { DEFTY_SYSTEM_EMPLOYEE_SLUG, DEFTY_SYSTEM_RUNTIME_KIND } from './defty-identity.js';
 import { readableSpaceSql } from './space-visibility.js';
+import { planCreatorKeepsRoomsSql } from './plan-room-access.js';
 
 /** The internal Defty action envelope has a different, established source contract. */
 export function canonicalDeftyActionSql(
@@ -118,13 +119,21 @@ export function requesterKeepsSourceRoomsSql(): SQL {
     OR EXISTS (SELECT 1 FROM messages named_message
       WHERE named_message.org_id = ${agentActions.org_id}
         AND named_message.id IN (${agentActions.message_id}, ${agentActions.params}->>'source_message_id')))`;
-  return sql`(CASE
+  // A plan step also needs its plan's creator to keep the plan's rooms
+  // (DFX3): its own row may name fewer rooms than the plan.
+  const planRoomsKept = sql`(${agentActions.plan_id} IS NULL OR NOT EXISTS (
+    SELECT 1 FROM agent_plans
+    WHERE agent_plans.id = ${agentActions.plan_id}
+      AND agent_plans.org_id = ${agentActions.org_id}
+      AND NOT ${planCreatorKeepsRoomsSql()}
+  ))`;
+  return sql`(${planRoomsKept} AND (CASE
     WHEN ${agentActions.agent_employee_id} IS NOT NULL AND NOT ${canonicalDeftyActionSql()} AND NOT ${isCapture} THEN true
     WHEN ${isCapture} THEN (${captureRoom} IS NULL AND NOT ${namesRoom})
       OR ((NOT ${resolvesRoom(true)} OR ${activeMember}) AND ${captureRoomReadable} AND ${referencedRoomsReadableSql(requester, 'history')})
     WHEN NOT ${namesRoom} THEN true
     ELSE (NOT ${resolvesRoom(false)} OR ${activeMember}) AND ${referencedRoomsReadableSql(requester, 'history')}
-  END)`;
+  END))`;
 }
 
 /** Source snapshots remain governed by their canonical source's current audience. */

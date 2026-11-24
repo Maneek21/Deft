@@ -516,6 +516,17 @@ export type InterruptedRecovery =
  * Recover one ordinary approval whose executor is gone. The caller must hold
  * the action's lease and must have authorized the call.
  */
+async function requesterStillKeepsRooms(row: AgentActionRow): Promise<boolean> {
+  const requesterId = await loadActionRequesterId(row);
+  return db.transaction(async (tx) => {
+    await lockRoomAccessForClaim(tx, row.org_id, requesterId);
+    const [kept] = await tx.select({ id: agentActions.id }).from(agentActions)
+      .where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id), requesterKeepsSourceRoomsSql()))
+      .limit(1);
+    return Boolean(kept);
+  });
+}
+
 export async function recoverInterruptedApproval(
   row: AgentActionRow,
   hooks: ApprovalFinaliserHooks,
@@ -526,7 +537,9 @@ export async function recoverInterruptedApproval(
   const token = await currentClaimToken(row.id, row.org_id);
   if (lease.lost) return { kind: 'lease_lost' };
   if (!token) return { kind: 'raced' };
-  if (receipt === 'legacy' && isReexecutableAfterInterruption(row.action)) {
+  // DFX3: an interrupted approval whose requester has since lost a room it
+  // came from (or its plan's room) is settled as failed, never run again.
+  if (receipt === 'legacy' && isReexecutableAfterInterruption(row.action) && await requesterStillKeepsRooms(row)) {
     const next = await takeOverInterruptedApproval(row, token);
     if (!next) return { kind: 'raced' };
     if (lease.lost) return { kind: 'lease_lost' };
