@@ -57,7 +57,9 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
   email address but their own: in the member list and people directory, people search,
   member profiles, room, group and team member lists, the MCP member, team and context
   tools, when they ask Defty to find someone, and in a member-scoped workspace export made
-  for a guest. Owners, admins and members see what they saw before.
+  for a guest. A guest also cannot start a direct message with, add to a room, or share a
+  note with someone they share no space with. Owners, admins and members see what they saw
+  before.
 - People search no longer lists removed members, for anyone.
 
 ## [0.3.0-preview.150] — 2026-11-25 (prerelease)
