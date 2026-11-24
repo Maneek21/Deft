@@ -73,7 +73,8 @@ export async function describeIncompleteFreshInit(client: Queryable, error: unkn
     return [
       'push-full stopped before it finished, and its schema ledger could not be read (the connection may have dropped). Do not use this database yet.',
       'Reconnect and run pnpm db:upgrade --status to see which upgrades it lacks; pnpm db:upgrade may finish it. '
-        + 'If it reports no ledger, drop the database, create an empty one and run pnpm db:push-full again.',
+        + 'If the database has no tables, run pnpm db:push-full again. If it has tables but no ledger, '
+        + 'drop it, create an empty one and run pnpm db:push-full again.',
     ];
   }
   // push-full builds the schema through the bootstrap directly; the upgrades
