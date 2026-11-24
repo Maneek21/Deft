@@ -29,6 +29,13 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
   at 1,277 (it may only be lowered), each exception's `milestone` now starts with
   its burn-down bucket, and `node scripts/check-app-boundary.mjs --summary` prints
   the counts per milestone. No finding changed.
+- Adding a calendar (ICS) feed now refuses, with 400 `ICS_URL_NOT_PUBLIC`, an address no
+  fetch could use: one that points to a private network or to the server itself, a port
+  other than 80 or 443, credentials in the address, or a name that cannot be found. Before,
+  such an address was saved and then refused at every sync, so nothing was ever fetched
+  from it; now it is not stored either. A self-hosted install's
+  `DEFT_CALENDAR_PRIVATE_URL_ALLOWLIST` entries are still accepted. Feeds already saved
+  are unchanged.
 
 ## [0.3.0-preview.150] — 2026-11-25 (prerelease)
 
