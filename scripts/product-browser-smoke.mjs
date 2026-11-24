@@ -48,6 +48,28 @@ async function main() {
     ]);
     record('Login through the production UI', email);
 
+    // Check 7 option B: the four isolation headers reach the browser from the
+    // production build; the MCP authorization page keeps no COOP (an outside
+    // client's pop-up must keep window.opener).
+    const isolation = {
+      'cross-origin-opener-policy': 'same-origin',
+      'origin-agent-cluster': '?1',
+      'cross-origin-resource-policy': 'same-origin',
+      'x-dns-prefetch-control': 'off',
+    };
+    for (const path of ['/chat', '/icon.png']) {
+      const response = await page.request.get(`${webUrl}${path}`, { maxRedirects: 0 });
+      for (const [key, value] of Object.entries(isolation)) {
+        if (response.headers()[key] !== value) throw new Error(`${path}: ${key} is ${response.headers()[key] ?? 'missing'}, expected ${value}`);
+      }
+    }
+    const authorize = await page.request.get(`${webUrl}/oauth/authorize`, { maxRedirects: 0 });
+    if (authorize.headers()['cross-origin-opener-policy'] !== 'unsafe-none') {
+      throw new Error(`/oauth/authorize: COOP is ${authorize.headers()['cross-origin-opener-policy'] ?? 'missing'}, expected unsafe-none`);
+    }
+    if (authorize.headers()['cross-origin-resource-policy'] !== 'same-origin') throw new Error('/oauth/authorize: CORP missing');
+    record('Serve the page isolation headers', 'COOP, Origin-Agent-Cluster, CORP, DNS prefetch off; /oauth/authorize without COOP');
+
     await settle(page, '/chat');
     const general = page.getByText('general', { exact: true }).first();
     await general.click();
