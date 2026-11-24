@@ -36,6 +36,7 @@ import { listTeamSummaries, teamAccessForEmployee } from './team-context.js';
 import { employeeCanAccessSpace } from './employee-space-access.js';
 import { readEmployeeModuleDiscovery } from '../module-discovery.js';
 import { loadEmployeeProjectAccess } from './employee-project-access.js';
+import { peopleViewer, personVisibleSql, withoutHiddenEmails } from '../people-visibility.js';
 
 type TriggerDescriptor = {
   kind: string;
@@ -407,7 +408,11 @@ export async function platformContext(
       return errorResult(`Org ${ctx.org_id} not found`);
     }
 
-    const teammates = await db
+    // The agent's own workspace role decides what it sees: an agent an owner
+    // made a guest sees only the people who share a space with it, without
+    // their email addresses (lib/people-visibility.ts).
+    const viewer = await peopleViewer(ctx.org_id, projectAccess.userId);
+    const teammates = withoutHiddenEmails(viewer, await db
       .select({
         id: users.id,
         name: users.name,
@@ -421,9 +426,10 @@ export async function platformContext(
         and(
           eq(orgMembers.org_id, ctx.org_id),
           eq(orgMembers.is_active, true),
+          personVisibleSql(viewer, users.id),
         ),
       )
-      .limit(100);
+      .limit(100), (row) => row.id);
 
     // ─── active projects (optional, fail soft) ───────────────────
     let activeProjects: Array<{ id: string; name: string; prefix: string }> = [];

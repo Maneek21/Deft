@@ -1,6 +1,10 @@
 // A guest sees only the people who share at least one space with them, and no
 // email address but their own. Owners, admins and members are unchanged. A
 // removed member is not found by people search, by anyone. (SFX1 item 1.)
+//
+// The guest's session and MCP token both claim role 'member': only the
+// org_members row makes them a guest, so every check below proves the role is
+// read from the database.
 import { before, after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -11,7 +15,12 @@ import { searchRoutes } from '../src/routes/search.js';
 import { spaceRoutes } from '../src/routes/spaces.js';
 import { groupRoutes } from '../src/routes/groups.js';
 import { teamRoutes } from '../src/routes/teams.js';
+import { dailyNoteRoutes } from '../src/routes/daily-notes.js';
+import { managerRoutes } from '../src/routes/manager.js';
 import { executeToolCall } from '../src/lib/agent-context.js';
+import { searchNativeMentions, resolveNativeMentions } from '../src/lib/native-mentions.js';
+import { nativeMentionRef } from '@deft/shared';
+import { memberList } from '../src/lib/mcp-tools/members.js';
 import {
   humanMemberGet,
   humanMemberList,
@@ -19,86 +28,117 @@ import {
   humanPlatformContext,
   humanResolveMember,
   humanResolveTargets,
+  humanTaskGet,
   humanTeamGet,
+  humanTeamList,
   humanTeamWorkload,
   type HumanToolContext,
 } from '../src/lib/mcp-tools/human.js';
 
 const c = new pg.Client({ connectionString: process.env.DATABASE_URL });
 const run = randomUUID().slice(0, 8);
-const org = randomUUID();
+const org = randomUUID(), otherOrg = randomUUID();
 const owner = randomUUID(), admin = randomUUID(), sharer = randomUUID(), stranger = randomUUID();
-const guest = randomUUID(), removed = randomUUID();
+const guest = randomUUID(), removed = randomUUID(), friend = randomUUID(), archivedPal = randomUUID();
+const agentUser = randomUUID(), agentEmployee = randomUUID();
 const sharedRoom = randomUUID(), privateRoom = randomUUID(), strangerRoom = randomUUID();
-const group = randomUUID(), team = randomUUID();
-const people: Array<[string, string, string, boolean]> = [
-  [owner, 'Olive Owner', 'owner', true],
-  [admin, 'Ada Admin', 'admin', true],
-  [sharer, 'Sam Sharer', 'member', true],
-  [stranger, 'Stella Stranger', 'member', true],
-  [guest, 'Gus Guest', 'guest', true],
-  [removed, 'Remy Removed', 'member', false],
+const dmRoom = randomUUID(), archivedRoom = randomUUID(), otherOrgRoom = randomUUID();
+const group = randomUUID(), team = randomUUID(), project = randomUUID(), task = randomUUID(), note = randomUUID();
+// [id, name, org role, active, kind]
+const people: Array<[string, string, string, boolean, 'human' | 'agent']> = [
+  [owner, 'Olive Owner', 'owner', true, 'human'],
+  [admin, 'Ada Admin', 'admin', true, 'human'],
+  [sharer, 'Sam Sharer', 'member', true, 'human'],
+  [stranger, 'Stella Stranger', 'member', true, 'human'],
+  [guest, 'Gus Guest', 'guest', true, 'human'],
+  [removed, 'Remy Removed', 'member', false, 'human'],
+  [friend, 'Stella Friend', 'member', true, 'human'],
+  [archivedPal, 'Archie Pal', 'member', true, 'human'],
+  [agentUser, 'Agatha Agent', 'guest', true, 'agent'],
 ];
 const emailOf = (id: string) => `gpv-${run}-${id}@test.local`;
-const nameOf = (id: string) => people.find(([pid]) => pid === id)![1];
+const nameOf = (id: string) => `${people.find(([pid]) => pid === id)![1]} ${run}`;
 
 before(async () => {
   await c.connect();
-  await c.query(`INSERT INTO orgs (id, name, slug) VALUES ($1, 'Guest People', $2)`, [org, `guest-people-${run}`]);
-  for (const [id, name, role, active] of people) {
-    await c.query(`INSERT INTO users (id, email, name, kind, password_hash) VALUES ($1, $2, $3, 'human', 'hash')`, [id, emailOf(id), `${name} ${run}`]);
-    await c.query(
-      `INSERT INTO org_members (id, org_id, user_id, role, is_active) VALUES (gen_random_uuid()::text, $1, $2, $3, $4)`,
-      [org, id, role, active],
-    );
+  await c.query(`INSERT INTO orgs (id, name, slug) VALUES ($1, 'Guest People', $2), ($3, 'Other Workspace', $4)`,
+    [org, `guest-people-${run}`, otherOrg, `guest-people-other-${run}`]);
+  for (const [id, , role, active, kind] of people) {
+    await c.query(`INSERT INTO users (id, email, name, kind, is_agent, password_hash) VALUES ($1, $2, $3, $4, $5, 'hash')`,
+      [id, emailOf(id), nameOf(id), kind, kind === 'agent']);
+    await c.query(`INSERT INTO org_members (id, org_id, user_id, role, is_active) VALUES (gen_random_uuid()::text, $1, $2, $3, $4)`,
+      [org, id, role, active]);
   }
-  // The guest shares one room with the admin and Sam (and the removed member,
-  // who must still not appear). Stella and the owner share nothing with them.
-  await c.query(
-    `INSERT INTO spaces (id, org_id, name, type, created_by) VALUES
-      ($1, $4, 'gpv shared', 'private', $5), ($2, $4, 'gpv owner room', 'private', $5), ($3, $4, 'gpv stranger room', 'public', $5)`,
-    [sharedRoom, privateRoom, strangerRoom, org, owner],
-  );
+  // The agent is a BYOA employee an owner made a guest.
+  await c.query(`INSERT INTO agent_employees (id, org_id, user_id, slug, name, system_prompt, is_byoa, trust_level, runtime_kind, role, created_by)
+    VALUES ($1, $2, $3, $4, 'Agatha Agent', 'test', true, 'standard', 'custom_mcp', 'custom', $5)`, [agentEmployee, org, agentUser, `gpv-agent-${run}`, owner]);
+  // In another workspace the guest and Stella share a room: that must not
+  // make Stella visible to the guest here.
+  for (const id of [guest, stranger]) {
+    await c.query(`INSERT INTO org_members (id, org_id, user_id, role, is_active) VALUES (gen_random_uuid()::text, $1, $2, 'member', true)`, [otherOrg, id]);
+  }
+  await c.query(`INSERT INTO spaces (id, org_id, name, type, created_by, is_archived) VALUES
+      ($1, $7, 'gpv shared', 'private', $8, false), ($2, $7, 'gpv owner room', 'private', $8, false),
+      ($3, $7, 'gpv stranger room', 'public', $8, false), ($4, $7, 'gpv dm', 'dm', $9, false),
+      ($5, $7, 'gpv archived', 'private', $8, true), ($6, $10, 'gpv elsewhere', 'private', $11, false)`,
+  [sharedRoom, privateRoom, strangerRoom, dmRoom, archivedRoom, otherOrgRoom, org, owner, guest, otherOrg, stranger]);
   for (const [room, user] of [
-    [sharedRoom, guest], [sharedRoom, admin], [sharedRoom, sharer], [sharedRoom, removed],
+    [sharedRoom, guest], [sharedRoom, admin], [sharedRoom, sharer], [sharedRoom, removed], [sharedRoom, agentUser],
     [privateRoom, owner], [privateRoom, stranger], [privateRoom, sharer],
     [strangerRoom, stranger], [strangerRoom, owner],
+    [dmRoom, guest], [dmRoom, friend],
+    [archivedRoom, guest], [archivedRoom, archivedPal],
+    [otherOrgRoom, guest], [otherOrgRoom, stranger],
   ]) {
     await c.query(`INSERT INTO space_members (id, space_id, user_id) VALUES (gen_random_uuid()::text, $1, $2)`, [room, user]);
   }
+  await c.query(`INSERT INTO messages (id, org_id, space_id, user_id, content) VALUES (gen_random_uuid()::text, $1, $2, $3, 'gpv hello')`, [org, sharedRoom, sharer]);
   await c.query(`INSERT INTO user_groups (id, org_id, name, handle, created_by) VALUES ($1, $2, 'gpv group', $3, $4)`, [group, org, `gpv-${run}`, owner]);
   for (const user of [sharer, stranger, owner]) {
     await c.query(`INSERT INTO user_group_members (id, group_id, user_id) VALUES (gen_random_uuid()::text, $1, $2)`, [group, user]);
   }
-  await c.query(
-    `INSERT INTO teams (id, org_id, name, handle, visibility, lead_user_id, created_by) VALUES ($1, $2, 'gpv team', $3, 'org', $4, $4)`,
-    [team, org, `gpv-team-${run}`, stranger],
-  );
-  await c.query(`INSERT INTO messages (id, org_id, space_id, user_id, content) VALUES (gen_random_uuid()::text, $1, $2, $3, 'gpv hello')`, [org, sharedRoom, sharer]);
+  await c.query(`INSERT INTO teams (id, org_id, name, handle, visibility, lead_user_id, created_by) VALUES ($1, $2, 'gpv team', $3, 'org', $4, $4)`,
+    [team, org, `gpv-team-${run}`, stranger]);
   for (const [user, role] of [[stranger, 'lead'], [sharer, 'member']]) {
     await c.query(`INSERT INTO team_members (id, org_id, team_id, user_id, role) VALUES (gen_random_uuid()::text, $1, $2, $3, $4)`, [org, team, user, role]);
   }
+  await c.query(`INSERT INTO projects (id, org_id, name, prefix, lead_id) VALUES ($1, $2, 'gpv project', $3, $4)`, [project, org, `G${run.slice(0, 4).toUpperCase()}`, owner]);
+  await c.query(`INSERT INTO tasks (id, org_id, project_id, number, title, created_by, assignee_id) VALUES ($1, $2, $3, 1, 'gpv task', $4, $5)`,
+    [task, org, project, stranger, sharer]);
+  await c.query(`INSERT INTO task_comments (id, org_id, task_id, user_id, content) VALUES (gen_random_uuid()::text, $1, $2, $3, 'gpv comment')`, [org, task, stranger]);
+  await c.query(`INSERT INTO notes (id, org_id, user_id, title) VALUES ($1, $2, $3, 'gpv note')`, [note, org, guest]);
+  await c.query(`INSERT INTO note_shares (id, note_id, shared_with_user_id, permission) VALUES (gen_random_uuid()::text, $1, $2, 'view')`, [note, sharer]);
 });
 
 after(async () => {
+  const all = people.map(([id]) => id);
+  await c.query(`DELETE FROM note_shares WHERE note_id = $1`, [note]);
+  await c.query(`DELETE FROM notes WHERE org_id = $1`, [org]);
+  await c.query(`DELETE FROM task_comments WHERE org_id = $1`, [org]);
+  await c.query(`DELETE FROM task_activity WHERE org_id = $1`, [org]).catch(() => {});
+  await c.query(`DELETE FROM tasks WHERE org_id = $1`, [org]);
+  await c.query(`DELETE FROM projects WHERE org_id = $1`, [org]);
   await c.query(`DELETE FROM team_members WHERE team_id = $1`, [team]);
   await c.query(`DELETE FROM teams WHERE id = $1`, [team]);
   await c.query(`DELETE FROM user_group_members WHERE group_id = $1`, [group]);
   await c.query(`DELETE FROM user_groups WHERE id = $1`, [group]);
   await c.query(`DELETE FROM messages WHERE org_id = $1`, [org]);
-  await c.query(`DELETE FROM space_members WHERE space_id = ANY($1::text[])`, [[sharedRoom, privateRoom, strangerRoom]]);
-  await c.query(`DELETE FROM spaces WHERE org_id = $1`, [org]);
-  await c.query(`DELETE FROM org_members WHERE org_id = $1`, [org]);
-  await c.query(`DELETE FROM users WHERE id = ANY($1::text[])`, [people.map(([id]) => id)]);
-  await c.query(`DELETE FROM orgs WHERE id = $1`, [org]);
+  await c.query(`DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id = ANY($1::text[]))`, [[org, otherOrg]]);
+  await c.query(`DELETE FROM spaces WHERE org_id = ANY($1::text[])`, [[org, otherOrg]]);
+  await c.query(`DELETE FROM agent_employees WHERE org_id = $1`, [org]);
+  await c.query(`DELETE FROM org_members WHERE org_id = ANY($1::text[])`, [[org, otherOrg]]);
+  await c.query(`DELETE FROM users WHERE id = ANY($1::text[])`, [all]);
+  await c.query(`DELETE FROM orgs WHERE id = ANY($1::text[])`, [[org, otherOrg]]);
   await c.end();
 });
 
+// The session claims 'member' for the guest; only org_members says guest.
+const sessionRole = (viewer: string) => (viewer === guest ? 'member' : people.find(([id]) => id === viewer)![2]);
+
 function app(viewer: string) {
-  const role = people.find(([id]) => id === viewer)![2];
   const hono = new Hono();
   hono.use('*', async (ctx, next) => {
-    ctx.set('user', { id: viewer, org_id: org, email: emailOf(viewer), sid: 's', role } as never);
+    ctx.set('user', { id: viewer, org_id: org, email: emailOf(viewer), sid: 's', role: sessionRole(viewer) } as never);
     await next();
   });
   hono.route('/api/members', memberRoutes);
@@ -106,42 +146,51 @@ function app(viewer: string) {
   hono.route('/api/spaces', spaceRoutes);
   hono.route('/api/groups', groupRoutes);
   hono.route('/api/teams', teamRoutes);
+  hono.route('/api/daily-notes', dailyNoteRoutes);
+  hono.route('/api/manager', managerRoutes);
   return hono;
 }
 
-async function get(viewer: string, path: string) {
-  const res = await app(viewer).request(path);
+async function call(viewer: string, path: string, init?: { method: string; body?: unknown }) {
+  const res = await app(viewer).request(path, init ? {
+    method: init.method,
+    headers: { 'content-type': 'application/json' },
+    body: init.body === undefined ? undefined : JSON.stringify(init.body),
+  } : undefined);
   return { status: res.status, body: await res.json() as any };
 }
+const get = (viewer: string, path: string) => call(viewer, path);
 
 const mcp = (viewer: string): HumanToolContext => ({
   org_id: org,
   user_id: viewer,
-  role: people.find(([id]) => id === viewer)![2] as HumanToolContext['role'],
+  role: sessionRole(viewer) as HumanToolContext['role'],
   scopes: ['read:workspace', 'read:tasks', 'read:messages'],
 });
 const parse = (result: { content: Array<{ text: string }>; isError?: boolean }) => JSON.parse(result.content[0]!.text);
 // A person's id: `user_id` where a row has its own id (team and group members), else `id`.
 const personId = (row: { id?: string; user_id?: string }) => row.user_id ?? row.id;
-const ids = (rows: Array<{ id?: string; user_id?: string }>) => rows.map(personId).filter((id) => people.some(([pid]) => pid === id)).sort();
+const known = new Set(people.map(([id]) => id));
+const ids = (rows: Array<{ id?: string; user_id?: string }>) => rows.map(personId).filter((id): id is string => known.has(id!)).sort();
 const sorted = (...list: string[]) => [...list].sort();
 
-const GUEST_SEES = sorted(guest, admin, sharer);
-const MEMBER_SEES = sorted(owner, admin, sharer, stranger, guest);
+const GUEST_SEES = sorted(guest, admin, sharer, friend, archivedPal, agentUser);
+const MEMBER_SEES = sorted(owner, admin, sharer, stranger, guest, friend, archivedPal, agentUser);
 
-function assertGuestEmails(rows: Array<{ id?: string; user_id?: string; email?: string | null }>) {
+function assertGuestEmails(rows: Array<{ id?: string; user_id?: string; email?: string | null }>, self = guest) {
   for (const row of rows) {
     const id = personId(row);
-    if (id === guest) assert.equal(row.email, emailOf(guest), 'a guest sees their own email');
+    if (id === self) assert.equal(row.email, emailOf(self), 'the viewer sees their own email');
     else assert.equal(row.email, null, `no email for ${id}`);
   }
 }
 
-test('GET /api/members: a guest sees only people sharing a space, without emails', async () => {
+test('GET /api/members: a guest sees only people sharing a space (a room, a DM, an archived room), without emails', async () => {
   const res = await get(guest, '/api/members');
   assert.equal(res.status, 200);
   assert.deepEqual(ids(res.body), GUEST_SEES);
   assertGuestEmails(res.body);
+  assert.equal(res.body.some((row: any) => row.id === stranger), false, 'a room shared in another workspace does not count');
 });
 
 test('GET /api/members: members and admins are unchanged', async () => {
@@ -149,7 +198,7 @@ test('GET /api/members: members and admins are unchanged', async () => {
     const res = await get(viewer, '/api/members');
     assert.equal(res.status, 200);
     assert.deepEqual(ids(res.body), MEMBER_SEES, viewer);
-    for (const row of res.body.filter((r: any) => people.some(([id]) => id === r.id))) assert.equal(row.email, emailOf(row.id));
+    for (const row of res.body.filter((r: any) => known.has(r.id))) assert.equal(row.email, emailOf(row.id));
   }
 });
 
@@ -172,8 +221,12 @@ test('GET /api/members/:id and /:id/detail: a guest reaches only people sharing 
   assert.equal(visible.status, 200);
   assert.equal(visible.body.email, null);
   assert.equal((await get(guest, `/api/members/${guest}`)).body.email, emailOf(guest));
-  for (const hidden of [stranger, owner, removed]) {
-    assert.equal((await get(guest, `/api/members/${hidden}`)).status, 404, hidden);
+  assert.equal((await get(guest, `/api/members/${friend}`)).status, 200, 'shared through a DM');
+  assert.equal((await get(guest, `/api/members/${archivedPal}`)).status, 200, 'shared through an archived room');
+  for (const hidden of [stranger, owner, removed, randomUUID()]) {
+    const one = await get(guest, `/api/members/${hidden}`);
+    assert.equal(one.status, 404, hidden);
+    assert.deepEqual(one.body, { error: 'Member not found', code: 'NOT_FOUND' }, 'a hidden person answers like an unknown id');
     assert.equal((await get(guest, `/api/members/${hidden}/detail`)).status, 404, hidden);
   }
 
@@ -198,19 +251,47 @@ test('people search: removed members are absent for everyone; a guest finds only
     return res.body.people as Array<{ id: string; email: string | null }>;
   };
   for (const viewer of [owner, admin, sharer, guest]) {
-    assert.deepEqual(ids(await search(viewer, `Remy Removed ${run}`)), [], `removed member hidden from ${viewer}`);
+    assert.deepEqual(ids(await search(viewer, nameOf(removed))), [], `removed member hidden from ${viewer}`);
     assert.deepEqual(ids(await search(viewer, emailOf(removed))), [], `removed member email hidden from ${viewer}`);
   }
-
-  assert.deepEqual(ids(await search(guest, `Sam Sharer ${run}`)), [sharer]);
-  assert.equal((await search(guest, `Sam Sharer ${run}`))[0]!.email, null);
-  assert.deepEqual(ids(await search(guest, `Stella Stranger ${run}`)), []);
+  assert.deepEqual(ids(await search(guest, nameOf(sharer))), [sharer]);
+  assert.equal((await search(guest, nameOf(sharer)))[0]!.email, null);
+  assert.deepEqual(ids(await search(guest, nameOf(stranger))), []);
   assert.deepEqual(ids(await search(guest, emailOf(sharer))), [], 'a guest cannot search by email');
-
-  assert.deepEqual(ids(await search(sharer, `Stella Stranger ${run}`)), [stranger]);
+  assert.deepEqual(ids(await search(sharer, nameOf(stranger))), [stranger]);
   const byEmail = await search(owner, emailOf(stranger));
   assert.deepEqual(ids(byEmail), [stranger]);
   assert.equal(byEmail[0]!.email, emailOf(stranger));
+});
+
+test('a guest cannot make a hidden person visible: DMs, room adds and note shares answer like an unknown id', async () => {
+  const unknown = randomUUID();
+  const dmHidden = await call(guest, '/api/spaces', { method: 'POST', body: { name: 'dm', type: 'dm', user_ids: [stranger] } });
+  const dmUnknown = await call(guest, '/api/spaces', { method: 'POST', body: { name: 'dm', type: 'dm', user_ids: [unknown] } });
+  assert.equal(dmHidden.status, 400);
+  assert.deepEqual(dmHidden, dmUnknown);
+  const groupHidden = await call(guest, '/api/spaces', { method: 'POST', body: { name: 'g', type: 'group_dm', user_ids: [sharer, stranger] } });
+  assert.deepEqual(groupHidden, dmUnknown);
+  assert.equal((await get(guest, `/api/members/${stranger}`)).status, 404, 'still hidden');
+
+  const addHidden = await call(guest, `/api/spaces/${sharedRoom}/members`, { method: 'POST', body: { user_id: stranger } });
+  const addUnknown = await call(guest, `/api/spaces/${sharedRoom}/members`, { method: 'POST', body: { user_id: unknown } });
+  assert.equal(addHidden.status, 404);
+  assert.deepEqual(addHidden, addUnknown);
+
+  const shareHidden = await call(guest, `/api/daily-notes/${note}/shares`, { method: 'POST', body: { user_id: stranger } });
+  const shareUnknown = await call(guest, `/api/daily-notes/${note}/shares`, { method: 'POST', body: { user_id: unknown } });
+  assert.equal(shareHidden.status, 404);
+  assert.deepEqual(shareHidden, shareUnknown);
+  const shares = await get(guest, `/api/daily-notes/${note}/shares`);
+  assert.equal(shares.status, 200);
+  assert.deepEqual(shares.body.shares.map((s: any) => [s.user_id, s.user_name, s.user_email]), [[sharer, nameOf(sharer), null]]);
+
+  // A member is unchanged: the DM with Stella is created.
+  const memberDm = await call(sharer, '/api/spaces', { method: 'POST', body: { name: 'dm', type: 'dm', user_ids: [stranger] } });
+  assert.equal(memberDm.status, 201);
+  await c.query(`DELETE FROM space_members WHERE space_id = $1`, [memberDm.body.id]);
+  await c.query(`DELETE FROM spaces WHERE id = $1`, [memberDm.body.id]);
 });
 
 test('space members, group members and team members follow the same rule', async () => {
@@ -229,10 +310,15 @@ test('space members, group members and team members follow the same rule', async
   const teamForGuest = await get(guest, `/api/teams/${team}`);
   assert.equal(teamForGuest.status, 200);
   assert.equal(teamForGuest.body.lead, null, 'a lead the guest shares no space with is not shown');
+  assert.equal(teamForGuest.body.team.lead_user_id, null, '... nor their id');
+  assert.equal(teamForGuest.body.team.created_by, null);
   assert.deepEqual(ids(teamForGuest.body.members), [sharer]);
   assertGuestEmails(teamForGuest.body.members);
+  const listed = (await get(guest, '/api/teams')).body.find((row: any) => row.id === team);
+  assert.equal(listed.lead_user_id, null);
   const teamForMember = await get(sharer, `/api/teams/${team}`);
   assert.equal(teamForMember.body.lead.email, emailOf(stranger));
+  assert.equal(teamForMember.body.team.lead_user_id, stranger);
   assert.deepEqual(ids(teamForMember.body.members), sorted(stranger, sharer));
 });
 
@@ -241,9 +327,9 @@ test('MCP member_list, member_get and resolve_member follow the rule', async () 
   assert.deepEqual(ids(guestList), GUEST_SEES);
   assertGuestEmails(guestList);
   assert.deepEqual(ids(parse(await humanMemberList({ query: emailOf(sharer) }, mcp(guest)))), [], 'no email matching for a guest');
-  const memberList = parse(await humanMemberList({}, mcp(sharer)));
-  assert.deepEqual(ids(memberList), MEMBER_SEES);
-  assert.equal(memberList.find((m: any) => m.id === stranger).email, emailOf(stranger));
+  const listForMember = parse(await humanMemberList({}, mcp(sharer)));
+  assert.deepEqual(ids(listForMember), MEMBER_SEES);
+  assert.equal(listForMember.find((m: any) => m.id === stranger).email, emailOf(stranger));
 
   const got = parse(await humanMemberGet({ user_id: sharer }, mcp(guest)));
   assert.equal(got.id, sharer);
@@ -252,19 +338,18 @@ test('MCP member_list, member_get and resolve_member follow the rule', async () 
   assert.equal((await humanMemberGet({ email: emailOf(sharer) }, mcp(guest))).isError, true, 'no lookup by email for a guest');
   assert.equal(parse(await humanMemberGet({ email: emailOf(stranger) }, mcp(sharer))).id, stranger);
 
-  const resolvedForGuest = parse(await humanResolveMember({ query: `Stella Stranger ${run}` }, mcp(guest)));
-  assert.notEqual(resolvedForGuest.selected?.id, stranger);
+  const resolvedForGuest = parse(await humanResolveMember({ query: nameOf(stranger) }, mcp(guest)));
   assert.equal(JSON.stringify(resolvedForGuest).includes(stranger), false, 'the stranger is not a candidate');
-  const sam = parse(await humanResolveMember({ query: `Sam Sharer ${run}` }, mcp(guest)));
+  const sam = parse(await humanResolveMember({ query: nameOf(sharer) }, mcp(guest)));
   assert.equal(sam.selected.id, sharer);
   assert.equal(JSON.stringify(sam).includes(emailOf(sharer)), false);
-  assert.equal(parse(await humanResolveMember({ query: `Stella Stranger ${run}` }, mcp(sharer))).selected.id, stranger);
+  assert.equal(parse(await humanResolveMember({ query: nameOf(stranger) }, mcp(sharer))).selected.id, stranger);
 
-  const targets = parse(await humanResolveTargets({ members: [`Stella Stranger ${run}`] }, mcp(guest)));
+  const targets = parse(await humanResolveTargets({ members: [nameOf(stranger)] }, mcp(guest)));
   assert.equal(JSON.stringify(targets).includes(stranger), false);
 });
 
-test('MCP platform_context, team_get and team_workload follow the rule', async () => {
+test('MCP platform_context, team tools, task_get and messages_recent follow the rule', async () => {
   const context = parse(await humanPlatformContext({}, mcp(guest)));
   assert.deepEqual(ids(context.teammates), GUEST_SEES);
   assertGuestEmails(context.teammates);
@@ -273,28 +358,72 @@ test('MCP platform_context, team_get and team_workload follow the rule', async (
   assert.deepEqual(ids(teamView.members), [sharer]);
   assertGuestEmails(teamView.members);
   assert.equal(teamView.team.lead_name, null);
+  assert.equal(teamView.team.lead_user_id, null);
+  const listed = parse(await humanTeamList({}, mcp(guest))).teams.find((row: any) => row.id === team);
+  assert.equal(listed.lead_user_id, null);
   assert.deepEqual(ids(parse(await humanTeamGet({ team_id: team }, mcp(sharer))).members), sorted(stranger, sharer));
 
   const workload = parse(await humanTeamWorkload({}, mcp(guest)));
-  assert.deepEqual(ids(workload.workload), GUEST_SEES);
-  assert.deepEqual(ids(parse(await humanTeamWorkload({}, mcp(sharer))).workload), MEMBER_SEES);
-});
+  assert.deepEqual(ids(workload.workload), sorted(guest, admin, sharer, friend, archivedPal));
+  assert.deepEqual(ids(parse(await humanTeamWorkload({}, mcp(sharer))).workload),
+    sorted(owner, admin, sharer, stranger, guest, friend, archivedPal));
 
-test('Defty search_members asked by a guest finds only people sharing a space', async () => {
-  const forGuest = await executeToolCall('search_members', { query: `Stella Stranger ${run}` }, org, guest);
-  assert.equal(forGuest.result.code, 'MEMBER_NOT_FOUND');
-  assert.deepEqual(forGuest.result.matches, []);
-  const samForGuest = await executeToolCall('search_members', { query: `Sam Sharer ${run}` }, org, guest);
-  assert.equal(samForGuest.result.member.id, sharer);
-  const forMember = await executeToolCall('search_members', { query: `Stella Stranger ${run}` }, org, sharer);
-  assert.equal(forMember.result.member.id, stranger);
-});
+  const taskView = parse(await humanTaskGet({ task_id: task }, mcp(guest)));
+  assert.equal(taskView.task.assignee_email, null);
+  assert.equal(taskView.task.created_by_email, null);
+  assert.ok(taskView.recent_comments.length > 0);
+  for (const comment of taskView.recent_comments) assert.equal(comment.user_email, null);
+  assert.equal(parse(await humanTaskGet({ task_id: task }, mcp(sharer))).task.created_by_email, emailOf(stranger));
 
-test('MCP messages_recent shows a guest no author email but their own', async () => {
   const forGuest = parse(await humanMessagesRecent({ space_id: sharedRoom }, mcp(guest)));
   const message = forGuest.messages.find((m: any) => m.user_id === sharer);
   assert.ok(message, 'the guest reads the shared room');
   assert.equal(message.user_email, null);
   const forMember = parse(await humanMessagesRecent({ space_id: sharedRoom }, mcp(sharer)));
   assert.equal(forMember.messages.find((m: any) => m.user_id === sharer).user_email, emailOf(sharer));
+});
+
+test('an agent employee an owner made a guest sees people as a guest does', async () => {
+  const listed = parse(await memberList({ caller_employee_slug: `gpv-agent-${run}` }, {
+    org_id: org, employee_id: agentEmployee, employee_slug: `gpv-agent-${run}`, trust_level: 'standard',
+  } as never));
+  assert.deepEqual(ids(listed), sorted(agentUser, guest, admin, sharer));
+  assertGuestEmails(listed, agentUser);
+});
+
+test('native mentions: a guest finds and resolves only people sharing a space', async () => {
+  const found = async (viewer: string, query: string) => (await searchNativeMentions({ orgId: org, userId: viewer }, query))
+    .filter((p: any) => p.ref.resource_type === 'person' && p.state === 'available').map((p: any) => p.ref.resource_id);
+  assert.deepEqual(await found(guest, `Stella`), [friend]);
+  assert.deepEqual((await found(sharer, `Stella`)).sort(), sorted(friend, stranger));
+  const [resolvedHidden] = await resolveNativeMentions({ orgId: org, userId: guest }, [nativeMentionRef('person', stranger)]);
+  const [resolvedUnknown] = await resolveNativeMentions({ orgId: org, userId: guest }, [nativeMentionRef('person', randomUUID())]);
+  assert.equal(resolvedHidden!.state, 'unavailable');
+  assert.equal(resolvedUnknown!.state, 'unavailable');
+});
+
+test('Defty, asked by a guest: search_members filters before matching, and people analytics are refused', async () => {
+  const forGuest = await executeToolCall('search_members', { query: nameOf(stranger) }, org, guest);
+  assert.equal(forGuest.result.code, 'MEMBER_NOT_FOUND');
+  assert.deepEqual(forGuest.result.matches, []);
+  // Hidden "Stella Stranger" and visible "Stella Friend": the guest gets Stella Friend, not an ambiguity.
+  const stella = await executeToolCall('search_members', { query: 'Stella' }, org, guest);
+  assert.equal(stella.result.member.id, friend);
+  assert.equal((await executeToolCall('search_members', { query: 'Stella' }, org, sharer)).result.code, 'MEMBER_AMBIGUOUS');
+  assert.equal((await executeToolCall('search_members', { query: nameOf(stranger) }, org, sharer)).result.member.id, stranger);
+
+  for (const tool of ['get_team_workload', 'get_user_activity', 'get_workload_balance', 'find_expert', 'get_team_dynamics']) {
+    const refused = await executeToolCall(tool, { user_name: 'Stella', topic: 'launch' }, org, guest);
+    assert.equal(refused.result.code, 'NOT_AVAILABLE_TO_GUESTS', tool);
+  }
+  const forMember = await executeToolCall('get_user_activity', { user_name: nameOf(stranger) }, org, sharer)
+    .catch((error: unknown) => ({ result: { thrown: String(error) } as Record<string, unknown> }));
+  assert.notEqual((forMember.result as { code?: string }).code, 'NOT_AVAILABLE_TO_GUESTS');
+});
+
+test('1:1 prep: a guest, and a report from another workspace, get "member not found"', async () => {
+  const fromGuest = await call(guest, '/api/manager/oneone-prep', { method: 'POST', body: { report_id: sharer } });
+  assert.equal(fromGuest.status, 404);
+  const outsider = await call(admin, '/api/manager/oneone-prep', { method: 'POST', body: { report_id: stranger.replace(/./, '0') } });
+  assert.deepEqual(fromGuest, outsider);
 });

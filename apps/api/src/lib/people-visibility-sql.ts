@@ -21,7 +21,7 @@ export function isGuestRole(role: string | null | undefined): boolean {
 
 /** The ids of everyone who shares a space with the viewer, the viewer included (when they are in any space). */
 export function sharedSpacePeopleSql(viewer: PeopleViewer): SQL {
-  return sql`SELECT shared_person.user_id
+  return sql`SELECT DISTINCT shared_person.user_id
     FROM ${spaceMembers} viewer_membership
     JOIN ${spaces} shared_space ON shared_space.id = viewer_membership.space_id
     JOIN ${spaceMembers} shared_person ON shared_person.space_id = viewer_membership.space_id

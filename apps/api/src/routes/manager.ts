@@ -12,6 +12,7 @@ import {
 } from '@deft/db/schema';
 import { generateOneOnePrep } from '../services/oneone-prep.js';
 import { DEFTY_EMAIL } from '../lib/ensure-defty-membership.js';
+import { peopleViewer } from '../lib/people-visibility.js';
 
 export const managerRoutes = new Hono();
 
@@ -90,9 +91,19 @@ managerRoutes.post('/oneone-prep', async (c) => {
     const user = c.get('user');
     const body = await c.req.json<{ report_id: string }>();
 
-    if (!body.report_id) {
+    if (!body.report_id || typeof body.report_id !== 'string') {
       return c.json({ error: 'report_id is required', code: 'VALIDATION_ERROR' }, 400);
     }
+
+    // The report must be an active member of this workspace (never a person
+    // of another one), and a guest, who is no one's manager, gets the same
+    // answer as for an unknown report (lib/people-visibility.ts).
+    const viewer = await peopleViewer(user.org_id, user.id);
+    const [report] = viewer.guest ? [] : await db.select({ id: orgMembers.user_id })
+      .from(orgMembers)
+      .where(and(eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, body.report_id), eq(orgMembers.is_active, true)))
+      .limit(1);
+    if (!report) return c.json({ error: 'Member not found', code: 'NOT_FOUND' }, 404);
 
     const result = await generateOneOnePrep(user.id, body.report_id, user.org_id);
     return c.json(result);

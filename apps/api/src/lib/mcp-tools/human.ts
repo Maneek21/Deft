@@ -781,13 +781,16 @@ async function resolveActiveMember(
   params: { user_id?: unknown; email?: unknown; name?: unknown; label: string },
 ): Promise<{ user: { id: string; name: string | null; email: string | null } | null; error?: ToolResult }> {
   const userId = typeof params.user_id === 'string' ? params.user_id.trim() : '';
-  const email = typeof params.email === 'string' ? params.email.trim().toLowerCase() : '';
   const name = typeof params.name === 'string' ? params.name.trim() : '';
-  if (!userId && !email && !name) return { user: null };
   // A guest resolves only the people who share a space with them, never by
-  // email address, and sees no email address (lib/people-visibility.ts).
+  // email address (an email is ignored; a name given with it is used), and
+  // sees no email address (lib/people-visibility.ts).
   const viewer = await peopleViewer(ctx.org_id, ctx.user_id);
-  if (viewer.guest && !userId && email) return { user: null, error: errorResult(`${params.label}: member not found`) };
+  const givenEmail = typeof params.email === 'string' ? params.email.trim().toLowerCase() : '';
+  const email = viewer.guest ? '' : givenEmail;
+  if (!userId && !email && !name) {
+    return givenEmail ? { user: null, error: errorResult(`${params.label}: member not found`) } : { user: null };
+  }
 
   if (userId || email) {
     const rows = await db.execute(sql`

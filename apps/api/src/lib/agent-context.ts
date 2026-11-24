@@ -46,7 +46,11 @@ import { velocityCalculator, workloadAnalyzer, skillsGapAnalyzer } from '../serv
 import { generateOneOnePrep } from '../services/oneone-prep.js';
 import { createPlanRow } from './agent-plans.js';
 import { resolveAssigneeWithMatches } from './resolve-assignee.js';
-import { canSeePerson, peopleViewer, visiblePersonIds } from './people-visibility.js';
+import { peopleViewer } from './people-visibility.js';
+
+const GUEST_REFUSED_PEOPLE_TOOLS = new Set([
+  'get_team_workload', 'get_user_activity', 'get_workload_balance', 'find_expert', 'get_team_dynamics',
+]);
 import { visibleTaskCondition } from './task-visibility.js';
 import { allowedNextStatuses } from './task-status-machine.js';
 import { getProjectResolvedConfig } from './project-resolved-config.js';
@@ -331,23 +335,25 @@ export async function executeToolCall(
     }
   }
 
+  // Workspace-wide analytics about people: a guest sees only the people who
+  // share a space with them, so Defty does not run these for one
+  // (lib/people-visibility.ts).
+  if (GUEST_REFUSED_PEOPLE_TOOLS.has(toolName) && (await peopleViewer(orgId, _userId)).guest) {
+    return { result: { error: "This looks across the workspace's people, which a guest cannot see.", code: 'NOT_AVAILABLE_TO_GUESTS' }, citations: [] };
+  }
+
   switch (toolName) {
     case 'search_members': {
       await requireActiveOrgMembership(orgId, _userId);
       if (typeof params.query !== 'string' || !params.query.trim() || params.query.length > 120) {
         return { result: { error: 'Provide one bounded member name or ID.', code: 'INVALID_MEMBER_QUERY' }, citations: [] };
       }
-      const resolved = await resolveAssigneeWithMatches(params.query, orgId);
       // Asked by a guest, Defty finds only the people who share a space with
       // that guest (lib/people-visibility.ts).
-      const visible = await visiblePersonIds(await peopleViewer(orgId, _userId));
-      if (resolved.ok && canSeePerson(visible, resolved.value.id)) return { result: { member: resolved.value }, citations: [] };
-      const matches = (resolved.ok ? [resolved.value] : resolved.matches).filter((match) => canSeePerson(visible, match.id));
-      const ambiguous = !resolved.ok && resolved.ambiguous && matches.length > 1;
-      if (!resolved.ok && resolved.ambiguous && matches.length === 1) return { result: { member: matches[0] }, citations: [] };
-      return { result: {
-        error: ambiguous ? 'Member name is ambiguous; ask which person.' : 'No active assignable member matched; ask for another name.',
-        code: ambiguous ? 'MEMBER_AMBIGUOUS' : 'MEMBER_NOT_FOUND', matches: ambiguous ? matches.slice(0, 20) : [],
+      const resolved = await resolveAssigneeWithMatches(params.query, orgId, { visibleTo: _userId });
+      return { result: resolved.ok ? { member: resolved.value } : {
+        error: resolved.ambiguous ? 'Member name is ambiguous; ask which person.' : 'No active assignable member matched; ask for another name.',
+        code: resolved.ambiguous ? 'MEMBER_AMBIGUOUS' : 'MEMBER_NOT_FOUND', matches: resolved.matches.slice(0, 20),
       }, citations: [] };
     }
     case 'list_spaces': {
@@ -395,7 +401,7 @@ export async function executeToolCall(
         conditions.push(eq(messages.space_id, matches[0]!.id));
       }
       if (params.author_name) {
-        const author = await resolveAssigneeWithMatches(String(params.author_name), orgId);
+        const author = await resolveAssigneeWithMatches(String(params.author_name), orgId, { visibleTo: _userId });
         if (!author.ok) return { result: { error: 'Message author is missing or ambiguous.', code: author.ambiguous ? 'MEMBER_AMBIGUOUS' : 'MEMBER_NOT_FOUND', matches: author.matches.slice(0, 20) }, citations: [] };
         conditions.push(eq(messages.user_id, author.value.id));
       }
@@ -508,7 +514,7 @@ export async function executeToolCall(
         conditions.push(sql`${tasks.status} NOT IN ('done', 'cancelled')`);
       }
       if (params.assignee_name) {
-        const resolved = await resolveAssigneeWithMatches(String(params.assignee_name), orgId);
+        const resolved = await resolveAssigneeWithMatches(String(params.assignee_name), orgId, { visibleTo: _userId });
         if (!resolved.ok) return { result: { error: 'Assignee is missing or ambiguous.', code: resolved.ambiguous ? 'MEMBER_AMBIGUOUS' : 'MEMBER_NOT_FOUND', matches: resolved.matches.slice(0, 20) }, citations: [] };
         conditions.push(eq(tasks.assignee_id, resolved.value.id));
       }

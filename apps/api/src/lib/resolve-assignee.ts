@@ -17,8 +17,9 @@ import { logId } from './log-metadata.js';
  * Returns null if no match found or match is ambiguous.
  */
 import { db } from './db.js';
+import { peopleViewer, personVisibleSql } from './people-visibility.js';
 import { users, orgMembers, agentEmployees } from '@deft/db/schema';
-import { or, sql } from 'drizzle-orm';
+import { and, or, sql } from 'drizzle-orm';
 
 export type ResolvedAssignee = {
   id: string;
@@ -93,6 +94,12 @@ export async function resolveAssignee(
 export async function resolveAssigneeWithMatches(
   nameOrId: string,
   orgId: string,
+  /**
+   * The person the lookup is for. When they are a guest, only the people who
+   * share a space with them are candidates, before any matching, so a hidden
+   * person is never matched, ranked or named (lib/people-visibility.ts).
+   */
+  options: { visibleTo?: string } = {},
 ): Promise<
   | { ok: true; value: ResolvedAssignee }
   | { ok: false; ambiguous: boolean; matches: ResolvedAssignee[] }
@@ -103,6 +110,7 @@ export async function resolveAssigneeWithMatches(
   const input = nameOrId.trim();
   if (input.length === 0) return { ok: false, ambiguous: false, matches: [] };
 
+  const viewer = options.visibleTo ? await peopleViewer(orgId, options.visibleTo) : null;
   const candidates = await db
     .select({
       id: users.id,
@@ -110,12 +118,13 @@ export async function resolveAssigneeWithMatches(
       is_agent: users.is_agent,
     })
     .from(users)
-    .where(
+    .where(and(
       or(
         sql`EXISTS (SELECT 1 FROM ${orgMembers} WHERE ${orgMembers.user_id} = ${users.id} AND ${orgMembers.org_id} = ${orgId} AND ${orgMembers.is_active} = true)`,
         sql`EXISTS (SELECT 1 FROM ${agentEmployees} WHERE ${agentEmployees.user_id} = ${users.id} AND ${agentEmployees.org_id} = ${orgId} AND ${agentEmployees.is_active} = true AND ${agentEmployees.is_deleted} = false AND ${agentEmployees.unhealthy} = false)`,
       ),
-    );
+      viewer ? personVisibleSql(viewer, users.id) : undefined,
+    ));
 
   if (candidates.length === 0) {
     return { ok: false, ambiguous: false, matches: [] };

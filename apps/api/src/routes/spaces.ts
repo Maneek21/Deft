@@ -6,7 +6,7 @@ import { spaces, spaceMembers, users, messages, agentEmployees, orgMembers } fro
 import { evictActiveHuddleParticipants, getIO } from '../socket.js';
 import { canReadSpace, canSelfJoinPublicSpaces, requireSpaceMembership } from '../lib/space-membership.js';
 import { DEFTY_EMAIL } from '../lib/ensure-defty-membership.js';
-import { peopleViewer, withoutHiddenEmails } from '../lib/people-visibility.js';
+import { peopleViewer, personVisibleSql, withoutHiddenEmails } from '../lib/people-visibility.js';
 import { cancelPendingScheduledMessagesForSpace } from '../lib/scheduled-message-cancel.js';
 import { closeLostRoomActionsInTx, finishLostRoomCancellations } from '../lib/lost-room-action-cancellation.js';
 import { lockRoomAccessChange } from '../lib/room-access-lock.js';
@@ -108,6 +108,9 @@ spaceRoutes.post('/', async (c) => {
     // Group DM semantics: same set of people = same conversation.
     if ((type === 'dm' || type === 'group_dm') && user_ids && user_ids.length > 0) {
       const targetSet = new Set<string>([user.id, ...user_ids.filter((id) => id !== user.id)]);
+      // A guest may start a conversation only with people they can already
+      // see; anyone else is answered like an unknown id (lib/people-visibility.ts).
+      const viewer = await peopleViewer(user.org_id, user.id);
       const visibleTargets = await db.select({ id: users.id })
         .from(orgMembers)
         .innerJoin(users, eq(orgMembers.user_id, users.id))
@@ -116,6 +119,7 @@ spaceRoutes.post('/', async (c) => {
           eq(orgMembers.is_active, true),
           inArray(users.id, [...targetSet]),
           visibleLiveSpaceMemberForOrg(user.org_id),
+          personVisibleSql(viewer, users.id),
         ));
       if (visibleTargets.length !== targetSet.size) {
         return c.json({ error: 'All DM members must be active members of this org', code: 'INVALID_MEMBER' }, 400);
@@ -555,6 +559,9 @@ spaceRoutes.post('/:id/members', async (c) => {
     const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
     if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
+    // A guest may add only people they can already see; anyone else is
+    // answered like an unknown id (lib/people-visibility.ts).
+    const viewer = await peopleViewer(user.org_id, user.id);
     const [targetMember] = await db.select({ id: users.id })
       .from(orgMembers)
       .innerJoin(users, eq(orgMembers.user_id, users.id))
@@ -563,6 +570,7 @@ spaceRoutes.post('/:id/members', async (c) => {
         eq(orgMembers.is_active, true),
         eq(orgMembers.user_id, user_id),
         visibleLiveSpaceMemberForOrg(user.org_id),
+        personVisibleSql(viewer, users.id),
       ))
       .limit(1);
     if (!targetMember) {

@@ -225,7 +225,8 @@ export async function listTeamSummaries(
     const resourcesByType = counts.get(row.id) ?? {};
     return {
       ...row,
-      // A guest is not told the name of a lead they share no space with.
+      // A guest is not told the name or id of a lead they share no space with.
+      lead_user_id: canSeePerson(people, row.lead_user_id) ? row.lead_user_id : null,
       lead_name: canSeePerson(people, row.lead_user_id) ? row.lead_name : null,
       resource_count: Object.values(resourcesByType).reduce((sum, value) => sum + value, 0),
       resources_by_type: resourcesByType,
@@ -271,11 +272,12 @@ async function resolveTeam(
     : { status: 'not_found', query, candidates: [] };
 }
 
-// A person calling through MCP: a guest sees only the people who share a
-// space with them, without their email addresses (lib/people-visibility.ts).
-// An agent employee's access is not a person's and is unchanged.
+// The caller's own workspace role decides what it sees, for a person and for
+// an agent employee alike (its user id): a guest sees only the people who
+// share a space with them, without their email addresses
+// (lib/people-visibility.ts).
 async function personViewerFor(access: TeamAccessContext): Promise<PeopleViewer | null> {
-  return access.user_id && !access.employee_project_access ? peopleViewer(access.org_id, access.user_id) : null;
+  return access.user_id ? peopleViewer(access.org_id, access.user_id) : null;
 }
 
 async function visiblePeopleFor(access: TeamAccessContext): Promise<ReadonlySet<string> | null> {
@@ -613,18 +615,23 @@ async function buildTeamWorkContext(access: TeamAccessContext, resources: Array<
       : Promise.resolve([]),
   ]);
 
+  // A guest is not told who, among people they share no space with, owns
+  // the work: those rows keep their counts without a name or id.
+  const people = await visiblePeopleFor(access);
+  const shown = (id: string | null) => id === null || canSeePerson(people, id);
   return {
     tasks: {
       linked_project_count: projectIds.length,
       open_count: openRows[0]?.count ?? 0,
       by_status: Object.fromEntries(statusRows.map((row) => [row.status, row.count])),
       by_owner: ownerRows.map((row) => ({
-        user_id: row.assignee_id,
-        name: row.assignee_name ?? 'Unassigned',
+        user_id: shown(row.assignee_id) ? row.assignee_id : null,
+        name: shown(row.assignee_id) ? row.assignee_name ?? 'Unassigned' : null,
         count: row.count,
       })),
       top_open: topTasks.map((task) => ({
         ...task,
+        ...(shown(task.assignee_id) ? {} : { assignee_id: null, assignee_name: null }),
         key: task.project_prefix && task.number ? `${task.project_prefix}-${task.number}` : null,
       })),
     },

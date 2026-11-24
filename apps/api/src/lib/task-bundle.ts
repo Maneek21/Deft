@@ -186,7 +186,7 @@ export async function createTaskBundle(params: TaskBundleCreateParams): Promise<
   if (!project) throw new Error('task_create: project not found');
 
   validateTaskBundleSubtasks(params.subtasks);
-  const subtasks = await normalizeSubtasksForOrg(params.subtasks, params.orgId, params.priority);
+  const subtasks = await normalizeSubtasksForOrg(params.subtasks, params.orgId, params.priority, params.createdBy);
   const count = 1 + subtasks.length;
   const created = await db.transaction(async (tx) => {
     // One agent action creates at most one bundle. A retry of an action
@@ -378,6 +378,8 @@ async function normalizeSubtasksForOrg(
   subtasks: TaskBundleSubtaskInput[] | null | undefined,
   orgId: string,
   inheritedPriority?: string | null,
+  /** The creator: a guest names only people who share a space with them. */
+  createdBy?: string,
 ): Promise<NormalizedSubtask[]> {
   const normalized = normalizeSubtaskInputs(subtasks);
   const result: NormalizedSubtask[] = [];
@@ -385,7 +387,7 @@ async function normalizeSubtasksForOrg(
     let assigneeId: string | null = null;
     const assigneeLookup = normalizeOptionalString(subtask.assignee_id) ?? normalizeOptionalString(subtask.assignee_name);
     if (assigneeLookup) {
-      const resolved = await resolveAssigneeWithMatches(assigneeLookup, orgId);
+      const resolved = await resolveAssigneeWithMatches(assigneeLookup, orgId, { visibleTo: createdBy });
       if (!resolved.ok) {
         if (resolved.ambiguous) {
           throw new Error(

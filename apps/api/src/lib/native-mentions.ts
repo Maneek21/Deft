@@ -15,6 +15,7 @@ import { explainNotificationPolicy } from './notification-policy.js';
 import { upsertAttentionItem } from './attention.js';
 import { emitToUser } from '../socket.js';
 import { nativeSourceAccessSql, nativeTaskAccessSql, nativeDeliveryAccessSql } from './native-mention-visibility.js';
+import { peopleViewer, personVisibleSql } from './people-visibility.js';
 
 const canonicalDeftySql = sql`(ae.runtime_kind = ${DEFTY_SYSTEM_RUNTIME_KIND} AND ae.slug = ${DEFTY_SYSTEM_EMPLOYEE_SLUG} AND ae.is_byoa = false)`;
 
@@ -229,6 +230,9 @@ export async function handleNativeMentionPublication(data: {
 export async function resolveNativeMentions(ctx: NativeMentionContext, refs: NativeMentionRef[]): Promise<NativeMentionProjection[]> {
   NativeMentionRefsSchema.parse(refs);
   if (!(await employeeBoundary(ctx, { project_id: null, space_id: null }))) return refs.map(ref => ({ ref, state: 'unavailable' }));
+  // A guest resolves only the people who share a space with them; anyone
+  // else is unavailable, like an unknown id (lib/people-visibility.ts).
+  const viewer = await peopleViewer(ctx.orgId, ctx.userId);
   return Promise.all(refs.map(async ref => {
     let row: Record<string, unknown> | undefined;
     if (ref.resource_type === 'person') {
@@ -236,6 +240,7 @@ export async function resolveNativeMentions(ctx: NativeMentionContext, refs: Nat
         FROM users u JOIN org_members om ON om.user_id = u.id
         LEFT JOIN agent_employees ae ON ae.user_id = u.id AND ae.org_id = om.org_id
         WHERE om.org_id = ${ctx.orgId} AND om.is_active = true AND u.id = ${ref.resource_id}
+          AND ${personVisibleSql(viewer, sql`u.id`)}
           AND (u.kind <> 'agent' OR (ae.is_active = true AND (ae.is_deleted = false OR ${canonicalDeftySql}))) LIMIT 1`))[0];
     } else if (ref.resource_type === 'task') {
       row = rows(await db.execute(sql`SELECT p.prefix || '-' || t.number || ' · ' || t.title AS label,
@@ -263,10 +268,13 @@ export async function resolveNativeMentions(ctx: NativeMentionContext, refs: Nat
 export async function searchNativeMentions(ctx: NativeMentionContext, query: string) {
   if (!(await employeeBoundary(ctx, { project_id: null, space_id: null }))) return [];
   const pattern = `%${query.replace(/[\\%_]/g, '\\$&')}%`;
+  // A guest finds only the people who share a space with them (lib/people-visibility.ts).
+  const viewer = await peopleViewer(ctx.orgId, ctx.userId);
   const people = rows<{ id: string }>(await db.execute(sql`SELECT id FROM (
     SELECT u.id, u.kind, u.name, row_number() OVER (PARTITION BY u.kind ORDER BY u.name, u.id) AS ordinal
     FROM users u JOIN org_members om ON om.user_id = u.id
     WHERE om.org_id = ${ctx.orgId} AND om.is_active = true AND u.name ILIKE ${pattern}
+      AND ${personVisibleSql(viewer, sql`u.id`)}
       AND u.kind IN ('human', 'agent')
       AND (u.kind = 'human' OR EXISTS (SELECT 1 FROM agent_employees ae
         WHERE ae.org_id = om.org_id AND ae.user_id = u.id AND ae.is_active = true
