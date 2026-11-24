@@ -115,6 +115,8 @@ export async function executeToolCall(
   _userId: string,
   conversationId?: string,
   agentEmployeeId?: string,
+  /** Set only by the plan executor for a plan's own create_plan step (DFX3). */
+  planOrigin?: { sourceMessageId?: string; createdVia?: 'api' },
 ): Promise<{ result: any; citations: Citation[] }> {
   const policyError = await agentToolPolicyError(orgId, agentEmployeeId, toolName);
   if (policyError) return { result: { error: policyError }, citations: [] };
@@ -2504,11 +2506,11 @@ export async function executeToolCall(
         };
       }
 
-      // A plan made by a plan step keeps its parent's rooms: the executor
-      // passes the parent's source message (check 13, DFX3).
-      const sourceMessageId = typeof (params as { source_message_id?: unknown }).source_message_id === 'string'
-        ? (params as { source_message_id: string }).source_message_id
-        : undefined;
+      // A plan made by a plan step keeps its parent's rooms and provenance,
+      // passed by the executor only (never read from the step's params):
+      // the parent's source message, and 'api' when a person made the parent
+      // through the plan route (check 13, DFX3).
+      const sourceMessageId = planOrigin?.sourceMessageId;
       const planResult = await createPlanRow({
         org_id: orgId,
         user_id: _userId,
@@ -2518,6 +2520,7 @@ export async function executeToolCall(
         description: description ?? null,
         steps,
         ...(sourceMessageId ? { source_message_id: sourceMessageId } : {}),
+        ...(planOrigin?.createdVia === 'api' ? { created_via: 'api' as const } : {}),
       });
 
       return { result: planResult, citations: [] };

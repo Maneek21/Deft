@@ -647,12 +647,6 @@ async function executePlanUnlocked(
       if (priorDecision && priorDecision.key === null && priorDecision.status !== 'pending') {
         throw new PlanApprovalBoundaryError(`Plan step '${step.id}' approval was ${priorDecision.status}`);
       }
-      // A plan made by this step keeps the parent's source message, and only
-      // that one: a step cannot bind its child to a room of its own choosing.
-      if (step.tool === 'create_plan') {
-        if (planSourceMessageId) resolvedParams.source_message_id = planSourceMessageId;
-        else delete resolvedParams.source_message_id;
-      }
       // Check 13: the step starts only while the plan is executing and its
       // creator still reads its rooms, checked under the creator's room-access
       // lock, so a loss cannot commit between this check and the start.
@@ -677,6 +671,14 @@ async function executePlanUnlocked(
           userId,
           plan.conversation_id ?? undefined,
           plan.agent_employee_id ?? undefined,
+          // A plan made by this step keeps the parent's source message and
+          // provenance, and only those (DFX3): never a source from its params.
+          step.tool === 'create_plan'
+            ? {
+              sourceMessageId: planSourceMessageId ?? undefined,
+              createdVia: (plan.context as Record<string, unknown> | null)?.created_via === 'api' ? 'api' : undefined,
+            }
+            : undefined,
         );
         if ((result as { error?: unknown } | null)?.error === CONNECTED_TOOL_UNAVAILABLE_ERROR) {
           throw new PlanApprovalBoundaryError(CONNECTED_TOOL_UNAVAILABLE_ERROR);

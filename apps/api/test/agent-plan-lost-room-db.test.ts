@@ -420,3 +420,50 @@ test('a plan bound to no room (148 recovery draft) is not readable or runnable b
   await executePlan(draft, orgId, ids.mia);
   assert.equal(await tasksCreated(draftTitle), 0, 'it never runs');
 });
+
+test('the steps of a plan bound to no room stay out of its member creator history and approvals', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  // A 148 recovery draft that ran a step and queued another: no created_via, no room.
+  const roomless = randomUUID();
+  const done = randomUUID();
+  const waiting = randomUUID();
+  await client!.query(`INSERT INTO agent_plans(id,org_id,user_id,conversation_id,title,steps,status,current_step,context)
+    VALUES($1,$2,$3,NULL,'Roomless recovery',$4::jsonb,'paused',1,'{}'::jsonb)`, [roomless, orgId, ids.mia, JSON.stringify([
+    { id: 'step-1', tool: 'create_task', params: { title: 'CANARY-roomless-done', resolved_project_id: projectId }, status: 'completed' },
+    { id: 'step-2', tool: 'create_task', params: { title: title(roomless), resolved_project_id: projectId, priority: 'p2' }, status: 'pending' },
+  ])]);
+  await client!.query(`INSERT INTO agent_actions(id,org_id,user_id,source,plan_id,plan_step_id,action,params,approval_tier,approval_status,executed_at)
+    VALUES($1,$2,$3,'plan',$4,'step-1','create_task',$5,'quick','approved',now())`, [
+    done, orgId, ids.mia, roomless, JSON.stringify({ title: 'CANARY-roomless-done', resolved_project_id: projectId }),
+  ]);
+  await client!.query(`INSERT INTO agent_actions(id,org_id,user_id,source,plan_id,plan_step_id,action,params,approval_tier,approval_status)
+    VALUES($1,$2,$3,'plan',$4,'step-2','create_task',$5,'quick','pending')`, [
+    waiting, orgId, ids.mia, roomless, JSON.stringify({ title: title(roomless), resolved_project_id: projectId, priority: 'p2' }),
+  ]);
+  const history = (await call(ids.mia, 'GET', '/api/agent/actions?limit=200')).text;
+  assert.ok(!history.includes(done) && !history.includes('CANARY-roomless-done'), 'not in her history');
+  assert.ok(!history.includes(waiting), 'nor its waiting step');
+  assert.ok((await call(ids.olive, 'GET', '/api/agent/actions?limit=200')).text.includes(done), 'the owner keeps the history');
+  const refused = await call(ids.mia, 'POST', `/api/agent/actions/${waiting}/approve`);
+  assert.notEqual(refused.status, 200, refused.text);
+  assert.equal(await tasksCreated(roomless), 0, 'the waiting step never ran');
+});
+
+test('a plan made by a step of a route-made plan without a room stays usable and takes no room from its params', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const parent = randomUUID();
+  const childTitle = `Child of route plan ${randomUUID()}`;
+  const smuggled = randomUUID();
+  await client!.query("INSERT INTO messages(id,org_id,space_id,user_id,content) VALUES($1,$2,$3,$4,'elsewhere')", [smuggled, orgId, rooms.kept, ids.olive]);
+  // The step's params carry a __proto__ key naming a source message (JSON keeps it as an own key).
+  const steps = `[{"id":"step-1","tool":"create_plan","status":"pending","params":{"__proto__":{"source_message_id":"${smuggled}"},"source_message_id":"${smuggled}","title":"${childTitle}","steps":[{"id":"c1","tool":"create_task","params":{"title":"x","resolved_project_id":"${projectId}"}}]}}]`;
+  await client!.query(`INSERT INTO agent_plans(id,org_id,user_id,conversation_id,title,steps,status,current_step,context)
+    VALUES($1,$2,$3,NULL,'Route plan',$4::jsonb,'approved',0,'{"created_via":"api"}'::jsonb)`, [parent, orgId, ids.mia, steps]);
+  const { executePlan } = await import('../src/lib/agent-plans.js');
+  await executePlan(parent, orgId, ids.mia);
+  const { rows } = await client!.query('SELECT id, conversation_id, context FROM agent_plans WHERE org_id=$1 AND title=$2', [orgId, childTitle]);
+  assert.equal(rows.length, 1, 'the child plan was made');
+  assert.deepEqual({ conversation_id: rows[0].conversation_id, context: rows[0].context },
+    { conversation_id: null, context: { created_via: 'api' } }, 'route provenance only, no room from its params');
+  assert.equal((await call(ids.mia, 'GET', `/api/agent-plans/${rows[0].id}`)).status, 200, 'its creator can read it');
+});
