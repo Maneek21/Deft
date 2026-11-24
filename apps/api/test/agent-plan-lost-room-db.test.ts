@@ -394,3 +394,120 @@ test('a plan can be created only in a room its creator can read', async (t) => {
   const made = await call(ids.olive, 'POST', '/api/agent-plans', body(closed));
   assert.equal(made.status, 201, made.text);
 });
+
+test('a plan bound to no room (148 recovery draft) is not readable or runnable by its member creator', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  // Release 148's failed-step recovery called create_plan with no conversation
+  // (agent-plans.ts:762 -> agent-runner.ts:909 -> agent-context.ts:2489 at 4aa4de9c).
+  const { executeToolCall } = await import('../src/lib/agent-context.js');
+  const draftTitle = `Recovery draft ${randomUUID()}`;
+  const { result } = await executeToolCall('create_plan', {
+    title: draftTitle,
+    steps: [{ id: 'step-1', tool: 'create_task', params: { title: title(draftTitle), resolved_project_id: projectId, priority: 'p2' } }],
+  }, orgId, ids.mia, undefined);
+  const draft = (result as { plan_id: string }).plan_id;
+  const { rows: [row] } = await client!.query('SELECT conversation_id, context FROM agent_plans WHERE id=$1', [draft]);
+  assert.deepEqual(row, { conversation_id: null, context: {} }, 'the draft names no room');
+
+  assert.ok(!(await listedPlans(ids.mia)).includes(draft), 'not in her list');
+  assert.equal((await call(ids.mia, 'GET', `/api/agent-plans/${draft}`)).status, 404);
+  for (const action of ['approve', 'execute']) {
+    assert.equal((await call(ids.mia, 'POST', `/api/agent-plans/${draft}/${action}`)).status, 404, `${action} by Mia`);
+    assert.equal((await call(ids.olive, 'POST', `/api/agent-plans/${draft}/${action}`)).status, 404, `${action} by the owner for her`);
+  }
+  await client!.query("UPDATE agent_plans SET status='approved' WHERE id=$1", [draft]);
+  const { executePlan } = await import('../src/lib/agent-plans.js');
+  await executePlan(draft, orgId, ids.mia);
+  assert.equal(await tasksCreated(draftTitle), 0, 'it never runs');
+});
+
+test('the steps of a plan bound to no room stay out of its member creator history and approvals', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  // A 148 recovery draft that ran a step and queued another: no created_via, no room.
+  const roomless = randomUUID();
+  const done = randomUUID();
+  const waiting = randomUUID();
+  await client!.query(`INSERT INTO agent_plans(id,org_id,user_id,conversation_id,title,steps,status,current_step,context)
+    VALUES($1,$2,$3,NULL,'Roomless recovery',$4::jsonb,'paused',1,'{}'::jsonb)`, [roomless, orgId, ids.mia, JSON.stringify([
+    { id: 'step-1', tool: 'create_task', params: { title: 'CANARY-roomless-done', resolved_project_id: projectId }, status: 'completed' },
+    { id: 'step-2', tool: 'create_task', params: { title: title(roomless), resolved_project_id: projectId, priority: 'p2' }, status: 'pending' },
+  ])]);
+  await client!.query(`INSERT INTO agent_actions(id,org_id,user_id,source,plan_id,plan_step_id,action,params,approval_tier,approval_status,executed_at)
+    VALUES($1,$2,$3,'plan',$4,'step-1','create_task',$5,'quick','approved',now())`, [
+    done, orgId, ids.mia, roomless, JSON.stringify({ title: 'CANARY-roomless-done', resolved_project_id: projectId }),
+  ]);
+  await client!.query(`INSERT INTO agent_actions(id,org_id,user_id,source,plan_id,plan_step_id,action,params,approval_tier,approval_status)
+    VALUES($1,$2,$3,'plan',$4,'step-2','create_task',$5,'quick','pending')`, [
+    waiting, orgId, ids.mia, roomless, JSON.stringify({ title: title(roomless), resolved_project_id: projectId, priority: 'p2' }),
+  ]);
+  const history = (await call(ids.mia, 'GET', '/api/agent/actions?limit=200')).text;
+  assert.ok(!history.includes(done) && !history.includes('CANARY-roomless-done'), 'not in her history');
+  assert.ok(!history.includes(waiting), 'nor its waiting step');
+  assert.ok((await call(ids.olive, 'GET', '/api/agent/actions?limit=200')).text.includes(done), 'the owner keeps the history');
+  const refused = await call(ids.mia, 'POST', `/api/agent/actions/${waiting}/approve`);
+  assert.notEqual(refused.status, 200, refused.text);
+  assert.equal(await tasksCreated(roomless), 0, 'the waiting step never ran');
+});
+
+test('a plan made by a step of a route-made plan without a room stays usable and takes no room from its params', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const parent = randomUUID();
+  const childTitle = `Child of route plan ${randomUUID()}`;
+  const smuggled = randomUUID();
+  await client!.query("INSERT INTO messages(id,org_id,space_id,user_id,content) VALUES($1,$2,$3,$4,'elsewhere')", [smuggled, orgId, rooms.kept, ids.olive]);
+  // The step's params carry a __proto__ key naming a source message (JSON keeps it as an own key).
+  const steps = `[{"id":"step-1","tool":"create_plan","status":"pending","params":{"__proto__":{"source_message_id":"${smuggled}"},"source_message_id":"${smuggled}","title":"${childTitle}","steps":[{"id":"c1","tool":"create_task","params":{"title":"x","resolved_project_id":"${projectId}"}}]}}]`;
+  await client!.query(`INSERT INTO agent_plans(id,org_id,user_id,conversation_id,title,steps,status,current_step,context)
+    VALUES($1,$2,$3,NULL,'Route plan',$4::jsonb,'approved',0,'{"created_via":"api"}'::jsonb)`, [parent, orgId, ids.mia, steps]);
+  const { executePlan } = await import('../src/lib/agent-plans.js');
+  await executePlan(parent, orgId, ids.mia);
+  const { rows } = await client!.query('SELECT id, conversation_id, context FROM agent_plans WHERE org_id=$1 AND title=$2', [orgId, childTitle]);
+  assert.equal(rows.length, 1, 'the child plan was made');
+  assert.deepEqual({ conversation_id: rows[0].conversation_id, context: rows[0].context },
+    { conversation_id: null, context: { created_via: 'api' } }, 'route provenance only, no room from its params');
+  assert.equal((await call(ids.mia, 'GET', `/api/agent-plans/${rows[0].id}`)).status, 200, 'its creator can read it');
+});
+
+test('another member reading an employee’s activity does not see the steps of a plan bound to no room', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const roomless = randomUUID();
+  const done = randomUUID();
+  const own = randomUUID();
+  const employee = randomUUID();
+  const shadow = randomUUID();
+  // An active member other than the plan's creator (Rita left the workspace in an earlier test).
+  const reader = randomUUID();
+  await client!.query("INSERT INTO users(id,email,name,kind,is_agent) VALUES($1,$2,'Activity reader','human',false)", [reader, `${reader}@example.test`]);
+  await client!.query('INSERT INTO org_members(id,org_id,user_id,role) VALUES($1,$2,$3,$4)', [randomUUID(), orgId, reader, 'member']);
+  await client!.query("INSERT INTO users(id,email,name,kind,is_agent) VALUES($1,$2,'Activity agent','agent',true)", [shadow, `${shadow}@agents.example.test`]);
+  await client!.query('INSERT INTO org_members(id,org_id,user_id,role) VALUES($1,$2,$3,$4)', [randomUUID(), orgId, shadow, 'member']);
+  await client!.query(`INSERT INTO agent_employees (id, org_id, user_id, name, slug, role, system_prompt, trust_level, is_byoa, is_active, created_by)
+    VALUES ($1, $2, $3, 'Activity agent', $4, 'project_manager', 'Fixture', 'conservative', true, true, $5)`, [employee, orgId, shadow, `activity-${employee.slice(0, 8)}`, reader]);
+  await client!.query('UPDATE users SET agent_employee_id = $2 WHERE id = $1', [shadow, employee]);
+  t.after(async () => {
+    await client!.query('UPDATE users SET agent_employee_id = NULL WHERE id = $1', [shadow]);
+    await client!.query('DELETE FROM agent_actions WHERE agent_employee_id = $1', [employee]);
+    await client!.query('DELETE FROM agent_employees WHERE id = $1', [employee]);
+    await client!.query('DELETE FROM org_members WHERE user_id = ANY($1::text[])', [[shadow, reader]]);
+    await client!.query('DELETE FROM users WHERE id = ANY($1::text[])', [[shadow, reader]]);
+  });
+  // A 148 recovery draft (no room, no created_via) of Mia's, run as the
+  // employee: its step is the employee's action. Another member's plans run
+  // as the same employee read its activity.
+  await client!.query(`INSERT INTO agent_plans(id,org_id,user_id,conversation_id,agent_employee_id,title,steps,status,current_step,context)
+    VALUES($1,$2,$3,NULL,$4,'Roomless recovery','[]'::jsonb,'completed',0,'{}'::jsonb)`, [roomless, orgId, ids.mia, employee]);
+  await client!.query(`INSERT INTO agent_actions(id,org_id,user_id,agent_employee_id,source,plan_id,plan_step_id,action,params,approval_tier,approval_status,executed_at)
+    VALUES($1,$2,$3,$4,'plan',$5,'step-1','create_task',$6,'quick','approved',now())`, [
+    done, orgId, ids.mia, employee, roomless, JSON.stringify({ title: 'CANARY-activity-roomless', resolved_project_id: projectId }),
+  ]);
+  // The employee's own action, which it keeps seeing.
+  await client!.query(`INSERT INTO agent_actions(id,org_id,user_id,agent_employee_id,source,action,params,approval_tier,approval_status,executed_at)
+    VALUES($1,$2,$3,$4,'mcp','create_task',$5,'quick','approved',now())`, [
+    own, orgId, reader, employee, JSON.stringify({ title: 'activity-own', resolved_project_id: projectId }),
+  ]);
+  const { executeToolCall } = await import('../src/lib/agent-context.js');
+  const { result } = await executeToolCall('get_agent_activity', { limit: 100 }, orgId, reader, undefined, employee);
+  const text = JSON.stringify(result);
+  assert.ok(text.includes(own), 'its own action');
+  assert.ok(!text.includes(done) && !text.includes('CANARY-activity-roomless'), 'not the roomless plan step');
+});

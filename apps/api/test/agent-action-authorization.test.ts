@@ -583,6 +583,8 @@ test('PLAN: plan payload marks destructive steps from the server classifier', { 
   const { plan_id } = await createPlanRow({
     org_id: orgId,
     user_id: requesterId,
+    // Made through the plan route (no room).
+    created_via: 'api',
     title: `W2a1 plan ${suffix}`,
     steps: [
       { id: 's1', description: 'Create', tool: 'create_task', params: { title: 'x' } },
@@ -621,6 +623,8 @@ test('PLAN: a destructive leaf step of an approved plan waits for its own approv
   const { plan_id } = await createPlanRow({
     org_id: orgId,
     user_id: requesterId,
+    // Made through the plan route (no room).
+    created_via: 'api',
     title: `W2a1 leaf ${suffix}`,
     steps: [{
       id: 'leaf',

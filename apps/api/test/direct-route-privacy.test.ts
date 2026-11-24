@@ -287,8 +287,9 @@ before(async () => {
 
     privateAgentPlanId = `drp-agent-plan-${stamp}`;
     await c.query(
-      `INSERT INTO agent_plans (id, org_id, user_id, title, description, steps, status, current_step, fail_fast, rollback_on_fail, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'draft', 0, false, false, NOW(), NOW())`,
+      // A plan its creator made through the plan route (no room).
+      `INSERT INTO agent_plans (id, org_id, user_id, title, description, steps, status, current_step, fail_fast, rollback_on_fail, context, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'draft', 0, false, false, '{"created_via":"api"}'::jsonb, NOW(), NOW())`,
       [
         privateAgentPlanId,
         ORG_ID,

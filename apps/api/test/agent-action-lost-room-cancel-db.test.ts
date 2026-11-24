@@ -160,10 +160,10 @@ before(async () => {
   await client.query('INSERT INTO projects(id,org_id,name,prefix,lead_id) VALUES($1,$2,$3,$4,$5)',
     [projectId, orgId, 'Lost room plans', `LR${orgId.slice(0, 4).toUpperCase()}`, ids.olive]);
   const planTitle = `Plan task ${planId}`;
-  await client.query(`INSERT INTO agent_plans(id,org_id,user_id,title,steps,status,current_step,context)
-    VALUES($1,$2,$3,'Lost room plan',$4::jsonb,'approved',0,'{}'::jsonb)`, [planId, orgId, ids.pia, JSON.stringify([
+  await client.query(`INSERT INTO agent_plans(id,org_id,user_id,conversation_id,title,steps,status,current_step,context)
+    VALUES($1,$2,$3,$5,'Lost room plan',$4::jsonb,'approved',0,'{}'::jsonb)`, [planId, orgId, ids.pia, JSON.stringify([
     { id: 'step-1', tool: 'create_task', params: { title: planTitle, resolved_project_id: projectId, priority: 'p2' }, status: 'waiting_approval' },
-  ])]);
+  ]), rooms.guard]);
   await client.query(`INSERT INTO agent_actions(id,org_id,user_id,conversation_id,source,plan_id,plan_step_id,action,params,approval_tier,approval_status,error)
     VALUES($1,$2,$3,$4,'plan',$5,'step-1','create_task',$6,'quick','expired',$7)`, [
     act.planStep, orgId, ids.pia, rooms.guard, planId,

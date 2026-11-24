@@ -376,6 +376,8 @@ export interface CreatePlanRowInput {
    * params.source_message_id so the created tasks/messages link back.
    */
   source_message_id?: string | null;
+  /** 'api': made by a person through POST /api/agent-plans (DFX3 F2). */
+  created_via?: 'api';
   title: string;
   description?: string | null;
   steps: PlanStep[];
@@ -419,6 +421,8 @@ export async function createPlanRow(
   const initialContext: Record<string, unknown> = {};
   if (input.source_message_id) initialContext.source_message_id = input.source_message_id;
   if (input.task_id) initialContext.task_id = input.task_id;
+  // A person made it through the plan route (DFX3 F2: such a plan may name no room).
+  if (input.created_via === 'api') initialContext.created_via = 'api';
 
   const [plan] = await db
     .insert(agentPlans)
@@ -643,8 +647,6 @@ async function executePlanUnlocked(
       if (priorDecision && priorDecision.key === null && priorDecision.status !== 'pending') {
         throw new PlanApprovalBoundaryError(`Plan step '${step.id}' approval was ${priorDecision.status}`);
       }
-      // A plan made by this step keeps the parent's source message.
-      if (step.tool === 'create_plan' && planSourceMessageId) resolvedParams.source_message_id = planSourceMessageId;
       // Check 13: the step starts only while the plan is executing and its
       // creator still reads its rooms, checked under the creator's room-access
       // lock, so a loss cannot commit between this check and the start.
@@ -669,6 +671,14 @@ async function executePlanUnlocked(
           userId,
           plan.conversation_id ?? undefined,
           plan.agent_employee_id ?? undefined,
+          // A plan made by this step keeps the parent's source message and
+          // provenance, and only those (DFX3): never a source from its params.
+          step.tool === 'create_plan'
+            ? {
+              sourceMessageId: planSourceMessageId ?? undefined,
+              createdVia: (plan.context as Record<string, unknown> | null)?.created_via === 'api' ? 'api' : undefined,
+            }
+            : undefined,
         );
         if ((result as { error?: unknown } | null)?.error === CONNECTED_TOOL_UNAVAILABLE_ERROR) {
           throw new PlanApprovalBoundaryError(CONNECTED_TOOL_UNAVAILABLE_ERROR);
@@ -983,7 +993,7 @@ async function rollbackCompletedSteps(
 }
 
 /** Context keys that are not step results. */
-const RESERVED_PLAN_CONTEXT_KEYS = new Set(['source_message_id', 'task_id']);
+const RESERVED_PLAN_CONTEXT_KEYS = new Set(['source_message_id', 'task_id', 'created_via']);
 
 /**
  * Check 13: whether the next step may start. Under the creator's room-access

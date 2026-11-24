@@ -179,6 +179,7 @@ agentPlanRoutes.post('/', async (c) => {
       rollback_on_fail: body.rollback_on_fail === true,
       // Task 3.10 — bind the plan to a task so progress events can stream
       task_id: body.task_id ?? null,
+      created_via: 'api',
     });
 
     // Return the full plan row so the external API contract stays identical.
