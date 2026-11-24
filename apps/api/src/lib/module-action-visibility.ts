@@ -36,9 +36,6 @@ export function canonicalDeftyActionSql(
  * (`currentAgentActionSourceAuthoritySql`).
  */
 export function sourceMessageRoomSql(userId: string | SQL, rule: 'review' | 'history' = 'review'): SQL {
-  const readable = (room: string) => rule === 'history'
-    ? readableSpaceSql(userId, sql.raw(`${room}.id`), sql.raw(`${room}.org_id`))
-    : currentUserSpaceAuthoritySql(sql.raw(`${room}.org_id`), sql`${userId}`, sql.raw(`${room}.id`));
   // CASE keeps the order: rows without a room reference, captures and
   // employee actions never run the room lookups.
   return sql`(CASE
@@ -46,7 +43,20 @@ export function sourceMessageRoomSql(userId: string | SQL, rule: 'review' | 'his
       AND (${agentActions.params}->>'source_message_id') IS NULL THEN true
     WHEN COALESCE(${agentActions.source} = 'defty_capture', false) THEN true
     WHEN ${agentActions.agent_employee_id} IS NOT NULL AND NOT ${canonicalDeftyActionSql()} THEN true
-    ELSE NOT EXISTS (
+    ELSE ${referencedRoomsReadableSql(userId, rule)}
+    END)`;
+}
+
+/**
+ * The room lookups of `sourceMessageRoomSql`, for any action row: its
+ * conversation room and the rooms of `message_id` and
+ * `params.source_message_id` are each readable by `userId` under `rule`.
+ */
+function referencedRoomsReadableSql(userId: string | SQL, rule: 'review' | 'history'): SQL {
+  const readable = (room: string) => rule === 'history'
+    ? readableSpaceSql(userId, sql.raw(`${room}.id`), sql.raw(`${room}.org_id`))
+    : currentUserSpaceAuthoritySql(sql.raw(`${room}.org_id`), sql`${userId}`, sql.raw(`${room}.id`));
+  return sql`(NOT EXISTS (
         SELECT 1 FROM spaces conversation_room
         WHERE conversation_room.id = ${agentActions.conversation_id}
           AND conversation_room.org_id = ${agentActions.org_id}
@@ -60,8 +70,61 @@ export function sourceMessageRoomSql(userId: string | SQL, rule: 'review' | 'his
         WHERE room_message.id IN (${agentActions.message_id}, ${agentActions.params}->>'source_message_id')
           AND room_message.org_id = ${agentActions.org_id}
           AND NOT COALESCE(${readable('message_room')}, false)
-      )
-    END)`;
+      ))`;
+}
+
+/**
+ * True while the action's requester (`actionRequesterIdSql`) can still read,
+ * now, every room a Defty action came from (DFX1's history rule), and is an
+ * active member of the workspace whenever the action names a room. For a
+ * capture the rooms include its captured room (params). False once they lost
+ * one: removed from it, left it, it was made private without them, they left
+ * the workspace or became a guest of it (no unjoined public rooms). Employee
+ * actions and actions that name no room are true. A reference to a room that
+ * is not in the workspace adds no room. An archived room stays readable for
+ * its members (an archived public room is not readable unjoined).
+ *
+ * DFX2: the pending-approval claims evaluate this in the claiming statement,
+ * and the access changes that end a room close the pending ones in their own
+ * transaction (lib/lost-room-action-cancellation.ts), with a sweep behind.
+ */
+export function requesterKeepsSourceRoomsSql(): SQL {
+  const requester = actionRequesterIdSql();
+  const isCapture = sql`COALESCE(${agentActions.source} = 'defty_capture', false)`;
+  const captureRoom = sql`COALESCE(
+    ${agentActions.params}->>'source_space_id',
+    ${agentActions.params}->>'origin_space_id',
+    ${agentActions.params}->>'space_id')`;
+  const namesRoom = sql`(${agentActions.conversation_id} IS NOT NULL OR ${agentActions.message_id} IS NOT NULL
+    OR (${agentActions.params}->>'source_message_id') IS NOT NULL)`;
+  // A person who leaves the workspace loses its room memberships with it;
+  // requiring the workspace membership too also covers a room membership
+  // added concurrently with the removal.
+  const activeMember = sql`EXISTS (SELECT 1 FROM org_members requester_membership
+    WHERE requester_membership.org_id = ${agentActions.org_id}
+      AND requester_membership.user_id = ${requester}
+      AND requester_membership.is_active = true)`;
+  const captureRoomReadable = sql`NOT EXISTS (
+      SELECT 1 FROM spaces capture_room
+      WHERE capture_room.id = ${captureRoom}
+        AND capture_room.org_id = ${agentActions.org_id}
+        AND NOT ${readableSpaceSql(requester, sql.raw('capture_room.id'), sql.raw('capture_room.org_id'))}
+    )`;
+  // A reference that resolves to no room of the workspace adds no room, so
+  // the membership check applies only when one does resolve.
+  const resolvesRoom = (withCapture: boolean) => sql`(EXISTS (SELECT 1 FROM spaces named_room
+      WHERE named_room.org_id = ${agentActions.org_id}
+        AND named_room.id IN (${agentActions.conversation_id}${withCapture ? sql`, ${captureRoom}` : sql``}))
+    OR EXISTS (SELECT 1 FROM messages named_message
+      WHERE named_message.org_id = ${agentActions.org_id}
+        AND named_message.id IN (${agentActions.message_id}, ${agentActions.params}->>'source_message_id')))`;
+  return sql`(CASE
+    WHEN ${agentActions.agent_employee_id} IS NOT NULL AND NOT ${canonicalDeftyActionSql()} AND NOT ${isCapture} THEN true
+    WHEN ${isCapture} THEN (${captureRoom} IS NULL AND NOT ${namesRoom})
+      OR ((NOT ${resolvesRoom(true)} OR ${activeMember}) AND ${captureRoomReadable} AND ${referencedRoomsReadableSql(requester, 'history')})
+    WHEN NOT ${namesRoom} THEN true
+    ELSE (NOT ${resolvesRoom(false)} OR ${activeMember}) AND ${referencedRoomsReadableSql(requester, 'history')}
+  END)`;
 }
 
 /** Source snapshots remain governed by their canonical source's current audience. */

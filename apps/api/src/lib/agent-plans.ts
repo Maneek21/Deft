@@ -606,7 +606,28 @@ async function executePlanUnlocked(
       resolvedParams.source_message_id = planSourceMessageId;
     }
 
-      if (!isWriteAction) {
+      // A step that already has an approval row that was not approved
+      // (pending, rejected, or expired, e.g. cancelled when its requester lost
+      // the room: DFX2) is never run directly, whatever the tool's current
+      // classification or the trust level: it keeps waiting or stops the plan.
+      const [priorDecision] = await db.select({
+        id: agentActions.id, status: agentActions.approval_status, key: agentActions.runtime_request_key,
+        tier: agentActions.approval_tier, error: agentActions.error,
+      }).from(agentActions).where(and(
+        eq(agentActions.org_id, orgId),
+        eq(agentActions.user_id, userId),
+        eq(agentActions.plan_id, planId),
+        eq(agentActions.plan_step_id, step.id),
+        eq(agentActions.source, 'plan'),
+        sql`${agentActions.approval_status} <> 'approved'`,
+      )).limit(1);
+      // A row queued by the direct path carries no request key; the reviewed
+      // path would read that as changed input, so its state is honoured here.
+      if (priorDecision && priorDecision.key === null && priorDecision.status !== 'pending') {
+        throw new PlanApprovalBoundaryError(`Plan step '${step.id}' approval was ${priorDecision.status}`);
+      }
+
+      if (!isWriteAction && !priorDecision) {
         // Read-only tool — execute directly
         const { result } = await executeToolCall(
           step.tool,
@@ -633,7 +654,11 @@ async function executePlanUnlocked(
         const destructiveStep = isDestructiveAction(step.tool, resolvedParams, mcpToolPolicy?.annotations);
 
         const tier = getApprovalTier(step.tool, approvalTierOverride);
-        const execResult = autoExec || (!isDependency && !destructiveStep)
+        const execResult = priorDecision && priorDecision.key === null
+          // Still pending (checked above): keep waiting on that row.
+          ? { actionId: priorDecision.id, success: false, result: null, requiresApproval: true,
+            error: priorDecision.error ?? 'Action requires human approval', approvalTier: priorDecision.tier }
+          : !priorDecision && (autoExec || (!isDependency && !destructiveStep))
           ? await executeActionDirect(
             step.tool,
             resolvedParams,

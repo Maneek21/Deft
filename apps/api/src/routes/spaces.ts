@@ -7,6 +7,8 @@ import { evictActiveHuddleParticipants, getIO } from '../socket.js';
 import { canReadSpace, canSelfJoinPublicSpaces, requireSpaceMembership } from '../lib/space-membership.js';
 import { DEFTY_EMAIL } from '../lib/ensure-defty-membership.js';
 import { cancelPendingScheduledMessagesForSpace } from '../lib/scheduled-message-cancel.js';
+import { closeLostRoomActionsInTx, finishLostRoomCancellations } from '../lib/lost-room-action-cancellation.js';
+import { lockRoomAccessChange } from '../lib/room-access-lock.js';
 
 export const spaceRoutes = new Hono();
 
@@ -36,13 +38,21 @@ async function canSeeSpaceForCreatorRoute(space: { id: string; created_by: strin
  * worker while the worker waits on the membership row.
  */
 async function removeSpaceMember(orgId: string, spaceId: string, userId: string) {
-  return db.transaction(async (tx) => {
+  const { removed, closedActions } = await db.transaction(async (tx) => {
+    // DFX2: the person's room-access lock first (lib/room-access-lock.ts).
+    await lockRoomAccessChange(tx, orgId, userId);
     const removed = await tx.delete(spaceMembers)
       .where(and(eq(spaceMembers.space_id, spaceId), eq(spaceMembers.user_id, userId)))
       .returning();
     await cancelPendingScheduledMessagesForSpace(tx, { orgId, spaceId, userId });
-    return removed;
+    // DFX2: their pending assistant actions from this room close with a
+    // reason, committed with the removal.
+    const closedActions = removed.length ? await closeLostRoomActionsInTx(tx, { orgId, requesterId: userId }) : [];
+    return { removed, closedActions };
   });
+  // Receipts and attention items (never throws; the sweep repairs a failure).
+  await finishLostRoomCancellations(orgId, closedActions);
+  return removed;
 }
 
 const VALID_SPACE_TYPES = ['public', 'private', 'dm', 'group_dm'] as const;
@@ -740,9 +750,17 @@ spaceRoutes.delete('/:id', async (c) => {
       return c.json({ error: 'Only the space creator can delete it', code: 'FORBIDDEN' }, 403);
     }
 
-    await db.update(spaces)
-      .set({ is_archived: true })
-      .where(eq(spaces.id, spaceId));
+    // DFX2: archiving ends unjoined reading of a public room. The update holds
+    // the room's row lock, which every approval claim takes (shared) before
+    // its claiming statement, so no claim commits on a pre-archive snapshot;
+    // the pending actions that lose their room close in the same transaction.
+    const closedActions = await db.transaction(async (tx) => {
+      await tx.update(spaces)
+        .set({ is_archived: true })
+        .where(eq(spaces.id, spaceId));
+      return closeLostRoomActionsInTx(tx, { orgId: user.org_id });
+    });
+    await finishLostRoomCancellations(user.org_id, closedActions);
 
     await evictActiveHuddleParticipants({
       orgId: user.org_id,

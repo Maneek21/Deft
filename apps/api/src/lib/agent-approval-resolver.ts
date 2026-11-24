@@ -165,7 +165,9 @@ import {
 import { resolveAttentionBySource } from './attention.js';
 import { publishAgentChannelEvent } from './agent-channel.js';
 import { currentAgentActionSourceAuthoritySql } from './agent-channel-authority.js';
-import { canonicalDeftyActionSql } from './module-action-visibility.js';
+import { canonicalDeftyActionSql, isModuleWriteActionName, requesterKeepsSourceRoomsSql } from './module-action-visibility.js';
+import { terminalModuleActionParams as sharedTerminalModuleActionParams } from './module-action-terminalization.js';
+import { lockRoomAccessForClaim } from './room-access-lock.js';
 import {
   wikiProposalRefusal,
   wikiProposalRefusalCode,
@@ -502,6 +504,48 @@ async function repairExpiredModuleTerminalState(
   await Promise.all(postcommit);
 }
 
+/**
+ * DFX2: the params a pending action keeps once it is closed without a
+ * decision, as the rejection path scrubs them: every governed module write
+ * (create, update, archive, bulk create) loses its record values, task links
+ * their raw keys. Null for any other action (its params are kept).
+ */
+export function closedPendingActionParams(
+  row: typeof agentActions.$inferSelect,
+  resolution: string,
+): Record<string, unknown> | null {
+  if (!MODULE_MUTATION_ACTIONS.has(row.action)) return null;
+  try {
+    // Create, update and archive keep their idempotency digest, as on TTL
+    // expiry (lib/module-action-terminalization.ts); bulk create and task
+    // links use the rejection path's sanitizer.
+    const sanitized = isModuleWriteActionName(row.action)
+      ? sharedTerminalModuleActionParams(row.action, row.params, {
+        orgId: row.org_id, userId: row.user_id, employeeId: row.agent_employee_id,
+      })
+      : terminalModuleActionParams(row.action, row.params, null, {
+        orgId: row.org_id,
+        userId: row.user_id,
+        agentEmployeeId: row.agent_employee_id,
+      }, hasHumanMcpBulkProvenance(row)) ?? sanitizeModuleActionParamsForHistory(row.action, row.params);
+    return { ...sanitized, [TERMINAL_ATTENTION_RESOLUTION]: resolution };
+  } catch {
+    // A stored proposal that no longer validates keeps none of its values,
+    // and never blocks the access change that closes it.
+    return { [TERMINAL_ATTENTION_RESOLUTION]: resolution };
+  }
+}
+
+/**
+ * DFX2: the receipt and attention artifacts of a module write closed
+ * without a decision (idempotent; the work intent is closed with the row).
+ */
+export async function finishClosedModuleAction(row: typeof agentActions.$inferSelect): Promise<boolean> {
+  if (!MODULE_MUTATION_ACTIONS.has(row.action)) return false;
+  await repairExpiredModuleTerminalState(row, { repairWorkIntent: false });
+  return true;
+}
+
 async function ensureApprovedModuleReceipt(
   row: typeof agentActions.$inferSelect,
 ): Promise<void> {
@@ -662,17 +706,26 @@ async function actionSourceIsCurrent(actionId: string, readerUserId?: string) {
 /**
  * The source boundary of a decision. On the internal path a Defty capture
  * also needs its requester (`requesterId`, its author) to still see the
- * captured room.
+ * captured room. For a new decision on a pending action the requester must
+ * also still read each room a Defty action came from (DFX2,
+ * `requesterKeepsSourceRoomsSql`); this is part of the claiming UPDATE, so no
+ * approval runs an action whose requester lost the room, whoever reviews it.
+ * Recovery and replay of a decision already made keep their own checks.
  */
 function decisionSourceSql(
   row: ReviewedActionRow,
   requesterId: string,
   readerUserId: string | undefined,
   internal: boolean | undefined,
+  pendingDecision: boolean,
 ) {
-  if (!internal || row.source !== CAPTURE_ACTION_SOURCE) return actionSourceAuthoritySql(readerUserId);
+  const requesterRooms = pendingDecision ? requesterKeepsSourceRoomsSql() : undefined;
+  if (!internal || row.source !== CAPTURE_ACTION_SOURCE) {
+    return and(actionSourceAuthoritySql(readerUserId), requesterRooms)!;
+  }
   return and(
     actionSourceAuthoritySql(readerUserId),
+    requesterRooms,
     visibleCaptureActionSql({ id: requesterId, org_id: row.org_id }),
   )!;
 }
@@ -1151,7 +1204,10 @@ async function approveActionLocked(
   }
 
   const sourceReaderId = options.internal ? undefined : approverUserId;
-  const decisionSource = and(decisionSourceSql(row, requesterId, sourceReaderId, options.internal), reviewerGuard)!;
+  const decisionSource = and(
+    decisionSourceSql(row, requesterId, sourceReaderId, options.internal, row.approval_status === 'pending'),
+    reviewerGuard,
+  )!;
   const [sourceCurrent] = await db.select({ id: agentActions.id }).from(agentActions)
     .where(and(eq(agentActions.id, actionId), decisionSource)).limit(1);
   if (!sourceCurrent) return sourceUnavailable();
@@ -1397,7 +1453,12 @@ async function approveActionLocked(
   // returns zero rows, we lost the race and return the idempotent result.
   if (!resumesApprovedModule) {
     await reviewerRecheckPoint('before_decision', actionId);
-    const claimed = await db.execute(
+    // The requester's room-access lock (shared) first, so the claiming
+    // statement never reads access from before a loss that commits while it
+    // waits (lib/room-access-lock.ts).
+    const claimed = await db.transaction(async (tx) => {
+      await lockRoomAccessForClaim(tx, row.org_id, requesterId, row.id);
+      return tx.execute(
       // The executing marker is the one the ordinary approval claim writes:
       // approval surfaces show the row as executing until an outcome write
       // (or recovery) replaces `result`.
@@ -1409,7 +1470,8 @@ async function approveActionLocked(
            WHERE id = ${actionId} AND approval_status = 'pending'
              AND ${decisionSource}
            RETURNING approved_at::text AS token`,
-    );
+      );
+    });
     const claimedRows =
       (claimed as { rows?: any[] }).rows ?? (claimed as unknown as any[]);
     claimToken = typeof claimedRows[0]?.token === 'string' ? claimedRows[0].token : null;
@@ -1446,6 +1508,9 @@ async function approveActionLocked(
           message: `action ${actionId} has expired`,
         };
       }
+      // Still pending: the claim's source rule failed in the statement (for
+      // example the requester lost the room between the read and the claim).
+      if (winner?.approval_status === 'pending') return sourceUnavailable();
       return {
         status: 'error',
         code: 'INVALID_STATE',
