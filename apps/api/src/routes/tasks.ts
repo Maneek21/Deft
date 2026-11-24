@@ -2026,7 +2026,11 @@ taskRoutes.patch('/:id', async (c) => {
       activityEntries.push({ action: 'priority_changed', field: 'priority', old_value: existingTask.priority, new_value: parsed.data.priority });
     }
 
-    if (parsed.data.assignee_id !== undefined) {
+    // Re-sending the current assignee is no change, so it is not validated
+    // again: an edit by a guest who cannot see that person still saves.
+    const keepsAssignee = typeof parsed.data.assignee_id === 'string'
+      && parsed.data.assignee_id.trim() === existingTask.assignee_id;
+    if (parsed.data.assignee_id !== undefined && !keepsAssignee) {
       const newAssignee = await validateAssignableAssigneeId(parsed.data.assignee_id, user.org_id, user.id);
       if (newAssignee === undefined) {
         return c.json({ error: 'Assignee must be an active user or healthy agent in this organization', code: 'INVALID_ASSIGNEE' }, 400);

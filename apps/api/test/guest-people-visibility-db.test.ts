@@ -515,6 +515,11 @@ test('a guest cannot assign a hidden person, or start a conversation with a hidd
   const patchUnknown = await call(guest, `/api/tasks/${task}`, { method: 'PATCH', body: { assignee_id: unknown } });
   assert.equal(patchHidden.status, 400);
   assert.deepEqual(patchHidden, patchUnknown);
+  // The task's current assignee (Sam, visible) re-sent with an edit is no change.
+  await c.query(`UPDATE tasks SET assignee_id = $1 WHERE id = $2`, [stranger, task]);
+  const keep = await call(guest, `/api/tasks/${task}`, { method: 'PATCH', body: { assignee_id: stranger, title: 'gpv task edited' } });
+  assert.equal(keep.status, 200, 're-sending a hidden current assignee is not a reassignment');
+  await c.query(`UPDATE tasks SET assignee_id = $1, title = 'gpv task' WHERE id = $2`, [sharer, task]);
 
   const talkHidden = await call(guest, '/api/agent/conversations', { method: 'POST', body: { agent_employee_id: hiddenAgentEmployee } });
   const talkUnknown = await call(guest, '/api/agent/conversations', { method: 'POST', body: { agent_employee_id: randomUUID() } });

@@ -139,6 +139,11 @@ export async function publishNativeMentions(ctx: NativeMentionContext, source: N
   const actor = await activeActor(ctx);
   if (!actor) throw new NativeMentionError('NOT_FOUND', 'Source not found', 404);
   if (actor.kind !== 'human') throw new NativeMentionError('FORBIDDEN', 'Human publication intent is required', 403);
+  // A guest's mention of someone they share no space with is blocked, the
+  // same as an unknown id (lib/people-visibility.ts). Read before the
+  // transaction: it uses the shared pool and must not hold a second
+  // connection while the transaction holds one.
+  const visible = await visiblePersonIds(await peopleViewer(ctx.orgId, ctx.userId));
   return db.transaction(async tx => {
     const current = await loadNativeSource(ctx, source, tx, true);
     if (!current) throw new NativeMentionError('NOT_FOUND', 'Source not found', 404);
@@ -165,9 +170,6 @@ export async function publishNativeMentions(ctx: NativeMentionContext, source: N
     const additions = currentIds.filter(id => !oldIds.includes(id));
     const eligible: string[] = [];
     let blocked = 0;
-    // A guest's mention of someone they share no space with is blocked, the
-    // same as an unknown id (lib/people-visibility.ts).
-    const visible = additions.length ? await visiblePersonIds(await peopleViewer(ctx.orgId, ctx.userId)) : null;
     for (const id of additions) {
       if (canSeePerson(visible, id) && await loadNativeSource({ orgId: ctx.orgId, userId: id }, source, tx)) eligible.push(id);
       else blocked++;
