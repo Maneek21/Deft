@@ -39,7 +39,9 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
   database machine, which then froze (seen on 145 through 149). The check now plans
   only the rules of the item types it can meet: a message item costs a few MB. What
   anyone sees in the Inbox is unchanged, proved item by item against the whole rule.
-  No migration.
+  No migration. Not yet fixed: while a person has an open approval in their Inbox,
+  their checks still plan the approval review rule (~80 MB per connection); making
+  that rule smaller, and closing large pooled connections sooner, are follow-ups.
 
 ## [0.3.0-preview.149] — 2026-11-24 (prerelease)
 

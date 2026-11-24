@@ -59,8 +59,10 @@ export type AttentionDraft = {
  * text). A type with an entry in `SOURCE_TYPE_ACCESS` is shown only while its
  * source's own access rule passes; every other type is shown to the item's
  * owner on the legacy-notification check alone. A new source type goes here,
- * with a deliberate choice about whether it needs an access rule there;
- * test/attention-visibility-narrowing-db.test.ts fails until it does.
+ * with a deliberate choice about whether it needs an access rule there:
+ * `AttentionDraft.sourceType` will not compile without it, and
+ * test/attention-visibility-narrowing-db.test.ts scans the API for
+ * `sourceType` literals. A direct insert into the table bypasses both.
  */
 export const ATTENTION_SOURCE_TYPES = [
   'agent', 'agent_action', 'agent_channel_event', 'app_integration_source', 'app_run', 'calendar',
@@ -157,6 +159,7 @@ export async function readAttentionWithSourceTypes<T>(
   where: SQL | undefined,
   read: (tx: AttentionTx, sourceTypes: string[]) => Promise<T>,
 ): Promise<T> {
+  if (!where) throw new Error('readAttentionWithSourceTypes needs a filter');
   return db.transaction(async (tx) => {
     const rows = await tx.selectDistinct({ source_type: attentionItems.source_type }).from(attentionItems).where(where);
     return read(tx, rows.map((row) => row.source_type));
@@ -175,6 +178,7 @@ export async function writeAttentionWithSourceTypes<T>(
   where: SQL | undefined,
   write: (tx: AttentionTx, sourceTypes: string[]) => Promise<T>,
 ): Promise<T> {
+  if (!where) throw new Error('writeAttentionWithSourceTypes needs a filter');
   return db.transaction(async (tx) => {
     const rows = await tx.select({ source_type: attentionItems.source_type }).from(attentionItems)
       .where(where).orderBy(attentionItems.id).for('update');

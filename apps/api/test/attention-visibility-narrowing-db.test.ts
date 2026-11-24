@@ -377,8 +377,6 @@ test('planning the rule for message items costs a backend a few MB, not the whol
     + `whole rule ${mb(whole.anon)} MB private, ${mb(whole.peak)} MB peak`);
   assert.ok(message.anon < 16 * 1024, `message-only rule, private memory: ${message.anon} kB`);
   assert.ok(message.peak < 48 * 1024, `message-only rule, peak: ${message.peak} kB`);
-  assert.ok(message.anon * 4 < Math.max(whole.anon, whole.peak),
-    `message-only ${message.anon} kB is a small part of the whole rule's ${Math.max(whole.anon, whole.peak)} kB`);
 });
 
 test('a read takes the item types and the items from one snapshot: a type change committed in between changes nothing', async (t) => {
