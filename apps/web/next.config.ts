@@ -108,9 +108,10 @@ const nextConfig: NextConfig = {
               // Trusted Host pages may create Blob Workers; opaque srcdoc children
               // apply an additional hash-only/connect-none policy.
               "worker-src 'self' blob:",
-              "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+              // Fonts are served from this app (app/layout.tsx), not Google.
+              "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: blob: https:",
-              "font-src 'self' data: https://fonts.gstatic.com",
+              "font-src 'self' data:",
               `connect-src ${connectSrc}`,
               "media-src 'self' blob:",
               "frame-ancestors 'none'",

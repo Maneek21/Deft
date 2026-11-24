@@ -1,4 +1,14 @@
 import type { Metadata, Viewport } from 'next';
+// Inter and JetBrains Mono are served from this app (fonts bundled by Next
+// under /_next/static/media), never from Google: no page, the signup and
+// setup pages included, makes a request outside the app's origin for fonts.
+// Same faces, weights and subsets the Google Fonts link loaded.
+import '@fontsource/inter/400.css';
+import '@fontsource/inter/500.css';
+import '@fontsource/inter/600.css';
+import '@fontsource/inter/700.css';
+import '@fontsource/jetbrains-mono/400.css';
+import '@fontsource/jetbrains-mono/500.css';
 import './globals.css';
 import { Providers } from './providers';
 import { DEFT_APP_NAME, DEFT_ICON_PATH, DEFT_THEME_COLOR } from '@/lib/web-app-identity';
@@ -34,9 +44,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <meta name="apple-mobile-web-app-capable" content="yes" />
           <link rel="apple-touch-icon" href={DEFT_ICON_PATH} />
         </>}
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
       </head>
       <body>
         <Providers>{children}</Providers>
