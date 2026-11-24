@@ -44,17 +44,19 @@ Upgrade notes:
 - No setting is added, changed or removed. Author Kit stays `0.1.0-alpha.43`.
 
 Fix: a few chat messages could run a small database out of memory (#583). Read this one
-first if Deft's Postgres has 1 GB of memory or less.
+first if Deft's Postgres runs on a small machine (512 MB).
 
 - **What happened.** In `.149` and earlier (at least back to `.145`), after a chat message
   the server checked each recipient's attention (Inbox) item with one very large visibility
   query. It covered every kind of item, including the approval review rule, whatever the
   item was. Planning that query took each database connection to about 86 MB, and the
   connection kept that memory until it closed. The same query also ran on every Inbox
-  count poll (every 15 seconds for each open tab). On a small database machine a few
-  connections doing it at once ran it out of memory: the kernel killed a Postgres process,
-  or the machine froze. On test workspaces, a 512 MB database machine with Postgres's
-  default settings went down after 15 to 40 messages in rooms with members.
+  count poll (every 15 seconds in each visible, online workspace tab). On a small
+  database machine a few connections doing it at once ran it out of memory. On three
+  test workspaces (512 MB database machines, Postgres's default settings), a few dozen
+  messages in rooms with members froze the machine on two of them, and on the third the
+  kernel's out-of-memory killer stopped a Postgres process (Postgres restarted its
+  connections).
 - **What changed.** The check now plans only the rules for the item types it can meet: for
   a message item, a connection grows by a few MB. Lists, counts and lookups by id read the
   item types and the items in one snapshot. Marking items seen, changing an item's state
@@ -63,11 +65,13 @@ first if Deft's Postgres has 1 GB of memory or less.
   items at once failed after the items were already marked.
 - **Visibility is unchanged.** A new equivalence test checks the narrowed query against the
   whole one, item by item. It covers owners, admins, members, guests and removed members;
-  private, public, archived and joined rooms; approvals, mentions and every item type. The
-  test fails if the code starts writing an item type that is not listed.
-- **Self-hosters.** This matters most on a small database (512 MB to 1 GB) with the default
-  `shared_buffers` of 128 MB: four such connections plus shared memory exceed the machine.
-  On a larger database it showed as higher memory use.
+  private, public, archived and joined rooms; approvals, mentions and every item type. It
+  also flags an item type named in the API code that is not listed (a direct insert into
+  the table is not covered).
+- **Self-hosters.** This matters most on a 512 MB database machine with the default
+  `shared_buffers` of 128 MB: four such connections (about 86 MB each) plus shared buffers
+  come to about 470 MB, leaving roughly 40 MB for the operating system and everything
+  else. A larger machine has more headroom; there it showed as higher memory use.
 
 Not fixed yet (follow-ups):
 
