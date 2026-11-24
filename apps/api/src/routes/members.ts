@@ -37,7 +37,7 @@ import { buySeatsUrlFor, getSeatStatus, reserveSeat, withSeatRetry, type SeatRes
 import { buildInviteUrl as buildSecretInviteUrl, buildRecoveryUrl as buildSecretRecoveryUrl } from '../lib/secret-links.js';
 import { roleMustHaveSecondStep } from '../lib/two-step-policy.js';
 import { userTwoStep } from '@deft/db/two-step';
-import { closeLostRoomActionsInTx, repairLostRoomCancellations } from '../lib/lost-room-action-cancellation.js';
+import { closeLostRoomActionsInTx, finishLostRoomCancellations } from '../lib/lost-room-action-cancellation.js';
 import {
   authorizeMembershipOperation, checkMembershipOperation, isProtectedMembership, lockMembership, MembershipGuardError, recordMembershipChange, recordPrivilege, type MembershipActor,
 } from '../lib/membership-guard.js';
@@ -123,7 +123,7 @@ type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
  * membership locks (lib/membership-guard.ts), so it can never act on a
  * membership that was restored after the removal was authorized.
  */
-async function endWorkspaceAccess(tx: Tx, orgId: string, memberId: string, revokedAt: Date): Promise<string[]> {
+async function endWorkspaceAccess(tx: Tx, orgId: string, memberId: string, revokedAt: Date, closedActions: string[] = []): Promise<string[]> {
   const sessions = await tx.select({ id: webSessions.id })
     .from(webSessions)
     .where(and(eq(webSessions.org_id, orgId), eq(webSessions.user_id, memberId), sql`${webSessions.revoked_at} IS NULL`))
@@ -217,12 +217,12 @@ async function endWorkspaceAccess(tx: Tx, orgId: string, memberId: string, revok
   }
   // DFX2: every room went with the workspace; their pending assistant
   // actions from rooms close with a reason, committed with the removal.
-  await closeLostRoomActionsInTx(tx, { orgId, requesterId: memberId });
+  closedActions.push(...await closeLostRoomActionsInTx(tx, { orgId, requesterId: memberId }));
   return sessions.map(session => session.id);
 }
 
 /** After commit: live effects of a removal, only if the person is still removed. */
-async function afterWorkspaceAccessEnded(orgId: string, memberId: string, sessionIds: string[]) {
+async function afterWorkspaceAccessEnded(orgId: string, memberId: string, sessionIds: string[], closedActions: string[]) {
   emitWebSessionRevocations(sessionIds);
   const [still] = await db.select({ is_active: orgMembers.is_active }).from(orgMembers)
     .where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, memberId))).limit(1);
@@ -230,7 +230,7 @@ async function afterWorkspaceAccessEnded(orgId: string, memberId: string, sessio
     await evictActiveHuddleParticipants({ orgId, userId: memberId, reason: 'org_membership_revoked' });
   }
   // DFX2: receipts and attention items of the actions closed in the removal.
-  await repairLostRoomCancellations(orgId);
+  await finishLostRoomCancellations(orgId, closedActions);
 }
 
 type Reassigned = { replacement_user_id: string | null; primary_open_tasks: number; led_projects: number; led_teams: number };
@@ -243,6 +243,7 @@ type Reassigned = { replacement_user_id: string | null; primary_open_tasks: numb
 async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, actor: MembershipActor, replacementUserId: string | null = null): Promise<Reassigned> {
   const revokedAt = new Date();
   let reassigned: Reassigned = { replacement_user_id: replacementUserId, primary_open_tasks: 0, led_projects: 0, led_teams: 0 };
+  const closedActions: string[] = [];
   const revokedSessionIds = await db.transaction(async (tx) => {
     const locked = await lockMembership(tx, { orgId, targetUserId: memberId });
     if (!locked.account || !locked.membership) return null;
@@ -251,9 +252,9 @@ async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, acto
     if (replacementUserId) reassigned = await reassignMemberOwnership(tx, orgId, memberId, replacementUserId);
     await recordMembershipChange(tx, { orgId, targetUserId: memberId, locked, change: { isActive: false } });
     await tx.update(orgMembers).set({ is_active: false, updated_at: revokedAt }).where(eq(orgMembers.id, locked.membership.id));
-    return endWorkspaceAccess(tx, orgId, memberId, revokedAt);
+    return endWorkspaceAccess(tx, orgId, memberId, revokedAt, closedActions);
   });
-  if (revokedSessionIds) await afterWorkspaceAccessEnded(orgId, memberId, revokedSessionIds);
+  if (revokedSessionIds) await afterWorkspaceAccessEnded(orgId, memberId, revokedSessionIds, closedActions);
   return reassigned;
 }
 
@@ -1404,6 +1405,7 @@ memberRoutes.delete('/invites/:id', async (c) => {
       }
 
       const revokedSessionIds: string[] = [];
+      const closedActions: string[] = [];
       let deactivatedUserId: string | null = null;
       if (userId && locked) {
         const user = locked.account;
@@ -1413,19 +1415,19 @@ memberRoutes.delete('/invites/:id', async (c) => {
           await tx.update(orgMembers).set({ is_active: false, updated_at: revokedAt }).where(eq(orgMembers.id, membership.id));
           // Every access ends here, under the same locks: nothing runs later
           // that could reach a membership the owner restored in between.
-          revokedSessionIds.push(...await endWorkspaceAccess(tx, currentUser.org_id, userId, revokedAt));
+          revokedSessionIds.push(...await endWorkspaceAccess(tx, currentUser.org_id, userId, revokedAt, closedActions));
           deactivatedUserId = userId;
         }
       }
       await tx.delete(invites).where(eq(invites.id, inviteId));
-      return { revokedSessionIds, deactivatedUserId };
+      return { revokedSessionIds, deactivatedUserId, closedActions };
     });
     if ('failure' in result) {
       if (result.failure === 'NOT_FOUND') return c.json({ error: 'Invite not found', code: 'NOT_FOUND' }, 404);
       if (result.failure === 'GUARD') return c.json({ error: result.error, code: 'FORBIDDEN' }, 403);
       return c.json({ error: 'Accepted invites cannot be revoked here', code: 'INVITE_ACCEPTED' }, 409);
     }
-    if (result.deactivatedUserId) await afterWorkspaceAccessEnded(currentUser.org_id, result.deactivatedUserId, result.revokedSessionIds);
+    if (result.deactivatedUserId) await afterWorkspaceAccessEnded(currentUser.org_id, result.deactivatedUserId, result.revokedSessionIds, result.closedActions);
     else emitWebSessionRevocations(result.revokedSessionIds);
 
     return c.json({ success: true });
@@ -1506,6 +1508,7 @@ memberRoutes.patch('/:id', async (c) => {
 
     // Read, seat check and role change share one transaction (and, on a
     // hosted cell, one seat lock): a guest becoming a member takes a seat.
+    let closedOnRoleChange: string[] = [];
     const changed = await withSeatRetry(() => db.transaction(async (tx) => {
       // The one locked path (lib/membership-guard.ts): account, membership.
       const locked = await lockMembership(tx, { orgId: currentUser.org_id, targetUserId: memberId });
@@ -1550,9 +1553,9 @@ memberRoutes.patch('/:id', async (c) => {
         .where(eq(orgMembers.id, targetMembership.id));
       // DFX2: a guest reads no public room it has not joined; those pending
       // assistant actions close with the role change.
-      if (parsed.data.role === 'guest' && targetMembership.role !== 'guest') {
-        await closeLostRoomActionsInTx(tx, { orgId: currentUser.org_id, requesterId: memberId });
-      }
+      closedOnRoleChange = parsed.data.role === 'guest' && targetMembership.role !== 'guest'
+        ? await closeLostRoomActionsInTx(tx, { orgId: currentUser.org_id, requesterId: memberId })
+        : [];
       return { previousRole: targetMembership.role, role: parsed.data.role };
     }), (result) => ('seatRefusal' in result && result.seatRefusal ? result.seatRefusal : null));
 
@@ -1578,9 +1581,7 @@ memberRoutes.patch('/:id', async (c) => {
         reason: 'org_role_changed',
       });
     }
-    if (changed.role === 'guest' && changed.previousRole !== 'guest') {
-      await repairLostRoomCancellations(currentUser.org_id);
-    }
+    await finishLostRoomCancellations(currentUser.org_id, closedOnRoleChange);
 
     return c.json({ success: true });
   } catch (err) {

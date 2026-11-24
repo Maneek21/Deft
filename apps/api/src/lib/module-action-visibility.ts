@@ -110,12 +110,20 @@ export function requesterKeepsSourceRoomsSql(): SQL {
         AND capture_room.org_id = ${agentActions.org_id}
         AND NOT ${readableSpaceSql(requester, sql.raw('capture_room.id'), sql.raw('capture_room.org_id'))}
     )`;
+  // A reference that resolves to no room of the workspace adds no room, so
+  // the membership check applies only when one does resolve.
+  const resolvesRoom = (withCapture: boolean) => sql`(EXISTS (SELECT 1 FROM spaces named_room
+      WHERE named_room.org_id = ${agentActions.org_id}
+        AND named_room.id IN (${agentActions.conversation_id}${withCapture ? sql`, ${captureRoom}` : sql``}))
+    OR EXISTS (SELECT 1 FROM messages named_message
+      WHERE named_message.org_id = ${agentActions.org_id}
+        AND named_message.id IN (${agentActions.message_id}, ${agentActions.params}->>'source_message_id')))`;
   return sql`(CASE
     WHEN ${agentActions.agent_employee_id} IS NOT NULL AND NOT ${canonicalDeftyActionSql()} AND NOT ${isCapture} THEN true
     WHEN ${isCapture} THEN (${captureRoom} IS NULL AND NOT ${namesRoom})
-      OR (${activeMember} AND ${captureRoomReadable} AND ${referencedRoomsReadableSql(requester, 'history')})
+      OR ((NOT ${resolvesRoom(true)} OR ${activeMember}) AND ${captureRoomReadable} AND ${referencedRoomsReadableSql(requester, 'history')})
     WHEN NOT ${namesRoom} THEN true
-    ELSE ${activeMember} AND ${referencedRoomsReadableSql(requester, 'history')}
+    ELSE (NOT ${resolvesRoom(false)} OR ${activeMember}) AND ${referencedRoomsReadableSql(requester, 'history')}
   END)`;
 }
 

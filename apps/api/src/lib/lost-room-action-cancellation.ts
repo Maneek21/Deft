@@ -66,7 +66,18 @@ const lostRoomPendingSql = () => and(
  * the rule then sees the change. Returns the closed ids; pass them to
  * `finishLostRoomCancellations` after the commit.
  */
-export async function closeLostRoomActionsInTx(tx: Tx, scope: { orgId: string; requesterId?: string }): Promise<string[]> {
+export async function closeLostRoomActionsInTx(tx: Tx, scope: { orgId: string; requesterId?: string; oneBatch?: boolean }): Promise<string[]> {
+  // An access change closes every matching row before it commits; only the
+  // background sweep stops after one batch.
+  const closed: string[] = [];
+  for (;;) {
+    const batch = await closeOneBatch(tx, scope);
+    closed.push(...batch.closed);
+    if (scope.oneBatch || batch.seen < BATCH) return closed;
+  }
+}
+
+async function closeOneBatch(tx: Tx, scope: { orgId: string; requesterId?: string }): Promise<{ seen: number; closed: string[] }> {
   const rows = await tx.select().from(agentActions)
     .where(and(
       eq(agentActions.org_id, scope.orgId),
@@ -76,7 +87,7 @@ export async function closeLostRoomActionsInTx(tx: Tx, scope: { orgId: string; r
     .orderBy(agentActions.id)
     .limit(BATCH)
     .for('update');
-  if (rows.length === 0) return [];
+  if (rows.length === 0) return { seen: 0, closed: [] };
   // The work intent reads the raw params, so it closes before they are scrubbed.
   await markWorkIntentsExpiredForActions({
     orgId: scope.orgId,
@@ -97,7 +108,7 @@ export async function closeLostRoomActionsInTx(tx: Tx, scope: { orgId: string; r
       .returning({ id: agentActions.id });
     if (done) closed.push(done.id);
   }
-  return closed;
+  return { seen: rows.length, closed };
 }
 
 /**
@@ -131,7 +142,7 @@ export async function cancelLostRoomActions(scope: { orgId?: string } = {}): Pro
     .limit(100);
   const closed: string[] = [];
   for (const { org_id: orgId } of orgs) {
-    const ids = await db.transaction((tx) => closeLostRoomActionsInTx(tx, { orgId }));
+    const ids = await db.transaction((tx) => closeLostRoomActionsInTx(tx, { orgId, oneBatch: true }));
     await finishLostRoomCancellations(orgId, ids);
     closed.push(...ids);
   }

@@ -20,7 +20,7 @@ const orgId = randomUUID();
 const ids = {
   mia: randomUUID(), olive: randomUUID(), adam: randomUUID(), rita: randomUUID(),
   gina: randomUUID(), pam: randomUUID(), sam: randomUUID(), ray: randomUUID(), kay: randomUUID(),
-  cal: randomUUID(), pia: randomUUID(),
+  cal: randomUUID(), pia: randomUUID(), dee: randomUUID(),
 };
 const projectId = randomUUID();
 const planId = randomUUID();
@@ -99,7 +99,7 @@ before(async () => {
     await client.query('INSERT INTO org_members(id,org_id,user_id,role) VALUES($1,$2,$3,$4)', [randomUUID(), orgId, id, roles[id]]);
   }
   const roomMembers: Record<string, string[]> = {
-    [rooms.removed]: [ids.mia, ids.olive, ids.adam],
+    [rooms.removed]: [ids.mia, ids.olive, ids.adam, ids.dee],
     [rooms.left]: [ids.mia, ids.olive, ids.adam],
     [rooms.dm]: [ids.mia, ids.olive, ids.adam],
     // Gina and Pam read the public room without joining it.
@@ -261,11 +261,26 @@ test('no later approval runs it: the fallback reviewer is refused before the swe
   await assertCancelled(act.guard, 'still cancelled after a late approval attempt');
 });
 
+test('a loss closes every pending action from the room in its transaction, past one batch', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  await client!.query(`INSERT INTO agent_actions(id,org_id,user_id,conversation_id,source,action,params,approval_tier,approval_status)
+    SELECT gen_random_uuid()::text, $1, $2, $3, 'mention', 'post_message', '{"content":"bulk"}'::jsonb, 'quick', 'pending'
+    FROM generate_series(1, 501)`, [orgId, ids.dee, rooms.removed]);
+  const removed = await call(ids.olive, `/api/spaces/${rooms.removed}/members/${ids.dee}`, { method: 'DELETE' });
+  assert.equal(removed.status, 200, removed.text);
+  const { rows } = await client!.query(`SELECT approval_status, error, count(*)::int AS n FROM agent_actions
+    WHERE org_id=$1 AND user_id=$2 GROUP BY 1, 2`, [orgId, ids.dee]);
+  assert.deepEqual(rows, [{ approval_status: 'expired', error: REASON, n: 501 }]);
+  // Keep the history test's list (latest 200) on the other actions.
+  await client!.query('DELETE FROM agent_actions WHERE org_id=$1 AND user_id=$2', [orgId, ids.dee]);
+});
+
 test('a capture that names only its source message is covered too', async (t) => {
   if (unavailable) return t.skip(unavailable);
   const { claimPendingApproval } = await import('../src/lib/agent-action-execution-lease.js');
   const { cancelLostRoomActions } = await import('../src/lib/lost-room-action-cancellation.js');
-  await silentlyRemoveFromWorkspace(ids.cal);
+  // Cal stays in the workspace and loses only the room the message is in.
+  await client!.query('DELETE FROM space_members WHERE space_id=$1 AND user_id=$2', [rooms.guard, ids.cal]);
   assert.equal(await claimPendingApproval(await loadRow(act.messageOnlyCapture), ids.olive), null, 'claim refused');
   assert.deepEqual(await cancelLostRoomActions({ orgId }), [act.messageOnlyCapture]);
   await assertCancelled(act.messageOnlyCapture, 'capture with only a source message');
@@ -275,20 +290,28 @@ test('a resumed plan does not run a step whose approval was cancelled', async (t
   if (unavailable) return t.skip(unavailable);
   const { executePlan } = await import('../src/lib/agent-plans.js');
   // A leaf create_task step would otherwise run directly on resume.
-  await executePlan(planId, orgId, ids.pia).catch(() => {});
+  await executePlan(planId, orgId, ids.pia);
   const { rows: tasks } = await client!.query('SELECT id FROM tasks WHERE org_id=$1', [orgId]);
   assert.equal(tasks.length, 0, 'no task was created');
   const { rows: stepActions } = await client!.query('SELECT id, approval_status FROM agent_actions WHERE plan_id=$1', [planId]);
   assert.deepEqual(stepActions, [{ id: act.planStep, approval_status: 'expired' }], 'no new approved action for the step');
   const { rows: [plan] } = await client!.query('SELECT status FROM agent_plans WHERE id=$1', [planId]);
-  assert.notEqual(plan.status, 'completed');
+  assert.equal(plan.status, 'paused');
+  const { rows: [stopped] } = await client!.query('SELECT error FROM agent_plans WHERE id=$1', [planId]);
+  assert.equal(stopped.error, "Plan step 'step-1' approval was expired", 'stopped because its approval was cancelled');
 });
 
-/** Wait until `count` sessions of this database are waiting on a lock. */
-async function lockWaiters(count: number) {
+/**
+ * Wait until `count` sessions are queued behind `holderPid`: blocked by it, or
+ * by a session that is (the second waiter on a row waits on the first).
+ */
+async function lockWaiters(holderPid: number, count: number) {
   for (let attempt = 0; attempt < 200; attempt += 1) {
-    const { rows: [row] } = await client!.query(
-      "SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'");
+    const { rows: [row] } = await client!.query(`WITH RECURSIVE queued(pid) AS (
+        SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))
+        UNION
+        SELECT activity.pid FROM pg_stat_activity activity JOIN queued ON queued.pid = ANY(pg_blocking_pids(activity.pid))
+      ) SELECT count(*)::int AS n FROM queued`, [holderPid]);
     if (row.n >= count) return;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
@@ -326,18 +349,19 @@ test('approval and loss together: the row lock orders them, and exactly one wins
       // Hold the action row so both statements queue on it in a known order.
       await holder.query('BEGIN');
       await holder.query('SELECT id FROM agent_actions WHERE id=$1 FOR UPDATE', [id]);
+      const { rows: [{ pid: holderPid }] } = await holder.query('SELECT pg_backend_pid() AS pid');
       let claim: Promise<unknown>;
       let loss: Promise<string[]>;
       if (order === 'claim first') {
         claim = claimPendingApproval(row, requester);
-        await lockWaiters(1);
+        await lockWaiters(holderPid, 1);
         loss = loseRoomInOneTransaction(requester);
-        await lockWaiters(2);
+        await lockWaiters(holderPid, 2);
       } else {
         loss = loseRoomInOneTransaction(requester);
-        await lockWaiters(1);
+        await lockWaiters(holderPid, 1);
         claim = claimPendingApproval(row, requester);
-        await lockWaiters(2);
+        await lockWaiters(holderPid, 2);
       }
       await holder.query('COMMIT');
       const [token, closed] = await Promise.all([claim, loss]);

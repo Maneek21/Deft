@@ -165,7 +165,8 @@ import {
 import { resolveAttentionBySource } from './attention.js';
 import { publishAgentChannelEvent } from './agent-channel.js';
 import { currentAgentActionSourceAuthoritySql } from './agent-channel-authority.js';
-import { canonicalDeftyActionSql, requesterKeepsSourceRoomsSql } from './module-action-visibility.js';
+import { canonicalDeftyActionSql, isModuleWriteActionName, requesterKeepsSourceRoomsSql } from './module-action-visibility.js';
+import { terminalModuleActionParams as sharedTerminalModuleActionParams } from './module-action-terminalization.js';
 import {
   wikiProposalRefusal,
   wikiProposalRefusalCode,
@@ -512,18 +513,26 @@ export function closedPendingActionParams(
   row: typeof agentActions.$inferSelect,
   resolution: string,
 ): Record<string, unknown> | null {
-  if (MODULE_MUTATION_ACTIONS.has(row.action)) {
-    return {
-      ...(terminalModuleActionParams(row.action, row.params, null, {
+  if (!MODULE_MUTATION_ACTIONS.has(row.action)) return null;
+  try {
+    // Create, update and archive keep their idempotency digest, as on TTL
+    // expiry (lib/module-action-terminalization.ts); bulk create and task
+    // links use the rejection path's sanitizer.
+    const sanitized = isModuleWriteActionName(row.action)
+      ? sharedTerminalModuleActionParams(row.action, row.params, {
+        orgId: row.org_id, userId: row.user_id, employeeId: row.agent_employee_id,
+      })
+      : terminalModuleActionParams(row.action, row.params, null, {
         orgId: row.org_id,
         userId: row.user_id,
         agentEmployeeId: row.agent_employee_id,
-      }, hasHumanMcpBulkProvenance(row)) ?? sanitizeModuleActionParamsForHistory(row.action, row.params)),
-      [TERMINAL_ATTENTION_RESOLUTION]: resolution,
-    };
+      }, hasHumanMcpBulkProvenance(row)) ?? sanitizeModuleActionParamsForHistory(row.action, row.params);
+    return { ...sanitized, [TERMINAL_ATTENTION_RESOLUTION]: resolution };
+  } catch {
+    // A stored proposal that no longer validates keeps none of its values,
+    // and never blocks the access change that closes it.
+    return { [TERMINAL_ATTENTION_RESOLUTION]: resolution };
   }
-  if (isModuleTaskLinkWriteAction(row.action)) return sanitizeModuleTaskLinkActionParamsForHistory(row.params);
-  return null;
 }
 
 /**
