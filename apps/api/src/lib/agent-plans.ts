@@ -633,7 +633,19 @@ async function executePlanUnlocked(
         const destructiveStep = isDestructiveAction(step.tool, resolvedParams, mcpToolPolicy?.annotations);
 
         const tier = getApprovalTier(step.tool, approvalTierOverride);
-        const execResult = autoExec || (!isDependency && !destructiveStep)
+        // A step that already has an approval row that was not approved
+        // (pending, rejected, or expired, e.g. cancelled when its requester
+        // lost the room: DFX2) goes through the reviewed path, which keeps it
+        // waiting or stops the plan, even if trust rose since and the step
+        // would now run directly.
+        const [undecidedStep] = await db.select({ id: agentActions.id }).from(agentActions).where(and(
+          eq(agentActions.org_id, orgId),
+          eq(agentActions.plan_id, planId),
+          eq(agentActions.plan_step_id, step.id),
+          eq(agentActions.source, 'plan'),
+          sql`${agentActions.approval_status} <> 'approved'`,
+        )).limit(1);
+        const execResult = !undecidedStep && (autoExec || (!isDependency && !destructiveStep))
           ? await executeActionDirect(
             step.tool,
             resolvedParams,

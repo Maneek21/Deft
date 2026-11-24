@@ -502,6 +502,40 @@ async function repairExpiredModuleTerminalState(
   await Promise.all(postcommit);
 }
 
+/**
+ * DFX2: the params a pending action keeps once it is closed without a
+ * decision, as the rejection path scrubs them: every governed module write
+ * (create, update, archive, bulk create) loses its record values, task links
+ * their raw keys. Null for any other action (its params are kept).
+ */
+export function closedPendingActionParams(
+  row: typeof agentActions.$inferSelect,
+  resolution: string,
+): Record<string, unknown> | null {
+  if (MODULE_MUTATION_ACTIONS.has(row.action)) {
+    return {
+      ...(terminalModuleActionParams(row.action, row.params, null, {
+        orgId: row.org_id,
+        userId: row.user_id,
+        agentEmployeeId: row.agent_employee_id,
+      }, hasHumanMcpBulkProvenance(row)) ?? sanitizeModuleActionParamsForHistory(row.action, row.params)),
+      [TERMINAL_ATTENTION_RESOLUTION]: resolution,
+    };
+  }
+  if (isModuleTaskLinkWriteAction(row.action)) return sanitizeModuleTaskLinkActionParamsForHistory(row.params);
+  return null;
+}
+
+/**
+ * DFX2: the receipt and attention artifacts of a module write closed
+ * without a decision (idempotent; the work intent is closed with the row).
+ */
+export async function finishClosedModuleAction(row: typeof agentActions.$inferSelect): Promise<boolean> {
+  if (!MODULE_MUTATION_ACTIONS.has(row.action)) return false;
+  await repairExpiredModuleTerminalState(row, { repairWorkIntent: false });
+  return true;
+}
+
 async function ensureApprovedModuleReceipt(
   row: typeof agentActions.$inferSelect,
 ): Promise<void> {
@@ -662,23 +696,26 @@ async function actionSourceIsCurrent(actionId: string, readerUserId?: string) {
 /**
  * The source boundary of a decision. On the internal path a Defty capture
  * also needs its requester (`requesterId`, its author) to still see the
- * captured room. On every path the requester must still read each room a
- * Defty action came from (DFX2, `requesterKeepsSourceRoomsSql`); this is part
- * of the claiming UPDATE, so no approval runs an action whose requester lost
- * the room, whoever reviews it.
+ * captured room. For a new decision on a pending action the requester must
+ * also still read each room a Defty action came from (DFX2,
+ * `requesterKeepsSourceRoomsSql`); this is part of the claiming UPDATE, so no
+ * approval runs an action whose requester lost the room, whoever reviews it.
+ * Recovery and replay of a decision already made keep their own checks.
  */
 function decisionSourceSql(
   row: ReviewedActionRow,
   requesterId: string,
   readerUserId: string | undefined,
   internal: boolean | undefined,
+  pendingDecision: boolean,
 ) {
+  const requesterRooms = pendingDecision ? requesterKeepsSourceRoomsSql() : undefined;
   if (!internal || row.source !== CAPTURE_ACTION_SOURCE) {
-    return and(actionSourceAuthoritySql(readerUserId), requesterKeepsSourceRoomsSql())!;
+    return and(actionSourceAuthoritySql(readerUserId), requesterRooms)!;
   }
   return and(
     actionSourceAuthoritySql(readerUserId),
-    requesterKeepsSourceRoomsSql(),
+    requesterRooms,
     visibleCaptureActionSql({ id: requesterId, org_id: row.org_id }),
   )!;
 }
@@ -1157,7 +1194,10 @@ async function approveActionLocked(
   }
 
   const sourceReaderId = options.internal ? undefined : approverUserId;
-  const decisionSource = and(decisionSourceSql(row, requesterId, sourceReaderId, options.internal), reviewerGuard)!;
+  const decisionSource = and(
+    decisionSourceSql(row, requesterId, sourceReaderId, options.internal, row.approval_status === 'pending'),
+    reviewerGuard,
+  )!;
   const [sourceCurrent] = await db.select({ id: agentActions.id }).from(agentActions)
     .where(and(eq(agentActions.id, actionId), decisionSource)).limit(1);
   if (!sourceCurrent) return sourceUnavailable();

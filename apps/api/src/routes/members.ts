@@ -37,7 +37,7 @@ import { buySeatsUrlFor, getSeatStatus, reserveSeat, withSeatRetry, type SeatRes
 import { buildInviteUrl as buildSecretInviteUrl, buildRecoveryUrl as buildSecretRecoveryUrl } from '../lib/secret-links.js';
 import { roleMustHaveSecondStep } from '../lib/two-step-policy.js';
 import { userTwoStep } from '@deft/db/two-step';
-import { cancelLostRoomActionsAfterLoss } from '../lib/lost-room-action-cancellation.js';
+import { closeLostRoomActionsInTx, repairLostRoomCancellations } from '../lib/lost-room-action-cancellation.js';
 import {
   authorizeMembershipOperation, checkMembershipOperation, isProtectedMembership, lockMembership, MembershipGuardError, recordMembershipChange, recordPrivilege, type MembershipActor,
 } from '../lib/membership-guard.js';
@@ -215,6 +215,9 @@ async function endWorkspaceAccess(tx: Tx, orgId: string, memberId: string, revok
     await tx.update(agentEmployees).set({ is_active: false })
       .where(and(eq(agentEmployees.org_id, orgId), inArray(agentEmployees.id, employeeIds)));
   }
+  // DFX2: every room went with the workspace; their pending assistant
+  // actions from rooms close with a reason, committed with the removal.
+  await closeLostRoomActionsInTx(tx, { orgId, requesterId: memberId });
   return sessions.map(session => session.id);
 }
 
@@ -226,10 +229,8 @@ async function afterWorkspaceAccessEnded(orgId: string, memberId: string, sessio
   if (still && !still.is_active) {
     await evictActiveHuddleParticipants({ orgId, userId: memberId, reason: 'org_membership_revoked' });
   }
-  // DFX2: every room went with the workspace; their pending assistant actions
-  // from rooms close with a reason. The rule is re-read, so a restored member
-  // keeps theirs.
-  await cancelLostRoomActionsAfterLoss(orgId, memberId);
+  // DFX2: receipts and attention items of the actions closed in the removal.
+  await repairLostRoomCancellations(orgId);
 }
 
 type Reassigned = { replacement_user_id: string | null; primary_open_tasks: number; led_projects: number; led_teams: number };
@@ -1547,6 +1548,11 @@ memberRoutes.patch('/:id', async (c) => {
       await tx.update(orgMembers)
         .set({ role: parsed.data.role })
         .where(eq(orgMembers.id, targetMembership.id));
+      // DFX2: a guest reads no public room it has not joined; those pending
+      // assistant actions close with the role change.
+      if (parsed.data.role === 'guest' && targetMembership.role !== 'guest') {
+        await closeLostRoomActionsInTx(tx, { orgId: currentUser.org_id, requesterId: memberId });
+      }
       return { previousRole: targetMembership.role, role: parsed.data.role };
     }), (result) => ('seatRefusal' in result && result.seatRefusal ? result.seatRefusal : null));
 
@@ -1572,9 +1578,8 @@ memberRoutes.patch('/:id', async (c) => {
         reason: 'org_role_changed',
       });
     }
-    // DFX2: a guest reads no public room it has not joined.
     if (changed.role === 'guest' && changed.previousRole !== 'guest') {
-      await cancelLostRoomActionsAfterLoss(currentUser.org_id, memberId);
+      await repairLostRoomCancellations(currentUser.org_id);
     }
 
     return c.json({ success: true });

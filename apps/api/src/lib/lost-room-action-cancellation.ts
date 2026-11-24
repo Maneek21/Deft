@@ -6,118 +6,177 @@
  * action history; DFX1 (lib/module-action-visibility.ts) already hides them
  * from the person.
  *
- * Who runs it, and why both:
- * - At the moment of loss, after the change commits (routes/spaces.ts and
- *   routes/members.ts), so the Inbox and approval lists settle at once.
- * - A sweep in the attention maintenance job (every 15 minutes), which
- *   catches every other way a room can be lost, including any added later,
- *   and any run that failed after the change committed.
+ * Where it runs:
+ * - Inside the transaction that ends the access (routes/spaces.ts,
+ *   routes/members.ts), so the loss and the cancellation commit together and
+ *   a later restore of the access cannot leave the proposal pending.
+ * - A sweep in the attention maintenance job (every 15 minutes) for every
+ *   other way a room can be lost, including any added later. It also repairs
+ *   the receipts and attention items written after a commit that failed.
  *
- * Neither is what stops an approval. Every approval claim carries
- * `requesterKeepsSourceRoomsSql` in its claiming UPDATE, and so does each
- * close below. A claim and a loss that happen together therefore resolve in
- * one order: if the loss committed before the claim's statement ran, the
- * claim matches no row; if the claim's statement ran first, the approval was
- * made while the person still had the room, and the close below finds the
- * row no longer pending and leaves it. Both statements lock the action row,
- * so they never both succeed.
+ * Approval and loss together. The close locks each action row (SELECT ...
+ * FOR UPDATE) and every pending-approval claim updates the same row with
+ * `approval_status = 'pending'` in its WHERE, so one of them waits for the
+ * other and then re-checks the row: exactly one wins. If the claim locked
+ * the row first, the approval commits before the loss does (it was made
+ * while the person had the room) and the close skips it. If the close locked
+ * it first, the claim finds the row expired. Once the loss has committed, a
+ * claim that starts later also fails on `requesterKeepsSourceRoomsSql`, which
+ * the claims carry for paths no hook covers.
  */
 import { and, eq, inArray, notInArray, sql } from 'drizzle-orm';
-import { agentActions } from '@deft/db/schema';
+import { actionReceipts, agentActions, attentionItems } from '@deft/db/schema';
 import { db } from './db.js';
 import { actionRequesterIdSql } from './agent-action-requester.js';
+import { closedPendingActionParams, finishClosedModuleAction } from './agent-approval-resolver.js';
 import { resolveAttentionBySource } from './attention.js';
-import { MODULE_WRITE_ACTION_NAMES, canonicalDeftyActionSql, requesterKeepsSourceRoomsSql } from './module-action-visibility.js';
-import { terminalizePendingModuleActions } from './module-action-terminalization.js';
+import { canonicalDeftyActionSql, MODULE_GOVERNED_WRITE_ACTION_NAMES, requesterKeepsSourceRoomsSql } from './module-action-visibility.js';
 import { markWorkIntentsExpiredForActions } from './work-intents.js';
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /** Recorded on the action (`error`) and on its receipt. Names no room. */
 export const LOST_ROOM_CANCEL_REASON = 'Cancelled: the person who asked no longer has access to the conversation this came from';
 /** Attention items of a closed action resolve with this. */
 export const LOST_ROOM_ATTENTION_RESOLUTION = 'source_room_access_lost';
 
+/** Rows closed per transaction; the sweep picks up the rest. */
+const BATCH = 500;
+
 /**
  * Governed App Run releases and record-mirror nominations keep their own
- * lifecycle and authority checks (lib/app-run-approval-adapter.ts); closing
- * only their action row would leave the run out of step. Their approval
- * claims still refuse a requester who lost the room.
+ * lifecycle (lib/app-run-approval-adapter.ts); closing only their action row
+ * would leave the run out of step. Their writers create rows that name no
+ * room today; the resolver pre-checks the requester's rooms before routing
+ * them, but their own release is not fenced by it.
  */
 const OWN_LIFECYCLE_ACTIONS = ['app_run_invoke', 'app_record_mirror_nominate'];
 
 const lostRoomPendingSql = () => and(
   eq(agentActions.approval_status, 'pending'),
-  sql`(${agentActions.agent_employee_id} IS NULL OR ${canonicalDeftyActionSql()})`,
+  sql`(${agentActions.agent_employee_id} IS NULL OR ${canonicalDeftyActionSql()} OR ${agentActions.source} = 'defty_capture')`,
   notInArray(agentActions.action, OWN_LIFECYCLE_ACTIONS),
   sql`NOT ${requesterKeepsSourceRoomsSql()}`,
 )!;
 
 /**
- * Close the pending Defty actions whose requester can no longer read a room
- * they came from. `orgId` and `requesterId` narrow the search (the sweep
- * passes neither). Returns the ids closed by this call.
+ * Close, in the caller's transaction, the pending Defty actions of `orgId`
+ * (narrowed to `requesterId`'s) whose requester can no longer read a room
+ * they came from. Run it after the access change in the same transaction:
+ * the rule then sees the change. Returns the closed ids; pass them to
+ * `finishLostRoomCancellations` after the commit.
  */
-export async function cancelLostRoomActions(scope: { orgId?: string; requesterId?: string } = {}): Promise<string[]> {
-  const candidates = await db
-    .select({ id: agentActions.id, org_id: agentActions.org_id, action: agentActions.action })
-    .from(agentActions)
+export async function closeLostRoomActionsInTx(tx: Tx, scope: { orgId: string; requesterId?: string }): Promise<string[]> {
+  const rows = await tx.select().from(agentActions)
     .where(and(
+      eq(agentActions.org_id, scope.orgId),
       lostRoomPendingSql(),
-      scope.orgId ? eq(agentActions.org_id, scope.orgId) : undefined,
       scope.requesterId ? sql`${actionRequesterIdSql()} = ${scope.requesterId}` : undefined,
-    ));
-  if (candidates.length === 0) return [];
-
+    ))
+    .orderBy(agentActions.id)
+    .limit(BATCH)
+    .for('update');
+  if (rows.length === 0) return [];
+  // The work intent reads the raw params, so it closes before they are scrubbed.
+  await markWorkIntentsExpiredForActions({
+    orgId: scope.orgId,
+    actions: rows.map((row) => ({ id: row.id, params: row.params })),
+    reason: LOST_ROOM_CANCEL_REASON,
+  }, tx);
   const closed: string[] = [];
-  const byOrg = new Map<string, typeof candidates>();
-  for (const row of candidates) byOrg.set(row.org_id, [...(byOrg.get(row.org_id) ?? []), row]);
-  for (const [orgId, rows] of byOrg) {
-    // Module writes carry record values: the shared terminal path scrubs them,
-    // issues the expired receipt and closes their attention items.
-    const moduleIds = rows.filter((row) => (MODULE_WRITE_ACTION_NAMES as readonly string[]).includes(row.action)).map((row) => row.id);
-    if (moduleIds.length) {
-      const done = await terminalizePendingModuleActions({
-        orgId,
-        actionIds: moduleIds,
-        reason: LOST_ROOM_CANCEL_REASON,
-        attentionResolution: LOST_ROOM_ATTENTION_RESOLUTION,
-        claimGuard: lostRoomPendingSql(),
-      });
-      closed.push(...done.map((row) => row.id));
-    }
-
-    const otherIds = rows.filter((row) => !moduleIds.includes(row.id)).map((row) => row.id);
-    if (otherIds.length === 0) continue;
-    // The same compare-and-set as the TTL expiry (lib/attention-maintenance.ts),
-    // with the room rule re-checked in the statement.
-    const expired = await db
-      .update(agentActions)
-      .set({ approval_status: 'expired', error: LOST_ROOM_CANCEL_REASON, updated_at: new Date() })
-      .where(and(eq(agentActions.org_id, orgId), inArray(agentActions.id, otherIds), lostRoomPendingSql()))
-      .returning({ id: agentActions.id, params: agentActions.params });
-    if (expired.length === 0) continue;
-    await markWorkIntentsExpiredForActions({ orgId, actions: expired, reason: LOST_ROOM_CANCEL_REASON });
-    for (const row of expired) {
-      await resolveAttentionBySource({
-        orgId,
-        sourceType: 'agent_action',
-        sourceId: row.id,
-        resolution: LOST_ROOM_ATTENTION_RESOLUTION,
-      });
-      closed.push(row.id);
-    }
+  for (const row of rows) {
+    const scrubbed = closedPendingActionParams(row, LOST_ROOM_ATTENTION_RESOLUTION);
+    const [done] = await tx.update(agentActions)
+      .set({
+        approval_status: 'expired',
+        error: LOST_ROOM_CANCEL_REASON,
+        updated_at: new Date(),
+        ...(scrubbed ? { params: scrubbed, result: null, before_state: null, after_state: null, executed_at: new Date() } : {}),
+      })
+      .where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id), eq(agentActions.approval_status, 'pending')))
+      .returning({ id: agentActions.id });
+    if (done) closed.push(done.id);
   }
   return closed;
 }
 
 /**
- * The moment-of-loss call: best effort after the change committed. A
- * failure is logged without content and left to the sweep; the approval
- * claims refuse the action meanwhile.
+ * After the commit: module receipts and attention items of the closed rows.
+ * Idempotent; a failure is logged without content and repaired by the sweep.
  */
-export async function cancelLostRoomActionsAfterLoss(orgId: string, userId: string): Promise<void> {
+export async function finishLostRoomCancellations(orgId: string, ids: readonly string[]): Promise<void> {
+  if (ids.length === 0) return;
   try {
-    await cancelLostRoomActions({ orgId, requesterId: userId });
+    const rows = await db.select().from(agentActions)
+      .where(and(eq(agentActions.org_id, orgId), inArray(agentActions.id, [...ids])));
+    for (const row of rows) {
+      if (await finishClosedModuleAction(row)) continue;
+      await resolveAttentionBySource({
+        orgId: row.org_id, sourceType: 'agent_action', sourceId: row.id, resolution: LOST_ROOM_ATTENTION_RESOLUTION,
+      });
+    }
   } catch {
-    console.error('[lost-room-actions] cancellation after a room loss failed; the maintenance sweep will retry');
+    console.error('[lost-room-actions] finishing closed actions failed; the maintenance sweep will repair it');
   }
+}
+
+/**
+ * The sweep: close what the access-change hooks did not (bounded per pass),
+ * then repair artifacts of rows closed earlier whose finishing failed.
+ * Returns the ids closed by this call.
+ */
+export async function cancelLostRoomActions(scope: { orgId?: string } = {}): Promise<string[]> {
+  const orgs = await db.selectDistinct({ org_id: agentActions.org_id }).from(agentActions)
+    .where(and(lostRoomPendingSql(), scope.orgId ? eq(agentActions.org_id, scope.orgId) : undefined))
+    .limit(100);
+  const closed: string[] = [];
+  for (const { org_id: orgId } of orgs) {
+    const ids = await db.transaction((tx) => closeLostRoomActionsInTx(tx, { orgId }));
+    await finishLostRoomCancellations(orgId, ids);
+    closed.push(...ids);
+  }
+  await repairLostRoomCancellations(scope.orgId);
+  return closed;
+}
+
+/**
+ * Closed rows whose receipt (module writes) or attention resolution did not
+ * land (bounded). Never throws: a failure is logged and the next sweep retries.
+ */
+export async function repairLostRoomCancellations(orgId?: string): Promise<void> {
+  try {
+    await repairOnce(orgId);
+  } catch {
+    console.error('[lost-room-actions] repair of closed actions failed; the maintenance sweep will retry');
+  }
+}
+
+async function repairOnce(orgId?: string): Promise<void> {
+  const closedRow = and(
+    eq(agentActions.approval_status, 'expired'),
+    eq(agentActions.error, LOST_ROOM_CANCEL_REASON),
+    orgId ? eq(agentActions.org_id, orgId) : undefined,
+  );
+  const missingReceipt = await db.select({ id: agentActions.id, org_id: agentActions.org_id }).from(agentActions)
+    .where(and(
+      closedRow,
+      inArray(agentActions.action, [...MODULE_GOVERNED_WRITE_ACTION_NAMES]),
+      sql`NOT EXISTS (SELECT 1 FROM ${actionReceipts} WHERE ${actionReceipts.action_id} = ${agentActions.id})`,
+    ))
+    .limit(100);
+  const openItems = await db.selectDistinct({ id: agentActions.id, org_id: agentActions.org_id }).from(attentionItems)
+    .innerJoin(agentActions, and(eq(agentActions.id, attentionItems.source_id), eq(agentActions.org_id, attentionItems.org_id)))
+    .where(and(
+      closedRow,
+      eq(attentionItems.source_type, 'agent_action'),
+      inArray(attentionItems.state, ['open_unseen', 'open_seen', 'acknowledged', 'snoozed']),
+    ))
+    .limit(100);
+  const byOrg = new Map<string, Set<string>>();
+  for (const row of [...missingReceipt, ...openItems]) {
+    let ids = byOrg.get(row.org_id);
+    if (!ids) byOrg.set(row.org_id, ids = new Set());
+    ids.add(row.id);
+  }
+  for (const [rowOrg, ids] of byOrg) await finishLostRoomCancellations(rowOrg, [...ids]);
 }

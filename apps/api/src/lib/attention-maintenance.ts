@@ -18,8 +18,14 @@ export async function maintainAttentionSystem(
 
   // DFX2 sweep: pending assistant actions whose requester lost a room they
   // came from close with that reason, whatever way the room was lost. Runs
-  // before the TTL pass so such a row records the specific reason.
-  await cancelLostRoomActions();
+  // before the TTL pass so such a row records the specific reason. A failure
+  // must not stop the rest of maintenance; the approval claims still refuse
+  // these actions meanwhile.
+  try {
+    await cancelLostRoomActions();
+  } catch {
+    console.error('[attention-maintenance] lost-room sweep failed; retrying next pass');
+  }
 
   // Module proposals carry record values until a reviewer decides. Their TTL
   // path therefore needs the same terminal sanitation, receipt, and lifecycle

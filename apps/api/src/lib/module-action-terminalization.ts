@@ -98,10 +98,6 @@ export async function terminalizePendingModuleActions(params: {
   attentionResolution: string;
   employeeId?: string;
   createdBefore?: Date;
-  /** Only these actions (DFX2 lost-room cancellation). */
-  actionIds?: readonly string[];
-  /** Re-checked in each claiming statement: only rows still matching it are closed. */
-  claimGuard?: SQL;
 }): Promise<TerminalizedModuleAction[]> {
   const conditions: SQL[] = [
     eq(agentActions.org_id, params.orgId),
@@ -110,11 +106,6 @@ export async function terminalizePendingModuleActions(params: {
   ];
   if (params.employeeId) conditions.push(eq(agentActions.agent_employee_id, params.employeeId));
   if (params.createdBefore) conditions.push(lt(agentActions.created_at, params.createdBefore));
-  if (params.actionIds) {
-    if (params.actionIds.length === 0) return [];
-    conditions.push(inArray(agentActions.id, [...params.actionIds]));
-  }
-  if (params.claimGuard) conditions.push(params.claimGuard);
 
   const candidates = await db
     .select({
@@ -153,7 +144,6 @@ export async function terminalizePendingModuleActions(params: {
           eq(agentActions.id, candidate.id),
           eq(agentActions.org_id, candidate.org_id),
           eq(agentActions.approval_status, 'pending'),
-          params.claimGuard,
         ))
         .returning({ id: agentActions.id });
       if (!claimed) return null;
