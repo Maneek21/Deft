@@ -56,8 +56,8 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
   the people who share at least one room, direct message or conversation with them, and no
   email address but their own: in the member list and people directory, people search,
   member profiles, room, group and team member lists, the MCP member, team and context
-  tools, and when they ask Defty to find someone. Owners, admins and members see what they
-  saw before.
+  tools, when they ask Defty to find someone, and in a member-scoped workspace export made
+  for a guest. Owners, admins and members see what they saw before.
 - People search no longer lists removed members, for anyone.
 
 ## [0.3.0-preview.150] — 2026-11-25 (prerelease)

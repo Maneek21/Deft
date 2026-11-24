@@ -1,6 +1,7 @@
 import { sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { readableSpaceSql } from '../space-visibility.js';
 import { visibleLiveMemberForOrg } from '../member-visibility.js';
+import { isGuestRole, personVisibleSql, type PeopleViewer } from '../people-visibility-sql.js';
 import type { ExportScope, ResolvedScope } from './format.js';
 import type { Snapshot } from './snapshot.js';
 
@@ -39,6 +40,17 @@ export function memberId(ctx: ExportContext): string | null {
   return ctx.scope.kind === 'member' ? ctx.scope.user_id : null;
 }
 
+/**
+ * The member scope sees people as GET /api/members shows them to that member:
+ * a guest only the people who share a space with them, and no email address
+ * but their own (lib/people-visibility-sql.ts). Null for the whole workspace.
+ */
+export function exportPeopleViewer(ctx: ExportContext): PeopleViewer | null {
+  return ctx.scope.kind === 'member'
+    ? { orgId: ctx.orgId, userId: ctx.scope.user_id, guest: isGuestRole(ctx.scope.role) }
+    : null;
+}
+
 /** The product's space read rule (`canReadSpace`) for the member scope; every space for the whole workspace. */
 export function spaceReadable(ctx: ExportContext, spaceId: SQLWrapper, spaceOrgId: SQLWrapper): SQL {
   const userId = memberId(ctx);
@@ -62,7 +74,8 @@ export function userKnown(ctx: ExportContext, userIdColumn: SQL): SQL {
   }
   return sql`EXISTS (SELECT 1 FROM org_members JOIN users ON users.id = org_members.user_id
     WHERE org_members.org_id = ${ctx.orgId} AND org_members.user_id = ${userIdColumn}
-      AND org_members.is_active = true AND ${visibleLiveMemberForOrg(sql`org_members.org_id`)})`;
+      AND org_members.is_active = true AND ${visibleLiveMemberForOrg(sql`org_members.org_id`)}
+      AND ${personVisibleSql(exportPeopleViewer(ctx)!, userIdColumn)})`;
 }
 
 /**

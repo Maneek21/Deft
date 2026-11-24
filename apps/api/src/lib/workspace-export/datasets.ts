@@ -1,7 +1,8 @@
 import { sql, type SQL } from 'drizzle-orm';
 import type { Omission } from './format.js';
 import { visibleLiveMemberForOrg } from '../member-visibility.js';
-import { spaceReadable, workspaceUser, userKnown, type ExportContext } from './scope.js';
+import { exportPeopleViewer, spaceReadable, workspaceUser, userKnown, type ExportContext } from './scope.js';
+import { personVisibleSql, visibleEmailSql } from '../people-visibility-sql.js';
 
 /**
  * A dataset is one JSON Lines file. Its SELECT list is the allowlist: only the
@@ -31,11 +32,13 @@ export const PEOPLE_AND_SPACES: readonly Dataset[] = [
           FROM org_members JOIN users ON users.id = org_members.user_id
           WHERE org_members.org_id = ${ctx.orgId}
           ORDER BY org_members.joined_at, users.id`
-      : sql`SELECT users.id AS user_id, users.name, users.email, users.kind, org_members.role,
-            org_members.is_active
+      : sql`SELECT users.id AS user_id, users.name,
+            ${visibleEmailSql(exportPeopleViewer(ctx)!, sql`users.id`, sql`users.email`)} AS email,
+            users.kind, org_members.role, org_members.is_active
           FROM org_members JOIN users ON users.id = org_members.user_id
           WHERE org_members.org_id = ${ctx.orgId} AND org_members.is_active = true
             AND ${visibleLiveMemberForOrg(sql`org_members.org_id`)}
+            AND ${personVisibleSql(exportPeopleViewer(ctx)!, sql`users.id`)}
           ORDER BY org_members.joined_at, users.id`,
   },
   {
