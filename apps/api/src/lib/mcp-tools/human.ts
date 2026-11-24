@@ -437,13 +437,22 @@ function normalizeIdempotencyKey(value: unknown): string | null {
 
 /**
  * A replayed result may have been stored before the caller became a guest
- * (and, for OAuth, under another token of the same client). It is shown as
- * the caller may see it now: for a guest, every email field but their own is
- * blanked (lib/people-visibility.ts).
+ * (and, for OAuth, under another token of the same client). A guest gets the
+ * stored result only if it was computed for a guest view, with every email
+ * field but their own blanked; a result computed for a wider view (names,
+ * ids) is not repeated, only that the request was already done
+ * (lib/people-visibility.ts). The request is never run twice either way.
  */
-async function redactReplayForViewer(result: ToolResult, ctx: HumanToolContext): Promise<ToolResult> {
+async function redactReplayForViewer(result: ToolResult, ctx: HumanToolContext, storedForGuest: boolean): Promise<ToolResult> {
   const viewer = await peopleViewer(ctx.org_id, ctx.user_id);
   if (!viewer.guest) return result;
+  if (!storedForGuest) {
+    return textResult({
+      status: 'already_completed',
+      replayed: true,
+      message: 'This request was already completed. Read the current state with the matching read tool.',
+    });
+  }
   const [me] = await db.select({ email: users.email }).from(users).where(eq(users.id, ctx.user_id)).limit(1);
   const own = me?.email?.toLowerCase() ?? null;
   const redact = (value: unknown): unknown => {
@@ -604,7 +613,7 @@ async function withIdempotency(
       .orderBy(desc(oauthAuditEvents.created_at))
       .limit(1);
     const replay = storedToolResult(existing?.metadata?.result);
-    if (replay) return redactReplayForViewer(replay, ctx);
+    if (replay) return redactReplayForViewer(replay, ctx, existing?.metadata?.viewer_guest === true);
   }
 
   const result = await execute();
@@ -622,6 +631,8 @@ async function withIdempotency(
         grant_id: ctx.grant_id ?? null,
         principal_kind: ctx.principal_kind ?? 'human',
         ...(bind === null ? {} : { bind }),
+        // The view the result was computed for (redactReplayForViewer).
+        viewer_guest: (await peopleViewer(ctx.org_id, ctx.user_id)).guest,
         result,
       },
     });
@@ -2289,11 +2300,16 @@ export async function humanTaskUpdate(args: { task_id?: string; patch?: Record<s
     if (!(await userCanSeeTask(ctx, taskId))) return errorResult('task_update: task not found');
     const [existingTask] = await db.select().from(tasks).where(and(eq(tasks.id, taskId), eq(tasks.org_id, ctx.org_id), eq(tasks.is_deleted, false))).limit(1);
     if (!existingTask) return errorResult('task_update: task not found');
-    if (typeof patch.assignee_id === 'string') {
+    // A guest may assign only people who share a space with them; anyone else
+    // reads like a non-member (lib/people-visibility.ts). Re-sending the
+    // current assignee is no change and is not checked again.
+    if (typeof patch.assignee_id === 'string' && patch.assignee_id !== existingTask.assignee_id) {
+      const viewer = await peopleViewer(ctx.org_id, ctx.user_id);
       const [member] = await db
         .select({ id: orgMembers.id })
         .from(orgMembers)
-        .where(and(eq(orgMembers.org_id, ctx.org_id), eq(orgMembers.user_id, patch.assignee_id), eq(orgMembers.is_active, true)))
+        .where(and(eq(orgMembers.org_id, ctx.org_id), eq(orgMembers.user_id, patch.assignee_id), eq(orgMembers.is_active, true),
+          personVisibleSql(viewer, orgMembers.user_id)))
         .limit(1);
       if (!member) return errorResult('task_update: assignee is not an active org member');
     }
@@ -3918,14 +3934,17 @@ export async function humanTaskSavedViewCreate(args: Record<string, unknown>, ct
 
 export async function humanAgentEmployeeList(args: { include_paused?: boolean; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:workspace'); if (scopeError) return scopeError;
-  const rows = await db.select({ id: agentEmployees.id, name: agentEmployees.name, slug: agentEmployees.slug, role: agentEmployees.role, job_title: agentEmployees.job_title, runtime_kind: agentEmployees.runtime_kind, is_active: agentEmployees.is_active, unhealthy: agentEmployees.unhealthy, unhealthy_reason: agentEmployees.unhealthy_reason, certification_status: agentEmployees.certification_status, last_mcp_call_at: agentEmployees.last_mcp_call_at, last_work_outcome_at: agentEmployees.last_work_outcome_at }).from(agentEmployees).where(and(eq(agentEmployees.org_id, ctx.org_id), eq(agentEmployees.is_deleted, false), args.include_paused ? sql`true` : eq(agentEmployees.is_active, true))).orderBy(agentEmployees.name).limit(Math.min(Math.max(1, args.limit ?? 50), 100));
+  // Agents are participants: a guest sees only those they share a space with (lib/people-visibility.ts).
+  const viewer = await peopleViewer(ctx.org_id, ctx.user_id);
+  const rows = await db.select({ id: agentEmployees.id, name: agentEmployees.name, slug: agentEmployees.slug, role: agentEmployees.role, job_title: agentEmployees.job_title, runtime_kind: agentEmployees.runtime_kind, is_active: agentEmployees.is_active, unhealthy: agentEmployees.unhealthy, unhealthy_reason: agentEmployees.unhealthy_reason, certification_status: agentEmployees.certification_status, last_mcp_call_at: agentEmployees.last_mcp_call_at, last_work_outcome_at: agentEmployees.last_work_outcome_at }).from(agentEmployees).where(and(eq(agentEmployees.org_id, ctx.org_id), eq(agentEmployees.is_deleted, false), args.include_paused ? sql`true` : eq(agentEmployees.is_active, true), personVisibleSql(viewer, agentEmployees.user_id))).orderBy(agentEmployees.name).limit(Math.min(Math.max(1, args.limit ?? 50), 100));
   return textResult(rows.map((row) => ({ ...row, url: `/settings/agent-employees/${row.id}` })));
 }
 
 export async function humanAgentEmployeeGet(args: { employee_id?: string }, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:workspace'); if (scopeError) return scopeError;
   if (!args.employee_id) return errorResult('employee_id is required');
-  const [row] = await db.select({ id: agentEmployees.id, name: agentEmployees.name, slug: agentEmployees.slug, role: agentEmployees.role, job_title: agentEmployees.job_title, expertise_description: agentEmployees.expertise_description, runtime_kind: agentEmployees.runtime_kind, trust_level: agentEmployees.trust_level, max_daily_actions: agentEmployees.max_daily_actions, daily_action_count: agentEmployees.daily_action_count, is_active: agentEmployees.is_active, unhealthy: agentEmployees.unhealthy, unhealthy_reason: agentEmployees.unhealthy_reason, certification_status: agentEmployees.certification_status, last_verified_at: agentEmployees.last_verified_at, last_mcp_call_at: agentEmployees.last_mcp_call_at, last_work_outcome_at: agentEmployees.last_work_outcome_at }).from(agentEmployees).where(and(eq(agentEmployees.id, args.employee_id), eq(agentEmployees.org_id, ctx.org_id), eq(agentEmployees.is_deleted, false))).limit(1);
+  const viewer = await peopleViewer(ctx.org_id, ctx.user_id);
+  const [row] = await db.select({ id: agentEmployees.id, name: agentEmployees.name, slug: agentEmployees.slug, role: agentEmployees.role, job_title: agentEmployees.job_title, expertise_description: agentEmployees.expertise_description, runtime_kind: agentEmployees.runtime_kind, trust_level: agentEmployees.trust_level, max_daily_actions: agentEmployees.max_daily_actions, daily_action_count: agentEmployees.daily_action_count, is_active: agentEmployees.is_active, unhealthy: agentEmployees.unhealthy, unhealthy_reason: agentEmployees.unhealthy_reason, certification_status: agentEmployees.certification_status, last_verified_at: agentEmployees.last_verified_at, last_mcp_call_at: agentEmployees.last_mcp_call_at, last_work_outcome_at: agentEmployees.last_work_outcome_at }).from(agentEmployees).where(and(eq(agentEmployees.id, args.employee_id), eq(agentEmployees.org_id, ctx.org_id), eq(agentEmployees.is_deleted, false), personVisibleSql(viewer, agentEmployees.user_id))).limit(1);
   return row ? textResult({ ...row, url: `/settings/agent-employees/${row.id}` }) : errorResult('Agent employee not found');
 }
 

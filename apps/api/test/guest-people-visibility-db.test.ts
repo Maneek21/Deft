@@ -29,6 +29,9 @@ import { searchNativeMentions, resolveNativeMentions } from '../src/lib/native-m
 import { nativeMentionRef } from '@deft/shared';
 import { memberList } from '../src/lib/mcp-tools/members.js';
 import {
+  humanAgentEmployeeGet,
+  humanAgentEmployeeList,
+  humanTaskUpdate,
   humanMemberGet,
   humanMemberList,
   humanMessagesRecent,
@@ -541,4 +544,32 @@ test('an agent an owner made a guest cannot message a hidden person: answered li
   const unknown = await sendMessage({ content: 'hi', target: { user_id: randomUUID() } } as never, ctx);
   assert.equal(hidden.isError, true);
   assert.deepEqual(hidden, unknown);
+});
+
+test('MCP task_update, agent_employee_list/get and idempotent replays follow the rule', async () => {
+  const writer = (viewer: string): HumanToolContext => ({ ...mcp(viewer), scopes: ['read:workspace', 'read:tasks', 'write:tasks'] });
+  const hidden = await humanTaskUpdate({ task_id: task, patch: { assignee_id: stranger } }, writer(guest));
+  const unknown = await humanTaskUpdate({ task_id: task, patch: { assignee_id: randomUUID() } }, writer(guest));
+  assert.equal(hidden.isError, true);
+  assert.deepEqual(hidden, unknown);
+
+  const agents = parse(await humanAgentEmployeeList({ include_paused: true }, mcp(guest))).map((row: any) => row.id);
+  assert.ok(agents.includes(agentEmployee));
+  assert.equal(agents.includes(hiddenAgentEmployee), false);
+  assert.equal((await humanAgentEmployeeGet({ employee_id: hiddenAgentEmployee }, mcp(guest))).isError, true);
+  assert.ok(parse(await humanAgentEmployeeList({ include_paused: true }, mcp(sharer))).some((row: any) => row.id === hiddenAgentEmployee));
+
+  // A result stored while Stella Friend was a member is not repeated to her as a guest.
+  const key = `gpv-replay-${run}`;
+  const first = await humanTaskUpdate({ task_id: task, patch: { priority: 'p1' }, idempotency_key: key }, writer(friend));
+  assert.notEqual(first.isError, true, first.content[0]!.text);
+  assert.ok(first.content[0]!.text.includes(task));
+  await c.query(`UPDATE org_members SET role = 'guest' WHERE org_id = $1 AND user_id = $2`, [org, friend]);
+  try {
+    const replayed = parse(await humanTaskUpdate({ task_id: task, patch: { priority: 'p1' }, idempotency_key: key }, writer(friend)));
+    assert.equal(replayed.status, 'already_completed');
+    assert.equal(JSON.stringify(replayed).includes(sharer), false, 'no stored assignee id is repeated');
+  } finally {
+    await c.query(`UPDATE org_members SET role = 'member' WHERE org_id = $1 AND user_id = $2`, [org, friend]);
+  }
 });

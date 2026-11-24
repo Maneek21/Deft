@@ -541,9 +541,14 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
     }
     if (user.role === 'guest') {
       // A guest is told only about people who share a space with them; if
-      // that cannot be read, about no one (lib/people-visibility.ts).
-      const visible = await visiblePersonIds({ orgId: user.org_id, userId: user.id, guest: true }).catch(() => new Set<string>());
-      socket.emit('presence:init', presenceList.filter((entry) => canSeePerson(visible, entry.user_id)));
+      // that cannot be read, about no one (lib/people-visibility.ts). Not
+      // awaited here: the handlers below, disconnect cleanup included, must
+      // be registered before anything else can happen on this socket.
+      void visiblePersonIds({ orgId: user.org_id, userId: user.id, guest: true })
+        .catch(() => new Set<string>())
+        .then((visible) => {
+          if (socket.connected) socket.emit('presence:init', presenceList.filter((entry) => canSeePerson(visible, entry.user_id)));
+        });
     } else {
       socket.emit('presence:init', presenceList);
     }
