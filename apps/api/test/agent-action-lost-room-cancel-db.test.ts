@@ -20,7 +20,7 @@ const orgId = randomUUID();
 const ids = {
   mia: randomUUID(), olive: randomUUID(), adam: randomUUID(), rita: randomUUID(),
   gina: randomUUID(), pam: randomUUID(), sam: randomUUID(), ray: randomUUID(), kay: randomUUID(),
-  cal: randomUUID(), pia: randomUUID(), dee: randomUUID(), pat: randomUUID(), gil: randomUUID(),
+  cal: randomUUID(), pia: randomUUID(), dee: randomUUID(), pat: randomUUID(), gil: randomUUID(), una: randomUUID(),
 };
 const projectId = randomUUID();
 const planId = randomUUID();
@@ -29,7 +29,7 @@ const roles: Record<string, 'member' | 'owner' | 'admin' | 'guest'> = Object.fro
 );
 const rooms = {
   removed: randomUUID(), left: randomUUID(), dm: randomUUID(), open: randomUUID(),
-  kept: randomUUID(), archived: randomUUID(), guard: randomUUID(), race: randomUUID(), pub: randomUUID(),
+  kept: randomUUID(), archived: randomUUID(), guard: randomUUID(), race: randomUUID(), pub: randomUUID(), arcRace: randomUUID(), arcRoute: randomUUID(),
 };
 const act = {
   removed: randomUUID(), capture: randomUUID(), approvedHistory: randomUUID(), left: randomUUID(), dm: randomUUID(),
@@ -110,9 +110,12 @@ before(async () => {
     [rooms.race]: [ids.ray, ids.kay, ids.pat, ids.olive, ids.adam],
     // Gil joined this public room; as a member of the workspace he could also read it unjoined.
     [rooms.pub]: [ids.gil, ids.olive, ids.adam],
+    // Una reads these public rooms without joining them.
+    [rooms.arcRace]: [ids.olive, ids.adam],
+    [rooms.arcRoute]: [ids.olive, ids.adam],
   };
   for (const [room, members] of Object.entries(roomMembers)) {
-    const type = room === rooms.dm ? 'group_dm' : room === rooms.open || room === rooms.pub ? 'public' : 'private';
+    const type = room === rooms.dm ? 'group_dm' : room === rooms.open || room === rooms.pub || room === rooms.arcRace || room === rooms.arcRoute ? 'public' : 'private';
     await client.query('INSERT INTO spaces(id,org_id,name,type,created_by) VALUES($1,$2,$3,$4,$5)', [room, orgId, `room-${room.slice(0, 8)}`, type, ids.olive]);
     for (const user of members) await client.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), room, user]);
   }
@@ -446,6 +449,39 @@ test('a guest demotion and a public-room removal at the same time: the second se
   }
   roles[ids.gil] = 'guest';
   await assertCancelled(pubAction, 'the removal ran after the demotion committed and saw it');
+});
+
+test('archiving a public room: a claim waits for it, then refuses; the archive closes the actions it orphans', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const { claimPendingApproval } = await import('../src/lib/agent-action-execution-lease.js');
+  const insertFor = async (room: string) => {
+    const id = randomUUID();
+    await client!.query(`INSERT INTO agent_actions(id,org_id,user_id,conversation_id,source,action,params,approval_tier,approval_status)
+      VALUES($1,$2,$3,$4,'mention','post_message','{"content":"unjoined"}'::jsonb,'quick','pending')`, [id, orgId, ids.una, room]);
+    return id;
+  };
+  const raced = await insertFor(rooms.arcRace);
+  // The archive is in progress (uncommitted) while Una approves her own action.
+  const holder = new pg.Client({ connectionString: url });
+  await holder.connect();
+  try {
+    await holder.query('BEGIN');
+    await holder.query('UPDATE spaces SET is_archived=true WHERE id=$1', [rooms.arcRace]);
+    const { rows: [{ pid }] } = await holder.query('SELECT pg_backend_pid() AS pid');
+    const claim = claimPendingApproval(await loadRow(raced), ids.una);
+    await lockWaiters(pid, 1);
+    await holder.query('COMMIT');
+    assert.equal(await claim, null, 'the claim read the room after the archive committed');
+  } finally {
+    await holder.query('ROLLBACK').catch(() => {});
+    await holder.end();
+  }
+  // Through the route: the archive closes the action in its own transaction.
+  const orphaned = await insertFor(rooms.arcRoute);
+  const archived = await call(ids.olive, `/api/spaces/${rooms.arcRoute}`, { method: 'DELETE' });
+  assert.equal(archived.status, 200, archived.text);
+  await assertCancelled(orphaned, 'archived room read unjoined');
+  await assertCancelled(raced, 'the same archive pass closed the raced one');
 });
 
 test('owners and admins keep the history of cancelled actions; the person who lost the room does not see it', async (t) => {

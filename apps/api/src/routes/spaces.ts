@@ -750,9 +750,17 @@ spaceRoutes.delete('/:id', async (c) => {
       return c.json({ error: 'Only the space creator can delete it', code: 'FORBIDDEN' }, 403);
     }
 
-    await db.update(spaces)
-      .set({ is_archived: true })
-      .where(eq(spaces.id, spaceId));
+    // DFX2: archiving ends unjoined reading of a public room. The update holds
+    // the room's row lock, which every approval claim takes (shared) before
+    // its claiming statement, so no claim commits on a pre-archive snapshot;
+    // the pending actions that lose their room close in the same transaction.
+    const closedActions = await db.transaction(async (tx) => {
+      await tx.update(spaces)
+        .set({ is_archived: true })
+        .where(eq(spaces.id, spaceId));
+      return closeLostRoomActionsInTx(tx, { orgId: user.org_id });
+    });
+    await finishLostRoomCancellations(user.org_id, closedActions);
 
     await evictActiveHuddleParticipants({
       orgId: user.org_id,

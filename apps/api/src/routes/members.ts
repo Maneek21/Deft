@@ -218,7 +218,7 @@ async function endWorkspaceAccess(tx: Tx, orgId: string, memberId: string, revok
   }
   // DFX2: every room went with the workspace; their pending assistant
   // actions from rooms close with a reason, committed with the removal.
-  closedActions.push(...await closeLostRoomActionsInTx(tx, { orgId, requesterId: memberId }));
+  for (const id of await closeLostRoomActionsInTx(tx, { orgId, requesterId: memberId })) closedActions.push(id);
   return sessions.map(session => session.id);
 }
 

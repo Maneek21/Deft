@@ -480,7 +480,7 @@ export async function claimPendingApproval(
 ): Promise<ClaimToken | null> {
   const requesterId = await loadActionRequesterId(row);
   return db.transaction(async (tx) => {
-  await lockRoomAccessForClaim(tx, row.org_id, requesterId);
+  await lockRoomAccessForClaim(tx, row.org_id, requesterId, row.id);
   const [claimed] = await tx
     .update(agentActions)
     .set({

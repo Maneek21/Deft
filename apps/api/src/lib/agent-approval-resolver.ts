@@ -1457,7 +1457,7 @@ async function approveActionLocked(
     // statement never reads access from before a loss that commits while it
     // waits (lib/room-access-lock.ts).
     const claimed = await db.transaction(async (tx) => {
-      await lockRoomAccessForClaim(tx, row.org_id, requesterId);
+      await lockRoomAccessForClaim(tx, row.org_id, requesterId, row.id);
       return tx.execute(
       // The executing marker is the one the ordinary approval claim writes:
       // approval surfaces show the row as executing until an outcome write

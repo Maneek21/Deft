@@ -13,6 +13,13 @@
  *   seeing the other's result.
  * Taking it first also keeps a single lock order with the membership row
  * locks the access changes take next.
+ *
+ * A change to a room itself (archiving it ends unjoined reading of a public
+ * room) does not take this lock: it updates the room's row, which every claim
+ * locks FOR SHARE before its claiming statement (see below), and closes the
+ * actions it orphans in its own transaction. Deleting an agent employee
+ * deactivates an agent's membership; agent employees' actions follow their
+ * own source rule, not this one.
  */
 import { sql } from 'drizzle-orm';
 import type { db } from './db.js';
@@ -28,7 +35,29 @@ export async function lockRoomAccessChange(tx: Executor, orgId: string, userId: 
   await tx.execute(sql`SELECT pg_advisory_xact_lock(${roomAccessLockKey(orgId, userId)})`);
 }
 
-/** Shared: an approval claim, before its claiming statement, for the action's requester. */
-export async function lockRoomAccessForClaim(tx: Executor, orgId: string, requesterId: string): Promise<void> {
+/**
+ * Shared: an approval claim, before its claiming statement, for the action's
+ * requester. Also locks the rows of the rooms the action came from (FOR
+ * SHARE, in id order), so a change to a room itself (archiving it, making it
+ * private) cannot commit between this and the claiming statement: it waits
+ * for the claim, or the claim waits for it and then reads it.
+ */
+export async function lockRoomAccessForClaim(tx: Executor, orgId: string, requesterId: string, actionId?: string): Promise<void> {
   await tx.execute(sql`SELECT pg_advisory_xact_lock_shared(${roomAccessLockKey(orgId, requesterId)})`);
+  if (!actionId) return;
+  await tx.execute(sql`SELECT source_room.id FROM spaces source_room
+    WHERE source_room.org_id = ${orgId}
+      AND source_room.id IN (
+        SELECT claimed.conversation_id FROM agent_actions claimed WHERE claimed.id = ${actionId} AND claimed.org_id = ${orgId}
+        UNION
+        SELECT COALESCE(claimed.params->>'source_space_id', claimed.params->>'origin_space_id', claimed.params->>'space_id')
+          FROM agent_actions claimed WHERE claimed.id = ${actionId} AND claimed.org_id = ${orgId} AND claimed.source = 'defty_capture'
+        UNION
+        SELECT source_message.space_id FROM messages source_message
+          JOIN agent_actions claimed ON claimed.id = ${actionId} AND claimed.org_id = ${orgId}
+          WHERE source_message.org_id = ${orgId}
+            AND source_message.id IN (claimed.message_id, claimed.params->>'source_message_id')
+      )
+    ORDER BY source_room.id
+    FOR SHARE OF source_room`);
 }
