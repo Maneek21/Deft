@@ -59,6 +59,7 @@ import {
 } from './module-service.js';
 import { requireActiveOrgMembership } from './org-membership.js';
 import { sourceMessageRoomSql, visibleModuleActionSql } from './module-action-visibility.js';
+import { actionPlanRoomsReadableSql } from './plan-room-access.js';
 import { visibleCaptureActionSql } from './agent-action-visibility.js';
 import {
   loadEmployeeProjectAccess,
@@ -2410,6 +2411,10 @@ export async function executeToolCall(
       // reaches that person, so their own room rule applies too, unless they
       // are an owner or admin (check 13, DFX3). A person no longer an active
       // member reads nothing.
+      // An employee's read also leaves out the steps of a plan whose creator
+      // lost one of its rooms, as its queues do (DFX3): another member who
+      // shares the employee does not read them either.
+      if (agentEmployeeId) conditions.push(actionPlanRoomsReadableSql());
       if (agentEmployeeId && _userId) {
         const [person] = await db.select({ kind: users.kind, role: orgMembers.role, active: orgMembers.is_active })
           .from(users)

@@ -298,9 +298,18 @@ test('a plan step leaves the review gate once its creator loses a room of its pl
   if (unavailable) return t.skip(unavailable);
   const kept = randomUUID();
   const source = randomUUID();
+  // Another member who shares both rooms and the employee, and keeps them.
+  const peer = randomUUID();
+  await client!.query("INSERT INTO users(id,email,name,kind,is_agent) VALUES($1,$2,'Gate peer','human',false)", [peer, `${peer}@example.test`]);
+  await client!.query('INSERT INTO org_members(id,org_id,user_id,role) VALUES($1,$2,$3,$4)', [randomUUID(), orgId, peer, 'member']);
+  t.after(async () => {
+    await client!.query('DELETE FROM space_members WHERE user_id = $1', [peer]);
+    await client!.query('DELETE FROM org_members WHERE user_id = $1', [peer]);
+    await client!.query('DELETE FROM users WHERE id = $1', [peer]);
+  });
   for (const room of [kept, source]) {
     await client!.query("INSERT INTO spaces(id,org_id,name,type,created_by) VALUES($1,$2,$3,'private',$4)", [room, orgId, `gate-${room.slice(0, 8)}`, ids.olive]);
-    for (const user of [ids.mia, ids.olive]) await client!.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), room, user]);
+    for (const user of [ids.mia, ids.olive, peer]) await client!.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), room, user]);
   }
   const sourceMessage = randomUUID();
   await client!.query("INSERT INTO messages(id,org_id,space_id,user_id,content) VALUES($1,$2,$3,$4,'@Defty plan this')", [sourceMessage, orgId, source, ids.mia]);
@@ -336,6 +345,8 @@ test('a plan step leaves the review gate once its creator loses a room of its pl
   const { executeToolCall } = await import('../src/lib/agent-context.js');
   const activity = async () => JSON.stringify((await executeToolCall('get_agent_activity', { limit: 100 }, orgId, ids.mia, undefined, employee)).result);
   assert.ok((await activity()).includes(byEmployee), 'in the employee activity she reads while she has both rooms');
+  assert.ok(JSON.stringify((await executeToolCall('get_agent_activity', { limit: 100 }, orgId, peer, undefined, employee)).result).includes(byEmployee),
+    'in the activity another member reads through the employee while Mia has both rooms');
   // The employee's own pending-work queues (fetch_unread, poll_pending_work).
   const { fetchUnread } = await import('../src/lib/mcp-tools/messages.js');
   const { pollPendingWork } = await import('../src/lib/mcp-tools/cooperative.js');
@@ -355,6 +366,8 @@ test('a plan step leaves the review gate once its creator loses a room of its pl
   if (after.includes(late) || after.includes(`CANARY-gate-${late}`)) seen.push('late step in pending list or Inbox');
   const activityAfter = await activity();
   const queuesAfter = await queues();
+  const peerActivity = JSON.stringify((await executeToolCall('get_agent_activity', { limit: 100 }, orgId, peer, undefined, employee)).result);
+  if (peerActivity.includes(byEmployee) || peerActivity.includes(`CANARY-gate-${byEmployee}`)) seen.push('employee step in the activity another member reads');
   if (queuesAfter.includes(byEmployee) || queuesAfter.includes(`CANARY-gate-${byEmployee}`)) seen.push('employee step in the employee pending-work queues');
   if (activityAfter.includes(byEmployee) || activityAfter.includes(`CANARY-gate-${byEmployee}`)) seen.push('employee step in the employee activity she reads');
   const retry = await call(ids.mia, 'POST', `/api/agent/actions/${finished}/approve`);
