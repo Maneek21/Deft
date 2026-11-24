@@ -53,10 +53,11 @@ first if Deft's Postgres runs on a small machine (512 MB).
   connection kept that memory until it closed. The same query also ran on every Inbox
   count poll (every 15 seconds in each visible, online workspace tab). On a small
   database machine a few connections doing it at once ran it out of memory. On three
-  test workspaces (512 MB database machines, Postgres's default settings), a few dozen
-  messages in rooms with members froze the machine on two of them, and on the third the
-  kernel's out-of-memory killer stopped a Postgres process (Postgres restarted its
-  connections).
+  test workspaces (512 MB database machines, Postgres's default settings), with messages
+  in rooms that had members: one machine froze after 26 messages and 2 uploads; one froze
+  during its fourth run of about 40 messages; on the third, after 14 messages, the
+  kernel's out-of-memory killer killed a Postgres backend and the postmaster reset all
+  backends.
 - **What changed.** The check now plans only the rules for the item types it can meet: for
   a message item, a connection grows by a few MB. Lists, counts and lookups by id read the
   item types and the items in one snapshot. Marking items seen, changing an item's state
