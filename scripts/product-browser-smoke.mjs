@@ -67,6 +67,20 @@ async function checkOAuthPopupOpener(browser, signedInContext) {
         if (!signedIn) await context.close();
       }
     }
+    // Without a saved /oauth/authorize request the marker is dropped by a
+    // full load, so ordinary sign-in keeps COOP.
+    const direct = await browser.newContext();
+    try {
+      const page = await direct.newPage();
+      await page.goto(`${webUrl}/login?from=oauth`);
+      await page.waitForURL((url) => url.pathname === '/login' && !url.searchParams.has('from'), { timeout: 15_000 });
+      const response = await page.reload({ waitUntil: 'domcontentloaded' });
+      if (response?.headers()['cross-origin-opener-policy'] !== 'same-origin') {
+        throw new Error('A direct /login?from=oauth visit kept a page without COOP');
+      }
+    } finally {
+      await direct.close();
+    }
   } finally {
     server.close();
   }

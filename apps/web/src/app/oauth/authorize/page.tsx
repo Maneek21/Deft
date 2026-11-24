@@ -124,7 +124,9 @@ function OAuthAuthorizeContent() {
   function deny() {
     const redirectUri = authorizeParams.redirect_uri;
     if (!redirectUri) {
-      router.replace('/settings/mcp-access');
+      // A full load: this page has no COOP (it may be an outside client's
+      // pop-up), and the app must not continue in this document.
+      window.location.replace('/settings/mcp-access');
       return;
     }
     const url = new URL(redirectUri);

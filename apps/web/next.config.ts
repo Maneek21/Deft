@@ -143,12 +143,20 @@ const nextConfig: NextConfig = {
         source: '/oauth/authorize',
         headers: [{ key: 'Cross-Origin-Opener-Policy', value: 'unsafe-none' }],
       },
+      // The sign-in steps on the way back to authorization:
+      // `/login?from=oauth` (where it sends a signed-out person, also after a
+      // session expires there) and `/two-step-setup?from=oauth` (enrolment or
+      // a recovery code during that sign-in). A reload of either in the pop-up
+      // must not cut the opener. The pages drop the marker unless the tab is
+      // returning to /oauth/authorize (lib/oauth-popup-marker.ts); ordinary
+      // sign-in keeps COOP.
       {
-        // The sign-in page that authorization sends a signed-out person to
-        // (`/login?from=oauth`, also after a session expires there). A reload
-        // of it in the pop-up must not cut the opener either. Ordinary sign-in
-        // keeps COOP.
         source: '/login',
+        has: [{ type: 'query', key: 'from', value: 'oauth' }],
+        headers: [{ key: 'Cross-Origin-Opener-Policy', value: 'unsafe-none' }],
+      },
+      {
+        source: '/two-step-setup',
         has: [{ type: 'query', key: 'from', value: 'oauth' }],
         headers: [{ key: 'Cross-Origin-Opener-Policy', value: 'unsafe-none' }],
       },

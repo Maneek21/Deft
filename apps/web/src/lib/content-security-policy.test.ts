@@ -95,7 +95,8 @@ function headersFor(rows: ReturnType<typeof headerRows>, target: string): Record
   for (const row of rows) {
     const prefix = row.source.endsWith('/:path*') ? row.source.slice(0, -'/:path*'.length) + '/' : null;
     const hasMatches = (row.has ?? []).every((condition) => condition.type === 'query'
-      && searchParams.has(condition.key) && (condition.value === undefined || searchParams.get(condition.key) === condition.value));
+      // Next reads the last value of a repeated query key.
+      && searchParams.has(condition.key) && (condition.value === undefined || searchParams.getAll(condition.key).at(-1) === condition.value));
     if (hasMatches && (row.source === '/(.*)' || row.source === pathname || (prefix && pathname.startsWith(prefix)))) {
       for (const header of row.headers) out[header.key] = header.value;
     }
@@ -123,11 +124,11 @@ test('every page sends the four isolation headers the API sends; two named excep
   assert.equal(authorize['Origin-Agent-Cluster'], '?1');
   // The sign-in page authorization sends a signed-out person to, so a reload
   // in the pop-up keeps the opener; ordinary sign-in keeps COOP.
-  for (const path of ['/login?from=oauth', '/login?expired=1&from=oauth']) {
+  for (const path of ['/login?from=oauth', '/login?expired=1&from=oauth', '/login?from=other&from=oauth', '/two-step-setup?from=oauth']) {
     assert.equal(headersFor(rows, path)['Cross-Origin-Opener-Policy'], 'unsafe-none', path);
     assert.equal(headersFor(rows, path)['Cross-Origin-Resource-Policy'], 'same-origin', path);
   }
-  for (const path of ['/login', '/login?expired=1', '/login?from=other']) {
+  for (const path of ['/login', '/login?expired=1', '/login?from=other', '/login?from=oauth&from=other', '/two-step-setup']) {
     assert.equal(headersFor(rows, path)['Cross-Origin-Opener-Policy'], 'same-origin', path);
   }
   // The opaque sandboxed bootstrap frame must be able to load its script.

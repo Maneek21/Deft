@@ -9,6 +9,7 @@ import { disconnectSocket } from './socket';
 import { createSessionCacheScope, setActiveSessionCacheScope } from './session-cache';
 import { signupRequestBody } from './setup-link';
 import { parsePausedNotice, type PausedNotice } from './paused-notice';
+import { oauthMarkerQuery } from './oauth-popup-marker';
 
 type NotificationPreferences = {
   keywords: string[];
@@ -362,7 +363,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setLoading(false);
         if (pending.status === 'enrolment_required') {
           storeEnrolToken(pending.token);
-          router.push('/two-step-setup');
+          // Keeps an outside client's OAuth pop-up opener (lib/oauth-popup-marker.ts).
+          router.push(`/two-step-setup${oauthMarkerQuery()}`);
           return;
         }
         return pending;
@@ -400,7 +402,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // A recovery code: no session yet. A new authenticator comes first.
     if ('token' in session) {
       storeEnrolToken(session.token, session.reason);
-      router.push('/two-step-setup');
+      router.push(`/two-step-setup${oauthMarkerQuery()}`);
       return;
     }
     sessionCacheEpoch.current += 1;
