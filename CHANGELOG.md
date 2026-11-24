@@ -48,6 +48,10 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
   found. Before, such a stop left a database that looked usable but lacked those tables.
   On the supported image (`pgvector/pgvector`, pinned in `docker-compose.yml`) push-full is
   unchanged. CI now checks that a fresh install and an upgraded one have the same tables.
+- The web app now serves its fonts (Inter and JetBrains Mono, the same weights) itself
+  instead of loading them from Google Fonts, so no page, the signup and setup pages
+  included, makes a request to Google, and the page policy (CSP) no longer allows
+  fonts.googleapis.com or fonts.gstatic.com.
 
 ## [0.3.0-preview.150] — 2026-11-25 (prerelease)
 
