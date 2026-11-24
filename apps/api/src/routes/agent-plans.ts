@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
-import { eq, and, desc, inArray, or, type SQL } from 'drizzle-orm';
+import { eq, and, desc, inArray, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { agentPlans } from '@deft/db/schema';
+import { readableSpaceSql } from '../lib/space-visibility.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import {
   assertPlanEmployeeBindable,
@@ -150,6 +151,19 @@ agentPlanRoutes.post('/', async (c) => {
     if (body.agent_employee_id != null) {
       if (typeof body.agent_employee_id !== 'string') throw new PlanAccessError(PLAN_EMPLOYEE_UNAVAILABLE_ERROR);
       await assertPlanEmployeeBindable(user.org_id, body.agent_employee_id);
+    }
+
+    // A plan is bound only to a room its creator can read (DFX3): the read
+    // and run gates would refuse it anyway.
+    if (body.conversation_id != null) {
+      if (typeof body.conversation_id !== 'string') {
+        return c.json({ error: 'conversation_id must be a string', code: 'VALIDATION_ERROR' }, 400);
+      }
+      // readableSpaceSql reads the room itself (id and workspace given as values).
+      const readable = await db.execute(sql`SELECT ${readableSpaceSql(user.id, sql`${body.conversation_id}`, sql`${user.org_id}`)} AS ok`);
+      if ((readable.rows[0] as { ok?: boolean } | undefined)?.ok !== true) {
+        return c.json({ error: 'Space not found', code: 'NOT_FOUND' }, 404);
+      }
     }
 
     const { plan_id } = await createPlanRow({

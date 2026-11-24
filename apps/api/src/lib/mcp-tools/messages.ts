@@ -7,6 +7,7 @@
  * message_post (write) is Phase 4 and gated by trust level.
  */
 import { and, eq, asc, or, desc } from 'drizzle-orm';
+import { actionPlanRoomsReadableSql } from '../plan-room-access.js';
 import { db } from '../db.js';
 import { messages, users, spaces, spaceMembers, agentEmployees, agentActions } from '@deft/db/schema';
 import type { ToolContext, ToolResult } from './types.js';
@@ -277,6 +278,9 @@ export async function fetchUnread(
           eq(agentActions.agent_employee_id, ctx.employee_id),
           eq(agentActions.approval_status, 'pending'),
           currentAgentActionSourceAuthoritySql(),
+          // A step of a plan whose creator lost one of its rooms is not
+          // offered (DFX3), as a person no longer sees it.
+          actionPlanRoomsReadableSql(),
         ),
       )
       .orderBy(desc(agentActions.created_at))

@@ -336,6 +336,12 @@ test('a plan step leaves the review gate once its creator loses a room of its pl
   const { executeToolCall } = await import('../src/lib/agent-context.js');
   const activity = async () => JSON.stringify((await executeToolCall('get_agent_activity', { limit: 100 }, orgId, ids.mia, undefined, employee)).result);
   assert.ok((await activity()).includes(byEmployee), 'in the employee activity she reads while she has both rooms');
+  // The employee's own pending-work queues (fetch_unread, poll_pending_work).
+  const { fetchUnread } = await import('../src/lib/mcp-tools/messages.js');
+  const { pollPendingWork } = await import('../src/lib/mcp-tools/cooperative.js');
+  const ctx = { org_id: orgId, employee_id: employee, employee_slug: `gate-${employee.slice(0, 8)}`, trust_level: 'conservative' } as any;
+  const queues = async () => JSON.stringify(await fetchUnread({} as any, ctx)) + JSON.stringify(await pollPendingWork({} as any, ctx));
+  assert.ok((await queues()).includes(byEmployee), 'in the employee queues while she has both rooms');
 
   const removed = await call(ids.olive, 'DELETE', `/api/spaces/${source}/members/${ids.mia}`);
   assert.equal(removed.status, 200, removed.text);
@@ -348,6 +354,8 @@ test('a plan step leaves the review gate once its creator loses a room of its pl
   if (after.includes(byEmployee) || after.includes(`CANARY-gate-${byEmployee}`)) seen.push('employee step in pending list or Inbox');
   if (after.includes(late) || after.includes(`CANARY-gate-${late}`)) seen.push('late step in pending list or Inbox');
   const activityAfter = await activity();
+  const queuesAfter = await queues();
+  if (queuesAfter.includes(byEmployee) || queuesAfter.includes(`CANARY-gate-${byEmployee}`)) seen.push('employee step in the employee pending-work queues');
   if (activityAfter.includes(byEmployee) || activityAfter.includes(`CANARY-gate-${byEmployee}`)) seen.push('employee step in the employee activity she reads');
   const retry = await call(ids.mia, 'POST', `/api/agent/actions/${finished}/approve`);
   if (retry.status !== 404 || retry.text.includes('CANARY-gate-result')) seen.push(`finished step retry ${retry.status}`);
@@ -357,4 +365,19 @@ test('a plan step leaves the review gate once its creator loses a room of its pl
   }
   assert.deepEqual(seen, [], 'nothing of the plan is seen or approvable after the loss');
   assert.equal(await tasksCreated(`gate-${late}`), 0);
+});
+
+test('a plan can be created only in a room its creator can read', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const closed = randomUUID();
+  await client!.query("INSERT INTO spaces(id,org_id,name,type,created_by) VALUES($1,$2,$3,'private',$4)", [closed, orgId, `closed-${closed.slice(0, 8)}`, ids.olive]);
+  await client!.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), closed, ids.olive]);
+  const body = (room: string) => ({ title: `Bound plan ${room}`, conversation_id: room,
+    steps: [{ id: 'step-1', tool: 'create_task', params: { title: 'x', resolved_project_id: projectId } }] });
+  const refused = await call(ids.mia, 'POST', '/api/agent-plans', body(closed));
+  assert.equal(refused.status, 404, refused.text);
+  const { rows } = await client!.query('SELECT count(*)::int AS n FROM agent_plans WHERE org_id=$1 AND conversation_id=$2', [orgId, closed]);
+  assert.equal(rows[0].n, 0, 'nothing stored');
+  const made = await call(ids.olive, 'POST', '/api/agent-plans', body(closed));
+  assert.equal(made.status, 201, made.text);
 });
