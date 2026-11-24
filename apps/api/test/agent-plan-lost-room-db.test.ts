@@ -332,6 +332,10 @@ test('a plan step leaves the review gate once its creator loses a room of its pl
   const pendingText = async () => (await call(ids.mia, 'GET', '/api/agent/actions/pending')).text
     + (await call(ids.mia, 'GET', '/api/inbox?kind=pending_approval')).text;
   assert.ok((await pendingText()).includes(byEmployee), 'the employee step waits for Mia while she has both rooms');
+  // Another plan of Mia's run as the employee reads its activity: the result reaches her.
+  const { executeToolCall } = await import('../src/lib/agent-context.js');
+  const activity = async () => JSON.stringify((await executeToolCall('get_agent_activity', { limit: 100 }, orgId, ids.mia, undefined, employee)).result);
+  assert.ok((await activity()).includes(byEmployee), 'in the employee activity she reads while she has both rooms');
 
   const removed = await call(ids.olive, 'DELETE', `/api/spaces/${source}/members/${ids.mia}`);
   assert.equal(removed.status, 200, removed.text);
@@ -343,6 +347,8 @@ test('a plan step leaves the review gate once its creator loses a room of its pl
   const seen: string[] = [];
   if (after.includes(byEmployee) || after.includes(`CANARY-gate-${byEmployee}`)) seen.push('employee step in pending list or Inbox');
   if (after.includes(late) || after.includes(`CANARY-gate-${late}`)) seen.push('late step in pending list or Inbox');
+  const activityAfter = await activity();
+  if (activityAfter.includes(byEmployee) || activityAfter.includes(`CANARY-gate-${byEmployee}`)) seen.push('employee step in the employee activity she reads');
   const retry = await call(ids.mia, 'POST', `/api/agent/actions/${finished}/approve`);
   if (retry.status !== 404 || retry.text.includes('CANARY-gate-result')) seen.push(`finished step retry ${retry.status}`);
   for (const id of [byEmployee, late]) {

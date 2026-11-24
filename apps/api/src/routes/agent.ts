@@ -1313,6 +1313,13 @@ export async function approveActionAsReviewer(c: Context, user: ActionReviewer, 
       // stored approver rather than to this request.
       await finalizeApprovalOutcome({ actionId, orgId: user.org_id, receipt: 'resolver' });
     }
+    // A stored outcome (decided by an earlier request) is answered only while
+    // this viewer may still review the action: they may have lost one of its
+    // rooms during this request's bookkeeping (DFX3).
+    if (result.status === 'approved' && result.decidedElsewhere === true
+      && !await loadReviewableAction(actionId, user)) {
+      return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+    }
     // An action approved earlier whose execution failed is reported as
     // failed, not as a fresh success. The settled row is read again: this
     // request's first read may predate the outcome another request recorded.

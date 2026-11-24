@@ -3794,11 +3794,14 @@ async function executeActionDirectLocked(
   const reusedGovernedAction = reusedModuleAction
     || reusedModuleTaskLinkAction
     || reusedModuleBulkCreateAction;
+  // A plan step, a forced approval, or a reuse of a plan step's action must
+  // match its plan and step: another context never takes over (or reads the
+  // result of) an action bound to a plan whose rooms it may not have (DFX3).
   if (
-    options?.forceApproval
+    (options?.forceApproval || options?.planId || actionRecord.plan_id)
     && reusedGovernedAction
     && (
-      !options.planId
+      !options?.planId
       || !options.planStepId
       || actionRecord.plan_id !== options.planId
       || actionRecord.plan_step_id !== options.planStepId
