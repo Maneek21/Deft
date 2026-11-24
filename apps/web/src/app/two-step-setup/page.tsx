@@ -6,6 +6,7 @@ import { Logo } from '@/components/brand/logo';
 import { TwoStepEnrolment } from '@/components/two-step-enrolment';
 import { safePostLoginDestination } from '@/lib/auth-context';
 import { takeEnrolReason, takeEnrolToken } from '@/lib/two-step';
+import { dropUnbackedOAuthMarker } from '@/lib/oauth-popup-marker';
 
 /**
  * Where an owner or admin who must have two-step verification lands after
@@ -18,6 +19,8 @@ export default function TwoStepSetupPage() {
   const [afterRecoveryCode, setAfterRecoveryCode] = useState(false);
 
   useEffect(() => {
+    // `from=oauth` (a page without COOP) only while this tab returns to /oauth/authorize.
+    if (dropUnbackedOAuthMarker()) return;
     setEnrolToken(takeEnrolToken());
     setAfterRecoveryCode(takeEnrolReason() === 'recovery_code');
   }, []);

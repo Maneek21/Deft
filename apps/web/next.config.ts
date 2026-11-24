@@ -119,7 +119,46 @@ const nextConfig: NextConfig = {
             ].join('; '),
           },
           { key: 'Strict-Transport-Security', value: 'max-age=31536000; includeSubDomains' },
+          // The four the API already sends (Hono secureHeaders defaults), so
+          // the two halves of a workspace match. COOP: a page on another
+          // address that opens this one in a new window keeps no handle to
+          // it. Origin-Agent-Cluster: ask for this origin's own process and
+          // turn off document.domain (nothing here uses it). CORP: another
+          // address cannot embed this app's files with <img>/<script> etc.
+          // (Experience frames are srcdoc with inline script and Blob
+          // Workers; print frames use blob: images; neither loads from
+          // here.) DNS prefetch off: link hrefs on the page are not looked
+          // up ahead of a click.
+          { key: 'Cross-Origin-Opener-Policy', value: 'same-origin' },
+          { key: 'Origin-Agent-Cluster', value: '?1' },
+          { key: 'Cross-Origin-Resource-Policy', value: 'same-origin' },
+          { key: 'X-DNS-Prefetch-Control', value: 'off' },
         ],
+      },
+      {
+        // The MCP authorization page (oauth/authorize) is opened by outside
+        // MCP clients, some in a pop-up whose callback page reports back to
+        // its opener. COOP same-origin here would cut that link for the
+        // whole pop-up, so this one page keeps the browser default.
+        source: '/oauth/authorize',
+        headers: [{ key: 'Cross-Origin-Opener-Policy', value: 'unsafe-none' }],
+      },
+      // The sign-in steps on the way back to authorization:
+      // `/login?from=oauth` (where it sends a signed-out person, also after a
+      // session expires there) and `/two-step-setup?from=oauth` (enrolment or
+      // a recovery code during that sign-in). A reload of either in the pop-up
+      // must not cut the opener. The pages drop the marker unless the tab is
+      // returning to /oauth/authorize (lib/oauth-popup-marker.ts); ordinary
+      // sign-in keeps COOP.
+      {
+        source: '/login',
+        has: [{ type: 'query', key: 'from', value: 'oauth' }],
+        headers: [{ key: 'Cross-Origin-Opener-Policy', value: 'unsafe-none' }],
+      },
+      {
+        source: '/two-step-setup',
+        has: [{ type: 'query', key: 'from', value: 'oauth' }],
+        headers: [{ key: 'Cross-Origin-Opener-Policy', value: 'unsafe-none' }],
       },
       {
         // The only frameable page is the trusted, opaque Experience bootstrap.
@@ -130,6 +169,14 @@ const nextConfig: NextConfig = {
           { key: 'Content-Security-Policy', value: "default-src 'none'; script-src 'self'; worker-src blob:; connect-src 'none'; img-src 'none'; style-src 'none'; font-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'" },
           { key: 'Referrer-Policy', value: 'no-referrer' },
         ],
+      },
+      {
+        // The bootstrap page above runs in a sandboxed frame with an opaque
+        // origin, so its one script request is cross-origin by definition;
+        // CORP same-origin would block it. The script is the fixed trusted
+        // bootstrap (no user data), so any origin may load it.
+        source: '/app-experience-bootstrap.js',
+        headers: [{ key: 'Cross-Origin-Resource-Policy', value: 'cross-origin' }],
       },
       // Invite and password recovery pages can be opened with a one-time
       // token in the address (old-style links). Send no Referer from them,

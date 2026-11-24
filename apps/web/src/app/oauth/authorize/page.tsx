@@ -71,7 +71,9 @@ function OAuthAuthorizeContent() {
     if (loading) return;
     if (!user) {
       sessionStorage.setItem('deft-redirect-after-login', `${window.location.pathname}${window.location.search}`);
-      router.replace('/login');
+      // `from=oauth` keeps a reload of the sign-in page inside an outside
+      // client's pop-up without COOP (next.config.ts), so its opener survives.
+      router.replace('/login?from=oauth');
     }
   }, [loading, router, user]);
 
@@ -122,7 +124,9 @@ function OAuthAuthorizeContent() {
   function deny() {
     const redirectUri = authorizeParams.redirect_uri;
     if (!redirectUri) {
-      router.replace('/settings/mcp-access');
+      // A full load: this page has no COOP (it may be an outside client's
+      // pop-up), and the app must not continue in this document.
+      window.location.replace('/settings/mcp-access');
       return;
     }
     const url = new URL(redirectUri);

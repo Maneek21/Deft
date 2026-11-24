@@ -10,6 +10,13 @@ import { EXPERIENCE_BOOTSTRAP_SCRIPT } from './app-experience-bootstrap-script.t
 
 const require=createRequire(import.meta.url),{chromium}=require('playwright'),{build}=require('esbuild');
 const fixture=new URL('../../../../scripts/gate-g/experiences/',import.meta.url);
+// Every header next.config.ts gives a path, merged as Next merges rows (a
+// later row overrides a key), so the frames run under the full page headers
+// (Cross-Origin-Opener/Resource-Policy, Origin-Agent-Cluster, ...), not CSP alone.
+const configHeaders=(rows,pathname)=>{const out={};for(const row of rows){const source=row.source;if(row.has)continue;// query-conditioned rows never match these paths
+ const hit=source==='/(.*)'||source===pathname||(source.endsWith('/:path*')&&pathname.startsWith(source.slice(0,-'/:path*'.length)+'/'));
+ if(hit)for(const header of row.headers)out[header.key]=header.value;}return out;};
+const PAGE_ISOLATION={'Cross-Origin-Opener-Policy':'same-origin','Origin-Agent-Cluster':'?1','Cross-Origin-Resource-Policy':'same-origin','X-DNS-Prefetch-Control':'off'};
 
 // Separate explicit CI entry: requires the locked Chromium install, never skips.
 test('actual srcdoc and HTTP control retain opaque Worker isolation under the real global parent policy', {timeout:60000},async()=>{
@@ -18,7 +25,7 @@ test('actual srcdoc and HTTP control retain opaque Worker isolation under the re
  const ast=ts.createSourceFile('next.config.ts',headersSource,ts.ScriptTarget.Latest,true);let method;
  const visit=node=>{if(ts.isMethodDeclaration(node)&&node.name.getText(ast)==='headers')method=node.getText(ast);ts.forEachChild(node,visit);};visit(ast);
  assert.ok(method);
- let childPolicy='';
+ let childPolicy='',configRows=[];
  const servers=[];
  const handler=(req,res)=>{
   const url=new URL(req.url,'http://127.0.0.1');let body,type='application/javascript',policy=parentPolicy;
@@ -32,13 +39,15 @@ test('actual srcdoc and HTTP control retain opaque Worker isolation under the re
   else if(url.pathname==='/app-experience-bootstrap.js')body=EXPERIENCE_BOOTSTRAP_SCRIPT;
   else if(url.pathname==='/app-experience-bootstrap'){type='text/html';policy=childPolicy;body='<!doctype html><meta charset="utf-8"><script src="/app-experience-bootstrap.js" defer></script>';}
   else{res.writeHead(404);res.end();return;}
-  res.writeHead(200,{'Content-Type':type+'; charset=utf-8','Cache-Control':'no-store','Content-Security-Policy':policy,'X-Frame-Options':url.pathname==='/app-experience-bootstrap'?'SAMEORIGIN':'DENY','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer'});res.end(body);
+  res.writeHead(200,{...configHeaders(configRows,url.pathname),'Content-Type':type+'; charset=utf-8','Cache-Control':'no-store','Content-Security-Policy':policy});res.end(body);
  };
  const listen=async()=>{const server=createServer(handler);servers.push(server);server.on('upgrade',(req,socket)=>{observations.worker_hits.push({port:req.socket.localPort,upgrade:true});socket.destroy();});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));return'http://127.0.0.1:'+server.address().port;};
  let browser;
  try{
   const host=await listen(),foreign=await listen();
   const rows=await vm.runInNewContext('('+method.replace('async headers()','async function()')+')()',{connectSrc:`'self' ${foreign} ${foreign.replace(/^http/,'ws')}`});
+  configRows=rows;
+  for(const [key,value] of Object.entries(PAGE_ISOLATION)){assert.equal(configHeaders(rows,'/')[key],value);assert.equal(configHeaders(rows,'/app-experience-bootstrap')[key],value);assert.equal(configHeaders(rows,'/app-experience-bootstrap.js')[key],key==='Cross-Origin-Resource-Policy'?'cross-origin':value);}
   parentPolicy=rows.find(row=>row.source==='/(.*)').headers.find(row=>row.key==='Content-Security-Policy').value;
   childPolicy=rows.find(row=>row.source==='/app-experience-bootstrap').headers.find(row=>row.key==='Content-Security-Policy').value;
   assert.ok(parentPolicy.includes("worker-src 'self' blob:"));
@@ -75,7 +84,7 @@ test('native app document print frame renders and enters print under the real pa
  const requests=[];
  const server=createServer((req,res)=>{
   requests.push(req.url);
-  res.writeHead(200,{'Content-Type':req.url==='/bundle.js'?'application/javascript':'text/html','Content-Security-Policy':policy});
+  res.writeHead(200,{...configHeaders(rows,new URL(req.url,'http://127.0.0.1').pathname),'Content-Type':req.url==='/bundle.js'?'application/javascript':'text/html','Content-Security-Policy':policy});
   res.end(req.url==='/bundle.js'?compiled.outputFiles[0].text:'<!doctype html><button>Print app document</button><script src="/bundle.js" defer></script>');
  });
  let browser;

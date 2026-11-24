@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, Suspense } from 'react';
+import { useEffect, useState, Suspense } from 'react';
+import { dropUnbackedOAuthMarker } from '@/lib/oauth-popup-marker';
 import { useAuth } from '@/lib/auth-context';
 import Link from 'next/link';
 import { Eye, EyeOff } from 'lucide-react';
@@ -27,6 +28,8 @@ function LoginContent() {
   const [pending, setPending] = useState<TwoStepPending | null>(null);
   const [code, setCode] = useState('');
   const [useRecoveryCode, setUseRecoveryCode] = useState(false);
+  // `from=oauth` (a page without COOP) only while this tab returns to /oauth/authorize.
+  useEffect(() => { dropUnbackedOAuthMarker(); }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

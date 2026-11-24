@@ -78,3 +78,61 @@ test('prebuilt image: placeholders in the policy become the real origins at star
     await rm(root, { recursive: true, force: true });
   }
 });
+
+/** All header rows from next.config.ts, in a fresh process. */
+function headerRows(): Array<{ source: string; has?: Array<{ type: string; key: string; value?: string }>; headers: Array<{ key: string; value: string }> }> {
+  const script = `import(${JSON.stringify(pathToFileURL(join(webRoot, 'next.config.ts')).href)})
+    .then(async (m) => { const config = m.default.default ?? m.default; process.stdout.write(JSON.stringify(await config.headers())); })`;
+  const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], { cwd: webRoot, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout);
+}
+
+/** Next applies every matching row in order; a later row overrides a key. */
+function headersFor(rows: ReturnType<typeof headerRows>, target: string): Record<string, string> {
+  const { pathname, searchParams } = new URL(target, 'https://deft.example');
+  const out: Record<string, string> = {};
+  for (const row of rows) {
+    const prefix = row.source.endsWith('/:path*') ? row.source.slice(0, -'/:path*'.length) + '/' : null;
+    const hasMatches = (row.has ?? []).every((condition) => condition.type === 'query'
+      // Next reads the last value of a repeated query key.
+      && searchParams.has(condition.key) && (condition.value === undefined || searchParams.getAll(condition.key).at(-1) === condition.value));
+    if (hasMatches && (row.source === '/(.*)' || row.source === pathname || (prefix && pathname.startsWith(prefix)))) {
+      for (const header of row.headers) out[header.key] = header.value;
+    }
+  }
+  return out;
+}
+
+test('every page sends the four isolation headers the API sends; two named exceptions', () => {
+  const rows = headerRows();
+  const four = {
+    'Cross-Origin-Opener-Policy': 'same-origin',
+    'Origin-Agent-Cluster': '?1',
+    'Cross-Origin-Resource-Policy': 'same-origin',
+    'X-DNS-Prefetch-Control': 'off',
+  };
+  for (const path of ['/', '/login', '/chat', '/dashboard', '/invite', '/invite/abc', '/reset-password', '/app-experience-bootstrap', '/_next/static/chunks/main.js', '/icon.png']) {
+    const headers = headersFor(rows, path);
+    for (const [key, value] of Object.entries(four)) assert.equal(headers[key], value, `${key} on ${path}`);
+  }
+  // The MCP authorization page may be an outside client's pop-up: no COOP,
+  // so its callback page keeps window.opener. The other three still apply.
+  const authorize = headersFor(rows, '/oauth/authorize');
+  assert.equal(authorize['Cross-Origin-Opener-Policy'], 'unsafe-none');
+  assert.equal(authorize['Cross-Origin-Resource-Policy'], 'same-origin');
+  assert.equal(authorize['Origin-Agent-Cluster'], '?1');
+  // The sign-in page authorization sends a signed-out person to, so a reload
+  // in the pop-up keeps the opener; ordinary sign-in keeps COOP.
+  for (const path of ['/login?from=oauth', '/login?expired=1&from=oauth', '/login?from=other&from=oauth', '/two-step-setup?from=oauth']) {
+    assert.equal(headersFor(rows, path)['Cross-Origin-Opener-Policy'], 'unsafe-none', path);
+    assert.equal(headersFor(rows, path)['Cross-Origin-Resource-Policy'], 'same-origin', path);
+  }
+  for (const path of ['/login', '/login?expired=1', '/login?from=other', '/login?from=oauth&from=other', '/two-step-setup']) {
+    assert.equal(headersFor(rows, path)['Cross-Origin-Opener-Policy'], 'same-origin', path);
+  }
+  // The opaque sandboxed bootstrap frame must be able to load its script.
+  const bootstrapScript = headersFor(rows, '/app-experience-bootstrap.js');
+  assert.equal(bootstrapScript['Cross-Origin-Resource-Policy'], 'cross-origin');
+  assert.equal(bootstrapScript['Cross-Origin-Opener-Policy'], 'same-origin');
+});

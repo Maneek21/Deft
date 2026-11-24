@@ -22,6 +22,96 @@ async function settle(page, path) {
   await page.waitForTimeout(350);
 }
 
+/**
+ * An outside MCP client on another origin opens /oauth/authorize in a pop-up;
+ * its callback page must still reach window.opener. Signed in, and signed
+ * out with a reload of the sign-in page the pop-up is sent to.
+ */
+async function checkOAuthPopupOpener(browser, signedInContext) {
+  const { createServer } = await import('node:http');
+  const server = createServer((request, response) => {
+    const { pathname } = new URL(request.url, 'http://localhost');
+    response.writeHead(pathname === '/opener' || pathname === '/callback' ? 200 : 404, { 'content-type': 'text/html' });
+    response.end(pathname === '/opener'
+      ? '<!doctype html><script>window.got=[];addEventListener("message",e=>window.got.push(String(e.data)))</script>'
+      : '<!doctype html><script>if(window.opener)window.opener.postMessage("code:"+new URLSearchParams(location.search).get("code"),"*")</script>');
+  });
+  await new Promise((resolve) => server.listen(0, 'localhost', resolve));
+  const outside = `http://localhost:${server.address().port}`;
+  const query = new URLSearchParams({
+    response_type: 'code', client_id: 'smoke', redirect_uri: `${outside}/callback`,
+    state: 's', code_challenge: 'c', code_challenge_method: 'S256',
+  });
+  try {
+    for (const signedIn of [true, false]) {
+      const context = signedIn ? signedInContext : await browser.newContext();
+      try {
+        const opener = await context.newPage();
+        await opener.goto(`${outside}/opener`);
+        const [popup] = await Promise.all([
+          context.waitForEvent('page'),
+          opener.evaluate((target) => { window.open(target, 'oauth', 'width=600,height=700'); }, `${webUrl}/oauth/authorize?${query}`),
+        ]);
+        await popup.waitForLoadState('domcontentloaded');
+        if (!signedIn) {
+          await popup.waitForURL((url) => url.pathname === '/login', { timeout: 15_000 });
+          await popup.reload({ waitUntil: 'domcontentloaded' });
+        }
+        await popup.evaluate((target) => { window.location.href = target; }, `${outside}/callback?code=smoke`);
+        await opener.waitForFunction(() => window.got.includes('code:smoke'), null, { timeout: 15_000 }).catch(() => {
+          throw new Error(`OAuth pop-up lost its opener (${signedIn ? 'signed in' : 'signed out, sign-in page reloaded'})`);
+        });
+        await popup.close();
+        await opener.close();
+      } finally {
+        if (!signedIn) await context.close();
+      }
+    }
+    // Without a saved /oauth/authorize request the marker is dropped by a
+    // full load, so ordinary sign-in keeps COOP.
+    const direct = await browser.newContext();
+    try {
+      let page = await direct.newPage();
+      // A navigation request for the unmarked page (a new document), not a URL rewrite.
+      const navigatedTo = (pathname) => page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return response.request().isNavigationRequest() && url.pathname === pathname && !url.searchParams.has('from');
+      }, { timeout: 15_000 });
+      const cleaned = navigatedTo('/login');
+      await page.goto(`${webUrl}/login?from=oauth`);
+      if ((await cleaned).headers()['cross-origin-opener-policy'] !== 'same-origin') {
+        throw new Error('A direct /login?from=oauth visit kept a page without COOP');
+      }
+      // From the marked sign-in page of a real authorization, a link to
+      // another page is a full load that brings that page's COOP.
+      await page.close();
+      page = await direct.newPage();
+      await page.goto(`${webUrl}/oauth/authorize?${query}`);
+      await page.waitForURL((url) => url.pathname === '/login' && url.searchParams.get('from') === 'oauth', { timeout: 15_000 });
+      const license = navigatedTo('/license');
+      await page.getByRole('link', { name: 'License & source' }).click();
+      if ((await license).headers()['cross-origin-opener-policy'] !== 'same-origin') {
+        throw new Error('A link out of the OAuth sign-in page stayed in a document without COOP');
+      }
+      // Next matches header paths without regard to case: a case variant of
+      // the exempt path is a not-found page without COOP, and its link must
+      // still be a full load.
+      await page.close();
+      page = await direct.newPage();
+      await page.goto(`${webUrl}/OAuth/Authorize`);
+      const dashboard = navigatedTo('/dashboard');
+      await page.getByRole('link', { name: 'Go to Dashboard' }).click();
+      if ((await dashboard).headers()['cross-origin-opener-policy'] !== 'same-origin') {
+        throw new Error('A link out of a case variant of the authorization page stayed in a document without COOP');
+      }
+    } finally {
+      await direct.close();
+    }
+  } finally {
+    server.close();
+  }
+}
+
 async function main() {
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
@@ -47,6 +137,31 @@ async function main() {
       page.getByRole('button', { name: 'Sign in', exact: true }).click(),
     ]);
     record('Login through the production UI', email);
+
+    // Check 7 option B: the four isolation headers reach the browser from the
+    // production build on real (200) responses; the MCP authorization page,
+    // and the sign-in page it sends a signed-out person to, keep no COOP.
+    const isolation = {
+      'cross-origin-opener-policy': 'same-origin',
+      'origin-agent-cluster': '?1',
+      'cross-origin-resource-policy': 'same-origin',
+      'x-dns-prefetch-control': 'off',
+    };
+    const expectHeaders = async (path, expected) => {
+      const response = await page.request.get(`${webUrl}${path}`, { maxRedirects: 0 });
+      if (response.status() !== 200) throw new Error(`${path}: status ${response.status()}, expected 200`);
+      for (const [key, value] of Object.entries(expected)) {
+        if (response.headers()[key] !== value) throw new Error(`${path}: ${key} is ${response.headers()[key] ?? 'missing'}, expected ${value}`);
+      }
+    };
+    for (const path of ['/chat', '/login', '/icon.png']) await expectHeaders(path, isolation);
+    await expectHeaders('/app-experience-bootstrap.js', { ...isolation, 'cross-origin-resource-policy': 'cross-origin' });
+    for (const path of ['/oauth/authorize', '/login?from=oauth']) {
+      await expectHeaders(path, { ...isolation, 'cross-origin-opener-policy': 'unsafe-none' });
+    }
+    record('Serve the page isolation headers', 'COOP, Origin-Agent-Cluster, CORP, DNS prefetch off; /oauth/authorize and /login?from=oauth without COOP');
+    await checkOAuthPopupOpener(browser, context);
+    record("Keep an outside client's OAuth pop-up opener", 'signed in, and signed out with a reload of the sign-in page');
 
     await settle(page, '/chat');
     const general = page.getByText('general', { exact: true }).first();

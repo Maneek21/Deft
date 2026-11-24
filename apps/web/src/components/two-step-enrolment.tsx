@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { clearEnrolToken, takeEnrolToken, TwoStepError, twoStepApi } from '@/lib/two-step';
+import { oauthMarkerQuery } from '@/lib/oauth-popup-marker';
 
 const inputStyle = {
   background: 'var(--surface-container)',
@@ -146,7 +147,7 @@ export function TwoStepEnrolment({ enrolToken = null, replacing = false, onFinis
       {error && (
         <div className="px-4 py-3 text-[0.8125rem] rounded-lg" role="alert" style={{ background: 'rgba(147,0,10,0.3)', color: 'var(--error)' }}>
           {error}
-          {signInAgain && <> <a href="/login" className="underline underline-offset-4">Sign in</a></>}
+          {signInAgain && <> <a href={`/login${oauthMarkerQuery()}`} className="underline underline-offset-4">Sign in</a></>}
         </div>
       )}
       {step === 'intro' && (
