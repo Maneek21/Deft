@@ -162,7 +162,7 @@ async function insertPlanRow(userId: string, steps: unknown[], status = 'draft')
   const id = randomUUID();
   await client.query(
     `INSERT INTO agent_plans (id, org_id, user_id, agent_employee_id, title, steps, status, current_step, context)
-     VALUES ($1, $2, $3, $4, 'D0 plan', $5::jsonb, $6, 0, '{}'::jsonb)`,
+     VALUES ($1, $2, $3, $4, 'D0 plan', $5::jsonb, $6, 0, '{"created_via":"api"}'::jsonb)`,
     [id, ORG, userId, EMPLOYEE, JSON.stringify(steps.map((step) => ({ ...(step as object), status: 'pending' }))), status],
   );
   return id;

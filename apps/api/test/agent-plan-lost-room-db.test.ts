@@ -394,3 +394,29 @@ test('a plan can be created only in a room its creator can read', async (t) => {
   const made = await call(ids.olive, 'POST', '/api/agent-plans', body(closed));
   assert.equal(made.status, 201, made.text);
 });
+
+test('a plan bound to no room (148 recovery draft) is not readable or runnable by its member creator', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  // Release 148's failed-step recovery called create_plan with no conversation
+  // (agent-plans.ts:762 -> agent-runner.ts:909 -> agent-context.ts:2489 at 4aa4de9c).
+  const { executeToolCall } = await import('../src/lib/agent-context.js');
+  const draftTitle = `Recovery draft ${randomUUID()}`;
+  const { result } = await executeToolCall('create_plan', {
+    title: draftTitle,
+    steps: [{ id: 'step-1', tool: 'create_task', params: { title: title(draftTitle), resolved_project_id: projectId, priority: 'p2' } }],
+  }, orgId, ids.mia, undefined);
+  const draft = (result as { plan_id: string }).plan_id;
+  const { rows: [row] } = await client!.query('SELECT conversation_id, context FROM agent_plans WHERE id=$1', [draft]);
+  assert.deepEqual(row, { conversation_id: null, context: {} }, 'the draft names no room');
+
+  assert.ok(!(await listedPlans(ids.mia)).includes(draft), 'not in her list');
+  assert.equal((await call(ids.mia, 'GET', `/api/agent-plans/${draft}`)).status, 404);
+  for (const action of ['approve', 'execute']) {
+    assert.equal((await call(ids.mia, 'POST', `/api/agent-plans/${draft}/${action}`)).status, 404, `${action} by Mia`);
+    assert.equal((await call(ids.olive, 'POST', `/api/agent-plans/${draft}/${action}`)).status, 404, `${action} by the owner for her`);
+  }
+  await client!.query("UPDATE agent_plans SET status='approved' WHERE id=$1", [draft]);
+  const { executePlan } = await import('../src/lib/agent-plans.js');
+  await executePlan(draft, orgId, ids.mia);
+  assert.equal(await tasksCreated(draftTitle), 0, 'it never runs');
+});

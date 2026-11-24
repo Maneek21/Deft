@@ -42,7 +42,26 @@ function planRoomsReadableSql(alias: string, reader: SQL): SQL {
       WHERE plan_reader_membership.org_id = ${col('org_id')}
         AND plan_reader_membership.user_id = ${reader}
         AND plan_reader_membership.is_active = true)
-
+    -- Fail closed (DFX3 F2): a plan bound to no room of the workspace (its
+    -- conversation and source message name none) counts only when a person
+    -- made it through the plan route (marked created_via 'api' from 149 on)
+    -- or for an owner or admin. Release 148's failed-step recovery could
+    -- draft such a plan from a room-bound one, and nothing records which
+    -- room it came from; older route-made plans without a room are treated
+    -- the same way.
+    AND (
+      ${col('context')}->>'created_via' = 'api'
+      OR
+      EXISTS (SELECT 1 FROM spaces bound_plan_room
+        WHERE bound_plan_room.id = ${col('conversation_id')} AND bound_plan_room.org_id = ${col('org_id')})
+      OR EXISTS (SELECT 1 FROM messages bound_plan_message
+        WHERE bound_plan_message.id = ${sourceMessageId} AND bound_plan_message.org_id = ${col('org_id')})
+      OR EXISTS (SELECT 1 FROM org_members plan_manager_membership
+        WHERE plan_manager_membership.org_id = ${col('org_id')}
+          AND plan_manager_membership.user_id = ${reader}
+          AND plan_manager_membership.is_active = true
+          AND plan_manager_membership.role IN ('owner', 'admin'))
+    )
   )`;
 }
 
