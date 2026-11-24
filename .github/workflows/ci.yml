@@ -652,6 +652,23 @@ jobs:
           "
           bash scripts/ci/snapshot-upgrade-data.sh "$RUNNER_TEMP/upgrade-after"
           diff --recursive --unified "$RUNNER_TEMP/upgrade-before" "$RUNNER_TEMP/upgrade-after"
+      - name: Compare a fresh install's tables with the upgraded database's
+        # db:push-full (fresh installs, dev and test databases) and db:upgrade
+        # (every existing install) must build the same set of tables, including
+        # those that only upgrades create (ics_publish_tokens, user_two_step).
+        run: |
+          set -euo pipefail
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE deft_fresh_compare_test'
+          fresh_url=postgres://postgres:postgres@localhost:5432/deft_fresh_compare_test
+          DATABASE_URL="$fresh_url" pnpm db:push-full
+          tables_sql="SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY 1"
+          psql "$fresh_url" -v ON_ERROR_STOP=1 -Atc "$tables_sql" > "$RUNNER_TEMP/tables-fresh.txt"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "$tables_sql" > "$RUNNER_TEMP/tables-upgraded.txt"
+          for table in ics_publish_tokens seat_statements user_two_step deft_schema_migrations; do
+            grep -qx "$table" "$RUNNER_TEMP/tables-fresh.txt" || { echo "fresh install is missing $table" >&2; exit 1; }
+          done
+          diff --unified --label fresh-install --label upgraded "$RUNNER_TEMP/tables-fresh.txt" "$RUNNER_TEMP/tables-upgraded.txt"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'DROP DATABASE deft_fresh_compare_test'
       - name: Rehearse both database restore routes with stored consent data
         run: |
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE deft_restore_source_test TEMPLATE deft_upgrade'

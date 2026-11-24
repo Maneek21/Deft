@@ -32,6 +32,89 @@ async function run(command: readonly string[]) {
   if (exitCode !== 0) throw new Error(`${command.slice(0, 2).join(' ')} failed (${exitCode})`);
 }
 
+const FRESH_BOOTSTRAP_VERSION = '0.3.0-preview.117';
+
+type Queryable = { query: (text: string) => Promise<{ rows: Array<Record<string, unknown>> }> };
+
+/**
+ * What to tell the operator when fresh initialization stops after it began
+ * building: the database is incomplete, and which recorded upgrades it lacks.
+ * Without this, a stop (for example E5_FRESH_PRESTAMP_CATALOG_UNRECOGNIZED on a
+ * server whose Postgres or pgvector version differs from the supported image)
+ * leaves tables from schema.ts in place but none from the upgrades after
+ * 0.3.0-preview.117 (ics_publish_tokens, seat_statements, user_two_step, ...),
+ * and the database looks usable. Read-only.
+ */
+// Tables only upgrades after the bootstrap create, named when they are missing.
+const LATE_TABLES = ['ics_publish_tokens', 'seat_statements', 'user_two_step'] as const;
+
+export async function describeIncompleteFreshInit(client: Queryable, error: unknown): Promise<string[]> {
+  let tableCount: number | null = null;
+  try {
+    const result = await client.query(`SELECT count(*)::int AS count FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`);
+    tableCount = Number(result.rows[0]?.count ?? 0);
+  } catch {
+    // Unknown: decided below by the ledger read.
+  }
+  if (tableCount === 0) {
+    return ['push-full stopped before it created any table: the database is still empty. Fix the cause below and run pnpm db:push-full again.'];
+  }
+  let recorded: Set<string> | null = new Set();
+  try {
+    const ledger = await client.query("SELECT to_regclass('public.deft_schema_migrations') IS NOT NULL AS present");
+    if (ledger.rows[0]?.present) {
+      recorded = new Set((await client.query('SELECT version FROM deft_schema_migrations')).rows.map((row) => String(row.version)));
+    }
+  } catch {
+    recorded = null;
+  }
+  if (recorded === null) {
+    return [
+      'push-full stopped before it finished, and its schema ledger could not be read (the connection may have dropped). Do not use this database yet.',
+      'Reconnect and run pnpm db:upgrade --status to see which upgrades it lacks; pnpm db:upgrade may finish it. '
+        + 'If the database has no tables, run pnpm db:push-full again. If it has tables but no ledger, '
+        + 'drop it, create an empty one and run pnpm db:push-full again.',
+    ];
+  }
+  // push-full builds the schema through the bootstrap directly; the upgrades
+  // after it run only once that schema is recognized and recorded.
+  const bootstrapEnd = upgradeManifest.migrations.findIndex((migration) => migration.version === FRESH_BOOTSTRAP_VERSION);
+  const missing = upgradeManifest.migrations.slice(bootstrapEnd + 1).filter((migration) => !recorded.has(migration.version));
+  const absentTables: string[] = [];
+  for (const table of LATE_TABLES) {
+    try {
+      const present = await client.query(`SELECT to_regclass('public.${table}') IS NOT NULL AS present`);
+      if (!present.rows[0]?.present) absentTables.push(table);
+    } catch {
+      // Not named when it cannot be checked.
+    }
+  }
+  const lines = [
+    'push-full stopped before it finished. This database is INCOMPLETE: do not use it for tests, a stage or an install.',
+    missing.length
+      ? `${missing.length} upgrade(s) after ${FRESH_BOOTSTRAP_VERSION} were not applied (${missing[0]!.version} to ${missing.at(-1)!.version}), `
+        + (absentTables.length ? `so tables they create are missing (among them ${absentTables.join(', ')}) and ` : 'so ')
+        + 'it does not match an install built by db:upgrade.'
+      : 'Every upgrade was applied, but the final step failed.',
+  ];
+  if (error instanceof Error && /^E5_\w*CATALOG_UNRECOGNIZED/u.test(error.message)) {
+    try {
+      const server = (await client.query("SELECT current_setting('server_version') AS version")).rows[0]?.version;
+      const extensions = (await client.query('SELECT extname, extversion FROM pg_extension ORDER BY extname')).rows
+        .map((row) => `${row.extname} ${row.extversion}`).join(', ');
+      lines.push(`This server's schema catalog is not one push-full recognizes (Postgres ${server}; extensions: ${extensions}). `
+        + 'The recognized catalogs depend on the exact Postgres and pgvector versions: use the pgvector/pgvector image pinned in docker-compose.yml and CI, with only the vector extension installed.');
+    } catch {
+      // The versions are a hint only.
+    }
+  }
+  lines.push(recorded.has(upgradeManifest.baseline.version)
+    ? 'Its upgrade ledger was recorded, so pnpm db:upgrade may finish it. If that refuses, drop this database, create an empty one and run pnpm db:push-full again.'
+    : 'Drop this database, create an empty one and run pnpm db:push-full again.');
+  return lines;
+}
+
 export async function main() {
   loadRootEnv(import.meta.url);
   const databaseUrl = resolveDatabaseUrl();
@@ -49,58 +132,66 @@ export async function main() {
         throw new Error(`Refusing fresh initialization: ${tableCount} application table(s) already exist at ${maskDatabaseUrl(databaseUrl)}. Use db:upgrade only for a supported, ledgered release or a verified v0.2.0-preview.1 baseline.`);
       }
       console.log(`[OK] Fresh database confirmed at ${maskDatabaseUrl(databaseUrl)}.`);
-
-      await run(['pnpm', 'exec', 'tsx', 'scripts/ensure-pgvector.ts']);
-      await run(['pnpm', 'exec', 'drizzle-kit', 'push', '--force']);
-      await run(['pnpm', 'exec', 'tsx', 'scripts/apply-extras.ts', '--fresh-init']);
-
-      // Only this verified-empty invocation, after every schema step succeeds,
-      // may attest the immutable schema117 bootstrap. A crash
-      // before this transaction leaves an unledgered schema that both fresh
-      // initialization and the upgrader refuse to auto-certify.
-      await client.query('BEGIN');
       try {
-        const existing = await client.query<{ present: boolean }>(
-          "SELECT to_regclass('public.deft_schema_migrations') IS NOT NULL AS present");
-        if (existing.rows[0]?.present) throw new Error('Fresh migration ledger already exists');
-        await client.query(`CREATE TABLE deft_schema_migrations (
-          version text PRIMARY KEY,
-          description text NOT NULL,
-          checksum text NOT NULL,
-          kind text NOT NULL CHECK (kind IN ('baseline', 'migration')),
-          applied_at timestamptz NOT NULL DEFAULT now()
-        )`);
-        await reconcileFreshSchemaContracts(client);
-        await client.query(`INSERT INTO deft_schema_migrations
-          (version, description, checksum, kind) VALUES ($1,$2,$3,'baseline')`,
-        [upgradeManifest.baseline.version,
-          `Supported schema baseline ${upgradeManifest.baseline.releaseTag}`,
-          baselineChecksum()]);
-        const bootstrapEnd = upgradeManifest.migrations.findIndex(row => row.version === '0.3.0-preview.117');
-        if (bootstrapEnd < 0) throw new Error('Reviewed schema117 bootstrap missing');
-        for (const migration of upgradeManifest.migrations.slice(0, bootstrapEnd + 1)) {
-          await client.query(`INSERT INTO deft_schema_migrations
-            (version, description, checksum, kind) VALUES ($1,$2,$3,'migration')`,
-          [migration.version, migration.description,
-            sha256(readFileSync(resolve(upgradesDir, migration.file), 'utf8'))]);
-        }
-        await assertReviewedFreshBootstrap(client);
-        await client.query('COMMIT');
+        await buildFreshSchema(client);
       } catch (error) {
-        await client.query('ROLLBACK');
+        for (const line of await describeIncompleteFreshInit(client, error)) console.error(`[FAIL] ${line}`);
         throw error;
       }
-      // A failure here leaves an exactly reviewed117 ledger that db:upgrade
-      // can recover. Never stamp118 before its SQL and final catalog succeed.
-      await convergeReviewedRelease(client);
-      await applyManifestTailMigrations(client);
-      console.log(`[OK] Recorded ${upgradeManifest.migrations.length + 1} current schema ledger version(s).`);
     } finally {
       await client.query('SELECT pg_advisory_unlock($1)', [LOCK_ID]);
     }
   } finally {
     await client.end();
   }
+}
+
+async function buildFreshSchema(client: InstanceType<typeof Client>) {
+  await run(['pnpm', 'exec', 'tsx', 'scripts/ensure-pgvector.ts']);
+  await run(['pnpm', 'exec', 'drizzle-kit', 'push', '--force']);
+  await run(['pnpm', 'exec', 'tsx', 'scripts/apply-extras.ts', '--fresh-init']);
+
+  // Only this verified-empty invocation, after every schema step succeeds,
+  // may attest the immutable schema117 bootstrap. A crash
+  // before this transaction leaves an unledgered schema that both fresh
+  // initialization and the upgrader refuse to auto-certify.
+  await client.query('BEGIN');
+  try {
+    const existing = await client.query<{ present: boolean }>(
+      "SELECT to_regclass('public.deft_schema_migrations') IS NOT NULL AS present");
+    if (existing.rows[0]?.present) throw new Error('Fresh migration ledger already exists');
+    await client.query(`CREATE TABLE deft_schema_migrations (
+      version text PRIMARY KEY,
+      description text NOT NULL,
+      checksum text NOT NULL,
+      kind text NOT NULL CHECK (kind IN ('baseline', 'migration')),
+      applied_at timestamptz NOT NULL DEFAULT now()
+    )`);
+    await reconcileFreshSchemaContracts(client);
+    await client.query(`INSERT INTO deft_schema_migrations
+      (version, description, checksum, kind) VALUES ($1,$2,$3,'baseline')`,
+    [upgradeManifest.baseline.version,
+      `Supported schema baseline ${upgradeManifest.baseline.releaseTag}`,
+      baselineChecksum()]);
+    const bootstrapEnd = upgradeManifest.migrations.findIndex(row => row.version === FRESH_BOOTSTRAP_VERSION);
+    if (bootstrapEnd < 0) throw new Error('Reviewed schema117 bootstrap missing');
+    for (const migration of upgradeManifest.migrations.slice(0, bootstrapEnd + 1)) {
+      await client.query(`INSERT INTO deft_schema_migrations
+        (version, description, checksum, kind) VALUES ($1,$2,$3,'migration')`,
+      [migration.version, migration.description,
+        sha256(readFileSync(resolve(upgradesDir, migration.file), 'utf8'))]);
+    }
+    await assertReviewedFreshBootstrap(client);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  }
+  // A failure here leaves an exactly reviewed117 ledger that db:upgrade
+  // can recover. Never stamp118 before its SQL and final catalog succeed.
+  await convergeReviewedRelease(client);
+  await applyManifestTailMigrations(client);
+  console.log(`[OK] Recorded ${upgradeManifest.migrations.length + 1} current schema ledger version(s).`);
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {

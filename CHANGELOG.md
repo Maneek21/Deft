@@ -41,6 +41,13 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
   or that would leave the key unreachable: an expiry date that is not a date or falls
   outside the years 1 to 9999, a rate limit above 2,147,483,647, a NUL character in the
   text, an empty agent id, or a change request that changes nothing.
+- `pnpm db:push-full` now says plainly when it stops part-way that the database is
+  incomplete and must not be used, names the upgrades it did not apply (those that create
+  `ics_publish_tokens`, `seat_statements`, `user_two_step` and others), and, when the
+  server's Postgres or pgvector version is not one it recognizes, shows the versions it
+  found. Before, such a stop left a database that looked usable but lacked those tables.
+  On the supported image (`pgvector/pgvector`, pinned in `docker-compose.yml`) push-full is
+  unchanged. CI now checks that a fresh install and an upgraded one have the same tables.
 
 ## [0.3.0-preview.150] — 2026-11-25 (prerelease)
 
