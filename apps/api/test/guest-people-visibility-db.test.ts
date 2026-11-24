@@ -518,7 +518,7 @@ test('a guest cannot assign a hidden person, or start a conversation with a hidd
   const patchUnknown = await call(guest, `/api/tasks/${task}`, { method: 'PATCH', body: { assignee_id: unknown } });
   assert.equal(patchHidden.status, 400);
   assert.deepEqual(patchHidden, patchUnknown);
-  // The task's current assignee (Sam, visible) re-sent with an edit is no change.
+  // The task's current assignee re-sent with an edit is no change, even when the guest cannot see them.
   await c.query(`UPDATE tasks SET assignee_id = $1 WHERE id = $2`, [stranger, task]);
   const keep = await call(guest, `/api/tasks/${task}`, { method: 'PATCH', body: { assignee_id: stranger, title: 'gpv task edited' } });
   assert.equal(keep.status, 200, 're-sending a hidden current assignee is not a reassignment');
@@ -572,4 +572,12 @@ test('MCP task_update, agent_employee_list/get and idempotent replays follow the
   } finally {
     await c.query(`UPDATE org_members SET role = 'member' WHERE org_id = $1 AND user_id = $2`, [org, friend]);
   }
+  // A guest's own replay is a receipt too: what they saw then may be hidden now.
+  const guestKey = `gpv-guest-replay-${run}`;
+  assert.notEqual((await humanTaskUpdate({ task_id: task, patch: { priority: 'p2' }, idempotency_key: guestKey }, writer(guest))).isError, true);
+  assert.equal(parse(await humanTaskUpdate({ task_id: task, patch: { priority: 'p2' }, idempotency_key: guestKey }, writer(guest))).status, 'already_completed');
+  // Re-sending the current assignee over MCP writes nothing for it and is not refused.
+  const unchanged = await humanTaskUpdate({ task_id: task, patch: { assignee_id: ` ${sharer} ` } }, writer(guest));
+  assert.notEqual(unchanged.isError, true, unchanged.content[0]!.text);
+  await c.query(`UPDATE tasks SET priority = 'p2' WHERE id = $1`, [task]);
 });

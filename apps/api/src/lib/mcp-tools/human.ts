@@ -436,43 +436,25 @@ function normalizeIdempotencyKey(value: unknown): string | null {
 }
 
 /**
- * A replayed result may have been stored before the caller became a guest
- * (and, for OAuth, under another token of the same client). A guest gets the
- * stored result only if it was computed for a guest view, with every email
- * field but their own blanked; a result computed for a wider view (names,
- * ids) is not repeated, only that the request was already done
- * (lib/people-visibility.ts). The request is never run twice either way.
+ * A replayed result was computed for the view the caller had then, which may
+ * have been wider than a guest's view now (a person they no longer share a
+ * space with, a role changed during the call). A guest is therefore told only
+ * that the request was already completed, never the stored result; the
+ * request is not run again either way (lib/people-visibility.ts).
  */
-async function redactReplayForViewer(result: ToolResult, ctx: HumanToolContext, storedForGuest: boolean): Promise<ToolResult> {
-  const viewer = await peopleViewer(ctx.org_id, ctx.user_id);
-  if (!viewer.guest) return result;
-  if (!storedForGuest) {
-    return textResult({
-      status: 'already_completed',
-      replayed: true,
-      message: 'This request was already completed. Read the current state with the matching read tool.',
-    });
-  }
-  const [me] = await db.select({ email: users.email }).from(users).where(eq(users.id, ctx.user_id)).limit(1);
-  const own = me?.email?.toLowerCase() ?? null;
-  const redact = (value: unknown): unknown => {
-    if (Array.isArray(value)) return value.map(redact);
-    if (!value || typeof value !== 'object') return value;
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [
-      key,
-      /email$/i.test(key) && typeof item === 'string' && item.toLowerCase() !== own ? null : redact(item),
-    ]));
-  };
-  return {
-    ...result,
-    content: result.content.map((item) => {
-      try {
-        return { ...item, text: JSON.stringify(redact(JSON.parse(item.text))) };
-      } catch {
-        return item;
-      }
-    }),
-  };
+async function replayForViewer(result: ToolResult, ctx: HumanToolContext): Promise<ToolResult> {
+  if (!(await peopleViewer(ctx.org_id, ctx.user_id)).guest) return result;
+  return textResult({
+    status: 'already_completed',
+    replayed: true,
+    message: 'This request was already completed. Read the current state with the matching read tool.',
+  });
+}
+
+function isAlreadyCompletedReceipt(payload: unknown): boolean {
+  return Boolean(payload && typeof payload === 'object'
+    && (payload as Record<string, unknown>).status === 'already_completed'
+    && (payload as Record<string, unknown>).replayed === true);
 }
 
 function storedToolResult(value: unknown): ToolResult | null {
@@ -613,7 +595,7 @@ async function withIdempotency(
       .orderBy(desc(oauthAuditEvents.created_at))
       .limit(1);
     const replay = storedToolResult(existing?.metadata?.result);
-    if (replay) return redactReplayForViewer(replay, ctx, existing?.metadata?.viewer_guest === true);
+    if (replay) return replayForViewer(replay, ctx);
   }
 
   const result = await execute();
@@ -631,8 +613,6 @@ async function withIdempotency(
         grant_id: ctx.grant_id ?? null,
         principal_kind: ctx.principal_kind ?? 'human',
         ...(bind === null ? {} : { bind }),
-        // The view the result was computed for (redactReplayForViewer).
-        viewer_guest: (await peopleViewer(ctx.org_id, ctx.user_id)).guest,
         result,
       },
     });
@@ -2295,24 +2275,29 @@ export async function humanTaskUpdate(args: { task_id?: string; patch?: Record<s
       updates.status = patch.status;
     }
     if (typeof patch.priority === 'string') updates.priority = patch.priority;
-    if (typeof patch.assignee_id === 'string' || patch.assignee_id === null) updates.assignee_id = patch.assignee_id;
+    if (typeof patch.assignee_id === 'string' || patch.assignee_id === null) {
+      updates.assignee_id = typeof patch.assignee_id === 'string' ? patch.assignee_id.trim() : null;
+    }
     if (Object.keys(updates).length === 0) return errorResult('task_update requires at least one supported patch field');
     if (!(await userCanSeeTask(ctx, taskId))) return errorResult('task_update: task not found');
     const [existingTask] = await db.select().from(tasks).where(and(eq(tasks.id, taskId), eq(tasks.org_id, ctx.org_id), eq(tasks.is_deleted, false))).limit(1);
     if (!existingTask) return errorResult('task_update: task not found');
+    // Re-sending the current assignee is no change: it is neither checked
+    // again nor written (a concurrent reassignment is not overwritten).
+    if (updates.assignee_id !== undefined && updates.assignee_id === existingTask.assignee_id) delete updates.assignee_id;
     // A guest may assign only people who share a space with them; anyone else
-    // reads like a non-member (lib/people-visibility.ts). Re-sending the
-    // current assignee is no change and is not checked again.
-    if (typeof patch.assignee_id === 'string' && patch.assignee_id !== existingTask.assignee_id) {
+    // reads like a non-member (lib/people-visibility.ts).
+    if (typeof updates.assignee_id === 'string') {
       const viewer = await peopleViewer(ctx.org_id, ctx.user_id);
       const [member] = await db
         .select({ id: orgMembers.id })
         .from(orgMembers)
-        .where(and(eq(orgMembers.org_id, ctx.org_id), eq(orgMembers.user_id, patch.assignee_id), eq(orgMembers.is_active, true),
+        .where(and(eq(orgMembers.org_id, ctx.org_id), eq(orgMembers.user_id, updates.assignee_id), eq(orgMembers.is_active, true),
           personVisibleSql(viewer, orgMembers.user_id)))
         .limit(1);
       if (!member) return errorResult('task_update: assignee is not an active org member');
     }
+    if (Object.keys(updates).length === 0) updates.updated_at = existingTask.updated_at;
     const [task] = await db.update(tasks).set(updates).where(and(eq(tasks.id, taskId), eq(tasks.org_id, ctx.org_id), eq(tasks.is_deleted, false))).returning();
     if (!task) return errorResult('task_update: task not found');
     const activityEntries: Array<{ action: string; field: string; old_value: string | null; new_value: string | null }> = [];
@@ -2469,6 +2454,8 @@ async function currentMessageWriteResult(result: ToolResult, ctx: HumanToolConte
   if (result.isError) return result;
   let payload: Record<string, unknown>;
   try { payload = JSON.parse(result.content[0]?.text ?? 'null'); } catch { return errorResult('Message not found'); }
+  // A guest's replay receipt names no message (replayForViewer).
+  if (isAlreadyCompletedReceipt(payload)) return result;
   if (!payload || typeof payload.id !== 'string') return errorResult('Message not found');
   const [message] = await db.select().from(messages).where(and(
     eq(messages.id, payload.id), eq(messages.org_id, ctx.org_id), eq(messages.is_deleted, false),

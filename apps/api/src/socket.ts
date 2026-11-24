@@ -532,13 +532,14 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
 
     // Send the users currently connected to this org to the new client. Cost:
     // one pass over this org's online users; no DB query.
-    const presenceList: { user_id: string; status: 'online' | 'idle' }[] = [];
-    const orgIdle = idleUsers.get(user.org_id);
-    for (const uid of orgOnline.keys()) {
-      if (uid !== user.id) {
-        presenceList.push({ user_id: uid, status: orgIdle?.has(uid) ? 'idle' : 'online' });
+    const currentPresence = () => {
+      const list: { user_id: string; status: 'online' | 'idle' }[] = [];
+      const orgIdle = idleUsers.get(user.org_id);
+      for (const uid of onlineUsers.get(user.org_id)?.keys() ?? []) {
+        if (uid !== user.id) list.push({ user_id: uid, status: orgIdle?.has(uid) ? 'idle' : 'online' });
       }
-    }
+      return list;
+    };
     if (user.role === 'guest') {
       // A guest is told only about people who share a space with them; if
       // that cannot be read, about no one (lib/people-visibility.ts). Not
@@ -547,10 +548,11 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
       void visiblePersonIds({ orgId: user.org_id, userId: user.id, guest: true })
         .catch(() => new Set<string>())
         .then((visible) => {
-          if (socket.connected) socket.emit('presence:init', presenceList.filter((entry) => canSeePerson(visible, entry.user_id)));
+          // Read after the lookup, so no one who left meanwhile is listed.
+          if (socket.connected) socket.emit('presence:init', currentPresence().filter((entry) => canSeePerson(visible, entry.user_id)));
         });
     } else {
-      socket.emit('presence:init', presenceList);
+      socket.emit('presence:init', currentPresence());
     }
 
     // Display name of the authenticated user, taken from the checked space join
