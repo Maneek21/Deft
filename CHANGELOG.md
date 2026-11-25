@@ -10,6 +10,28 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### Guests see only the notes they were added to
+
+A privacy change for every install, hosted or self-hosted, that has guests.
+
+- Guests no longer see notes visible to the whole workspace; they see their own notes,
+  notes shared with them and notes in their spaces. Owners, admins, members and agents
+  see what they saw before.
+- **Before.** On `.152` and earlier, a guest could list, open and search every note
+  visible to the whole workspace, as a member could.
+- **Now.** For a guest, any other note answers as if it did not exist (404, or left out
+  of a list) on the notes page and its templates, search, tags and tag counts, task
+  backlinks, team links (title and label hidden; a hidden note can't be linked), the MCP
+  note, search and team tools, Defty's note tools and retrieval, note mentions, note
+  promotion to the wiki and the workspace export.
+- **Search fix.** Search now finds a note shared with you. It used its own copy of the
+  rule, without shares; every note surface now uses the one rule.
+- **For members too.** Defty's note search and note retrieval now also return notes shared
+  with you and notes in your spaces (notes you could already open). A note linked to a
+  team that the reader can't see now shows no title or label there, and can't be linked
+  by a team lead who can't see it (before, a private note's title showed to every team
+  reader in the MCP team tools).
+
 ### Notice: Kit `0.1.0-alpha.44` removes deprecated Email compatibility
 
 Not before 2026-11-25, and never fewer than 14 days after this notice merged.

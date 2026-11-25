@@ -149,9 +149,10 @@ test('tag counts count only the items the caller can see', async (t) => {
   assert.deepEqual(await countsFor(ids.outsider), { 'for-admin': 0, 'for-owner': 0, main: 4, 'secret-only': 0 });
   // Owners and admins get no wider view than their own access: the count matches the list they are shown.
   assert.deepEqual(await countsFor(ids.admin), { 'for-admin': 0, 'for-owner': 0, main: 2, 'secret-only': 0 });
-  // A guest in no space sees the org note, as in the tagged-items list. The open task is in a project
-  // the guest does not belong to, so it is hidden from them (lib/task-visibility.ts).
-  assert.deepEqual(await countsFor(ids.guest), { 'for-admin': 0, 'for-owner': 0, main: 1, 'secret-only': 0 });
+  // A guest in no space sees nothing tagged: the org note is not theirs, shared with them or in
+  // their spaces (lib/note-visibility.ts), and the open task is in a project the guest does not
+  // belong to (lib/task-visibility.ts).
+  assert.deepEqual(await countsFor(ids.guest), { 'for-admin': 0, 'for-owner': 0, main: 0, 'secret-only': 0 });
 
   for (const actor of [ids.insider, ids.outsider, ids.admin, ids.guest]) {
     const listed = await call(actor, 'GET', `/api/tags/${tags.main}/entities`);
