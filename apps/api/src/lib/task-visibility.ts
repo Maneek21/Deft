@@ -126,10 +126,13 @@ export function taskHiddenFromGuestSql(userId: string | SQLWrapper, taskId: SQLW
 }
 
 /**
- * Both rules, for a query that names `tasks` by an alias and does not join
- * `projects` (the project lead is read by a subquery).
+ * Both rules, for a query that does not join `projects` (the project lead is
+ * read by a subquery): on `tasks` itself by default, or on `tasks` under an
+ * alias (`taskAliasColumns`). Every surface that returns task rows, titles
+ * or counts uses this or `visibleTaskCondition`, never `guestTaskScopeSql`
+ * alone (that is the guest rule only).
  */
-export function visibleTaskSql(userId: string | SQLWrapper, task: TaskVisibilityColumns): SQL {
+export function visibleTaskSql(userId: string | SQLWrapper, task: TaskVisibilityColumns = TABLE_COLUMNS): SQL {
   return sql`COALESCE(((coalesce(${task.metadata}->>'visibility', 'org') != 'restricted'
       OR ${taskNamesUserSql(userId, task, true)}
       OR COALESCE((SELECT true FROM ${projects} led_project
@@ -163,4 +166,20 @@ export function visibleTaskCondition(userId: string): SQL {
   );
   // Total: a NULL (an unassigned task, a project with no lead) reads as false.
   return sql`COALESCE((${restrictedRule} AND ${guestTaskScopeSql(userId)}), false)`;
+}
+
+/**
+ * The part of a task's metadata that restricts it (`visibility` and
+ * `visible_user_ids`), to carry onto a task made from it (a duplicate, the
+ * next occurrence of a recurring task) so the copy is hidden from the same
+ * people. Undefined for a task that is not restricted.
+ */
+export function taskRestrictionMetadata(metadata: unknown): { visibility: 'restricted'; visible_user_ids?: unknown[] } | undefined {
+  if (!metadata || typeof metadata !== 'object') return undefined;
+  const source = metadata as Record<string, unknown>;
+  if (source.visibility !== 'restricted') return undefined;
+  return {
+    visibility: 'restricted',
+    ...(Array.isArray(source.visible_user_ids) ? { visible_user_ids: source.visible_user_ids } : {}),
+  };
 }

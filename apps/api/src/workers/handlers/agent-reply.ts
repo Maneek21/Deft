@@ -37,7 +37,7 @@ import { buildRoomContextPackWithSources } from '../../lib/defty-room-context.js
 import { loadPendingDeftyDraft, pendingDeftyDraftContext, type PendingDeftyDraft } from '../../lib/defty-pending-action.js';
 import { emitMessageToSpaceViewers, projectMessagesForViewer } from '../../lib/agent-message-run-details.js';
 import { promotableNoteSql } from '../../lib/agent-action-visibility.js';
-import { guestTaskScopeSql, visibleTaskCondition } from '../../lib/task-visibility.js';
+import { visibleTaskCondition, visibleTaskSql } from '../../lib/task-visibility.js';
 import { assertDeliveryOwnedBeforeCommit, claimDeftyReplySlot, DeftyDeliveryLostError, findExistingDeftyReply, isDatabaseWaitTimeout, throwIfDeliveryLost, type DeftyReplyDelivery } from '../../lib/defty-reply-guard.js';
 
 export async function withAgentWorkingSignal<T>(input: {
@@ -376,8 +376,8 @@ export async function resolvePendingActionTargets(
               eq(tasks.org_id, orgId),
               eq(tasks.project_id, project.id),
               eq(tasks.number, Number.parseInt(shorthand[2]!, 10)),
-              // A task hidden from a guest answers like an unknown one (task-visibility.ts).
-              guestTaskScopeSql(userId),
+              // A task hidden from the requester answers like an unknown one (task-visibility.ts).
+              visibleTaskSql(userId),
             ))
             .limit(1);
           resolvedTaskId = foundTask?.id ?? '';
@@ -386,7 +386,7 @@ export async function resolvePendingActionTargets(
         const [foundTask] = await db
           .select({ id: tasks.id })
           .from(tasks)
-          .where(and(eq(tasks.org_id, orgId), eq(tasks.id, taskIdentifier), guestTaskScopeSql(userId)))
+          .where(and(eq(tasks.org_id, orgId), eq(tasks.id, taskIdentifier), visibleTaskSql(userId)))
           .limit(1);
         resolvedTaskId = foundTask?.id ?? '';
       }
@@ -561,7 +561,7 @@ export async function resolvePendingActionTargets(
         const foundTasks = taskIds.length ? await db.select({ id: tasks.id }).from(tasks).where(and(
           eq(tasks.org_id, orgId),
           inArray(tasks.id, taskIds),
-          guestTaskScopeSql(userId),
+          visibleTaskSql(userId),
         )) : [];
         if (foundTasks.length !== taskIds.length) {
           warnings.push('One or more selected tasks no longer exist in this workspace.');
@@ -941,7 +941,7 @@ export async function collectRecentAgentTaskReferences(options: PriorReplyScope 
       eq(tasks.org_id, options.orgId),
       eq(tasks.is_deleted, false),
       inArray(sql<string>`${projects.prefix} || '-' || ${tasks.number}`, references),
-      guestTaskScopeSql(options.requesterId),
+      visibleTaskSql(options.requesterId),
     ));
   const parentIds = referencedTasks.filter((task) => !task.parent_task_id).map((task) => task.id);
   if (parentIds.length === 0) return references.slice(0, MAX_INLINE_APPROVAL_ACTIONS);
@@ -957,7 +957,7 @@ export async function collectRecentAgentTaskReferences(options: PriorReplyScope 
       eq(tasks.org_id, options.orgId),
       eq(tasks.is_deleted, false),
       inArray(tasks.parent_task_id, parentIds),
-      guestTaskScopeSql(options.requesterId),
+      visibleTaskSql(options.requesterId),
     ))
     .orderBy(tasks.number);
   if (childTasks.length === 0) return references.slice(0, MAX_INLINE_APPROVAL_ACTIONS);

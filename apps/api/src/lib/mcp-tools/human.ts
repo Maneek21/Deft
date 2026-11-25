@@ -34,7 +34,7 @@ import {
   wikiPageVersions,
 } from '@deft/db/schema';
 import { retrieveContext, type ContextResult } from '../retrieve-context.js';
-import { guestTaskScopeSql, taskAliasColumns, visibleTaskCondition } from '../task-visibility.js';
+import { taskAliasColumns, visibleTaskCondition, visibleTaskSql } from '../task-visibility.js';
 import { withoutHiddenParent, withoutHiddenParents } from '../task-parent-projection.js';
 import { visibleWikiPageCondition } from '../wiki-visibility.js';
 import { errorResult, textResult, type ToolResult } from './types.js';
@@ -2017,7 +2017,7 @@ export async function humanProjectList(args: { query?: string; include_archived?
     FROM projects p
     LEFT JOIN users lead ON lead.id = p.lead_id
     LEFT JOIN tasks t ON t.project_id = p.id AND t.org_id = p.org_id
-      AND ${guestTaskScopeSql(ctx.user_id, taskAliasColumns('t'))}
+      AND ${visibleTaskSql(ctx.user_id, taskAliasColumns('t'))}
     WHERE p.org_id = ${ctx.org_id}
       AND p.is_deleted = false
       AND (${args.include_archived ? sql`true` : sql`p.is_archived = false`})
@@ -2080,7 +2080,7 @@ export async function humanProjectGet(args: { project_id?: string }, ctx: HumanT
     FROM projects p
     LEFT JOIN users lead ON lead.id = p.lead_id
     LEFT JOIN tasks t ON t.project_id = p.id AND t.org_id = p.org_id
-      AND ${guestTaskScopeSql(ctx.user_id, taskAliasColumns('t'))}
+      AND ${visibleTaskSql(ctx.user_id, taskAliasColumns('t'))}
     WHERE p.org_id = ${ctx.org_id}
       AND p.id = ${args.project_id}
       AND p.is_deleted = false
@@ -3121,16 +3121,7 @@ export async function humanProjectProgress(args: ProjectProgressArgs, ctx: Human
     LEFT JOIN tasks t ON t.project_id = p.id
       AND t.org_id = p.org_id
       AND t.is_deleted = false
-      AND (
-        coalesce(t.metadata->>'visibility', 'org') != 'restricted'
-        OR t.assignee_id = ${ctx.user_id}
-        OR t.created_by = ${ctx.user_id}
-        OR p.lead_id = ${ctx.user_id}
-        OR coalesce(t.metadata->'visible_user_ids', '[]'::jsonb) ? ${ctx.user_id}
-        OR exists (select 1 from task_watchers tw where tw.task_id = t.id and tw.user_id = ${ctx.user_id})
-        OR exists (select 1 from task_assignees ta where ta.task_id = t.id and ta.user_id = ${ctx.user_id})
-      )
-      AND ${guestTaskScopeSql(ctx.user_id, taskAliasColumns('t'))}
+      AND ${visibleTaskSql(ctx.user_id, taskAliasColumns('t'))}
     WHERE p.org_id = ${ctx.org_id}
       AND p.is_deleted = false
       AND ${projectWhere}
@@ -3229,20 +3220,9 @@ export async function humanTeamWorkload(args: { days?: number }, ctx: HumanToolC
       AND t.org_id = ${ctx.org_id}
       AND t.is_deleted = false
       AND t.status NOT IN ('done', 'cancelled')
-      AND ${guestTaskScopeSql(ctx.user_id, taskAliasColumns('t'))}
-    LEFT JOIN projects p ON p.id = t.project_id AND p.org_id = t.org_id
+      AND ${visibleTaskSql(ctx.user_id, taskAliasColumns('t'))}
     WHERE u.is_agent = false
       AND ${personVisibleSql(viewer, sql`u.id`)}
-      AND (
-        t.id IS NULL
-        OR coalesce(t.metadata->>'visibility', 'org') != 'restricted'
-        OR t.assignee_id = ${ctx.user_id}
-        OR t.created_by = ${ctx.user_id}
-        OR p.lead_id = ${ctx.user_id}
-        OR coalesce(t.metadata->'visible_user_ids', '[]'::jsonb) ? ${ctx.user_id}
-        OR exists (select 1 from task_watchers tw where tw.task_id = t.id and tw.user_id = ${ctx.user_id})
-        OR exists (select 1 from task_assignees ta where ta.task_id = t.id and ta.user_id = ${ctx.user_id})
-      )
     GROUP BY u.id, u.name
     ORDER BY open_tasks DESC, u.name ASC
     LIMIT 50

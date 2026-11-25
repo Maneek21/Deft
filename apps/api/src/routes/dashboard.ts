@@ -8,7 +8,7 @@ import { visibleModuleActionSql } from '../lib/module-action-visibility.js';
 import { viewerReviewAuthority } from '../lib/agent-approval-resolver.js';
 import {readEmailCalendarOccurrences} from '../lib/email-calendar-projection.js';
 import { getDayBoundaries, resolveViewerTimezone } from '../lib/task-dates.js';
-import { guestTaskScopeSql, visibleTaskCondition } from '../lib/task-visibility.js';
+import { visibleTaskCondition, visibleTaskSql } from '../lib/task-visibility.js';
 import { noticeNamesGuestHiddenTaskSql } from '../lib/native-mention-visibility.js';
 import { peopleViewer } from '../lib/people-visibility.js';
 
@@ -263,9 +263,9 @@ dashboardRoutes.get('/', async (c) => {
     const projectStats = [];
     for (const p of myProjects) {
       const [total] = await db.select({ count: sql<number>`count(*)::int` })
-        .from(tasks).where(and(eq(tasks.project_id, p.id), eq(tasks.is_deleted, false), guestTaskScopeSql(user.id)));
+        .from(tasks).where(and(eq(tasks.project_id, p.id), eq(tasks.is_deleted, false), visibleTaskSql(user.id)));
       const [done] = await db.select({ count: sql<number>`count(*)::int` })
-        .from(tasks).where(and(eq(tasks.project_id, p.id), eq(tasks.is_deleted, false), eq(tasks.status, 'done'), guestTaskScopeSql(user.id)));
+        .from(tasks).where(and(eq(tasks.project_id, p.id), eq(tasks.is_deleted, false), eq(tasks.status, 'done'), visibleTaskSql(user.id)));
       const [myCount] = await db.select({ count: sql<number>`count(*)::int` })
         .from(tasks).where(and(eq(tasks.project_id, p.id), eq(tasks.is_deleted, false), eq(tasks.assignee_id, user.id)));
 

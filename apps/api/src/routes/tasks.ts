@@ -13,7 +13,7 @@ import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users,
 import { getIO, emitToUser, emitOrgTaskEvent } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { canDeleteTask } from '../lib/task-permissions.js';
-import { guestTaskScopeSql, taskAliasColumns, visibleTaskCondition } from '../lib/task-visibility.js';
+import { taskAliasColumns, taskRestrictionMetadata, visibleTaskCondition, visibleTaskSql } from '../lib/task-visibility.js';
 import { peopleViewer } from '../lib/people-visibility.js';
 import { withoutHiddenParent, withoutHiddenParents } from '../lib/task-parent-projection.js';
 import { visibleWikiPageCondition } from '../lib/wiki-visibility.js';
@@ -185,14 +185,14 @@ async function getVisibleTaskForOrg(taskId: string, orgId: string, userId: strin
 
 /**
  * True when `parentId` may be a subtask's parent for `userId`: a live task of
- * `orgId` that, for a guest, they may see (lib/task-visibility.ts). A missing
+ * `orgId` that they may see (lib/task-visibility.ts). A missing
  * task, another workspace's task and a hidden one all answer false, so the
  * caller refuses them alike, as an unknown task.
  */
 async function parentTaskUsable(parentId: string, orgId: string, userId: string): Promise<boolean> {
   const [row] = await db.select({ id: tasks.id })
     .from(tasks)
-    .where(and(eq(tasks.id, parentId), eq(tasks.org_id, orgId), eq(tasks.is_deleted, false), guestTaskScopeSql(userId)))
+    .where(and(eq(tasks.id, parentId), eq(tasks.org_id, orgId), eq(tasks.is_deleted, false), visibleTaskSql(userId)))
     .limit(1);
   return Boolean(row);
 }
@@ -284,6 +284,11 @@ async function dispatchMentionNotifications(params: {
 
   for (const userId of mentionedIds) {
     try {
+      // The notice quotes the task: only someone who may see the task gets it
+      // (a restricted task names its people: lib/task-visibility.ts).
+      const [seen] = await db.select({ id: tasks.id }).from(tasks)
+        .where(and(eq(tasks.id, taskId), eq(tasks.org_id, orgId), visibleTaskSql(userId))).limit(1);
+      if (!seen) continue;
       const notification = await createNotificationIfAllowed({
         org_id: orgId,
         user_id: userId,
@@ -377,7 +382,7 @@ taskRoutes.get('/my', async (c) => {
             and(
               inArray(tasks.parent_task_id, taskIds), eq(tasks.org_id, user.org_id),
               eq(tasks.is_deleted, false),
-              guestTaskScopeSql(user.id),
+              visibleTaskSql(user.id),
             )
           )
           .groupBy(tasks.parent_task_id)
@@ -401,7 +406,11 @@ taskRoutes.get('/my', async (c) => {
   }
 });
 
-// GET /api/tasks/search?q=DEFT — search tasks by ID or title
+// GET /api/tasks/search?q=DEFT-5 — search tasks by key or title. A query
+// matches a task whose key (PREFIX-N or PREFIXN, any case) equals it, or
+// whose title contains it; key matches come first. A project prefix may hold
+// digits (R8O-1), and a title word may end in one (rc8), so both are always
+// tried rather than guessing from the query's shape.
 taskRoutes.get('/search', async (c) => {
   try {
     const user = c.get('user');
@@ -412,56 +421,30 @@ taskRoutes.get('/search', async (c) => {
     }
 
     const q = query.trim();
+    const key = q.toUpperCase();
+    const keyMatch = sql`(upper(${projects.prefix}) || '-' || ${tasks.number}::text = ${key}
+      OR upper(${projects.prefix}) || ${tasks.number}::text = ${key})`;
 
-    // Try to parse as project prefix + number (e.g., DEFT-5)
-    const prefixMatch = q.match(/^([A-Za-z]+)-?(\d+)$/);
-
-    let result;
-    if (prefixMatch) {
-      const prefix = prefixMatch[1]!.toUpperCase();
-      const num = parseInt(prefixMatch[2]!);
-
-      result = await db.select({
-        id: tasks.id,
-        number: tasks.number,
-        title: tasks.title,
-        status: tasks.status,
-        priority: tasks.priority,
-        project_prefix: projects.prefix,
-      })
-        .from(tasks)
-        .innerJoin(projects, eq(tasks.project_id, projects.id))
-        .where(
-          and(
-            eq(tasks.org_id, user.org_id),
-            eq(tasks.is_deleted, false),
-            eq(projects.prefix, prefix),
-            eq(tasks.number, num),
-            visibleTaskCondition(user.id),
-          )
+    const result = await db.select({
+      id: tasks.id,
+      number: tasks.number,
+      title: tasks.title,
+      status: tasks.status,
+      priority: tasks.priority,
+      project_prefix: projects.prefix,
+    })
+      .from(tasks)
+      .innerJoin(projects, eq(tasks.project_id, projects.id))
+      .where(
+        and(
+          eq(tasks.org_id, user.org_id),
+          eq(tasks.is_deleted, false),
+          or(keyMatch, ilike(tasks.title, `%${q}%`)),
+          visibleTaskCondition(user.id),
         )
-        .limit(20);
-    } else {
-      result = await db.select({
-        id: tasks.id,
-        number: tasks.number,
-        title: tasks.title,
-        status: tasks.status,
-        priority: tasks.priority,
-        project_prefix: projects.prefix,
-      })
-        .from(tasks)
-        .innerJoin(projects, eq(tasks.project_id, projects.id))
-        .where(
-          and(
-            eq(tasks.org_id, user.org_id),
-            eq(tasks.is_deleted, false),
-            ilike(tasks.title, `%${q}%`),
-            visibleTaskCondition(user.id),
-          )
-        )
-        .limit(20);
-    }
+      )
+      .orderBy(sql`${keyMatch} DESC`, desc(tasks.updated_at))
+      .limit(20);
 
     return c.json(result);
   } catch (err) {
@@ -774,7 +757,7 @@ taskRoutes.get('/table', async (c) => {
       parent_task_id: tasks.parent_task_id,
       total: sql<number>`count(*)::int`,
       done: sql<number>`count(*) filter (where ${tasks.status} = 'done')::int`,
-    }).from(tasks).where(and(inArray(tasks.parent_task_id, taskIds), eq(tasks.org_id, user.org_id), eq(tasks.is_deleted, false), guestTaskScopeSql(user.id))).groupBy(tasks.parent_task_id) : [];
+    }).from(tasks).where(and(inArray(tasks.parent_task_id, taskIds), eq(tasks.org_id, user.org_id), eq(tasks.is_deleted, false), visibleTaskSql(user.id))).groupBy(tasks.parent_task_id) : [];
     const subtaskMap = new Map(subtaskCounts.map((item) => [item.parent_task_id, item]));
     const creatorIds = [...new Set(pageRows.map((task) => task.created_by))];
     const creatorRows = creatorIds.length ? await db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, creatorIds)) : [];
@@ -812,7 +795,7 @@ taskRoutes.get('/templates', async (c) => {
       priority: tasks.priority,
       estimation: tasks.estimation,
     }).from(tasks)
-      .where(and(eq(tasks.org_id, user.org_id), eq(tasks.is_template, true), eq(tasks.is_deleted, false), guestTaskScopeSql(user.id)))
+      .where(and(eq(tasks.org_id, user.org_id), eq(tasks.is_template, true), eq(tasks.is_deleted, false), visibleTaskSql(user.id)))
       .orderBy(tasks.title);
     return c.json({ templates: rows });
   } catch (err) {
@@ -1262,7 +1245,7 @@ taskRoutes.get('/:id', async (c) => {
     })
       .from(tasks)
       .leftJoin(users, eq(tasks.assignee_id, users.id))
-      .where(and(eq(tasks.parent_task_id, taskId), eq(tasks.org_id, user.org_id), eq(tasks.is_deleted, false), guestTaskScopeSql(user.id)))
+      .where(and(eq(tasks.parent_task_id, taskId), eq(tasks.org_id, user.org_id), eq(tasks.is_deleted, false), visibleTaskSql(user.id)))
       .orderBy(asc(tasks.sort_order));
 
     // Fetch source message if any
@@ -1306,7 +1289,7 @@ taskRoutes.get('/:id', async (c) => {
       })
         .from(tasks)
         .innerJoin(projects, eq(tasks.project_id, projects.id))
-        .where(and(eq(tasks.id, task.parent_task_id), eq(tasks.org_id, user.org_id), guestTaskScopeSql(user.id),
+        .where(and(eq(tasks.id, task.parent_task_id), eq(tasks.org_id, user.org_id), visibleTaskSql(user.id),
           // A guest is not shown a deleted parent (fetching it answers 404 too).
           (await peopleViewer(user.org_id, user.id)).guest ? eq(tasks.is_deleted, false) : undefined))
         .limit(1);
@@ -1732,6 +1715,7 @@ taskRoutes.get('/project/:projectId', async (c) => {
       assignee_avatar: users.avatar_url,
     })
       .from(tasks)
+      .innerJoin(projects, eq(tasks.project_id, projects.id))
       .leftJoin(users, eq(tasks.assignee_id, users.id))
       .where(
         and(
@@ -1739,7 +1723,8 @@ taskRoutes.get('/project/:projectId', async (c) => {
           eq(tasks.is_deleted, false),
           eq(tasks.is_template, false),
           isNull(tasks.parent_task_id),
-          guestTaskScopeSql(user.id),
+          // The same rule as GET /api/projects/:id/tasks (lib/task-visibility.ts).
+          visibleTaskCondition(user.id),
         )
       )
       .orderBy(tasks.sort_order);
@@ -1769,7 +1754,7 @@ taskRoutes.get('/project/:projectId', async (c) => {
             and(
               inArray(tasks.parent_task_id, taskIds), eq(tasks.org_id, user.org_id),
               eq(tasks.is_deleted, false),
-              guestTaskScopeSql(user.id),
+              visibleTaskSql(user.id),
             )
           )
           .groupBy(tasks.parent_task_id)
@@ -2318,6 +2303,8 @@ taskRoutes.patch('/:id', async (c) => {
           recurrence: recurringTask.recurrence,
           recurrence_source_id: recurringTask.recurrence_source_id || recurringTask.id,
           created_by: user.id,
+          // A restricted task's next occurrence is hidden from the same people.
+          metadata: taskRestrictionMetadata(recurringTask.metadata),
         }).returning({ id: tasks.id });
 
         // Clone labels via the (task_id, label_id) composite PK. The
@@ -2572,6 +2559,8 @@ taskRoutes.post('/:id/duplicate', async (c) => {
       assignee_id: original.assignee_id,
       created_by: user.id,
       sort_order: 0,
+      // A copy of a restricted task is hidden from the same people.
+      metadata: taskRestrictionMetadata(original.metadata),
     }).returning();
 
     // Copy labels
@@ -2629,7 +2618,7 @@ taskRoutes.get('/:id/dependencies', async (c) => {
           eq(taskRelationships.source_task_id, taskId),
           eq(tasks.org_id, user.org_id),
           eq(tasks.is_deleted, false),
-          guestTaskScopeSql(user.id),
+          visibleTaskSql(user.id),
         )
       );
 
@@ -2655,7 +2644,7 @@ taskRoutes.get('/:id/dependencies', async (c) => {
           eq(taskRelationships.target_task_id, taskId),
           eq(tasks.org_id, user.org_id),
           eq(tasks.is_deleted, false),
-          guestTaskScopeSql(user.id),
+          visibleTaskSql(user.id),
         )
       );
 
@@ -2971,7 +2960,7 @@ taskRoutes.get('/:id/subtree', async (c) => {
       )
       SELECT subtree.* FROM subtree
       JOIN tasks subtree_task ON subtree_task.id = subtree.id
-      WHERE ${guestTaskScopeSql(user.id, taskAliasColumns('subtree_task'))}
+      WHERE ${visibleTaskSql(user.id, taskAliasColumns('subtree_task'))}
       ORDER BY subtree.depth, subtree.title
     `);
     const rows: Array<{ id: string; title: string; parent_task_id: string | null; depth: number }> =

@@ -9,7 +9,7 @@ import {
   peopleExpertise,
 } from '@deft/db/schema';
 import { eq, and, sql, gte, lt, inArray } from 'drizzle-orm';
-import { visibleTaskCondition } from '../lib/task-visibility.js';
+import { unrestrictedTaskCondition, visibleTaskCondition, visibleTaskSql } from '../lib/task-visibility.js';
 
 // ─── Velocity Calculator ───
 
@@ -61,7 +61,9 @@ export async function velocityCalculator(
           eq(tasks.org_id, orgId),
           eq(tasks.is_deleted, false),
           eq(projects.is_deleted, false),
-          ...(viewerUserId ? [visibleTaskCondition(viewerUserId)] : []),
+          // Only tasks the viewer may see; with no viewer (a digest sent to
+          // several people) no restricted task (lib/task-visibility.ts).
+          viewerUserId ? visibleTaskCondition(viewerUserId) : unrestrictedTaskCondition(),
           ...(projectId ? [eq(tasks.project_id, projectId)] : []),
           ...conditions,
         ),
@@ -125,6 +127,7 @@ const PRIORITY_WEIGHTS: Record<string, number> = {
 
 export async function workloadAnalyzer(
   orgId: string,
+  viewerUserId?: string,
 ): Promise<{ members: MemberWorkload[]; team_mean: number }> {
   // Get all active members
   const members = await db
@@ -151,6 +154,8 @@ export async function workloadAnalyzer(
           eq(tasks.assignee_id, member.userId),
           eq(tasks.is_deleted, false),
           sql`${tasks.status} IN ('todo', 'in_progress', 'in_review')`,
+          // As in velocityCalculator: the viewer's tasks, or no restricted one.
+          viewerUserId ? visibleTaskSql(viewerUserId) : unrestrictedTaskCondition(),
         ),
       )
       .groupBy(tasks.priority);

@@ -13,6 +13,7 @@ import {
   teamHealthSnapshots,
 } from '@deft/db/schema';
 import { eq, and, gte, sql, ne, count as drizzleCount, lt } from 'drizzle-orm';
+import { visibleTaskSql } from '../lib/task-visibility.js';
 import { getDayBoundaries, getOrgTimezone } from '../lib/task-dates.js';
 
 type HealthStatus = 'green' | 'yellow' | 'red';
@@ -87,6 +88,8 @@ export async function generateManagerPulse(
         and(
           eq(tasks.org_id, orgId),
           eq(tasks.assignee_id, member.userId),
+          // The pulse is the manager's: only tasks they may see (lib/task-visibility.ts).
+          visibleTaskSql(managerId),
           eq(tasks.is_deleted, false),
           sql`${tasks.status} IN ('todo', 'in_progress', 'in_review')`,
         ),
@@ -101,6 +104,8 @@ export async function generateManagerPulse(
         and(
           eq(tasks.org_id, orgId),
           eq(tasks.assignee_id, member.userId),
+          // The pulse is the manager's: only tasks they may see (lib/task-visibility.ts).
+          visibleTaskSql(managerId),
           eq(tasks.is_deleted, false),
           sql`${tasks.status} NOT IN ('done', 'cancelled')`,
           lt(tasks.due_date, startOfToday),
@@ -230,6 +235,8 @@ export async function generateManagerPulse(
         and(
           eq(tasks.org_id, orgId),
           eq(tasks.assignee_id, member.userId),
+          // The pulse is the manager's: only tasks they may see (lib/task-visibility.ts).
+          visibleTaskSql(managerId),
           eq(tasks.status, 'done'),
           gte(tasks.updated_at, oneWeekAgo),
         ),

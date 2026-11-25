@@ -30,6 +30,30 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
   its burn-down bucket, and `node scripts/check-app-boundary.mjs --summary` prints
   the counts per milestone. No finding changed.
 
+### Fixed
+
+- **Restricted tasks.** A task restricted to named people could be seen by other members
+  and admins in a project's task list and a team dashboard's top tasks; fixed. This was so
+  in 152 and earlier (since restricted tasks were added). Other places that showed such a
+  task's title, or counted it, to people it does not name now leave it out too: a project's
+  task counts, totals and weekly completions, subtask counts, a task's subtasks, parent,
+  dependencies and subtree, the dashboard's project counts, the people directory and member
+  detail, the MCP tools `project_list`, `project_get` and `team_workload`, activity receipts,
+  Defty's team performance, workload and 1:1 prep tools, the 1:1 prep and manager pulse
+  pages, the weekly digest and workload alerts (these count no restricted task), and the
+  @mention, workflow, unblocked, duplicate, blocked and stalled notices. A copy of a
+  restricted task, and the next occurrence of a recurring one, stay restricted to the same
+  people (they used to be open to everyone). Owners are not exempt: as before, an owner
+  sees a restricted task only when it names them or they lead its project.
+- **Task search** (`GET /api/tasks/search`, used by the task pickers) found nothing for a
+  query that ends in a digit, such as `rc8`, or for a key whose project prefix holds a
+  digit, such as `R8O-1`. It now matches a task's key (`PREFIX-N` or `PREFIXN`, any case)
+  and its title for every query, key matches first, and still shows only tasks the caller
+  may see.
+- **Project lead at creation.** A guest can no longer set a project's lead when creating
+  a project: `POST /api/projects` with `lead_id` from a guest answers `403 FORBIDDEN`, as
+  changing a lead already did. A guest may still create a project without a lead.
+
 ## [0.3.0-preview.152] — 2026-11-25 (prerelease)
 
 Changes since `v0.3.0-preview.151`: #592, #593, #594, #595 and #596. Release scope `core`

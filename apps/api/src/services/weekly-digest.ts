@@ -13,6 +13,7 @@ import {
 } from '@deft/db/schema';
 import { eq, and, gte, sql, lt, desc } from 'drizzle-orm';
 import { velocityCalculator, workloadAnalyzer } from './team-analytics.js';
+import { unrestrictedTaskCondition } from '../lib/task-visibility.js';
 
 export async function generateWeeklyDigest(
   managerId: string,
@@ -33,6 +34,8 @@ export async function generateWeeklyDigest(
       and(
         eq(tasks.org_id, orgId),
         eq(tasks.is_deleted, false),
+        // The digest goes to several people: no restricted task (lib/task-visibility.ts).
+        unrestrictedTaskCondition(),
         eq(taskActivity.action, 'status_changed'),
         sql`${taskActivity.new_value} = 'done'`,
         gte(taskActivity.created_at, oneWeekAgo),
@@ -48,6 +51,8 @@ export async function generateWeeklyDigest(
       and(
         eq(tasks.org_id, orgId),
         eq(tasks.is_deleted, false),
+        // The digest goes to several people: no restricted task (lib/task-visibility.ts).
+        unrestrictedTaskCondition(),
         gte(tasks.created_at, oneWeekAgo),
       ),
     );
@@ -61,6 +66,8 @@ export async function generateWeeklyDigest(
       and(
         eq(tasks.org_id, orgId),
         eq(tasks.is_deleted, false),
+        // The digest goes to several people: no restricted task (lib/task-visibility.ts).
+        unrestrictedTaskCondition(),
         sql`${tasks.status} NOT IN ('done', 'cancelled')`,
         lt(tasks.due_date, now),
       ),
@@ -128,6 +135,8 @@ export async function generateWeeklyDigest(
       and(
         eq(tasks.org_id, orgId),
         eq(tasks.is_deleted, false),
+        // The digest goes to several people: no restricted task (lib/task-visibility.ts).
+        unrestrictedTaskCondition(),
         eq(taskActivity.action, 'status_changed'),
         sql`${taskActivity.new_value} = 'done'`,
         gte(taskActivity.created_at, oneWeekAgo),

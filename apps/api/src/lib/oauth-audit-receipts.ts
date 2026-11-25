@@ -3,7 +3,7 @@ import { messages, projects, spaces, tasks } from '@deft/db/schema';
 import { db } from './db.js';
 import { toPlainText } from './plain-text.js';
 import { readableSpaceSql } from './space-membership.js';
-import { guestTaskScopeSql } from './task-visibility.js';
+import { visibleTaskSql } from './task-visibility.js';
 
 export type AuditReceipt = {
   title: string;
@@ -191,8 +191,9 @@ export async function enrichOAuthAuditActions<T extends AuditActionRow>(
     status: string;
     project_prefix: string | null;
   }>();
-  // Tasks the reader may no longer see as a guest (outside their projects
-  // and not naming them, lib/task-visibility.ts): their receipts name no
+  // Tasks the reader may no longer see (a restricted task no longer naming
+  // them, or for a guest a task outside their projects and not naming them,
+  // lib/task-visibility.ts): their receipts name no
   // task, not even the title stored with the result.
   const hiddenTaskIds = new Set<string>();
 
@@ -204,7 +205,7 @@ export async function enrichOAuthAuditActions<T extends AuditActionRow>(
         title: tasks.title,
         status: tasks.status,
         project_prefix: projects.prefix,
-        reader_may_see: sql<boolean>`${guestTaskScopeSql(readerId)}`,
+        reader_may_see: sql<boolean>`${visibleTaskSql(readerId)}`,
       })
       .from(tasks)
       .innerJoin(projects, eq(tasks.project_id, projects.id))
