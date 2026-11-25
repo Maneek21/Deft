@@ -116,6 +116,17 @@ test('a room read is given up after its timeout, and the scheduler never cuts a 
   assert.ok(ROOM_PENDING_APPROVALS_READ_TIMEOUT_MS > ROOM_PENDING_APPROVALS_REQUEST_TIMEOUT_MS,
     'a read settles before the scheduler would start another beside it');
   assert.ok(ROOM_PENDING_APPROVALS_REQUEST_TIMEOUT_MS < ROOM_PENDING_APPROVALS_REFRESH_MS, 'a stalled read ends before the next poll is due');
+  // In Node an AbortSignal.timeout timer does not keep the process alive (a browser's does): hold the
+  // event loop open while the stalled requests wait for it, or the test ends before the timeout fires.
+  const keepAlive = setInterval(() => undefined, 1_000);
+  try {
+    await stalledRequestsAreGivenUp();
+  } finally {
+    clearInterval(keepAlive);
+  }
+});
+
+async function stalledRequestsAreGivenUp() {
   const original = globalThis.fetch;
   let seenSignal: AbortSignal | undefined;
   // A server that never answers: the request settles only when its signal aborts.
@@ -148,7 +159,7 @@ test('a room read is given up after its timeout, and the scheduler never cuts a 
   } finally {
     api.fetch = clientFetch;
   }
-});
+}
 
 test('the hook listens to the events the server sends an approval\'s reviewers, with the type it gives them', () => {
   const attention = readFileSync(new URL('../../../api/src/lib/attention.ts', import.meta.url), 'utf8');
