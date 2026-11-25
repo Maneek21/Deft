@@ -52,9 +52,8 @@ Upgrade notes:
 
 Guests (#587). A privacy change for every install, hosted or self-hosted, that has guests:
 
-- **Before.** On `.150` and earlier, a guest received the whole member list, with every
-  member's email address, from the member list, the people directory and member profiles:
-  the same list an owner saw.
+- **Before.** On `.150` and earlier, a guest received every active member, with their
+  email address, from the member list, the people directory and member profiles.
 - **Now.** Guests no longer see every member or any member's email address; they see only
   people they share a space with (a room, a direct or group message, or an agent
   conversation, archived or not), and no email address but their own. This holds in the
@@ -65,14 +64,19 @@ Guests (#587). A privacy change for every install, hosted or self-hosted, that h
   performance, agent employees and their costs) are refused to a guest
   (`NOT_AVAILABLE_TO_GUESTS`).
 - A guest cannot start a direct message with, add to a room, assign a task to, or share a
-  note with someone they share no space with: that person is refused as if unknown.
+  note with someone they share no space with: that person is refused as if unknown. A
+  guest can no longer generate a 1:1 prep for anyone (404, as for an unknown report); for
+  everyone else, the report must be an active member of the workspace.
 - **What still shows.** Names on content a guest can already read: the assignee, creator,
   commenters and watchers of a task they can see, the authors of messages they can read,
-  and their own past collaborators in My Insights. Group and team member counts still
-  include people the guest cannot see (numbers only, no names).
-- The rule follows the person's role in the workspace, never their session or token, and
-  an agent employee follows it by its own workspace role. Owners, admins and members see
-  what they saw before.
+  and their own past collaborators in My Insights. The member counts in the group list and
+  on teams still include people the guest cannot see (numbers only, no names); a group's
+  own page counts only the members the guest can see.
+- The rule follows the person's active role in the workspace, never their session or
+  token. A person with no active membership gets the guest view. An agent employee follows
+  the rule by its own workspace role, but one with no active membership row keeps the view
+  it had before: to restrict an agent employee, give it the guest role. Owners, admins and
+  members see what they saw before.
 - For everyone: people search no longer lists removed members, or deleted or inactive
   agents.
 
@@ -93,9 +97,10 @@ Postgres runs on a small machine (512 MB):
   127 MB each and the kernel killed Postgres within 9 seconds; now the four peak at 119 MB
   together and the database at 168 MB.
 - **Pooled connections retire.** Every database pool the API opens now closes a connection
-  once it is `DEFT_DATABASE_POOL_MAX_LIFETIME_SECONDS` old (default 300; 30 to 86,400),
-  when it is next idle and never while in use, so memory a connection took is kept at most
-  that long. It also closes one idle for `DEFT_DATABASE_POOL_IDLE_TIMEOUT_SECONDS` (default
+  once it is `DEFT_DATABASE_POOL_MAX_LIFETIME_SECONDS` old (default 300; 30 to 86,400).
+  A connection past that age is closed when it is next released, never while a request,
+  transaction or advisory lock holds it, so the memory it took is given back soon after.
+  The pools also close one idle for `DEFT_DATABASE_POOL_IDLE_TIMEOUT_SECONDS` (default
   10, as before; 1 to 3,600). No pool's size changes. The App run maintenance pool keeps its
   one standing connection past the lifetime (node-postgres would not reopen it).
 - **Still open.** A chat room's pending-approvals poll (every 5 seconds) costs a connection
@@ -109,26 +114,30 @@ Also changed:
   invite and password-reset pages make no request outside the app and its API at all; a
   browser test in CI checks this. The page policy (CSP) no longer allows
   `fonts.googleapis.com` or `fonts.gstatic.com`.
-- **Calendar feeds (#586).** Adding a calendar (ICS) feed now refuses, with 400
-  `ICS_URL_NOT_PUBLIC`, an address no fetch could use: one that points to a private network
-  or to the server itself, a port other than 80 or 443, credentials in the address, or a
-  name that cannot be found. Before, such an address was saved and then refused at every
-  sync, so nothing was ever fetched from it; now it is not stored either. A self-hosted
-  install's `DEFT_CALENDAR_PRIVATE_URL_ALLOWLIST` entries are still accepted. Feeds already
-  saved are unchanged.
+- **Calendar feeds (#586).** Adding a calendar (ICS) feed now checks the address before
+  saving it and refuses, with 400 `ICS_URL_NOT_PUBLIC`, one that points to a private
+  network or to the server itself, uses a port other than 80 or 443, carries credentials,
+  or whose name does not resolve within 5 seconds. A sync allows the whole fetch 20
+  seconds, so a public feed whose name was slow to resolve can be refused once and saved
+  on a retry. A hosted workspace at its outside-request limit is refused with 429
+  `WORKSPACE_OUTGOING_LIMIT` before the check. Before, an inward address was saved and
+  then refused at every sync, so nothing was ever fetched from it; now it is not stored
+  either. A self-hosted install's `DEFT_CALENDAR_PRIVATE_URL_ALLOWLIST` entries are still
+  accepted. Feeds already saved are unchanged.
 - **API keys (#585).** Creating or changing an API key with a malformed request body is now
   refused with 400 `VALIDATION_ERROR` instead of failing with 500. So is a value the
   database cannot store or that would leave the key unreachable: an expiry date that is not
   a date or falls outside the years 1 to 9999, a rate limit above 2,147,483,647, a NUL
-  character in the text, an empty agent id, or a change request that changes nothing.
+  character in the text, an empty agent id, or a change request with no recognized field.
 - **`pnpm db:push-full` (#588).** When it stops part-way it now says plainly that the
-  database is incomplete and must not be used, names the range of upgrades it did not apply
-  and which of the tables they create are missing (among them `ics_publish_tokens`,
-  `seat_statements` and `user_two_step`), says how to recover, and, when the server's
-  Postgres or pgvector version is not one it recognizes, shows the versions it found. Before, such a stop left a database that looked usable but lacked those
-  tables. On the supported image (`pgvector/pgvector`, pinned in `docker-compose.yml`)
-  push-full is unchanged. CI now checks that a fresh install and an upgraded one have the
-  same tables.
+  database is incomplete and must not be used, and how to recover. When it can read the
+  database's upgrade ledger, it also names the range of upgrades it did not apply and which
+  of `ics_publish_tokens`, `seat_statements` and `user_two_step` are missing; when the
+  server's Postgres or pgvector version is not one it recognizes, it shows the versions it
+  found. Before, such a stop left a database that looked usable but lacked the tables of
+  those upgrades. On the supported image (`pgvector/pgvector`, pinned in
+  `docker-compose.yml`) push-full is unchanged. CI now checks that a fresh install and an
+  upgraded one have the same tables.
 
 ## [0.3.0-preview.150] — 2026-11-25 (prerelease)
 
