@@ -47,9 +47,19 @@ export const ROOM_PENDING_APPROVALS_REQUEST_TIMEOUT_MS = 20_000;
  */
 export const ROOM_PENDING_APPROVALS_READ_TIMEOUT_MS = 30_000;
 
-/** The request for a room's pending approvals (`/api/agent/actions/pending-by-space?space_id=…`), given up after the timeout. */
+/**
+ * The request for a room's pending approvals (`/api/agent/actions/pending-by-space?space_id=…`),
+ * given up after the timeout. The signal aborts the fetch and its body; the
+ * race also ends a wait the signal cannot reach, such as a session refresh
+ * after a 401 waiting on another tab's lock (astra, review of 995f3401).
+ */
 export function roomPendingApprovalsRequest(url: string, timeoutMs = ROOM_PENDING_APPROVALS_REQUEST_TIMEOUT_MS): Promise<Response> {
-  return api.fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  const signal = AbortSignal.timeout(timeoutMs);
+  const timedOut = new Promise<never>((_resolve, reject) => {
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+  });
+  timedOut.catch(() => undefined);
+  return Promise.race([api.fetch(url, { signal }), timedOut]);
 }
 
 /** The Inbox events a room re-reads its approvals on (lib/attention.ts, emitAttention). */

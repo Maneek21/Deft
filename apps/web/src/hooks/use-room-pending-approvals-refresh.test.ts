@@ -11,6 +11,7 @@ import {
   roomPendingApprovalsRequest,
   scheduleRoomPendingApprovalsRefresh,
 } from './use-room-pending-approvals-refresh';
+import { api } from '../lib/api';
 
 test('a room re-reads its approvals on an approval Inbox event, and on nothing else', () => {
   assert.equal(isApprovalAttentionEvent({ id: 'a', source_type: 'agent_action' }), true);
@@ -129,6 +130,23 @@ test('a room read is given up after its timeout, and the scheduler never cuts a 
     assert.ok(Date.now() - started < 2_000, 'given up at its timeout');
   } finally {
     globalThis.fetch = original;
+  }
+  // A wait inside the client that never sees the signal (a session refresh queued behind another tab's lock).
+  const clientFetch = api.fetch;
+  api.fetch = (() => new Promise<Response>(() => undefined)) as typeof api.fetch;
+  try {
+    const started = Date.now();
+    await assert.rejects(roomPendingApprovalsRequest('/api/agent/actions/pending-by-space?space_id=s', 40), (error: Error) => error.name === 'TimeoutError');
+    assert.ok(Date.now() - started < 2_000, 'given up at its timeout even so');
+  } finally {
+    api.fetch = clientFetch;
+  }
+  // A request that answers in time is that answer.
+  api.fetch = (async () => new Response('[]', { status: 200 })) as typeof api.fetch;
+  try {
+    assert.equal((await roomPendingApprovalsRequest('/api/agent/actions/pending-by-space?space_id=s', 1_000)).status, 200);
+  } finally {
+    api.fetch = clientFetch;
   }
 });
 
