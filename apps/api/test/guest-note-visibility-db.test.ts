@@ -394,3 +394,12 @@ test('the export reads the same rule: the condition holds inside a subquery on t
   const ids = ((result as any).rows as Array<{ id: string }>).map((row) => row.id);
   assert.deepEqual(sorted(ids), await visibleNow(guest));
 });
+
+test('an app integration writing an org note shows owners, admins and members as its audience, not guests', async () => {
+  const { appIntegrationDestinationPostgres } = await import('../src/lib/app-integration-destination-postgres.js');
+  const audience = await db.transaction((tx) => appIntegrationDestinationPostgres({}).audience(
+    tx as never, { org_id: org, user_id: member } as never, { kind: 'note', visibility: 'org' } as never, undefined as never));
+  const readers = (audience as { identity: Array<{ user_id: string }> }).identity.map((row) => row.user_id);
+  assert.equal((audience as { member_count: number }).member_count, 3);
+  assert.deepEqual(sorted(readers), sorted([owner, admin, member]));
+});
