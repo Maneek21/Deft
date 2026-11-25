@@ -18,7 +18,7 @@ import {
 import { noteFiles } from '@deft/db/note-files';
 import { db } from './db.js';
 import { visibleTaskCondition } from './task-visibility.js';
-import { visibleNoteCondition } from './note-visibility.js';
+import { visibleNoteCondition, visibleNoteConditionFromLockedGrants } from './note-visibility.js';
 import { unjoinedPublicSpaceReadableSql } from './space-membership.js';
 
 /**
@@ -206,23 +206,25 @@ export async function authorizeAttachmentDownload(params: Readonly<{
       // new links (their foreign key); the links, the notes, and the caller's
       // shares and space memberships those notes could grant through are
       // SHARE-locked, so an unshare, a removal, a delete or a visibility change
-      // in flight is decided before this read or waits for it.
+      // in flight is decided before this read or waits for it. The decision
+      // counts only the grant rows locked here, never one inserted since.
       const links = await tx.select({ note_id: noteFiles.note_id }).from(noteFiles).where(and(
         eq(noteFiles.org_id, params.org_id), eq(noteFiles.file_id, file.id))).for('share');
       if (links.length === 0) throw missing();
       const noteIds = links.map((link) => link.note_id);
       const linked = await tx.select({ id: notes.id, space_id: notes.visibility_space_id }).from(notes).where(and(
         inArray(notes.id, noteIds), eq(notes.org_id, params.org_id))).for('share');
-      await tx.select({ note_id: noteShares.note_id }).from(noteShares).where(and(
+      const shares = await tx.select({ note_id: noteShares.note_id }).from(noteShares).where(and(
         inArray(noteShares.note_id, noteIds), eq(noteShares.shared_with_user_id, params.user_id))).for('share');
       const spaceIds = [...new Set(linked.map((note) => note.space_id).filter((id): id is string => Boolean(id)))];
-      if (spaceIds.length > 0) {
-        await tx.select({ id: spaceMembers.id }).from(spaceMembers).where(and(
-          inArray(spaceMembers.space_id, spaceIds), eq(spaceMembers.user_id, params.user_id))).for('share');
-      }
+      const memberships = spaceIds.length === 0 ? [] : await tx.select({ space_id: spaceMembers.space_id }).from(spaceMembers)
+        .where(and(inArray(spaceMembers.space_id, spaceIds), eq(spaceMembers.user_id, params.user_id))).for('share');
       const [visible] = await tx.select({ id: notes.id }).from(notes).where(and(
-        inArray(notes.id, noteIds), eq(notes.org_id, params.org_id), eq(notes.is_deleted, false),
-        visibleNoteCondition(params.user_id))).limit(1);
+        inArray(notes.id, linked.map((note) => note.id)), eq(notes.org_id, params.org_id), eq(notes.is_deleted, false),
+        visibleNoteConditionFromLockedGrants(params.user_id, {
+          sharedNoteIds: shares.map((share) => share.note_id),
+          memberSpaceIds: memberships.map((membership) => membership.space_id),
+        }))).limit(1);
       if (!visible) throw missing();
     }
     // SID is last. Parent/member/link locks protect all preceding decisions

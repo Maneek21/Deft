@@ -313,7 +313,7 @@ test('MCP note_create and note_update and Defty create_note keep the links too',
   assert.equal(rows.length, 1);
 });
 
-test('the backfill links the kept images of notes saved before note_files, only those, and running it again changes nothing', { skip }, async () => {
+test('the backfill links the images of notes saved before note_files by the save rule, and running it again changes nothing', { skip }, async () => {
   const file = async (uploader: Person, extra: { staged?: boolean; message?: string; kind?: string } = {}) => {
     const id = randomUUID();
     await c.query(`INSERT INTO files (id, org_id, uploaded_by, filename, mime_type, size_bytes, storage_key, processing_status, attachment_kind, staged_expires_at, message_id)
@@ -335,20 +335,41 @@ test('the backfill links the kept images of notes saved before note_files, only 
   await c.query(`INSERT INTO notes (id, org_id, user_id, title, content, visibility, is_deleted) VALUES
     ($1, $3, $4, 'old', $5, 'org', false), ($2, $3, $4, 'old deleted', $6, 'org', true)`,
   [live, deleted, org, ids.author,
-    [kept, theirs, staged, onMessage, pdf, randomUUID()].map(img).join('') + `<img src="/api/files/${legacy}">`
+    `<IMG DATA-FILE-ID="${kept}">` + [theirs, staged, onMessage, pdf, randomUUID()].map(img).join('') + `<img src="/api/files/${legacy}">`
       + `<p>text naming /api/files/${theirs}</p>`,
     img(inDeleted)]);
   assert.deepEqual(await links(live), []);
 
   await mod.claims.backfillNoteFileLinks(mod.db);
-  assert.deepEqual(await links(live), [kept, legacy].sort());
+  assert.deepEqual(await links(live), [kept, staged].sort(), 'an older unprocessed upload is not linked: it is not known to be an image');
+  assert.equal(await expiryOf(staged), null, 'an image still staged is linked and kept');
   assert.deepEqual(await links(deleted), [inDeleted], 'a deleted note is linked too, so restoring it restores its images');
   assert.ok(await mod.access.getVisibleAttachment(kept, org, ids.workspaceMember), 'its readers can load it');
   assert.equal(await mod.access.getVisibleAttachment(theirs, org, ids.workspaceMember), null);
   assert.equal(await mod.access.getVisibleAttachment(inDeleted, org, ids.workspaceMember), null);
 
   await mod.claims.backfillNoteFileLinks(mod.db, { batchSize: 1 });
-  assert.deepEqual(await links(live), [kept, legacy].sort(), 'idempotent');
+  assert.deepEqual(await links(live), [kept, staged].sort(), 'idempotent');
   assert.deepEqual(await links(deleted), [inDeleted]);
-  assert.notEqual(await expiryOf(staged), null, 'a staged file is not claimed by the backfill');
+  assert.equal(await mod.access.getVisibleAttachment(legacy, org, ids.workspaceMember), null);
+});
+
+test('the locked download decides only by the grant rows it locked: a share it did not lock does not count', { skip }, async () => {
+  const [{ visibleNoteCondition, visibleNoteConditionFromLockedGrants }, { notes }, { and, eq }] = await Promise.all([
+    import('../src/lib/note-visibility.js'), import('@deft/db/schema'), import('drizzle-orm'),
+  ]);
+  const shared = await createNote({ content: '<p>shared</p>' });
+  const inSpace = await createNote({ content: '<p>space</p>', visibility: 'space', visibility_space_id: space });
+  await c.query(`INSERT INTO note_shares (id, note_id, shared_with_user_id) VALUES (gen_random_uuid()::text, $1, $2)`, [shared, ids.sharedMember]);
+  const sees = async (noteId: string, userId: string, grants?: { sharedNoteIds: string[]; memberSpaceIds: string[] }) =>
+    (await mod.db.select({ id: notes.id }).from(notes).where(and(eq(notes.id, noteId),
+      grants ? visibleNoteConditionFromLockedGrants(userId, grants) : visibleNoteCondition(userId)))).length === 1;
+  const none = { sharedNoteIds: [], memberSpaceIds: [] };
+  assert.equal(await sees(shared, ids.sharedMember), true);
+  assert.equal(await sees(shared, ids.sharedMember, none), false, 'an unlocked share is not counted');
+  assert.equal(await sees(shared, ids.sharedMember, { ...none, sharedNoteIds: [shared] }), true);
+  assert.equal(await sees(inSpace, ids.spaceMember), true);
+  assert.equal(await sees(inSpace, ids.spaceMember, none), false, 'an unlocked membership is not counted');
+  assert.equal(await sees(inSpace, ids.spaceMember, { ...none, memberSpaceIds: [space] }), true);
+  assert.equal(await sees(shared, ids.author, none), true, 'the author needs no grant row');
 });

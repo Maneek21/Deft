@@ -113,6 +113,17 @@ function imageTags(html: string): Array<Map<string, string>> {
       if (!end) break;
       j = end.index;
     }
+    if (tagName === 'template') {
+      // A template's content is inert: a browser parses it into a separate
+      // fragment the editor never reads. Skip to its matching end tag.
+      const marker = /<(\/?)template(?=[\t\n\f\r />])/gi;
+      marker.lastIndex = j;
+      let depth = 1;
+      let found: RegExpExecArray | null;
+      while (depth > 0 && (found = marker.exec(html))) depth += found[1] ? -1 : 1;
+      if (depth > 0) break;
+      j = marker.lastIndex;
+    }
     i = j;
   }
   return images;
@@ -130,12 +141,19 @@ function fileIdFromLegacyUrl(value: string | null): string | null {
   }
 }
 
-/** The ids of the uploaded files a note's images show, in order of first appearance. */
+/**
+ * The ids of the uploaded files a note's images show, in order of first
+ * appearance. As the editor: an <img> is a note image when it has a
+ * `data-file-id` attribute or its `src` contains `/api/files/`; its id is
+ * `data-file-id`, else the id in `src`, trimmed (protected-file.ts).
+ */
 export function noteFileIds(content: string | null | undefined): string[] {
   if (!content) return [];
   const ids = new Set<string>();
   for (const attrs of imageTags(content)) {
-    const id = attrs.get('data-file-id') || fileIdFromLegacyUrl(attrs.get('src') ?? null);
+    const src = attrs.get('src') ?? null;
+    if (!attrs.has('data-file-id') && !src?.includes('/api/files/')) continue;
+    const id = (attrs.get('data-file-id') || fileIdFromLegacyUrl(src))?.trim();
     if (id && FILE_ID.test(id)) ids.add(id);
   }
   return [...ids];
@@ -253,28 +271,28 @@ export async function syncNoteFiles(
 }
 
 /**
- * Links the images of notes saved before `note_files` existed. A link is
- * written only for a file the note's content shows that the note's author
- * uploaded in its workspace, that is kept already (no expiry), is on no task
- * or message, and is an image (or an older upload never processed), not
- * blocked. Deleted notes are included, so a restored note shows its images.
- * Runs when the workers start; idempotent (an existing link is left as it is)
- * and bounded. Each note is read under a share lock, so a save in flight
- * finishes first and the content read is the saved one.
+ * Links the images of notes saved before `note_files` existed, by the rule a
+ * save uses: a file the note's content shows that the note's author uploaded
+ * in its workspace, as an image (attachment_kind 'image', not blocked), on no
+ * task or message. A linked file is claimed (an image still staged is kept).
+ * Deleted notes are included, so a restored note shows its images. Runs when
+ * the workers start; idempotent (an existing link is left as it is), and each
+ * pass reads every note that names an image. Each note is read under a share
+ * lock, so a save in flight finishes first and the content read is the saved
+ * one; its files are locked before they are checked.
  */
 export async function backfillNoteFileLinks(
   database: Pick<typeof db, 'execute' | 'transaction'>,
-  options: { batchSize?: number; maxBatches?: number } = {},
+  options: { batchSize?: number } = {},
 ): Promise<number> {
   const batchSize = options.batchSize ?? 200;
-  const maxBatches = options.maxBatches ?? 500;
   let after = '';
   let written = 0;
-  for (let batch = 0; batch < maxBatches; batch += 1) {
+  for (;;) {
     const page = rowsOf<{ id: string }>(await database.execute(sql`
       SELECT id FROM notes
       WHERE id > ${after}
-        AND (position('data-file-id' in content) > 0 OR position('/api/files/' in content) > 0)
+        AND (strpos(lower(content), 'data-file-id') > 0 OR strpos(content, '/api/files/') > 0)
       ORDER BY id
       LIMIT ${batchSize}`));
     for (const { id } of page) {
@@ -283,19 +301,23 @@ export async function backfillNoteFileLinks(
           SELECT id, org_id, user_id, content FROM notes WHERE id = ${id} FOR SHARE`));
         if (!note) return 0;
         let count = 0;
-        for (const chunk of batches(noteFileIds(note.content))) {
-          count += rowsOf(await tx.execute(sql`
+        for (const chunk of batches(noteFileIds(note.content).sort())) {
+          // Lock first, then check on the locked rows in a fresh statement.
+          await tx.execute(sql`SELECT ${files.id} FROM ${files}
+            WHERE ${files.org_id} = ${note.org_id} AND ${inArray(files.id, chunk)}
+            ORDER BY ${files.id} FOR UPDATE OF ${files}`);
+          const linked = rowsOf<{ file_id: string }>(await tx.execute(sql`
             INSERT INTO note_files (org_id, note_id, file_id)
             SELECT ${files.org_id}, ${note.id}, ${files.id} FROM ${files}
-            WHERE ${files.org_id} = ${note.org_id} AND ${inArray(files.id, chunk)}
-              AND ${files.uploaded_by} = ${note.user_id}
-              AND ${files.staged_expires_at} IS NULL
-              AND (${files.attachment_kind} = 'image'
-                OR (${files.attachment_kind} = 'binary' AND ${files.processing_status} = 'pending'))
-              AND ${files.processing_status} <> 'blocked'
-              AND NOT ${onTaskOrMessage}
+            WHERE ${files.org_id} = ${note.org_id} AND ${inArray(files.id, chunk)} AND ${linkable(note.user_id)}
             ON CONFLICT DO NOTHING
-            RETURNING file_id`)).length;
+            RETURNING file_id`));
+          count += linked.length;
+          if (linked.length > 0) {
+            await tx.execute(sql`UPDATE ${files} SET staged_expires_at = NULL
+              WHERE ${files.org_id} = ${note.org_id} AND ${inArray(files.id, linked.map((row) => row.file_id))}
+                AND ${files.staged_expires_at} IS NOT NULL`);
+          }
         }
         return count;
       });

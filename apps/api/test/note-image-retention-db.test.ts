@@ -129,6 +129,11 @@ test('noteFileIds reads images as the editor does: data-file-id, else an older /
   assert.deepEqual(noteFileIds(`<textarea><p title="</textarea><img data-file-id=${a}>`), [a], 'a textarea ends at its end tag');
   assert.deepEqual(noteFileIds(`<img alt=one /data-file-id=${b} src=/api/files/${a}>`), [a], 'a non-breaking space is not whitespace');
   assert.deepEqual(noteFileIds(`<img/data-file-id="&#97;&#x62;" src="/api/files/${b}">`), ['ab'], 'character references are decoded');
+  assert.deepEqual(noteFileIds(`<img src="api/files/${b}">${img(a)}`), [a], 'a src without /api/files/ is not a note image');
+  assert.deepEqual(noteFileIds(`<img data-file-id="" src="api/files/${b}">`), [b], 'unless the img has data-file-id, as the editor matches it');
+  assert.deepEqual(noteFileIds(`<img data-file-id=" ${a} ">`), [a], 'the id is trimmed, as the editor fetches it');
+  assert.deepEqual(noteFileIds(`<template><template>${img(b)}</template>${img(b)}</template>${img(a)}`), [a], 'template content is inert');
+  assert.deepEqual(noteFileIds(`<template>${img(b)}`), [], 'an unclosed template runs to the end');
   // Crafted input with no closing '>' is read in one pass, not backtracked.
   const started = Date.now();
   noteFileIds('<a "<a" '.repeat(250_000));

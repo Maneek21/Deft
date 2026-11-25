@@ -24,8 +24,9 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
   later, once no other note of yours shows it (later still if a scheduled message you
   have not sent yet carries it). Before, it was kept for ever.
 - **Older notes.** When the server starts, it records the images that notes saved before
-  this release show, so their readers can load them too. Images uploaded by someone
-  other than the note's author are not included.
+  this release show, so their readers can load them too (and an image still waiting to
+  be cleaned up is kept). Only images the note's author uploaded count; an upload from
+  before Deft checked file types is not included and still loads only for its uploader.
 - **Database.** Upgrade `0.3.0-preview.154` adds one table, `note_files` (which note shows
   which uploaded file). It only adds; `pnpm db:upgrade` applies it and `pnpm db:push-full`
   creates it on a fresh install.
