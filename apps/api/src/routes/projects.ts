@@ -324,8 +324,10 @@ projectRoutes.patch('/:id', async (c) => {
     // lead may change who leads it, and never a guest (lib/project-lead.ts).
     // An unchanged lead is not written, so a stale form never puts back a
     // lead someone else has since changed. A change is applied only while the
-    // lead is still the one it was authorized against (409 otherwise).
-    const leadChanging = updates.lead_id !== undefined && (updates.lead_id ?? null) !== existing.lead_id;
+    // lead is still the one it was authorized against (409 otherwise). A
+    // blank lead id means no lead.
+    if (typeof updates.lead_id === 'string' && !updates.lead_id.trim()) updates.lead_id = null;
+    const leadChanging =updates.lead_id !== undefined && (updates.lead_id ?? null) !== existing.lead_id;
     if (updates.lead_id !== undefined && !leadChanging) delete updates.lead_id;
     if (leadChanging) {
       const refusal = await projectLeadChangeRefusal(user.org_id, user.id, existing.lead_id);

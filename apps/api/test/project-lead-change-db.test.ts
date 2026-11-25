@@ -206,6 +206,13 @@ test('PATCH /api/projects/:id: the new lead must be an active member of the work
   assert.equal(res.status, 400);
   assert.equal(res.body.code, 'VALIDATION_ERROR');
   assert.equal(await currentLead(), lead);
+  // A blank id means no lead: a member is refused, as for null; the owner clears it.
+  const blankByMember = await call(member, `/api/projects/${project}`, { method: 'PATCH', body: { lead_id: '' } });
+  assert.equal(blankByMember.status, 403);
+  const blankByOwner = await call(owner, `/api/projects/${project}`, { method: 'PATCH', body: { lead_id: '' } });
+  assert.equal(blankByOwner.status, 200);
+  assert.equal(await currentLead(), null);
+  await setLead(lead);
 });
 
 test('the lead write itself carries the authority: it applies only for an active owner, admin or current lead, and only while the lead is unchanged', async () => {
