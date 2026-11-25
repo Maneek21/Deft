@@ -26,8 +26,10 @@ A privacy change for every install, hosted or self-hosted, that has guests.
   promotion to the wiki and the workspace export.
 - **Search fix.** Search now finds a note shared with you. It used its own copy of the
   rule, without shares; every note surface now uses the one rule.
-- **Team links.** A note linked to a team that the reader can't see now shows no title or
-  label there, for members too (before, a private note's title showed to every team
+- **For members too.** Defty's note search and note retrieval now also return notes shared
+  with you and notes in your spaces (notes you could already open). A note linked to a
+  team that the reader can't see now shows no title or label there, and can't be linked
+  by a team lead who can't see it (before, a private note's title showed to every team
   reader in the MCP team tools).
 
 ### Notice: Kit `0.1.0-alpha.44` removes deprecated Email compatibility

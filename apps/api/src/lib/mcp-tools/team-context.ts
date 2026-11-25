@@ -457,13 +457,15 @@ async function enrichResources(access: TeamAccessContext, teamId: string) {
       visibility: notes.visibility,
       is_pinned: notes.is_pinned,
       updated_at: notes.updated_at,
+      is_deleted: notes.is_deleted,
       visible: access.user_id ? sql<boolean>`${visibleNoteCondition(access.user_id)}` : sql<boolean>`true`,
-    }).from(notes).where(and(eq(notes.org_id, access.org_id), inArray(notes.id, noteIds), eq(notes.is_deleted, false)));
-    // A note the reader may not see (lib/note-visibility.ts) is listed like a
-    // restricted space: no title, no label.
-    rows.forEach(({ visible, ...row }) => {
-      if (visible) put('note', row.id, row);
-      else hiddenNotes.add(row.id);
+    }).from(notes).where(and(eq(notes.org_id, access.org_id), inArray(notes.id, noteIds)));
+    // A note the reader may not see (lib/note-visibility.ts), deleted or not,
+    // is listed like a restricted space: no title, no label. As REST
+    // (routes/teams.ts decorateResourcesForUser).
+    rows.forEach(({ visible, is_deleted, ...row }) => {
+      if (!visible) hiddenNotes.add(row.id);
+      else if (!is_deleted) put('note', row.id, row);
     });
   }
 

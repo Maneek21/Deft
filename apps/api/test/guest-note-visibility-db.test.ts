@@ -23,6 +23,7 @@ import { promotableNoteSql } from '../src/lib/agent-action-visibility.js';
 import { retrieveContext } from '../src/lib/retrieve-context.js';
 import { resolveNativeNoteDisplay } from '../src/lib/native-content-projections.js';
 import { executeToolCall } from '../src/lib/agent-context.js';
+import { executeActionDirect } from '../src/lib/agent-actions.js';
 import { getTeamContext } from '../src/lib/mcp-tools/team-context.js';
 import { humanNoteGet, humanNoteList, type HumanToolContext } from '../src/lib/mcp-tools/human.js';
 import { dailyNoteRoutes } from '../src/routes/daily-notes.js';
@@ -46,7 +47,9 @@ const people: Array<[string, string, string | null, 'human' | 'agent']> = [
 ];
 const NON_GUESTS = [owner, admin, member, looseAgent];
 const guestRoom = randomUUID(), memberRoom = randomUUID();
-const project = randomUUID(), task = randomUUID(), tag = randomUUID(), team = randomUUID();
+const project = randomUUID(), task = randomUUID(), tag = randomUUID(), team = randomUUID(), ledTeam = randomUUID();
+// An org note linked to no team, for the link check.
+const unlinkedOrgNote = randomUUID();
 const word = `gnv${run}`;
 
 type Shape = { author: string; visibility: 'private' | 'org' | 'space'; space?: string; sharedWith?: string; template?: boolean };
@@ -116,6 +119,10 @@ before(async () => {
   await c.query(`INSERT INTO teams (id, org_id, name, handle, visibility, lead_user_id) VALUES ($1, $2, 'gnv team', $3, 'org', $4)`,
     [team, org, `gnv-${run}`, member]);
   await c.query(`INSERT INTO team_members (id, org_id, team_id, user_id) VALUES (gen_random_uuid()::text, $1, $2, $3)`, [org, team, guest]);
+  // A team the guest leads, so a link request reaches the note check.
+  await c.query(`INSERT INTO teams (id, org_id, name, handle, visibility, lead_user_id) VALUES ($1, $2, 'gnv led team', $3, 'org', $4)`,
+    [ledTeam, org, `gnv-led-${run}`, guest]);
+  await insertNote(unlinkedOrgNote, 'unlinkedOrg', { author: member, visibility: 'org' });
   for (const key of Object.keys(shapes) as NoteKey[]) {
     await c.query(`INSERT INTO cross_references (id, org_id, source_type, source_id, target_type, target_id, created_by)
       VALUES (gen_random_uuid()::text, $1, 'note', $2, 'task', $3, $4)`, [org, noteIds[key], task, member]);
@@ -127,6 +134,12 @@ before(async () => {
 });
 
 after(async () => {
+  // Rows the executor wrote for search_notes and read_note.
+  for (const [table, column] of [['action_receipts', 'action_id'], ['agent_action_approvers', 'action_id'], ['module_mutation_receipts', 'agent_action_id']]) {
+    await c.query(`DELETE FROM ${table} WHERE ${column} IN (SELECT id FROM agent_actions WHERE org_id = $1)`, [org]).catch(() => {});
+  }
+  await c.query(`DELETE FROM agent_actions WHERE org_id = $1`, [org]);
+  await c.query(`DELETE FROM audit_log WHERE org_id = $1`, [org]).catch(() => {});
   await c.query(`DELETE FROM team_resources WHERE org_id = $1`, [org]);
   await c.query(`DELETE FROM team_members WHERE org_id = $1`, [org]);
   await c.query(`DELETE FROM teams WHERE org_id = $1`, [org]);
@@ -317,8 +330,12 @@ test('tags, backlinks and team links: a guest sees no hidden note there; members
   assert.equal(hiddenRow.access, 'restricted');
   const memberTeam = await get(member, `/api/teams/${team}`);
   assert.equal(memberTeam.body.resources.find((row: any) => row.resource_id === noteIds.orgNote).label, titleOf('orgNote'));
-  const link = await call(guest, `/api/teams/${team}/resources`, { method: 'POST', body: { resource_type: 'note', resource_id: noteIds.orgNote } });
-  assert.notEqual(link.status, 201, 'a hidden note cannot be linked');
+  const link = await call(guest, `/api/teams/${ledTeam}/resources`, { method: 'POST', body: { resource_type: 'note', resource_id: unlinkedOrgNote } });
+  const linkUnknown = await call(guest, `/api/teams/${ledTeam}/resources`, { method: 'POST', body: { resource_type: 'note', resource_id: randomUUID() } });
+  assert.equal(link.status, 400, 'a hidden note cannot be linked by a guest team lead');
+  assert.deepEqual(link.body, linkUnknown.body, 'it answers like an unknown note');
+  const ownLink = await call(guest, `/api/teams/${ledTeam}/resources`, { method: 'POST', body: { resource_type: 'note', resource_id: noteIds.spaceIn } });
+  assert.equal(ownLink.status, 201, 'a note the guest can see can be linked');
 
   const context = JSON.stringify(await getTeamContext({ org_id: org, user_id: guest, role: 'member' }, { team_id: team } as never));
   assert.ok(context.includes(noteIds.spaceIn), 'the team context lists the links');
@@ -356,6 +373,14 @@ test('Defty search_notes and read_note, retrieval and mention display follow the
   assert.deepEqual(namedIn(JSON.stringify(retrieved), GUEST_HIDDEN), []);
   const memberRetrieved = await retrieveContext({ query: titleOf('sharedToMember'), org_id: org, user_id: member, types: ['notes'], limit: 50, hybrid: false });
   assert.ok(memberRetrieved.some((row) => row.source_id === noteIds.sharedToMember), 'retrieval finds a note shared with a member');
+
+  // The executor's own search_notes and read_note (agent-actions.ts).
+  const direct = JSON.stringify(await executeActionDirect('search_notes', { query: word, limit: 50 }, org, guest, null, 'auto'));
+  assert.deepEqual(namedIn(direct, GUEST_HIDDEN), []);
+  assert.ok(names(direct, 'spaceIn') && names(direct, 'sharedToGuest'), 'the executor finds space and shared notes');
+  const directRead = JSON.stringify(await executeActionDirect('read_note', { note_id: noteIds.orgNote }, org, guest, null, 'auto'));
+  assert.equal(names(directRead, 'orgNote'), false);
+  assert.ok(names(JSON.stringify(await executeActionDirect('read_note', { note_id: noteIds.orgNote }, org, member, null, 'auto')), 'orgNote'));
 
   assert.equal(await resolveNativeNoteDisplay({ org_id: org, user_id: guest, role: 'member' } as never, noteIds.orgNote), null);
   assert.notEqual(await resolveNativeNoteDisplay({ org_id: org, user_id: guest, role: 'member' } as never, noteIds.spaceIn), null);
