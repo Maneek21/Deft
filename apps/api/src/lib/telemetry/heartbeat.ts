@@ -36,8 +36,15 @@ const SEAT_QUERY_TIMEOUT = '3s';
  * hosted cell holds one workspace (seat-limit.ts); before setup there is none
  * (0). Two or more (a database restored over another, say) is ambiguous:
  * nothing is sent rather than one workspace's count under the cell's name.
- * The queries run in one read transaction that the database ends after 3
- * seconds, so a heartbeat never holds a connection through a shutdown.
+ * How long it can hold a database connection, end to end, against the
+ * server's 15-second shutdown deadline (server.ts):
+ * - getting a connection: at most 5 seconds, whether a new one or a wait for
+ *   a busy pool (db.ts connectionTimeoutMillis; pg-pool applies it to queued
+ *   checkouts too, then fails the checkout);
+ * - BEGIN and SET LOCAL: they take no locks;
+ * - the two reads: at most 3 seconds, waiting on a lock or running
+ *   (SET LOCAL statement_timeout and lock_timeout, below).
+ * About 8 seconds in all, and only while a heartbeat is out (once an hour).
  */
 async function defaultSeatsUsed(): Promise<number | null> {
   const [{ db }, { orgs }, { sql }, { countSeatsInUse }] = await Promise.all([
