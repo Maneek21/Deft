@@ -21,6 +21,7 @@
  */
 import { useEffect } from 'react';
 import { useSWRConfig } from 'swr';
+import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 
 /** The fallback poll of a room's pending approvals. */
@@ -29,8 +30,27 @@ export const ROOM_PENDING_APPROVALS_REFRESH_MS = 30_000;
 /** How long after an approval event a room re-reads; later events until then join that re-read. */
 export const ROOM_PENDING_APPROVALS_EVENT_DELAY_MS = 750;
 
-/** How long a re-read may hold its room: a request that never settles does not stop later events. */
-export const ROOM_PENDING_APPROVALS_READ_TIMEOUT_MS = 15_000;
+/**
+ * How long a room's read of its pending approvals may take, body included,
+ * before it is given up (an error SWR shows as a failed read). Every read then
+ * settles: SWR's poll waits for the read in flight before its next one, so a
+ * read that never settled stopped the room's poll for good (astra, review of
+ * 0b32f025).
+ */
+export const ROOM_PENDING_APPROVALS_REQUEST_TIMEOUT_MS = 20_000;
+
+/**
+ * How long a re-read may hold its room in the scheduler. Longer than a read
+ * can take (ROOM_PENDING_APPROVALS_REQUEST_TIMEOUT_MS), so it never starts a
+ * second read beside one still running, whose response SWR would drop; it
+ * only guards against a refresh that never settles for another reason.
+ */
+export const ROOM_PENDING_APPROVALS_READ_TIMEOUT_MS = 30_000;
+
+/** The request for a room's pending approvals (`/api/agent/actions/pending-by-space?space_id=…`), given up after the timeout. */
+export function roomPendingApprovalsRequest(url: string, timeoutMs = ROOM_PENDING_APPROVALS_REQUEST_TIMEOUT_MS): Promise<Response> {
+  return api.fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+}
 
 /** The Inbox events a room re-reads its approvals on (lib/attention.ts, emitAttention). */
 export const APPROVAL_ATTENTION_EVENTS = ['attention:new', 'attention:updated'] as const;
@@ -54,10 +74,11 @@ const rooms = new Map<string, RoomRefresh>();
  * runs queue one more read after it completes. A read started while another
  * runs would replace it (SWR drops the older response), so events closer
  * together than a read takes would otherwise keep the card from ever
- * updating (astra, review of b0ee15db). A read holds its room for at most
- * ROOM_PENDING_APPROVALS_READ_TIMEOUT_MS: one that never settles releases it
- * then, and the queued read (which replaces it) runs (astra, review of
- * ad034701). `refresh` re-reads the room's own key.
+ * updating (astra, review of b0ee15db). Reads settle within
+ * ROOM_PENDING_APPROVALS_REQUEST_TIMEOUT_MS; a refresh that still has not
+ * after ROOM_PENDING_APPROVALS_READ_TIMEOUT_MS releases the room, and the
+ * queued read runs (astra, review of ad034701). `refresh` re-reads the room's
+ * own key.
  */
 export function scheduleRoomPendingApprovalsRefresh(key: string, refresh: () => unknown, timers: Timers = browserTimers): void {
   const current = rooms.get(key);

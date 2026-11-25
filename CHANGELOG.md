@@ -23,7 +23,8 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 - A room's approval cards refresh when the reviewer's Inbox gets an approval event (raised,
   changed or decided; events within ¾ second make one refresh), and otherwise every 30
   seconds instead of every 5, so a few open tabs no longer run into the per-user request
-  limit; a room reads them one request at a time. Where no event reaches the reviewer (an
+  limit; a room reads them one request at a time, each given up after 20 seconds (a read
+  that never ended stopped the room's poll). Where no event reaches the reviewer (an
   Inbox item they already closed, an approval reopened after a retryable failure, a tab
   reconnecting), a card can take up to 30 seconds to change.
 - Measured on Postgres 16 capped at 512 MB, one pending approval with six tabs open (four of

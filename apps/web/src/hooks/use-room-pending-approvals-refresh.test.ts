@@ -7,6 +7,8 @@ import {
   ROOM_PENDING_APPROVALS_EVENT_DELAY_MS,
   ROOM_PENDING_APPROVALS_READ_TIMEOUT_MS,
   ROOM_PENDING_APPROVALS_REFRESH_MS,
+  ROOM_PENDING_APPROVALS_REQUEST_TIMEOUT_MS,
+  roomPendingApprovalsRequest,
   scheduleRoomPendingApprovalsRefresh,
 } from './use-room-pending-approvals-refresh';
 
@@ -109,6 +111,27 @@ test('a read that never settles releases its room after the timeout, and the que
   await settle();
 });
 
+test('a room read is given up after its timeout, and the scheduler never cuts a read short (astra)', async () => {
+  assert.ok(ROOM_PENDING_APPROVALS_READ_TIMEOUT_MS > ROOM_PENDING_APPROVALS_REQUEST_TIMEOUT_MS,
+    'a read settles before the scheduler would start another beside it');
+  assert.ok(ROOM_PENDING_APPROVALS_REQUEST_TIMEOUT_MS < ROOM_PENDING_APPROVALS_REFRESH_MS, 'a stalled read ends before the next poll is due');
+  const original = globalThis.fetch;
+  let seenSignal: AbortSignal | undefined;
+  // A server that never answers: the request settles only when its signal aborts.
+  globalThis.fetch = ((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+    seenSignal = init?.signal ?? undefined;
+    seenSignal?.addEventListener('abort', () => reject(seenSignal!.reason));
+  })) as typeof fetch;
+  try {
+    const started = Date.now();
+    await assert.rejects(roomPendingApprovalsRequest('/api/agent/actions/pending-by-space?space_id=s', 40), (error: Error) => error.name === 'TimeoutError');
+    assert.ok(seenSignal, 'the request carries a signal');
+    assert.ok(Date.now() - started < 2_000, 'given up at its timeout');
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test('the hook listens to the events the server sends an approval\'s reviewers, with the type it gives them', () => {
   const attention = readFileSync(new URL('../../../api/src/lib/attention.ts', import.meta.url), 'utf8');
   const emitted = attention.match(/async function emitAttention\(event: ([^,]+),/)?.[1];
@@ -129,5 +152,6 @@ test('the rooms poll their approvals only as a fallback, every 30 seconds, and b
     assert.ok(!/pending-by-space[\s\S]{0,1200}refreshInterval: 5000/.test(source), `${file}: no 5-second poll`);
     assert.ok(source.includes('refreshInterval: ROOM_PENDING_APPROVALS_REFRESH_MS'), `${file}: the fallback interval`);
     assert.ok(source.includes('useRoomPendingApprovalsRefresh(pendingBySpaceKey)'), `${file}: re-reads on the events`);
+    assert.ok(source.includes('const res = await roomPendingApprovalsRequest(url);'), `${file}: reads with the bounded request`);
   }
 });

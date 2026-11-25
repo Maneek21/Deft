@@ -13,7 +13,7 @@ import { api } from '@/lib/api';
 import { createNativeCreateIntent } from '@/lib/native-create-intent';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { getSocket } from '@/lib/socket';
-import { ROOM_PENDING_APPROVALS_REFRESH_MS, useRoomPendingApprovalsRefresh } from '@/hooks/use-room-pending-approvals-refresh';
+import { ROOM_PENDING_APPROVALS_REFRESH_MS, roomPendingApprovalsRequest, useRoomPendingApprovalsRefresh } from '@/hooks/use-room-pending-approvals-refresh';
 import { watchCatchUp, type CatchUpResult } from '@/lib/space-socket';
 import { useAuth } from '@/lib/auth-context';
 import { X, Smile, ArrowLeft, FileText } from 'lucide-react';
@@ -274,7 +274,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
   const { data: pendingByMessage, error: pendingActionsError } = useSWR(
     pendingBySpaceKey,
     async (url: string) => {
-      const res = await api.get(url);
+      const res = await roomPendingApprovalsRequest(url);
       if (!res.ok) throw new Error(`Unable to load pending actions (${res.status})`);
       const list: Array<AgentAction & { message_id: string }> = await res.json();
       const map: Record<string, AgentAction[]> = {};
