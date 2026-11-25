@@ -22,6 +22,7 @@ import {
   taskLabels,
 } from '@deft/db/schema';
 import { eq, and, gte, sql, inArray, ne, desc } from 'drizzle-orm';
+import { unrestrictedTaskCondition } from '../lib/task-visibility.js';
 
 // ═══ INTERACTION MATRIX ═══
 
@@ -309,6 +310,8 @@ If a message has no clear expertise topic, use an empty topics array.`;
     .where(
       and(
         eq(tasks.org_id, orgId),
+        // The graph is shared by the whole workspace: no restricted task (lib/task-visibility.ts).
+        unrestrictedTaskCondition(),
         eq(taskActivity.action, 'status_changed'),
         eq(taskActivity.new_value, 'done'),
         gte(taskActivity.created_at, cutoff),
@@ -499,6 +502,8 @@ Respond ONLY with valid JSON array. Each element: { "idx": number, "topics": str
     .where(
       and(
         eq(tasks.org_id, orgId),
+        // The graph is shared by the whole workspace: no restricted task (lib/task-visibility.ts).
+        unrestrictedTaskCondition(),
         eq(tasks.status, 'done'),
         eq(tasks.is_deleted, false),
         sql`${tasks.updated_at} > NOW() - INTERVAL '24 hours'`,
@@ -748,6 +753,8 @@ export async function analyzePatterns(orgId: string): Promise<void> {
         .where(
           and(
             eq(tasks.org_id, orgId),
+            // The graph is shared by the whole workspace: no restricted task (lib/task-visibility.ts).
+            unrestrictedTaskCondition(),
             eq(taskActivity.user_id, userId),
             eq(taskActivity.action, 'status_changed'),
             eq(taskActivity.new_value, 'done'),
@@ -762,6 +769,8 @@ export async function analyzePatterns(orgId: string): Promise<void> {
         .where(
           and(
             eq(tasks.org_id, orgId),
+            // The graph is shared by the whole workspace: no restricted task (lib/task-visibility.ts).
+            unrestrictedTaskCondition(),
             eq(taskActivity.user_id, userId),
             eq(taskActivity.action, 'status_changed'),
             eq(taskActivity.new_value, 'done'),
@@ -958,12 +967,15 @@ export async function detectRelationships(orgId: string): Promise<void> {
       .where(
         and(
           eq(tasks.org_id, orgId),
+          // The graph is shared by the whole workspace: no restricted task (lib/task-visibility.ts).
+          unrestrictedTaskCondition(),
           eq(tasks.is_deleted, false),
           sql`${tasks.project_id} IN (
             SELECT DISTINCT project_id FROM tasks
             WHERE org_id = ${orgId}
               AND assignee_id = ${pair.user_a_id}
               AND is_deleted = false
+              AND ${unrestrictedTaskCondition()}
           )`,
           eq(tasks.assignee_id, pair.user_b_id),
         ),
@@ -1126,6 +1138,8 @@ export async function detectRelationships(orgId: string): Promise<void> {
     .where(
       and(
         eq(tasks.org_id, orgId),
+        // The graph is shared by the whole workspace: no restricted task (lib/task-visibility.ts).
+        unrestrictedTaskCondition(),
         eq(tasks.is_deleted, false),
         gte(tasks.created_at, fourteenDaysAgo),
         sql`${tasks.assignee_id} IS NOT NULL`,

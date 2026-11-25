@@ -10,6 +10,45 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### Images pasted into a note no longer vanish after 24 hours
+
+- **Fixed.** An image pasted or inserted into a note was kept as an unattached upload, and
+  the daily file clean-up deleted it (and its stored file) after 24 hours, so the note
+  showed a broken image from the next day on. Saving a note's text now keeps the images
+  it shows: on create and edit, from the notes page, the MCP note tools and Defty's
+  `create_note`. Only uploads you made yourself, in the same workspace, are kept this way;
+  naming someone else's upload in your note does not keep it. Scheduling or cancelling a
+  message that carries a kept image no longer puts it back on the 24-hour clock.
+- **Already lost.** Images pasted into notes before this release and already removed by
+  the clean-up (it runs about hourly, once an upload is 24 hours old) can't be restored
+  from the app: paste them again. An older image that still shows is kept once you edit
+  the note's text (renaming the note alone does not keep it).
+- **Known gap.** Removing an image from a note keeps its file; nothing deletes it yet.
+- **Who can see a note image** is unchanged: an image in a note is still loaded only by
+  the person who uploaded it, so people you share a note with see it as unavailable.
+
+### Guests see only the notes they were added to
+
+A privacy change for every install, hosted or self-hosted, that has guests.
+
+- Guests no longer see notes visible to the whole workspace; they see their own notes,
+  notes shared with them and notes in their spaces. Owners, admins, members and agents
+  see what they saw before.
+- **Before.** On `.152` and earlier, a guest could list, open and search every note
+  visible to the whole workspace, as a member could.
+- **Now.** For a guest, any other note answers as if it did not exist (404, or left out
+  of a list) on the notes page and its templates, search, tags and tag counts, task
+  backlinks, team links (title and label hidden; a hidden note can't be linked), the MCP
+  note and team tools, Defty's note tools and retrieval, note mentions, note
+  promotion to the wiki and the workspace export.
+- **Search fix.** Search now finds a note shared with you. It used its own copy of the
+  rule, without shares; every note surface now uses the one rule.
+- **For members too.** Defty's note search and note retrieval now also return notes shared
+  with you and notes in your spaces (notes you could already open). A note linked to a
+  team that the reader can't see now shows no title or label there, and can't be linked
+  by a team lead who can't see it (before, a private note's title showed to every team
+  reader in the MCP team tools).
+
 ### Notice: Kit `0.1.0-alpha.44` removes deprecated Email compatibility
 
 Not before 2026-11-25, and never fewer than 14 days after this notice merged.
@@ -29,6 +68,38 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
   at 1,277 (it may only be lowered), each exception's `milestone` now starts with
   its burn-down bucket, and `node scripts/check-app-boundary.mjs --summary` prints
   the counts per milestone. No finding changed.
+
+### Fixed
+
+- **Restricted tasks.** A task restricted to named people could be seen by other members
+  and admins in a project's task list and a team dashboard's top tasks; fixed. This was so
+  in 152 and earlier (since restricted tasks were added). Other places that showed such a
+  task's title, or counted it, to people it does not name now leave it out too: a project's
+  task counts, totals and weekly completions, subtask counts, a task's subtasks, parent,
+  dependencies and subtree, the dashboard's project counts, the people directory and member
+  detail, the MCP tools `project_list`, `project_get` and `team_workload`, activity receipts,
+  Defty's team performance, workload, 1:1 prep and expert-finder tools, the 1:1 prep and
+  manager pulse pages, the weekly digest, workload alerts and People Graph (these count no
+  restricted task), and the @mention, workflow, unblocked, duplicate, blocked and stalled
+  notices. A restricted task's stalled or overdue nudge goes to the person, not to an agent.
+  A copy of a restricted task, and the next occurrence of a recurring one, stay restricted
+  to the same people (they used to be open to everyone).
+
+  Known limits, not fixed here: 1:1 preps, snapshots and People Graph counts saved before
+  this release keep what they showed when they were made (as do notices written before
+  it). Defty answering in a shared room can quote what the person who asked may see, the
+  same family as the room-publication limit (D2). `/api/audit` shows owners and admins
+  task audit snapshots, a restricted task's title included. Owners are not exempt: as before, an owner
+  sees a restricted task only when it names them or they lead its project.
+- **Task search** (`GET /api/tasks/search`, used by the task pickers) found nothing for a
+  query that ends in a digit, such as `rc8`, or for a key whose project prefix holds a
+  digit, such as `R8O-1`. It now matches a task's key (`PREFIX-N` or `PREFIXN`, any case)
+  and its title for every query, key matches first, and still shows only tasks the caller
+  may see.
+- **Project lead at creation.** A guest can no longer set a project's lead when creating
+  a project: `POST /api/projects` with `lead_id` from a guest answers `403 FORBIDDEN`, and
+  the MCP tool `project_create` refuses it, as changing a lead already did. A guest may
+  still create a project without a lead.
 
 ## [0.3.0-preview.152] — 2026-11-25 (prerelease)
 

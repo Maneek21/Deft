@@ -1969,11 +1969,8 @@ export async function executeToolCall(
         projectId = proj.id;
       }
 
-      const velocity = await velocityCalculator(
-        orgId,
-        projectId,
-        agentEmployeeId ? _userId : undefined,
-      );
+      // Only completions of tasks the caller may see (lib/task-visibility.ts).
+      const velocity = await velocityCalculator(orgId, projectId, _userId);
       return { result: velocity, citations: [] };
     }
 
@@ -1985,7 +1982,7 @@ export async function executeToolCall(
           citations: [],
         };
       }
-      const workload = await workloadAnalyzer(orgId);
+      const workload = await workloadAnalyzer(orgId, _userId);
       return { result: workload, citations: [] };
     }
 

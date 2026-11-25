@@ -9,7 +9,7 @@ import {
 import { eq, and, sql } from 'drizzle-orm';
 import { emitToUser } from '../../socket.js';
 import { createNotificationIfAllowed } from '../../lib/notification-policy.js';
-import { guestTaskScopeSql } from '../../lib/task-visibility.js';
+import { visibleTaskSql } from '../../lib/task-visibility.js';
 
 /** Split a title into normalized words for comparison */
 function tokenize(title: string): Set<string> {
@@ -51,8 +51,8 @@ export async function handleDuplicateDetect(job: JobData): Promise<void> {
     }
 
     // Query all non-done tasks in the same project (excluding this task).
-    // The notice names the other task to the new task's creator, so a guest
-    // is matched only against tasks they may see (task-visibility.ts).
+    // The notice names the other task to the new task's creator, so they
+    // are matched only against tasks they may see (task-visibility.ts).
     const existingTasks = await db
       .select({
         id: tasks.id,
@@ -70,7 +70,7 @@ export async function handleDuplicateDetect(job: JobData): Promise<void> {
           eq(tasks.is_deleted, false),
           sql`${tasks.status} NOT IN ('done', 'cancelled')`,
           sql`${tasks.id} != ${taskId}`,
-          guestTaskScopeSql(newTask.created_by),
+          visibleTaskSql(newTask.created_by),
         ),
       );
 

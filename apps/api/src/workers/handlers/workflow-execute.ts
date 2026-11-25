@@ -19,7 +19,7 @@ import {
 import { eq, and } from 'drizzle-orm';
 import { emitToUser } from '../../socket.js';
 import { createNotificationIfAllowed } from '../../lib/notification-policy.js';
-import { guestTaskScopeSql } from '../../lib/task-visibility.js';
+import { guestTaskScopeSql, visibleTaskSql } from '../../lib/task-visibility.js';
 
 interface WorkflowExecuteJobData {
   workflow_id: string;
@@ -138,6 +138,11 @@ export async function handleWorkflowExecute(job: JobData): Promise<void> {
         case 'notify': {
           if (!action.user_id) { results.push({ kind: 'notify', ok: false, error: 'missing user_id' }); break; }
           await assertActiveMember(rule.org_id, action.user_id);
+          // The notice carries the task's title: it goes only to someone who
+          // may see the task (lib/task-visibility.ts).
+          const [recipientSees] = await db.select({ id: tasks.id }).from(tasks)
+            .where(and(eq(tasks.id, task.id), visibleTaskSql(action.user_id))).limit(1);
+          if (!recipientSees) { results.push({ kind: 'notify', ok: false, error: 'recipient may not see the task' }); break; }
           const title = action.title || `Workflow: ${rule.name}`;
           const notif = await createNotificationIfAllowed({
             org_id: rule.org_id,
@@ -183,10 +188,11 @@ export async function handleWorkflowExecute(job: JobData): Promise<void> {
             if (!dep || !dep.assignee_id) continue;
             if (dep.status === 'done' || dep.status === 'cancelled') continue;
             if (!(await isActiveMember(rule.org_id, dep.assignee_id))) continue;
-            // A guest assignee may not see the finished task (task-visibility.ts):
-            // then the note does not name it.
+            // The assignee may not see the finished task (restricted, or for a
+            // guest outside their projects: task-visibility.ts): then the note
+            // does not name it.
             const [unblockerVisible] = await db.select({ id: tasks.id }).from(tasks)
-              .where(and(eq(tasks.id, task.id), guestTaskScopeSql(dep.assignee_id)))
+              .where(and(eq(tasks.id, task.id), visibleTaskSql(dep.assignee_id)))
               .limit(1);
             const notif = await createNotificationIfAllowed({
               org_id: rule.org_id,

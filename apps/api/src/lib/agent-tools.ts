@@ -767,7 +767,7 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
   {
     name: 'search_notes',
     description:
-      'Search the caller\'s private notes + org-visible notes by title/content. Returns up to `limit` matches (default 10).',
+      'Search the notes the caller may open (their own, notes shared with them, notes in their spaces and, unless they are a guest, org-visible notes) by title/content. Returns up to `limit` matches (default 10).',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -775,7 +775,7 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
         scope: {
           type: 'string',
           enum: ['mine', 'org', 'all'],
-          description: 'Restrict to your own notes, org-visible notes, or both (default).',
+          description: 'Filter the notes you may open: your own, org-visible ones, or all of them (default).',
         },
         limit: { type: 'number', description: 'Max results (default 10)' },
       },
@@ -807,7 +807,7 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
   {
     name: 'read_note',
     description:
-      'Read a single note by id. Returns title, content (HTML), visibility, updated_at. Respects visibility: you can only read notes you own or are org-visible.',
+      'Read a single note by id. Returns title, content (HTML), visibility, updated_at. Respects visibility: you can only read notes the caller may open (own, shared with them, in their spaces, or org-visible unless they are a guest).',
     input_schema: {
       type: 'object' as const,
       properties: {

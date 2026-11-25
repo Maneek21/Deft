@@ -414,8 +414,11 @@ test('deleted projects are absent from unrestricted and project-specific velocit
     assertNoSecrets(deletedProject);
   }
 
+  // With no viewer (the weekly digest, sent to several people) a restricted
+  // task's completion is left out: only the allowed task's completion remains
+  // (the deleted project's is left out too; lib/task-visibility.ts).
   const directOrgVelocity = await velocityCalculator(orgId);
-  assert.equal(directOrgVelocity.weeks.reduce((sum, week) => sum + week.completed, 0), 2);
+  assert.equal(directOrgVelocity.weeks.reduce((sum, week) => sum + week.completed, 0), 1);
   assert.equal(
     directOrgVelocity.weeks.some((week) => deletedProjectActorName in week.per_person),
     false,

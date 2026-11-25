@@ -15,7 +15,7 @@ import { eq, and, gte, inArray } from 'drizzle-orm';
 import { emitVisibleNotification } from '../../lib/notification-delivery.js';
 import { toPlainText, truncatePlainText } from '../../lib/plain-text.js';
 import { createNotificationIfAllowed } from '../../lib/notification-policy.js';
-import { guestTaskScopeSql } from '../../lib/task-visibility.js';
+import { visibleTaskSql } from '../../lib/task-visibility.js';
 
 export async function handleBlockedAlert(job: JobData): Promise<void> {
   const { messageId, spaceId, orgId, userId } = job.data;
@@ -129,11 +129,12 @@ export async function handleBlockedAlert(job: JobData): Promise<void> {
         continue; // Don't notify the blocked person themselves
       }
 
-      // The lead hears only of blocking tasks they may see: a guest lead's
-      // notice names no task hidden from them (task-visibility.ts).
+      // The lead hears only of blocking tasks they may see: a lead's
+      // notice names no task hidden from them, restricted or, for a guest,
+      // outside their projects (task-visibility.ts).
       const blockingIds = blockingDeps.map((d) => d.source_task_id);
       const visibleBlockingIds = blockingIds.length === 0 ? [] : (await db.select({ id: tasks.id }).from(tasks)
-        .where(and(inArray(tasks.id, blockingIds), eq(tasks.org_id, orgId), guestTaskScopeSql(targetUserId))))
+        .where(and(inArray(tasks.id, blockingIds), eq(tasks.org_id, orgId), visibleTaskSql(targetUserId))))
         .map((row) => row.id);
 
       const message = `${userName} may be blocked — '${contentSnippet}' (in #${spaceName})`;

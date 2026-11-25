@@ -1,9 +1,10 @@
 import { Hono } from 'hono';
-import { eq, and, ilike, desc, or, gte, lte, inArray, isNotNull } from 'drizzle-orm';
+import { eq, and, ilike, desc, or, gte, lte, isNotNull } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { tasks, projects, spaces, users, messages, orgMembers, tags, notes, spaceMembers } from '@deft/db/schema';
 import { retrieveContext, type ContextResult } from '../lib/retrieve-context.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
+import { visibleNoteCondition } from '../lib/note-visibility.js';
 import { visibleLiveMemberForOrg } from '../lib/member-visibility.js';
 import { emailFor, peopleViewer, personVisibleSql } from '../lib/people-visibility.js';
 import { unjoinedPublicSpaceReadableSql } from '../lib/space-membership.js';
@@ -28,10 +29,6 @@ searchRoutes.get('/', async (c) => {
     const pattern = `%${q}%`;
 
     // Search spaces
-    const visibleSpaceIds = db.select({ space_id: spaceMembers.space_id })
-      .from(spaceMembers)
-      .where(eq(spaceMembers.user_id, user.id));
-
     // Spaces and messages the caller may read: spaces they are in, and public
     // spaces a member of the workspace (never a guest) may read before joining.
     const readableSpace = or(isNotNull(spaceMembers.id), unjoinedPublicSpaceReadableSql(user.id));
@@ -140,7 +137,7 @@ searchRoutes.get('/', async (c) => {
       .where(and(eq(tags.org_id, user.org_id), ilike(tags.name, `%${tagQuery}%`)))
       .limit(5);
 
-    // Search notes (existing DB query for backward compat)
+    // Search notes: the one note rule (lib/note-visibility.ts).
     const noteResults = await db.select({
       id: notes.id, title: notes.title, icon: notes.icon, updated_at: notes.updated_at,
     }).from(notes)
@@ -148,14 +145,7 @@ searchRoutes.get('/', async (c) => {
         eq(notes.org_id, user.org_id),
         eq(notes.is_deleted, false),
         or(ilike(notes.title, pattern), ilike(notes.content, pattern)),
-        or(
-          eq(notes.user_id, user.id),
-          eq(notes.visibility, 'org'),
-          and(
-            eq(notes.visibility, 'space'),
-            inArray(notes.visibility_space_id, visibleSpaceIds),
-          ),
-        ),
+        visibleNoteCondition(user.id),
       ))
       .orderBy(desc(notes.updated_at))
       .limit(5);

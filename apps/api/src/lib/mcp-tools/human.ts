@@ -34,7 +34,7 @@ import {
   wikiPageVersions,
 } from '@deft/db/schema';
 import { retrieveContext, type ContextResult } from '../retrieve-context.js';
-import { guestTaskScopeSql, taskAliasColumns, visibleTaskCondition } from '../task-visibility.js';
+import { taskAliasColumns, visibleTaskCondition, visibleTaskSql } from '../task-visibility.js';
 import { withoutHiddenParent, withoutHiddenParents } from '../task-parent-projection.js';
 import { visibleWikiPageCondition } from '../wiki-visibility.js';
 import { errorResult, textResult, type ToolResult } from './types.js';
@@ -44,6 +44,7 @@ import { createTaskBundle, type TaskBundleSubtaskInput } from '../task-bundle.js
 import { bulkUpdateTasks, BulkTaskUpdateError, bulkTaskUpdateSchema } from '../task-bulk-update.js';
 import { queryCompactTasks, type CompactTaskQuery } from '../task-compact-query.js';
 import { visibleNoteCondition } from '../note-visibility.js';
+import { claimNoteFiles } from '../note-file-claims.js';
 import { canReadSpace, readableSpaceSql } from '../space-membership.js';
 import { Context } from 'hono';
 import { currentActionReviewerSql } from '../agent-action-review-gate.js';
@@ -2017,7 +2018,7 @@ export async function humanProjectList(args: { query?: string; include_archived?
     FROM projects p
     LEFT JOIN users lead ON lead.id = p.lead_id
     LEFT JOIN tasks t ON t.project_id = p.id AND t.org_id = p.org_id
-      AND ${guestTaskScopeSql(ctx.user_id, taskAliasColumns('t'))}
+      AND ${visibleTaskSql(ctx.user_id, taskAliasColumns('t'))}
     WHERE p.org_id = ${ctx.org_id}
       AND p.is_deleted = false
       AND (${args.include_archived ? sql`true` : sql`p.is_archived = false`})
@@ -2080,7 +2081,7 @@ export async function humanProjectGet(args: { project_id?: string }, ctx: HumanT
     FROM projects p
     LEFT JOIN users lead ON lead.id = p.lead_id
     LEFT JOIN tasks t ON t.project_id = p.id AND t.org_id = p.org_id
-      AND ${guestTaskScopeSql(ctx.user_id, taskAliasColumns('t'))}
+      AND ${visibleTaskSql(ctx.user_id, taskAliasColumns('t'))}
     WHERE p.org_id = ${ctx.org_id}
       AND p.id = ${args.project_id}
       AND p.is_deleted = false
@@ -3121,16 +3122,7 @@ export async function humanProjectProgress(args: ProjectProgressArgs, ctx: Human
     LEFT JOIN tasks t ON t.project_id = p.id
       AND t.org_id = p.org_id
       AND t.is_deleted = false
-      AND (
-        coalesce(t.metadata->>'visibility', 'org') != 'restricted'
-        OR t.assignee_id = ${ctx.user_id}
-        OR t.created_by = ${ctx.user_id}
-        OR p.lead_id = ${ctx.user_id}
-        OR coalesce(t.metadata->'visible_user_ids', '[]'::jsonb) ? ${ctx.user_id}
-        OR exists (select 1 from task_watchers tw where tw.task_id = t.id and tw.user_id = ${ctx.user_id})
-        OR exists (select 1 from task_assignees ta where ta.task_id = t.id and ta.user_id = ${ctx.user_id})
-      )
-      AND ${guestTaskScopeSql(ctx.user_id, taskAliasColumns('t'))}
+      AND ${visibleTaskSql(ctx.user_id, taskAliasColumns('t'))}
     WHERE p.org_id = ${ctx.org_id}
       AND p.is_deleted = false
       AND ${projectWhere}
@@ -3229,20 +3221,9 @@ export async function humanTeamWorkload(args: { days?: number }, ctx: HumanToolC
       AND t.org_id = ${ctx.org_id}
       AND t.is_deleted = false
       AND t.status NOT IN ('done', 'cancelled')
-      AND ${guestTaskScopeSql(ctx.user_id, taskAliasColumns('t'))}
-    LEFT JOIN projects p ON p.id = t.project_id AND p.org_id = t.org_id
+      AND ${visibleTaskSql(ctx.user_id, taskAliasColumns('t'))}
     WHERE u.is_agent = false
       AND ${personVisibleSql(viewer, sql`u.id`)}
-      AND (
-        t.id IS NULL
-        OR coalesce(t.metadata->>'visibility', 'org') != 'restricted'
-        OR t.assignee_id = ${ctx.user_id}
-        OR t.created_by = ${ctx.user_id}
-        OR p.lead_id = ${ctx.user_id}
-        OR coalesce(t.metadata->'visible_user_ids', '[]'::jsonb) ? ${ctx.user_id}
-        OR exists (select 1 from task_watchers tw where tw.task_id = t.id and tw.user_id = ${ctx.user_id})
-        OR exists (select 1 from task_assignees ta where ta.task_id = t.id and ta.user_id = ${ctx.user_id})
-      )
     GROUP BY u.id, u.name
     ORDER BY open_tasks DESC, u.name ASC
     LIMIT 50
@@ -3378,14 +3359,18 @@ export async function humanNoteCreate(args: Record<string, unknown>, ctx: HumanT
     const spaceId = typeof args.visibility_space_id === 'string' ? args.visibility_space_id : null;
     const spaceError = await validateNoteSpace(ctx, visibility, spaceId);
     if (spaceError) return spaceError;
-    const [created] = await db.insert(notes).values({
+    const [created] = await db.transaction(async (tx) => {
+      const rows = await tx.insert(notes).values({
       org_id: ctx.org_id, user_id: ctx.user_id,
       title: typeof args.title === 'string' ? args.title.trim() : '',
       content: typeof args.content === 'string' ? args.content : '',
       icon: typeof args.icon === 'string' ? args.icon : null,
       is_pinned: args.is_pinned === true,
       visibility, visibility_space_id: visibility === 'space' ? spaceId : null,
-    }).returning();
+      }).returning();
+      await claimNoteFiles(tx, { id: ctx.user_id, org_id: ctx.org_id }, rows[0]!.content);
+      return rows;
+    });
     return textResult({ created: true, note: created, url: `/notes?note=${created!.id}` });
   });
 }
@@ -3412,7 +3397,11 @@ export async function humanNoteUpdate(args: Record<string, unknown>, ctx: HumanT
       updates.version = current.version + 1;
     }
     if (Object.keys(updates).length === 0) return textResult({ updated: false, note: current, url: `/notes?note=${current.id}` });
-    const [updated] = await db.update(notes).set(updates).where(and(eq(notes.id, current.id), eq(notes.version, current.version))).returning();
+    const updated = await db.transaction(async (tx) => {
+      const [saved] = await tx.update(notes).set(updates).where(and(eq(notes.id, current.id), eq(notes.version, current.version))).returning();
+      if (saved && args.content !== undefined) await claimNoteFiles(tx, { id: ctx.user_id, org_id: ctx.org_id }, saved.content);
+      return saved;
+    });
     return updated ? textResult({ updated: true, note: updated, url: `/notes?note=${updated.id}` }) : errorResult('Note changed in another session; read it again before retrying');
   });
 }
@@ -3878,6 +3867,11 @@ export async function humanProjectCreate(args: Record<string, unknown>, ctx: Hum
     const name = typeof args.name === 'string' ? args.name.trim() : '';
     const prefix = typeof args.prefix === 'string' ? args.prefix.trim().toUpperCase() : '';
     if (!name || !/^[A-Z0-9]{2,6}$/.test(prefix)) return errorResult('name and a unique 2-6 character alphanumeric prefix are required');
+    // As in project_update and POST /api/projects: a guest cannot set who
+    // leads a project (a lead reads all of its tasks, task-visibility.ts).
+    if (args.lead_id !== undefined && args.lead_id !== null && (await peopleViewer(ctx.org_id, ctx.user_id)).guest) {
+      return errorResult('project_create: a guest cannot set a project lead');
+    }
     const leadResult = await resolveActiveMember(ctx, { user_id: args.lead_id, label: 'project_create lead' });
     if (leadResult.error) return leadResult.error;
     const [duplicate] = await db.select({ id: projects.id }).from(projects).where(and(eq(projects.org_id, ctx.org_id), eq(projects.prefix, prefix))).limit(1);

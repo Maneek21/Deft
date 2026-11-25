@@ -19,7 +19,7 @@ import type { TriggerInvocation } from './employee-trigger.js';
 import { getOrgTimezone, isOverdue, isDueWithinDays } from '../../lib/task-dates.js';
 import { createNotificationIfAllowed } from '../../lib/notification-policy.js';
 import { buildTaskNudgeDigest } from '../../lib/notification-digests.js';
-import { guestTaskScopeSql } from '../../lib/task-visibility.js';
+import { unrestrictedTaskCondition, visibleTaskSql } from '../../lib/task-visibility.js';
 import { noticeNamesGuestHiddenTaskSql } from '../../lib/native-mention-visibility.js';
 
 // Phase 6 — per-kind trigger routing. Stalled tasks and overdue tasks are
@@ -46,14 +46,16 @@ async function findNudgeEmployee(orgId: string, triggerKind: string) {
 }
 
 /**
- * A subscribed employee that is a guest of the workspace hears only about the
- * tasks of its projects and the tasks that name it (task-visibility.ts); for
- * any other task the nudge goes to the person instead, as when no employee is
- * subscribed.
+ * A subscribed employee hears only about tasks it may see: for an employee
+ * that is a guest of the workspace only the tasks of its projects and the
+ * tasks that name it (task-visibility.ts). A restricted task's nudge never
+ * goes to an employee: the trigger's title and goal are stored on an agent
+ * action that the workspace's agent activity lists. For any other task the
+ * nudge goes to the person instead, as when no employee is subscribed.
  */
 async function employeeMaySeeTask(taskId: string, employeeUserId: string): Promise<boolean> {
   const [row] = await db.select({ id: tasks.id }).from(tasks)
-    .where(and(eq(tasks.id, taskId), guestTaskScopeSql(employeeUserId)))
+    .where(and(eq(tasks.id, taskId), visibleTaskSql(employeeUserId), unrestrictedTaskCondition()))
     .limit(1);
   return Boolean(row);
 }
@@ -500,6 +502,9 @@ export async function checkWorkloadImbalance(): Promise<void> {
           eq(tasks.is_deleted, false),
           sql`${tasks.assignee_id} IS NOT NULL`,
           sql`${tasks.status} IN ('todo', 'in_progress', 'in_review')`,
+          // The counts go to every owner and admin, so a task restricted to
+          // named people is not counted (lib/task-visibility.ts).
+          unrestrictedTaskCondition(),
         ),
       )
       .groupBy(tasks.org_id, tasks.assignee_id, users.name);

@@ -15,7 +15,8 @@ import { eq, and, sql } from 'drizzle-orm';
 import type { JobData } from '../types.js';
 import { jobOrgId } from '../job-org.js';
 import { db } from '../../lib/db.js';
-import { agentActions, agentEmployees, messages, spaces } from '@deft/db/schema';
+import { agentActions, agentEmployees, messages, spaces, tasks } from '@deft/db/schema';
+import { unrestrictedTaskCondition, visibleTaskSql } from '../../lib/task-visibility.js';
 import { currentEmployeeMessageAuthoritySql } from '../../lib/agent-channel-authority.js';
 import { toPlainText } from '../../lib/plain-text.js';
 
@@ -86,6 +87,18 @@ export async function handleEmployeeTrigger(job: JobData): Promise<void> {
     console.warn("[employee-trigger] Employee <redacted> has exhausted daily action budget"
     );
     return;
+  }
+
+  // A stalled or overdue task's trigger names the task. It is stored on an
+  // agent action that the workspace's agent activity lists, so it is queued
+  // only while the task is unrestricted and the employee may see it, checked
+  // now and not only when the nudge was enqueued (lib/task-visibility.ts).
+  if ((trigger_kind === 'event:task-stalled' || trigger_kind === 'event:task-overdue') && typeof context?.task_id === 'string') {
+    const [current] = await db.select({ id: tasks.id }).from(tasks).where(and(
+      eq(tasks.id, context.task_id), eq(tasks.org_id, orgId), eq(tasks.is_deleted, false),
+      unrestrictedTaskCondition(), visibleTaskSql(employee.user_id),
+    )).limit(1);
+    if (!current) return;
   }
 
   let messageId: string | null = null;

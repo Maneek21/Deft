@@ -9,6 +9,7 @@ import { requireSpaceMembership } from '../lib/space-membership.js';
 import { visibleNoteCondition } from '../lib/note-visibility.js';
 import { toPlainText } from '../lib/plain-text.js';
 import { createNativeNote } from '../lib/native-context-create.js';
+import { claimNoteFiles } from '../lib/note-file-claims.js';
 
 const TASK_ID_PATTERN = /([A-Z]+-\d+)/;
 
@@ -253,11 +254,12 @@ dailyNoteRoutes.post('/', async (c) => {
     return c.json(FOLDER_NOT_FOUND, 404);
   }
 
-  const note = await createNativeNote(db, user, {
+  // One transaction: the note and the claim on its images (note-file-claims.ts).
+  const note = await db.transaction((tx) => createNativeNote(tx, user, {
     ...(parsed.success ? parsed.data : {}),
     visibility,
     visibility_space_id: visibility === 'space' ? visibilitySpaceId : null,
-  });
+  }));
 
   // Task 5.1 — scan note content for PREFIX-N task refs on create
   if (note && note.content) {
@@ -361,10 +363,16 @@ dailyNoteRoutes.patch('/:id', async (c) => {
     updates.version = full.version + 1;
   }
 
-  const [updated] = await db.update(notes)
-    .set(updates)
-    .where(and(eq(notes.id, noteId), eq(notes.version, full.version)))
-    .returning();
+  // One transaction: the save and the claim on the images the saved content
+  // shows that this person uploaded (note-file-claims.ts).
+  const updated = await db.transaction(async (tx) => {
+    const [saved] = await tx.update(notes)
+      .set(updates)
+      .where(and(eq(notes.id, noteId), eq(notes.version, full.version)))
+      .returning();
+    if (saved && parsed.data.content !== undefined) await claimNoteFiles(tx, user, saved.content);
+    return saved;
+  });
 
   if (!updated) {
     return c.json({ error: 'Note was modified by another session. Please refresh and try again.', code: 'CONFLICT' }, 409);
