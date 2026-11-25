@@ -30,6 +30,7 @@ import {
   knownValuesPattern,
   parseStack,
   releaseLabel,
+  recheckEventMessage,
   scrubErrorClass,
   scrubFunctionName,
   scrubMessage,
@@ -108,9 +109,9 @@ async function defaultKnownValues(): Promise<{ whole: string[]; parts: string[] 
   ]);
   const [orgRows, people, agents] = await Promise.all([
     db.select({ name: orgs.name, slug: orgs.slug }).from(orgs).limit(100),
-    db.select({ name: users.name }).from(users).where(ne(users.kind, 'system')).limit(5000),
+    db.select({ name: users.name }).from(users).where(ne(users.kind, 'system')).limit(20_000),
     // A cloned agent keeps its source's user row: its own name lives here.
-    db.select({ name: agentEmployees.name }).from(agentEmployees).limit(2000),
+    db.select({ name: agentEmployees.name }).from(agentEmployees).limit(20_000),
   ]);
   const whole = [
     ...orgRows.flatMap((row) => [row.name, row.slug, row.slug.replace(/-[a-z0-9]{8}$/, '')]),
@@ -263,7 +264,7 @@ function record(input: CaptureInput): void {
   const pattern = known.pattern;
   const browser = input.kind === 'client';
   const errorClass = browser ? browserErrorClass(input.errorClass) : scrubErrorClass(input.errorClass, pattern);
-  const message = eventMessage({ message: input.message, code: input.code });
+  const message = eventMessage({ message: input.message, code: input.code }, pattern);
   const frames = parseStack(input.stack, browser ? { webOrigins: errorReporterDeps.webOrigins() } : { appRoot: APP_ROOT }, pattern);
   const route = scrubRouteTemplate(input.route);
   const method = scrubMethod(input.method);
@@ -375,6 +376,7 @@ function rescrub(event: TelemetryEvent, pattern: KnownValues | null): TelemetryE
   return {
     ...event,
     error_class: event.kind === 'client' ? event.error_class : scrubErrorClass(event.error_class, pattern),
+    message: recheckEventMessage(event.message, pattern),
     frames: event.frames.map((frame) => ({ ...frame, fn: event.kind === 'client' ? frame.fn : scrubFunctionName(frame.fn, pattern) })),
   };
 }

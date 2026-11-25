@@ -134,9 +134,9 @@ function cleanValues(values: Iterable<string>): string[] {
 export function knownValuesPattern(values: Iterable<string>, wordsOnly: Iterable<string> = []): KnownValues | null {
   const whole = cleanValues(values);
   // Longest first, so "Acme Robotics" wins over "Acme".
-  const words = [...new Set([...whole, ...cleanValues(wordsOnly)])].sort((a, b) => b.length - a.length).slice(0, 10_000);
+  const words = [...new Set([...whole, ...cleanValues(wordsOnly)])].sort((a, b) => b.length - a.length).slice(0, 80_000);
   if (words.length === 0) return null;
-  const compact = [...new Set(whole.map(compactForm).filter((value) => value.length >= 4))].slice(0, 5000);
+  const compact = [...new Set(whole.map(compactForm).filter((value) => value.length >= 4))].slice(0, 40_000);
   return {
     words: new RegExp(`(?<![\\p{L}\\p{N}_])(?:${words.map(escapeRegExp).join('|')})(?![\\p{L}\\p{N}_])`, 'giu'),
     compact: compact.length > 0 ? new RegExp(compact.map(escapeRegExp).join('|'), 'u') : null,
@@ -281,18 +281,28 @@ const DNS_CODES: ReadonlySet<string> = new Set([
   'ECONNREFUSED', 'ESERVFAIL', 'EREFUSED', 'ENODATA', 'EBADRESP',
 ]);
 
+/** PostgreSQL's SQLSTATE classes (Appendix A of its manual): a code's first two characters. */
+const SQLSTATE_CLASSES: ReadonlySet<string> = new Set([
+  '00', '01', '02', '03', '08', '09', '0A', '0B', '0F', '0L', '0P', '0Z', '20', '21', '22', '23', '24', '25', '26', '27',
+  '28', '2B', '2D', '2F', '34', '38', '39', '3B', '3D', '3F', '40', '42', '44', '53', '54', '55', '57', '58', '72', 'F0',
+  'HV', 'P0', 'XX',
+]);
+
 /**
  * A real error code, or null: an operating-system or DNS error name, a
  * Node.js internal code ("ERR_STREAM_PREMATURE_CLOSE"), an undici code
  * ("UND_ERR_CONNECT_TIMEOUT"), or a Postgres SQLSTATE ("23505", "42P01",
- * "XX000": a known class and at least one digit). Anything else an error's
- * `code` holds is not sent.
+ * "XX000": one of Postgres's classes, then three characters with a digit
+ * somewhere in the code). A code that holds one of the workspace's names is
+ * not sent either ("ERR_ORCHID_EXPORT" in a workspace called Orchid).
+ * Anything else an error's `code` holds is not sent.
  */
-export function systemErrorCode(raw: unknown): string | null {
+export function systemErrorCode(raw: unknown, known: KnownValues | null = null): string | null {
   if (typeof raw !== 'string' || raw.length > 64) return null;
+  if (containsKnownValue(raw, known)) return null;
   if (ERRNO_NAMES.has(raw) || DNS_CODES.has(raw)) return raw;
   if (/^ERR_[A-Z0-9]+(?:_[A-Z0-9]+){1,10}$/.test(raw) || /^UND_ERR_[A-Z]+(?:_[A-Z]+){0,6}$/.test(raw)) return raw;
-  if (/^(?:[0-9]{2}|[0-9][A-Z]|[A-Z][0-9]|HV|XX|P0)[0-9A-Z]{3}$/.test(raw) && /\d/.test(raw)) return raw;
+  if (/^[0-9A-Z]{5}$/.test(raw) && SQLSTATE_CLASSES.has(raw.slice(0, 2)) && /\d/.test(raw)) return raw;
   return null;
 }
 
@@ -310,12 +320,17 @@ export function firstLine(message: unknown): string {
  * the fixed text for a known runtime form, or else a real error code, or
  * nothing. No part of the original message is ever sent.
  */
-export function eventMessage(input: { message: unknown; code?: unknown }): string {
+export function eventMessage(input: { message: unknown; code?: unknown }, known: KnownValues | null = null): string {
   const line = firstLine(input.message).replace(/^Uncaught (?:\(in promise\) )?(?:[A-Za-z]*Error: )?/, '').trim();
   const text = line ? runtimeMessageText(line) : null;
   if (text) return text;
-  const code = systemErrorCode(input.code);
+  const code = systemErrorCode(input.code, known);
   return code ? `code ${code}` : '';
+}
+
+/** On the way out, with the newest names: a code message that now holds a name is dropped. */
+export function recheckEventMessage(message: string, known: KnownValues | null): string {
+  return message.startsWith('code ') && containsKnownValue(message.slice(5), known) ? '' : message;
 }
 
 /** A function name from a stack frame: a code identifier as it is, anything else under the message rules. */

@@ -222,3 +222,20 @@ test('the 60-second floor counts from the send, even when preparing a batch is s
   assert.equal(network.sent.length, 1, 'not two seconds later, even on the way out');
   assert.equal(bufferedEventsForTest().length, 1, 'the second event waits');
 });
+
+test('a SQLSTATE needs one of Postgres\'s own classes; a code holding a workspace name is dropped', () => {
+  for (const junk of ['Z9ABC', 'A1BCD', 'Q0000']) assert.equal(eventMessage({ message: 'x', code: junk }), '', junk);
+  const known = knownValuesPattern(['Orchid'], ['Orchid']);
+  assert.equal(eventMessage({ message: 'x', code: 'ERR_ORCHID_EXPORT' }, known), '');
+  assert.equal(eventMessage({ message: 'x', code: 'ERR_STREAM_PREMATURE_CLOSE' }, known), 'code ERR_STREAM_PREMATURE_CLOSE');
+});
+
+test('a code captured before the names loaded is checked again on the way out', async () => {
+  const network = useErrorReporter(HOSTED_ENV, { known: ['Orchid'] });
+  captureJobError('export', (function exportJob() { return Object.assign(new Error('x'), { code: 'ERR_ORCHID_EXPORT' }); })());
+  captureJobError('stream', (function streamJob() { return Object.assign(new Error('y'), { code: 'ERR_STREAM_PREMATURE_CLOSE' }); })());
+  await flushErrorTelemetry();
+  const messages = (network.sent[0]!.body as { events: { message: string }[] }).events.map((event) => event.message).sort();
+  assert.deepEqual(messages, ['', 'code ERR_STREAM_PREMATURE_CLOSE']);
+  assert.doesNotMatch(String(network.sent[0]!.init.body), /ORCHID/i);
+});
