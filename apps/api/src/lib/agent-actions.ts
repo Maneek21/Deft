@@ -42,7 +42,7 @@ import { assertScheduleRoom } from './workspace-limits.js';
 import { resolveSpaceTarget } from './resolve-space-target.js';
 import { createTaskBundle } from './task-bundle.js';
 import { bulkUpdateTasks, BulkTaskUpdateError } from './task-bulk-update.js';
-import { isTaskPriority } from './task-priority.js';
+import { isTaskPriority, isTaskStatus, TASK_STATUS_MESSAGE } from './task-priority.js';
 import {
   agentToolPolicyError,
   consumeAgentDailyActionBudget,
@@ -2057,6 +2057,9 @@ export async function executeAction(
           .where(and(eq(tasks.id, taskId), eq(tasks.org_id, orgId)))
           .limit(1);
         if (!existing) return { success: false, result: null, error: 'Task not found' };
+        if (!isTaskStatus(params.new_status)) {
+          return { success: false, result: null, error: `Invalid status: ${TASK_STATUS_MESSAGE}` };
+        }
 
         const oldStatus = existing.status;
         await db.update(tasks).set({ status: params.new_status }).where(eq(tasks.id, taskId));

@@ -57,7 +57,7 @@ import { allowedNextStatuses, isValidTransition } from '../task-status-machine.j
 import { enqueue, QUEUE_NAMES } from '../queues.js';
 import { resolveAssigneeWithMatches } from '../resolve-assignee.js';
 import { createTaskBundle, validateTaskBundleSubtasks, type TaskBundleSubtaskInput } from '../task-bundle.js';
-import { taskPriorityError } from '../task-priority.js';
+import { isTaskStatus, taskPriorityError } from '../task-priority.js';
 import { visibleTaskCondition } from '../task-visibility.js';
 import { employeeCanAccessSpace } from './employee-space-access.js';
 import { verifiedCitedMessage } from './cited-message.js';
@@ -639,14 +639,6 @@ export async function taskCreate(
 
 // ─── task_update ──────────────────────────────────────────────────────────
 
-const VALID_STATUS = new Set([
-  'backlog',
-  'todo',
-  'in_progress',
-  'in_review',
-  'done',
-  'cancelled',
-]);
 
 export type TaskUpdateArgs = {
   caller_employee_slug: string;
@@ -712,7 +704,7 @@ export async function executeTaskUpdate(
 
     if (typeof patch.title === 'string') update.title = patch.title;
     if (typeof patch.description === 'string') update.description = patch.description;
-    if (patch.status !== undefined && !VALID_STATUS.has(patch.status)) {
+    if (patch.status !== undefined && !isTaskStatus(patch.status)) {
       const resolvedConfig = await getProjectResolvedConfig(existingTask.project_id);
       return errorResult(JSON.stringify({
         error: 'task_update: invalid status transition',
@@ -722,7 +714,7 @@ export async function executeTaskUpdate(
         allowed_next_statuses: allowedNextStatuses(existingTask.status, resolvedConfig),
       }));
     }
-    if (patch.status && VALID_STATUS.has(patch.status)) {
+    if (patch.status && isTaskStatus(patch.status)) {
       if (patch.status !== existingTask.status) {
         const resolvedConfig = await getProjectResolvedConfig(existingTask.project_id);
         if (!isValidTransition(existingTask.status, patch.status, resolvedConfig)) {

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { taskPriorityEnum } from '@deft/db/schema';
+import { taskPriorityEnum, taskStatusEnum } from '@deft/db/schema';
 
 // A task's priority, p0 (urgent) to p3 (low), as the database enum holds it.
 // Every path that writes a priority (REST create and update, bulk update, MCP
@@ -25,4 +25,21 @@ export function isTaskPriority(value: unknown): value is TaskPriority {
 export function taskPriorityError(value: unknown): string | null {
   if (value === undefined || value === null) return null;
   return isTaskPriority(value) ? null : TASK_PRIORITY_MESSAGE;
+}
+
+// A task's status, backlog to cancelled, as the database enum holds it. A
+// task create route and Defty's update_task_status check it with this schema,
+// so an unknown value such as 'open' is refused rather than failing as a 500.
+// (PATCH answers an unknown status through its transition check, and bulk
+// update and the MCP tools check it with this schema too.)
+
+export const TASK_STATUSES = taskStatusEnum.enumValues;
+export type TaskStatus = (typeof TASK_STATUSES)[number];
+
+export const TASK_STATUS_MESSAGE = `status must be one of ${TASK_STATUSES.join(', ')}`;
+
+export const taskStatusSchema = z.enum(TASK_STATUSES, { message: TASK_STATUS_MESSAGE });
+
+export function isTaskStatus(value: unknown): value is TaskStatus {
+  return taskStatusSchema.safeParse(value).success;
 }

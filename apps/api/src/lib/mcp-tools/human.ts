@@ -42,7 +42,7 @@ import { enrichOAuthAuditActions } from '../oauth-audit-receipts.js';
 import { getTeamContext, getTeamProfile, listTeamSummaries } from './team-context.js';
 import { createTaskBundle, type TaskBundleSubtaskInput } from '../task-bundle.js';
 import { bulkUpdateTasks, BulkTaskUpdateError, bulkTaskUpdateSchema } from '../task-bulk-update.js';
-import { taskPriorityError } from '../task-priority.js';
+import { isTaskStatus, taskPriorityError, type TaskStatus } from '../task-priority.js';
 import { queryCompactTasks, type CompactTaskQuery } from '../task-compact-query.js';
 import { visibleNoteCondition } from '../note-visibility.js';
 import { syncNoteFiles } from '../note-file-claims.js';
@@ -629,8 +629,8 @@ function taskReference(projectPrefix: string | null, number: number | null): str
   return `${projectPrefix}-${number}`;
 }
 
-function validTaskStatus(value: unknown): value is 'backlog' | 'todo' | 'in_progress' | 'in_review' | 'done' | 'cancelled' {
-  return typeof value === 'string' && ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'cancelled'].includes(value);
+function validTaskStatus(value: unknown): value is TaskStatus {
+  return isTaskStatus(value);
 }
 
 function validWikiType(value: unknown): value is 'concept' | 'entity' | 'decision' | 'resource' | 'procedure' | 'preference' | 'fact' {

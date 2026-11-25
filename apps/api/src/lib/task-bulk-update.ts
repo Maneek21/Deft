@@ -9,7 +9,7 @@ import {
   tasks,
 } from '@deft/db/schema';
 import { db } from './db.js';
-import { taskPrioritySchema } from './task-priority.js';
+import { taskPrioritySchema, taskStatusSchema } from './task-priority.js';
 import { createNotificationIfAllowed } from './notification-policy.js';
 import { getProjectResolvedConfig } from './project-resolved-config.js';
 import { resolveAssignableAssigneeId } from './resolve-assignee.js';
@@ -20,7 +20,7 @@ import { emitToUser, emitOrgTaskEvent } from '../socket.js';
 export const bulkTaskUpdateSchema = z.object({
   task_ids: z.array(z.string().min(1)).min(1).max(50),
   updates: z.object({
-    status: z.enum(['backlog', 'todo', 'in_progress', 'in_review', 'done', 'cancelled']).optional(),
+    status: taskStatusSchema.optional(),
     priority: taskPrioritySchema.optional(),
     assignee_id: z.string().nullable().optional(),
     due_date: z.string().nullable().optional(),

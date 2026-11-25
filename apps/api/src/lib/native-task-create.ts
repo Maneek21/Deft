@@ -1,15 +1,17 @@
 import {tasks,taskActivity} from '@deft/db/schema';
 import type {AppRunTransaction} from './app-run-repository.js';
 import {reserveNextTaskNumber} from './task-numbering.js';
-import {taskPrioritySchema} from './task-priority.js';
+import {taskPrioritySchema,taskStatusSchema} from './task-priority.js';
 /** Transaction-capable extraction of the existing route constructor. Caller
  * retains project/assignee checks and runs its existing notifications afterward. */
 export async function createNativeTask(tx:AppRunTransaction,input:{org_id:string;project_id:string;user_id:string;title:string;
  description?:string|null;status?:string|null;priority?:string|null;assignee_id?:string|null;due_date?:string|null;sort_order?:number|null;
  source_message_id?:string|null;parent_task_id?:string|null;metadata?:Record<string,unknown>|null}){
  // Callers validate first (REST schema, App Kit task details); this is the
- // last check before the task_priority enum, with the same shared schema.
+ // last check before the task_priority and task_status enums, with the same
+ // shared schemas.
  if(input.priority!=null&&!taskPrioritySchema.safeParse(input.priority).success)throw Error('INVALID_TASK_PRIORITY');
+ if(input.status!=null&&!taskStatusSchema.safeParse(input.status).success)throw Error('INVALID_TASK_STATUS');
  const number=await reserveNextTaskNumber({projectId:input.project_id,orgId:input.org_id,executor:tx});
  const [task]=await tx.insert(tasks).values({org_id:input.org_id,project_id:input.project_id,number,title:input.title,
   description:input.description||undefined,status:(input.status||'backlog') as typeof tasks.$inferInsert.status,

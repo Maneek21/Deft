@@ -273,3 +273,56 @@ test('Defty set_priority and bulk_update_tasks: an unknown priority fails; a val
   assert.equal(good.success, true, JSON.stringify(good));
   assert.equal(await priorityOf(existing), 'p1');
 });
+
+// ── Status: the same rule, from the task_status enum ──────────────────
+
+async function statusOf(id: string) {
+  const { rows } = await c.query(`SELECT status FROM tasks WHERE id = $1`, [id]);
+  return rows[0]?.status as string | undefined;
+}
+
+for (const [name, path, body] of REST_CREATES) {
+  test(`${name}: an unknown status is 400 VALIDATION_ERROR and creates nothing; a valid or null one works`, async () => {
+    const before = await taskCount();
+    for (const status of ['open', 'DONE', '']) {
+      const res = await call('POST', path, { ...body('p1'), status });
+      assert.equal(res.status, 400, `${name} status ${JSON.stringify(status)}: ${JSON.stringify(res.body)}`);
+      assert.equal(res.body?.code, 'VALIDATION_ERROR');
+    }
+    assert.equal(await taskCount(), before, 'nothing created');
+    const valid = await call('POST', path, { ...body('p1'), status: 'todo' });
+    assert.equal(valid.status, 201, JSON.stringify(valid.body));
+    assert.equal(valid.body.status, 'todo');
+    const nulled = await call('POST', path, { ...body('p1'), status: null });
+    assert.equal(nulled.status, 201, JSON.stringify(nulled.body));
+    assert.equal(nulled.body.status, 'backlog');
+  });
+}
+
+test('PATCH /api/tasks/:id and /api/tasks/bulk: an unknown status is a 400', async () => {
+  const one = await call('PATCH', `/api/tasks/${existing}`, { status: 'open' });
+  assert.equal(one.status, 400, JSON.stringify(one.body));
+  const bulk = await call('PATCH', '/api/tasks/bulk', { task_ids: [existing, other], updates: { status: 'open' } });
+  assert.equal(bulk.status, 400, JSON.stringify(bulk.body));
+  assert.equal(bulk.body?.code, 'VALIDATION_ERROR');
+  assert.equal(await statusOf(existing), 'todo');
+});
+
+test('MCP task_update (personal and agent employee): an unknown status is a tool error', async () => {
+  const personal = await humanTaskUpdate({ task_id: existing, patch: { status: 'open' } }, human);
+  assert.equal(personal.isError, true, text(personal));
+  const employee = await taskUpdate({ caller_employee_slug: employeeSlug, task_id: existing, patch: { status: 'open' } } as any, byoa());
+  assert.equal(employee.isError, true, text(employee));
+  assert.equal(await statusOf(existing), 'todo');
+});
+
+test('Defty update_task_status: an unknown status fails with a validation message; a valid one is written', async () => {
+  const bad = await executeActionDirect('update_task_status', { resolved_task_id: other, new_status: 'open' }, org, owner, null, 'quick');
+  assert.equal(bad.success, false, JSON.stringify(bad));
+  assert.match(String(bad.error), /status must be one of/);
+  assert.equal(await statusOf(other), 'todo');
+  const good = await executeActionDirect('update_task_status', { resolved_task_id: other, new_status: 'in_progress' }, org, owner, null, 'quick');
+  assert.equal(good.success, true, JSON.stringify(good));
+  assert.equal(await statusOf(other), 'in_progress');
+  await c.query(`UPDATE tasks SET status = 'todo' WHERE id = $1`, [other]);
+});

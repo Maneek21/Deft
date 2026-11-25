@@ -10,7 +10,7 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
-### An unknown task priority is refused, not a server error
+### An unknown task priority or status is refused, not a server error
 
 - **Fixed.** Creating a task with a priority other than `p0`, `p1`, `p2` or `p3` (for
   example `urgent`) through `POST /api/tasks`, `POST /api/projects/:id/tasks` or
@@ -22,6 +22,11 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
   unknown priority is refused with each tool's usual error. Before, MCP and Defty task
   creation quietly used `p2` instead, an agent employee's `task_update` quietly skipped
   it, and the personal MCP `task_update` failed with a database error.
+- **Status too.** An unknown `status` on those three create routes (for example `open`;
+  valid values are `backlog`, `todo`, `in_progress`, `in_review`, `done` and `cancelled`)
+  now answers 400 `VALIDATION_ERROR` instead of 500, and Defty's `update_task_status`
+  refuses it instead of failing with a database error. A missing or `null` status is
+  still `backlog`.
 
 ### Images in a note load for everyone who can read the note
 
