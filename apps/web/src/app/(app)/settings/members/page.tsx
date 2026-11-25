@@ -25,6 +25,7 @@ import {
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { buySeatsHref, buySeatsHrefForRefusal } from '@/lib/buy-seats';
+import { PersonalDriveNote } from './personal-drive-note';
 
 const ROLE_OPTIONS = ['admin', 'member', 'guest'] as const;
 const FILTERS = ['all', 'humans', 'agents', 'pending', 'inactive'] as const;
@@ -397,6 +398,12 @@ export default function MembersPage() {
   const offboardingHandoffCount = offboardingPreview
     ? offboardingPreview.counts.primary_open_tasks + offboardingPreview.counts.led_projects + offboardingPreview.counts.led_teams
     : 0;
+  // A replacement is sent only when the dialog shows the choice (there is work
+  // to hand off); it then gets the personal drive too. Otherwise the drive is
+  // frozen until the owner hands it on.
+  const offboardingReplacement = offboardingHandoffCount > 0 && offboardingReplacementId
+    ? offboardingReplacementOptions.find((member) => member.id === offboardingReplacementId) ?? null
+    : null;
 
   const handleInvite = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -475,7 +482,7 @@ export default function MembersPage() {
     setOffboardingError('');
     try {
       const res = await api.delete(`/api/members/${memberId}`, {
-        replacement_user_id: offboardingReplacementId || null,
+        replacement_user_id: offboardingReplacement?.id ?? null,
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -968,6 +975,7 @@ export default function MembersPage() {
                                     </select>
                                   </div>
                                 )}
+                                <PersonalDriveNote replacementName={offboardingReplacement?.name ?? null} />
                               </div>
                             )}
 

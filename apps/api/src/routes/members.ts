@@ -42,7 +42,9 @@ import { closeLostRoomActionsInTx, finishLostRoomCancellations } from '../lib/lo
 import { lockRoomAccessChange } from '../lib/room-access-lock.js';
 import { applyAccessLossInTx, finishAccessLoss, type PendingAccessLoss } from '../lib/document-access-change.js';
 import { emitDocumentAccessChanged } from '../lib/document-access-events.js';
-import { endDriveAccessOnDepartureInTx } from '../lib/drives.js';
+import {
+  endDriveAccessOnDepartureInTx, finishDriveLosses, handOverPersonalDriveOnRemovalInTx, PrincipalCannotHoldAccessError,
+} from '../lib/drives.js';
 import { visibleTaskSql } from '../lib/task-visibility.js';
 import {
   authorizeMembershipOperation, checkMembershipOperation, isProtectedMembership, lockMembership, MembershipGuardError, recordMembershipChange, recordPrivilege, type MembershipActor,
@@ -231,8 +233,9 @@ async function endWorkspaceAccess(
   for (const id of await closeLostRoomActionsInTx(tx, { orgId, requesterId: memberId })) closedActions.push(id);
   // Drives and documents (rules C3 and C5), after the room rule: what they
   // lost above (their membership, their chats) is what the hooks see. The
-  // one departure seam (lib/drives.ts), shared with deleting an agent.
-  documentLosses.push(await endDriveAccessOnDepartureInTx(tx, orgId, memberId));
+  // one departure seam (lib/drives.ts), shared with deleting an agent: it
+  // freezes their personal drive, unless a removal handed it on already.
+  documentLosses.push(...await endDriveAccessOnDepartureInTx(tx, orgId, memberId));
   return sessions.map(session => session.id);
 }
 
@@ -248,8 +251,9 @@ async function afterWorkspaceAccessEnded(
   }
   // DFX2: receipts and attention items of the actions closed in the removal.
   await finishLostRoomCancellations(orgId, closedActions);
-  // Rule C3: the access generation moves, live document connections re-check.
-  for (const loss of documentLosses) await finishAccessLoss(loss.change, loss.result);
+  // Rule C3: the access generation moves, live document connections re-check;
+  // a frozen or handed-on drive's documents are refetched by their viewers (C4).
+  await finishDriveLosses(documentLosses);
 }
 
 type Reassigned = { replacement_user_id: string | null; primary_open_tasks: number; led_projects: number; led_teams: number };
@@ -271,7 +275,9 @@ async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, acto
     if (!locked.account || !locked.membership) return null;
     const refusal = await authorizeMembershipOperation(tx, { orgId, actor, locked });
     if (refusal) throw new MembershipGuardError(refusal);
-    if (replacementUserId) reassigned = await reassignMemberOwnership(tx, orgId, memberId, replacementUserId);
+    if (replacementUserId) {
+      reassigned = await reassignMemberOwnership(tx, orgId, memberId, replacementUserId, actor === 'operator' ? 'operator' : actor.userId, documentLosses);
+    }
     await recordMembershipChange(tx, { orgId, targetUserId: memberId, locked, change: { isActive: false } });
     await tx.update(orgMembers).set({ is_active: false, updated_at: revokedAt }).where(eq(orgMembers.id, locked.membership.id));
     return endWorkspaceAccess(tx, orgId, memberId, revokedAt, closedActions, documentLosses);
@@ -282,8 +288,16 @@ async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, acto
 
 class ReassignmentError extends Error {}
 
-/** Moves the person's open work to the replacement, on the caller's locked transaction. */
-async function reassignMemberOwnership(tx: Tx, orgId: string, memberId: string, replacementUserId: string) {
+/**
+ * Moves the person's open work to the replacement, on the caller's locked
+ * transaction, and hands their personal drive to the replacement (spec 5.2,
+ * F6): the handover's access loss is pushed onto `documentLosses`, for
+ * afterWorkspaceAccessEnded. A replacement who can't hold drive access fails
+ * the removal (PrincipalCannotHoldAccessError) when there is a drive to hand on.
+ */
+async function reassignMemberOwnership(
+  tx: Tx, orgId: string, memberId: string, replacementUserId: string, actorId: string, documentLosses: PendingAccessLoss[],
+) {
   if (memberId === replacementUserId) {
     throw new ReassignmentError('Replacement cannot be the member being removed');
   }
@@ -351,6 +365,9 @@ async function reassignMemberOwnership(tx: Tx, orgId: string, memberId: string, 
         set: { role: 'lead', updated_at: reassignedAt },
       });
   }
+
+  const handover = await handOverPersonalDriveOnRemovalInTx(tx, orgId, memberId, replacementUserId, actorId);
+  if (handover) documentLosses.push(handover);
 
   return {
     replacement_user_id: replacementUserId,
@@ -1710,6 +1727,9 @@ memberRoutes.delete('/:id', async (c) => {
     } catch (err) {
       if (err instanceof MembershipGuardError) return c.json({ error: err.message, code: 'FORBIDDEN' }, 403);
       if (err instanceof ReassignmentError) return c.json({ error: err.message, code: 'VALIDATION_ERROR' }, 400);
+      if (err instanceof PrincipalCannotHoldAccessError) {
+        return c.json({ error: 'The replacement can’t be given this person’s personal drive; choose someone else', code: err.code }, 400);
+      }
       throw err;
     }
     const remaining = await buildOffboardingPreview(currentUser.org_id, memberId);

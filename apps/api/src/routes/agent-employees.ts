@@ -8,7 +8,7 @@ import { AgentSetGrew, agentManagementView, manageAgent, manageAgents, managemen
 import { lockMembership, recordMembershipChange } from '../lib/membership-guard.js';
 import { accessLossInTx, finishAccessLoss } from '../lib/document-access-change.js';
 import { emitDocumentAccessChanged } from '../lib/document-access-events.js';
-import { endDriveAccessOnDepartureInTx } from '../lib/drives.js';
+import { endDriveAccessOnDepartureInTx, finishDriveLosses } from '../lib/drives.js';
 import { reviewableApprovalCountsByEmployee } from '../lib/pending-approval-audience.js';
 import { hermesBundleAvailability, type HermesBundleAvailability } from '../lib/hermes-release.js';
 import {
@@ -2552,11 +2552,12 @@ agentEmployeeRoutes.delete('/:id', async (c) => {
         .set({ is_active: false, updated_at: new Date() })
         .where(and(eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, existing.user_id)));
       // Drives and documents (rules C3 and C5): the agent leaves the
-      // workspace, through the same departure seam as a removed member.
+      // workspace, through the same departure seam as a removed member, which
+      // freezes its personal drive.
       return endDriveAccessOnDepartureInTx(tx, user.org_id, existing.user_id);
     });
     if (!managed.ok) return managementRefused(c, managed);
-    await finishAccessLoss(managed.value.change, managed.value.result);
+    await finishDriveLosses(managed.value);
 
     // Module proposals temporarily contain record values for review. Close
     // those through the module-aware terminal path before the legacy generic

@@ -31,7 +31,7 @@ import {
   visibleDocumentIdSql,
   visibleDriveCondition,
 } from '../src/lib/document-access.js';
-import { driveListQuery } from '../src/lib/drives.js';
+import { driveListQuery, drivesWithoutManagerQuery } from '../src/lib/drives.js';
 import { setupDrivesFixture, type DrivesFixture } from './fixtures/drives-fixture.js';
 import { planningGrowth, type Growth } from './fixtures/planning-growth.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
@@ -125,6 +125,8 @@ test('the drive list plans within budget', async (t) => {
       ['drive list, at least edit', db.select({ id: drives.id }).from(drives).where(visibleDriveCondition(member, fx.orgId, 'edit')).toSQL()],
       // The role on one drive: the point lookup, the drive condition once for each role.
       ['driveRoleFor (point lookup)', query(driveRoleQuery(member, fx.orgId, fx.workspaceDriveId))],
+      // GET /api/drives/without-manager: the private drives nobody active holds full on (F6).
+      ['drives without a manager', query(drivesWithoutManagerQuery(fx.orgId))],
     ];
   });
 });

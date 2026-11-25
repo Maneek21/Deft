@@ -3,7 +3,8 @@
 // change)` inside its own transaction, after the change itself, and
 // `finishAccessLoss(change, result)` after the commit:
 // - drive member removed or lowered; drive link removed; a drive's
-//   default_role lowered; drive deleted (routes/drives.ts), or frozen (F6);
+//   default_role lowered; drive deleted (routes/drives.ts); a personal drive
+//   frozen on departure, or handed on (lib/drives.ts, F6);
 // - share removed or lowered (F9); document moved or deleted (F5);
 // - chat member removed (routes/spaces.ts removeSpaceMember; archiving a chat
 //   too, although an archived chat keeps granting its members, rule C7);

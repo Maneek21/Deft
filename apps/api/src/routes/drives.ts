@@ -34,6 +34,16 @@
 // that lock, so changes to one drive run one after another, and every check
 // inside it reads through the same transaction.
 //
+// Departed members (spec 5.2, F6): a departure freezes the person's personal
+// drive (lib/drives.ts endDriveAccessOnDepartureInTx); a frozen drive gives
+// nobody anything through its own grants, owners and admins included, so
+// every route here answers it with 404. Only the workspace owner hands it on
+// (POST /:id/handover; an admin gets 403 OWNER_ONLY), which makes it a
+// private drive with the new holder at full, audited in the same
+// transaction. Owners and admins list the private drives nobody active holds
+// full on, and the frozen drives, at GET /without-manager; they give a
+// drive a manager through the admin path above.
+//
 // Deleting a drive, or changing its Knowledge default, raises a lifecycle
 // event for each of its documents, so Knowledge withdraws or re-learns them
 // (H4). Neither sends a socket event: after a delete nobody can view the
@@ -48,7 +58,10 @@ import { DOC_ROLE_RANK, adminListedDriveCondition, canHoldDocumentAccess, driveR
 import { accessLossInTx, finishAccessLoss } from '../lib/document-access-change.js';
 import { emitDocumentAccessChanged, type DocumentAccessChange } from '../lib/document-access-events.js';
 import { emitDocumentEvent } from '../lib/document-events.js';
-import { driveListQuery, ensureWorkspaceDrive } from '../lib/drives.js';
+import {
+  driveListQuery, drivesWithoutManagerQuery, ensureWorkspaceDrive, finishDriveLosses, frozenDrivesQuery, handOverPersonalDriveInTx,
+  PrincipalCannotHoldAccessError,
+} from '../lib/drives.js';
 import { emitVisibleNotifications } from '../lib/notification-delivery.js';
 import { createNotificationIfAllowed } from '../lib/notification-policy.js';
 import { asStoredNotificationType } from '../lib/notification-types.js';
@@ -72,6 +85,9 @@ const PERSONAL_OWNER = refusal(409, 'The owner of a personal drive keeps full ac
 const ALREADY_MEMBER = refusal(409, 'Already a member of this drive; change their role instead', 'ALREADY_MEMBER');
 const ALREADY_LINKED = refusal(409, 'This chat is already linked to a drive', 'SPACE_ALREADY_LINKED');
 const NOT_IN_CHAT = refusal(403, 'You can only link a chat you are in', 'SPACE_MEMBERSHIP_REQUIRED');
+const OWNER_ONLY = refusal(403, 'Only the workspace owner can hand on a departed person’s drive', 'OWNER_ONLY');
+const OWNERS_AND_ADMINS = refusal(403, 'Only workspace owners and admins can see drives without a manager', 'FORBIDDEN');
+const NOT_FROZEN = refusal(409, 'Only a frozen personal drive can be handed on', 'DRIVE_NOT_FROZEN');
 
 class Refused extends Error {
   constructor(readonly refusal: Refusal) { super(refusal.body.code); }
@@ -121,6 +137,7 @@ const addMemberSchema = z.object({
 });
 const memberRoleSchema = z.object({ role: roleSchema });
 const linkSchema = z.object({ space_id: z.string().trim().min(1).max(200), role: roleSchema });
+const handoverSchema = z.object({ user_id: z.string().trim().min(1).max(200) });
 
 const bodyOf = (c: Context) => c.req.json().catch(() => ({}));
 
@@ -147,6 +164,20 @@ async function driveAccess(reader: Reader, user: AuthUser, driveId: string, lock
     adminPath = Boolean(listed);
   }
   return { drive, role, adminPath };
+}
+
+/**
+ * The caller's role in their workspace: an active human membership, read
+ * through `reader`. With `lock`, the membership row is share-locked until
+ * commit, so the role holds for the change made under it.
+ */
+async function workspaceRole(reader: Reader, user: AuthUser, lock = false): Promise<string | null> {
+  const query = reader.select({ role: orgMembers.role }).from(orgMembers)
+    .innerJoin(users, eq(users.id, orgMembers.user_id))
+    .where(and(eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, user.id), eq(orgMembers.is_active, true), eq(users.kind, 'human')))
+    .limit(1);
+  const [membership] = lock ? await query.for('share', { of: orgMembers }) : await query;
+  return membership?.role ?? null;
 }
 
 /** Null when `access` allows `need`; else the refusal. `manage` is full, or the admin path. */
@@ -390,6 +421,33 @@ driveRoutes.get('/', async (c) => {
     });
   } catch {
     return failed(c, 'list drives');
+  }
+});
+
+// GET /api/drives/without-manager (owners and admins): the private drives
+// nobody active holds full on, and the frozen personal drives an owner can
+// hand on. Registered before /:id.
+driveRoutes.get('/without-manager', async (c) => {
+  try {
+    const user = c.get('user');
+    const role = await workspaceRole(db, user);
+    if (role !== 'owner' && role !== 'admin') return answer(c, OWNERS_AND_ADMINS);
+    const [listed, frozen] = await Promise.all([
+      db.execute(drivesWithoutManagerQuery(user.org_id)),
+      db.execute(frozenDrivesQuery(user.org_id)),
+    ]);
+    const drivesWithout = listed.rows as Array<{ id: string; name: string; icon: string | null; created_at: Date | string; member_count: number }>;
+    const frozenDrives = frozen.rows as Array<{ id: string; frozen_at: Date | string; former_owner_id: string; former_owner_name: string | null }>;
+    return c.json({
+      drives: drivesWithout.map((row) => ({
+        id: row.id, name: row.name, icon: row.icon, member_count: Number(row.member_count), created_at: row.created_at,
+      })),
+      frozen_drives: frozenDrives.map((row) => ({
+        id: row.id, frozen_at: row.frozen_at, former_owner_id: row.former_owner_id, former_owner_name: row.former_owner_name,
+      })),
+    });
+  } catch {
+    return failed(c, 'list drives without a manager');
   }
 });
 
@@ -735,6 +793,33 @@ driveRoutes.delete('/:id/link-space/:spaceId', async (c) => {
   } catch (error) {
     if (error instanceof Refused) return answer(c, error.refusal);
     return failed(c, 'unlink the chat');
+  }
+});
+
+// POST /api/drives/:id/handover { user_id } (the workspace owner only): a
+// frozen personal drive becomes a private drive held by `user_id` at full
+// (lib/drives.ts handOverPersonalDriveInTx). The owner role is checked first,
+// so nobody else learns whether a drive exists.
+driveRoutes.post('/:id/handover', async (c) => {
+  try {
+    const user = c.get('user');
+    const parsed = handoverSchema.safeParse(await bodyOf(c));
+    if (!parsed.success) return answer(c, invalid());
+    const outcome = await db.transaction(async (tx) => {
+      if ((await workspaceRole(tx, user, true)) !== 'owner') throw new Refused(OWNER_ONLY);
+      const [drive] = await tx.select().from(drives)
+        .where(and(eq(drives.id, c.req.param('id')), eq(drives.org_id, user.org_id), eq(drives.is_deleted, false)))
+        .for('update');
+      if (!drive) throw new Refused(NOT_FOUND);
+      if (drive.kind !== 'personal' || drive.frozen_at === null) throw new Refused(NOT_FROZEN);
+      return handOverPersonalDriveInTx(tx, drive, parsed.data.user_id, user.id, 'handover');
+    });
+    await finishDriveLosses([outcome.loss]);
+    return c.json({ drive: driveShape(outcome.drive, null, false) });
+  } catch (error) {
+    if (error instanceof Refused) return answer(c, error.refusal);
+    if (error instanceof PrincipalCannotHoldAccessError) return answer(c, CANNOT_HOLD);
+    return failed(c, 'hand the drive on');
   }
 });
 
