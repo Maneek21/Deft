@@ -30,6 +30,13 @@ test('htmlToJson counts a handler inside a removed element', () => {
   assert.ok(!JSON.stringify(json).includes('Go'), 'the form and what was in it are gone');
 });
 
+test('htmlToJson counts inside template contents, nested templates included', () => {
+  assert.equal(htmlToJson('<template><input onclick=x></template>').dropped, 2);
+  const nested = htmlToJson('<p>ok</p><template><div><template><script>alert(1)</script><b onmouseover="y()">z</b></template></div></template>');
+  assert.equal(nested.dropped, 2);
+  assert.ok(!JSON.stringify(nested.json).includes('alert'));
+});
+
 test('a plain TipTap task checkbox is not counted, but a handler on it is', () => {
   const taskList = (input: string) => '<ul data-type="taskList"><li data-checked="false" data-type="taskItem">'
     + `<label>${input}<span></span></label><div><p>Do it</p></div></li></ul>`;

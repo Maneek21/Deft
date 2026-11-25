@@ -55,6 +55,23 @@ test('with blockIds every top-level block gets a comment, with or without an id,
   assert.match(jsonToMarkdown(EMPTY_DOCUMENT, { blockIds: true }), /^<!-- block:[0-9a-f-]{36} -->\n&nbsp;$/);
 });
 
+test('a stored id such as section-intro survives topLevelBlocks and Markdown unchanged', () => {
+  const source = doc(
+    paragraph('section-intro', [text('Intro')]),
+    { type: 'heading', attrs: { id: 'has space', level: 2 }, content: [text('Next')] },
+  );
+  assert.equal(topLevelBlocks(source)[0]!.id, 'section-intro');
+  assert.equal(topLevelBlocks(source)[0]!.id, 'section-intro', 'the same on a second call');
+  const derived = topLevelBlocks(source)[1]!.id;
+  assert.equal(topLevelBlocks(source)[1]!.id, derived, 'a malformed id is derived the same way each call');
+  const markdown = jsonToMarkdown(source, { blockIds: true });
+  assert.match(markdown, /^<!-- block:section-intro -->\nIntro$/m);
+  assert.deepEqual(commentIds(markdown), ['section-intro', derived]);
+  const back = markdownToJson(markdown);
+  assertValid(back);
+  assert.deepEqual(topLevelBlocks(back).map(block => block.id), ['section-intro', derived]);
+});
+
 test('without blockIds there are no block comments', () => {
   const markdown = jsonToMarkdown(doc(paragraph(blockId(1), [text('Hello')])));
   assert.equal(markdown, 'Hello');

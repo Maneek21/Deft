@@ -1,7 +1,12 @@
 import type { JSONContent } from '@tiptap/core';
 import { generateJSON } from '@tiptap/html/server';
 import { DOMSerializer } from '@tiptap/pm/model';
-import { Window } from 'happy-dom';
+import {
+  Window,
+  type DocumentFragment as HappyDocumentFragment,
+  type Element as HappyElement,
+  type HTMLTemplateElement as HappyTemplateElement,
+} from 'happy-dom';
 import { documentSchemaExtensions, getDocumentSchema } from './extensions';
 
 /** Elements removed (with everything inside them) before HTML is read, and counted. */
@@ -35,22 +40,34 @@ function withWindow<T>(use: (window: Window) => T): T {
 }
 
 /**
+ * Every element under `root`, including (at any depth) the ones inside a
+ * `<template>`'s content fragment, which `querySelectorAll` does not reach.
+ */
+function allElements(root: HappyElement | HappyDocumentFragment): HappyElement[] {
+  return Array.from(root.querySelectorAll('*')).flatMap(element => element.tagName === 'TEMPLATE'
+    ? [element, ...allElements((element as HappyTemplateElement).content)]
+    : [element]);
+}
+
+/**
  * Removes unsafe elements and `on*` attributes; returns the HTML left and how
- * many were removed. Everything is counted over the whole input before
- * anything is removed, so a handler inside a removed element still counts.
+ * many were removed. Everything is counted over the whole input (template
+ * contents included) before anything is removed, so a handler inside a
+ * removed element still counts.
  */
 function stripUnsafe(html: string): { html: string; dropped: number } {
   return withWindow(window => {
     const body = new window.DOMParser().parseFromString(`<!DOCTYPE html><html><body>${html}</body></html>`, 'text/html').body;
+    const elements = allElements(body);
     let dropped = 0;
-    for (const element of Array.from(body.querySelectorAll('*'))) {
+    for (const element of elements) {
       for (const name of element.getAttributeNames()) {
         if (!name.toLowerCase().startsWith('on')) continue;
         element.removeAttribute(name);
         dropped += 1;
       }
     }
-    const unsafe = Array.from(body.querySelectorAll(UNSAFE_ELEMENTS));
+    const unsafe = elements.filter(element => element.matches(UNSAFE_ELEMENTS));
     for (const element of unsafe) {
       if (!element.matches(TASK_ITEM_CHECKBOX)) dropped += 1;
     }

@@ -17,7 +17,10 @@ import {
 } from '../src/index.js';
 import { ALL_NODES, blockId, paragraph, text } from './fixtures.js';
 
+/** A random version-4 UUID, as `crypto.randomUUID()` gives. */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+/** Any UUID-shaped id, such as one derived from a malformed id. */
+const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 test('the schema has every fixed node and mark name', () => {
   const schema = getDocumentSchema();
@@ -34,6 +37,9 @@ test('the schema has every fixed node and mark name', () => {
   assert.equal(DOCUMENT_FRAGMENT, 'default');
   assert.deepEqual(EMPTY_DOCUMENT, { type: 'doc', content: [{ type: 'paragraph' }] });
   assert.ok(BLOCK_ID_COMMENT.test(`<!-- block:${blockId(1)} -->`));
+  assert.equal(BLOCK_ID_COMMENT.exec('<!-- block:section-intro -->')?.[1], 'section-intro');
+  assert.ok(!BLOCK_ID_COMMENT.test('<!-- block:has space -->'));
+  assert.ok(!BLOCK_ID_COMMENT.test(`<!-- block:${'a'.repeat(65)} -->`));
 });
 
 test('json → Yjs → json is identical for a document using every node and mark', () => {
@@ -108,16 +114,37 @@ test('ensureBlockIds keeps existing ids and fills missing ones', () => {
   assert.equal(topLevelBlocks(out)[0]!.id, blockId(1));
 });
 
-test('ensureBlockIds gives a repeated or malformed id a new one', () => {
-  const out = ensureBlockIds({
+test('ensureBlockIds keeps id tokens, derives a malformed or repeated id the same way every time, and gives a missing one a UUID', () => {
+  const input: JSONContent = {
     type: 'doc',
-    content: [paragraph(blockId(1), [text('a')]), paragraph(blockId(1), [text('b')]), paragraph('not-a-block-id', [text('c')])],
-  });
-  const [first, second, third] = out.content!;
-  assert.equal(first!.attrs!.id, blockId(1));
-  assert.notEqual(second!.attrs!.id, blockId(1));
-  assert.match(String(second!.attrs!.id), UUID);
-  assert.match(String(third!.attrs!.id), UUID);
+    content: [
+      paragraph('section-intro', [text('Kept')]),
+      paragraph('has space', [text('Malformed')]),
+      paragraph('section-intro', [text('Repeated')]),
+      { type: 'paragraph', content: [text('Missing')] },
+      paragraph('', [text('Empty')]),
+    ],
+  };
+  const ids = () => ensureBlockIds(input).content!.map(node => String(node.attrs!.id));
+  const first = ids();
+  const second = ids();
+  assert.equal(first[0], 'section-intro');
+  assert.match(first[1]!, UUID_SHAPE);
+  assert.equal(second[1], first[1], 'a malformed id maps to the same id on every call');
+  assert.match(first[2]!, UUID_SHAPE);
+  assert.equal(second[2], first[2], 'a repeated id maps to the same id on every call');
+  assert.match(first[3]!, UUID);
+  assert.match(first[4]!, UUID);
+  assert.notEqual(second[3], first[3], 'only a missing id is random');
+  assert.equal(new Set(first).size, 5);
+});
+
+test('topLevelBlocks gives a malformed id the same derived id on two calls', () => {
+  const input: JSONContent = { type: 'doc', content: [paragraph('has space', [text('Malformed')])] };
+  const [once] = topLevelBlocks(input);
+  const [twice] = topLevelBlocks(input);
+  assert.match(once!.id, UUID_SHAPE);
+  assert.equal(twice!.id, once!.id);
 });
 
 test('topLevelBlocks lists every top-level block, giving a copy ids where they are missing', () => {

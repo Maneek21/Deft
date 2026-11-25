@@ -3,29 +3,52 @@ import type { JSONContent } from '@tiptap/core';
 import { BLOCK_ID_TYPES } from './extensions';
 
 /** The line that names the next top-level block in Markdown written with `blockIds: true`. */
-export const BLOCK_ID_COMMENT = /^<!-- block:([0-9a-f-]{36}) -->$/;
+export const BLOCK_ID_COMMENT = /^<!-- block:([A-Za-z0-9_-]{1,64}) -->$/;
 
-/** The shape of a block id: what `crypto.randomUUID()` gives and BLOCK_ID_COMMENT can carry. */
-const BLOCK_ID = /^[0-9a-f-]{36}$/;
+/** A block id BLOCK_ID_COMMENT can carry: a UUID from `crypto.randomUUID()`, or any other such token. */
+const BLOCK_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 const blockIdTypes = new Set<string>(BLOCK_ID_TYPES);
 
 const hasBlockId = (node: JSONContent) => blockIdTypes.has(node.type ?? '');
 
+/** A UUID-shaped id (version 8, "custom", per RFC 9562) taken from the sha256 of `seed`: the same seed always gives the same id. */
+function derivedBlockId(seed: string): string {
+  const hex = createHash('sha256').update(seed).digest('hex');
+  const variant = ((parseInt(hex[16]!, 16) & 0x3) | 0x8).toString(16);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
 /**
- * Gives every block-id node (at any depth) a new `crypto.randomUUID()` when
- * its id is missing, is not block-id shaped, or repeats an earlier one, as
- * the editor's UniqueID does. Returns a new document; the input is not changed.
+ * Gives every block-id node (at any depth) an id BLOCK_ID_COMMENT can carry,
+ * changing as little as it can. The same input always gives the same ids,
+ * except where a random id is the only choice:
+ * - an existing id that matches BLOCK_ID is kept;
+ * - an existing id that does not match (`has space`), or that repeats an
+ *   earlier block's id, gets an id derived from the sha256 of the old id and
+ *   how many times it has already been seen;
+ * - only a block with no id, or an empty one, gets a random `crypto.randomUUID()`.
+ * Returns a new document; the input is not changed.
  */
 export function ensureBlockIds(json: JSONContent): JSONContent {
-  const seen = new Set<string>();
+  const assigned = new Set<string>();
+  const occurrences = new Map<string, number>();
+  const idFor = (current: unknown): string => {
+    if (current === null || current === undefined || current === '') return crypto.randomUUID();
+    const old = String(current);
+    const occurrence = occurrences.get(old) ?? 0;
+    occurrences.set(old, occurrence + 1);
+    if (occurrence === 0 && BLOCK_ID.test(old) && !assigned.has(old)) return old;
+    const seed = occurrence === 0 ? old : `${old}\u0000${occurrence}`;
+    let id = derivedBlockId(seed);
+    for (let attempt = 1; assigned.has(id); attempt += 1) id = derivedBlockId(`${seed}\u0000${attempt}`);
+    return id;
+  };
   const visit = (node: JSONContent): JSONContent => {
     const copy: JSONContent = { ...node };
     if (hasBlockId(node)) {
-      const current: unknown = node.attrs?.id;
-      const keep = typeof current === 'string' && BLOCK_ID.test(current) && !seen.has(current);
-      const id = keep ? current : crypto.randomUUID();
-      seen.add(id);
+      const id = idFor(node.attrs?.id);
+      assigned.add(id);
       copy.attrs = { ...node.attrs, id };
     }
     if (node.content) copy.content = node.content.map(visit);
@@ -37,8 +60,9 @@ export function ensureBlockIds(json: JSONContent): JSONContent {
 /**
  * Every top-level block with its id and its position in `content`. It runs
  * `ensureBlockIds` on a copy first (every top-level block type carries an
- * id), so a block without a valid id gets a fresh one on each call; store the
- * `ensureBlockIds` result when an id has to stay the same.
+ * id), so a stored id, or one derived from a malformed or repeated id, is the
+ * same on every call; only a block with no id gets a fresh random one each
+ * call, so store the `ensureBlockIds` result when that id has to stay the same.
  */
 export function topLevelBlocks(json: JSONContent): Array<{ id: string; index: number; node: JSONContent }> {
   return (ensureBlockIds(json).content ?? []).flatMap((node, index) => {
