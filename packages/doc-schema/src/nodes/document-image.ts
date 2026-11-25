@@ -1,11 +1,15 @@
 import { Image } from '@tiptap/extension-image';
 
-/** Notes saved before `data-file-id` point at the file as `/api/files/<id>`. */
-function fileIdFromLegacyUrl(value: string | null): string | null {
-  if (!value) return null;
+/**
+ * Notes saved before `data-file-id` point at the file with a relative
+ * `/api/files/<id>` source. An absolute or protocol-relative URL belongs to
+ * another site even when its path looks the same, so it never names a Deft file.
+ */
+function fileIdFromLegacyPath(value: string | null): string | null {
+  const match = value?.match(/^\/api\/files\/([^/?#]+)(?:[?#]|$)/);
+  if (!match) return null;
   try {
-    const match = new URL(value, 'http://deft.invalid').pathname.match(/^\/api\/files\/([^/]+)$/);
-    return match ? decodeURIComponent(match[1]!) : null;
+    return decodeURIComponent(match[1]!);
   } catch {
     return null;
   }
@@ -30,7 +34,7 @@ export const DocumentImage = Image.extend({
       title: stringAttribute('title'),
       fileId: {
         default: null,
-        parseHTML: el => el.getAttribute('data-file-id') || fileIdFromLegacyUrl(el.getAttribute('src')),
+        parseHTML: el => el.getAttribute('data-file-id') || fileIdFromLegacyPath(el.getAttribute('src')),
         renderHTML: attrs => attrs.fileId ? { 'data-file-id': attrs.fileId } : {},
       },
     };

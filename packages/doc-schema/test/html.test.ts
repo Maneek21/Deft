@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { htmlToJson } from '../src/index.js';
+import { htmlToJson, jsonToMarkdown } from '../src/index.js';
 
 test('htmlToJson drops script, iframe and onclick and counts them', () => {
   const { json, dropped } = htmlToJson(
@@ -21,6 +21,34 @@ test('htmlToJson counts style, object, embed, form, input, link and meta too', (
   );
   // style, object, embed, form, input (inside the form), link, meta, and two handlers.
   assert.equal(dropped, 9);
+});
+
+test('htmlToJson counts a handler inside a removed element', () => {
+  const { json, dropped } = htmlToJson('<form><button onclick="go()">Go</button><script onload="x()"></script></form><p>ok</p>');
+  // form, script, and the two handlers.
+  assert.equal(dropped, 4);
+  assert.ok(!JSON.stringify(json).includes('Go'), 'the form and what was in it are gone');
+});
+
+test('a plain TipTap task checkbox is not counted, but a handler on it is', () => {
+  const taskList = (input: string) => '<ul data-type="taskList"><li data-checked="false" data-type="taskItem">'
+    + `<label>${input}<span></span></label><div><p>Do it</p></div></li></ul>`;
+  assert.equal(htmlToJson(taskList('<input type="checkbox">')).dropped, 0);
+  assert.equal(htmlToJson(taskList('<input type="checkbox" onclick="steal()">')).dropped, 1);
+  assert.equal(htmlToJson('<p>Not a task</p><input type="checkbox">').dropped, 1, 'a checkbox outside a task item counts');
+});
+
+test('an image names a Deft file only through data-file-id or a relative /api/files path', () => {
+  const image = (html: string) => htmlToJson(html).json.content![0]!.attrs!;
+  assert.equal(image('<img src="/api/files/abc?v=2" alt="Ours">').fileId, 'abc');
+  const external = image('<img src="https://assets.example/api/files/chart" alt="Theirs">');
+  assert.equal(external.fileId, null);
+  assert.equal(external.src, 'https://assets.example/api/files/chart');
+  assert.equal(image('<img src="//cdn.example/api/files/chart">').fileId, null, 'a protocol-relative URL is another host');
+  assert.equal(
+    jsonToMarkdown({ type: 'doc', content: [{ type: 'image', attrs: external }] }),
+    '![Theirs](https://assets.example/api/files/chart)',
+  );
 });
 
 test('htmlToJson keeps a callout div, a task list and an image with data-file-id', () => {

@@ -1,24 +1,82 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { JSONContent } from '@tiptap/core';
-import { BLOCK_ID_COMMENT, jsonToMarkdown, markdownToJson, topLevelBlocks } from '../src/index.js';
+import {
+  BLOCK_ID_COMMENT,
+  EMPTY_DOCUMENT,
+  getDocumentSchema,
+  jsonToMarkdown,
+  markdownToJson,
+  topLevelBlocks,
+} from '../src/index.js';
 import { ALL_NODES, blockId, paragraph, text } from './fixtures.js';
 
 const doc = (...content: JSONContent[]): JSONContent => ({ type: 'doc', content });
+const commentIds = (markdown: string) => markdown.split('\n').flatMap(line => BLOCK_ID_COMMENT.exec(line)?.[1] ?? []);
+
+/** ProseMirror's own check: throws when the document does not fit the schema. */
+function assertValid(json: JSONContent): void {
+  assert.doesNotThrow(() => getDocumentSchema().nodeFromJSON(json).check());
+}
 
 test('a Markdown round trip with blockIds keeps every top-level id', () => {
   const markdown = jsonToMarkdown(ALL_NODES, { blockIds: true });
-  const commentIds = markdown.split('\n').flatMap(line => BLOCK_ID_COMMENT.exec(line)?.[1] ?? []);
   const expected = topLevelBlocks(ALL_NODES).map(block => ({ id: block.id, type: block.node.type }));
-  assert.deepEqual(commentIds, expected.map(block => block.id), 'one comment line per top-level block');
+  assert.deepEqual(commentIds(markdown), expected.map(block => block.id), 'one comment line per top-level block');
   const back = markdownToJson(markdown);
+  assertValid(back);
   assert.deepEqual(topLevelBlocks(back).map(block => ({ id: block.id, type: block.node.type })), expected);
   assert.equal(back.content!.length, ALL_NODES.content!.length);
+});
+
+test('with blockIds every top-level block gets a comment, with or without an id, empty or not', () => {
+  const source = doc(
+    paragraph(blockId(1), [text('Kept')]),
+    { type: 'paragraph', content: [text('No id yet')] },
+    { type: 'paragraph' },
+    { type: 'heading', attrs: { level: 2 } },
+  );
+  const markdown = jsonToMarkdown(source, { blockIds: true });
+  const ids = commentIds(markdown);
+  assert.equal(ids.length, 4);
+  assert.equal(ids[0], blockId(1));
+  assert.equal(new Set(ids).size, 4);
+  const back = markdownToJson(markdown);
+  assertValid(back);
+  assert.deepEqual(topLevelBlocks(back).map(block => ({ id: block.id, type: block.node.type })), [
+    { id: ids[0], type: 'paragraph' },
+    { id: ids[1], type: 'paragraph' },
+    { id: ids[2], type: 'paragraph' },
+    { id: ids[3], type: 'heading' },
+  ]);
+  assert.equal(back.content![2]!.content, undefined, 'the empty paragraph stays empty');
+  assert.equal(back.content![3]!.attrs!.level, 2);
+
+  assert.match(jsonToMarkdown(EMPTY_DOCUMENT, { blockIds: true }), /^<!-- block:[0-9a-f-]{36} -->\n&nbsp;$/);
 });
 
 test('without blockIds there are no block comments', () => {
   const markdown = jsonToMarkdown(doc(paragraph(blockId(1), [text('Hello')])));
   assert.equal(markdown, 'Hello');
+});
+
+test('headings deeper than level 3 become level 3', () => {
+  const level = (markdown: string) => markdownToJson(markdown).content![0]!.attrs!.level;
+  assert.equal(level('## Two'), 2);
+  assert.equal(level('### Three'), 3);
+  assert.equal(level('#### Four'), 3);
+  assert.equal(level('###### Six'), 3);
+  assertValid(markdownToJson('#### Four\n\n- ##### Five in a list'));
+});
+
+test('a list item that starts with an image keeps the paragraph the schema requires', () => {
+  const image = { type: 'image', attrs: { id: null, src: null, alt: 'chart', title: null, fileId: 'f' } };
+  const back = markdownToJson('- ![chart](deft-file:f)');
+  assertValid(back);
+  assert.deepEqual(back.content![0]!.content![0], { type: 'listItem', content: [paragraph(null), image] });
+  for (const markdown of ['- ![chart](deft-file:f) after', '- [ ] ![chart](deft-file:f)', '1. See ![chart](deft-file:f) here']) {
+    assertValid(markdownToJson(markdown));
+  }
 });
 
 test('a callout and a details block survive Markdown both ways', () => {

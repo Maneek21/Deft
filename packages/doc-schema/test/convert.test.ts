@@ -108,12 +108,38 @@ test('ensureBlockIds keeps existing ids and fills missing ones', () => {
   assert.equal(topLevelBlocks(out)[0]!.id, blockId(1));
 });
 
-test('ensureBlockIds gives a repeated id a new one', () => {
-  const out = ensureBlockIds({ type: 'doc', content: [paragraph(blockId(1), [text('a')]), paragraph(blockId(1), [text('b')])] });
-  const [first, second] = topLevelBlocks(out);
-  assert.equal(first!.id, blockId(1));
-  assert.notEqual(second!.id, blockId(1));
-  assert.match(second!.id, UUID);
+test('ensureBlockIds gives a repeated or malformed id a new one', () => {
+  const out = ensureBlockIds({
+    type: 'doc',
+    content: [paragraph(blockId(1), [text('a')]), paragraph(blockId(1), [text('b')]), paragraph('not-a-block-id', [text('c')])],
+  });
+  const [first, second, third] = out.content!;
+  assert.equal(first!.attrs!.id, blockId(1));
+  assert.notEqual(second!.attrs!.id, blockId(1));
+  assert.match(String(second!.attrs!.id), UUID);
+  assert.match(String(third!.attrs!.id), UUID);
+});
+
+test('topLevelBlocks lists every top-level block, giving a copy ids where they are missing', () => {
+  const input: JSONContent = {
+    type: 'doc',
+    content: [
+      paragraph(blockId(1), [text('Kept')]),
+      { type: 'paragraph', content: [text('No id')] },
+      { type: 'paragraph' },
+      { type: 'heading', attrs: { level: 2 } },
+    ],
+  };
+  const before = JSON.stringify(input);
+  const blocks = topLevelBlocks(input);
+  assert.equal(JSON.stringify(input), before, 'the input is not changed');
+  assert.deepEqual(blocks.map(block => block.index), [0, 1, 2, 3]);
+  assert.deepEqual(blocks.map(block => block.node.type), ['paragraph', 'paragraph', 'paragraph', 'heading']);
+  assert.equal(blocks[0]!.id, blockId(1));
+  for (const block of blocks.slice(1)) {
+    assert.match(block.id, UUID);
+    assert.equal(block.node.attrs!.id, block.id);
+  }
 });
 
 test('blockHash ignores the id attribute', () => {
@@ -128,4 +154,17 @@ test('blockHash ignores the id attribute', () => {
   assert.notEqual(blockHash(one), blockHash(paragraph(blockId(1), [text('Other words')])));
   const mention = (id: string) => paragraph(blockId(1), [{ type: 'nativeMention', attrs: { kind: 'person', id } }]);
   assert.notEqual(blockHash(mention('user_1')), blockHash(mention('user_2')), 'a mention id is content, not a block id');
+});
+
+test('blockHash is pinned: block id removed, mention id kept, null attribute and empty marks dropped', () => {
+  const node: JSONContent = {
+    type: 'paragraph',
+    attrs: { id: blockId(1), textAlign: null },
+    content: [
+      { type: 'text', text: 'Ask ', marks: [] },
+      { type: 'nativeMention', attrs: { kind: 'person', id: 'user_1' } },
+    ],
+  };
+  // sha256 of {"content":[{"text":"Ask ","type":"text"},{"attrs":{"id":"user_1","kind":"person"},"type":"nativeMention"}],"type":"paragraph"}
+  assert.equal(blockHash(node), 'e21004a33f5a39ca9bf036a53aef5b0e34a6de1b4e904cc1345373c960b55d6a');
 });

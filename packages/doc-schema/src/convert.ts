@@ -1,4 +1,5 @@
 import type { JSONContent } from '@tiptap/core';
+import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import { prosemirrorJSONToYDoc, updateYFragment, yDocToProsemirrorJSON } from '@tiptap/y-tiptap';
 import type * as Y from 'yjs';
 import { getDocumentSchema } from './extensions';
@@ -19,7 +20,12 @@ export const EMPTY_DOCUMENT: JSONContent = Object.freeze({
  * package; the conversions below return this form.
  */
 export function normalizeJson(json: JSONContent): JSONContent {
-  return JSON.parse(JSON.stringify(getDocumentSchema().nodeFromJSON(json).toJSON())) as JSONContent;
+  return plainJson(getDocumentSchema().nodeFromJSON(json));
+}
+
+/** A ProseMirror node's `toJSON`, as plain objects. */
+export function plainJson(node: ProseMirrorNode): JSONContent {
+  return JSON.parse(JSON.stringify(node.toJSON())) as JSONContent;
 }
 
 /** EMPTY_DOCUMENT in canonical form, as a fresh object. */

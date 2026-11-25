@@ -5,14 +5,17 @@ import { BLOCK_ID_TYPES } from './extensions';
 /** The line that names the next top-level block in Markdown written with `blockIds: true`. */
 export const BLOCK_ID_COMMENT = /^<!-- block:([0-9a-f-]{36}) -->$/;
 
+/** The shape of a block id: what `crypto.randomUUID()` gives and BLOCK_ID_COMMENT can carry. */
+const BLOCK_ID = /^[0-9a-f-]{36}$/;
+
 const blockIdTypes = new Set<string>(BLOCK_ID_TYPES);
 
 const hasBlockId = (node: JSONContent) => blockIdTypes.has(node.type ?? '');
 
 /**
- * Gives every block-id node (at any depth) that has no id, or repeats an
- * earlier one, a new `crypto.randomUUID()`, as the editor's UniqueID does.
- * Returns a new document; the input is not changed.
+ * Gives every block-id node (at any depth) a new `crypto.randomUUID()` when
+ * its id is missing, is not block-id shaped, or repeats an earlier one, as
+ * the editor's UniqueID does. Returns a new document; the input is not changed.
  */
 export function ensureBlockIds(json: JSONContent): JSONContent {
   const seen = new Set<string>();
@@ -20,7 +23,8 @@ export function ensureBlockIds(json: JSONContent): JSONContent {
     const copy: JSONContent = { ...node };
     if (hasBlockId(node)) {
       const current: unknown = node.attrs?.id;
-      const id = typeof current === 'string' && current && !seen.has(current) ? current : crypto.randomUUID();
+      const keep = typeof current === 'string' && BLOCK_ID.test(current) && !seen.has(current);
+      const id = keep ? current : crypto.randomUUID();
       seen.add(id);
       copy.attrs = { ...node.attrs, id };
     }
@@ -30,18 +34,24 @@ export function ensureBlockIds(json: JSONContent): JSONContent {
   return visit(json);
 }
 
-/** The document's top-level blocks that have a block id, with their position in `content`. */
+/**
+ * Every top-level block with its id and its position in `content`. It runs
+ * `ensureBlockIds` on a copy first (every top-level block type carries an
+ * id), so a block without a valid id gets a fresh one on each call; store the
+ * `ensureBlockIds` result when an id has to stay the same.
+ */
 export function topLevelBlocks(json: JSONContent): Array<{ id: string; index: number; node: JSONContent }> {
-  return (json.content ?? []).flatMap((node, index) => {
+  return (ensureBlockIds(json).content ?? []).flatMap((node, index) => {
     const id: unknown = node.attrs?.id;
-    return hasBlockId(node) && typeof id === 'string' && id ? [{ id, index, node }] : [];
+    return typeof id === 'string' && hasBlockId(node) ? [{ id, index, node }] : [];
   });
 }
 
 /**
- * The node with block ids removed (at any depth) and empty or null parts
- * dropped, so the same content hashes the same however it was written. A
- * native mention's `id` names what it mentions, so it stays.
+ * The node as blockHash sees it: `attrs.id` removed only on block-id node
+ * types (at any depth); every other id, such as the person or task a native
+ * mention names, is kept; null attribute values and empty `attrs`,
+ * `content` and `marks` are dropped.
  */
 function withoutBlockIds(node: JSONContent): JSONContent {
   const { attrs, content, marks, ...rest } = node;
@@ -64,7 +74,17 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-/** sha256 (hex) of the block's canonical JSON, ignoring block ids, so a block that only got a new id keeps its hash. */
+/**
+ * sha256 (hex) of the block's canonical JSON. The rule, which stored hashes
+ * depend on:
+ * - `attrs.id` is removed on block-id node types (BLOCK_ID_TYPES) at any
+ *   depth, so a block that only got a new id keeps its hash;
+ * - every other id is content and is kept: a native mention's `id` names the
+ *   person or task, so mentioning someone else changes the hash;
+ * - attributes whose value is null, and empty `attrs`, `content` and `marks`,
+ *   are dropped, so sparse and complete JSON for the same block hash the same;
+ * - object keys are sorted; arrays keep their order.
+ */
 export function blockHash(node: JSONContent): string {
   return createHash('sha256').update(canonicalJson(withoutBlockIds(node))).digest('hex');
 }

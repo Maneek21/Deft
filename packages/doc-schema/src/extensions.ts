@@ -12,6 +12,9 @@ import { TableOfContents } from './nodes/table-of-contents';
 import { TaskView } from './nodes/task-view';
 import { Toggle, ToggleContent, ToggleSummary } from './nodes/toggle';
 
+/** The heading levels a document has; imports fold deeper headings into the last one. */
+export const HEADING_LEVELS = [1, 2, 3] as const;
+
 /** The node types that carry a block id (`attrs.id`): every top-level block type. */
 export const BLOCK_ID_TYPES = [
   'paragraph', 'heading', 'bulletList', 'orderedList', 'taskList', 'blockquote', 'codeBlock', 'table',
@@ -30,7 +33,7 @@ export const BLOCK_ID_TYPES = [
  */
 export function documentSchemaExtensions(): Extensions {
   return [
-    StarterKit.configure({ heading: { levels: [1, 2, 3] }, undoRedo: false }),
+    StarterKit.configure({ heading: { levels: [...HEADING_LEVELS] }, undoRedo: false }),
     TaskList,
     TaskItem.configure({ nested: true }),
     Table,

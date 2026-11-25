@@ -6,7 +6,12 @@ import { documentSchemaExtensions, getDocumentSchema } from './extensions';
 
 /** Elements removed (with everything inside them) before HTML is read, and counted. */
 const UNSAFE_ELEMENTS = 'script, style, iframe, object, embed, form, input, link, meta';
-/** The checkbox a task item draws for itself: removed, but not counted. */
+/**
+ * The one exception to counting an `input`: the checkbox TipTap writes in
+ * every task item it renders. It is removed (the task item's
+ * `data-checked` carries the state) but is not counted as dropped, or every
+ * saved task list would read as unsafe content. A handler on it still counts.
+ */
 const TASK_ITEM_CHECKBOX = 'li[data-type="taskItem"] > label > input[type="checkbox"]';
 
 /** A happy-dom window that runs no script and loads nothing, closed after `use`. Same settings as `@tiptap/html/server`. */
@@ -29,15 +34,15 @@ function withWindow<T>(use: (window: Window) => T): T {
   }
 }
 
-/** Removes unsafe elements and `on*` attributes; returns the HTML left and how many were removed. */
+/**
+ * Removes unsafe elements and `on*` attributes; returns the HTML left and how
+ * many were removed. Everything is counted over the whole input before
+ * anything is removed, so a handler inside a removed element still counts.
+ */
 function stripUnsafe(html: string): { html: string; dropped: number } {
   return withWindow(window => {
     const body = new window.DOMParser().parseFromString(`<!DOCTYPE html><html><body>${html}</body></html>`, 'text/html').body;
     let dropped = 0;
-    for (const element of Array.from(body.querySelectorAll(UNSAFE_ELEMENTS))) {
-      if (!element.matches(TASK_ITEM_CHECKBOX)) dropped += 1;
-      element.remove();
-    }
     for (const element of Array.from(body.querySelectorAll('*'))) {
       for (const name of element.getAttributeNames()) {
         if (!name.toLowerCase().startsWith('on')) continue;
@@ -45,6 +50,11 @@ function stripUnsafe(html: string): { html: string; dropped: number } {
         dropped += 1;
       }
     }
+    const unsafe = Array.from(body.querySelectorAll(UNSAFE_ELEMENTS));
+    for (const element of unsafe) {
+      if (!element.matches(TASK_ITEM_CHECKBOX)) dropped += 1;
+    }
+    for (const element of unsafe) element.remove();
     return { html: body.innerHTML, dropped };
   });
 }

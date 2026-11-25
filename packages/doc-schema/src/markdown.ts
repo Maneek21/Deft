@@ -1,8 +1,9 @@
 import { Extension, type AnyExtension, type JSONContent, type MarkdownToken } from '@tiptap/core';
 import { MarkdownManager } from '@tiptap/markdown';
-import { BLOCK_ID_COMMENT } from './blocks';
-import { emptyDocument, normalizeJson } from './convert';
-import { documentSchemaExtensions, getDocumentSchema } from './extensions';
+import { Fragment, type Node as ProseMirrorNode } from '@tiptap/pm/model';
+import { BLOCK_ID_COMMENT, ensureBlockIds } from './blocks';
+import { emptyDocument, plainJson } from './convert';
+import { HEADING_LEVELS, documentSchemaExtensions, getDocumentSchema } from './extensions';
 import { htmlToJson, jsonToHtml } from './html';
 import { Callout } from './nodes/callout';
 import { DocumentImage } from './nodes/document-image';
@@ -102,34 +103,58 @@ function markdownManager(): MarkdownManager {
   return manager;
 }
 
-const UUID_ID = /^[0-9a-f-]{36}$/;
+/** Markdown for a block that renders to nothing, so its id line still names a block. */
+function emptyBlockMarkdown(node: JSONContent): string {
+  return node.type === 'heading' ? '#'.repeat(Number(node.attrs?.level) || 1) : '&nbsp;';
+}
 
 /**
- * The document as Markdown, top-level blocks separated by a blank line. With
- * `blockIds`, each top-level block that has an id is preceded by its own
- * `<!-- block:<id> -->` line, and an empty paragraph is kept as `&nbsp;`.
+ * The document as Markdown, top-level blocks separated by a blank line.
+ * With `blockIds`, it runs `ensureBlockIds` on a copy first, so every
+ * top-level block is preceded by its own `<!-- block:<id> -->` line, and an
+ * empty block is kept (`&nbsp;` for a paragraph, `#` for a heading).
+ * Without it, empty blocks are left out.
  */
 export function jsonToMarkdown(json: JSONContent, opts: { blockIds?: boolean } = {}): string {
   const markdown = markdownManager();
+  const source = opts.blockIds ? ensureBlockIds(json) : json;
   const parts: string[] = [];
-  for (const node of json.content ?? []) {
-    const id = opts.blockIds && typeof node.attrs?.id === 'string' && UUID_ID.test(node.attrs.id) ? node.attrs.id : null;
-    const emptyParagraph = node.type === 'paragraph' && !node.content?.length;
-    const body = emptyParagraph
-      ? (id ? '&nbsp;' : '')
-      : markdown.serialize({ type: 'doc', content: [node] }).replace(/^\n+|\n+$/g, '');
-    if (!body) continue;
-    parts.push(id ? `<!-- block:${id} -->\n${body}` : body);
+  for (const node of source.content ?? []) {
+    const body = markdown.serialize({ type: 'doc', content: [node] }).replace(/^\n+|\n+$/g, '');
+    const id: unknown = node.attrs?.id;
+    if (opts.blockIds && typeof id === 'string') parts.push(`<!-- block:${id} -->\n${body || emptyBlockMarkdown(node)}`);
+    else if (body) parts.push(body);
   }
   return parts.join('\n\n');
 }
 
-/** Drops markers and empty text nodes at any depth. */
-function withoutMarkers(nodes: JSONContent[]): JSONContent[] {
+const MAX_HEADING_LEVEL = Math.max(...HEADING_LEVELS);
+
+/**
+ * At any depth: drops markers and empty text nodes, and folds headings
+ * deeper than the schema has (`####` and below) into its last level.
+ */
+function cleanParsed(nodes: JSONContent[]): JSONContent[] {
   return nodes.flatMap(node => {
     if (node.type === MARKER || (node.type === 'text' && !node.text)) return [];
-    return [node.content ? { ...node, content: withoutMarkers(node.content) } : node];
+    const tooDeep = node.type === 'heading' && Number(node.attrs?.level) > MAX_HEADING_LEVEL;
+    const kept = tooDeep ? { ...node, attrs: { ...node.attrs, level: MAX_HEADING_LEVEL } } : node;
+    return [kept.content ? { ...kept, content: cleanParsed(kept.content) } : kept];
   });
+}
+
+/**
+ * Rebuilds the tree bottom-up, filling in content the schema requires around
+ * what Markdown gave: a list item that starts with an image gets its leading
+ * empty paragraph back.
+ */
+function fitToSchema(node: ProseMirrorNode): ProseMirrorNode {
+  if (node.isLeaf || node.isTextblock) return node;
+  const children: ProseMirrorNode[] = [];
+  node.forEach(child => { children.push(fitToSchema(child)); });
+  const content = Fragment.fromArray(children);
+  if (node.type.validContent(content)) return node.copy(content);
+  return node.type.createAndFill(node.attrs, content, node.marks) ?? node.copy(content);
 }
 
 /** Gives the block after each top-level block-id comment that id. */
@@ -184,12 +209,14 @@ function liftBlocksOutOfTextblocks(nodes: JSONContent[]): JSONContent[] {
 }
 
 /**
- * Reads Markdown into a document in the schema's JSON form. Block-id
+ * Reads Markdown into a document in the schema's canonical JSON form, fitted
+ * to the schema (headings 1–3, required paragraphs filled in). Block-id
  * comments give the next top-level block its id; blocks without one keep a
  * null id (run `ensureBlockIds` to fill them).
  */
 export function markdownToJson(markdown: string): JSONContent {
   const parsed = markdownManager().parse(markdown);
-  const content = liftBlocksOutOfTextblocks(withoutMarkers(applyBlockIds(parsed.content ?? [])));
-  return content.length ? normalizeJson({ type: 'doc', content }) : emptyDocument();
+  const content = liftBlocksOutOfTextblocks(cleanParsed(applyBlockIds(parsed.content ?? [])));
+  if (!content.length) return emptyDocument();
+  return plainJson(fitToSchema(getDocumentSchema().nodeFromJSON({ type: 'doc', content })));
 }
