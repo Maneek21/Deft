@@ -52,8 +52,8 @@ Upgrade notes:
 
 Guests (#587). A privacy change for every install, hosted or self-hosted, that has guests:
 
-- **Before.** On `.150` and earlier, a guest received every active member, with their
-  email address, from the member list, the people directory and member profiles.
+- **Before.** On `.150` and earlier, a guest received the same people a member saw, with
+  every email address, from the member list, the people directory and member profiles.
 - **Now.** Guests no longer see every member or any member's email address; they see only
   people they share a space with (a room, a direct or group message, or an agent
   conversation, archived or not), and no email address but their own. This holds in the
@@ -119,11 +119,12 @@ Also changed:
   network or to the server itself, uses a port other than 80 or 443, carries credentials,
   or whose name does not resolve within 5 seconds. A sync allows the whole fetch 20
   seconds, so a public feed whose name was slow to resolve can be refused once and saved
-  on a retry. A hosted workspace at its outside-request limit is refused with 429
-  `WORKSPACE_OUTGOING_LIMIT` before the check. Before, an inward address was saved and
-  then refused at every sync, so nothing was ever fetched from it; now it is not stored
-  either. A self-hosted install's `DEFT_CALENDAR_PRIVATE_URL_ALLOWLIST` entries are still
-  accepted. Feeds already saved are unchanged.
+  on a retry. In a hosted workspace at its outside-request limit, an address that passes
+  the other checks is refused with 429 `WORKSPACE_OUTGOING_LIMIT` before its name is
+  looked up. Before, an inward address was saved and then refused at every sync, so
+  nothing was ever fetched from it; now it is not stored either. A self-hosted install's
+  `DEFT_CALENDAR_PRIVATE_URL_ALLOWLIST` entries are still accepted. Feeds already saved are
+  unchanged.
 - **API keys (#585).** Creating or changing an API key with a malformed request body is now
   refused with 400 `VALIDATION_ERROR` instead of failing with 500. So is a value the
   database cannot store or that would leave the key unreachable: an expiry date that is not
