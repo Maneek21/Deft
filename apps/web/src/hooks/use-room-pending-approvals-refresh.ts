@@ -39,26 +39,45 @@ export function isApprovalAttentionEvent(item: unknown): boolean {
 type Timers = { set: (run: () => void, ms: number) => unknown };
 const browserTimers: Timers = { set: (run, ms) => setTimeout(run, ms) };
 
-/** One scheduled re-read per room (SWR key), shared by every view of that room in this tab. */
-const scheduled = new Map<string, { timer: unknown; refresh: () => unknown }>();
+type RoomRefresh = { refresh: () => unknown; reading: boolean; again: boolean };
+
+/** One pending or running re-read per room (SWR key), shared by every view of that room in this tab. */
+const rooms = new Map<string, RoomRefresh>();
 
 /**
- * Re-read the room `key` once, ROOM_PENDING_APPROVALS_EVENT_DELAY_MS from the
- * first event not yet answered; events until then join it (the latest
- * `refresh` runs). A re-read after its views closed only refreshes the cache.
+ * Re-read the room `key` ROOM_PENDING_APPROVALS_EVENT_DELAY_MS after an event,
+ * one read at a time. Events before the read starts join it; events while it
+ * runs queue one more read after it completes. A read started while another
+ * runs would replace it (SWR drops the older response), so events closer
+ * together than a read takes would otherwise keep the card from ever
+ * updating (astra, review of b0ee15db). The latest `refresh` runs; a re-read
+ * after the room's views closed only refreshes the cache.
  */
 export function scheduleRoomPendingApprovalsRefresh(key: string, refresh: () => unknown, timers: Timers = browserTimers): void {
-  const current = scheduled.get(key);
+  const current = rooms.get(key);
   if (current) {
     current.refresh = refresh;
+    if (current.reading) current.again = true;
     return;
   }
-  const entry: { timer: unknown; refresh: () => unknown } = { timer: undefined, refresh };
-  entry.timer = timers.set(() => {
-    scheduled.delete(key);
-    Promise.resolve(entry.refresh()).catch(() => undefined);
+  const entry: RoomRefresh = { refresh, reading: false, again: false };
+  rooms.set(key, entry);
+  const read = () => timers.set(() => {
+    entry.reading = true;
+    Promise.resolve()
+      .then(() => entry.refresh())
+      .catch(() => undefined)
+      .then(() => {
+        entry.reading = false;
+        if (entry.again) {
+          entry.again = false;
+          read();
+        } else {
+          rooms.delete(key);
+        }
+      });
   }, ROOM_PENDING_APPROVALS_EVENT_DELAY_MS);
-  scheduled.set(key, entry);
+  read();
 }
 
 /** Re-read the room's pending approvals (`refresh`, SWR's bound mutate) on the viewer's approval Inbox events. */
