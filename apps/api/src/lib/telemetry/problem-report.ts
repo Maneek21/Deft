@@ -17,6 +17,7 @@
  * It is never retried behind their back. Self-hosted Deft never sends one.
  */
 import { randomUUID } from 'node:crypto';
+import { releaseLabel } from './scrub.js';
 import type { ControlPlaneTarget } from './settings.js';
 
 export const REPORT_TEXT_MAX = 4000;
@@ -74,7 +75,7 @@ export async function buildProblemReport(target: ControlPlaneTarget, input: {
 }): Promise<ProblemReport> {
   return {
     cell_id: target.cellId,
-    release: await problemReportDeps.release().catch(() => 'unknown'),
+    release: releaseLabel(await problemReportDeps.release().catch(() => 'unknown')),
     report_id: problemReportDeps.newId(),
     role: input.role,
     category: input.category,

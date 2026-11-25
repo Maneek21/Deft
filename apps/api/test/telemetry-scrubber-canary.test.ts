@@ -40,12 +40,16 @@ const FILE_NAME = 'Q3-board-report.pdf';
 const WORKSPACE = 'Acme Robotics';
 const WORKSPACE_SLUG = 'acme-robotics';
 const PERSON = 'Priya Sharma';
+// Ordinary text a person typed, unquoted, in a message the app wrote.
+const NOTE_TEXT = 'move the blue chair';
+// A workspace's own UUID, offered as a request ID: only references the cell issued may pass.
+const WORKSPACE_UUID = '3c9d0f6e-2b1a-4c8d-9e7f-5a6b7c8d9e0f';
 
 /** Every piece that must not leave the cell, checked without regard to case. */
 const CANARIES = [
   EMAIL, 'priya', 'sharma', 'acme', 'robotics', SETUP_TOKEN, SETUP_LINK, INVITE_LINK, INVITE_JWT, 'eyJ', AI_KEY,
   'Q2FuYXJ5', SHORT_AI_KEY, 'c4n4ry', JWT, MESSAGE_TEXT, 'launch plan', 'friday', FILE_NAME, 'board-report', '.pdf',
-  WORKSPACE, WORKSPACE_SLUG, 'deft.ing', 'signup#', 'invite#', 'setup=', 'token=',
+  WORKSPACE, WORKSPACE_SLUG, 'deft.ing', 'signup#', 'invite#', 'setup=', 'token=', NOTE_TEXT, 'blue chair', WORKSPACE_UUID,
 ];
 
 /** One message carrying every canary, quoted and unquoted. */
@@ -84,7 +88,7 @@ after(() => {
 
 test('no canary survives any capture path into the batch that leaves the cell', async () => {
   // The workspace's names and people's names, as the cell loads them from its database.
-  const network = useErrorReporter(HOSTED_ENV, { known: [WORKSPACE, WORKSPACE_SLUG, PERSON] });
+  const network = useErrorReporter(HOSTED_ENV, { known: [WORKSPACE, WORKSPACE_SLUG, PERSON], webOrigins: [`https://${WORKSPACE_SLUG}.deft.ing`] });
 
   // 1. A request error, thrown from a route reached by a raw path full of canaries.
   const app = new Hono();
@@ -93,13 +97,22 @@ test('no canary survives any capture path into the batch that leaves the cell', 
   app.post('/api/spaces/:id/files/:name', () => { throw loadedError(); });
   // 2. A 5xx answer without an exception.
   app.get('/api/spaces/:id/export', (c) => c.json({ error: 'Export failed', code: 'INTERNAL_ERROR' }, 500));
+  // An app message with a person's text, unquoted, even under an engine class name.
+  app.get('/api/notes/:id', function saveNote() { throw new TypeError(`Could not save note: ${NOTE_TEXT}`); });
+  // A real engine error: its message is useful and safe once scrubbed.
+  app.get('/api/tasks/:id', function readTask() { const task = undefined as unknown as { title: { trim(): string } }; return new Response(task.title.trim()); });
   const thrown = await app.request(`/api/spaces/${WORKSPACE_SLUG}/files/${FILE_NAME}?email=${EMAIL}&token=${JWT}`, { method: 'POST' });
   assert.equal(thrown.status, 500);
   const answered = await app.request(`/api/spaces/${WORKSPACE_SLUG}/export?q=${encodeURIComponent(MESSAGE_TEXT)}`);
   assert.equal(answered.status, 500);
+  assert.equal((await app.request('/api/notes/n1')).status, 500);
+  assert.equal((await app.request('/api/tasks/t1')).status, 500);
 
   // 3. A failed job, and 4. an uncaught process error, with a class name that is data.
   captureJobError('agent-reply', loadedError());
+  captureJobError('note-save', (function saveNoteJob() { return new Error(`Could not save note: ${NOTE_TEXT}`); })());
+  // A system error: only its code leaves, never the address in its message.
+  captureJobError('imap-sync', Object.assign((function syncMailbox() { return new Error(`connect ECONNREFUSED mail.${WORKSPACE_SLUG}.example:993 for ${EMAIL}`); })(), { code: 'ECONNREFUSED' }));
   captureProcessError(loadedError(WORKSPACE));
   captureProcessError(loadedError(EMAIL));
 
@@ -121,8 +134,10 @@ test('no canary survives any capture path into the batch that leaves the cell', 
   for (const body of [
     { type: 'error', error_class: 'TypeError', message: LOADED_MESSAGE, stack: browserStack, page: `/chat/${WORKSPACE_SLUG}/${FILE_NAME}?email=${EMAIL}#setup=${SETUP_TOKEN}` },
     { type: 'rejection', error_class: EMAIL, message: `Uncaught (in promise) ${LOADED_MESSAGE}`, stack: browserStack, page: `/invite#token=${INVITE_JWT}` },
-    { type: 'api', method: 'GET', api_path: `/api/spaces/${WORKSPACE_SLUG}/messages?q=${encodeURIComponent(MESSAGE_TEXT)}&key=${AI_KEY}`, status: 502, request_id: '7f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b', page: `/settings/${EMAIL}` },
+    { type: 'api', method: 'GET', api_path: `/api/spaces/${WORKSPACE_SLUG}/messages?q=${encodeURIComponent(MESSAGE_TEXT)}&key=${AI_KEY}`, status: 502, request_id: WORKSPACE_UUID, page: `/settings/${EMAIL}` },
     { type: 'api', method: 'GET', api_path: `/api/files/${FILE_NAME}`, status: 500, page: `/notes/${WORKSPACE_SLUG}` },
+    { type: 'error', error_class: 'TypeError', message: "Cannot read properties of undefined (reading 'title')", page: '/tasks/:id' },
+    { type: 'error', error_class: 'Error', message: `Could not save note: ${NOTE_TEXT}`, page: '/notes/:id' },
   ]) {
     const res = await post(body);
     assert.equal(res.status, 200);
@@ -164,6 +179,11 @@ test('no canary survives any capture path into the batch that leaves the cell', 
   for (const expected of ['/api/spaces/:id/files/:name', '/api/spaces/:id/export', '/chat/:param/:param', '/invite', '/api/spaces/:id/messages']) {
     assert.ok(routes_.has(expected), `route template ${expected} in ${[...routes_].join(' ')}`);
   }
+  // Messages: a runtime message stays (scrubbed); an app's own text does not; a system error is its code.
+  const messages = body.events.map((event) => event.message);
+  assert.ok(messages.includes('Cannot read properties of undefined (reading <quoted>)'), messages.join(' | '));
+  assert.ok(messages.includes('code ECONNREFUSED'), messages.join(' | '));
+  assert.ok(body.events.filter((event) => event.route === '/api/notes/:id' || event.job === 'note-save').every((event) => event.message === ''));
   // A path the API has no route for is not a template: no route at all.
   assert.ok(body.events.some((event) => event.kind === 'client' && event.method === 'GET' && event.status === 500 && event.route === null));
   // The thrown request error carries the reference the person was shown.

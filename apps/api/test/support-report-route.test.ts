@@ -17,6 +17,7 @@ import test, { afterEach } from 'node:test';
 import { Hono } from 'hono';
 import { createSupportRoutes, supportDeps } from '../src/routes/support.js';
 import { problemReportDeps } from '../src/lib/telemetry/problem-report.js';
+import { forgetIssuedReferencesForTest, rememberIssuedReference } from '../src/lib/telemetry/scrub.js';
 import { CELL_ID, CONTROL_PLANE, FETCH_TOKEN, HOSTED_ENV, SELF_HOSTED_ENV, recordingFetch } from './fixtures/telemetry.js';
 
 const savedSupport = { ...supportDeps };
@@ -77,10 +78,13 @@ test('every signed-in role can report, and the report carries that role', async 
 
 test('the report is exactly the contract: the control plane, the seat token, and only these fields', async () => {
   const { network, send } = setup();
+  forgetIssuedReferencesForTest();
+  // One reference this cell issued; the other UUIDs (a workspace's, say) never pass as request IDs.
+  rememberIssuedReference('7f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b');
   const res = await send({ id: 'user-1', role: 'member' }, {
     category: 'confusing',
     text: '  I cannot find where to change my status.\u0000  ',
-    request_ids: ['7f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b', 'not-an-id', '7F1C2A3B-4D5E-4F60-8A7B-9C0D1E2F3A4B'],
+    request_ids: ['7f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b', 'not-an-id', '7F1C2A3B-4D5E-4F60-8A7B-9C0D1E2F3A4B', '3c9d0f6e-2b1a-4c8d-9e7f-5a6b7c8d9e0f'],
     page: '/settings/profile?tab=status#x',
     reply_email: 'someone-else@example.com',
   });
@@ -104,10 +108,13 @@ test('the report is exactly the contract: the control plane, the seat token, and
   });
 });
 
-test('no reply address unless the person ticks the box', async () => {
+test('no reply address unless the person ticks the box; the box must be answered', async () => {
   const { network, send } = setup();
   assert.equal((await send({ id: 'user-1', role: 'guest' }, { email_me: false })).status, 201);
   assert.equal((network.sent[0]!.body as { reply_email: unknown }).reply_email, null);
+  // Left out, it is not taken as yes: the report is refused and nothing is sent.
+  assert.equal((await send({ id: 'user-2', role: 'member' }, { email_me: undefined })).status, 400);
+  assert.equal(network.sent.length, 1);
 });
 
 test('no session, no report; a session without a role, no report', async () => {

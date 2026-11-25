@@ -9,6 +9,7 @@
 import type { Context } from 'hono';
 import { matchedRoutes } from 'hono/route';
 import { scrubMethod, scrubRouteTemplate } from './scrub.js';
+import { WEB_PATH_WORDS } from './web-paths.js';
 
 type RouteEntry = { method: string; path: string };
 
@@ -74,26 +75,16 @@ export function apiRouteTemplateFor(method: unknown, rawPath: unknown): string |
 }
 
 /**
- * Words that appear as fixed segments in the web app's paths (apps/web/src/app).
- * A segment not in this list (an ID, a slug, a name) becomes ":param".
+ * The page a browser was on, as a template. The web app sends it with its
+ * dynamic segments already named ("/modules/:slug", lib/error-telemetry.ts);
+ * here a segment stays only if it is such a name or one of the app's fixed
+ * folder names (web-paths.ts), and anything else becomes ":param".
  */
-const WEB_PATH_WORDS = new Set([
-  'action-batches', 'agent', 'agent-employees', 'ai', 'api-access', 'app-attachments', 'app-experience-bootstrap',
-  'app-resources', 'approvals', 'apps', 'attachment-operator', 'attention', 'authorize', 'calendar', 'callback', 'chat',
-  'connections', 'create', 'dashboard', 'developer', 'email', 'forgot-password', 'groups', 'heartbeats', 'inbox',
-  'integration-preparations', 'integrations', 'invite', 'knowledge', 'library', 'license', 'login', 'mcp', 'mcp-access',
-  'members', 'modules', 'native-email', 'notes', 'oauth', 'operator', 'personality', 'private-app-resources',
-  'private-resources', 'profile', 'projects', 'recovery', 'reminders', 'reset-password', 'search', 'settings', 'setup',
-  'setup-ai', 'share', 'shared', 'sharing', 'signup', 'skills', 'source', 'tags', 'tasks', 'teams', 'transfer',
-  'two-step-setup', 'webhooks', 'welcome', 'workflows', 'wiki', 'files', 'billing', 'security', 'notifications',
-  'appearance', 'account', 'workspace', 'audit', 'decisions', 'manager', 'clips', 'daily-notes', 'reports', 'runs',
-  'automations', 'records', 'views', 'new', 'edit', 'trust', 'library', 'templates',
-]);
-
-/** The page a browser was on, as a template: known words kept, everything else ":param". */
 export function webPageTemplate(rawPath: unknown): string | null {
   if (typeof rawPath !== 'string' || !rawPath.startsWith('/') || rawPath.length > 2048) return null;
   const path = rawPath.split(/[?#]/, 1)[0] ?? '';
-  const segments = path.split('/').slice(1).map((segment) => (segment === '' || WEB_PATH_WORDS.has(segment) ? segment : ':param'));
+  const segments = path.split('/').slice(1).map((segment) => (
+    segment === '' || WEB_PATH_WORDS.has(segment) || /^:[A-Za-z_][A-Za-z0-9_]{0,30}$/.test(segment) ? segment : ':param'
+  ));
   return `/${segments.join('/')}`.slice(0, 200);
 }

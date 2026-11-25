@@ -6,13 +6,15 @@
  *
  * Hosted cells scrub the report and add it to the error events they send to
  * the control plane as kind `client`. Every other install answers
- * `{ "enabled": false }`, keeps nothing, and the page stops reporting.
+ * `{ "enabled": false }` without reading the body, keeps nothing, and the
+ * page stops reporting.
  *
- * Limited per session (the bearer it carries, hashed, or else the client
- * address) and per client address, with a ceiling for the whole server.
+ * Limits, all checked before the body is read: per client address first,
+ * then per session (a verified web session, or the address when there is
+ * none), then a ceiling for the whole server that only requests admitted by
+ * the first two count against, so one noisy address cannot use it up.
  */
-import { createHash } from 'node:crypto';
-import { Hono, type Context } from 'hono';
+import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { rateLimiter } from 'hono-rate-limiter';
 import { z } from 'zod';
@@ -34,28 +36,50 @@ const clientErrorSchema = z.object({
 
 const limited = (c: Context) => c.json({ error: 'Too many requests.', code: 'RATE_LIMITED' }, 429);
 
-export function createTelemetryRoutes(limits: { perSession?: number; perAddress?: number; perServer?: number } = {}) {
-  const addressKey = createInviteClientKey();
+/** The verified web session a request carries, or null. */
+async function verifiedSession(request: Request): Promise<string | null> {
+  if (!request.headers.get('authorization')?.startsWith('Bearer ')) return null;
+  try {
+    const { authenticateWebRequest } = await import('../middleware/auth.js');
+    const result = await authenticateWebRequest(request, false);
+    return result.ok ? result.user.sid : null;
+  } catch {
+    return null;
+  }
+}
+
+export function createTelemetryRoutes(options: {
+  perSession?: number;
+  perAddress?: number;
+  perServer?: number;
+  /** Test seams: the session a request carries, and its client address. */
+  sessionOf?: (request: Request) => Promise<string | null>;
+  addressOf?: (c: Context) => Promise<string>;
+} = {}) {
+  const addressKey = options.addressOf ?? createInviteClientKey();
+  const sessionOf = options.sessionOf ?? verifiedSession;
   const sessionKey = async (c: Context) => {
-    const authorization = c.req.header('authorization')?.trim();
-    return authorization
-      ? `session:${createHash('sha256').update(authorization).digest('hex').slice(0, 32)}`
-      : `address:${await addressKey(c)}`;
+    const sid = await sessionOf(c.req.raw);
+    return sid ? `session:${sid}` : `address:${await addressKey(c)}`;
   };
-  const perServer = rateLimiter({ windowMs: 60_000, limit: limits.perServer ?? 600, keyGenerator: () => 'client-error', handler: limited });
-  const perAddress = rateLimiter({ windowMs: 60_000, limit: limits.perAddress ?? 30, keyGenerator: addressKey, handler: limited });
-  const perSession = rateLimiter({ windowMs: 60_000, limit: limits.perSession ?? 10, keyGenerator: sessionKey, handler: limited });
+  const perAddress = rateLimiter({ windowMs: 60_000, limit: options.perAddress ?? 30, keyGenerator: addressKey, handler: limited });
+  const perSession = rateLimiter({ windowMs: 60_000, limit: options.perSession ?? 10, keyGenerator: sessionKey, handler: limited });
+  const perServer = rateLimiter({ windowMs: 60_000, limit: options.perServer ?? 600, keyGenerator: () => 'client-error', handler: limited });
+  const onlyWhenEnabled: MiddlewareHandler = async (c, next) => {
+    c.header('Cache-Control', 'no-store');
+    if (!isErrorTelemetryEnabled()) return c.json({ enabled: false });
+    return next();
+  };
 
   const routes = new Hono();
   routes.post(
     '/client-error',
-    bodyLimit({ maxSize: 24 * 1024, onError: (c) => c.json({ error: 'Request body is too large', code: 'VALIDATION_ERROR' }, 413) }),
-    perServer,
+    onlyWhenEnabled,
     perAddress,
     perSession,
+    perServer,
+    bodyLimit({ maxSize: 24 * 1024, onError: (c) => c.json({ error: 'Request body is too large', code: 'VALIDATION_ERROR' }, 413) }),
     async (c) => {
-      c.header('Cache-Control', 'no-store');
-      if (!isErrorTelemetryEnabled()) return c.json({ enabled: false });
       const parsed = clientErrorSchema.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
       const report = parsed.data;

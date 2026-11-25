@@ -9,6 +9,7 @@
 import type { Context, MiddlewareHandler } from 'hono';
 import { captureErrorResponse, captureRequestError } from './error-reporter.js';
 import { answeringRouteTemplate } from './route-templates.js';
+import { rememberIssuedReference } from './scrub.js';
 
 declare module 'hono' {
   interface ContextVariableMap {
@@ -18,6 +19,8 @@ declare module 'hono' {
 
 export function captureUnhandledRequestError(c: Context, error: unknown, reference: string): void {
   try {
+    // Only references the cell really issued may later travel as request IDs (scrub.ts).
+    rememberIssuedReference(reference);
     captureRequestError(error, { route: answeringRouteTemplate(c), method: c.req.method, status: 500, requestId: reference });
     c.set('telemetryCaptured', true);
   } catch {

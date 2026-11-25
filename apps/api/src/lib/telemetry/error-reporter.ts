@@ -5,13 +5,16 @@
  * background jobs, uncaught process errors, and browser errors the web app
  * reports to its own cell (routes/telemetry.ts). Each is scrubbed here
  * (scrub.ts) the moment it is captured, and once more just before sending.
+ * A message leaves only when the JavaScript engine or the browser wrote it;
+ * otherwise an event carries a system or database error code, or no message.
  *
  * Events are aggregated in memory by fingerprint. At most one batch leaves
- * per minute: at most 50 events and 64 KB, to
- * `<control plane>/v1/cells/telemetry/errors`, authenticated like the seat
- * statement fetch. Sending is fire-and-forget with a short timeout. It never
- * blocks a request or a job, and is never retried: a failed batch is dropped
- * and counted, and repeated failures (or a 429) pause sending for a while.
+ * per 60 seconds, the last one before a fatal exit included: at most 50
+ * events and 64 KB, to `<control plane>/v1/cells/telemetry/errors`,
+ * authenticated like the seat statement fetch. Server and job errors go
+ * first; browser reports fill what is left. Sending is fire-and-forget with a
+ * short timeout. It never blocks a request or a job, and is never retried: a
+ * failed batch is dropped and counted, and failures (or a 429) pause sending.
  *
  * Off unless the cell is hosted and has its control-plane settings
  * (settings.ts); off on a paused start; off with DEFT_TELEMETRY=off.
@@ -19,11 +22,15 @@
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { isPausedStart } from '../paused-start.js';
+import { corsAllowedWebOrigins } from '../web-origins.js';
 import {
+  browserErrorClass,
   containsKnownValue,
+  eventMessage,
   fingerprint,
   knownValuesPattern,
   parseStack,
+  releaseLabel,
   scrubErrorClass,
   scrubFunctionName,
   scrubMessage,
@@ -55,9 +62,14 @@ export type TelemetryEvent = {
   count: number;
 };
 
-export const FLUSH_INTERVAL_MS = 60_000;
+/** The contract's floor between two batches. */
+export const MIN_BATCH_GAP_MS = 60_000;
+/** The timer runs a little slower than the floor, so timer drift never skips a batch. */
+export const FLUSH_INTERVAL_MS = 61_000;
 export const BATCH_MAX_EVENTS = 50;
 export const BATCH_MAX_BYTES = 64 * 1024;
+/** Batch places browser reports may take; the rest are kept for server and job errors. */
+export const BATCH_MAX_CLIENT_EVENTS = 25;
 /** Distinct fingerprints held between batches; new ones beyond this are dropped and counted. */
 export const BUFFER_MAX_FINGERPRINTS = 200;
 /**
@@ -97,6 +109,15 @@ async function defaultKnownValues(): Promise<string[]> {
   ];
 }
 
+/** The web app's own addresses: browser frames from anywhere else are dropped. */
+function defaultWebOrigins(): string[] {
+  const origins: string[] = [];
+  for (const value of corsAllowedWebOrigins()) {
+    try { origins.push(new URL(value).origin); } catch { /* not an address */ }
+  }
+  return origins;
+}
+
 /** Test seams. */
 export const errorReporterDeps = {
   fetch: (input: string, init: RequestInit): Promise<Response> => fetch(input, init),
@@ -104,6 +125,7 @@ export const errorReporterDeps = {
   env: process.env as NodeJS.ProcessEnv,
   release: defaultRelease,
   knownValues: defaultKnownValues,
+  webOrigins: defaultWebOrigins,
   isPaused: (): boolean => isPausedStart(),
 };
 
@@ -128,6 +150,7 @@ const counters: TelemetryCounters = {
 const buffer = new Map<string, TelemetryEvent>();
 let timer: ReturnType<typeof setInterval> | null = null;
 let inFlight: Promise<void> | null = null;
+let lastSendAt = -Infinity;
 let pausedUntil = 0;
 let consecutiveFailures = 0;
 let known: { pattern: KnownValues | null; loadedAt: number } = { pattern: null, loadedAt: -Infinity };
@@ -144,7 +167,11 @@ function target(): ControlPlaneTarget | null {
 
 /** True when this cell sends error events. */
 export function isErrorTelemetryEnabled(): boolean {
-  return target() !== null;
+  try {
+    return target() !== null;
+  } catch {
+    return false;
+  }
 }
 
 function refreshKnownValues(force = false): Promise<void> {
@@ -171,78 +198,13 @@ function ensureTimer(): void {
   void refreshKnownValues();
 }
 
-type CaptureInput = {
-  kind: TelemetryKind;
-  errorClass: unknown;
-  message: unknown;
-  stack?: unknown;
-  route?: unknown;
-  method?: unknown;
-  status?: unknown;
-  job?: unknown;
-  requestIds?: unknown;
-};
+type ErrorParts = { errorClass: unknown; message: unknown; stack: unknown; code: unknown };
 
-function firstLine(message: unknown): string {
-  const text = typeof message === 'string' ? message : '';
-  // A database driver's message ends with the query's parameters: customer data.
-  const cut = text.search(/\bparams:|\bparameters:|\bdetail:/i);
-  return (cut >= 0 ? text.slice(0, cut) : text).split('\n', 1)[0] ?? '';
-}
-
-function jobName(raw: unknown): string | null {
-  return typeof raw === 'string' && /^[a-z0-9][a-z0-9:_.-]{0,79}$/i.test(raw) ? raw : null;
-}
-
-function record(input: CaptureInput): void {
+/** What an event may use of a thrown value. Never throws: a hostile getter yields nothing. */
+function errorParts(error: unknown): ErrorParts {
+  const parts: ErrorParts = { errorClass: 'NonErrorThrown', message: '', stack: undefined, code: undefined };
   try {
-    if (!target()) return;
-    ensureTimer();
-    counters.captured += 1;
-    const pattern = known.pattern;
-    const errorClass = scrubErrorClass(input.errorClass, pattern);
-    const frames = parseStack(input.stack, input.kind === 'client' ? null : APP_ROOT, pattern);
-    const route = scrubRouteTemplate(input.route);
-    const method = scrubMethod(input.method);
-    const fallback = input.kind === 'job' ? `job:${jobName(input.job) ?? ''}` : `${method ?? ''} ${route ?? ''}`;
-    const print = fingerprint(input.kind, errorClass, frames, fallback);
-    const at = new Date(errorReporterDeps.now()).toISOString();
-    const requestIds = scrubRequestIds(input.requestIds);
-    const existing = buffer.get(print);
-    if (existing) {
-      existing.count += 1;
-      existing.last_seen_at = at;
-      existing.message = scrubMessage(firstLine(input.message), pattern);
-      existing.request_ids = [...existing.request_ids.filter((id) => !requestIds.includes(id)), ...requestIds].slice(-10);
-      return;
-    }
-    const clientHeld = input.kind === 'client' ? [...buffer.values()].filter((event) => event.kind === 'client').length : 0;
-    if (buffer.size >= BUFFER_MAX_FINGERPRINTS || clientHeld >= BUFFER_MAX_CLIENT_FINGERPRINTS) {
-      counters.dropped_buffer_full += 1;
-      return;
-    }
-    buffer.set(print, {
-      kind: input.kind,
-      fingerprint: print,
-      error_class: errorClass,
-      message: scrubMessage(firstLine(input.message), pattern),
-      frames,
-      route,
-      method,
-      status: scrubStatus(input.status),
-      job: input.kind === 'job' ? jobName(input.job) : null,
-      request_ids: requestIds,
-      first_seen_at: at,
-      last_seen_at: at,
-      count: 1,
-    });
-  } catch {
-    // Telemetry never gets in the way.
-  }
-}
-
-function errorParts(error: unknown): { errorClass: string; message: string; stack: string | undefined } {
-  if (error instanceof Error) {
+    if (!(error instanceof Error)) return parts;
     const message = typeof error.message === 'string' ? error.message : '';
     let stack = typeof error.stack === 'string' ? error.stack : undefined;
     // The stack's first lines repeat the message: parse only the frames after it.
@@ -250,44 +212,121 @@ function errorParts(error: unknown): { errorClass: string; message: string; stac
       const at = stack.indexOf(message);
       if (at >= 0) stack = stack.slice(at + message.length);
     }
-    return { errorClass: error.name || error.constructor?.name || 'Error', message, stack };
+    const own = (error as { code?: unknown }).code;
+    const cause = (error as { cause?: unknown }).cause;
+    const causeCode = cause && typeof cause === 'object' ? (cause as { code?: unknown }).code : undefined;
+    return { errorClass: error.name || error.constructor?.name || 'Error', message, stack, code: typeof own === 'string' ? own : causeCode };
+  } catch {
+    return parts;
   }
-  return { errorClass: 'NonErrorThrown', message: '', stack: undefined };
+}
+
+type CaptureInput = ErrorParts & {
+  kind: TelemetryKind;
+  route?: unknown;
+  method?: unknown;
+  status?: unknown;
+  job?: unknown;
+  requestIds?: unknown;
+};
+
+function jobName(raw: unknown): string | null {
+  return typeof raw === 'string' && /^[a-z0-9][a-z0-9:_.-]{0,79}$/i.test(raw) ? raw : null;
+}
+
+function countKind(kind: TelemetryKind): number {
+  let n = 0;
+  for (const event of buffer.values()) if (event.kind === kind) n += 1;
+  return n;
+}
+
+function record(input: CaptureInput): void {
+  ensureTimer();
+  counters.captured += 1;
+  const pattern = known.pattern;
+  const browser = input.kind === 'client';
+  const errorClass = browser ? browserErrorClass(input.errorClass) : scrubErrorClass(input.errorClass, pattern);
+  const message = eventMessage({ message: input.message, code: input.code }, pattern);
+  const frames = parseStack(input.stack, browser ? { webOrigins: errorReporterDeps.webOrigins() } : { appRoot: APP_ROOT }, pattern);
+  const route = scrubRouteTemplate(input.route);
+  const method = scrubMethod(input.method);
+  const fallback = input.kind === 'job' ? `job:${jobName(input.job) ?? ''}` : `${method ?? ''} ${route ?? ''}`;
+  const print = fingerprint(input.kind, errorClass, frames, fallback);
+  const at = new Date(errorReporterDeps.now()).toISOString();
+  const requestIds = scrubRequestIds(input.requestIds, errorReporterDeps.now());
+  const existing = buffer.get(print);
+  if (existing) {
+    existing.count += 1;
+    existing.last_seen_at = at;
+    existing.message = message;
+    existing.request_ids = [...existing.request_ids.filter((id) => !requestIds.includes(id)), ...requestIds].slice(-10);
+    return;
+  }
+  if (buffer.size >= BUFFER_MAX_FINGERPRINTS || (browser && countKind('client') >= BUFFER_MAX_CLIENT_FINGERPRINTS)) {
+    counters.dropped_buffer_full += 1;
+    return;
+  }
+  buffer.set(print, {
+    kind: input.kind,
+    fingerprint: print,
+    error_class: errorClass,
+    message,
+    frames,
+    route,
+    method,
+    status: scrubStatus(input.status),
+    job: input.kind === 'job' ? jobName(input.job) : null,
+    request_ids: requestIds,
+    first_seen_at: at,
+    last_seen_at: at,
+    count: 1,
+  });
+}
+
+/** Every capture: off unless enabled, and nothing it meets can make it throw. */
+function capture(build: () => CaptureInput): void {
+  try {
+    if (!target()) return;
+    record(build());
+  } catch {
+    // Telemetry never gets in the way.
+  }
 }
 
 /** An exception thrown while answering a request. */
 export function captureRequestError(error: unknown, context: { route: string | null; method: string; status: number; requestId?: string }): void {
-  const parts = errorParts(error);
-  record({
+  capture(() => ({
     kind: 'server',
-    ...parts,
+    ...errorParts(error),
     route: context.route,
     method: context.method,
     status: context.status,
     requestIds: context.requestId ? [context.requestId] : [],
-  });
+  }));
 }
 
 /** A 5xx response that was not an exception (a route caught its own error). */
 export function captureErrorResponse(context: { route: string | null; method: string; status: number }): void {
-  record({
+  capture(() => ({
     kind: 'server',
     errorClass: `HttpStatus${scrubStatus(context.status) ?? 500}`,
     message: '',
+    stack: undefined,
+    code: undefined,
     route: context.route,
     method: context.method,
     status: context.status,
-  });
+  }));
 }
 
 /** A background job attempt that failed. */
 export function captureJobError(job: string, error: unknown): void {
-  record({ kind: 'job', ...errorParts(error), job });
+  capture(() => ({ kind: 'job', ...errorParts(error), job }));
 }
 
 /** An uncaught exception or unhandled rejection: the process is about to exit. */
 export function captureProcessError(error: unknown): void {
-  record({ kind: 'server', ...errorParts(error) });
+  capture(() => ({ kind: 'server', ...errorParts(error) }));
 }
 
 /** A browser error the web app reported to its own cell. Every field is untrusted. */
@@ -300,7 +339,7 @@ export function captureClientError(input: {
   status?: unknown;
   requestIds?: unknown;
 }): void {
-  record({ kind: 'client', ...input });
+  capture(() => ({ kind: 'client', code: undefined, ...input }));
 }
 
 function pause(ms: number): void {
@@ -312,12 +351,40 @@ function rescrub(event: TelemetryEvent, pattern: KnownValues | null): TelemetryE
   if (!pattern) return event;
   return {
     ...event,
-    error_class: scrubErrorClass(event.error_class, pattern),
+    error_class: event.kind === 'client' ? event.error_class : scrubErrorClass(event.error_class, pattern),
     message: scrubMessage(event.message, pattern),
     frames: event.frames
       .filter((frame) => !containsKnownValue(frame.file, pattern))
-      .map((frame) => ({ ...frame, fn: scrubFunctionName(frame.fn, pattern) })),
+      .map((frame) => ({ ...frame, fn: event.kind === 'client' ? frame.fn : scrubFunctionName(frame.fn, pattern) })),
   };
+}
+
+/**
+ * This batch: server and job errors first, then browser reports (at most
+ * 25), oldest first within each, up to 50 events and 64 KB. What does not
+ * fit stays for the next batch.
+ */
+function selectBatch(header: { cell_id: string; release: string }, pattern: KnownValues | null): TelemetryEvent[] {
+  const byAge = (a: TelemetryEvent, b: TelemetryEvent) => a.first_seen_at.localeCompare(b.first_seen_at);
+  const ordered = [
+    ...[...buffer.values()].filter((event) => event.kind !== 'client').sort(byAge),
+    ...[...buffer.values()].filter((event) => event.kind === 'client').sort(byAge),
+  ];
+  const chosen: TelemetryEvent[] = [];
+  let bytes = Buffer.byteLength(JSON.stringify({ ...header, events: [] }));
+  let clients = 0;
+  for (const event of ordered) {
+    if (chosen.length >= BATCH_MAX_EVENTS) break;
+    if (event.kind === 'client' && clients >= BATCH_MAX_CLIENT_EVENTS) continue;
+    const ready = rescrub(event, pattern);
+    const size = Buffer.byteLength(JSON.stringify(ready)) + 1;
+    if (bytes + size > BATCH_MAX_BYTES) continue;
+    bytes += size;
+    if (event.kind === 'client') clients += 1;
+    chosen.push(ready);
+    buffer.delete(event.fingerprint);
+  }
+  return chosen;
 }
 
 async function sendOnce(): Promise<void> {
@@ -326,55 +393,49 @@ async function sendOnce(): Promise<void> {
     buffer.clear();
     return;
   }
-  if (buffer.size === 0 || errorReporterDeps.now() < pausedUntil) return;
-  const taken = [...buffer.values()]
-    .sort((a, b) => a.first_seen_at.localeCompare(b.first_seen_at))
-    .slice(0, BATCH_MAX_EVENTS);
-  for (const event of taken) buffer.delete(event.fingerprint);
+  const now = errorReporterDeps.now();
+  // At most one batch per 60 seconds, whoever asks (the timer or a fatal exit).
+  if (buffer.size === 0 || now < pausedUntil || now - lastSendAt < MIN_BATCH_GAP_MS) return;
+  lastSendAt = now;
 
   await refreshKnownValues();
-  const events = taken.map((event) => rescrub(event, known.pattern));
-  const release = await errorReporterDeps.release().catch(() => 'unknown');
-  const body = { cell_id: destination.cellId, release, events };
-  let serialized = JSON.stringify(body);
-  while (Buffer.byteLength(serialized) > BATCH_MAX_BYTES && body.events.length > 0) {
-    body.events.pop();
-    counters.events_dropped += 1;
-    serialized = JSON.stringify(body);
-  }
-  if (body.events.length === 0) return;
+  const header = { cell_id: destination.cellId, release: releaseLabel(await errorReporterDeps.release().catch(() => 'unknown')) };
+  const events = selectBatch(header, known.pattern);
+  if (events.length === 0) return;
+  const body = JSON.stringify({ ...header, events });
 
   try {
     const res = await errorReporterDeps.fetch(`${destination.baseUrl}/v1/cells/telemetry/errors`, {
       method: 'POST',
       headers: { authorization: `Bearer ${destination.token}`, 'content-type': 'application/json' },
-      body: serialized,
+      body,
       redirect: 'error',
       signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
     });
     await res.body?.cancel().catch(() => undefined);
     if (res.ok) {
       counters.batches_sent += 1;
-      counters.events_sent += body.events.length;
+      counters.events_sent += events.length;
       consecutiveFailures = 0;
       return;
     }
     counters.batches_failed += 1;
-    counters.events_dropped += body.events.length;
+    counters.events_dropped += events.length;
     consecutiveFailures += 1;
     if (res.status === 429) pause(PAUSE_AFTER_REFUSAL_MS);
-    else pause(FLUSH_INTERVAL_MS * 2 ** Math.min(consecutiveFailures - 1, 5));
+    else pause(MIN_BATCH_GAP_MS * 2 ** Math.min(consecutiveFailures - 1, 5));
   } catch {
     counters.batches_failed += 1;
-    counters.events_dropped += body.events.length;
+    counters.events_dropped += events.length;
     consecutiveFailures += 1;
-    pause(FLUSH_INTERVAL_MS * 2 ** Math.min(consecutiveFailures - 1, 5));
+    pause(MIN_BATCH_GAP_MS * 2 ** Math.min(consecutiveFailures - 1, 5));
   }
 }
 
 /**
- * Send one batch now. The minute timer is the only regular caller, so at
- * most one batch leaves per minute; concurrent calls share one send.
+ * Send one batch now, if 60 seconds have passed since the last one and no
+ * pause is on. The minute timer is the regular caller; concurrent calls
+ * share one send.
  */
 export function flushErrorTelemetry(): Promise<void> {
   if (!inFlight) {
@@ -383,10 +444,12 @@ export function flushErrorTelemetry(): Promise<void> {
   return inFlight;
 }
 
-/** Before a fatal exit: one last batch, waiting at most `timeoutMs`. */
+/**
+ * Before a fatal exit: one last batch, under the same 60-second floor and
+ * pauses as any other, waiting at most `timeoutMs`.
+ */
 export async function flushErrorTelemetryBeforeExit(timeoutMs = 2_000): Promise<void> {
   if (buffer.size === 0 && !inFlight) return;
-  pausedUntil = 0;
   let timeout: ReturnType<typeof setTimeout> | undefined;
   await Promise.race([
     flushErrorTelemetry(),
@@ -406,12 +469,18 @@ export function resetErrorTelemetryForTest(): void {
   if (timer) clearInterval(timer);
   timer = null;
   inFlight = null;
+  lastSendAt = -Infinity;
   pausedUntil = 0;
   consecutiveFailures = 0;
   known = { pattern: null, loadedAt: -Infinity };
   knownLoading = null;
   cachedTarget = null;
   for (const key of Object.keys(counters) as (keyof TelemetryCounters)[]) counters[key] = 0;
+}
+
+/** Test helper: allow the next flush now, as if a minute had passed. */
+export function allowNextBatchForTest(): void {
+  lastSendAt = -Infinity;
 }
 
 /** Test helper: what is waiting to be sent. */

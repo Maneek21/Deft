@@ -10,17 +10,20 @@
  * accept invites). Nothing else: no names, email addresses, workspace names,
  * counts, addresses or content. No authentication.
  *
- * `install_id` is a UUID v4 made once per install and kept with it: it is
- * computed from the install's workspace row (the first workspace's own
- * random ID, hashed with a fixed label), so it needs no table of its own,
- * survives restarts and upgrades, moves with a database backup, and cannot
- * be turned back into the workspace ID.
+ * `install_id` is a UUID v4 made once per install and kept with it: an
+ * HMAC-SHA256, keyed with the install's own secret ENCRYPTION_KEY (which never
+ * leaves the server and cannot be changed without losing stored credentials),
+ * of the first workspace's random ID. So it needs no table of its own,
+ * survives restarts and upgrades, and moves with a backup; and nobody without
+ * the server's key, the Deft project included, can compute it from a
+ * workspace ID or turn it back into one.
  *
  * Never sent in hosted mode, on a paused start, or with DEFT_TELEMETRY=off.
  * Fire-and-forget: a short timeout, no retry; a failure is dropped and counted.
  */
-import { createHash } from 'node:crypto';
+import { createHmac } from 'node:crypto';
 import { isPausedStart } from '../paused-start.js';
+import { releaseLabel } from './scrub.js';
 import { isInstallPingEnabled } from './settings.js';
 
 export const INSTALL_PING_URL = 'https://get.deft.ing/v1/installs/ping';
@@ -29,9 +32,9 @@ const MAX_BODY_BYTES = 1024;
 
 export type InstallEvent = 'installed' | 'person_added';
 
-/** UUID v4 layout (version and variant bits set) from a hash of the workspace's ID. */
-export function installIdFromWorkspaceId(workspaceId: string): string {
-  const bytes = createHash('sha256').update(`deft-install-id-v1\n${workspaceId}`).digest().subarray(0, 16);
+/** UUID v4 layout (version and variant bits set) from an HMAC of the workspace's ID under the install's secret. */
+export function installIdFromWorkspaceId(workspaceId: string, installSecret: string): string {
+  const bytes = createHmac('sha256', installSecret).update(`deft-install-id-v1\n${workspaceId}`).digest().subarray(0, 16);
   bytes[6] = (bytes[6]! & 0x0f) | 0x40;
   bytes[8] = (bytes[8]! & 0x3f) | 0x80;
   const hex = bytes.toString('hex');
@@ -60,6 +63,8 @@ export const installPingDeps = {
   env: process.env as NodeJS.ProcessEnv,
   firstWorkspaceId: defaultFirstWorkspaceId,
   version: defaultVersion,
+  /** The install's own secret key (env.ts validates it in production). */
+  installSecret: async (): Promise<string> => (await import('../env.js')).env.ENCRYPTION_KEY,
   isPaused: (): boolean => isPausedStart(),
 };
 
@@ -88,10 +93,12 @@ export async function sendInstallPing(event: InstallEvent, workspaceId?: string)
     if (!isInstallPingOn()) return;
     const id = workspaceId ?? await installPingDeps.firstWorkspaceId();
     if (!id) return;
+    const secret = await installPingDeps.installSecret();
+    if (!secret) return;
     const body = JSON.stringify({
-      install_id: installIdFromWorkspaceId(id),
+      install_id: installIdFromWorkspaceId(id, secret),
       event,
-      version: await installPingDeps.version(),
+      version: releaseLabel(await installPingDeps.version()),
       sent_at: new Date(installPingDeps.now()).toISOString(),
     });
     if (Buffer.byteLength(body) > MAX_BODY_BYTES) return;

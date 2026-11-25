@@ -18,8 +18,9 @@ For self-hosters:
   first owner creates the workspace and each time someone accepts an invite. It carries
   four fields: an install ID, the event (`installed` or `person_added`), the Deft
   version and the time. No names, email addresses, workspace names, content or counts.
-  The install ID is a one-way hash of the workspace's own database ID, so no table is
-  added. Only production builds send it (`NODE_ENV=production`, as the Docker image
+  The install ID is a keyed hash of the workspace's own database ID under the server's
+  `ENCRYPTION_KEY`, so no table is added and nobody without that key can compute it.
+  Only production builds send it (`NODE_ENV=production`, as the Docker image
   is), with one attempt and a five-second limit; it never delays signup or an invite.
 - **To turn it off,** add `DEFT_TELEMETRY=off` to `.env` and restart. The setup screen
   says this in one line while the ping is on. Details: `docs/self-hosting.md`,
@@ -32,10 +33,14 @@ For self-hosters:
 For the hosted service (`DEFT_HOSTED=true` with the seat-statement settings):
 
 - Unhandled request errors, other 5xx answers, failed background jobs, uncaught
-  process errors and browser errors are scrubbed in the cell (no message text,
-  addresses, names, keys, tokens, links, file names, query strings or bodies; frames are
-  file, line and function only; routes are templates) and sent to the control plane at
-  most once a minute, grouped by fingerprint (at most 50 events and 64 KB a batch), with
+  process errors and browser errors are scrubbed in the cell and sent to the control
+  plane. A message leaves only when the JavaScript engine or the browser wrote it (then
+  with quoted text, addresses, links, keys, tokens, file names, numbers and the
+  workspace's and people's names removed); otherwise only a system or database error
+  code, or nothing. Frames are file, line and function only (browser frames: the web
+  app's own bundles, no function names); routes are templates; request IDs are only
+  error references the cell issued. At most one batch a minute, a fatal exit included,
+  grouped by fingerprint (at most 50 events and 64 KB, server and job errors first), with
   the seat fetch token. A failed batch is dropped and counted, never retried, and
   sending pauses after failures or a 429. `DEFT_TELEMETRY=off` stops these too.
 - "Report a problem" in the user menu, for everyone signed in (guests included): the

@@ -38,9 +38,11 @@ async function harness(): Promise<string> {
   const api = path.join(web, 'src/lib/api.ts');
   const bundle = await build({
     stdin: {
-      contents: `import { installErrorTelemetry, recentErrorReferences } from ${JSON.stringify(telemetry)};
+      contents: `import { installErrorTelemetry, recentErrorReferences, setCurrentPageTemplate, pageTemplateFor } from ${JSON.stringify(telemetry)};
 import { api } from ${JSON.stringify(api)};
 installErrorTelemetry();
+// As the root layout does: the route template from the path and the router's params.
+setCurrentPageTemplate(pageTemplateFor(window.location.pathname, { space: 'space-secret-42' }));
 window.__violations = [];
 document.addEventListener('securitypolicyviolation', (e) => window.__violations.push(e.violatedDirective + ' ' + e.blockedURI));
 window.__throw = () => setTimeout(() => { throw new TypeError('Cannot read properties of undefined'); }, 0);
@@ -76,7 +78,7 @@ async function run(enabled: boolean) {
     await tab.route('**/*', async (route: any) => {
       const url = new URL(route.request().url());
       if (url.origin !== ORIGIN) return route.abort();
-      if (url.pathname === '/harness') {
+      if (url.pathname === '/harness/space-secret-42') {
         return route.fulfill({ contentType: 'text/html', headers, body: '<!doctype html><title>harness</title>' });
       }
       if (url.pathname === '/api/telemetry/client-error') {
@@ -93,7 +95,7 @@ async function run(enabled: boolean) {
       return route.abort();
     });
     // The address carries a query and a link token after "#": neither may be reported.
-    await tab.goto(`${ORIGIN}/harness?space=secret-space#setup=SECRETTOKEN123`);
+    await tab.goto(`${ORIGIN}/harness/space-secret-42?space=secret-space#setup=SECRETTOKEN123`);
     await tab.addScriptTag({ content: script });
     await tab.waitForFunction(() => (window as any).__ready === true);
 
@@ -125,11 +127,11 @@ test('a thrown error, a rejection and a failed API call reach the cell route, an
   assert.equal(rejected!.type, 'rejection');
   assert.equal(rejected!.error_class, 'RangeError');
   assert.deepEqual(failed, {
-    type: 'api', method: 'GET', api_path: '/api/spaces/space-123/messages', status: 500, request_id: REFERENCE, page: '/harness',
+    type: 'api', method: 'GET', api_path: '/api/spaces/space-123/messages', status: 500, request_id: REFERENCE, page: '/harness/:space',
   });
   for (const report of seen.reports) {
-    assert.equal(report.page, '/harness', 'the page path only: no query, no fragment');
-    assert.doesNotMatch(JSON.stringify(report), /SECRETTOKEN123|secret-space|launch/);
+    assert.equal(report.page, '/harness/:space', 'the route template only: no param value, query or fragment');
+    assert.doesNotMatch(JSON.stringify(report), /SECRETTOKEN123|secret-space|space-secret-42|launch/);
   }
   // "Report a problem" can quote the server's reference for the failed call.
   assert.deepEqual(seen.references, [REFERENCE]);

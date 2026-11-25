@@ -13,7 +13,7 @@ import { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import { AppDialog } from './overlay-primitives';
 import { api } from '@/lib/api';
-import { recentErrorReferences } from '@/lib/error-telemetry';
+import { currentPageTemplate, recentErrorReferences } from '@/lib/error-telemetry';
 
 export type SupportConfig = { report: boolean; contact_email: string | null };
 
@@ -80,7 +80,8 @@ export function ReportProblemDialog({ open, onClose }: { open: boolean; onClose:
         category,
         text,
         email_me: emailMe,
-        page: window.location.pathname,
+        // The route template ("/tasks/:id"), never the address.
+        ...(currentPageTemplate() ? { page: currentPageTemplate() } : {}),
         request_ids: recentErrorReferences(),
       });
       const body = await res.json().catch(() => ({})) as { reference?: string; error?: string };

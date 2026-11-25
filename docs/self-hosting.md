@@ -805,9 +805,11 @@ exactly four fields:
 ```
 
 - `install_id` is a random-looking ID (UUID v4) that stays the same for your
-  install. It is computed from your workspace's own random database ID with
-  a one-way hash, so it cannot be turned back into that ID, and it needs no
-  extra table: a restored backup keeps it.
+  install. It is a keyed hash (HMAC-SHA256) of your workspace's own random
+  database ID under your server's `ENCRYPTION_KEY`, which never leaves your
+  server. Nobody without that key, the Deft project included, can compute it
+  from your workspace ID or turn it back into one. It needs no extra table: a
+  restored backup with the same `ENCRYPTION_KEY` keeps it.
 - `event` is `installed` once, when the first owner finishes creating the
   workspace, or `person_added` each time someone accepts an invite and joins
   (guests too; agents never send one).

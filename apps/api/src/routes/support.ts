@@ -36,7 +36,8 @@ import {
 const reportSchema = z.object({
   category: z.enum(REPORT_CATEGORIES),
   text: z.string().max(REPORT_TEXT_MAX + 200),
-  email_me: z.boolean().default(true),
+  // Must be given: the reporter's address leaves only when they said so.
+  email_me: z.boolean(),
   page: z.string().max(2048).optional(),
   request_ids: z.array(z.string().max(64)).max(20).optional(),
 });

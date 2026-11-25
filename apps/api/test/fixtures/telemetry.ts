@@ -4,6 +4,10 @@
  */
 import { setApiRouteTemplates } from '../../src/lib/telemetry/route-templates.js';
 import { errorReporterDeps, resetErrorTelemetryForTest } from '../../src/lib/telemetry/error-reporter.js';
+import { forgetIssuedReferencesForTest } from '../../src/lib/telemetry/scrub.js';
+
+/** The hosted cell's own web address in these tests. */
+export const WEB_ORIGIN = 'https://cell.test.invalid';
 
 export const CONTROL_PLANE = 'https://control.test.invalid';
 export const CELL_ID = 'cell-telemetry-test';
@@ -39,8 +43,9 @@ export function recordingFetch(status: number | 'throw' | (() => number | 'throw
 const originalReporterDeps = { ...errorReporterDeps };
 
 /** Point the error reporter at a test environment and a recording network. */
-export function useErrorReporter(env: NodeJS.ProcessEnv, options: { status?: Parameters<typeof recordingFetch>[0]; known?: string[]; now?: () => number } = {}) {
+export function useErrorReporter(env: NodeJS.ProcessEnv, options: { status?: Parameters<typeof recordingFetch>[0]; known?: string[]; now?: () => number; webOrigins?: string[] } = {}) {
   resetErrorTelemetryForTest();
+  forgetIssuedReferencesForTest();
   const network = recordingFetch(options.status ?? 200);
   Object.assign(errorReporterDeps, {
     env,
@@ -49,6 +54,7 @@ export function useErrorReporter(env: NodeJS.ProcessEnv, options: { status?: Par
     knownValues: async () => options.known ?? [],
     isPaused: () => false,
     now: options.now ?? (() => Date.now()),
+    webOrigins: () => options.webOrigins ?? [WEB_ORIGIN],
   });
   return network;
 }

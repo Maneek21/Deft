@@ -76,7 +76,7 @@ test('install ping: once per event through signup and invite acceptance', { skip
   async function freshInstall(env: NodeJS.ProcessEnv) {
     await admin.query(`TRUNCATE ${TABLES.map((table) => `"${schema}".${table}`).join(', ')}`);
     const network = recordingFetch(202);
-    Object.assign(installPingDeps, { env, fetch: network.fetch, version: async () => '0.3.0-preview.152', isPaused: () => false });
+    Object.assign(installPingDeps, { env, fetch: network.fetch, version: async () => '0.3.0-preview.152', installSecret: async () => 'db-test-install-secret-0123456789abcdef', isPaused: () => false });
     return network;
   }
   /** The pings are not awaited by the routes: let the one in flight finish. */
@@ -134,7 +134,7 @@ test('install ping: once per event through signup and invite acceptance', { skip
 
     const workspaceId = first.body.org.id as string;
     const ids = new Set(network.sent.map((request) => (request.body as { install_id: string }).install_id));
-    assert.deepEqual([...ids], [installIdFromWorkspaceId(workspaceId)], 'one install, one install_id');
+    assert.deepEqual([...ids], [installIdFromWorkspaceId(workspaceId, 'db-test-install-secret-0123456789abcdef')], 'one install, one install_id');
     for (const request of network.sent) {
       assert.deepEqual(Object.keys(request.body as object).sort(), ['event', 'install_id', 'sent_at', 'version']);
       const wire = String(request.init.body);

@@ -11,6 +11,7 @@
  * Pure: no database, no network, no clock.
  */
 import { createHash } from 'node:crypto';
+import { webBundlePath } from './web-paths.js';
 
 export const MESSAGE_MAX = 300;
 export const ERROR_CLASS_MAX = 100;
@@ -177,6 +178,81 @@ function isCodeIdentifier(text: string, known: KnownValues | null): boolean {
   return !text.split('.').some((segment) => segment.length >= 24 && /\d/.test(segment) && /[A-Za-z]/.test(segment));
 }
 
+/** The classes a browser report may name (JavaScript, DOMException, a failed chunk load); any other becomes "Error". */
+const BROWSER_CLASSES = new Set([
+  'Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError', 'URIError', 'EvalError', 'ChunkLoadError',
+  'AbortError', 'TimeoutError', 'NetworkError', 'NotAllowedError', 'NotFoundError', 'NotSupportedError',
+  'NotReadableError', 'QuotaExceededError', 'SecurityError', 'InvalidStateError', 'InvalidAccessError',
+  'DataCloneError', 'OperationError', 'UnknownError', 'UnhandledRejection', 'ApiRequestFailed',
+]);
+
+/**
+ * Messages a JavaScript engine, Node or a browser writes, with only code
+ * expressions in the variable parts. A message that matches none of these
+ * was written by the app or a provider and never leaves the cell.
+ */
+const RUNTIME_MESSAGES: readonly RegExp[] = [
+  /^Cannot read properties of (?:undefined|null) \(reading .{1,120}\)$/,
+  /^Cannot set properties of (?:undefined|null) \(setting .{1,120}\)$/,
+  /^Cannot destructure property .{1,120} of .{1,120} as it is (?:undefined|null)\.?$/,
+  /^Cannot destructure .{1,120} as it is (?:undefined|null)\.?$/,
+  /^[\w$.[\]()?'"]{1,120} is not (?:a function|a constructor|iterable|defined)$/,
+  /^[\w$.[\]]{1,120} is (?:null|undefined)$/,
+  /^(?:undefined|null) is not an object \(evaluating .{1,160}\)$/,
+  /^can't access property .{1,120}, .{1,120} is (?:undefined|null)$/,
+  /^Cannot access .{1,120} before initialization$/,
+  /^Cannot convert (?:undefined or null|undefined|null) to object$/,
+  /^Cannot use 'in' operator to search for .{1,120} in .{1,120}$/,
+  /^Assignment to constant variable\.$/,
+  /^Maximum call stack size exceeded\.?$/,
+  /^too much recursion$/,
+  /^Invalid (?:array length|time value|Date|string length|URL|regular expression.{0,120}|character|code point .{1,20})$/,
+  /^Unexpected (?:token|end of JSON input|identifier|number|string|non-whitespace character)\b.{0,200}$/,
+  /^"[^"]{0,30}"(?:\.\.\.)? is not valid JSON$/,
+  /^Converting circular structure to JSON\b.{0,300}$/,
+  /^Do not know how to serialize a BigInt$/,
+  /^(?:Failed to fetch|Load failed|fetch failed|Network request failed|NetworkError when attempting to fetch resource\.)$/,
+  /^(?:The operation was aborted\.?|This operation was aborted|The user aborted a request\.?|signal is aborted without reason|The operation timed out\.?)$/,
+  /^Loading (?:CSS )?chunk \S{1,80} failed\b.{0,200}$/,
+  /^ResizeObserver loop .{1,80}$/,
+  /^Request failed with status code \d{3}$/,
+];
+
+/** True when the JavaScript engine, Node or a browser wrote this message. */
+export function isRuntimeMessage(line: string): boolean {
+  return line.length <= 400 && RUNTIME_MESSAGES.some((pattern) => pattern.test(line));
+}
+
+export function browserErrorClass(raw: unknown): string {
+  return typeof raw === 'string' && BROWSER_CLASSES.has(raw) ? raw : 'Error';
+}
+
+/** A Node system error code ("ECONNREFUSED", "ERR_STREAM_PREMATURE_CLOSE") or a Postgres SQLSTATE ("23505"). */
+export function systemErrorCode(raw: unknown): string | null {
+  return typeof raw === 'string' && /^(?:E[A-Z0-9_]{2,60}|[0-9A-Z]{5})$/.test(raw) ? raw : null;
+}
+
+/** The first line of a message, cut before a database driver's parameters. */
+export function firstLine(message: unknown): string {
+  const text = typeof message === 'string' ? message : '';
+  const cut = text.search(/\bparams:|\bparameters:|\bdetail:/i);
+  return (cut >= 0 ? text.slice(0, cut) : text).split('\n', 1)[0] ?? '';
+}
+
+/**
+ * The message an event may carry. Free text the app or a provider wrote can
+ * hold anything a person typed ("Could not save note: move the blue chair"),
+ * and no pattern can tell it from code, so it never leaves the cell. Only a
+ * message of a known runtime form (then scrubbed as well), or else a system
+ * or database error code, or nothing.
+ */
+export function eventMessage(input: { message: unknown; code?: unknown }, known: KnownValues | null = null): string {
+  const line = firstLine(input.message).replace(/^Uncaught (?:\(in promise\) )?(?:[A-Za-z]*Error: )?/, '').trim();
+  if (line && isRuntimeMessage(line)) return scrubMessage(line, known);
+  const code = systemErrorCode(input.code);
+  return code ? `code ${code}` : '';
+}
+
 /** A function name from a stack frame: a code identifier as it is, anything else under the message rules. */
 export function scrubFunctionName(raw: string, known: KnownValues | null = null): string {
   if (containsKnownValue(raw, known)) return P.name;
@@ -187,47 +263,45 @@ export function scrubFunctionName(raw: string, known: KnownValues | null = null)
 }
 
 const CODE_FILE = /\.(?:[cm]?[jt]sx?)$/;
-// The web app's own bundles, by path on the web app: folders, then one file
-// name with no dot but its ".js".
-const WEB_BUNDLE = /^_next\/static\/(?:[A-Za-z0-9_()[\]@-]+\/)*[A-Za-z0-9_-]+\.js$/;
+
+/**
+ * Where a stack comes from. The server's own stacks: frames under `appRoot`.
+ * A browser's: frames of the web app's own bundles, served from one of
+ * `webOrigins`; their function names are dropped (the browser is not
+ * trusted, and production bundles are minified anyway).
+ */
+export type StackSource = { appRoot: string; webOrigins?: undefined } | { appRoot?: undefined; webOrigins: readonly string[] };
 
 /**
  * A frame's file: a code file relative to the app root, a `node:` module, or
  * one of the web app's own bundles (its path only, never host or query).
- * Anything else is dropped: a frame never names a directory outside the app
- * or a file that is not code.
+ * Anything else is dropped: a frame never names a directory outside the app,
+ * a file that is not code, or another site's script.
  */
-export function scrubFramePath(raw: string, appRoot: string | null): string | null {
+export function scrubFramePath(raw: string, source: StackSource): string | null {
   let file = raw.trim();
   if (!file) return null;
+  if (source.webOrigins) {
+    // A browser frame: one of the web app's own bundles, from its own address.
+    let parsed: URL;
+    try { parsed = new URL(file); } catch { return null; }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    if (!source.webOrigins.includes(parsed.origin)) return null;
+    return webBundlePath(parsed.pathname);
+  }
   if (/^node:[A-Za-z0-9_/.:-]+$/.test(file)) return file.slice(0, FILE_MAX);
-  let web = false;
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(file)) {
     let parsed: URL;
     try { parsed = new URL(file); } catch { return null; }
-    if (parsed.protocol === 'file:') {
-      try { file = decodeURIComponent(parsed.pathname); } catch { return null; }
-      if (/^\/[A-Za-z]:\//.test(file)) file = file.slice(1);
-    } else if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
-      file = parsed.pathname.replace(/^\/+/, '');
-      web = true;
-    } else {
-      // Extensions, blob: and data: frames are not the app's code.
-      return null;
-    }
+    if (parsed.protocol !== 'file:') return null;
+    try { file = decodeURIComponent(parsed.pathname); } catch { return null; }
+    if (/^\/[A-Za-z]:\//.test(file)) file = file.slice(1);
   }
   file = file.replace(/\\/g, '/');
-  if (!web) {
-    if (!appRoot) return null;
-    const root = appRoot.replace(/\\/g, '/').replace(/\/+$/, '');
-    if (!file.toLowerCase().startsWith(`${root.toLowerCase()}/`)) return null;
-    file = file.slice(root.length + 1);
-    if (!CODE_FILE.test(file) || !/^[A-Za-z0-9_./@+-]+$/.test(file) || file.includes('..')) return null;
-  } else if (!WEB_BUNDLE.test(file) || file.includes('..')) {
-    return null;
-  }
-  // Content hashes vary per build; one placeholder keeps fingerprints stable.
-  file = file.replace(/[0-9a-fA-F]{16,}/g, '<hash>');
+  const root = source.appRoot.replace(/\\/g, '/').replace(/\/+$/, '');
+  if (!file.toLowerCase().startsWith(`${root.toLowerCase()}/`)) return null;
+  file = file.slice(root.length + 1);
+  if (!CODE_FILE.test(file) || !/^[A-Za-z0-9_./@+-]+$/.test(file) || file.includes('..')) return null;
   return file.slice(0, FILE_MAX);
 }
 
@@ -237,14 +311,14 @@ const V8_FRAME = /^\s*at (?:(.*?) \()?(.+?):(\d+):(\d+)\)?\s*$/;
 const GECKO_FRAME = /^\s*([^@\s]*)@(.+?):(\d+):(\d+)\s*$/;
 
 /** Parse a stack trace into file, line and function only (no locals, no text). */
-export function parseStack(stack: unknown, appRoot: string | null, known: KnownValues | null = null): TelemetryFrame[] {
+export function parseStack(stack: unknown, source: StackSource, known: KnownValues | null = null): TelemetryFrame[] {
   if (typeof stack !== 'string') return [];
   const frames: TelemetryFrame[] = [];
   for (const line of stack.slice(0, 16_000).split('\n')) {
     const match = V8_FRAME.exec(line) ?? GECKO_FRAME.exec(line);
     if (!match) continue;
     const [, fnRaw, fileRaw, lineRaw] = match;
-    const file = scrubFramePath(fileRaw ?? '', appRoot);
+    const file = scrubFramePath(fileRaw ?? '', source);
     if (!file || containsKnownValue(file, known)) continue;
     // V8 "at async fn (...)" and "at new Foo (...)".
     const fnName = (fnRaw ?? '').replace(/^(?:async|new) /, '');
@@ -252,7 +326,7 @@ export function parseStack(stack: unknown, appRoot: string | null, known: KnownV
     frames.push({
       file,
       line: Number.isFinite(lineNumber) && lineNumber >= 0 ? Math.min(lineNumber, 10_000_000) : 0,
-      fn: scrubFunctionName(fnName, known),
+      fn: source.webOrigins ? '<anonymous>' : scrubFunctionName(fnName, known),
     });
     if (frames.length >= FRAMES_MAX) break;
   }
@@ -283,12 +357,35 @@ export function isUuid(value: unknown): value is string {
   return typeof value === 'string' && UUID.test(value);
 }
 
-/** Request IDs are the cell's own error references: UUIDs only, at most ten. */
-export function scrubRequestIds(raw: unknown): string[] {
+/**
+ * The error references this cell has issued (X-Deft-Error-Reference) in the
+ * last hour, at most 2,000. A request ID leaves the cell only if it is one of
+ * them, so no other UUID (a workspace's, a person's) can pass as one.
+ */
+const ISSUED_TTL_MS = 60 * 60 * 1000;
+const ISSUED_MAX = 2_000;
+const issued = new Map<string, number>();
+
+export function rememberIssuedReference(reference: string, now = Date.now()): void {
+  if (!isUuid(reference)) return;
+  issued.delete(reference.toLowerCase());
+  issued.set(reference.toLowerCase(), now + ISSUED_TTL_MS);
+  while (issued.size > ISSUED_MAX) issued.delete(issued.keys().next().value!);
+}
+
+export function forgetIssuedReferencesForTest(): void {
+  issued.clear();
+}
+
+/** Request IDs: references this cell issued within the hour, at most ten. */
+export function scrubRequestIds(raw: unknown, now = Date.now()): string[] {
   if (!Array.isArray(raw)) return [];
   const ids: string[] = [];
   for (const value of raw) {
-    if (isUuid(value) && !ids.includes(value.toLowerCase())) ids.push(value.toLowerCase());
+    if (!isUuid(value)) continue;
+    const id = value.toLowerCase();
+    const expires = issued.get(id);
+    if (expires !== undefined && expires > now && !ids.includes(id)) ids.push(id);
     if (ids.length >= REQUEST_IDS_MAX) break;
   }
   return ids;
@@ -339,4 +436,13 @@ export function browserFamily(userAgent: string | undefined | null): string {
     ?? pick(/\bChrome\/(\d{1,4})\./, 'Chrome')
     ?? (/\bSafari\//.test(ua) ? pick(/\bVersion\/(\d{1,4})\./, 'Safari') : null)
     ?? 'Other';
+}
+
+/**
+ * The release, as sent: a plain version ("0.3.0-preview.152") or "unknown".
+ * DEFT_RELEASE_VERSION is an operator setting; a label put there for a
+ * customer never leaves the cell.
+ */
+export function releaseLabel(raw: unknown): string {
+  return typeof raw === 'string' && /^\d{1,4}\.\d{1,4}\.\d{1,6}(?:-[a-z]{1,16}\.\d{1,6})?$/.test(raw) ? raw : 'unknown';
 }

@@ -8,9 +8,11 @@
  * receives and, on the hosted service only, forwards it; any other server
  * answers `{ "enabled": false }` and this page stops reporting.
  *
- * Only the page's path is sent (never its query or fragment, which can hold
- * a link token). At most 5 reports a minute and 30 a page load, and the same
- * error once per page load.
+ * The page goes as its route template, with each dynamic segment replaced by
+ * its name ("/modules/:slug", never "/modules/billing"), and never its query
+ * or fragment (which can hold a link token). Until the router has said which
+ * route this is, no page is sent. At most 5 reports a minute and 30 a page
+ * load, and the same error once per page load.
  *
  * The server's error references (X-Deft-Error-Reference) from recent failed
  * calls are kept here, so "Report a problem" can include them.
@@ -46,6 +48,40 @@ const recentSends: number[] = [];
 const seen = new Set<string>();
 const references: string[] = [];
 
+let pageTemplate: string | null = null;
+
+/**
+ * The route template for a path and the router's params: each segment that
+ * is a param's value becomes ":name". "/modules/billing" with { slug:
+ * "billing" } is "/modules/:slug".
+ */
+export function pageTemplateFor(pathname: string, params: Record<string, string | string[] | undefined> | null | undefined): string {
+  const names = new Map<string, string>();
+  for (const [name, value] of Object.entries(params ?? {})) {
+    for (const item of Array.isArray(value) ? value : [value]) {
+      if (typeof item !== 'string' || !item) continue;
+      names.set(item, name);
+      try { names.set(encodeURIComponent(item), name); } catch { /* keep the plain form */ }
+    }
+  }
+  return `/${pathname.split(/[?#]/, 1)[0]!.split('/').slice(1).map((segment) => {
+    let decoded = segment;
+    try { decoded = decodeURIComponent(segment); } catch { /* keep as is */ }
+    const name = names.get(segment) ?? names.get(decoded);
+    return name ? `:${name.replace(/[^A-Za-z0-9_]/g, '')}` : segment;
+  }).join('/')}`;
+}
+
+/** Called by the root layout on each navigation with the current route template. */
+export function setCurrentPageTemplate(template: string | null): void {
+  pageTemplate = template;
+}
+
+/** The current page as a route template, or null before the router has said. */
+export function currentPageTemplate(): string | null {
+  return pageTemplate;
+}
+
 /** The server's error references from this page's recent failed calls, newest last. */
 export function recentErrorReferences(): string[] {
   return [...references];
@@ -75,7 +111,7 @@ function send(report: Report): void {
   if (seen.size < 200) seen.add(key);
   recentSends.push(now);
   total += 1;
-  const body = JSON.stringify({ ...report, page: window.location.pathname });
+  const body = JSON.stringify({ ...report, ...(pageTemplate ? { page: pageTemplate } : {}) });
   const token = accessToken();
   try {
     void fetch(`${API_URL}${CLIENT_ERROR_PATH}`, {
@@ -84,6 +120,8 @@ function send(report: Report): void {
       body,
       credentials: 'omit',
       cache: 'no-store',
+      // Only this workspace's own server: never followed anywhere else.
+      redirect: 'error',
       keepalive: body.length < 60_000,
     }).then(async (res) => {
       if (res.status === 429) {
@@ -161,4 +199,5 @@ export function resetErrorTelemetryForTest(): void {
   recentSends.length = 0;
   seen.clear();
   references.length = 0;
+  pageTemplate = null;
 }

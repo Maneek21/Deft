@@ -33,6 +33,7 @@ afterEach(() => {
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const WORKSPACE_ID = 'org_tz4a98xxat96iws9zmbrgj3a';
+const SECRET = 'install-secret-for-tests-0123456789abcdef';
 
 function useNetwork(env: NodeJS.ProcessEnv, status: number | 'throw' = 202) {
   const network = recordingFetch(status);
@@ -41,6 +42,7 @@ function useNetwork(env: NodeJS.ProcessEnv, status: number | 'throw' = 202) {
     fetch: network.fetch,
     firstWorkspaceId: async () => WORKSPACE_ID,
     version: async () => '0.3.0-preview.152',
+    installSecret: async () => SECRET,
     now: () => Date.parse('2026-11-25T10:00:00.000Z'),
     isPaused: () => false,
   });
@@ -61,7 +63,7 @@ test('a self-hosted production install sends exactly the four fields, anonymousl
     const headers = new Headers(request.init.headers);
     assert.deepEqual([...headers.keys()], ['content-type'], 'no authorization, no identifying headers');
     assert.deepEqual(request.body, {
-      install_id: installIdFromWorkspaceId(WORKSPACE_ID),
+      install_id: installIdFromWorkspaceId(WORKSPACE_ID, SECRET),
       event,
       version: '0.3.0-preview.152',
       sent_at: '2026-11-25T10:00:00.000Z',
@@ -71,11 +73,13 @@ test('a self-hosted production install sends exactly the four fields, anonymousl
   assert.deepEqual(installPingCounters(), { sent: 2, failed: 0 });
 });
 
-test('install_id is a UUID v4, stable per install, and does not reveal the workspace ID', () => {
-  const id = installIdFromWorkspaceId(WORKSPACE_ID);
+test('install_id is a UUID v4, stable per install, and needs the install key', () => {
+  const id = installIdFromWorkspaceId(WORKSPACE_ID, SECRET);
   assert.match(id, UUID_V4);
-  assert.equal(installIdFromWorkspaceId(WORKSPACE_ID), id, 'the same install, the same ID, after a restart');
-  assert.notEqual(installIdFromWorkspaceId('org_another_install_entirely0'), id);
+  assert.equal(installIdFromWorkspaceId(WORKSPACE_ID, SECRET), id, 'the same install, the same ID, after a restart');
+  assert.notEqual(installIdFromWorkspaceId('org_another_install_entirely0', SECRET), id);
+  // Knowing the workspace ID is not enough to compute it.
+  assert.notEqual(installIdFromWorkspaceId(WORKSPACE_ID, 'some-other-key-0123456789abcdef0123'), id);
   assert.ok(!id.replaceAll('-', '').includes(WORKSPACE_ID.replace(/[^0-9a-f]/g, '').slice(0, 8)));
 });
 
@@ -108,6 +112,13 @@ test('a failed ping is dropped and counted: one attempt, no retry, no error', as
     assert.equal(network.sent.length, 1, String(status));
     assert.deepEqual(installPingCounters(), { sent: 0, failed: 1 });
   }
+});
+
+test('a version that is not a plain release number is sent as unknown', async () => {
+  const network = useNetwork(SELF_HOSTED_ENV);
+  installPingDeps.version = async () => '0.3.0-acme-robotics-custom';
+  await sendInstallPing('person_added');
+  assert.equal((network.sent[0]!.body as { version: string }).version, 'unknown');
 });
 
 test('an install with no workspace yet sends nothing', async () => {

@@ -24,6 +24,8 @@ async function mount(answer: { status: number; body: unknown }) {
       contents: `import { createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ReportProblemDialog } from ${JSON.stringify(dialog)};
+import { setCurrentPageTemplate } from ${JSON.stringify(path.join(web, 'src/lib/error-telemetry.ts'))};
+setCurrentPageTemplate('/tasks/:id');
 createRoot(document.getElementById('root')).render(createElement(ReportProblemDialog, { open: true, onClose() {} }));`,
       resolveDir: web,
       loader: 'tsx',
@@ -67,7 +69,7 @@ test('the person reads the note, the box is ticked, and a sent report shows its 
     await tab.getByRole('button', { name: 'Send report' }).click();
     await tab.getByText('3F2B1C4D').waitFor();
     assert.deepEqual(sent, [{
-      category: 'confusing', text: 'The board does not show my tasks.', email_me: true, page: '/tasks/board', request_ids: [],
+      category: 'confusing', text: 'The board does not show my tasks.', email_me: true, page: '/tasks/:id', request_ids: [],
     }]);
   } finally {
     await browser.close();
