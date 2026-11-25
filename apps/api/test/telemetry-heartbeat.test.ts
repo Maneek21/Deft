@@ -150,3 +150,32 @@ test('a failed heartbeat is dropped and counted: one attempt, no retry, no error
   await assert.doesNotReject(sendHeartbeat());
   assert.equal(network.sent.length, 0);
 });
+
+test('a send still out when the heartbeat is stopped and restarted never leaves a stray timer', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const network = useHeartbeat(HOSTED_ENV, { random: 0 });
+  const settle = async () => { for (let i = 0; i < 10; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
+  let release!: (seats: number) => void;
+  heartbeatDeps.seatsUsed = () => new Promise<number>((resolve) => { release = resolve; });
+  startCellHeartbeat();
+  t.mock.timers.tick(FIRST_DELAY_MS.min);
+  await settle();
+  // The first send is out (waiting on the seat count). Stop, then start again.
+  stopCellHeartbeat();
+  startCellHeartbeat();
+  heartbeatDeps.seatsUsed = async () => 7;
+  release(7);
+  await settle();
+  // The final stop must leave nothing behind.
+  stopCellHeartbeat();
+  t.mock.timers.tick(INTERVAL_MS.max * 5);
+  await settle();
+  assert.equal(network.sent.length, 1, 'only the send that was already out');
+});
+
+test('no single workspace to count: nothing is sent', async () => {
+  const network = useHeartbeat(HOSTED_ENV);
+  heartbeatDeps.seatsUsed = async () => null;
+  await sendHeartbeat();
+  assert.equal(network.sent.length, 0);
+});

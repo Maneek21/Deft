@@ -28,7 +28,7 @@ const TABLES = ['users', 'orgs', 'org_members'];
 
 test('seats_used counts the workspace\'s seat-holding people, and 0 before setup', { skip: !safe, timeout: 120_000 }, async (t) => {
   const schema = `heartbeat_${randomUUID().replaceAll('-', '')}`;
-  const admin = new pg.Pool({ connectionString: target, max: 1 });
+  const admin = new pg.Pool({ connectionString: target, max: 2 });
   await admin.query(`CREATE SCHEMA "${schema}"`);
   for (const table of TABLES) {
     await admin.query(`CREATE TABLE "${schema}".${table} (LIKE public.${table} INCLUDING ALL)`);
@@ -66,4 +66,22 @@ test('seats_used counts the workspace\'s seat-holding people, and 0 before setup
   }
   // Owner, admin and member: guests, agents, the system user and removed members never count.
   assert.equal(await heartbeatDeps.seatsUsed(), 3);
+
+  // A table held by someone else: the count gives up within its 3-second bound
+  // instead of holding a connection through a shutdown (15-second deadline).
+  const holder = await admin.connect();
+  try {
+    await holder.query('BEGIN');
+    await holder.query(`LOCK TABLE "${schema}".orgs IN ACCESS EXCLUSIVE MODE`);
+    const started = Date.now();
+    await assert.rejects(heartbeatDeps.seatsUsed());
+    assert.ok(Date.now() - started < 8_000, `gave up after ${Date.now() - started} ms`);
+  } finally {
+    await holder.query('ROLLBACK');
+    holder.release();
+  }
+
+  // Two workspaces (a database restored over another): ambiguous, so no count at all.
+  await admin.query(`INSERT INTO "${schema}".orgs (id, name, slug) VALUES ($1, 'Second Org', $2)`, [randomUUID(), `hb2-${org.slice(0, 8)}`]);
+  assert.equal(await heartbeatDeps.seatsUsed(), null);
 });

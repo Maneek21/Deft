@@ -7,7 +7,9 @@
  * So the ops view can show seats used against seats paid, and when the cell
  * was last heard from. `seats_used` is counted by the very function the seat
  * limit uses (seat-limit.ts countSeatsInUse: active human members who are not
- * guests; agents and guests never count). Nothing else is sent.
+ * guests; agents and guests never count). Nothing else is sent. With no
+ * single workspace to count (two, after a database restored over another),
+ * nothing is sent at all.
  *
  * Once shortly after start (30 to 90 seconds, so a restart storm does not
  * arrive all at once), then about hourly (55 to 65 minutes). Fire-and-forget:
@@ -26,16 +28,32 @@ const SEND_TIMEOUT_MS = 5_000;
 export const FIRST_DELAY_MS = { min: 30_000, max: 90_000 };
 export const INTERVAL_MS = { min: 55 * 60_000, max: 65 * 60_000 };
 
-async function defaultSeatsUsed(): Promise<number> {
-  const [{ db }, { orgs }, { asc }, { countSeatsInUse }] = await Promise.all([
+/** How long the seat count may take in the database: well inside the server's shutdown deadline. */
+const SEAT_QUERY_TIMEOUT = '3s';
+
+/**
+ * The seat count, or null when there is no single workspace to count. A
+ * hosted cell holds one workspace (seat-limit.ts); before setup there is none
+ * (0). Two or more (a database restored over another, say) is ambiguous:
+ * nothing is sent rather than one workspace's count under the cell's name.
+ * The queries run in one read transaction that the database ends after 3
+ * seconds, so a heartbeat never holds a connection through a shutdown.
+ */
+async function defaultSeatsUsed(): Promise<number | null> {
+  const [{ db }, { orgs }, { sql }, { countSeatsInUse }] = await Promise.all([
     import('../db.js'),
     import('@deft/db/schema'),
     import('drizzle-orm'),
     import('../seat-limit.js'),
   ]);
-  // A hosted cell holds one workspace (seat-limit.ts); before setup there is none.
-  const [org] = await db.select({ id: orgs.id }).from(orgs).orderBy(asc(orgs.created_at), asc(orgs.id)).limit(1);
-  return org ? countSeatsInUse(db, org.id) : 0;
+  return db.transaction(async (tx) => {
+    await tx.execute(sql.raw(`SET LOCAL statement_timeout = '${SEAT_QUERY_TIMEOUT}'`));
+    await tx.execute(sql.raw(`SET LOCAL lock_timeout = '${SEAT_QUERY_TIMEOUT}'`));
+    const workspaces = await tx.select({ id: orgs.id }).from(orgs).limit(2);
+    if (workspaces.length === 0) return 0;
+    if (workspaces.length > 1) return null;
+    return countSeatsInUse(tx, workspaces[0]!.id);
+  }, { accessMode: 'read only' });
 }
 
 async function defaultRelease(): Promise<string> {
@@ -56,6 +74,8 @@ export const heartbeatDeps = {
 
 const counters = { sent: 0, failed: 0 };
 let timer: ReturnType<typeof setTimeout> | null = null;
+/** Bumped by every stop: a send that began under an older generation never schedules another. */
+let generation = 0;
 
 export function heartbeatCounters(): { sent: number; failed: number } {
   return { ...counters };
@@ -75,7 +95,7 @@ export async function sendHeartbeat(): Promise<void> {
     const destination = target();
     if (!destination) return;
     const seats = await heartbeatDeps.seatsUsed();
-    if (!Number.isInteger(seats) || seats < 0) return;
+    if (seats === null || !Number.isInteger(seats) || seats < 0) return;
     const body = JSON.stringify({
       cell_id: destination.cellId,
       release: releaseLabel(await heartbeatDeps.release().catch(() => 'unknown')),
@@ -97,10 +117,12 @@ export async function sendHeartbeat(): Promise<void> {
   }
 }
 
-function schedule(delay: number): void {
+function schedule(delay: number, owner: number): void {
   timer = setTimeout(() => {
     void sendHeartbeat().finally(() => {
-      if (timer) schedule(between(INTERVAL_MS));
+      // Only the run that is still current schedules the next one: a stop (and
+      // any restart) while this send was out leaves the newer timer alone.
+      if (owner === generation && timer) schedule(between(INTERVAL_MS), owner);
     });
   }, delay);
   timer.unref?.();
@@ -109,10 +131,11 @@ function schedule(delay: number): void {
 /** Start the heartbeat (server.ts, after listening). A no-op where it is off, or already started. */
 export function startCellHeartbeat(): void {
   if (timer || !target()) return;
-  schedule(between(FIRST_DELAY_MS));
+  schedule(between(FIRST_DELAY_MS), generation);
 }
 
 export function stopCellHeartbeat(): void {
+  generation += 1;
   if (timer) clearTimeout(timer);
   timer = null;
 }
