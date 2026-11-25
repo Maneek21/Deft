@@ -11,7 +11,7 @@
  * Pure: no database, no network, no clock.
  */
 import { createHash } from 'node:crypto';
-import { webBundlePath } from './web-paths.js';
+import { isRouteWord, webBundlePath } from './web-paths.js';
 
 export const MESSAGE_MAX = 300;
 export const ERROR_CLASS_MAX = 100;
@@ -37,17 +37,36 @@ const P = {
   param: '<param>',
 } as const;
 
-// Quoted text: '…', "…", `…`, and typographic quotes. Customer text in error
-// messages is nearly always quoted (Postgres, Zod, fs, JSON.parse, TypeError).
-const QUOTED = /"[^"\n]*"|'[^'\n]*'|`[^`\n]*`|“[^”\n]*”|‘[^’\n]*’|«[^»\n]*»/g;
-// A quote with no partner runs to the end of the line: drop the rest.
-const UNPAIRED_QUOTE = /["'`“”‘’«»][^\n]*/g;
+// Quote characters. An apostrophe inside a word ("can't") is not one.
+const QUOTE_CHAR = /["`“”«»]|['‘’](?!\p{L})|(?<!\p{L})['‘’]/gu;
+
+/**
+ * Quoted text, which in error messages is nearly always customer text
+ * (Postgres, Zod, fs, JSON.parse). On each line everything from the first
+ * quote character to the last becomes one placeholder, so quotes nested in a
+ * value (`"my "secret" plan"`) or escaped in JSON hide nothing; a single
+ * quote hides the rest of its line.
+ */
+function removeQuoted(text: string): string {
+  return text.split('\n').map((line) => {
+    const positions = [...line.matchAll(QUOTE_CHAR)].map((match) => match.index!);
+    if (positions.length === 0) return line;
+    const first = positions[0]!;
+    const last = positions[positions.length - 1]!;
+    return first === last ? `${line.slice(0, first)}<quoted>` : `${line.slice(0, first)}<quoted>${line.slice(last + 1)}`;
+  }).join('\n');
+}
 // Anything with a scheme: keep the scheme; the host becomes a placeholder (a
 // hosted workspace's address can carry its name); drop path, query, fragment.
 const URL_WITH_SCHEME = /\b([a-z][a-z0-9+.-]{1,15}):\/\/[^\s<>]*/gi;
-const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+// Addresses in any script ("josé@acme.com", "bob@münchen.de").
+const EMAIL = /[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.\p{L}{2,}/gu;
 // An address part with no dot in its domain ("bob@acme").
-const AT_HANDLE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+/g;
+const AT_HANDLE = /[\p{L}\p{N}._%+-]+@[\p{L}\p{N}-]+/gu;
+// An authorization value after its scheme name.
+const AUTH_VALUE = /\b(Bearer|Basic|Digest)\s+\S+/gi;
+// Seven or more digits split by spaces, dots or dashes: card and phone numbers.
+const DIGIT_GROUPS = /\d(?:[ .-]?\d){6,}/g;
 const JWT = /\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*/g;
 // Well-known key and token shapes, caught even when shorter than 16 characters.
 const KEY_PREFIXES = /\b(?:sk-ant|sk-proj|sk|pk|rk|xox[abposr]|ghp|gho|ghu|ghs|ghr|github_pat|glpat|whsec|ya29)[-_.][A-Za-z0-9_-]{6,}|\b(?:AKIA|ASIA)[A-Z0-9]{12,}|\bAIza[A-Za-z0-9_-]{20,}/g;
@@ -100,17 +119,25 @@ function compactForm(value: string): string {
   return value.toLowerCase().normalize('NFKD').replace(/[^\p{L}\p{N}]/gu, '');
 }
 
-export function knownValuesPattern(values: Iterable<string>): KnownValues | null {
-  const cleaned = [...new Set([...values]
+function cleanValues(values: Iterable<string>): string[] {
+  return [...new Set([...values]
     .map((value) => (typeof value === 'string' ? value.trim() : ''))
-    .filter((value) => value.length >= 3 && value.length <= 200))]
-    // Longest first, so "Acme Robotics" wins over "Acme".
-    .sort((a, b) => b.length - a.length)
-    .slice(0, 5000);
-  if (cleaned.length === 0) return null;
-  const compact = [...new Set(cleaned.map(compactForm).filter((value) => value.length >= 4))];
+    .filter((value) => value.length >= 3 && value.length <= 200))];
+}
+
+/**
+ * `values`: whole names ("Priya Raman", "Acme Robotics"), matched as words and
+ * found inside tokens. `wordsOnly`: their parts ("Priya", "Raman"), matched
+ * as whole words only, so a short first name does not blank code identifiers.
+ */
+export function knownValuesPattern(values: Iterable<string>, wordsOnly: Iterable<string> = []): KnownValues | null {
+  const whole = cleanValues(values);
+  // Longest first, so "Acme Robotics" wins over "Acme".
+  const words = [...new Set([...whole, ...cleanValues(wordsOnly)])].sort((a, b) => b.length - a.length).slice(0, 10_000);
+  if (words.length === 0) return null;
+  const compact = [...new Set(whole.map(compactForm).filter((value) => value.length >= 4))].slice(0, 5000);
   return {
-    words: new RegExp(`(?<![\\p{L}\\p{N}_])(?:${cleaned.map(escapeRegExp).join('|')})(?![\\p{L}\\p{N}_])`, 'giu'),
+    words: new RegExp(`(?<![\\p{L}\\p{N}_])(?:${words.map(escapeRegExp).join('|')})(?![\\p{L}\\p{N}_])`, 'giu'),
     compact: compact.length > 0 ? new RegExp(compact.map(escapeRegExp).join('|'), 'u') : null,
   };
 }
@@ -128,12 +155,10 @@ export function scrubMessage(raw: unknown, known: KnownValues | null = null): st
   let text = typeof raw === 'string' ? raw : raw === undefined || raw === null ? '' : String(raw);
   // Bound the work before any regular expression runs.
   text = text.slice(0, 8_000).replace(CONTROL, ' ');
-  text = text
-    .replace(URL_WITH_SCHEME, (_match, scheme: string) => `${scheme.toLowerCase()}://${P.host}`)
-    .replace(QUOTED, P.quoted)
-    .replace(UNPAIRED_QUOTE, P.quoted)
+  text = removeQuoted(text.replace(URL_WITH_SCHEME, (_match, scheme: string) => `${scheme.toLowerCase()}://${P.host}`))
     .replace(EMAIL, P.email)
     .replace(AT_HANDLE, P.email)
+    .replace(AUTH_VALUE, (_match, scheme: string) => `${scheme} ${P.secret}`)
     .replace(JWT, P.jwt)
     .replace(KEY_PREFIXES, P.key)
     .replace(SECRET_PARAM, (_match, lead: string) => `${lead}${P.param}`)
@@ -145,6 +170,7 @@ export function scrubMessage(raw: unknown, known: KnownValues | null = null): st
     .replace(IPV6, P.ip)
     .replace(HEX_RUN, P.secret)
     .replace(BASE64_RUN, P.secret)
+    .replace(DIGIT_GROUPS, P.number)
     .replace(DIGIT_RUN, P.number);
   if (known) {
     // Names last, once the rules above have taken out whole structures.
@@ -187,36 +213,42 @@ const BROWSER_CLASSES = new Set([
 ]);
 
 /**
- * Messages a JavaScript engine, Node or a browser writes, with only code
- * expressions in the variable parts. A message that matches none of these
- * was written by the app or a provider and never leaves the cell.
+ * Messages a JavaScript engine, Node or a browser writes. Each variable part
+ * is either quoted (and then removed whole by the quote rule) or a single code
+ * token (an identifier path, a number), so no form leaves room for prose. A
+ * message that matches none of these was written by the app, a provider or a
+ * caller, and never leaves the cell.
  */
+const CODE_TOKEN = String.raw`[\w$.[\]()?]{1,120}`;
+const QUOTED_PART = String.raw`(?:'[^\n]{0,200}'|"[^\n]{0,200}"|\x60[^\n]{0,200}\x60)`;
 const RUNTIME_MESSAGES: readonly RegExp[] = [
-  /^Cannot read properties of (?:undefined|null) \(reading .{1,120}\)$/,
-  /^Cannot set properties of (?:undefined|null) \(setting .{1,120}\)$/,
-  /^Cannot destructure property .{1,120} of .{1,120} as it is (?:undefined|null)\.?$/,
-  /^Cannot destructure .{1,120} as it is (?:undefined|null)\.?$/,
-  /^[\w$.[\]()?'"]{1,120} is not (?:a function|a constructor|iterable|defined)$/,
-  /^[\w$.[\]]{1,120} is (?:null|undefined)$/,
-  /^(?:undefined|null) is not an object \(evaluating .{1,160}\)$/,
-  /^can't access property .{1,120}, .{1,120} is (?:undefined|null)$/,
-  /^Cannot access .{1,120} before initialization$/,
-  /^Cannot convert (?:undefined or null|undefined|null) to object$/,
-  /^Cannot use 'in' operator to search for .{1,120} in .{1,120}$/,
-  /^Assignment to constant variable\.$/,
-  /^Maximum call stack size exceeded\.?$/,
-  /^too much recursion$/,
-  /^Invalid (?:array length|time value|Date|string length|URL|regular expression.{0,120}|character|code point .{1,20})$/,
-  /^Unexpected (?:token|end of JSON input|identifier|number|string|non-whitespace character)\b.{0,200}$/,
-  /^"[^"]{0,30}"(?:\.\.\.)? is not valid JSON$/,
-  /^Converting circular structure to JSON\b.{0,300}$/,
-  /^Do not know how to serialize a BigInt$/,
-  /^(?:Failed to fetch|Load failed|fetch failed|Network request failed|NetworkError when attempting to fetch resource\.)$/,
-  /^(?:The operation was aborted\.?|This operation was aborted|The user aborted a request\.?|signal is aborted without reason|The operation timed out\.?)$/,
-  /^Loading (?:CSS )?chunk \S{1,80} failed\b.{0,200}$/,
-  /^ResizeObserver loop .{1,80}$/,
-  /^Request failed with status code \d{3}$/,
-];
+  `Cannot read properties of (?:undefined|null) \\(reading ${QUOTED_PART}\\)`,
+  `Cannot set properties of (?:undefined|null) \\(setting ${QUOTED_PART}\\)`,
+  `Cannot destructure property ${QUOTED_PART} of ${QUOTED_PART} as it is (?:undefined|null)\\.?`,
+  `Cannot destructure ${QUOTED_PART} as it is (?:undefined|null)\\.?`,
+  `${CODE_TOKEN} is not (?:a function|a constructor|iterable|defined)`,
+  `${CODE_TOKEN} is (?:null|undefined)`,
+  `(?:undefined|null) is not an object \\(evaluating ${QUOTED_PART}\\)`,
+  `can't access property ${QUOTED_PART}, ${CODE_TOKEN} is (?:undefined|null)`,
+  `Cannot access ${QUOTED_PART} before initialization`,
+  'Cannot convert (?:undefined or null|undefined|null) to object',
+  `Cannot use 'in' operator to search for ${QUOTED_PART} in ${CODE_TOKEN}`,
+  'Assignment to constant variable\\.',
+  'Maximum call stack size exceeded\\.?',
+  'too much recursion',
+  'Invalid (?:array length|time value|Date|string length|URL|character|code point \\d{1,10})',
+  `Unexpected (?:token|identifier|number|string) ${QUOTED_PART}(?:, ${QUOTED_PART}(?:\\.\\.\\.)? is not valid JSON)?`,
+  'Unexpected end of JSON input',
+  'Unexpected non-whitespace character after JSON at position \\d{1,10}(?: \\(line \\d{1,10} column \\d{1,10}\\))?',
+  `${QUOTED_PART}(?:\\.\\.\\.)? is not valid JSON`,
+  'Converting circular structure to JSON',
+  'Do not know how to serialize a BigInt',
+  '(?:Failed to fetch|Load failed|fetch failed|Network request failed|NetworkError when attempting to fetch resource\\.)',
+  '(?:The operation was aborted\\.?|This operation was aborted|The user aborted a request\\.?|signal is aborted without reason|The operation timed out\\.?)',
+  'Loading (?:CSS )?chunk [\\w-]{1,80} failed\\.?',
+  'ResizeObserver loop (?:limit exceeded|completed with undelivered notifications\\.)',
+  'Request failed with status code \\d{3}',
+].map((source) => new RegExp(`^${source}$`));
 
 /** True when the JavaScript engine, Node or a browser wrote this message. */
 export function isRuntimeMessage(line: string): boolean {
@@ -319,7 +351,9 @@ export function parseStack(stack: unknown, source: StackSource, known: KnownValu
     if (!match) continue;
     const [, fnRaw, fileRaw, lineRaw] = match;
     const file = scrubFramePath(fileRaw ?? '', source);
-    if (!file || containsKnownValue(file, known)) continue;
+    // Frame files are code paths from a fixed character set or the bundle list:
+    // never checked against names (a member called "apps" must not blank them).
+    if (!file) continue;
     // V8 "at async fn (...)" and "at new Foo (...)".
     const fnName = (fnRaw ?? '').replace(/^(?:async|new) /, '');
     const lineNumber = Number.parseInt(lineRaw ?? '', 10);
@@ -328,7 +362,8 @@ export function parseStack(stack: unknown, source: StackSource, known: KnownValu
       line: Number.isFinite(lineNumber) && lineNumber >= 0 ? Math.min(lineNumber, 10_000_000) : 0,
       fn: source.webOrigins ? '<anonymous>' : scrubFunctionName(fnName, known),
     });
-    if (frames.length >= FRAMES_MAX) break;
+    // A browser's stack is untrusted and bulky: eight frames are enough.
+    if (frames.length >= (source.webOrigins ? 8 : FRAMES_MAX)) break;
   }
   return frames;
 }
@@ -392,9 +427,10 @@ export function scrubRequestIds(raw: unknown, now = Date.now()): string[] {
 }
 
 /**
- * A route template from the code ("/api/spaces/:id"). Code-defined static
- * segments stay; anything that does not look like one becomes a parameter,
- * so a raw path can never pass as a template.
+ * A route template from the code ("/api/spaces/:id"). A fixed segment stays
+ * only if the API's registered routes or the web app's page folders have it
+ * (web-paths.ts); anything else becomes a parameter, so a raw path can never
+ * pass as a template, whoever calls this.
  */
 export function scrubRouteTemplate(raw: unknown): string | null {
   if (typeof raw !== 'string' || !raw.startsWith('/')) return null;
@@ -402,7 +438,7 @@ export function scrubRouteTemplate(raw: unknown): string | null {
   const segments = path.split('/').slice(1).map((segment) => {
     if (segment === '' || segment === '*') return segment;
     if (/^:[A-Za-z_][A-Za-z0-9_]*(?:\{[^}]*\})?\??$/.test(segment)) return segment.replace(/\{[^}]*\}/, '').replace(/\?$/, '');
-    if (/^[a-z][a-z0-9]*(?:[-_.][a-z0-9]+)*$/.test(segment) && segment.length <= 40 && !/\d{3,}/.test(segment)) return segment;
+    if (isRouteWord(segment)) return segment;
     return ':param';
   });
   return `/${segments.join('/')}`.slice(0, 200);

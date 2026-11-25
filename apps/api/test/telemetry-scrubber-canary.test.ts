@@ -99,6 +99,10 @@ test('no canary survives any capture path into the batch that leaves the cell', 
   app.get('/api/spaces/:id/export', (c) => c.json({ error: 'Export failed', code: 'INTERNAL_ERROR' }, 500));
   // An app message with a person's text, unquoted, even under an engine class name.
   app.get('/api/notes/:id', function saveNote() { throw new TypeError(`Could not save note: ${NOTE_TEXT}`); });
+  // A runtime message quoting customer text that itself contains quotes.
+  app.get('/api/spaces/:id/import', function importSpace() {
+    return new Response(JSON.parse(`my "${MESSAGE_TEXT}" for "${WORKSPACE}" ${EMAIL}`) as string);
+  });
   // A real engine error: its message is useful and safe once scrubbed.
   app.get('/api/tasks/:id', function readTask() { const task = undefined as unknown as { title: { trim(): string } }; return new Response(task.title.trim()); });
   const thrown = await app.request(`/api/spaces/${WORKSPACE_SLUG}/files/${FILE_NAME}?email=${EMAIL}&token=${JWT}`, { method: 'POST' });
@@ -106,6 +110,7 @@ test('no canary survives any capture path into the batch that leaves the cell', 
   const answered = await app.request(`/api/spaces/${WORKSPACE_SLUG}/export?q=${encodeURIComponent(MESSAGE_TEXT)}`);
   assert.equal(answered.status, 500);
   assert.equal((await app.request('/api/notes/n1')).status, 500);
+  assert.equal((await app.request(`/api/spaces/${WORKSPACE_SLUG}/import`)).status, 500);
   assert.equal((await app.request('/api/tasks/t1')).status, 500);
 
   // 3. A failed job, and 4. an uncaught process error, with a class name that is data.

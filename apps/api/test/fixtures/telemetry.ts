@@ -51,7 +51,7 @@ export function useErrorReporter(env: NodeJS.ProcessEnv, options: { status?: Par
     env,
     fetch: network.fetch,
     release: async () => '0.3.0-preview.152',
-    knownValues: async () => options.known ?? [],
+    knownValues: async () => ({ whole: options.known ?? [], parts: (options.known ?? []).flatMap((name) => name.split(/[s._-]+/)) }),
     isPaused: () => false,
     now: options.now ?? (() => Date.now()),
     webOrigins: () => options.webOrigins ?? [WEB_ORIGIN],

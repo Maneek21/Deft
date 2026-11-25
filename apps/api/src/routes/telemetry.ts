@@ -9,6 +9,9 @@
  * `{ "enabled": false }` without reading the body, keeps nothing, and the
  * page stops reporting.
  *
+ * Only a JSON body, and from a browser only on the web app's own address
+ * (its Origin), so another site cannot make its visitors post here.
+ *
  * Limits, all checked before the body is read: per client address first,
  * then per session (a verified web session, or the address when there is
  * none), then a ceiling for the whole server that only requests admitted by
@@ -19,6 +22,7 @@ import { bodyLimit } from 'hono/body-limit';
 import { rateLimiter } from 'hono-rate-limiter';
 import { z } from 'zod';
 import { createInviteClientKey } from '../lib/invite-client-ip.js';
+import { corsAllowedWebOrigins } from '../lib/web-origins.js';
 import { captureClientError, isErrorTelemetryEnabled } from '../lib/telemetry/error-reporter.js';
 import { apiRouteTemplateFor, webPageTemplate } from '../lib/telemetry/route-templates.js';
 
@@ -55,7 +59,11 @@ export function createTelemetryRoutes(options: {
   /** Test seams: the session a request carries, and its client address. */
   sessionOf?: (request: Request) => Promise<string | null>;
   addressOf?: (c: Context) => Promise<string>;
+  webOrigins?: () => string[];
 } = {}) {
+  const webOrigins = options.webOrigins ?? (() => corsAllowedWebOrigins().flatMap((value) => {
+    try { return [new URL(value).origin]; } catch { return []; }
+  }));
   const addressKey = options.addressOf ?? createInviteClientKey();
   const sessionOf = options.sessionOf ?? verifiedSession;
   const sessionKey = async (c: Context) => {
@@ -68,6 +76,11 @@ export function createTelemetryRoutes(options: {
   const onlyWhenEnabled: MiddlewareHandler = async (c, next) => {
     c.header('Cache-Control', 'no-store');
     if (!isErrorTelemetryEnabled()) return c.json({ enabled: false });
+    if (c.req.header('content-type')?.split(';', 1)[0]?.trim().toLowerCase() !== 'application/json') {
+      return c.json({ error: 'Send JSON', code: 'UNSUPPORTED_MEDIA_TYPE' }, 415);
+    }
+    const origin = c.req.header('origin');
+    if (origin && !webOrigins().includes(origin)) return c.json({ error: 'Forbidden', code: 'FORBIDDEN' }, 403);
     return next();
   };
 

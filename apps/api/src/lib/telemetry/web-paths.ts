@@ -51,3 +51,19 @@ export function webBundlePath(pathname: string): string | null {
   if (!BUNDLE_FILES.has(base) && !/^\d{1,8}$/.test(base)) return null;
   return `_next/static/${[...segments, `${base}${match[2] ? '-<hash>' : ''}.js`].join('/')}`;
 }
+
+/** Fixed words of the API's own route paths, registered once the routes are mounted. */
+const apiRouteWords = new Set<string>();
+
+export function addApiRouteWords(paths: Iterable<string>): void {
+  for (const path of paths) {
+    for (const segment of path.split('/')) {
+      if (segment && !segment.startsWith(':') && segment !== '*' && /^[A-Za-z0-9_.-]{1,60}$/.test(segment)) apiRouteWords.add(segment);
+    }
+  }
+}
+
+/** True for a fixed word of an API route or a web page folder: code, never data. */
+export function isRouteWord(segment: string): boolean {
+  return apiRouteWords.has(segment) || WEB_PATH_WORDS.has(segment);
+}

@@ -9,7 +9,7 @@
 import type { Context } from 'hono';
 import { matchedRoutes } from 'hono/route';
 import { scrubMethod, scrubRouteTemplate } from './scrub.js';
-import { WEB_PATH_WORDS } from './web-paths.js';
+import { WEB_PATH_WORDS, addApiRouteWords } from './web-paths.js';
 
 type RouteEntry = { method: string; path: string };
 
@@ -24,6 +24,8 @@ export function answeringRouteTemplate(c: Context): string | null {
     for (let i = routes.length - 1; i >= 0; i -= 1) {
       const route = routes[i]!;
       if (route.method === 'ALL' && isMiddlewarePath(route.path)) continue;
+      // The matched route's own path is code, not request data: its words are route words.
+      addApiRouteWords([route.path]);
       return scrubRouteTemplate(route.path);
     }
   } catch {
@@ -36,6 +38,7 @@ let apiRoutes: RouteEntry[] = [];
 
 /** index.ts hands over the mounted routes once they are all registered. */
 export function setApiRouteTemplates(routes: ReadonlyArray<RouteEntry>): void {
+  addApiRouteWords(routes.map((route) => route.path));
   apiRoutes = routes
     .filter((route) => route.method !== 'ALL' && !isMiddlewarePath(route.path) && route.path.startsWith('/api/'))
     .map((route) => ({ method: route.method, path: route.path }));

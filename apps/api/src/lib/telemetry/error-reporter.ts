@@ -25,7 +25,6 @@ import { isPausedStart } from '../paused-start.js';
 import { corsAllowedWebOrigins } from '../web-origins.js';
 import {
   browserErrorClass,
-  containsKnownValue,
   eventMessage,
   fingerprint,
   knownValuesPattern,
@@ -92,21 +91,25 @@ async function defaultRelease(): Promise<string> {
   return DEFT_RELEASE_VERSION;
 }
 
-/** The workspace's own names and its people's names, removed from every message. */
-async function defaultKnownValues(): Promise<string[]> {
-  const [{ db }, { orgs, users }, { eq }] = await Promise.all([
+/**
+ * The workspace's own names and its people's and agents' names, removed from
+ * every message: whole names, and each part of a name as a whole word.
+ */
+async function defaultKnownValues(): Promise<{ whole: string[]; parts: string[] }> {
+  const [{ db }, { orgs, users }, { ne }] = await Promise.all([
     import('../db.js'),
     import('@deft/db/schema'),
     import('drizzle-orm'),
   ]);
   const [orgRows, people] = await Promise.all([
     db.select({ name: orgs.name, slug: orgs.slug }).from(orgs).limit(100),
-    db.select({ name: users.name }).from(users).where(eq(users.kind, 'human')).limit(5000),
+    db.select({ name: users.name }).from(users).where(ne(users.kind, 'system')).limit(5000),
   ]);
-  return [
+  const whole = [
     ...orgRows.flatMap((row) => [row.name, row.slug, row.slug.replace(/-[a-z0-9]{8}$/, '')]),
     ...people.map((row) => row.name),
   ];
+  return { whole, parts: whole.flatMap((name) => name.split(/[s._-]+/)) };
 }
 
 /** The web app's own addresses: browser frames from anywhere else are dropped. */
@@ -124,7 +127,7 @@ export const errorReporterDeps = {
   now: (): number => Date.now(),
   env: process.env as NodeJS.ProcessEnv,
   release: defaultRelease,
-  knownValues: defaultKnownValues,
+  knownValues: defaultKnownValues as () => Promise<{ whole: string[]; parts: string[] }>,
   webOrigins: defaultWebOrigins,
   isPaused: (): boolean => isPausedStart(),
 };
@@ -154,6 +157,10 @@ let lastSendAt = -Infinity;
 let pausedUntil = 0;
 let consecutiveFailures = 0;
 let known: { pattern: KnownValues | null; loadedAt: number } = { pattern: null, loadedAt: -Infinity };
+/** False until the names have loaded once: until then no message leaves (fail closed). */
+let knownLoadedOnce = false;
+/** Set on a fatal exit: the last batch does not wait on the database. */
+let exiting = false;
 let knownLoading: Promise<void> | null = null;
 let cachedTarget: { value: ControlPlaneTarget | null; at: number } | null = null;
 
@@ -180,7 +187,9 @@ function refreshKnownValues(force = false): Promise<void> {
   if (knownLoading) return knownLoading;
   knownLoading = (async () => {
     try {
-      known = { pattern: knownValuesPattern(await errorReporterDeps.knownValues()), loadedAt: errorReporterDeps.now() };
+      const values = await errorReporterDeps.knownValues();
+      known = { pattern: knownValuesPattern(values.whole, values.parts), loadedAt: errorReporterDeps.now() };
+      knownLoadedOnce = true;
     } catch {
       // Keep the last list; the regular-expression rules still apply.
       known = { ...known, loadedAt: errorReporterDeps.now() };
@@ -346,16 +355,18 @@ function pause(ms: number): void {
   pausedUntil = errorReporterDeps.now() + Math.min(ms, PAUSE_MAX_MS);
 }
 
-/** Re-apply the known-value rule with a fresh list, just before sending. */
+/**
+ * Re-apply the known-value rule with a fresh list, just before sending. Until
+ * the names have loaded once, no message leaves at all.
+ */
 function rescrub(event: TelemetryEvent, pattern: KnownValues | null): TelemetryEvent {
+  if (!knownLoadedOnce) return { ...event, message: '' };
   if (!pattern) return event;
   return {
     ...event,
     error_class: event.kind === 'client' ? event.error_class : scrubErrorClass(event.error_class, pattern),
     message: scrubMessage(event.message, pattern),
-    frames: event.frames
-      .filter((frame) => !containsKnownValue(frame.file, pattern))
-      .map((frame) => ({ ...frame, fn: event.kind === 'client' ? frame.fn : scrubFunctionName(frame.fn, pattern) })),
+    frames: event.frames.map((frame) => ({ ...frame, fn: event.kind === 'client' ? frame.fn : scrubFunctionName(frame.fn, pattern) })),
   };
 }
 
@@ -398,7 +409,8 @@ async function sendOnce(): Promise<void> {
   if (buffer.size === 0 || now < pausedUntil || now - lastSendAt < MIN_BATCH_GAP_MS) return;
   lastSendAt = now;
 
-  await refreshKnownValues();
+  // On a fatal exit the database may be why: send with what is already known.
+  if (!exiting) await refreshKnownValues();
   const header = { cell_id: destination.cellId, release: releaseLabel(await errorReporterDeps.release().catch(() => 'unknown')) };
   const events = selectBatch(header, known.pattern);
   if (events.length === 0) return;
@@ -449,6 +461,7 @@ export function flushErrorTelemetry(): Promise<void> {
  * pauses as any other, waiting at most `timeoutMs`.
  */
 export async function flushErrorTelemetryBeforeExit(timeoutMs = 2_000): Promise<void> {
+  exiting = true;
   if (buffer.size === 0 && !inFlight) return;
   let timeout: ReturnType<typeof setTimeout> | undefined;
   await Promise.race([
@@ -474,6 +487,8 @@ export function resetErrorTelemetryForTest(): void {
   consecutiveFailures = 0;
   known = { pattern: null, loadedAt: -Infinity };
   knownLoading = null;
+  knownLoadedOnce = false;
+  exiting = false;
   cachedTarget = null;
   for (const key of Object.keys(counters) as (keyof TelemetryCounters)[]) counters[key] = 0;
 }
