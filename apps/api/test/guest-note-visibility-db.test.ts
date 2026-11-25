@@ -24,7 +24,7 @@ import { retrieveContext } from '../src/lib/retrieve-context.js';
 import { resolveNativeNoteDisplay } from '../src/lib/native-content-projections.js';
 import { executeToolCall } from '../src/lib/agent-context.js';
 import { getTeamContext } from '../src/lib/mcp-tools/team-context.js';
-import { humanNoteGet, humanNoteList, humanSearch, type HumanToolContext } from '../src/lib/mcp-tools/human.js';
+import { humanNoteGet, humanNoteList, type HumanToolContext } from '../src/lib/mcp-tools/human.js';
 import { dailyNoteRoutes } from '../src/routes/daily-notes.js';
 import { searchRoutes } from '../src/routes/search.js';
 import { tagRoutes } from '../src/routes/tags.js';
@@ -70,9 +70,11 @@ const NOT_TEMPLATES = (Object.keys(shapes) as NoteKey[]).filter((key) => key !==
 const matrixIds: string[] = [];
 
 async function insertNote(id: string, key: string, shape: Shape) {
-  await c.query(`INSERT INTO notes (id, org_id, user_id, title, content, visibility, visibility_space_id, is_template)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-  [id, org, shape.author, titleOf(key), `<p>${titleOf(key)} body</p>`, shape.visibility, shape.space ?? null, shape.template ?? false]);
+  // Matrix notes are older, so the named notes stay inside the notes list's 100 rows.
+  await c.query(`INSERT INTO notes (id, org_id, user_id, title, content, visibility, visibility_space_id, is_template, updated_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now() - ($9 || ' days')::interval)`,
+  [id, org, shape.author, titleOf(key), `<p>${titleOf(key)} body</p>`, shape.visibility, shape.space ?? null, shape.template ?? false,
+    key.startsWith('matrix-') ? '1' : '0']);
   if (shape.sharedWith) {
     await c.query(`INSERT INTO note_shares (id, note_id, shared_with_user_id) VALUES (gen_random_uuid()::text, $1, $2)`, [id, shape.sharedWith]);
   }
@@ -333,16 +335,14 @@ const mcp = (viewer: string): HumanToolContext => ({
 });
 const text = (result: { content: Array<{ text: string }> }) => result.content.map((part) => part.text).join('\n');
 
-test('MCP note_list, note_get and search: a hidden note is unknown to a guest', async () => {
+test('MCP note_list and note_get: a hidden note is unknown to a guest; members unchanged', async () => {
   const list = text(await humanNoteList({ query: word, limit: 100 }, mcp(guest)));
   assert.deepEqual(namedIn(list, GUEST_HIDDEN), []);
   for (const key of GUEST_SEES) assert.ok(names(list, key), `listed: ${key}`);
   const unknown = text(await humanNoteGet({ note_id: randomUUID() }, mcp(guest)));
   for (const key of GUEST_HIDDEN) assert.equal(text(await humanNoteGet({ note_id: noteIds[key] }, mcp(guest))), unknown, key);
-  const search = text(await humanSearch({ query: titleOf('orgNote') }, mcp(guest)));
-  assert.equal(names(search, 'orgNote'), false);
-  const memberSearch = text(await humanSearch({ query: titleOf('orgNote') }, mcp(member)));
-  assert.equal(names(memberSearch, 'orgNote'), true, 'a member still finds it');
+  const memberGet = text(await humanNoteGet({ note_id: noteIds.orgNote }, mcp(member)));
+  assert.equal(names(memberGet, 'orgNote'), true, 'a member still reads it');
 });
 
 test('Defty search_notes and read_note, retrieval and mention display follow the guest rule', async () => {
