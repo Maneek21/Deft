@@ -28,6 +28,7 @@ import { revokeWebSession, changeWebPassword, verifyWebAccess, WebCredentialsCha
 import { issueSession, issuedSessionBody } from '../lib/session-issuance.js';
 import { SecondStepRequiredError } from '../lib/two-step-policy.js';
 import { pausedNotice } from '../lib/paused-start.js';
+import { isInstallPingOn, sendInstallPing } from '../lib/telemetry/install-ping.js';
 
 export const authRoutes = new Hono();
 authRoutes.use('*', bodyLimit({ maxSize: 64 * 1024, onError: (c) => c.json({ error: 'Request body is too large', code: 'VALIDATION_ERROR' }, 413) }));
@@ -72,7 +73,9 @@ export function allowAccountLoginAttempt(email: string): boolean {
 // GET /api/auth/has-workspace — public pre-check for the signup page
 authRoutes.get('/has-workspace', async (c) => {
   const { countOrgs } = await import('../lib/single-org-guard.js');
-  return c.json({ hasWorkspace: (await countOrgs()) > 0 });
+  // install_ping (present only when true): the setup screen says that this
+  // install sends the anonymous install ping (lib/telemetry/install-ping.ts).
+  return c.json({ hasWorkspace: (await countOrgs()) > 0, ...(isInstallPingOn() ? { install_ping: true } : {}) });
 });
 
 // POST /api/auth/signup
@@ -232,6 +235,10 @@ authRoutes.post('/signup', async (c) => {
   } catch (err) {
     console.error('[ensureDeftyDm] failed for org', 'user');
   }
+
+  // Self-hosted: the anonymous install ping, once, now that the first owner
+  // has set the workspace up (lib/telemetry/install-ping.ts). Not awaited.
+  void sendInstallPing('installed', org.id);
 
   // In hosted mode the first owner gets an enrol-only token here, not a session.
   const issued = await issueSession({ via: 'signup', identity: { id: user.id, email: user.email!, org_id: org.id } });

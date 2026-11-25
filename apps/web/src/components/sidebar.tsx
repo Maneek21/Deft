@@ -55,8 +55,10 @@ import {
   ChevronDown,
   AppWindow,
   Compass,
+  LifeBuoy,
   type LucideIcon,
 } from 'lucide-react';
+import { GetHelpDialog, ReportProblemDialog, useSupportConfig } from './report-problem-dialog';
 import { CreateSpaceModal } from './create-space-modal';
 import { CreateDmModal } from './create-dm-modal';
 import { BrowseSpacesModal } from './browse-spaces-modal';
@@ -869,6 +871,9 @@ export function Sidebar({
   const [createSpaceOpen, setCreateSpaceOpen] = useState(false);
   useEffect(() => registerOpenCreateSpace(() => setCreateSpaceOpen(true)), []);
   const [savedOpen, setSavedOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  // Hosted: "Report a problem". Self-hosted: the administrator's own address, if set.
+  const support = useSupportConfig(Boolean(user));
   const [dnd, setDnd] = useState(() => user?.status_text === 'Do Not Disturb');
   const userMenuBtnRef = useRef<HTMLButtonElement>(null);
   const navigationRef = useRef<HTMLElement>(null);
@@ -923,6 +928,11 @@ export function Sidebar({
       icon: theme === 'dark' ? <Sun size={14} strokeWidth={1.5} /> : <Moon size={14} strokeWidth={1.5} />,
       onSelect: toggleTheme,
     },
+    ...(support?.report || support?.contact_email ? [{
+      label: support.report ? 'Report a problem' : 'Get help',
+      icon: <LifeBuoy size={14} strokeWidth={1.5} />,
+      onSelect: () => setHelpOpen(true),
+    }] : []),
     {
       label: 'Settings',
       icon: <Settings size={14} strokeWidth={1.5} />,
@@ -1164,6 +1174,8 @@ export function Sidebar({
       </div>
       {statusModalOpen && <StatusModal onClose={() => setStatusModalOpen(false)} />}
       {savedOpen && <SavedMessages onClose={() => setSavedOpen(false)} />}
+      {support?.report && <ReportProblemDialog open={helpOpen} onClose={() => setHelpOpen(false)} />}
+      {!support?.report && support?.contact_email && <GetHelpDialog open={helpOpen} onClose={() => setHelpOpen(false)} email={support.contact_email} />}
     </>
   );
 

@@ -24,13 +24,16 @@ export default function SignupPage() {
 
   // Pre-check: does a workspace already exist?
   const [workspaceCheck, setWorkspaceCheck] = useState<'loading' | 'exists' | 'free'>('loading');
+  // Self-hosted with the anonymous install ping on: this screen says so.
+  const [installPing, setInstallPing] = useState(false);
 
   useEffect(() => {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
     fetch(`${apiUrl}/api/auth/has-workspace`)
       .then(r => r.json())
-      .then((data: { hasWorkspace: boolean }) => {
+      .then((data: { hasWorkspace: boolean; install_ping?: boolean }) => {
         setWorkspaceCheck(data.hasWorkspace ? 'exists' : 'free');
+        setInstallPing(data.install_ping === true);
       })
       .catch(() => {
         // On fetch error, fall through to free — the POST will catch it anyway
@@ -227,6 +230,12 @@ export default function SignupPage() {
                 'Create workspace'
               )}
             </button>
+            {installPing && workspaceCheck === 'free' && (
+              <p className="text-[0.75rem] leading-5" style={{ color: 'var(--on-surface-variant)' }}>
+                Deft sends an anonymous ping when it&apos;s installed and when someone joins: no names, emails or content.
+                {' '}Turn it off with <code className="font-mono">DEFT_TELEMETRY=off</code>.
+              </p>
+            )}
           </form>
 
 

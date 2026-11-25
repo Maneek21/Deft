@@ -62,6 +62,8 @@ export const SESSION_EXEMPT_ROUTES: ReadonlyArray<{ methods?: readonly string[];
   // Exact routes that share a prefix with session-gated routers.
   { methods: ['POST'], path: '/api/agent-webhooks/:slug' },
   { methods: ['GET', 'HEAD'], path: '/api/ics/feed/:token' },
+  // Browser error reports (routes/telemetry.ts): signed in or not, changes nothing.
+  { methods: ['POST'], path: '/api/telemetry/client-error' },
 ];
 
 function segments(path: string): string[] {

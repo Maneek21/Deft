@@ -21,6 +21,7 @@ import { APP_AUTOMATION_SCAN_CRON, ensureAppAutomationScan } from '../lib/app-au
 import { GITHUB_SYNC_SCAN_JOB, GITHUB_SYNC_SCAN_MS, githubSyncIntervalMs } from './handlers/github-sync-schedule.js';
 import type { JobHandler } from './types.js';
 import { isPausedStart } from '../lib/paused-start.js';
+import { captureJobError } from '../lib/telemetry/error-reporter.js';
 
 // ─── Cron re-enqueue delays ───
 const CRON_DELAYS: Record<string, number> = {
@@ -510,6 +511,8 @@ async function processDequeuedJob(
       if (settled) console.warn(`[worker] Job ${logJobName(job.name)} deferred:`);
       return;
     }
+    // Hosted cells: a scrubbed error event (lib/telemetry). A no-op otherwise.
+    captureJobError(job.name, err);
     // Until every handler cooperatively cancels its I/O, retrying immediately
     // after a timeout can overlap with the still-running original promise.
     // Terminal-fail the occurrence; operators can inspect/replay it explicitly.
@@ -604,6 +607,7 @@ async function processAttentionProjectionGroup(
     console.log(`[worker] Job group ${logJobName(merged.name)} settled ${logNumber(settledCount)}/${logNumber(jobs.length)} jobs`);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    captureJobError(merged.name, err);
     await Promise.all(jobs.map((job) => failJob(job.id, job.lockToken, message, {
       terminal: err instanceof JobTimeoutError,
     })));

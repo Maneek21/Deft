@@ -10,6 +10,44 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### Telemetry: an install ping for self-hosters, error reports and "Report a problem" on hosted cells
+
+For self-hosters:
+
+- Deft now sends an anonymous ping to `https://get.deft.ing/v1/installs/ping` when the
+  first owner creates the workspace and each time someone accepts an invite. It carries
+  four fields: an install ID, the event (`installed` or `person_added`), the Deft
+  version and the time. No names, email addresses, workspace names, content or counts.
+  The install ID is a one-way hash of the workspace's own database ID, so no table is
+  added. Only production builds send it (`NODE_ENV=production`, as the Docker image
+  is), with one attempt and a five-second limit; it never delays signup or an invite.
+- **To turn it off,** add `DEFT_TELEMETRY=off` to `.env` and restart. The setup screen
+  says this in one line while the ping is on. Details: `docs/self-hosting.md`,
+  "Telemetry".
+- Nothing else leaves a self-hosted server. The web app reports errors in the page to
+  your own API server, which keeps nothing and tells the page to stop.
+- New optional setting `DEFT_SUPPORT_EMAIL`: an address your people can write to for
+  help. When set, the user menu shows "Get help" with it.
+
+For the hosted service (`DEFT_HOSTED=true` with the seat-statement settings):
+
+- Unhandled request errors, other 5xx answers, failed background jobs, uncaught
+  process errors and browser errors are scrubbed in the cell (no message text,
+  addresses, names, keys, tokens, links, file names, query strings or bodies; frames are
+  file, line and function only; routes are templates) and sent to the control plane at
+  most once a minute, grouped by fingerprint (at most 50 events and 64 KB a batch), with
+  the seat fetch token. A failed batch is dropped and counted, never retried, and
+  sending pauses after failures or a 429. `DEFT_TELEMETRY=off` stops these too.
+- "Report a problem" in the user menu, for everyone signed in (guests included): the
+  person's text, a category and "Email me about this report", sent to the Deft team
+  with the release, the page (as a template), the browser family and recent error
+  references. The person gets a short reference, or is told it was not sent.
+- `/api/metrics` adds `deft_telemetry_error_events_total`,
+  `deft_telemetry_error_batches_total` and `deft_telemetry_install_pings_total`.
+
+Upgrade notes: no migration. New optional settings `DEFT_TELEMETRY` and
+`DEFT_SUPPORT_EMAIL`.
+
 ### Notice: Kit `0.1.0-alpha.44` removes deprecated Email compatibility
 
 Not before 2026-11-25, and never fewer than 14 days after this notice merged.

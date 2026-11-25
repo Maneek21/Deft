@@ -234,6 +234,8 @@ jobs:
           src/lib/invite-two-step-mounted.test.ts
           src/lib/members-admin-actions-mounted.test.ts
           src/lib/members-buy-seats-mounted.test.ts
+          src/lib/error-telemetry-mounted.test.ts
+          src/lib/report-problem-mounted.test.ts
           src/lib/two-step-recovery-mounted.test.ts
           src/lib/agent-management-mounted.test.ts
       - name: Test that signup and setup pages request nothing from a third party

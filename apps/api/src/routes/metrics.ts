@@ -14,6 +14,30 @@ import { Hono, type Context } from 'hono';
 import { timingSafeEqual } from 'node:crypto';
 import { db } from '../lib/db.js';
 import { collectMetrics } from '../lib/otel-metrics.js';
+import { errorTelemetryCounters } from '../lib/telemetry/error-reporter.js';
+import { installPingCounters } from '../lib/telemetry/install-ping.js';
+
+/** Telemetry's local counters (lib/telemetry): what was sent and what was dropped. Numbers only. */
+export function telemetryMetricsText(): string {
+  const errors = errorTelemetryCounters();
+  const ping = installPingCounters();
+  const lines = [
+    '# HELP deft_telemetry_error_events_total Hosted error events, by outcome.',
+    '# TYPE deft_telemetry_error_events_total counter',
+    `deft_telemetry_error_events_total{outcome="captured"} ${errors.captured}`,
+    `deft_telemetry_error_events_total{outcome="sent"} ${errors.events_sent}`,
+    `deft_telemetry_error_events_total{outcome="dropped"} ${errors.events_dropped + errors.dropped_buffer_full}`,
+    '# HELP deft_telemetry_error_batches_total Hosted error batches, by outcome.',
+    '# TYPE deft_telemetry_error_batches_total counter',
+    `deft_telemetry_error_batches_total{outcome="sent"} ${errors.batches_sent}`,
+    `deft_telemetry_error_batches_total{outcome="failed"} ${errors.batches_failed}`,
+    '# HELP deft_telemetry_install_pings_total Self-hosted install pings, by outcome.',
+    '# TYPE deft_telemetry_install_pings_total counter',
+    `deft_telemetry_install_pings_total{outcome="sent"} ${ping.sent}`,
+    `deft_telemetry_install_pings_total{outcome="failed"} ${ping.failed}`,
+  ];
+  return `${lines.join('\n')}\n`;
+}
 
 export const metricsRoutes = new Hono();
 
@@ -52,7 +76,7 @@ metricsRoutes.get('/', async (c) => {
   if (authError) return authError;
 
   try {
-    const body = await collectMetrics(db as any);
+    const body = `${await collectMetrics(db as any)}${telemetryMetricsText()}`;
     return new Response(body, {
       status: 200,
       headers: { 'Content-Type': 'text/plain; version=0.0.4' },

@@ -12,6 +12,7 @@ import { ensureDeftyMembership, ensureDeftyDm } from '../lib/ensure-defty-member
 import { WebCredentialsChangedError } from '../lib/web-sessions.js';
 import { issueSession, issuedSessionBody } from '../lib/session-issuance.js';
 import { isProtectedMembership, linkMakerStillCounts } from '../lib/membership-guard.js';
+import { sendInstallPing } from '../lib/telemetry/install-ping.js';
 
 export const inviteRoutes = new Hono();
 
@@ -231,6 +232,10 @@ inviteRoutes.post('/accept', async (c) => {
   } catch (err) {
     console.error('[ensureDeftyDm] failed for org', 'user');
   }
+
+  // Self-hosted: the anonymous install ping says a person joined (no name,
+  // address or count). Not awaited (lib/telemetry/install-ping.ts).
+  void sendInstallPing('person_added');
 
   // Fire member.joined trigger now that the user has actually joined.
   // Fire-and-forget — a failing subscriber must not block sign-in.
