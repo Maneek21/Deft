@@ -97,6 +97,7 @@ import {
 
 import { manageAgent } from '../agent-management.js';
 import { emailFor, peopleViewer, personVisibleSql, withoutHiddenEmails } from '../people-visibility.js';
+import { leadChangeWriteCondition, projectLeadChangeRefusal } from '../project-lead.js';
 import { RUNTIME_WORKFLOW_NAMES, RUNTIME_WORKFLOW_SCOPES, isRuntimeWorkflowTool, runtimeWorkflowHasScopes, humanRuntimeWorkflowTool } from '../app-runtime-workflow-tools.js';
 
 export type HumanToolContext = {
@@ -3896,16 +3897,46 @@ export async function humanProjectUpdate(args: Record<string, unknown>, ctx: Hum
     // A project's lead reads all of its tasks, so a guest, who sees only the
     // tasks of their projects (task-visibility.ts), cannot change who leads one.
     if (args.lead_id !== undefined && (await peopleViewer(ctx.org_id, ctx.user_id)).guest) {
-      return errorResult('project_update: a guest cannot change a project lead');
+      return textResult({ error: 'project_update: a guest cannot change a project lead', code: 'FORBIDDEN' }, true);
     }
-    if (args.lead_id === null) updates.lead_id = null;
-    else if (args.lead_id !== undefined) {
-      const leadResult = await resolveActiveMember(ctx, { user_id: args.lead_id, label: 'project_update lead' });
-      if (leadResult.error) return leadResult.error;
-      updates.lead_id = leadResult.user?.id ?? null;
+    // Only an owner, an admin or the current lead may change who leads a
+    // project (lib/project-lead.ts), as on PATCH /api/projects/:id: checked
+    // before the new lead is looked up, and applied only while the lead is
+    // still the one it was checked against. An unchanged lead is not written.
+    let expectedLead: string | null | undefined;
+    if (args.lead_id !== undefined) {
+      const [current] = await db.select({ lead_id: projects.lead_id }).from(projects)
+        .where(and(eq(projects.id, args.project_id as string), eq(projects.org_id, ctx.org_id))).limit(1);
+      // A member id (trimmed) or null; a blank id means no lead, as the
+      // member lookup reads it.
+      if (args.lead_id !== null && typeof args.lead_id !== 'string') return errorResult('project_update: lead_id must be a member id or null');
+      const requested = typeof args.lead_id === 'string' && args.lead_id.trim() ? args.lead_id.trim() : null;
+      if (current && requested !== current.lead_id) {
+        const refusal = await projectLeadChangeRefusal(ctx.org_id, ctx.user_id, current.lead_id);
+        if (refusal) return textResult({ error: `project_update: ${refusal.error}`, code: refusal.code }, true);
+        expectedLead = current.lead_id;
+        if (requested === null) updates.lead_id = null;
+        else {
+          const leadResult = await resolveActiveMember(ctx, { user_id: requested, label: 'project_update lead' });
+          if (leadResult.error) return leadResult.error;
+          updates.lead_id = leadResult.user?.id ?? null;
+        }
+      }
     }
-    if (Object.keys(updates).length === 0) return errorResult('At least one editable project field is required');
-    const [updated] = await db.update(projects).set(updates).where(and(eq(projects.id, args.project_id as string), eq(projects.org_id, ctx.org_id))).returning();
+    if (Object.keys(updates).length === 0) {
+      if (args.lead_id !== undefined) {
+        const [unchanged] = await db.select().from(projects).where(and(eq(projects.id, args.project_id as string), eq(projects.org_id, ctx.org_id))).limit(1);
+        if (unchanged) return textResult({ updated: false, project: await projectForViewer(ctx, unchanged), url: `/tasks?project=${unchanged.id}` });
+      }
+      return errorResult('At least one editable project field is required');
+    }
+    const [updated] = await db.update(projects).set(updates).where(and(eq(projects.id, args.project_id as string), eq(projects.org_id, ctx.org_id),
+      expectedLead !== undefined ? leadChangeWriteCondition(ctx.org_id, ctx.user_id, expectedLead) : undefined)).returning();
+    if (!updated) {
+      const refusal = expectedLead !== undefined ? await projectLeadChangeRefusal(ctx.org_id, ctx.user_id, expectedLead) : null;
+      if (refusal) return textResult({ error: `project_update: ${refusal.error}`, code: refusal.code }, true);
+      return textResult({ error: 'project_update: the project lead changed meanwhile; read the project and try again', code: 'CONFLICT' }, true);
+    }
     return textResult({ updated: true, project: await projectForViewer(ctx, updated!), url: `/tasks?project=${updated!.id}` });
   });
 }

@@ -95,11 +95,15 @@ export function ProjectSettingsModal({ project, onClose, onUpdated }: Props) {
     setSaving(true);
     setError(null);
     try {
+      // The lead is sent only when it was changed here: changing it needs an
+      // owner, an admin or the current lead, and a stale value must not put
+      // back a lead someone else has since changed.
+      const leadChanged = (leadId || null) !== (project.lead_id ?? null);
       const res = await api.patch(`/api/projects/${project.id}`, {
         name: name.trim(),
         description: description.trim() || null,
         color,
-        lead_id: leadId || null,
+        ...(leadChanged ? { lead_id: leadId || null } : {}),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({ error: 'Failed to save' }));

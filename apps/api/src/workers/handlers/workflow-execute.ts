@@ -16,10 +16,10 @@ import {
   tasks, taskComments, taskLabels, labels,
   taskRelationships, orgMembers,
 } from '@deft/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, or } from 'drizzle-orm';
 import { emitToUser } from '../../socket.js';
 import { createNotificationIfAllowed } from '../../lib/notification-policy.js';
-import { guestTaskScopeSql, visibleTaskSql } from '../../lib/task-visibility.js';
+import { guestTaskScopeSql, unrestrictedTaskCondition, visibleTaskSql } from '../../lib/task-visibility.js';
 
 interface WorkflowExecuteJobData {
   workflow_id: string;
@@ -116,9 +116,15 @@ export async function handleWorkflowExecute(job: JobData): Promise<void> {
         case 'assign_to': {
           if (!action.user_id) { results.push({ kind: 'assign_to', ok: false, error: 'missing user_id' }); break; }
           await assertActiveMember(rule.org_id, action.user_id);
-          await db.update(tasks)
+          // Assigning a task names its assignee, who then reads it. A rule
+          // (written or edited by any member) never grants that on a
+          // restricted task: it assigns one only to someone who may already
+          // see it, checked in the same statement (lib/task-visibility.ts).
+          const [assigned] = await db.update(tasks)
             .set({ assignee_id: action.user_id, updated_at: new Date() })
-            .where(eq(tasks.id, task.id));
+            .where(and(eq(tasks.id, task.id), or(unrestrictedTaskCondition(), visibleTaskSql(action.user_id))))
+            .returning({ id: tasks.id });
+          if (!assigned) { results.push({ kind: 'assign_to', ok: false, error: 'assignee may not see the task' }); break; }
           results.push({ kind: 'assign_to', ok: true });
           break;
         }
