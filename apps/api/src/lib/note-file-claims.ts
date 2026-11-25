@@ -26,10 +26,12 @@ import type { db } from './db.js';
 
 const CLAIM_BATCH = 500;
 const FILE_ID = /^[A-Za-z0-9_-]{1,64}$/;
-// An <img> start tag; a quoted attribute value may hold '>'. Each step takes
-// a different first character, so the match is linear.
-const IMG_TAG = /<img\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
-const COMMENT = /<!--[\s\S]*?-->/g;
+// A comment (to its end, or to the end of the content when unclosed, as a
+// browser reads it), or an <img> start tag, where a quoted attribute value
+// may hold '>'. Each step of the tag takes a different first character, so
+// the match is linear. Comments are matched only to be skipped: an image
+// inside one is not shown.
+const COMMENT_OR_IMG = /<!--[\s\S]*?(?:-->|$)|<img\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
 
 /** The value of attribute `name` in one tag, quoted or not, HTML entities for quotes left as they are. */
 function attribute(tag: string, name: string): string | null {
@@ -54,7 +56,8 @@ function fileIdFromLegacyUrl(value: string | null): string | null {
 export function noteFileIds(content: string | null | undefined): string[] {
   if (!content) return [];
   const ids = new Set<string>();
-  for (const [tag] of content.replace(COMMENT, '').matchAll(IMG_TAG)) {
+  for (const [tag] of content.matchAll(COMMENT_OR_IMG)) {
+    if (tag.startsWith('<!--')) continue;
     const id = attribute(tag, 'data-file-id') || fileIdFromLegacyUrl(attribute(tag, 'src'));
     if (id && FILE_ID.test(id)) ids.add(id);
   }

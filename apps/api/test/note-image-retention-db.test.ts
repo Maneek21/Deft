@@ -108,6 +108,7 @@ test('noteFileIds reads images as the editor does: data-file-id, else an older /
   assert.deepEqual(noteFileIds('<img src="/api/files/"><img data-file-id="">'), []);
   assert.deepEqual(noteFileIds(`<img alt="A > B" data-file-id="${a}">`), [a], 'a quoted > does not end the tag');
   assert.deepEqual(noteFileIds(`<!-- ${img(b)} -->${img(a)}`), [a], 'an image in a comment is not shown');
+  assert.deepEqual(noteFileIds(`${img(a)}<!-- unclosed ${img(b)}`), [a], 'nor one after an unclosed comment');
   const many = Array.from({ length: 1200 }, () => randomUUID());
   assert.equal(noteFileIds(many.map(img).join('')).length, 1200, 'no cap on images per note');
 });
