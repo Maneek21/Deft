@@ -15,6 +15,7 @@ import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { canDeleteTask } from '../lib/task-permissions.js';
 import { guestTaskScopeSql, taskAliasColumns, visibleTaskCondition } from '../lib/task-visibility.js';
 import { peopleViewer } from '../lib/people-visibility.js';
+import { withoutHiddenParent, withoutHiddenParents } from '../lib/task-parent-projection.js';
 import { visibleWikiPageCondition } from '../lib/wiki-visibility.js';
 import { allowedNextStatuses, isValidTransition } from '../lib/task-status-machine.js';
 import { getProjectResolvedConfig } from '../lib/project-resolved-config.js';
@@ -197,17 +198,6 @@ async function parentTaskUsable(parentId: string, orgId: string, userId: string)
 }
 
 /**
- * A task row as `userId` may see it: for a guest, a parent hidden from them is
- * not named, not even by id (lib/task-visibility.ts). Anyone else gets the
- * row unchanged.
- */
-async function withoutHiddenParent<T extends { parent_task_id: string | null }>(row: T, orgId: string, userId: string): Promise<T> {
-  if (!row.parent_task_id || await parentTaskUsable(row.parent_task_id, orgId, userId)) return row;
-  if (!(await peopleViewer(orgId, userId)).guest) return row;
-  return { ...row, parent_task_id: null };
-}
-
-/**
  * Task 6.4 — extract `@name` / `@user_id` tokens from a free-form HTML/text
  * payload and resolve them against the org's member roster. Case-insensitive
  * partial match against `name`/`email`, first exact match wins; direct
@@ -385,7 +375,7 @@ taskRoutes.get('/my', async (c) => {
           .from(tasks)
           .where(
             and(
-              inArray(tasks.parent_task_id, taskIds),
+              inArray(tasks.parent_task_id, taskIds), eq(tasks.org_id, user.org_id),
               eq(tasks.is_deleted, false),
               guestTaskScopeSql(user.id),
             )
@@ -784,7 +774,7 @@ taskRoutes.get('/table', async (c) => {
       parent_task_id: tasks.parent_task_id,
       total: sql<number>`count(*)::int`,
       done: sql<number>`count(*) filter (where ${tasks.status} = 'done')::int`,
-    }).from(tasks).where(and(inArray(tasks.parent_task_id, taskIds), eq(tasks.is_deleted, false), guestTaskScopeSql(user.id))).groupBy(tasks.parent_task_id) : [];
+    }).from(tasks).where(and(inArray(tasks.parent_task_id, taskIds), eq(tasks.org_id, user.org_id), eq(tasks.is_deleted, false), guestTaskScopeSql(user.id))).groupBy(tasks.parent_task_id) : [];
     const subtaskMap = new Map(subtaskCounts.map((item) => [item.parent_task_id, item]));
     const creatorIds = [...new Set(pageRows.map((task) => task.created_by))];
     const creatorRows = creatorIds.length ? await db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, creatorIds)) : [];
@@ -797,7 +787,7 @@ taskRoutes.get('/table', async (c) => {
       subtask_done_count: subtaskMap.get(task.id)?.done ?? 0,
     }));
     const last = enriched.at(-1);
-    const data = enriched.map(({ group_cursor_value: _groupCursorValue, ...task }) => task);
+    const data = await withoutHiddenParents(enriched.map(({ group_cursor_value: _groupCursorValue, ...task }) => task), user.org_id, user.id);
     return c.json({
       data,
       total: countRow?.total ?? 0,
@@ -1316,7 +1306,9 @@ taskRoutes.get('/:id', async (c) => {
       })
         .from(tasks)
         .innerJoin(projects, eq(tasks.project_id, projects.id))
-        .where(and(eq(tasks.id, task.parent_task_id), eq(tasks.org_id, user.org_id), guestTaskScopeSql(user.id)))
+        .where(and(eq(tasks.id, task.parent_task_id), eq(tasks.org_id, user.org_id), guestTaskScopeSql(user.id),
+          // A guest is not shown a deleted parent (fetching it answers 404 too).
+          (await peopleViewer(user.org_id, user.id)).guest ? eq(tasks.is_deleted, false) : undefined))
         .limit(1);
       parentTask = pt ?? null;
     }
@@ -1775,7 +1767,7 @@ taskRoutes.get('/project/:projectId', async (c) => {
           .from(tasks)
           .where(
             and(
-              inArray(tasks.parent_task_id, taskIds),
+              inArray(tasks.parent_task_id, taskIds), eq(tasks.org_id, user.org_id),
               eq(tasks.is_deleted, false),
               guestTaskScopeSql(user.id),
             )
@@ -1850,7 +1842,7 @@ async function createTaskForProject(
     create: async (tx) => {
     return createNativeTask(tx,{...data,org_id:orgId,project_id:projectId,user_id:userId,assignee_id:assigneeId});
   } });
-  if (replayed) return { task, project };
+  if (replayed) return { task: await withoutHiddenParent(task, orgId, userId), project };
   const taskNumber = task.number;
 
   // Members reload task content through the audience-checked reads.
@@ -2038,7 +2030,7 @@ taskRoutes.patch('/:id', async (c) => {
         return c.json({
           error: 'Task changed after it was loaded',
           code: 'TASK_STALE',
-          current_task: existingTask,
+          current_task: await withoutHiddenParent(existingTask, user.org_id, user.id),
         }, 409);
       }
     }
@@ -2982,14 +2974,22 @@ taskRoutes.get('/:id/subtree', async (c) => {
       WHERE ${guestTaskScopeSql(user.id, taskAliasColumns('subtree_task'))}
       ORDER BY subtree.depth, subtree.title
     `);
-    const rows: Array<{ id: string; parent_task_id: string | null }> = (result as any).rows ?? result;
-    // A row whose parent is hidden from a guest (left out above) names no
-    // parent, not even by id (lib/task-visibility.ts). For anyone else every
-    // parent is the root or another row, so nothing changes.
-    const shown = new Set([taskId, ...(Array.isArray(rows) ? rows.map((row) => row.id) : [])]);
-    const subtasks = Array.isArray(rows)
-      ? rows.map((row) => (row.parent_task_id && !shown.has(row.parent_task_id) ? { ...row, parent_task_id: null } : row))
-      : [];
+    const rows: Array<{ id: string; title: string; parent_task_id: string | null; depth: number }> =
+      Array.isArray((result as any).rows ?? result) ? ((result as any).rows ?? result) : [];
+    // A row under a task hidden from a guest (left out above) hangs from the
+    // root task instead, with its depth counted over shown tasks
+    // only, so no hidden task can be named or inferred (lib/task-visibility.ts).
+    // For anyone else every parent is the root or another row: unchanged.
+    const shown = new Set([taskId, ...rows.map((row) => row.id)]);
+    if (rows.every((row) => row.parent_task_id !== null && shown.has(row.parent_task_id))) return c.json({ subtasks: rows });
+    const depthOf = new Map<string, number>([[taskId, -1]]);
+    const subtasks = rows.map((row) => {
+      // Rows come ordered by depth, so a shown parent is placed before its children.
+      const parent = row.parent_task_id && shown.has(row.parent_task_id) ? row.parent_task_id : taskId;
+      const depth = (depthOf.get(parent) ?? -1) + 1;
+      depthOf.set(row.id, depth);
+      return { ...row, parent_task_id: parent, depth };
+    }).sort((a, b) => a.depth - b.depth || String(a.title).localeCompare(String(b.title)));
     return c.json({ subtasks });
   } catch (err) {
     console.error('Failed to fetch subtree:');

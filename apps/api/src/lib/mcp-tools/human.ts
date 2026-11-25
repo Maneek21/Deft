@@ -35,6 +35,7 @@ import {
 } from '@deft/db/schema';
 import { retrieveContext, type ContextResult } from '../retrieve-context.js';
 import { guestTaskScopeSql, taskAliasColumns, visibleTaskCondition } from '../task-visibility.js';
+import { withoutHiddenParent, withoutHiddenParents } from '../task-parent-projection.js';
 import { visibleWikiPageCondition } from '../wiki-visibility.js';
 import { errorResult, textResult, type ToolResult } from './types.js';
 import { enrichOAuthAuditActions } from '../oauth-audit-receipts.js';
@@ -1881,7 +1882,8 @@ export async function humanListMyTasks(args: { status?: string; include_complete
     .where(and(...conditions))
     .orderBy(desc(tasks.updated_at))
     .limit(Math.min(Math.max(1, args.limit ?? 20), 50));
-  return textResult(rows);
+  // A parent hidden from a guest is not named, not even by id (task-parent-projection.ts).
+  return textResult(await withoutHiddenParents(rows, ctx.org_id, ctx.user_id));
 }
 
 export async function humanTaskGet(args: { task_id?: string }, ctx: HumanToolContext): Promise<ToolResult> {
@@ -2305,7 +2307,7 @@ export async function humanTaskUpdate(args: { task_id?: string; patch?: Record<s
     }
     // Nothing left to change (only the current assignee was re-sent): write
     // nothing, so updated_at never moves and no concurrent edit is undone.
-    if (Object.keys(updates).length === 0) return textResult(existingTask);
+    if (Object.keys(updates).length === 0) return textResult(await withoutHiddenParent(existingTask, ctx.org_id, ctx.user_id));
     const [task] = await db.update(tasks).set(updates).where(and(eq(tasks.id, taskId), eq(tasks.org_id, ctx.org_id), eq(tasks.is_deleted, false))).returning();
     if (!task) return errorResult('task_update: task not found');
     const activityEntries: Array<{ action: string; field: string; old_value: string | null; new_value: string | null }> = [];
@@ -2356,7 +2358,7 @@ export async function humanTaskUpdate(args: { task_id?: string; patch?: Record<s
         payload: { old_status: existingTask.status, new_status: updates.status },
       });
     }
-    return textResult(task);
+    return textResult(await withoutHiddenParent(task, ctx.org_id, ctx.user_id));
   });
 }
 
@@ -2376,7 +2378,7 @@ export async function humanTaskTransition(args: { task_id?: string; status?: str
       .limit(1);
     if (!existingTask) return errorResult('task_transition: task not found');
     if (existingTask.status === status) {
-      return textResult({ ...existingTask, unchanged: true, task_key: null });
+      return textResult({ ...(await withoutHiddenParent(existingTask, ctx.org_id, ctx.user_id)), unchanged: true, task_key: null });
     }
     const [task] = await db
       .update(tasks)
@@ -2408,7 +2410,7 @@ export async function humanTaskTransition(args: { task_id?: string; status?: str
       },
     });
     return textResult({
-      ...task,
+      ...(await withoutHiddenParent(task, ctx.org_id, ctx.user_id)),
       task_key: taskReference(project?.prefix ?? null, task.number),
       transition: {
         from: existingTask.status,

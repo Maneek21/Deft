@@ -9,6 +9,7 @@ import { emitToUser, emitOrgTaskEvent } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { guestTaskScopeSql, taskAliasColumns, visibleTaskCondition } from '../lib/task-visibility.js';
 import { peopleViewer } from '../lib/people-visibility.js';
+import { withoutHiddenParent } from '../lib/task-parent-projection.js';
 import {
   getProjectResolvedConfig,
 } from '../lib/project-resolved-config.js';
@@ -578,7 +579,7 @@ async function listProjectTasks(c: any) {
           .from(tasks)
           .where(
             and(
-              inArray(tasks.parent_task_id, taskIds),
+              inArray(tasks.parent_task_id, taskIds), eq(tasks.org_id, user.org_id),
               eq(tasks.is_deleted, false),
               guestTaskScopeSql(user.id),
             )
@@ -693,7 +694,7 @@ projectRoutes.post('/:id/tasks', async (c) => {
 
         return task!;
     } });
-    if (replayed) return c.json({ ...task, project_prefix: project.prefix, project_name: project.name }, 201);
+    if (replayed) return c.json({ ...(await withoutHiddenParent(task, user.org_id, user.id)), project_prefix: project.prefix, project_name: project.name }, 201);
     const taskNumber = task.number;
 
     // Members reload task content through the audience-checked reads.

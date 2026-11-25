@@ -469,8 +469,8 @@ test('a subtask parent must be a task the caller may see: hidden, missing and fo
 
   // A task the guest sees whose parent is hidden from them names no parent, not even by id.
   const child = randomUUID();
-  await c.query(`INSERT INTO tasks (id, org_id, project_id, number, title, created_by, parent_task_id)
-    VALUES ($1, $2, $3, 9000, $4, $5, $6)`, [child, org, pIn, `gtv-${run}-child`, member, taskIds.outOrg]);
+  await c.query(`INSERT INTO tasks (id, org_id, project_id, number, title, created_by, parent_task_id, assignee_id)
+    VALUES ($1, $2, $3, 9000, $4, $5, $6, $7)`, [child, org, pIn, `gtv-${run}-child`, member, taskIds.outOrg, guest]);
   try {
     const forGuest = await get(guest, `/api/tasks/${child}`);
     assert.equal(forGuest.status, 200);
@@ -482,12 +482,17 @@ test('a subtask parent must be a task the caller may see: hidden, missing and fo
     const viaMcp = JSON.parse(text(await humanTaskGet({ task_id: child }, mcp(guest))));
     assert.equal(viaMcp.task.parent_task_id, null, 'MCP task_get');
     assert.equal(JSON.parse(text(await humanTaskGet({ task_id: child }, mcp(member)))).task.parent_task_id, taskIds.outOrg);
+    const mine = JSON.parse(text(await humanListMyTasks({ include_completed: true, limit: 50 }, mcp(guest)))) as Array<{ id: string; parent_task_id: string | null }>;
+    assert.equal(mine.find((row) => row.id === child)?.parent_task_id, null, 'MCP list_my_tasks');
     // Subtree of a visible task through a hidden middle task: the visible grandchild names no hidden parent.
     await c.query(`UPDATE tasks SET parent_task_id = $1 WHERE id = $2`, [taskIds.inOrg, taskIds.outOrg]);
     await c.query(`UPDATE tasks SET parent_task_id = $1 WHERE id = $2`, [taskIds.outOrg, child]);
     const tree = await get(guest, `/api/tasks/${taskIds.inOrg}/subtree`);
     assert.equal(tree.status, 200);
     assert.equal(mentions(tree.text, 'outOrg'), false, 'the hidden middle task is not named');
+    const placed = tree.body.subtasks.find((row: any) => row.id === child);
+    assert.equal(placed.parent_task_id, taskIds.inOrg, 'hangs from the root');
+    assert.equal(placed.depth, 0, 'no hidden level is counted');
     const memberTree = await get(member, `/api/tasks/${taskIds.inOrg}/subtree`);
     assert.ok(mentions(memberTree.text, 'outOrg'), 'members unchanged');
   } finally {
