@@ -752,6 +752,69 @@ test('a drive notification is listed and counted only while its reader can view 
   assert.equal(removed.unread, shared.unread - 1, 'no longer counted');
 });
 
+test('a drive notification that is also a readable mention delivery is listed and counted only while its reader can view the drive', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member, member2 } = fx.people;
+  const q = (text: string, values: unknown[]) => fx!.client.query(text, values);
+  const drive = await createDrive(member, { name: 'Mentioned drive', kind: 'private' });
+  await addMember(member, drive, { user: member2 }, 'view');
+  const [message, state, delivery, notification] = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
+  // A mention of member2 in a message of the team chat, which member2 can read: the delivery stays readable.
+  await q(`INSERT INTO messages (id, org_id, space_id, user_id, content) VALUES ($1, $2, $3, $4, 'a mention')`, [message, fx.orgId, fx.spaces.team, member]);
+  try {
+    await q(`INSERT INTO native_reference_states (id, org_id, source_kind, source_id, content_hash) VALUES ($1, $2, 'message', $3, 'hash')`,
+      [state, fx.orgId, message]);
+    await q(`INSERT INTO native_mention_deliveries (id, org_id, source_state_id, publication_revision, recipient_user_id, actor_user_id, status)
+      VALUES ($1, $2, $3, 1, $4, $5, 'delivered')`, [delivery, fx.orgId, state, member2, member]);
+    await q(`INSERT INTO notifications (id, org_id, user_id, type, title, metadata)
+      VALUES ($1, $2, $3, 'mention', 'Mentioned', jsonb_build_object('native_mention_delivery_id', $4::text, 'drive_id', $5::text))`,
+    [notification, fx.orgId, member2, delivery, drive]);
+    const inbox = async () => {
+      const body = await call(member2, 'GET', '/api/notifications', undefined, 200);
+      return { listed: (body.notifications as any[]).some((row) => row.id === notification), unread: body.unread_count as number };
+    };
+    const before = await inbox();
+    assert.equal(before.listed, true, 'listed while member2 can view the drive');
+    await call(member, 'DELETE', `/api/drives/${drive}/members/${await memberRowId(drive, member2)}`, undefined, 200);
+    const after = await inbox();
+    assert.equal(after.listed, false, 'the readable mention does not keep it listed');
+    // member2's drive_member notice for this drive goes too.
+    assert.equal(after.unread, before.unread - 2, 'neither is counted');
+  } finally {
+    await q('DELETE FROM notifications WHERE id = $1', [notification]);
+    await q('DELETE FROM native_mention_deliveries WHERE id = $1', [delivery]);
+    await q('DELETE FROM native_reference_states WHERE id = $1', [state]);
+    await q('DELETE FROM messages WHERE id = $1', [message]);
+  }
+});
+
+test('someone an admin adds to a private drive gets their drive_member notice and the admin_change notice', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { admin, member, member2 } = fx.people;
+  const drive = await createDrive(member, { name: 'Admin adds', kind: 'private' });
+  await addMember(admin, drive, { user: member2 }, 'view');
+  const { rows } = await fx.client.query(`SELECT user_id, metadata->>'subtype' AS subtype FROM notifications
+    WHERE org_id = $1 AND metadata->>'drive_id' = $2 ORDER BY user_id, subtype`, [fx.orgId, drive]);
+  const byPerson = (id: string) => rows.filter((row) => row.user_id === id).map((row) => row.subtype).sort();
+  assert.deepEqual(byPerson(member2), ['admin_change', 'drive_member'], 'the person added gets both');
+  assert.deepEqual(byPerson(member), ['admin_change']);
+  assert.deepEqual(byPerson(admin), [], 'never the admin who acted');
+});
+
+test('a direct grant tells the named person, agent included; a chat grant tells only the chat’s humans', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { agentUser, guest, member, member2 } = fx.people;
+  const drive = await createDrive(member, { name: 'Agent told', kind: 'private' });
+  const toldFor = async () => (await fx!.client.query(`SELECT user_id FROM notifications
+    WHERE org_id = $1 AND metadata->>'drive_id' = $2 AND metadata->>'subtype' = 'drive_member'`, [fx!.orgId, drive])).rows.map((row) => row.user_id);
+  await addMember(member, drive, { user: agentUser }, 'view');
+  assert.deepEqual(await toldFor(), [agentUser], 'an agent with an active employee, named directly');
+  await addMember(member, drive, { space: fx.spaces.team }, 'view');
+  const told = await toldFor();
+  assert.deepEqual(told.filter((id) => id !== agentUser).sort(), [member2, guest].sort(), 'the humans in the chat, apart from the actor');
+  assert.equal(told.filter((id) => id === agentUser).length, 1, 'the chat grant does not tell the agent again');
+});
+
 test('adding a person or a chat, or linking a chat, tells the people it reaches apart from the actor', async (t) => {
   if (!fx) return t.skip(SKIP);
   const { agentUser, guest, member, member2 } = fx.people;

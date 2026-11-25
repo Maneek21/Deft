@@ -82,9 +82,11 @@ export function nativeDeliveryAccessSql(userId: string | SQL, deliveryId: SQL, o
  * that task (noticeNamesGuestHiddenTaskSql). A notification that names a
  * drive (`metadata.drive_id`) and no document is shown only while the reader
  * can view that drive (visibleDriveIdSql): a drive shared with them, or an
- * admin's change to a private drive's members. F9 adds the document branch.
- * A notification that names none of these (reminders without a source,
- * system notices) is unaffected.
+ * admin's change to a private drive's members. That check stands outside the
+ * mention/source CASE, so it holds whichever branch the notification takes,
+ * a mention delivery included. F9 adds the document branch. A notification
+ * that names none of these (reminders without a source, system notices) is
+ * unaffected.
  */
 export function nativeNotificationAccessSql(
   userId: string | SQL, metadata: SQL, orgId: SQL, link: SQL = sql`${notifications.link}`,
@@ -101,9 +103,9 @@ export function nativeNotificationAccessSql(
       AND (${messageId} IS NULL OR EXISTS (
         SELECT 1 FROM messages nlm WHERE nlm.id = ${messageId} AND nlm.org_id = ${orgId}
           AND nlm.is_deleted = false AND ${readableSpaceSql(userId, sql`nlm.space_id`, orgId)}))
-      AND (${driveId} IS NULL OR ${metadata}->>'document_id' IS NOT NULL
-        OR ${visibleDriveIdSql(userId, orgId, driveId)})
-    END) AND NOT ${noticeNamesGuestHiddenTaskSql(userId, metadata, orgId, link)})`;
+    END)
+    AND (${driveId} IS NULL OR ${metadata}->>'document_id' IS NOT NULL OR ${visibleDriveIdSql(userId, orgId, driveId)})
+    AND NOT ${noticeNamesGuestHiddenTaskSql(userId, metadata, orgId, link)})`;
 }
 
 /**

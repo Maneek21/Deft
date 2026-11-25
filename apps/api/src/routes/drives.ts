@@ -22,9 +22,9 @@
 //   read: 400 PRINCIPAL_CANNOT_HOLD_ACCESS. Lowering or removing a grant is
 //   always allowed, so stale grants can be cleaned up.
 // - Adding a person or a chat, or linking a chat, sends `document_shared`
-//   (subtype `drive_member`) to the person, or to each human in the chat,
-//   apart from the actor. Notifications naming a drive stay listed only while
-//   the reader can view it (lib/native-mention-visibility.ts).
+//   (subtype `drive_member`) to the person, human or agent, or to each human
+//   in the chat, apart from the actor. Notifications naming a drive stay
+//   listed only while the reader can view it (lib/native-mention-visibility.ts).
 //
 // Access changes (consult rule C3): removing or lowering a member, removing or
 // lowering a link, lowering a default role and deleting a drive run
@@ -287,13 +287,11 @@ function drivePeopleSql(orgId: string, driveId: string): SQL {
       WHERE told_chat.drive_id = ${driveId} AND told_chat.principal_type = 'space'`;
 }
 
-/** The person a principal names, or the people in the chat it names. */
-function principalPeopleSql(orgId: string, principalType: 'user' | 'space', principalId: string): SQL {
-  return principalType === 'user'
-    ? sql`SELECT ${principalId}::text AS user_id`
-    : sql`SELECT told_seat.user_id FROM ${spaceMembers} told_seat
-        JOIN ${spaces} told_space ON told_space.id = told_seat.space_id AND told_space.org_id = ${orgId}
-        WHERE told_seat.space_id = ${principalId}`;
+/** The people in the chat `spaceId` of `orgId`. */
+function chatPeopleSql(orgId: string, spaceId: string): SQL {
+  return sql`SELECT told_seat.user_id FROM ${spaceMembers} told_seat
+    JOIN ${spaces} told_space ON told_space.id = told_seat.space_id AND told_space.org_id = ${orgId}
+    WHERE told_seat.space_id = ${spaceId}`;
 }
 
 type Notice = { subtype: 'admin_change' | 'drive_member'; title: string; body: string };
@@ -338,13 +336,14 @@ const ADMIN_CHANGE_BODY: Record<AdminChange['change'], string> = {
 
 /**
  * After commit, for a change made through the admin path: every current
- * human member apart from the actor (and anyone `alreadyTold`) is sent the
- * `admin_change` notice. Agents read their work through MCP and aren't sent it.
+ * human member apart from the actor is sent the `admin_change` notice,
+ * naming the admin who acted. That includes anyone the change just added,
+ * who also gets their `drive_member` notice. Agents read their work through
+ * MCP and aren't sent it.
  */
-async function tellMembersOfAdminChange(user: AuthUser, drive: DriveRow, change: AdminChange['change'], alreadyTold: readonly string[] = []): Promise<void> {
+async function tellMembersOfAdminChange(user: AuthUser, drive: DriveRow, change: AdminChange['change']): Promise<void> {
   try {
-    const recipients = (await activeHumans(user.org_id, user.id, drivePeopleSql(user.org_id, drive.id)))
-      .filter((id) => !alreadyTold.includes(id));
+    const recipients = await activeHumans(user.org_id, user.id, drivePeopleSql(user.org_id, drive.id));
     await tell(user, drive, recipients, { subtype: 'admin_change', title: `Drive members changed: ${drive.name}`, body: ADMIN_CHANGE_BODY[change] });
   } catch {
     console.error('[drives] telling members of an admin change failed');
@@ -352,22 +351,24 @@ async function tellMembersOfAdminChange(user: AuthUser, drive: DriveRow, change:
 }
 
 /**
- * After commit: the person a new grant names, or each human in the chat it
- * names, apart from the actor, is told the drive was shared with them.
- * Returns who was told.
+ * After commit: the people a new grant reaches are told the drive was shared
+ * with them, apart from the actor. A grant to a person tells that person,
+ * human or agent, while they can hold access (canHoldDocumentAccess). A grant
+ * to a chat, or a link, tells the humans in the chat.
  */
-async function tellAdded(user: AuthUser, drive: DriveRow, principalType: 'user' | 'space', principalId: string): Promise<string[]> {
+async function tellAdded(user: AuthUser, drive: DriveRow, principalType: 'user' | 'space', principalId: string): Promise<void> {
   try {
-    const recipients = await activeHumans(user.org_id, user.id, principalPeopleSql(user.org_id, principalType, principalId));
+    if (principalType === 'user') {
+      if (principalId === user.id || !(await canHoldDocumentAccess(principalId, user.org_id))) return;
+      await tell(user, drive, [principalId], { subtype: 'drive_member', title: `Drive shared with you: ${drive.name}`, body: 'You can now open this drive.' });
+      return;
+    }
+    const recipients = await activeHumans(user.org_id, user.id, chatPeopleSql(user.org_id, principalId));
     await tell(user, drive, recipients, {
-      subtype: 'drive_member',
-      title: `Drive shared with you: ${drive.name}`,
-      body: principalType === 'user' ? 'You can now open this drive.' : 'This drive was shared with a chat you are in.',
+      subtype: 'drive_member', title: `Drive shared with you: ${drive.name}`, body: 'This drive was shared with a chat you are in.',
     });
-    return recipients;
   } catch {
     console.error('[drives] telling new members failed');
-    return [];
   }
 }
 
@@ -584,8 +585,8 @@ driveRoutes.post('/:id/members', async (c) => {
       return { access, member: member! };
     });
     emitDocumentAccessChanged(memberChange(user.org_id, outcome.access.drive.id, outcome.member));
-    const told = await tellAdded(user, outcome.access.drive, principalType, principalId);
-    if (outcome.access.adminPath) await tellMembersOfAdminChange(user, outcome.access.drive, 'added', told);
+    await tellAdded(user, outcome.access.drive, principalType, principalId);
+    if (outcome.access.adminPath) await tellMembersOfAdminChange(user, outcome.access.drive, 'added');
     return c.json({ member: memberShape(outcome.member) }, 201);
   } catch (error) {
     if (error instanceof Refused) return answer(c, error.refusal);
