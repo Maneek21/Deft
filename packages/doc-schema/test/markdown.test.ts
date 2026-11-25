@@ -153,6 +153,20 @@ test('an image inside a sentence becomes its own block', () => {
   ]);
 });
 
+test('backslashes in an image alt, URL or title survive Markdown unchanged', () => {
+  const images = [
+    { alt: 'C:\\charts\\q3 [draft]', src: 'https://example.com/a\\b(1).png', title: 'say "hi" \\o/' },
+    { alt: 'ends with \\', src: 'https://example.com/path with space\\x.png', title: 'trailing \\' },
+    { alt: '\\[not a link\\]', src: 'https://example.com/\\)', title: null },
+  ];
+  for (const attrs of images) {
+    const source = doc({ type: 'image', attrs: { id: blockId(1), fileId: null, ...attrs } });
+    const back = markdownToJson(jsonToMarkdown(source, { blockIds: true }));
+    assertValid(back);
+    assert.deepEqual(back, source, JSON.stringify(attrs));
+  }
+});
+
 test('an image round-trips as deft-file:<id>', () => {
   const source = doc({ type: 'image', attrs: { id: blockId(1), src: null, alt: 'Roadmap', title: null, fileId: 'file_123' } });
   const markdown = jsonToMarkdown(source, { blockIds: true });

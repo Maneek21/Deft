@@ -1,5 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { htmlToJson, jsonToMarkdown } from '../src/index.js';
 
 test('htmlToJson drops script, iframe and onclick and counts them', () => {
@@ -21,6 +23,34 @@ test('htmlToJson counts style, object, embed, form, input, link and meta too', (
   );
   // style, object, embed, form, input (inside the form), link, meta, and two handlers.
   assert.equal(dropped, 9);
+});
+
+test('htmlToJson makes no network request for untrusted HTML', async () => {
+  let requests = 0;
+  const server = createServer((_request, response) => {
+    requests += 1;
+    response.end('x');
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const { json, dropped } = htmlToJson(
+      `<link rel="stylesheet" href="${base}/style.css"><iframe src="${base}/frame"></iframe>`
+        + `<script src="${base}/script.js"></script><img src="${base}/image.png" alt="Remote">`
+        + `<object data="${base}/object"></object><p>Text</p>`,
+    );
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.equal(requests, 0, 'parsing asked the server for nothing');
+    assert.equal(dropped, 4, 'link, iframe, script and object are dropped and counted');
+    assert.deepEqual(json.content!.map(node => node.type), ['image', 'paragraph']);
+    assert.equal(json.content![0]!.attrs!.src, `${base}/image.png`, 'the image is kept as a reference, not fetched');
+
+    await fetch(`${base}/control`);
+    assert.equal(requests, 1, 'the server does count a real request');
+  } finally {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  }
 });
 
 test('htmlToJson counts a handler inside a removed element', () => {

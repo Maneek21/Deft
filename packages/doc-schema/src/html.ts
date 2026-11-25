@@ -1,13 +1,13 @@
 import type { JSONContent } from '@tiptap/core';
-import { generateJSON } from '@tiptap/html/server';
-import { DOMSerializer } from '@tiptap/pm/model';
+import { DOMParser, DOMSerializer } from '@tiptap/pm/model';
 import {
   Window,
   type DocumentFragment as HappyDocumentFragment,
   type Element as HappyElement,
   type HTMLTemplateElement as HappyTemplateElement,
 } from 'happy-dom';
-import { documentSchemaExtensions, getDocumentSchema } from './extensions';
+import { plainJson } from './convert';
+import { getDocumentSchema } from './extensions';
 
 /** Elements removed (with everything inside them) before HTML is read, and counted. */
 const UNSAFE_ELEMENTS = 'script, style, iframe, object, embed, form, input, link, meta';
@@ -19,15 +19,42 @@ const UNSAFE_ELEMENTS = 'script, style, iframe, object, embed, form, input, link
  */
 const TASK_ITEM_CHECKBOX = 'li[data-type="taskItem"] > label > input[type="checkbox"]';
 
-/** A happy-dom window that runs no script and loads nothing, closed after `use`. Same settings as `@tiptap/html/server`. */
+/**
+ * A happy-dom window for untrusted HTML, closed after `use`: it runs no
+ * script, loads no script, stylesheet, image or frame, cannot navigate, and
+ * refuses every request it would make anyway. These are happy-dom 21's
+ * setting names; JavaScript evaluation and CSS, image and iframe loading are
+ * off by default there, and are set off here so a default can't change it.
+ */
 function withWindow<T>(use: (window: Window) => T): T {
   const window = new Window({
     settings: {
-      disableJavaScriptEvaluation: true,
+      enableJavaScriptEvaluation: false,
       disableJavaScriptFileLoading: true,
-      disableCSSFileLoading: true,
-      disableIframePageLoading: true,
+      enableCSSFileLoading: false,
+      enableImageFileLoading: false,
+      enableIframePageLoading: false,
       disableComputedStyleRendering: true,
+      navigation: {
+        disableMainFrameNavigation: true,
+        disableChildFrameNavigation: true,
+        disableChildPageNavigation: true,
+        disableFallbackToSetURL: true,
+      },
+      fetch: {
+        interceptor: {
+          beforeAsyncRequest: async ({ window: requester }) => new requester.Response(null, { status: 403 }),
+          beforeSyncRequest: ({ request, window: requester }) => ({
+            status: 403,
+            statusText: 'Forbidden',
+            ok: false,
+            url: request.url,
+            redirected: false,
+            headers: new requester.Headers(),
+            body: null,
+          }),
+        },
+      },
     },
   });
   try {
@@ -50,43 +77,44 @@ function allElements(root: HappyElement | HappyDocumentFragment): HappyElement[]
 }
 
 /**
- * Removes unsafe elements and `on*` attributes; returns the HTML left and how
- * many were removed. Everything is counted over the whole input (template
+ * Removes unsafe elements and `on*` attributes from `body`; returns how many
+ * were removed. Everything is counted over the whole input (template
  * contents included) before anything is removed, so a handler inside a
  * removed element still counts.
  */
-function stripUnsafe(html: string): { html: string; dropped: number } {
-  return withWindow(window => {
-    const body = new window.DOMParser().parseFromString(`<!DOCTYPE html><html><body>${html}</body></html>`, 'text/html').body;
-    const elements = allElements(body);
-    let dropped = 0;
-    for (const element of elements) {
-      for (const name of element.getAttributeNames()) {
-        if (!name.toLowerCase().startsWith('on')) continue;
-        element.removeAttribute(name);
-        dropped += 1;
-      }
+function stripUnsafe(body: HappyElement): number {
+  const elements = allElements(body);
+  let dropped = 0;
+  for (const element of elements) {
+    for (const name of element.getAttributeNames()) {
+      if (!name.toLowerCase().startsWith('on')) continue;
+      element.removeAttribute(name);
+      dropped += 1;
     }
-    const unsafe = elements.filter(element => element.matches(UNSAFE_ELEMENTS));
-    for (const element of unsafe) {
-      if (!element.matches(TASK_ITEM_CHECKBOX)) dropped += 1;
-    }
-    for (const element of unsafe) element.remove();
-    return { html: body.innerHTML, dropped };
-  });
+  }
+  const unsafe = elements.filter(element => element.matches(UNSAFE_ELEMENTS));
+  for (const element of unsafe) {
+    if (!element.matches(TASK_ITEM_CHECKBOX)) dropped += 1;
+  }
+  for (const element of unsafe) element.remove();
+  return dropped;
 }
 
 /**
- * Reads HTML (a note, a paste, an HTML block in Markdown) into a document.
- * Scripts, styles, frames, embeds, forms and inline event handlers are
- * dropped first and counted in `dropped`; anything else the schema has no
- * place for is left out by the parser.
+ * Reads untrusted HTML (a note, a paste, an import, an HTML block in
+ * Markdown) into a document. The HTML is parsed once, in the locked-down
+ * window above; scripts, styles, frames, embeds, forms and inline event
+ * handlers are dropped and counted in `dropped`; then ProseMirror's own
+ * parser reads what is left against the document schema, leaving out
+ * anything the schema has no place for.
  */
 export function htmlToJson(html: string): { json: JSONContent; dropped: number } {
-  const clean = stripUnsafe(html);
-  // Through JSON so the result is plain objects, not ProseMirror's null-prototype attrs.
-  const json = JSON.parse(JSON.stringify(generateJSON(clean.html, documentSchemaExtensions()))) as JSONContent;
-  return { json, dropped: clean.dropped };
+  return withWindow(window => {
+    const page = new window.DOMParser().parseFromString(`<!DOCTYPE html><html><body>${html}</body></html>`, 'text/html');
+    const dropped = stripUnsafe(page.body);
+    const doc = DOMParser.fromSchema(getDocumentSchema()).parse(page.body as unknown as globalThis.Node);
+    return { json: plainJson(doc), dropped };
+  });
 }
 
 /** The HTML of a node: a whole node's outer HTML, or a `doc`'s content. Used for Markdown HTML blocks. */

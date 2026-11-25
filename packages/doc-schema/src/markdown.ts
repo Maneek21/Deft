@@ -28,7 +28,15 @@ const MARKER = 'deftMarkdownMarker';
 /** An HTML block in Markdown must not contain a blank line, so newlines are written as character references. */
 const oneLine = (html: string) => html.replace(/\r/g, '&#13;').replace(/\n/g, '&#10;');
 const escapeAttribute = (value: string) => value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-const escapeImageText = (value: string) => value.replace(/([\\[\]])/g, '\\$1');
+// Markdown escapes below use one regex each, the backslash among its characters, so a
+// backslash in the input is always escaped along with the rest.
+const escapeImageText = (value: string) => value.replace(/[\\[\]]/g, '\\$&');
+const escapeTitle = (value: string) => value.replace(/[\\"]/g, '\\$&');
+/** A link destination: inside `<…>` when it holds whitespace or an angle bracket, otherwise bare. */
+const escapeDestination = (url: string) =>
+  /[\s<>]/.test(url) ? `<${url.replace(/[\\<>]/g, '\\$&')}>` : url.replace(/[\\()]/g, '\\$&');
+/** Undoes Markdown backslash escapes (a backslash before ASCII punctuation); marked leaves them in an image's alt. */
+const unescapeMarkdown = (value: string) => value.replace(/\\([!-/:-@[-`{-~])/g, '$1');
 
 function calloutHtml(node: JSONContent): string {
   const id = typeof node.attrs?.id === 'string' ? ` data-id="${escapeAttribute(node.attrs.id)}"` : '';
@@ -38,8 +46,8 @@ function calloutHtml(node: JSONContent): string {
 
 function imageMarkdown(node: JSONContent): string {
   const attrs = node.attrs ?? {};
-  const target = attrs.fileId ? `${FILE_SCHEME}${attrs.fileId}` : String(attrs.src ?? '');
-  const title = attrs.title ? ` "${String(attrs.title).replace(/"/g, '\\"')}"` : '';
+  const target = escapeDestination(attrs.fileId ? `${FILE_SCHEME}${attrs.fileId}` : String(attrs.src ?? ''));
+  const title = attrs.title ? ` "${escapeTitle(String(attrs.title))}"` : '';
   return `![${escapeImageText(String(attrs.alt ?? ''))}](${target}${title})`;
 }
 
@@ -48,7 +56,12 @@ function imageFromToken(token: MarkdownToken): JSONContent {
   const file = href.startsWith(FILE_SCHEME) ? href.slice(FILE_SCHEME.length) : null;
   return {
     type: 'image',
-    attrs: { src: file ? null : href || null, alt: token.text || null, title: token.title || null, fileId: file || null },
+    attrs: {
+      src: file ? null : href || null,
+      alt: token.text ? unescapeMarkdown(String(token.text)) : null,
+      title: token.title || null,
+      fileId: file || null,
+    },
   };
 }
 
