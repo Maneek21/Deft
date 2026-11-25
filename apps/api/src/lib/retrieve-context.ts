@@ -15,6 +15,7 @@ import { wikiPages, agentMemory, notes, tasks, spaceMembers, spaces, projects, a
 import { embedQuiet, EMBED_DIMS } from './embed.js';
 import { unrestrictedTaskCondition, visibleTaskCondition } from './task-visibility.js';
 import { visibleWikiPageCondition, wikiPageRelevantToSpaceCondition } from './wiki-visibility.js';
+import { visibleNoteCondition } from './note-visibility.js';
 import { publicSpaceVisibleSql } from './space-visibility.js';
 import {
   deftyModuleActor,
@@ -839,17 +840,10 @@ async function fetchNotes(
     // NOTE: trigram index (pg_trgm) on notes.content is planned (Task 1.4)
     // to avoid sequential scans on ILIKE. Until then this will scan.
     //
-    // Task 5.2: include org-visible notes for all callers. When user_id is
-    // present we return the user's own notes (any visibility), org-visible
-    // notes from other users, and space-visible notes only for spaces the user
-    // belongs to. When user_id is absent (system queries) we return only
-    // org-visible notes so private/space notes are never leaked.
-    const visibleSpaceIds = user_id
-      ? db.select({ space_id: spaceMembers.space_id })
-        .from(spaceMembers)
-        .where(eq(spaceMembers.user_id, user_id))
-      : undefined;
-
+    // With a user: the one note rule (lib/note-visibility.ts), so a guest
+    // gets no note visible to the whole workspace. Without one (system
+    // queries) only notes visible to the whole workspace, so private and
+    // space notes are never leaked.
     const rows = await db
       .select({
         id: notes.id,
@@ -861,16 +855,7 @@ async function fetchNotes(
         and(
           eq(notes.org_id, org_id),
           eq(notes.is_deleted, false),
-          or(
-            user_id ? eq(notes.user_id, user_id) : undefined,
-            eq(notes.visibility, 'org'),
-            user_id && visibleSpaceIds
-              ? and(
-                  eq(notes.visibility, 'space'),
-                  inArray(notes.visibility_space_id, visibleSpaceIds),
-                )
-              : undefined,
-          ),
+          user_id ? visibleNoteCondition(user_id) : eq(notes.visibility, 'org'),
           or(
             sql`${notes.title} ILIKE ${`%${forIlike}%`}`,
             sql`${notes.content} ILIKE ${`%${forIlike}%`}`,
@@ -1194,10 +1179,8 @@ export async function retrieveContextWithDiagnostics(
       ? fetchMemory(org_id, user_id, conversation_id, forIlike, words, limit)
       : Promise.resolve([]),
 
-    // 6. Notes branch respects visibility (Task 5.2). When user_id is present,
-    //    returns the user's own notes plus org-visible notes. When user_id is
-    //    absent (system queries), returns only org-visible notes — private notes
-    //    are never leaked.
+    // 6. Notes branch respects visibility: with user_id, the notes that user
+    //    may see (lib/note-visibility.ts); without, only org-visible notes.
     types.includes('notes')
       ? fetchNotes(org_id, user_id, forIlike, words, limit)
       : Promise.resolve([]),

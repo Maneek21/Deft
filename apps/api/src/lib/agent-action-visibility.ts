@@ -7,6 +7,7 @@ import {requireSpaceMembership} from './space-membership.js';
 import {visibleTaskCondition} from './task-visibility.js';
 import {visibleWikiPageCondition} from './wiki-visibility.js';
 import {captureEvidenceAvailableSql} from './capture-evidence.js';
+import {fullWorkspaceViewSql} from './people-visibility-sql.js';
 export function visibleCaptureActionSql(user: { id: string | SQL; org_id: string | SQL }) {
   return sql`(
     ${agentActions.source} IS DISTINCT FROM 'defty_capture'
@@ -114,12 +115,14 @@ export async function canUndoAgentAction(
 
 /**
  * Note promotion (C13): the actor's own note, an org note, or a space note
- * in a space of the note's own org that the actor is a member of.
+ * in a space of the note's own org that the actor is a member of. An org
+ * note needs an owner, admin or member (or an agent) of that workspace, as
+ * visibleNoteCondition (lib/note-visibility.ts): never a guest.
  */
 export function promotableNoteSql(userId: string): SQL {
   return sql`(
     ${notes.user_id} = ${userId}
-    OR ${notes.visibility} = 'org'
+    OR (${notes.visibility} = 'org' AND ${fullWorkspaceViewSql(userId, notes.org_id)})
     OR (${notes.visibility} = 'space' AND EXISTS (
       SELECT 1 FROM space_members promotable_note_sm
       INNER JOIN spaces promotable_note_s ON promotable_note_s.id = promotable_note_sm.space_id
