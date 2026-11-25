@@ -3,7 +3,7 @@
  * stand-in for the network that records every request instead of sending it.
  */
 import { setApiRouteTemplates } from '../../src/lib/telemetry/route-templates.js';
-import { errorReporterDeps, resetErrorTelemetryForTest } from '../../src/lib/telemetry/error-reporter.js';
+import { errorReporterDeps, nameParts, resetErrorTelemetryForTest } from '../../src/lib/telemetry/error-reporter.js';
 import { forgetIssuedReferencesForTest } from '../../src/lib/telemetry/scrub.js';
 
 /** The hosted cell's own web address in these tests. */
@@ -51,7 +51,8 @@ export function useErrorReporter(env: NodeJS.ProcessEnv, options: { status?: Par
     env,
     fetch: network.fetch,
     release: async () => '0.3.0-preview.152',
-    knownValues: async () => ({ whole: options.known ?? [], parts: (options.known ?? []).flatMap((name) => name.split(/[s._-]+/)) }),
+    // The same split production uses (nameParts), so a test exercises the real parts.
+    knownValues: async () => ({ whole: options.known ?? [], parts: nameParts(options.known ?? []) }),
     isPaused: () => false,
     now: options.now ?? (() => Date.now()),
     webOrigins: () => options.webOrigins ?? [WEB_ORIGIN],

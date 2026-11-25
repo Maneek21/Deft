@@ -91,6 +91,11 @@ async function defaultRelease(): Promise<string> {
   return DEFT_RELEASE_VERSION;
 }
 
+/** Each part of each name ("Priya Raman" -> "Priya", "Raman"; "acme-robotics" -> "acme", "robotics"). */
+export function nameParts(names: readonly string[]): string[] {
+  return names.flatMap((name) => name.split(/[\s._-]+/u)).filter((part) => part.length > 0);
+}
+
 /**
  * The workspace's own names and its people's and agents' names, removed from
  * every message: whole names, and each part of a name as a whole word.
@@ -109,7 +114,7 @@ async function defaultKnownValues(): Promise<{ whole: string[]; parts: string[] 
     ...orgRows.flatMap((row) => [row.name, row.slug, row.slug.replace(/-[a-z0-9]{8}$/, '')]),
     ...people.map((row) => row.name),
   ];
-  return { whole, parts: whole.flatMap((name) => name.split(/[s._-]+/)) };
+  return { whole, parts: nameParts(whole) };
 }
 
 /** The web app's own addresses: browser frames from anywhere else are dropped. */

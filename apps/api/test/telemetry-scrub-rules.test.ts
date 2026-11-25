@@ -16,6 +16,8 @@ import {
   errorReporterDeps,
   flushErrorTelemetry,
   flushErrorTelemetryBeforeExit,
+  loadKnownValuesForTest,
+  nameParts,
 } from '../src/lib/telemetry/error-reporter.js';
 import { eventMessage, knownValuesPattern, parseStack, scrubMessage, scrubRouteTemplate } from '../src/lib/telemetry/scrub.js';
 import { setApiRouteTemplates } from '../src/lib/telemetry/route-templates.js';
@@ -54,6 +56,21 @@ test('addresses in any script, credentials after their scheme, card and phone nu
   assert.equal(scrubMessage('call 415-555-0199'), 'call <n>');
   // Line numbers and versions are not personal numbers.
   assert.equal(scrubMessage('at line 120:7 in 0.3.0'), 'at line 120:7 in 0.3.0');
+});
+
+test('names are split into their parts on spaces, dots, underscores and dashes', () => {
+  assert.deepEqual(nameParts(['Priya Raman', 'acme-robotics', 'jo.ann_smith', 'Søren  Kierkegaard']), [
+    'Priya', 'Raman', 'acme', 'robotics', 'jo', 'ann', 'smith', 'Søren', 'Kierkegaard',
+  ]);
+});
+
+test('through the reporter, a known name\'s parts never leave in a message', async () => {
+  const network = useErrorReporter(HOSTED_ENV, { known: ['Priya Raman'] });
+  await loadKnownValuesForTest();
+  captureJobError('dm', thrownBy(() => { (undefined as unknown as Record<string, () => void>).Raman!(); }));
+  await flushErrorTelemetry();
+  const wire = String(network.sent[0]!.init.body);
+  assert.doesNotMatch(wire, /Raman|Priya/);
 });
 
 test('name parts are removed as whole words; a member called "apps" blanks no frame', () => {
