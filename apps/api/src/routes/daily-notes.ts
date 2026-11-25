@@ -10,8 +10,8 @@ import { visibleNoteCondition } from '../lib/note-visibility.js';
 import { toPlainText } from '../lib/plain-text.js';
 import { createNativeNote } from '../lib/native-context-create.js';
 import { syncNoteFiles } from '../lib/note-file-claims.js';
+import { mentionsTaskKey } from '../lib/task-key.js';
 
-const TASK_ID_PATTERN = /([A-Z]+-\d+)/;
 
 async function enqueueNoteCrossReference(
   noteId: string,
@@ -21,7 +21,7 @@ async function enqueueNoteCrossReference(
 ): Promise<void> {
   if (!content) return;
   const plain = toPlainText(content);
-  if (!TASK_ID_PATTERN.test(plain)) return;
+  if (!mentionsTaskKey(plain)) return;
   try {
     await enqueue(QUEUE_NAMES.AGENT_JOBS, 'cross-reference', {
       sourceType: 'note',
