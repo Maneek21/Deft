@@ -8,6 +8,7 @@ import {
   attentionItems,
 } from '@deft/db/schema';
 import { db } from '../lib/db.js';
+import { readReviewGateScope } from '../lib/agent-action-review-gate.js';
 import {
   currentApprovalRecipientSql,
   ensureAttentionBackfillForUser,
@@ -95,7 +96,10 @@ async function hydrateApprovals(
     .map((item) => item.source_id);
   if (actionIds.length === 0) return rows.map((item) => ({ ...projectAttentionItem(item), approval: null }));
 
-  const actions = await db
+  const theseActions = and(inArray(agentActions.id, actionIds), eq(agentActions.org_id, viewer.org_id));
+  // The review gate planned only for the kinds of these actions, read on the
+  // snapshot it runs on (lib/agent-action-review-gate.ts, ReviewGateScope).
+  const actions = await db.transaction(async (tx) => tx
     .select({
       id: agentActions.id,
       action: agentActions.action,
@@ -114,10 +118,9 @@ async function hydrateApprovals(
     .from(agentActions)
     .leftJoin(agentEmployees, eq(agentEmployees.id, agentActions.agent_employee_id))
     .where(and(
-      inArray(agentActions.id, actionIds),
-      eq(agentActions.org_id, viewer.org_id),
-      currentApprovalRecipientSql(viewer.id),
-    ));
+      theseActions,
+      currentApprovalRecipientSql(viewer.id, await readReviewGateScope(tx, sql`FROM ${agentActions} WHERE ${theseActions}`)),
+    )), { isolationLevel: 'repeatable read', accessMode: 'read only' });
   // Whether this viewer may approve or reject, as the approve and reject routes
   // answer; `viewer_can_approve` is absent when only the App Run approval path
   // can tell. The ids keep the page's order.

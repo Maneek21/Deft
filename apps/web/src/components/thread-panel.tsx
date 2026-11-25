@@ -13,6 +13,7 @@ import { api } from '@/lib/api';
 import { createNativeCreateIntent } from '@/lib/native-create-intent';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { getSocket } from '@/lib/socket';
+import { ROOM_PENDING_APPROVALS_REFRESH_MS, useRoomPendingApprovalsRefresh } from '@/hooks/use-room-pending-approvals-refresh';
 import { watchCatchUp, type CatchUpResult } from '@/lib/space-socket';
 import { useAuth } from '@/lib/auth-context';
 import { X, Smile, ArrowLeft, FileText } from 'lucide-react';
@@ -270,7 +271,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     ? `/api/agent/actions/pending-by-space?space_id=${spaceId}`
     : null;
 
-  const { data: pendingByMessage, error: pendingActionsError } = useSWR(
+  const { data: pendingByMessage, error: pendingActionsError, mutate: refreshPendingApprovals } = useSWR(
     pendingBySpaceKey,
     async (url: string) => {
       const res = await api.get(url);
@@ -283,8 +284,9 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
       }
       return map;
     },
-    { refreshInterval: 5000, fallbackData: {} },
+    { refreshInterval: ROOM_PENDING_APPROVALS_REFRESH_MS, fallbackData: {} },
   );
+  useRoomPendingApprovalsRefresh(pendingBySpaceKey, refreshPendingApprovals);
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768);

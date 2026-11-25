@@ -16,6 +16,7 @@ import { createNativeCreateIntent } from '@/lib/native-create-intent';
 import { openDeftyDm } from '@/lib/quick-actions';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { getSocket } from '@/lib/socket';
+import { ROOM_PENDING_APPROVALS_REFRESH_MS, useRoomPendingApprovalsRefresh } from '@/hooks/use-room-pending-approvals-refresh';
 import { ChatMessageEventScope, createChatMessageNewHandler } from '@/lib/chat-message-event-scope';
 import { subscribeToSpace, watchCatchUp, type CatchUpResult } from '@/lib/space-socket';
 import { applyMessageEvent, replayMessageEvents, type MessageEvent } from '@/lib/chat-message-events';
@@ -635,14 +636,14 @@ export function SpaceChat({
   const continuingApprovalIdRef = useRef<string | null>(null);
   const [continuedApprovalIds, setContinuedApprovalIds] = useState<Set<string>>(new Set());
 
-  // P4-4 — pending agent_actions keyed by message_id for this space.
-  // Polled every 5s so inline approval cards appear promptly.
+  // P4-4 — pending agent_actions keyed by message_id for this space, re-read
+  // when the viewer's approval Inbox events arrive (hooks/use-room-pending-approvals-refresh.ts).
   const { retain: retainFailure, retainedFor: retainedFailures } = useRetainedApprovalFailures();
   const pendingBySpaceKey = spaceId
     ? `/api/agent/actions/pending-by-space?space_id=${spaceId}`
     : null;
 
-  const { data: pendingByMessage, error: pendingActionsError, isLoading: pendingActionsLoading } = useSWR(
+  const { data: pendingByMessage, error: pendingActionsError, isLoading: pendingActionsLoading, mutate: refreshPendingApprovals } = useSWR(
     pendingBySpaceKey,
     async (url: string) => {
       const res = await api.get(url);
@@ -655,8 +656,9 @@ export function SpaceChat({
       }
       return map;
     },
-    { refreshInterval: 5000 },
+    { refreshInterval: ROOM_PENDING_APPROVALS_REFRESH_MS },
   );
+  useRoomPendingApprovalsRefresh(pendingBySpaceKey, refreshPendingApprovals);
   const pendingActionsLoaded = pendingByMessage !== undefined
     && !pendingActionsLoading
     && !pendingActionsError;

@@ -1,10 +1,9 @@
 import { emitCurrentMessageToSpaceViewers } from '../lib/agent-message-run-details.js';
 import {canUndoAgentAction, visibleCaptureActionSql} from '../lib/agent-action-visibility.js';
-import { reviewableActionSql } from '../lib/agent-action-review-gate.js';
+import { readReviewGateScope, reviewableActionSql, reviewsActionSql } from '../lib/agent-action-review-gate.js';
 import type { AppRunTransaction } from '../lib/app-run-repository.js';
 import { reconcileApprovalReplyText } from '../lib/agent-approval-copy.js';
 import { emitMessageToSpaceViewers, projectMessagesForViewer } from '../lib/agent-message-run-details.js';
-import { actionReviewAssignmentSql } from '../lib/agent-action-requester.js';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { AppRunError } from '../lib/app-run-errors.js';
@@ -72,8 +71,6 @@ import {
 import { WIKI_PROPOSAL_REFUSALS, wikiProposalRefusal, wikiProposalRefusalCode } from '../lib/wiki-proposal-target.js';
 import {
   isModuleWriteActionName,
-  sourceMessageRoomSql,
-  visibleAgentActionSourceSql,
   visibleModuleActionSql,
 } from '../lib/module-action-visibility.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
@@ -912,12 +909,7 @@ agentRoutes.get('/actions/pending-by-space', async (c) => {
     return c.json([], 200);
   }
 
-  const rows = await db.execute(sql`
-    SELECT
-      a.*,
-      -- The action stays listed when its source message was deleted; the text does not.
-      CASE WHEN msg.is_deleted THEN NULL ELSE msg.content END AS source_message_content,
-      msg.space_id AS source_message_space_id
+  const pendingInRoom = sql`
     FROM agent_actions a
     JOIN messages msg ON msg.id = a.message_id
     WHERE msg.space_id = ${spaceId}
@@ -926,11 +918,6 @@ agentRoutes.get('/actions/pending-by-space', async (c) => {
       AND a.approval_status = 'pending'
       AND a.approval_tier IN ('quick', 'full')
       AND a.source IS DISTINCT FROM 'defty_capture'
-      AND EXISTS (
-        SELECT 1 FROM agent_actions WHERE agent_actions.id = a.id
-          AND ${visibleAgentActionSourceSql({ userId: user.id, orgId: user.org_id })}
-          AND ${sourceMessageRoomSql(user.id)}
-      )
       AND (${user.role !== 'guest'} OR a.action NOT IN (
         'module_record_create',
         'module_record_bulk_create',
@@ -938,14 +925,27 @@ agentRoutes.get('/actions/pending-by-space', async (c) => {
         'module_record_archive',
         'module_record_task_link',
         'module_record_task_unlink'
-      ))
-      AND EXISTS (
-        SELECT 1 FROM agent_actions WHERE agent_actions.id = a.id
-          AND ${actionReviewAssignmentSql(user.id)}
-      )
-    ORDER BY a.created_at DESC
-    LIMIT 100
-  `);
+      ))`;
+  // Polled every few seconds by each open room, so the review gate is planned
+  // only for the kinds of action pending here (read on the same snapshot): the
+  // source check only when an outside agent's action is among them. The gate
+  // is the user's capture, source and room checks with
+  // actionReviewAssignmentSql, as these two conditions were before (a capture
+  // is never listed here, so its check is true).
+  const rows = await db.transaction(async (tx) => {
+    const scope = await readReviewGateScope(tx, pendingInRoom, 'a');
+    return tx.execute(sql`
+      SELECT
+        a.*,
+        -- The action stays listed when its source message was deleted; the text does not.
+        CASE WHEN msg.is_deleted THEN NULL ELSE msg.content END AS source_message_content,
+        msg.space_id AS source_message_space_id
+      ${pendingInRoom}
+        AND COALESCE((SELECT ${reviewsActionSql(user.id, scope)} FROM agent_actions WHERE agent_actions.id = a.id), false)
+      ORDER BY a.created_at DESC
+      LIMIT 100
+    `);
+  }, { isolationLevel: 'repeatable read', accessMode: 'read only' });
 
   const normalizedRows = rows.rows.map((row: any) => {
     const normalizeTimestamp = (value: unknown) => {

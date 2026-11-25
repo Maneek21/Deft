@@ -10,6 +10,23 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### Database memory: approval cards in rooms and approvals in the Inbox
+
+- A room's approval cards and the Inbox's approvals now plan the approval review check
+  only for the kinds of action they show: the check of an outside agent's source is planned
+  only when an outside agent's approval is among them, the check of a capture's evidence
+  only when a capture is. A connection grows 7 MB planning a room's cards (was 36) and 17 MB
+  an Inbox approval of Defty's (was 30); an outside agent's approval still costs 19 and 30.
+  Who sees and who reviews an approval is unchanged; a test compares every narrowed check,
+  and the room's list, with the previous one for every person, role, room and approval
+  state.
+- A room's approval cards refresh when the reviewer's Inbox gets an approval event (raised,
+  changed or decided), and otherwise every 30 seconds instead of every 5, so a few open tabs
+  no longer run into the per-user request limit.
+- Measured on Postgres 16 capped at 512 MB, one pending approval with six tabs open (four of
+  its reviewer's): the database's four connections grew to 112 MB in all instead of 213
+  (largest 31 instead of 56), and at least 369 MB stayed available instead of 268.
+
 ### Telemetry: an install ping for self-hosters, error reports and "Report a problem" on hosted cells
 
 For self-hosters:
