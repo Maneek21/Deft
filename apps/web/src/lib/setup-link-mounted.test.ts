@@ -13,7 +13,8 @@ const { chromium } = require('playwright');
 const { build } = require('esbuild');
 
 const NEXT_STUBS: Record<string, string> = {
-  'next/navigation': 'export const usePathname = () => window.location.pathname; export const useRouter = () => ({ push() {}, replace() {}, refresh() {}, back() {}, prefetch() {} });',
+  // useParams: the production providers name the page's route for error reports (lib/error-telemetry.ts).
+  'next/navigation': 'const params = {}; export const usePathname = () => window.location.pathname; export const useParams = () => params; export const useRouter = () => ({ push() {}, replace() {}, refresh() {}, back() {}, prefetch() {} });',
   'next/link': "import { createElement } from 'react'; export default function Link({ href, children, prefetch, ...rest }) { return createElement('a', { href, ...rest }, children); }",
   'next/image': "import { createElement } from 'react'; export default function Image({ priority, ...rest }) { return createElement('img', rest); }",
 };
