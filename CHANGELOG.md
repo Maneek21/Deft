@@ -85,23 +85,26 @@ the cell's seat-statement channel, never to a third party:
 - **Error events.** Unhandled request errors, other 5xx answers, failed background jobs,
   uncaught process errors and browser errors, scrubbed in the cell. No part of an error's
   own message is sent: only fixed text for a message the JavaScript engine or the browser
-  writes ("Cannot read properties of undefined (reading <quoted>)"), or a system or
-  database error code ("code ECONNREFUSED"), or nothing. Also the error class, frames as
+  writes ("Cannot read properties of undefined (reading <quoted>)"), or an error code in
+  the format of a system or database error code ("code ECONNREFUSED"), or nothing. Also the error class, frames as
   file, line and function (browser frames: the web app's own bundles, no function names),
   the code's route templates and the app's page templates, and only error references the
   cell itself issued. At most one batch a minute (a fatal exit included), grouped by
   fingerprint, at most 50 events and 64 KB; a failed batch is dropped and counted, never
   retried, and sending pauses after failures or a 429.
 - **"Report a problem"** in the user menu, for everyone signed in (guests included): the
-  text the person writes, a category, and their account's email address only if they tick
-  "Email me about this report"; with it the release, their role, the page (as a template),
+  text the person writes, as written, a category, and their account's email address if
+  "Email me about this report" is ticked (it is ticked when the form opens; unticking it
+  leaves the address out); with it the release, their role, the page (as a template),
   the browser family and the cell's recent error references. Sent only when the person
   asks; they get a short reference or are told it was not sent.
 - **Heartbeat.** Shortly after start and then about hourly: the cell id, the release, the
   seats in use (counted exactly as the seat limit counts them; guests and agents never
   count) and the time. Nothing else.
-- **Never sent:** message or task content, names, email addresses (apart from a ticked
-  report), file names, links, keys, request bodies, headers or query strings.
+- **Never sent automatically** (in error events and the heartbeat): message or task
+  content, names, email addresses, uploaded file names, links, keys, request bodies,
+  headers or query strings. A problem report carries what the person chose to write, and
+  their email address as above.
 - `/api/metrics` adds `deft_telemetry_heartbeats_total`, `deft_telemetry_error_events_total`,
   `deft_telemetry_error_batches_total` and `deft_telemetry_install_pings_total`.
 
@@ -138,10 +141,11 @@ Guests (#595). A privacy change for every install, hosted or self-hosted, that h
   project, search and Inbox tools, Defty's task tools and approval cards, and a
   member-scoped workspace export made for a guest. Notifications already sent to a guest
   about such a task are no longer shown.
-- **No longer allowed for a guest:** setting who leads a project (a lead sees all of its
-  tasks); creating, changing or deleting workflow rules; watching, commenting on, editing
+- **No longer allowed for a guest:** changing who leads an existing project (a lead sees
+  all of its tasks); creating, changing or deleting workflow rules; watching, commenting on, editing
   or nesting a subtask under a task hidden from them; listing 1:1 preps made before they
-  became a guest. A project's task counter is not shown to a guest.
+  became a guest. Project lists and details no longer show a guest a project's task
+  counter.
 - **For everyone:** watching a task now needs read access to it. Before, anyone signed in
   could watch any task by its id and, as a watcher, read it even when it was restricted.
   A subtask created or moved through the API now needs a parent task of the same workspace
