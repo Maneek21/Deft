@@ -137,7 +137,10 @@ test('noteFileIds reads images as the editor does: data-file-id, else an older /
   assert.deepEqual(noteFileIds(`<template><p title="</template>">${img(b)}</p></template>${img(a)}`), [a], 'an end tag inside a quoted value does not end a template');
   assert.deepEqual(noteFileIds(`<template><!-- </template> -->${img(b)}</template>${img(a)}`), [a], 'nor one inside a comment');
   assert.deepEqual(noteFileIds(`<object data="x">${img(b)}</object>${img(a)}`), [a], 'the editor ignores object content');
-  assert.deepEqual(noteFileIds(`<head>${img(b)}</head>${img(a)}`), [a], 'and head content');
+  assert.deepEqual(noteFileIds(`<head>${img(b)}</head>${img(a)}`), [b, a], 'a head tag in the body is ignored: its images show');
+  assert.deepEqual(noteFileIds(`<template><object></template>${img(a)}`), [a], "a template's end tag closes what opened inside it");
+  assert.deepEqual(noteFileIds(`<object></template>${img(b)}</object>${img(a)}`), [a], 'a stray template end tag does not close an object');
+  assert.deepEqual(noteFileIds(`<object><template></object>${img(b)}</template>${img(b)}</object>${img(a)}`), [a], 'an object end tag inside a template closes nothing; the object hides until its own end tag');
   assert.deepEqual(noteFileIds(`</object>${img(a)}`), [a], 'a stray end tag hides nothing');
   // Crafted input with no closing '>' is read in one pass, not backtracked.
   const started = Date.now();

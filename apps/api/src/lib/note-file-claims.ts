@@ -40,8 +40,9 @@ const UNQUOTED_END = /[\t\n\f\r >]/;
 // Elements whose content a browser reads as text up to their end tag.
 const RAW_TEXT = new Set(['textarea', 'title', 'script', 'style', 'xmp', 'iframe', 'noembed', 'noframes', 'noscript']);
 // Elements whose content the editor never shows: a template's content is an
-// inert fragment, and the editor's parser ignores object and head subtrees.
-const HIDDEN = new Set(['template', 'object', 'head']);
+// inert fragment, and the editor's parser ignores an object's subtree. (A
+// <head> tag inside the body, where note content is parsed, is ignored.)
+const HIDDEN = new Set(['template', 'object']);
 const NAMED_REFS: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
 
 /** An attribute value with its character references decoded, as a browser reads it. */
@@ -59,13 +60,16 @@ function decodeReferences(value: string): string {
  * skipped (an unclosed one runs to the end, as a browser reads it), the
  * content of text-only elements such as <textarea> is skipped to their end
  * tag, and every other tag is read whole, so a quoted value never starts a
- * tag or a comment. An image inside a template, an object or a head (until
- * its end tag) is not shown by the editor and is left out. Values have character references decoded; the
+ * tag or a comment. An image inside a template or an object (until its end
+ * tag) is not shown by the editor and is left out. Values have character references decoded; the
  * first of a repeated attribute wins, as in a browser.
  */
 function imageTags(html: string): Array<Map<string, string>> {
   const images: Array<Map<string, string>> = [];
-  let hidden = 0;
+  // Open hidden elements, outermost first. A template's end tag closes
+  // whatever opened inside it; an end tag with no matching open element, or
+  // one for an element opened outside the innermost template, is ignored.
+  const hidden: string[] = [];
   let i = 0;
   while (i < html.length) {
     const open = html.indexOf('<', i);
@@ -112,12 +116,13 @@ function imageTags(html: string): Array<Map<string, string>> {
     }
     if (!ended) break;
     if (closing) {
-      if (HIDDEN.has(tagName) && hidden > 0) hidden--;
+      const at = hidden.lastIndexOf(tagName);
+      if (HIDDEN.has(tagName) && at >= 0 && (tagName === 'template' || !hidden.includes('template', at))) hidden.length = at;
       i = j;
       continue;
     }
-    if (tagName === 'img' && hidden === 0) images.push(attrs);
-    if (HIDDEN.has(tagName)) hidden++;
+    if (tagName === 'img' && hidden.length === 0) images.push(attrs);
+    if (HIDDEN.has(tagName)) hidden.push(tagName);
     if (tagName === 'plaintext') break;
     if (RAW_TEXT.has(tagName)) {
       const endTag = new RegExp(`</${tagName}(?=[\\t\\n\\f\\r />])`, 'gi');
