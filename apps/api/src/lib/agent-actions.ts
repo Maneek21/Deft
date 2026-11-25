@@ -52,7 +52,7 @@ import { getApprovalTier, isDestructiveAction, mandatoryApprovalTier, shouldAuto
 import { validateNativeAgentMentionWrite } from './native-mention-agent-writes.js';
 import { clientSafeErrorMessage } from './client-safe-error.js';
 import { authorizeNativeActionTarget, promotableNoteSql } from './agent-action-visibility.js';
-import { claimNoteFiles } from './note-file-claims.js';
+import { syncNoteFiles } from './note-file-claims.js';
 import { visibleNoteCondition } from './note-visibility.js';
 import { executeWikiWriteAction, TERMINAL_REFUSAL_RESULT, wikiProposalTargetValues } from './wiki-proposal-target.js';
 import {
@@ -3385,7 +3385,7 @@ export async function executeAction(
           return { success: false, result: null, error: 'visibility_space_id is required when visibility=space' };
         }
 
-        // One transaction: the note and the claim on the images it shows that
+        // One transaction: the note and the links to the images it shows that
         // this person uploaded (note-file-claims.ts).
         const inserted = await db.transaction(async (tx) => {
           const [row] = await tx
@@ -3399,7 +3399,7 @@ export async function executeAction(
               visibility_space_id: visibility === 'space' ? spaceId : null,
             })
             .returning();
-          await claimNoteFiles(tx, { id: userId, org_id: orgId }, row!.content);
+          await syncNoteFiles(tx, { id: userId, org_id: orgId }, row!);
           return row;
         });
 

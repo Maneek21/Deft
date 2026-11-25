@@ -843,6 +843,14 @@ async function startWorkersInternal(opts?: {
       .then((mod) => mod.scrubLegacyHeartbeatTicks())
       .then((count) => { if (count > 0) console.log(`[workers] Scrubbed ${logNumber(count)} older heartbeat tick(s)`); })
       .catch((err) => console.warn('[workers] heartbeat tick scrub failed:')));
+
+    // Notes saved before note_files existed: link the images they show, so
+    // their readers can load them (lib/note-file-claims.ts). Idempotent;
+    // runs in the background, never blocks start.
+    void trackBackground(Promise.all([import('../lib/note-file-claims.js'), import('../lib/db.js')])
+      .then(([mod, { db: database }]) => mod.backfillNoteFileLinks(database))
+      .then((count) => { if (count > 0) console.log(`[workers] Linked ${logNumber(count)} note image(s) to their notes`); })
+      .catch((err) => console.warn('[workers] note image link backfill failed:')));
   }
 
   workersRunning = true;

@@ -1,28 +1,33 @@
 // An image pasted into a note is uploaded with no task or message
 // (POST /api/upload), so it is staged: it gets a 24-hour expiry and the
 // retention sweep (attachment-retention.ts) deletes the row and the bytes of
-// every staged file still unclaimed after that. Saving a note claims the
-// files its content shows by clearing that expiry, so they are kept.
+// every staged file still unclaimed after that.
 //
-// A file is claimed only when all three hold:
-// - an image of the saved note content shows it, read as the editor reads it
-//   (apps/web/src/app/(app)/notes/protected-note-image.tsx): an <img> with
-//   `data-file-id`, else an older <img src="/api/files/…">;
-// - it is in the note's workspace;
-// - the person saving the note uploaded it;
-// - it is an image the editor can show (attachment_kind 'image', not blocked).
-// So nobody can keep someone else's staged upload alive by naming it. A file
-// the sweep would not delete anyway (attached to a task or a message) is left
-// as it is.
+// Saving a note keeps `note_files` (one row per note and file it shows) in
+// step with its content, in the transaction that saves it:
+// - a file the saved content shows is linked when the person saving it
+//   uploaded it, in the note's workspace, as an image the editor can show
+//   (attachment_kind 'image', not blocked), and it is on no task or message.
+//   Linking claims it: its expiry is cleared, so the sweep keeps it. Nobody
+//   can link, keep alive or share someone else's upload by naming it.
+// - a file already linked to this note stays linked while the content shows it.
+// - a link whose image the content no longer shows is removed. A file that
+//   loses its last link and is on no task or message is staged again: it
+//   expires 24 hours later (or 24 hours after a pending scheduled message
+//   that carries it is due), and the sweep deletes it then.
 //
-// Claiming never changes who may read a file (attachment-access.ts): an
-// unattached file is still served only to the person who uploaded it.
+// Who may read a linked file: everyone who can read a note of its workspace
+// that links it and is not deleted (attachment-access.ts). A deleted note
+// keeps its links, which grant nothing while it is deleted.
 //
-// Removing an image from a note does not stage its file again: the file is
-// kept. Deleting such files is a follow-up.
-import { and, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
+// The images a note shows are read as the editor reads them
+// (apps/web/src/app/(app)/notes/protected-note-image.tsx): an <img> with
+// `data-file-id`, else an older <img src="/api/files/…">.
+import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { files } from '@deft/db/schema';
+import { noteFiles } from '@deft/db/note-files';
 import type { db } from './db.js';
+import { STAGED_ATTACHMENT_TTL_MS, stagedAttachmentExpiry } from './attachment-retention.js';
 
 const CLAIM_BATCH = 500;
 const FILE_ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -136,37 +141,167 @@ export function noteFileIds(content: string | null | undefined): string[] {
   return [...ids];
 }
 
+type NoteFileDatabase = Pick<typeof db, 'select' | 'insert' | 'update' | 'delete' | 'execute'>;
+
+function rowsOf<T>(result: unknown): T[] {
+  if (Array.isArray(result)) return result as T[];
+  if (result && typeof result === 'object' && 'rows' in result && Array.isArray(result.rows)) return result.rows as T[];
+  return [];
+}
+
+function batches<T>(values: T[]): T[][] {
+  const out: T[][] = [];
+  for (let start = 0; start < values.length; start += CLAIM_BATCH) out.push(values.slice(start, start + CLAIM_BATCH));
+  return out;
+}
+
+/** The file is on a task or a message (legacy column or typed link): the sweep never deletes it. */
+const onTaskOrMessage = sql`(${files.message_id} IS NOT NULL OR ${files.task_id} IS NOT NULL
+  OR EXISTS (SELECT 1 FROM message_attachments
+    WHERE message_attachments.org_id = ${files.org_id} AND message_attachments.file_id = ${files.id})
+  OR EXISTS (SELECT 1 FROM task_attachments
+    WHERE task_attachments.org_id = ${files.org_id} AND task_attachments.file_id = ${files.id}))`;
+
+/** The person saving a note may link this file: they uploaded it, as an image the editor shows, and it is on no task or message. */
+const linkable = (userId: string) => sql`(${files.uploaded_by} = ${userId} AND ${files.attachment_kind} = 'image'
+  AND ${files.processing_status} <> 'blocked' AND NOT ${onTaskOrMessage})`;
+
+export type NoteFileSync = { linked: number; claimed: number; unlinked: number; restaged: number };
+
 /**
- * Clears the staged expiry of the files `content` shows that `user` uploaded
- * in `user.org_id`. Run it in the transaction that saves the note. Returns
- * how many files were claimed.
+ * Brings `note`'s file links in step with its saved content (see the top of
+ * this file). Run it in the transaction that saved the note, after the save,
+ * with the person who saved it. Returns what changed.
  */
-export async function claimNoteFiles(
-  database: Pick<typeof db, 'update'>,
+export async function syncNoteFiles(
+  database: NoteFileDatabase,
   user: Readonly<{ id: string; org_id: string }>,
-  content: string | null | undefined,
-): Promise<number> {
-  const ids = noteFileIds(content);
-  let claimed = 0;
-  for (let start = 0; start < ids.length; start += CLAIM_BATCH) {
-    const rows = await database.update(files)
+  note: Readonly<{ id: string; org_id: string; content: string | null }>,
+): Promise<NoteFileSync> {
+  if (note.org_id !== user.org_id) throw new Error('A note is saved in its own workspace');
+  const shown = noteFileIds(note.content);
+  const current = (await database.select({ file_id: noteFiles.file_id }).from(noteFiles)
+    .where(and(eq(noteFiles.org_id, note.org_id), eq(noteFiles.note_id, note.id))))
+    .map((row) => row.file_id);
+  const linked = new Set(current);
+  const shownSet = new Set(shown);
+  const removed = current.filter((id) => !shownSet.has(id));
+  const candidates = shown.filter((id) => !linked.has(id));
+  const result: NoteFileSync = { linked: 0, claimed: 0, unlinked: 0, restaged: 0 };
+  if (removed.length === 0 && candidates.length === 0) return result;
+
+  // Lock, in one id order, every file this save may link or release, so two
+  // saves (or a save and a schedule or a cancel) that touch the same files
+  // wait for each other instead of deadlocking. A file to link is locked only
+  // when it qualifies, and the check is made again on the locked row.
+  const removedSet = new Set(removed);
+  const touched = [...new Set([...candidates, ...removed])].sort();
+  const toLink: string[] = [];
+  for (const ids of batches(touched)) {
+    const releasing = ids.filter((id) => removedSet.has(id));
+    const locked = rowsOf<{ id: string; qualifies: boolean }>(await database.execute(sql`
+      SELECT ${files.id} AS id, ${linkable(user.id)} AS qualifies
+      FROM ${files}
+      WHERE ${files.org_id} = ${note.org_id} AND ${inArray(files.id, ids)}
+        AND (${releasing.length > 0 ? inArray(files.id, releasing) : sql`false`} OR ${linkable(user.id)})
+      ORDER BY ${files.id}
+      FOR UPDATE OF ${files}`));
+    for (const row of locked) if (row.qualifies && !removedSet.has(row.id)) toLink.push(row.id);
+  }
+
+  for (const ids of batches(toLink)) {
+    const inserted = await database.insert(noteFiles)
+      .values(ids.map((file_id) => ({ org_id: note.org_id, note_id: note.id, file_id })))
+      .onConflictDoNothing()
+      .returning({ file_id: noteFiles.file_id });
+    result.linked += inserted.length;
+    const claimed = await database.update(files)
       .set({ staged_expires_at: null })
+      .where(and(eq(files.org_id, note.org_id), inArray(files.id, ids), isNotNull(files.staged_expires_at)))
+      .returning({ id: files.id });
+    result.claimed += claimed.length;
+  }
+
+  for (const ids of batches(removed)) {
+    const deleted = await database.delete(noteFiles)
+      .where(and(eq(noteFiles.org_id, note.org_id), eq(noteFiles.note_id, note.id), inArray(noteFiles.file_id, ids)))
+      .returning({ file_id: noteFiles.file_id });
+    result.unlinked += deleted.length;
+    if (deleted.length === 0) continue;
+    // Staged again only when no note links it any more and it is on no task
+    // or message. A pending scheduled message that carries it keeps it until
+    // 24 hours after it is due, as cancelling one does (scheduled-message-cancel.ts).
+    const restaged = await database.update(files)
+      .set({ staged_expires_at: sql`greatest(${stagedAttachmentExpiry().toISOString()}::timestamp, (
+        SELECT max(pending.scheduled_for) + ${STAGED_ATTACHMENT_TTL_MS} * interval '1 millisecond'
+        FROM scheduled_messages AS pending
+        WHERE pending.org_id = ${files.org_id} AND pending.user_id = ${files.uploaded_by}
+          AND pending.status IN ('pending', 'sending')
+          AND position(('[[file:' || ${files.id} || ':') in pending.content) > 0
+      ))` })
       .where(and(
-        inArray(files.id, ids.slice(start, start + CLAIM_BATCH)),
-        eq(files.org_id, user.org_id),
-        eq(files.uploaded_by, user.id),
-        isNotNull(files.staged_expires_at),
-        eq(files.attachment_kind, 'image'),
-        ne(files.processing_status, 'blocked'),
-        isNull(files.message_id),
-        isNull(files.task_id),
-        sql`NOT EXISTS (SELECT 1 FROM message_attachments
-          WHERE message_attachments.org_id = ${files.org_id} AND message_attachments.file_id = ${files.id})`,
-        sql`NOT EXISTS (SELECT 1 FROM task_attachments
-          WHERE task_attachments.org_id = ${files.org_id} AND task_attachments.file_id = ${files.id})`,
+        eq(files.org_id, note.org_id),
+        inArray(files.id, deleted.map((row) => row.file_id)),
+        sql`NOT ${onTaskOrMessage}`,
+        sql`NOT EXISTS (SELECT 1 FROM note_files AS other
+          WHERE other.org_id = ${files.org_id} AND other.file_id = ${files.id})`,
       ))
       .returning({ id: files.id });
-    claimed += rows.length;
+    result.restaged += restaged.length;
   }
-  return claimed;
+  return result;
+}
+
+/**
+ * Links the images of notes saved before `note_files` existed. A link is
+ * written only for a file the note's content shows that the note's author
+ * uploaded in its workspace, that is kept already (no expiry), is on no task
+ * or message, and is an image (or an older upload never processed), not
+ * blocked. Deleted notes are included, so a restored note shows its images.
+ * Runs when the workers start; idempotent (an existing link is left as it is)
+ * and bounded. Each note is read under a share lock, so a save in flight
+ * finishes first and the content read is the saved one.
+ */
+export async function backfillNoteFileLinks(
+  database: Pick<typeof db, 'execute' | 'transaction'>,
+  options: { batchSize?: number; maxBatches?: number } = {},
+): Promise<number> {
+  const batchSize = options.batchSize ?? 200;
+  const maxBatches = options.maxBatches ?? 500;
+  let after = '';
+  let written = 0;
+  for (let batch = 0; batch < maxBatches; batch += 1) {
+    const page = rowsOf<{ id: string }>(await database.execute(sql`
+      SELECT id FROM notes
+      WHERE id > ${after}
+        AND (position('data-file-id' in content) > 0 OR position('/api/files/' in content) > 0)
+      ORDER BY id
+      LIMIT ${batchSize}`));
+    for (const { id } of page) {
+      written += await database.transaction(async (tx) => {
+        const [note] = rowsOf<{ id: string; org_id: string; user_id: string; content: string | null }>(await tx.execute(sql`
+          SELECT id, org_id, user_id, content FROM notes WHERE id = ${id} FOR SHARE`));
+        if (!note) return 0;
+        let count = 0;
+        for (const chunk of batches(noteFileIds(note.content))) {
+          count += rowsOf(await tx.execute(sql`
+            INSERT INTO note_files (org_id, note_id, file_id)
+            SELECT ${files.org_id}, ${note.id}, ${files.id} FROM ${files}
+            WHERE ${files.org_id} = ${note.org_id} AND ${inArray(files.id, chunk)}
+              AND ${files.uploaded_by} = ${note.user_id}
+              AND ${files.staged_expires_at} IS NULL
+              AND (${files.attachment_kind} = 'image'
+                OR (${files.attachment_kind} = 'binary' AND ${files.processing_status} = 'pending'))
+              AND ${files.processing_status} <> 'blocked'
+              AND NOT ${onTaskOrMessage}
+            ON CONFLICT DO NOTHING
+            RETURNING file_id`)).length;
+        }
+        return count;
+      });
+    }
+    if (page.length < batchSize) break;
+    after = page[page.length - 1]!.id;
+  }
+  return written;
 }

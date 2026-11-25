@@ -10,13 +10,14 @@ import { Hono } from 'hono';
 import { dailyNoteRoutes } from '../src/routes/daily-notes.js';
 import { scheduledRoutes } from '../src/routes/scheduled.js';
 import { sweepExpiredStagedAttachments } from '../src/lib/attachment-retention.js';
-import { noteFileIds, claimNoteFiles } from '../src/lib/note-file-claims.js';
+import { noteFileIds, syncNoteFiles } from '../src/lib/note-file-claims.js';
 import { humanNoteCreate, humanNoteUpdate, type HumanToolContext } from '../src/lib/mcp-tools/human.js';
 import { db } from '../src/lib/db.js';
 import type { FileStore } from '../src/lib/file-store.js';
 import { executeActionDirect } from '../src/lib/agent-actions.js';
 import { createNativeNote } from '../src/lib/native-context-create.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
+import { ensureNoteFilesTable } from './fixtures/note-files-table.js';
 
 // The sweep below runs over the whole database: only ever on a disposable test database.
 const url = safeTestDatabaseUrl();
@@ -47,6 +48,7 @@ const sweepAfter25h = () => sweepExpiredStagedAttachments({ now: new Date(Date.n
 
 before(async () => {
   if (unavailable) return;
+  await ensureNoteFilesTable(url!);
   await c.connect();
   for (const [id, slug] of [[org, `nir-${run}`], [otherOrg, `nir-other-${run}`]]) {
     await c.query(`INSERT INTO orgs (id, name, slug) VALUES ($1, 'Note Images', $2)`, [id, slug]);
@@ -98,6 +100,12 @@ function app(userId: string) {
 async function send(userId: string, method: string, path: string, body: unknown) {
   const res = await app(userId).request(path, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   return { status: res.status, body: await res.json() as any };
+}
+/** A note of Alice's with this content, saved without links yet. */
+async function aliceNote(content: string) {
+  const id = randomUUID();
+  await c.query(`INSERT INTO notes (id, org_id, user_id, title, content) VALUES ($1, $2, $3, $4, $5)`, [id, org, alice, `nir sync ${run}`, content]);
+  return { id, org_id: org, content };
 }
 const img = (id: string) => `<img data-file-id="${id}" data-protected-note-image="" alt="pasted.png" title="pasted.png">`;
 
@@ -180,6 +188,24 @@ test('scheduling and cancelling a message that carries a note image keeps the im
   assert.equal(await exists(file), true);
 });
 
+test('an image removed from a note that a pending scheduled message carries is kept until a day after the message is due', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const file = await stagedFile(org, alice);
+  const note = await send(alice, 'POST', '/api/daily-notes', { title: `nir sched removed ${run}`, content: img(file) });
+  assert.equal(note.status, 201);
+  const due = new Date(Date.now() + 3 * 86400_000);
+  const scheduled = await send(alice, 'POST', '/api/scheduled-messages', {
+    space_id: room, content: `see [[file:${file}:pasted.png]]`, scheduled_for: due.toISOString(),
+  });
+  assert.equal(scheduled.status, 201, JSON.stringify(scheduled.body));
+  const removed = await send(alice, 'PATCH', `/api/daily-notes/${note.body.id}`, { content: '<p>no image</p>' });
+  assert.equal(removed.status, 200);
+  const expiry = await expiryOf(file) as Date;
+  assert.ok(expiry && expiry.getTime() >= due.getTime() + 23 * 3600_000, `staged until a day after it is due (${expiry?.toISOString()})`);
+  await sweepAfter25h();
+  assert.equal(await exists(file), true, 'still there for the scheduled message');
+});
+
 test('a staged file of another person, or of another workspace, named in my note is not claimed', async (t) => {
   if (unavailable) return t.skip(unavailable);
   const bobs = await stagedFile(org, bob);
@@ -236,23 +262,27 @@ test('only an image the editor can show is claimed: not a PDF, not a blocked upl
   const pdf = await stagedFile(org, alice, 'pdf');
   const blocked = await stagedFile(org, alice, 'image', 'blocked');
   const image = await stagedFile(org, alice);
-  assert.equal(await claimNoteFiles(db, { id: alice, org_id: org }, `${img(pdf)}${img(blocked)}${img(image)}`), 1);
+  const synced = await syncNoteFiles(db, { id: alice, org_id: org }, await aliceNote(`${img(pdf)}${img(blocked)}${img(image)}`));
+  assert.deepEqual([synced.linked, synced.claimed], [1, 1]);
   assert.notEqual(await expiryOf(pdf), null);
   assert.notEqual(await expiryOf(blocked), null);
   assert.equal(await expiryOf(image), null);
 });
 
-test('claimNoteFiles counts only the files it claimed, and leaves an attached file alone', async (t) => {
+test('syncNoteFiles counts only the files it linked and claimed, and leaves an attached file alone', async (t) => {
   if (unavailable) return t.skip(unavailable);
   // A file on a message that still carries an expiry: the sweep never deletes it, and a note does not change it.
   const attached = await stagedFile(org, alice);
   const message = randomUUID();
   await c.query(`INSERT INTO messages (id, org_id, space_id, user_id, content) VALUES ($1, $2, $3, $4, 'with file')`, [message, org, room, alice]);
   await c.query(`UPDATE files SET message_id = $2 WHERE id = $1`, [attached, message]);
-  assert.equal(await claimNoteFiles(db, { id: alice, org_id: org }, img(attached)), 0);
+  assert.deepEqual(await syncNoteFiles(db, { id: alice, org_id: org }, await aliceNote(img(attached))), { linked: 0, claimed: 0, unlinked: 0, restaged: 0 });
   assert.notEqual(await expiryOf(attached), null);
   const mine = await stagedFile(org, alice);
   const bobs = await stagedFile(org, bob);
-  assert.equal(await claimNoteFiles(db, { id: alice, org_id: org }, `${img(mine)}${img(bobs)}${img(randomUUID())}`), 1);
-  assert.equal(await claimNoteFiles(db, { id: alice, org_id: org }, img(mine)), 0, 'an already claimed file is not counted again');
+  const note = await aliceNote(`${img(mine)}${img(bobs)}${img(randomUUID())}`);
+  assert.deepEqual(await syncNoteFiles(db, { id: alice, org_id: org }, note), { linked: 1, claimed: 1, unlinked: 0, restaged: 0 });
+  assert.deepEqual(await syncNoteFiles(db, { id: alice, org_id: org }, note), { linked: 0, claimed: 0, unlinked: 0, restaged: 0 }, 'saving again changes nothing');
+  const other = await aliceNote(img(mine));
+  assert.deepEqual(await syncNoteFiles(db, { id: alice, org_id: org }, other), { linked: 1, claimed: 0, unlinked: 0, restaged: 0 }, 'a kept file of mine is linked, not claimed again');
 });

@@ -47,7 +47,7 @@ export type ExportOptions = Readonly<{
 /** Every table the export reads, directly or through the product's visibility rules. All must be in the pinned schema. */
 export const EXPORT_TABLES: readonly string[] = ['orgs', 'users', 'org_members', 'agent_employees', 'spaces', 'space_members',
   'messages', 'reactions', 'canvases', 'projects', 'project_spaces', 'labels', 'tasks', 'task_assignees', 'task_watchers', 'task_labels',
-  'task_relationships', 'task_reactions', 'task_comments', 'note_folders', 'notes', 'note_shares', 'wiki_pages', 'wiki_links',
+  'task_relationships', 'task_reactions', 'task_comments', 'note_folders', 'notes', 'note_shares', 'note_files', 'wiki_pages', 'wiki_links',
   'events', 'files', 'message_attachments', 'task_attachments', 'module_installations', 'module_versions', 'module_records',
   'module_record_relations'];
 
