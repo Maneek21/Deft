@@ -10,114 +10,6 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
-### Database memory: approval cards in rooms and approvals in the Inbox
-
-- A room's approval cards and the Inbox's approvals now plan the approval review check
-  only for the kinds of action they show: the check of an outside agent's source is planned
-  only when an outside agent's approval is among them, the check of a capture's evidence
-  only when a capture is. A connection grows 7 MB planning a room's cards (was 36) and 17 MB
-  an Inbox approval of Defty's (was 30); an outside agent's approval still costs 19 and 30.
-  Who sees and who reviews an approval is unchanged; a test compares every narrowed check,
-  and the room's list, with the previous one for every person, role, room and approval
-  state.
-- A room's approval cards refresh when the reviewer's Inbox gets an approval event (raised,
-  changed or decided; events within ¾ second make one refresh), and otherwise every 30
-  seconds instead of every 5, so a few open tabs no longer run into the per-user request
-  limit; a room reads them one request at a time, each given up after 20 seconds (a read
-  that never ended stopped the room's poll; after failed reads the app retries with growing
-  gaps, as before). Where no event reaches the reviewer (an
-  Inbox item they already closed, an approval reopened after a retryable failure, a tab
-  reconnecting), a card can take up to 30 seconds to change.
-- Measured on Postgres 16 capped at 512 MB, one pending approval with six tabs open (four of
-  its reviewer's): the database's four connections grew to 112 MB in all instead of 213
-  (largest 31 instead of 56), and at least 369 MB stayed available instead of 268.
-
-### Telemetry: an install ping for self-hosters, error reports and "Report a problem" on hosted cells
-
-For self-hosters:
-
-- Deft now sends an anonymous ping to `https://get.deft.ing/v1/installs/ping` when the
-  first owner creates the workspace and each time someone accepts an invite. It carries
-  four fields: an install ID, the event (`installed` or `person_added`), the Deft
-  version and the time. No names, email addresses, workspace names, content or counts.
-  The install ID is a keyed hash of the workspace's own database ID under the server's
-  `ENCRYPTION_KEY`, so no table is added and nobody without that key can compute it.
-  Only production builds send it (`NODE_ENV=production`, as the Docker image
-  is), with one attempt and a five-second limit; it never delays signup or an invite.
-- **To turn it off,** add `DEFT_TELEMETRY=off` to `.env` and restart. The setup screen
-  says this in one line while the ping is on. Details: `docs/self-hosting.md`,
-  "Telemetry".
-- Nothing else leaves a self-hosted server. The web app reports errors in the page to
-  your own API server, which keeps nothing and tells the page to stop.
-- New optional setting `DEFT_SUPPORT_EMAIL`: an address your people can write to for
-  help. When set, the user menu shows "Get help" with it.
-
-For the hosted service (`DEFT_HOSTED=true` with the seat-statement settings):
-
-- Unhandled request errors, other 5xx answers, failed background jobs, uncaught
-  process errors and browser errors are scrubbed in the cell and sent to the control
-  plane. No part of an error's own message is sent: a message the JavaScript engine or
-  the browser writes is replaced by fixed text ("Cannot read properties of undefined
-  (reading <quoted>)"); otherwise only a real system or database error code
-  ("code ECONNREFUSED"), or nothing. Frames are file, line and function only (browser
-  frames: the web app's own bundles, no function names); routes are the code's route
-  templates and the app's own page patterns; request IDs are only
-  error references the cell issued. At most one batch a minute, a fatal exit included,
-  grouped by fingerprint (at most 50 events and 64 KB, server and job errors first), with
-  the seat fetch token. A failed batch is dropped and counted, never retried, and
-  sending pauses after failures or a 429. `DEFT_TELEMETRY=off` stops these too.
-- "Report a problem" in the user menu, for everyone signed in (guests included): the
-  person's text, a category and "Email me about this report", sent to the Deft team
-  with the release, the page (as a template), the browser family and recent error
-  references. The person gets a short reference, or is told it was not sent.
-- A heartbeat: shortly after start and then about hourly, the cell sends the control plane
-  its cell ID, release, how many seats are in use (counted exactly as the seat limit counts
-  them: guests and agents never count) and the time, so seats used can be shown against
-  seats paid. Nothing else. `DEFT_TELEMETRY=off` stops it too.
-- `/api/metrics` adds `deft_telemetry_heartbeats_total`, `deft_telemetry_error_events_total`,
-  `deft_telemetry_error_batches_total` and `deft_telemetry_install_pings_total`.
-
-Upgrade notes: no migration. New optional settings `DEFT_TELEMETRY` and
-`DEFT_SUPPORT_EMAIL`.
-
-### Guests see only the tasks of their projects
-
-A privacy change for every install, hosted or self-hosted, that has guests.
-
-- Guests no longer see workspace-wide tasks; they see tasks in the projects and spaces
-  they belong to. A guest sees tasks in projects they lead or belong to, and tasks that
-  name them. A guest belongs to a project linked to a room they are in (archived or not).
-  A task names them when they are its assignee, a co-assignee, its creator or a named
-  viewer. Watching a task does not count, so a guest's earlier watches on other tasks no
-  longer show them. Restricted tasks keep their own rule for guests too.
-- **Before.** On `.151` and earlier, a guest could read every workspace-wide task, its
-  comments, activity and files, as a member could.
-- **Now.** For a guest, any other task answers as if it did not exist (404, or left out of
-  a list) everywhere a task reaches a person: task lists, boards, the table, search,
-  calendar and timeline, task detail, subtasks, dependencies, comments, activity, files
-  and their downloads, project and team counts, the dashboard, member profiles, live
-  updates, notifications and the unread count, the Inbox, workflow run history, the MCP
-  task, project, search and Inbox tools, Defty's task tools and approval cards, and a
-  member-scoped workspace export made for a guest. Notifications already sent to a guest
-  about such a task are no longer shown.
-- A guest cannot comment on, edit, watch or attach a subtask to such a task. A guest also
-  cannot change who leads a project (a project's lead sees all of its tasks), create,
-  change or delete workflow rules (a rule could assign them a task), or list 1:1 preps
-  made before they became a guest. A project's task counter is not shown to a guest.
-- **Unchanged.** Owners, admins and members see exactly what they saw before. The rule
-  follows the person's active role in the workspace, never their session or token.
-- **Also, for everyone:** watching a task now needs read access to it. Before, anyone
-  signed in could watch any task by its id and, as a watcher, read it even when it was
-  restricted. A subtask created or moved through the API now needs a parent task of the
-  same workspace (a missing or other workspace's task is refused as unknown, 404).
-- **Known limits.** Task text that is published into a room reaches everyone in it,
-  guests included: Defty's replies when a member asks about other projects' tasks, and
-  the daily standup posted in #general. Clip summaries leave task context out when a
-  guest in the room cannot see the task, but a guest who joins the room later reads the
-  summary as posted. Per-viewer room messages are a later design.
-
-Upgrade notes: no migration.
-
 ### Notice: Kit `0.1.0-alpha.44` removes deprecated Email compatibility
 
 Not before 2026-11-25, and never fewer than 14 days after this notice merged.
@@ -137,6 +29,137 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
   at 1,277 (it may only be lowered), each exception's `milestone` now starts with
   its burn-down bucket, and `node scripts/check-app-boundary.mjs --summary` prints
   the counts per milestone. No finding changed.
+
+## [0.3.0-preview.152] — 2026-11-25 (prerelease)
+
+Changes since `v0.3.0-preview.151`: #592, #593, #594, #595 and #596. Release scope `core`
+(no Hermes compatibility claim).
+
+Upgrade notes:
+
+- No migration. Schema head stays `0.3.0-preview.149`; `pnpm db:upgrade --status` on an
+  install already at `.144` to `.151` has nothing to apply. An install on an older release
+  follows the earlier upgrade notes first (stop Deft, back up the database and the uploads
+  volume, `pnpm db:upgrade`).
+- Two optional settings are added: `DEFT_TELEMETRY` (leave unset for on; `off` turns the
+  anonymous install ping off) and `DEFT_SUPPORT_EMAIL`. No setting is changed or removed.
+  Author Kit stays `0.1.0-alpha.43`.
+- Self-hosted installs now send one anonymous install ping. Read "Telemetry, self-hosted"
+  below; to stop it, add `DEFT_TELEMETRY=off` to `.env` before you start this release.
+- Guests see fewer tasks. If your workspace has guests, read "Guests" below first.
+
+Telemetry, self-hosted (#592). A self-hosted install sends one thing, the install ping, and
+nothing else:
+
+- **What.** A `POST` to `https://get.deft.ing/v1/installs/ping` with four fields: an
+  anonymous install id, the event, the Deft version and the time. The event is
+  `installed` once, when the first owner creates the workspace, and `person_added` each
+  time someone accepts an invite and becomes an active member (guests too; agents never
+  send one). No names, email addresses, workspace names, message, task or file content,
+  counts or credentials.
+- **The install id** is derived from the install's own `ENCRYPTION_KEY` and its first
+  workspace's id (a keyed hash, HMAC-SHA256; the key never leaves the server). It is
+  stable: it stays the same across restarts, upgrades and a restored backup, and changes
+  only if that key is rotated (or the workspace is created again on a new database). It is
+  not linked to any person or address, and nobody without the key, the Deft project
+  included, can compute it or turn it back into a workspace id. The control plane keeps,
+  per install id, when it was first and last seen, the last version and how many people
+  were added; it keeps no IP address, user agent or headers.
+- **When not.** Never with `DEFT_TELEMETRY=off`, on a paused start, from a development
+  build (only `NODE_ENV=production` sends, as the Docker image is), or on a hosted cell.
+  One attempt with a five-second limit; it never delays signup or an invite.
+- **Nothing else.** Self-hosted installs send no error events, no problem reports and no
+  heartbeats. The web app reports errors in the page to your own API server, which keeps
+  nothing and tells the page to stop. "Report a problem" exists only on the hosted
+  service; on a self-hosted install, `DEFT_SUPPORT_EMAIL` (optional) shows your own help
+  address in the user menu ("Get help") and sends nothing.
+- **Turn it off:** add `DEFT_TELEMETRY=off` to `.env` and restart. It is disclosed in
+  `docs/self-hosting.md` ("Telemetry"), in one line on the setup screen while the ping is
+  on, and in `.env.example`.
+
+Telemetry, hosted cells (#592, #593). Only on hosted workspaces (`DEFT_HOSTED=true`) with
+the seat-statement settings set; error events and the heartbeat also need a production
+build and `DEFT_TELEMETRY` not off. Everything goes to the Deft control plane only, over
+the cell's seat-statement channel, never to a third party:
+
+- **Error events.** Unhandled request errors, other 5xx answers, failed background jobs,
+  uncaught process errors and browser errors, scrubbed in the cell. No part of an error's
+  own message is sent: only fixed text for a message the JavaScript engine or the browser
+  writes ("Cannot read properties of undefined (reading <quoted>)"), or a system or
+  database error code ("code ECONNREFUSED"), or nothing. Also the error class, frames as
+  file, line and function (browser frames: the web app's own bundles, no function names),
+  the code's route templates and the app's page templates, and only error references the
+  cell itself issued. At most one batch a minute (a fatal exit included), grouped by
+  fingerprint, at most 50 events and 64 KB; a failed batch is dropped and counted, never
+  retried, and sending pauses after failures or a 429.
+- **"Report a problem"** in the user menu, for everyone signed in (guests included): the
+  text the person writes, a category, and their account's email address only if they tick
+  "Email me about this report"; with it the release, their role, the page (as a template),
+  the browser family and the cell's recent error references. Sent only when the person
+  asks; they get a short reference or are told it was not sent.
+- **Heartbeat.** Shortly after start and then about hourly: the cell id, the release, the
+  seats in use (counted exactly as the seat limit counts them; guests and agents never
+  count) and the time. Nothing else.
+- **Never sent:** message or task content, names, email addresses (apart from a ticked
+  report), file names, links, keys, request bodies, headers or query strings.
+- `/api/metrics` adds `deft_telemetry_heartbeats_total`, `deft_telemetry_error_events_total`,
+  `deft_telemetry_error_batches_total` and `deft_telemetry_install_pings_total`.
+
+Database memory: approvals (#594). Read this one if Deft's Postgres runs on a small machine
+(512 MB):
+
+- A room's pending-approvals poll now costs a database connection about 7 MB to plan
+  instead of about 36 MB, and an Inbox approval of a Defty action about 17 MB instead of
+  about 30 MB: the approval review check plans only the parts the approvals it meets need.
+  Who sees and who reviews an approval is unchanged; a test compares every narrowed check,
+  and a room's list, with release 151's for every person, role, room and approval state.
+- **Trade-off.** A room's pending approvals now refresh when something changes, with a
+  fallback check every 30 seconds; with slow database reads a change can take about 1
+  minute to show (151 was about 35 s). This also stops a few open tabs running into the
+  per-user request limit.
+- Measured on Postgres 16 capped at 512 MB, one pending approval with six tabs open: the
+  database's four connections grew to 112 MB in all instead of 213, and at least 369 MB
+  stayed available instead of 268.
+- **Known limit.** Approvals from outside agents still plan about 19 MB (room) to 30 MB
+  (Inbox).
+
+Guests (#595). A privacy change for every install, hosted or self-hosted, that has guests:
+
+- **Before.** On `.151` and earlier, a guest could read every workspace-wide task, its
+  comments, activity and files, as a member could.
+- **Now.** A guest sees only the tasks of projects they lead or belong to, and tasks that
+  name them (as assignee, co-assignee, creator or named viewer; watching does not count).
+  A guest belongs to a project linked to a room they are in (archived or not). Restricted
+  tasks keep their own rule for guests too. Any other task answers as if it did not exist
+  (404, or left out) everywhere: task lists, boards, the table, search, calendar and
+  timeline, task detail, subtasks, dependencies, comments, activity, files and their
+  downloads, project and team counts, the dashboard, member profiles, live updates,
+  notifications and the unread count, the Inbox, workflow run history, the MCP task,
+  project, search and Inbox tools, Defty's task tools and approval cards, and a
+  member-scoped workspace export made for a guest. Notifications already sent to a guest
+  about such a task are no longer shown.
+- **No longer allowed for a guest:** setting who leads a project (a lead sees all of its
+  tasks); creating, changing or deleting workflow rules; watching, commenting on, editing
+  or nesting a subtask under a task hidden from them; listing 1:1 preps made before they
+  became a guest. A project's task counter is not shown to a guest.
+- **For everyone:** watching a task now needs read access to it. Before, anyone signed in
+  could watch any task by its id and, as a watcher, read it even when it was restricted.
+  A subtask created or moved through the API now needs a parent task of the same workspace
+  (otherwise 404).
+- **Unchanged.** Owners, admins and members see what they saw before. The rule follows the
+  person's active role in the workspace, never their session or token.
+- **Known limits.** Deft has no way yet to link a room to a project (only the demo seed
+  scripts write these links), so on hosted workspaces nothing links rooms to projects and a
+  hosted guest belongs to a project only by leading it. The room publication limits (D2)
+  are unchanged: task text published into a room reaches everyone in it, guests included
+  (Defty's replies about other projects' tasks, the daily standup in #general, and a clip
+  summary read by a guest who joins the room later). Per-viewer room messages are a later
+  design.
+
+Also changed:
+
+- **Launch checks (#596).** Tests only, no behaviour change: CI now guards seat limits,
+  clip routes, setup tokens and stored AI addresses.
 
 ## [0.3.0-preview.151] — 2026-11-25 (prerelease)
 
