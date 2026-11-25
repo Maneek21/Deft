@@ -32,10 +32,12 @@ export default function SignupPage() {
   useEffect(() => {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
     fetch(`${apiUrl}/api/auth/has-workspace`)
-      .then(r => r.json())
-      .then((data: { hasWorkspace: boolean; install_ping?: boolean }) => {
-        setWorkspaceCheck(data.hasWorkspace ? 'exists' : 'free');
-        setInstallPing(data.install_ping === true ? 'on' : 'off');
+      .then(async (r) => ({ ok: r.ok, data: await r.json() as { hasWorkspace?: unknown; install_ping?: unknown } | null }))
+      .then(({ ok, data }) => {
+        setWorkspaceCheck(data?.hasWorkspace ? 'exists' : 'free');
+        // Only a good answer can say the ping is off; an error or an odd body is unknown.
+        const answered = ok && typeof data?.hasWorkspace === 'boolean';
+        setInstallPing(!answered ? 'unknown' : data?.install_ping === true ? 'on' : 'off');
       })
       .catch(() => {
         // On fetch error, fall through to free — the POST will catch it anyway

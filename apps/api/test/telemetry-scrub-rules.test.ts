@@ -34,7 +34,7 @@ function thrownBy(fn: () => unknown): Error {
 test('quotes nested in a quoted value hide nothing', () => {
   const parse = thrownBy(() => JSON.parse('my "secret merger" plan'));
   const sent = eventMessage({ message: parse.message });
-  assert.match(sent, /^Unexpected token <quoted>/);
+  assert.equal(sent, 'Unexpected token in JSON');
   assert.doesNotMatch(sent, /secret|merger|plan/);
   for (const raw of [
     'invalid input syntax for type integer: "my "secret launch plan" text"',
@@ -82,11 +82,11 @@ test('name parts are removed as whole words; a member called "apps" blanks no fr
 
 test('only runtime-written messages leave, and none of their forms admits prose', () => {
   assert.equal(eventMessage({ message: 'Could not save note: move the blue chair' }), '');
-  assert.equal(eventMessage({ message: 'Unexpected token x, buy cheap pills at evil.com is not valid JSON' }), '');
-  assert.equal(eventMessage({ message: 'Cannot read properties of undefined (reading buy cheap pills now)' }), '');
-  assert.equal(eventMessage({ message: 'Converting circular structure to JSON and visit evil.com' }), '');
+  assert.equal(eventMessage({ message: 'Unexpected token x, buy cheap pills at evil.com is not valid JSON' }), 'Unexpected token in JSON');
+  assert.equal(eventMessage({ message: 'Cannot read properties of undefined (reading buy cheap pills now)' }), 'Cannot read properties of undefined (reading <quoted>)');
+  assert.equal(eventMessage({ message: 'Converting circular structure to JSON and visit evil.com' }), 'Converting circular structure to JSON');
   assert.equal(eventMessage({ message: 'Invalid regular expression: /launch plan/: Unterminated group' }), '');
-  assert.equal(eventMessage({ message: 'visit.evil.com is not a function' }), '<host> is not a function');
+  assert.equal(eventMessage({ message: 'visit.evil.com is not a function' }), '<expr> is not a function');
   assert.equal(eventMessage({ message: "Cannot read properties of undefined (reading 'title')" }), 'Cannot read properties of undefined (reading <quoted>)');
   assert.equal(eventMessage({ message: 'connect ECONNREFUSED 10.0.0.5:5432', code: 'ECONNREFUSED' }), 'code ECONNREFUSED');
   assert.equal(eventMessage({ message: 'duplicate key value violates unique constraint', code: '23505' }), 'code 23505');
@@ -145,4 +145,80 @@ test('a fatal exit does not wait on the database for names', async () => {
   assert.ok(Date.now() - started < 1_000, 'sent without waiting for the names query');
   assert.equal(network.sent.length, 1);
   assert.equal((network.sent[0]!.body as { events: { message: string }[] }).events[0]!.message, '', 'and with no message, since names never loaded');
+});
+
+// Confirmation round: values V8 prints unquoted, and every other form, leave only as fixed text.
+test('a runtime value V8 prints unquoted never leaves: only fixed text', () => {
+  const inOperator = thrownBy(() => 'type' in ('hunter2' as unknown as object));
+  assert.equal(eventMessage({ message: inOperator.message }), "Cannot use 'in' operator to search for <quoted> in <expr>");
+  const construct = thrownBy(() => Reflect.construct('s3cretword' as unknown as new () => object, []));
+  assert.equal(eventMessage({ message: construct.message }), '<expr> is not a constructor');
+  const key = "x' blue chair https://example.invalid";
+  const read = thrownBy(() => (undefined as unknown as Record<string, unknown>)[key]);
+  assert.equal(eventMessage({ message: read.message }), 'Cannot read properties of undefined (reading <quoted>)');
+  for (const message of [inOperator, construct, read].map((error) => eventMessage({ message: error.message }))) {
+    assert.doesNotMatch(message, /hunter2|s3cret|blue|chair|example/);
+  }
+});
+
+test('only real error codes leave, whole', () => {
+  assert.equal(eventMessage({ message: 'x', code: 'ECONNREFUSED' }), 'code ECONNREFUSED');
+  assert.equal(eventMessage({ message: 'x', code: 'ENOTFOUND' }), 'code ENOTFOUND');
+  assert.equal(eventMessage({ message: 'x', code: 'ERR_STREAM_PREMATURE_CLOSE' }), 'code ERR_STREAM_PREMATURE_CLOSE');
+  assert.equal(eventMessage({ message: 'x', code: 'UND_ERR_CONNECT_TIMEOUT' }), 'code UND_ERR_CONNECT_TIMEOUT');
+  for (const sqlstate of ['23505', '42P01', 'XX000', '57P01', 'P0001']) assert.equal(eventMessage({ message: 'x', code: sqlstate }), `code ${sqlstate}`);
+  for (const junk of ['HELLO', 'ACMEX', 'EACMEROBOTICS', 'SEAT_LIMIT_REACHED', 'hunter2', 'ERR_']) {
+    assert.equal(eventMessage({ message: 'x', code: junk }), '', junk);
+  }
+});
+
+test('a long code survives the last pass before sending', async () => {
+  const network = useErrorReporter(HOSTED_ENV, { known: ['Priya Raman'] });
+  await loadKnownValuesForTest();
+  captureJobError('stream', Object.assign(new Error('premature close'), { code: 'ERR_STREAM_PREMATURE_CLOSE' }));
+  await flushErrorTelemetry();
+  assert.equal((network.sent[0]!.body as { events: { message: string }[] }).events[0]!.message, 'code ERR_STREAM_PREMATURE_CLOSE');
+});
+
+test('pages are the app\'s own patterns, whatever the browser sends', async () => {
+  const { webPageTemplate } = await import('../src/lib/telemetry/route-templates.js');
+  for (const page of ['/modules/billing', '/modules/:orchid', '/modules/chat', '/modules/:slug']) {
+    assert.equal(webPageTemplate(page), '/modules/:slug', page);
+  }
+  assert.equal(webPageTemplate('/settings/agent-employees/emp_1/heartbeats'), '/settings/agent-employees/:id/heartbeats');
+  assert.equal(webPageTemplate('/settings/agent-employees/create'), '/settings/agent-employees/create', 'a fixed page beats a dynamic one');
+  assert.equal(webPageTemplate('/chat?space=abc#setup=x'), '/chat');
+  assert.equal(webPageTemplate('/made/up/page'), null);
+  assert.equal(webPageTemplate('/notes/my-launch-plan'), null);
+});
+
+test('bundle paths: only real folders, decoded, with chunk names and hashes replaced', async () => {
+  const { webBundlePath } = await import('../src/lib/telemetry/web-paths.js');
+  assert.equal(webBundlePath('/_next/static/chunks/app/(orchid)/page-0123456789abcdef.js'), null, 'no such route group');
+  assert.equal(webBundlePath('/_next/static/chunks/app/(app)/settings/[evil_site]/page.js'), null, 'no such dynamic folder');
+  assert.equal(webBundlePath('/_next/static/chunks/app/(app)/settings/agent-employees/%5Bid%5D/page-0123456789abcdef.js'),
+    '_next/static/chunks/app/(app)/settings/agent-employees/[id]/page-<hash>.js');
+  assert.equal(webBundlePath('/_next/static/chunks/fd9d1056-0123456789abcdef.js'), '_next/static/chunks/<chunk>-<hash>.js');
+  assert.equal(webBundlePath('/_next/static/chunks/1234-0123456789abcdef.js'), '_next/static/chunks/<chunk>-<hash>.js');
+  assert.equal(webBundlePath('/_next/static/chunks/buy-pills.js'), null);
+});
+
+test('a release label outside Deft\'s channels is unknown', async () => {
+  const { releaseLabel } = await import('../src/lib/telemetry/scrub.js');
+  for (const ok of ['0.3.0-preview.152', '1.0.0', '1.1.0-rc.2', '2.0.0-beta.1']) assert.equal(releaseLabel(ok), ok);
+  for (const bad of ['0.3.0-exampleco.1', '0.3.0-acme.2', 'v1.0.0', '1.0']) assert.equal(releaseLabel(bad), 'unknown', bad);
+});
+
+test('the 60-second floor counts from the send, even when preparing a batch is slow', async () => {
+  let now = Date.parse('2026-11-25T10:00:00.000Z');
+  const network = useErrorReporter(HOSTED_ENV, { now: () => now });
+  // The names query takes 59 seconds; the first batch leaves at 59 s.
+  errorReporterDeps.knownValues = async () => { now += 59_000; return { whole: [], parts: [] }; };
+  captureJobError('first', 'x');
+  await flushErrorTelemetry();
+  captureJobError('second', 'x');
+  now += 2_000;
+  await flushErrorTelemetryBeforeExit(500);
+  assert.equal(network.sent.length, 1, 'not two seconds later, even on the way out');
+  assert.equal(bufferedEventsForTest().length, 1, 'the second event waits');
 });

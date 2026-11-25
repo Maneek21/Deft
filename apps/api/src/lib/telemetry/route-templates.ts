@@ -9,7 +9,7 @@
 import type { Context } from 'hono';
 import { matchedRoutes } from 'hono/route';
 import { scrubMethod, scrubRouteTemplate } from './scrub.js';
-import { WEB_PATH_WORDS, addApiRouteWords } from './web-paths.js';
+import { addApiRouteWords, matchWebPage } from './web-paths.js';
 
 type RouteEntry = { method: string; path: string };
 
@@ -78,16 +78,12 @@ export function apiRouteTemplateFor(method: unknown, rawPath: unknown): string |
 }
 
 /**
- * The page a browser was on, as a template. The web app sends it with its
- * dynamic segments already named ("/modules/:slug", lib/error-telemetry.ts);
- * here a segment stays only if it is such a name or one of the app's fixed
- * folder names (web-paths.ts), and anything else becomes ":param".
+ * The page a browser was on, as the app's own page pattern (web-paths.ts),
+ * whatever the browser sent: "/modules/billing", "/modules/:orchid" and
+ * "/modules/chat" are all "/modules/:slug". A path that matches no page is
+ * no route at all.
  */
 export function webPageTemplate(rawPath: unknown): string | null {
   if (typeof rawPath !== 'string' || !rawPath.startsWith('/') || rawPath.length > 2048) return null;
-  const path = rawPath.split(/[?#]/, 1)[0] ?? '';
-  const segments = path.split('/').slice(1).map((segment) => (
-    segment === '' || WEB_PATH_WORDS.has(segment) || /^:[A-Za-z_][A-Za-z0-9_]{0,30}$/.test(segment) ? segment : ':param'
-  ));
-  return `/${segments.join('/')}`.slice(0, 200);
+  return matchWebPage(rawPath);
 }

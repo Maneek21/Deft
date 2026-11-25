@@ -181,7 +181,7 @@ test('no canary survives any capture path into the batch that leaves the cell', 
   const kinds = new Set(body.events.map((event) => event.kind));
   assert.deepEqual([...kinds].sort(), ['client', 'job', 'server']);
   const routes_ = new Set(body.events.map((event) => event.route));
-  for (const expected of ['/api/spaces/:id/files/:name', '/api/spaces/:id/export', '/chat/:param/:param', '/invite', '/api/spaces/:id/messages']) {
+  for (const expected of ['/api/spaces/:id/files/:name', '/api/spaces/:id/export', '/invite', '/api/spaces/:id/messages']) {
     assert.ok(routes_.has(expected), `route template ${expected} in ${[...routes_].join(' ')}`);
   }
   // Messages: a runtime message stays (scrubbed); an app's own text does not; a system error is its code.

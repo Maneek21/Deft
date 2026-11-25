@@ -11,6 +11,7 @@
  * Pure: no database, no network, no clock.
  */
 import { createHash } from 'node:crypto';
+import { constants as osConstants } from 'node:os';
 import { isRouteWord, webBundlePath } from './web-paths.js';
 
 export const MESSAGE_MAX = 300;
@@ -213,55 +214,86 @@ const BROWSER_CLASSES = new Set([
 ]);
 
 /**
- * Messages a JavaScript engine, Node or a browser writes. Each variable part
- * is either quoted (and then removed whole by the quote rule) or a single code
- * token (an identifier path, a number), so no form leaves room for prose. A
- * message that matches none of these was written by the app, a provider or a
- * caller, and never leaves the cell.
+ * Messages a JavaScript engine, Node or a browser writes, each with the fixed
+ * text that is sent in its place. Nothing of the original message is ever
+ * sent: a variable part (a quoted value, an expression, a value V8 prints
+ * unquoted such as `'id' in bluechair`) is always a placeholder, and only
+ * "undefined"/"null" or a status code is carried over. A message that
+ * matches none of these was written by the app, a provider or a caller, and
+ * never leaves the cell.
  */
-const CODE_TOKEN = String.raw`[\w$.[\]()?]{1,120}`;
-const QUOTED_PART = String.raw`(?:'[^\n]{0,200}'|"[^\n]{0,200}"|\x60[^\n]{0,200}\x60)`;
-const RUNTIME_MESSAGES: readonly RegExp[] = [
-  `Cannot read properties of (?:undefined|null) \\(reading ${QUOTED_PART}\\)`,
-  `Cannot set properties of (?:undefined|null) \\(setting ${QUOTED_PART}\\)`,
-  `Cannot destructure property ${QUOTED_PART} of ${QUOTED_PART} as it is (?:undefined|null)\\.?`,
-  `Cannot destructure ${QUOTED_PART} as it is (?:undefined|null)\\.?`,
-  `${CODE_TOKEN} is not (?:a function|a constructor|iterable|defined)`,
-  `${CODE_TOKEN} is (?:null|undefined)`,
-  `(?:undefined|null) is not an object \\(evaluating ${QUOTED_PART}\\)`,
-  `can't access property ${QUOTED_PART}, ${CODE_TOKEN} is (?:undefined|null)`,
-  `Cannot access ${QUOTED_PART} before initialization`,
-  'Cannot convert (?:undefined or null|undefined|null) to object',
-  `Cannot use 'in' operator to search for ${QUOTED_PART} in ${CODE_TOKEN}`,
-  'Assignment to constant variable\\.',
-  'Maximum call stack size exceeded\\.?',
-  'too much recursion',
-  'Invalid (?:array length|time value|Date|string length|URL|character|code point \\d{1,10})',
-  `Unexpected (?:token|identifier|number|string) ${QUOTED_PART}(?:, ${QUOTED_PART}(?:\\.\\.\\.)? is not valid JSON)?`,
-  'Unexpected end of JSON input',
-  'Unexpected non-whitespace character after JSON at position \\d{1,10}(?: \\(line \\d{1,10} column \\d{1,10}\\))?',
-  `${QUOTED_PART}(?:\\.\\.\\.)? is not valid JSON`,
-  'Converting circular structure to JSON',
-  'Do not know how to serialize a BigInt',
-  '(?:Failed to fetch|Load failed|fetch failed|Network request failed|NetworkError when attempting to fetch resource\\.)',
-  '(?:The operation was aborted\\.?|This operation was aborted|The user aborted a request\\.?|signal is aborted without reason|The operation timed out\\.?)',
-  'Loading (?:CSS )?chunk [\\w-]{1,80} failed\\.?',
-  'ResizeObserver loop (?:limit exceeded|completed with undelivered notifications\\.)',
-  'Request failed with status code \\d{3}',
-].map((source) => new RegExp(`^${source}$`));
+const ANY = String.raw`[^\n]{1,300}`;
+const NULLISH = '(undefined|null)';
+type RuntimeForm = [source: string, text: (m: RegExpExecArray) => string];
+const RUNTIME_MESSAGES: ReadonlyArray<{ match: RegExp; text: (m: RegExpExecArray) => string }> = ([
+  [`Cannot read properties of ${NULLISH} \\(reading ${ANY}\\)`, (m) => `Cannot read properties of ${m[1]} (reading <quoted>)`],
+  [`Cannot set properties of ${NULLISH} \\(setting ${ANY}\\)`, (m) => `Cannot set properties of ${m[1]} (setting <quoted>)`],
+  [`Cannot destructure ${ANY} as it is ${NULLISH}\\.?`, (m) => `Cannot destructure <quoted> as it is ${m[1]}.`],
+  [`${ANY} is not a function`, () => '<expr> is not a function'],
+  [`${ANY} is not a constructor`, () => '<expr> is not a constructor'],
+  [`${ANY} is not iterable`, () => '<expr> is not iterable'],
+  [`${ANY} is not defined`, () => '<expr> is not defined'],
+  [`${NULLISH} is not an object \\(evaluating ${ANY}\\)`, (m) => `${m[1]} is not an object (evaluating <expr>)`],
+  [`can't access property ${ANY}, ${ANY} is ${NULLISH}`, (m) => `can't access property <quoted>, <expr> is ${m[1]}`],
+  [`[\\w$.]{1,120} is ${NULLISH}`, (m) => `<expr> is ${m[1]}`],
+  [`Cannot access ${ANY} before initialization`, () => 'Cannot access <quoted> before initialization'],
+  ['Cannot convert (undefined or null|undefined|null) to object', (m) => `Cannot convert ${m[1]} to object`],
+  [`Cannot use 'in' operator to search for ${ANY}`, () => "Cannot use 'in' operator to search for <quoted> in <expr>"],
+  ['Assignment to constant variable\\.', () => 'Assignment to constant variable.'],
+  ['Maximum call stack size exceeded\\.?', () => 'Maximum call stack size exceeded'],
+  ['too much recursion', () => 'Maximum call stack size exceeded'],
+  ['Invalid (array length|time value|Date|string length|URL|character)', (m) => `Invalid ${m[1]}`],
+  [`Invalid code point ${ANY}`, () => 'Invalid code point'],
+  [`Unexpected (?:token|identifier|number|string)${ANY}`, () => 'Unexpected token in JSON'],
+  ['Unexpected end of JSON input', () => 'Unexpected end of JSON input'],
+  [`Unexpected non-whitespace character after JSON${ANY}`, () => 'Unexpected non-whitespace character after JSON'],
+  [`${ANY} is not valid JSON`, () => 'Unexpected token in JSON'],
+  [`Converting circular structure to JSON${String.raw`[^\n]{0,300}`}`, () => 'Converting circular structure to JSON'],
+  ['Do not know how to serialize a BigInt', () => 'Do not know how to serialize a BigInt'],
+  ['(Failed to fetch|Load failed|fetch failed|Network request failed)', (m) => m[1]!],
+  ['NetworkError when attempting to fetch resource\\.', () => 'NetworkError when attempting to fetch resource.'],
+  ['(?:The operation was aborted\\.?|This operation was aborted|The user aborted a request\\.?|signal is aborted without reason)', () => 'The operation was aborted'],
+  ['The operation timed out\\.?', () => 'The operation timed out'],
+  [`Loading (?:CSS )?chunk ${ANY} failed${String.raw`[^\n]{0,300}`}`, () => 'Loading chunk failed'],
+  [`ResizeObserver loop${ANY}`, () => 'ResizeObserver loop'],
+  ['Request failed with status code ([1-5]\\d{2})', (m) => `Request failed with status code ${m[1]}`],
+] satisfies RuntimeForm[]).map(([source, text]: RuntimeForm) => ({ match: new RegExp(`^${source}$`), text }));
 
-/** True when the JavaScript engine, Node or a browser wrote this message. */
-export function isRuntimeMessage(line: string): boolean {
-  return line.length <= 400 && RUNTIME_MESSAGES.some((pattern) => pattern.test(line));
+/** The fixed text for a runtime-written message, or null when no runtime wrote it. */
+export function runtimeMessageText(line: string): string | null {
+  if (line.length > 400) return null;
+  for (const form of RUNTIME_MESSAGES) {
+    const match = form.match.exec(line);
+    if (match) return form.text(match);
+  }
+  return null;
 }
 
 export function browserErrorClass(raw: unknown): string {
   return typeof raw === 'string' && BROWSER_CLASSES.has(raw) ? raw : 'Error';
 }
 
-/** A Node system error code ("ECONNREFUSED", "ERR_STREAM_PREMATURE_CLOSE") or a Postgres SQLSTATE ("23505"). */
+/** The operating system's error names ("ECONNREFUSED", "ENOENT"), from Node itself. */
+const ERRNO_NAMES: ReadonlySet<string> = new Set(Object.keys(osConstants.errno));
+const DNS_CODES: ReadonlySet<string> = new Set([
+  'EAI_ADDRFAMILY', 'EAI_AGAIN', 'EAI_BADFLAGS', 'EAI_BADHINTS', 'EAI_CANCELED', 'EAI_FAIL', 'EAI_FAMILY', 'EAI_MEMORY',
+  'EAI_NODATA', 'EAI_NONAME', 'EAI_OVERFLOW', 'EAI_PROTOCOL', 'EAI_SERVICE', 'EAI_SOCKTYPE', 'ENOTFOUND', 'ETIMEOUT',
+  'ECONNREFUSED', 'ESERVFAIL', 'EREFUSED', 'ENODATA', 'EBADRESP',
+]);
+
+/**
+ * A real error code, or null: an operating-system or DNS error name, a
+ * Node.js internal code ("ERR_STREAM_PREMATURE_CLOSE"), an undici code
+ * ("UND_ERR_CONNECT_TIMEOUT"), or a Postgres SQLSTATE ("23505", "42P01",
+ * "XX000": a known class and at least one digit). Anything else an error's
+ * `code` holds is not sent.
+ */
 export function systemErrorCode(raw: unknown): string | null {
-  return typeof raw === 'string' && /^(?:E[A-Z0-9_]{2,60}|[0-9A-Z]{5})$/.test(raw) ? raw : null;
+  if (typeof raw !== 'string' || raw.length > 64) return null;
+  if (ERRNO_NAMES.has(raw) || DNS_CODES.has(raw)) return raw;
+  if (/^ERR_[A-Z0-9]+(?:_[A-Z0-9]+){1,10}$/.test(raw) || /^UND_ERR_[A-Z]+(?:_[A-Z]+){0,6}$/.test(raw)) return raw;
+  if (/^(?:[0-9]{2}|[0-9][A-Z]|[A-Z][0-9]|HV|XX|P0)[0-9A-Z]{3}$/.test(raw) && /\d/.test(raw)) return raw;
+  return null;
 }
 
 /** The first line of a message, cut before a database driver's parameters. */
@@ -274,13 +306,14 @@ export function firstLine(message: unknown): string {
 /**
  * The message an event may carry. Free text the app or a provider wrote can
  * hold anything a person typed ("Could not save note: move the blue chair"),
- * and no pattern can tell it from code, so it never leaves the cell. Only a
- * message of a known runtime form (then scrubbed as well), or else a system
- * or database error code, or nothing.
+ * and no pattern can tell it from code, so it never leaves the cell. Only
+ * the fixed text for a known runtime form, or else a real error code, or
+ * nothing. No part of the original message is ever sent.
  */
-export function eventMessage(input: { message: unknown; code?: unknown }, known: KnownValues | null = null): string {
+export function eventMessage(input: { message: unknown; code?: unknown }): string {
   const line = firstLine(input.message).replace(/^Uncaught (?:\(in promise\) )?(?:[A-Za-z]*Error: )?/, '').trim();
-  if (line && isRuntimeMessage(line)) return scrubMessage(line, known);
+  const text = line ? runtimeMessageText(line) : null;
+  if (text) return text;
   const code = systemErrorCode(input.code);
   return code ? `code ${code}` : '';
 }
@@ -475,10 +508,11 @@ export function browserFamily(userAgent: string | undefined | null): string {
 }
 
 /**
- * The release, as sent: a plain version ("0.3.0-preview.152") or "unknown".
+ * The release, as sent: a plain version on one of Deft's own release
+ * channels ("0.3.0-preview.152", "1.0.0", "1.1.0-rc.2") or "unknown".
  * DEFT_RELEASE_VERSION is an operator setting; a label put there for a
- * customer never leaves the cell.
+ * customer ("0.3.0-exampleco.1") never leaves the cell.
  */
 export function releaseLabel(raw: unknown): string {
-  return typeof raw === 'string' && /^\d{1,4}\.\d{1,4}\.\d{1,6}(?:-[a-z]{1,16}\.\d{1,6})?$/.test(raw) ? raw : 'unknown';
+  return typeof raw === 'string' && /^\d{1,4}\.\d{1,4}\.\d{1,6}(?:-(?:preview|alpha|beta|rc)\.\d{1,6})?$/.test(raw) ? raw : 'unknown';
 }

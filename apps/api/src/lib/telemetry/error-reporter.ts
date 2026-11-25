@@ -101,18 +101,21 @@ export function nameParts(names: readonly string[]): string[] {
  * every message: whole names, and each part of a name as a whole word.
  */
 async function defaultKnownValues(): Promise<{ whole: string[]; parts: string[] }> {
-  const [{ db }, { orgs, users }, { ne }] = await Promise.all([
+  const [{ db }, { orgs, users, agentEmployees }, { ne }] = await Promise.all([
     import('../db.js'),
     import('@deft/db/schema'),
     import('drizzle-orm'),
   ]);
-  const [orgRows, people] = await Promise.all([
+  const [orgRows, people, agents] = await Promise.all([
     db.select({ name: orgs.name, slug: orgs.slug }).from(orgs).limit(100),
     db.select({ name: users.name }).from(users).where(ne(users.kind, 'system')).limit(5000),
+    // A cloned agent keeps its source's user row: its own name lives here.
+    db.select({ name: agentEmployees.name }).from(agentEmployees).limit(2000),
   ]);
   const whole = [
     ...orgRows.flatMap((row) => [row.name, row.slug, row.slug.replace(/-[a-z0-9]{8}$/, '')]),
     ...people.map((row) => row.name),
+    ...agents.map((row) => row.name),
   ];
   return { whole, parts: nameParts(whole) };
 }
@@ -260,7 +263,7 @@ function record(input: CaptureInput): void {
   const pattern = known.pattern;
   const browser = input.kind === 'client';
   const errorClass = browser ? browserErrorClass(input.errorClass) : scrubErrorClass(input.errorClass, pattern);
-  const message = eventMessage({ message: input.message, code: input.code }, pattern);
+  const message = eventMessage({ message: input.message, code: input.code });
   const frames = parseStack(input.stack, browser ? { webOrigins: errorReporterDeps.webOrigins() } : { appRoot: APP_ROOT }, pattern);
   const route = scrubRouteTemplate(input.route);
   const method = scrubMethod(input.method);
@@ -362,7 +365,9 @@ function pause(ms: number): void {
 
 /**
  * Re-apply the known-value rule with a fresh list, just before sending. Until
- * the names have loaded once, no message leaves at all.
+ * the names have loaded once, no message leaves at all. A message is fixed
+ * text or a code (scrub.ts eventMessage), so it is never re-scrubbed: that
+ * would only mangle a long code ("code ERR_STREAM_PREMATURE_CLOSE").
  */
 function rescrub(event: TelemetryEvent, pattern: KnownValues | null): TelemetryEvent {
   if (!knownLoadedOnce) return { ...event, message: '' };
@@ -370,7 +375,6 @@ function rescrub(event: TelemetryEvent, pattern: KnownValues | null): TelemetryE
   return {
     ...event,
     error_class: event.kind === 'client' ? event.error_class : scrubErrorClass(event.error_class, pattern),
-    message: scrubMessage(event.message, pattern),
     frames: event.frames.map((frame) => ({ ...frame, fn: event.kind === 'client' ? frame.fn : scrubFunctionName(frame.fn, pattern) })),
   };
 }
@@ -412,7 +416,6 @@ async function sendOnce(): Promise<void> {
   const now = errorReporterDeps.now();
   // At most one batch per 60 seconds, whoever asks (the timer or a fatal exit).
   if (buffer.size === 0 || now < pausedUntil || now - lastSendAt < MIN_BATCH_GAP_MS) return;
-  lastSendAt = now;
 
   // On a fatal exit the database may be why: send with what is already known.
   if (!exiting) await refreshKnownValues();
@@ -421,6 +424,13 @@ async function sendOnce(): Promise<void> {
   if (events.length === 0) return;
   const body = JSON.stringify({ ...header, events });
 
+  // The floor counts from the moment a batch goes, not from when preparing it began
+  // (a slow names query must not let the next batch follow seconds behind).
+  if (errorReporterDeps.now() - lastSendAt < MIN_BATCH_GAP_MS) {
+    for (const event of events) if (buffer.size < BUFFER_MAX_FINGERPRINTS) buffer.set(event.fingerprint, event);
+    return;
+  }
+  lastSendAt = errorReporterDeps.now();
   try {
     const res = await errorReporterDeps.fetch(`${destination.baseUrl}/v1/cells/telemetry/errors`, {
       method: 'POST',
