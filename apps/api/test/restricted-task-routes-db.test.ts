@@ -22,6 +22,7 @@ import { humanProjectCreate, humanProjectGet, humanProjectList, humanProjectProg
 import { executeToolCall } from '../src/lib/agent-context.js';
 import { generateOneOnePrep } from '../src/services/oneone-prep.js';
 import { generateManagerPulse } from '../src/services/manager-pulse.js';
+import { taskRestrictionMetadata } from '../src/lib/task-visibility.js';
 import { handleDuplicateDetect } from '../src/workers/handlers/duplicate-detect.js';
 import { handleWorkflowExecute } from '../src/workers/handlers/workflow-execute.js';
 
@@ -117,6 +118,7 @@ after(async () => {
   await c.query(`DELETE FROM job_queue WHERE org_id = $1`, [org]).catch(() => {});
   await c.query(`DELETE FROM duplicate_flags WHERE org_id = $1`, [org]);
   await c.query(`DELETE FROM agent_nudges WHERE org_id = $1`, [org]);
+  await c.query(`DELETE FROM team_health_snapshots WHERE org_id = $1`, [org]);
   await c.query(`DELETE FROM oneone_preps WHERE org_id = $1`, [org]);
   await c.query(`DELETE FROM workflow_runs WHERE rule_id IN (SELECT id FROM workflow_rules WHERE org_id = $1)`, [org]);
   await c.query(`DELETE FROM workflow_rules WHERE org_id = $1`, [org]);
@@ -493,4 +495,10 @@ test('a manager pulse lists a stalled nudge about a restricted task only to a ma
     assert.ok(card.includes(`rtr-nudge-${run}-open`), `${who(manager)}: the open task's nudge`);
     assert.equal(card.includes(`rtr-nudge-${run}-hidden`), seesRestricted(manager), `${who(manager)}: the restricted task's nudge`);
   }
+});
+
+test('a copy keeps named viewers stored as an array or as object keys (both read by the rule)', () => {
+  assert.deepEqual(taskRestrictionMetadata({ visibility: 'restricted', visible_user_ids: ['a'] }, ['b', null]), { visibility: 'restricted', visible_user_ids: ['a', 'b'] });
+  assert.deepEqual(taskRestrictionMetadata({ visibility: 'restricted', visible_user_ids: { a: true } }, ['a']), { visibility: 'restricted', visible_user_ids: ['a'] });
+  assert.equal(taskRestrictionMetadata({ visible_user_ids: ['a'] }), undefined);
 });

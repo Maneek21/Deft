@@ -184,9 +184,12 @@ export function taskRestrictionMetadata(
   if (!metadata || typeof metadata !== 'object') return undefined;
   const source = metadata as Record<string, unknown>;
   if (source.visibility !== 'restricted') return undefined;
-  const named = Array.isArray(source.visible_user_ids)
-    ? source.visible_user_ids.filter((id): id is string => typeof id === 'string')
-    : [];
+  // The rule reads `visible_user_ids` with jsonb `?`: array elements, or the
+  // keys of an object. Both forms carry over.
+  const viewers = source.visible_user_ids;
+  const named = Array.isArray(viewers)
+    ? viewers.filter((id): id is string => typeof id === 'string')
+    : viewers && typeof viewers === 'object' ? Object.keys(viewers) : [];
   return {
     visibility: 'restricted',
     visible_user_ids: [...new Set([...named, ...alsoNamed.filter((id): id is string => typeof id === 'string' && id.length > 0)])],

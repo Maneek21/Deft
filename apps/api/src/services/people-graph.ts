@@ -975,6 +975,7 @@ export async function detectRelationships(orgId: string): Promise<void> {
             WHERE org_id = ${orgId}
               AND assignee_id = ${pair.user_a_id}
               AND is_deleted = false
+              AND ${unrestrictedTaskCondition()}
           )`,
           eq(tasks.assignee_id, pair.user_b_id),
         ),
