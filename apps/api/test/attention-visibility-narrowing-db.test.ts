@@ -84,6 +84,8 @@ const plans: string[] = [];
 const employeeUser = randomUUID();
 const employeeId = randomUUID();
 const otherOrgId = randomUUID();
+const otherEmployeeUser = randomUUID();
+const otherEmployeeId = randomUUID();
 const deliveries: string[] = [];
 /** `${person}|${type}|${source}|${metadata variant}` → item id; variant 0 has empty metadata. */
 const itemIds = new Map<string, string>();
@@ -168,14 +170,14 @@ before(async () => {
 
   // Approvals: the requester reviews; a removed requester's action has an assigned reviewer; one names no room; one is a capture.
   type ActionShape = {
-    status?: string; source?: string; action?: string; employee?: string | null; event?: string | null;
+    status?: string; source?: string | null; action?: string; employee?: string | null; event?: string | null;
     plan?: string | null; conversation?: string | null; org?: string;
   };
   const action = async (requester: string, messageId: string | null, params: Record<string, unknown>, source = 'mention', shape: ActionShape = {}) => {
     const id = randomUUID();
     await q(`INSERT INTO agent_actions(id,org_id,user_id,action,params,approval_tier,approval_status,source,message_id,
         agent_employee_id,channel_event_id,plan_id,conversation_id)
-      VALUES($1,$2,$3,$7,$4,'quick',$8,$5,$6,$9,$10,$11,$12)`, [id, shape.org ?? orgId, requester, JSON.stringify(params), shape.source ?? source, messageId,
+      VALUES($1,$2,$3,$7,$4,'quick',$8,$5,$6,$9,$10,$11,$12)`, [id, shape.org ?? orgId, requester, JSON.stringify(params), shape.source === undefined ? source : shape.source, messageId,
       shape.action ?? 'create_task', shape.status ?? 'pending', shape.employee ?? null, shape.event ?? null, shape.plan ?? null, shape.conversation ?? null]);
     actions.push(id);
     actionByTitle.set(String(params.title), id);
@@ -248,6 +250,15 @@ before(async () => {
   await action(people.member, messagesByRoom[rooms.archived]!, { title: 'Defty, archived room' });
   await action(people.guest, messagesByRoom[rooms.pubGuest]!, { title: 'module write by a guest, in a room' }, 'mention', { action: 'module_record_create' });
   await action(people.owner, messagesByRoom[rooms.pubGuest]!, { title: 'employee, guest public room' }, 'mcp', { employee: employeeId });
+  // Kinds at the edges of the review gate's scope (release 152): a capture that carries an employee, an
+  // action with no source, an employee of another workspace on this workspace's action.
+  await action(people.member, null, { title: 'capture with an employee', source_user_id: people.member, source_space_id: rooms.priv },
+    'defty_capture', { employee: employeeId });
+  await action(people.member, messagesByRoom[rooms.priv]!, { title: 'no source' }, 'mention', { source: null });
+  await q("INSERT INTO users(id,email,name,kind,is_agent) VALUES($1,$2,'Other employee','agent',true)", [otherEmployeeUser, `${otherEmployeeUser}@example.test`]);
+  await q(`INSERT INTO agent_employees(id,org_id,user_id,name,slug,role,system_prompt,trust_level,is_active,is_byoa,runtime_kind,created_by)
+    VALUES($1,$2,$3,'Other employee',$4,'custom','Test.','conservative',true,true,'custom_mcp',$5)`, [otherEmployeeId, otherOrgId, otherEmployeeUser, `other-${otherEmployeeId}`, people.owner]);
+  await action(people.member, messagesByRoom[rooms.priv]!, { title: 'employee of another workspace' }, 'mcp', { employee: otherEmployeeId });
 
   // Mentions: a live message in the private room, one in the admin room, one whose source is deleted; one delivery per person.
   for (const [room, deleted] of [[rooms.priv, false], [rooms.adminOnly, false], [rooms.pub, true]] as const) {
@@ -306,6 +317,8 @@ after(async () => {
   try {
     if (seeded && client) {
       await q('DELETE FROM agent_actions WHERE org_id=$1', [otherOrgId]);
+      await q('DELETE FROM agent_actions WHERE agent_employee_id=$1', [otherEmployeeId]);
+      await q('DELETE FROM agent_employees WHERE org_id=$1', [otherOrgId]);
       for (const table of ['attention_events', 'attention_items', 'native_mention_deliveries', 'native_reference_states',
         'agent_action_approvers', 'agent_actions', 'agent_channel_events', 'agent_plans', 'agent_employees', 'messages']) {
         await q(`DELETE FROM ${table} WHERE org_id=$1`, [orgId]);
@@ -313,7 +326,7 @@ after(async () => {
       await q('DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id=$1)', [orgId]);
       for (const table of ['spaces', 'org_members']) await q(`DELETE FROM ${table} WHERE org_id=$1`, [orgId]);
       await q('DELETE FROM orgs WHERE id=ANY($1::text[])', [[orgId, otherOrgId]]);
-      await q('DELETE FROM users WHERE id=ANY($1::text[])', [[...Object.values(people), employeeUser]]);
+      await q('DELETE FROM users WHERE id=ANY($1::text[])', [[...Object.values(people), employeeUser, otherEmployeeUser]]);
     }
   } finally {
     await client?.end();
@@ -643,6 +656,11 @@ test('the review gate narrowed to the kinds of its actions answers as the whole 
   const kinds = await actionKinds();
   const kindCount = (key: keyof ActionKind) => [...kinds.values()].filter((kind) => kind[key]).length;
   assert.ok(kindCount('employee') >= 3 && kindCount('capture') >= 2, 'the fixture has outside agents\' actions and captures');
+  const kindOf = (title: string) => kinds.get(actionByTitle.get(title)!);
+  assert.deepEqual(kindOf('capture with an employee'), { employee: true, capture: true });
+  assert.deepEqual(kindOf('no source'), { employee: false, capture: false });
+  assert.deepEqual(kindOf('employee of another workspace'), { employee: true, capture: false });
+  assert.deepEqual(kindOf('Defty envelope, private room'), { employee: false, capture: false });
   let excluded = 0;
   let shown = 0;
   for (const scope of PARTIAL_SCOPES) {
@@ -667,6 +685,34 @@ test('the review gate narrowed to the kinds of its actions answers as the whole 
     assert.deepEqual(await gateAnswers(reviewsActionSql(person)), await gateAnswers(formerReviewsSql(person)), `${name}, gate without audience, whole`);
   }
   assert.ok(shown > 0 && excluded > 0, `narrowed gates show ${shown} and leave out ${excluded} that the whole gate shows`);
+});
+
+test('while the Defty envelope is inactive or marked BYOA its actions count as an outside agent\'s, and narrowed gates still agree', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const { rows: [envelope] } = await q("SELECT id FROM agent_employees WHERE org_id = $1 AND runtime_kind = 'defty_system'", [orgId]);
+  assert.ok(envelope, 'the Defty envelope');
+  const envelopeActions = actions.filter((id) => [...actionByTitle].some(([title, value]) => value === id && title.startsWith('Defty envelope')));
+  assert.equal(envelopeActions.length, 2);
+  for (const [state, change, restore] of [['inactive', 'is_active = false', 'is_active = true'], ['marked BYOA', 'is_byoa = true', 'is_byoa = false']]) {
+    await q(`UPDATE agent_employees SET ${change} WHERE id = $1`, [envelope.id]);
+    try {
+      const kinds = await actionKinds();
+      for (const id of envelopeActions) assert.equal(kinds.get(id)!.employee, true, `${state}: an envelope action is an outside agent's`);
+      for (const scope of PARTIAL_SCOPES) {
+        const covered = (ids: string[]) => ids.filter((id) => coveredBy(scope, kinds.get(id)));
+        for (const [name, person] of Object.entries(people)) {
+          const at = `${state}, ${name}, employee actions ${scope.employeeActions}, captures ${scope.captures}`;
+          assert.deepEqual((await gateAnswers(reviewsActionSql(person, scope))).filtered, covered((await gateAnswers(formerReviewsSql(person))).filtered), `${at}: gate without audience`);
+          assert.deepEqual((await gateAnswers(currentRoleReviewableActionSql(person, scope))).filtered,
+            covered((await gateAnswers(formerCurrentRoleReviewableActionSql(person))).filtered), `${at}: Inbox gate`);
+          const viewer = { id: person, org_id: orgId, role: roles[person] };
+          assert.deepEqual((await gateAnswers(reviewableActionSql(viewer, scope))).filtered, covered((await gateAnswers(formerReviewableActionSql(viewer))).filtered), `${at}: routes' gate`);
+        }
+      }
+    } finally {
+      await q(`UPDATE agent_employees SET ${restore} WHERE id = $1`, [envelope.id]);
+    }
+  }
 });
 
 test('approval-kind entries narrow the Inbox approval rule exactly, and a read adds them only when no item needs the check', async (t) => {
@@ -753,19 +799,27 @@ test('viewerReviewAuthority answers the same for an action whether or not the pa
   const { viewerReviewAuthority } = await import('../src/lib/agent-approval-resolver.js');
   const kinds = await actionKinds();
   const plain = actions.filter((id) => coveredBy({ employeeActions: false, captures: false }, kinds.get(id)));
+  // Pages of one kind each: only plain actions, only outside agents' (and plain), only captures (and plain).
+  const pages: Array<[string, string[]]> = [
+    ['plain', plain],
+    ['outside agents\'', actions.filter((id) => coveredBy({ employeeActions: true, captures: false }, kinds.get(id)))],
+    ['captures', actions.filter((id) => coveredBy({ employeeActions: false, captures: true }, kinds.get(id)))],
+  ];
   let canApprove = 0;
   for (const [name, person] of Object.entries(people)) {
     for (const role of ['owner', 'admin', 'member', 'guest']) {
       const viewer = { id: person, org_id: orgId, role };
       const whole = await viewerReviewAuthority(viewer, actions);
-      const narrowed = await viewerReviewAuthority(viewer, plain);
-      for (const id of plain) {
-        assert.deepEqual(narrowed.get(id), whole.get(id), `${name} as ${role}: ${[...actionByTitle].find(([, value]) => value === id)?.[0]}`);
-        if (narrowed.get(id)?.viewer_can_approve) canApprove += 1;
+      for (const [page, ids] of pages) {
+        const narrowed = await viewerReviewAuthority(viewer, ids);
+        for (const id of ids) {
+          assert.deepEqual(narrowed.get(id), whole.get(id), `${name} as ${role}, a page of ${page}: ${[...actionByTitle].find(([, value]) => value === id)?.[0]}`);
+          if (narrowed.get(id)?.viewer_can_approve) canApprove += 1;
+        }
       }
     }
   }
-  assert.ok(canApprove > 0, `some viewer may approve a plain action (${canApprove})`);
+  assert.ok(canApprove > 0, `some viewer may approve on a narrowed page (${canApprove})`);
 });
 
 type Growth = { anon: number; peak: number };

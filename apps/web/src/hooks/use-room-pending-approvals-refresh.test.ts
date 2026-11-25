@@ -1,13 +1,45 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { isApprovalAttentionEvent, ROOM_PENDING_APPROVALS_REFRESH_MS } from './use-room-pending-approvals-refresh';
+import {
+  APPROVAL_ATTENTION_EVENTS,
+  isApprovalAttentionEvent,
+  ROOM_PENDING_APPROVALS_EVENT_DELAY_MS,
+  ROOM_PENDING_APPROVALS_REFRESH_MS,
+  scheduleRoomPendingApprovalsRefresh,
+} from './use-room-pending-approvals-refresh';
 
 test('a room re-reads its approvals on an approval Inbox event, and on nothing else', () => {
   assert.equal(isApprovalAttentionEvent({ id: 'a', source_type: 'agent_action' }), true);
   for (const item of [{ source_type: 'message' }, { source_type: 'task' }, {}, null, undefined, 'agent_action']) {
     assert.equal(isApprovalAttentionEvent(item), false, JSON.stringify(item));
   }
+});
+
+test('events that arrive together make one re-read per room, and a later event another', () => {
+  const pending: Array<{ run: () => void; ms: number }> = [];
+  const timers = { set: (run: () => void, ms: number) => pending.push({ run, ms }) };
+  const reads: string[] = [];
+  // An approval raised, seen and decided, heard by the room and by its thread panel.
+  for (const view of ['room', 'thread', 'room', 'thread']) scheduleRoomPendingApprovalsRefresh('room-a', () => reads.push(view), timers);
+  scheduleRoomPendingApprovalsRefresh('room-b', () => reads.push('b'), timers);
+  assert.equal(pending.length, 2, 'one scheduled re-read per room');
+  assert.ok(pending.every((entry) => entry.ms === ROOM_PENDING_APPROVALS_EVENT_DELAY_MS));
+  for (const entry of pending.splice(0)) entry.run();
+  assert.deepEqual(reads, ['thread', 'b'], 'the latest refresh of each room ran once');
+  scheduleRoomPendingApprovalsRefresh('room-a', () => reads.push('later'), timers);
+  assert.equal(pending.length, 1, 'an event after the re-read schedules another');
+  pending[0]!.run();
+  assert.deepEqual(reads, ['thread', 'b', 'later']);
+});
+
+test('the hook listens to the events the server sends an approval\'s reviewers, with the type it gives them', () => {
+  const attention = readFileSync(new URL('../../../api/src/lib/attention.ts', import.meta.url), 'utf8');
+  const emitted = attention.match(/async function emitAttention\(event: ([^,]+),/)?.[1];
+  assert.ok(emitted, 'lib/attention.ts emitAttention');
+  assert.deepEqual([...emitted.matchAll(/'([a-z:]+)'/g)].map((match) => match[1]).sort(), [...APPROVAL_ATTENTION_EVENTS].sort());
+  assert.match(attention, /emitToUser\(current\.org_id, current\.user_id, event, projectAttentionItem\(current\)\)/, 'the item itself is the payload');
+  assert.match(attention, /export function approvalToAttentionDraft[\s\S]*?sourceType: 'agent_action'/, 'an approval\'s item has source_type agent_action');
 });
 
 test('the rooms poll their approvals only as a fallback, every 30 seconds, and both re-read on the events', () => {

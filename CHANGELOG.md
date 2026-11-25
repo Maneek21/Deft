@@ -21,8 +21,10 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
   and the room's list, with the previous one for every person, role, room and approval
   state.
 - A room's approval cards refresh when the reviewer's Inbox gets an approval event (raised,
-  changed or decided), and otherwise every 30 seconds instead of every 5, so a few open tabs
-  no longer run into the per-user request limit.
+  changed or decided; events within ¾ second make one refresh), and otherwise every 30
+  seconds instead of every 5, so a few open tabs no longer run into the per-user request
+  limit. Where no event reaches the reviewer (an Inbox item they already closed, an approval
+  reopened after a retryable failure), a card can take up to 30 seconds to change.
 - Measured on Postgres 16 capped at 512 MB, one pending approval with six tabs open (four of
   its reviewer's): the database's four connections grew to 112 MB in all instead of 213
   (largest 31 instead of 56), and at least 369 MB stayed available instead of 268.
