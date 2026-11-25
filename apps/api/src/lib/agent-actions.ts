@@ -1917,9 +1917,11 @@ export async function executeAction(
           }
         }
 
-        // Smart priority detection if not explicitly set
-        let priority = params.priority || 'p2';
-        if (!params.priority) {
+        // Smart priority detection if not explicitly set. A priority that is
+        // set is checked by createTaskBundle (lib/task-priority.ts), so an
+        // empty or unknown one is refused rather than replaced.
+        let priority = params.priority ?? 'p2';
+        if (params.priority === undefined || params.priority === null) {
           const lowerContent = (params.description || params.title || '').toLowerCase();
           if (lowerContent.match(/\b(urgent|asap|critical|blocker|emergency|p0)\b/)) {
             priority = 'p0';

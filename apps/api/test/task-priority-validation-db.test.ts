@@ -131,13 +131,16 @@ for (const [name, path, body] of REST_CREATES) {
     assert.equal(await taskCount(), before, 'nothing created');
   });
 
-  test(`${name}: a valid priority is kept, and a missing one is p2`, async () => {
+  test(`${name}: a valid priority is kept, and a missing or null one is p2`, async () => {
     const valid = await call('POST', path, body('p1'));
     assert.equal(valid.status, 201, JSON.stringify(valid.body));
     assert.equal(valid.body.priority, 'p1');
     const missing = await call('POST', path, { ...body('p1'), priority: undefined });
     assert.equal(missing.status, 201, JSON.stringify(missing.body));
     assert.equal(missing.body.priority, 'p2');
+    const nulled = await call('POST', path, { ...body('p1'), priority: null });
+    assert.equal(nulled.status, 201, JSON.stringify(nulled.body));
+    assert.equal(nulled.body.priority, 'p2');
   });
 }
 
@@ -219,6 +222,17 @@ test('MCP task_create (agent employee): an unknown priority is a tool error, not
   assert.equal(rows[0]?.priority, 'p1');
 });
 
+test('MCP task_create / task_update (agent employee, conservative trust): an unknown priority is refused before anything is queued for approval', async () => {
+  const conservative = (): ToolContext => ({ ...byoa(), trust_level: 'conservative' });
+  const queued = async () => (await c.query(`SELECT count(*)::int AS n FROM agent_actions WHERE org_id = $1`, [org])).rows[0].n as number;
+  const before = await queued();
+  const create = await taskCreate({ caller_employee_slug: employeeSlug, title: `byoa queued ${run}`, project_id: project, priority: 'urgent' } as any, conservative());
+  assert.equal(create.isError, true, text(create));
+  const update = await taskUpdate({ caller_employee_slug: employeeSlug, task_id: existing, patch: { priority: 'urgent' } } as any, conservative());
+  assert.equal(update.isError, true, text(update));
+  assert.equal(await queued(), before, 'nothing queued');
+});
+
 test('MCP task_update (agent employee): an unknown priority is a tool error, not silently ignored', async () => {
   await resetPriorities();
   const bad = await taskUpdate({ caller_employee_slug: employeeSlug, task_id: existing, patch: { priority: 'urgent' } } as any, byoa());
@@ -237,6 +251,8 @@ test("Defty create_task: an unknown priority, on the task or a subtask, fails an
   const bad = await executeActionDirect('create_task', { title: `defty ${run}`, resolved_project_id: project, project_name: projectName, priority: 'urgent' }, org, owner, null, 'quick');
   assert.equal(bad.success, false, JSON.stringify(bad));
   assert.match(String(bad.error), /priority/);
+  const empty = await executeActionDirect('create_task', { title: `defty empty ${run}`, resolved_project_id: project, project_name: projectName, priority: '' }, org, owner, null, 'quick');
+  assert.equal(empty.success, false, JSON.stringify(empty));
   const badSub = await executeActionDirect('create_task', { title: `defty sub ${run}`, resolved_project_id: project, project_name: projectName, subtasks: [{ title: 'child', priority: 'high' }] }, org, owner, null, 'quick');
   assert.equal(badSub.success, false, JSON.stringify(badSub));
   assert.equal(await taskCount(), before, 'nothing created');
