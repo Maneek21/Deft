@@ -737,8 +737,8 @@ jobs:
           #
           # Allow-lists: objects whose definition legitimately differs between a
           # fresh install and an upgraded one, one per line, quoted, followed by
-          # a comment giving the reason. None is known, so both are empty. A
-          # function is written as regprocedure prints it, for example
+          # a comment giving the reason. A function is written as regprocedure
+          # prints it, for example
           #   'enforce_app_runtime_session()'  # reason
           # and a column as 'table.column'. An entry replaces only that column's
           # default, or only that function's body (prosrc, probin or a
@@ -749,8 +749,10 @@ jobs:
           # LEAKPROOF, PARALLEL, set-returning flag, COST, ROWS, SUPPORT and
           # SET options, each from pg_proc.
           allowed_function_differences=(
+            'wiki_pages_search_update()'  # body differs only in line ends: fresh installs create it from packages/db/drizzle/0020_wiki_search_vector.sql (LF in git) through apply-extras; upgraded installs keep the CRLF body their first release created (lineages/public61/artifacts/public-git-db.tar holds that CRLF body); no upgrade redefines it
           )
           allowed_column_differences=(
+            'users.notification_preferences'  # fresh installs carry the newer default with push settings; upgraded installs keep the older default; add-only upgrades can't change a default; reported to the orchestrator, 26 Nov
           )
           sql_text_array() {
             local items=() item ok='^[]A-Za-z0-9_.(),[ ]+$'
