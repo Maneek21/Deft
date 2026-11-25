@@ -38,10 +38,12 @@ test('an operator sets either one in whole seconds; anything else out of range s
   }
 });
 
+type PoolFile = { file: string; constructions: number; recycled: number; overrides: string[] };
+
 /** Every `new Pool(` / `new pg.Pool(` the running API has (scripts and tests open their own). */
-function poolConstructions(): Array<{ file: string; constructions: number; recycled: number }> {
+function poolConstructions(): PoolFile[] {
   const root = fileURLToPath(new URL('../src', import.meta.url));
-  const found: Array<{ file: string; constructions: number; recycled: number }> = [];
+  const found: PoolFile[] = [];
   const walk = (dir: string) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name);
@@ -51,7 +53,13 @@ function poolConstructions(): Array<{ file: string; constructions: number; recyc
         const text = readFileSync(path, 'utf8');
         const constructions = text.match(/new\s+(?:pg\.)?Pool\s*\(/g)?.length ?? 0;
         if (constructions > 0) {
-          found.push({ file: relative(root, path), constructions, recycled: text.match(/\.\.\.DATABASE_POOL_RECYCLING\b/g)?.length ?? 0 });
+          found.push({
+            file: relative(root, path).replace(/\\/g, '/'),
+            constructions,
+            recycled: text.match(/\.\.\.DATABASE_POOL_RECYCLING\b/g)?.length ?? 0,
+            // A key of its own would replace the spread value wherever it stands after it.
+            overrides: [...text.matchAll(/\b(maxLifetimeSeconds|idleTimeoutMillis|maxUses)\s*:\s*[^,}\n]+/g)].map((match) => match[0].trim()),
+          });
         }
       }
     }
@@ -66,6 +74,11 @@ test('every pool the API opens takes the recycling options', () => {
   for (const pool of pools) {
     assert.ok(pool.recycled >= pool.constructions,
       `${pool.file}: ${pool.constructions} pool(s), ${pool.recycled} spread(s) of DATABASE_POOL_RECYCLING`);
+    // The one exception: a pool that keeps a connection on purpose (`min`) keeps it past the lifetime,
+    // since node-postgres would close it for age and not reopen it.
+    const allowed = pool.file === 'lib/app-run-bounded-db.ts' ? ['maxLifetimeSeconds: 0'] : [];
+    assert.deepEqual(pool.overrides.filter((key) => !allowed.includes(key)), [],
+      `${pool.file}: sets its own lifetime or idle timeout`);
   }
 });
 

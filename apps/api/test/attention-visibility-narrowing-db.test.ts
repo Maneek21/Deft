@@ -216,6 +216,11 @@ before(async () => {
   await action(people.member, null, { title: 'employee, channel event' }, 'mcp', { employee: employeeId, event: channelEvent });
   await action(people.member, null, { title: 'employee, no source' }, 'mcp', { employee: employeeId });
   await action(people.removed, null, { title: 'employee, no source, departed requester' }, 'mcp', { employee: employeeId });
+  // The canonical Defty envelope is a Defty action: its rooms decide, not an employee's source rule.
+  const { ensureDeftyEmployee } = await import('../src/lib/ensure-defty-membership.js');
+  const deftyEmployee = (await ensureDeftyEmployee(orgId)).employeeId;
+  await action(people.member, messagesByRoom[rooms.priv]!, { title: 'Defty envelope, private room' }, 'mention', { employee: deftyEmployee });
+  await action(people.member, messagesByRoom[rooms.adminOnly]!, { title: 'Defty envelope, admin room' }, 'mention', { employee: deftyEmployee });
   for (const room of [rooms.priv, rooms.adminOnly]) {
     const plan = randomUUID();
     plans.push(plan);
@@ -487,6 +492,14 @@ test('the review gate answers exactly as the composition it replaced, for every 
     assert.deepEqual(named(current.filtered), named(asRoutes.filtered), `${name}: the Inbox gate is the routes' gate under their current role`);
     passedBy.set(name, new Set(current.filtered));
   }
+  // Someone the workspace does not know reviews nothing, under either composition.
+  const stranger = randomUUID();
+  for (const role of ['owner', 'member', undefined]) {
+    const viewer = { id: stranger, org_id: orgId, role };
+    assert.deepEqual(await gateAnswers(reviewableActionSql(viewer)), { filtered: [], selected: [] }, `stranger as ${role}`);
+    assert.deepEqual(await gateAnswers(formerReviewableActionSql(viewer)), { filtered: [], selected: [] }, `stranger as ${role} (former)`);
+  }
+  assert.deepEqual(await gateAnswers(currentRoleReviewableActionSql(stranger)), { filtered: [], selected: [] }, 'stranger, Inbox gate');
   // The gate's user is a column of the statement (the approval sweep, approver assignment).
   const sweep = (gate: (user: SQL) => SQL) => db.select({ id: attentionItems.id }).from(attentionItems).where(and(
     eq(attentionItems.org_id, orgId), eq(attentionItems.source_type, 'agent_action'),
@@ -523,6 +536,7 @@ test('the review gate answers exactly as the composition it replaced, for every 
     ['guest', 'module write by a guest', false], ['member', 'module write by a member', true],
     ['member', 'employee, cited message', true], ['guest', 'employee, cited message', false],
     ['member', 'employee, message in the admin room', false],
+    ['member', 'Defty envelope, private room', true], ['member', 'Defty envelope, admin room', false],
     ['member', 'employee, channel event', true], ['member', 'employee, no source', true],
     ['owner', 'employee, no source, departed requester', true], ['member', 'employee, no source, departed requester', false],
     ['member', 'capture', true], ['member', 'capture from the admin room', false],

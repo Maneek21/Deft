@@ -18,7 +18,10 @@
  *   had as node-postgres's default): a connection idle this long is closed.
  *
  * Neither changes how many connections a pool may open. Each setting is a
- * whole number in range, or the API does not start. The API holds no LISTEN
+ * whole number in range, or the API does not start. A pool that keeps a
+ * connection open on purpose (`min`: the App run maintenance pool) takes the
+ * idle timeout only, since node-postgres would close that connection for age
+ * and not reopen it (app-run-bounded-db.ts). The API holds no LISTEN
  * connection; one would need its own client, not a pooled connection, which
  * these settings close.
  */

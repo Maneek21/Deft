@@ -44,7 +44,8 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
   idle, never while in use, so memory a connection took stays at most that long, and one
   idle for `DEFT_DATABASE_POOL_IDLE_TIMEOUT_SECONDS` (default 10, as before; 1 to 3,600).
   Both are optional; a value out of range stops startup, naming the setting. No pool's size
-  changes. Still open: a chat room's pending-approvals poll (every 5 seconds) costs a
+  changes. The App run maintenance pool keeps its one standing connection past the lifetime
+  (node-postgres would not reopen it). Still open: a chat room's pending-approvals poll (every 5 seconds) costs a
   connection 36 MB to plan, and the whole Inbox rule 35 MB.
 - App-boundary gate: `scripts/app-boundary-ceiling.json` caps the exception count
   at 1,277 (it may only be lowered), each exception's `milestone` now starts with
