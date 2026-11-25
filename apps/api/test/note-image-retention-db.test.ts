@@ -19,9 +19,11 @@ import { createNativeNote } from '../src/lib/native-context-create.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 
 // The sweep below runs over the whole database: only ever on a disposable test database.
-const unavailable = safeTestDatabaseUrl() ? '' : 'Set DEFT_TEST_DATABASE_URL to a disposable test database';
+const url = safeTestDatabaseUrl();
+const unavailable = url ? '' : 'Set DEFT_TEST_DATABASE_URL to a disposable test database';
 
-const c = new pg.Client({ connectionString: process.env.DATABASE_URL });
+// The fixture client uses the checked URL, the same database the API and the sweep use.
+const c = new pg.Client({ connectionString: url });
 const run = randomUUID().slice(0, 8);
 const org = randomUUID(), otherOrg = randomUUID();
 const alice = randomUUID(), bob = randomUUID();
@@ -109,6 +111,7 @@ test('noteFileIds reads images as the editor does: data-file-id, else an older /
   assert.deepEqual(noteFileIds(`<img alt="A > B" data-file-id="${a}">`), [a], 'a quoted > does not end the tag');
   assert.deepEqual(noteFileIds(`<!-- ${img(b)} -->${img(a)}`), [a], 'an image in a comment is not shown');
   assert.deepEqual(noteFileIds(`${img(a)}<!-- unclosed ${img(b)}`), [a], 'nor one after an unclosed comment');
+  assert.deepEqual(noteFileIds(`<img alt="<!--" data-file-id="${a}"><!-- caption -->`), [a], 'a comment opener inside a quoted value is not a comment');
   const many = Array.from({ length: 1200 }, () => randomUUID());
   assert.equal(noteFileIds(many.map(img).join('')).length, 1200, 'no cap on images per note');
 });
