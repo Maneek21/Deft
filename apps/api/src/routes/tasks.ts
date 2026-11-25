@@ -185,9 +185,11 @@ async function getVisibleTaskForOrg(taskId: string, orgId: string, userId: strin
 
 /**
  * The restriction a copy of `task` (a duplicate, the next occurrence) keeps:
- * its own named viewers plus the original's creator, co-assignees and
- * watchers, whom the copy does not carry over, so it reaches the same people
- * (lib/task-visibility.ts). Undefined for a task that is not restricted.
+ * its own named viewers plus the original's creator, co-assignees and the
+ * watchers who may see it, whom the copy does not carry over, so it reaches
+ * the same people and no one else (lib/task-visibility.ts: watching is not a
+ * grant for a guest, so a guest watcher who may not see the original is not
+ * named on the copy). Undefined for a task that is not restricted.
  */
 async function restrictionForCopy(task: { id: string; created_by: string | null; metadata: unknown }) {
   if (!taskRestrictionMetadata(task.metadata)) return undefined;
@@ -195,7 +197,12 @@ async function restrictionForCopy(task: { id: string; created_by: string | null;
     db.select({ user_id: taskAssignees.user_id }).from(taskAssignees).where(eq(taskAssignees.task_id, task.id)),
     db.select({ user_id: taskWatchers.user_id }).from(taskWatchers).where(eq(taskWatchers.task_id, task.id)),
   ]);
-  return taskRestrictionMetadata(task.metadata, [task.created_by, ...coAssignees.map((row) => row.user_id), ...watchers.map((row) => row.user_id)]);
+  const seeingWatchers: string[] = [];
+  for (const { user_id: watcher } of watchers) {
+    const [seen] = await db.select({ id: tasks.id }).from(tasks).where(and(eq(tasks.id, task.id), visibleTaskSql(watcher))).limit(1);
+    if (seen) seeingWatchers.push(watcher);
+  }
+  return taskRestrictionMetadata(task.metadata, [task.created_by, ...coAssignees.map((row) => row.user_id), ...seeingWatchers]);
 }
 
 /**

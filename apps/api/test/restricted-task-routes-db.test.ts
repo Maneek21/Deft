@@ -122,6 +122,8 @@ after(async () => {
   await c.query(`DELETE FROM workflow_rules WHERE org_id = $1`, [org]);
   await c.query(`DELETE FROM idempotency_keys WHERE user_id = ANY($1::text[])`, [VIEWERS]).catch(() => {});
   await c.query(`DELETE FROM task_labels WHERE task_id IN (SELECT id FROM tasks WHERE org_id = $1)`, [org]);
+  await c.query(`DELETE FROM task_watchers WHERE task_id IN (SELECT id FROM tasks WHERE org_id = $1)`, [org]);
+  await c.query(`DELETE FROM task_assignees WHERE task_id IN (SELECT id FROM tasks WHERE org_id = $1)`, [org]);
   await c.query(`DELETE FROM task_comments WHERE org_id = $1`, [org]);
   await c.query(`DELETE FROM team_resources WHERE org_id = $1`, [org]);
   await c.query(`DELETE FROM team_members WHERE org_id = $1`, [org]);
@@ -415,6 +417,9 @@ test('a duplicate and the next occurrence of a restricted task stay restricted t
     VALUES ($1, $2, $3, 90, $4, $5, $6, 'in_progress', 'weekly')`,
   [recurring, org, project, `rt9 ${run} (recurring)`, owner, JSON.stringify({ visibility: 'restricted', visible_user_ids: [named] })]);
   await c.query(`INSERT INTO task_watchers (id, task_id, user_id) VALUES (gen_random_uuid()::text, $1, $2)`, [recurring, admin]);
+  // A guest watcher may not see a restricted task (watching is no grant for a guest): not named on the copy.
+  await c.query(`INSERT INTO task_watchers (id, task_id, user_id) VALUES (gen_random_uuid()::text, $1, $2)`, [recurring, guest]);
+  assert.equal((await get(guest, `/api/tasks/${recurring}`)).status, 404, 'guest watcher: the original');
   const done = await call(named, `/api/tasks/${recurring}`, { method: 'PATCH', body: { status: 'done' } });
   assert.equal(done.status, 200);
   const { rows } = await c.query(`SELECT id, metadata FROM tasks WHERE recurrence_source_id = $1`, [recurring]);
@@ -425,6 +430,7 @@ test('a duplicate and the next occurrence of a restricted task stay restricted t
     assert.equal((await get(viewer, `/api/tasks/${rows[0].id}`)).status, 200, `${who(viewer)}: the next occurrence`);
   }
   assert.equal((await get(member, `/api/tasks/${rows[0].id}`)).status, 404, 'member: the next occurrence');
+  assert.equal((await get(guest, `/api/tasks/${rows[0].id}`)).status, 404, 'guest watcher: the next occurrence');
   await c.query(`UPDATE tasks SET is_deleted = true WHERE id = ANY($1::text[])`, [[recurring, rows[0].id]]);
 });
 
