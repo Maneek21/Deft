@@ -37,7 +37,9 @@ import type { AppRunTransaction } from './app-run-repository.js';
  */
 import { clientSafeErrorMessage, clientSafeErrorText } from './client-safe-error.js';
 import { eq, and, or, sql, isNull, inArray, type SQL } from 'drizzle-orm';
-import { currentActionReviewerSql, reviewableActionSql } from './agent-action-review-gate.js';
+import {
+  currentActionReviewerSql, EVERY_REVIEW_GATE_ACTION, readReviewGateScope, reviewableActionSql, type ReviewGateScope,
+} from './agent-action-review-gate.js';
 import {
   CAPTURE_ACTION_SOURCE,
   captureSourceUserId,
@@ -687,14 +689,21 @@ export type ApprovalResolverResult =
   | ApprovalResolverSuccess
   | ApprovalResolverError;
 
-function actionSourceAuthoritySql(readerUserId?: string) {
+function actionSourceAuthoritySql(readerUserId?: string, scope: ReviewGateScope = EVERY_REVIEW_GATE_ACTION) {
   // Internal Defty keeps its established human-source boundary. External
   // employee proposals use only durable source columns, never model arguments.
-  return sql`(${agentActions.agent_employee_id} is null or ${canonicalDeftyActionSql()}
-    or (${currentAgentActionSourceAuthoritySql('agent_actions', readerUserId ? sql`${readerUserId}` : undefined)}))
-    and (${agentActions.source} is distinct from 'defty_capture' or
+  // A part a scope leaves out is true on every action in that scope (its
+  // first test), so it is not planned (ReviewGateScope).
+  const employeeSource = scope.employeeActions
+    ? sql`(${agentActions.agent_employee_id} is null or ${canonicalDeftyActionSql()}
+    or (${currentAgentActionSourceAuthoritySql('agent_actions', readerUserId ? sql`${readerUserId}` : undefined)}))`
+    : sql`true`;
+  const captureEvidence = scope.captures
+    ? sql`(${agentActions.source} is distinct from 'defty_capture' or
       ${captureEvidenceAvailableSql(sql`${agentActions.params}->'metadata'`, agentActions.org_id,
-        sql`coalesce(${agentActions.params}->>'source_space_id', ${agentActions.params}->>'space_id')`)})`;
+        sql`coalesce(${agentActions.params}->>'source_space_id', ${agentActions.params}->>'space_id')`)})`
+    : sql`true`;
+  return sql`${employeeSource} and ${captureEvidence}`;
 }
 
 async function actionSourceIsCurrent(actionId: string, readerUserId?: string) {
@@ -869,15 +878,23 @@ export async function viewerReviewAuthority(
   const authority = new Map<string, ViewerReviewAuthority>();
   const ids = [...new Set(actionIds)];
   if (ids.length === 0) return authority;
-  const rows = await db
-    .select({
-      ...requesterActionColumns,
-      action: agentActions.action,
-      reviewable: sql<boolean>`coalesce((${reviewableActionSql(viewer)}), false)`,
-      source_current: sql<boolean>`coalesce((${actionSourceAuthoritySql(viewer.id)}), false)`,
-    })
-    .from(agentActions)
-    .where(and(inArray(agentActions.id, ids), eq(agentActions.org_id, viewer.org_id)));
+  const these = and(inArray(agentActions.id, ids), eq(agentActions.org_id, viewer.org_id));
+  // The review gate and source check planned only for the kinds of these
+  // actions, read on the snapshot they run on. An action out of the scope
+  // would read as not reviewable, so the scope covers every row read here;
+  // source_current is read only where reviewable is true.
+  const rows = await db.transaction(async (tx) => {
+    const scope = await readReviewGateScope(tx, sql`FROM ${agentActions} WHERE ${these}`);
+    return tx
+      .select({
+        ...requesterActionColumns,
+        action: agentActions.action,
+        reviewable: sql<boolean>`coalesce((${reviewableActionSql(viewer, scope)}), false)`,
+        source_current: sql<boolean>`coalesce((${actionSourceAuthoritySql(viewer.id, scope)}), false)`,
+      })
+      .from(agentActions)
+      .where(these);
+  }, { isolationLevel: 'repeatable read', accessMode: 'read only' });
   const membership = await loadReviewMembership(viewer.id, viewer.org_id);
   const requesters = await loadActionRequesterIds(rows);
   const appRunRows: AppRunReviewRow[] = [];

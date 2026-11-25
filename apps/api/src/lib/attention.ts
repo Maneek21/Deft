@@ -21,7 +21,9 @@ import { scheduleAttentionDeliveries, scheduleAttentionDelivery } from './web-pu
 import { nativeDeliveryAccessSql, nativeNotificationAccessSql } from './native-mention-visibility.js';
 import { publicSpaceVisibleSql } from './space-visibility.js';
 import { actionReviewerCandidateSql, loadActionReviewers } from './agent-action-requester.js';
-import { currentRoleReviewableActionSql } from './agent-action-review-gate.js';
+import {
+  currentRoleReviewableActionSql, EVERY_REVIEW_GATE_ACTION, readReviewGateScope, type ReviewGateScope,
+} from './agent-action-review-gate.js';
 
 export type AttentionLane = 'needs_you' | 'updates';
 export type AttentionPriority = 'critical' | 'high' | 'normal' | 'low';
@@ -71,8 +73,22 @@ export const ATTENTION_SOURCE_TYPES = [
 
 export type AttentionSourceType = typeof ATTENTION_SOURCE_TYPES[number];
 
+/** What `readAttentionWithSourceTypes` read: the rows' source types, and the scope of the approval items' actions. */
+function isReadScope(scope: AttentionSourceScope): scope is AttentionReadScope {
+  return scope !== 'all' && !Array.isArray(scope);
+}
+
+/**
+ * The review gate's scope for approval items: narrowed only by what a read
+ * found on its snapshot (`AttentionReadScope.approvals`), never by source type
+ * strings, which are stored free text. Otherwise the whole gate.
+ */
+function approvalGateScope(scope: AttentionSourceScope): ReviewGateScope {
+  return isReadScope(scope) ? scope.approvals : EVERY_REVIEW_GATE_ACTION;
+}
+
 /** The access rule of each source type that has one, for reader `userId`. */
-const SOURCE_TYPE_ACCESS: Partial<Record<AttentionSourceType, (userId: string) => SQL>> = {
+const SOURCE_TYPE_ACCESS: Partial<Record<AttentionSourceType, (userId: string, sourceTypes: AttentionSourceScope) => SQL>> = {
   native_mention: (userId) => nativeDeliveryAccessSql(userId, sql`${attentionItems.source_id}`, sql`${attentionItems.org_id}`),
   message: (userId) => sql`EXISTS (
         SELECT 1
@@ -99,8 +115,8 @@ const SOURCE_TYPE_ACCESS: Partial<Record<AttentionSourceType, (userId: string) =
   // The gate as the value of a lookup by primary key, not inside EXISTS:
   // PostgreSQL plans an EXISTS here twice (per row, and hashed over every
   // action), which doubled the review gate's planning memory.
-  agent_action: (userId) => sql`COALESCE((
-        SELECT ${currentApprovalRecipientSql(userId)}
+  agent_action: (userId, sourceTypes) => sql`COALESCE((
+        SELECT ${currentRoleReviewableActionSql(userId, approvalGateScope(sourceTypes))}
         FROM ${agentActions}
         WHERE ${agentActions.id} = ${attentionItems.source_id}
           AND ${agentActions.org_id} = ${attentionItems.org_id}
@@ -111,11 +127,19 @@ const SOURCE_TYPE_ACCESS: Partial<Record<AttentionSourceType, (userId: string) =
 export const ATTENTION_SOURCE_TYPES_WITH_ACCESS_RULE: readonly string[] = Object.keys(SOURCE_TYPE_ACCESS);
 
 /**
- * Which source types a visibility condition must cover: `'all'`, or the types
- * of the rows it will be evaluated on (`attentionSourceTypesOf`,
- * `readAttentionWithSourceTypes`, `writeAttentionWithSourceTypes`).
+ * What `readAttentionWithSourceTypes` read on its snapshot: the source types
+ * of the rows, and the review gate's scope for the actions of the approval
+ * items among them (`ReviewGateScope`), kept apart from the types.
  */
-export type AttentionSourceScope = 'all' | readonly string[];
+export type AttentionReadScope = Readonly<{ types: readonly string[]; approvals: ReviewGateScope }>;
+
+/**
+ * Which rows a visibility condition must cover: `'all'`, the types of the
+ * rows it will be evaluated on (`attentionSourceTypesOf`,
+ * `writeAttentionWithSourceTypes`: the approval rule is the whole gate), or
+ * what `readAttentionWithSourceTypes` read (the approval rule narrowed).
+ */
+export type AttentionSourceScope = 'all' | readonly string[] | AttentionReadScope;
 
 /**
  * Whether `userId` may see an attention item (the Inbox's visibility rule).
@@ -127,17 +151,19 @@ export type AttentionSourceScope = 'all' | readonly string[];
  * condition, the sum). A row whose type has a rule that was not
  * asked for is not visible (fail closed), so name every type the statement
  * can meet; on rows of the named types and of types with no rule the result
- * is exactly the `'all'` result.
+ * is exactly the `'all'` result. A read's scope (`AttentionReadScope`) narrows
+ * the approval rule the same way, by the kinds of the items' actions.
  */
 export function visibleAttentionCondition(userId: string, sourceTypes: AttentionSourceScope) {
   const ruled = Object.keys(SOURCE_TYPE_ACCESS) as AttentionSourceType[];
-  const planned = sourceTypes === 'all' ? ruled : ruled.filter((type) => sourceTypes.includes(type));
+  const types = isReadScope(sourceTypes) ? sourceTypes.types : sourceTypes;
+  const planned = types === 'all' ? ruled : ruled.filter((type) => types.includes(type));
   return sql<boolean>`(
     (${attentionItems.metadata}->>'legacy_notification_id' IS NULL OR
       ${nativeNotificationAccessSql(userId, sql`${attentionItems.metadata}`, sql`${attentionItems.org_id}`, sql`${attentionItems.link}`)})
     AND (
     ${attentionItems.source_type} NOT IN (${sql.join(ruled.map((type) => sql.raw(`'${type}'`)), sql`, `)})
-    ${sql.join(planned.map((type) => sql`OR (${attentionItems.source_type} = ${sql.raw(`'${type}'`)} AND ${SOURCE_TYPE_ACCESS[type]!(userId)})`), sql` `)}
+    ${sql.join(planned.map((type) => sql`OR (${attentionItems.source_type} = ${sql.raw(`'${type}'`)} AND ${SOURCE_TYPE_ACCESS[type]!(userId, sourceTypes)})`), sql` `)}
     )
   )`;
 }
@@ -156,15 +182,26 @@ export type AttentionTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
  * so `visibleAttentionCondition(user, sourceTypes)` there answers exactly as
  * the whole rule would on that snapshot. `where` must select every row `read`
  * applies the condition to. Run every statement of `read` on `tx`.
+ *
+ * When approval items are among them it also reads the kinds of their actions
+ * (`AttentionReadScope.approvals`), so the approval rule plans only the
+ * checks those actions need (release 152).
  */
 export async function readAttentionWithSourceTypes<T>(
   where: SQL | undefined,
-  read: (tx: AttentionTx, sourceTypes: string[]) => Promise<T>,
+  read: (tx: AttentionTx, sourceTypes: AttentionReadScope) => Promise<T>,
 ): Promise<T> {
   if (!where) throw new Error('readAttentionWithSourceTypes needs a filter');
   return db.transaction(async (tx) => {
     const rows = await tx.selectDistinct({ source_type: attentionItems.source_type }).from(attentionItems).where(where);
-    return read(tx, rows.map((row) => row.source_type));
+    const types = rows.map((row) => row.source_type);
+    const approvals = types.includes('agent_action')
+      ? await readReviewGateScope(tx, sql`FROM ${attentionItems}
+        JOIN ${agentActions} approval_action
+          ON approval_action.id = ${attentionItems.source_id} AND approval_action.org_id = ${attentionItems.org_id}
+        WHERE ${where} AND ${attentionItems.source_type} = 'agent_action'`, 'approval_action')
+      : EVERY_REVIEW_GATE_ACTION;
+    return read(tx, Object.freeze({ types, approvals }));
   }, { isolationLevel: 'repeatable read', accessMode: 'read only' });
 }
 
@@ -223,8 +260,8 @@ function isDeadlock(error: unknown): boolean {
  * under the owner's current role. Every read, count, mutation, emission,
  * delivery and backfill of an approval item goes through it.
  */
-export function currentApprovalRecipientSql(userId: string | SQL): SQL {
-  return currentRoleReviewableActionSql(userId);
+export function currentApprovalRecipientSql(userId: string | SQL, scope = EVERY_REVIEW_GATE_ACTION): SQL {
+  return currentRoleReviewableActionSql(userId, scope);
 }
 
 /**
@@ -755,9 +792,12 @@ export async function filterVisibleAttentionItems<T extends typeof attentionItem
   rows: T[],
 ): Promise<T[]> {
   if (rows.length === 0) return [];
-  const visible = await db.select().from(attentionItems).where(and(
-    inArray(attentionItems.id, rows.map((item) => item.id)), eq(attentionItems.user_id, userId), visibleAttentionCondition(userId, attentionSourceTypesOf(rows)),
-  ));
+  // The rows' types and approval kinds read on the snapshot the check runs on,
+  // so it plans only their rules (readAttentionWithSourceTypes).
+  const theseRows = and(inArray(attentionItems.id, rows.map((item) => item.id)), eq(attentionItems.user_id, userId));
+  const readVisible = () => readAttentionWithSourceTypes(theseRows, (tx, sourceTypes) => tx.select().from(attentionItems)
+    .where(and(theseRows, visibleAttentionCondition(userId, sourceTypes))));
+  const visible = await readVisible();
   const allowed = new Set(visible.map((item) => item.id));
   const hidden = rows.filter((item) => !allowed.has(item.id));
   // Keep existing approvals held back while their reviewer lacks authority;
@@ -778,9 +818,7 @@ export async function filterVisibleAttentionItems<T extends typeof attentionItem
       expectedVersion: item.version,
     });
   }
-  const finalRows = hidden.length ? await db.select().from(attentionItems).where(and(
-    inArray(attentionItems.id, rows.map((item) => item.id)), eq(attentionItems.user_id, userId), visibleAttentionCondition(userId, attentionSourceTypesOf(rows)),
-  )) : visible;
+  const finalRows = hidden.length ? await readVisible() : visible;
   const currentById = new Map(finalRows.map((item) => [item.id, item]));
   // A thread can reuse its id for a newer reply while this read is in flight.
   // Drop stale snapshots without resolving the newly visible replacement.

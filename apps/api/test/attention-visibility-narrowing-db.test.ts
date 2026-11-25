@@ -24,6 +24,12 @@
  *   pending, decided and expired; requesters, assignees who do and do not
  *   pass the checks, non-reviewers; module writes, employee, capture and plan
  *   actions; another workspace. Planning it costs about a third of before.
+ * - The gate narrowed to the kinds of action a statement meets (release 152:
+ *   no outside agent's action, no capture) answers as the whole gate on the
+ *   actions it covers and false on the others; the Inbox rule narrowed by
+ *   the entries a read adds, a room's pending approvals (against release
+ *   151's statement, every role, room and approval state) and
+ *   viewerReviewAuthority answer as before.
  */
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -33,9 +39,12 @@ import { fileURLToPath } from 'node:url';
 import test, { after, before } from 'node:test';
 import pg from 'pg';
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { agentActions, attentionItems } from '@deft/db/schema';
 import { closeDb, db } from '../src/lib/db.js';
-import { currentRoleReviewableActionSql, reviewableActionSql } from '../src/lib/agent-action-review-gate.js';
+import {
+  captureActionSql, currentRoleReviewableActionSql, employeeActionSql, reviewableActionSql, reviewsActionSql, type ReviewGateScope,
+} from '../src/lib/agent-action-review-gate.js';
 import { actionReviewAssignmentSql } from '../src/lib/agent-action-requester.js';
 import { visibleCaptureActionSql } from '../src/lib/agent-action-visibility.js';
 import { moduleRoleAudienceSql, sourceMessageRoomSql, visibleAgentActionSourceSql } from '../src/lib/module-action-visibility.js';
@@ -74,6 +83,8 @@ const plans: string[] = [];
 const employeeUser = randomUUID();
 const employeeId = randomUUID();
 const otherOrgId = randomUUID();
+const otherEmployeeUser = randomUUID();
+const otherEmployeeId = randomUUID();
 const deliveries: string[] = [];
 /** `${person}|${type}|${source}|${metadata variant}` → item id; variant 0 has empty metadata. */
 const itemIds = new Map<string, string>();
@@ -158,14 +169,14 @@ before(async () => {
 
   // Approvals: the requester reviews; a removed requester's action has an assigned reviewer; one names no room; one is a capture.
   type ActionShape = {
-    status?: string; source?: string; action?: string; employee?: string | null; event?: string | null;
+    status?: string; source?: string | null; action?: string; employee?: string | null; event?: string | null;
     plan?: string | null; conversation?: string | null; org?: string;
   };
   const action = async (requester: string, messageId: string | null, params: Record<string, unknown>, source = 'mention', shape: ActionShape = {}) => {
     const id = randomUUID();
     await q(`INSERT INTO agent_actions(id,org_id,user_id,action,params,approval_tier,approval_status,source,message_id,
         agent_employee_id,channel_event_id,plan_id,conversation_id)
-      VALUES($1,$2,$3,$7,$4,'quick',$8,$5,$6,$9,$10,$11,$12)`, [id, shape.org ?? orgId, requester, JSON.stringify(params), shape.source ?? source, messageId,
+      VALUES($1,$2,$3,$7,$4,'quick',$8,$5,$6,$9,$10,$11,$12)`, [id, shape.org ?? orgId, requester, JSON.stringify(params), shape.source === undefined ? source : shape.source, messageId,
       shape.action ?? 'create_task', shape.status ?? 'pending', shape.employee ?? null, shape.event ?? null, shape.plan ?? null, shape.conversation ?? null]);
     actions.push(id);
     actionByTitle.set(String(params.title), id);
@@ -231,6 +242,22 @@ before(async () => {
   await action(people.member, null, { title: 'capture from the admin room', source_user_id: people.member, source_space_id: rooms.adminOnly }, 'defty_capture');
   await q('INSERT INTO orgs(id,name,slug) VALUES($1,$2,$3)', [otherOrgId, 'Another workspace', `attention-narrowing-${otherOrgId}`]);
   await action(people.member, null, { title: 'another workspace' }, 'mention', { org: otherOrgId });
+  // A pending approval in every kind of room, for a room's pending-approvals poll (release 152): the
+  // public room has only Defty actions and an employee's in a room of its own kind mix; the archived room
+  // only Defty; the guest's public room a module write by the guest.
+  await action(people.owner, messagesByRoom[rooms.pub]!, { title: 'Defty, public room' });
+  await action(people.member, messagesByRoom[rooms.archived]!, { title: 'Defty, archived room' });
+  await action(people.guest, messagesByRoom[rooms.pubGuest]!, { title: 'module write by a guest, in a room' }, 'mention', { action: 'module_record_create' });
+  await action(people.owner, messagesByRoom[rooms.pubGuest]!, { title: 'employee, guest public room' }, 'mcp', { employee: employeeId });
+  // Kinds at the edges of the review gate's scope (release 152): a capture that carries an employee, an
+  // action with no source, an employee of another workspace on this workspace's action.
+  await action(people.member, null, { title: 'capture with an employee', source_user_id: people.member, source_space_id: rooms.priv },
+    'defty_capture', { employee: employeeId });
+  await action(people.member, messagesByRoom[rooms.priv]!, { title: 'no source' }, 'mention', { source: null });
+  await q("INSERT INTO users(id,email,name,kind,is_agent) VALUES($1,$2,'Other employee','agent',true)", [otherEmployeeUser, `${otherEmployeeUser}@example.test`]);
+  await q(`INSERT INTO agent_employees(id,org_id,user_id,name,slug,role,system_prompt,trust_level,is_active,is_byoa,runtime_kind,created_by)
+    VALUES($1,$2,$3,'Other employee',$4,'custom','Test.','conservative',true,true,'custom_mcp',$5)`, [otherEmployeeId, otherOrgId, otherEmployeeUser, `other-${otherEmployeeId}`, people.owner]);
+  await action(people.member, messagesByRoom[rooms.priv]!, { title: 'employee of another workspace' }, 'mcp', { employee: otherEmployeeId });
 
   // Mentions: a live message in the private room, one in the admin room, one whose source is deleted; one delivery per person.
   for (const [room, deleted] of [[rooms.priv, false], [rooms.adminOnly, false], [rooms.pub, true]] as const) {
@@ -289,6 +316,8 @@ after(async () => {
   try {
     if (seeded && client) {
       await q('DELETE FROM agent_actions WHERE org_id=$1', [otherOrgId]);
+      await q('DELETE FROM agent_actions WHERE agent_employee_id=$1', [otherEmployeeId]);
+      await q('DELETE FROM agent_employees WHERE org_id=$1', [otherOrgId]);
       for (const table of ['attention_events', 'attention_items', 'native_mention_deliveries', 'native_reference_states',
         'agent_action_approvers', 'agent_actions', 'agent_channel_events', 'agent_plans', 'agent_employees', 'messages']) {
         await q(`DELETE FROM ${table} WHERE org_id=$1`, [orgId]);
@@ -296,7 +325,7 @@ after(async () => {
       await q('DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id=$1)', [orgId]);
       for (const table of ['spaces', 'org_members']) await q(`DELETE FROM ${table} WHERE org_id=$1`, [orgId]);
       await q('DELETE FROM orgs WHERE id=ANY($1::text[])', [[orgId, otherOrgId]]);
-      await q('DELETE FROM users WHERE id=ANY($1::text[])', [[...Object.values(people), employeeUser]]);
+      await q('DELETE FROM users WHERE id=ANY($1::text[])', [[...Object.values(people), employeeUser, otherEmployeeUser]]);
     }
   } finally {
     await client?.end();
@@ -338,7 +367,7 @@ test('the rule narrowed to the types a statement meets shows exactly what the wh
     // A list reads its rows' types first, on the same snapshot (routes/attention.ts, the MCP tools).
     const mine = and(eq(attentionItems.org_id, orgId), eq(attentionItems.user_id, person));
     const listed = await readAttentionWithSourceTypes(mine, async (tx, types) => {
-      assert.deepEqual([...types].sort(), [...ATTENTION_SOURCE_TYPES].sort(), `${name}: every type read first`);
+      assert.deepEqual([...types.types].sort(), [...ATTENTION_SOURCE_TYPES].sort(), `${name}: every type read first`);
       return tx.select({ id: attentionItems.id }).from(attentionItems).where(and(mine, visibleAttentionCondition(person, types)));
     });
     assert.deepEqual(sorted(new Set(listed.map((row) => row.id))), sorted(whole), `${name}: the types read first`);
@@ -579,6 +608,232 @@ test('an approval item is shown exactly when the rule it replaced showed it, pen
   }
 });
 
+/** `reviewsActionSql` as composed before release 151: the user's own checks, then `actionReviewAssignmentSql`. */
+function formerReviewsSql(userId: string): SQL {
+  return and(
+    visibleCaptureActionSql({ id: userId, org_id: actionOrg }),
+    visibleAgentActionSourceSql({ userId, orgId: actionOrg }),
+    sourceMessageRoomSql(userId),
+    actionReviewAssignmentSql(userId),
+  )!;
+}
+
+/** The room's pending approvals as release 151 listed them (routes/agent.ts, GET /actions/pending-by-space). */
+function formerPendingInRoomSql(user: { id: string; org_id: string; role: string }, spaceId: string): SQL {
+  return sql`SELECT a.id FROM agent_actions a JOIN messages msg ON msg.id = a.message_id
+    WHERE msg.space_id = ${spaceId} AND msg.org_id = ${user.org_id} AND a.org_id = ${user.org_id}
+      AND a.approval_status = 'pending' AND a.approval_tier IN ('quick', 'full')
+      AND a.source IS DISTINCT FROM 'defty_capture'
+      AND EXISTS (SELECT 1 FROM agent_actions WHERE agent_actions.id = a.id
+        AND ${visibleAgentActionSourceSql({ userId: user.id, orgId: user.org_id })}
+        AND ${sourceMessageRoomSql(user.id)})
+      AND (${user.role !== 'guest'} OR a.action NOT IN ('module_record_create', 'module_record_bulk_create',
+        'module_record_update', 'module_record_archive', 'module_record_task_link', 'module_record_task_unlink'))
+      AND EXISTS (SELECT 1 FROM agent_actions WHERE agent_actions.id = a.id AND ${actionReviewAssignmentSql(user.id)})`;
+}
+
+type ActionKind = { employee: boolean; capture: boolean };
+
+/** Each test action's kind (an outside agent's, a capture), as the gate's scope reads it. */
+async function actionKinds(): Promise<Map<string, ActionKind>> {
+  const rows = await db.select({ id: agentActions.id, employee: employeeActionSql(), capture: captureActionSql() })
+    .from(agentActions).where(inArray(agentActions.id, actions));
+  return new Map(rows.map((row) => [row.id, { employee: row.employee, capture: row.capture }]));
+}
+
+const PARTIAL_SCOPES: ReviewGateScope[] = [
+  { employeeActions: false, captures: true },
+  { employeeActions: true, captures: false },
+  { employeeActions: false, captures: false },
+];
+
+const coveredBy = (scope: ReviewGateScope, kind: ActionKind | undefined) => kind !== undefined
+  && (scope.employeeActions || !kind.employee) && (scope.captures || !kind.capture);
+
+test('the review gate narrowed to the kinds of its actions answers as the whole gate on them, and false on the others', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const kinds = await actionKinds();
+  const kindCount = (key: keyof ActionKind) => [...kinds.values()].filter((kind) => kind[key]).length;
+  assert.ok(kindCount('employee') >= 3 && kindCount('capture') >= 2, 'the fixture has outside agents\' actions and captures');
+  const kindOf = (title: string) => kinds.get(actionByTitle.get(title)!);
+  assert.deepEqual(kindOf('capture with an employee'), { employee: true, capture: true });
+  assert.deepEqual(kindOf('no source'), { employee: false, capture: false });
+  assert.deepEqual(kindOf('employee of another workspace'), { employee: true, capture: false });
+  assert.deepEqual(kindOf('Defty envelope, private room'), { employee: false, capture: false });
+  let excluded = 0;
+  let shown = 0;
+  for (const scope of PARTIAL_SCOPES) {
+    const label = `employee actions ${scope.employeeActions}, captures ${scope.captures}`;
+    const covered = (ids: string[]) => ids.filter((id) => coveredBy(scope, kinds.get(id)));
+    const same = (narrowed: { filtered: string[]; selected: string[] }, whole: { filtered: string[]; selected: string[] }, at: string) => {
+      assert.deepEqual(narrowed.filtered, covered(whole.filtered), `${at}, ${label}: as a filter`);
+      assert.deepEqual(narrowed.selected, covered(whole.selected), `${at}, ${label}: as a value`);
+      excluded += whole.filtered.length - narrowed.filtered.length;
+      shown += narrowed.filtered.length;
+    };
+    for (const [name, person] of Object.entries(people)) {
+      for (const role of ['owner', 'admin', 'member', 'guest', undefined]) {
+        const viewer = { id: person, org_id: orgId, role };
+        same(await gateAnswers(reviewableActionSql(viewer, scope)), await gateAnswers(formerReviewableActionSql(viewer)), `${name} as ${role}, routes' gate`);
+      }
+      same(await gateAnswers(currentRoleReviewableActionSql(person, scope)), await gateAnswers(formerCurrentRoleReviewableActionSql(person)), `${name}, Inbox gate`);
+      same(await gateAnswers(reviewsActionSql(person, scope)), await gateAnswers(formerReviewsSql(person)), `${name}, gate without audience`);
+    }
+  }
+  for (const [name, person] of Object.entries(people)) {
+    assert.deepEqual(await gateAnswers(reviewsActionSql(person)), await gateAnswers(formerReviewsSql(person)), `${name}, gate without audience, whole`);
+  }
+  assert.ok(shown > 0 && excluded > 0, `narrowed gates show ${shown} and leave out ${excluded} that the whole gate shows`);
+});
+
+test('while the Defty envelope is inactive or marked BYOA its actions count as an outside agent\'s, and narrowed gates still agree', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const { rows: [envelope] } = await q("SELECT id FROM agent_employees WHERE org_id = $1 AND runtime_kind = 'defty_system'", [orgId]);
+  assert.ok(envelope, 'the Defty envelope');
+  const envelopeActions = actions.filter((id) => [...actionByTitle].some(([title, value]) => value === id && title.startsWith('Defty envelope')));
+  assert.equal(envelopeActions.length, 2);
+  for (const [state, change, restore] of [['inactive', 'is_active = false', 'is_active = true'], ['marked BYOA', 'is_byoa = true', 'is_byoa = false']]) {
+    await q(`UPDATE agent_employees SET ${change} WHERE id = $1`, [envelope.id]);
+    try {
+      const kinds = await actionKinds();
+      for (const id of envelopeActions) assert.equal(kinds.get(id)!.employee, true, `${state}: an envelope action is an outside agent's`);
+      for (const scope of PARTIAL_SCOPES) {
+        const covered = (ids: string[]) => ids.filter((id) => coveredBy(scope, kinds.get(id)));
+        for (const [name, person] of Object.entries(people)) {
+          const at = `${state}, ${name}, employee actions ${scope.employeeActions}, captures ${scope.captures}`;
+          assert.deepEqual((await gateAnswers(reviewsActionSql(person, scope))).filtered, covered((await gateAnswers(formerReviewsSql(person))).filtered), `${at}: gate without audience`);
+          assert.deepEqual((await gateAnswers(currentRoleReviewableActionSql(person, scope))).filtered,
+            covered((await gateAnswers(formerCurrentRoleReviewableActionSql(person))).filtered), `${at}: Inbox gate`);
+          const viewer = { id: person, org_id: orgId, role: roles[person] };
+          assert.deepEqual((await gateAnswers(reviewableActionSql(viewer, scope))).filtered, covered((await gateAnswers(formerReviewableActionSql(viewer))).filtered), `${at}: routes' gate`);
+        }
+      }
+    } finally {
+      await q(`UPDATE agent_employees SET ${restore} WHERE id = $1`, [envelope.id]);
+    }
+  }
+});
+
+test('a read narrows the Inbox approval rule exactly, by the kinds it read and never by a stored source type', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const kinds = await actionKinds();
+  const plainActions = actions.filter((id) => coveredBy({ employeeActions: false, captures: false }, kinds.get(id)));
+  for (const [name, person] of Object.entries(people)) {
+    const whole = await visibleIds(person, 'all');
+    const items = await db.select({ id: attentionItems.id, source_id: attentionItems.source_id }).from(attentionItems)
+      .where(and(eq(attentionItems.org_id, orgId), eq(attentionItems.user_id, person), eq(attentionItems.source_type, 'agent_action')));
+    for (const scope of PARTIAL_SCOPES) {
+      const expected = new Set(items.filter((item) => whole.has(item.id) && coveredBy(scope, kinds.get(item.source_id))).map((item) => item.id));
+      assert.deepEqual(sorted(await visibleIds(person, { types: ['agent_action'], approvals: scope }, 'agent_action')), sorted(expected),
+        `${name}, employee actions ${scope.employeeActions}, captures ${scope.captures}`);
+    }
+    // A read of items whose actions are neither an outside agent's nor captures narrows both, and shows what the whole rule shows.
+    const plainItems = and(eq(attentionItems.org_id, orgId), eq(attentionItems.user_id, person),
+      eq(attentionItems.source_type, 'agent_action'), inArray(attentionItems.source_id, plainActions));
+    const read = await readAttentionWithSourceTypes(plainItems, async (tx, scope) => {
+      assert.deepEqual(scope, { types: ['agent_action'], approvals: { employeeActions: false, captures: false } }, `${name}: what the read found`);
+      return tx.select({ id: attentionItems.id }).from(attentionItems).where(and(plainItems, visibleAttentionCondition(person, scope)));
+    });
+    const plainExpected = new Set(items.filter((item) => whole.has(item.id) && plainActions.includes(item.source_id)).map((item) => item.id));
+    assert.deepEqual(sorted(new Set(read.map((row) => row.id))), sorted(plainExpected), `${name}: plain approvals, read`);
+    // Every approval item of the person (outside agents' and captures among them): the whole gate.
+    const every = and(eq(attentionItems.org_id, orgId), eq(attentionItems.user_id, person), eq(attentionItems.source_type, 'agent_action'));
+    await readAttentionWithSourceTypes(every, async (_tx, scope) => assert.deepEqual(scope.approvals, { employeeActions: true, captures: true }, `${name}: whole`));
+  }
+  // Astra (review of 0148e174): a stored item whose source type is text that once meant "no captures" next to a
+  // reviewable capture's item hid the capture. Source types are free text and never narrow the gate.
+  const capture = [...itemIds.entries()].find(([key]) => key === `${people.member}|agent_action|${actionByTitle.get('capture')}|0`)![1];
+  const lookalikes = ['agent_action:no-captures', 'agent_action:no-employee-actions'].map((type) => ({ id: randomUUID(), type }));
+  for (const { id, type } of lookalikes) {
+    await q(`INSERT INTO attention_items(id,org_id,user_id,kind,lane,dedupe_key,source_type,source_id,title)
+      VALUES($1,$2,$3,'test','updates',$1,$4,$5,'look-alike')`, [id, orgId, people.member, type, randomUUID()]);
+  }
+  const both = and(eq(attentionItems.org_id, orgId), eq(attentionItems.user_id, people.member),
+    inArray(attentionItems.id, [capture, ...lookalikes.map((row) => row.id)]));
+  const shown = await readAttentionWithSourceTypes(both, (tx, scope) => tx.select({ id: attentionItems.id }).from(attentionItems)
+    .where(and(both, visibleAttentionCondition(people.member, scope))));
+  assert.deepEqual(sorted(new Set(shown.map((row) => row.id))), sorted(new Set([capture, ...lookalikes.map((row) => row.id)])),
+    'the capture and both look-alike items are shown');
+  // A change takes stored types as they are (writeAttentionWithSourceTypes): the whole gate.
+  assert.ok((await visibleIds(people.member, ['agent_action', 'agent_action:no-captures'], 'agent_action')).has(capture),
+    'stored types passed as a list never narrow the gate');
+});
+
+test('a room\'s pending approvals are exactly what release 151 listed, for every role, room and approval state', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const { Hono } = await import('hono');
+  const { agentRoutes } = await import('../src/routes/agent.js');
+  const kinds = await actionKinds();
+  const listed = async (person: string, role: string, room: string) => {
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('user' as never, { id: person, org_id: orgId, email: `${person}@example.test`, role } as never);
+      await next();
+    });
+    app.route('/api/agent', agentRoutes);
+    const response = await app.request(`/api/agent/actions/pending-by-space?space_id=${room}`);
+    assert.equal(response.status, 200);
+    return ((await response.json()) as Array<{ id: string }>).map((row) => row.id).sort();
+  };
+  const pendingKinds = new Map<string, ActionKind[]>();
+  let nonEmpty = 0;
+  for (const [roomName, room] of Object.entries(rooms)) {
+    const { rows } = await q(`SELECT a.id FROM agent_actions a JOIN messages m ON m.id = a.message_id
+      WHERE m.space_id = $1 AND a.approval_status = 'pending' AND a.org_id = $2`, [room, orgId]);
+    pendingKinds.set(roomName, rows.map((row: { id: string }) => kinds.get(row.id)!).filter(Boolean));
+    for (const [name, person] of Object.entries(people)) {
+      const member = (await q('SELECT 1 FROM space_members WHERE space_id = $1 AND user_id = $2', [room, person])).rowCount! > 0;
+      for (const role of ['owner', 'admin', 'member', 'guest']) {
+        const expected = member
+          ? ((await db.execute(formerPendingInRoomSql({ id: person, org_id: orgId, role }, room))).rows as Array<{ id: string }>).map((row) => row.id).sort()
+          : [];
+        const got = await listed(person, role, room);
+        assert.deepEqual(got, expected, `${name} as ${role}, ${roomName} room`);
+        if (got.length > 0) nonEmpty += 1;
+      }
+    }
+  }
+  assert.ok(nonEmpty >= 6, `the rooms list approvals in ${nonEmpty} cases`);
+  // Both plans ran: a room with only Defty actions pending, and one with an outside agent's.
+  const mixes = [...pendingKinds.values()].filter((list) => list.length > 0);
+  assert.ok(mixes.some((list) => list.every((kind) => !kind.employee)), 'a room with only Defty actions pending');
+  assert.ok(mixes.some((list) => list.some((kind) => kind.employee)), 'a room with an outside agent\'s action pending');
+  // Decided and expired approvals are never listed.
+  const decided = actions.filter((id) => ['approved', 'rejected', 'expired'].includes([...actionByTitle].find(([, value]) => value === id)?.[0] ?? ''));
+  assert.equal(decided.length, 3);
+  for (const role of ['owner', 'member']) {
+    for (const id of await listed(people.member, role, rooms.priv)) assert.ok(!decided.includes(id), 'a decided approval is not listed');
+  }
+});
+
+test('viewerReviewAuthority answers the same for an action whether or not the page holds an outside agent\'s action or a capture', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const { viewerReviewAuthority } = await import('../src/lib/agent-approval-resolver.js');
+  const kinds = await actionKinds();
+  const plain = actions.filter((id) => coveredBy({ employeeActions: false, captures: false }, kinds.get(id)));
+  // Pages of one kind each: only plain actions, only outside agents' (and plain), only captures (and plain).
+  const pages: Array<[string, string[]]> = [
+    ['plain', plain],
+    ['outside agents\'', actions.filter((id) => coveredBy({ employeeActions: true, captures: false }, kinds.get(id)))],
+    ['captures', actions.filter((id) => coveredBy({ employeeActions: false, captures: true }, kinds.get(id)))],
+  ];
+  let canApprove = 0;
+  for (const [name, person] of Object.entries(people)) {
+    for (const role of ['owner', 'admin', 'member', 'guest']) {
+      const viewer = { id: person, org_id: orgId, role };
+      const whole = await viewerReviewAuthority(viewer, actions);
+      for (const [page, ids] of pages) {
+        const narrowed = await viewerReviewAuthority(viewer, ids);
+        for (const id of ids) {
+          assert.deepEqual(narrowed.get(id), whole.get(id), `${name} as ${role}, a page of ${page}: ${[...actionByTitle].find(([, value]) => value === id)?.[0]}`);
+          if (narrowed.get(id)?.viewer_can_approve) canApprove += 1;
+        }
+      }
+    }
+  }
+  assert.ok(canApprove > 0, `some viewer may approve on a narrowed page (${canApprove})`);
+});
+
 type Growth = { anon: number; peak: number };
 
 /**
@@ -659,6 +914,35 @@ test('planning an approval item\'s review gate costs a backend about a third of 
   }
 });
 
+test('planning a room\'s pending approvals, and an Inbox approval of a Defty action, costs a backend a few MB', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  // Release 151 measured, JIT off: a room's pending-approvals poll (every 5 s per open room) 36 MB private,
+  // an Inbox approval item 30 MB. Release 152 plans the review gate only for the kinds of action the rows
+  // are: a room with only Defty actions pending 7 MB, one with an outside agent's 19 MB.
+  const roomPoll = (scope: ReviewGateScope) => planningGrowth('all', new PgDialect().sqlToQuery(sql`SELECT a.id
+      FROM agent_actions a JOIN messages msg ON msg.id = a.message_id
+      WHERE msg.space_id = ${rooms.priv} AND msg.org_id = ${orgId} AND a.org_id = ${orgId}
+        AND a.approval_status = 'pending' AND a.approval_tier IN ('quick', 'full')
+        AND a.source IS DISTINCT FROM 'defty_capture'
+        AND COALESCE((SELECT ${reviewsActionSql(people.member, scope)} FROM agent_actions WHERE agent_actions.id = a.id), false)
+      ORDER BY a.created_at DESC LIMIT 100`));
+  const deftyRoom = await roomPoll({ employeeActions: false, captures: false });
+  if (deftyRoom === null) return t.skip('this test database does not let a session read /proc/self/status');
+  const employeeRoom = (await roomPoll({ employeeActions: true, captures: false }))!;
+  const deftyApproval = (await planningGrowth({ types: ['agent_action'], approvals: { employeeActions: false, captures: false } }))!;
+  const mb = (kb: number) => Math.round(kb / 1024);
+  const measured: Array<[string, Growth, number, number]> = [
+    ['a room with only Defty actions pending', deftyRoom, 12, 28],
+    ['a room with an outside agent\'s action pending', employeeRoom, 26, 50],
+    ['an Inbox approval of a Defty action', deftyApproval, 24, 50],
+  ];
+  t.diagnostic(`backend growth planning: ${measured.map(([name, growth]) => `${name} ${mb(growth.anon)} MB private, ${mb(growth.peak)} MB peak`).join('; ')}`);
+  for (const [name, growth, anonMb, peakMb] of measured) {
+    assert.ok(growth.anon < anonMb * 1024, `${name}, private memory: ${growth.anon} kB`);
+    assert.ok(growth.peak < peakMb * 1024, `${name}, peak: ${growth.peak} kB`);
+  }
+});
+
 test('a read takes the item types and the items from one snapshot: a type change committed in between changes nothing', async (t) => {
   if (unavailable) return t.skip(unavailable);
   // A member's own task item (no legacy metadata), turned into a readable space item by a concurrent upsert.
@@ -666,7 +950,7 @@ test('a read takes the item types and the items from one snapshot: a type change
   const where = and(eq(attentionItems.org_id, orgId), eq(attentionItems.user_id, people.member), eq(attentionItems.id, id!));
   try {
     const seen = await readAttentionWithSourceTypes(where, async (tx, types) => {
-      assert.deepEqual(types, ['task']);
+      assert.deepEqual(types.types, ['task']);
       await q("UPDATE attention_items SET source_type='space', source_id=$2, version=version+1 WHERE id=$1", [id, rooms.priv]);
       return tx.select({ id: attentionItems.id, source_type: attentionItems.source_type }).from(attentionItems)
         .where(and(where, visibleAttentionCondition(people.member, types)));
