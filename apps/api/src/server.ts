@@ -1,4 +1,4 @@
-import './lib/content-free-process-errors.js';
+import { setFatalErrorReporter } from './lib/content-free-process-errors.js';
 import { logNumber, logSignal } from './lib/log-metadata.js';
 import 'dotenv/config';
 import { workerStartup } from './lib/worker-startup.js';
@@ -7,6 +7,16 @@ import type { Server } from 'node:http';
 import { app } from './index.js';
 import { getIO, setupSocket } from './socket.js';
 import { assertPausedStartSettingValid, logPausedStart, serverStartupPlan } from './lib/paused-start.js';
+import { captureProcessError, flushErrorTelemetryBeforeExit, isErrorTelemetryEnabled } from './lib/telemetry/error-reporter.js';
+
+// Hosted cells that send error events: an uncaught error is recorded and one
+// last batch sent before the process exits (it waits at most 2.5 seconds).
+// Everywhere else the exit is immediate, as before.
+setFatalErrorReporter(async (error) => {
+  if (!isErrorTelemetryEnabled()) return;
+  captureProcessError(error);
+  await flushErrorTelemetryBeforeExit(2_000);
+});
 
 // Prefer Railway/Fly's PORT env, then API_PORT, then local default.
 const port = parseInt(process.env.PORT || process.env.API_PORT || '3001');

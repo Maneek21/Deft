@@ -1,6 +1,7 @@
 import type { ErrorHandler } from 'hono';
 import { randomUUID } from 'node:crypto';
 import { logId } from './log-metadata.js';
+import { captureUnhandledRequestError } from './telemetry/http-capture.js';
 
 /** Hono's default handler prints the complete exception, including its cause. */
 export const contentFreeErrorHandler: ErrorHandler = (error, c) => {
@@ -12,6 +13,8 @@ export const contentFreeErrorHandler: ErrorHandler = (error, c) => {
   }
   const reference = randomUUID();
   console.error('[http] Unhandled request error; reference:', logId(reference));
+  // Hosted cells: a scrubbed error event (lib/telemetry). A no-op otherwise.
+  captureUnhandledRequestError(c, error, reference);
   c.header('X-Deft-Error-Reference', reference);
   // Preserve the neutral JSON failure contract added by the DB-recovery lane.
   return c.json({ error: 'Request failed', code: 'INTERNAL_ERROR' }, 500);

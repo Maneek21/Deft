@@ -610,6 +610,8 @@ can supply its own AI independently of Deft's provider configuration.
 | `R2_ENDPOINT` / `R2_ACCESS_KEY` / `R2_SECRET_KEY` / `R2_BUCKET` | No | Cloudflare R2 uploads | local uploads volume |
 | `GITHUB_WEBHOOK_SECRET` | No | Secret for `POST /api/webhooks/github`; unset disables that endpoint (503). GitHub PR-to-Done runs through the scheduled per-workspace GitHub sync and does not use it | none |
 | `DEFT_GITHUB_SYNC_INTERVAL_MIN` | No | Minutes between scheduled syncs of each connected GitHub account (at most 10 connections queued per minute; failures back off, rate limits wait for GitHub's reset). `0` or `off` disables the schedule; manual sync still works | `10` |
+| `DEFT_TELEMETRY` | No | The anonymous install ping (see "Telemetry" below). `off` turns it off; so does `false`, `0`, `no` or any value other than `on`, `true`, `1` or `yes` | on |
+| `DEFT_SUPPORT_EMAIL` | No | An address people in your workspace can write to for help. When set, the user menu shows "Get help" with it; when unset, there is no help item. Nothing is sent anywhere | none |
 | `METRICS_SCRAPE_TOKEN` | No | Bearer token for `/api/metrics` and `/health/queue`; unset disables detailed telemetry | none |
 | `DEFT_PAUSED_START` | No | Exactly `true` starts Deft read-only, for example to look at a restored copy before releasing it; see "Health checks and a paused start" below. Any value other than exactly `true` or `false` stops startup | unset (normal start) |
 | `DEFT_PAUSED_REASON` | No | Why a paused install is paused, shown to signed-in people: `restore_review`, `billing` or `emergency_stop` (the hosted service's emergency stop). Any other value stops startup. It changes nothing that is refused | `restore_review` |
@@ -788,6 +790,57 @@ keyring available until the governed ledger is quiescent.
 Read [Governed App Run operations](./app-run-operations.md) before enabling the
 feature. It contains rotation, retirement, backup/restore, disaster recovery,
 split-control drain/pause behavior, and the exact rollback-floor rules.
+
+## Telemetry
+
+Self-hosted Deft sends one thing to the Deft project: an anonymous install
+ping. Nothing else leaves your server: no error reports, no usage data, no
+problem reports.
+
+**What is sent.** A `POST` to `https://get.deft.ing/v1/installs/ping` with
+exactly four fields:
+
+```json
+{ "install_id": "1b4e28ba-2fa1-4d2b-883f-0016d3cca427", "event": "installed", "version": "0.3.0-preview.152", "sent_at": "2026-11-25T10:00:00.000Z" }
+```
+
+- `install_id` is a random-looking ID (UUID v4) that stays the same for your
+  install. It is a keyed hash (HMAC-SHA256) of your workspace's own random
+  database ID under your server's `ENCRYPTION_KEY`, which never leaves your
+  server. Nobody without that key, the Deft project included, can compute it
+  from your workspace ID or turn it back into one. It needs no extra table: a
+  restored backup with the same `ENCRYPTION_KEY` keeps it.
+- `event` is `installed` once, when the first owner finishes creating the
+  workspace, or `person_added` each time someone accepts an invite and joins
+  (guests too; agents never send one).
+- `version` is the Deft release; `sent_at` is the time.
+
+No names, email addresses, workspace names, message or file content, counts,
+or credentials. Deft sends no cookies or credentials with the ping. The Deft
+project keeps, per `install_id`, when it was first and last seen, the last
+version and how many people were added, and stores no IP address, user agent
+or headers for it.
+
+**When it is not sent.** With `DEFT_TELEMETRY=off` (see "Environment
+Variables"), on a paused start, from a development build (only
+`NODE_ENV=production` builds send it, as the Docker image is), and never on
+the hosted Deft service. Sending never delays signup or an invite: it is one
+attempt with a five-second limit, and a failure is dropped. The setup screen
+says this in one line while the ping is on.
+
+**Turn it off.** Add `DEFT_TELEMETRY=off` to `.env` and restart the stack
+(`docker compose up -d`). Nothing is sent from then on.
+
+**Browser errors.** The web app reports errors in the page to your own API
+server (`POST /api/telemetry/client-error`). A self-hosted server keeps
+nothing and answers that reporting is off, and the page stops reporting.
+
+**Getting help.** Set `DEFT_SUPPORT_EMAIL` to show your own support address
+in the user menu ("Get help"). "Report a problem", which sends a report to the
+Deft team, exists only on the hosted service.
+
+**Counters.** `/api/metrics` (with `METRICS_SCRAPE_TOKEN`) shows how many
+pings were sent and how many failed: `deft_telemetry_install_pings_total`.
 
 ## Backups
 

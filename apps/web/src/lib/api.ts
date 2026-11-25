@@ -1,4 +1,5 @@
 import { calmPausedRefusal } from './paused-notice';
+import { noteApiResponse } from './error-telemetry';
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 const SESSION_REFRESH_EXEMPT_PATHS = new Set([
   '/api/auth/login',
@@ -217,6 +218,8 @@ class ApiClient {
       }
     }
 
+    // A 5xx is reported to this workspace's own server (lib/error-telemetry.ts).
+    noteApiResponse(method, path, response);
     return calmPausedRefusal(response, method);
   }
 
@@ -310,6 +313,7 @@ class ApiClient {
       }
     }
 
+    noteApiResponse('POST', path, response);
     return calmPausedRefusal(response, 'POST');
   }
 }

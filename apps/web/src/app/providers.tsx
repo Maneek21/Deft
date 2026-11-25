@@ -4,8 +4,10 @@ import { ThemeProvider } from '@/components/theme-provider';
 import { AuthProvider } from '@/lib/auth-context';
 import { LinkTokenBoundary } from '@/lib/use-link-token';
 import { useEffect } from 'react';
+import { useParams, usePathname } from 'next/navigation';
 import { documentServedWithoutCoop, followLinksWithFullLoads } from '@/lib/oauth-popup-marker';
 import { APPS_ENABLED, APP_RESOURCE_SYNC_ENABLED, APP_ATTACHMENT_BROKER_ENABLED } from '@/lib/feature-flags';
+import { installErrorTelemetry, pageTemplateFor, setCurrentPageTemplate } from '@/lib/error-telemetry';
 
 export function Providers({ children }: { children: React.ReactNode }) {
   useEffect(() => {
@@ -18,6 +20,14 @@ export function Providers({ children }: { children: React.ReactNode }) {
     }));
     return () => document.documentElement.removeAttribute('data-deft-browser-features');
   }, []);
+  // Uncaught errors go to this workspace's own server (lib/error-telemetry.ts),
+  // with the page as its route template ("/modules/:slug"), never its address.
+  useEffect(() => installErrorTelemetry(), []);
+  const pathname = usePathname();
+  const params = useParams();
+  useEffect(() => {
+    setCurrentPageTemplate(pathname ? pageTemplateFor(pathname, params as Record<string, string | string[]>) : null);
+  }, [pathname, params]);
   // A document served without COOP (an outside client's OAuth pop-up) leaves
   // by full loads only, so no other page of the app runs inside it.
   useEffect(() => (documentServedWithoutCoop() ? followLinksWithFullLoads() : undefined), []);

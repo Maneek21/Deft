@@ -138,6 +138,10 @@ import {
   webhookLimiter,
 } from './middleware/rate-limit.js';
 import { githubWebhookRoutes } from './routes/webhooks/github.js';
+import { telemetryRoutes } from './routes/telemetry.js';
+import { supportRoutes } from './routes/support.js';
+import { telemetryResponseCapture } from './lib/telemetry/http-capture.js';
+import { setApiRouteTemplates } from './lib/telemetry/route-templates.js';
 import { corsAllowedWebOrigins } from './lib/web-origins.js';
 
 // The admins' notice when a hosted workspace reaches a limit (workspace-limits.ts does not import it: see there).
@@ -179,6 +183,8 @@ const securityHeaders = secureHeaders({
 // Also applied to responses the request gate produces before routing.
 const edgeMiddleware = [requestLogger, corsPolicy, securityHeaders];
 for (const middleware of edgeMiddleware) app.use('*', middleware);
+// Hosted cells: any other 5xx answer becomes a scrubbed error event (lib/telemetry).
+app.use('*', telemetryResponseCapture);
 
 // Public routes
 app.route('/.well-known', oauthWellKnownRoutes);
@@ -247,6 +253,11 @@ app.route('/api/ics', icsPublicRoutes);
 app.use('/api/invites/*', inviteLimiter);
 app.route('/api/invites', inviteRoutes);
 
+// Browser errors, reported by the web app to its own cell, signed in or not.
+// Hosted cells scrub and forward them; every other install keeps nothing.
+// Its own limits per session and per client address (routes/telemetry.ts).
+app.route('/api/telemetry', telemetryRoutes);
+
 // Protected routes
 if (APP_DEVELOPER_PAIRING_ENABLED) {
   app.use('/api/app-developer/*', authLimiter);
@@ -303,6 +314,7 @@ app.route('/api/ics', icsRoutes);
 app.route('/api/upload', uploadRoutes);
 app.route('/api/files', fileServingRoutes);
 app.route('/api/members', memberRoutes);
+app.route('/api/support', supportRoutes);
 app.route('/api/projects', projectRoutes);
 app.route('/api/tasks', taskRoutes);
 app.route('/api/agent', agentRoutes);
@@ -448,6 +460,9 @@ app.get('/health/queue', async (c) => {
     return c.json({ error: 'Failed to query queue health', code: 'INTERNAL_ERROR' }, 500);
   }
 });
+
+// Browser reports of failed API calls are matched against these templates.
+setApiRouteTemplates(app.routes);
 
 // Path and session checks that run before routing, for every request.
 installRequestGate(app, {
