@@ -77,15 +77,15 @@ also needs to be named on it or lead its project; watching does not count for a 
   before this release keep what they showed when they were made (as do notices written
   before it). Defty answering in a shared room can quote what the person who asked may
   see, the same family as the room-publication limit (D2). `/api/audit` shows owners and
-  admins task audit snapshots, a restricted task's title included. Two numbers still show
-  that hidden tasks exist, without their titles: a project's `task_counter` (the next task
-  number, shown to owners, admins and members), and a visible subtask's `parent_task_id`
+  admins task audit snapshots, a restricted task's title included. Two fields still show
+  that hidden tasks exist, without their titles: a project's `task_counter` (the last
+  reserved task number, shown to owners, admins and members), and a visible subtask's `parent_task_id`
   when its parent is a restricted task hidden from an owner, admin or member.
 
 Task search (#600). `GET /api/tasks/search`, used by the task pickers, searched titles only
-when a query did not look like a task key, and keys only when it did: a query such as `rc8`
-found no task titled "rc8 notes", and a key whose project prefix holds a digit, such as
-`R8O-1`, found nothing. It now matches a task's key (`PREFIX-N` or `PREFIXN`, any case)
+when a query did not look like a task key, and keys only when it did: `rc8` searched only
+for the key `RC-8` (so no task titled "rc8 notes"), while `R8O-1`, a key whose project
+prefix holds a digit, searched only in titles. It now matches a task's key (`PREFIX-N` or `PREFIXN`, any case)
 and its title for every query, key matches first, and still shows only tasks the caller
 may see.
 
@@ -95,8 +95,8 @@ included, so naming a lead grants that access:
 - **Changing a lead.** Before, any member could make themselves lead of an existing project
   and so read its restricted tasks. Now only an owner, an admin or the project's current
   lead can change it: anyone else gets `403 FORBIDDEN` from `PATCH /api/projects/:id`, and
-  a tool error with code `FORBIDDEN` from the MCP tool `project_update`, as guests already
-  did. So a member can no longer give a lead to a project that has none; an owner or admin
+  a tool error with code `FORBIDDEN` from the MCP tool `project_update`. Guests were already
+  barred from changing the lead. So a member can no longer give a lead to a project that has none; an owner or admin
   can. When changing a lead through the API, the new lead must be an active member of the
   workspace (`400`); a change racing another lead change answers `409 CONFLICT`
   (`CONFLICT` from the MCP tool). Members still set a lead when creating a project, and
