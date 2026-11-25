@@ -207,6 +207,7 @@ export const FK_PAIRS: Array<[child: string, col: string, parent: string]> = [
   ['messages', 'space_id', 'spaces'],
   ['module_mutation_receipts', 'agent_action_id', 'agent_actions'],
   ['native_mention_deliveries', 'source_state_id', 'native_reference_states'],
+  ['note_files', 'note_id', 'notes'],
   ['notes', 'folder_id', 'note_folders'],
   ['notes', 'visibility_space_id', 'spaces'],
   ['oauth_access_tokens', 'grant_id', 'oauth_grants'],

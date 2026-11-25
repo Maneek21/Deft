@@ -10,6 +10,29 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### Images in a note load for everyone who can read the note
+
+- **Fixed.** An image in a note now loads for everyone who can open that note: people it
+  is shared with, members of its space, and, for a note visible to the whole workspace,
+  its owners, admins and members. Before, only the person who uploaded the image could
+  load it; everyone else saw "Image is unavailable".
+- **Nothing else widens.** Only images the note's author uploaded count. A file no note
+  you can read shows still answers as unknown, guests follow the note rule (they see the
+  images of notes shared with them and of notes in their spaces), and a deleted note's
+  images load only for the person who uploaded them.
+- **Removed images are deleted.** An image you take out of a note is deleted 24 hours
+  later, once no other note of yours shows it (later still if a scheduled message you
+  have not sent yet carries it). Before, it was kept for ever.
+- **Older notes.** When the server starts, it records the images that notes saved before
+  this release show, so their readers can load them too (and an image still waiting to
+  be cleaned up is kept). Only images the note's author uploaded count; an upload from
+  before Deft checked file types is not included and still loads only for its uploader.
+- **Database.** Upgrade `0.3.0-preview.154` adds one table, `note_files` (which note shows
+  which uploaded file). It only adds; `pnpm db:upgrade` applies it and `pnpm db:push-full`
+  creates it on a fresh install.
+- **Workspace export.** A person's export now includes the images of the notes they can
+  read, the same files the app lets them load.
+
 ### Images pasted into a note no longer vanish after 24 hours
 
 - **Fixed.** An image pasted or inserted into a note was kept as an unattached upload, and
@@ -23,9 +46,8 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
   the clean-up (it runs about hourly, once an upload is 24 hours old) can't be restored
   from the app: paste them again. An older image that still shows is kept once you edit
   the note's text (renaming the note alone does not keep it).
-- **Known gap.** Removing an image from a note keeps its file; nothing deletes it yet.
-- **Who can see a note image** is unchanged: an image in a note is still loaded only by
-  the person who uploaded it, so people you share a note with see it as unavailable.
+- Removing an image from a note, and who can load a note's images: see "Images in a note
+  load for everyone who can read the note" above.
 
 ### Guests see only the notes they were added to
 

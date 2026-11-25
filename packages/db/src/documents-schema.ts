@@ -2,7 +2,7 @@ import { bigint, boolean, customType, doublePrecision, index, integer, jsonb, pg
 import { sql } from 'drizzle-orm';
 
 /** Drives, folders, documents and what hangs off them. Created by upgrade
- * 0.3.0-preview.150 on both fresh installs and upgrades, so they are exported
+ * 0.3.0-preview.155 on both fresh installs and upgrades, so they are exported
  * as `@deft/db/documents` rather than from schema.ts. The upgrade file also
  * holds what this mirror leaves out: the org-qualified foreign keys, the
  * CHECKs, the principal check trigger (a member or share principal must

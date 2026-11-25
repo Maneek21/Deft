@@ -44,7 +44,7 @@ import { createTaskBundle, type TaskBundleSubtaskInput } from '../task-bundle.js
 import { bulkUpdateTasks, BulkTaskUpdateError, bulkTaskUpdateSchema } from '../task-bulk-update.js';
 import { queryCompactTasks, type CompactTaskQuery } from '../task-compact-query.js';
 import { visibleNoteCondition } from '../note-visibility.js';
-import { claimNoteFiles } from '../note-file-claims.js';
+import { syncNoteFiles } from '../note-file-claims.js';
 import { canReadSpace, readableSpaceSql } from '../space-membership.js';
 import { Context } from 'hono';
 import { currentActionReviewerSql } from '../agent-action-review-gate.js';
@@ -3368,7 +3368,7 @@ export async function humanNoteCreate(args: Record<string, unknown>, ctx: HumanT
       is_pinned: args.is_pinned === true,
       visibility, visibility_space_id: visibility === 'space' ? spaceId : null,
       }).returning();
-      await claimNoteFiles(tx, { id: ctx.user_id, org_id: ctx.org_id }, rows[0]!.content);
+      await syncNoteFiles(tx, { id: ctx.user_id, org_id: ctx.org_id }, rows[0]!);
       return rows;
     });
     return textResult({ created: true, note: created, url: `/notes?note=${created!.id}` });
@@ -3399,7 +3399,7 @@ export async function humanNoteUpdate(args: Record<string, unknown>, ctx: HumanT
     if (Object.keys(updates).length === 0) return textResult({ updated: false, note: current, url: `/notes?note=${current.id}` });
     const updated = await db.transaction(async (tx) => {
       const [saved] = await tx.update(notes).set(updates).where(and(eq(notes.id, current.id), eq(notes.version, current.version))).returning();
-      if (saved && args.content !== undefined) await claimNoteFiles(tx, { id: ctx.user_id, org_id: ctx.org_id }, saved.content);
+      if (saved && args.content !== undefined) await syncNoteFiles(tx, { id: ctx.user_id, org_id: ctx.org_id }, saved);
       return saved;
     });
     return updated ? textResult({ updated: true, note: updated, url: `/notes?note=${updated.id}` }) : errorResult('Note changed in another session; read it again before retrying');

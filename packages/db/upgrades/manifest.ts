@@ -333,7 +333,8 @@ export const upgradeManifest = {
     {version:'0.3.0-preview.144',file:'0.3.0-preview.144-seat-statements.sql',description:'Store the newest seat statement a hosted cell accepted and its version floor'},
     {version:'0.3.0-preview.148',file:'0.3.0-preview.148-restore-safe-check-helpers.sql',description:'Give every function a CHECK constraint calls its own search_path so a dump with stored rows restores'},
     {version:'0.3.0-preview.149',file:'0.3.0-preview.149-two-step-verification.sql',description:'Add two-step verification secrets, single-use recovery code hashes and sign-in challenges'},
-    {version:'0.3.0-preview.150',file:'0.3.0-preview.150-drives-and-documents.sql',description:'Add drives, folders, documents, shares, versions, attachments, favorites and the notes move map, with org-qualified keys, a principal check and document search'},
+    {version:'0.3.0-preview.154',file:'0.3.0-preview.154-note-files.sql',description:'Record which uploaded files each note shows, so everyone who can read a note can load its images'},
+    {version:'0.3.0-preview.155',file:'0.3.0-preview.155-drives-and-documents.sql',description:'Add drives, folders, documents, shares, versions, attachments, favorites and the notes move map, with org-qualified keys, a principal check and document search'},
   ] satisfies UpgradeMigration[],
 } as const;
 

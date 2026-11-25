@@ -35,7 +35,7 @@ export const teamRoutes = new Hono();
 const HANDLE_REGEX = /^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/;
 const TEAM_ROLES = ['lead', 'member', 'viewer'] as const;
 const TEAM_VISIBILITIES = ['private', 'org'] as const;
-/** `team_resource_type` labels that only upgrade SQL adds (0.3.0-preview.150).
+/** `team_resource_type` labels that only upgrade SQL adds (0.3.0-preview.155).
  * schema.ts's enum is part of the fresh-install fingerprint and stays as it
  * is, the same way lib/notification-types.ts widens notification types. */
 const UPGRADE_RESOURCE_TYPES = ['document'] as const;

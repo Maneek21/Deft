@@ -5,7 +5,7 @@ import pg from 'pg';
 import * as documentsSchema from '@deft/db/documents';
 import { UPGRADE_NOTIFICATION_TYPES, asStoredNotificationType } from '../src/lib/notification-types.js';
 
-// Drives and documents are created by upgrade 0.3.0-preview.150 (db:push-full
+// Drives and documents are created by upgrade 0.3.0-preview.155 (db:push-full
 // and db:upgrade both apply it), not by schema.ts.
 
 const DRIVE_TABLES = [

@@ -660,6 +660,16 @@ jobs:
               THEN
                 RAISE EXCEPTION 'seat statement table missing or different after upgrade';
               END IF;
+              -- Same definitions as apps/api/test/note-image-readers-db.test.ts (fresh install).
+              IF (SELECT string_agg(column_name || ':' || data_type || ':' || is_nullable, ',' ORDER BY ordinal_position)
+                  FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'note_files')
+                IS DISTINCT FROM 'org_id:text:NO,note_id:text:NO,file_id:text:NO,created_at:timestamp without time zone:NO'
+                OR (SELECT string_agg(conname || ': ' || pg_get_constraintdef(oid), ' | ' ORDER BY conname)
+                  FROM pg_constraint WHERE conrelid = 'public.note_files'::regclass)
+                IS DISTINCT FROM 'note_files_note_id_fkey: FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE | note_files_org_file_fk: FOREIGN KEY (org_id, file_id) REFERENCES files(org_id, id) ON DELETE CASCADE | note_files_pkey: PRIMARY KEY (note_id, file_id)'
+              THEN
+                RAISE EXCEPTION 'note file links table missing or different after upgrade';
+              END IF;
               -- Same definitions as apps/api/test/documents-schema-db.test.ts (fresh install):
               -- foreign keys and CHECKs, then indexes, of documents, drive_members and document_shares.
               IF (SELECT string_agg(conname || ': ' || pg_get_constraintdef(oid), ' | ' ORDER BY conname)
@@ -700,8 +710,9 @@ jobs:
         # db:push-full (fresh installs, dev and test databases) and db:upgrade
         # (every existing install) must build the same set of tables, including
         # those that only upgrades create (ics_publish_tokens, user_two_step,
-        # drives, documents), and the same enum labels, functions, triggers and
-        # columns: enum labels and trigger functions also come only from upgrades.
+        # note_files, drives, documents), and the same enum labels, functions,
+        # triggers and columns: enum labels and trigger functions also come only
+        # from upgrades.
         run: |
           set -euo pipefail
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE deft_fresh_compare_test'
@@ -710,7 +721,7 @@ jobs:
           tables_sql="SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY 1"
           psql "$fresh_url" -v ON_ERROR_STOP=1 -Atc "$tables_sql" > "$RUNNER_TEMP/tables-fresh.txt"
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "$tables_sql" > "$RUNNER_TEMP/tables-upgraded.txt"
-          for table in ics_publish_tokens seat_statements user_two_step drives documents deft_schema_migrations; do
+          for table in ics_publish_tokens seat_statements user_two_step note_files drives documents deft_schema_migrations; do
             grep -qx "$table" "$RUNNER_TEMP/tables-fresh.txt" || { echo "fresh install is missing $table" >&2; exit 1; }
           done
           diff --unified --label fresh-install --label upgraded "$RUNNER_TEMP/tables-fresh.txt" "$RUNNER_TEMP/tables-upgraded.txt"

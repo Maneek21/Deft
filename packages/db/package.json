@@ -10,7 +10,8 @@
     "./documents": "./src/documents-schema.ts",
     "./ics-publish-tokens": "./src/ics-publish-token-schema.ts",
     "./seat-statements": "./src/seat-statement-schema.ts",
-    "./two-step": "./src/two-step-schema.ts"
+    "./two-step": "./src/two-step-schema.ts",
+    "./note-files": "./src/note-file-schema.ts"
   },
   "scripts": {
     "assert-fresh": "tsx scripts/assert-fresh.ts",

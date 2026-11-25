@@ -1,8 +1,10 @@
-import { and, eq, isNotNull, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, or, sql } from 'drizzle-orm';
 import {
   files,
   messageAttachments,
   messages,
+  notes,
+  noteShares,
   projects,
   spaceMembers,
   spaces,
@@ -13,8 +15,10 @@ import {
   taskAttachments,
   tasks,
 } from '@deft/db/schema';
+import { noteFiles } from '@deft/db/note-files';
 import { db } from './db.js';
 import { visibleTaskCondition } from './task-visibility.js';
+import { visibleNoteCondition, visibleNoteConditionFromLockedGrants } from './note-visibility.js';
 import { unjoinedPublicSpaceReadableSql } from './space-membership.js';
 
 /**
@@ -67,6 +71,30 @@ export async function canAccessAttachmentTask(
 }
 
 /**
+ * A file on no task or message that a note shows (note_files, kept in step
+ * with the note's content by note-file-claims.ts) is read by everyone who can
+ * read that note: the note is in the same workspace, not deleted, and visible
+ * to the caller under the note rule (note-visibility.ts, role-aware).
+ */
+export async function canReadAttachmentThroughNote(
+  fileId: string,
+  orgId: string,
+  userId: string,
+): Promise<boolean> {
+  const [row] = await db.select({ id: notes.id })
+    .from(noteFiles)
+    .innerJoin(notes, and(eq(notes.id, noteFiles.note_id), eq(notes.org_id, noteFiles.org_id)))
+    .where(and(
+      eq(noteFiles.org_id, orgId),
+      eq(noteFiles.file_id, fileId),
+      eq(notes.is_deleted, false),
+      visibleNoteCondition(userId),
+    ))
+    .limit(1);
+  return Boolean(row);
+}
+
+/**
  * Resolves the current attachment target before returning metadata. Typed
  * links are authoritative once present; legacy columns remain a read fallback
  * throughout the compatibility window. Multiple typed targets fail closed.
@@ -107,7 +135,9 @@ export async function getVisibleAttachment(fileId: string, orgId: string, userId
   if (file.message_id) {
     return await canAccessAttachmentMessage(file.message_id, orgId, userId, 'read') ? file : null;
   }
-  return file.uploaded_by === userId ? file : null;
+  // On no task or message: its uploader, or a reader of a note that shows it.
+  if (file.uploaded_by === userId) return file;
+  return await canReadAttachmentThroughNote(fileId, orgId, userId) ? file : null;
 }
 
 export class AttachmentDownloadAuthorityError extends Error {
@@ -131,6 +161,12 @@ export async function authorizeAttachmentDownload(params: Readonly<{
     const [member] = await tx.select({ active: orgMembers.is_active }).from(orgMembers).where(and(
       eq(orgMembers.org_id, params.org_id), eq(orgMembers.user_id, params.user_id))).for('share');
     if (!member?.active) throw new AttachmentDownloadAuthorityError('INVALID_TOKEN', 401);
+    // A note's save locks the note, then the files it links or releases. Take
+    // the notes that link this file first, in the same order, so a save and a
+    // download of the same image wait for each other instead of timing out.
+    await tx.select({ id: notes.id }).from(notes).where(and(eq(notes.org_id, params.org_id), inArray(notes.id,
+      tx.select({ id: noteFiles.note_id }).from(noteFiles).where(and(eq(noteFiles.org_id, params.org_id), eq(noteFiles.file_id, params.file.id))))))
+      .orderBy(notes.id).for('share');
     const [file] = await tx.select().from(files).where(and(eq(files.org_id, params.org_id), eq(files.id, params.file.id))).for('update');
     if (!file || file.storage_key !== params.file.storage_key || file.size_bytes !== params.file.size_bytes
       || file.content_sha256 !== params.file.content_sha256) throw missing();
@@ -170,7 +206,33 @@ export async function authorizeAttachmentDownload(params: Readonly<{
         .innerJoin(projects, and(eq(tasks.project_id, projects.id), eq(projects.org_id, params.org_id)))
         .where(and(eq(tasks.id, taskId), eq(tasks.org_id, params.org_id), eq(tasks.is_deleted, false), visibleTaskCondition(params.user_id)));
       if (!visible) throw missing();
-    } else if (file.uploaded_by !== params.user_id) throw missing();
+    } else if (file.uploaded_by !== params.user_id) {
+      // On no task or message and not the caller's upload: only a reader of a
+      // note that shows it. The file row is UPDATE-locked above, which fences
+      // new links (their foreign key); the links, the notes, and the caller's
+      // shares and space memberships those notes could grant through are
+      // SHARE-locked, so an unshare, a removal, a delete or a visibility change
+      // in flight is decided before this read or waits for it. The decision
+      // counts only the grant rows locked here, never one inserted since.
+      const links = await tx.select({ note_id: noteFiles.note_id }).from(noteFiles).where(and(
+        eq(noteFiles.org_id, params.org_id), eq(noteFiles.file_id, file.id))).for('share');
+      if (links.length === 0) throw missing();
+      const noteIds = links.map((link) => link.note_id);
+      const linked = await tx.select({ id: notes.id, space_id: notes.visibility_space_id }).from(notes).where(and(
+        inArray(notes.id, noteIds), eq(notes.org_id, params.org_id))).for('share');
+      const shares = await tx.select({ note_id: noteShares.note_id }).from(noteShares).where(and(
+        inArray(noteShares.note_id, noteIds), eq(noteShares.shared_with_user_id, params.user_id))).for('share');
+      const spaceIds = [...new Set(linked.map((note) => note.space_id).filter((id): id is string => Boolean(id)))];
+      const memberships = spaceIds.length === 0 ? [] : await tx.select({ space_id: spaceMembers.space_id }).from(spaceMembers)
+        .where(and(inArray(spaceMembers.space_id, spaceIds), eq(spaceMembers.user_id, params.user_id))).for('share');
+      const [visible] = await tx.select({ id: notes.id }).from(notes).where(and(
+        inArray(notes.id, linked.map((note) => note.id)), eq(notes.org_id, params.org_id), eq(notes.is_deleted, false),
+        visibleNoteConditionFromLockedGrants(params.user_id, {
+          sharedNoteIds: shares.map((share) => share.note_id),
+          memberSpaceIds: memberships.map((membership) => membership.space_id),
+        }))).limit(1);
+      if (!visible) throw missing();
+    }
     // SID is last. Parent/member/link locks protect all preceding decisions
     // through its possible wait; sample both deadlines after the final query.
     const [session] = await tx.select({ expires_at: webSessions.expires_at, revoked_at: webSessions.revoked_at }).from(webSessions).where(and(

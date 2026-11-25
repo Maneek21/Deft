@@ -9,7 +9,7 @@ import { ScratchDatabases, scratchDatabaseName } from './upgrade-tail-scratch.ts
  * no tail migration applied (for example restored from a supported release
  * backup). The tests never write to it. Each test upgrades its own scratch
  * copy, made from it with CREATE DATABASE … TEMPLATE … under a new short name
- * (`<prefix>tail_<random>`): the tail adds enum labels (`.150`), which
+ * (`<prefix>tail_<random>`): the tail adds enum labels (`.155`), which
  * PostgreSQL cannot remove, so an upgraded database can't be put back to the
  * head. A taken name fails creation; only databases this run created are
  * dropped (upgrade-tail-scratch.test.ts). The fixture's role needs CREATEDB
@@ -113,9 +113,11 @@ test('a .131 head applies the tail once and the second run is a no-op',
       assert.equal(columns.rows[0].count, 3, 'retirement columns exist after upgrade');
       const review = await client.query("SELECT to_regclass('app_restore_access_reviews') AS present");
       assert.ok(review.rows[0].present, 'restore review table exists after upgrade');
-      const documents = await client.query(`SELECT to_regclass('documents') IS NOT NULL AS tables,
+      const late = await client.query(`SELECT to_regclass('note_files') IS NOT NULL AS note_files,
+        to_regclass('documents') IS NOT NULL AS tables,
         'document_shared' = ANY (enum_range(NULL::notification_type)::text[]) AS label`);
-      assert.deepEqual(documents.rows[0], { tables: true, label: true }, 'drives tables and labels exist after upgrade');
+      assert.deepEqual(late.rows[0], { note_files: true, tables: true, label: true },
+        'the .154 note file links and the .155 drives tables and label exist after upgrade');
 
       const before = (await client.query('SELECT version FROM deft_schema_migrations ORDER BY version')).rows
         .map((row: { version: string }) => row.version);
@@ -140,6 +142,7 @@ async function tailState(client: pg.Client) {
     (SELECT md5(pg_get_functiondef('public.enforce_app_runtime_session()'::regprocedure))) AS session_fn,
     (SELECT md5(pg_get_constraintdef(oid)) FROM pg_constraint
       WHERE conname='app_connection_sessions_record_identity') AS session_constraint,
+    to_regclass('note_files') IS NOT NULL AS note_files,
     to_regclass('documents') IS NOT NULL AS documents,
     (SELECT count(*)::int FROM pg_enum WHERE enumlabel = 'document_shared') AS document_labels`)).rows[0];
   return { ledger, shape };
@@ -154,7 +157,8 @@ test('PR424-F11: --status and --dry-run on a .131 head change nothing',
       assert.ok(!before.ledger.some((row: { version: string }) => tailVersions.has(row.version)),
         'fixture is at the .131 head');
       assert.equal(before.shape.resume_fn, 0, '.133 resume function is absent at the head');
-      assert.equal(before.shape.documents, false, '.150 tables are absent at the head');
+      assert.equal(before.shape.note_files, false, '.154 note file links are absent at the head');
+      assert.equal(before.shape.documents, false, '.155 drives tables are absent at the head');
       await runUpgrade(['--status']);
       assert.deepEqual(await tailState(client), before, '--status is read-only');
       await runUpgrade(['--dry-run']);
@@ -178,8 +182,9 @@ test('PR424-F13: concurrent upgrades of a .131 head both succeed and apply the t
       const state = await tailState(client);
       assert.equal(state.shape.retirement_columns, 3);
       assert.equal(state.shape.restore_reviews, true);
+      assert.equal(state.shape.note_files, true);
       assert.equal(state.shape.documents, true);
-      assert.equal(state.shape.document_labels, 1, 'the .150 label is added once');
+      assert.equal(state.shape.document_labels, 1, 'the .155 label is added once');
     } finally {
       await finish(client, name);
     }
