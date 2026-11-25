@@ -116,6 +116,12 @@ export async function handleWorkflowExecute(job: JobData): Promise<void> {
         case 'assign_to': {
           if (!action.user_id) { results.push({ kind: 'assign_to', ok: false, error: 'missing user_id' }); break; }
           await assertActiveMember(rule.org_id, action.user_id);
+          // Assigning a task names its assignee, who then reads it. A rule
+          // (written or edited by any member) never grants that: it assigns a
+          // task only to someone who may already see it (lib/task-visibility.ts).
+          const [assigneeSees] = await db.select({ id: tasks.id }).from(tasks)
+            .where(and(eq(tasks.id, task.id), visibleTaskSql(action.user_id))).limit(1);
+          if (!assigneeSees) { results.push({ kind: 'assign_to', ok: false, error: 'assignee may not see the task' }); break; }
           await db.update(tasks)
             .set({ assignee_id: action.user_id, updated_at: new Date() })
             .where(eq(tasks.id, task.id));

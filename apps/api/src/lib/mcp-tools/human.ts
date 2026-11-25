@@ -96,6 +96,7 @@ import {
 
 import { manageAgent } from '../agent-management.js';
 import { emailFor, peopleViewer, personVisibleSql, withoutHiddenEmails } from '../people-visibility.js';
+import { projectLeadChangeRefusal } from '../project-lead.js';
 import { RUNTIME_WORKFLOW_NAMES, RUNTIME_WORKFLOW_SCOPES, isRuntimeWorkflowTool, runtimeWorkflowHasScopes, humanRuntimeWorkflowTool } from '../app-runtime-workflow-tools.js';
 
 export type HumanToolContext = {
@@ -3894,6 +3895,16 @@ export async function humanProjectUpdate(args: Record<string, unknown>, ctx: Hum
       const leadResult = await resolveActiveMember(ctx, { user_id: args.lead_id, label: 'project_update lead' });
       if (leadResult.error) return leadResult.error;
       updates.lead_id = leadResult.user?.id ?? null;
+    }
+    // Only an owner, an admin or the current lead may change who leads a
+    // project (lib/project-lead.ts), as on PATCH /api/projects/:id.
+    if (updates.lead_id !== undefined) {
+      const [current] = await db.select({ lead_id: projects.lead_id }).from(projects)
+        .where(and(eq(projects.id, args.project_id as string), eq(projects.org_id, ctx.org_id))).limit(1);
+      if (current && current.lead_id !== updates.lead_id) {
+        const refusal = await projectLeadChangeRefusal(ctx.org_id, ctx.user_id, current.lead_id);
+        if (refusal) return errorResult(`project_update: ${refusal.error.charAt(0).toLowerCase()}${refusal.error.slice(1)}`);
+      }
     }
     if (Object.keys(updates).length === 0) return errorResult('At least one editable project field is required');
     const [updated] = await db.update(projects).set(updates).where(and(eq(projects.id, args.project_id as string), eq(projects.org_id, ctx.org_id))).returning();

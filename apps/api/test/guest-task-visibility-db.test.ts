@@ -412,7 +412,7 @@ test('task lists, search, table, boards and project counts leave out hidden task
   assert.ok(outCount.total_tasks < ownerCount.total_tasks);
 });
 
-test('a guest cannot make themselves a project lead to read its tasks; members still change leads', async () => {
+test('a guest cannot make themselves a project lead to read its tasks; an admin still changes leads', async () => {
   const refused = await call(guest, `/api/projects/${pOut}`, { method: 'PATCH', body: { lead_id: guest } });
   assert.equal(refused.status, 403);
   assert.equal(mentions(refused.text, 'outOrg'), false);
@@ -425,8 +425,12 @@ test('a guest cannot make themselves a project lead to read its tasks; members s
   // A guest may still rename a project, as before; only the lead is refused.
   const renamed = await call(guest, `/api/projects/${pOut}`, { method: 'PATCH', body: { color: '#123456' } });
   assert.equal(renamed.status, 200);
+  // Since release 153 only an owner, an admin or the current lead changes a
+  // lead (lib/project-lead.ts, project-lead-change-db.test.ts).
   const byMember = await call(member, `/api/projects/${pOut}`, { method: 'PATCH', body: { lead_id: member } });
-  assert.equal(byMember.status, 200, 'a member still changes the lead');
+  assert.equal(byMember.status, 403, 'a member who does not lead the project does not change its lead');
+  const byAdmin = await call(admin, `/api/projects/${pOut}`, { method: 'PATCH', body: { lead_id: member } });
+  assert.equal(byAdmin.status, 200, 'an admin still changes the lead');
   await c.query(`UPDATE projects SET lead_id = NULL, color = NULL WHERE id = $1`, [pOut]);
 });
 

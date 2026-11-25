@@ -9,6 +9,7 @@ import { emitToUser, emitOrgTaskEvent } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { taskAliasColumns, visibleTaskCondition, visibleTaskSql } from '../lib/task-visibility.js';
 import { peopleViewer } from '../lib/people-visibility.js';
+import { projectLeadChangeRefusal } from '../lib/project-lead.js';
 import { withoutHiddenParent } from '../lib/task-parent-projection.js';
 import {
   getProjectResolvedConfig,
@@ -318,11 +319,12 @@ projectRoutes.patch('/:id', async (c) => {
       return c.json(guestEditor ? { ...existing, task_counter: null } : existing);
     }
 
-    // A project's lead reads all of its tasks, so a guest, who sees only the
-    // tasks of their projects (lib/task-visibility.ts), cannot change who
-    // leads one. The role is read from org_members, not the session.
-    if (updates.lead_id !== undefined && updates.lead_id !== existing.lead_id && guestEditor) {
-      return c.json({ error: 'A guest cannot change a project lead', code: 'FORBIDDEN' }, 403);
+    // A project's lead reads all of its tasks, restricted ones included
+    // (lib/task-visibility.ts), so only an owner, an admin or the current
+    // lead may change who leads it, and never a guest (lib/project-lead.ts).
+    if (updates.lead_id !== undefined && (updates.lead_id ?? null) !== existing.lead_id) {
+      const refusal = await projectLeadChangeRefusal(user.org_id, user.id, existing.lead_id);
+      if (refusal) return c.json(refusal, 403);
     }
 
     const [updated] = await db.update(projects)
