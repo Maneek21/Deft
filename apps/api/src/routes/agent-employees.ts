@@ -6,6 +6,9 @@ import crypto from 'node:crypto';
 import { db } from '../lib/db.js';
 import { AgentSetGrew, agentManagementView, manageAgent, manageAgents, managementFor, ownerOnlyAgentUsers, type AgentManagementRefusal } from '../lib/agent-management.js';
 import { lockMembership, recordMembershipChange } from '../lib/membership-guard.js';
+import { accessLossInTx, finishAccessLoss } from '../lib/document-access-change.js';
+import { emitDocumentAccessChanged } from '../lib/document-access-events.js';
+import { endDriveAccessOnDepartureInTx } from '../lib/drives.js';
 import { reviewableApprovalCountsByEmployee } from '../lib/pending-approval-audience.js';
 import { hermesBundleAvailability, type HermesBundleAvailability } from '../lib/hermes-release.js';
 import {
@@ -2548,8 +2551,12 @@ agentEmployeeRoutes.delete('/:id', async (c) => {
         .update(orgMembers)
         .set({ is_active: false, updated_at: new Date() })
         .where(and(eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, existing.user_id)));
+      // Drives and documents (rules C3 and C5): the agent leaves the
+      // workspace, through the same departure seam as a removed member.
+      return endDriveAccessOnDepartureInTx(tx, user.org_id, existing.user_id);
     });
     if (!managed.ok) return managementRefused(c, managed);
+    await finishAccessLoss(managed.value.change, managed.value.result);
 
     // Module proposals temporarily contain record values for review. Close
     // those through the module-aware terminal path before the legacy generic
@@ -2613,9 +2620,14 @@ agentEmployeeRoutes.post('/:id/pause', async (c) => {
       return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
     }
 
-    const managed = await manageAgent({ userId: user.id, orgId: user.org_id }, id, (tx) =>
-      tx.update(agentEmployees).set({ is_active: false }).where(eq(agentEmployees.id, id)));
+    // A paused agent holds no drive or document access (lib/document-access.ts
+    // needs an active employee): the access-loss path, rule C3.
+    const managed = await manageAgent({ userId: user.id, orgId: user.org_id }, id, async (tx) => {
+      await tx.update(agentEmployees).set({ is_active: false }).where(eq(agentEmployees.id, id));
+      return accessLossInTx(tx, { orgId: user.org_id, userIds: [existing.user_id] });
+    });
     if (!managed.ok) return managementRefused(c, managed);
+    await finishAccessLoss(managed.value.change, managed.value.result);
 
     return c.json({ success: true, is_active: false });
   } catch (err) {
@@ -2649,6 +2661,8 @@ agentEmployeeRoutes.post('/:id/resume', async (c) => {
     const managed = await manageAgent({ userId: user.id, orgId: user.org_id }, id, (tx) =>
       tx.update(agentEmployees).set({ is_active: true }).where(eq(agentEmployees.id, id)));
     if (!managed.ok) return managementRefused(c, managed);
+    // Resuming takes nothing away: live document connections re-check (rule C3).
+    emitDocumentAccessChanged({ orgId: user.org_id, userIds: [existing.user_id] });
 
     return c.json({ success: true, is_active: true });
   } catch (err) {

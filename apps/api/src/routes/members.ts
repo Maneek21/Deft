@@ -42,6 +42,7 @@ import { closeLostRoomActionsInTx, finishLostRoomCancellations } from '../lib/lo
 import { lockRoomAccessChange } from '../lib/room-access-lock.js';
 import { applyAccessLossInTx, finishAccessLoss, type PendingAccessLoss } from '../lib/document-access-change.js';
 import { emitDocumentAccessChanged } from '../lib/document-access-events.js';
+import { endDriveAccessOnDepartureInTx } from '../lib/drives.js';
 import { visibleTaskSql } from '../lib/task-visibility.js';
 import {
   authorizeMembershipOperation, checkMembershipOperation, isProtectedMembership, lockMembership, MembershipGuardError, recordMembershipChange, recordPrivilege, type MembershipActor,
@@ -120,19 +121,6 @@ async function getCurrentMembership(orgId: string, userId: string) {
 }
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
-
-/**
- * Drives and documents, when a person leaves the workspace (consult rules C3
- * and C5): every way out (removal, deactivation, invite revocation) ends
- * their document access here, inside the removal's transaction, after the
- * room rule. The caller finishes the returned loss after commit
- * (afterWorkspaceAccessEnded). F6 freezes the person's personal drive in this
- * same function, before the access loss.
- */
-async function endDocumentAccessInTx(tx: Tx, orgId: string, memberId: string): Promise<PendingAccessLoss> {
-  const change = { orgId, userIds: [memberId] };
-  return { change, result: await applyAccessLossInTx(tx, change) };
-}
 
 /**
  * Everything that ends a person's access to the workspace: sessions, spaces,
@@ -241,9 +229,10 @@ async function endWorkspaceAccess(
   // DFX2: every room went with the workspace; their pending assistant
   // actions from rooms close with a reason, committed with the removal.
   for (const id of await closeLostRoomActionsInTx(tx, { orgId, requesterId: memberId })) closedActions.push(id);
-  // Drives and documents (rule C3), after the room rule: what they lost above
-  // (their membership, their chats) is what the hooks see.
-  documentLosses.push(await endDocumentAccessInTx(tx, orgId, memberId));
+  // Drives and documents (rules C3 and C5), after the room rule: what they
+  // lost above (their membership, their chats) is what the hooks see. The
+  // one departure seam (lib/drives.ts), shared with deleting an agent.
+  documentLosses.push(await endDriveAccessOnDepartureInTx(tx, orgId, memberId));
   return sessions.map(session => session.id);
 }
 

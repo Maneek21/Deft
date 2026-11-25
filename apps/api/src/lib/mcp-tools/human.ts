@@ -6,6 +6,8 @@ import { z } from 'zod';
 import { NativeMentionSourceSchema, nativeMentionToken } from '@deft/shared';
 import { searchNativeMentions, publishNativeMentions, enqueueNativeMentionPublication } from '../native-mentions.js';
 import { nativeNotificationAccessSql } from '../native-mention-visibility.js';
+import { accessLossInTx, finishAccessLoss } from '../document-access-change.js';
+import { emitDocumentAccessChanged } from '../document-access-events.js';
 import { withoutUnverifiableReplyText } from '../reply-notification-text.js';
 import {
   connectedAccounts,
@@ -3963,9 +3965,20 @@ export async function humanAgentEmployeeUpdateState(args: Record<string, unknown
     else return errorResult('state must be active, paused, or healthy');
     // The same choke point as the HTTP routes (lib/agent-management.ts): an
     // agent that is or was an owner or admin is the owner's to pause or resume.
-    const managed = await manageAgent({ userId: ctx.user_id, orgId: ctx.org_id }, args.employee_id as string, (tx) => tx.update(agentEmployees).set(updates).where(and(eq(agentEmployees.id, args.employee_id as string), eq(agentEmployees.org_id, ctx.org_id), eq(agentEmployees.is_deleted, false))).returning({ id: agentEmployees.id, name: agentEmployees.name, is_active: agentEmployees.is_active, unhealthy: agentEmployees.unhealthy }));
+    const managed = await manageAgent({ userId: ctx.user_id, orgId: ctx.org_id }, args.employee_id as string, async (tx, agent) => {
+      const rows = await tx.update(agentEmployees).set(updates).where(and(eq(agentEmployees.id, args.employee_id as string), eq(agentEmployees.org_id, ctx.org_id), eq(agentEmployees.is_deleted, false))).returning({ id: agentEmployees.id, name: agentEmployees.name, is_active: agentEmployees.is_active, unhealthy: agentEmployees.unhealthy });
+      // Rule C3: a paused agent holds no drive or document access.
+      const loss = rows.length > 0 && updates.is_active === false && agent.userId
+        ? await accessLossInTx(tx, { orgId: ctx.org_id, userIds: [agent.userId] })
+        : null;
+      return { rows, loss };
+    });
     if (!managed.ok) return errorResult(managed.error);
-    const [updated] = managed.value;
+    if (managed.value.loss) await finishAccessLoss(managed.value.loss.change, managed.value.loss.result);
+    else if (updates.is_active === true && managed.value.rows.length > 0 && managed.agent.userId) {
+      emitDocumentAccessChanged({ orgId: ctx.org_id, userIds: [managed.agent.userId] });
+    }
+    const [updated] = managed.value.rows;
     return updated ? textResult({ updated: true, employee: updated, url: `/settings/agent-employees/${updated.id}` }) : errorResult('Agent employee not found');
   });
 }

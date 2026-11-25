@@ -19,7 +19,8 @@ import test, { after, before, type TestContext } from 'node:test';
 import { and, desc, eq, ilike, or, sql, type SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { documents, drives } from '@deft/db/documents';
-import { attentionItems } from '@deft/db/schema';
+import { attentionItems, notifications } from '@deft/db/schema';
+import { nativeNotificationAccessSql } from '../src/lib/native-mention-visibility.js';
 import { closeDb, db } from '../src/lib/db.js';
 import {
   documentRoleQuery,
@@ -71,7 +72,7 @@ async function withinBudget(t: TestContext, forms: (fx: DrivesFixture) => Promis
         SELECT gen_random_uuid()::text, org_id, $2, 'document_shared', 'updates', 'document_shared:' || id || ':' || $2, 'document', id, title
         FROM documents WHERE org_id = $1`, [fx.orgId, fx.people.member]);
       await fx.client.query(`ANALYZE drives, drive_members, doc_folders, documents, document_shares, doc_favorites, spaces, space_members,
-        org_members, users, agent_employees, attention_items`);
+        org_members, users, agent_employees, attention_items, notifications`);
       for (const [name, statement] of await forms(fx)) {
         const growth = await planningGrowth(statement);
         assert.ok(growth, `${name}: measured`);
@@ -134,6 +135,11 @@ test('the attention, export and retrieval forms plan within budget', async (t) =
     const { member } = fx.people;
     const words = 'seed document';
     return [
+      // GET /api/notifications: the notification rule, with its drive branch (F4), on every list and count.
+      ['notifications list (drive branch)', db.select({ id: notifications.id }).from(notifications).where(and(
+        eq(notifications.user_id, member), eq(notifications.org_id, fx.orgId),
+        nativeNotificationAccessSql(member, sql`${notifications.metadata}`, sql`${notifications.org_id}`),
+      )).orderBy(desc(notifications.created_at)).limit(50).toSQL()],
       // The Inbox rule for document items (F9): the item's workspace and document are columns of the statement.
       ['attention items', db.select({ id: attentionItems.id }).from(attentionItems).where(and(
         eq(attentionItems.org_id, fx.orgId), eq(attentionItems.user_id, member), eq(attentionItems.source_type, 'document'),

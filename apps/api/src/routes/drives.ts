@@ -3,48 +3,57 @@
 // Every route reads the caller's role with driveRoleFor (lib/document-access.ts)
 // for the drive's workspace, which must be the caller's: a drive they can't
 // see, in this workspace or another, is a 404, never a 403.
-// - Reading a drive needs view. Settings, deleting it and linking a chat need
-//   full; linking also needs membership of the chat.
+// - Reading a drive needs view. Settings and deleting it need full; the
+//   Workspace, Shared notes and personal drives can't be deleted.
 // - Members: full, or the admin path. An owner or admin who isn't a full
 //   member of a private drive sees it listed (adminListedDriveCondition) and
 //   may manage its members, adding themselves included, but can't open it
-//   until they are a member. Each such change is written to the audit log,
-//   every current member is sent a `document_shared` notification with the
-//   `admin_change` subtype, and GET /:id/members returns the recent ones as
-//   `admin_changes`, which the members panel shows as a notice.
-// - A grant can't name someone who could never hold access
-//   (canHoldDocumentAccess), nor a chat that isn't one of this workspace's
-//   the caller can read: 400 PRINCIPAL_CANNOT_HOLD_ACCESS.
+//   until they are a member. Each such change writes its audit row in the
+//   same transaction (so a change never commits without it), every current
+//   human member apart from the actor is sent a `document_shared`
+//   notification (subtype `admin_change`), and GET /:id/members returns the
+//   recent ones as `admin_changes`, which the members panel shows as a notice.
+// - Links: linking a chat, or raising a link's role, needs full and
+//   membership of the chat (locked until commit); lowering or removing a
+//   link needs full. That holds whichever endpoint the change comes through:
+//   the admin path doesn't reach link rows.
+// - A grant, made or raised, can't name someone who could never hold access
+//   (canHoldDocumentAccess), nor a chat of this workspace the caller can't
+//   read: 400 PRINCIPAL_CANNOT_HOLD_ACCESS. Lowering or removing a grant is
+//   always allowed, so stale grants can be cleaned up.
+// - Adding a person or a chat, or linking a chat, sends `document_shared`
+//   (subtype `drive_member`) to the person, or to each human in the chat,
+//   apart from the actor. Notifications naming a drive stay listed only while
+//   the reader can view it (lib/native-mention-visibility.ts).
 //
-// Access changes (consult rule C3): removing or lowering a member, removing a
-// link, lowering a default role and deleting a drive run applyAccessLossInTx
-// in their transaction and finishAccessLoss after it. Changes that only add
-// access emit emitDocumentAccessChanged after commit. Each mutation locks the
-// drive row first and checks the caller's role under that lock, so changes
-// to one drive run one after another.
+// Access changes (consult rule C3): removing or lowering a member, removing or
+// lowering a link, lowering a default role and deleting a drive run
+// applyAccessLossInTx in their transaction and finishAccessLoss after it.
+// Changes that only add access emit emitDocumentAccessChanged after commit.
+// Each mutation locks the drive row first and checks the caller's role under
+// that lock, so changes to one drive run one after another, and every check
+// inside it reads through the same transaction.
 //
-// Live events follow rule C4 (lib/document-access-events.ts). Deleting a
-// drive, or changing its Knowledge default, also raises a lifecycle event for
-// each of its documents, so Knowledge withdraws or re-learns them (H4).
+// Deleting a drive, or changing its Knowledge default, raises a lifecycle
+// event for each of its documents, so Knowledge withdraws or re-learns them
+// (H4). Neither sends a socket event: after a delete nobody can view the
+// documents any more (rule C4).
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { and, asc, desc, eq, inArray, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, or, sql, type SQL } from 'drizzle-orm';
 import { docFavorites, documents, driveMembers, drives, type DocRole, type DriveMemberRow, type DriveRow } from '@deft/db/documents';
 import { auditLog, orgMembers, spaceMembers, spaces, users } from '@deft/db/schema';
 import { db } from '../lib/db.js';
-import { logAuditEvent } from '../lib/audit.js';
 import { DOC_ROLE_RANK, adminListedDriveCondition, canHoldDocumentAccess, driveRoleFor } from '../lib/document-access.js';
-import { applyAccessLossInTx, finishAccessLoss, type PendingAccessLoss } from '../lib/document-access-change.js';
-import {
-  documentEventAudience, emitDocumentAccessChanged, emitDocumentUpdated, sendDocumentEvent, type DocumentAccessChange,
-} from '../lib/document-access-events.js';
+import { accessLossInTx, finishAccessLoss } from '../lib/document-access-change.js';
+import { emitDocumentAccessChanged, type DocumentAccessChange } from '../lib/document-access-events.js';
 import { emitDocumentEvent } from '../lib/document-events.js';
 import { driveListQuery, ensureWorkspaceDrive } from '../lib/drives.js';
 import { emitVisibleNotifications } from '../lib/notification-delivery.js';
 import { createNotificationIfAllowed } from '../lib/notification-policy.js';
 import { asStoredNotificationType } from '../lib/notification-types.js';
 import { canSeePerson, peopleViewer, visiblePersonIds } from '../lib/people-visibility.js';
-import { canReadSpace, requireSpaceMembership, unjoinedPublicSpaceReadableSql } from '../lib/space-membership.js';
+import { canReadSpace, unjoinedPublicSpaceReadableSql } from '../lib/space-membership.js';
 import type { AuthUser } from '../middleware/auth.js';
 
 export const driveRoutes = new Hono();
@@ -62,6 +71,7 @@ const MEMBER_NOT_FOUND = refusal(404, 'Member not found', 'NOT_FOUND');
 const PERSONAL_OWNER = refusal(409, 'The owner of a personal drive keeps full access to it', 'PERSONAL_DRIVE_OWNER');
 const ALREADY_MEMBER = refusal(409, 'Already a member of this drive; change their role instead', 'ALREADY_MEMBER');
 const ALREADY_LINKED = refusal(409, 'This chat is already linked to a drive', 'SPACE_ALREADY_LINKED');
+const NOT_IN_CHAT = refusal(403, 'You can only link a chat you are in', 'SPACE_MEMBERSHIP_REQUIRED');
 
 class Refused extends Error {
   constructor(readonly refusal: Refusal) { super(refusal.body.code); }
@@ -71,8 +81,9 @@ function answer(c: Context, r: Refusal) {
   return c.json(r.body, r.status);
 }
 
+/** A 500 that names the step to the caller; the log line is fixed text, never a request value. */
 function failed(c: Context, what: string) {
-  console.error(`[drives] ${what} failed`);
+  console.error('[drives] a drive request failed');
   return c.json({ error: `Failed to ${what}`, code: 'INTERNAL_ERROR' }, 500);
 }
 
@@ -203,22 +214,28 @@ function memberChange(orgId: string, driveId: string, row: Pick<DriveMemberRow, 
     : { orgId, driveId, spaceId: row.principal_id };
 }
 
-/** Applies `change` as a loss in `tx`, to finish after commit. */
-async function lossInTx(tx: Tx, change: DocumentAccessChange): Promise<PendingAccessLoss> {
-  return { change, result: await applyAccessLossInTx(tx, change) };
-}
-
 /**
- * Refuses a grant to someone who could never hold access: a person must be
- * an active human member (guests included) or an agent user with an active
- * employee; a chat must be one of this workspace's that the caller can read.
+ * Refuses a grant, made or raised, to someone who could never hold access: a
+ * person must be an active human member (guests included) or an agent user
+ * with an active employee; a chat must be one of this workspace's that the
+ * caller can read. Reads through `tx`.
  */
 async function principalRefusal(tx: Tx, user: AuthUser, principalType: 'user' | 'space', principalId: string): Promise<Refusal | null> {
   if (principalType === 'user') return await canHoldDocumentAccess(principalId, user.org_id, tx) ? null : CANNOT_HOLD;
-  const [chat] = await tx.select({ id: spaces.id }).from(spaces)
-    .where(and(eq(spaces.id, principalId), eq(spaces.org_id, user.org_id))).limit(1);
-  if (!chat || !(await canReadSpace(principalId, user.id, user.org_id))) return CANNOT_HOLD;
-  return null;
+  return await canReadSpace(principalId, user.id, user.org_id, tx) ? null : CANNOT_HOLD;
+}
+
+/**
+ * The link rule's chat check: the caller's own seat in the chat, in this
+ * workspace, share-locked until commit, so leaving the chat can't commit
+ * between this check and the link.
+ */
+async function requireChatSeatLocked(tx: Tx, user: AuthUser, spaceId: string): Promise<void> {
+  const [seat] = await tx.select({ id: spaceMembers.id }).from(spaceMembers)
+    .innerJoin(spaces, eq(spaces.id, spaceMembers.space_id))
+    .where(and(eq(spaceMembers.space_id, spaceId), eq(spaceMembers.user_id, user.id), eq(spaces.org_id, user.org_id)))
+    .for('share', { of: spaceMembers });
+  if (!seat) throw new Refused(NOT_IN_CHAT);
 }
 
 type AdminChange = {
@@ -229,6 +246,90 @@ type AdminChange = {
   previous_role: DocRole | null;
 };
 
+/**
+ * The admin path's audit row, in the change's own transaction: the columns
+ * logAuditEvent writes, but a failure rolls the change back with it.
+ */
+async function auditAdminChangeInTx(tx: Tx, user: AuthUser, drive: DriveRow, change: AdminChange): Promise<void> {
+  const grant = (role: DocRole | null) => (role ? { principal_type: change.principal_type, principal_id: change.principal_id, role } : null);
+  await tx.insert(auditLog).values({
+    org_id: user.org_id,
+    actor_type: 'user',
+    actor_id: user.id,
+    action: 'drive_member_changed_by_admin',
+    entity_type: 'drive',
+    entity_id: drive.id,
+    before_state: grant(change.previous_role),
+    after_state: grant(change.role),
+    metadata: change,
+  });
+}
+
+/** The active humans among `people` (a statement with a `user_id` column), apart from the actor. */
+async function activeHumans(orgId: string, actorId: string, people: SQL): Promise<string[]> {
+  const result = await db.execute(sql`SELECT DISTINCT told.user_id FROM (${people}) told
+    JOIN ${orgMembers} told_membership ON told_membership.org_id = ${orgId} AND told_membership.user_id = told.user_id
+      AND told_membership.is_active = true
+    JOIN ${users} told_user ON told_user.id = told.user_id AND told_user.kind = 'human'
+    WHERE told.user_id <> ${actorId}
+    ORDER BY told.user_id`);
+  return (result.rows as Array<{ user_id: string }>).map((row) => row.user_id);
+}
+
+/** The people a drive's members name, and the people in its member chats. */
+function drivePeopleSql(orgId: string, driveId: string): SQL {
+  return sql`SELECT told_member.principal_id AS user_id FROM ${driveMembers} told_member
+      WHERE told_member.drive_id = ${driveId} AND told_member.principal_type = 'user'
+    UNION
+    SELECT told_seat.user_id FROM ${driveMembers} told_chat
+      JOIN ${spaces} told_space ON told_space.id = told_chat.principal_id AND told_space.org_id = ${orgId}
+      JOIN ${spaceMembers} told_seat ON told_seat.space_id = told_space.id
+      WHERE told_chat.drive_id = ${driveId} AND told_chat.principal_type = 'space'`;
+}
+
+/** The person a principal names, or the people in the chat it names. */
+function principalPeopleSql(orgId: string, principalType: 'user' | 'space', principalId: string): SQL {
+  return principalType === 'user'
+    ? sql`SELECT ${principalId}::text AS user_id`
+    : sql`SELECT told_seat.user_id FROM ${spaceMembers} told_seat
+        JOIN ${spaces} told_space ON told_space.id = told_seat.space_id AND told_space.org_id = ${orgId}
+        WHERE told_seat.space_id = ${principalId}`;
+}
+
+type Notice = { subtype: 'admin_change' | 'drive_member'; title: string; body: string };
+
+/**
+ * After commit: a `document_shared` notification to each recipient. Each one
+ * is created on its own, so a failure for one person never stops the rest.
+ * Never throws.
+ */
+async function tell(user: AuthUser, drive: DriveRow, recipients: readonly string[], notice: Notice): Promise<void> {
+  const created: Array<{ id: string; org_id: string; user_id: string }> = [];
+  for (const recipient of recipients) {
+    try {
+      const notification = await createNotificationIfAllowed({
+        org_id: user.org_id,
+        user_id: recipient,
+        type: asStoredNotificationType('document_shared'),
+        title: notice.title,
+        body: notice.body,
+        link: `/drive/${drive.id}`,
+        metadata: notice.subtype === 'admin_change'
+          ? { subtype: 'admin_change', drive_id: drive.id, actor_id: user.id }
+          : { subtype: 'drive_member', drive_id: drive.id },
+      });
+      if (notification) created.push(notification);
+    } catch {
+      console.error('[drives] a drive notification could not be created');
+    }
+  }
+  try {
+    await emitVisibleNotifications(created);
+  } catch {
+    console.error('[drives] drive notifications could not be sent');
+  }
+}
+
 const ADMIN_CHANGE_BODY: Record<AdminChange['change'], string> = {
   added: 'A workspace owner or admin added a member to this drive.',
   role_changed: 'A workspace owner or admin changed a member’s role on this drive.',
@@ -236,50 +337,37 @@ const ADMIN_CHANGE_BODY: Record<AdminChange['change'], string> = {
 };
 
 /**
- * After commit, for a change made through the admin path: the audit entry,
- * and a `document_shared` notification (subtype `admin_change`) to every
- * current member: the people the drive names and the people in its member
- * chats who are active humans, apart from the actor. Never throws.
+ * After commit, for a change made through the admin path: every current
+ * human member apart from the actor (and anyone `alreadyTold`) is sent the
+ * `admin_change` notice. Agents read their work through MCP and aren't sent it.
  */
-async function recordAdminChange(user: AuthUser, drive: DriveRow, change: AdminChange): Promise<void> {
-  await logAuditEvent({
-    orgId: user.org_id, actorType: 'user', actorId: user.id, action: 'drive_member_changed_by_admin',
-    entityType: 'drive', entityId: drive.id,
-    beforeState: change.previous_role ? { principal_type: change.principal_type, principal_id: change.principal_id, role: change.previous_role } : null,
-    afterState: change.role ? { principal_type: change.principal_type, principal_id: change.principal_id, role: change.role } : null,
-    metadata: change,
-  });
+async function tellMembersOfAdminChange(user: AuthUser, drive: DriveRow, change: AdminChange['change'], alreadyTold: readonly string[] = []): Promise<void> {
   try {
-    const result = await db.execute(sql`SELECT DISTINCT told.user_id
-      FROM (
-        SELECT told_member.principal_id AS user_id FROM ${driveMembers} told_member
-          WHERE told_member.drive_id = ${drive.id} AND told_member.principal_type = 'user'
-        UNION
-        SELECT told_seat.user_id FROM ${driveMembers} told_chat
-          JOIN ${spaces} told_space ON told_space.id = told_chat.principal_id AND told_space.org_id = ${user.org_id}
-          JOIN ${spaceMembers} told_seat ON told_seat.space_id = told_space.id
-          WHERE told_chat.drive_id = ${drive.id} AND told_chat.principal_type = 'space'
-      ) told
-      JOIN org_members told_membership ON told_membership.org_id = ${user.org_id} AND told_membership.user_id = told.user_id
-        AND told_membership.is_active = true
-      JOIN ${users} told_user ON told_user.id = told.user_id AND told_user.kind = 'human'
-      WHERE told.user_id <> ${user.id}`);
-    const created: Array<{ id: string; org_id: string; user_id: string }> = [];
-    for (const { user_id: recipient } of result.rows as Array<{ user_id: string }>) {
-      const notification = await createNotificationIfAllowed({
-        org_id: user.org_id,
-        user_id: recipient,
-        type: asStoredNotificationType('document_shared'),
-        title: `Drive members changed: ${drive.name}`,
-        body: ADMIN_CHANGE_BODY[change.change],
-        link: `/drive/${drive.id}`,
-        metadata: { subtype: 'admin_change', drive_id: drive.id, actor_id: user.id },
-      });
-      if (notification) created.push(notification);
-    }
-    await emitVisibleNotifications(created);
+    const recipients = (await activeHumans(user.org_id, user.id, drivePeopleSql(user.org_id, drive.id)))
+      .filter((id) => !alreadyTold.includes(id));
+    await tell(user, drive, recipients, { subtype: 'admin_change', title: `Drive members changed: ${drive.name}`, body: ADMIN_CHANGE_BODY[change] });
   } catch {
     console.error('[drives] telling members of an admin change failed');
+  }
+}
+
+/**
+ * After commit: the person a new grant names, or each human in the chat it
+ * names, apart from the actor, is told the drive was shared with them.
+ * Returns who was told.
+ */
+async function tellAdded(user: AuthUser, drive: DriveRow, principalType: 'user' | 'space', principalId: string): Promise<string[]> {
+  try {
+    const recipients = await activeHumans(user.org_id, user.id, principalPeopleSql(user.org_id, principalType, principalId));
+    await tell(user, drive, recipients, {
+      subtype: 'drive_member',
+      title: `Drive shared with you: ${drive.name}`,
+      body: principalType === 'user' ? 'You can now open this drive.' : 'This drive was shared with a chat you are in.',
+    });
+    return recipients;
+  } catch {
+    console.error('[drives] telling new members failed');
+    return [];
   }
 }
 
@@ -374,14 +462,13 @@ driveRoutes.patch('/:id', async (c) => {
         ))).map((row) => row.id)
         : null;
       // A lower default role takes access away from every member it reaches.
-      const loss = lowered ? await lossInTx(tx, { orgId: user.org_id, driveId: drive.id }) : null;
+      const loss = lowered ? await accessLossInTx(tx, { orgId: user.org_id, driveId: drive.id }) : null;
       return { drive: updated!, role, loss, roleRaised: defaultChanged && !lowered, knowledgeDocuments };
     });
     if (outcome.loss) await finishAccessLoss(outcome.loss.change, outcome.loss.result);
     else if (outcome.roleRaised) emitDocumentAccessChanged({ orgId: user.org_id, driveId: outcome.drive.id });
     if (outcome.knowledgeDocuments && outcome.knowledgeDocuments.length > 0) {
       emitDocumentEvent({ type: 'knowledge_changed', orgId: user.org_id, documentIds: outcome.knowledgeDocuments, actorId: user.id });
-      await emitDocumentUpdated(user.org_id, outcome.knowledgeDocuments);
     }
     return c.json({ drive: driveShape(outcome.drive, outcome.role, await isPinned(user.id, user.org_id, outcome.drive.id)) });
   } catch (error) {
@@ -390,28 +477,27 @@ driveRoutes.patch('/:id', async (c) => {
   }
 });
 
-// DELETE /api/drives/:id (needs full): a soft delete. The Workspace and Shared notes drives stay.
+// DELETE /api/drives/:id (needs full): a soft delete. The Workspace, Shared notes and personal drives stay.
 driveRoutes.delete('/:id', async (c) => {
   try {
     const user = c.get('user');
     const outcome = await db.transaction(async (tx) => {
       const { drive } = await locked(tx, user, c.req.param('id'), 'full');
       if (drive.system_key) throw new Refused(refusal(409, 'This drive belongs to the workspace and can’t be deleted', 'SYSTEM_DRIVE'));
+      // It holds every personal document: deleting it would trash them all at once.
+      if (drive.kind === 'personal') throw new Refused(refusal(409, 'A personal drive can’t be deleted', 'PERSONAL_DRIVE'));
       const documentIds = (await tx.select({ id: documents.id }).from(documents).where(and(
         eq(documents.org_id, user.org_id), eq(documents.drive_id, drive.id), eq(documents.is_deleted, false),
       ))).map((row) => row.id);
-      // Who could see each document, read before they are hidden, for document:updated after commit.
-      const audience = await documentEventAudience(user.org_id, documentIds, tx);
       const now = new Date();
       await tx.update(drives).set({ is_deleted: true, deleted_at: now, updated_at: now }).where(eq(drives.id, drive.id));
       // A chat links one drive at most; free it for another.
       await tx.delete(driveMembers).where(and(eq(driveMembers.drive_id, drive.id), eq(driveMembers.is_link, true)));
-      const loss = await lossInTx(tx, { orgId: user.org_id, driveId: drive.id, documentIds });
-      return { drive, documentIds, audience, loss };
+      const loss = await accessLossInTx(tx, { orgId: user.org_id, driveId: drive.id, documentIds });
+      return { drive, documentIds, loss };
     });
     await finishAccessLoss(outcome.loss.change, outcome.loss.result);
     emitDocumentEvent({ type: 'deleted', orgId: user.org_id, documentIds: outcome.documentIds, fromDriveId: outcome.drive.id, actorId: user.id });
-    sendDocumentEvent(outcome.audience, 'document:updated');
     return c.json({ success: true });
   } catch (error) {
     if (error instanceof Refused) return answer(c, error.refusal);
@@ -492,12 +578,14 @@ driveRoutes.post('/:id/members', async (c) => {
       const [member] = await tx.insert(driveMembers).values({
         org_id: user.org_id, drive_id: access.drive.id, principal_type: principalType, principal_id: principalId, role, added_by: user.id,
       }).returning();
+      if (access.adminPath) {
+        await auditAdminChangeInTx(tx, user, access.drive, { change: 'added', principal_type: principalType, principal_id: principalId, role, previous_role: null });
+      }
       return { access, member: member! };
     });
     emitDocumentAccessChanged(memberChange(user.org_id, outcome.access.drive.id, outcome.member));
-    if (outcome.access.adminPath) {
-      await recordAdminChange(user, outcome.access.drive, { change: 'added', principal_type: principalType, principal_id: principalId, role, previous_role: null });
-    }
+    const told = await tellAdded(user, outcome.access.drive, principalType, principalId);
+    if (outcome.access.adminPath) await tellMembersOfAdminChange(user, outcome.access.drive, 'added', told);
     return c.json({ member: memberShape(outcome.member) }, 201);
   } catch (error) {
     if (error instanceof Refused) return answer(c, error.refusal);
@@ -508,16 +596,22 @@ driveRoutes.post('/:id/members', async (c) => {
   }
 });
 
-/** The member row `memberId` of the drive, locked; a personal drive's owner row can't be lowered or removed. */
-async function lockedMember(tx: Tx, drive: DriveRow, memberId: string): Promise<DriveMemberRow> {
+/**
+ * The member row `memberId` of the drive, locked. A personal drive's owner
+ * row can't be lowered or removed. A link row follows the link rule: only
+ * full access changes it, never the admin path.
+ */
+async function lockedMember(tx: Tx, access: DriveAccess, memberId: string): Promise<DriveMemberRow> {
+  const { drive } = access;
   const [row] = await tx.select().from(driveMembers)
     .where(and(eq(driveMembers.id, memberId), eq(driveMembers.drive_id, drive.id))).for('update');
   if (!row) throw new Refused(MEMBER_NOT_FOUND);
   if (drive.kind === 'personal' && row.principal_type === 'user' && row.principal_id === drive.owner_user_id) throw new Refused(PERSONAL_OWNER);
+  if (row.is_link && access.role !== 'full') throw new Refused(FORBIDDEN_ROLE);
   return row;
 }
 
-// PATCH /api/drives/:id/members/:memberId { role } (full, or the admin path).
+// PATCH /api/drives/:id/members/:memberId { role } (full, or the admin path; a link row needs full).
 driveRoutes.patch('/:id/members/:memberId', async (c) => {
   try {
     const user = c.get('user');
@@ -526,21 +620,28 @@ driveRoutes.patch('/:id/members/:memberId', async (c) => {
     const { role } = parsed.data;
     const outcome = await db.transaction(async (tx) => {
       const access = await locked(tx, user, c.req.param('id'), 'manage');
-      const row = await lockedMember(tx, access.drive, c.req.param('memberId'));
+      const row = await lockedMember(tx, access, c.req.param('memberId'));
       if (row.role === role) return { access, member: row, previous: row.role, loss: null };
+      const lowered = lowers(row.role, role);
+      if (!lowered) {
+        // A stronger grant is a new grant: the principal rule, and for a link the link rule.
+        if (row.is_link) await requireChatSeatLocked(tx, user, row.principal_id);
+        const refused = await principalRefusal(tx, user, row.principal_type, row.principal_id);
+        if (refused) throw new Refused(refused);
+      }
       const [member] = await tx.update(driveMembers).set({ role, updated_at: new Date() }).where(eq(driveMembers.id, row.id)).returning();
-      const loss = lowers(row.role, role) ? await lossInTx(tx, memberChange(user.org_id, access.drive.id, row)) : null;
+      if (access.adminPath) {
+        await auditAdminChangeInTx(tx, user, access.drive, {
+          change: 'role_changed', principal_type: row.principal_type, principal_id: row.principal_id, role, previous_role: row.role,
+        });
+      }
+      const loss = lowered ? await accessLossInTx(tx, memberChange(user.org_id, access.drive.id, row)) : null;
       return { access, member: member!, previous: row.role, loss };
     });
     if (outcome.previous !== role) {
       if (outcome.loss) await finishAccessLoss(outcome.loss.change, outcome.loss.result);
       else emitDocumentAccessChanged(memberChange(user.org_id, outcome.access.drive.id, outcome.member));
-      if (outcome.access.adminPath) {
-        await recordAdminChange(user, outcome.access.drive, {
-          change: 'role_changed', principal_type: outcome.member.principal_type, principal_id: outcome.member.principal_id,
-          role, previous_role: outcome.previous,
-        });
-      }
+      if (outcome.access.adminPath) await tellMembersOfAdminChange(user, outcome.access.drive, 'role_changed');
     }
     return c.json({ member: memberShape(outcome.member) });
   } catch (error) {
@@ -549,22 +650,23 @@ driveRoutes.patch('/:id/members/:memberId', async (c) => {
   }
 });
 
-// DELETE /api/drives/:id/members/:memberId (full, or the admin path).
+// DELETE /api/drives/:id/members/:memberId (full, or the admin path; a link row needs full).
 driveRoutes.delete('/:id/members/:memberId', async (c) => {
   try {
     const user = c.get('user');
     const outcome = await db.transaction(async (tx) => {
       const access = await locked(tx, user, c.req.param('id'), 'manage');
-      const row = await lockedMember(tx, access.drive, c.req.param('memberId'));
+      const row = await lockedMember(tx, access, c.req.param('memberId'));
       await tx.delete(driveMembers).where(eq(driveMembers.id, row.id));
-      return { access, row, loss: await lossInTx(tx, memberChange(user.org_id, access.drive.id, row)) };
+      if (access.adminPath) {
+        await auditAdminChangeInTx(tx, user, access.drive, {
+          change: 'removed', principal_type: row.principal_type, principal_id: row.principal_id, role: null, previous_role: row.role,
+        });
+      }
+      return { access, loss: await accessLossInTx(tx, memberChange(user.org_id, access.drive.id, row)) };
     });
     await finishAccessLoss(outcome.loss.change, outcome.loss.result);
-    if (outcome.access.adminPath) {
-      await recordAdminChange(user, outcome.access.drive, {
-        change: 'removed', principal_type: outcome.row.principal_type, principal_id: outcome.row.principal_id, role: null, previous_role: outcome.row.role,
-      });
-    }
+    if (outcome.access.adminPath) await tellMembersOfAdminChange(user, outcome.access.drive, 'removed');
     return c.json({ success: true });
   } catch (error) {
     if (error instanceof Refused) return answer(c, error.refusal);
@@ -581,9 +683,7 @@ driveRoutes.post('/:id/link-space', async (c) => {
     const { space_id: spaceId, role } = parsed.data;
     const outcome = await db.transaction(async (tx) => {
       const access = await locked(tx, user, c.req.param('id'), 'full');
-      if (!(await requireSpaceMembership(spaceId, user.id, user.org_id))) {
-        throw new Refused(refusal(403, 'You can only link a chat you are in', 'SPACE_MEMBERSHIP_REQUIRED'));
-      }
+      await requireChatSeatLocked(tx, user, spaceId);
       const [linked] = await tx.select({ id: driveMembers.id }).from(driveMembers).where(and(
         eq(driveMembers.org_id, user.org_id), eq(driveMembers.principal_type, 'space'), eq(driveMembers.principal_id, spaceId),
         eq(driveMembers.is_link, true),
@@ -596,15 +696,16 @@ driveRoutes.post('/:id/link-space', async (c) => {
       const change: DocumentAccessChange = { orgId: user.org_id, driveId: access.drive.id, spaceId };
       if (plain) {
         const [member] = await tx.update(driveMembers).set({ is_link: true, role, updated_at: new Date() }).where(eq(driveMembers.id, plain.id)).returning();
-        return { member: member!, change, loss: lowers(plain.role, role) ? await lossInTx(tx, change) : null };
+        return { access, member: member!, change, loss: lowers(plain.role, role) ? await accessLossInTx(tx, change) : null };
       }
       const [member] = await tx.insert(driveMembers).values({
         org_id: user.org_id, drive_id: access.drive.id, principal_type: 'space', principal_id: spaceId, role, is_link: true, added_by: user.id,
       }).returning();
-      return { member: member!, change, loss: null };
+      return { access, member: member!, change, loss: null };
     });
     if (outcome.loss) await finishAccessLoss(outcome.loss.change, outcome.loss.result);
     else emitDocumentAccessChanged(outcome.change);
+    await tellAdded(user, outcome.access.drive, 'space', spaceId);
     return c.json({ member: memberShape(outcome.member) }, 201);
   } catch (error) {
     if (error instanceof Refused) return answer(c, error.refusal);
@@ -626,7 +727,7 @@ driveRoutes.delete('/:id/link-space/:spaceId', async (c) => {
         eq(driveMembers.is_link, true),
       )).returning({ id: driveMembers.id });
       if (removed.length === 0) throw new Refused(refusal(404, 'This chat isn’t linked to the drive', 'NOT_FOUND'));
-      return { loss: await lossInTx(tx, { orgId: user.org_id, driveId: access.drive.id, spaceId }) };
+      return { loss: await accessLossInTx(tx, { orgId: user.org_id, driveId: access.drive.id, spaceId }) };
     });
     await finishAccessLoss(outcome.loss.change, outcome.loss.result);
     return c.json({ success: true });

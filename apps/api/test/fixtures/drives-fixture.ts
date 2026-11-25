@@ -45,10 +45,11 @@ export type DrivesFixture = {
   removeSpaceMember(spaceId: string, userId: string): Promise<void>;
   /**
    * Another person in the workspace `orgId` (an active human member by
-   * default), removed with the fixture. An agent made here has no employee,
-   * as Defty's own user.
+   * default), removed with the fixture. An agent has no employee, as Defty's
+   * own user, unless `agentEmployeeId` is given: then an active employee with
+   * that id is linked to it, as provisioning does.
    */
-  addPerson(i?: { role?: 'owner' | 'admin' | 'member' | 'guest'; kind?: 'human' | 'agent' | 'system'; active?: boolean }): Promise<string>;
+  addPerson(i?: { role?: 'owner' | 'admin' | 'member' | 'guest'; kind?: 'human' | 'agent' | 'system'; active?: boolean; agentEmployeeId?: string }): Promise<string>;
   teardown(): Promise<void>;
 };
 
@@ -102,7 +103,7 @@ export async function setupDrivesFixture(label: string, options: DrivesFixtureOp
   const teardown = async () => {
     try {
       const orgs = [orgId, otherOrgId];
-      for (const table of ['attention_events', 'attention_items', 'notifications', 'audit_log', 'doc_favorites', 'note_document_map', 'document_attachments',
+      for (const table of ['attention_events', 'attention_items', 'notifications', 'audit_log', 'oauth_audit_events', 'doc_favorites', 'note_document_map', 'document_attachments',
         'document_versions', 'document_shares', 'documents', 'doc_folders', 'drive_members', 'drives']) {
         await q(`DELETE FROM ${table} WHERE org_id = ANY($1::text[])`, [orgs]);
       }
@@ -220,12 +221,17 @@ export async function setupDrivesFixture(label: string, options: DrivesFixtureOp
       await q('DELETE FROM space_members WHERE space_id = $1 AND user_id = $2', [spaceId, userId]);
     },
 
-    async addPerson({ role = 'member', kind = 'human', active = true } = {}) {
+    async addPerson({ role = 'member', kind = 'human', active = true, agentEmployeeId } = {}) {
       const id = randomUUID();
       extraPeople.push(id);
-      await q('INSERT INTO users (id, email, name, kind, is_agent) VALUES ($1, $2, $3, $4, $5)',
-        [id, `extra-${id.slice(0, 8)}-${tag}@drives.test`, `extra ${kind} ${role}`, kind, kind === 'agent']);
+      await q('INSERT INTO users (id, email, name, kind, is_agent, agent_employee_id) VALUES ($1, $2, $3, $4, $5, $6)',
+        [id, `extra-${id.slice(0, 8)}-${tag}@drives.test`, `extra ${kind} ${role}`, kind, kind === 'agent', agentEmployeeId ?? null]);
       await q('INSERT INTO org_members (id, org_id, user_id, role, is_active) VALUES ($1, $2, $3, $4, $5)', [randomUUID(), orgId, id, role, active]);
+      if (agentEmployeeId) {
+        await q(`INSERT INTO agent_employees (id, org_id, user_id, name, slug, role, system_prompt, trust_level, is_active, is_byoa, runtime_kind, created_by)
+          VALUES ($1, $2, $3, 'Agent', $4, 'custom', 'Test.', 'conservative', true, true, 'custom_mcp', $5)`,
+        [agentEmployeeId, orgId, id, `agent-${id.slice(0, 8)}-${tag}`, people.owner]);
+      }
       return id;
     },
 

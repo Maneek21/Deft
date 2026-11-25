@@ -7,7 +7,7 @@
 //   Its owner holds full access only through a `full` drive_members row
 //   (lib/document-access.ts has no rule of its own for personal drives), so
 //   ensurePersonalDrive writes that row every time, and restores it if it was
-//   lost or lowered.
+//   lost or lowered, for someone who can hold access.
 // - Shared notes: the open drive, default "can view", that the notes move
 //   (F14) creates for notes visible to the whole workspace (system_key
 //   'shared_notes').
@@ -19,10 +19,26 @@
 import { and, eq, sql, type SQL } from 'drizzle-orm';
 import { driveMembers, drives, type DocRole, type DocShareRole, type DriveRow, type DriveSystemKey } from '@deft/db/documents';
 import { db } from './db.js';
-import { adminListedDriveCondition, visibleDriveCondition } from './document-access.js';
+import { adminListedDriveCondition, canHoldDocumentAccess, visibleDriveCondition } from './document-access.js';
+import { accessLossInTx, type PendingAccessLoss } from './document-access-change.js';
 
 /** The pool by default, or a caller's transaction. */
-type Executor = Pick<typeof db, 'select' | 'insert'>;
+type Executor = Pick<typeof db, 'select' | 'insert' | 'execute'>;
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * A person leaves the workspace (consult rules C3 and C5): every way out ends
+ * their drive and document access here, inside the transaction that ended
+ * their membership, after everything else it ends. The caller finishes the
+ * returned loss after commit (finishAccessLoss). Called by
+ * routes/members.ts endWorkspaceAccess (removal, deactivation, invite
+ * revocation) and by deleting an agent employee (routes/agent-employees.ts).
+ * F6 freezes the person's personal drive here, before the access loss.
+ */
+export async function endDriveAccessOnDepartureInTx(tx: Tx, orgId: string, userId: string): Promise<PendingAccessLoss> {
+  return accessLossInTx(tx, { orgId, userIds: [userId] });
+}
 
 async function liveSystemDrive(executor: Executor, orgId: string, key: DriveSystemKey): Promise<DriveRow | undefined> {
   const [drive] = await executor.select().from(drives)
@@ -60,12 +76,20 @@ async function livePersonalDrive(executor: Executor, orgId: string, userId: stri
   return drive;
 }
 
+/** Thrown by ensurePersonalDrive for someone who could never hold access (canHoldDocumentAccess). */
+export class PrincipalCannotHoldAccessError extends Error {
+  readonly code = 'PRINCIPAL_CANNOT_HOLD_ACCESS';
+  constructor() { super('That person can’t hold access to drives in this workspace'); }
+}
+
 /**
- * `userId`'s My drive in `orgId`, with their `full` drive_members row. The
- * person needs an org_members row there (the upgrade's triggers refuse
- * anyone else).
+ * `userId`'s My drive in `orgId`, with their `full` drive_members row. A
+ * grant is made only to someone who can hold access (canHoldDocumentAccess:
+ * an active human member, or an agent user with an active employee); for
+ * anyone else this throws PrincipalCannotHoldAccessError and creates nothing.
  */
 export async function ensurePersonalDrive(orgId: string, userId: string, executor: Executor = db): Promise<DriveRow> {
+  if (!(await canHoldDocumentAccess(userId, orgId, executor))) throw new PrincipalCannotHoldAccessError();
   let drive = await livePersonalDrive(executor, orgId, userId);
   if (!drive) {
     await executor.insert(drives)

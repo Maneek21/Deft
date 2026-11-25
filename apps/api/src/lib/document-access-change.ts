@@ -7,9 +7,12 @@
 // - share removed or lowered (F9); document moved or deleted (F5);
 // - chat member removed (routes/spaces.ts removeSpaceMember; archiving a chat
 //   too, although an archived chat keeps granting its members, rule C7);
-// - workspace access ended (routes/members.ts endWorkspaceAccess: removal,
-//   deactivation, invite revocation), the change to guest, and an admin
-//   demoted to member.
+// - workspace access ended (lib/drives.ts endDriveAccessOnDepartureInTx,
+//   from routes/members.ts endWorkspaceAccess: removal, deactivation, invite
+//   revocation; and from deleting an agent employee), the change to guest,
+//   and an admin demoted to member;
+// - an agent employee paused (routes/agent-employees.ts, and the MCP
+//   agent_employee_update_state tool): its user holds nothing while paused.
 //
 // Inside the transaction the registered hooks run (`onAccessLossInTx`): M6
 // cancels the suggestions whose asker lost edit. They see the change, and
@@ -55,6 +58,11 @@ export async function applyAccessLossInTx(tx: Tx, change: DocumentAccessChange):
     for (const id of await hook(tx, change)) cancelled.add(id);
   }
   return { cancelledActionIds: [...cancelled] };
+}
+
+/** applyAccessLossInTx, keeping the change with its result for finishAccessLoss after the commit. */
+export async function accessLossInTx(tx: Tx, change: DocumentAccessChange): Promise<PendingAccessLoss> {
+  return { change, result: await applyAccessLossInTx(tx, change) };
 }
 
 /** After the commit: bumps the access generation, emits the change and finishes the cancellations. Never throws. */

@@ -11,13 +11,14 @@
 // drive or chat can reach.
 //
 // Socket events (rule C4): `document:updated` and `document:shared` reach
-// only people who can view the document. For a document of an open drive
-// that is the workspace's `org-members` room (owners, admins and members)
-// plus each other viewer (guests through their grants); otherwise each
-// viewer. The viewers come from one query (`documentViewers` in
-// lib/document-access.ts). Payloads carry ids only: clients refetch through
-// REST, which applies the access check.
-import { getIO, emitToUser } from '../socket.js';
+// only people who can view the document, each of them individually
+// (`emitToUser`), whatever the drive. Never the workspace's `org-members`
+// room: that room also holds agent users with the member role, who get
+// nothing from an open drive without a grant of their own. The viewers come
+// from one statement (`documentViewers` in lib/document-access.ts), read when
+// the event is sent, so nobody who has lost access is told. Payloads carry
+// ids only: clients refetch through REST, which applies the access check.
+import { emitToUser } from '../socket.js';
 import { db } from './db.js';
 import { documentViewers, type Executor } from './document-access.js';
 
@@ -48,33 +49,27 @@ export function onDocumentAccessChanged(listener: (c: DocumentAccessChange) => v
   return () => { listeners.delete(listener); };
 }
 
-/**
- * Who a live event about some documents goes to, read before it is sent:
- * for each document that exists and isn't deleted, its drive, whether the
- * workspace's members room covers its drive (an open drive), and every other
- * person who can view it. Read it before a change that hides the documents
- * (deleting a drive) and send it after commit.
- */
+/** Who a live event about some documents goes to: each document's drive and its current viewers. */
 export type DocumentEventAudience = {
   orgId: string;
-  documents: Array<{ documentId: string; driveId: string; membersRoom: boolean; userIds: string[] }>;
+  documents: Array<{ documentId: string; driveId: string; userIds: string[] }>;
 };
 
+/** The current viewers of `documentIds` (existing, not deleted), from one statement. */
 export async function documentEventAudience(orgId: string, documentIds: readonly string[], executor: Executor = db): Promise<DocumentEventAudience> {
   if (documentIds.length === 0) return { orgId, documents: [] };
   return { orgId, documents: await documentViewers(orgId, documentIds, executor) };
 }
 
 /**
- * Sends `event` about each document of `audience`, ids only:
- * `document:updated` carries `{ id, drive_id }` and `document:shared`
+ * Sends `event` about each document of `audience` to each of its viewers, ids
+ * only: `document:updated` carries `{ id, drive_id }` and `document:shared`
  * carries `{ document_id }`. Best effort, like every realtime event.
  */
 export function sendDocumentEvent(audience: DocumentEventAudience, event: 'document:updated' | 'document:shared'): void {
   try {
     for (const doc of audience.documents) {
       const payload = event === 'document:updated' ? { id: doc.documentId, drive_id: doc.driveId } : { document_id: doc.documentId };
-      if (doc.membersRoom) getIO()?.to(`org-members:${audience.orgId}`).emit(event, payload);
       for (const userId of doc.userIds) emitToUser(audience.orgId, userId, event, payload);
     }
   } catch {

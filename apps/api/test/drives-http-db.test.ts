@@ -10,6 +10,15 @@
  * inside a transaction that has already written), so a recorded id shows the
  * hook ran inside the change's own transaction, before commit.
  *
+ * Fix round 1 adds: agent employees paused, resumed and deleted (REST and
+ * MCP); document:updated sent only to each current viewer, never to the
+ * members room (non-guest agents without a grant included), and nothing
+ * after a drive is deleted; admin changes audited in their own transaction
+ * and told to every human member; drive notifications that disappear with
+ * drive access; the link rule on every endpoint; grants raised only to
+ * people who can hold access; chat checks on the drive transaction; personal
+ * drives kept; drive_member notifications.
+ *
  * Run:
  *   DATABASE_URL=... DEFT_TEST_DATABASE_URL=... pnpm --filter @deft/api test test/drives-http-db.test.ts
  */
@@ -22,13 +31,16 @@ import test, { after, before } from 'node:test';
 import { sql } from 'drizzle-orm';
 import { closeDb } from '../src/lib/db.js';
 import { driveRoleFor, documentRoleFor } from '../src/lib/document-access.js';
-import { onDocumentAccessChanged, type DocumentAccessChange } from '../src/lib/document-access-events.js';
+import { emitDocumentUpdated, onDocumentAccessChanged, type DocumentAccessChange } from '../src/lib/document-access-events.js';
 import { currentAccessGeneration, onAccessLossInTx } from '../src/lib/document-access-change.js';
 import { onDocumentEvent, type DocumentLifecycleEvent } from '../src/lib/document-events.js';
-import { ensurePersonalDrive, ensureSharedNotesDrive, ensureWorkspaceDrive } from '../src/lib/drives.js';
+import { ensurePersonalDrive, ensureSharedNotesDrive, ensureWorkspaceDrive, PrincipalCannotHoldAccessError } from '../src/lib/drives.js';
+import { humanAgentEmployeeUpdateState } from '../src/lib/mcp-tools/human.js';
+import { agentEmployeeRoutes } from '../src/routes/agent-employees.js';
 import { driveRoutes } from '../src/routes/drives.js';
 import { spaceRoutes } from '../src/routes/spaces.js';
 import { memberRoutes } from '../src/routes/members.js';
+import { notificationRoutes } from '../src/routes/notifications.js';
 import { setupSocket } from '../src/socket.js';
 import { setupDrivesFixture, type DrivesFixture } from './fixtures/drives-fixture.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
@@ -41,6 +53,8 @@ const ROUTES = [
   { path: '/api/drives', app: driveRoutes },
   { path: '/api/spaces', app: spaceRoutes },
   { path: '/api/members', app: memberRoutes },
+  { path: '/api/notifications', app: notificationRoutes },
+  { path: '/api/agent-employees', app: agentEmployeeRoutes },
 ];
 let fx: DrivesFixture | undefined;
 
@@ -227,9 +241,11 @@ test('an admin has full access on every open drive', async (t) => {
 
 test('an admin sees a private drive listed but gets 404 on it until they add themselves; the change is audited and members are told', async (t) => {
   if (!fx) return t.skip(SKIP);
-  const { admin, member, member2 } = fx.people;
+  const { admin, agentUser, guest, member, member2 } = fx.people;
   const drive = await createDrive(member, { name: 'Payroll', kind: 'private' });
   await addMember(member, drive, { user: member2 }, 'view');
+  // The chat `other` holds member2 only; an agent member is never sent the notice.
+  await addMember(member, drive, { user: agentUser }, 'view');
 
   const listed = (await listOf(admin)).find((row) => row.id === drive);
   assert.ok(listed, 'listed for the admin');
@@ -243,8 +259,10 @@ test('an admin sees a private drive listed but gets 404 on it until they add the
   assert.equal((await listOf(fx.people.guest)).find((row) => row.id === drive), undefined);
 
   const before = await call(admin, 'GET', `/api/drives/${drive}/members`, undefined, 200);
-  assert.deepEqual(before.members.map((row: any) => [row.principal_id, row.role]).sort(), [[member, 'full'], [member2, 'view']].sort());
+  assert.deepEqual(before.members.map((row: any) => [row.principal_id, row.role]).sort(),
+    [[member, 'full'], [member2, 'view'], [agentUser, 'view']].sort());
   assert.deepEqual(before.admin_changes, []);
+  assert.equal(before.admin_path, true);
 
   await addMember(admin, drive, { user: admin }, 'edit');
   assert.equal((await call(admin, 'GET', `/api/drives/${drive}`, undefined, 200)).drive.role, 'edit');
@@ -252,7 +270,7 @@ test('an admin sees a private drive listed but gets 404 on it until they add the
   assert.equal(after?.role, 'edit');
   assert.equal(after?.admin_listed, false);
 
-  const { rows: audits } = await fx.client.query(`SELECT actor_id, action, entity_type, entity_id, metadata FROM audit_log
+  const { rows: audits } = await fx.client.query(`SELECT actor_id, action, entity_type, entity_id, metadata, xmin::text AS xmin FROM audit_log
     WHERE org_id = $1 AND entity_id = $2`, [fx.orgId, drive]);
   assert.equal(audits.length, 1);
   assert.equal(audits[0].action, 'drive_member_changed_by_admin');
@@ -260,24 +278,34 @@ test('an admin sees a private drive listed but gets 404 on it until they add the
   assert.equal(audits[0].actor_id, admin);
   assert.equal(audits[0].metadata.change, 'added');
   assert.equal(audits[0].metadata.principal_id, admin);
+  // Written by the change's own transaction: the same xmin as the member row it records.
+  const { rows: [adminRow] } = await fx.client.query('SELECT xmin::text AS xmin FROM drive_members WHERE drive_id = $1 AND principal_id = $2',
+    [drive, admin]);
+  assert.equal(audits[0].xmin, adminRow.xmin, 'the audit row commits with the change');
 
   const { rows: told } = await fx.client.query(`SELECT user_id, type::text AS type, metadata FROM notifications
-    WHERE org_id = $1 AND metadata->>'drive_id' = $2 ORDER BY user_id`, [fx.orgId, drive]);
-  assert.deepEqual(told.map((row) => row.user_id).sort(), [member, member2].sort(), 'every member but the admin who acted');
+    WHERE org_id = $1 AND metadata->>'drive_id' = $2 AND metadata->>'subtype' = 'admin_change' ORDER BY user_id`, [fx.orgId, drive]);
+  assert.deepEqual(told.map((row) => row.user_id).sort(), [member, member2].sort(), 'every human member but the admin who acted');
   for (const row of told) {
     assert.equal(row.type, 'document_shared');
-    assert.equal(row.metadata.subtype, 'admin_change');
     assert.equal(row.metadata.actor_id, admin);
   }
 
+  // A removal through the admin path tells the members in a chat member too, never the agent.
+  await addMember(member, drive, { space: fx.spaces.team }, 'view');
+  await fx.client.query(`DELETE FROM notifications WHERE org_id = $1 AND metadata->>'drive_id' = $2`, [fx.orgId, drive]);
+  await call(admin, 'DELETE', `/api/drives/${drive}/members/${await memberRowId(drive, member2)}`, undefined, 200);
+  const { rows: toldOfRemoval } = await fx.client.query(`SELECT user_id FROM notifications
+    WHERE org_id = $1 AND metadata->>'drive_id' = $2 AND metadata->>'subtype' = 'admin_change'`, [fx.orgId, drive]);
+  assert.deepEqual(toldOfRemoval.map((row) => row.user_id).sort(), [member, member2, guest].sort(),
+    'member, and member2 and the guest through the team chat; not the agent, not the admin');
+
   const panel = await call(member, 'GET', `/api/drives/${drive}/members`, undefined, 200);
-  assert.equal(panel.admin_changes.length, 1);
-  assert.equal(panel.admin_changes[0].actor_id, admin);
-  assert.equal(panel.admin_changes[0].change, 'added');
+  assert.deepEqual(panel.admin_changes.map((entry: any) => [entry.actor_id, entry.change]), [[admin, 'removed'], [admin, 'added']]);
 
   // A full member's own changes are not admin changes.
   await addMember(member, drive, { user: fx.people.guest }, 'view');
-  assert.equal((await call(member, 'GET', `/api/drives/${drive}/members`, undefined, 200)).admin_changes.length, 1);
+  assert.equal((await call(member, 'GET', `/api/drives/${drive}/members`, undefined, 200)).admin_changes.length, 2);
 });
 
 test('adding a chat as a member grants its members; removing someone from the chat emits an access change and removes it', async (t) => {
@@ -373,6 +401,14 @@ test("the Workspace drive can't be deleted (409 SYSTEM_DRIVE)", async (t) => {
   assert.equal(rows[0].is_deleted, false);
   const sharedNotes = await ensureSharedNotesDrive(fx.orgId, fx.people.owner);
   assert.equal((await call(fx.people.owner, 'DELETE', `/api/drives/${sharedNotes.id}`, undefined, 409)).code, 'SYSTEM_DRIVE');
+});
+
+test("a personal drive can't be deleted, even by its owner (409 PERSONAL_DRIVE)", async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const mine = await ensurePersonalDrive(fx.orgId, fx.people.member);
+  assert.equal((await call(fx.people.member, 'DELETE', `/api/drives/${mine.id}`, undefined, 409)).code, 'PERSONAL_DRIVE');
+  const { rows } = await fx.client.query('SELECT is_deleted FROM drives WHERE id = $1', [mine.id]);
+  assert.equal(rows[0].is_deleted, false);
 });
 
 test('lowering default_role, removing a member, removing a link, demoting an admin and deleting a drive each run applyAccessLossInTx', async (t) => {
@@ -545,6 +581,7 @@ test('deleting a drive, or changing its knowledge default, emits a lifecycle eve
   // The deleted drive's chat link is gone, so the chat can be linked again.
   const other = await createDrive(member2, { name: 'Next link', kind: 'private' });
   await call(member2, 'POST', `/api/drives/${other}/link-space`, { space_id: fx.spaces.team, role: 'view' }, 201);
+  await call(member2, 'DELETE', `/api/drives/${other}/link-space/${fx.spaces.team}`, undefined, 200);
 });
 
 test('pinning a drive is per person', async (t) => {
@@ -605,34 +642,189 @@ async function waitFor(cond: () => boolean, label: string, timeoutMs = 5_000) {
 
 test('document:updated for a private drive reaches only people who can view it', async (t) => {
   if (!fx) return t.skip(SKIP);
-  const { admin, guest, member, member2, owner } = fx.people;
+  const { admin, agentUser, guest, member, member2, owner } = fx.people;
   const drive = await createDrive(member, { name: 'Private events', kind: 'private' });
   const document = await fx.insertDocument({ driveId: drive, title: 'Private' });
   await fx.share(document, { user: guest }, 'view');
-  const openDocument = await fx.insertDocument({ driveId: fx.workspaceDriveId, title: 'Open' });
-  const harness = await socketHarness([owner, admin, member, member2, guest]);
+  const harness = await socketHarness([owner, admin, member, member2, guest, agentUser]);
   try {
-    await call(member, 'PATCH', `/api/drives/${drive}`, { knowledge_default: false }, 200);
+    await emitDocumentUpdated(fx.orgId, [document]);
     const expected = { id: document, drive_id: drive };
     await waitFor(() => harness.updates(member).length > 0 && harness.updates(guest).length > 0, 'the viewers are told');
-    assert.deepEqual(harness.updates(member), [expected]);
-    assert.deepEqual(harness.updates(guest), [expected], 'a guest who holds a share');
-    // An open drive's change reaches the workspace's members' room, and only guests who can view.
-    await call(admin, 'PATCH', `/api/drives/${fx.workspaceDriveId}`, { knowledge_default: false }, 200);
-    await waitFor(() => harness.updates(member2).length > 0, 'the members room is told');
+    // Deleting the drive tells nobody, not even someone who could see it a moment ago.
+    await call(member, 'DELETE', `/api/drives/${drive}`, undefined, 200);
+    await emitDocumentUpdated(fx.orgId, [document]);
     await new Promise((r) => setTimeout(r, 300));
-    assert.deepEqual(harness.updates(member2).filter((update) => update.drive_id === drive), [], 'a member outside the private drive');
-    assert.deepEqual(harness.updates(owner).filter((update) => update.drive_id === drive), [], 'an owner outside the private drive');
-    assert.deepEqual(harness.updates(admin).filter((update) => update.drive_id === drive), [], 'an admin outside the private drive');
-    assert.ok(harness.updates(member2).some((update) => update.id === openDocument && update.drive_id === fx!.workspaceDriveId));
-    assert.deepEqual(harness.updates(guest).filter((update) => update.drive_id === fx!.workspaceDriveId), [], 'a guest without a share');
-    for (const id of [owner, admin, member, member2, guest]) {
-      for (const update of harness.updates(id)) assert.deepEqual(Object.keys(update).sort(), ['drive_id', 'id'], 'ids only');
-    }
+    assert.deepEqual(harness.updates(member), [expected], 'the full member, once: nothing after the delete');
+    assert.deepEqual(harness.updates(guest), [expected], 'a guest who holds a share, once');
+    for (const outside of [owner, admin, member2, agentUser]) assert.deepEqual(harness.updates(outside), [], 'outside the private drive');
+    for (const update of [...harness.updates(member), ...harness.updates(guest)]) assert.deepEqual(Object.keys(update).sort(), ['drive_id', 'id'], 'ids only');
   } finally {
     await harness.close();
-    await call(admin, 'PATCH', `/api/drives/${fx.workspaceDriveId}`, { knowledge_default: true }, 200);
   }
+});
+
+test('document:updated for an open drive goes to each viewer, never the members room: a non-guest agent gets it only with a grant', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { agentUser, guest, member2, owner } = fx.people;
+  const openDocument = await fx.insertDocument({ driveId: fx.workspaceDriveId, title: 'Open' });
+  const harness = await socketHarness([owner, member2, guest, agentUser]);
+  try {
+    const expected = { id: openDocument, drive_id: fx.workspaceDriveId };
+    await emitDocumentUpdated(fx.orgId, [openDocument]);
+    await waitFor(() => harness.updates(member2).length > 0 && harness.updates(owner).length > 0, 'the open drive’s people are told');
+    await new Promise((r) => setTimeout(r, 300));
+    assert.deepEqual(harness.updates(member2), [expected]);
+    assert.deepEqual(harness.updates(owner), [expected]);
+    assert.deepEqual(harness.updates(agentUser), [], 'an agent with the member role, and no grant, in the org-members room');
+    assert.deepEqual(harness.updates(guest), [], 'a guest without a share');
+    // With a grant of its own, the agent is told; the guest still isn't.
+    await fx.share(openDocument, { user: agentUser }, 'view');
+    await emitDocumentUpdated(fx.orgId, [openDocument]);
+    await waitFor(() => harness.updates(agentUser).length > 0, 'the agent with a share is told');
+    await new Promise((r) => setTimeout(r, 300));
+    assert.deepEqual(harness.updates(agentUser), [expected]);
+    assert.deepEqual(harness.updates(member2), [expected, expected], 'once per event');
+    assert.deepEqual(harness.updates(guest), []);
+  } finally {
+    await harness.close();
+  }
+});
+
+test('pausing an agent, or deleting it, runs applyAccessLossInTx; resuming only emits (REST and MCP)', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member, owner } = fx.people;
+  const employeeId = randomUUID();
+  const agent = await fx.addPerson({ kind: 'agent', agentEmployeeId: employeeId });
+  const drive = await createDrive(member, { name: 'Agent access', kind: 'private' });
+  await addMember(member, drive, { user: agent }, 'view');
+  assert.equal(await driveRoleFor(agent, fx.orgId, drive), 'view');
+  const lost = { orgId: fx.orgId, userIds: [agent] };
+
+  resetEvents();
+  let generation = currentAccessGeneration();
+  await call(owner, 'POST', `/api/agent-employees/${employeeId}/pause`, {}, 200);
+  assertOneLoss(lost, generation);
+  assert.equal(await driveRoleFor(agent, fx.orgId, drive), null);
+
+  resetEvents();
+  await call(owner, 'POST', `/api/agent-employees/${employeeId}/resume`, {}, 200);
+  assert.equal(lossesInTx.length, 0, 'resuming takes nothing away');
+  assert.deepEqual(accessChanges, [lost]);
+  assert.equal(await driveRoleFor(agent, fx.orgId, drive), 'view');
+
+  const mcp = (state: string) => humanAgentEmployeeUpdateState({ employee_id: employeeId, state },
+    { org_id: fx!.orgId, user_id: owner, role: 'owner', scopes: ['write:workspace'] });
+  resetEvents();
+  generation = currentAccessGeneration();
+  assert.ok(!(await mcp('paused')).isError);
+  assertOneLoss(lost, generation);
+  assert.equal(await driveRoleFor(agent, fx.orgId, drive), null);
+  resetEvents();
+  assert.ok(!(await mcp('active')).isError);
+  assert.equal(lossesInTx.length, 0);
+  assert.deepEqual(accessChanges, [lost]);
+  assert.equal(await driveRoleFor(agent, fx.orgId, drive), 'view');
+
+  resetEvents();
+  generation = currentAccessGeneration();
+  await call(owner, 'DELETE', `/api/agent-employees/${employeeId}`, undefined, 200);
+  assertOneLoss(lost, generation);
+  assert.equal(await driveRoleFor(agent, fx.orgId, drive), null);
+});
+
+test('a drive notification is listed and counted only while its reader can view the drive', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member, member2 } = fx.people;
+  const drive = await createDrive(member, { name: 'Shared then not', kind: 'private' });
+  await addMember(member, drive, { user: member2 }, 'view');
+  const inbox = async () => {
+    const body = await call(member2, 'GET', '/api/notifications', undefined, 200);
+    return { forDrive: (body.notifications as any[]).filter((row) => row.metadata?.drive_id === drive), unread: body.unread_count as number };
+  };
+  const shared = await inbox();
+  assert.equal(shared.forDrive.length, 1);
+  assert.equal(shared.forDrive[0].metadata.subtype, 'drive_member');
+  assert.equal(shared.forDrive[0].type, 'document_shared');
+  await call(member, 'DELETE', `/api/drives/${drive}/members/${await memberRowId(drive, member2)}`, undefined, 200);
+  const removed = await inbox();
+  assert.deepEqual(removed.forDrive, [], 'no longer listed');
+  assert.equal(removed.unread, shared.unread - 1, 'no longer counted');
+});
+
+test('adding a person or a chat, or linking a chat, tells the people it reaches apart from the actor', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { agentUser, guest, member, member2 } = fx.people;
+  const told = async (drive: string) => (await fx!.client.query(`SELECT user_id, metadata FROM notifications
+    WHERE org_id = $1 AND metadata->>'drive_id' = $2 ORDER BY user_id`, [fx!.orgId, drive])).rows;
+  const byPerson = await createDrive(member, { name: 'Told by person', kind: 'private' });
+  await addMember(member, byPerson, { user: member2 }, 'view');
+  assert.deepEqual((await told(byPerson)).map((row) => [row.user_id, row.metadata.subtype]), [[member2, 'drive_member']]);
+  const byChat = await createDrive(member, { name: 'Told by chat', kind: 'private' });
+  await addMember(member, byChat, { space: fx.spaces.team }, 'view');
+  assert.deepEqual((await told(byChat)).map((row) => row.user_id).sort(), [member2, guest].sort(), 'the humans in the chat, not the agent, not the actor');
+  const byLink = await createDrive(member, { name: 'Told by link', kind: 'private' });
+  await call(member, 'POST', `/api/drives/${byLink}/link-space`, { space_id: fx.spaces.team, role: 'view' }, 201);
+  assert.deepEqual((await told(byLink)).map((row) => row.user_id).sort(), [member2, guest].sort());
+  assert.ok(!(await told(byLink)).some((row) => row.user_id === agentUser));
+  await call(member, 'DELETE', `/api/drives/${byLink}/link-space/${fx.spaces.team}`, undefined, 200);
+});
+
+test('a link row follows the link rule on every endpoint: the admin path never changes it', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { admin, member, member2 } = fx.people;
+  const drive = await createDrive(member2, { name: 'Linked, admin-listed', kind: 'private' });
+  await call(member2, 'POST', `/api/drives/${drive}/link-space`, { space_id: fx.spaces.other, role: 'comment' }, 201);
+  const linkRow = await memberRowId(drive, fx.spaces.other);
+  try {
+    assert.equal((await call(admin, 'GET', `/api/drives/${drive}/members`, undefined, 200)).admin_path, true);
+    assert.equal((await call(admin, 'PATCH', `/api/drives/${drive}/members/${linkRow}`, { role: 'view' }, 403)).code, 'FORBIDDEN_ROLE');
+    assert.equal((await call(admin, 'DELETE', `/api/drives/${drive}/members/${linkRow}`, undefined, 403)).code, 'FORBIDDEN_ROLE');
+    // A full member who isn't in the chat may lower the link but not raise it.
+    await addMember(member2, drive, { user: member }, 'full');
+    assert.equal((await call(member, 'PATCH', `/api/drives/${drive}/members/${linkRow}`, { role: 'edit' }, 403)).code, 'SPACE_MEMBERSHIP_REQUIRED');
+    await call(member, 'PATCH', `/api/drives/${drive}/members/${linkRow}`, { role: 'view' }, 200);
+    // In the chat: raising is allowed.
+    assert.equal((await call(member2, 'PATCH', `/api/drives/${drive}/members/${linkRow}`, { role: 'edit' }, 200)).member.role, 'edit');
+  } finally {
+    await call(member2, 'DELETE', `/api/drives/${drive}/link-space/${fx.spaces.other}`, undefined, 200);
+  }
+});
+
+test('a grant is raised only for someone who can hold access; a stale grant can still be lowered and removed', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member } = fx.people;
+  const person = await fx.addPerson();
+  const drive = await createDrive(member, { name: 'Stale grants', kind: 'private' });
+  await addMember(member, drive, { user: person }, 'comment');
+  const row = await memberRowId(drive, person);
+  await fx.client.query('UPDATE org_members SET is_active = false WHERE org_id = $1 AND user_id = $2', [fx.orgId, person]);
+  assert.equal((await call(member, 'PATCH', `/api/drives/${drive}/members/${row}`, { role: 'edit' }, 400)).code, 'PRINCIPAL_CANNOT_HOLD_ACCESS');
+  const { rows: [unchanged] } = await fx.client.query('SELECT role FROM drive_members WHERE id = $1', [row]);
+  assert.equal(unchanged.role, 'comment');
+  assert.equal((await call(member, 'PATCH', `/api/drives/${drive}/members/${row}`, { role: 'view' }, 200)).member.role, 'view');
+  await call(member, 'DELETE', `/api/drives/${drive}/members/${row}`, undefined, 200);
+
+  // ensurePersonalDrive makes no drive and no grant for someone who can't hold access.
+  const noEmployeeAgent = await fx.addPerson({ kind: 'agent' });
+  for (const nobody of [person, noEmployeeAgent]) {
+    await assert.rejects(ensurePersonalDrive(fx.orgId, nobody), PrincipalCannotHoldAccessError);
+    const { rows } = await fx.client.query('SELECT id FROM drives WHERE org_id = $1 AND owner_user_id = $2', [fx.orgId, nobody]);
+    assert.deepEqual(rows, []);
+  }
+});
+
+test('member changes on several drives at once finish: chat checks run on the drive transaction, not a second connection', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member2 } = fx.people;
+  // The API pool holds 4 connections. Each change holds one, with its drive row locked, while it checks the chat.
+  const many: string[] = [];
+  for (let at = 0; at < 6; at += 1) many.push(await createDrive(member2, { name: `Concurrent ${at}`, kind: 'private' }));
+  const started = Date.now();
+  const responses = await Promise.all(many.map((drive) => fx!.request(member2, 'POST', `/api/drives/${drive}/members`,
+    { principal_type: 'space', principal_id: fx!.spaces.other, role: 'view' })));
+  assert.deepEqual(responses.map((res) => res.status), many.map(() => 201));
+  assert.ok(Date.now() - started < 4_000, `took ${Date.now() - started} ms`);
 });
 
 test('the drive routes answer a drive of another workspace with 404', async (t) => {

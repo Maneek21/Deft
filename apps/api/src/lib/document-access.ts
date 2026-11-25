@@ -289,6 +289,31 @@ export async function documentRoleFor(userId: string, orgId: string, documentId:
 }
 
 /**
+ * The drive rule by id, with the person as a value or a column. The caller's
+ * expressions are bound first, in `access_target`, as in documentIdVisibleSql.
+ */
+function driveIdVisibleSql(userId: UserRef, orgId: OrgRef, driveId: SQL, min: DocRole): SQL {
+  const user = sql.raw('access_target.user_id');
+  return sql`EXISTS (SELECT 1
+    FROM (SELECT (${driveId})::text AS id, (${orgId})::text AS org_id, (${userId})::text AS user_id) access_target
+    JOIN drives access_drive ON access_drive.id = access_target.id AND access_drive.org_id = access_target.org_id
+    WHERE access_drive.is_deleted = false
+      AND ${activeActorSql(user, sql.raw('access_target.org_id'))}
+      AND ${anyGrant([driveGrants(user, accessDrive)], checkedRole(min))})`;
+}
+
+/**
+ * For any statement: true when the drive `driveId` of `orgId` exists and
+ * `userId` holds at least `min` on it (view by default), exactly as
+ * visibleDriveCondition. Any of the three may be a column of the statement
+ * under any alias (a notification's recipient, workspace and
+ * `metadata->>'drive_id'`): they are bound before the check's own aliases.
+ */
+export function visibleDriveIdSql(userId: string | SQL, orgId: OrgRef, driveId: SQL, min: DocRole = 'view'): SQL {
+  return driveIdVisibleSql(userId, orgId, driveId, min);
+}
+
+/**
  * For a query over the `drives` table (not aliased): true for a drive of
  * `orgId` where `userId` holds at least `min` (view by default). A share of
  * a document gives no role on its drive.
@@ -374,64 +399,87 @@ export async function canHoldDocumentAccess(userId: string, orgId: string, execu
 /**
  * The statement documentViewers runs. Exported for its planning test.
  *
- * Candidates are only the people the grants name: drive members (people, and
- * the people in member chats) and the document's shares (likewise). That is
- * everyone who can view, except the owners, admins and members an open
- * drive admits through its default role, who are reached through the
- * members room instead (`members_room`). Each candidate is then held to the
- * full check (documentIdVisibleSql), so frozen drives, inactive members,
- * paused employees and chats of another workspace give nothing. One row per
- * document and viewer; a document with no other viewer still has one row,
- * with no user.
+ * A document's viewers are its drive's viewers and the people its shares
+ * reach (documentGrants). So:
+ * - each drive's viewers are found once: its candidates (every active member
+ *   of the workspace for an open drive, else the people its members name and
+ *   the people in its member chats) held to the drive check;
+ * - each document's share candidates (people, and the people in shared
+ *   chats) are held to the full document check.
+ * Frozen drives, inactive members, paused employees, agent users without a
+ * grant and chats of another workspace give nothing.
+ *
+ * Rows, kept apart so a large open drive costs one row per viewer, not per
+ * document and viewer: a document with its drive and no user; a drive viewer
+ * (no document); a share viewer (no drive).
  */
 export function documentViewersQuery(orgId: string, documentIds: readonly string[]): SQL {
-  const candidate = sql.raw('viewer_candidate.user_id');
-  return sql`SELECT viewer_doc.id AS document_id, viewer_doc.drive_id,
-      (viewer_drive.kind = 'open' AND viewer_drive.frozen_at IS NULL) AS members_room,
-      viewer_candidate.user_id
-    FROM documents viewer_doc
-    JOIN drives viewer_drive ON viewer_drive.id = viewer_doc.drive_id AND viewer_drive.org_id = viewer_doc.org_id
-    LEFT JOIN LATERAL (
-      SELECT viewer_member.principal_id AS user_id FROM drive_members viewer_member
-        WHERE viewer_member.drive_id = viewer_doc.drive_id AND viewer_member.principal_type = 'user'
+  const person = sql.raw('viewer_person.user_id');
+  return sql`WITH viewer_target AS (
+      SELECT viewer_doc.id AS document_id, viewer_doc.drive_id
+      FROM documents viewer_doc
+      JOIN drives viewer_drive ON viewer_drive.id = viewer_doc.drive_id AND viewer_drive.org_id = viewer_doc.org_id
+      WHERE viewer_doc.org_id = ${orgId} AND viewer_doc.id = ANY(${sql.param([...documentIds])}::text[])
+        AND viewer_doc.is_deleted = false AND viewer_drive.is_deleted = false
+    )
+    SELECT viewer_target.document_id, viewer_target.drive_id, NULL::text AS user_id FROM viewer_target
+    UNION ALL
+    SELECT NULL::text, viewer_home.id, viewer_person.user_id
+    FROM drives viewer_home
+    CROSS JOIN LATERAL (
+      SELECT viewer_open.user_id FROM org_members viewer_open
+        WHERE viewer_home.kind = 'open' AND viewer_open.org_id = viewer_home.org_id AND viewer_open.is_active = true
+      UNION
+      SELECT viewer_member.principal_id FROM drive_members viewer_member
+        WHERE viewer_member.drive_id = viewer_home.id AND viewer_member.principal_type = 'user'
       UNION
       SELECT viewer_chat_seat.user_id FROM drive_members viewer_chat
         JOIN space_members viewer_chat_seat ON viewer_chat_seat.space_id = viewer_chat.principal_id
-        WHERE viewer_chat.drive_id = viewer_doc.drive_id AND viewer_chat.principal_type = 'space'
-      UNION
-      SELECT viewer_share.principal_id FROM document_shares viewer_share
-        WHERE viewer_share.document_id = viewer_doc.id AND viewer_share.principal_type = 'user'
+        WHERE viewer_chat.drive_id = viewer_home.id AND viewer_chat.principal_type = 'space'
+    ) viewer_person
+    WHERE viewer_home.org_id = ${orgId} AND viewer_home.id IN (SELECT viewer_target.drive_id FROM viewer_target)
+      AND ${driveIdVisibleSql(person, orgId, sql.raw('viewer_home.id'), 'view')}
+    UNION ALL
+    SELECT viewer_target.document_id, NULL::text, viewer_person.user_id
+    FROM viewer_target
+    CROSS JOIN LATERAL (
+      SELECT viewer_share.principal_id AS user_id FROM document_shares viewer_share
+        WHERE viewer_share.document_id = viewer_target.document_id AND viewer_share.principal_type = 'user'
       UNION
       SELECT viewer_share_seat.user_id FROM document_shares viewer_chat_share
         JOIN space_members viewer_share_seat ON viewer_share_seat.space_id = viewer_chat_share.principal_id
-        WHERE viewer_chat_share.document_id = viewer_doc.id AND viewer_chat_share.principal_type = 'space'
-    ) viewer_candidate ON NOT (viewer_drive.kind = 'open' AND viewer_drive.frozen_at IS NULL AND EXISTS (
-        SELECT 1 FROM org_members viewer_room
-        WHERE viewer_room.org_id = viewer_doc.org_id AND viewer_room.user_id = viewer_candidate.user_id
-          AND viewer_room.role IN ('owner', 'admin', 'member')))
-      AND ${documentIdVisibleSql(candidate, orgId, sql.raw('viewer_doc.id'), 'view')}
-    WHERE viewer_doc.org_id = ${orgId} AND viewer_doc.id = ANY(${sql.param([...documentIds])}::text[])
-      AND viewer_doc.is_deleted = false AND viewer_drive.is_deleted = false
-    ORDER BY viewer_doc.id, viewer_candidate.user_id`;
+        WHERE viewer_chat_share.document_id = viewer_target.document_id AND viewer_chat_share.principal_type = 'space'
+    ) viewer_person
+    WHERE ${documentIdVisibleSql(person, orgId, sql.raw('viewer_target.document_id'), 'view')}`;
 }
 
 /**
  * Who may be sent a live event about the documents `documentIds` of `orgId`
- * (consult rule C4): for each one that exists and isn't deleted, its drive,
- * whether the workspace's members room covers it (an open drive: its owners,
- * admins and members can all view it), and every other person who can view
- * it. One statement for all the documents.
+ * (consult rule C4): for each one that exists and isn't deleted, its drive
+ * and every person who can view it now. One statement for all the documents.
  */
 export async function documentViewers(
   orgId: string, documentIds: readonly string[], executor: Executor = db,
-): Promise<Array<{ documentId: string; driveId: string; membersRoom: boolean; userIds: string[] }>> {
+): Promise<Array<{ documentId: string; driveId: string; userIds: string[] }>> {
   if (documentIds.length === 0) return [];
   const result = await executor.execute(documentViewersQuery(orgId, documentIds));
-  const byDocument = new Map<string, { documentId: string; driveId: string; membersRoom: boolean; userIds: string[] }>();
-  for (const row of result.rows as Array<{ document_id: string; drive_id: string; members_room: boolean; user_id: string | null }>) {
-    let entry = byDocument.get(row.document_id);
-    if (!entry) byDocument.set(row.document_id, entry = { documentId: row.document_id, driveId: row.drive_id, membersRoom: row.members_room, userIds: [] });
-    if (row.user_id) entry.userIds.push(row.user_id);
+  const rows = result.rows as Array<{ document_id: string | null; drive_id: string | null; user_id: string | null }>;
+  const driveOf = new Map<string, string>();
+  const byDrive = new Map<string, Set<string>>();
+  const byShare = new Map<string, Set<string>>();
+  const add = (map: Map<string, Set<string>>, key: string, userId: string) => {
+    let set = map.get(key);
+    if (!set) map.set(key, set = new Set());
+    set.add(userId);
+  };
+  for (const row of rows) {
+    if (row.user_id === null && row.document_id && row.drive_id) driveOf.set(row.document_id, row.drive_id);
+    else if (row.user_id && row.drive_id) add(byDrive, row.drive_id, row.user_id);
+    else if (row.user_id && row.document_id) add(byShare, row.document_id, row.user_id);
   }
-  return [...byDocument.values()];
+  return [...driveOf].map(([documentId, driveId]) => ({
+    documentId,
+    driveId,
+    userIds: [...new Set([...(byDrive.get(driveId) ?? []), ...(byShare.get(documentId) ?? [])])].sort(),
+  }));
 }
