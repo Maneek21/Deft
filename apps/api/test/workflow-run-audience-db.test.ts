@@ -96,15 +96,20 @@ test('workflow execution details follow the source task audience', async (t) => 
   for (const viewer of [ids.owner, ids.admin, ids.source]) {
     assert.ok(JSON.stringify(await readRun(viewer, id)).includes('CANARY-ERROR'));
   }
-  for (const viewer of [ids.other, ids.guest]) {
-    const row = await readRun(viewer, id);
-    assert.deepEqual(row.result, { actions: [{ kind: 'add_comment', ok: false }] });
-    assert.equal(JSON.stringify(row).includes('CANARY'), false);
-  }
+  const row = await readRun(ids.other, id);
+  assert.deepEqual(row.result, { actions: [{ kind: 'add_comment', ok: false }] });
+  assert.equal(JSON.stringify(row).includes('CANARY'), false);
+  // A guest is not shown a run on a task hidden from them (lib/task-visibility.ts), and watching
+  // does not make a task visible to a guest; being named on it does.
+  const guestRuns = async () => JSON.stringify(await (await request(ids.guest)).json());
+  assert.equal((await guestRuns()).includes(id), false);
   await client!.query('INSERT INTO task_watchers(id,task_id,user_id) VALUES($1,$2,$3)', [randomUUID(), taskId, ids.guest]);
-  assert.ok(JSON.stringify(await readRun(ids.guest, id)).includes('CANARY-ERROR'));
+  assert.equal((await guestRuns()).includes(id), false);
   await client!.query('DELETE FROM task_watchers WHERE task_id=$1', [taskId]);
-  assert.deepEqual((await readRun(ids.guest, id)).result, { actions: [{ kind: 'add_comment', ok: false }] });
+  await client!.query(`UPDATE tasks SET metadata=jsonb_build_object('visibility','restricted','visible_user_ids',jsonb_build_array($2::text)) WHERE id=$1`, [taskId, ids.guest]);
+  assert.ok(JSON.stringify(await readRun(ids.guest, id)).includes('CANARY-ERROR'));
+  await client!.query(`UPDATE tasks SET metadata='{"visibility":"restricted"}' WHERE id=$1`, [taskId]);
+  assert.equal((await guestRuns()).includes(id), false);
 });
 
 test('unresolved source tasks reserve execution detail for owners and admins', async (t) => {

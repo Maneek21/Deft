@@ -19,6 +19,8 @@ import type { TriggerInvocation } from './employee-trigger.js';
 import { getOrgTimezone, isOverdue, isDueWithinDays } from '../../lib/task-dates.js';
 import { createNotificationIfAllowed } from '../../lib/notification-policy.js';
 import { buildTaskNudgeDigest } from '../../lib/notification-digests.js';
+import { guestTaskScopeSql } from '../../lib/task-visibility.js';
+import { noticeNamesGuestHiddenTaskSql } from '../../lib/native-mention-visibility.js';
 
 // Phase 6 — per-kind trigger routing. Stalled tasks and overdue tasks are
 // separate kinds so an employee can subscribe to just one. If the org has
@@ -41,6 +43,19 @@ async function findNudgeEmployee(orgId: string, triggerKind: string) {
     )
     .limit(1);
   return row ?? null;
+}
+
+/**
+ * A subscribed employee that is a guest of the workspace hears only about the
+ * tasks of its projects and the tasks that name it (task-visibility.ts); for
+ * any other task the nudge goes to the person instead, as when no employee is
+ * subscribed.
+ */
+async function employeeMaySeeTask(taskId: string, employeeUserId: string): Promise<boolean> {
+  const [row] = await db.select({ id: tasks.id }).from(tasks)
+    .where(and(eq(tasks.id, taskId), guestTaskScopeSql(employeeUserId)))
+    .limit(1);
+  return Boolean(row);
 }
 
 // Task 3.11 — proactive agent comment on a task, authored by the given
@@ -188,7 +203,7 @@ export async function handleNudgeCheck(_job: JobData): Promise<void> {
         stalledEmpByOrg.set(task.org_id, await findNudgeEmployee(task.org_id, NUDGE_STALLED_KIND));
       }
       const subscribed = stalledEmpByOrg.get(task.org_id);
-      if (subscribed) {
+      if (subscribed && await employeeMaySeeTask(task.id, subscribed.user_id)) {
         const invocation: TriggerInvocation = {
           employee_id: subscribed.id,
           org_id: task.org_id,
@@ -240,7 +255,7 @@ export async function handleNudgeCheck(_job: JobData): Promise<void> {
         overdueEmpByOrg.set(task.org_id, await findNudgeEmployee(task.org_id, NUDGE_OVERDUE_KIND));
       }
       const subscribed = overdueEmpByOrg.get(task.org_id);
-      if (subscribed) {
+      if (subscribed && await employeeMaySeeTask(task.id, subscribed.user_id)) {
         const invocation: TriggerInvocation = {
           employee_id: subscribed.id,
           org_id: task.org_id,
@@ -377,6 +392,9 @@ async function processNudge(params: NudgeParams): Promise<void> {
         eq(notifications.is_read, false),
         gte(notifications.created_at, since),
         sql`${notifications.metadata}->>'nudge_type' = ${nudgeType}`,
+        // A digest naming a task now hidden from a guest recipient is not
+        // extended (task-visibility.ts); a fresh notice is made instead.
+        sql`NOT ${noticeNamesGuestHiddenTaskSql(targetUserId, sql`${notifications.metadata}`, sql`${notifications.org_id}`, sql`${notifications.link}`)}`,
       ))
       .orderBy(sql`${notifications.created_at} DESC`)
       .limit(1);

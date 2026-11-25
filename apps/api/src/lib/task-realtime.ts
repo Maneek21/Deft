@@ -8,6 +8,11 @@
  * of the fields that changed. Clients fetch task content through the
  * audience-checked task reads, which answer 404 to a member who cannot read
  * the task.
+ *
+ * A guest (role guest in org_members) is in the org room but not in
+ * `org-members:<orgId>`: socket.ts narrows org-room task events to that room
+ * and sends a guest the event only for the tasks they may see (the tasks of
+ * their projects and the tasks that name them, lib/task-visibility.ts).
  */
 export const ORG_TASK_EVENTS = [
   'task:created',

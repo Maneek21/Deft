@@ -3,7 +3,17 @@ import { eq, and, desc, getTableColumns, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../lib/db.js';
 import { projects, tasks, workflowRules, workflowRuns } from '@deft/db/schema';
-import { visibleTaskCondition } from '../lib/task-visibility.js';
+import { taskHiddenFromGuestSql, visibleTaskCondition } from '../lib/task-visibility.js';
+import { peopleViewer } from '../lib/people-visibility.js';
+
+// A workspace rule acts on every task (it can assign one to its author, who
+// would then read it), so a guest, who sees only the tasks of their projects
+// (lib/task-visibility.ts), cannot create, change or delete one. The role is
+// read from org_members, not the session.
+async function guestRefusal(orgId: string, userId: string): Promise<Response | null> {
+  if (!(await peopleViewer(orgId, userId)).guest) return null;
+  return Response.json({ error: 'A guest cannot manage workflow rules', code: 'FORBIDDEN' }, { status: 403 });
+}
 
 export const workflowRoutes = new Hono();
 
@@ -55,6 +65,8 @@ workflowRoutes.get('/', async (c) => {
 // POST /api/workflows — create rule
 workflowRoutes.post('/', async (c) => {
   const user = c.get('user');
+  const refused = await guestRefusal(user.org_id, user.id);
+  if (refused) return refused;
   const body = await c.req.json();
   const { name, trigger_type, trigger_config, action_type, action_config, is_active } = body;
 
@@ -86,6 +98,8 @@ workflowRoutes.post('/', async (c) => {
 // PATCH /api/workflows/:id — update rule
 workflowRoutes.patch('/:id', async (c) => {
   const user = c.get('user');
+  const refused = await guestRefusal(user.org_id, user.id);
+  if (refused) return refused;
   const id = c.req.param('id');
   const body = await c.req.json();
   const { name, trigger_type, trigger_config, action_type, action_config, is_active } = body;
@@ -123,6 +137,8 @@ workflowRoutes.patch('/:id', async (c) => {
 // DELETE /api/workflows/:id — delete rule
 workflowRoutes.delete('/:id', async (c) => {
   const user = c.get('user');
+  const refused = await guestRefusal(user.org_id, user.id);
+  if (refused) return refused;
   const id = c.req.param('id');
 
   // Verify ownership FIRST
@@ -166,9 +182,14 @@ workflowRoutes.get('/:id/runs', async (c) => {
         eq(projects.is_deleted, false),
         visibleTaskCondition(user.id),
       ))})`;
+  // A guest is not shown the runs on tasks hidden from them (lib/task-visibility.ts).
+  const guest = (await peopleViewer(user.org_id, user.id)).guest;
   const runs = await db.select({ ...getTableColumns(workflowRuns), can_read_detail: canReadDetail })
     .from(workflowRuns)
-    .where(eq(workflowRuns.rule_id, id))
+    .where(guest
+      ? and(eq(workflowRuns.rule_id, id),
+        sql`NOT ${taskHiddenFromGuestSql(user.id, sql`${workflowRuns.result}->>'task_id'`, sql`${user.org_id}`)}`)
+      : eq(workflowRuns.rule_id, id))
     .orderBy(desc(workflowRuns.executed_at))
     .limit(50);
 

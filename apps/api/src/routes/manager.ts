@@ -117,6 +117,9 @@ managerRoutes.post('/oneone-prep', async (c) => {
 managerRoutes.get('/oneone-preps', async (c) => {
   try {
     const user = c.get('user');
+    // A guest is no one's manager (POST above): preps made before they became
+    // a guest hold workspace task titles they may no longer see.
+    if ((await peopleViewer(user.org_id, user.id)).guest) return c.json({ preps: [] });
 
     const preps = await db
       .select()
@@ -143,6 +146,9 @@ managerRoutes.patch('/oneone-preps/:id', async (c) => {
     const user = c.get('user');
     const prepId = c.req.param('id');
     const body = await c.req.json<{ status?: string; notes?: string }>();
+    if ((await peopleViewer(user.org_id, user.id)).guest) {
+      return c.json({ error: 'Prep not found', code: 'NOT_FOUND' }, 404);
+    }
 
     // Verify ownership
     const [existing] = await db
@@ -292,6 +298,9 @@ managerRoutes.patch('/settings', async (c) => {
 managerRoutes.get('/team-health', async (c) => {
   try {
     const user = c.get('user');
+    // A snapshot made before its author became a guest holds workspace task
+    // counts and stalled-task keys they may no longer see (lib/task-visibility.ts).
+    if ((await peopleViewer(user.org_id, user.id)).guest) return c.json({ snapshot: null });
 
     const [snapshot] = await db
       .select()

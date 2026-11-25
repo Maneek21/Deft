@@ -10,6 +10,7 @@ import {
 import { db } from './db.js';
 import { syncNotificationToAttention, syncNotificationsToAttention } from './attention.js';
 import { enqueue, QUEUE_NAMES } from './queues.js';
+import { noticeHidesTaskFrom, noticeMayNameTask } from './native-mention-visibility.js';
 
 type NotificationChannel = keyof UserNotificationPreferences['channels'];
 type NotificationInsert = typeof notifications.$inferInsert;
@@ -178,6 +179,8 @@ export async function createNotificationIfAllowed(
 ): Promise<typeof notifications.$inferSelect | null> {
   const decision = await explainNotificationPolicy(values, options);
   if (!decision.allowed) return null;
+  // A guest is never told about a task they may not see (task-visibility.ts).
+  if (await noticeHidesTaskFrom(values)) return null;
 
   const existingMetadata =
     values.metadata && typeof values.metadata === 'object' && !Array.isArray(values.metadata)
@@ -243,7 +246,14 @@ export async function createNotificationsIfAllowed(
   const recipientById = new Map(recipients.map((recipient) => [recipient.id, recipient]));
   const evaluatedAt = new Date().toISOString();
 
+  // A guest is never told about a task they may not see (task-visibility.ts).
+  // Only notifications that may name a task pay for the check.
+  const hidesTask = new Set<NotificationInsert>();
+  for (const value of values) {
+    if (noticeMayNameTask(value.metadata, value.link) && await noticeHidesTaskFrom(value)) hidesTask.add(value);
+  }
   const allowed = values.flatMap((value) => {
+    if (hidesTask.has(value)) return [];
     const recipient = recipientById.get(value.user_id);
     if (!recipient) return [];
     if (options.respectDnd && recipient.status_text === 'Do Not Disturb') return [];

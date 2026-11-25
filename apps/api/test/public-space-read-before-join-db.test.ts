@@ -153,6 +153,7 @@ before(async () => {
 after(async () => {
   if (seeded && client) {
     const orgs = [orgId, otherOrgId];
+    await client.query('DELETE FROM project_spaces WHERE project_id IN (SELECT id FROM projects WHERE org_id=ANY($1::text[]))', [orgs]);
     for (const table of ['message_bookmarks', 'cross_references', 'audit_log', 'wiki_citations', 'wiki_pages', 'tasks', 'projects']) {
       await client.query(`DELETE FROM ${table} WHERE org_id=ANY($1::text[])`, [orgs]);
     }
@@ -451,6 +452,9 @@ test('saved messages, task sources/references, wiki citations and native display
   const project = randomUUID(), task = randomUUID(), page = randomUUID();
   await client!.query(`INSERT INTO projects(id,org_id,name,prefix) VALUES($1,$2,'Public references','PBR')`, [project, orgId]);
   await client!.query(`INSERT INTO tasks(id,org_id,project_id,number,title,created_by,source_message_id) VALUES($1,$2,$3,1,'Public source',$4,$5)`, [task, orgId, project, ids.creator, M.pub]);
+  // The project belongs to a room the guest is in, so the guest reads the task
+  // (a guest sees only the tasks of their projects, lib/task-visibility.ts).
+  await client!.query('INSERT INTO project_spaces(id,project_id,space_id) VALUES($1,$2,$3)', [randomUUID(), project, S.own]);
   await client!.query(`INSERT INTO wiki_pages(id,org_id,title,slug,type,scope,user_id,content) VALUES($1,$2,'Public citations',$3,'decision','org',$4,'{}')`, [page, orgId, `pub-${page}`, ids.creator]);
   for (const message of [M.pub, M.priv]) {
     await client!.query(`INSERT INTO cross_references(id,org_id,source_type,source_id,target_type,target_id,created_by) VALUES($1,$2,'message',$3,'task',$4,$5)`, [randomUUID(), orgId, message, task, ids.creator]);

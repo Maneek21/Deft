@@ -40,6 +40,7 @@ import { roleMustHaveSecondStep } from '../lib/two-step-policy.js';
 import { userTwoStep } from '@deft/db/two-step';
 import { closeLostRoomActionsInTx, finishLostRoomCancellations } from '../lib/lost-room-action-cancellation.js';
 import { lockRoomAccessChange } from '../lib/room-access-lock.js';
+import { guestTaskScopeSql } from '../lib/task-visibility.js';
 import {
   authorizeMembershipOperation, checkMembershipOperation, isProtectedMembership, lockMembership, MembershipGuardError, recordMembershipChange, recordPrivilege, type MembershipActor,
 } from '../lib/membership-guard.js';
@@ -562,7 +563,9 @@ function mapTaskRows(rows: Array<Record<string, unknown>>) {
   return out;
 }
 
-async function loadPeopleStats(orgId: string, userIds: string[]) {
+// `viewerId`: who reads the stats. A guest counts only the tasks they may
+// see (lib/task-visibility.ts).
+async function loadPeopleStats(orgId: string, userIds: string[], viewerId: string) {
   if (userIds.length === 0) {
     return {
       spaces: new Map<string, number>(),
@@ -598,7 +601,7 @@ async function loadPeopleStats(orgId: string, userIds: string[]) {
       total: sql<number>`count(*) filter (where ${tasks.is_deleted} = false)::int`,
     })
       .from(tasks)
-      .where(and(eq(tasks.org_id, orgId), inArray(tasks.assignee_id, userIds)))
+      .where(and(eq(tasks.org_id, orgId), inArray(tasks.assignee_id, userIds), guestTaskScopeSql(viewerId)))
       .groupBy(tasks.assignee_id),
     db.select({
       user_id: projects.lead_id,
@@ -754,7 +757,7 @@ memberRoutes.get('/directory', async (c) => {
 
     const userIds = rows.map((row) => row.member_id);
     const [stats, inviteRows] = await Promise.all([
-      loadPeopleStats(user.org_id, userIds),
+      loadPeopleStats(user.org_id, userIds, user.id),
       isAdmin ? listOrgInvites(user.org_id) : Promise.resolve([]),
     ]);
 
@@ -934,7 +937,7 @@ memberRoutes.get('/:id/detail', async (c) => {
     }
 
     const [stats, inviteRows, memberSpaces, openTasks, ledProjects, recentMcpTokens, recentOauthGrants] = await Promise.all([
-      loadPeopleStats(user.org_id, [memberId]),
+      loadPeopleStats(user.org_id, [memberId], user.id),
       isAdmin ? listOrgInvites(user.org_id) : Promise.resolve([]),
       db.select({
         id: spaces.id,
@@ -971,6 +974,7 @@ memberRoutes.get('/:id/detail', async (c) => {
           eq(tasks.assignee_id, memberId),
           eq(tasks.is_deleted, false),
           sql`${tasks.status} NOT IN ('done', 'cancelled')`,
+          guestTaskScopeSql(user.id),
         ))
         .orderBy(desc(tasks.updated_at))
         .limit(8),

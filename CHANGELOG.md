@@ -80,6 +80,44 @@ For the hosted service (`DEFT_HOSTED=true` with the seat-statement settings):
 Upgrade notes: no migration. New optional settings `DEFT_TELEMETRY` and
 `DEFT_SUPPORT_EMAIL`.
 
+### Guests see only the tasks of their projects
+
+A privacy change for every install, hosted or self-hosted, that has guests.
+
+- Guests no longer see workspace-wide tasks; they see tasks in the projects and spaces
+  they belong to. A guest sees tasks in projects they lead or belong to, and tasks that
+  name them. A guest belongs to a project linked to a room they are in (archived or not).
+  A task names them when they are its assignee, a co-assignee, its creator or a named
+  viewer. Watching a task does not count, so a guest's earlier watches on other tasks no
+  longer show them. Restricted tasks keep their own rule for guests too.
+- **Before.** On `.151` and earlier, a guest could read every workspace-wide task, its
+  comments, activity and files, as a member could.
+- **Now.** For a guest, any other task answers as if it did not exist (404, or left out of
+  a list) everywhere a task reaches a person: task lists, boards, the table, search,
+  calendar and timeline, task detail, subtasks, dependencies, comments, activity, files
+  and their downloads, project and team counts, the dashboard, member profiles, live
+  updates, notifications and the unread count, the Inbox, workflow run history, the MCP
+  task, project, search and Inbox tools, Defty's task tools and approval cards, and a
+  member-scoped workspace export made for a guest. Notifications already sent to a guest
+  about such a task are no longer shown.
+- A guest cannot comment on, edit, watch or attach a subtask to such a task. A guest also
+  cannot change who leads a project (a project's lead sees all of its tasks), create,
+  change or delete workflow rules (a rule could assign them a task), or list 1:1 preps
+  made before they became a guest. A project's task counter is not shown to a guest.
+- **Unchanged.** Owners, admins and members see exactly what they saw before. The rule
+  follows the person's active role in the workspace, never their session or token.
+- **Also, for everyone:** watching a task now needs read access to it. Before, anyone
+  signed in could watch any task by its id and, as a watcher, read it even when it was
+  restricted. A subtask created or moved through the API now needs a parent task of the
+  same workspace (a missing or other workspace's task is refused as unknown, 404).
+- **Known limits.** Task text that is published into a room reaches everyone in it,
+  guests included: Defty's replies when a member asks about other projects' tasks, and
+  the daily standup posted in #general. Clip summaries leave task context out when a
+  guest in the room cannot see the task, but a guest who joins the room later reads the
+  summary as posted. Per-viewer room messages are a later design.
+
+Upgrade notes: no migration.
+
 ### Notice: Kit `0.1.0-alpha.44` removes deprecated Email compatibility
 
 Not before 2026-11-25, and never fewer than 14 days after this notice merged.

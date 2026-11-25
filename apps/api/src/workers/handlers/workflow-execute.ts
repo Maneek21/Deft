@@ -19,6 +19,7 @@ import {
 import { eq, and } from 'drizzle-orm';
 import { emitToUser } from '../../socket.js';
 import { createNotificationIfAllowed } from '../../lib/notification-policy.js';
+import { guestTaskScopeSql } from '../../lib/task-visibility.js';
 
 interface WorkflowExecuteJobData {
   workflow_id: string;
@@ -66,6 +67,23 @@ export async function handleWorkflowExecute(job: JobData): Promise<void> {
   if (!actor_user_id || !(await isActiveMember(rule.org_id, actor_user_id))) {
     console.warn(`[workflow-execute] actor for rule ${logId(rule.id)} is not an active member; not run`);
     return;
+  }
+
+  // A rule written by a guest (before guests were refused rules, or by
+  // someone since made a guest) acts only on tasks they may see: it could
+  // otherwise assign a hidden task to them (lib/task-visibility.ts). Rules of
+  // owners, admins and members, and of authors no longer in the workspace,
+  // run as before.
+  const [author] = await db.select({ role: orgMembers.role }).from(orgMembers)
+    .where(and(eq(orgMembers.org_id, rule.org_id), eq(orgMembers.user_id, rule.created_by), eq(orgMembers.is_active, true)))
+    .limit(1);
+  if (author?.role === 'guest') {
+    const [authorSees] = await db.select({ id: tasks.id }).from(tasks)
+      .where(and(eq(tasks.id, task.id), guestTaskScopeSql(rule.created_by))).limit(1);
+    if (!authorSees) {
+      console.warn(`[workflow-execute] rule ${logId(rule.id)} was written by a guest who may not see the task; not run`);
+      return;
+    }
   }
 
   // Actions are stored either as an array on action_config.actions OR as a
@@ -165,17 +183,24 @@ export async function handleWorkflowExecute(job: JobData): Promise<void> {
             if (!dep || !dep.assignee_id) continue;
             if (dep.status === 'done' || dep.status === 'cancelled') continue;
             if (!(await isActiveMember(rule.org_id, dep.assignee_id))) continue;
+            // A guest assignee may not see the finished task (task-visibility.ts):
+            // then the note does not name it.
+            const [unblockerVisible] = await db.select({ id: tasks.id }).from(tasks)
+              .where(and(eq(tasks.id, task.id), guestTaskScopeSql(dep.assignee_id)))
+              .limit(1);
             const notif = await createNotificationIfAllowed({
               org_id: rule.org_id,
               user_id: dep.assignee_id,
               type: 'system',
               title: `Unblocked: ${dep.title}`,
-              body: `"${task.title}" is done — you can start on this now.`,
+              body: unblockerVisible
+                ? `"${task.title}" is done — you can start on this now.`
+                : 'A task blocking this one is done — you can start on this now.',
               link: `/tasks`,
               metadata: {
                 workflow_id,
                 task_id: dep.id,
-                unblocker_task_id: task.id,
+                ...(unblockerVisible ? { unblocker_task_id: task.id } : {}),
                 subtype: 'unblocked',
               },
             }, { channel: 'tasks' });

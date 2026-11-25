@@ -27,6 +27,7 @@ import { actionRequesterIdSql } from '../lib/agent-action-requester.js';
 import { OrgMembershipError, requireOrgAdminOrOwner } from '../lib/org-membership.js';
 import type { AuthUser } from '../middleware/auth.js';
 import { canSeePerson, emailFor, peopleViewer, visiblePersonIds } from '../lib/people-visibility.js';
+import { guestTaskScopeSql } from '../lib/task-visibility.js';
 
 export const teamRoutes = new Hono();
 
@@ -361,6 +362,9 @@ async function buildTeamDashboard(viewer: AuthUser, teamId: string) {
         eq(tasks.is_deleted, false),
         inArray(tasks.project_id, projectIds),
         sql`${tasks.status} not in ('done', 'cancelled')`,
+        // A guest counts and sees only the tasks of their projects and the
+        // tasks that name them (lib/task-visibility.ts).
+        guestTaskScopeSql(viewer.id),
       )
     : null;
 

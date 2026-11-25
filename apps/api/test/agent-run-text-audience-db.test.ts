@@ -226,10 +226,23 @@ test('W2a4-B2: agent presence goes out org-wide with neutral status and no error
   }
 });
 
-test('W2a4-B3: task progress goes to every socket as a neutral update; no viewer receives runtime text', async (t) => {
+/**
+ * Resolves 'none' when `pending` has not settled within a short window: the
+ * guest's socket receives no event for a task it may not read.
+ */
+async function nothingArrives(pending: Promise<unknown>): Promise<'received' | 'none'> {
+  return Promise.race([
+    pending.then(() => 'received' as const, () => 'none' as const),
+    new Promise<'none'>((resolve) => setTimeout(() => resolve('none'), 750)),
+  ]);
+}
+
+test('W2a4-B3: task progress goes to every member socket as a neutral update (a guest who cannot read the task gets none); no viewer receives runtime text', async (t) => {
   if (unavailable) return t.skip(unavailable);
   realtime ??= await startRealtime();
-  const viewers = { admin: await realtime.open(ids.admin), taskReader: await realtime.open(ids.insider), peer: await realtime.open(ids.peer), guest: await realtime.open(ids.guest) };
+  const viewers = { admin: await realtime.open(ids.admin), taskReader: await realtime.open(ids.insider), peer: await realtime.open(ids.peer) };
+  const guest = await realtime.open(ids.guest);
+  const guestReceived = guest.next('task:agent_progress', (data) => data?.task_id === taskId);
   const received = Object.entries(viewers).map(([name, viewer]) => viewer.next('task:agent_progress', (data) => data?.task_id === taskId).then((data) => [name, data] as const));
   const hono = new Hono();
   hono.route('/api/agent-channel/v1', channelRoutes!);
@@ -245,6 +258,9 @@ test('W2a4-B3: task progress goes to every socket as a neutral update; no viewer
     assert.equal(progress.status, 'started');
     assert.equal(progress.step_description, 'Agent employee activity updated');
   }
+  // The task is restricted and names no guest: a guest sees only the tasks
+  // they may read (lib/task-visibility.ts), live events included.
+  assert.equal(await nothingArrives(guestReceived), 'none', 'the guest receives no progress for a task it may not read');
 });
 
 // ── C. References taken from earlier replies ────────────────────────────
@@ -315,10 +331,12 @@ test('W2a4-E: a run row with malformed or conflicting result markers gives detai
 });
 
 // ── D. Same pattern on the remaining carriers ───────────────────────────
-test('W2a4-D1: a progress milestone reaches readers of the task through the task read; every socket gets a neutral update', async (t) => {
+test('W2a4-D1: a progress milestone reaches readers of the task through the task read; every member socket gets a neutral update, a guest who cannot read the task none', async (t) => {
   if (unavailable) return t.skip(unavailable);
   realtime ??= await startRealtime();
-  const viewers = { admin: await realtime.open(ids.admin), taskReader: await realtime.open(ids.insider), peer: await realtime.open(ids.peer), guest: await realtime.open(ids.guest) };
+  const viewers = { admin: await realtime.open(ids.admin), taskReader: await realtime.open(ids.insider), peer: await realtime.open(ids.peer) };
+  const guest = await realtime.open(ids.guest);
+  const guestReceived = guest.next('task:agent_progress', (data) => data?.task_id === taskId);
   const received = Object.entries(viewers).map(([name, viewer]) => viewer.next('task:agent_progress', (data) => data?.task_id === taskId).then((data) => [name, data] as const));
   const { recordProgress } = await import('../src/lib/mcp-tools/cooperative.js');
   const result = await recordProgress({ summary: 'CANARY-MILESTONE drafted the plan', status: 'working', idempotency_key: `w2a4-${randomUUID()}` }, {
@@ -330,6 +348,7 @@ test('W2a4-D1: a progress milestone reaches readers of the task through the task
     assert.deepEqual(canaries(JSON.stringify(progress)), [], `${name} receives no milestone text over the org room`);
     assert.deepEqual(Object.keys(progress).sort(), NEUTRAL_PROGRESS_KEYS);
   }
+  assert.equal(await nothingArrives(guestReceived), 'none', 'the guest receives no progress for a task it may not read');
   // The task read is the reader's source of the step text (what the strip refetches).
   const taskRoutes = (await import('../src/routes/tasks.js')).taskRoutes;
   const readTask = (viewerId: string) => {
