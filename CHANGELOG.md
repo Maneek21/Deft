@@ -48,7 +48,11 @@ For the hosted service (`DEFT_HOSTED=true` with the seat-statement settings):
   person's text, a category and "Email me about this report", sent to the Deft team
   with the release, the page (as a template), the browser family and recent error
   references. The person gets a short reference, or is told it was not sent.
-- `/api/metrics` adds `deft_telemetry_error_events_total`,
+- A heartbeat: shortly after start and then about hourly, the cell sends the control plane
+  its cell ID, release, how many seats are in use (counted exactly as the seat limit counts
+  them: guests and agents never count) and the time, so seats used can be shown against
+  seats paid. Nothing else. `DEFT_TELEMETRY=off` stops it too.
+- `/api/metrics` adds `deft_telemetry_heartbeats_total`, `deft_telemetry_error_events_total`,
   `deft_telemetry_error_batches_total` and `deft_telemetry_install_pings_total`.
 
 Upgrade notes: no migration. New optional settings `DEFT_TELEMETRY` and

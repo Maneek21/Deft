@@ -44,6 +44,10 @@ const server = serve({ fetch: app.fetch, port }, async (info) => {
   // A no-op unless hosted mode is on and this process is not paused.
   const { startSeatStatementRefresher } = await import('./lib/seat-limit.js');
   startSeatStatementRefresher();
+  // Hosted cells tell the control plane they are up, with their seats in use
+  // (lib/telemetry/heartbeat.ts). A no-op everywhere else.
+  const { startCellHeartbeat } = await import('./lib/telemetry/heartbeat.js');
+  startCellHeartbeat();
 
   // Historical MCP connection forms wrote credentials into a JSONB column in
   // plaintext. Encrypt those rows before any worker can construct a runtime
@@ -110,6 +114,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   shuttingDown = true;
   workerStartup.stop();
   void import('./lib/seat-limit.js').then(({ stopSeatStatementRefresher }) => stopSeatStatementRefresher());
+  void import('./lib/telemetry/heartbeat.js').then(({ stopCellHeartbeat }) => stopCellHeartbeat());
   console.log(`[shutdown] ${logSignal(signal)} received; draining HTTP and job workers`);
 
   const httpServer = server as unknown as Server;

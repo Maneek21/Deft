@@ -16,11 +16,13 @@ import { db } from '../lib/db.js';
 import { collectMetrics } from '../lib/otel-metrics.js';
 import { errorTelemetryCounters } from '../lib/telemetry/error-reporter.js';
 import { installPingCounters } from '../lib/telemetry/install-ping.js';
+import { heartbeatCounters } from '../lib/telemetry/heartbeat.js';
 
 /** Telemetry's local counters (lib/telemetry): what was sent and what was dropped. Numbers only. */
 export function telemetryMetricsText(): string {
   const errors = errorTelemetryCounters();
   const ping = installPingCounters();
+  const heartbeat = heartbeatCounters();
   const lines = [
     '# HELP deft_telemetry_error_events_total Hosted error events, by outcome.',
     '# TYPE deft_telemetry_error_events_total counter',
@@ -35,6 +37,10 @@ export function telemetryMetricsText(): string {
     '# TYPE deft_telemetry_install_pings_total counter',
     `deft_telemetry_install_pings_total{outcome="sent"} ${ping.sent}`,
     `deft_telemetry_install_pings_total{outcome="failed"} ${ping.failed}`,
+    '# HELP deft_telemetry_heartbeats_total Hosted cell heartbeats, by outcome.',
+    '# TYPE deft_telemetry_heartbeats_total counter',
+    `deft_telemetry_heartbeats_total{outcome="sent"} ${heartbeat.sent}`,
+    `deft_telemetry_heartbeats_total{outcome="failed"} ${heartbeat.failed}`,
   ];
   return `${lines.join('\n')}\n`;
 }
