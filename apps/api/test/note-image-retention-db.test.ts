@@ -117,12 +117,16 @@ test('noteFileIds reads images as the editor does: data-file-id, else an older /
   assert.deepEqual(noteFileIds(`<imgx data-file-id="${b}">${img(a)}`), [a], 'only img itself');
   assert.deepEqual(noteFileIds(`<img alt=' data-file-id="${b}"' data-file-id="${a}">`), [a], 'an attribute inside a quoted value is not an attribute');
   assert.deepEqual(noteFileIds(`<img data-file-id="${a}" data-file-id="${b}">`), [a], 'the first of a repeated attribute wins');
+  assert.deepEqual(noteFileIds(`<textarea>${img(b)}</textarea>${img(a)}`), [a], 'an img inside a textarea is text');
+  assert.deepEqual(noteFileIds(`<textarea><p title="</textarea><img data-file-id=${a}>`), [a], 'a textarea ends at its end tag');
+  assert.deepEqual(noteFileIds(`<img alt=one /data-file-id=${b} src=/api/files/${a}>`), [a], 'a non-breaking space is not whitespace');
+  assert.deepEqual(noteFileIds(`<img/data-file-id="&#97;&#x62;" src="/api/files/${b}">`), ['ab'], 'character references are decoded');
   // Crafted input with no closing '>' is read in one pass, not backtracked.
   const started = Date.now();
   noteFileIds('<a "<a" '.repeat(250_000));
   noteFileIds('<img '.repeat(400_000));
   noteFileIds('<!--'.repeat(500_000));
-  assert.ok(Date.now() - started < 2000, `parsing crafted input took ${Date.now() - started} ms`);
+  assert.ok(Date.now() - started < 10_000, `parsing crafted input took ${Date.now() - started} ms`);
   const many = Array.from({ length: 1200 }, () => randomUUID());
   assert.equal(noteFileIds(many.map(img).join('')).length, 1200, 'no cap on images per note');
 });

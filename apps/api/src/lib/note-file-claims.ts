@@ -26,16 +26,33 @@ import type { db } from './db.js';
 
 const CLAIM_BATCH = 500;
 const FILE_ID = /^[A-Za-z0-9_-]{1,64}$/;
-const SPACE = /[\s/]/;
-const TAG_END = /[\s/>]/;
+// HTML whitespace is ASCII only (a non-breaking space is not whitespace).
+const WS = /[\t\n\f\r ]/;
+const SPACE = /[\t\n\f\r /]/;
+const TAG_END = /[\t\n\f\r />]/;
+const NAME_END = /[\t\n\f\r />=]/;
+const UNQUOTED_END = /[\t\n\f\r >]/;
+// Elements whose content a browser reads as text up to their end tag.
+const RAW_TEXT = new Set(['textarea', 'title', 'script', 'style', 'xmp', 'iframe', 'noembed', 'noframes', 'noscript']);
+const NAMED_REFS: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+
+/** An attribute value with its character references decoded, as a browser reads it. */
+function decodeReferences(value: string): string {
+  return value.replace(/&(?:#(\d{1,7})|#[xX]([0-9A-Fa-f]{1,6})|([A-Za-z]{2,8}));?/g, (whole, dec, hex, named) => {
+    if (named) return NAMED_REFS[named] ?? whole;
+    const code = dec ? Number(dec) : parseInt(hex, 16);
+    return code > 0 && code <= 0x10ffff && (code < 0xd800 || code > 0xdfff) ? String.fromCodePoint(code) : '�';
+  });
+}
 
 /**
  * The attributes of every <img> start tag in `html`, read in one forward
  * pass (no regular expression can backtrack on a long note). Comments are
- * skipped (an unclosed one runs to the end, as a browser reads it), and
- * every other start tag is read whole, so a quoted value never starts a tag
- * or a comment. Values are as written (entities not decoded); the first of
- * a repeated attribute wins, as in a browser.
+ * skipped (an unclosed one runs to the end, as a browser reads it), the
+ * content of text-only elements such as <textarea> is skipped to their end
+ * tag, and every other start tag is read whole, so a quoted value never
+ * starts a tag or a comment. Values have character references decoded; the
+ * first of a repeated attribute wins, as in a browser.
  */
 function imageTags(html: string): Array<Map<string, string>> {
   const images: Array<Map<string, string>> = [];
@@ -52,7 +69,7 @@ function imageTags(html: string): Array<Map<string, string>> {
     if (!/[A-Za-z]/.test(html[open + 1] ?? '')) { i = open + 1; continue; }
     let j = open + 1;
     while (j < html.length && !TAG_END.test(html[j]!)) j++;
-    const isImg = html.slice(open + 1, j).toLowerCase() === 'img';
+    const tagName = html.slice(open + 1, j).toLowerCase();
     const attrs = new Map<string, string>();
     let ended = false;
     while (j < html.length) {
@@ -60,13 +77,13 @@ function imageTags(html: string): Array<Map<string, string>> {
       if (ch === '>') { ended = true; j++; break; }
       if (SPACE.test(ch)) { j++; continue; }
       const nameStart = j;
-      while (j < html.length && !/[\s/>=]/.test(html[j]!)) j++;
+      while (j < html.length && !NAME_END.test(html[j]!)) j++;
       const name = html.slice(nameStart, j).toLowerCase();
-      while (j < html.length && /\s/.test(html[j]!)) j++;
+      while (j < html.length && WS.test(html[j]!)) j++;
       let value = '';
       if (html[j] === '=') {
         j++;
-        while (j < html.length && /\s/.test(html[j]!)) j++;
+        while (j < html.length && WS.test(html[j]!)) j++;
         const quote = html[j];
         if (quote === '"' || quote === "'") {
           const close = html.indexOf(quote, j + 1);
@@ -75,14 +92,22 @@ function imageTags(html: string): Array<Map<string, string>> {
           j = close + 1;
         } else {
           const valueStart = j;
-          while (j < html.length && !/[\s>]/.test(html[j]!)) j++;
+          while (j < html.length && !UNQUOTED_END.test(html[j]!)) j++;
           value = html.slice(valueStart, j);
         }
       }
-      if (name && !attrs.has(name)) attrs.set(name, value);
+      if (name && !attrs.has(name)) attrs.set(name, decodeReferences(value));
     }
     if (!ended) break;
-    if (isImg) images.push(attrs);
+    if (tagName === 'img') images.push(attrs);
+    if (tagName === 'plaintext') break;
+    if (RAW_TEXT.has(tagName)) {
+      const endTag = new RegExp(`</${tagName}(?=[\\t\\n\\f\\r />])`, 'gi');
+      endTag.lastIndex = j;
+      const end = endTag.exec(html);
+      if (!end) break;
+      j = end.index;
+    }
     i = j;
   }
   return images;
@@ -92,7 +117,7 @@ function imageTags(html: string): Array<Map<string, string>> {
 function fileIdFromLegacyUrl(value: string | null): string | null {
   if (!value) return null;
   try {
-    const url = new URL(value.replace(/&amp;/g, '&'), 'http://deft.invalid');
+    const url = new URL(value, 'http://deft.invalid');
     const match = url.pathname.match(/^\/api\/files\/([^/]+)$/);
     return match ? decodeURIComponent(match[1]!) : null;
   } catch {
