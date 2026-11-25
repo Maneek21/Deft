@@ -1,0 +1,160 @@
+/**
+ * Planning the document and drive access checks costs a database backend a
+ * few MB, in every form the surfaces use them (spec 5.2; consult S-F4).
+ *
+ * Why: PostgreSQL plans every branch of a condition whatever the row, and the
+ * backend keeps the memory it grew to until its connection closes. An
+ * oversized condition ran a 512 MB database machine out of memory in
+ * releases 145 to 149 (attention-visibility-narrowing-db.test.ts).
+ *
+ * Each form is planned by a fresh backend (planningGrowth, JIT off as the
+ * API's connections run) in workspaces of 10, 50 and 200 documents
+ * (setupDrivesFixture's `documents`), after ANALYZE. Budget for each: under
+ * 24 MB of private memory and under 48 MB of peak resident size. The measured
+ * values are printed as diagnostics. Skipped where the test database does not
+ * let a session read /proc/self/status (CI's does, and fails instead).
+ */
+import assert from 'node:assert/strict';
+import test, { after, before, type TestContext } from 'node:test';
+import { and, desc, eq, ilike, or, sql, type SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { documents, drives } from '@deft/db/documents';
+import { attentionItems } from '@deft/db/schema';
+import { closeDb, db } from '../src/lib/db.js';
+import {
+  adminListedDriveCondition,
+  documentRoleQuery,
+  driveRoleQuery,
+  spaceMembersWhoCannotOpenQuery,
+  visibleDocumentCondition,
+  visibleDocumentIdSql,
+  visibleDriveCondition,
+} from '../src/lib/document-access.js';
+import { setupDrivesFixture, type DrivesFixture } from './fixtures/drives-fixture.js';
+import { planningGrowth, type Growth } from './fixtures/planning-growth.js';
+import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
+
+const url = safeTestDatabaseUrl();
+const SIZES = [10, 50, 200] as const;
+const ANON_MB = 24;
+const PEAK_MB = 48;
+type Statement = { sql: string; params: unknown[] };
+const query = (statement: SQL): Statement => new PgDialect().sqlToQuery(statement);
+let unavailable = url ? '' : 'Set DEFT_TEST_DATABASE_URL to a disposable test database';
+
+before(async () => {
+  if (unavailable) return;
+  if (await planningGrowth({ sql: 'SELECT 1', params: [] }) === null) {
+    unavailable = 'this test database does not let a session read /proc/self/status';
+  }
+});
+
+after(async () => {
+  await closeDb();
+});
+
+const mb = (kb: number) => Math.round(kb / 1024);
+
+/**
+ * Plans each form at each workspace size and asserts the budget. The forms
+ * are built against a fresh fixture of that size, ANALYZEd so the planner
+ * sees its rows, then torn down.
+ */
+async function withinBudget(t: TestContext, forms: (fx: DrivesFixture) => Promise<Array<[string, Statement]>>): Promise<void> {
+  const measured: Array<[string, number, Growth]> = [];
+  for (const size of SIZES) {
+    const fx = await setupDrivesFixture(`planning-${size}`, { documents: size });
+    try {
+      // An Inbox item for each document, as F9's document_shared items are.
+      await fx.client.query(`INSERT INTO attention_items (id, org_id, user_id, kind, lane, dedupe_key, source_type, source_id, title)
+        SELECT gen_random_uuid()::text, org_id, $2, 'document_shared', 'updates', 'document_shared:' || id || ':' || $2, 'document', id, title
+        FROM documents WHERE org_id = $1`, [fx.orgId, fx.people.member]);
+      await fx.client.query(`ANALYZE drives, drive_members, doc_folders, documents, document_shares, spaces, space_members,
+        org_members, users, agent_employees, attention_items`);
+      for (const [name, statement] of await forms(fx)) {
+        const growth = await planningGrowth(statement);
+        assert.ok(growth, `${name}: measured`);
+        measured.push([name, size, growth]);
+      }
+    } finally {
+      await fx.teardown();
+    }
+  }
+  t.diagnostic(`backend growth planning (private / peak MB): ${measured
+    .map(([name, size, growth]) => `${name} at ${size} documents ${mb(growth.anon)} / ${mb(growth.peak)}`).join('; ')}`);
+  for (const [name, size, growth] of measured) {
+    assert.ok(growth.anon < ANON_MB * 1024, `${name} at ${size} documents, private memory: ${growth.anon} kB`);
+    assert.ok(growth.peak < PEAK_MB * 1024, `${name} at ${size} documents, peak: ${growth.peak} kB`);
+  }
+}
+
+test('the document access check plans within budget', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  await withinBudget(t, async (fx) => {
+    const { member } = fx.people;
+    const [document] = await db.select({ id: documents.id }).from(documents).where(eq(documents.org_id, fx.orgId)).limit(1);
+    return [
+      // A list of documents (a drive's tree, recent documents).
+      ['document list', db.select({ id: documents.id, title: documents.title }).from(documents)
+        .where(and(eq(documents.drive_id, fx.workspaceDriveId), visibleDocumentCondition(member, fx.orgId)))
+        .orderBy(desc(documents.updated_at)).limit(200).toSQL()],
+      ['document list, at least edit', db.select({ id: documents.id }).from(documents)
+        .where(visibleDocumentCondition(member, fx.orgId, 'edit')).limit(200).toSQL()],
+      // The role of one document, on every request and live-editing connection.
+      ['documentRoleFor', query(documentRoleQuery(member, fx.orgId, document!.id))],
+      // Who in a chat can't open a document (the posting prompt).
+      ['spaceMembersWhoCannotOpen', query(spaceMembersWhoCannotOpenQuery(fx.orgId, fx.spaces.team, document!.id))],
+    ];
+  });
+});
+
+test('the drive list plans within budget', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  await withinBudget(t, async (fx) => {
+    const { admin, member } = fx.people;
+    return [
+      // GET /api/drives: the drives a person can open, plus the private drives an owner or admin sees listed.
+      ['drive list', db.select({ id: drives.id, name: drives.name }).from(drives)
+        .where(or(visibleDriveCondition(admin, fx.orgId), adminListedDriveCondition(admin, fx.orgId))).orderBy(drives.name).toSQL()],
+      ['drive list, at least edit', db.select({ id: drives.id }).from(drives).where(visibleDriveCondition(member, fx.orgId, 'edit')).toSQL()],
+      ['driveRoleFor', query(driveRoleQuery(member, fx.orgId, fx.workspaceDriveId))],
+    ];
+  });
+});
+
+test('the attention, export and retrieval forms plan within budget', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  await withinBudget(t, async (fx) => {
+    const { member } = fx.people;
+    const words = 'seed document';
+    return [
+      // The Inbox rule for document items (F9): the item's workspace and document are columns of the statement.
+      ['attention items', db.select({ id: attentionItems.id }).from(attentionItems).where(and(
+        eq(attentionItems.org_id, fx.orgId), eq(attentionItems.user_id, member), eq(attentionItems.source_type, 'document'),
+        visibleDocumentIdSql(member, sql`${attentionItems.org_id}`, sql`${attentionItems.source_id}`),
+      )).orderBy(desc(attentionItems.last_event_at)).limit(50).toSQL()],
+      // A member's workspace export (F17): every dataset filtered by the document id of its rows.
+      ['export documents', query(sql`SELECT export_document.id, export_document.drive_id, export_document.folder_id,
+          export_document.parent_document_id, export_document.title, export_document.content_json,
+          export_document.created_at, export_document.updated_at
+        FROM documents export_document
+        WHERE export_document.org_id = ${fx.orgId} AND export_document.is_deleted = false
+          AND ${visibleDocumentIdSql(member, fx.orgId, sql`export_document.id`)}
+        ORDER BY export_document.created_at, export_document.id`)],
+      ['export shares', query(sql`SELECT share.document_id, share.principal_type, share.principal_id, share.role, share.created_at
+        FROM document_shares share
+        WHERE share.org_id = ${fx.orgId} AND share.principal_type = 'user' AND share.principal_id = ${member}
+          AND ${visibleDocumentIdSql(member, fx.orgId, sql`share.document_id`)}
+        ORDER BY share.document_id, share.created_at, share.id`)],
+      // Defty's retrieval (retrieveContext's documents until H2) and search's documents group.
+      ['retrieval', db.select({ id: documents.id, title: documents.title, text: documents.content_text }).from(documents).where(and(
+        eq(documents.org_id, fx.orgId), eq(documents.is_deleted, false), visibleDocumentCondition(member, fx.orgId),
+        or(ilike(documents.title, `%${words}%`), ilike(documents.content_text, `%${words}%`)),
+      )).limit(10).toSQL()],
+      ['search', db.select({ id: documents.id, title: documents.title }).from(documents).where(and(
+        eq(documents.org_id, fx.orgId), visibleDocumentCondition(member, fx.orgId),
+        sql`${documents.search_vector} @@ websearch_to_tsquery('simple', ${words})`,
+      )).orderBy(sql`ts_rank(${documents.search_vector}, websearch_to_tsquery('simple', ${words})) DESC`).limit(10).toSQL()],
+    ];
+  });
+});

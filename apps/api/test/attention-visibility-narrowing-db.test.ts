@@ -59,6 +59,7 @@ import {
   writeAttentionWithSourceTypes,
   type AttentionSourceScope,
 } from '../src/lib/attention.js';
+import { planningGrowth as statementPlanningGrowth, type Growth } from './fixtures/planning-growth.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 
 const url = safeTestDatabaseUrl();
@@ -835,42 +836,14 @@ test('viewerReviewAuthority answers the same for an action whether or not the pa
   assert.ok(canApprove > 0, `some viewer may approve on a narrowed page (${canApprove})`);
 });
 
-type Growth = { anon: number; peak: number };
-
 /**
- * How much a fresh backend grows (kB) planning `statement` (by default the
- * Inbox rule narrowed to `scope`): its private memory (`RssAnon`, which the
- * backend keeps after the statement) and its peak resident size (`VmHWM`,
- * which also counts the shared catalog pages a new backend reads). Null when
- * the session cannot read /proc.
- *
- * With JIT off, as the API's connections run (lib/db.ts): on a database with
- * rows and statistics the estimated cost of these statements passes
- * jit_above_cost, and even a plain EXPLAIN then sets up JIT compilation,
- * which adds ~50 MB that has nothing to do with planning.
+ * How much a fresh backend grows planning `statement` (fixtures/planning-growth.ts),
+ * by default the Inbox rule narrowed to `scope` over the member's items.
  */
-async function planningGrowth(scope: AttentionSourceScope, statement?: { sql: string; params: unknown[] }): Promise<Growth | null> {
-  const backend = new pg.Client({ connectionString: url, connectionTimeoutMillis: 3000 });
-  await backend.connect();
-  try {
-    await backend.query('SET jit = off');
-    const read = async (): Promise<Growth | null> => {
-      const { rows } = await backend.query(`SELECT substring(s from 'RssAnon:\\s*([0-9]+)')::int AS anon,
-        substring(s from 'VmHWM:\\s*([0-9]+)')::int AS peak FROM pg_read_file('/proc/self/status') s`);
-      return rows[0]?.anon == null || rows[0]?.peak == null ? null : { anon: rows[0].anon, peak: rows[0].peak };
-    };
-    let before: Growth | null;
-    try { before = await read(); } catch (error) { if (inCi) throw error; return null; }
-    if (before == null) { if (inCi) throw new Error('/proc/self/status gave no RssAnon or VmHWM'); return null; }
-    const query = statement ?? db.select({ id: attentionItems.id }).from(attentionItems).where(and(
-      eq(attentionItems.org_id, orgId), eq(attentionItems.user_id, people.member), visibleAttentionCondition(people.member, scope),
-    )).toSQL();
-    await backend.query(`EXPLAIN ${query.sql}`, query.params);
-    const afterPlanning = (await read())!;
-    return { anon: afterPlanning.anon - before.anon, peak: afterPlanning.peak - before.peak };
-  } finally {
-    await backend.end();
-  }
+function planningGrowth(scope: AttentionSourceScope, statement?: { sql: string; params: unknown[] }): Promise<Growth | null> {
+  return statementPlanningGrowth(statement ?? db.select({ id: attentionItems.id }).from(attentionItems).where(and(
+    eq(attentionItems.org_id, orgId), eq(attentionItems.user_id, people.member), visibleAttentionCondition(people.member, scope),
+  )).toSQL());
 }
 
 test('planning the rule for message items costs a backend a few MB, not the whole rule', async (t) => {
