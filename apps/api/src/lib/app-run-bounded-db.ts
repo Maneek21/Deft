@@ -2,6 +2,7 @@ import { handleDatabaseConnectionErrors } from './database-connection-errors.js'
 import { drizzle } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
 import type { AppRunTransaction } from './app-run-repository.js';
+import { DATABASE_POOL_RECYCLING } from './database-pool-recycling.js';
 
 export const APP_RUN_TRANSACTION_LIMITS = Object.freeze({ budget_ms: 10_000,
   acquisition_ms: 250, lock_ms: 250, statement_ms: 2_000 });
@@ -9,6 +10,10 @@ export const APP_RUN_TRANSACTION_LIMITS = Object.freeze({ budget_ms: 10_000,
 /** Dedicated bounded capacity; ordinary workers keep their pool. */
 export function createBoundedAppRunDatabase(connectionString: string, options: { max: number; application_name: string; min?: number }) {
   const pool = new pg.Pool({ connectionString, max: options.max,
+    // A pool that keeps a connection open on purpose (`min`, the run maintenance
+    // pool) keeps it: pg-pool closes a connection for age even below `min` and
+    // does not open another, so it would lose the connection it keeps.
+    ...(options.min ? { ...DATABASE_POOL_RECYCLING, maxLifetimeSeconds: 0 } : DATABASE_POOL_RECYCLING),
     min: options.min ?? 0,
     connectionTimeoutMillis: APP_RUN_TRANSACTION_LIMITS.acquisition_ms,
     statement_timeout: APP_RUN_TRANSACTION_LIMITS.statement_ms,

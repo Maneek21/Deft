@@ -6,6 +6,7 @@ import * as schema from '@deft/db/schema';
 import { env } from './env.js';
 import { ExperienceExposureBusyError } from './app-experience-exposure-db-error.js';
 import { APP_DATABASE_POOL_BUDGET } from './app-database-pool-budget.js';
+import { DATABASE_POOL_RECYCLING } from './database-pool-recycling.js';
 
 export const APP_EXPERIENCE_EXPOSURE_DB_LIMITS = Object.freeze({
   connections: APP_DATABASE_POOL_BUDGET.experience_read,
@@ -36,6 +37,7 @@ export function createExperienceExposureDatabase(connectionString: string) {
   const pool = new pg.Pool({
     ...poolOptions,
     max: APP_EXPERIENCE_EXPOSURE_DB_LIMITS.connections,
+    ...DATABASE_POOL_RECYCLING,
     application_name: 'deft-experience-exposure',
   });
   // Reads can hold both ordinary slots longer than the acquisition timeout.
@@ -44,6 +46,7 @@ export function createExperienceExposureDatabase(connectionString: string) {
   const humanActionPool = new pg.Pool({
     ...poolOptions,
     max: APP_EXPERIENCE_EXPOSURE_DB_LIMITS.human_action_connections,
+    ...DATABASE_POOL_RECYCLING,
     application_name: 'deft-experience-human-action',
   });
   handleDatabaseConnectionErrors(pool);

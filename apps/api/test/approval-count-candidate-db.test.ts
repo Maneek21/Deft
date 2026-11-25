@@ -305,14 +305,29 @@ async function statementsOf(run: () => Promise<unknown>): Promise<Statement[]> {
   return seen;
 }
 
-/** The gate starting as the THEN arm of a CASE whose WHEN is a subquery (the candidate test). */
-const GUARDED_GATE = /CASE WHEN \(SubPlan \d+\) THEN \(\(agent_actions\.org_id = [^)]+\) AND \(\(agent_actions\.source IS DISTINCT FROM 'defty_capture'/g;
+/** Text that ends where the gate is the THEN arm of a CASE whose WHEN is a subquery (the candidate test). */
+const GUARDED_GATE = /CASE WHEN \(SubPlan \d+\) THEN $/;
+
+/**
+ * Where the review gate (`reviewGateSql`) is in an EXPLAIN filter: the
+ * parenthesized expression that ends with its last part, the subquery over the
+ * user and the assignees (`COALESCE((SubPlan n), false)`).
+ */
+function reviewGateIn(filter: string): { start: number; end: number } | null {
+  const last = [...filter.matchAll(/COALESCE\(\(SubPlan \d+\), false\)/g)].at(-1);
+  if (!last) return null;
+  const close = last.index! + last[0].length;
+  for (let at = close, depth = 0; at >= 0; at -= 1) {
+    if (filter[at] === ')') depth += 1;
+    else if (filter[at] === '(' && --depth === 0) return { start: at, end: close + 1 };
+  }
+  return null;
+}
 
 /**
  * Largest number of times a subquery of the review gate ran (the subplans named
- * in the agent_actions filter after the gate's first test, its capture-room
- * check, the last one in the filter), and whether the gate in the filter sits
- * behind the candidate test.
+ * in the gate's part of the agent_actions filter), and whether the gate in the
+ * filter sits behind the candidate test.
  */
 async function reviewGateLoops(statement: Statement): Promise<{ loops: number; guarded: boolean }> {
   const plan = (await q(`EXPLAIN (ANALYZE, VERBOSE, FORMAT JSON) ${statement.text}`, statement.values)).rows[0]['QUERY PLAN'][0];
@@ -322,11 +337,10 @@ async function reviewGateLoops(statement: Statement): Promise<{ loops: number; g
   const walk = (node: any, main: boolean) => {
     if (main && node.Alias === 'agent_actions' && typeof node.Filter === 'string') {
       const filter: string = node.Filter;
-      const start = filter.lastIndexOf("IS DISTINCT FROM 'defty_capture'");
-      assert.ok(start >= 0, 'the filter holds the review gate');
-      for (const match of filter.slice(start).matchAll(/SubPlan (\d+)/g)) named.add(`SubPlan ${match[1]}`);
-      guarded = [...filter.matchAll(GUARDED_GATE)].some((match) => match.index! + match[0].length
-        === start + "IS DISTINCT FROM 'defty_capture'".length);
+      const gate = reviewGateIn(filter);
+      assert.ok(gate, 'the filter holds the review gate');
+      for (const match of filter.slice(gate.start, gate.end).matchAll(/SubPlan (\d+)/g)) named.add(`SubPlan ${match[1]}`);
+      guarded = GUARDED_GATE.test(filter.slice(0, gate.start));
     }
     if (node['Subplan Name']) loops.set(node['Subplan Name'], Math.max(loops.get(node['Subplan Name']) ?? 0, node['Actual Loops'] ?? 0));
     for (const child of node.Plans ?? []) walk(child, main && !['SubPlan', 'InitPlan'].includes(child['Parent Relationship']));

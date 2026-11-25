@@ -4,6 +4,7 @@ import pg from 'pg';
 import * as schema from '@deft/db/schema';
 import { env } from './env.js';
 import { APP_DATABASE_POOL_BUDGET } from './app-database-pool-budget.js';
+import { DATABASE_POOL_RECYCLING } from './database-pool-recycling.js';
 
 export const APP_AUTOMATION_SCAN_DB_LIMITS = Object.freeze({
   connections: APP_DATABASE_POOL_BUDGET.automation_scan,
@@ -23,6 +24,7 @@ export function createAppAutomationScanDatabase(connectionString: string) {
   const pool = new pg.Pool({
     connectionString,
     max: APP_AUTOMATION_SCAN_DB_LIMITS.connections,
+    ...DATABASE_POOL_RECYCLING,
     connectionTimeoutMillis: APP_AUTOMATION_SCAN_DB_LIMITS.acquisition_ms,
     statement_timeout: APP_AUTOMATION_SCAN_DB_LIMITS.statement_ms,
     lock_timeout: APP_AUTOMATION_SCAN_DB_LIMITS.lock_ms,
