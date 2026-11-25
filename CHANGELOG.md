@@ -93,6 +93,16 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
 
 ### Fixed
 
+- **Changing a project's lead.** A project's lead sees all of its tasks, restricted ones
+  included, and any member could make themselves lead of an existing project. Now only an
+  owner, an admin or the project's current lead can change it (`PATCH /api/projects/:id`
+  and the MCP tool `project_update`); anyone else gets `403 FORBIDDEN`, as guests already
+  did. Members still set a lead when creating a project, and still edit a project's other
+  fields. A member who leads no project can no longer give a lead to a project that has
+  none; an owner or admin can.
+- **Workflow rules.** A rule's `assign_to` action no longer assigns a task to someone who
+  may not already see it (a restricted task not naming them), whoever wrote or edited the
+  rule; the run records the action as not done.
 - **Restricted tasks.** A task restricted to named people could be seen by other members
   and admins in a project's task list and a team dashboard's top tasks; fixed. This was so
   in 152 and earlier (since restricted tasks were added). Other places that showed such a

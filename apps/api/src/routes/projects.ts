@@ -4,11 +4,12 @@ import { eq, and, desc, gt, sql, inArray, isNull } from 'drizzle-orm';
 import { loadMessageForMember } from '../lib/space-membership.js';
 import { db } from '../lib/db.js';
 import { nativeCreate, nativeCreateKey, NativeCreateError } from '../lib/native-create.js';
-import { projects, tasks, taskLabels, labels, users, taskActivity } from '@deft/db/schema';
+import { orgMembers, projects, tasks, taskLabels, labels, users, taskActivity } from '@deft/db/schema';
 import { emitToUser, emitOrgTaskEvent } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { taskAliasColumns, visibleTaskCondition, visibleTaskSql } from '../lib/task-visibility.js';
 import { peopleViewer } from '../lib/people-visibility.js';
+import { leadChangeWriteCondition, projectLeadChangeRefusal } from '../lib/project-lead.js';
 import { withoutHiddenParent } from '../lib/task-parent-projection.js';
 import {
   getProjectResolvedConfig,
@@ -318,17 +319,39 @@ projectRoutes.patch('/:id', async (c) => {
       return c.json(guestEditor ? { ...existing, task_counter: null } : existing);
     }
 
-    // A project's lead reads all of its tasks, so a guest, who sees only the
-    // tasks of their projects (lib/task-visibility.ts), cannot change who
-    // leads one. The role is read from org_members, not the session.
-    if (updates.lead_id !== undefined && updates.lead_id !== existing.lead_id && guestEditor) {
-      return c.json({ error: 'A guest cannot change a project lead', code: 'FORBIDDEN' }, 403);
+    // A project's lead reads all of its tasks, restricted ones included
+    // (lib/task-visibility.ts), so only an owner, an admin or the current
+    // lead may change who leads it, and never a guest (lib/project-lead.ts).
+    // An unchanged lead is not written, so a stale form never puts back a
+    // lead someone else has since changed. A change is applied only while the
+    // lead is still the one it was authorized against (409 otherwise). A
+    // blank lead id means no lead.
+    if (typeof updates.lead_id === 'string' && !updates.lead_id.trim()) updates.lead_id = null;
+    const leadChanging =updates.lead_id !== undefined && (updates.lead_id ?? null) !== existing.lead_id;
+    if (updates.lead_id !== undefined && !leadChanging) delete updates.lead_id;
+    if (leadChanging) {
+      const refusal = await projectLeadChangeRefusal(user.org_id, user.id, existing.lead_id);
+      if (refusal) return c.json(refusal, 403);
+      // The new lead is an active member of this workspace.
+      if (updates.lead_id) {
+        const [newLead] = await db.select({ id: orgMembers.id }).from(orgMembers)
+          .where(and(eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, updates.lead_id), eq(orgMembers.is_active, true))).limit(1);
+        if (!newLead) return c.json({ error: 'The lead must be an active member of this workspace', code: 'VALIDATION_ERROR' }, 400);
+      }
+    }
+    if (Object.keys(updates).length === 0) {
+      return c.json(guestEditor ? { ...existing, task_counter: null } : existing);
     }
 
     const [updated] = await db.update(projects)
       .set(updates)
-      .where(eq(projects.id, projectId))
+      .where(and(eq(projects.id, projectId), leadChanging ? leadChangeWriteCondition(user.org_id, user.id, existing.lead_id) : undefined))
       .returning();
+    if (!updated) {
+      const refusal = await projectLeadChangeRefusal(user.org_id, user.id, existing.lead_id);
+      if (refusal) return c.json(refusal, 403);
+      return c.json({ error: 'The project lead changed meanwhile; reload and try again', code: 'CONFLICT' }, 409);
+    }
 
     return c.json(guestEditor ? { ...updated, task_counter: null } : updated);
   } catch (err) {
