@@ -171,8 +171,8 @@ before(async () => {
     actionByTitle.set(String(params.title), id);
     return id;
   };
-  const assign =(actionId: string, user: string, decision = 'pending') => q(
-    'INSERT INTO agent_action_approvers(id,org_id,action_id,user_id,decision) VALUES($1,$2,$3,$4,$5)', [randomUUID(), orgId, actionId, user, decision]);
+  const assign = (actionId: string, user: string, decision = 'pending', org = orgId) => q(
+    'INSERT INTO agent_action_approvers(id,org_id,action_id,user_id,decision) VALUES($1,$2,$3,$4,$5)', [randomUUID(), org, actionId, user, decision]);
   await action(people.member, messagesByRoom[rooms.priv]!, { title: 'from the private room' });
   await action(people.guest, messagesByRoom[rooms.pubGuest]!, { title: 'from the guest public room' });
   await action(people.member, null, { title: 'no room' });
@@ -192,7 +192,15 @@ before(async () => {
   await assign(await action(people.removed, messagesByRoom[rooms.adminOnly]!, { title: 'assignee outside the room' }), people.owner);
   await assign(await action(people.removed, null, { title: 'departed requester, assigned to the admin' }), people.admin, 'rejected');
   await assign(await action(people.member, null, { title: 'requester assigned, decided' }), people.member, 'approved');
-  await assign(await action(people.member, null, { title: 'requester and an admin assigned' }), people.admin);
+  await assign(await action(people.member, null, { title: 'an admin assigned, the requester reviews' }), people.admin);
+  const mixed = await action(people.member, null, { title: 'requester and an admin assigned' });
+  await assign(mixed, people.member);
+  await assign(mixed, people.admin);
+  const departedMixed = await action(people.removed, null, { title: 'departed requester, owner and member assigned' });
+  await assign(departedMixed, people.owner);
+  await assign(departedMixed, people.member);
+  // An assignment row of another workspace counts for nobody.
+  await assign(await action(people.removed, null, { title: 'departed requester, assignment of another workspace' }), people.admin, 'pending', otherOrgId);
   await action(people.guest, null, { title: 'module write by a guest' }, 'mention', { action: 'module_record_create' });
   await action(people.member, null, { title: 'module write by a member' }, 'mention', { action: 'module_record_create' });
   await q("INSERT INTO users(id,email,name,kind,is_agent) VALUES($1,$2,'Employee','agent',true)", [employeeUser, `${employeeUser}@example.test`]);
@@ -486,6 +494,15 @@ test('the review gate answers exactly as the composition it replaced, for every 
       AND ${agentActions.org_id} = ${attentionItems.org_id} AND ${gate(sql`${attentionItems.user_id}`)})`,
   )).then((rows) => rows.map((row) => row.id).sort());
   assert.deepEqual(await sweep(currentRoleReviewableActionSql), await sweep(formerCurrentRoleReviewableActionSql), 'gate user as a column');
+  // ... and of another table, per action (approver assignment, ensureActionApprovers).
+  const recipients = async (gate: (user: SQL) => SQL) => (await db.execute(sql`SELECT a.id || ':' || om.user_id AS pair
+    FROM agent_actions a JOIN org_members om ON om.org_id = ${orgId}
+    WHERE a.id = ANY(${sql.param(actions)}::text[])
+      AND EXISTS (SELECT 1 FROM ${agentActions} WHERE ${agentActions.id} = a.id AND ${agentActions.org_id} = ${orgId}
+        AND ${gate(sql`om.user_id`)})`)).rows.map((row) => String((row as { pair: string }).pair)).sort();
+  const recipientPairs = await recipients(currentRoleReviewableActionSql);
+  assert.ok(recipientPairs.length > 0, 'some action has recipients');
+  assert.deepEqual(recipientPairs, await recipients(formerCurrentRoleReviewableActionSql), 'gate user as a column of another table');
 
   // The fixture reaches the cases it names (so the comparison above is not vacuous).
   const passes = (name: string, title: string) => passedBy.get(name)!.has(actionByTitle.get(title)!);
@@ -497,7 +514,12 @@ test('the review gate answers exactly as the composition it replaced, for every 
     ['owner', 'assignee outside the room', false], ['admin', 'assignee outside the room', true],
     ['owner', 'departed requester, assigned to the admin', false], ['admin', 'departed requester, assigned to the admin', true],
     ['admin', 'assigned', true], ['owner', 'assigned', false],
-    ['member', 'requester assigned, decided', true], ['member', 'requester and an admin assigned', true], ['admin', 'requester and an admin assigned', false],
+    ['member', 'requester assigned, decided', true],
+    ['member', 'an admin assigned, the requester reviews', true], ['admin', 'an admin assigned, the requester reviews', false],
+    ['member', 'requester and an admin assigned', true], ['admin', 'requester and an admin assigned', false],
+    ['owner', 'departed requester, owner and member assigned', true], ['admin', 'departed requester, owner and member assigned', false],
+    ['member', 'departed requester, owner and member assigned', false],
+    ['owner', 'departed requester, assignment of another workspace', true], ['admin', 'departed requester, assignment of another workspace', true],
     ['guest', 'module write by a guest', false], ['member', 'module write by a member', true],
     ['member', 'employee, cited message', true], ['guest', 'employee, cited message', false],
     ['member', 'employee, message in the admin room', false],
