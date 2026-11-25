@@ -46,15 +46,16 @@ async function findNudgeEmployee(orgId: string, triggerKind: string) {
 }
 
 /**
- * A subscribed employee hears only about tasks it may see: a restricted task
- * only when it names the employee, and for an employee that is a guest of the
- * workspace only the tasks of its projects and the tasks that name it
- * (task-visibility.ts). For any other task the nudge goes to the person
- * instead, as when no employee is subscribed.
+ * A subscribed employee hears only about tasks it may see: for an employee
+ * that is a guest of the workspace only the tasks of its projects and the
+ * tasks that name it (task-visibility.ts). A restricted task's nudge never
+ * goes to an employee: the trigger's title and goal are stored on an agent
+ * action that the workspace's agent activity lists. For any other task the
+ * nudge goes to the person instead, as when no employee is subscribed.
  */
 async function employeeMaySeeTask(taskId: string, employeeUserId: string): Promise<boolean> {
   const [row] = await db.select({ id: tasks.id }).from(tasks)
-    .where(and(eq(tasks.id, taskId), visibleTaskSql(employeeUserId)))
+    .where(and(eq(tasks.id, taskId), visibleTaskSql(employeeUserId), unrestrictedTaskCondition()))
     .limit(1);
   return Boolean(row);
 }

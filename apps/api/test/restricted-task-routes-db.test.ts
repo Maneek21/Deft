@@ -21,6 +21,7 @@ import { memberRoutes } from '../src/routes/members.js';
 import { humanProjectCreate, humanProjectGet, humanProjectList, humanProjectProgress, humanTeamWorkload, type HumanToolContext } from '../src/lib/mcp-tools/human.js';
 import { executeToolCall } from '../src/lib/agent-context.js';
 import { generateOneOnePrep } from '../src/services/oneone-prep.js';
+import { generateManagerPulse } from '../src/services/manager-pulse.js';
 import { handleDuplicateDetect } from '../src/workers/handlers/duplicate-detect.js';
 import { handleWorkflowExecute } from '../src/workers/handlers/workflow-execute.js';
 
@@ -115,6 +116,7 @@ after(async () => {
   await c.query(`DELETE FROM attention_items WHERE org_id = $1`, [org]).catch(() => {});
   await c.query(`DELETE FROM job_queue WHERE org_id = $1`, [org]).catch(() => {});
   await c.query(`DELETE FROM duplicate_flags WHERE org_id = $1`, [org]);
+  await c.query(`DELETE FROM agent_nudges WHERE org_id = $1`, [org]);
   await c.query(`DELETE FROM oneone_preps WHERE org_id = $1`, [org]);
   await c.query(`DELETE FROM workflow_runs WHERE rule_id IN (SELECT id FROM workflow_rules WHERE org_id = $1)`, [org]);
   await c.query(`DELETE FROM workflow_rules WHERE org_id = $1`, [org]);
@@ -472,4 +474,17 @@ test('workflow notices and duplicate notices name a restricted task only to peop
     [org, member, `%${ids.hidden}%`]);
   assert.equal(notices[0].n, 0, 'no notice names the restricted task');
   await c.query(`UPDATE tasks SET is_deleted = true WHERE id = $1`, [copy]);
+});
+
+test('a manager pulse lists a stalled nudge about a restricted task only to a manager it names', async () => {
+  for (const key of ['open', 'hidden'] as const) {
+    await c.query(`INSERT INTO agent_nudges (id, org_id, user_id, task_id, nudge_type, message) VALUES (gen_random_uuid()::text, $1, $2, $3, 'stalled', $4)`,
+      [org, named, ids[key], `rtr-nudge-${run}-${key}`]);
+  }
+  for (const manager of [admin, owner]) {
+    const pulse = await generateManagerPulse(manager, org);
+    const card = JSON.stringify(pulse.healthCards);
+    assert.ok(card.includes(`rtr-nudge-${run}-open`), `${who(manager)}: the open task's nudge`);
+    assert.equal(card.includes(`rtr-nudge-${run}-hidden`), seesRestricted(manager), `${who(manager)}: the restricted task's nudge`);
+  }
 });

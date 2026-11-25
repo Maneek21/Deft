@@ -99,10 +99,13 @@ export async function generateWeeklyDigest(
   const [openBlockersRow] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(agentNudges)
+    .innerJoin(tasks, eq(tasks.id, agentNudges.task_id))
     .where(
       and(
         eq(agentNudges.org_id, orgId),
         eq(agentNudges.is_dismissed, false),
+        // A nudge about a restricted task is not counted (lib/task-visibility.ts).
+        unrestrictedTaskCondition(),
       ),
     );
   const openBlockers = Number(openBlockersRow?.count ?? 0);
@@ -110,11 +113,13 @@ export async function generateWeeklyDigest(
   const [resolvedBlockersRow] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(agentNudges)
+    .innerJoin(tasks, eq(tasks.id, agentNudges.task_id))
     .where(
       and(
         eq(agentNudges.org_id, orgId),
         eq(agentNudges.is_dismissed, true),
         gte(agentNudges.updated_at, oneWeekAgo),
+        unrestrictedTaskCondition(),
       ),
     );
   const resolvedBlockers = Number(resolvedBlockersRow?.count ?? 0);

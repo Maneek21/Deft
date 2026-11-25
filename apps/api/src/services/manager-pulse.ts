@@ -145,9 +145,12 @@ export async function generateManagerPulse(
     const blockerNudges = await db
       .select({ message: agentNudges.message })
       .from(agentNudges)
+      .innerJoin(tasks, eq(tasks.id, agentNudges.task_id))
       .where(
         and(
           eq(agentNudges.org_id, orgId),
+          // Only nudges about tasks the manager may see (lib/task-visibility.ts).
+          visibleTaskSql(managerId),
           eq(agentNudges.user_id, member.userId),
           eq(agentNudges.nudge_type, 'stalled'),
           eq(agentNudges.is_dismissed, false),
