@@ -40,7 +40,7 @@ import { roleMustHaveSecondStep } from '../lib/two-step-policy.js';
 import { userTwoStep } from '@deft/db/two-step';
 import { closeLostRoomActionsInTx, finishLostRoomCancellations } from '../lib/lost-room-action-cancellation.js';
 import { lockRoomAccessChange } from '../lib/room-access-lock.js';
-import { guestTaskScopeSql } from '../lib/task-visibility.js';
+import { visibleTaskSql } from '../lib/task-visibility.js';
 import {
   authorizeMembershipOperation, checkMembershipOperation, isProtectedMembership, lockMembership, MembershipGuardError, recordMembershipChange, recordPrivilege, type MembershipActor,
 } from '../lib/membership-guard.js';
@@ -601,7 +601,7 @@ async function loadPeopleStats(orgId: string, userIds: string[], viewerId: strin
       total: sql<number>`count(*) filter (where ${tasks.is_deleted} = false)::int`,
     })
       .from(tasks)
-      .where(and(eq(tasks.org_id, orgId), inArray(tasks.assignee_id, userIds), guestTaskScopeSql(viewerId)))
+      .where(and(eq(tasks.org_id, orgId), inArray(tasks.assignee_id, userIds), visibleTaskSql(viewerId)))
       .groupBy(tasks.assignee_id),
     db.select({
       user_id: projects.lead_id,
@@ -974,7 +974,7 @@ memberRoutes.get('/:id/detail', async (c) => {
           eq(tasks.assignee_id, memberId),
           eq(tasks.is_deleted, false),
           sql`${tasks.status} NOT IN ('done', 'cancelled')`,
-          guestTaskScopeSql(user.id),
+          visibleTaskSql(user.id),
         ))
         .orderBy(desc(tasks.updated_at))
         .limit(8),

@@ -15,6 +15,7 @@ import {
 } from '@deft/db/schema';
 import { eq, and, gte, sql, desc, lt } from 'drizzle-orm';
 import { getDayBoundaries, getOrgTimezone } from '../lib/task-dates.js';
+import { visibleTaskSql } from '../lib/task-visibility.js';
 
 export async function generateOneOnePrep(
   managerId: string,
@@ -68,6 +69,8 @@ export async function generateOneOnePrep(
       and(
         eq(tasks.org_id, orgId),
         eq(tasks.assignee_id, reportId),
+        // The prep is the manager's: only tasks they may see (lib/task-visibility.ts).
+        visibleTaskSql(managerId),
         eq(tasks.status, 'done'),
         eq(tasks.is_deleted, false),
         gte(tasks.updated_at, sinceDate),
@@ -88,6 +91,8 @@ export async function generateOneOnePrep(
       and(
         eq(tasks.org_id, orgId),
         eq(tasks.assignee_id, reportId),
+        // The prep is the manager's: only tasks they may see (lib/task-visibility.ts).
+        visibleTaskSql(managerId),
         eq(tasks.status, 'in_progress'),
         eq(tasks.is_deleted, false),
       ),
@@ -107,6 +112,8 @@ export async function generateOneOnePrep(
       and(
         eq(tasks.org_id, orgId),
         eq(tasks.assignee_id, reportId),
+        // The prep is the manager's: only tasks they may see (lib/task-visibility.ts).
+        visibleTaskSql(managerId),
         eq(tasks.is_deleted, false),
         lt(tasks.due_date, startOfToday),
         sql`${tasks.status} NOT IN ('done', 'cancelled')`,

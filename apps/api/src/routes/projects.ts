@@ -7,7 +7,7 @@ import { nativeCreate, nativeCreateKey, NativeCreateError } from '../lib/native-
 import { projects, tasks, taskLabels, labels, users, taskActivity } from '@deft/db/schema';
 import { emitToUser, emitOrgTaskEvent } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
-import { guestTaskScopeSql, taskAliasColumns, visibleTaskCondition } from '../lib/task-visibility.js';
+import { taskAliasColumns, visibleTaskCondition, visibleTaskSql } from '../lib/task-visibility.js';
 import { peopleViewer } from '../lib/people-visibility.js';
 import { withoutHiddenParent } from '../lib/task-parent-projection.js';
 import {
@@ -54,48 +54,14 @@ projectRoutes.get('/', async (c) => {
         select count(*)::int from "tasks"
         where "tasks"."project_id" = "projects"."id"
           and "tasks"."is_deleted" = false
-          and (
-            coalesce("tasks"."metadata"->>'visibility', 'org') != 'restricted'
-            or "tasks"."assignee_id" = ${user.id}
-            or "tasks"."created_by" = ${user.id}
-            or "projects"."lead_id" = ${user.id}
-            or coalesce("tasks"."metadata"->'visible_user_ids', '[]'::jsonb) ? ${user.id}
-            or exists (
-              select 1 from "task_watchers"
-              where "task_watchers"."task_id" = "tasks"."id"
-                and "task_watchers"."user_id" = ${user.id}
-            )
-            or exists (
-              select 1 from "task_assignees"
-              where "task_assignees"."task_id" = "tasks"."id"
-                and "task_assignees"."user_id" = ${user.id}
-            )
-          )
-          and ${guestTaskScopeSql(user.id)}
+          and ${visibleTaskSql(user.id)}
       )`.as('total_tasks'),
       done_tasks: sql<number>`(
         select count(*)::int from "tasks"
         where "tasks"."project_id" = "projects"."id"
           and "tasks"."is_deleted" = false
           and "tasks"."status" = 'done'
-          and (
-            coalesce("tasks"."metadata"->>'visibility', 'org') != 'restricted'
-            or "tasks"."assignee_id" = ${user.id}
-            or "tasks"."created_by" = ${user.id}
-            or "projects"."lead_id" = ${user.id}
-            or coalesce("tasks"."metadata"->'visible_user_ids', '[]'::jsonb) ? ${user.id}
-            or exists (
-              select 1 from "task_watchers"
-              where "task_watchers"."task_id" = "tasks"."id"
-                and "task_watchers"."user_id" = ${user.id}
-            )
-            or exists (
-              select 1 from "task_assignees"
-              where "task_assignees"."task_id" = "tasks"."id"
-                and "task_assignees"."user_id" = ${user.id}
-            )
-          )
-          and ${guestTaskScopeSql(user.id)}
+          and ${visibleTaskSql(user.id)}
       )`.as('done_tasks'),
       is_archived: projects.is_archived,
       created_at: projects.created_at,
@@ -163,6 +129,13 @@ projectRoutes.post('/', async (c) => {
 
     const { name, prefix, description, icon, color, lead_id } = parsed.data;
 
+    // A guest cannot set who leads a project, at creation as on an edit
+    // (PATCH /:id): a project's lead reads all of its tasks. The role is read
+    // from org_members, not the session.
+    if (lead_id && (await peopleViewer(user.org_id, user.id)).guest) {
+      return c.json({ error: 'A guest cannot change a project lead', code: 'FORBIDDEN' }, 403);
+    }
+
     // Ensure prefix is uppercase
     const uppercasePrefix = prefix.toUpperCase();
 
@@ -226,7 +199,7 @@ projectRoutes.get('/:id', async (c) => {
         and(
           eq(tasks.project_id, projectId),
           eq(tasks.is_deleted, false),
-          guestTaskScopeSql(user.id),
+          visibleTaskSql(user.id),
         )
       )
       .groupBy(tasks.status);
@@ -272,7 +245,7 @@ projectRoutes.get('/:id/velocity', async (c) => {
         AND ta.action = 'status_changed'
         AND ta.new_value = 'done'
         AND ta.created_at > NOW() - make_interval(weeks => ${weeks})
-        AND ${guestTaskScopeSql(user.id, taskAliasColumns('t'))}
+        AND ${visibleTaskSql(user.id, taskAliasColumns('t'))}
       GROUP BY date_trunc('week', ta.created_at)
       ORDER BY week_start
     `);
@@ -581,7 +554,7 @@ async function listProjectTasks(c: any) {
             and(
               inArray(tasks.parent_task_id, taskIds), eq(tasks.org_id, user.org_id),
               eq(tasks.is_deleted, false),
-              guestTaskScopeSql(user.id),
+              visibleTaskSql(user.id),
             )
           )
           .groupBy(tasks.parent_task_id)
@@ -644,14 +617,14 @@ projectRoutes.post('/:id/tasks', async (c) => {
       return c.json({ error: 'source_message_id must reference a visible message', code: 'VALIDATION_ERROR' }, 400);
     }
 
-    // A subtask's parent is a live task of this workspace that, for a guest,
-    // they may see (lib/task-visibility.ts). A missing task, another
+    // A subtask's parent is a live task of this workspace that they may see
+    // (lib/task-visibility.ts). A missing task, another
     // workspace's task and a hidden one all answer like an unknown task.
     if (parsed.data.parent_task_id) {
       const [parent] = await db.select({ id: tasks.id })
         .from(tasks)
         .where(and(eq(tasks.id, parsed.data.parent_task_id), eq(tasks.org_id, user.org_id), eq(tasks.is_deleted, false),
-          guestTaskScopeSql(user.id)))
+          visibleTaskSql(user.id)))
         .limit(1);
       if (!parent) return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
     }
