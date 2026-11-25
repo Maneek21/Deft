@@ -96,7 +96,7 @@ import {
 
 import { manageAgent } from '../agent-management.js';
 import { emailFor, peopleViewer, personVisibleSql, withoutHiddenEmails } from '../people-visibility.js';
-import { leadStillIs, projectLeadChangeRefusal } from '../project-lead.js';
+import { leadChangeWriteCondition, projectLeadChangeRefusal } from '../project-lead.js';
 import { RUNTIME_WORKFLOW_NAMES, RUNTIME_WORKFLOW_SCOPES, isRuntimeWorkflowTool, runtimeWorkflowHasScopes, humanRuntimeWorkflowTool } from '../app-runtime-workflow-tools.js';
 
 export type HumanToolContext = {
@@ -3888,7 +3888,7 @@ export async function humanProjectUpdate(args: Record<string, unknown>, ctx: Hum
     // A project's lead reads all of its tasks, so a guest, who sees only the
     // tasks of their projects (task-visibility.ts), cannot change who leads one.
     if (args.lead_id !== undefined && (await peopleViewer(ctx.org_id, ctx.user_id)).guest) {
-      return errorResult('project_update: a guest cannot change a project lead');
+      return textResult({ error: 'project_update: a guest cannot change a project lead', code: 'FORBIDDEN' }, true);
     }
     // Only an owner, an admin or the current lead may change who leads a
     // project (lib/project-lead.ts), as on PATCH /api/projects/:id: checked
@@ -3898,7 +3898,10 @@ export async function humanProjectUpdate(args: Record<string, unknown>, ctx: Hum
     if (args.lead_id !== undefined) {
       const [current] = await db.select({ lead_id: projects.lead_id }).from(projects)
         .where(and(eq(projects.id, args.project_id as string), eq(projects.org_id, ctx.org_id))).limit(1);
-      const requested = args.lead_id === null ? null : args.lead_id;
+      // A member id (trimmed) or null; a blank id means no lead, as the
+      // member lookup reads it.
+      if (args.lead_id !== null && typeof args.lead_id !== 'string') return errorResult('project_update: lead_id must be a member id or null');
+      const requested = typeof args.lead_id === 'string' && args.lead_id.trim() ? args.lead_id.trim() : null;
       if (current && requested !== current.lead_id) {
         const refusal = await projectLeadChangeRefusal(ctx.org_id, ctx.user_id, current.lead_id);
         if (refusal) return textResult({ error: `project_update: ${refusal.error}`, code: refusal.code }, true);
@@ -3919,8 +3922,12 @@ export async function humanProjectUpdate(args: Record<string, unknown>, ctx: Hum
       return errorResult('At least one editable project field is required');
     }
     const [updated] = await db.update(projects).set(updates).where(and(eq(projects.id, args.project_id as string), eq(projects.org_id, ctx.org_id),
-      expectedLead !== undefined ? leadStillIs(expectedLead) : undefined)).returning();
-    if (!updated) return textResult({ error: 'project_update: the project lead changed meanwhile; read the project and try again', code: 'CONFLICT' }, true);
+      expectedLead !== undefined ? leadChangeWriteCondition(ctx.org_id, ctx.user_id, expectedLead) : undefined)).returning();
+    if (!updated) {
+      const refusal = expectedLead !== undefined ? await projectLeadChangeRefusal(ctx.org_id, ctx.user_id, expectedLead) : null;
+      if (refusal) return textResult({ error: `project_update: ${refusal.error}`, code: refusal.code }, true);
+      return textResult({ error: 'project_update: the project lead changed meanwhile; read the project and try again', code: 'CONFLICT' }, true);
+    }
     return textResult({ updated: true, project: await projectForViewer(ctx, updated!), url: `/tasks?project=${updated!.id}` });
   });
 }

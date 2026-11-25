@@ -4,12 +4,12 @@ import { eq, and, desc, gt, sql, inArray, isNull } from 'drizzle-orm';
 import { loadMessageForMember } from '../lib/space-membership.js';
 import { db } from '../lib/db.js';
 import { nativeCreate, nativeCreateKey, NativeCreateError } from '../lib/native-create.js';
-import { projects, tasks, taskLabels, labels, users, taskActivity } from '@deft/db/schema';
+import { orgMembers, projects, tasks, taskLabels, labels, users, taskActivity } from '@deft/db/schema';
 import { emitToUser, emitOrgTaskEvent } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { taskAliasColumns, visibleTaskCondition, visibleTaskSql } from '../lib/task-visibility.js';
 import { peopleViewer } from '../lib/people-visibility.js';
-import { leadStillIs, projectLeadChangeRefusal } from '../lib/project-lead.js';
+import { leadChangeWriteCondition, projectLeadChangeRefusal } from '../lib/project-lead.js';
 import { withoutHiddenParent } from '../lib/task-parent-projection.js';
 import {
   getProjectResolvedConfig,
@@ -330,6 +330,12 @@ projectRoutes.patch('/:id', async (c) => {
     if (leadChanging) {
       const refusal = await projectLeadChangeRefusal(user.org_id, user.id, existing.lead_id);
       if (refusal) return c.json(refusal, 403);
+      // The new lead is an active member of this workspace.
+      if (updates.lead_id) {
+        const [newLead] = await db.select({ id: orgMembers.id }).from(orgMembers)
+          .where(and(eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, updates.lead_id), eq(orgMembers.is_active, true))).limit(1);
+        if (!newLead) return c.json({ error: 'The lead must be an active member of this workspace', code: 'VALIDATION_ERROR' }, 400);
+      }
     }
     if (Object.keys(updates).length === 0) {
       return c.json(guestEditor ? { ...existing, task_counter: null } : existing);
@@ -337,9 +343,11 @@ projectRoutes.patch('/:id', async (c) => {
 
     const [updated] = await db.update(projects)
       .set(updates)
-      .where(and(eq(projects.id, projectId), leadChanging ? leadStillIs(existing.lead_id) : undefined))
+      .where(and(eq(projects.id, projectId), leadChanging ? leadChangeWriteCondition(user.org_id, user.id, existing.lead_id) : undefined))
       .returning();
     if (!updated) {
+      const refusal = await projectLeadChangeRefusal(user.org_id, user.id, existing.lead_id);
+      if (refusal) return c.json(refusal, 403);
       return c.json({ error: 'The project lead changed meanwhile; reload and try again', code: 'CONFLICT' }, 409);
     }
 

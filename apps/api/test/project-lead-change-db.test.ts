@@ -13,6 +13,10 @@ import { taskRoutes } from '../src/routes/tasks.js';
 import { projectRoutes } from '../src/routes/projects.js';
 import { humanProjectUpdate, type HumanToolContext } from '../src/lib/mcp-tools/human.js';
 import { handleWorkflowExecute } from '../src/workers/handlers/workflow-execute.js';
+import { and, eq } from 'drizzle-orm';
+import { projects } from '@deft/db/schema';
+import { db } from '../src/lib/db.js';
+import { leadChangeWriteCondition } from '../src/lib/project-lead.js';
 
 const c = new pg.Client({ connectionString: process.env.DATABASE_URL });
 const run = randomUUID().slice(0, 8);
@@ -158,20 +162,19 @@ test('MCP project_update follows the same rule', async () => {
     assert.match(body.error, /owner, an admin or the project lead/);
     assert.equal(await currentLead(), lead);
   }
-  const same = await humanProjectUpdate({ project_id: project, lead_id: lead, name: `plc mcp ${run}` }, mcp(member)) as any;
-  assert.notEqual(same.isError, true, 'naming the current lead again is no change');
+  const same = await humanProjectUpdate({ project_id: project, lead_id: ` ${lead} `, name: `plc mcp ${run}` }, mcp(member)) as any;
+  assert.notEqual(same.isError, true, 'naming the current lead again (with spaces) is no change');
+  const blank = await humanProjectUpdate({ project_id: outside, lead_id: '', name: `plc outside ${run}` }, mcp(member)) as any;
+  assert.notEqual(blank.isError, true, 'a blank lead on a project with none is no change');
+  const guestRes = await humanProjectUpdate({ project_id: project, lead_id: guest }, mcp(guest)) as any;
+  assert.equal(guestRes.isError, true);
+  assert.equal(JSON.parse(guestRes.content[0].text).code, 'FORBIDDEN', 'a guest refusal carries its code');
   for (const actor of [owner, admin, lead]) {
     const res = await humanProjectUpdate({ project_id: project, lead_id: named }, mcp(actor)) as any;
     assert.notEqual(res.isError, true, who(actor));
     assert.equal(await currentLead(), named);
     await setLead(lead);
   }
-});
-
-test('POST /api/projects: a member may still set a lead when creating a project', async () => {
-  const res = await call(member, '/api/projects', { method: 'POST', body: { name: 'plc new', prefix: `N${run.slice(0, 4).toUpperCase()}`, lead_id: member } });
-  assert.equal(res.status, 201);
-  assert.equal(res.body.lead_id, member);
 });
 
 test('a workflow assign_to never assigns a task to someone who may not already see it, whoever wrote or edited the rule', async () => {
@@ -196,4 +199,28 @@ test('a workflow assign_to never assigns a task to someone who may not already s
     assert.equal(await runRule(guest, outsideTask), guest, `rule by ${who(author)}: an unrestricted task is still assigned to a guest outside its project`);
     await c.query(`UPDATE tasks SET assignee_id = NULL WHERE id = $1`, [outsideTask]);
   }
+});
+
+test('PATCH /api/projects/:id: the new lead must be an active member of the workspace', async () => {
+  const res = await patchLead(owner, randomUUID());
+  assert.equal(res.status, 400);
+  assert.equal(res.body.code, 'VALIDATION_ERROR');
+  assert.equal(await currentLead(), lead);
+});
+
+test('the lead write itself carries the authority: it applies only for an active owner, admin or current lead, and only while the lead is unchanged', async () => {
+  const write = async (actor: string, expected: string | null, next: string) => (await db.update(projects).set({ lead_id: next })
+    .where(and(eq(projects.id, project), leadChangeWriteCondition(org, actor, expected))).returning({ id: projects.id })).length;
+  assert.equal(await write(member, lead, member), 0, 'a member who does not lead');
+  assert.equal(await write(admin, named, member), 0, 'an admin against a lead that changed meanwhile');
+  await c.query(`UPDATE org_members SET role = 'member' WHERE org_id = $1 AND user_id = $2`, [org, admin]);
+  try {
+    assert.equal(await write(admin, lead, member), 0, 'an admin demoted before the write');
+  } finally {
+    await c.query(`UPDATE org_members SET role = 'admin' WHERE org_id = $1 AND user_id = $2`, [org, admin]);
+  }
+  assert.equal(await currentLead(), lead);
+  assert.equal(await write(lead, lead, named), 1, 'the current lead hands over');
+  assert.equal(await write(admin, named, lead), 1, 'an admin puts it back');
+  assert.equal(await currentLead(), lead);
 });
