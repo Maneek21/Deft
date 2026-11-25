@@ -25,64 +25,120 @@ opt-in. Use `@deft/app-kit/core` and the `deft-email` `runtime/domain` modules, 
 keep pinning alpha.43. Names and plan are listed in the Kit README and
 `docs/superpowers/plans/2026-11-06-email-host-kit-shrink.md`.
 
-- Database memory, continued from #583 (for operators of a small Postgres, 512 MB). An
-  open approval in someone's Inbox no longer makes each database connection that checks it
-  about 80 MB larger. The approval review rule (the Inbox's and the approve and reject
-  routes') is now composed so Postgres plans each of its checks once: a connection grows
-  30 MB planning an Inbox approval item (was 79), 35 MB planning the whole Inbox rule (was
-  84), 23 MB loading a page's approvals (was 38), 22 MB answering whether the viewer may
-  approve (was 38). Who sees and who reviews an approval is unchanged; a test compares
-  the rule with the previous one for every
-  person, role and approval of a matrix (pending, approved, rejected and expired;
-  requesters, assignees, owners, admins, guests, departed requesters; module writes,
-  employee, capture and plan actions). Measured on Postgres 16 capped at 512 MB, 14 tabs
-  polling an Inbox with 11 pending approvals: before, four connections reached 127 MB each
-  and the kernel killed Postgres within 9 seconds; now the four peak at 119 MB together and
-  the database at 168 MB.
-- Every database pool the API opens now closes a connection once it is
-  `DEFT_DATABASE_POOL_MAX_LIFETIME_SECONDS` old (default 300; 30 to 86,400), when it is next
-  idle, never while in use, so memory a connection took stays at most that long, and one
-  idle for `DEFT_DATABASE_POOL_IDLE_TIMEOUT_SECONDS` (default 10, as before; 1 to 3,600).
-  Both are optional; a value out of range stops startup, naming the setting. No pool's size
-  changes. The App run maintenance pool keeps its one standing connection past the lifetime
-  (node-postgres would not reopen it). Still open: a chat room's pending-approvals poll (every 5 seconds) costs a
-  connection 36 MB to plan, and the whole Inbox rule 35 MB.
 - App-boundary gate: `scripts/app-boundary-ceiling.json` caps the exception count
   at 1,277 (it may only be lowered), each exception's `milestone` now starts with
   its burn-down bucket, and `node scripts/check-app-boundary.mjs --summary` prints
   the counts per milestone. No finding changed.
-- Adding a calendar (ICS) feed now refuses, with 400 `ICS_URL_NOT_PUBLIC`, an address no
-  fetch could use: one that points to a private network or to the server itself, a port
-  other than 80 or 443, credentials in the address, or a name that cannot be found. Before,
-  such an address was saved and then refused at every sync, so nothing was ever fetched
-  from it; now it is not stored either. A self-hosted install's
-  `DEFT_CALENDAR_PRIVATE_URL_ALLOWLIST` entries are still accepted. Feeds already saved
-  are unchanged.
-- Creating or changing an API key with a malformed request body is now refused with 400
-  `VALIDATION_ERROR` instead of failing with 500. So is a value the database cannot store
-  or that would leave the key unreachable: an expiry date that is not a date or falls
-  outside the years 1 to 9999, a rate limit above 2,147,483,647, a NUL character in the
-  text, an empty agent id, or a change request that changes nothing.
-- `pnpm db:push-full` now says plainly when it stops part-way that the database is
-  incomplete and must not be used, names the upgrades it did not apply (those that create
-  `ics_publish_tokens`, `seat_statements`, `user_two_step` and others), and, when the
-  server's Postgres or pgvector version is not one it recognizes, shows the versions it
-  found. Before, such a stop left a database that looked usable but lacked those tables.
-  On the supported image (`pgvector/pgvector`, pinned in `docker-compose.yml`) push-full is
-  unchanged. CI now checks that a fresh install and an upgraded one have the same tables.
-- The web app now serves its fonts (Inter and JetBrains Mono, the same weights) itself
-  instead of loading them from Google Fonts, so no page, the signup and setup pages
-  included, makes a request to Google, and the page policy (CSP) no longer allows
-  fonts.googleapis.com or fonts.gstatic.com.
-- Guests no longer see every member or any member's email address. A guest now sees only
-  the people who share at least one room, direct message or conversation with them, and no
-  email address but their own: in the member list and people directory, people search,
-  member profiles, room, group and team member lists, the MCP member, team and context
-  tools, when they ask Defty to find someone, and in a member-scoped workspace export made
-  for a guest. A guest also cannot start a direct message with, add to a room, or share a
-  note with someone they share no space with. Owners, admins and members see what they saw
-  before.
-- People search no longer lists removed members, for anyone.
+
+## [0.3.0-preview.151] — 2026-11-25 (prerelease)
+
+Changes since `v0.3.0-preview.150`: #585, #586, #587, #588, #589 and #590. Release scope
+`core` (no Hermes compatibility claim).
+
+Upgrade notes:
+
+- No migration. Schema head stays `0.3.0-preview.149`; `pnpm db:upgrade --status` on an
+  install already at `.144` to `.150` has nothing to apply. An install on an older release
+  follows the earlier upgrade notes first (stop Deft, back up the database and the uploads
+  volume, `pnpm db:upgrade`).
+- Two optional settings are added, both for the API's database pools:
+  `DEFT_DATABASE_POOL_MAX_LIFETIME_SECONDS` (default `300`) and
+  `DEFT_DATABASE_POOL_IDLE_TIMEOUT_SECONDS` (default `10`). Leave them unset for the
+  defaults. A value that is not a whole number in range stops the API at startup, naming
+  the setting. No setting is changed or removed. Author Kit stays `0.1.0-alpha.43`.
+- Guests see fewer people. If your workspace has guests, read "Guests" below first.
+- No page loads fonts from Google any more. A proxy or browser policy of your own that
+  allowed `fonts.googleapis.com` or `fonts.gstatic.com` for Deft no longer needs to.
+
+Guests (#587). A privacy change for every install, hosted or self-hosted, that has guests:
+
+- **Before.** On `.150` and earlier, a guest received the same people a member saw, with
+  every email address, from the member list, the people directory and member profiles.
+- **Now.** Guests no longer see every member or any member's email address; they see only
+  people they share a space with (a room, a direct or group message, or an agent
+  conversation, archived or not), and no email address but their own. This holds in the
+  member list and people directory, people search (by name only), member profiles, room,
+  group and team member lists, who is online, the MCP member, team and context tools, when
+  they ask Defty to find someone, and in a member-scoped workspace export made for a guest.
+  Defty's workspace-wide reports about people (team workload, activity, expertise, team
+  performance, agent employees and their costs) are refused to a guest
+  (`NOT_AVAILABLE_TO_GUESTS`).
+- A guest cannot start a direct message with, add to a room, assign a task to, or share a
+  note with someone they share no space with: that person is refused as if unknown. A
+  guest can no longer generate a 1:1 prep for anyone (404, as for an unknown report); for
+  everyone else, the report must be an active member of the workspace.
+- **What still shows.** Names on content a guest can already read: the assignee, creator,
+  commenters and watchers of a task they can see, the authors of messages they can read,
+  and their own past collaborators in My Insights. The member counts in the group list and
+  on teams still include people the guest cannot see (numbers only, no names); a group's
+  own page counts only the members the guest can see.
+- The rule follows the person's active role in the workspace, never their session or
+  token. A person with no active membership gets the guest view. An agent employee follows
+  the rule by its own workspace role, but one with no active membership row keeps the view
+  it had before: to restrict an agent employee, give it the guest role. Owners, admins and
+  members see what they saw before.
+- For everyone: people search no longer lists removed members, or deleted or inactive
+  agents.
+
+Database memory on a small Postgres (#590), continued from `.150`. Read this one if Deft's
+Postgres runs on a small machine (512 MB):
+
+- **Approvals.** On `.150`, while a person had an open approval in their Inbox, each
+  database connection that checked it grew about 80 MB and kept that memory until it
+  closed. The approval review rule (the Inbox's, and the approve and reject routes') now
+  plans each of its checks once. A connection grows 30 MB planning an Inbox approval item
+  (was 79), 35 MB planning the whole Inbox rule (was 84), 23 MB loading a page's approvals
+  (was 38) and 22 MB answering whether the viewer may approve (was 38). Who sees and who
+  reviews an approval is unchanged: a test compares the rule with the previous one for
+  every person, role and approval of a matrix (pending, approved, rejected and expired;
+  requesters, assignees, owners, admins, guests, departed requesters; module writes,
+  employee, capture and plan actions). Measured on Postgres 16 capped at 512 MB, with 14
+  tabs polling an Inbox that held 11 pending approvals: before, four connections reached
+  127 MB each and the kernel killed Postgres within 9 seconds; now the four peak at 119 MB
+  together and the database at 168 MB.
+- **Pooled connections retire.** Every database pool the API opens now closes a connection
+  once it is `DEFT_DATABASE_POOL_MAX_LIFETIME_SECONDS` old (default 300; 30 to 86,400).
+  A connection past that age is closed when it is next released, never while a request,
+  transaction or advisory lock holds it, so the memory it took is given back soon after.
+  The pools also close one idle for `DEFT_DATABASE_POOL_IDLE_TIMEOUT_SECONDS` (default
+  10, as before; 1 to 3,600). No pool's size changes. The App run maintenance pool keeps its
+  one standing connection past the lifetime (node-postgres would not reopen it).
+- **Still open.** A chat room's pending-approvals poll (every 5 seconds) costs a connection
+  36 MB to plan, and the whole Inbox rule 35 MB.
+
+Also changed:
+
+- **Fonts (#589).** The web app now serves its fonts (Inter and JetBrains Mono, the same
+  weights) itself instead of loading them from Google Fonts, so no page makes a request to a
+  third party for fonts. The signup page (with or without a setup link), setup, login,
+  invite and password-reset pages make no request outside the app and its API at all; a
+  browser test in CI checks this. The page policy (CSP) no longer allows
+  `fonts.googleapis.com` or `fonts.gstatic.com`.
+- **Calendar feeds (#586).** Adding a calendar (ICS) feed now checks the address before
+  saving it and refuses, with 400 `ICS_URL_NOT_PUBLIC`, one that points to a private
+  network or to the server itself, uses a port other than 80 or 443, carries credentials,
+  or whose name does not resolve within 5 seconds. A sync allows the whole fetch 20
+  seconds, so a public feed whose name was slow to resolve can be refused once and saved
+  on a retry. In a hosted workspace at its outside-request limit, an address that passes
+  the other checks is refused with 429 `WORKSPACE_OUTGOING_LIMIT` before its name is
+  looked up. Before, an inward address was saved and then refused at every sync, so
+  nothing was ever fetched from it; now it is not stored either. A self-hosted install's
+  `DEFT_CALENDAR_PRIVATE_URL_ALLOWLIST` entries are still accepted. Feeds already saved are
+  unchanged.
+- **API keys (#585).** Creating or changing an API key with a malformed request body is now
+  refused with 400 `VALIDATION_ERROR` instead of failing with 500. So is a value the
+  database cannot store or that would leave the key unreachable: an expiry date that is not
+  a date or falls outside the years 1 to 9999, a rate limit above 2,147,483,647, a NUL
+  character in the text, an empty agent id, or a change request with no recognized field.
+- **`pnpm db:push-full` (#588).** When it stops part-way it now says plainly that the
+  database is incomplete and must not be used, and how to recover. When it can read the
+  database's upgrade ledger, it also names the range of upgrades it did not apply and which
+  of `ics_publish_tokens`, `seat_statements` and `user_two_step` are missing; when the
+  server's Postgres or pgvector version is not one it recognizes, it shows the versions it
+  found. Before, such a stop left a database that looked usable but lacked the tables of
+  those upgrades. On the supported image (`pgvector/pgvector`, pinned in
+  `docker-compose.yml`) push-full is unchanged. CI now checks that a fresh install and an
+  upgraded one have the same tables.
 
 ## [0.3.0-preview.150] — 2026-11-25 (prerelease)
 
