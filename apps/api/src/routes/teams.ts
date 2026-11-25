@@ -28,6 +28,7 @@ import { OrgMembershipError, requireOrgAdminOrOwner } from '../lib/org-membershi
 import type { AuthUser } from '../middleware/auth.js';
 import { canSeePerson, emailFor, peopleViewer, visiblePersonIds } from '../lib/people-visibility.js';
 import { guestTaskScopeSql } from '../lib/task-visibility.js';
+import { visibleNoteCondition } from '../lib/note-visibility.js';
 
 export const teamRoutes = new Hono();
 
@@ -177,7 +178,8 @@ async function validateActiveOrgUsers(orgId: string, userIds: string[]) {
   return userIds.every((id) => active.has(id));
 }
 
-async function resourceBelongsToOrg(orgId: string, type: ResourceType, id: string) {
+/** `viewerId`, when given, must be able to see a note (lib/note-visibility.ts); a hidden note answers like a missing one. */
+async function resourceBelongsToOrg(orgId: string, type: ResourceType, id: string, viewerId?: string) {
   switch (type) {
     case 'space': {
       const [row] = await db.select({ id: spaces.id }).from(spaces).where(and(eq(spaces.org_id, orgId), eq(spaces.id, id))).limit(1);
@@ -203,7 +205,12 @@ async function resourceBelongsToOrg(orgId: string, type: ResourceType, id: strin
       const [row] = await db
         .select({ id: notes.id })
         .from(notes)
-        .where(and(eq(notes.org_id, orgId), eq(notes.id, id), eq(notes.is_deleted, false)))
+        .where(and(
+          eq(notes.org_id, orgId),
+          eq(notes.id, id),
+          eq(notes.is_deleted, false),
+          viewerId ? visibleNoteCondition(viewerId) : undefined,
+        ))
         .limit(1);
       return Boolean(row);
     }
@@ -242,9 +249,27 @@ async function decorateResourcesForUser(
   const spaceIds = resources
     .filter((resource) => resource.resource_type === 'space')
     .map((resource) => resource.resource_id);
+  const noteIds = resources
+    .filter((resource) => resource.resource_type === 'note')
+    .map((resource) => resource.resource_id);
+
+  // A linked note the reader may not see (lib/note-visibility.ts) keeps its
+  // row, like a restricted space, but not its label. A deleted note keeps
+  // its label, as before.
+  const hiddenNoteIds = new Set(noteIds.length === 0 ? [] : (await db
+    .select({ id: notes.id })
+    .from(notes)
+    .where(and(
+      eq(notes.org_id, orgId),
+      inArray(notes.id, Array.from(new Set(noteIds))),
+      sql`NOT ${visibleNoteCondition(userId)}`,
+    ))).map((note) => note.id));
+  const withNotes = (resource: typeof resources[number]) => (resource.resource_type === 'note' && hiddenNoteIds.has(resource.resource_id)
+    ? { ...resource, label: null, access: 'restricted' as const, restricted_reason: 'note_not_visible' }
+    : null);
 
   if (spaceIds.length === 0) {
-    return resources.map((resource) => ({ ...resource, access: 'visible' as const }));
+    return resources.map((resource) => withNotes(resource) ?? { ...resource, access: 'visible' as const });
   }
 
   const visibleSpaces = await db
@@ -264,6 +289,8 @@ async function decorateResourcesForUser(
   const visibleSpaceIds = new Set(visibleSpaces.map((space) => space.id));
 
   return resources.map((resource) => {
+    const hiddenNote = withNotes(resource);
+    if (hiddenNote) return hiddenNote;
     if (resource.resource_type !== 'space' || visibleSpaceIds.has(resource.resource_id)) {
       return { ...resource, access: 'visible' as const };
     }
@@ -847,7 +874,7 @@ teamRoutes.post('/:id/resources', async (c) => {
   if (!parsed.success) {
     return c.json({ error: 'Invalid resource payload', code: 'VALIDATION_ERROR', details: parsed.error.flatten() }, 400);
   }
-  if (!(await resourceBelongsToOrg(user.org_id, parsed.data.resource_type, parsed.data.resource_id))) {
+  if (!(await resourceBelongsToOrg(user.org_id, parsed.data.resource_type, parsed.data.resource_id, user.id))) {
     return c.json({ error: 'Resource must belong to this organization', code: 'INVALID_RESOURCE' }, 400);
   }
 
