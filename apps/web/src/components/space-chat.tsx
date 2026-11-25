@@ -643,7 +643,7 @@ export function SpaceChat({
     ? `/api/agent/actions/pending-by-space?space_id=${spaceId}`
     : null;
 
-  const { data: pendingByMessage, error: pendingActionsError, isLoading: pendingActionsLoading, mutate: refreshPendingApprovals } = useSWR(
+  const { data: pendingByMessage, error: pendingActionsError, isLoading: pendingActionsLoading } = useSWR(
     pendingBySpaceKey,
     async (url: string) => {
       const res = await api.get(url);
@@ -658,7 +658,7 @@ export function SpaceChat({
     },
     { refreshInterval: ROOM_PENDING_APPROVALS_REFRESH_MS },
   );
-  useRoomPendingApprovalsRefresh(pendingBySpaceKey, refreshPendingApprovals);
+  useRoomPendingApprovalsRefresh(pendingBySpaceKey);
   const pendingActionsLoaded = pendingByMessage !== undefined
     && !pendingActionsLoading
     && !pendingActionsError;

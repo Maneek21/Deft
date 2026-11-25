@@ -5,6 +5,7 @@ import {
   APPROVAL_ATTENTION_EVENTS,
   isApprovalAttentionEvent,
   ROOM_PENDING_APPROVALS_EVENT_DELAY_MS,
+  ROOM_PENDING_APPROVALS_READ_TIMEOUT_MS,
   ROOM_PENDING_APPROVALS_REFRESH_MS,
   scheduleRoomPendingApprovalsRefresh,
 } from './use-room-pending-approvals-refresh';
@@ -19,28 +20,35 @@ test('a room re-reads its approvals on an approval Inbox event, and on nothing e
 /** Let the scheduler's promise chain run (a few microtask turns). */
 const settle = async () => { for (let turn = 0; turn < 5; turn += 1) await Promise.resolve(); };
 
+/** Injected timers: the ¾ s delays before reads, and the timeouts that bound a read. */
+function fakeTimers() {
+  const delays: Array<() => void> = [];
+  const timeouts: Array<() => void> = [];
+  return {
+    delays, timeouts,
+    timers: { set: (run: () => void, ms: number) => (ms === ROOM_PENDING_APPROVALS_READ_TIMEOUT_MS ? timeouts : delays).push(run) },
+  };
+}
+
 test('events that arrive together make one re-read per room, and a later event another', async () => {
-  const pending: Array<{ run: () => void; ms: number }> = [];
-  const timers = { set: (run: () => void, ms: number) => pending.push({ run, ms }) };
+  const { delays, timers } = fakeTimers();
   const reads: string[] = [];
   // An approval raised, seen and decided, heard by the room and by its thread panel.
   for (const view of ['room', 'thread', 'room', 'thread']) scheduleRoomPendingApprovalsRefresh('room-a', () => reads.push(view), timers);
   scheduleRoomPendingApprovalsRefresh('room-b', () => reads.push('b'), timers);
-  assert.equal(pending.length, 2, 'one scheduled re-read per room');
-  assert.ok(pending.every((entry) => entry.ms === ROOM_PENDING_APPROVALS_EVENT_DELAY_MS));
-  for (const entry of pending.splice(0)) entry.run();
+  assert.equal(delays.length, 2, 'one scheduled re-read per room');
+  for (const run of delays.splice(0)) run();
   await settle();
   assert.deepEqual(reads, ['thread', 'b'], 'the latest refresh of each room ran once');
   scheduleRoomPendingApprovalsRefresh('room-a', () => reads.push('later'), timers);
-  assert.equal(pending.length, 1, 'an event after the re-read schedules another');
-  pending[0]!.run();
+  assert.equal(delays.length, 1, 'an event after the re-read schedules another');
+  delays.shift()!();
   await settle();
   assert.deepEqual(reads, ['thread', 'b', 'later']);
 });
 
 test('one read at a time per room: events during a read queue one more, which waits for it (astra)', async () => {
-  const pending: Array<() => void> = [];
-  const timers = { set: (run: () => void) => pending.push(run) };
+  const { delays: pending, timers } = fakeTimers();
   let running = 0;
   let overlapped = false;
   const finishes: Array<() => void> = [];
@@ -73,6 +81,34 @@ test('one read at a time per room: events during a read queue one more, which wa
   await settle();
 });
 
+test('a read that never settles releases its room after the timeout, and the queued read runs (astra)', async () => {
+  const { delays, timeouts, timers } = fakeTimers();
+  const calls: string[] = [];
+  let finishFirst: () => void = () => undefined;
+  scheduleRoomPendingApprovalsRefresh('room-stalled', () => { calls.push('stalled'); return new Promise<void>((resolve) => { finishFirst = resolve; }); }, timers);
+  delays.shift()!();
+  await settle();
+  assert.deepEqual(calls, ['stalled']);
+  for (let event = 0; event < 100; event += 1) scheduleRoomPendingApprovalsRefresh('room-stalled', () => { calls.push('next'); }, timers);
+  assert.equal(delays.length, 0, 'no read starts beside the stalled one');
+  assert.equal(timeouts.length, 1, 'the stalled read has a deadline');
+  timeouts.shift()!();
+  assert.equal(delays.length, 1, 'at the deadline the room is released and the queued read is scheduled');
+  delays.shift()!();
+  await settle();
+  assert.deepEqual(calls, ['stalled', 'next'], 'the queued read ran');
+  // The stalled request settling late changes nothing: the room was already released.
+  finishFirst();
+  await settle();
+  assert.equal(delays.length, 0, 'a late settle schedules nothing');
+  for (const run of timeouts.splice(0)) run();
+  await settle();
+  scheduleRoomPendingApprovalsRefresh('room-stalled', () => undefined, timers);
+  assert.equal(delays.length, 1, 'the room is free again');
+  delays.shift()!();
+  await settle();
+});
+
 test('the hook listens to the events the server sends an approval\'s reviewers, with the type it gives them', () => {
   const attention = readFileSync(new URL('../../../api/src/lib/attention.ts', import.meta.url), 'utf8');
   const emitted = attention.match(/async function emitAttention\(event: ([^,]+),/)?.[1];
@@ -84,10 +120,14 @@ test('the hook listens to the events the server sends an approval\'s reviewers, 
 
 test('the rooms poll their approvals only as a fallback, every 30 seconds, and both re-read on the events', () => {
   assert.equal(ROOM_PENDING_APPROVALS_REFRESH_MS, 30_000);
+  // The hook re-reads the room it was scheduled for (SWR's global mutate on that key), not a component's current key.
+  const hook = readFileSync(new URL('./use-room-pending-approvals-refresh.ts', import.meta.url), 'utf8');
+  assert.ok(hook.includes('scheduleRoomPendingApprovalsRefresh(key, () => mutate(key))'), 're-reads its own key');
+  assert.ok(hook.includes('const { mutate } = useSWRConfig();'), 'with the global mutate');
   for (const file of ['../components/space-chat.tsx', '../components/thread-panel.tsx']) {
     const source = readFileSync(new URL(file, import.meta.url), 'utf8');
     assert.ok(!/pending-by-space[\s\S]{0,1200}refreshInterval: 5000/.test(source), `${file}: no 5-second poll`);
     assert.ok(source.includes('refreshInterval: ROOM_PENDING_APPROVALS_REFRESH_MS'), `${file}: the fallback interval`);
-    assert.ok(source.includes('useRoomPendingApprovalsRefresh(pendingBySpaceKey, refreshPendingApprovals)'), `${file}: re-reads on the events`);
+    assert.ok(source.includes('useRoomPendingApprovalsRefresh(pendingBySpaceKey)'), `${file}: re-reads on the events`);
   }
 });

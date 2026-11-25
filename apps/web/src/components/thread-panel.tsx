@@ -271,7 +271,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     ? `/api/agent/actions/pending-by-space?space_id=${spaceId}`
     : null;
 
-  const { data: pendingByMessage, error: pendingActionsError, mutate: refreshPendingApprovals } = useSWR(
+  const { data: pendingByMessage, error: pendingActionsError } = useSWR(
     pendingBySpaceKey,
     async (url: string) => {
       const res = await api.get(url);
@@ -286,7 +286,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     },
     { refreshInterval: ROOM_PENDING_APPROVALS_REFRESH_MS, fallbackData: {} },
   );
-  useRoomPendingApprovalsRefresh(pendingBySpaceKey, refreshPendingApprovals);
+  useRoomPendingApprovalsRefresh(pendingBySpaceKey);
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768);

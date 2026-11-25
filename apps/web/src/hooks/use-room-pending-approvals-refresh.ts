@@ -20,6 +20,7 @@
  * spend the per-user limit an approve click needs.
  */
 import { useEffect } from 'react';
+import { useSWRConfig } from 'swr';
 import { getSocket } from '@/lib/socket';
 
 /** The fallback poll of a room's pending approvals. */
@@ -27,6 +28,9 @@ export const ROOM_PENDING_APPROVALS_REFRESH_MS = 30_000;
 
 /** How long after an approval event a room re-reads; later events until then join that re-read. */
 export const ROOM_PENDING_APPROVALS_EVENT_DELAY_MS = 750;
+
+/** How long a re-read may hold its room: a request that never settles does not stop later events. */
+export const ROOM_PENDING_APPROVALS_READ_TIMEOUT_MS = 15_000;
 
 /** The Inbox events a room re-reads its approvals on (lib/attention.ts, emitAttention). */
 export const APPROVAL_ATTENTION_EVENTS = ['attention:new', 'attention:updated'] as const;
@@ -50,8 +54,10 @@ const rooms = new Map<string, RoomRefresh>();
  * runs queue one more read after it completes. A read started while another
  * runs would replace it (SWR drops the older response), so events closer
  * together than a read takes would otherwise keep the card from ever
- * updating (astra, review of b0ee15db). The latest `refresh` runs; a re-read
- * after the room's views closed only refreshes the cache.
+ * updating (astra, review of b0ee15db). A read holds its room for at most
+ * ROOM_PENDING_APPROVALS_READ_TIMEOUT_MS: one that never settles releases it
+ * then, and the queued read (which replaces it) runs (astra, review of
+ * ad034701). `refresh` re-reads the room's own key.
  */
 export function scheduleRoomPendingApprovalsRefresh(key: string, refresh: () => unknown, timers: Timers = browserTimers): void {
   const current = rooms.get(key);
@@ -64,35 +70,46 @@ export function scheduleRoomPendingApprovalsRefresh(key: string, refresh: () => 
   rooms.set(key, entry);
   const read = () => timers.set(() => {
     entry.reading = true;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      entry.reading = false;
+      if (entry.again) {
+        entry.again = false;
+        read();
+      } else {
+        rooms.delete(key);
+      }
+    };
+    timers.set(release, ROOM_PENDING_APPROVALS_READ_TIMEOUT_MS);
     Promise.resolve()
       .then(() => entry.refresh())
       .catch(() => undefined)
-      .then(() => {
-        entry.reading = false;
-        if (entry.again) {
-          entry.again = false;
-          read();
-        } else {
-          rooms.delete(key);
-        }
-      });
+      .then(release);
   }, ROOM_PENDING_APPROVALS_EVENT_DELAY_MS);
   read();
 }
 
-/** Re-read the room's pending approvals (`refresh`, SWR's bound mutate) on the viewer's approval Inbox events. */
-export function useRoomPendingApprovalsRefresh(key: string | null, refresh: () => unknown) {
+/**
+ * Re-read the room `key`'s pending approvals on the viewer's approval Inbox
+ * events. It re-reads that key itself (SWR's global mutate), not the
+ * component's current key, so a read scheduled before a switch to another
+ * room still re-reads the room it was for.
+ */
+export function useRoomPendingApprovalsRefresh(key: string | null) {
+  const { mutate } = useSWRConfig();
   useEffect(() => {
     if (!key) return;
     const token = localStorage.getItem('deft-access-token');
     if (!token) return;
     const socket = getSocket(token);
     const onAttention = (item: unknown) => {
-      if (isApprovalAttentionEvent(item)) scheduleRoomPendingApprovalsRefresh(key, refresh);
+      if (isApprovalAttentionEvent(item)) scheduleRoomPendingApprovalsRefresh(key, () => mutate(key));
     };
     for (const event of APPROVAL_ATTENTION_EVENTS) socket.on(event, onAttention);
     return () => {
       for (const event of APPROVAL_ATTENTION_EVENTS) socket.off(event, onAttention);
     };
-  }, [key, refresh]);
+  }, [key, mutate]);
 }
