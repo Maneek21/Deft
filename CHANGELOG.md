@@ -14,13 +14,15 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 - **Fixed.** An image pasted or inserted into a note was kept as an unattached upload, and
   the daily file clean-up deleted it (and its stored file) after 24 hours, so the note
-  showed a broken image from the next day on. Saving a note now keeps the images it
-  shows: on create and edit, from the notes page, the MCP note tools and Defty's
+  showed a broken image from the next day on. Saving a note's text now keeps the images
+  it shows: on create and edit, from the notes page, the MCP note tools and Defty's
   `create_note`. Only uploads you made yourself, in the same workspace, are kept this way;
-  naming someone else's upload in your note does not keep it.
-- **Already lost.** Images pasted into notes before this release and more than 24 hours
-  old were already deleted, and can't be restored from the app. Paste them again. Images
-  still under 24 hours old are kept the next time the note is saved.
+  naming someone else's upload in your note does not keep it. Scheduling or cancelling a
+  message that carries a kept image no longer puts it back on the 24-hour clock.
+- **Already lost.** Images pasted into notes before this release and already removed by
+  the clean-up (it runs about hourly, once an upload is 24 hours old) can't be restored
+  from the app: paste them again. An older image that still shows is kept once you edit
+  the note's text (renaming the note alone does not keep it).
 - **Known gap.** Removing an image from a note keeps its file; nothing deletes it yet.
 - **Who can see a note image** is unchanged: an image in a note is still loaded only by
   the person who uploaded it, so people you share a note with see it as unavailable.

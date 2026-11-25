@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { Hono } from 'hono';
 import { dailyNoteRoutes } from '../src/routes/daily-notes.js';
+import { scheduledRoutes } from '../src/routes/scheduled.js';
 import { sweepExpiredStagedAttachments } from '../src/lib/attachment-retention.js';
 import { noteFileIds, claimNoteFiles } from '../src/lib/note-file-claims.js';
 import { humanNoteCreate, humanNoteUpdate, type HumanToolContext } from '../src/lib/mcp-tools/human.js';
@@ -19,6 +20,7 @@ const run = randomUUID().slice(0, 8);
 const org = randomUUID(), otherOrg = randomUUID();
 const alice = randomUUID(), bob = randomUUID();
 const fileIds: string[] = [];
+const room = randomUUID();
 
 async function stagedFile(orgId: string, uploader: string): Promise<string> {
   const id = randomUUID();
@@ -28,6 +30,7 @@ async function stagedFile(orgId: string, uploader: string): Promise<string> {
   return id;
 }
 
+const expiryOf = async (id: string) => (await c.query(`SELECT staged_expires_at FROM files WHERE id = $1`, [id])).rows[0]?.staged_expires_at ?? null;
 const exists = async (id: string) => (await c.query(`SELECT 1 FROM files WHERE id = $1`, [id])).rowCount === 1;
 const deletedKeys: string[] = [];
 const store = { delete: async (key: string) => { deletedKeys.push(key); } } as unknown as FileStore;
@@ -45,13 +48,20 @@ before(async () => {
       await c.query(`INSERT INTO org_members (id, org_id, user_id, role, is_active) VALUES (gen_random_uuid()::text, $1, $2, 'member', true)`, [orgId, id]);
     }
   }
+  await c.query(`INSERT INTO spaces (id, org_id, name, type, created_by) VALUES ($1, $2, 'nir room', 'private', $3)`, [room, org, alice]);
+  await c.query(`INSERT INTO space_members (id, space_id, user_id) VALUES (gen_random_uuid()::text, $1, $2)`, [room, alice]);
 });
 
 after(async () => {
   await c.query(`DELETE FROM note_versions WHERE note_id IN (SELECT id FROM notes WHERE org_id = ANY($1::text[]))`, [[org, otherOrg]]);
   await c.query(`DELETE FROM notes WHERE org_id = ANY($1::text[])`, [[org, otherOrg]]);
   await c.query(`DELETE FROM files WHERE org_id = ANY($1::text[])`, [[org, otherOrg]]);
+  await c.query(`DELETE FROM messages WHERE org_id = ANY($1::text[])`, [[org, otherOrg]]);
+  await c.query(`DELETE FROM scheduled_messages WHERE org_id = ANY($1::text[])`, [[org, otherOrg]]).catch(() => {});
+  await c.query(`DELETE FROM space_members WHERE space_id = $1`, [room]);
+  await c.query(`DELETE FROM spaces WHERE org_id = ANY($1::text[])`, [[org, otherOrg]]);
   await c.query(`DELETE FROM idempotency_keys WHERE user_id = ANY($1::text[])`, [[alice, bob]]).catch(() => {});
+  await c.query(`DELETE FROM oauth_audit_events WHERE org_id = ANY($1::text[])`, [[org, otherOrg]]).catch(() => {});
   await c.query(`DELETE FROM job_queue WHERE org_id = ANY($1::text[])`, [[org, otherOrg]]).catch(() => {});
   await c.query(`DELETE FROM org_members WHERE org_id = ANY($1::text[])`, [[org, otherOrg]]);
   await c.query(`DELETE FROM users WHERE id = ANY($1::text[])`, [[alice, bob]]);
@@ -66,6 +76,7 @@ function app(userId: string) {
     await next();
   });
   hono.route('/api/daily-notes', dailyNoteRoutes);
+  hono.route('/api/scheduled-messages', scheduledRoutes);
   return hono;
 }
 async function send(userId: string, method: string, path: string, body: unknown) {
@@ -74,11 +85,15 @@ async function send(userId: string, method: string, path: string, body: unknown)
 }
 const img = (id: string) => `<img data-file-id="${id}" data-protected-note-image="" alt="pasted.png" title="pasted.png">`;
 
-test('noteFileIds reads the editor form and the older /api/files/ form, once each', () => {
-  const a = randomUUID(), b = randomUUID();
-  assert.deepEqual(noteFileIds(`<p>x</p>${img(a)}<img src="/api/files/${b}"><img data-file-id='${a}'>`), [a, b]);
+test('noteFileIds reads images as the editor does: data-file-id, else an older /api/files/ src', () => {
+  const a = randomUUID(), b = randomUUID(), c2 = randomUUID();
+  assert.deepEqual(noteFileIds(`<p>x</p>${img(a)}<img src="/api/files/${b}"><img data-file-id='${a}'><IMG data-file-id=${c2} alt=x>`), [a, b, c2]);
+  assert.deepEqual(noteFileIds(`<img data-file-id="${a}" src="/api/files/${b}">`), [a], 'data-file-id wins, as in the editor');
+  assert.deepEqual(noteFileIds(`<p>see /api/files/${a}</p><a href="/api/files/${b}">x</a>`), [], 'text and links are not images');
   assert.deepEqual(noteFileIds(null), []);
-  assert.deepEqual(noteFileIds('<p>/api/files/</p><img data-file-id="">'), []);
+  assert.deepEqual(noteFileIds('<img src="/api/files/"><img data-file-id="">'), []);
+  const many = Array.from({ length: 1200 }, () => randomUUID());
+  assert.equal(noteFileIds(many.map(img).join('')).length, 1200, 'no cap on images per note');
 });
 
 test('a note image created and edited in a note survives a sweep after 25 hours; an unreferenced staged file still goes', async () => {
@@ -89,6 +104,8 @@ test('a note image created and edited in a note survives a sweep after 25 hours;
 
   const created = await send(alice, 'POST', '/api/daily-notes', { title: `nir ${run}`, content: `<p>hello</p>${img(pastedAtCreate)}` });
   assert.equal(created.status, 201);
+  assert.equal(await expiryOf(pastedAtCreate), null, 'claimed on create');
+  assert.notEqual(await expiryOf(pastedLater), null, 'not yet in the note');
   const patched = await send(alice, 'PATCH', `/api/daily-notes/${created.body.id}`, {
     content: `<p>hello</p>${img(pastedAtCreate)}${img(pastedLater)}<img src="/api/files/${legacy}">`,
   });
@@ -99,6 +116,30 @@ test('a note image created and edited in a note survives a sweep after 25 hours;
   assert.equal(await exists(pastedLater), true, 'image saved on edit is kept');
   assert.equal(await exists(legacy), true, 'an older /api/files/ image is kept');
   assert.equal(await exists(unreferenced), false, 'an upload no note names is still swept');
+});
+
+test('an edit that is refused claims nothing', async () => {
+  const note = await send(alice, 'POST', '/api/daily-notes', { title: `nir refused ${run}`, content: '<p>mine</p>' });
+  const bobs = await stagedFile(org, bob);
+  const refused = await send(bob, 'PATCH', `/api/daily-notes/${note.body.id}`, { content: img(bobs) });
+  assert.notEqual(refused.status, 200);
+  assert.notEqual(await expiryOf(bobs), null, "Bob's upload keeps its expiry");
+});
+
+test('scheduling and cancelling a message that carries a note image keeps the image', async () => {
+  const file = await stagedFile(org, alice);
+  const note = await send(alice, 'POST', '/api/daily-notes', { title: `nir sched ${run}`, content: img(file) });
+  assert.equal(note.status, 201);
+  const scheduled = await send(alice, 'POST', '/api/scheduled-messages', {
+    space_id: room, content: `see [[file:${file}:pasted.png]]`, scheduled_for: new Date(Date.now() + 3600_000).toISOString(),
+  });
+  assert.equal(scheduled.status, 201, JSON.stringify(scheduled.body));
+  assert.equal(await expiryOf(file), null, 'scheduling does not stage a claimed file again');
+  const cancelled = await app(alice).request(`/api/scheduled-messages/${scheduled.body.id}`, { method: 'DELETE' });
+  assert.equal(cancelled.status, 200);
+  assert.equal(await expiryOf(file), null, 'cancelling does not stage it again');
+  await sweepAfter25h();
+  assert.equal(await exists(file), true);
 });
 
 test('a staged file of another person, or of another workspace, named in my note is not claimed', async () => {
@@ -120,6 +161,7 @@ test('MCP note_create and note_update claim the same way', async () => {
   const bobs = await stagedFile(org, bob);
   const created = await humanNoteCreate({ title: `nir mcp ${run}`, content: img(atCreate) }, ctx);
   const note = JSON.parse(created.content[0]!.text).note as { id: string };
+  assert.equal(await expiryOf(atCreate), null, 'claimed on create');
   await humanNoteUpdate({ note_id: note.id, content: `${img(atCreate)}${img(atUpdate)}${img(bobs)}` }, ctx);
   await sweepAfter25h();
   assert.equal(await exists(atCreate), true);
@@ -127,7 +169,14 @@ test('MCP note_create and note_update claim the same way', async () => {
   assert.equal(await exists(bobs), false);
 });
 
-test('claimNoteFiles counts only the files it claimed', async () => {
+test('claimNoteFiles counts only the files it claimed, and leaves an attached file alone', async () => {
+  // A file on a message that still carries an expiry: the sweep never deletes it, and a note does not change it.
+  const attached = await stagedFile(org, alice);
+  const message = randomUUID();
+  await c.query(`INSERT INTO messages (id, org_id, space_id, user_id, content) VALUES ($1, $2, $3, $4, 'with file')`, [message, org, room, alice]);
+  await c.query(`UPDATE files SET message_id = $2 WHERE id = $1`, [attached, message]);
+  assert.equal(await claimNoteFiles(db, { id: alice, org_id: org }, img(attached)), 0);
+  assert.notEqual(await expiryOf(attached), null);
   const mine = await stagedFile(org, alice);
   const bobs = await stagedFile(org, bob);
   assert.equal(await claimNoteFiles(db, { id: alice, org_id: org }, `${img(mine)}${img(bobs)}${img(randomUUID())}`), 1);
