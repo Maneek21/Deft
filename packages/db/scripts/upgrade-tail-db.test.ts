@@ -1,14 +1,16 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { after, test } from 'node:test';
 import pg from 'pg';
 import { main as runUpgrade, tailMigrations, CONVERGE_HEAD_VERSION } from './upgrade.ts';
 import { assertReviewedCurrent } from './lineage-convergence.mjs';
 
-const upgradeDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'upgrades');
-
+/** DATABASE_URL names the fixture: a database at the reviewed `.131` head with
+ * no tail migration applied (for example restored from a supported release
+ * backup). The tests never write to it. Each test upgrades a scratch copy,
+ * `<fixture>_tail`, made from it with CREATE DATABASE … TEMPLATE …: the tail
+ * adds enum labels (`.150`), which PostgreSQL cannot remove, so an upgraded
+ * database can't be put back to the head and every test starts from a new
+ * copy instead. The fixture's role needs CREATEDB and must own the fixture. */
 const target = process.env.DATABASE_URL;
 const safe = (() => {
   if (!target) return false;
@@ -17,14 +19,14 @@ const safe = (() => {
     && url.port === '55440' && /^\/(fix_a_|deft_test_424fix_)/u.test(url.pathname);
 })();
 
-/** The functions `.148` alters, read from the upgrade file itself. */
-function restoreSafeFunctions() {
-  const sql = readFileSync(resolve(upgradeDir, '0.3.0-preview.148-restore-safe-check-helpers.sql'), 'utf8');
-  const signatures = [...sql.matchAll(/^ALTER FUNCTION (public\.[a-z0-9_]+\([a-z ,]*\)) SET search_path = pg_catalog, public, pg_temp;$/gmu)]
-    .map((match) => match[1]!);
-  assert.equal(signatures.length, 11, 'preview148 function list is located');
-  return signatures;
-}
+const databaseName = (url: string) => decodeURIComponent(new URL(url).pathname.slice(1));
+const quoteIdent = (name: string) => `"${name.replaceAll('"', '""')}"`;
+const withDatabase = (url: string, name: string) => {
+  const next = new URL(url);
+  next.pathname = `/${encodeURIComponent(name)}`;
+  return next.toString();
+};
+const scratchUrl = safe ? withDatabase(target!, `${databaseName(target!)}_tail`) : undefined;
 
 async function isReviewedHead(client: pg.Client) {
   try {
@@ -34,65 +36,63 @@ async function isReviewedHead(client: pg.Client) {
   }
 }
 
-/** Resets a `.131`-head database to exactly the pre-tail state, reverting the
- * `.133` and `.135` function/constraint changes, the `.136` index, the `.137`, `.144` and `.149` tables and the `.148` function
- * search_path settings in place so it again matches a reviewed head variant. A fresh (push-full) database already carries the
- * `.132` columns and `.134` table in its reviewed bootstrap; an upgraded clone
- * does not, so those are dropped only when the clone needs it. Runs in one
- * transaction and rolls back unless the result is a reviewed head, so a fixture
- * mismatch never leaves the database half reset. Only tail surfaces change. */
-async function resetToHead(client: pg.Client) {
-  const persistent = readFileSync(resolve(upgradeDir, '0.3.0-preview.120-app-persistent-consent.sql'), 'utf8');
-  const start = persistent.indexOf('CREATE OR REPLACE FUNCTION public.enforce_app_runtime_session()');
-  const end = persistent.indexOf('CREATE OR REPLACE FUNCTION public.enforce_app_v7_effective_grant_shape()', start);
-  assert.ok(start >= 0 && end > start, 'preview120 runtime session guard body is located');
-  const constraintStart = persistent.indexOf('ALTER TABLE app_connection_sessions DROP CONSTRAINT app_connection_sessions_record_identity;');
-  assert.ok(constraintStart >= 0, 'preview120 connection session constraint is located');
-  const repairFnStart = persistent.indexOf('CREATE OR REPLACE FUNCTION public.deft_app_connection_credential_repair_record_valid(r jsonb)');
-  const repairFnEnd = persistent.indexOf('CREATE OR REPLACE FUNCTION public.deft_app_consent_continuation_guard()', repairFnStart);
-  assert.ok(repairFnStart >= 0 && repairFnEnd > repairFnStart, 'preview120 credential-repair function is located');
-  await client.query('BEGIN');
+let fixtureChecked = false;
+
+/** The fixture must be exactly a reviewed head: the head ledger row, no tail
+ * row, and a catalogue that is a reviewed head variant. Read-only. */
+async function assertFixtureAtHead() {
+  if (fixtureChecked) return;
+  const client = new pg.Client({ connectionString: target });
+  await client.connect();
   try {
-    await client.query(persistent.slice(start, end));
-    await client.query('DROP FUNCTION IF EXISTS public.app_runtime_session_resume_allowed(app_runtime_sessions, app_runtime_sessions)');
-    // Revert the .135 restore-marker constraint and credential-repair function change.
-    await client.query(persistent.slice(constraintStart));
-    await client.query(persistent.slice(repairFnStart, repairFnEnd));
-    // Revert the .136 pending agent actions index.
-    await client.query('DROP INDEX IF EXISTS public.agent_action_pending_org_created_idx');
-    // Revert the .137 published calendar feed table.
-    await client.query('DROP TABLE IF EXISTS public.ics_publish_tokens');
-    // Revert the .144 seat statement table.
-    await client.query('DROP TABLE IF EXISTS public.seat_statements');
-    // Revert the .148 search_path setting on every function a CHECK constraint calls.
-    for (const signature of restoreSafeFunctions()) {
-      await client.query(`ALTER FUNCTION ${signature} RESET search_path`);
-    }
-    // Revert the .149 two-step verification tables.
-    await client.query('DROP TABLE IF EXISTS public.org_member_privilege_history, public.two_step_challenges, public.user_two_step_recovery_codes, public.user_two_step');
-    await client.query(`DELETE FROM deft_schema_migrations WHERE version = ANY($1::text[])`,
-      [tailMigrations().map((migration) => migration.version)]);
     const head = await client.query('SELECT 1 FROM deft_schema_migrations WHERE version = $1', [CONVERGE_HEAD_VERSION]);
     assert.equal(head.rowCount, 1, 'fixture must be a reviewed head clone');
-    if (!(await isReviewedHead(client))) {
-      await client.query(`ALTER TABLE app_integration_capture_policies
-        DROP COLUMN IF EXISTS retired_at, DROP COLUMN IF EXISTS retired_reason, DROP COLUMN IF EXISTS last_error`);
-      await client.query('DROP TABLE IF EXISTS app_restore_access_reviews CASCADE');
-      assert.ok(await isReviewedHead(client), 'reset reproduces a reviewed .131 head variant');
-    }
-    await client.query('COMMIT');
-  } catch (error) {
-    await client.query('ROLLBACK');
-    throw error;
+    const tail = await client.query('SELECT version FROM deft_schema_migrations WHERE version = ANY($1::text[]) ORDER BY version',
+      [tailMigrations().map((migration) => migration.version)]);
+    assert.deepEqual(tail.rows, [], 'fixture must have no tail migration applied; rebuild it at the head instead of upgrading it');
+    assert.ok(await isReviewedHead(client), 'fixture is a reviewed .131 head variant');
+  } finally {
+    await client.end();
+  }
+  fixtureChecked = true;
+}
+
+async function maintenance<T>(work: (client: pg.Client) => Promise<T>): Promise<T> {
+  const client = new pg.Client({ connectionString: withDatabase(target!, 'postgres') });
+  await client.connect();
+  try {
+    return await work(client);
+  } finally {
+    await client.end();
   }
 }
 
+/** Recreates the scratch database as a copy of the fixture and points the
+ * upgrader (which reads DATABASE_URL) at it. The fixture must have no other
+ * session open while it is copied. */
+async function freshScratch(): Promise<pg.Client> {
+  await assertFixtureAtHead();
+  const scratch = quoteIdent(databaseName(scratchUrl!));
+  await maintenance(async (client) => {
+    await client.query(`DROP DATABASE IF EXISTS ${scratch} WITH (FORCE)`);
+    await client.query(`CREATE DATABASE ${scratch} TEMPLATE ${quoteIdent(databaseName(target!))}`);
+  });
+  process.env.DATABASE_URL = scratchUrl;
+  const client = new pg.Client({ connectionString: scratchUrl });
+  await client.connect();
+  return client;
+}
+
+after(async () => {
+  if (!safe) return;
+  process.env.DATABASE_URL = target;
+  await maintenance((client) => client.query(`DROP DATABASE IF EXISTS ${quoteIdent(databaseName(scratchUrl!))} WITH (FORCE)`));
+});
+
 test('a .131 head applies the tail once and the second run is a no-op',
   { skip: !safe, timeout: 120000 }, async () => {
-    const client = new pg.Client({ connectionString: target });
-    await client.connect();
+    const client = await freshScratch();
     try {
-      await resetToHead(client);
       const head = tailMigrations().map((migration) => migration.version);
       await runUpgrade([]);
       for (const version of head) {
@@ -106,6 +106,9 @@ test('a .131 head applies the tail once and the second run is a no-op',
       assert.equal(columns.rows[0].count, 3, 'retirement columns exist after upgrade');
       const review = await client.query("SELECT to_regclass('app_restore_access_reviews') AS present");
       assert.ok(review.rows[0].present, 'restore review table exists after upgrade');
+      const documents = await client.query(`SELECT to_regclass('documents') IS NOT NULL AS tables,
+        'document_shared' = ANY (enum_range(NULL::notification_type)::text[]) AS label`);
+      assert.deepEqual(documents.rows[0], { tables: true, label: true }, 'drives tables and labels exist after upgrade');
 
       const before = (await client.query('SELECT version FROM deft_schema_migrations ORDER BY version')).rows
         .map((row: { version: string }) => row.version);
@@ -129,21 +132,22 @@ async function tailState(client: pg.Client) {
     (SELECT count(*)::int FROM pg_proc WHERE proname='app_runtime_session_resume_allowed') AS resume_fn,
     (SELECT md5(pg_get_functiondef('public.enforce_app_runtime_session()'::regprocedure))) AS session_fn,
     (SELECT md5(pg_get_constraintdef(oid)) FROM pg_constraint
-      WHERE conname='app_connection_sessions_record_identity') AS session_constraint`)).rows[0];
+      WHERE conname='app_connection_sessions_record_identity') AS session_constraint,
+    to_regclass('documents') IS NOT NULL AS documents,
+    (SELECT count(*)::int FROM pg_enum WHERE enumlabel = 'document_shared') AS document_labels`)).rows[0];
   return { ledger, shape };
 }
 
 test('PR424-F11: --status and --dry-run on a .131 head change nothing',
   { skip: !safe, timeout: 120000 }, async () => {
-    const client = new pg.Client({ connectionString: target });
-    await client.connect();
+    const client = await freshScratch();
     try {
-      await resetToHead(client);
       const before = await tailState(client);
       const tailVersions = new Set(tailMigrations().map((migration) => migration.version));
       assert.ok(!before.ledger.some((row: { version: string }) => tailVersions.has(row.version)),
         'fixture is at the .131 head');
       assert.equal(before.shape.resume_fn, 0, '.133 resume function is absent at the head');
+      assert.equal(before.shape.documents, false, '.150 tables are absent at the head');
       await runUpgrade(['--status']);
       assert.deepEqual(await tailState(client), before, '--status is read-only');
       await runUpgrade(['--dry-run']);
@@ -155,10 +159,8 @@ test('PR424-F11: --status and --dry-run on a .131 head change nothing',
 
 test('PR424-F13: concurrent upgrades of a .131 head both succeed and apply the tail once',
   { skip: !safe, timeout: 180000 }, async () => {
-    const client = new pg.Client({ connectionString: target });
-    await client.connect();
+    const client = await freshScratch();
     try {
-      await resetToHead(client);
       const results = await Promise.allSettled([runUpgrade([]), runUpgrade([])]);
       assert.deepEqual(results.map((result) => result.status === 'rejected' ? String(result.reason) : 'ok'),
         ['ok', 'ok'], 'neither concurrent upgrader fails');
@@ -169,6 +171,8 @@ test('PR424-F13: concurrent upgrades of a .131 head both succeed and apply the t
       const state = await tailState(client);
       assert.equal(state.shape.retirement_columns, 3);
       assert.equal(state.shape.restore_reviews, true);
+      assert.equal(state.shape.documents, true);
+      assert.equal(state.shape.document_labels, 1, 'the .150 label is added once');
     } finally {
       await client.end();
     }

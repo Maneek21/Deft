@@ -660,6 +660,38 @@ jobs:
               THEN
                 RAISE EXCEPTION 'seat statement table missing or different after upgrade';
               END IF;
+              -- Same definitions as apps/api/test/documents-schema-db.test.ts (fresh install):
+              -- foreign keys and CHECKs, then indexes, of documents, drive_members and document_shares.
+              IF (SELECT string_agg(conname || ': ' || pg_get_constraintdef(oid), ' | ' ORDER BY conname)
+                  FROM pg_constraint WHERE conrelid = 'public.documents'::regclass AND contype IN ('c', 'f'))
+                IS DISTINCT FROM 'documents_drive_fk: FOREIGN KEY (org_id, drive_id) REFERENCES drives(org_id, id) | documents_folder_fk: FOREIGN KEY (org_id, drive_id, folder_id) REFERENCES doc_folders(org_id, drive_id, id) DEFERRABLE | documents_folder_or_parent: CHECK ((NOT ((folder_id IS NOT NULL) AND (parent_document_id IS NOT NULL)))) | documents_org_id_fkey: FOREIGN KEY (org_id) REFERENCES orgs(id) | documents_parent_fk: FOREIGN KEY (org_id, drive_id, parent_document_id) REFERENCES documents(org_id, drive_id, id) DEFERRABLE'
+                OR (SELECT string_agg(pg_get_indexdef(i.indexrelid), ' | ' ORDER BY c.relname)
+                  FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+                  WHERE i.indrelid = 'public.documents'::regclass AND NOT i.indisprimary)
+                IS DISTINCT FROM 'CREATE UNIQUE INDEX documents_org_drive_id_key ON public.documents USING btree (org_id, drive_id, id) | CREATE INDEX documents_org_drive_live_idx ON public.documents USING btree (org_id, drive_id) WHERE (NOT is_deleted) | CREATE UNIQUE INDEX documents_org_id_id_key ON public.documents USING btree (org_id, id) | CREATE INDEX documents_parent_idx ON public.documents USING btree (parent_document_id) | CREATE INDEX documents_search_idx ON public.documents USING gin (search_vector)'
+              THEN
+                RAISE EXCEPTION 'documents table missing or different after upgrade';
+              END IF;
+              IF (SELECT string_agg(conname || ': ' || pg_get_constraintdef(oid), ' | ' ORDER BY conname)
+                  FROM pg_constraint WHERE conrelid = 'public.drive_members'::regclass AND contype IN ('c', 'f'))
+                IS DISTINCT FROM 'drive_members_drive_fk: FOREIGN KEY (org_id, drive_id) REFERENCES drives(org_id, id) | drive_members_org_id_fkey: FOREIGN KEY (org_id) REFERENCES orgs(id) | drive_members_principal_type_check: CHECK ((principal_type = ANY (ARRAY[''user''::text, ''space''::text]))) | drive_members_role_check: CHECK ((role = ANY (ARRAY[''full''::text, ''edit''::text, ''comment''::text, ''view''::text])))'
+                OR (SELECT string_agg(pg_get_indexdef(i.indexrelid), ' | ' ORDER BY c.relname)
+                  FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+                  WHERE i.indrelid = 'public.drive_members'::regclass AND NOT i.indisprimary)
+                IS DISTINCT FROM 'CREATE UNIQUE INDEX drive_members_drive_principal_key ON public.drive_members USING btree (drive_id, principal_type, principal_id) | CREATE INDEX drive_members_principal_idx ON public.drive_members USING btree (principal_type, principal_id) | CREATE UNIQUE INDEX drive_members_space_link_uidx ON public.drive_members USING btree (org_id, principal_id) WHERE ((principal_type = ''space''::text) AND is_link)'
+              THEN
+                RAISE EXCEPTION 'drive members table missing or different after upgrade';
+              END IF;
+              IF (SELECT string_agg(conname || ': ' || pg_get_constraintdef(oid), ' | ' ORDER BY conname)
+                  FROM pg_constraint WHERE conrelid = 'public.document_shares'::regclass AND contype IN ('c', 'f'))
+                IS DISTINCT FROM 'document_shares_document_fk: FOREIGN KEY (org_id, document_id) REFERENCES documents(org_id, id) | document_shares_org_id_fkey: FOREIGN KEY (org_id) REFERENCES orgs(id) | document_shares_principal_type_check: CHECK ((principal_type = ANY (ARRAY[''user''::text, ''space''::text]))) | document_shares_role_check: CHECK ((role = ANY (ARRAY[''edit''::text, ''comment''::text, ''view''::text])))'
+                OR (SELECT string_agg(pg_get_indexdef(i.indexrelid), ' | ' ORDER BY c.relname)
+                  FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+                  WHERE i.indrelid = 'public.document_shares'::regclass AND NOT i.indisprimary)
+                IS DISTINCT FROM 'CREATE UNIQUE INDEX document_shares_document_principal_key ON public.document_shares USING btree (document_id, principal_type, principal_id) | CREATE INDEX document_shares_principal_idx ON public.document_shares USING btree (principal_type, principal_id)'
+              THEN
+                RAISE EXCEPTION 'document shares table missing or different after upgrade';
+              END IF;
             END \$\$;
           "
           bash scripts/ci/snapshot-upgrade-data.sh "$RUNNER_TEMP/upgrade-after"
@@ -667,7 +699,9 @@ jobs:
       - name: Compare a fresh install's tables with the upgraded database's
         # db:push-full (fresh installs, dev and test databases) and db:upgrade
         # (every existing install) must build the same set of tables, including
-        # those that only upgrades create (ics_publish_tokens, user_two_step).
+        # those that only upgrades create (ics_publish_tokens, user_two_step,
+        # drives, documents), and the same enum labels, functions, triggers and
+        # columns: enum labels and trigger functions also come only from upgrades.
         run: |
           set -euo pipefail
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE deft_fresh_compare_test'
@@ -676,10 +710,27 @@ jobs:
           tables_sql="SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY 1"
           psql "$fresh_url" -v ON_ERROR_STOP=1 -Atc "$tables_sql" > "$RUNNER_TEMP/tables-fresh.txt"
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "$tables_sql" > "$RUNNER_TEMP/tables-upgraded.txt"
-          for table in ics_publish_tokens seat_statements user_two_step deft_schema_migrations; do
+          for table in ics_publish_tokens seat_statements user_two_step drives documents deft_schema_migrations; do
             grep -qx "$table" "$RUNNER_TEMP/tables-fresh.txt" || { echo "fresh install is missing $table" >&2; exit 1; }
           done
           diff --unified --label fresh-install --label upgraded "$RUNNER_TEMP/tables-fresh.txt" "$RUNNER_TEMP/tables-upgraded.txt"
+          # Each list is compared as a set: enum labels by name (not sort position),
+          # functions by signature and settings (extension members excluded),
+          # triggers by definition, columns by type and nullability.
+          enums_sql="SELECT t.typname || ': ' || e.enumlabel FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid JOIN pg_namespace n ON n.oid = t.typnamespace WHERE n.nspname = 'public' ORDER BY 1"
+          functions_sql="SELECT p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ') ' || coalesce(array_to_string(p.proconfig, ','), '') FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e') ORDER BY 1"
+          triggers_sql="SELECT pg_get_triggerdef(t.oid) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND NOT t.tgisinternal ORDER BY 1"
+          columns_sql="SELECT c.relname || '.' || a.attname || ': ' || format_type(a.atttypid, a.atttypmod) || CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE '' END FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND a.attnum > 0 AND NOT a.attisdropped ORDER BY 1"
+          catalog_differs=0
+          for part in enums functions triggers columns; do
+            part_sql="${part}_sql"
+            psql "$fresh_url" -v ON_ERROR_STOP=1 -Atc "${!part_sql}" > "$RUNNER_TEMP/$part-fresh.txt"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "${!part_sql}" > "$RUNNER_TEMP/$part-upgraded.txt"
+            diff --unified --label "fresh-install $part" --label "upgraded $part" "$RUNNER_TEMP/$part-fresh.txt" "$RUNNER_TEMP/$part-upgraded.txt" || catalog_differs=1
+          done
+          grep -qx 'notification_type: document_shared' "$RUNNER_TEMP/enums-fresh.txt" || { echo 'fresh install is missing notification_type document_shared' >&2; exit 1; }
+          grep -q '^doc_principal_check() ' "$RUNNER_TEMP/functions-fresh.txt" || { echo 'fresh install is missing doc_principal_check' >&2; exit 1; }
+          test "$catalog_differs" = 0
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'DROP DATABASE deft_fresh_compare_test'
       - name: Rehearse both database restore routes with stored consent data
         run: |

@@ -35,6 +35,10 @@ export const teamRoutes = new Hono();
 const HANDLE_REGEX = /^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/;
 const TEAM_ROLES = ['lead', 'member', 'viewer'] as const;
 const TEAM_VISIBILITIES = ['private', 'org'] as const;
+/** `team_resource_type` labels that only upgrade SQL adds (0.3.0-preview.150).
+ * schema.ts's enum is part of the fresh-install fingerprint and stays as it
+ * is, the same way lib/notification-types.ts widens notification types. */
+const UPGRADE_RESOURCE_TYPES = ['document'] as const;
 const RESOURCE_TYPES = [
   'space',
   'project',
@@ -43,6 +47,7 @@ const RESOURCE_TYPES = [
   'calendar_feed',
   'task_template',
   'agent_employee',
+  ...UPGRADE_RESOURCE_TYPES,
 ] as const;
 
 const teamRoleSchema = z.enum(TEAM_ROLES);
@@ -83,6 +88,13 @@ const resourceSchema = z.object({
 
 type TeamRow = typeof teams.$inferSelect;
 type ResourceType = (typeof RESOURCE_TYPES)[number];
+type StoredResourceType = (typeof teamResources.$inferSelect)['resource_type'];
+
+/** The one sanctioned cast from the widened list to the stored Drizzle type.
+ * Every value is a real label of the database enum. */
+function asStoredResourceType(type: ResourceType): StoredResourceType {
+  return type as StoredResourceType;
+}
 
 function forbidden(c: Context, err: unknown) {
   if (err instanceof OrgMembershipError) {
@@ -238,6 +250,10 @@ async function resourceBelongsToOrg(orgId: string, type: ResourceType, id: strin
         .limit(1);
       return Boolean(row);
     }
+    case 'document':
+      // Linking a document needs the document access check, which this route
+      // doesn't run yet, so no document can be linked.
+      return false;
   }
 }
 
@@ -885,7 +901,7 @@ teamRoutes.post('/:id/resources', async (c) => {
     .values({
       org_id: user.org_id,
       team_id: manager.team.id,
-      resource_type: parsed.data.resource_type,
+      resource_type: asStoredResourceType(parsed.data.resource_type),
       resource_id: parsed.data.resource_id,
       label: parsed.data.label ?? null,
       created_by: user.id,
@@ -902,7 +918,7 @@ teamRoutes.post('/:id/resources', async (c) => {
       and(
         eq(teamResources.org_id, user.org_id),
         eq(teamResources.team_id, manager.team.id),
-        eq(teamResources.resource_type, parsed.data.resource_type),
+        eq(teamResources.resource_type, asStoredResourceType(parsed.data.resource_type)),
         eq(teamResources.resource_id, parsed.data.resource_id),
       ),
     )
@@ -924,7 +940,7 @@ teamRoutes.delete('/:id/resources/:resourceType/:resourceId', async (c) => {
       and(
         eq(teamResources.org_id, user.org_id),
         eq(teamResources.team_id, manager.team.id),
-        eq(teamResources.resource_type, resourceType.data),
+        eq(teamResources.resource_type, asStoredResourceType(resourceType.data)),
         eq(teamResources.resource_id, c.req.param('resourceId')),
       ),
     )

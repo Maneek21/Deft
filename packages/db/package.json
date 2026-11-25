@@ -7,6 +7,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./schema": "./src/schema.ts",
+    "./documents": "./src/documents-schema.ts",
     "./ics-publish-tokens": "./src/ics-publish-token-schema.ts",
     "./seat-statements": "./src/seat-statement-schema.ts",
     "./two-step": "./src/two-step-schema.ts"
