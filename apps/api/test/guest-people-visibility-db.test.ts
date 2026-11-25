@@ -128,6 +128,7 @@ before(async () => {
 
 after(async () => {
   const all = people.map(([id]) => id);
+  await c.query(`DELETE FROM oneone_preps WHERE org_id = $1`, [org]).catch(() => {});
   await c.query(`DELETE FROM note_shares WHERE note_id = $1`, [note]);
   await c.query(`DELETE FROM notes WHERE org_id = $1`, [org]);
   await c.query(`DELETE FROM task_comments WHERE org_id = $1`, [org]);
@@ -444,7 +445,7 @@ test('Defty, asked by a guest: search_members filters before matching, and peopl
 test('1:1 prep: a guest, and a report from another workspace, get "member not found"', async () => {
   const fromGuest = await call(guest, '/api/manager/oneone-prep', { method: 'POST', body: { report_id: sharer } });
   assert.equal(fromGuest.status, 404);
-  const outsider = await call(admin, '/api/manager/oneone-prep', { method: 'POST', body: { report_id: stranger.replace(/./, '0') } });
+  const outsider = await call(admin, '/api/manager/oneone-prep', { method: 'POST', body: { report_id: randomUUID() } });
   assert.deepEqual(fromGuest, outsider);
 });
 
