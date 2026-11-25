@@ -78,6 +78,11 @@ before(async () => {
   const room = randomUUID();
   await q('INSERT INTO spaces(id,org_id,name,type,created_by) VALUES($1,$2,$3,\'private\',$4)', [room, orgId, `room-${room}`, ids.admin]);
   for (const user of [ids.admin, ids.departed]) await q('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), room, user]);
+  // A room the guest shares with Rita: a guest sees only the agents and people
+  // they share a space with (lib/people-visibility.ts), so Rita is in their list.
+  const guestRoom = randomUUID();
+  await q("INSERT INTO spaces(id,org_id,name,type,created_by) VALUES($1,$2,$3,'private',$4)", [guestRoom, orgId, `guest-room-${guestRoom}`, ids.admin]);
+  for (const user of [ids.guest, agentUserId]) await q('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), guestRoom, user]);
   const base = Date.now() - 60_000;
   const insert = (id: string, org: string, user: string, employee: string | null, action: string, tier: string,
     source: string, params: Record<string, unknown>, offsetSec: number, status = 'pending') => q(
