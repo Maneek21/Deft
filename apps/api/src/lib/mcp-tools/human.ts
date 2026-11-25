@@ -3858,6 +3858,11 @@ export async function humanProjectCreate(args: Record<string, unknown>, ctx: Hum
     const name = typeof args.name === 'string' ? args.name.trim() : '';
     const prefix = typeof args.prefix === 'string' ? args.prefix.trim().toUpperCase() : '';
     if (!name || !/^[A-Z0-9]{2,6}$/.test(prefix)) return errorResult('name and a unique 2-6 character alphanumeric prefix are required');
+    // As in project_update and POST /api/projects: a guest cannot set who
+    // leads a project (a lead reads all of its tasks, task-visibility.ts).
+    if (args.lead_id !== undefined && args.lead_id !== null && (await peopleViewer(ctx.org_id, ctx.user_id)).guest) {
+      return errorResult('project_create: a guest cannot set a project lead');
+    }
     const leadResult = await resolveActiveMember(ctx, { user_id: args.lead_id, label: 'project_create lead' });
     if (leadResult.error) return leadResult.error;
     const [duplicate] = await db.select({ id: projects.id }).from(projects).where(and(eq(projects.org_id, ctx.org_id), eq(projects.prefix, prefix))).limit(1);

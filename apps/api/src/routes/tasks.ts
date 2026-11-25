@@ -184,6 +184,21 @@ async function getVisibleTaskForOrg(taskId: string, orgId: string, userId: strin
 }
 
 /**
+ * The restriction a copy of `task` (a duplicate, the next occurrence) keeps:
+ * its own named viewers plus the original's creator, co-assignees and
+ * watchers, whom the copy does not carry over, so it reaches the same people
+ * (lib/task-visibility.ts). Undefined for a task that is not restricted.
+ */
+async function restrictionForCopy(task: { id: string; created_by: string | null; metadata: unknown }) {
+  if (!taskRestrictionMetadata(task.metadata)) return undefined;
+  const [coAssignees, watchers] = await Promise.all([
+    db.select({ user_id: taskAssignees.user_id }).from(taskAssignees).where(eq(taskAssignees.task_id, task.id)),
+    db.select({ user_id: taskWatchers.user_id }).from(taskWatchers).where(eq(taskWatchers.task_id, task.id)),
+  ]);
+  return taskRestrictionMetadata(task.metadata, [task.created_by, ...coAssignees.map((row) => row.user_id), ...watchers.map((row) => row.user_id)]);
+}
+
+/**
  * True when `parentId` may be a subtask's parent for `userId`: a live task of
  * `orgId` that they may see (lib/task-visibility.ts). A missing
  * task, another workspace's task and a hidden one all answer false, so the
@@ -2304,7 +2319,7 @@ taskRoutes.patch('/:id', async (c) => {
           recurrence_source_id: recurringTask.recurrence_source_id || recurringTask.id,
           created_by: user.id,
           // A restricted task's next occurrence is hidden from the same people.
-          metadata: taskRestrictionMetadata(recurringTask.metadata),
+          metadata: await restrictionForCopy(recurringTask),
         }).returning({ id: tasks.id });
 
         // Clone labels via the (task_id, label_id) composite PK. The
@@ -2560,7 +2575,7 @@ taskRoutes.post('/:id/duplicate', async (c) => {
       created_by: user.id,
       sort_order: 0,
       // A copy of a restricted task is hidden from the same people.
-      metadata: taskRestrictionMetadata(original.metadata),
+      metadata: await restrictionForCopy(original),
     }).returning();
 
     // Copy labels

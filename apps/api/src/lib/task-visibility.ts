@@ -172,14 +172,23 @@ export function visibleTaskCondition(userId: string): SQL {
  * The part of a task's metadata that restricts it (`visibility` and
  * `visible_user_ids`), to carry onto a task made from it (a duplicate, the
  * next occurrence of a recurring task) so the copy is hidden from the same
- * people. Undefined for a task that is not restricted.
+ * people. `alsoNamed` are the people the original names in other ways that
+ * the copy does not keep (its creator, co-assignees, watchers): they become
+ * named viewers of the copy, so it reaches the same people. Undefined for a
+ * task that is not restricted.
  */
-export function taskRestrictionMetadata(metadata: unknown): { visibility: 'restricted'; visible_user_ids?: unknown[] } | undefined {
+export function taskRestrictionMetadata(
+  metadata: unknown,
+  alsoNamed: ReadonlyArray<string | null | undefined> = [],
+): { visibility: 'restricted'; visible_user_ids: string[] } | undefined {
   if (!metadata || typeof metadata !== 'object') return undefined;
   const source = metadata as Record<string, unknown>;
   if (source.visibility !== 'restricted') return undefined;
+  const named = Array.isArray(source.visible_user_ids)
+    ? source.visible_user_ids.filter((id): id is string => typeof id === 'string')
+    : [];
   return {
     visibility: 'restricted',
-    ...(Array.isArray(source.visible_user_ids) ? { visible_user_ids: source.visible_user_ids } : {}),
+    visible_user_ids: [...new Set([...named, ...alsoNamed.filter((id): id is string => typeof id === 'string' && id.length > 0)])],
   };
 }

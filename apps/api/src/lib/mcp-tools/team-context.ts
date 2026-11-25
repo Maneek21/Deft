@@ -16,7 +16,7 @@ import {
   wikiPages,
 } from '@deft/db/schema';
 import { db } from '../db.js';
-import { visibleTaskCondition } from '../task-visibility.js';
+import { unrestrictedTaskCondition, visibleTaskCondition } from '../task-visibility.js';
 import { visibleWikiPageCondition } from '../wiki-visibility.js';
 import { publicSpaceVisibleSql } from '../space-visibility.js';
 import { canSeePerson, emailFor, peopleViewer, visiblePersonIds, type PeopleViewer } from '../people-visibility.js';
@@ -542,7 +542,8 @@ async function buildTeamWorkContext(access: TeamAccessContext, resources: Array<
   );
   const rawSpaceIds = resources.filter((row) => row.type === 'space').map((row) => row.resource_id);
   const spaceIds = access.can_read_messages === false ? [] : await allowedSpaceIds(access, rawSpaceIds);
-  const taskVisibility = access.user_id ? visibleTaskCondition(access.user_id) : sql<boolean>`true`;
+  // With no viewer, no restricted task (lib/task-visibility.ts).
+  const taskVisibility = access.user_id ? visibleTaskCondition(access.user_id) : unrestrictedTaskCondition();
 
   const taskPredicate = access.can_read_tasks !== false && projectIds.length > 0
     ? and(

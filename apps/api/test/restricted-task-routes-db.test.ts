@@ -18,7 +18,7 @@ import { projectRoutes } from '../src/routes/projects.js';
 import { teamRoutes } from '../src/routes/teams.js';
 import { dashboardRoutes } from '../src/routes/dashboard.js';
 import { memberRoutes } from '../src/routes/members.js';
-import { humanProjectGet, humanProjectList, humanProjectProgress, humanTeamWorkload, type HumanToolContext } from '../src/lib/mcp-tools/human.js';
+import { humanProjectCreate, humanProjectGet, humanProjectList, humanProjectProgress, humanTeamWorkload, type HumanToolContext } from '../src/lib/mcp-tools/human.js';
 import { executeToolCall } from '../src/lib/agent-context.js';
 import { generateOneOnePrep } from '../src/services/oneone-prep.js';
 import { handleDuplicateDetect } from '../src/workers/handlers/duplicate-detect.js';
@@ -403,20 +403,38 @@ test('a duplicate and the next occurrence of a restricted task stay restricted t
   assert.equal(dup.body.metadata?.visibility, 'restricted');
   assert.equal((await get(member, `/api/tasks/${dup.body.id}`)).status, 404, 'member: the copy');
   assert.equal((await get(named, `/api/tasks/${dup.body.id}`)).status, 200, 'named: the copy');
+  assert.ok(dup.body.metadata.visible_user_ids.includes(owner), 'the original creator is named on the copy');
   await c.query(`UPDATE tasks SET is_deleted = true WHERE id = $1`, [dup.body.id]);
 
+  // The owner creates it, the admin watches it, the named person completes it:
+  // the next occurrence still reaches all three, and not the member.
   const recurring = randomUUID();
   await c.query(`INSERT INTO tasks (id, org_id, project_id, number, title, created_by, metadata, status, recurrence)
     VALUES ($1, $2, $3, 90, $4, $5, $6, 'in_progress', 'weekly')`,
   [recurring, org, project, `rt9 ${run} (recurring)`, owner, JSON.stringify({ visibility: 'restricted', visible_user_ids: [named] })]);
-  const done = await call(owner, `/api/tasks/${recurring}`, { method: 'PATCH', body: { status: 'done' } });
+  await c.query(`INSERT INTO task_watchers (id, task_id, user_id) VALUES (gen_random_uuid()::text, $1, $2)`, [recurring, admin]);
+  const done = await call(named, `/api/tasks/${recurring}`, { method: 'PATCH', body: { status: 'done' } });
   assert.equal(done.status, 200);
   const { rows } = await c.query(`SELECT id, metadata FROM tasks WHERE recurrence_source_id = $1`, [recurring]);
   assert.equal(rows.length, 1, 'the next occurrence was made');
   assert.equal(rows[0].metadata?.visibility, 'restricted');
-  assert.deepEqual(rows[0].metadata?.visible_user_ids, [named]);
+  assert.deepEqual(sorted(rows[0].metadata?.visible_user_ids), sorted([named, owner, admin]));
+  for (const viewer of [owner, admin, named, lead]) {
+    assert.equal((await get(viewer, `/api/tasks/${rows[0].id}`)).status, 200, `${who(viewer)}: the next occurrence`);
+  }
   assert.equal((await get(member, `/api/tasks/${rows[0].id}`)).status, 404, 'member: the next occurrence');
   await c.query(`UPDATE tasks SET is_deleted = true WHERE id = ANY($1::text[])`, [[recurring, rows[0].id]]);
+});
+
+test('MCP project_create: a guest cannot set a project lead', async () => {
+  const guestCtx = { ...mcp(guest), scopes: ['write:workspace'] };
+  const refused = await humanProjectCreate({ name: 'rtr mcp guest', prefix: `H${run.slice(0, 3).toUpperCase()}A`, lead_id: guest }, guestCtx) as any;
+  assert.equal(refused.isError, true);
+  assert.match(refused.content[0].text, /guest cannot set a project lead/);
+  const { rows } = await c.query(`SELECT count(*)::int AS n FROM projects WHERE org_id = $1 AND name = 'rtr mcp guest'`, [org]);
+  assert.equal(rows[0].n, 0);
+  const plain = await humanProjectCreate({ name: 'rtr mcp guest plain', prefix: `H${run.slice(0, 3).toUpperCase()}B` }, guestCtx) as any;
+  assert.notEqual(plain.isError, true, 'a guest may still create a project without a lead');
 });
 
 test('an @mention on a restricted task notifies only people it names', async () => {
