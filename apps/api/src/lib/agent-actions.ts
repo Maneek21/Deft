@@ -52,6 +52,7 @@ import { getApprovalTier, isDestructiveAction, mandatoryApprovalTier, shouldAuto
 import { validateNativeAgentMentionWrite } from './native-mention-agent-writes.js';
 import { clientSafeErrorMessage } from './client-safe-error.js';
 import { authorizeNativeActionTarget, promotableNoteSql } from './agent-action-visibility.js';
+import { claimNoteFiles } from './note-file-claims.js';
 import { executeWikiWriteAction, TERMINAL_REFUSAL_RESULT, wikiProposalTargetValues } from './wiki-proposal-target.js';
 import {
   MODULE_OPERATION_REQUEST_SCHEMAS,
@@ -3393,6 +3394,8 @@ export async function executeAction(
             visibility_space_id: visibility === 'space' ? spaceId : null,
           })
           .returning();
+        // Keep the images the note embeds that this person uploaded (note-file-claims.ts).
+        await claimNoteFiles(db, { id: userId, org_id: orgId }, inserted!.content);
 
         await db
           .update(agentActions)

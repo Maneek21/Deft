@@ -44,6 +44,7 @@ import { createTaskBundle, type TaskBundleSubtaskInput } from '../task-bundle.js
 import { bulkUpdateTasks, BulkTaskUpdateError, bulkTaskUpdateSchema } from '../task-bulk-update.js';
 import { queryCompactTasks, type CompactTaskQuery } from '../task-compact-query.js';
 import { visibleNoteCondition } from '../note-visibility.js';
+import { claimNoteFiles } from '../note-file-claims.js';
 import { canReadSpace, readableSpaceSql } from '../space-membership.js';
 import { Context } from 'hono';
 import { currentActionReviewerSql } from '../agent-action-review-gate.js';
@@ -3386,6 +3387,7 @@ export async function humanNoteCreate(args: Record<string, unknown>, ctx: HumanT
       is_pinned: args.is_pinned === true,
       visibility, visibility_space_id: visibility === 'space' ? spaceId : null,
     }).returning();
+    await claimNoteFiles(db, { id: ctx.user_id, org_id: ctx.org_id }, created!.content);
     return textResult({ created: true, note: created, url: `/notes?note=${created!.id}` });
   });
 }
@@ -3413,6 +3415,7 @@ export async function humanNoteUpdate(args: Record<string, unknown>, ctx: HumanT
     }
     if (Object.keys(updates).length === 0) return textResult({ updated: false, note: current, url: `/notes?note=${current.id}` });
     const [updated] = await db.update(notes).set(updates).where(and(eq(notes.id, current.id), eq(notes.version, current.version))).returning();
+    if (updated && args.content !== undefined) await claimNoteFiles(db, { id: ctx.user_id, org_id: ctx.org_id }, updated.content);
     return updated ? textResult({ updated: true, note: updated, url: `/notes?note=${updated.id}` }) : errorResult('Note changed in another session; read it again before retrying');
   });
 }

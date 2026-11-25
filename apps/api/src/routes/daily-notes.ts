@@ -9,6 +9,7 @@ import { requireSpaceMembership } from '../lib/space-membership.js';
 import { visibleNoteCondition } from '../lib/note-visibility.js';
 import { toPlainText } from '../lib/plain-text.js';
 import { createNativeNote } from '../lib/native-context-create.js';
+import { claimNoteFiles } from '../lib/note-file-claims.js';
 
 const TASK_ID_PATTERN = /([A-Z]+-\d+)/;
 
@@ -369,6 +370,9 @@ dailyNoteRoutes.patch('/:id', async (c) => {
   if (!updated) {
     return c.json({ error: 'Note was modified by another session. Please refresh and try again.', code: 'CONFLICT' }, 409);
   }
+
+  // Keep the images the saved content embeds that this person uploaded (note-file-claims.ts).
+  if (parsed.data.content !== undefined) await claimNoteFiles(db, user, updated.content);
 
   // Task 5.1 — enqueue cross-reference scan whenever content changes
   if (updated && parsed.data.content !== undefined) {
