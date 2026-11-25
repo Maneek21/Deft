@@ -28,39 +28,65 @@ const SEND_TIMEOUT_MS = 5_000;
 export const FIRST_DELAY_MS = { min: 30_000, max: 90_000 };
 export const INTERVAL_MS = { min: 55 * 60_000, max: 65 * 60_000 };
 
-/** How long the seat count may take in the database: well inside the server's shutdown deadline. */
+/** How long the seat count may wait or run in the database. */
 const SEAT_QUERY_TIMEOUT = '3s';
+/** After this long with a connection out, the heartbeat gives it up, whatever the database is doing. */
+export const SEAT_DEADLINE_MS = 4_000;
+
+/** Set while a seat count holds a connection: gives it up at once (stopCellHeartbeat). */
+let giveUpConnection: (() => void) | null = null;
 
 /**
  * The seat count, or null when there is no single workspace to count. A
  * hosted cell holds one workspace (seat-limit.ts); before setup there is none
  * (0). Two or more (a database restored over another, say) is ambiguous:
  * nothing is sent rather than one workspace's count under the cell's name.
- * How long it can hold a database connection, end to end, against the
- * server's 15-second shutdown deadline (server.ts):
- * - getting a connection: at most 5 seconds, whether a new one or a wait for
- *   a busy pool (db.ts connectionTimeoutMillis; pg-pool applies it to queued
- *   checkouts too, then fails the checkout);
- * - BEGIN and SET LOCAL: they take no locks;
- * - the two reads: at most 3 seconds, waiting on a lock or running
- *   (SET LOCAL statement_timeout and lock_timeout, below).
- * About 8 seconds in all, and only while a heartbeat is out (once an hour).
+ *
+ * It never holds a database connection through a shutdown. It checks one out
+ * of the shared pool (at most 5 seconds: db.ts connectionTimeoutMillis, which
+ * pg-pool applies to queued checkouts too) and runs one read-only transaction
+ * on it, which the database ends after 3 seconds. Stopping the heartbeat, or
+ * 4 seconds with the connection out (a stalled network, say), gives the
+ * connection up: it is released with an error, which takes it out of the
+ * pool at once (so closing the pool never waits for it), and its socket is
+ * destroyed. The pending query then fails, and the heartbeat sends nothing.
  */
 async function defaultSeatsUsed(): Promise<number | null> {
-  const [{ db }, { orgs }, { sql }, { countSeatsInUse }] = await Promise.all([
+  const [{ db }, schema, { sql }, { drizzle }, { countSeatsInUse }] = await Promise.all([
     import('../db.js'),
     import('@deft/db/schema'),
     import('drizzle-orm'),
+    import('drizzle-orm/node-postgres'),
     import('../seat-limit.js'),
   ]);
-  return db.transaction(async (tx) => {
-    await tx.execute(sql.raw(`SET LOCAL statement_timeout = '${SEAT_QUERY_TIMEOUT}'`));
-    await tx.execute(sql.raw(`SET LOCAL lock_timeout = '${SEAT_QUERY_TIMEOUT}'`));
-    const workspaces = await tx.select({ id: orgs.id }).from(orgs).limit(2);
-    if (workspaces.length === 0) return 0;
-    if (workspaces.length > 1) return null;
-    return countSeatsInUse(tx, workspaces[0]!.id);
-  }, { accessMode: 'read only' });
+  const client = await db.$client.connect();
+  let given = false;
+  const giveUp = (error?: Error) => {
+    if (given) return;
+    given = true;
+    client.release(error);
+    if (error) {
+      try { (client as unknown as { connection?: { stream?: { destroy(): void } } }).connection?.stream?.destroy(); } catch { /* already closed */ }
+    }
+  };
+  const deadline = setTimeout(() => giveUp(new Error('heartbeat seat count deadline')), SEAT_DEADLINE_MS);
+  deadline.unref?.();
+  giveUpConnection = () => giveUp(new Error('heartbeat stopped'));
+  try {
+    const reader = drizzle(client, { schema });
+    return await reader.transaction(async (tx) => {
+      await tx.execute(sql.raw(`SET LOCAL statement_timeout = '${SEAT_QUERY_TIMEOUT}'`));
+      await tx.execute(sql.raw(`SET LOCAL lock_timeout = '${SEAT_QUERY_TIMEOUT}'`));
+      const workspaces = await tx.select({ id: schema.orgs.id }).from(schema.orgs).limit(2);
+      if (workspaces.length === 0) return 0;
+      if (workspaces.length > 1) return null;
+      return countSeatsInUse(tx as unknown as Parameters<typeof countSeatsInUse>[0], workspaces[0]!.id);
+    }, { accessMode: 'read only' });
+  } finally {
+    clearTimeout(deadline);
+    giveUpConnection = null;
+    giveUp();
+  }
 }
 
 async function defaultRelease(): Promise<string> {
@@ -145,6 +171,8 @@ export function stopCellHeartbeat(): void {
   generation += 1;
   if (timer) clearTimeout(timer);
   timer = null;
+  // A seat count still holding a connection gives it up now (see defaultSeatsUsed).
+  giveUpConnection?.();
 }
 
 export function resetHeartbeatForTest(): void {

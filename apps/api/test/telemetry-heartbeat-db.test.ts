@@ -35,8 +35,8 @@ test('seats_used counts the workspace\'s seat-holding people, and 0 before setup
   }
   const savedOptions = process.env.PGOPTIONS;
   process.env.PGOPTIONS = `-c search_path=${schema},public`;
-  const { heartbeatDeps } = await import('../src/lib/telemetry/heartbeat.js');
-  const { closeDb } = await import('../src/lib/db.js');
+  const { heartbeatDeps, stopCellHeartbeat } = await import('../src/lib/telemetry/heartbeat.js');
+  const { closeDb, db } = await import('../src/lib/db.js');
   t.after(async () => {
     await closeDb();
     if (savedOptions === undefined) delete process.env.PGOPTIONS; else process.env.PGOPTIONS = savedOptions;
@@ -80,6 +80,26 @@ test('seats_used counts the workspace\'s seat-holding people, and 0 before setup
     await holder.query('ROLLBACK');
     holder.release();
   }
+
+  // A shutdown while a count is out: stopping gives the connection up at once,
+  // out of the pool (so closing the pool cannot wait for it), and the count fails.
+  const blocker = await admin.connect();
+  try {
+    await blocker.query('BEGIN');
+    await blocker.query(`LOCK TABLE "${schema}".orgs IN ACCESS EXCLUSIVE MODE`);
+    const pending = heartbeatDeps.seatsUsed();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const before = db.$client.totalCount;
+    const stopped = Date.now();
+    stopCellHeartbeat();
+    assert.equal(db.$client.totalCount, before - 1, 'the connection left the pool at once');
+    await assert.rejects(pending);
+    assert.ok(Date.now() - stopped < 1_000, `the count failed after ${Date.now() - stopped} ms`);
+  } finally {
+    await blocker.query('ROLLBACK');
+    blocker.release();
+  }
+  assert.equal(await heartbeatDeps.seatsUsed(), 3, 'and the next count works');
 
   // Two workspaces (a database restored over another): ambiguous, so no count at all.
   await admin.query(`INSERT INTO "${schema}".orgs (id, name, slug) VALUES ($1, 'Second Org', $2)`, [randomUUID(), `hb2-${org.slice(0, 8)}`]);
