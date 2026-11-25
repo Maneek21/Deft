@@ -166,9 +166,18 @@ const CASES: Record<string, RouteCase> = {
   },
 };
 
-/** The routes as the clip router lists them, middleware excluded. */
+/**
+ * Middleware registered on the clip router (`clipRoutes.use(...)`), which Hono lists as `ALL <path>` alongside the
+ * routes. None today. A middleware added later is named here; anything else listed as `ALL`, such as a terminal
+ * `clipRoutes.all(...)` endpoint, is a route and needs a case.
+ */
+const MIDDLEWARE: readonly string[] = [];
+
+/** Every route the clip router lists, `ALL` included, less the middleware named above. */
 function routerRoutes(): string[] {
-  return [...new Set(clipRoutes.routes.filter((route) => route.method !== 'ALL').map((route) => `${route.method} ${route.path}`))].sort();
+  return [...new Set(clipRoutes.routes.map((route) => `${route.method} ${route.path}`))]
+    .filter((route) => !MIDDLEWARE.includes(route))
+    .sort();
 }
 
 before(async () => {
@@ -202,6 +211,10 @@ before(async () => {
 
 after(async () => {
   const ids = Object.values(people);
+  // Every clip file this org has, uploads included (even one a refused caller should never have made).
+  for (const row of (await db.execute(sql`SELECT file_key FROM clips WHERE org_id = ${orgId}`)).rows as Array<{ file_key: string }>) {
+    fileKeys.add(row.file_key);
+  }
   await db.execute(sql`DELETE FROM job_queue WHERE org_id = ${orgId}`);
   await db.execute(sql`DELETE FROM clips WHERE org_id = ${orgId}`);
   await db.execute(sql`DELETE FROM messages WHERE org_id = ${orgId}`);

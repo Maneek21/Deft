@@ -276,7 +276,7 @@ const EXPIRED_BY: Array<[string, number]> = [
 ];
 
 for (const [when, seconds] of EXPIRED_BY) {
-  test(`row 7b: a statement ${when}, offered while a valid one is stored, is refused at start, on the timer and on the on-limit fetch`, async () => {
+  test(`row 7b: a statement ${when}, offered while a valid one is stored, is refused at start, on the timer and on the on-limit fetch`, async (t) => {
     nowMs = Date.now();
     // The valid baseline is at its limit: ten seats, ten people.
     const baseline = await validBaseline(PEOPLE);
@@ -299,17 +299,28 @@ for (const [when, seconds] of EXPIRED_BY) {
       assert.equal(await used(), PEOPLE, `${when}, ${moment}: no extra person`);
     };
 
-    // At start.
-    stopSeatStatementRefresher();
-    startSeatStatementRefresher();
-    assert.deepEqual(await refreshSeatStatement(), { ok: false, reason: 'expired' }, `${when}: refused at start`);
-    stopSeatStatementRefresher();
-    await expectKept('at start');
+    // At start, and on the refresher's own timer: each fetch is the refresher's, observed as it is made. Awaiting
+    // refreshSeatStatement() then joins that fetch (it makes no fetch of its own while one is in flight).
+    t.mock.timers.enable({ apis: ['setInterval'] });
+    try {
+      stopSeatStatementRefresher();
+      fetchCalls = 0;
+      startSeatStatementRefresher();
+      assert.equal(fetchCalls, 1, `${when}: the refresher fetched at start`);
+      assert.deepEqual(await refreshSeatStatement(), { ok: false, reason: 'expired' }, `${when}: refused at start`);
+      assert.equal(fetchCalls, 1, `${when}: the start fetch was the refresher's own`);
+      await expectKept('at start');
 
-    // On the timer (the same fetch, run again).
-    nowMs += 15 * 60 * 1000;
-    assert.deepEqual(await refreshSeatStatement(), { ok: false, reason: 'expired' }, `${when}: refused on the timer`);
-    await expectKept('on the timer');
+      nowMs += 15 * 60 * 1000;
+      t.mock.timers.tick(15 * 60 * 1000);
+      assert.equal(fetchCalls, 2, `${when}: the refresher fetched on its timer`);
+      assert.deepEqual(await refreshSeatStatement(), { ok: false, reason: 'expired' }, `${when}: refused on the timer`);
+      assert.equal(fetchCalls, 2, `${when}: the timer fetch was the refresher's own`);
+      await expectKept('on the timer');
+    } finally {
+      stopSeatStatementRefresher();
+      t.mock.timers.reset();
+    }
 
     // Handed to intake directly.
     assert.deepEqual(await acceptSeatStatementToken(serve()), { ok: false, reason: 'expired' }, `${when}: intake refuses it on time alone`);

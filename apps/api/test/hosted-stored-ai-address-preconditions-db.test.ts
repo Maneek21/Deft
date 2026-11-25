@@ -57,8 +57,10 @@ const ADDRESSES = [
 ];
 
 /** Two shapes of stored configuration: every route pinned to the address, or reasoning through a stored Ollama address. */
+const PLANT_EVERY_ROUTE = 'every route and the embedding pinned to the address';
+const PLANT_OLLAMA_REASON = 'reasoning through the stored Ollama address, embedding at the address';
 const PLANTS: Record<string, (address: string) => Record<string, unknown>> = {
-  'every route and the embedding pinned to the address': (address) => ({
+  [PLANT_EVERY_ROUTE]: (address) => ({
     embed: { provider: 'openai', base_url: address },
     ai_models: {
       reason: { provider: 'openai', model: 'gpt-4o', baseUrl: address },
@@ -68,7 +70,7 @@ const PLANTS: Record<string, (address: string) => Record<string, unknown>> = {
     },
     ollama_url: address,
   }),
-  'reasoning through the stored Ollama address, embedding at the address': (address) => ({
+  [PLANT_OLLAMA_REASON]: (address) => ({
     embed: { provider: 'openai', base_url: address },
     ai_models: { reason: { provider: 'ollama', model: 'llama3.1' } },
     ollama_url: address,
@@ -127,30 +129,52 @@ async function bringOwnKeys() {
  * already-planted address (a bring-your-own key is saved after the address).
  * Later addresses are planted with `plantAddresses`, which keeps the keys.
  */
-const PRECONDITIONS: Record<string, (config: Record<string, unknown>) => Promise<void>> = {
-  'no key': async (config) => {
-    setEnvKeys({});
-    await plant(config);
+const PRECONDITIONS: Record<string, { apply: (config: Record<string, unknown>) => Promise<void>; orgKeys: boolean }> = {
+  'no key': {
+    orgKeys: false,
+    apply: async (config) => {
+      setEnvKeys({});
+      await plant(config);
+    },
   },
-  'a stored org key': async (config) => {
-    setEnvKeys({});
-    await plant({ ...config, api_keys: Object.fromEntries(Object.entries(orgKeys()).map(([provider, key]) => [provider, encrypt(key)])) });
+  'a stored org key': {
+    orgKeys: true,
+    apply: async (config) => {
+      setEnvKeys({});
+      await plant({ ...config, api_keys: Object.fromEntries(Object.entries(orgKeys()).map(([provider, key]) => [provider, encrypt(key)])) });
+    },
   },
-  'a bring-your-own key saved through the settings': async (config) => {
-    setEnvKeys({});
-    await plant(config);
-    await bringOwnKeys();
+  'a bring-your-own key saved through the settings': {
+    orgKeys: true,
+    apply: async (config) => {
+      setEnvKeys({});
+      await plant(config);
+      await bringOwnKeys();
+    },
   },
-  'the platform env key (OPENAI_API_KEY)': async (config) => {
-    setEnvKeys({ OPENAI_API_KEY: 'sk-env-openai-test' });
-    await plant(config);
+  'the platform env key (OPENAI_API_KEY)': {
+    orgKeys: false,
+    apply: async (config) => {
+      setEnvKeys({ OPENAI_API_KEY: 'sk-env-openai-test' });
+      await plant(config);
+    },
   },
-  'org keys and every env key together': async (config) => {
-    setEnvKeys({ OPENAI_API_KEY: 'sk-env-openai-test', ANTHROPIC_API_KEY: 'sk-ant-env-test', OPENROUTER_API_KEY: 'sk-or-env-test' });
-    await plant(config);
-    await bringOwnKeys();
+  'org keys and every env key together': {
+    orgKeys: true,
+    apply: async (config) => {
+      setEnvKeys({ OPENAI_API_KEY: 'sk-env-openai-test', ANTHROPIC_API_KEY: 'sk-ant-env-test', OPENROUTER_API_KEY: 'sk-or-env-test' });
+      await plant(config);
+      await bringOwnKeys();
+    },
   },
 };
+
+/** Apply a precondition and check it took: the org's own keys are stored (and decrypt) exactly when it says so. */
+async function applyPrecondition(name: string, config: Record<string, unknown>) {
+  const precondition = PRECONDITIONS[name]!;
+  await precondition.apply(config);
+  assert.deepEqual((await getOrgAIConfig(orgId)).api_keys, precondition.orgKeys ? orgKeys() : {}, `${name}: the org's keys as the precondition stores them`);
+}
 
 /** A fetch stand-in that records every request and answers like a model server, so nothing ever leaves this machine. */
 function recordFetches(t: test.TestContext): string[] {
@@ -168,23 +192,46 @@ function recordFetches(t: test.TestContext): string[] {
 /** One-pixel PNG for the image-question path. */
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
 
-/** Trigger every path that would use a stored AI address. Failures are expected (refusals); only where requests go matters. */
-async function triggerEveryUse(): Promise<{ privateEndpoint: string | null; embedProvider: string }> {
-  const quietly = async (run: () => Promise<unknown>) => { try { await run(); } catch { /* a refusal */ } };
-  await quietly(() => embed('hello', orgId));
-  await quietly(() => embedQuiet('hello', orgId));
-  await quietly(() => handleEmbedContent({ id: `job-${randomUUID()}`, name: 'embed-content', attempts: 0, data: { source_type: 'wiki_page', source_id: wikiId } }));
-  const orgConfig = await getOrgAIConfig(orgId);
-  for (const task of TASKS) {
-    await quietly(() => llm({ task, messages: [{ role: 'user', content: 'hello' }], orgConfig, orgId }));
+/** Every path that would use a stored AI address, by name. */
+const TRIGGERS: ReadonlyArray<{ readonly name: string; readonly run: () => Promise<unknown> }> = [
+  { name: 'embed()', run: () => embed('hello', orgId) },
+  { name: 'embedQuiet()', run: () => embedQuiet('hello', orgId) },
+  {
+    name: 'the embed-content job',
+    run: () => handleEmbedContent({ id: `job-${randomUUID()}`, name: 'embed-content', attempts: 0, data: { source_type: 'wiki_page', source_id: wikiId } }),
+  },
+  ...TASKS.map((task) => ({
+    name: `llm(${task})`,
+    run: async () => llm({ task, messages: [{ role: 'user', content: 'hello' }], orgConfig: await getOrgAIConfig(orgId), orgId }),
+  })),
+  {
+    name: 'the agent loop',
+    run: async () => createAgentMessage({ resolved: await resolveReasonProvider(orgId), system: 'test', messages: [{ role: 'user', content: 'hello' }], tools: [], maxTokens: 16 }),
+  },
+  { name: 'an image question', run: () => answerImageAttachmentQuestion({ orgId, bytes: PNG, mimeType: 'image/png' }) },
+];
+
+/**
+ * Run each trigger on its own and return the requests each one sent. A trigger may fail (a refusal, or a stand-in
+ * answer it cannot read); only where its requests went matters.
+ */
+async function requestsPerTrigger(urls: string[]): Promise<Record<string, string[]>> {
+  const sent: Record<string, string[]> = {};
+  for (const trigger of TRIGGERS) {
+    const start = urls.length;
+    try { await trigger.run(); } catch { /* a refusal */ }
+    sent[trigger.name] = urls.slice(start);
   }
-  const resolved = await resolveReasonProvider(orgId);
-  await quietly(() => createAgentMessage({ resolved, system: 'test', messages: [{ role: 'user', content: 'hello' }], tools: [], maxTokens: 16 }));
-  await quietly(() => answerImageAttachmentQuestion({ orgId, bytes: PNG, mimeType: 'image/png' }));
-  let privateEndpoint: string | null = null;
-  try { privateEndpoint = privateDeftyEndpoint(resolved); } catch { /* refused */ }
-  return { privateEndpoint, embedProvider: (await getEmbedConfigMasked(orgId)).provider };
+  return sent;
 }
+
+/** The private-model endpoint the agent would be bound to, or null when it is refused. It sends nothing itself. */
+async function privateEndpoint(): Promise<string | null> {
+  try { return privateDeftyEndpoint(await resolveReasonProvider(orgId)); } catch { return null; }
+}
+
+const wikiEmbeddingIsNull = async () =>
+  ((await db.execute(sql`SELECT embedding IS NULL AS empty FROM wiki_pages WHERE id = ${wikiId}`)).rows[0] as { empty: boolean }).empty;
 
 function sameHost(url: string, address: string) {
   return new URL(url).host === new URL(address).host;
@@ -211,12 +258,12 @@ after(async () => {
 });
 
 for (const [plantName, plantFor] of Object.entries(PLANTS)) {
-  for (const [preconditionName, apply] of Object.entries(PRECONDITIONS)) {
+  for (const preconditionName of Object.keys(PRECONDITIONS)) {
     test(`hosted, ${plantName}, with ${preconditionName}: no request leaves for a stored inward or custom address`, async (t) => {
       setHosted(true);
       await db.execute(sql`UPDATE wiki_pages SET embedding = NULL WHERE id = ${wikiId}`);
       const urls = recordFetches(t);
-      await apply(plantFor(ADDRESSES[0]!));
+      await applyPrecondition(preconditionName, plantFor(ADDRESSES[0]!));
       const keys = (await storedConfig()).api_keys ?? null;
       for (const address of ADDRESSES) {
         await plantAddresses(plantFor(address));
@@ -224,32 +271,44 @@ for (const [plantName, plantFor] of Object.entries(PLANTS)) {
         assert.deepEqual(stored.api_keys ?? null, keys, `${address}: the precondition's keys are still stored`);
         assert.equal(stored.embed?.base_url, address, `${address}: the address is still stored (the precondition did not clear it)`);
         assert.equal(stored.ollama_url, address);
-        const start = urls.length;
-        const { privateEndpoint, embedProvider } = await triggerEveryUse();
-        const sent = urls.slice(start);
         const label = `${preconditionName}, ${address}`;
-        assert.deepEqual(sent.filter((url) => sameHost(url, address)), [], `${label}: nothing sent to the stored address`);
-        assert.deepEqual(sent.filter((url) => !STANDARD_ORIGINS.has(new URL(url).origin)), [], `${label}: nothing sent anywhere but a named provider`);
-        assert.ok(privateEndpoint === null || !sameHost(privateEndpoint, address), `${label}: the private model endpoint is not the stored address`);
-        assert.equal(embedProvider, 'off', `${label}: embeddings are off while a custom address is stored`);
-        const [wiki] = (await db.execute(sql`SELECT embedding IS NULL AS empty FROM wiki_pages WHERE id = ${wikiId}`)).rows as Array<{ empty: boolean }>;
-        assert.equal(wiki!.empty, true, `${label}: the background job wrote no embedding`);
+        for (const [trigger, sent] of Object.entries(await requestsPerTrigger(urls))) {
+          assert.deepEqual(sent.filter((url) => sameHost(url, address)), [], `${label}, ${trigger}: nothing sent to the stored address`);
+          assert.deepEqual(sent.filter((url) => !STANDARD_ORIGINS.has(new URL(url).origin)), [], `${label}, ${trigger}: nothing sent anywhere but a named provider`);
+        }
+        const endpoint = await privateEndpoint();
+        assert.ok(endpoint === null || !sameHost(endpoint, address), `${label}: the private model endpoint is not the stored address`);
+        assert.equal((await getEmbedConfigMasked(orgId)).provider, 'off', `${label}: embeddings are off while a custom address is stored`);
+        assert.equal(await wikiEmbeddingIsNull(), true, `${label}: the background job wrote no embedding`);
       }
     });
   }
 }
 
-test('canary, self-hosted: the same stored address is fetched by the same triggers, so the hosted refusals are real', async (t) => {
+/**
+ * Which triggers fetch the stored address on a self-hosted install, per stored configuration. The rest do not by
+ * design: llm() never sends Anthropic or OpenRouter to a route's address (llm(summarize) and llm(classify) in the
+ * first), and tasks with no route use the org's own keys at the standard addresses (classify, summarize and extract in
+ * the second). The hosted cases still run every trigger.
+ */
+const SELF_HOSTED_REACHES: Record<string, readonly string[]> = {
+  [PLANT_EVERY_ROUTE]: ['embed()', 'embedQuiet()', 'the embed-content job', 'llm(reason)', 'llm(extract)', 'the agent loop', 'an image question'],
+  [PLANT_OLLAMA_REASON]: ['embed()', 'embedQuiet()', 'the embed-content job', 'llm(reason)', 'the agent loop', 'an image question'],
+};
+
+test('canary, self-hosted: each trigger fetches the same stored address, so each hosted refusal is real', async (t) => {
   setHosted(false);
   const urls = recordFetches(t);
   const address = ADDRESSES[0]!;
-  for (const plantFor of Object.values(PLANTS)) {
-    await PRECONDITIONS['org keys and every env key together']!(plantFor(address));
-    await triggerEveryUse();
-  }
-  const reached = urls.filter((url) => sameHost(url, address)).map((url) => new URL(url).pathname);
-  for (const path of ['/embeddings', '/chat/completions', '/api/chat']) {
-    assert.ok(reached.some((reachedPath) => reachedPath.endsWith(path)), `self-hosted reaches ${path} at the stored address: ${reached.join(', ')}`);
+  for (const [plantName, plantFor] of Object.entries(PLANTS)) {
+    await db.execute(sql`UPDATE wiki_pages SET embedding = NULL WHERE id = ${wikiId}`);
+    await applyPrecondition('org keys and every env key together', plantFor(address));
+    const sent = await requestsPerTrigger(urls);
+    for (const trigger of SELF_HOSTED_REACHES[plantName]!) {
+      assert.ok(sent[trigger]?.some((url) => sameHost(url, address)), `${plantName}: ${trigger} reaches the stored address: ${JSON.stringify(sent[trigger])}`);
+    }
+    assert.equal(await wikiEmbeddingIsNull(), false, `${plantName}: the embed-content job wrote the vector it fetched`);
+    assert.ok(sameHost((await privateEndpoint())!, address), `${plantName}: the private model endpoint is the stored address`);
   }
   await db.execute(sql`UPDATE wiki_pages SET embedding = NULL WHERE id = ${wikiId}`);
 });
@@ -257,7 +316,7 @@ test('canary, self-hosted: the same stored address is fetched by the same trigge
 test('canary, hosted: a stored standard address is fetched at its standard place', async (t) => {
   setHosted(true);
   const urls = recordFetches(t);
-  await PRECONDITIONS['a stored org key']!({ embed: { provider: 'openai', base_url: 'https://api.openai.com/v1' } });
+  await applyPrecondition('a stored org key', { embed: { provider: 'openai', base_url: 'https://api.openai.com/v1' } });
   assert.equal((await embed('hello', orgId))?.length, 1536);
   assert.deepEqual(urls, ['https://api.openai.com/v1/embeddings']);
 });

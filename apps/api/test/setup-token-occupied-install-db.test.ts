@@ -50,35 +50,42 @@ test('hosted: a new valid setup token on an install that already has an owner ma
 }, async (t) => {
   assert.ok(safe, 'CI must provide a disposable localhost test database (DEFT_TEST_DATABASE_URL equal to DATABASE_URL)');
   const schema = `setup_occupied_${randomUUID().replaceAll('-', '')}`;
+  const savedOptions = process.env.PGOPTIONS;
+  const savedHosted = Object.fromEntries(HOSTED_KEYS.map((key) => [key, process.env[key]]));
+  // Everything this test acquires, released in reverse even if a step fails or an earlier release throws.
+  const cleanups: Array<() => Promise<unknown> | unknown> = [];
+  t.after(async () => {
+    const errors: unknown[] = [];
+    for (const cleanup of cleanups.reverse()) {
+      try { await cleanup(); } catch (error) { errors.push(error); }
+    }
+    if (savedOptions === undefined) delete process.env.PGOPTIONS; else process.env.PGOPTIONS = savedOptions;
+    setHostedEnv(savedHosted);
+    if (errors.length > 0) throw errors[0];
+  });
+
   await ensureTwoStepTables(target!);
   const admin = new pg.Pool({ connectionString: target, max: 1 });
+  cleanups.push(() => admin.end());
+  cleanups.push(() => admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`));
   await admin.query(`CREATE SCHEMA "${schema}"`);
   for (const table of TABLES) {
     await admin.query(`CREATE TABLE "${schema}".${table} (LIKE public.${table} INCLUDING ALL)`);
   }
 
-  const savedOptions = process.env.PGOPTIONS;
-  const savedHosted = Object.fromEntries(HOSTED_KEYS.map((key) => [key, process.env[key]]));
   process.env.PGOPTIONS = `-c search_path=${schema},public`;
   const { authRoutes } = await import('../src/routes/auth.js');
   const { closeDb } = await import('../src/lib/db.js');
+  cleanups.push(() => closeDb());
   const { setupTokenUseStore } = await import('../src/lib/setup-token-use.js');
   const app = new Hono().route('/api/auth', authRoutes);
   // This process's own uploads volume, so markers never land in apps/api/uploads.
   const volume = await mkdtemp(join(tmpdir(), 'deft-setup-occupied-'));
+  cleanups.push(() => rm(volume, { recursive: true, force: true }));
   const savedMarkerDir = setupTokenUseStore.dir;
+  cleanups.push(() => { setupTokenUseStore.dir = savedMarkerDir; });
   setupTokenUseStore.dir = join(volume, 'uploads', '.setup-token-used');
   const markerDir = setupTokenUseStore.dir;
-
-  t.after(async () => {
-    await closeDb();
-    if (savedOptions === undefined) delete process.env.PGOPTIONS; else process.env.PGOPTIONS = savedOptions;
-    setHostedEnv(savedHosted);
-    await admin.query(`DROP SCHEMA "${schema}" CASCADE`);
-    await admin.end();
-    setupTokenUseStore.dir = savedMarkerDir;
-    await rm(volume, { recursive: true, force: true });
-  });
 
   function setHostedEnv(values: Record<string, string | undefined>) {
     for (const key of HOSTED_KEYS) {
@@ -133,12 +140,16 @@ test('hosted: a new valid setup token on an install that already has an owner ma
     return { original, owner: await owners() };
   }
 
-  /** A signup with `token` is refused, and the install still has its one organisation, owner and person. */
-  async function assertRefusedAndUnchanged(label: string, token: string, owner: unknown, body: Record<string, unknown> = {}) {
+  /**
+   * A signup with `token` is refused with `code`, and the install still has its one organisation, owner and person.
+   * A new valid token must pass the token check and be refused by the one-workspace rule (`SINGLE_ORG_LIMIT`): a
+   * refusal at the token check instead would mean the new token was never honoured, so the row tested nothing.
+   */
+  async function assertRefusedAndUnchanged(label: string, token: string, owner: unknown, code: 'SINGLE_ORG_LIMIT' | 'SETUP_TOKEN_INVALID') {
     const before = await markers();
-    const res = await signup(person({ setup_token: token, ...body }));
+    const res = await signup(person({ setup_token: token }));
     assert.equal(res.status, 403, `${label}: refused: ${res.text}`);
-    assert.ok(['SINGLE_ORG_LIMIT', 'SETUP_TOKEN_INVALID'].includes(res.json.code), `${label}: refused as a setup or single-workspace refusal: ${res.text}`);
+    assert.equal(res.json.code, code, `${label}: refused with ${code}: ${res.text}`);
     assert.ok(!res.json.accessToken && !res.json.refreshToken && !res.json.two_step, `${label}: no session and no enrolment`);
     assert.equal(await orgCount(), 1, `${label}: no second organisation`);
     assert.equal(await ownerCount(), 1, `${label}: no second owner`);
@@ -152,10 +163,9 @@ test('hosted: a new valid setup token on an install that already has an owner ma
     const { owner } = await occupiedInstall();
     const fresh = newToken();
     runWithToken(fresh);
-    const refused = await assertRefusedAndUnchanged('row 12', fresh, owner);
-    assert.equal(refused.json.code, 'SINGLE_ORG_LIMIT', 'refused because the install already has its workspace');
+    await assertRefusedAndUnchanged('row 12', fresh, owner, 'SINGLE_ORG_LIMIT');
     // The same new token again: still refused.
-    await assertRefusedAndUnchanged('row 12, again', fresh, owner);
+    await assertRefusedAndUnchanged('row 12, again', fresh, owner, 'SINGLE_ORG_LIMIT');
   });
 
   await t.test('row 12: the uploads volume was also replaced (no markers at all), and the fresh token is still refused', async () => {
@@ -163,7 +173,7 @@ test('hosted: a new valid setup token on an install that already has an owner ma
     await rm(markerDir, { recursive: true, force: true });
     const fresh = newToken();
     runWithToken(fresh);
-    await assertRefusedAndUnchanged('row 12, no markers', fresh, owner);
+    await assertRefusedAndUnchanged('row 12, no markers', fresh, owner, 'SINGLE_ORG_LIMIT');
   });
 
   await t.test('row 13: only the stored hash is replaced, the owner kept; the token for the replacement hash is refused', async () => {
@@ -173,9 +183,9 @@ test('hosted: a new valid setup token on an install that already has an owner ma
     const expiry = process.env.DEFT_SETUP_TOKEN_EXPIRES_AT;
     process.env.DEFT_SETUP_TOKEN_SHA256 = sha256(replacement);
     assert.equal(process.env.DEFT_SETUP_TOKEN_EXPIRES_AT, expiry);
-    await assertRefusedAndUnchanged('row 13', replacement, owner);
-    // The original token no longer matches the stored hash either.
-    await assertRefusedAndUnchanged('row 13, original token', original, owner);
+    await assertRefusedAndUnchanged('row 13', replacement, owner, 'SINGLE_ORG_LIMIT');
+    // The original token no longer matches the stored hash: refused at the token check.
+    await assertRefusedAndUnchanged('row 13, original token', original, owner, 'SETUP_TOKEN_INVALID');
   });
 
   await t.test('rows 12 and 13: several signups at once with the new valid token all fail', async () => {
@@ -183,7 +193,7 @@ test('hosted: a new valid setup token on an install that already has an owner ma
     const fresh = newToken();
     runWithToken(fresh);
     const results = await Promise.all(Array.from({ length: 4 }, () => signup(person({ setup_token: fresh }))));
-    assert.deepEqual(results.map((res) => res.status), [403, 403, 403, 403], results.map((res) => res.text).join('\n'));
+    assert.deepEqual(results.map((res) => [res.status, res.json.code]), Array.from({ length: 4 }, () => [403, 'SINGLE_ORG_LIMIT']), results.map((res) => res.text).join('\n'));
     assert.deepEqual([await orgCount(), await ownerCount(), await humanCount()], [1, 1, 1]);
     assert.deepEqual(await owners(), owner);
   });
