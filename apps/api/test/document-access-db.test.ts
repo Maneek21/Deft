@@ -547,8 +547,75 @@ test('spaceMembersWhoCannotOpen lists the chat members who cannot open a documen
   }
   // Another workspace's chat gives nothing.
   assert.deepEqual(await spaceMembersWhoCannotOpen(fx.otherOrgId, spaces.team, unshared), { userIds: [], guests: 0 });
+  // In a caller's transaction, which sees its own uncommitted share.
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`INSERT INTO document_shares (id, org_id, document_id, principal_type, principal_id, role)
+      VALUES (${randomUUID()}, ${fx!.orgId}, ${unshared}, 'user', ${people.member2}, 'view')`);
+    assert.deepEqual(await spaceMembersWhoCannotOpen(fx!.orgId, spaces.other, unshared, tx), { userIds: [], guests: 0 });
+    tx.rollback();
+  }).catch((error: Error) => { if (!/rollback/i.test(error.message)) throw error; });
+  assert.deepEqual(await spaceMembersWhoCannotOpen(fx.orgId, spaces.other, unshared), { userIds: [people.member2], guests: 0 }, 'rolled back');
 });
 
+test('a system user gets nothing, even with a linked active employee', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { people } = fx;
+  const drive = await fx.insertDrive({ kind: 'private', name: 'System user' });
+  await fx.addDriveMember(drive, { user: people.agentUser }, 'edit');
+  const doc = await fx.insertDocument({ driveId: drive });
+  await fx.share(doc, { user: people.agentUser }, 'comment');
+  assert.equal(await roleOf(people.agentUser, doc), 'edit', 'as an agent user');
+  // The same user, its linked employee active, but of kind system: only humans and agent users act.
+  await fx.client.query("UPDATE users SET kind = 'system' WHERE id = $1", [people.agentUser]);
+  try {
+    assert.equal(await roleOf(people.agentUser, doc), null);
+    assert.equal(await driveRoleOf(people.agentUser, drive), null);
+    const listed = await db.select({ id: documents.id }).from(documents).where(visibleDocumentCondition(people.agentUser, fx.orgId));
+    assert.deepEqual(listed, []);
+  } finally {
+    await fx.client.query("UPDATE users SET kind = 'agent' WHERE id = $1", [people.agentUser]);
+  }
+});
+
+test("caller SQL is bound before the check's own aliases: an outer access_doc or access_drive can't widen it", async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { people, orgId, otherOrgId } = fx;
+  // The guest can read one of these and not the other.
+  const readable = await fx.insertDocument({ driveId: fx.workspaceDriveId, title: 'Shared with the guest' });
+  await fx.share(readable, { user: people.guest }, 'view');
+  const unreadable = await fx.insertDocument({ driveId: fx.workspaceDriveId, title: 'Not shared' });
+  const docsOfOrg = (await db.select({ id: documents.id }).from(documents).where(eq(documents.org_id, orgId))).map((row) => row.id).sort();
+  const expected: string[] = [];
+  for (const id of docsOfOrg) if (await roleOf(people.guest, id) !== null) expected.push(id);
+  assert.ok(expected.includes(readable) && !expected.includes(unreadable), 'the fixture has both outcomes');
+  // The outer query names its documents with each of the check's own aliases.
+  for (const alias of ['access_doc', 'access_drive', 'access_target', 'access_member', 'access_share', 'access_actor', 'access_chat_seat', 'access_open']) {
+    const name = sql.raw(alias);
+    const rows = await db.execute(sql`SELECT ${name}.id AS id FROM documents ${name}
+      WHERE ${name}.org_id = ${orgId} AND ${visibleDocumentIdSql(people.guest, orgId, sql.raw(`${alias}.id`))}`);
+    assert.deepEqual(rows.rows.map((row) => (row as { id: string }).id).sort(), expected, `documents aliased ${alias}`);
+  }
+  // The workspace taken from an outer access_drive: a document of another workspace is not admitted under it,
+  // even for someone in both workspaces.
+  const otherDrive = randomUUID();
+  await fx.client.query(`INSERT INTO drives (id, org_id, name, kind, default_role) VALUES ($1, $2, 'Alias test', 'open', 'edit')`, [otherDrive, otherOrgId]);
+  const otherDoc = await fx.insertDocument({ driveId: otherDrive });
+  await fx.client.query("INSERT INTO org_members (id, org_id, user_id, role) VALUES ($1, $2, $3, 'member')", [randomUUID(), otherOrgId, people.member]);
+  try {
+    const askedUnder = async (driveId: string) => (await db.execute(sql`SELECT doc.id FROM documents doc
+      JOIN drives access_drive ON access_drive.id = ${driveId}
+      WHERE doc.id = ${otherDoc} AND ${visibleDocumentIdSql(people.member, sql.raw('access_drive.org_id'), sql.raw('doc.id'))}`)).rows.length;
+    assert.equal(await askedUnder(fx.workspaceDriveId), 0, "asked under this workspace's drive");
+    assert.equal(await askedUnder(otherDrive), 1, "asked under the other workspace's drive");
+  } finally {
+    await fx.client.query('DELETE FROM org_members WHERE org_id = $1 AND user_id = $2', [otherOrgId, people.member]);
+  }
+});
+
+// documentRoleFor and driveRoleFor are built from visibleDocumentCondition and visibleDriveCondition, so what this
+// guards is: the EXISTS form (visibleDocumentIdSql, with the workspace as a value and as a column) gives exactly the
+// list form's answer, and the role lookups' CASE returns the highest role at which the condition holds (at least
+// `min` exactly when the condition holds at `min`, for every role).
 test('visibleDocumentCondition and documentRoleFor agree for every person and document in the fixture', async (t) => {
   if (!fx) return t.skip(SKIP);
   const people = Object.entries({ ...fx.people, stranger: randomUUID() });

@@ -20,11 +20,20 @@
 //   admins). A share out of a frozen drive gives view at most;
 // - to anyone who is not an active member of the document's workspace, nor,
 //   for an agent user, whose own agent employee (users.agent_employee_id) in
-//   that workspace is paused or deleted;
+//   that workspace is paused or deleted, nor to a user of any other kind
+//   (system);
 // - to a guest or an agent user through an open drive: they get only what
 //   names them or their chats.
 // Roles are read from org_members for the document's workspace, never from a
 // session or token claim.
+//
+// Agents, specifically:
+// - Defty's own user never passes: it has no users.agent_employee_id, and its
+//   internal employee row is deleted (ensureDeftyEmployee). Defty's tools
+//   check access as the person asking;
+// - a cloned employee shares its source's user (routes/agent-employees.ts,
+//   clone), so its access follows the source employee, the one
+//   users.agent_employee_id names.
 //
 // The conditions are OR'd EXISTS branches, never a computed maximum:
 // PostgreSQL plans every branch of a condition whatever the row, and the
@@ -92,7 +101,15 @@ const drivesTable: DriveRefs = {
   defaultRole: sql`${drives.default_role}`, frozenAt: sql`${drives.frozen_at}`,
 };
 
-/** The inner alias for drives. Inner tables are always aliased, so a reference to an outer `documents` or `drives` column is never captured. */
+/**
+ * The drive as the inner alias `access_drive`. Every table the check reads is
+ * aliased `access_*`, so its own references to the outer `documents` or
+ * `drives` table (the list conditions) are never captured. Expressions a
+ * caller passes in can't be protected that way, since the caller may use the
+ * same alias names: visibleDocumentIdSql binds them before any `access_*`
+ * alias is in scope (`access_target`, documentIdVisibleSql). The list
+ * conditions and role lookups take only values, sent as parameters.
+ */
 const accessDrive: DriveRefs = {
   id: sql.raw('access_drive.id'), org: sql.raw('access_drive.org_id'), kind: sql.raw('access_drive.kind'),
   defaultRole: sql.raw('access_drive.default_role'), frozenAt: sql.raw('access_drive.frozen_at'),
@@ -189,16 +206,21 @@ function anyGrant(groups: GrantGroup[], min: DocRole): SQL {
  * member there, and, unless human, an agent user whose own employee (the one
  * `users.agent_employee_id` names, as provisioning records it) belongs to
  * that workspace and user and is active and not deleted. Another employee
- * row naming the same user counts for nothing. Every branch needs it.
+ * row naming the same user counts for nothing, and so does a user of any
+ * other kind. Every branch needs it.
+ *
+ * `userId` and `orgId` are parameters, `access_target` columns or another
+ * alias that isn't `access_*`: never caller SQL (see accessDrive).
  */
 function activeActorSql(userId: UserRef, orgId: OrgRef): SQL {
   return sql`EXISTS (SELECT 1 FROM org_members access_actor
     JOIN users access_actor_user ON access_actor_user.id = access_actor.user_id
     WHERE access_actor.org_id = ${orgId} AND access_actor.user_id = ${userId} AND access_actor.is_active = true
-      AND (access_actor_user.kind = 'human' OR EXISTS (SELECT 1 FROM agent_employees access_actor_employee
-        WHERE access_actor_employee.id = access_actor_user.agent_employee_id
-          AND access_actor_employee.org_id = access_actor.org_id AND access_actor_employee.user_id = access_actor.user_id
-          AND access_actor_employee.is_active = true AND access_actor_employee.is_deleted = false)))`;
+      AND (access_actor_user.kind = 'human' OR (access_actor_user.kind = 'agent'
+        AND EXISTS (SELECT 1 FROM agent_employees access_actor_employee
+          WHERE access_actor_employee.id = access_actor_user.agent_employee_id
+            AND access_actor_employee.org_id = access_actor.org_id AND access_actor_employee.user_id = access_actor.user_id
+            AND access_actor_employee.is_active = true AND access_actor_employee.is_deleted = false))))`;
 }
 
 /** The access rule for the document row `documentId` in the drive row `access_drive`, given the actor check is made. */
@@ -206,14 +228,23 @@ function documentGrants(userId: UserRef, documentId: SQL): GrantGroup[] {
   return [driveGrants(userId, accessDrive), shareGrants(userId, documentId, accessDrive)];
 }
 
-/** visibleDocumentIdSql, with the person as a value or a column (spaceMembersWhoCannotOpen). */
+/**
+ * visibleDocumentIdSql, with the person as a value or a column
+ * (spaceMembersWhoCannotOpen). The caller's expressions are bound first, in
+ * `access_target`: a derived table with no FROM, written before any `access_*`
+ * alias exists, so nothing of this check is in scope there and they resolve
+ * in the caller's query whatever aliases it uses. Everything after reads them
+ * through `access_target`.
+ */
 function documentIdVisibleSql(userId: UserRef, orgId: OrgRef, documentId: SQL, min: DocRole): SQL {
-  return sql`EXISTS (SELECT 1 FROM documents access_doc
+  const user = sql.raw('access_target.user_id');
+  return sql`EXISTS (SELECT 1
+    FROM (SELECT (${documentId})::text AS id, (${orgId})::text AS org_id, (${userId})::text AS user_id) access_target
+    JOIN documents access_doc ON access_doc.id = access_target.id AND access_doc.org_id = access_target.org_id
     JOIN drives access_drive ON access_drive.id = access_doc.drive_id AND access_drive.org_id = access_doc.org_id
-    WHERE access_doc.id = ${documentId} AND access_doc.org_id = ${orgId}
-      AND access_doc.is_deleted = false AND access_drive.is_deleted = false
-      AND ${activeActorSql(userId, orgId)}
-      AND ${anyGrant(documentGrants(userId, sql.raw('access_doc.id')), checkedRole(min))})`;
+    WHERE access_doc.is_deleted = false AND access_drive.is_deleted = false
+      AND ${activeActorSql(user, sql.raw('access_target.org_id'))}
+      AND ${anyGrant(documentGrants(user, sql.raw('access_doc.id')), checkedRole(min))})`;
 }
 
 /**
@@ -233,7 +264,9 @@ export function visibleDocumentCondition(userId: string, orgId: string, min: Doc
  * The same rule for any statement: true when the document `documentId` of
  * `orgId` exists and `userId` can open it with at least `min`. `orgId` and
  * `documentId` may be columns of the statement (an attention item's
- * `org_id` and `source_id`, an exported row's document id).
+ * `org_id` and `source_id`, an exported row's document id), under any alias,
+ * the check's own `access_*` names included: they are bound before those
+ * exist (documentIdVisibleSql).
  */
 export function visibleDocumentIdSql(userId: string, orgId: OrgRef, documentId: SQL, min: DocRole = 'view'): SQL {
   return documentIdVisibleSql(userId, orgId, documentId, min);
@@ -319,8 +352,10 @@ export function spaceMembersWhoCannotOpenQuery(orgId: string, spaceId: string, d
  * the workspace aren't counted. The caller has already checked that it may
  * see the document and the chat (F9's GET /audience).
  */
-export async function spaceMembersWhoCannotOpen(orgId: string, spaceId: string, documentId: string): Promise<{ userIds: string[]; guests: number }> {
-  const result = await db.execute(spaceMembersWhoCannotOpenQuery(orgId, spaceId, documentId));
+export async function spaceMembersWhoCannotOpen(
+  orgId: string, spaceId: string, documentId: string, executor: Executor = db,
+): Promise<{ userIds: string[]; guests: number }> {
+  const result = await executor.execute(spaceMembersWhoCannotOpenQuery(orgId, spaceId, documentId));
   const rows = result.rows as Array<{ user_id: string; guest: boolean }>;
   return { userIds: rows.map((row) => row.user_id), guests: rows.filter((row) => row.guest).length };
 }
