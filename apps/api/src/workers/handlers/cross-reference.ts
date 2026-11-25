@@ -144,7 +144,7 @@ export async function handleCrossReference(job: JobData): Promise<void> {
         .innerJoin(projects, eq(tasks.project_id, projects.id))
         .where(and(
           eq(projects.org_id, orgId),
-          taskKeyMatch(ref),
+          taskKeyMatch(ref, { exact: true }),
           eq(projects.is_deleted, false),
           eq(projects.is_archived, false),
           eq(tasks.org_id, orgId),

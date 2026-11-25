@@ -17,8 +17,10 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
   read from its last letters (`R9G-1` as `G-1`), so the task got no backlink, or a task in
   another project whose prefix matched those letters got it instead.
 - **Same rule as task search.** A key is matched whole, the way task search matches it
-  since 153, so a zero-padded key (`R9G-01`) links nothing. A note still links only tasks
-  its author may see.
+  since 153, so a zero-padded key (`R9G-01`) links nothing. A prefix may also start with
+  a digit (`9RC-1`). A key must stand as its own word (`preR9G-1` links nothing), and a
+  note links only the task whose key is written exactly, with its dash. A note still
+  links only tasks its author may see.
 
 ### Images in a note load for everyone who can read the note
 

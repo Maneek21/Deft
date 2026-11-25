@@ -6,19 +6,26 @@ import { projects, tasks } from '@deft/db/schema';
 // letters end; it is compared whole against prefix and number.
 
 /**
- * True for the task whose key equals `key`, written PREFIX-N or PREFIXN, in
- * any case. `projects` must be joined to `tasks`. The number is compared as
- * written, so a zero-padded key (R9G-01) matches nothing.
+ * True for the task whose key equals `key`, in any case. `projects` must be
+ * joined to `tasks`. The number is compared as written, so a zero-padded key
+ * (R9G-01) matches nothing. Search also takes the key without its dash
+ * (PREFIXN); `{ exact: true }` takes only PREFIX-N, for a key read out of
+ * text, where the dashless form could name a second project (prefix `AB-`,
+ * task 1, also reads `AB-1`).
  */
-export function taskKeyMatch(key: string): SQL {
+export function taskKeyMatch(key: string, opts: { exact?: boolean } = {}): SQL {
   const wanted = key.trim().toUpperCase();
-  return sql`(upper(${projects.prefix}) || '-' || ${tasks.number}::text = ${wanted}
+  const withDash = sql`upper(${projects.prefix}) || '-' || ${tasks.number}::text = ${wanted}`;
+  if (opts.exact) return sql`(${withDash})`;
+  return sql`(${withDash}
       OR upper(${projects.prefix}) || ${tasks.number}::text = ${wanted})`;
 }
 
-// A key written in text (a note, a message): capital letters and digits,
-// starting with a letter, then a dash and the number.
-const TASK_KEY_IN_TEXT = /[A-Z][A-Z0-9]*-\d+/g;
+// A key written in text (a note, a message): a prefix of capital letters and
+// digits holding at least one letter (R9G, 9RC), a dash and the number, as a
+// whole word: not inside a longer run of letters and digits (preR9G-1,
+// R9G-1draft).
+const TASK_KEY_IN_TEXT = /(?<![A-Za-z0-9])(?=[0-9]*[A-Z])[A-Z0-9]+-\d+(?![A-Za-z0-9])/g;
 
 /** The distinct task keys written in `text`, in order of first appearance. */
 export function taskKeysIn(text: string): string[] {

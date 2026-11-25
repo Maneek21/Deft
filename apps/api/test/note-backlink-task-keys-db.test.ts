@@ -19,13 +19,20 @@ const member = randomUUID();
 const people = [owner, member];
 
 // R9G holds a digit; G is the project the old scanner read R9G-1 as.
-const projectIds = { r9g: randomUUID(), rc8: randomUUID(), g: randomUUID() };
-const prefixes = { r9g: 'R9G', rc8: 'RC8', g: 'G' };
+// 9RC starts with a digit; RC is its decoy. AB- ends in a dash, so its task 1
+// would read AB-1 without the dash rule; AB is the project AB-1 names.
+const projectIds = { r9g: randomUUID(), rc8: randomUUID(), g: randomUUID(), n9rc: randomUUID(), rc: randomUUID(), ab: randomUUID(), abDash: randomUUID() };
+const prefixes = { r9g: 'R9G', rc8: 'RC8', g: 'G', n9rc: '9RC', rc: 'RC', ab: 'AB', abDash: 'AB-' };
+type ProjectKey = keyof typeof projectIds;
 const taskIds = {
   r9g1: randomUUID(),   // R9G-1
   rc812: randomUUID(),  // RC8-12
   g1: randomUUID(),     // G-1 (decoy)
   hidden: randomUUID(), // R9G-3, restricted to the owner
+  n9rc1: randomUUID(),  // 9RC-1
+  rc1: randomUUID(),    // RC-1 (decoy)
+  ab1: randomUUID(),    // AB-1, restricted to the owner
+  abDash1: randomUUID(), // AB--1 (decoy), open
 };
 
 before(async () => {
@@ -36,7 +43,7 @@ before(async () => {
       [id, `nbk-${run}-${role}@test.local`, `NBK ${role} ${run}`]);
     await c.query(`INSERT INTO org_members (id, org_id, user_id, role, is_active) VALUES (gen_random_uuid()::text, $1, $2, $3, true)`, [org, id, role]);
   }
-  for (const key of ['r9g', 'rc8', 'g'] as const) {
+  for (const key of Object.keys(projectIds) as ProjectKey[]) {
     await c.query(`INSERT INTO projects (id, org_id, name, prefix, lead_id, task_counter) VALUES ($1, $2, $3, $4, null, 20)`,
       [projectIds[key], org, `nbk ${key} ${run}`, prefixes[key]]);
   }
@@ -46,6 +53,10 @@ before(async () => {
     [taskIds.rc812, projectIds.rc8, 12, null],
     [taskIds.g1, projectIds.g, 1, null],
     [taskIds.hidden, projectIds.r9g, 3, restricted],
+    [taskIds.n9rc1, projectIds.n9rc, 1, null],
+    [taskIds.rc1, projectIds.rc, 1, null],
+    [taskIds.ab1, projectIds.ab, 1, restricted],
+    [taskIds.abDash1, projectIds.abDash, 1, null],
   ];
   for (const [id, project, number, metadata] of rows) {
     await c.query(`INSERT INTO tasks (id, org_id, project_id, number, title, created_by, status, priority, metadata)
@@ -85,6 +96,8 @@ async function scanNote(author: string, text: string): Promise<string[]> {
 test('taskKeysIn reads a key whose prefix holds a digit whole, once each', () => {
   assert.deepEqual(taskKeysIn('see R9G-1, RC8-12 and DEFT-5; again R9G-1'), ['R9G-1', 'RC8-12', 'DEFT-5']);
   assert.deepEqual(taskKeysIn('due 2026-11-26, covid-19, r9g-1'), []);
+  assert.deepEqual(taskKeysIn('9RC-1 (DEFT-5), "RC8-12".'), ['9RC-1', 'DEFT-5', 'RC8-12']);
+  assert.deepEqual(taskKeysIn('preR9G-1, R9G-1draft, x9RC-1'), []);
 });
 
 test('a note naming R9G-1 and RC8-12 links those tasks, not G-1', async () => {
@@ -104,4 +117,17 @@ test('a zero-padded key (R9G-01) links nothing, as task search finds nothing for
 test('a restricted task is linked only from a note whose author may see it', async () => {
   assert.deepEqual(await scanNote(member, 'Also R9G-3.'), [], 'a member the task does not name gets no link');
   assert.deepEqual(await scanNote(owner, 'Also R9G-3.'), [taskIds.hidden], 'its creator gets the link');
+});
+
+test('a prefix that starts with a digit (9RC-1) links that task, not RC-1', async () => {
+  assert.deepEqual(await scanNote(member, 'Waiting on 9RC-1.'), [taskIds.n9rc1]);
+});
+
+test('a key inside a longer word (preR9G-1, R9G-1draft) links nothing', async () => {
+  assert.deepEqual(await scanNote(member, 'preR9G-1 and R9G-1draft'), []);
+});
+
+test('AB-1 links only project AB task 1, never project AB- task 1, even when AB-1 is hidden from the author', async () => {
+  assert.deepEqual(await scanNote(member, 'See AB-1.'), [], 'the member cannot see AB-1 and AB- task 1 is not AB-1');
+  assert.deepEqual(await scanNote(owner, 'See AB-1.'), [taskIds.ab1]);
 });
