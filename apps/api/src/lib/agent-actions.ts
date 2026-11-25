@@ -53,6 +53,7 @@ import { validateNativeAgentMentionWrite } from './native-mention-agent-writes.j
 import { clientSafeErrorMessage } from './client-safe-error.js';
 import { authorizeNativeActionTarget, promotableNoteSql } from './agent-action-visibility.js';
 import { claimNoteFiles } from './note-file-claims.js';
+import { visibleNoteCondition } from './note-visibility.js';
 import { executeWikiWriteAction, TERMINAL_REFUSAL_RESULT, wikiProposalTargetValues } from './wiki-proposal-target.js';
 import {
   MODULE_OPERATION_REQUEST_SCHEMAS,
@@ -3302,7 +3303,7 @@ export async function executeAction(
       }
 
       case 'search_notes': {
-        // Block 2.1 — search across user's own notes + org-visible notes.
+        // Block 2.1 — search the notes the user may see (lib/note-visibility.ts).
         const query = typeof params.query === 'string' ? params.query.trim() : '';
         const scope = ['mine', 'org', 'all'].includes(params.scope) ? params.scope : 'all';
         const limit = Math.min(Math.max(Number(params.limit) || 10, 1), 50);
@@ -3315,7 +3316,7 @@ export async function executeAction(
             ? eq(notes.user_id, userId)
             : scope === 'org'
               ? eq(notes.visibility, 'org')
-              : sql`(${notes.user_id} = ${userId} OR ${notes.visibility} = 'org')`;
+              : undefined;
         const rows = await db
           .select({
             id: notes.id,
@@ -3329,6 +3330,7 @@ export async function executeAction(
             and(
               eq(notes.org_id, orgId),
               eq(notes.is_deleted, false),
+              visibleNoteCondition(userId),
               scopeClause,
               sql`(${notes.title} ILIKE ${pattern} OR coalesce(${notes.content}, '') ILIKE ${pattern})`,
             ),
@@ -3349,7 +3351,7 @@ export async function executeAction(
               eq(notes.id, noteId),
               eq(notes.org_id, orgId),
               eq(notes.is_deleted, false),
-              sql`(${notes.user_id} = ${userId} OR ${notes.visibility} = 'org')`,
+              visibleNoteCondition(userId),
             ),
           )
           .limit(1);

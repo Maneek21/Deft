@@ -1064,14 +1064,19 @@ export default function TeamsSettingsPage() {
                           <p className="text-[13px]" style={{ color: 'var(--muted)' }}>No linked resources yet.</p>
                         ) : detail.resources.map((resource) => {
                           const restricted = resource.access === 'restricted';
+                          const hiddenNote = restricted && resource.restricted_reason === 'note_not_visible';
                           const label = restricted
-                            ? 'Restricted private space'
+                            ? (hiddenNote ? 'Note you can’t open' : 'Restricted private space')
                             : (resource.label || resource.resource_id.slice(0, 8));
                           return (
                             <span
                               key={resource.id}
                               className="inline-flex max-w-full items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium"
-                              title={restricted ? 'You need to be a member of this private space to see its name and messages.' : undefined}
+                              title={restricted
+                                ? (hiddenNote
+                                  ? 'This note is not shared with you, so its title is hidden.'
+                                  : 'You need to be a member of this private space to see its name and messages.')
+                                : undefined}
                               style={{
                                 color: restricted ? 'var(--muted)' : 'white',
                                 background: restricted ? 'var(--surface)' : 'var(--accent)',

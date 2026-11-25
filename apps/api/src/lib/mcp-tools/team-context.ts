@@ -18,6 +18,7 @@ import {
 import { db } from '../db.js';
 import { visibleTaskCondition } from '../task-visibility.js';
 import { visibleWikiPageCondition } from '../wiki-visibility.js';
+import { visibleNoteCondition } from '../note-visibility.js';
 import { publicSpaceVisibleSql } from '../space-visibility.js';
 import { canSeePerson, emailFor, peopleViewer, visiblePersonIds, type PeopleViewer } from '../people-visibility.js';
 import { errorResult, textResult, type ToolContext, type ToolResult } from './types.js';
@@ -447,6 +448,7 @@ async function enrichResources(access: TeamAccessContext, teamId: string) {
   }
 
   const noteIds = idsByType.get('note') ?? [];
+  const hiddenNotes = new Set<string>();
   if (noteIds.length) {
     const rows = await db.select({
       id: notes.id,
@@ -455,8 +457,16 @@ async function enrichResources(access: TeamAccessContext, teamId: string) {
       visibility: notes.visibility,
       is_pinned: notes.is_pinned,
       updated_at: notes.updated_at,
-    }).from(notes).where(and(eq(notes.org_id, access.org_id), inArray(notes.id, noteIds), eq(notes.is_deleted, false)));
-    rows.forEach((row) => put('note', row.id, row));
+      is_deleted: notes.is_deleted,
+      visible: access.user_id ? sql<boolean>`${visibleNoteCondition(access.user_id)}` : sql<boolean>`true`,
+    }).from(notes).where(and(eq(notes.org_id, access.org_id), inArray(notes.id, noteIds)));
+    // A note the reader may not see (lib/note-visibility.ts), deleted or not,
+    // is listed like a restricted space: no title, no label. As REST
+    // (routes/teams.ts decorateResourcesForUser).
+    rows.forEach(({ visible, is_deleted, ...row }) => {
+      if (!visible) hiddenNotes.add(row.id);
+      else if (!is_deleted) put('note', row.id, row);
+    });
   }
 
   const feedIds = idsByType.get('calendar_feed') ?? [];
@@ -506,14 +516,16 @@ async function enrichResources(access: TeamAccessContext, teamId: string) {
 
   return resources.map((row) => {
     const rowMetadata = metadata.get(`${row.resource_type}:${row.resource_id}`) ?? null;
-    const restricted = row.resource_type === 'space' && rowMetadata?.access === 'restricted';
+    const restrictedSpace = row.resource_type === 'space' && rowMetadata?.access === 'restricted';
+    const hiddenNote = row.resource_type === 'note' && hiddenNotes.has(row.resource_id);
+    const restricted = restrictedSpace || hiddenNote;
     return {
       id: row.id,
       type: row.resource_type,
       resource_id: row.resource_id,
       label: restricted ? null : row.label,
       access: restricted ? 'restricted' : 'visible',
-      restricted_reason: restricted ? 'space_membership_required' : null,
+      restricted_reason: restrictedSpace ? 'space_membership_required' : hiddenNote ? 'note_not_visible' : null,
       created_at: row.created_at,
       metadata: rowMetadata,
     };
