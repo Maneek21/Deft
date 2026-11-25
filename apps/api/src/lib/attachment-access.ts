@@ -161,6 +161,12 @@ export async function authorizeAttachmentDownload(params: Readonly<{
     const [member] = await tx.select({ active: orgMembers.is_active }).from(orgMembers).where(and(
       eq(orgMembers.org_id, params.org_id), eq(orgMembers.user_id, params.user_id))).for('share');
     if (!member?.active) throw new AttachmentDownloadAuthorityError('INVALID_TOKEN', 401);
+    // A note's save locks the note, then the files it links or releases. Take
+    // the notes that link this file first, in the same order, so a save and a
+    // download of the same image wait for each other instead of timing out.
+    await tx.select({ id: notes.id }).from(notes).where(and(eq(notes.org_id, params.org_id), inArray(notes.id,
+      tx.select({ id: noteFiles.note_id }).from(noteFiles).where(and(eq(noteFiles.org_id, params.org_id), eq(noteFiles.file_id, params.file.id))))))
+      .orderBy(notes.id).for('share');
     const [file] = await tx.select().from(files).where(and(eq(files.org_id, params.org_id), eq(files.id, params.file.id))).for('update');
     if (!file || file.storage_key !== params.file.storage_key || file.size_bytes !== params.file.size_bytes
       || file.content_sha256 !== params.file.content_sha256) throw missing();

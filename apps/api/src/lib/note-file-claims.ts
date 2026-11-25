@@ -39,6 +39,9 @@ const NAME_END = /[\t\n\f\r />=]/;
 const UNQUOTED_END = /[\t\n\f\r >]/;
 // Elements whose content a browser reads as text up to their end tag.
 const RAW_TEXT = new Set(['textarea', 'title', 'script', 'style', 'xmp', 'iframe', 'noembed', 'noframes', 'noscript']);
+// Elements whose content the editor never shows: a template's content is an
+// inert fragment, and the editor's parser ignores object and head subtrees.
+const HIDDEN = new Set(['template', 'object', 'head']);
 const NAMED_REFS: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
 
 /** An attribute value with its character references decoded, as a browser reads it. */
@@ -55,12 +58,14 @@ function decodeReferences(value: string): string {
  * pass (no regular expression can backtrack on a long note). Comments are
  * skipped (an unclosed one runs to the end, as a browser reads it), the
  * content of text-only elements such as <textarea> is skipped to their end
- * tag, and every other start tag is read whole, so a quoted value never
- * starts a tag or a comment. Values have character references decoded; the
+ * tag, and every other tag is read whole, so a quoted value never starts a
+ * tag or a comment. An image inside a template, an object or a head (until
+ * its end tag) is not shown by the editor and is left out. Values have character references decoded; the
  * first of a repeated attribute wins, as in a browser.
  */
 function imageTags(html: string): Array<Map<string, string>> {
   const images: Array<Map<string, string>> = [];
+  let hidden = 0;
   let i = 0;
   while (i < html.length) {
     const open = html.indexOf('<', i);
@@ -71,10 +76,12 @@ function imageTags(html: string): Array<Map<string, string>> {
       i = close + 3;
       continue;
     }
-    if (!/[A-Za-z]/.test(html[open + 1] ?? '')) { i = open + 1; continue; }
-    let j = open + 1;
+    const closing = html[open + 1] === '/';
+    const nameStart = open + (closing ? 2 : 1);
+    if (!/[A-Za-z]/.test(html[nameStart] ?? '')) { i = open + 1; continue; }
+    let j = nameStart;
     while (j < html.length && !TAG_END.test(html[j]!)) j++;
-    const tagName = html.slice(open + 1, j).toLowerCase();
+    const tagName = html.slice(nameStart, j).toLowerCase();
     const attrs = new Map<string, string>();
     let ended = false;
     while (j < html.length) {
@@ -104,7 +111,13 @@ function imageTags(html: string): Array<Map<string, string>> {
       if (name && !attrs.has(name)) attrs.set(name, decodeReferences(value));
     }
     if (!ended) break;
-    if (tagName === 'img') images.push(attrs);
+    if (closing) {
+      if (HIDDEN.has(tagName) && hidden > 0) hidden--;
+      i = j;
+      continue;
+    }
+    if (tagName === 'img' && hidden === 0) images.push(attrs);
+    if (HIDDEN.has(tagName)) hidden++;
     if (tagName === 'plaintext') break;
     if (RAW_TEXT.has(tagName)) {
       const endTag = new RegExp(`</${tagName}(?=[\\t\\n\\f\\r />])`, 'gi');
@@ -112,17 +125,6 @@ function imageTags(html: string): Array<Map<string, string>> {
       const end = endTag.exec(html);
       if (!end) break;
       j = end.index;
-    }
-    if (tagName === 'template') {
-      // A template's content is inert: a browser parses it into a separate
-      // fragment the editor never reads. Skip to its matching end tag.
-      const marker = /<(\/?)template(?=[\t\n\f\r />])/gi;
-      marker.lastIndex = j;
-      let depth = 1;
-      let found: RegExpExecArray | null;
-      while (depth > 0 && (found = marker.exec(html))) depth += found[1] ? -1 : 1;
-      if (depth > 0) break;
-      j = marker.lastIndex;
     }
     i = j;
   }
@@ -211,20 +213,25 @@ export async function syncNoteFiles(
   // Lock, in one id order, every file this save may link or release, so two
   // saves (or a save and a schedule or a cancel) that touch the same files
   // wait for each other instead of deadlocking. A file to link is locked only
-  // when it qualifies, and the check is made again on the locked row.
+  // when it qualifies; it is then checked again in a fresh statement, which
+  // sees a task or message link committed while this one waited.
   const removedSet = new Set(removed);
   const touched = [...new Set([...candidates, ...removed])].sort();
   const toLink: string[] = [];
   for (const ids of batches(touched)) {
     const releasing = ids.filter((id) => removedSet.has(id));
-    const locked = rowsOf<{ id: string; qualifies: boolean }>(await database.execute(sql`
-      SELECT ${files.id} AS id, ${linkable(user.id)} AS qualifies
+    const locked = rowsOf<{ id: string }>(await database.execute(sql`
+      SELECT ${files.id} AS id
       FROM ${files}
       WHERE ${files.org_id} = ${note.org_id} AND ${inArray(files.id, ids)}
         AND (${releasing.length > 0 ? inArray(files.id, releasing) : sql`false`} OR ${linkable(user.id)})
       ORDER BY ${files.id}
-      FOR UPDATE OF ${files}`));
-    for (const row of locked) if (row.qualifies && !removedSet.has(row.id)) toLink.push(row.id);
+      FOR UPDATE OF ${files}`)).map((row) => row.id).filter((id) => !removedSet.has(id));
+    if (locked.length === 0) continue;
+    const qualifying = rowsOf<{ id: string }>(await database.execute(sql`
+      SELECT ${files.id} AS id FROM ${files}
+      WHERE ${files.org_id} = ${note.org_id} AND ${inArray(files.id, locked)} AND ${linkable(user.id)}`));
+    toLink.push(...qualifying.map((row) => row.id));
   }
 
   for (const ids of batches(toLink)) {
@@ -292,7 +299,7 @@ export async function backfillNoteFileLinks(
     const page = rowsOf<{ id: string }>(await database.execute(sql`
       SELECT id FROM notes
       WHERE id > ${after}
-        AND (strpos(lower(content), 'data-file-id') > 0 OR strpos(content, '/api/files/') > 0)
+        AND strpos(lower(content), '<img') > 0
       ORDER BY id
       LIMIT ${batchSize}`));
     for (const { id } of page) {

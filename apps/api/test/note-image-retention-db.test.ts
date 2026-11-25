@@ -134,6 +134,11 @@ test('noteFileIds reads images as the editor does: data-file-id, else an older /
   assert.deepEqual(noteFileIds(`<img data-file-id=" ${a} ">`), [a], 'the id is trimmed, as the editor fetches it');
   assert.deepEqual(noteFileIds(`<template><template>${img(b)}</template>${img(b)}</template>${img(a)}`), [a], 'template content is inert');
   assert.deepEqual(noteFileIds(`<template>${img(b)}`), [], 'an unclosed template runs to the end');
+  assert.deepEqual(noteFileIds(`<template><p title="</template>">${img(b)}</p></template>${img(a)}`), [a], 'an end tag inside a quoted value does not end a template');
+  assert.deepEqual(noteFileIds(`<template><!-- </template> -->${img(b)}</template>${img(a)}`), [a], 'nor one inside a comment');
+  assert.deepEqual(noteFileIds(`<object data="x">${img(b)}</object>${img(a)}`), [a], 'the editor ignores object content');
+  assert.deepEqual(noteFileIds(`<head>${img(b)}</head>${img(a)}`), [a], 'and head content');
+  assert.deepEqual(noteFileIds(`</object>${img(a)}`), [a], 'a stray end tag hides nothing');
   // Crafted input with no closing '>' is read in one pass, not backtracked.
   const started = Date.now();
   noteFileIds('<a "<a" '.repeat(250_000));

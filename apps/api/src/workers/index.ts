@@ -758,10 +758,17 @@ async function runStaleMaintenance(): Promise<void> {
   ]);
 }
 
-async function runRetentionMaintenance(): Promise<void> {
+async function runRetentionMaintenance(options: { attachmentsAfter?: Promise<void> } = {}): Promise<void> {
+  // The startup run sweeps staged uploads only after the note image backfill,
+  // in the background, so start does not wait for it.
+  const sweep = () => sweepExpiredStagedAttachments();
+  if (options.attachmentsAfter) {
+    void trackBackground(options.attachmentsAfter.then(sweep).then(reportAttachmentSweep)
+      .catch((err) => console.warn('[workers] retention sweep failed:')));
+  }
   const [pruned, attachments] = await Promise.all([
     pruneFinishedJobs(JOB_RETENTION_MS),
-    sweepExpiredStagedAttachments(),
+    options.attachmentsAfter ? Promise.resolve(null) : sweep(),
     APP_RUNS_ENABLED ? import('../lib/app-run-maintenance.js').then(mod => mod.runAppRunMaintenance('retention')) : Promise.resolve(),
     isAppAttachmentBrokerEnabled()?import('../lib/app-attachment-cleanup.js').then(async mod=>{
       const result=await mod.appAttachmentCleanup.run();
@@ -769,6 +776,10 @@ async function runRetentionMaintenance(): Promise<void> {
     }):Promise.resolve(),
   ]);
   if (pruned > 0) console.log(`[workers] Pruned ${logNumber(pruned)} expired terminal job(s)`);
+  if (attachments) reportAttachmentSweep(attachments);
+}
+
+function reportAttachmentSweep(attachments: Awaited<ReturnType<typeof sweepExpiredStagedAttachments>>): void {
   if (attachments.deletedRows > 0) {
     console.log(`[workers] Pruned ${logNumber(attachments.deletedRows)} expired staged attachment(s)`);
   }
@@ -824,7 +835,17 @@ async function startWorkersInternal(opts?: {
   if (!opts?.skipStartupWork) {
     const recovered = await cleanupStaleJobs();
     if (recovered > 0) console.log(`[workers] Recovered ${logNumber(recovered)} stale job(s) on startup`);
-    await runRetentionMaintenance();
+    // Notes saved before note_files existed: link the images they show, so
+    // their readers can load them, and keep the ones still staged
+    // (lib/note-file-claims.ts). The startup sweep of staged uploads waits for
+    // it, so it never deletes an image a note still shows; the rest of start
+    // does not wait.
+    const noteImages = Promise.all([import('../lib/note-file-claims.js'), import('../lib/db.js')])
+      .then(([mod, { db: database }]) => mod.backfillNoteFileLinks(database))
+      .then((count) => { if (count > 0) console.log(`[workers] Linked ${logNumber(count)} note image(s) to their notes`); })
+      .catch((err) => console.warn('[workers] note image link backfill failed:'));
+    void trackBackground(noteImages);
+    await runRetentionMaintenance({ attachmentsAfter: noteImages });
 
     const hydrationResults = await Promise.allSettled([
       import('./handlers/reminder-fire.js').then((mod) => mod.rehydratePendingReminders()),
@@ -843,14 +864,6 @@ async function startWorkersInternal(opts?: {
       .then((mod) => mod.scrubLegacyHeartbeatTicks())
       .then((count) => { if (count > 0) console.log(`[workers] Scrubbed ${logNumber(count)} older heartbeat tick(s)`); })
       .catch((err) => console.warn('[workers] heartbeat tick scrub failed:')));
-
-    // Notes saved before note_files existed: link the images they show, so
-    // their readers can load them (lib/note-file-claims.ts). Idempotent;
-    // runs in the background, never blocks start.
-    void trackBackground(Promise.all([import('../lib/note-file-claims.js'), import('../lib/db.js')])
-      .then(([mod, { db: database }]) => mod.backfillNoteFileLinks(database))
-      .then((count) => { if (count > 0) console.log(`[workers] Linked ${logNumber(count)} note image(s) to their notes`); })
-      .catch((err) => console.warn('[workers] note image link backfill failed:')));
   }
 
   workersRunning = true;
