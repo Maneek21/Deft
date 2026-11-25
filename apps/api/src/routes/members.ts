@@ -40,6 +40,8 @@ import { roleMustHaveSecondStep } from '../lib/two-step-policy.js';
 import { userTwoStep } from '@deft/db/two-step';
 import { closeLostRoomActionsInTx, finishLostRoomCancellations } from '../lib/lost-room-action-cancellation.js';
 import { lockRoomAccessChange } from '../lib/room-access-lock.js';
+import { applyAccessLossInTx, finishAccessLoss, type PendingAccessLoss } from '../lib/document-access-change.js';
+import { emitDocumentAccessChanged } from '../lib/document-access-events.js';
 import { visibleTaskSql } from '../lib/task-visibility.js';
 import {
   authorizeMembershipOperation, checkMembershipOperation, isProtectedMembership, lockMembership, MembershipGuardError, recordMembershipChange, recordPrivilege, type MembershipActor,
@@ -120,13 +122,31 @@ async function getCurrentMembership(orgId: string, userId: string) {
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /**
- * Everything that ends a person's access to the workspace: sessions, spaces,
- * teams, groups, task assignments, personal and API keys, connected apps.
- * Runs inside the caller's transaction, which holds the person's account and
- * membership locks (lib/membership-guard.ts), so it can never act on a
- * membership that was restored after the removal was authorized.
+ * Drives and documents, when a person leaves the workspace (consult rules C3
+ * and C5): every way out (removal, deactivation, invite revocation) ends
+ * their document access here, inside the removal's transaction, after the
+ * room rule. The caller finishes the returned loss after commit
+ * (afterWorkspaceAccessEnded). F6 freezes the person's personal drive in this
+ * same function, before the access loss.
  */
-async function endWorkspaceAccess(tx: Tx, orgId: string, memberId: string, revokedAt: Date, closedActions: string[] = []): Promise<string[]> {
+async function endDocumentAccessInTx(tx: Tx, orgId: string, memberId: string): Promise<PendingAccessLoss> {
+  const change = { orgId, userIds: [memberId] };
+  return { change, result: await applyAccessLossInTx(tx, change) };
+}
+
+/**
+ * Everything that ends a person's access to the workspace: sessions, spaces,
+ * teams, groups, task assignments, personal and API keys, connected apps,
+ * drives and documents. Runs inside the caller's transaction, which holds
+ * the person's account and membership locks (lib/membership-guard.ts), so it
+ * can never act on a membership that was restored after the removal was
+ * authorized. The closed room actions and the document access loss are
+ * pushed onto `closedActions` and `documentLosses`, for
+ * afterWorkspaceAccessEnded.
+ */
+async function endWorkspaceAccess(
+  tx: Tx, orgId: string, memberId: string, revokedAt: Date, closedActions: string[] = [], documentLosses: PendingAccessLoss[] = [],
+): Promise<string[]> {
   const sessions = await tx.select({ id: webSessions.id })
     .from(webSessions)
     .where(and(eq(webSessions.org_id, orgId), eq(webSessions.user_id, memberId), sql`${webSessions.revoked_at} IS NULL`))
@@ -221,11 +241,16 @@ async function endWorkspaceAccess(tx: Tx, orgId: string, memberId: string, revok
   // DFX2: every room went with the workspace; their pending assistant
   // actions from rooms close with a reason, committed with the removal.
   for (const id of await closeLostRoomActionsInTx(tx, { orgId, requesterId: memberId })) closedActions.push(id);
+  // Drives and documents (rule C3), after the room rule: what they lost above
+  // (their membership, their chats) is what the hooks see.
+  documentLosses.push(await endDocumentAccessInTx(tx, orgId, memberId));
   return sessions.map(session => session.id);
 }
 
 /** After commit: live effects of a removal, only if the person is still removed. */
-async function afterWorkspaceAccessEnded(orgId: string, memberId: string, sessionIds: string[], closedActions: string[]) {
+async function afterWorkspaceAccessEnded(
+  orgId: string, memberId: string, sessionIds: string[], closedActions: string[], documentLosses: PendingAccessLoss[] = [],
+) {
   emitWebSessionRevocations(sessionIds);
   const [still] = await db.select({ is_active: orgMembers.is_active }).from(orgMembers)
     .where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, memberId))).limit(1);
@@ -234,6 +259,8 @@ async function afterWorkspaceAccessEnded(orgId: string, memberId: string, sessio
   }
   // DFX2: receipts and attention items of the actions closed in the removal.
   await finishLostRoomCancellations(orgId, closedActions);
+  // Rule C3: the access generation moves, live document connections re-check.
+  for (const loss of documentLosses) await finishAccessLoss(loss.change, loss.result);
 }
 
 type Reassigned = { replacement_user_id: string | null; primary_open_tasks: number; led_projects: number; led_teams: number };
@@ -247,6 +274,7 @@ async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, acto
   const revokedAt = new Date();
   let reassigned: Reassigned = { replacement_user_id: replacementUserId, primary_open_tasks: 0, led_projects: 0, led_teams: 0 };
   const closedActions: string[] = [];
+  const documentLosses: PendingAccessLoss[] = [];
   const revokedSessionIds = await db.transaction(async (tx) => {
     // DFX2: the person's room-access lock first (lib/room-access-lock.ts).
     await lockRoomAccessChange(tx, orgId, memberId);
@@ -257,9 +285,9 @@ async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, acto
     if (replacementUserId) reassigned = await reassignMemberOwnership(tx, orgId, memberId, replacementUserId);
     await recordMembershipChange(tx, { orgId, targetUserId: memberId, locked, change: { isActive: false } });
     await tx.update(orgMembers).set({ is_active: false, updated_at: revokedAt }).where(eq(orgMembers.id, locked.membership.id));
-    return endWorkspaceAccess(tx, orgId, memberId, revokedAt, closedActions);
+    return endWorkspaceAccess(tx, orgId, memberId, revokedAt, closedActions, documentLosses);
   });
-  if (revokedSessionIds) await afterWorkspaceAccessEnded(orgId, memberId, revokedSessionIds, closedActions);
+  if (revokedSessionIds) await afterWorkspaceAccessEnded(orgId, memberId, revokedSessionIds, closedActions, documentLosses);
   return reassigned;
 }
 
@@ -1435,6 +1463,7 @@ memberRoutes.delete('/invites/:id', async (c) => {
 
       const revokedSessionIds: string[] = [];
       const closedActions: string[] = [];
+      const documentLosses: PendingAccessLoss[] = [];
       let deactivatedUserId: string | null = null;
       if (userId && locked) {
         const user = locked.account;
@@ -1444,20 +1473,23 @@ memberRoutes.delete('/invites/:id', async (c) => {
           await tx.update(orgMembers).set({ is_active: false, updated_at: revokedAt }).where(eq(orgMembers.id, membership.id));
           // Every access ends here, under the same locks: nothing runs later
           // that could reach a membership the owner restored in between.
-          revokedSessionIds.push(...await endWorkspaceAccess(tx, currentUser.org_id, userId, revokedAt, closedActions));
+          revokedSessionIds.push(...await endWorkspaceAccess(tx, currentUser.org_id, userId, revokedAt, closedActions, documentLosses));
           deactivatedUserId = userId;
         }
       }
       await tx.delete(invites).where(eq(invites.id, inviteId));
-      return { revokedSessionIds, deactivatedUserId, closedActions };
+      return { revokedSessionIds, deactivatedUserId, closedActions, documentLosses };
     });
     if ('failure' in result) {
       if (result.failure === 'NOT_FOUND') return c.json({ error: 'Invite not found', code: 'NOT_FOUND' }, 404);
       if (result.failure === 'GUARD') return c.json({ error: result.error, code: 'FORBIDDEN' }, 403);
       return c.json({ error: 'Accepted invites cannot be revoked here', code: 'INVITE_ACCEPTED' }, 409);
     }
-    if (result.deactivatedUserId) await afterWorkspaceAccessEnded(currentUser.org_id, result.deactivatedUserId, result.revokedSessionIds, result.closedActions);
-    else emitWebSessionRevocations(result.revokedSessionIds);
+    if (result.deactivatedUserId) {
+      await afterWorkspaceAccessEnded(currentUser.org_id, result.deactivatedUserId, result.revokedSessionIds, result.closedActions, result.documentLosses);
+    } else {
+      emitWebSessionRevocations(result.revokedSessionIds);
+    }
 
     return c.json({ success: true });
   } catch (err) {
@@ -1538,7 +1570,9 @@ memberRoutes.patch('/:id', async (c) => {
     // Read, seat check and role change share one transaction (and, on a
     // hosted cell, one seat lock): a guest becoming a member takes a seat.
     let closedOnRoleChange: string[] = [];
+    let documentLoss: PendingAccessLoss | null = null;
     const changed = await withSeatRetry(() => db.transaction(async (tx) => {
+      documentLoss = null;
       // DFX2: the person's room-access lock first (lib/room-access-lock.ts);
       // a demotion to guest ends their unjoined public rooms.
       await lockRoomAccessChange(tx, currentUser.org_id, memberId);
@@ -1588,6 +1622,14 @@ memberRoutes.patch('/:id', async (c) => {
       closedOnRoleChange = parsed.data.role === 'guest' && targetMembership.role !== 'guest'
         ? await closeLostRoomActionsInTx(tx, { orgId: currentUser.org_id, requesterId: memberId })
         : [];
+      // Drives and documents (rule C3): a guest loses every open drive's
+      // default role, and an admin made a member loses full access on open
+      // drives. Both run the access-loss path, after the room rule.
+      if ((parsed.data.role === 'guest' && targetMembership.role !== 'guest')
+        || (parsed.data.role === 'member' && targetMembership.role === 'admin')) {
+        const change = { orgId: currentUser.org_id, userIds: [memberId] };
+        documentLoss = { change, result: await applyAccessLossInTx(tx, change) };
+      }
       return { previousRole: targetMembership.role, role: parsed.data.role };
     }), (result) => ('seatRefusal' in result && result.seatRefusal ? result.seatRefusal : null));
 
@@ -1614,6 +1656,11 @@ memberRoutes.patch('/:id', async (c) => {
       });
     }
     await finishLostRoomCancellations(currentUser.org_id, closedOnRoleChange);
+    // A lowered role finishes its document access loss; a raised one (guest
+    // to member, member to admin) is an access change live editing re-checks.
+    const loss = documentLoss as PendingAccessLoss | null;
+    if (loss) await finishAccessLoss(loss.change, loss.result);
+    else if (changed.role !== changed.previousRole) emitDocumentAccessChanged({ orgId: currentUser.org_id, userIds: [memberId] });
 
     return c.json({ success: true });
   } catch (err) {

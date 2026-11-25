@@ -22,14 +22,15 @@ import { documents, drives } from '@deft/db/documents';
 import { attentionItems } from '@deft/db/schema';
 import { closeDb, db } from '../src/lib/db.js';
 import {
-  adminListedDriveCondition,
   documentRoleQuery,
+  documentViewersQuery,
   driveRoleQuery,
   spaceMembersWhoCannotOpenQuery,
   visibleDocumentCondition,
   visibleDocumentIdSql,
   visibleDriveCondition,
 } from '../src/lib/document-access.js';
+import { driveListQuery } from '../src/lib/drives.js';
 import { setupDrivesFixture, type DrivesFixture } from './fixtures/drives-fixture.js';
 import { planningGrowth, type Growth } from './fixtures/planning-growth.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
@@ -69,7 +70,7 @@ async function withinBudget(t: TestContext, forms: (fx: DrivesFixture) => Promis
       await fx.client.query(`INSERT INTO attention_items (id, org_id, user_id, kind, lane, dedupe_key, source_type, source_id, title)
         SELECT gen_random_uuid()::text, org_id, $2, 'document_shared', 'updates', 'document_shared:' || id || ':' || $2, 'document', id, title
         FROM documents WHERE org_id = $1`, [fx.orgId, fx.people.member]);
-      await fx.client.query(`ANALYZE drives, drive_members, doc_folders, documents, document_shares, spaces, space_members,
+      await fx.client.query(`ANALYZE drives, drive_members, doc_folders, documents, document_shares, doc_favorites, spaces, space_members,
         org_members, users, agent_employees, attention_items`);
       for (const [name, statement] of await forms(fx)) {
         const growth = await planningGrowth(statement);
@@ -105,6 +106,9 @@ test('the document access check plans within budget', async (t) => {
       ['documentRoleFor (point lookup)', query(documentRoleQuery(member, fx.orgId, document!.id))],
       // Who in a chat can't open a document (the posting prompt).
       ['spaceMembersWhoCannotOpen', query(spaceMembersWhoCannotOpenQuery(fx.orgId, fx.spaces.team, document!.id))],
+      // Who is sent document:updated for a drive's documents (rule C4): one statement for all of them.
+      ['documentViewers (events)', query(documentViewersQuery(fx.orgId,
+        (await db.select({ id: documents.id }).from(documents).where(eq(documents.org_id, fx.orgId)).limit(50)).map((row) => row.id)))],
     ];
   });
 });
@@ -114,9 +118,9 @@ test('the drive list plans within budget', async (t) => {
   await withinBudget(t, async (fx) => {
     const { admin, member } = fx.people;
     return [
-      // GET /api/drives: the drives a person can open, plus the private drives an owner or admin sees listed.
-      ['drive list', db.select({ id: drives.id, name: drives.name }).from(drives)
-        .where(or(visibleDriveCondition(admin, fx.orgId), adminListedDriveCondition(admin, fx.orgId))).orderBy(drives.name).toSQL()],
+      // GET /api/drives, as the route runs it: each drive's role, plus the private drives an owner or admin sees listed.
+      ['drive list', query(driveListQuery(admin, fx.orgId))],
+      ['drive list (a member)', query(driveListQuery(member, fx.orgId))],
       ['drive list, at least edit', db.select({ id: drives.id }).from(drives).where(visibleDriveCondition(member, fx.orgId, 'edit')).toSQL()],
       // The role on one drive: the point lookup, the drive condition once for each role.
       ['driveRoleFor (point lookup)', query(driveRoleQuery(member, fx.orgId, fx.workspaceDriveId))],

@@ -359,3 +359,79 @@ export async function spaceMembersWhoCannotOpen(
   const rows = result.rows as Array<{ user_id: string; guest: boolean }>;
   return { userIds: rows.map((row) => row.user_id), guests: rows.filter((row) => row.guest).length };
 }
+
+/**
+ * True when `userId` could ever hold access in `orgId` (F4's grant check): an
+ * active human member of any role, guests included, or an agent user whose
+ * own employee is active (activeActorSql). Defty's own user, a system user
+ * and an inactive member can't. A grant naming anyone else is refused.
+ */
+export async function canHoldDocumentAccess(userId: string, orgId: string, executor: Executor = db): Promise<boolean> {
+  const result = await executor.execute(sql`SELECT ${activeActorSql(userId, orgId)} AS can_hold`);
+  return (result.rows[0] as { can_hold?: unknown } | undefined)?.can_hold === true;
+}
+
+/**
+ * The statement documentViewers runs. Exported for its planning test.
+ *
+ * Candidates are only the people the grants name: drive members (people, and
+ * the people in member chats) and the document's shares (likewise). That is
+ * everyone who can view, except the owners, admins and members an open
+ * drive admits through its default role, who are reached through the
+ * members room instead (`members_room`). Each candidate is then held to the
+ * full check (documentIdVisibleSql), so frozen drives, inactive members,
+ * paused employees and chats of another workspace give nothing. One row per
+ * document and viewer; a document with no other viewer still has one row,
+ * with no user.
+ */
+export function documentViewersQuery(orgId: string, documentIds: readonly string[]): SQL {
+  const candidate = sql.raw('viewer_candidate.user_id');
+  return sql`SELECT viewer_doc.id AS document_id, viewer_doc.drive_id,
+      (viewer_drive.kind = 'open' AND viewer_drive.frozen_at IS NULL) AS members_room,
+      viewer_candidate.user_id
+    FROM documents viewer_doc
+    JOIN drives viewer_drive ON viewer_drive.id = viewer_doc.drive_id AND viewer_drive.org_id = viewer_doc.org_id
+    LEFT JOIN LATERAL (
+      SELECT viewer_member.principal_id AS user_id FROM drive_members viewer_member
+        WHERE viewer_member.drive_id = viewer_doc.drive_id AND viewer_member.principal_type = 'user'
+      UNION
+      SELECT viewer_chat_seat.user_id FROM drive_members viewer_chat
+        JOIN space_members viewer_chat_seat ON viewer_chat_seat.space_id = viewer_chat.principal_id
+        WHERE viewer_chat.drive_id = viewer_doc.drive_id AND viewer_chat.principal_type = 'space'
+      UNION
+      SELECT viewer_share.principal_id FROM document_shares viewer_share
+        WHERE viewer_share.document_id = viewer_doc.id AND viewer_share.principal_type = 'user'
+      UNION
+      SELECT viewer_share_seat.user_id FROM document_shares viewer_chat_share
+        JOIN space_members viewer_share_seat ON viewer_share_seat.space_id = viewer_chat_share.principal_id
+        WHERE viewer_chat_share.document_id = viewer_doc.id AND viewer_chat_share.principal_type = 'space'
+    ) viewer_candidate ON NOT (viewer_drive.kind = 'open' AND viewer_drive.frozen_at IS NULL AND EXISTS (
+        SELECT 1 FROM org_members viewer_room
+        WHERE viewer_room.org_id = viewer_doc.org_id AND viewer_room.user_id = viewer_candidate.user_id
+          AND viewer_room.role IN ('owner', 'admin', 'member')))
+      AND ${documentIdVisibleSql(candidate, orgId, sql.raw('viewer_doc.id'), 'view')}
+    WHERE viewer_doc.org_id = ${orgId} AND viewer_doc.id = ANY(${sql.param([...documentIds])}::text[])
+      AND viewer_doc.is_deleted = false AND viewer_drive.is_deleted = false
+    ORDER BY viewer_doc.id, viewer_candidate.user_id`;
+}
+
+/**
+ * Who may be sent a live event about the documents `documentIds` of `orgId`
+ * (consult rule C4): for each one that exists and isn't deleted, its drive,
+ * whether the workspace's members room covers it (an open drive: its owners,
+ * admins and members can all view it), and every other person who can view
+ * it. One statement for all the documents.
+ */
+export async function documentViewers(
+  orgId: string, documentIds: readonly string[], executor: Executor = db,
+): Promise<Array<{ documentId: string; driveId: string; membersRoom: boolean; userIds: string[] }>> {
+  if (documentIds.length === 0) return [];
+  const result = await executor.execute(documentViewersQuery(orgId, documentIds));
+  const byDocument = new Map<string, { documentId: string; driveId: string; membersRoom: boolean; userIds: string[] }>();
+  for (const row of result.rows as Array<{ document_id: string; drive_id: string; members_room: boolean; user_id: string | null }>) {
+    let entry = byDocument.get(row.document_id);
+    if (!entry) byDocument.set(row.document_id, entry = { documentId: row.document_id, driveId: row.drive_id, membersRoom: row.members_room, userIds: [] });
+    if (row.user_id) entry.userIds.push(row.user_id);
+  }
+  return [...byDocument.values()];
+}

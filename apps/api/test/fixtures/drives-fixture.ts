@@ -43,6 +43,12 @@ export type DrivesFixture = {
   insertDocument(i: { driveId: string; folderId?: string; parentDocumentId?: string; title?: string; json?: JSONContent; deleted?: boolean }): Promise<string>;
   share(documentId: string, p: Principal, role: 'edit' | 'comment' | 'view'): Promise<void>;
   removeSpaceMember(spaceId: string, userId: string): Promise<void>;
+  /**
+   * Another person in the workspace `orgId` (an active human member by
+   * default), removed with the fixture. An agent made here has no employee,
+   * as Defty's own user.
+   */
+  addPerson(i?: { role?: 'owner' | 'admin' | 'member' | 'guest'; kind?: 'human' | 'agent' | 'system'; active?: boolean }): Promise<string>;
   teardown(): Promise<void>;
 };
 
@@ -91,18 +97,19 @@ export async function setupDrivesFixture(label: string, options: DrivesFixtureOp
   const agentEmployeeId = randomUUID();
   const spaces = { team: randomUUID(), other: randomUUID() };
   const workspaceDriveId = randomUUID();
+  const extraPeople: string[] = [];
 
   const teardown = async () => {
     try {
       const orgs = [orgId, otherOrgId];
-      for (const table of ['attention_events', 'attention_items', 'doc_favorites', 'note_document_map', 'document_attachments',
+      for (const table of ['attention_events', 'attention_items', 'notifications', 'audit_log', 'doc_favorites', 'note_document_map', 'document_attachments',
         'document_versions', 'document_shares', 'documents', 'doc_folders', 'drive_members', 'drives']) {
         await q(`DELETE FROM ${table} WHERE org_id = ANY($1::text[])`, [orgs]);
       }
       await q('DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id = ANY($1::text[]))', [orgs]);
       for (const table of ['spaces', 'agent_employees', 'org_members']) await q(`DELETE FROM ${table} WHERE org_id = ANY($1::text[])`, [orgs]);
       await q('DELETE FROM orgs WHERE id = ANY($1::text[])', [orgs]);
-      await q('DELETE FROM users WHERE id = ANY($1::text[])', [Object.values(people)]);
+      await q('DELETE FROM users WHERE id = ANY($1::text[])', [[...Object.values(people), ...extraPeople]]);
     } finally {
       await client.end();
     }
@@ -211,6 +218,15 @@ export async function setupDrivesFixture(label: string, options: DrivesFixtureOp
 
     async removeSpaceMember(spaceId, userId) {
       await q('DELETE FROM space_members WHERE space_id = $1 AND user_id = $2', [spaceId, userId]);
+    },
+
+    async addPerson({ role = 'member', kind = 'human', active = true } = {}) {
+      const id = randomUUID();
+      extraPeople.push(id);
+      await q('INSERT INTO users (id, email, name, kind, is_agent) VALUES ($1, $2, $3, $4, $5)',
+        [id, `extra-${id.slice(0, 8)}-${tag}@drives.test`, `extra ${kind} ${role}`, kind, kind === 'agent']);
+      await q('INSERT INTO org_members (id, org_id, user_id, role, is_active) VALUES ($1, $2, $3, $4, $5)', [randomUUID(), orgId, id, role, active]);
+      return id;
     },
 
     teardown,
