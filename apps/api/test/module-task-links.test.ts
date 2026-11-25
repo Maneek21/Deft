@@ -182,9 +182,11 @@ test('module record task links enforce native task and module boundaries', async
       linkModuleRecordToTask(member, restrictedTaskId, record.resource_id),
       (error: any) => error?.code === 'TASK_NOT_FOUND',
     );
+    // The task's project is not linked to any space of the guest, so the
+    // task answers the guest like an unknown one (lib/task-visibility.ts).
     await assert.rejects(
       listTaskModuleRecordLinks(guest, taskId),
-      (error: any) => error?.code === 'MODULE_ACCESS_DENIED',
+      (error: any) => error?.code === 'TASK_NOT_FOUND',
     );
     await assert.rejects(
       linkModuleRecordToTask(outsider, taskId, record.resource_id),

@@ -19,6 +19,7 @@ import { emitToUser } from '../socket.js';
 import { isModuleGovernedWriteActionName } from './module-action-visibility.js';
 import { scheduleAttentionDeliveries, scheduleAttentionDelivery } from './web-push.js';
 import { nativeDeliveryAccessSql, nativeNotificationAccessSql } from './native-mention-visibility.js';
+import { taskHiddenFromGuestSql } from './task-visibility.js';
 import { publicSpaceVisibleSql } from './space-visibility.js';
 import { actionReviewerCandidateSql, loadActionReviewers } from './agent-action-requester.js';
 import {
@@ -89,6 +90,11 @@ function approvalGateScope(scope: AttentionSourceScope): ReviewGateScope {
 
 /** The access rule of each source type that has one, for reader `userId`. */
 const SOURCE_TYPE_ACCESS: Partial<Record<AttentionSourceType, (userId: string, sourceTypes: AttentionSourceScope) => SQL>> = {
+  // A guest sees a task item only while they may see the task (task-visibility.ts);
+  // for an owner, admin or member, and for an id naming no task, always true.
+  task: (userId) => sql`NOT ${taskHiddenFromGuestSql(userId, sql`${attentionItems.source_id}`, sql`${attentionItems.org_id}`)}`,
+  // An agent's request for help on a task (cooperative.ts) names the task in its metadata.
+  agent_channel_event: (userId) => sql`NOT ${taskHiddenFromGuestSql(userId, sql`${attentionItems.metadata}->>'task_id'`, sql`${attentionItems.org_id}`)}`,
   native_mention: (userId) => nativeDeliveryAccessSql(userId, sql`${attentionItems.source_id}`, sql`${attentionItems.org_id}`),
   message: (userId) => sql`EXISTS (
         SELECT 1
@@ -152,7 +158,10 @@ export type AttentionSourceScope = 'all' | readonly string[] | AttentionReadScop
  * asked for is not visible (fail closed), so name every type the statement
  * can meet; on rows of the named types and of types with no rule the result
  * is exactly the `'all'` result. A read's scope (`AttentionReadScope`) narrows
- * the approval rule the same way, by the kinds of the items' actions.
+ * the approval rule the same way, by the kinds of the items' actions. A task
+ * item, an agent's help request naming a task, and a notice (legacy
+ * notification) naming a task in its metadata or link, are hidden from a guest
+ * who may not see that task (task-visibility.ts).
  */
 export function visibleAttentionCondition(userId: string, sourceTypes: AttentionSourceScope) {
   const ruled = Object.keys(SOURCE_TYPE_ACCESS) as AttentionSourceType[];

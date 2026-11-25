@@ -13,7 +13,9 @@ import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users,
 import { getIO, emitToUser, emitOrgTaskEvent } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { canDeleteTask } from '../lib/task-permissions.js';
-import { visibleTaskCondition } from '../lib/task-visibility.js';
+import { guestTaskScopeSql, taskAliasColumns, visibleTaskCondition } from '../lib/task-visibility.js';
+import { peopleViewer } from '../lib/people-visibility.js';
+import { withoutHiddenParent, withoutHiddenParents } from '../lib/task-parent-projection.js';
 import { visibleWikiPageCondition } from '../lib/wiki-visibility.js';
 import { allowedNextStatuses, isValidTransition } from '../lib/task-status-machine.js';
 import { getProjectResolvedConfig } from '../lib/project-resolved-config.js';
@@ -179,6 +181,20 @@ async function getVisibleTaskForOrg(taskId: string, orgId: string, userId: strin
     )
     .limit(1);
   return task ?? null;
+}
+
+/**
+ * True when `parentId` may be a subtask's parent for `userId`: a live task of
+ * `orgId` that, for a guest, they may see (lib/task-visibility.ts). A missing
+ * task, another workspace's task and a hidden one all answer false, so the
+ * caller refuses them alike, as an unknown task.
+ */
+async function parentTaskUsable(parentId: string, orgId: string, userId: string): Promise<boolean> {
+  const [row] = await db.select({ id: tasks.id })
+    .from(tasks)
+    .where(and(eq(tasks.id, parentId), eq(tasks.org_id, orgId), eq(tasks.is_deleted, false), guestTaskScopeSql(userId)))
+    .limit(1);
+  return Boolean(row);
 }
 
 /**
@@ -359,8 +375,9 @@ taskRoutes.get('/my', async (c) => {
           .from(tasks)
           .where(
             and(
-              inArray(tasks.parent_task_id, taskIds),
+              inArray(tasks.parent_task_id, taskIds), eq(tasks.org_id, user.org_id),
               eq(tasks.is_deleted, false),
+              guestTaskScopeSql(user.id),
             )
           )
           .groupBy(tasks.parent_task_id)
@@ -757,7 +774,7 @@ taskRoutes.get('/table', async (c) => {
       parent_task_id: tasks.parent_task_id,
       total: sql<number>`count(*)::int`,
       done: sql<number>`count(*) filter (where ${tasks.status} = 'done')::int`,
-    }).from(tasks).where(and(inArray(tasks.parent_task_id, taskIds), eq(tasks.is_deleted, false))).groupBy(tasks.parent_task_id) : [];
+    }).from(tasks).where(and(inArray(tasks.parent_task_id, taskIds), eq(tasks.org_id, user.org_id), eq(tasks.is_deleted, false), guestTaskScopeSql(user.id))).groupBy(tasks.parent_task_id) : [];
     const subtaskMap = new Map(subtaskCounts.map((item) => [item.parent_task_id, item]));
     const creatorIds = [...new Set(pageRows.map((task) => task.created_by))];
     const creatorRows = creatorIds.length ? await db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, creatorIds)) : [];
@@ -770,7 +787,7 @@ taskRoutes.get('/table', async (c) => {
       subtask_done_count: subtaskMap.get(task.id)?.done ?? 0,
     }));
     const last = enriched.at(-1);
-    const data = enriched.map(({ group_cursor_value: _groupCursorValue, ...task }) => task);
+    const data = await withoutHiddenParents(enriched.map(({ group_cursor_value: _groupCursorValue, ...task }) => task), user.org_id, user.id);
     return c.json({
       data,
       total: countRow?.total ?? 0,
@@ -795,7 +812,7 @@ taskRoutes.get('/templates', async (c) => {
       priority: tasks.priority,
       estimation: tasks.estimation,
     }).from(tasks)
-      .where(and(eq(tasks.org_id, user.org_id), eq(tasks.is_template, true), eq(tasks.is_deleted, false)))
+      .where(and(eq(tasks.org_id, user.org_id), eq(tasks.is_template, true), eq(tasks.is_deleted, false), guestTaskScopeSql(user.id)))
       .orderBy(tasks.title);
     return c.json({ templates: rows });
   } catch (err) {
@@ -912,6 +929,11 @@ taskRoutes.post('/:id/watch', async (c) => {
   try {
     const user = c.get('user');
     const taskId = c.req.param('id');
+    // Watching names the watcher on the task, which lets them read it
+    // (lib/task-visibility.ts), so only a task the caller can already read may
+    // be watched; any other answers like an unknown task.
+    const taskRow = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
+    if (!taskRow) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
     await db.insert(taskWatchers).values({
       task_id: taskId,
       user_id: user.id,
@@ -1240,7 +1262,7 @@ taskRoutes.get('/:id', async (c) => {
     })
       .from(tasks)
       .leftJoin(users, eq(tasks.assignee_id, users.id))
-      .where(and(eq(tasks.parent_task_id, taskId), eq(tasks.is_deleted, false)))
+      .where(and(eq(tasks.parent_task_id, taskId), eq(tasks.org_id, user.org_id), eq(tasks.is_deleted, false), guestTaskScopeSql(user.id)))
       .orderBy(asc(tasks.sort_order));
 
     // Fetch source message if any
@@ -1284,13 +1306,19 @@ taskRoutes.get('/:id', async (c) => {
       })
         .from(tasks)
         .innerJoin(projects, eq(tasks.project_id, projects.id))
-        .where(eq(tasks.id, task.parent_task_id))
+        .where(and(eq(tasks.id, task.parent_task_id), eq(tasks.org_id, user.org_id), guestTaskScopeSql(user.id),
+          // A guest is not shown a deleted parent (fetching it answers 404 too).
+          (await peopleViewer(user.org_id, user.id)).guest ? eq(tasks.is_deleted, false) : undefined))
         .limit(1);
       parentTask = pt ?? null;
     }
 
     return c.json({
       ...task,
+      // A parent hidden from a guest is not named, not even by id (lib/task-visibility.ts).
+      parent_task_id: task.parent_task_id && !parentTask
+        ? (await withoutHiddenParent(task, user.org_id, user.id)).parent_task_id
+        : task.parent_task_id,
       assignee_name: assignee?.name ?? null,
       assignee_avatar: assignee?.avatar_url ?? null,
       creator_name: creator?.name ?? null,
@@ -1438,6 +1466,7 @@ taskRoutes.post('/:id/comments', async (c) => {
           title: `${userData?.name || 'Someone'} commented on ${taskId_str}`,
           body: parsed.data.content.slice(0, 200),
           link: `/tasks?task=${taskId_str}`,
+          metadata: { task_id: taskId },
         }, { channel: 'tasks' });
         if (notification) {
           emitToUser(notification.org_id, commentedTask.assignee_id, 'notification:new', notification);
@@ -1710,6 +1739,7 @@ taskRoutes.get('/project/:projectId', async (c) => {
           eq(tasks.is_deleted, false),
           eq(tasks.is_template, false),
           isNull(tasks.parent_task_id),
+          guestTaskScopeSql(user.id),
         )
       )
       .orderBy(tasks.sort_order);
@@ -1737,8 +1767,9 @@ taskRoutes.get('/project/:projectId', async (c) => {
           .from(tasks)
           .where(
             and(
-              inArray(tasks.parent_task_id, taskIds),
+              inArray(tasks.parent_task_id, taskIds), eq(tasks.org_id, user.org_id),
               eq(tasks.is_deleted, false),
+              guestTaskScopeSql(user.id),
             )
           )
           .groupBy(tasks.parent_task_id)
@@ -1801,13 +1832,17 @@ async function createTaskForProject(
     throw Object.assign(new Error('Invalid source message'), { code: 'INVALID_SOURCE_MESSAGE' });
   }
 
+  if (data.parent_task_id && !await parentTaskUsable(data.parent_task_id, orgId, userId)) {
+    throw Object.assign(new Error('Parent task not found'), { code: 'PARENT_NOT_FOUND' });
+  }
+
   const { value: task, replayed } = await nativeCreate({
     orgId, userId, operation: `task:${projectId}`, key: requestKey, payload: data,
     replay: async (tx, id) => (await tx.select().from(tasks).where(and(eq(tasks.id, id), eq(tasks.org_id, orgId), eq(tasks.project_id, projectId), eq(tasks.created_by, userId), eq(tasks.is_deleted, false))).limit(1))[0],
     create: async (tx) => {
     return createNativeTask(tx,{...data,org_id:orgId,project_id:projectId,user_id:userId,assignee_id:assigneeId});
   } });
-  if (replayed) return { task, project };
+  if (replayed) return { task: await withoutHiddenParent(task, orgId, userId), project };
   const taskNumber = task.number;
 
   // Members reload task content through the audience-checked reads.
@@ -1825,6 +1860,7 @@ async function createTaskForProject(
         title: `${creatorUser?.name || 'Someone'} assigned you ${taskId_str}`,
         body: task!.title,
         link: `/tasks?task=${taskId_str}`,
+        metadata: { task_id: task!.id },
       }, { channel: 'tasks' });
       if (notification) {
         emitToUser(notification.org_id, task!.assignee_id, 'notification:new', notification);
@@ -1895,6 +1931,9 @@ taskRoutes.post('/', async (c) => {
       if (err?.code === 'INVALID_SOURCE_MESSAGE') {
         return c.json(INVALID_SOURCE_MESSAGE, 400);
       }
+      if (err?.code === 'PARENT_NOT_FOUND') {
+        return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
+      }
       if (err?.code === 'INVALID_ASSIGNEE') {
         return c.json({ error: 'Assignee must be an active user or healthy agent in this organization', code: 'INVALID_ASSIGNEE' }, 400);
       }
@@ -1929,6 +1968,9 @@ taskRoutes.post('/project/:projectId', async (c) => {
       }
       if (err?.code === 'INVALID_SOURCE_MESSAGE') {
         return c.json(INVALID_SOURCE_MESSAGE, 400);
+      }
+      if (err?.code === 'PARENT_NOT_FOUND') {
+        return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
       }
       throw err;
     }
@@ -1988,7 +2030,7 @@ taskRoutes.patch('/:id', async (c) => {
         return c.json({
           error: 'Task changed after it was loaded',
           code: 'TASK_STALE',
-          current_task: existingTask,
+          current_task: await withoutHiddenParent(existingTask, user.org_id, user.id),
         }, 409);
       }
     }
@@ -2094,6 +2136,9 @@ taskRoutes.patch('/:id', async (c) => {
     if (parsed.data.parent_task_id !== undefined) {
       const newParent = parsed.data.parent_task_id || null;
       if (newParent !== existingTask.parent_task_id) {
+        if (newParent && !await parentTaskUsable(newParent, user.org_id, user.id)) {
+          return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
+        }
         updateData.parent_task_id = newParent;
         activityEntries.push({ action: 'parent_changed', field: 'parent_task_id', old_value: existingTask.parent_task_id ?? null, new_value: newParent });
       }
@@ -2161,7 +2206,7 @@ taskRoutes.patch('/:id', async (c) => {
       return c.json({
         error: 'Task changed after it was loaded',
         code: 'TASK_STALE',
-        current_task: currentTask,
+        current_task: currentTask ? await withoutHiddenParent(currentTask, user.org_id, user.id) : null,
       }, 409);
     }
 
@@ -2317,6 +2362,7 @@ taskRoutes.patch('/:id', async (c) => {
             title: `${assignerUser?.name || 'Someone'} assigned you ${taskId_str}`,
             body: updatedTask!.title,
             link: `/tasks?task=${taskId_str}`,
+            metadata: { task_id: updatedTask!.id },
           }, { channel: 'tasks' });
           if (notification) {
             emitToUser(notification.org_id, newAssignee, 'notification:new', notification);
@@ -2350,6 +2396,7 @@ taskRoutes.patch('/:id', async (c) => {
             title: `${changerUser?.name || 'Someone'} moved ${taskId_str} to ${statusLabel}`,
             body: updatedTask!.title,
             link: `/tasks?task=${taskId_str}`,
+            metadata: { task_id: updatedTask!.id },
           }, { channel: 'tasks' });
           if (notification) {
             emitToUser(notification.org_id, assignee, 'notification:new', notification);
@@ -2444,7 +2491,7 @@ taskRoutes.patch('/:id', async (c) => {
     }
 
     return c.json({
-      ...updatedTask,
+      ...(await withoutHiddenParent(updatedTask, user.org_id, user.id)),
       project_prefix: project?.prefix ?? null,
       project_name: project?.name ?? null,
     });
@@ -2580,7 +2627,9 @@ taskRoutes.get('/:id/dependencies', async (c) => {
       .where(
         and(
           eq(taskRelationships.source_task_id, taskId),
+          eq(tasks.org_id, user.org_id),
           eq(tasks.is_deleted, false),
+          guestTaskScopeSql(user.id),
         )
       );
 
@@ -2604,7 +2653,9 @@ taskRoutes.get('/:id/dependencies', async (c) => {
       .where(
         and(
           eq(taskRelationships.target_task_id, taskId),
+          eq(tasks.org_id, user.org_id),
           eq(tasks.is_deleted, false),
+          guestTaskScopeSql(user.id),
         )
       );
 
@@ -2911,17 +2962,35 @@ taskRoutes.get('/:id/subtree', async (c) => {
     const result = await db.execute(sql`
       WITH RECURSIVE subtree AS (
         SELECT id, title, status, priority, parent_task_id, 0 as depth
-        FROM tasks WHERE parent_task_id = ${taskId} AND is_deleted = false AND is_template = false
+        FROM tasks WHERE parent_task_id = ${taskId} AND org_id = ${user.org_id} AND is_deleted = false AND is_template = false
         UNION ALL
         SELECT t.id, t.title, t.status, t.priority, t.parent_task_id, s.depth + 1
         FROM tasks t
         JOIN subtree s ON t.parent_task_id = s.id
-        WHERE t.is_deleted = false AND t.is_template = false AND s.depth < 5
+        WHERE t.org_id = ${user.org_id} AND t.is_deleted = false AND t.is_template = false AND s.depth < 5
       )
-      SELECT * FROM subtree ORDER BY depth, title
+      SELECT subtree.* FROM subtree
+      JOIN tasks subtree_task ON subtree_task.id = subtree.id
+      WHERE ${guestTaskScopeSql(user.id, taskAliasColumns('subtree_task'))}
+      ORDER BY subtree.depth, subtree.title
     `);
-    const rows = (result as any).rows ?? result;
-    return c.json({ subtasks: Array.isArray(rows) ? rows : [] });
+    const rows: Array<{ id: string; title: string; parent_task_id: string | null; depth: number }> =
+      Array.isArray((result as any).rows ?? result) ? ((result as any).rows ?? result) : [];
+    // A row under a task hidden from a guest (left out above) hangs from the
+    // root task instead, with its depth counted over shown tasks
+    // only, so no hidden task can be named or inferred (lib/task-visibility.ts).
+    // For anyone else every parent is the root or another row: unchanged.
+    const shown = new Set([taskId, ...rows.map((row) => row.id)]);
+    if (rows.every((row) => row.parent_task_id !== null && shown.has(row.parent_task_id))) return c.json({ subtasks: rows });
+    const depthOf = new Map<string, number>([[taskId, -1]]);
+    const subtasks = rows.map((row) => {
+      // Rows come ordered by depth, so a shown parent is placed before its children.
+      const parent = row.parent_task_id && shown.has(row.parent_task_id) ? row.parent_task_id : taskId;
+      const depth = (depthOf.get(parent) ?? -1) + 1;
+      depthOf.set(row.id, depth);
+      return { ...row, parent_task_id: parent, depth };
+    }).sort((a, b) => a.depth - b.depth || String(a.title).localeCompare(String(b.title)));
+    return c.json({ subtasks });
   } catch (err) {
     console.error('Failed to fetch subtree:');
     return c.json({ error: 'Failed to fetch subtree', code: 'INTERNAL_ERROR' }, 500);

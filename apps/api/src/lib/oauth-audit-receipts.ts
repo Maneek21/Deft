@@ -1,8 +1,9 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { messages, projects, spaces, tasks } from '@deft/db/schema';
 import { db } from './db.js';
 import { toPlainText } from './plain-text.js';
 import { readableSpaceSql } from './space-membership.js';
+import { guestTaskScopeSql } from './task-visibility.js';
 
 export type AuditReceipt = {
   title: string;
@@ -144,6 +145,12 @@ function defaultReceipt(action: AuditActionRow): AuditReceipt {
  * raw `metadata.result` is never returned, and a message receipt's preview
  * comes from the current message only while `readerId` can still read it.
  */
+/** The task ids a stored bulk-update result lists (`updated_ids`). */
+function bulkUpdatedIds(result: ToolResultRecord): string[] {
+  const ids = (result as Record<string, unknown>).updated_ids;
+  return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : [];
+}
+
 export async function enrichOAuthAuditActions<T extends AuditActionRow>(
   orgId: string,
   readerId: string,
@@ -167,6 +174,7 @@ export async function enrichOAuthAuditActions<T extends AuditActionRow>(
         ? asString(result.task_id)
         : asString(result.id) ?? asString(result.task_id);
       if (id) taskIds.add(id);
+      if (tool === 'task_bulk_update') for (const updatedId of bulkUpdatedIds(result)) taskIds.add(updatedId);
     }
     if (tool === 'message_post' || tool === 'send_message') {
       const spaceId = asString(result.space_id);
@@ -183,6 +191,10 @@ export async function enrichOAuthAuditActions<T extends AuditActionRow>(
     status: string;
     project_prefix: string | null;
   }>();
+  // Tasks the reader may no longer see as a guest (outside their projects
+  // and not naming them, lib/task-visibility.ts): their receipts name no
+  // task, not even the title stored with the result.
+  const hiddenTaskIds = new Set<string>();
 
   if (taskIds.size > 0) {
     const taskRows = await db
@@ -192,11 +204,15 @@ export async function enrichOAuthAuditActions<T extends AuditActionRow>(
         title: tasks.title,
         status: tasks.status,
         project_prefix: projects.prefix,
+        reader_may_see: sql<boolean>`${guestTaskScopeSql(readerId)}`,
       })
       .from(tasks)
       .innerJoin(projects, eq(tasks.project_id, projects.id))
       .where(and(eq(tasks.org_id, orgId), inArray(tasks.id, [...taskIds])));
-    for (const task of taskRows) taskMap.set(task.id, task);
+    for (const { reader_may_see, ...task } of taskRows) {
+      if (reader_may_see) taskMap.set(task.id, task);
+      else hiddenTaskIds.add(task.id);
+    }
   }
 
   const spaceMap = new Map<string, string>();
@@ -231,7 +247,9 @@ export async function enrichOAuthAuditActions<T extends AuditActionRow>(
     if (action.event === 'mcp_idempotency_result' && result && tool) {
       if (TASK_WRITE_TOOLS.has(tool)) {
         if (tool === 'task_bulk_update') {
-          const updated = asNumber(result.updated) ?? 0;
+          // Tasks now hidden from a guest reader are not counted (lib/task-visibility.ts).
+          const hidden = bulkUpdatedIds(result).filter((id) => hiddenTaskIds.has(id)).length;
+          const updated = Math.max(0, (asNumber(result.updated) ?? 0) - hidden);
           const fields = Array.isArray(result.fields) ? result.fields.filter((field): field is string => typeof field === 'string') : [];
           receipt = {
             title: 'Updated tasks',
@@ -240,28 +258,32 @@ export async function enrichOAuthAuditActions<T extends AuditActionRow>(
           };
         } else {
           const taskId = tool === 'comment_on_task'
-          ? asString(result.task_id)
-          : asString(result.id) ?? asString(result.task_id);
-        const task = taskId ? taskMap.get(taskId) : undefined;
-        const key = asString(result.task_key)
-          ?? taskKey(task?.project_prefix, task?.number)
-          ?? taskKey(null, asNumber(result.number))
-          ?? 'task';
-        const title = task?.title ?? asString(result.title) ?? 'Untitled task';
-        const transition = asRecord(result.transition);
-        const from = asString(transition?.from);
-        const to = asString(transition?.to) ?? task?.status ?? asString(result.status);
+            ? asString(result.task_id)
+            : asString(result.id) ?? asString(result.task_id);
+          if (taskId && hiddenTaskIds.has(taskId)) {
+            receipt = { title: fallbackTitle(action), detail: 'task', target_kind: 'task' };
+          } else {
+            const task = taskId ? taskMap.get(taskId) : undefined;
+            const key = asString(result.task_key)
+              ?? taskKey(task?.project_prefix, task?.number)
+              ?? taskKey(null, asNumber(result.number))
+              ?? 'task';
+            const title = task?.title ?? asString(result.title) ?? 'Untitled task';
+            const transition = asRecord(result.transition);
+            const from = asString(transition?.from);
+            const to = asString(transition?.to) ?? task?.status ?? asString(result.status);
 
-          receipt = {
-            title: fallbackTitle(action),
-            detail: tool === 'task_transition'
-              ? `${key}: ${from ?? 'previous'} -> ${to ?? 'updated'}`
-              : `${key}: ${title}`,
-            href: taskId ? `/tasks?task=${encodeURIComponent(taskId)}` : undefined,
-            target_kind: 'task',
-            target_id: taskId ?? undefined,
-            preview: title,
-          };
+            receipt = {
+              title: fallbackTitle(action),
+              detail: tool === 'task_transition'
+                ? `${key}: ${from ?? 'previous'} -> ${to ?? 'updated'}`
+                : `${key}: ${title}`,
+              href: taskId ? `/tasks?task=${encodeURIComponent(taskId)}` : undefined,
+              target_kind: 'task',
+              target_id: taskId ?? undefined,
+              preview: title,
+            };
+          }
         }
       } else if (tool === 'message_post' || tool === 'send_message') {
         const messageId = asString(result.id);

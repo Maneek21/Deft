@@ -34,7 +34,8 @@ import {
   wikiPageVersions,
 } from '@deft/db/schema';
 import { retrieveContext, type ContextResult } from '../retrieve-context.js';
-import { visibleTaskCondition } from '../task-visibility.js';
+import { guestTaskScopeSql, taskAliasColumns, visibleTaskCondition } from '../task-visibility.js';
+import { withoutHiddenParent, withoutHiddenParents } from '../task-parent-projection.js';
 import { visibleWikiPageCondition } from '../wiki-visibility.js';
 import { errorResult, textResult, type ToolResult } from './types.js';
 import { enrichOAuthAuditActions } from '../oauth-audit-receipts.js';
@@ -1881,7 +1882,8 @@ export async function humanListMyTasks(args: { status?: string; include_complete
     .where(and(...conditions))
     .orderBy(desc(tasks.updated_at))
     .limit(Math.min(Math.max(1, args.limit ?? 20), 50));
-  return textResult(rows);
+  // A parent hidden from a guest is not named, not even by id (task-parent-projection.ts).
+  return textResult(await withoutHiddenParents(rows, ctx.org_id, ctx.user_id));
 }
 
 export async function humanTaskGet(args: { task_id?: string }, ctx: HumanToolContext): Promise<ToolResult> {
@@ -1934,9 +1936,13 @@ export async function humanTaskGet(args: { task_id?: string }, ctx: HumanToolCon
     ...row,
     user_email: emailFor(viewer, row.user_id as string | null, (row.user_email as string | null) ?? null),
   });
+  // A parent hidden from a guest is not named, not even by id (lib/task-visibility.ts).
+  const parentHidden = viewer.guest && typeof task.parent_task_id === 'string'
+    && !(await userCanSeeTask(ctx, task.parent_task_id));
   return textResult({
     task: {
       ...task,
+      ...(parentHidden ? { parent_task_id: null } : {}),
       assignee_email: emailFor(viewer, task.assignee_id, task.assignee_email ?? null),
       created_by_email: emailFor(viewer, task.created_by, task.created_by_email ?? null),
     },
@@ -2011,6 +2017,7 @@ export async function humanProjectList(args: { query?: string; include_archived?
     FROM projects p
     LEFT JOIN users lead ON lead.id = p.lead_id
     LEFT JOIN tasks t ON t.project_id = p.id AND t.org_id = p.org_id
+      AND ${guestTaskScopeSql(ctx.user_id, taskAliasColumns('t'))}
     WHERE p.org_id = ${ctx.org_id}
       AND p.is_deleted = false
       AND (${args.include_archived ? sql`true` : sql`p.is_archived = false`})
@@ -2073,6 +2080,7 @@ export async function humanProjectGet(args: { project_id?: string }, ctx: HumanT
     FROM projects p
     LEFT JOIN users lead ON lead.id = p.lead_id
     LEFT JOIN tasks t ON t.project_id = p.id AND t.org_id = p.org_id
+      AND ${guestTaskScopeSql(ctx.user_id, taskAliasColumns('t'))}
     WHERE p.org_id = ${ctx.org_id}
       AND p.id = ${args.project_id}
       AND p.is_deleted = false
@@ -2299,7 +2307,7 @@ export async function humanTaskUpdate(args: { task_id?: string; patch?: Record<s
     }
     // Nothing left to change (only the current assignee was re-sent): write
     // nothing, so updated_at never moves and no concurrent edit is undone.
-    if (Object.keys(updates).length === 0) return textResult(existingTask);
+    if (Object.keys(updates).length === 0) return textResult(await withoutHiddenParent(existingTask, ctx.org_id, ctx.user_id));
     const [task] = await db.update(tasks).set(updates).where(and(eq(tasks.id, taskId), eq(tasks.org_id, ctx.org_id), eq(tasks.is_deleted, false))).returning();
     if (!task) return errorResult('task_update: task not found');
     const activityEntries: Array<{ action: string; field: string; old_value: string | null; new_value: string | null }> = [];
@@ -2350,7 +2358,7 @@ export async function humanTaskUpdate(args: { task_id?: string; patch?: Record<s
         payload: { old_status: existingTask.status, new_status: updates.status },
       });
     }
-    return textResult(task);
+    return textResult(await withoutHiddenParent(task, ctx.org_id, ctx.user_id));
   });
 }
 
@@ -2370,7 +2378,7 @@ export async function humanTaskTransition(args: { task_id?: string; status?: str
       .limit(1);
     if (!existingTask) return errorResult('task_transition: task not found');
     if (existingTask.status === status) {
-      return textResult({ ...existingTask, unchanged: true, task_key: null });
+      return textResult({ ...(await withoutHiddenParent(existingTask, ctx.org_id, ctx.user_id)), unchanged: true, task_key: null });
     }
     const [task] = await db
       .update(tasks)
@@ -2402,7 +2410,7 @@ export async function humanTaskTransition(args: { task_id?: string; status?: str
       },
     });
     return textResult({
-      ...task,
+      ...(await withoutHiddenParent(task, ctx.org_id, ctx.user_id)),
       task_key: taskReference(project?.prefix ?? null, task.number),
       transition: {
         from: existingTask.status,
@@ -3122,6 +3130,7 @@ export async function humanProjectProgress(args: ProjectProgressArgs, ctx: Human
         OR exists (select 1 from task_watchers tw where tw.task_id = t.id and tw.user_id = ${ctx.user_id})
         OR exists (select 1 from task_assignees ta where ta.task_id = t.id and ta.user_id = ${ctx.user_id})
       )
+      AND ${guestTaskScopeSql(ctx.user_id, taskAliasColumns('t'))}
     WHERE p.org_id = ${ctx.org_id}
       AND p.is_deleted = false
       AND ${projectWhere}
@@ -3220,6 +3229,7 @@ export async function humanTeamWorkload(args: { days?: number }, ctx: HumanToolC
       AND t.org_id = ${ctx.org_id}
       AND t.is_deleted = false
       AND t.status NOT IN ('done', 'cancelled')
+      AND ${guestTaskScopeSql(ctx.user_id, taskAliasColumns('t'))}
     LEFT JOIN projects p ON p.id = t.project_id AND p.org_id = t.org_id
     WHERE u.is_agent = false
       AND ${personVisibleSql(viewer, sql`u.id`)}
@@ -3877,6 +3887,11 @@ export async function humanProjectCreate(args: Record<string, unknown>, ctx: Hum
   });
 }
 
+/** A project row as the caller may see it: a guest is not shown the task counter, which counts hidden tasks too (task-visibility.ts). */
+async function projectForViewer<T extends { task_counter: number }>(ctx: HumanToolContext, project: T): Promise<T | (Omit<T, 'task_counter'> & { task_counter: null })> {
+  return (await peopleViewer(ctx.org_id, ctx.user_id)).guest ? { ...project, task_counter: null } : project;
+}
+
 export async function humanProjectUpdate(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'write:workspace'); if (scopeError) return scopeError;
   if (typeof args.project_id !== 'string') return errorResult('project_id is required');
@@ -3884,6 +3899,11 @@ export async function humanProjectUpdate(args: Record<string, unknown>, ctx: Hum
     if (!(await userCanSeeProject(ctx, args.project_id as string))) return errorResult('Project not found');
     const updates: Record<string, unknown> = {};
     for (const field of ['name', 'description', 'color', 'icon'] as const) if (args[field] !== undefined) updates[field] = args[field];
+    // A project's lead reads all of its tasks, so a guest, who sees only the
+    // tasks of their projects (task-visibility.ts), cannot change who leads one.
+    if (args.lead_id !== undefined && (await peopleViewer(ctx.org_id, ctx.user_id)).guest) {
+      return errorResult('project_update: a guest cannot change a project lead');
+    }
     if (args.lead_id === null) updates.lead_id = null;
     else if (args.lead_id !== undefined) {
       const leadResult = await resolveActiveMember(ctx, { user_id: args.lead_id, label: 'project_update lead' });
@@ -3892,7 +3912,7 @@ export async function humanProjectUpdate(args: Record<string, unknown>, ctx: Hum
     }
     if (Object.keys(updates).length === 0) return errorResult('At least one editable project field is required');
     const [updated] = await db.update(projects).set(updates).where(and(eq(projects.id, args.project_id as string), eq(projects.org_id, ctx.org_id))).returning();
-    return textResult({ updated: true, project: updated, url: `/tasks?project=${updated!.id}` });
+    return textResult({ updated: true, project: await projectForViewer(ctx, updated!), url: `/tasks?project=${updated!.id}` });
   });
 }
 
@@ -3901,7 +3921,7 @@ export async function humanProjectArchive(args: Record<string, unknown>, ctx: Hu
   if (typeof args.project_id !== 'string') return errorResult('project_id is required');
   return withIdempotency('project_archive', args, ctx, async () => {
     const [updated] = await db.update(projects).set({ is_archived: args.archived !== false }).where(and(eq(projects.id, args.project_id as string), eq(projects.org_id, ctx.org_id), eq(projects.is_deleted, false))).returning();
-    return updated ? textResult({ archived: updated.is_archived, project: updated, url: `/tasks?project=${updated.id}` }) : errorResult('Project not found');
+    return updated ? textResult({ archived: updated.is_archived, project: await projectForViewer(ctx, updated), url: `/tasks?project=${updated.id}` }) : errorResult('Project not found');
   });
 }
 

@@ -119,6 +119,9 @@ before(async () => {
     await c.query(`INSERT INTO team_members (id, org_id, team_id, user_id, role) VALUES (gen_random_uuid()::text, $1, $2, $3, $4)`, [org, team, user, role]);
   }
   await c.query(`INSERT INTO projects (id, org_id, name, prefix, lead_id) VALUES ($1, $2, 'gpv project', $3, $4)`, [project, org, `G${run.slice(0, 4).toUpperCase()}`, owner]);
+  // The project belongs to the guest's room, so the guest sees its task (a
+  // guest sees only the tasks of their projects: guest-task-visibility-db.test.ts).
+  await c.query(`INSERT INTO project_spaces (id, project_id, space_id) VALUES (gen_random_uuid()::text, $1, $2)`, [project, sharedRoom]);
   await c.query(`INSERT INTO tasks (id, org_id, project_id, number, title, created_by, assignee_id) VALUES ($1, $2, $3, 1, 'gpv task', $4, $5)`,
     [task, org, project, stranger, sharer]);
   await c.query(`INSERT INTO task_comments (id, org_id, task_id, user_id, content) VALUES (gen_random_uuid()::text, $1, $2, $3, 'gpv comment')`, [org, task, stranger]);
@@ -134,6 +137,7 @@ after(async () => {
   await c.query(`DELETE FROM task_comments WHERE org_id = $1`, [org]);
   await c.query(`DELETE FROM task_activity WHERE org_id = $1`, [org]).catch(() => {});
   await c.query(`DELETE FROM tasks WHERE org_id = $1`, [org]);
+  await c.query(`DELETE FROM project_spaces WHERE project_id = $1`, [project]);
   await c.query(`DELETE FROM projects WHERE org_id = $1`, [org]);
   await c.query(`DELETE FROM team_members WHERE team_id = $1`, [team]);
   await c.query(`DELETE FROM teams WHERE id = $1`, [team]);

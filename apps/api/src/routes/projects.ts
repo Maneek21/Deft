@@ -7,7 +7,9 @@ import { nativeCreate, nativeCreateKey, NativeCreateError } from '../lib/native-
 import { projects, tasks, taskLabels, labels, users, taskActivity } from '@deft/db/schema';
 import { emitToUser, emitOrgTaskEvent } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
-import { visibleTaskCondition } from '../lib/task-visibility.js';
+import { guestTaskScopeSql, taskAliasColumns, visibleTaskCondition } from '../lib/task-visibility.js';
+import { peopleViewer } from '../lib/people-visibility.js';
+import { withoutHiddenParent } from '../lib/task-parent-projection.js';
 import {
   getProjectResolvedConfig,
 } from '../lib/project-resolved-config.js';
@@ -27,6 +29,9 @@ projectRoutes.get('/', async (c) => {
   try {
     const user = c.get('user');
     const includeArchived = c.req.query('include_archived') === 'true';
+    // A guest is not shown a project's task counter (it counts every task ever
+    // made there, including those hidden from them: lib/task-visibility.ts).
+    const guest = (await peopleViewer(user.org_id, user.id)).guest;
 
     const conditions = [
       eq(projects.org_id, user.org_id),
@@ -44,7 +49,7 @@ projectRoutes.get('/', async (c) => {
       icon: projects.icon,
       color: projects.color,
       lead_id: projects.lead_id,
-      task_counter: projects.task_counter,
+      task_counter: guest ? sql<number | null>`NULL::int` : projects.task_counter,
       total_tasks: sql<number>`(
         select count(*)::int from "tasks"
         where "tasks"."project_id" = "projects"."id"
@@ -66,6 +71,7 @@ projectRoutes.get('/', async (c) => {
                 and "task_assignees"."user_id" = ${user.id}
             )
           )
+          and ${guestTaskScopeSql(user.id)}
       )`.as('total_tasks'),
       done_tasks: sql<number>`(
         select count(*)::int from "tasks"
@@ -89,6 +95,7 @@ projectRoutes.get('/', async (c) => {
                 and "task_assignees"."user_id" = ${user.id}
             )
           )
+          and ${guestTaskScopeSql(user.id)}
       )`.as('done_tasks'),
       is_archived: projects.is_archived,
       created_at: projects.created_at,
@@ -219,6 +226,7 @@ projectRoutes.get('/:id', async (c) => {
         and(
           eq(tasks.project_id, projectId),
           eq(tasks.is_deleted, false),
+          guestTaskScopeSql(user.id),
         )
       )
       .groupBy(tasks.status);
@@ -236,7 +244,10 @@ projectRoutes.get('/:id', async (c) => {
       task_counts[row.status] = row.count;
     }
 
-    return c.json({ ...project, task_counts });
+    // A guest is not shown the project's task counter: it counts every task
+    // ever made there, including those hidden from them (lib/task-visibility.ts).
+    const guest = (await peopleViewer(user.org_id, user.id)).guest;
+    return c.json({ ...project, ...(guest ? { task_counter: null } : {}), task_counts });
   } catch (err) {
     console.error('Failed to fetch project:');
     return c.json({ error: 'Failed to fetch project', code: 'INTERNAL_ERROR' }, 500);
@@ -261,6 +272,7 @@ projectRoutes.get('/:id/velocity', async (c) => {
         AND ta.action = 'status_changed'
         AND ta.new_value = 'done'
         AND ta.created_at > NOW() - make_interval(weeks => ${weeks})
+        AND ${guestTaskScopeSql(user.id, taskAliasColumns('t'))}
       GROUP BY date_trunc('week', ta.created_at)
       ORDER BY week_start
     `);
@@ -327,8 +339,17 @@ projectRoutes.patch('/:id', async (c) => {
       return c.json({ error: 'Project not found', code: 'NOT_FOUND' }, 404);
     }
 
+    // A guest is not shown the project's task counter (see GET /:id).
+    const guestEditor = (await peopleViewer(user.org_id, user.id)).guest;
     if (!hasChanges) {
-      return c.json(existing);
+      return c.json(guestEditor ? { ...existing, task_counter: null } : existing);
+    }
+
+    // A project's lead reads all of its tasks, so a guest, who sees only the
+    // tasks of their projects (lib/task-visibility.ts), cannot change who
+    // leads one. The role is read from org_members, not the session.
+    if (updates.lead_id !== undefined && updates.lead_id !== existing.lead_id && guestEditor) {
+      return c.json({ error: 'A guest cannot change a project lead', code: 'FORBIDDEN' }, 403);
     }
 
     const [updated] = await db.update(projects)
@@ -336,7 +357,7 @@ projectRoutes.patch('/:id', async (c) => {
       .where(eq(projects.id, projectId))
       .returning();
 
-    return c.json(updated);
+    return c.json(guestEditor ? { ...updated, task_counter: null } : updated);
   } catch (err) {
     console.error('Failed to update project:');
     return c.json({ error: 'Failed to update project', code: 'INTERNAL_ERROR' }, 500);
@@ -408,7 +429,8 @@ projectRoutes.post('/:id/restore', async (c) => {
       .where(eq(projects.id, projectId))
       .returning();
 
-    return c.json(restored);
+    // A guest is not shown the project's task counter (see GET /:id).
+    return c.json((await peopleViewer(user.org_id, user.id)).guest ? { ...restored, task_counter: null } : restored);
   } catch (err) {
     console.error('Failed to restore project:');
     return c.json({ error: 'Failed to restore project', code: 'INTERNAL_ERROR' }, 500);
@@ -557,8 +579,9 @@ async function listProjectTasks(c: any) {
           .from(tasks)
           .where(
             and(
-              inArray(tasks.parent_task_id, taskIds),
+              inArray(tasks.parent_task_id, taskIds), eq(tasks.org_id, user.org_id),
               eq(tasks.is_deleted, false),
+              guestTaskScopeSql(user.id),
             )
           )
           .groupBy(tasks.parent_task_id)
@@ -621,6 +644,18 @@ projectRoutes.post('/:id/tasks', async (c) => {
       return c.json({ error: 'source_message_id must reference a visible message', code: 'VALIDATION_ERROR' }, 400);
     }
 
+    // A subtask's parent is a live task of this workspace that, for a guest,
+    // they may see (lib/task-visibility.ts). A missing task, another
+    // workspace's task and a hidden one all answer like an unknown task.
+    if (parsed.data.parent_task_id) {
+      const [parent] = await db.select({ id: tasks.id })
+        .from(tasks)
+        .where(and(eq(tasks.id, parsed.data.parent_task_id), eq(tasks.org_id, user.org_id), eq(tasks.is_deleted, false),
+          guestTaskScopeSql(user.id)))
+        .limit(1);
+      if (!parent) return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
+    }
+
     const { value: task, replayed } = await nativeCreate({
       orgId: user.org_id, userId: user.id, operation: `task:${projectId}`,
       key: nativeCreateKey(c.req.header('Idempotency-Key')), payload: parsed.data,
@@ -659,7 +694,7 @@ projectRoutes.post('/:id/tasks', async (c) => {
 
         return task!;
     } });
-    if (replayed) return c.json({ ...task, project_prefix: project.prefix, project_name: project.name }, 201);
+    if (replayed) return c.json({ ...(await withoutHiddenParent(task, user.org_id, user.id)), project_prefix: project.prefix, project_name: project.name }, 201);
     const taskNumber = task.number;
 
     // Members reload task content through the audience-checked reads.
@@ -677,6 +712,7 @@ projectRoutes.post('/:id/tasks', async (c) => {
           title: `${creatorUser?.name || 'Someone'} assigned you ${taskId_str}`,
           body: task!.title,
           link: `/tasks?task=${taskId_str}`,
+          metadata: { task_id: task!.id },
         }, { channel: 'tasks' });
         if (notification) {
           emitToUser(notification.org_id, task!.assignee_id, 'notification:new', notification);

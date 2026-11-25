@@ -10,6 +10,7 @@ import { requireActiveOrgMembership } from './lib/org-membership.js';
 import { createNotificationIfAllowed } from './lib/notification-policy.js';
 import { PAUSED_ERROR, isPausedStart } from './lib/paused-start.js';
 import { isOrgTaskEvent, orgTaskEventPayload, type OrgTaskEvent, type OrgTaskEventPayload } from './lib/task-realtime.js';
+import { taskAliasColumns, visibleTaskSql } from './lib/task-visibility.js';
 import { socketAllowedWebOrigins, socketOriginAllowed } from './lib/web-origins.js';
 
 export type SocketUser = {
@@ -318,7 +319,11 @@ export function getIO(): SocketIOServer | null {
   return io;
 }
 
-/** Emit an identifier-only task event to every member of `orgId`. */
+/**
+ * Emit an identifier-only task event to the workspace `orgId`: its owners,
+ * admins and members get it at once, and a guest only for the tasks they may
+ * see (see `routeOrgTaskPacket`).
+ */
 export function emitOrgTaskEvent(orgId: string, event: OrgTaskEvent, payload: OrgTaskEventPayload): void {
   try {
     io?.to(`org:${orgId}`).emit(event, orgTaskEventPayload(event, payload));
@@ -328,32 +333,110 @@ export function emitOrgTaskEvent(orgId: string, event: OrgTaskEvent, payload: Or
 }
 
 type BroadcastPacket = { data?: unknown[] };
-type BroadcastOptions = { rooms?: Set<string> };
+type BroadcastOptions = { rooms?: Set<string>; except?: Set<string> };
 type BroadcastingAdapter = {
   broadcast(packet: BroadcastPacket, opts: BroadcastOptions): void;
   broadcastWithAck(packet: BroadcastPacket, opts: BroadcastOptions, ...rest: unknown[]): void;
 };
 
+/** Task events sent to an org room with their full payload: a guest gets them only for the tasks they may see. */
+const GUEST_ROUTED_TASK_EVENTS: ReadonlySet<string> = new Set(['task:agent_progress']);
+
+type GuestRoutedPayload = { id?: unknown; task_id?: unknown; task_ids?: unknown };
+
 /**
  * Task events addressed to an org room (or to every socket) reach every
  * member, so whatever an emitter passes is reduced to the identifier-only
- * payload before delivery.
+ * payload before delivery. An org room is narrowed to its owners, admins and
+ * members (the org-members room); a guest is sent the event separately, and
+ * only for the tasks they may see (lib/task-visibility.ts: the tasks of their
+ * projects and the tasks that name them). `task:agent_progress` is routed the
+ * same way, with its payload unchanged.
  */
-function reduceOrgTaskPacket(packet: BroadcastPacket, opts: BroadcastOptions): BroadcastPacket {
+function routeOrgTaskPacket(packet: BroadcastPacket, opts: BroadcastOptions): [BroadcastPacket, BroadcastOptions] {
   const data = packet?.data;
-  if (!Array.isArray(data) || !isOrgTaskEvent(data[0])) return packet;
+  if (!Array.isArray(data)) return [packet, opts];
+  const event: unknown = data[0];
+  const orgEvent = isOrgTaskEvent(event) ? event : null;
+  if (typeof event !== 'string' || (!orgEvent && !GUEST_ROUTED_TASK_EVENTS.has(event))) return [packet, opts];
   const rooms = opts?.rooms;
   const reachesOrg = !rooms || rooms.size === 0 || [...rooms].some((room) => room.startsWith('org:'));
-  if (!reachesOrg) return packet;
-  return { ...packet, data: [data[0], orgTaskEventPayload(data[0], data[1])] };
+  if (!reachesOrg) return [packet, opts];
+  const payload: GuestRoutedPayload = orgEvent
+    ? orgTaskEventPayload(orgEvent, data[1])
+    : (data[1] && typeof data[1] === 'object' ? data[1] : {}) as GuestRoutedPayload;
+  const reduced = orgEvent ? { ...packet, data: [event, payload] } : packet;
+  // A task event sent to every socket would reach guests of every workspace;
+  // none is sent that way, and one that is reaches no one (fail closed).
+  if (!rooms || rooms.size === 0) return [reduced, { ...opts, rooms: new Set(['org-task-event:unaddressed']) }];
+  const routed = new Set<string>();
+  for (const room of rooms) {
+    if (!room.startsWith('org:')) {
+      routed.add(room);
+      continue;
+    }
+    const orgId = room.slice('org:'.length);
+    routed.add(`org-members:${orgId}`);
+    void sendOrgTaskEventToGuests(orgId, event, payload, opts.except).catch(() => {
+      // Realtime delivery is best-effort; a guest reloads task content on navigation.
+    });
+  }
+  return [reduced, { ...opts, rooms: routed }];
+}
+
+/** The task event to each connected guest of `orgId` who may see its task(s). */
+async function sendOrgTaskEventToGuests(
+  orgId: string,
+  event: string,
+  payload: GuestRoutedPayload,
+  except?: Set<string>,
+): Promise<void> {
+  const server = io;
+  const orgSockets = onlineUsers.get(orgId);
+  if (!server || !orgSockets) return;
+  const single = typeof payload.id === 'string' ? payload.id : typeof payload.task_id === 'string' ? payload.task_id : undefined;
+  const listed = Array.isArray(payload.task_ids) ? payload.task_ids.filter((id): id is string => typeof id === 'string') : undefined;
+  const taskIds = [...new Set([single, ...(listed ?? [])].filter((id): id is string => typeof id === 'string'))];
+  if (taskIds.length === 0) return;
+  const guestSockets = new Map<string, string[]>();
+  for (const [guestId, socketIds] of orgSockets) {
+    for (const socketId of socketIds) {
+      const rooms = server.sockets.sockets.get(socketId)?.rooms;
+      if (!rooms?.has(`org:${orgId}`) || rooms.has(`org-members:${orgId}`)) continue;
+      if (except && [...rooms].some((room) => except.has(room))) continue;
+      guestSockets.set(guestId, [...(guestSockets.get(guestId) ?? []), socketId]);
+    }
+  }
+  for (const [guestId, socketIds] of guestSockets) {
+    const result = await db.execute(sql`
+      SELECT guest_task.id FROM tasks guest_task
+      WHERE guest_task.org_id = ${orgId}
+        AND guest_task.id IN (${sql.join(taskIds.map((id) => sql`${id}`), sql`, `)})
+        AND ${visibleTaskSql(guestId, taskAliasColumns('guest_task'))}`);
+    const visible = new Set(((result as unknown as { rows?: Array<{ id: string }> }).rows ?? []).map((row) => row.id));
+    if (single && !visible.has(single)) continue;
+    let shown: GuestRoutedPayload = payload;
+    if (listed) {
+      const ids = listed.filter((id) => visible.has(id));
+      if (ids.length === 0 && !single) continue;
+      shown = { ...payload, task_ids: ids };
+    }
+    for (const socketId of socketIds) server.to(socketId).emit(event, shown);
+  }
 }
 
 function installOrgTaskEventGuard(server: SocketIOServer) {
   const adapter = server.of('/').adapter as unknown as BroadcastingAdapter;
   const broadcast = adapter.broadcast.bind(adapter);
   const broadcastWithAck = adapter.broadcastWithAck.bind(adapter);
-  adapter.broadcast = (packet, opts) => broadcast(reduceOrgTaskPacket(packet, opts), opts);
-  adapter.broadcastWithAck = (packet, opts, ...rest) => broadcastWithAck(reduceOrgTaskPacket(packet, opts), opts, ...rest);
+  adapter.broadcast = (packet, opts) => {
+    const [routedPacket, routedOpts] = routeOrgTaskPacket(packet, opts);
+    broadcast(routedPacket, routedOpts);
+  };
+  adapter.broadcastWithAck = (packet, opts, ...rest) => {
+    const [routedPacket, routedOpts] = routeOrgTaskPacket(packet, opts);
+    broadcastWithAck(routedPacket, routedOpts, ...rest);
+  };
 }
 
 /**

@@ -8,7 +8,9 @@ import { visibleModuleActionSql } from '../lib/module-action-visibility.js';
 import { viewerReviewAuthority } from '../lib/agent-approval-resolver.js';
 import {readEmailCalendarOccurrences} from '../lib/email-calendar-projection.js';
 import { getDayBoundaries, resolveViewerTimezone } from '../lib/task-dates.js';
-import { visibleTaskCondition } from '../lib/task-visibility.js';
+import { guestTaskScopeSql, visibleTaskCondition } from '../lib/task-visibility.js';
+import { noticeNamesGuestHiddenTaskSql } from '../lib/native-mention-visibility.js';
+import { peopleViewer } from '../lib/people-visibility.js';
 
 /** Full workspace members; guests and unresolved roles are excluded from org-wide standups. */
 function isWorkspaceMember(role: string | undefined): boolean {
@@ -240,14 +242,16 @@ dashboardRoutes.get('/', async (c) => {
       task_prefix: taskMap.get(a.task_id)?.project_prefix,
     }));
 
-    // 7. My projects with stats
+    // 7. My projects with stats. A guest is not shown a project's task
+    // counter: it counts tasks hidden from them too (lib/task-visibility.ts).
+    const guestViewer = (await peopleViewer(user.org_id, user.id)).guest;
     const myProjects = await db.select({
       id: projects.id,
       name: projects.name,
       prefix: projects.prefix,
       color: projects.color,
       icon: projects.icon,
-      task_counter: projects.task_counter,
+      task_counter: guestViewer ? sql<number | null>`NULL::int` : projects.task_counter,
     })
       .from(projects)
       .where(and(
@@ -259,9 +263,9 @@ dashboardRoutes.get('/', async (c) => {
     const projectStats = [];
     for (const p of myProjects) {
       const [total] = await db.select({ count: sql<number>`count(*)::int` })
-        .from(tasks).where(and(eq(tasks.project_id, p.id), eq(tasks.is_deleted, false)));
+        .from(tasks).where(and(eq(tasks.project_id, p.id), eq(tasks.is_deleted, false), guestTaskScopeSql(user.id)));
       const [done] = await db.select({ count: sql<number>`count(*)::int` })
-        .from(tasks).where(and(eq(tasks.project_id, p.id), eq(tasks.is_deleted, false), eq(tasks.status, 'done')));
+        .from(tasks).where(and(eq(tasks.project_id, p.id), eq(tasks.is_deleted, false), eq(tasks.status, 'done'), guestTaskScopeSql(user.id)));
       const [myCount] = await db.select({ count: sql<number>`count(*)::int` })
         .from(tasks).where(and(eq(tasks.project_id, p.id), eq(tasks.is_deleted, false), eq(tasks.assignee_id, user.id)));
 
@@ -274,9 +278,12 @@ dashboardRoutes.get('/', async (c) => {
     }
 
     // 8. Unread notification count
+    // A guest's count leaves out notices of tasks hidden from them, as their
+    // notification list does (lib/native-mention-visibility.ts).
     const [notifCount] = await db.select({ count: sql<number>`count(*)::int` })
       .from(notifications)
-      .where(and(eq(notifications.org_id, user.org_id), eq(notifications.user_id, user.id), eq(notifications.is_read, false)));
+      .where(and(eq(notifications.org_id, user.org_id), eq(notifications.user_id, user.id), eq(notifications.is_read, false),
+        sql`NOT ${noticeNamesGuestHiddenTaskSql(user.id, sql`${notifications.metadata}`, sql`${notifications.org_id}`, sql`${notifications.link}`)}`));
 
     // 8b. Recent/pending agent activity for the cockpit surface. This keeps
     // the dashboard useful even when the frontend only renders a subset.

@@ -1,7 +1,7 @@
 import { logId, logNumber } from '../../lib/log-metadata.js';
 import { emitCurrentMessageToSpaceViewers } from '../../lib/agent-message-run-details.js';
 // Worker handler: transcribe clip audio, then summarize with AI agent
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { db } from '../../lib/db.js';
 import { clips, messages, tasks, spaces, users, projects, spaceMembers } from '@deft/db/schema';
 import { transcribe } from '../../lib/transcription.js';
@@ -10,7 +10,7 @@ import { getOrgAIConfig } from '../../lib/org-ai-config.js';
 import { getIO } from '../../socket.js';
 import { basename, join } from 'node:path';
 import type { JobData } from '../types.js';
-import { unrestrictedTaskCondition, visibleTaskCondition } from '../../lib/task-visibility.js';
+import { guestTaskScopeSql, unrestrictedTaskCondition, visibleTaskCondition } from '../../lib/task-visibility.js';
 import { toPlainText, truncatePlainText } from '../../lib/plain-text.js';
 import { parseClipSummaryJson, type ClipSummary } from '../../lib/clip-summary.js';
 
@@ -21,6 +21,8 @@ export async function loadShareableClipContext(params: {
   contextId: string;
   orgId: string;
   userId: string;
+  /** The space whose message carries the summary; its guests must be able to see the task too. */
+  spaceId?: string;
 }): Promise<{ title: string; description: string }> {
   let title = '';
   let description = '';
@@ -41,6 +43,10 @@ export async function loadShareableClipContext(params: {
         // context may be visible to the recorder but not to every member of
         // that message's space, so it must never enter the shared summary.
         unrestrictedTaskCondition(),
+        // Nor a task hidden from a guest of that space (task-visibility.ts).
+        ...(params.spaceId ? [sql`NOT EXISTS (SELECT 1 FROM ${spaceMembers} clip_space_member
+          WHERE clip_space_member.space_id = ${params.spaceId}
+            AND NOT ${guestTaskScopeSql(sql`clip_space_member.user_id`)})`] : []),
       ))
       .limit(1);
     if (task) {
@@ -181,6 +187,7 @@ export async function handleClipProcess(job: JobData): Promise<void> {
       contextId: context_id,
       orgId: org_id,
       userId: user_id,
+      spaceId: space_id,
     });
     contextTitle = context.title;
     contextDescription = context.description;

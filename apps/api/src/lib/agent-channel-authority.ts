@@ -1,6 +1,7 @@
 import { sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { actionRequesterIdSql } from './agent-action-requester.js';
 import { publicSpaceVisibleSql } from './space-visibility.js';
+import { guestTaskScopeSql, taskAliasColumns } from './task-visibility.js';
 
 /** Current room authority, resolved from canonical rows rather than event payloads. */
 export function currentEmployeeSpaceAuthoritySql(orgId: SQLWrapper, employeeId: SQLWrapper, spaceId: SQLWrapper): SQL {
@@ -53,7 +54,8 @@ function taskVisibleToSql(userId: SQLWrapper): SQL {
     or task.assignee_id = ${userId} or task.created_by = ${userId} or project.lead_id = ${userId}
     or coalesce(task.metadata->'visible_user_ids', '[]'::jsonb) ? ${userId}
     or exists (select 1 from task_watchers watcher where watcher.task_id = task.id and watcher.user_id = ${userId})
-    or exists (select 1 from task_assignees assignee where assignee.task_id = task.id and assignee.user_id = ${userId}))`;
+    or exists (select 1 from task_assignees assignee where assignee.task_id = task.id and assignee.user_id = ${userId}))
+    and ${guestTaskScopeSql(userId, taskAliasColumns('task'))}`;
 }
 
 export function currentAgentChannelEventAuthoritySql(eventId: SQLWrapper, readerUserId?: SQLWrapper): SQL {

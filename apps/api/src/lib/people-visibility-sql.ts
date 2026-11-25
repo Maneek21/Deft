@@ -19,6 +19,28 @@ export function isGuestRole(role: string | null | undefined): boolean {
   return role !== 'owner' && role !== 'admin' && role !== 'member';
 }
 
+/**
+ * `peopleViewer` (people-visibility.ts) as SQL, for a query that does not
+ * know the workspace up front: true when `userId` reads the workspace
+ * `orgId` as an active owner, admin or member, or is an agent with no active
+ * membership there (an agent user, or an agent employee of that workspace).
+ * False for a guest and for anyone else.
+ *
+ * Written as lookups by key (scalar subqueries), never IN or EXISTS: those
+ * are planned twice (per row and hashed), and this condition sits inside
+ * checks PostgreSQL plans on every Inbox read (lib/attention.ts). For an
+ * owner, admin or member it costs one index lookup on org_members.
+ */
+export function fullWorkspaceViewSql(userId: string | SQLWrapper, orgId: SQLWrapper): SQL {
+  return sql`COALESCE(
+    (SELECT full_view_member.role IN ('owner', 'admin', 'member') FROM org_members full_view_member
+      WHERE full_view_member.org_id = ${orgId} AND full_view_member.user_id = ${userId} AND full_view_member.is_active = true),
+    (SELECT full_view_user.kind = 'agent' OR COALESCE((SELECT true FROM agent_employees full_view_employee
+        WHERE full_view_employee.user_id = full_view_user.id AND full_view_employee.org_id = ${orgId} LIMIT 1), false)
+      FROM users full_view_user WHERE full_view_user.id = ${userId}),
+    false)`;
+}
+
 /** The ids of everyone who shares a space with the viewer, the viewer included (when they are in any space). */
 export function sharedSpacePeopleSql(viewer: PeopleViewer): SQL {
   return sql`SELECT DISTINCT shared_person.user_id

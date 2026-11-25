@@ -418,7 +418,8 @@ test('each access rule shows and hides the items it should, under the whole rule
     ["member, the owner's mention", member, item(member, 'native_mention', delivery(0, owner)), false],
     ['member, the approval they asked for', member, item(member, 'agent_action', actions[0]!), true],
     ["guest, the member's approval", guest, item(guest, 'agent_action', actions[0]!), false],
-    // The legacy-notification check, on a type with no rule of its own (variants: see `legacy`).
+    // The legacy-notification check (variants: see `legacy`), on task items whose source names no task,
+    // so the task rule (a guest sees only the tasks they may see, task-visibility.ts) passes them.
     ['member, task item, no metadata', member, item(member, 'task', null, 0), true],
     ['member, task item, legacy notice of their private room', member, item(member, 'task', null, 2), true],
     ['member, task item, legacy notice of the admin-only room', member, item(member, 'task', null, 3), false],

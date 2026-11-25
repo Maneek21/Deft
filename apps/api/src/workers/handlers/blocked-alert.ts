@@ -11,10 +11,11 @@ import {
   taskRelationships,
   messages,
 } from '@deft/db/schema';
-import { eq, and, gte } from 'drizzle-orm';
+import { eq, and, gte, inArray } from 'drizzle-orm';
 import { emitVisibleNotification } from '../../lib/notification-delivery.js';
 import { toPlainText, truncatePlainText } from '../../lib/plain-text.js';
 import { createNotificationIfAllowed } from '../../lib/notification-policy.js';
+import { guestTaskScopeSql } from '../../lib/task-visibility.js';
 
 export async function handleBlockedAlert(job: JobData): Promise<void> {
   const { messageId, spaceId, orgId, userId } = job.data;
@@ -128,6 +129,13 @@ export async function handleBlockedAlert(job: JobData): Promise<void> {
         continue; // Don't notify the blocked person themselves
       }
 
+      // The lead hears only of blocking tasks they may see: a guest lead's
+      // notice names no task hidden from them (task-visibility.ts).
+      const blockingIds = blockingDeps.map((d) => d.source_task_id);
+      const visibleBlockingIds = blockingIds.length === 0 ? [] : (await db.select({ id: tasks.id }).from(tasks)
+        .where(and(inArray(tasks.id, blockingIds), eq(tasks.org_id, orgId), guestTaskScopeSql(targetUserId))))
+        .map((row) => row.id);
+
       const message = `${userName} may be blocked — '${contentSnippet}' (in #${spaceName})`;
 
       // Create notification
@@ -143,7 +151,7 @@ export async function handleBlockedAlert(job: JobData): Promise<void> {
           message_id: messageId,
           space_id: spaceId,
           nudge_type: 'blocked',
-          blocking_deps: blockingDeps.map((d) => d.source_task_id),
+          blocking_deps: blockingIds.filter((id) => visibleBlockingIds.includes(id)),
         },
       }, { channel: 'agents', spaceId, isMention: false });
 

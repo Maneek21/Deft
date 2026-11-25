@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, ne, or, sql, type SQL } from 'drizzle-orm';
 import {
-  agentEmployees, messages, orgMembers, spaceMembers, spaces, tasks, users,
+  agentEmployees, messages, orgMembers, projects, spaceMembers, spaces, tasks, users,
   wikiCitations, wikiLinks, wikiPages,
 } from '@deft/db/schema';
 import { db } from './db.js';
@@ -96,7 +96,9 @@ async function citationVisible(reader: NativeWikiReader, citation: typeof wikiCi
     return Boolean(row);
   }
   if (citation.source_type === 'task') {
+    // visibleTaskCondition reads the project's lead, so the query joins projects.
     const [row] = await db.select({ project_id: tasks.project_id }).from(tasks)
+      .innerJoin(projects, eq(projects.id, tasks.project_id))
       .where(and(eq(tasks.id, citation.source_id), eq(tasks.org_id, reader.orgId),
         eq(tasks.is_deleted, false), visibleTaskCondition(reader.subjectUserId)))
       .limit(1);
