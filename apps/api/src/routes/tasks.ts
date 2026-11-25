@@ -82,12 +82,15 @@ const updateTaskSchema = z.object({
 const bulkTaskIdsSchema = z.array(z.string().min(1)).min(1).max(50);
 const bulkTaskDeleteSchema = z.object({ task_ids: bulkTaskIdsSchema });
 
-async function validateAssignableAssigneeId(assigneeId: unknown, orgId: string): Promise<string | null | undefined> {
+// `actorId`: the person assigning. A guest may assign only people who share
+// a space with them; anyone else is refused like an unknown id
+// (lib/people-visibility.ts).
+async function validateAssignableAssigneeId(assigneeId: unknown, orgId: string, actorId: string): Promise<string | null | undefined> {
   if (assigneeId === undefined) return undefined;
   if (assigneeId === null || assigneeId === '') return null;
   if (typeof assigneeId !== 'string' || assigneeId.trim().length === 0) return null;
   const trimmed = assigneeId.trim();
-  const resolved = await resolveAssignableAssigneeId(trimmed, orgId);
+  const resolved = await resolveAssignableAssigneeId(trimmed, orgId, { visibleTo: actorId });
   return resolved ? resolved.id : undefined;
 }
 
@@ -943,7 +946,7 @@ taskRoutes.post('/:id/assignees', async (c) => {
     const { user_id } = await c.req.json();
     if (!user_id) return c.json({ error: 'user_id required', code: 'VALIDATION_ERROR' }, 400);
 
-    const assigneeId = await validateAssignableAssigneeId(user_id, user.org_id);
+    const assigneeId = await validateAssignableAssigneeId(user_id, user.org_id, user.id);
     if (!assigneeId) {
       return c.json({ error: 'Assignee must be an active user or healthy agent in this organization', code: 'INVALID_ASSIGNEE' }, 400);
     }
@@ -1789,7 +1792,7 @@ async function createTaskForProject(
     throw Object.assign(new Error('Project not found'), { code: 'NOT_FOUND' });
   }
 
-  const assigneeId = await validateAssignableAssigneeId(data.assignee_id, orgId);
+  const assigneeId = await validateAssignableAssigneeId(data.assignee_id, orgId, userId);
   if (data.assignee_id !== undefined && assigneeId === undefined) {
     throw Object.assign(new Error('Invalid assignee'), { code: 'INVALID_ASSIGNEE' });
   }
@@ -2023,8 +2026,12 @@ taskRoutes.patch('/:id', async (c) => {
       activityEntries.push({ action: 'priority_changed', field: 'priority', old_value: existingTask.priority, new_value: parsed.data.priority });
     }
 
-    if (parsed.data.assignee_id !== undefined) {
-      const newAssignee = await validateAssignableAssigneeId(parsed.data.assignee_id, user.org_id);
+    // Re-sending the current assignee is no change, so it is not validated
+    // again: an edit by a guest who cannot see that person still saves.
+    const keepsAssignee = typeof parsed.data.assignee_id === 'string'
+      && parsed.data.assignee_id.trim() === existingTask.assignee_id;
+    if (parsed.data.assignee_id !== undefined && !keepsAssignee) {
+      const newAssignee = await validateAssignableAssigneeId(parsed.data.assignee_id, user.org_id, user.id);
       if (newAssignee === undefined) {
         return c.json({ error: 'Assignee must be an active user or healthy agent in this organization', code: 'INVALID_ASSIGNEE' }, 400);
       }

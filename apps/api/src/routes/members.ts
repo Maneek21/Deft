@@ -30,6 +30,7 @@ import {
 } from '@deft/db/schema';
 import { env } from '../lib/env.js';
 import { visibleLiveMemberForOrg } from '../lib/member-visibility.js';
+import { emailFor, peopleViewer, personVisibleSql } from '../lib/people-visibility.js';
 import { OrgMembershipError, requireOrgAdminOrOwner } from '../lib/org-membership.js';
 import { evictActiveHuddleParticipants } from '../socket.js';
 import { emitWebSessionRevocations } from '../lib/web-sessions.js';
@@ -650,6 +651,9 @@ async function loadPeopleStats(orgId: string, userIds: string[]) {
 memberRoutes.get('/', async (c) => {
   try {
     const user = c.get('user');
+    // A guest sees only the people who share a space with them, without
+    // their email addresses (lib/people-visibility.ts).
+    const viewer = await peopleViewer(user.org_id, user.id);
 
     const members = await db.select({
       id: users.id,
@@ -669,12 +673,14 @@ memberRoutes.get('/', async (c) => {
           eq(orgMembers.org_id, user.org_id),
           eq(orgMembers.is_active, true),
           visibleLiveMemberForOrg(orgMembers.org_id),
+          personVisibleSql(viewer, users.id),
         )
       );
 
     // Clear expired statuses
     const now = new Date();
-    const result = members.map(m => {
+    const result = members.map(member => {
+      const m = { ...member, email: emailFor(viewer, member.id, member.email) };
       if (m.status_expires_at && new Date(m.status_expires_at) < now) {
         // Auto-clear expired status (fire-and-forget DB update)
         db.update(users).set({ status_emoji: null, status_text: null, status_expires_at: null })
@@ -698,6 +704,7 @@ memberRoutes.get('/directory', async (c) => {
     const user = c.get('user');
     const currentMembership = await getCurrentMembership(user.org_id, user.id);
     const isAdmin = currentMembership?.role === 'owner' || currentMembership?.role === 'admin';
+    const viewer = await peopleViewer(user.org_id, user.id);
 
     const rows = await db.select({
       membership_id: orgMembers.id,
@@ -741,6 +748,7 @@ memberRoutes.get('/directory', async (c) => {
         eq(orgMembers.org_id, user.org_id),
         isAdmin ? sql`true` : eq(orgMembers.is_active, true),
         visibleLiveMemberForOrg(orgMembers.org_id),
+        personVisibleSql(viewer, users.id),
       ))
       .orderBy(desc(orgMembers.is_active), users.name);
 
@@ -770,7 +778,7 @@ memberRoutes.get('/directory', async (c) => {
         id: row.member_id,
         membership_id: row.membership_id,
         name: row.name,
-        email: row.email,
+        email: emailFor(viewer, row.member_id, row.email),
         kind: row.kind,
         avatar_url: row.avatar_url,
         title: row.title,
@@ -873,6 +881,7 @@ memberRoutes.get('/:id/detail', async (c) => {
     const memberId = c.req.param('id');
     const currentMembership = await getCurrentMembership(user.org_id, user.id);
     const isAdmin = currentMembership?.role === 'owner' || currentMembership?.role === 'admin';
+    const viewer = await peopleViewer(user.org_id, user.id);
 
     const [member] = await db.select({
       id: users.id,
@@ -916,6 +925,7 @@ memberRoutes.get('/:id/detail', async (c) => {
         eq(users.id, memberId),
         isAdmin ? sql`true` : eq(orgMembers.is_active, true),
         visibleLiveMemberForOrg(orgMembers.org_id),
+        personVisibleSql(viewer, users.id),
       ))
       .limit(1);
 
@@ -935,7 +945,15 @@ memberRoutes.get('/:id/detail', async (c) => {
       })
         .from(spaceMembers)
         .innerJoin(spaces, eq(spaces.id, spaceMembers.space_id))
-        .where(and(eq(spaces.org_id, user.org_id), eq(spaceMembers.user_id, memberId)))
+        .where(and(
+          eq(spaces.org_id, user.org_id),
+          eq(spaceMembers.user_id, memberId),
+          // A guest is shown only the spaces they share with this person.
+          viewer.guest
+            ? sql`EXISTS (SELECT 1 FROM ${spaceMembers} viewer_membership
+                WHERE viewer_membership.space_id = ${spaces.id} AND viewer_membership.user_id = ${user.id})`
+            : sql`true`,
+        ))
         .orderBy(desc(spaceMembers.joined_at))
         .limit(12),
       db.select({
@@ -1004,7 +1022,7 @@ memberRoutes.get('/:id/detail', async (c) => {
       member: {
         id: member.id,
         name: member.name,
-        email: member.email,
+        email: emailFor(viewer, member.id, member.email),
         kind: member.kind,
         avatar_url: member.avatar_url,
         title: member.title,
@@ -1111,6 +1129,7 @@ memberRoutes.get('/:id', async (c) => {
   try {
     const user = c.get('user');
     const memberId = c.req.param('id');
+    const viewer = await peopleViewer(user.org_id, user.id);
 
     const [member] = await db.select({
       id: users.id,
@@ -1134,6 +1153,7 @@ memberRoutes.get('/:id', async (c) => {
         eq(orgMembers.is_active, true),
         eq(users.id, memberId),
         visibleLiveMemberForOrg(orgMembers.org_id),
+        personVisibleSql(viewer, users.id),
       ))
       .limit(1);
 
@@ -1141,7 +1161,7 @@ memberRoutes.get('/:id', async (c) => {
       return c.json({ error: 'Member not found', code: 'NOT_FOUND' }, 404);
     }
 
-    return c.json(member);
+    return c.json({ ...member, email: emailFor(viewer, member.id, member.email) });
   } catch (err) {
     console.error('Failed to fetch member:');
     return c.json({ error: 'Failed to fetch member', code: 'INTERNAL_ERROR' }, 500);

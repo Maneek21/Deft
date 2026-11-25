@@ -1899,7 +1899,7 @@ export async function executeAction(
 
         let assigneeId: string | null = null;
         if (params.assignee_name) {
-          const resolved = await resolveAssigneeWithMatches(params.assignee_name, orgId);
+          const resolved = await resolveAssigneeWithMatches(params.assignee_name, orgId, { visibleTo: userId });
           if (!resolved.ok) {
             if (resolved.ambiguous) {
               return {
@@ -2156,7 +2156,7 @@ export async function executeAction(
           if (requested[field] !== undefined) updates[field] = requested[field];
         }
         if (typeof requested.assignee_name === 'string') {
-          const resolved = await resolveAssigneeWithMatches(requested.assignee_name, orgId);
+          const resolved = await resolveAssigneeWithMatches(requested.assignee_name, orgId, { visibleTo: userId });
           if (!resolved.ok) {
             const suffix = resolved.ambiguous ? ` Matches: ${resolved.matches.map((match) => match.name).join(', ')}` : '';
             return { success: false, result: null, error: `Could not resolve assignee "${requested.assignee_name}".${suffix}` };
@@ -2237,7 +2237,7 @@ export async function executeAction(
           .limit(1);
         if (!existing) return { success: false, result: null, error: 'Task not found' };
 
-        const resolved = await resolveAssigneeWithMatches(params.assignee_name, orgId);
+        const resolved = await resolveAssigneeWithMatches(params.assignee_name, orgId, { visibleTo: userId });
         if (!resolved.ok) {
           if (resolved.ambiguous) {
             return {

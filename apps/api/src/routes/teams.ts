@@ -26,6 +26,7 @@ import { ordinaryPendingApprovalSql, specialApprovalActionSql } from '../lib/pen
 import { actionRequesterIdSql } from '../lib/agent-action-requester.js';
 import { OrgMembershipError, requireOrgAdminOrOwner } from '../lib/org-membership.js';
 import type { AuthUser } from '../middleware/auth.js';
+import { canSeePerson, emailFor, peopleViewer, visiblePersonIds } from '../lib/people-visibility.js';
 
 export const teamRoutes = new Hono();
 
@@ -128,6 +129,18 @@ async function canSeeTeam(user: AuthUser, team: TeamRow) {
   if (team.visibility === 'org') return true;
   if (team.lead_user_id === user.id) return true;
   return Boolean(await getCurrentTeamRole(user.org_id, team.id, user.id));
+}
+
+/** A team row with its lead and creator ids kept only when the viewer may see them. */
+function withVisibleTeamPeople<T extends { lead_user_id: string | null; created_by: string | null }>(
+  team: T,
+  visiblePeople: ReadonlySet<string> | null,
+): T {
+  return {
+    ...team,
+    lead_user_id: canSeePerson(visiblePeople, team.lead_user_id) ? team.lead_user_id : null,
+    created_by: canSeePerson(visiblePeople, team.created_by) ? team.created_by : null,
+  };
 }
 
 async function requireVisibleTeam(c: Context, user: AuthUser, teamId: string) {
@@ -421,6 +434,11 @@ async function buildTeamDashboard(viewer: AuthUser, teamId: string) {
       : Promise.resolve([{ count: 0 }]),
   ]);
 
+  // A guest is not told who, among people they share no space with, owns
+  // the work: those rows keep their counts without a name or id
+  // (lib/people-visibility.ts).
+  const visiblePeople = await visiblePersonIds(await peopleViewer(orgId, viewer.id));
+  const shown = (id: string | null) => id === null || canSeePerson(visiblePeople, id);
   return {
     generated_at: now.toISOString(),
     data_quality: {
@@ -443,16 +461,16 @@ async function buildTeamDashboard(viewer: AuthUser, teamId: string) {
       due_soon_tasks: dueSoonTaskCount[0]?.count ?? 0,
       in_review_tasks: inReviewTaskCount[0]?.count ?? 0,
       pending_agent_actions: pendingActions[0]?.count ?? 0,
-      top_tasks: attentionTasks,
+      top_tasks: attentionTasks.map((task) => (shown(task.assignee_id)
+        ? task
+        : { ...task, assignee_id: null, assignee_name: null })),
     },
     workload: {
       open_tasks: openTaskCount[0]?.count ?? 0,
       by_status: Object.fromEntries(statusRows.map((row) => [row.status, row.count])),
-      by_owner: ownerRows.map((row) => ({
-        user_id: row.assignee_id,
-        name: row.assignee_name ?? 'Unassigned',
-        count: row.count,
-      })),
+      by_owner: ownerRows.map((row) => (shown(row.assignee_id)
+        ? { user_id: row.assignee_id, name: row.assignee_name ?? 'Unassigned', count: row.count }
+        : { user_id: null, name: null, count: row.count })),
     },
     context: {
       linked_projects: projectIds.length,
@@ -510,7 +528,10 @@ teamRoutes.get('/', async (c) => {
     ? rows
     : rows.filter((row) => row.visibility === 'org' || row.lead_user_id === user.id || Boolean(row.current_user_role));
 
-  return c.json(visible);
+  // A guest is not given the id of a lead or creator they share no space
+  // with (lib/people-visibility.ts).
+  const visiblePeople = await visiblePersonIds(await peopleViewer(user.org_id, user.id));
+  return c.json(visible.map((row) => withVisibleTeamPeople(row, visiblePeople)));
 });
 
 teamRoutes.post('/', async (c) => {
@@ -598,9 +619,14 @@ teamRoutes.get('/:id', async (c) => {
   const visible = await requireVisibleTeam(c, user, c.req.param('id'));
   if ('response' in visible) return visible.response;
 
-  const [lead] = visible.team.lead_user_id
+  // A guest sees only the people who share a space with them, without their
+  // email addresses (lib/people-visibility.ts).
+  const viewer = await peopleViewer(user.org_id, user.id);
+  const visiblePeople = await visiblePersonIds(viewer);
+  const [leadRow] = visible.team.lead_user_id && canSeePerson(visiblePeople, visible.team.lead_user_id)
     ? await db.select({ id: users.id, name: users.name, email: users.email, avatar_url: users.avatar_url }).from(users).where(eq(users.id, visible.team.lead_user_id)).limit(1)
     : [null];
+  const lead = leadRow ? { ...leadRow, email: emailFor(viewer, leadRow.id, leadRow.email) } : null;
 
   const members = await db
     .select({
@@ -634,10 +660,11 @@ teamRoutes.get('/:id', async (c) => {
   const decoratedResources = await decorateResourcesForUser(user.org_id, user.id, resources);
 
   return c.json({
-    team: visible.team,
+    team: withVisibleTeamPeople(visible.team, visiblePeople),
     lead,
-    members: members.map((member) => ({
+    members: members.filter((member) => canSeePerson(visiblePeople, member.user_id)).map((member) => ({
       ...member,
+      email: emailFor(viewer, member.user_id, member.email),
       kind: member.kind === 'agent' || member.agent_employee_id ? 'agent' : member.kind,
     })),
     resources: decoratedResources,

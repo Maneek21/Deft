@@ -3,6 +3,7 @@ import { orgMembers, teamMembers, teams, users } from '@deft/db/schema';
 import { db } from './db.js';
 import { canSeeTeam } from './mcp-tools/team-context.js';
 import { visibleLiveMemberForOrg } from './member-visibility.js';
+import { peopleViewer, personVisibleSql } from './people-visibility.js';
 import type { NativeResourceDisplay, NativeResourceSubject } from './native-resource-types.js';
 
 /** The directory owner exposes current members only. Its richer profile fields
@@ -21,6 +22,8 @@ export async function resolveNativePersonDisplay(
     .limit(1);
   if (!viewer) return null;
 
+  // A guest resolves only the people who share a space with them (lib/people-visibility.ts).
+  const people = await peopleViewer(subject.org_id, subject.user_id);
   const [person] = await db.select({ name: users.name, updated_at: users.updated_at })
     .from(users)
     .innerJoin(orgMembers, eq(orgMembers.user_id, users.id))
@@ -29,6 +32,7 @@ export async function resolveNativePersonDisplay(
       eq(orgMembers.org_id, subject.org_id),
       eq(orgMembers.is_active, true),
       visibleLiveMemberForOrg(orgMembers.org_id),
+      personVisibleSql(people, users.id),
     ))
     .limit(1);
   return person ? { label: person.name, updated_at: person.updated_at.toISOString() } : null;

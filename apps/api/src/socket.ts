@@ -3,7 +3,8 @@ import type { Server as HTTPServer } from 'node:http';
 import { verifyWebAccess, webSessionEvents } from './lib/web-sessions.js';
 import { db } from './lib/db.js';
 import { users, orgMembers, spaceMembers, spaces } from '@deft/db/schema';
-import { eq, and, ne } from 'drizzle-orm';
+import { eq, and, ne, sql } from 'drizzle-orm';
+import { canSeePerson, visiblePersonIds } from './lib/people-visibility.js';
 import * as huddle from './huddle-rooms.js';
 import { requireActiveOrgMembership } from './lib/org-membership.js';
 import { createNotificationIfAllowed } from './lib/notification-policy.js';
@@ -259,6 +260,60 @@ function clearIdle(orgId: string, userId: string): void {
   if (set.size === 0) idleUsers.delete(orgId);
 }
 
+type PresenceStatus = 'online' | 'idle' | 'offline';
+type PresenceSender = { id: string; to: (room: string) => { emit: (event: string, payload: unknown) => unknown } };
+
+/**
+ * A presence change of `userId` reaches the workspace's owners, admins and
+ * members (the org-members room), and only those connected guests who share a
+ * space with that person: a guest sees only those people
+ * (lib/people-visibility.ts). The socket the change came from never receives
+ * it. A guest's socket is one in the org room but not in org-members.
+ */
+function broadcastPresence(from: PresenceSender, orgId: string, userId: string, status: PresenceStatus): void {
+  const payload = { user_id: userId, status };
+  from.to(`org-members:${orgId}`).emit('presence:update', payload);
+  void notifyGuestsOfPresence(orgId, userId, payload, from.id).catch(() => {
+    // Presence is best effort; a guest who misses one update sees the next.
+  });
+}
+
+async function notifyGuestsOfPresence(
+  orgId: string,
+  userId: string,
+  payload: { user_id: string; status: PresenceStatus },
+  exceptSocketId: string,
+): Promise<void> {
+  const server = io;
+  const orgSockets = onlineUsers.get(orgId);
+  if (!server || !orgSockets) return;
+  const guestSockets = new Map<string, string[]>();
+  for (const [guestId, socketIds] of orgSockets) {
+    for (const socketId of socketIds) {
+      if (socketId === exceptSocketId) continue;
+      const rooms = server.sockets.sockets.get(socketId)?.rooms;
+      if (!rooms?.has(`org:${orgId}`) || rooms.has(`org-members:${orgId}`)) continue;
+      guestSockets.set(guestId, [...(guestSockets.get(guestId) ?? []), socketId]);
+    }
+  }
+  if (guestSockets.size === 0) return;
+  const guests = [...guestSockets.keys()];
+  const result = await db.execute(sql`
+    SELECT DISTINCT viewer_membership.user_id
+    FROM ${spaceMembers} viewer_membership
+    JOIN ${spaces} shared_space ON shared_space.id = viewer_membership.space_id
+    JOIN ${spaceMembers} person_membership ON person_membership.space_id = viewer_membership.space_id
+    WHERE shared_space.org_id = ${orgId}
+      AND person_membership.user_id = ${userId}
+      AND viewer_membership.user_id IN (${sql.join(guests.map((id) => sql`${id}`), sql`, `)})`);
+  const seeing = new Set(((result as unknown as { rows?: Array<{ user_id: string }> }).rows ?? []).map((row) => row.user_id));
+  seeing.add(userId);
+  for (const [guestId, socketIds] of guestSockets) {
+    if (!seeing.has(guestId)) continue;
+    for (const socketId of socketIds) server.to(socketId).emit('presence:update', payload);
+  }
+}
+
 export function getIO(): SocketIOServer | null {
   return io;
 }
@@ -472,22 +527,33 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
     // Broadcast online to the org for this user's first socket in the org, or
     // when a new socket ends an idle period: peers must not keep showing idle.
     if (userSockets.size === 1 || wasIdle) {
-      socket.to(`org:${user.org_id}`).emit('presence:update', {
-        user_id: user.id,
-        status: 'online',
-      });
+      broadcastPresence(socket, user.org_id, user.id, 'online');
     }
 
     // Send the users currently connected to this org to the new client. Cost:
     // one pass over this org's online users; no DB query.
-    const presenceList: { user_id: string; status: 'online' | 'idle' }[] = [];
-    const orgIdle = idleUsers.get(user.org_id);
-    for (const uid of orgOnline.keys()) {
-      if (uid !== user.id) {
-        presenceList.push({ user_id: uid, status: orgIdle?.has(uid) ? 'idle' : 'online' });
+    const currentPresence = () => {
+      const list: { user_id: string; status: 'online' | 'idle' }[] = [];
+      const orgIdle = idleUsers.get(user.org_id);
+      for (const uid of onlineUsers.get(user.org_id)?.keys() ?? []) {
+        if (uid !== user.id) list.push({ user_id: uid, status: orgIdle?.has(uid) ? 'idle' : 'online' });
       }
+      return list;
+    };
+    if (user.role === 'guest') {
+      // A guest is told only about people who share a space with them; if
+      // that cannot be read, about no one (lib/people-visibility.ts). Not
+      // awaited here: the handlers below, disconnect cleanup included, must
+      // be registered before anything else can happen on this socket.
+      void visiblePersonIds({ orgId: user.org_id, userId: user.id, guest: true })
+        .catch(() => new Set<string>())
+        .then((visible) => {
+          // Read after the lookup, so no one who left meanwhile is listed.
+          if (socket.connected) socket.emit('presence:init', currentPresence().filter((entry) => canSeePerson(visible, entry.user_id)));
+        });
+    } else {
+      socket.emit('presence:init', currentPresence());
     }
-    socket.emit('presence:init', presenceList);
 
     // Display name of the authenticated user, taken from the checked space join
     // (users.name); typing events use it instead of a client-supplied name.
@@ -561,10 +627,7 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
       const orgIdle = idleSet(user.org_id);
       if (!orgIdle.has(user.id)) {
         orgIdle.add(user.id);
-        socket.to(`org:${user.org_id}`).emit('presence:update', {
-          user_id: user.id,
-          status: 'idle',
-        });
+        broadcastPresence(socket, user.org_id, user.id, 'idle');
       }
     });
 
@@ -572,10 +635,7 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
       recordLastSeen(user.id);
       if (idleUsers.get(user.org_id)?.has(user.id)) {
         clearIdle(user.org_id, user.id);
-        socket.to(`org:${user.org_id}`).emit('presence:update', {
-          user_id: user.id,
-          status: 'online',
-        });
+        broadcastPresence(socket, user.org_id, user.id, 'online');
       }
     });
 
@@ -987,10 +1047,7 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
           if (orgSockets.size === 0) onlineUsers.delete(user.org_id);
           clearIdle(user.org_id, user.id);
           recordLastSeen(user.id);
-          socket.to(`org:${user.org_id}`).emit('presence:update', {
-            user_id: user.id,
-            status: 'offline',
-          });
+          broadcastPresence(socket, user.org_id, user.id, 'offline');
         }
       }
     });

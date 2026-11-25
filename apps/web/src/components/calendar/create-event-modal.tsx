@@ -54,7 +54,10 @@ export function CreateEventModal({
     }).catch(() => {});
   }, []);
 
+  // Attendees are invited by email address. A guest receives no one's email
+  // but their own (GET /api/members), so only people with one are offered.
   const filteredMembers = allMembers.filter(m =>
+    Boolean(m.email) &&
     !attendees.some(a => a.id === m.id) &&
     calendarMemberMatches(m, attendeeSearch)
   );

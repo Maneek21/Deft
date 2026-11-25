@@ -321,7 +321,8 @@ export async function resolvePendingActionTargets(
       const project = projectResolution.project;
 
       if (typeof params.assignee_name === 'string' && params.assignee_name.trim()) {
-        const resolvedAssignee = await resolveAssigneeWithMatches(params.assignee_name.trim(), orgId);
+        // Asked by a guest, only people who share a space with them are matched or named.
+        const resolvedAssignee = await resolveAssigneeWithMatches(params.assignee_name.trim(), orgId, { visibleTo: userId });
         if (!resolvedAssignee.ok) {
           if (resolvedAssignee.ambiguous) {
             warnings.push(`I need the exact assignee. "${params.assignee_name}" matches: ${resolvedAssignee.matches.map((m) => m.name).join(', ')}.`);

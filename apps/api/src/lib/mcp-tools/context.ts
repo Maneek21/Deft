@@ -36,6 +36,7 @@ import { listTeamSummaries, teamAccessForEmployee } from './team-context.js';
 import { employeeCanAccessSpace } from './employee-space-access.js';
 import { readEmployeeModuleDiscovery } from '../module-discovery.js';
 import { loadEmployeeProjectAccess } from './employee-project-access.js';
+import { peopleViewer, personVisibleSql, withoutHiddenEmails } from '../people-visibility.js';
 
 type TriggerDescriptor = {
   kind: string;
@@ -377,13 +378,18 @@ export async function platformContext(
   // Scope is part of the key, not just an invalidation side effect. This
   // prevents an old-scope request that finishes after invalidation from
   // repopulating the cache entry used by a newly narrowed employee.
-  const key = cacheKey(
+  // The agent's own workspace role decides which people it sees, so it is
+  // read before the cache: the view is part of the key, and a guest-role
+  // agent (whose shared spaces can change at any time) is never served from
+  // or stored in the cache (lib/people-visibility.ts).
+  const viewer = await peopleViewer(ctx.org_id, projectAccess.userId);
+  const key = `${cacheKey(
     ctx.employee_id,
     projectAccess,
     projectLifecycleFingerprint,
     trigger,
-  );
-  const cached = cacheGet(key);
+  )}:${viewer.guest ? 'guest' : 'member'}`;
+  const cached = viewer.guest ? undefined : cacheGet(key);
   if (cached) {
     // Re-emit with the cache flag set so callers (and our tests) can tell.
     // The first content block is a JSON string — we re-parse, tag, re-stringify.
@@ -407,7 +413,9 @@ export async function platformContext(
       return errorResult(`Org ${ctx.org_id} not found`);
     }
 
-    const teammates = await db
+    // An agent an owner made a guest sees only the people who share a space
+    // with it, without their email addresses (lib/people-visibility.ts).
+    const teammates = withoutHiddenEmails(viewer, await db
       .select({
         id: users.id,
         name: users.name,
@@ -421,9 +429,10 @@ export async function platformContext(
         and(
           eq(orgMembers.org_id, ctx.org_id),
           eq(orgMembers.is_active, true),
+          personVisibleSql(viewer, users.id),
         ),
       )
-      .limit(100);
+      .limit(100), (row) => row.id);
 
     // ─── active projects (optional, fail soft) ───────────────────
     let activeProjects: Array<{ id: string; name: string; prefix: string }> = [];
@@ -632,7 +641,7 @@ export async function platformContext(
     };
 
     const result = textResult(payload);
-    cacheSet(key, result);
+    if (!viewer.guest) cacheSet(key, result);
     return result;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

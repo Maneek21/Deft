@@ -2,6 +2,7 @@ import { emitCurrentMessageToSpaceViewers } from './agent-message-run-details.js
 import { createHash } from 'node:crypto';
 import { extname } from 'node:path';
 import { and, eq, sql } from 'drizzle-orm';
+import { peopleViewer, personVisibleSql } from './people-visibility.js';
 import { publicSpaceVisibleSql } from './space-visibility.js';
 import { z } from 'zod';
 import {
@@ -280,6 +281,9 @@ export async function prepareDocumentSend(params: {
     targetShape = { thread_id: thread.id };
   } else if (draft.target && 'user_id' in draft.target) {
     if (draft.target.user_id === params.actorUserId) throw new Error('Document target cannot be the sending agent itself');
+    // An agent an owner made a guest may send only to people who share a
+    // space with it; anyone else is answered like an unknown id.
+    const sender = await peopleViewer(params.orgId, params.actorUserId);
     const target = await db.execute(sql`
       SELECT u.id
       FROM users u
@@ -287,6 +291,7 @@ export async function prepareDocumentSend(params: {
       WHERE u.id = ${draft.target.user_id}
         AND om.org_id = ${params.orgId}
         AND om.is_active = true
+        AND ${personVisibleSql(sender, sql`u.id`)}
       LIMIT 1
     `);
     if (target.rows.length === 0) throw new Error('Target user is not an active workspace member');

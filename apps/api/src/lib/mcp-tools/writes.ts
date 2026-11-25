@@ -20,6 +20,7 @@ import { emitCurrentMessageToSpaceViewers } from '../agent-message-run-details.j
  * point is the end of each execute* function.
  */
 import { sql, eq, and, inArray } from 'drizzle-orm';
+import { canSeePerson, peopleViewer, visiblePersonIds } from '../people-visibility.js';
 import { db } from '../db.js';
 import { employeeMentionWriteError } from './native-mention-write-guard.js';
 import {
@@ -178,6 +179,19 @@ function employeeOwnChatMessageAutoExecutes(
 
 /** Same DM rule as the human DM route (routes/spaces.ts): the other person
  * must be an active member of this workspace. */
+/**
+ * The calling agent employee's own user id. Assignee lookups pass it as
+ * visibleTo, so an agent an owner made a guest matches and names only the
+ * people who share a space with it (lib/people-visibility.ts).
+ */
+async function employeeUserId(ctx: ToolContext): Promise<string | undefined> {
+  const [employee] = await db.select({ user_id: agentEmployees.user_id })
+    .from(agentEmployees)
+    .where(and(eq(agentEmployees.id, ctx.employee_id), eq(agentEmployees.org_id, ctx.org_id)))
+    .limit(1);
+  return employee?.user_id ?? undefined;
+}
+
 async function isActiveOrgMember(orgId: string, userId: string): Promise<boolean> {
   const [member] = await db
     .select({ id: orgMembers.id })
@@ -463,7 +477,7 @@ export async function executeTaskCreate(
 
     let assigneeId: string | null = null;
     if (args.assignee_id?.trim()) {
-      const resolved = await resolveAssigneeWithMatches(args.assignee_id, ctx.org_id);
+      const resolved = await resolveAssigneeWithMatches(args.assignee_id, ctx.org_id, { visibleTo: await employeeUserId(ctx) });
       if (!resolved.ok) {
         return errorResult(
           `task_create: assignee_id ${args.assignee_id} not found in caller's org`,
@@ -471,7 +485,7 @@ export async function executeTaskCreate(
       }
       assigneeId = resolved.value.id;
     } else if (args.assignee_name?.trim()) {
-      const resolved = await resolveAssigneeWithMatches(args.assignee_name, ctx.org_id);
+      const resolved = await resolveAssigneeWithMatches(args.assignee_name, ctx.org_id, { visibleTo: await employeeUserId(ctx) });
       if (!resolved.ok) {
         if (resolved.ambiguous) {
           return errorResult(
@@ -729,7 +743,7 @@ export async function executeTaskUpdate(
     if (patch.assignee_id !== undefined) {
       const assigneeId = patch.assignee_id || null;
       if (assigneeId) {
-        const resolved = await resolveAssigneeWithMatches(assigneeId, ctx.org_id);
+        const resolved = await resolveAssigneeWithMatches(assigneeId, ctx.org_id, { visibleTo: await employeeUserId(ctx) });
         if (!resolved.ok) {
           return errorResult(
             `task_update: assignee_id ${assigneeId} not found in caller's org`,
@@ -1157,7 +1171,10 @@ export async function sendMessage(
     if (!shadowUserId) {
       return errorResult(`send_message: no shadow user for employee ${ctx.employee_id}`);
     }
-    if (!(await isActiveOrgMember(ctx.org_id, target.user_id))) {
+    // An agent an owner made a guest may message only people who share a
+    // space with it; anyone else is answered like an unknown id.
+    if (!(await isActiveOrgMember(ctx.org_id, target.user_id))
+      || !canSeePerson(await visiblePersonIds(await peopleViewer(ctx.org_id, shadowUserId)), target.user_id)) {
       return errorResult('send_message: user_id is not an active member of this workspace');
     }
     spaceId = await findOrCreateDmSpace(ctx.org_id, shadowUserId, target.user_id);

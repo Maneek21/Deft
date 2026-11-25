@@ -94,6 +94,7 @@ import {
 } from '../app-action-operations.js';
 
 import { manageAgent } from '../agent-management.js';
+import { emailFor, peopleViewer, personVisibleSql, withoutHiddenEmails } from '../people-visibility.js';
 import { RUNTIME_WORKFLOW_NAMES, RUNTIME_WORKFLOW_SCOPES, isRuntimeWorkflowTool, runtimeWorkflowHasScopes, humanRuntimeWorkflowTool } from '../app-runtime-workflow-tools.js';
 
 export type HumanToolContext = {
@@ -434,6 +435,28 @@ function normalizeIdempotencyKey(value: unknown): string | null {
   return key.slice(0, 160);
 }
 
+/**
+ * A replayed result was computed for the view the caller had then, which may
+ * have been wider than a guest's view now (a person they no longer share a
+ * space with, a role changed during the call). A guest is therefore told only
+ * that the request was already completed, never the stored result; the
+ * request is not run again either way (lib/people-visibility.ts).
+ */
+async function replayForViewer(result: ToolResult, ctx: HumanToolContext): Promise<ToolResult> {
+  if (!(await peopleViewer(ctx.org_id, ctx.user_id)).guest) return result;
+  return textResult({
+    status: 'already_completed',
+    replayed: true,
+    message: 'This request was already completed. Read the current state with the matching read tool.',
+  });
+}
+
+function isAlreadyCompletedReceipt(payload: unknown): boolean {
+  return Boolean(payload && typeof payload === 'object'
+    && (payload as Record<string, unknown>).status === 'already_completed'
+    && (payload as Record<string, unknown>).replayed === true);
+}
+
 function storedToolResult(value: unknown): ToolResult | null {
   if (!value || typeof value !== 'object') return null;
   const maybe = value as Partial<ToolResult>;
@@ -572,7 +595,7 @@ async function withIdempotency(
       .orderBy(desc(oauthAuditEvents.created_at))
       .limit(1);
     const replay = storedToolResult(existing?.metadata?.result);
-    if (replay) return replay;
+    if (replay) return replayForViewer(replay, ctx);
   }
 
   const result = await execute();
@@ -780,9 +803,16 @@ async function resolveActiveMember(
   params: { user_id?: unknown; email?: unknown; name?: unknown; label: string },
 ): Promise<{ user: { id: string; name: string | null; email: string | null } | null; error?: ToolResult }> {
   const userId = typeof params.user_id === 'string' ? params.user_id.trim() : '';
-  const email = typeof params.email === 'string' ? params.email.trim().toLowerCase() : '';
   const name = typeof params.name === 'string' ? params.name.trim() : '';
-  if (!userId && !email && !name) return { user: null };
+  // A guest resolves only the people who share a space with them, never by
+  // email address (an email is ignored; a name given with it is used), and
+  // sees no email address (lib/people-visibility.ts).
+  const viewer = await peopleViewer(ctx.org_id, ctx.user_id);
+  const givenEmail = typeof params.email === 'string' ? params.email.trim().toLowerCase() : '';
+  const email = viewer.guest ? '' : givenEmail;
+  if (!userId && !email && !name) {
+    return givenEmail ? { user: null, error: errorResult(`${params.label}: member not found`) } : { user: null };
+  }
 
   if (userId || email) {
     const rows = await db.execute(sql`
@@ -792,10 +822,11 @@ async function resolveActiveMember(
       WHERE om.org_id = ${ctx.org_id}
         AND om.is_active = true
         AND (${userId ? sql`u.id = ${userId}` : sql`lower(u.email) = ${email}`})
+        AND ${personVisibleSql(viewer, sql`u.id`)}
       ORDER BY u.is_agent ASC, u.name ASC
       LIMIT 1
     `);
-    const match = (((rows as any).rows ?? []) as Array<{ id: string; name: string | null; email: string | null }>)[0] ?? null;
+    const match = withoutHiddenEmails(viewer, ((rows as any).rows ?? []) as Array<{ id: string; name: string | null; email: string | null }>, (row) => row.id)[0] ?? null;
     return match ? { user: match } : { user: null, error: errorResult(`${params.label}: member not found`) };
   }
 
@@ -805,10 +836,11 @@ async function resolveActiveMember(
     JOIN users u ON u.id = om.user_id
     WHERE om.org_id = ${ctx.org_id}
       AND om.is_active = true
+      AND ${personVisibleSql(viewer, sql`u.id`)}
     ORDER BY u.is_agent ASC, u.name ASC
     LIMIT 200
   `);
-  const members = ((rows as any).rows ?? []) as Array<{ id: string; name: string | null; email: string | null }>;
+  const members = withoutHiddenEmails(viewer, ((rows as any).rows ?? []) as Array<{ id: string; name: string | null; email: string | null }>, (row) => row.id);
   const ranked = rankResolverCandidates(name, members, (row) => [
     { value: row.name, reason: 'name' },
     { value: row.email, reason: 'email', weight: 0.96 },
@@ -1119,12 +1151,15 @@ export async function humanPlatformContext(args: { trigger?: HumanTriggerDescrip
   const [org] = await db.select({ id: orgs.id, name: orgs.name }).from(orgs).where(eq(orgs.id, ctx.org_id)).limit(1);
   if (!org) return errorResult('Org not found');
   const [me] = await db.select({ id: users.id, name: users.name, email: users.email }).from(users).where(eq(users.id, ctx.user_id)).limit(1);
-  const teammates = await db
+  // A guest's teammates are the people who share a space with them, without
+  // their email addresses (lib/people-visibility.ts).
+  const viewer = await peopleViewer(ctx.org_id, ctx.user_id);
+  const teammates = withoutHiddenEmails(viewer, await db
     .select({ id: users.id, name: users.name, email: users.email, role: orgMembers.role, is_agent: users.is_agent })
     .from(orgMembers)
     .innerJoin(users, eq(users.id, orgMembers.user_id))
-    .where(and(eq(orgMembers.org_id, ctx.org_id), eq(orgMembers.is_active, true)))
-    .limit(100);
+    .where(and(eq(orgMembers.org_id, ctx.org_id), eq(orgMembers.is_active, true), personVisibleSql(viewer, users.id)))
+    .limit(100), (row) => row.id);
   const activeProjects = await db
     .select({ id: projects.id, name: projects.name, prefix: projects.prefix })
     .from(projects)
@@ -1893,10 +1928,20 @@ export async function humanTaskGet(args: { task_id?: string }, ctx: HumanToolCon
     ORDER BY a.created_at DESC
     LIMIT 10
   `);
+  // A guest sees no email address but their own (lib/people-visibility.ts).
+  const viewer = await peopleViewer(ctx.org_id, ctx.user_id);
+  const withUserEmail = (row: Record<string, unknown>) => ({
+    ...row,
+    user_email: emailFor(viewer, row.user_id as string | null, (row.user_email as string | null) ?? null),
+  });
   return textResult({
-    task,
-    recent_comments: ((comments as any).rows ?? []).reverse(),
-    recent_activity: ((activity as any).rows ?? []).reverse(),
+    task: {
+      ...task,
+      assignee_email: emailFor(viewer, task.assignee_id, task.assignee_email ?? null),
+      created_by_email: emailFor(viewer, task.created_by, task.created_by_email ?? null),
+    },
+    recent_comments: (((comments as any).rows ?? []) as Array<Record<string, unknown>>).reverse().map(withUserEmail),
+    recent_activity: (((activity as any).rows ?? []) as Array<Record<string, unknown>>).reverse().map(withUserEmail),
   });
 }
 
@@ -2118,7 +2163,10 @@ export async function humanSpaceGet(args: { space_id?: string }, ctx: HumanToolC
     ORDER BY u.name ASC
     LIMIT 100
   `);
-  return textResult({ space, members: (members as any).rows ?? [] });
+  // A guest reads only spaces they belong to, so everyone listed shares one
+  // with them; they still see no email address but their own.
+  const viewer = await peopleViewer(ctx.org_id, ctx.user_id);
+  return textResult({ space, members: withoutHiddenEmails(viewer, ((members as any).rows ?? []) as Array<{ id: string; email: string | null }>, (row) => row.id) });
 }
 
 type HumanTaskCreateArgs = {
@@ -2227,19 +2275,31 @@ export async function humanTaskUpdate(args: { task_id?: string; patch?: Record<s
       updates.status = patch.status;
     }
     if (typeof patch.priority === 'string') updates.priority = patch.priority;
-    if (typeof patch.assignee_id === 'string' || patch.assignee_id === null) updates.assignee_id = patch.assignee_id;
+    if (typeof patch.assignee_id === 'string' || patch.assignee_id === null) {
+      updates.assignee_id = typeof patch.assignee_id === 'string' ? patch.assignee_id.trim() : null;
+    }
     if (Object.keys(updates).length === 0) return errorResult('task_update requires at least one supported patch field');
     if (!(await userCanSeeTask(ctx, taskId))) return errorResult('task_update: task not found');
     const [existingTask] = await db.select().from(tasks).where(and(eq(tasks.id, taskId), eq(tasks.org_id, ctx.org_id), eq(tasks.is_deleted, false))).limit(1);
     if (!existingTask) return errorResult('task_update: task not found');
-    if (typeof patch.assignee_id === 'string') {
+    // Re-sending the current assignee is no change: it is neither checked
+    // again nor written (a concurrent reassignment is not overwritten).
+    if (updates.assignee_id !== undefined && updates.assignee_id === existingTask.assignee_id) delete updates.assignee_id;
+    // A guest may assign only people who share a space with them; anyone else
+    // reads like a non-member (lib/people-visibility.ts).
+    if (typeof updates.assignee_id === 'string') {
+      const viewer = await peopleViewer(ctx.org_id, ctx.user_id);
       const [member] = await db
         .select({ id: orgMembers.id })
         .from(orgMembers)
-        .where(and(eq(orgMembers.org_id, ctx.org_id), eq(orgMembers.user_id, patch.assignee_id), eq(orgMembers.is_active, true)))
+        .where(and(eq(orgMembers.org_id, ctx.org_id), eq(orgMembers.user_id, updates.assignee_id), eq(orgMembers.is_active, true),
+          personVisibleSql(viewer, orgMembers.user_id)))
         .limit(1);
       if (!member) return errorResult('task_update: assignee is not an active org member');
     }
+    // Nothing left to change (only the current assignee was re-sent): write
+    // nothing, so updated_at never moves and no concurrent edit is undone.
+    if (Object.keys(updates).length === 0) return textResult(existingTask);
     const [task] = await db.update(tasks).set(updates).where(and(eq(tasks.id, taskId), eq(tasks.org_id, ctx.org_id), eq(tasks.is_deleted, false))).returning();
     if (!task) return errorResult('task_update: task not found');
     const activityEntries: Array<{ action: string; field: string; old_value: string | null; new_value: string | null }> = [];
@@ -2396,6 +2456,8 @@ async function currentMessageWriteResult(result: ToolResult, ctx: HumanToolConte
   if (result.isError) return result;
   let payload: Record<string, unknown>;
   try { payload = JSON.parse(result.content[0]?.text ?? 'null'); } catch { return errorResult('Message not found'); }
+  // A guest's replay receipt names no message (replayForViewer).
+  if (isAlreadyCompletedReceipt(payload)) return result;
   if (!payload || typeof payload.id !== 'string') return errorResult('Message not found');
   const [message] = await db.select().from(messages).where(and(
     eq(messages.id, payload.id), eq(messages.org_id, ctx.org_id), eq(messages.is_deleted, false),
@@ -2589,6 +2651,14 @@ export async function humanMemberList(args: { query?: string; include_agents?: b
   const scopeError = requireScope(ctx, 'read:workspace');
   if (scopeError) return scopeError;
   const query = (args.query ?? '').trim().toLowerCase();
+  // A guest lists only the people who share a space with them, matched by
+  // name only, without email addresses (lib/people-visibility.ts).
+  const viewer = await peopleViewer(ctx.org_id, ctx.user_id);
+  const matchesQuery = !query
+    ? sql`true`
+    : viewer.guest
+      ? sql`lower(u.name) LIKE ${`%${query}%`}`
+      : sql`lower(u.name) LIKE ${`%${query}%`} OR lower(u.email) LIKE ${`%${query}%`}`;
   const rows = await db.execute(sql`
     SELECT u.id, u.name, u.email, om.role, u.is_agent, om.is_active
     FROM org_members om
@@ -2596,11 +2666,12 @@ export async function humanMemberList(args: { query?: string; include_agents?: b
     WHERE om.org_id = ${ctx.org_id}
       AND om.is_active = true
       AND (${args.include_agents === false ? sql`u.is_agent = false` : sql`true`})
-      AND (${query ? sql`lower(u.name) LIKE ${`%${query}%`} OR lower(u.email) LIKE ${`%${query}%`}` : sql`true`})
+      AND (${matchesQuery})
+      AND ${personVisibleSql(viewer, sql`u.id`)}
     ORDER BY u.is_agent ASC, u.name ASC
     LIMIT ${Math.min(Math.max(1, args.limit ?? 100), 200)}
   `);
-  return textResult((rows as any).rows ?? []);
+  return textResult(withoutHiddenEmails(viewer, ((rows as any).rows ?? []) as Array<{ id: string; email: string | null }>, (row) => row.id));
 }
 
 export async function humanResolveMember(args: { query?: string; include_agents?: boolean; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
@@ -2608,6 +2679,9 @@ export async function humanResolveMember(args: { query?: string; include_agents?
   if (scopeError) return scopeError;
   const query = args.query?.trim();
   if (!query) return errorResult('resolve_member requires query');
+  // A guest resolves only the people who share a space with them, and sees
+  // and matches no email address (lib/people-visibility.ts).
+  const viewer = await peopleViewer(ctx.org_id, ctx.user_id);
   const rows = await db.execute(sql`
     SELECT u.id, u.name, u.email, om.role, u.is_agent, om.is_active
     FROM org_members om
@@ -2615,10 +2689,11 @@ export async function humanResolveMember(args: { query?: string; include_agents?
     WHERE om.org_id = ${ctx.org_id}
       AND om.is_active = true
       AND (${args.include_agents === false ? sql`u.is_agent = false` : sql`true`})
+      AND ${personVisibleSql(viewer, sql`u.id`)}
     ORDER BY u.is_agent ASC, u.name ASC
     LIMIT 200
   `);
-  const members = ((rows as any).rows ?? []) as Array<Record<string, unknown>>;
+  const members = withoutHiddenEmails(viewer, ((rows as any).rows ?? []) as Array<Record<string, unknown> & { id: string; email?: string | null }>, (row) => row.id);
   const ranked = rankResolverCandidates(query, members, (row) => [
     { value: row.name, reason: 'name' },
     { value: row.email, reason: 'email', weight: 0.96 },
@@ -2694,6 +2769,10 @@ export async function humanMemberGet(args: { user_id?: string; email?: string },
   const scopeError = requireScope(ctx, 'read:workspace');
   if (scopeError) return scopeError;
   if (!args.user_id && !args.email) return errorResult('member_get requires user_id or email');
+  // A guest looks up only the people who share a space with them, never by
+  // email address, and sees no email address (lib/people-visibility.ts).
+  const viewer = await peopleViewer(ctx.org_id, ctx.user_id);
+  if (viewer.guest && !args.user_id) return errorResult('member_get: member not found');
   const rows = await db.execute(sql`
     SELECT u.id, u.name, u.email, om.role, u.is_agent, om.is_active
     FROM org_members om
@@ -2701,9 +2780,10 @@ export async function humanMemberGet(args: { user_id?: string; email?: string },
     WHERE om.org_id = ${ctx.org_id}
       AND om.is_active = true
       AND (${args.user_id ? sql`u.id = ${args.user_id}` : sql`lower(u.email) = ${args.email!.toLowerCase()}`})
+      AND ${personVisibleSql(viewer, sql`u.id`)}
     LIMIT 1
   `);
-  const member = ((rows as any).rows ?? [])[0];
+  const member = withoutHiddenEmails(viewer, ((rows as any).rows ?? []) as Array<{ id: string; email: string | null }>, (row) => row.id)[0];
   return member ? textResult(member) : errorResult('member_get: member not found');
 }
 
@@ -2774,10 +2854,13 @@ export async function humanMessagesRecent(args: HumanMessagesRecentArgs, ctx: Hu
   `);
 
   const messagesRows = ((rows as any).rows ?? []) as Array<Record<string, unknown>>;
+  // A guest sees no email address but their own (lib/people-visibility.ts).
+  const viewer = await peopleViewer(ctx.org_id, ctx.user_id);
   return textResult({
     count: messagesRows.length,
     messages: messagesRows.map((row) => ({
       ...row,
+      user_email: emailFor(viewer, row.user_id as string | null, (row.user_email as string | null) ?? null),
       snippet: cleanSnippet(row.content),
       url: `/chat?space=${encodeURIComponent(String(row.space_id))}&message=${encodeURIComponent(String(row.id))}`,
     })),
@@ -3127,6 +3210,8 @@ export async function humanTeamWorkload(args: { days?: number }, ctx: HumanToolC
   const scopeError = requireScope(ctx, 'read:tasks');
   if (scopeError) return scopeError;
   const days = Math.min(Math.max(1, args.days ?? 7), 90);
+  // A guest sees the workload of the people who share a space with them only.
+  const viewer = await peopleViewer(ctx.org_id, ctx.user_id);
   const rows = await db.execute(sql`
     SELECT u.id AS user_id, u.name, count(t.id)::int AS open_tasks
     FROM users u
@@ -3137,6 +3222,7 @@ export async function humanTeamWorkload(args: { days?: number }, ctx: HumanToolC
       AND t.status NOT IN ('done', 'cancelled')
     LEFT JOIN projects p ON p.id = t.project_id AND p.org_id = t.org_id
     WHERE u.is_agent = false
+      AND ${personVisibleSql(viewer, sql`u.id`)}
       AND (
         t.id IS NULL
         OR coalesce(t.metadata->>'visibility', 'org') != 'restricted'
@@ -3837,14 +3923,17 @@ export async function humanTaskSavedViewCreate(args: Record<string, unknown>, ct
 
 export async function humanAgentEmployeeList(args: { include_paused?: boolean; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:workspace'); if (scopeError) return scopeError;
-  const rows = await db.select({ id: agentEmployees.id, name: agentEmployees.name, slug: agentEmployees.slug, role: agentEmployees.role, job_title: agentEmployees.job_title, runtime_kind: agentEmployees.runtime_kind, is_active: agentEmployees.is_active, unhealthy: agentEmployees.unhealthy, unhealthy_reason: agentEmployees.unhealthy_reason, certification_status: agentEmployees.certification_status, last_mcp_call_at: agentEmployees.last_mcp_call_at, last_work_outcome_at: agentEmployees.last_work_outcome_at }).from(agentEmployees).where(and(eq(agentEmployees.org_id, ctx.org_id), eq(agentEmployees.is_deleted, false), args.include_paused ? sql`true` : eq(agentEmployees.is_active, true))).orderBy(agentEmployees.name).limit(Math.min(Math.max(1, args.limit ?? 50), 100));
+  // Agents are participants: a guest sees only those they share a space with (lib/people-visibility.ts).
+  const viewer = await peopleViewer(ctx.org_id, ctx.user_id);
+  const rows = await db.select({ id: agentEmployees.id, name: agentEmployees.name, slug: agentEmployees.slug, role: agentEmployees.role, job_title: agentEmployees.job_title, runtime_kind: agentEmployees.runtime_kind, is_active: agentEmployees.is_active, unhealthy: agentEmployees.unhealthy, unhealthy_reason: agentEmployees.unhealthy_reason, certification_status: agentEmployees.certification_status, last_mcp_call_at: agentEmployees.last_mcp_call_at, last_work_outcome_at: agentEmployees.last_work_outcome_at }).from(agentEmployees).where(and(eq(agentEmployees.org_id, ctx.org_id), eq(agentEmployees.is_deleted, false), args.include_paused ? sql`true` : eq(agentEmployees.is_active, true), personVisibleSql(viewer, agentEmployees.user_id))).orderBy(agentEmployees.name).limit(Math.min(Math.max(1, args.limit ?? 50), 100));
   return textResult(rows.map((row) => ({ ...row, url: `/settings/agent-employees/${row.id}` })));
 }
 
 export async function humanAgentEmployeeGet(args: { employee_id?: string }, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:workspace'); if (scopeError) return scopeError;
   if (!args.employee_id) return errorResult('employee_id is required');
-  const [row] = await db.select({ id: agentEmployees.id, name: agentEmployees.name, slug: agentEmployees.slug, role: agentEmployees.role, job_title: agentEmployees.job_title, expertise_description: agentEmployees.expertise_description, runtime_kind: agentEmployees.runtime_kind, trust_level: agentEmployees.trust_level, max_daily_actions: agentEmployees.max_daily_actions, daily_action_count: agentEmployees.daily_action_count, is_active: agentEmployees.is_active, unhealthy: agentEmployees.unhealthy, unhealthy_reason: agentEmployees.unhealthy_reason, certification_status: agentEmployees.certification_status, last_verified_at: agentEmployees.last_verified_at, last_mcp_call_at: agentEmployees.last_mcp_call_at, last_work_outcome_at: agentEmployees.last_work_outcome_at }).from(agentEmployees).where(and(eq(agentEmployees.id, args.employee_id), eq(agentEmployees.org_id, ctx.org_id), eq(agentEmployees.is_deleted, false))).limit(1);
+  const viewer = await peopleViewer(ctx.org_id, ctx.user_id);
+  const [row] = await db.select({ id: agentEmployees.id, name: agentEmployees.name, slug: agentEmployees.slug, role: agentEmployees.role, job_title: agentEmployees.job_title, expertise_description: agentEmployees.expertise_description, runtime_kind: agentEmployees.runtime_kind, trust_level: agentEmployees.trust_level, max_daily_actions: agentEmployees.max_daily_actions, daily_action_count: agentEmployees.daily_action_count, is_active: agentEmployees.is_active, unhealthy: agentEmployees.unhealthy, unhealthy_reason: agentEmployees.unhealthy_reason, certification_status: agentEmployees.certification_status, last_verified_at: agentEmployees.last_verified_at, last_mcp_call_at: agentEmployees.last_mcp_call_at, last_work_outcome_at: agentEmployees.last_work_outcome_at }).from(agentEmployees).where(and(eq(agentEmployees.id, args.employee_id), eq(agentEmployees.org_id, ctx.org_id), eq(agentEmployees.is_deleted, false), personVisibleSql(viewer, agentEmployees.user_id))).limit(1);
   return row ? textResult({ ...row, url: `/settings/agent-employees/${row.id}` }) : errorResult('Agent employee not found');
 }
 

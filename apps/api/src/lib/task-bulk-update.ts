@@ -89,7 +89,7 @@ export async function bulkUpdateTasks(input: BulkTaskUpdateInput, actor: BulkTas
   let nextAssigneeId: string | null | undefined;
   if (updates.assignee_id !== undefined) {
     if (updates.assignee_id === null || updates.assignee_id === '') nextAssigneeId = null;
-    else nextAssigneeId = (await resolveAssignableAssigneeId(updates.assignee_id, actor.orgId))?.id;
+    else nextAssigneeId = (await resolveAssignableAssigneeId(updates.assignee_id, actor.orgId, { visibleTo: actor.userId }))?.id;
     if (nextAssigneeId === undefined) {
       throw new BulkTaskUpdateError(
         'Assignee must be an active user or healthy agent in this organization',

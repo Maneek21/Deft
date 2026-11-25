@@ -357,6 +357,8 @@ function inferTaskDescriptionUpdate(content: string): string | null {
 async function inferTaskAssigneeUpdate(
   orgId: string,
   content: string,
+  /** The message's author: a guest's message names only people who share a space with them. */
+  sourceUserId: string,
 ): Promise<{ assigneeId: string | null; assigneeName: string | null } | undefined> {
   if (/\b(?:unassign|clear assignee|remove assignee)\b/i.test(content)) {
     return { assigneeId: null, assigneeName: null };
@@ -369,7 +371,7 @@ async function inferTaskAssigneeUpdate(
     ?.replace(/[.!?]+$/g, '')
     .trim();
   if (!name) return undefined;
-  const resolved = await resolveAssigneeWithMatches(name, orgId);
+  const resolved = await resolveAssigneeWithMatches(name, orgId, { visibleTo: sourceUserId });
   if (!resolved.ok) return undefined;
   return { assigneeId: resolved.value.id, assigneeName: resolved.value.name };
 }
@@ -462,7 +464,7 @@ async function findReferencedTaskUpdate(
     metadata.current_due_date = existingDueDate;
   }
 
-  const assignee = await inferTaskAssigneeUpdate(orgId, content);
+  const assignee = await inferTaskAssigneeUpdate(orgId, content, sourceUserId);
   if (assignee && task.assignee_id !== assignee.assigneeId) {
     patch.assignee_id = assignee.assigneeId;
     changes.push(assignee.assigneeName ? `assignee -> ${assignee.assigneeName}` : 'clear assignee');
@@ -1492,7 +1494,7 @@ export async function queueDeftyCreateTaskCapture(params: {
   let resolvedAssigneeName: string | null = null;
   const requestedAssigneeName = assigneeName?.trim() || null;
   if (requestedAssigneeName) {
-    const resolved = await resolveAssigneeWithMatches(requestedAssigneeName, orgId);
+    const resolved = await resolveAssigneeWithMatches(requestedAssigneeName, orgId, { visibleTo: params.sourceUserId });
     if (resolved.ok) {
       assigneeId = resolved.value.id;
       resolvedAssigneeName = resolved.value.name;

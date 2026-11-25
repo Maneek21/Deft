@@ -4,6 +4,8 @@ import { db } from '../lib/db.js';
 import { tasks, projects, spaces, users, messages, orgMembers, tags, notes, spaceMembers } from '@deft/db/schema';
 import { retrieveContext, type ContextResult } from '../lib/retrieve-context.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
+import { visibleLiveMemberForOrg } from '../lib/member-visibility.js';
+import { emailFor, peopleViewer, personVisibleSql } from '../lib/people-visibility.js';
 import { unjoinedPublicSpaceReadableSql } from '../lib/space-membership.js';
 import { humanModuleActor } from '../lib/module-service.js';
 import { searchAuthorizedModuleResourcesWithDiagnostics as searchModuleRecords } from '../lib/resource-search-service.js';
@@ -78,17 +80,24 @@ searchRoutes.get('/', async (c) => {
       .orderBy(desc(tasks.updated_at))
       .limit(5);
 
-    // Search people
-    const peopleResults = await db.select({
+    // Search people: active members only (a removed member is not listed).
+    // A guest finds only the people who share a space with them, by name
+    // only, and sees no email address (lib/people-visibility.ts).
+    const viewer = await peopleViewer(user.org_id, user.id);
+    const peopleRows = await db.select({
       id: users.id, name: users.name, email: users.email, avatar_url: users.avatar_url,
     })
       .from(users)
       .innerJoin(orgMembers, eq(users.id, orgMembers.user_id))
       .where(and(
         eq(orgMembers.org_id, user.org_id),
-        or(ilike(users.name, pattern), ilike(users.email, pattern)),
+        eq(orgMembers.is_active, true),
+        visibleLiveMemberForOrg(orgMembers.org_id),
+        personVisibleSql(viewer, users.id),
+        viewer.guest ? ilike(users.name, pattern) : or(ilike(users.name, pattern), ilike(users.email, pattern)),
       ))
       .limit(5);
+    const peopleResults = peopleRows.map((person) => ({ ...person, email: emailFor(viewer, person.id, person.email) }));
 
     // Search messages (with optional filters: author_id, space_id, date_from, date_to)
     const authorId = c.req.query('author_id');

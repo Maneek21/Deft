@@ -153,16 +153,19 @@ test('W2a4-B1: employee statistics return the channel error text to owners/admin
     const response = await asViewer(viewer, '?expand=stats');
     assert.equal(response.status, 200, await response.clone().text());
     const rows = await response.json() as Array<Record<string, unknown>>;
-    return rows.find((row) => row.id === employeeId)!;
+    return rows.find((row) => row.id === employeeId);
   };
-  const admin = await read(ids.admin);
+  const admin = (await read(ids.admin))!;
   assert.equal(admin.channel_last_error, 'CANARY-CONNECTION');
-  for (const viewer of [ids.insider, ids.peer, ids.guest]) {
-    const row = await read(viewer);
+  for (const viewer of [ids.insider, ids.peer]) {
+    const row = (await read(viewer))!;
     assert.deepEqual(canaries(JSON.stringify(row)), []);
     assert.equal(row.channel_status, 'degraded', 'the neutral status stays');
     assert.equal(row.channel_has_error, true);
   }
+  // A guest sees only agents they share a space with (lib/people-visibility.ts):
+  // this one, in a private room the guest is not in, is not listed at all.
+  assert.equal(await read(ids.guest), undefined);
 });
 
 let realtime: Awaited<ReturnType<typeof startRealtime>> | undefined;
