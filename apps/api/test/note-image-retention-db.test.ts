@@ -112,6 +112,17 @@ test('noteFileIds reads images as the editor does: data-file-id, else an older /
   assert.deepEqual(noteFileIds(`<!-- ${img(b)} -->${img(a)}`), [a], 'an image in a comment is not shown');
   assert.deepEqual(noteFileIds(`${img(a)}<!-- unclosed ${img(b)}`), [a], 'nor one after an unclosed comment');
   assert.deepEqual(noteFileIds(`<img alt="<!--" data-file-id="${a}"><!-- caption -->`), [a], 'a comment opener inside a quoted value is not a comment');
+  assert.deepEqual(noteFileIds(`<p title="<!--">${img(a)}</p>`), [a], 'nor inside another tag');
+  assert.deepEqual(noteFileIds(`<p title='<img data-file-id="${b}">'>x</p>${img(a)}`), [a], 'an img inside a quoted value is not an image');
+  assert.deepEqual(noteFileIds(`<imgx data-file-id="${b}">${img(a)}`), [a], 'only img itself');
+  assert.deepEqual(noteFileIds(`<img alt=' data-file-id="${b}"' data-file-id="${a}">`), [a], 'an attribute inside a quoted value is not an attribute');
+  assert.deepEqual(noteFileIds(`<img data-file-id="${a}" data-file-id="${b}">`), [a], 'the first of a repeated attribute wins');
+  // Crafted input with no closing '>' is read in one pass, not backtracked.
+  const started = Date.now();
+  noteFileIds('<a "<a" '.repeat(250_000));
+  noteFileIds('<img '.repeat(400_000));
+  noteFileIds('<!--'.repeat(500_000));
+  assert.ok(Date.now() - started < 2000, `parsing crafted input took ${Date.now() - started} ms`);
   const many = Array.from({ length: 1200 }, () => randomUUID());
   assert.equal(noteFileIds(many.map(img).join('')).length, 1200, 'no cap on images per note');
 });

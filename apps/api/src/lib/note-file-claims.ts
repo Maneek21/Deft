@@ -26,18 +26,66 @@ import type { db } from './db.js';
 
 const CLAIM_BATCH = 500;
 const FILE_ID = /^[A-Za-z0-9_-]{1,64}$/;
-// A comment (to its end, or to the end of the content when unclosed, as a
-// browser reads it), or an <img> start tag, where a quoted attribute value
-// may hold '>'. Each step of the tag takes a different first character, so
-// the match is linear. Comments are matched only to be skipped: an image
-// inside one is not shown.
-const COMMENT_OR_IMG = /<!--[\s\S]*?(?:-->|$)|<img\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
+const SPACE = /[\s/]/;
+const TAG_END = /[\s/>]/;
 
-/** The value of attribute `name` in one tag, quoted or not, HTML entities for quotes left as they are. */
-function attribute(tag: string, name: string): string | null {
-  const match = new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>\`]+))`, 'i').exec(tag);
-  if (!match) return null;
-  return match[1] ?? match[2] ?? match[3] ?? null;
+/**
+ * The attributes of every <img> start tag in `html`, read in one forward
+ * pass (no regular expression can backtrack on a long note). Comments are
+ * skipped (an unclosed one runs to the end, as a browser reads it), and
+ * every other start tag is read whole, so a quoted value never starts a tag
+ * or a comment. Values are as written (entities not decoded); the first of
+ * a repeated attribute wins, as in a browser.
+ */
+function imageTags(html: string): Array<Map<string, string>> {
+  const images: Array<Map<string, string>> = [];
+  let i = 0;
+  while (i < html.length) {
+    const open = html.indexOf('<', i);
+    if (open < 0) break;
+    if (html.startsWith('<!--', open)) {
+      const close = html.indexOf('-->', open + 4);
+      if (close < 0) break;
+      i = close + 3;
+      continue;
+    }
+    if (!/[A-Za-z]/.test(html[open + 1] ?? '')) { i = open + 1; continue; }
+    let j = open + 1;
+    while (j < html.length && !TAG_END.test(html[j]!)) j++;
+    const isImg = html.slice(open + 1, j).toLowerCase() === 'img';
+    const attrs = new Map<string, string>();
+    let ended = false;
+    while (j < html.length) {
+      const ch = html[j]!;
+      if (ch === '>') { ended = true; j++; break; }
+      if (SPACE.test(ch)) { j++; continue; }
+      const nameStart = j;
+      while (j < html.length && !/[\s/>=]/.test(html[j]!)) j++;
+      const name = html.slice(nameStart, j).toLowerCase();
+      while (j < html.length && /\s/.test(html[j]!)) j++;
+      let value = '';
+      if (html[j] === '=') {
+        j++;
+        while (j < html.length && /\s/.test(html[j]!)) j++;
+        const quote = html[j];
+        if (quote === '"' || quote === "'") {
+          const close = html.indexOf(quote, j + 1);
+          if (close < 0) { j = html.length; break; }
+          value = html.slice(j + 1, close);
+          j = close + 1;
+        } else {
+          const valueStart = j;
+          while (j < html.length && !/[\s>]/.test(html[j]!)) j++;
+          value = html.slice(valueStart, j);
+        }
+      }
+      if (name && !attrs.has(name)) attrs.set(name, value);
+    }
+    if (!ended) break;
+    if (isImg) images.push(attrs);
+    i = j;
+  }
+  return images;
 }
 
 /** The file id of an older image's `src`: the path `/api/files/<id>`, as the editor reads it. */
@@ -56,9 +104,8 @@ function fileIdFromLegacyUrl(value: string | null): string | null {
 export function noteFileIds(content: string | null | undefined): string[] {
   if (!content) return [];
   const ids = new Set<string>();
-  for (const [tag] of content.matchAll(COMMENT_OR_IMG)) {
-    if (tag.startsWith('<!--')) continue;
-    const id = attribute(tag, 'data-file-id') || fileIdFromLegacyUrl(attribute(tag, 'src'));
+  for (const attrs of imageTags(content)) {
+    const id = attrs.get('data-file-id') || fileIdFromLegacyUrl(attrs.get('src') ?? null);
     if (id && FILE_ID.test(id)) ids.add(id);
   }
   return [...ids];
