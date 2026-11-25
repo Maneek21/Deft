@@ -9,7 +9,8 @@
 //   (apps/web/src/app/(app)/notes/protected-note-image.tsx): an <img> with
 //   `data-file-id`, else an older <img src="/api/files/…">;
 // - it is in the note's workspace;
-// - the person saving the note uploaded it.
+// - the person saving the note uploaded it;
+// - it is an image the editor can show (attachment_kind 'image', not blocked).
 // So nobody can keep someone else's staged upload alive by naming it. A file
 // the sweep would not delete anyway (attached to a task or a message) is left
 // as it is.
@@ -19,13 +20,16 @@
 //
 // Removing an image from a note does not stage its file again: the file is
 // kept. Deleting such files is a follow-up.
-import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import { files } from '@deft/db/schema';
 import type { db } from './db.js';
 
 const CLAIM_BATCH = 500;
 const FILE_ID = /^[A-Za-z0-9_-]{1,64}$/;
-const IMG_TAG = /<img\b[^>]*>/gi;
+// An <img> start tag; a quoted attribute value may hold '>'. Each step takes
+// a different first character, so the match is linear.
+const IMG_TAG = /<img\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
+const COMMENT = /<!--[\s\S]*?-->/g;
 
 /** The value of attribute `name` in one tag, quoted or not, HTML entities for quotes left as they are. */
 function attribute(tag: string, name: string): string | null {
@@ -50,7 +54,7 @@ function fileIdFromLegacyUrl(value: string | null): string | null {
 export function noteFileIds(content: string | null | undefined): string[] {
   if (!content) return [];
   const ids = new Set<string>();
-  for (const [tag] of content.matchAll(IMG_TAG)) {
+  for (const [tag] of content.replace(COMMENT, '').matchAll(IMG_TAG)) {
     const id = attribute(tag, 'data-file-id') || fileIdFromLegacyUrl(attribute(tag, 'src'));
     if (id && FILE_ID.test(id)) ids.add(id);
   }
@@ -77,6 +81,8 @@ export async function claimNoteFiles(
         eq(files.org_id, user.org_id),
         eq(files.uploaded_by, user.id),
         isNotNull(files.staged_expires_at),
+        eq(files.attachment_kind, 'image'),
+        ne(files.processing_status, 'blocked'),
         isNull(files.message_id),
         isNull(files.task_id),
         sql`NOT EXISTS (SELECT 1 FROM message_attachments
