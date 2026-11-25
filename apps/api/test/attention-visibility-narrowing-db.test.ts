@@ -18,6 +18,12 @@
  *   exactly the items the whole rule shows: per type, for the types read
  *   first, and through the delivery filter.
  * - Planning the rule for message items stays a few MB.
+ * - The review gate (an approval item's rule, and the approve and reject
+ *   routes') composed to plan each check once (release 151) answers exactly
+ *   as the composition it replaced, for every person, role and approval:
+ *   pending, decided and expired; requesters, assignees who do and do not
+ *   pass the checks, non-reviewers; module writes, employee, capture and plan
+ *   actions; another workspace. Planning it costs about a third of before.
  */
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -26,9 +32,14 @@ import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test, { after, before } from 'node:test';
 import pg from 'pg';
-import { and, eq, sql } from 'drizzle-orm';
-import { attentionItems } from '@deft/db/schema';
+import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { agentActions, attentionItems } from '@deft/db/schema';
 import { closeDb, db } from '../src/lib/db.js';
+import { currentRoleReviewableActionSql, reviewableActionSql } from '../src/lib/agent-action-review-gate.js';
+import { actionReviewAssignmentSql } from '../src/lib/agent-action-requester.js';
+import { visibleCaptureActionSql } from '../src/lib/agent-action-visibility.js';
+import { moduleRoleAudienceSql, sourceMessageRoomSql, visibleAgentActionSourceSql } from '../src/lib/module-action-visibility.js';
+import { nativeNotificationAccessSql } from '../src/lib/native-mention-visibility.js';
 import {
   ATTENTION_SOURCE_TYPES,
   ATTENTION_SOURCE_TYPES_WITH_ACCESS_RULE,
@@ -58,6 +69,11 @@ const rooms = {
 const messagesByRoom: Record<string, string> = {};
 let deletedMessage = '';
 const actions: string[] = [];
+const actionByTitle = new Map<string, string>();
+const plans: string[] = [];
+const employeeUser = randomUUID();
+const employeeId = randomUUID();
+const otherOrgId = randomUUID();
 const deliveries: string[] = [];
 /** `${person}|${type}|${source}|${metadata variant}` → item id; variant 0 has empty metadata. */
 const itemIds = new Map<string, string>();
@@ -141,19 +157,67 @@ before(async () => {
     [deletedMessage, orgId, rooms.priv, people.member]);
 
   // Approvals: the requester reviews; a removed requester's action has an assigned reviewer; one names no room; one is a capture.
-  const action = async (requester: string, messageId: string | null, params: Record<string, unknown>, source = 'mention') => {
+  type ActionShape = {
+    status?: string; source?: string; action?: string; employee?: string | null; event?: string | null;
+    plan?: string | null; conversation?: string | null; org?: string;
+  };
+  const action = async (requester: string, messageId: string | null, params: Record<string, unknown>, source = 'mention', shape: ActionShape = {}) => {
     const id = randomUUID();
-    await q(`INSERT INTO agent_actions(id,org_id,user_id,action,params,approval_tier,approval_status,source,message_id)
-      VALUES($1,$2,$3,'create_task',$4,'quick','pending',$5,$6)`, [id, orgId, requester, JSON.stringify(params), source, messageId]);
+    await q(`INSERT INTO agent_actions(id,org_id,user_id,action,params,approval_tier,approval_status,source,message_id,
+        agent_employee_id,channel_event_id,plan_id,conversation_id)
+      VALUES($1,$2,$3,$7,$4,'quick',$8,$5,$6,$9,$10,$11,$12)`, [id, shape.org ?? orgId, requester, JSON.stringify(params), shape.source ?? source, messageId,
+      shape.action ?? 'create_task', shape.status ?? 'pending', shape.employee ?? null, shape.event ?? null, shape.plan ?? null, shape.conversation ?? null]);
     actions.push(id);
+    actionByTitle.set(String(params.title), id);
     return id;
   };
+  const assign =(actionId: string, user: string, decision = 'pending') => q(
+    'INSERT INTO agent_action_approvers(id,org_id,action_id,user_id,decision) VALUES($1,$2,$3,$4,$5)', [randomUUID(), orgId, actionId, user, decision]);
   await action(people.member, messagesByRoom[rooms.priv]!, { title: 'from the private room' });
   await action(people.guest, messagesByRoom[rooms.pubGuest]!, { title: 'from the guest public room' });
   await action(people.member, null, { title: 'no room' });
   const assigned = await action(people.removed, messagesByRoom[rooms.adminOnly]!, { title: 'assigned' });
-  await q('INSERT INTO agent_action_approvers(id,org_id,action_id,user_id) VALUES($1,$2,$3,$4)', [randomUUID(), orgId, assigned, people.admin]);
+  await assign(assigned, people.admin);
   await action(people.member, null, { title: 'capture', source_user_id: people.member, source_space_id: rooms.priv }, 'defty_capture');
+
+  // The review gate's cases (`reviewGateSql`): decided and expired approvals; the requester alone; an assignment
+  // naming someone who is not a reviewer, or a reviewer who fails the room check; a module write; employee
+  // actions (a cited message, a channel event, no source); plan steps; a capture from a room its requester
+  // cannot read; an action of another workspace.
+  for (const status of ['approved', 'rejected', 'expired']) {
+    await action(people.member, messagesByRoom[rooms.priv]!, { title: status }, 'mention', { status });
+  }
+  await action(people.removed, null, { title: 'departed requester, no room' });
+  await assign(await action(people.removed, messagesByRoom[rooms.priv]!, { title: 'assigned to a non-reviewer' }), people.member);
+  await assign(await action(people.removed, messagesByRoom[rooms.adminOnly]!, { title: 'assignee outside the room' }), people.owner);
+  await assign(await action(people.removed, null, { title: 'departed requester, assigned to the admin' }), people.admin, 'rejected');
+  await assign(await action(people.member, null, { title: 'requester assigned, decided' }), people.member, 'approved');
+  await assign(await action(people.member, null, { title: 'requester and an admin assigned' }), people.admin);
+  await action(people.guest, null, { title: 'module write by a guest' }, 'mention', { action: 'module_record_create' });
+  await action(people.member, null, { title: 'module write by a member' }, 'mention', { action: 'module_record_create' });
+  await q("INSERT INTO users(id,email,name,kind,is_agent) VALUES($1,$2,'Employee','agent',true)", [employeeUser, `${employeeUser}@example.test`]);
+  await q("INSERT INTO org_members(id,org_id,user_id,role) VALUES($1,$2,$3,'member')", [randomUUID(), orgId, employeeUser]);
+  await q(`INSERT INTO agent_employees(id,org_id,user_id,name,slug,role,system_prompt,trust_level,is_active,is_byoa,runtime_kind,created_by)
+    VALUES($1,$2,$3,'Employee',$4,'custom','Test.','conservative',true,true,'custom_mcp',$5)`, [employeeId, orgId, employeeUser, `employee-${employeeId}`, people.owner]);
+  await q('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), rooms.priv, employeeUser]);
+  const channelEvent = randomUUID();
+  await q(`INSERT INTO agent_channel_events(id,org_id,agent_employee_id,kind,source_kind,source_id,space_id,idempotency_key)
+    VALUES($1,$2,$3,'message.created','message',$4,$5,$1)`, [channelEvent, orgId, employeeId, messagesByRoom[rooms.priv], rooms.priv]);
+  await action(people.member, messagesByRoom[rooms.priv]!, { title: 'employee, cited message' }, 'mcp', { employee: employeeId });
+  await action(people.member, messagesByRoom[rooms.adminOnly]!, { title: 'employee, message in the admin room' }, 'mcp', { employee: employeeId });
+  await action(people.member, null, { title: 'employee, channel event' }, 'mcp', { employee: employeeId, event: channelEvent });
+  await action(people.member, null, { title: 'employee, no source' }, 'mcp', { employee: employeeId });
+  await action(people.removed, null, { title: 'employee, no source, departed requester' }, 'mcp', { employee: employeeId });
+  for (const room of [rooms.priv, rooms.adminOnly]) {
+    const plan = randomUUID();
+    plans.push(plan);
+    await q(`INSERT INTO agent_plans(id,org_id,user_id,conversation_id,title,steps,status,current_step,context)
+      VALUES($1,$2,$3,$4,'plan','[]','executing',0,'{}')`, [plan, orgId, people.member, room]);
+    await action(people.member, null, { title: `plan step, ${room === rooms.priv ? 'private' : 'admin'} room` }, 'mention', { plan, conversation: room });
+  }
+  await action(people.member, null, { title: 'capture from the admin room', source_user_id: people.member, source_space_id: rooms.adminOnly }, 'defty_capture');
+  await q('INSERT INTO orgs(id,name,slug) VALUES($1,$2,$3)', [otherOrgId, 'Another workspace', `attention-narrowing-${otherOrgId}`]);
+  await action(people.member, null, { title: 'another workspace' }, 'mention', { org: otherOrgId });
 
   // Mentions: a live message in the private room, one in the admin room, one whose source is deleted; one delivery per person.
   for (const [room, deleted] of [[rooms.priv, false], [rooms.adminOnly, false], [rooms.pub, true]] as const) {
@@ -211,14 +275,15 @@ before(async () => {
 after(async () => {
   try {
     if (seeded && client) {
+      await q('DELETE FROM agent_actions WHERE org_id=$1', [otherOrgId]);
       for (const table of ['attention_events', 'attention_items', 'native_mention_deliveries', 'native_reference_states',
-        'agent_action_approvers', 'agent_actions', 'messages']) {
+        'agent_action_approvers', 'agent_actions', 'agent_channel_events', 'agent_plans', 'agent_employees', 'messages']) {
         await q(`DELETE FROM ${table} WHERE org_id=$1`, [orgId]);
       }
       await q('DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id=$1)', [orgId]);
       for (const table of ['spaces', 'org_members']) await q(`DELETE FROM ${table} WHERE org_id=$1`, [orgId]);
-      await q('DELETE FROM orgs WHERE id=$1', [orgId]);
-      await q('DELETE FROM users WHERE id=ANY($1::text[])', [Object.values(people)]);
+      await q('DELETE FROM orgs WHERE id=ANY($1::text[])', [[orgId, otherOrgId]]);
+      await q('DELETE FROM users WHERE id=ANY($1::text[])', [[...Object.values(people), employeeUser]]);
     }
   } finally {
     await client?.end();
@@ -344,15 +409,150 @@ test('the delivery and list filter (filterVisibleAttentionItems) keeps exactly t
   }
 });
 
+/**
+ * The review gates as they were composed before release 151 (`reviewGateSql`), from the pieces that
+ * remain in use: the user's own checks, then `actionReviewAssignmentSql`, which runs them again for
+ * each assignee. The oracle the compact composition must match.
+ */
+const actionOrg = sql`${agentActions.org_id}`;
+function formerReviewableActionSql(user: { id: string; org_id: string; role?: string }): SQL {
+  return and(
+    sql`${agentActions.org_id} = ${user.org_id}`,
+    visibleCaptureActionSql(user),
+    visibleAgentActionSourceSql({ userId: user.id, orgId: user.org_id }),
+    moduleRoleAudienceSql(user.role, { userId: user.id, orgId: user.org_id }),
+    sourceMessageRoomSql(user.id),
+    actionReviewAssignmentSql(user.id),
+  )!;
+}
+function formerCurrentRoleReviewableActionSql(userId: string | SQL): SQL {
+  const hasRole = (roles: string[]) => sql`EXISTS (
+      SELECT 1 FROM org_members review_role
+      WHERE review_role.org_id = ${agentActions.org_id} AND review_role.user_id = ${userId}
+        AND review_role.is_active = true
+        AND review_role.role IN (${sql.join(roles.map((value) => sql`${value}`), sql`, `)})
+    )`;
+  return and(
+    visibleCaptureActionSql({ id: userId, org_id: actionOrg }),
+    visibleAgentActionSourceSql({ userId, orgId: actionOrg }),
+    sql`(${hasRole(['owner', 'admin'])}
+      OR (${hasRole(['member'])} AND ${moduleRoleAudienceSql('member', { userId, orgId: actionOrg })})
+      OR (${hasRole(['guest'])} AND ${moduleRoleAudienceSql('guest', { userId, orgId: actionOrg })}))`,
+    sourceMessageRoomSql(userId),
+    actionReviewAssignmentSql(userId),
+  )!;
+}
+
+/** The test actions a gate passes, as a filter and as a selected value (the two ways the code uses it). */
+async function gateAnswers(gate: SQL): Promise<{ filtered: string[]; selected: string[] }> {
+  const filtered = await db.select({ id: agentActions.id }).from(agentActions).where(and(inArray(agentActions.id, actions), gate));
+  const selected = await db.select({ id: agentActions.id, passes: sql<boolean>`coalesce((${gate}), false)` })
+    .from(agentActions).where(inArray(agentActions.id, actions));
+  return {
+    filtered: filtered.map((row) => row.id).sort(),
+    selected: selected.filter((row) => row.passes).map((row) => row.id).sort(),
+  };
+}
+
+test('the review gate answers exactly as the composition it replaced, for every person, role and approval', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const titleOf = new Map([...actionByTitle].map(([title, id]) => [id, title]));
+  const named = (ids: string[]) => ids.map((id) => titleOf.get(id) ?? id);
+  const passedBy = new Map<string, Set<string>>();
+  for (const [name, person] of Object.entries(people)) {
+    // The approve and reject routes' gate, under each role the caller's session may carry.
+    for (const role of ['owner', 'admin', 'member', 'guest', undefined]) {
+      const viewer = { id: person, org_id: orgId, role };
+      const now = await gateAnswers(reviewableActionSql(viewer));
+      const former = await gateAnswers(formerReviewableActionSql(viewer));
+      assert.deepEqual(named(now.filtered), named(former.filtered), `${name} as ${role}: route gate as a filter`);
+      assert.deepEqual(named(now.selected), named(former.selected), `${name} as ${role}: route gate as a value`);
+      assert.deepEqual(now.filtered, now.selected, `${name} as ${role}: the filter and the value agree`);
+    }
+    // The Inbox's gate, with the role read in the statement: as before, and as the routes answer under that role.
+    const current = await gateAnswers(currentRoleReviewableActionSql(person));
+    const formerCurrent = await gateAnswers(formerCurrentRoleReviewableActionSql(person));
+    assert.deepEqual(named(current.filtered), named(formerCurrent.filtered), `${name}: Inbox gate as a filter`);
+    assert.deepEqual(named(current.selected), named(formerCurrent.selected), `${name}: Inbox gate as a value`);
+    const asRoutes = person === people.removed ? { filtered: [], selected: [] }
+      : await gateAnswers(reviewableActionSql({ id: person, org_id: orgId, role: roles[person] }));
+    assert.deepEqual(named(current.filtered), named(asRoutes.filtered), `${name}: the Inbox gate is the routes' gate under their current role`);
+    passedBy.set(name, new Set(current.filtered));
+  }
+  // The gate's user is a column of the statement (the approval sweep, approver assignment).
+  const sweep = (gate: (user: SQL) => SQL) => db.select({ id: attentionItems.id }).from(attentionItems).where(and(
+    eq(attentionItems.org_id, orgId), eq(attentionItems.source_type, 'agent_action'),
+    sql`EXISTS (SELECT 1 FROM ${agentActions} WHERE ${agentActions.id} = ${attentionItems.source_id}
+      AND ${agentActions.org_id} = ${attentionItems.org_id} AND ${gate(sql`${attentionItems.user_id}`)})`,
+  )).then((rows) => rows.map((row) => row.id).sort());
+  assert.deepEqual(await sweep(currentRoleReviewableActionSql), await sweep(formerCurrentRoleReviewableActionSql), 'gate user as a column');
+
+  // The fixture reaches the cases it names (so the comparison above is not vacuous).
+  const passes = (name: string, title: string) => passedBy.get(name)!.has(actionByTitle.get(title)!);
+  const expected: Array<[string, string, boolean]> = [
+    ['member', 'from the private room', true], ['owner', 'from the private room', false], ['guest', 'from the private room', false],
+    ['member', 'approved', true], ['member', 'rejected', true], ['member', 'expired', true], ['admin', 'expired', false],
+    ['owner', 'departed requester, no room', true], ['admin', 'departed requester, no room', true], ['member', 'departed requester, no room', false],
+    ['owner', 'assigned to a non-reviewer', true], ['admin', 'assigned to a non-reviewer', false], ['member', 'assigned to a non-reviewer', false],
+    ['owner', 'assignee outside the room', false], ['admin', 'assignee outside the room', true],
+    ['owner', 'departed requester, assigned to the admin', false], ['admin', 'departed requester, assigned to the admin', true],
+    ['admin', 'assigned', true], ['owner', 'assigned', false],
+    ['member', 'requester assigned, decided', true], ['member', 'requester and an admin assigned', true], ['admin', 'requester and an admin assigned', false],
+    ['guest', 'module write by a guest', false], ['member', 'module write by a member', true],
+    ['member', 'employee, cited message', true], ['guest', 'employee, cited message', false],
+    ['member', 'employee, message in the admin room', false],
+    ['member', 'employee, channel event', true], ['member', 'employee, no source', true],
+    ['owner', 'employee, no source, departed requester', true], ['member', 'employee, no source, departed requester', false],
+    ['member', 'capture', true], ['member', 'capture from the admin room', false],
+    ['member', 'plan step, private room', true], ['member', 'plan step, admin room', false],
+    ['member', 'another workspace', false], ['removed', 'from the private room', false],
+  ];
+  for (const [name, title, shown] of expected) assert.equal(passes(name, title), shown, `${name}, "${title}": ${shown ? 'reviews' : 'does not review'}`);
+});
+
+test('an approval item is shown exactly when the rule it replaced showed it, pending, decided or expired', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const tally = new Map<string, { shown: number; hidden: number }>();
+  const statusOf = new Map((await q('SELECT id, approval_status FROM agent_actions WHERE id = ANY($1::text[])', [actions]))
+    .rows.map((row: { id: string; approval_status: string }) => [row.id, row.approval_status]));
+  for (const [name, person] of Object.entries(people)) {
+    const former = await db.select({ id: attentionItems.id, source_id: attentionItems.source_id }).from(attentionItems).where(and(
+      eq(attentionItems.org_id, orgId), eq(attentionItems.user_id, person), eq(attentionItems.source_type, 'agent_action'),
+      sql`(${attentionItems.metadata}->>'legacy_notification_id' IS NULL OR
+        ${nativeNotificationAccessSql(person, sql`${attentionItems.metadata}`, sql`${attentionItems.org_id}`, sql`${attentionItems.link}`)})`,
+      sql`EXISTS (SELECT 1 FROM ${agentActions} WHERE ${agentActions.id} = ${attentionItems.source_id}
+        AND ${agentActions.org_id} = ${attentionItems.org_id} AND ${formerCurrentRoleReviewableActionSql(person)})`,
+    ));
+    const expected = new Set(former.map((row) => row.id));
+    assert.deepEqual(sorted(await visibleIds(person, ['agent_action'], 'agent_action')), sorted(expected), `${name}: approval items, narrowed`);
+    const whole = await visibleIds(person, 'all');
+    const ofType = await idsOfType(person, 'agent_action');
+    assert.deepEqual(sorted(new Set([...ofType].filter((id) => whole.has(id)))), sorted(expected), `${name}: approval items, whole rule`);
+    const rows = await db.select({ id: attentionItems.id, source_id: attentionItems.source_id }).from(attentionItems)
+      .where(and(eq(attentionItems.org_id, orgId), eq(attentionItems.user_id, person), eq(attentionItems.source_type, 'agent_action')));
+    for (const row of rows) {
+      const status = statusOf.get(row.source_id) ?? 'missing';
+      const entry = tally.get(status) ?? { shown: 0, hidden: 0 };
+      if (expected.has(row.id)) entry.shown += 1; else entry.hidden += 1;
+      tally.set(status, entry);
+    }
+  }
+  for (const status of ['pending', 'approved', 'rejected', 'expired']) {
+    const entry = tally.get(status);
+    assert.ok(entry && entry.shown > 0 && entry.hidden > 0, `${status}: shown ${entry?.shown}, hidden ${entry?.hidden}`);
+  }
+});
+
 type Growth = { anon: number; peak: number };
 
 /**
- * How much a fresh backend grows (kB) planning `scope`'s rule: its private
- * memory (`RssAnon`, which the backend keeps after the statement) and its
- * peak resident size (`VmHWM`, which also counts the shared catalog pages a
- * new backend reads). Null when the session cannot read /proc.
+ * How much a fresh backend grows (kB) planning `statement` (by default the
+ * Inbox rule narrowed to `scope`): its private memory (`RssAnon`, which the
+ * backend keeps after the statement) and its peak resident size (`VmHWM`,
+ * which also counts the shared catalog pages a new backend reads). Null when
+ * the session cannot read /proc.
  */
-async function planningGrowth(scope: AttentionSourceScope): Promise<Growth | null> {
+async function planningGrowth(scope: AttentionSourceScope, statement?: { sql: string; params: unknown[] }): Promise<Growth | null> {
   const backend = new pg.Client({ connectionString: url, connectionTimeoutMillis: 3000 });
   await backend.connect();
   try {
@@ -364,7 +564,7 @@ async function planningGrowth(scope: AttentionSourceScope): Promise<Growth | nul
     let before: Growth | null;
     try { before = await read(); } catch (error) { if (inCi) throw error; return null; }
     if (before == null) { if (inCi) throw new Error('/proc/self/status gave no RssAnon or VmHWM'); return null; }
-    const query = db.select({ id: attentionItems.id }).from(attentionItems).where(and(
+    const query = statement ?? db.select({ id: attentionItems.id }).from(attentionItems).where(and(
       eq(attentionItems.org_id, orgId), eq(attentionItems.user_id, people.member), visibleAttentionCondition(people.member, scope),
     )).toSQL();
     await backend.query(`EXPLAIN ${query.sql}`, query.params);
@@ -385,6 +585,35 @@ test('planning the rule for message items costs a backend a few MB, not the whol
     + `whole rule ${mb(whole.anon)} MB private, ${mb(whole.peak)} MB peak`);
   assert.ok(message.anon < 16 * 1024, `message-only rule, private memory: ${message.anon} kB`);
   assert.ok(message.peak < 48 * 1024, `message-only rule, peak: ${message.peak} kB`);
+});
+
+test('planning an approval item\'s review gate costs a backend about a third of what it did', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  // Release 150 measured, on the CI image: approval items 81 MB private (107 MB peak), the whole rule 86 MB
+  // (114 MB), the Inbox's load of a page's approvals (the gate as a filter) 134 MB, the approve and reject
+  // routes' gate as a value (viewerReviewAuthority) 39 MB. Release 151: 31, 36, 23 and 22 MB.
+  const approval = await planningGrowth(['agent_action']);
+  if (approval === null) return t.skip('this test database does not let a session read /proc/self/status');
+  const whole = (await planningGrowth('all'))!;
+  const pageApprovals = (await planningGrowth('all', db.select({ id: agentActions.id }).from(agentActions).where(and(
+    inArray(agentActions.id, actions), eq(agentActions.org_id, orgId), currentRoleReviewableActionSql(people.member),
+  )).toSQL()))!;
+  const reviewAuthority = (await planningGrowth('all', db.select({
+    id: agentActions.id,
+    reviewable: sql<boolean>`coalesce((${reviewableActionSql({ id: people.member, org_id: orgId, role: 'member' })}), false)`,
+  }).from(agentActions).where(inArray(agentActions.id, actions)).toSQL()))!;
+  const mb = (kb: number) => Math.round(kb / 1024);
+  const measured: Array<[string, Growth, number, number]> = [
+    ['approval items', approval, 40, 64],
+    ['whole rule', whole, 48, 72],
+    ['a page\'s approvals (gate as a filter)', pageApprovals, 32, 56],
+    ['review authority (gate as a value)', reviewAuthority, 32, 56],
+  ];
+  t.diagnostic(`backend growth planning: ${measured.map(([name, growth]) => `${name} ${mb(growth.anon)} MB private, ${mb(growth.peak)} MB peak`).join('; ')}`);
+  for (const [name, growth, anonMb, peakMb] of measured) {
+    assert.ok(growth.anon < anonMb * 1024, `${name}, private memory: ${growth.anon} kB`);
+    assert.ok(growth.peak < peakMb * 1024, `${name}, peak: ${growth.peak} kB`);
+  }
 });
 
 test('a read takes the item types and the items from one snapshot: a type change committed in between changes nothing', async (t) => {

@@ -1,8 +1,8 @@
 import { and, eq, sql, type SQL } from 'drizzle-orm';
-import { agentActions, orgMembers } from '@deft/db/schema';
+import { agentActionApprovers, agentActions, orgMembers } from '@deft/db/schema';
 import { db } from './db.js';
 import { visibleCaptureActionSql } from './agent-action-visibility.js';
-import { actionReviewAssignmentSql } from './agent-action-requester.js';
+import { actionReviewerSql } from './agent-action-requester.js';
 import { moduleRoleAudienceSql, sourceMessageRoomSql, visibleAgentActionSourceSql } from './module-action-visibility.js';
 
 type UserRef = string | SQL;
@@ -18,13 +18,7 @@ type UserRef = string | SQL;
 export function reviewableActionSql(user: { id: UserRef; org_id: UserRef; role?: string }) {
   return and(
     sql`${agentActions.org_id} = ${user.org_id}`,
-    visibleCaptureActionSql(user),
-    // `visibleModuleActionSql` without its history room rule: the gate's own
-    // room rule below is the stricter one.
-    visibleAgentActionSourceSql({ userId: user.id, orgId: user.org_id }),
-    moduleRoleAudienceSql(user.role, { userId: user.id, orgId: user.org_id }),
-    sourceMessageRoomSql(user.id),
-    actionReviewAssignmentSql(user.id),
+    reviewGateSql(user.id, moduleRoleAudienceSql(user.role, { userId: user.id, orgId: user.org_id })),
   )!;
 }
 
@@ -41,6 +35,54 @@ export function assigneeRoomSql(userId: SQL): SQL {
 }
 
 /**
+ * The review gate on the `agent_actions` row in scope, for `userId` and the
+ * module `audience` of their role: the user passes the action's capture,
+ * source (`visibleAgentActionSourceSql`) and room (`sourceMessageRoomSql`)
+ * checks and reviews it (`actionReviewAssignmentSql`: a reviewer of it who,
+ * when an assignment names a reviewer who also passes those checks
+ * (`assigneeRoomSql`), holds an assignment).
+ *
+ * Written so PostgreSQL plans each check once. The user and the action's
+ * assignees are the rows of one small list and "reviews and passes the
+ * checks" is one column of it; OFFSET 0 keeps the planner from copying that
+ * column into each place it is read. Composed directly (the checks for the
+ * user, then `actionReviewAssignmentSql`, which runs them again for the
+ * assignees), the gate made a backend ~80 MB larger to plan (DBF3, release
+ * 151), memory it kept until its connection closed: every Inbox item of an
+ * approval, and every reviewer check of the approval routes, planned it.
+ * test/attention-visibility-narrowing-db.test.ts proves this composition
+ * answers as that one did.
+ *
+ * A positive filter, like the rule it replaces: it may be false where that
+ * rule was NULL, so never negate it.
+ */
+function reviewGateSql(userId: UserRef, audience: SQL): SQL {
+  const reader = sql.raw('gate_reader.user_id');
+  const reviews = and(
+    actionReviewerSql(reader),
+    visibleCaptureActionSql({ id: reader, org_id: sql`${agentActions.org_id}` }),
+    visibleAgentActionSourceSql({ userId: reader }),
+    sourceMessageRoomSql(reader),
+  )!;
+  // The user's own row always exists, so each bool_or below is true or false.
+  return sql`(${audience} AND COALESCE((
+    SELECT bool_or(gate_check.is_viewer AND gate_check.reviews)
+      AND (bool_or(NOT gate_check.is_viewer AND gate_check.user_id = ${userId})
+        OR NOT bool_or(NOT gate_check.is_viewer AND gate_check.reviews))
+    FROM (
+      SELECT gate_reader.user_id, gate_reader.is_viewer, COALESCE(${reviews}, false) AS reviews
+      FROM (
+        SELECT (${userId})::text AS user_id, true AS is_viewer
+        UNION ALL
+        SELECT gate_ap.user_id, false FROM ${agentActionApprovers} gate_ap
+        WHERE gate_ap.action_id = ${agentActions.id} AND gate_ap.org_id = ${agentActions.org_id}
+      ) gate_reader
+      OFFSET 0
+    ) gate_check
+  ), false))`;
+}
+
+/**
  * `reviewableActionSql` for the user's current active role in the action's
  * workspace, read inside the statement that uses it (Attention items).
  */
@@ -53,15 +95,9 @@ export function currentRoleReviewableActionSql(userId: UserRef): SQL {
         AND review_role.role IN (${sql.join(roles.map((value) => sql`${value}`), sql`, `)})
     )`;
   // reviewableActionSql with the role read here; only the module audience depends on it.
-  return and(
-    visibleCaptureActionSql({ id: userId, org_id: orgId }),
-    visibleAgentActionSourceSql({ userId, orgId }),
-    sql`(${hasRole(['owner', 'admin'])}
+  return reviewGateSql(userId, sql`(${hasRole(['owner', 'admin'])}
       OR (${hasRole(['member'])} AND ${moduleRoleAudienceSql('member', { userId, orgId })})
-      OR (${hasRole(['guest'])} AND ${moduleRoleAudienceSql('guest', { userId, orgId })}))`,
-    sourceMessageRoomSql(userId),
-    actionReviewAssignmentSql(userId),
-  )!;
+      OR (${hasRole(['guest'])} AND ${moduleRoleAudienceSql('guest', { userId, orgId })}))`);
 }
 
 /**

@@ -25,6 +25,26 @@ opt-in. Use `@deft/app-kit/core` and the `deft-email` `runtime/domain` modules, 
 keep pinning alpha.43. Names and plan are listed in the Kit README and
 `docs/superpowers/plans/2026-11-06-email-host-kit-shrink.md`.
 
+- Database memory, continued from #583 (for operators of a small Postgres, 512 MB). An
+  open approval in someone's Inbox no longer makes each database connection that checks it
+  about 80 MB larger. The approval review rule (the Inbox's and the approve and reject
+  routes') is now composed so Postgres plans each of its checks once: a connection grows
+  31 MB planning an Inbox approval item (was 81), 25 MB loading a page's approvals (was
+  134), 23 MB answering whether the viewer may approve (was 39). Who sees and who reviews
+  an approval is unchanged; a test compares the rule with the previous one for every
+  person, role and approval of a matrix (pending, approved, rejected and expired;
+  requesters, assignees, owners, admins, guests, departed requesters; module writes,
+  employee, capture and plan actions). Measured on Postgres 16 capped at 512 MB, 14 tabs
+  polling an Inbox with 11 pending approvals: before, four connections reached 127 MB each
+  and the kernel killed Postgres within 9 seconds; now the four peak at 119 MB together and
+  the database at 168 MB.
+- Every database pool the API opens now closes a connection once it is
+  `DEFT_DATABASE_POOL_MAX_LIFETIME_SECONDS` old (default 300; 30 to 86,400), when it is next
+  idle, never while in use, so memory a connection took stays at most that long, and one
+  idle for `DEFT_DATABASE_POOL_IDLE_TIMEOUT_SECONDS` (default 10, as before; 1 to 3,600).
+  Both are optional; a value out of range stops startup, naming the setting. The number of
+  connections is unchanged (18 at most). Still open: the whole Inbox rule costs a
+  connection 36 MB and a chat room's pending-approvals poll (every 5 seconds) 36 MB.
 - App-boundary gate: `scripts/app-boundary-ceiling.json` caps the exception count
   at 1,277 (it may only be lowered), each exception's `milestone` now starts with
   its burn-down bucket, and `node scripts/check-app-boundary.mjs --summary` prints

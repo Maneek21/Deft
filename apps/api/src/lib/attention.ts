@@ -96,13 +96,15 @@ const SOURCE_TYPE_ACCESS: Partial<Record<AttentionSourceType, (userId: string) =
           AND ${spaces.org_id} = ${attentionItems.org_id}
           AND ((${spaces.is_archived} = false AND ${publicSpaceVisibleSql(spaces.type, spaces.org_id, userId)}) OR ${spaceMembers.id} IS NOT NULL)
       )`,
-  agent_action: (userId) => sql`EXISTS (
-        SELECT 1
+  // The gate as the value of a lookup by primary key, not inside EXISTS:
+  // PostgreSQL plans an EXISTS here twice (per row, and hashed over every
+  // action), which doubled the review gate's planning memory.
+  agent_action: (userId) => sql`COALESCE((
+        SELECT ${currentApprovalRecipientSql(userId)}
         FROM ${agentActions}
         WHERE ${agentActions.id} = ${attentionItems.source_id}
           AND ${agentActions.org_id} = ${attentionItems.org_id}
-          AND ${currentApprovalRecipientSql(userId)}
-      )`,
+      ), false)`,
 };
 
 /** The source types with an access rule of their own. */
@@ -118,11 +120,11 @@ export type AttentionSourceScope = 'all' | readonly string[];
 /**
  * Whether `userId` may see an attention item (the Inbox's visibility rule).
  *
- * PostgreSQL plans every branch of the condition whatever the row, and the
- * approval branch (the review gate) is large: planning the whole condition
- * takes a backend ~85 MB, which the backend keeps until its connection
- * closes. Pass the source types the rows can have so only their rules are
- * planned (a message item: a few MB). A row whose type has a rule that was not
+ * PostgreSQL plans every branch of the condition whatever the row, and a
+ * backend keeps the memory planning took until its connection closes. Pass
+ * the source types the rows can have so only their rules are planned (a
+ * message item: a few MB; an approval item, the review gate, more; the whole
+ * condition, the sum). A row whose type has a rule that was not
  * asked for is not visible (fail closed), so name every type the statement
  * can meet; on rows of the named types and of types with no rule the result
  * is exactly the `'all'` result.

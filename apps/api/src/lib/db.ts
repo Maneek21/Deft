@@ -7,12 +7,14 @@ import { closeAppAutomationScanDatabase } from './app-automation-scan-db.js';
 import { closeExperienceExposureDatabase } from './app-experience-exposure-db.js';
 import { closePrivateSearchDatabase } from './app-resource-private-search-db.js';
 import { APP_DATABASE_POOL_BUDGET } from './app-database-pool-budget.js';
+import { DATABASE_POOL_RECYCLING } from './database-pool-recycling.js';
 
 const { Pool } = pg;
 
 const pool = new Pool({
   connectionString: env.DATABASE_URL,
   max: APP_DATABASE_POOL_BUDGET.ordinary,
+  ...DATABASE_POOL_RECYCLING,
   connectionTimeoutMillis: 5_000,
   statement_timeout: 30_000,
   idle_in_transaction_session_timeout: 60_000,
@@ -38,6 +40,8 @@ const advisoryPool = new Pool({
   connectionString: env.DATABASE_URL,
   application_name: 'deft-advisory',
   max: APP_DATABASE_POOL_BUDGET.advisory,
+  // A lease keeps its connection checked out, so recycling never ends one while it holds a lock.
+  ...DATABASE_POOL_RECYCLING,
   keepAlive: true,
   keepAliveInitialDelayMillis: 10_000,
 });

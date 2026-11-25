@@ -591,6 +591,8 @@ can supply its own AI independently of Deft's provider configuration.
 | `ENCRYPTION_KEY` | Yes for Docker/production | Encrypts stored credentials and signs receipts; at least 32 characters, unique and non-placeholder | none suitable for Docker |
 | Apps flags | No | See "Apps feature flags" below; all are off by default | off |
 | `DATABASE_URL` | No for Compose | External Postgres URL for non-Compose installs | derived |
+| `DEFT_DATABASE_POOL_MAX_LIFETIME_SECONDS` | No | Seconds after which the API closes a pooled database connection, when it is next idle (never while in use), so memory a Postgres connection kept is given back; 30 to 86400, anything else stops startup | `300` |
+| `DEFT_DATABASE_POOL_IDLE_TIMEOUT_SECONDS` | No | Seconds after which the API closes a pooled database connection nothing has used; 1 to 3600, anything else stops startup | `10` |
 | `NEXT_PUBLIC_APP_URL` | Recommended | Public web URL and invite-link base | `http://localhost:3000` |
 | `NEXT_PUBLIC_API_URL` | Recommended | Public API URL seen by browser | `http://localhost:3001` |
 | `NEXT_PUBLIC_WS_URL` | Recommended | Public WebSocket/API URL seen by browser | `http://localhost:3001` |

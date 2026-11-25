@@ -357,9 +357,24 @@ test('PERF-B: a steady Attention poll runs the review check for the backfill onl
   const memberPoll = backfill(await statementsOf(() => poll('member')));
   assert.equal(memberPoll.length, 1, 'one backfill statement with the review check');
   /**
+   * Where the review check (`reviewGateSql`) is in an EXPLAIN filter: the
+   * parenthesized expression that ends with its last part, the subquery over
+   * the user and the assignees (`COALESCE((SubPlan n), false)`).
+   */
+  const reviewCheckIn = (filter: string): { start: number; end: number } | null => {
+    const last = [...filter.matchAll(/COALESCE\(\(SubPlan \d+\), false\)/g)].at(-1);
+    if (!last) return null;
+    const close = last.index! + last[0].length;
+    for (let at = close, depth = 0; at >= 0; at -= 1) {
+      if (filter[at] === ')') depth += 1;
+      else if (filter[at] === '(' && --depth === 0) return { start: at, end: close + 1 };
+    }
+    return null;
+  };
+  /**
    * Largest number of times a subquery of the review check ran: the subplans the
-   * statement's agent_actions filter names, from where the review check starts
-   * (its capture-room test) when `fromCheck`, else anywhere in the filter.
+   * statement's agent_actions filter names, in the review check when
+   * `fromCheck`, else anywhere in the filter.
    */
   const reviewCheckLoops = async (statement: { text: string; values: unknown[] }, fromCheck: boolean) => {
     const plan = (await q(`EXPLAIN (ANALYZE, VERBOSE, FORMAT JSON) ${statement.text}`, statement.values)).rows[0]['QUERY PLAN'][0];
@@ -369,9 +384,9 @@ test('PERF-B: a steady Attention poll runs the review check for the backfill onl
       // The statement's own scan of agent_actions, outside any subquery.
       if (main && node.Alias === 'agent_actions' && typeof node.Filter === 'string') {
         const filter: string = node.Filter;
-        const start = filter.indexOf("IS DISTINCT FROM 'defty_capture'");
-        assert.ok(start >= 0, 'the filter holds the review check');
-        const branch = fromCheck ? filter.slice(start) : filter;
+        const check = reviewCheckIn(filter);
+        assert.ok(check, 'the filter holds the review check');
+        const branch = fromCheck ? filter.slice(check.start, check.end) : filter;
         for (const match of branch.matchAll(/SubPlan (\d+)/g)) named.add(`SubPlan ${match[1]}`);
       }
       if (node['Subplan Name']) loops.set(node['Subplan Name'], Math.max(loops.get(node['Subplan Name']) ?? 0, node['Actual Loops'] ?? 0));
