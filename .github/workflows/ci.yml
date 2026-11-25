@@ -729,10 +729,14 @@ jobs:
           # a comment giving the reason. None is known, so both are empty. A
           # function is written as regprocedure prints it, for example
           #   'enforce_app_runtime_session()'  # reason
-          # and a column as 'table.column'. An entry replaces only that
-          # function's definition or that column's default with a fixed marker:
-          # the function's signature, and the column's presence, type and
-          # nullability, are still compared.
+          # and a column as 'table.column'. An entry replaces only that column's
+          # default, or only that function's body (prosrc, probin or a
+          # SQL-standard body), with a fixed marker. Everything else is still
+          # compared: the column's presence, type and nullability; the
+          # function's signature, arguments (names, modes, defaults), result,
+          # kind, language, transforms, volatility, STRICT, SECURITY DEFINER,
+          # LEAKPROOF, PARALLEL, set-returning flag, COST, ROWS, SUPPORT and
+          # SET options, each from pg_proc.
           allowed_function_differences=(
           )
           allowed_column_differences=(
@@ -751,7 +755,7 @@ jobs:
           public_functions="FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')"
           enums_sql="SELECT t.typname || ': ' || e.enumlabel FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid JOIN pg_namespace n ON n.oid = t.typnamespace WHERE n.nspname = 'public' ORDER BY 1"
           functions_sql="SELECT p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ') ' || coalesce(array_to_string(p.proconfig, ','), '') $public_functions ORDER BY 1"
-          function_defs_sql="SELECT CASE WHEN p.oid::regprocedure::text = ANY ($function_allow) THEN 'ALLOW-LISTED DEFINITION ' || p.oid::regprocedure::text ELSE pg_get_functiondef(p.oid) END $public_functions AND p.prokind IN ('f', 'p', 'w') ORDER BY p.proname, pg_get_function_identity_arguments(p.oid)"
+          function_defs_sql="SELECT CASE WHEN p.oid::regprocedure::text = ANY ($function_allow) THEN format('ALLOW-LISTED BODY %s kind=%s arguments=%L result=%L language=%s transforms=%L volatility=%s strict=%s security_definer=%s leakproof=%s parallel=%s returns_set=%s cost=%s rows=%s support=%s config=%L', p.oid::regprocedure, p.prokind, pg_get_function_arguments(p.oid), pg_get_function_result(p.oid), (SELECT l.lanname FROM pg_language l WHERE l.oid = p.prolang), p.protrftypes::regtype[], p.provolatile, p.proisstrict, p.prosecdef, p.proleakproof, p.proparallel, p.proretset, p.procost, p.prorows, p.prosupport, p.proconfig) ELSE pg_get_functiondef(p.oid) END $public_functions AND p.prokind IN ('f', 'p', 'w') ORDER BY p.proname, pg_get_function_identity_arguments(p.oid)"
           triggers_sql="SELECT pg_get_triggerdef(t.oid) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND NOT t.tgisinternal ORDER BY 1"
           columns_sql="SELECT c.relname || '.' || a.attname || ': ' || format_type(a.atttypid, a.atttypmod) || CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE '' END || CASE WHEN a.attgenerated <> '' THEN ' GENERATED ' ELSE ' DEFAULT ' END || CASE WHEN (c.relname || '.' || a.attname) = ANY ($column_allow) THEN '(allow-listed)' WHEN d.adbin IS NULL THEN '(none)' ELSE replace(replace(pg_get_expr(d.adbin, d.adrelid), chr(92), chr(92) || chr(92)), chr(10), chr(92) || 'n') END FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND a.attnum > 0 AND NOT a.attisdropped ORDER BY 1"
           catalog_differs=0
