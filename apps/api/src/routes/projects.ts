@@ -18,6 +18,7 @@ import { reserveNextTaskNumber } from '../lib/task-numbering.js';
 import { resolveAssignableAssigneeId } from '../lib/resolve-assignee.js';
 import { createNotificationIfAllowed } from '../lib/notification-policy.js';
 import { dispatchAgentEmployeeTask } from '../lib/dispatch-agent-task.js';
+import { taskPrioritySchema } from '../lib/task-priority.js';
 
 export const projectRoutes = new Hono();
 
@@ -469,7 +470,7 @@ const createTaskSchema = z.object({
   title: z.string().min(1),
   description: z.string().nullable().optional(),
   status: z.string().nullable().optional(),
-  priority: z.string().nullable().optional(),
+  priority: taskPrioritySchema.nullable().optional(),
   assignee_id: z.string().nullable().optional(),
   due_date: z.string().nullable().optional(),
   sort_order: z.number().nullable().optional(),

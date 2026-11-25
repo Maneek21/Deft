@@ -42,6 +42,7 @@ import { assertScheduleRoom } from './workspace-limits.js';
 import { resolveSpaceTarget } from './resolve-space-target.js';
 import { createTaskBundle } from './task-bundle.js';
 import { bulkUpdateTasks, BulkTaskUpdateError } from './task-bulk-update.js';
+import { isTaskPriority } from './task-priority.js';
 import {
   agentToolPolicyError,
   consumeAgentDailyActionBudget,
@@ -2599,7 +2600,7 @@ export async function executeAction(
         if (!taskId) return { success: false, result: null, error: 'Task not found' };
 
         const priority = params.priority;
-        if (!['p0', 'p1', 'p2', 'p3'].includes(priority)) {
+        if (!isTaskPriority(priority)) {
           return { success: false, result: null, error: `Invalid priority: ${priority}` };
         }
 
