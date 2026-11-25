@@ -19,18 +19,28 @@
 // - by a frozen drive's own grants (its members, its default role, owners and
 //   admins). A share out of a frozen drive gives view at most;
 // - to anyone who is not an active member of the document's workspace, nor,
-//   for an agent user, whose agent employee there is paused or deleted;
+//   for an agent user, whose own agent employee (users.agent_employee_id) in
+//   that workspace is paused or deleted;
 // - to a guest or an agent user through an open drive: they get only what
 //   names them or their chats.
 // Roles are read from org_members for the document's workspace, never from a
 // session or token claim.
 //
-// The conditions are OR'd EXISTS branches over drive_members,
-// document_shares, space_members, spaces, org_members, users and
-// agent_employees, never a computed maximum: PostgreSQL plans every branch of
-// a condition whatever the row, and the backend keeps that memory. An
-// oversized condition ran a 512 MB database out of memory in releases 145 to
-// 149. document-access-planning-db.test.ts holds every form to a budget.
+// The conditions are OR'd EXISTS branches, never a computed maximum:
+// PostgreSQL plans every branch of a condition whatever the row, and the
+// backend keeps that memory. An oversized condition ran a 512 MB database out
+// of memory in releases 145 to 149. document-access-planning-db.test.ts holds
+// every form to a budget. Besides drives and documents they read only:
+// - drive_members and document_shares (the grants);
+// - space_members (who is in a chat);
+// - spaces, because space_members has no org_id and a chat can move to
+//   another workspace after a grant was written (the principal triggers
+//   check only when a grant is written), so a chat counts only while it is in
+//   the document's workspace;
+// - org_members (active, role), users (kind, agent_employee_id) and
+//   agent_employees (active, not deleted).
+// The role lookups ask the same conditions at each role from full down, in
+// one CASE, so each EXISTS stops at its first match and one row comes back.
 //
 // The conditions read no database themselves, so the workspace export can
 // use them on its own snapshot.
@@ -60,14 +70,18 @@ function checkedRole(min: DocRole): DocRole {
   return min;
 }
 
-/** The highest of `roles` (text from the database), or null. Anything that is not a role counts for nothing. */
-function highestRole(roles: readonly unknown[]): DocRole | null {
-  let best: DocRole | null = null;
-  for (const role of roles) {
-    if (typeof role !== 'string' || !Object.hasOwn(DOC_ROLE_RANK, role)) continue;
-    if (best === null || DOC_ROLE_RANK[role as DocRole] > DOC_ROLE_RANK[best]) best = role as DocRole;
-  }
-  return best;
+/** A role read back from the database, or null. Anything that is not a role counts for nothing. */
+function storedRole(role: unknown): DocRole | null {
+  return typeof role === 'string' && Object.hasOwn(DOC_ROLE_RANK, role) ? role as DocRole : null;
+}
+
+/**
+ * One row with the highest role at which `visibleAt` holds, or a null role:
+ * the condition asked at full, edit, comment and view in turn. CASE stops at
+ * the first that holds, and each EXISTS at its first matching grant.
+ */
+function highestRoleSql(visibleAt: (min: DocRole) => SQL): SQL {
+  return sql`SELECT CASE ${sql.join(DOC_ROLES.map((role) => sql`WHEN ${visibleAt(role)} THEN ${sql.raw(`'${role}'`)}`), sql` `)} END AS role`;
 }
 
 /** The columns of the drive a grant is correlated with. */
@@ -170,24 +184,20 @@ function anyGrant(groups: GrantGroup[], min: DocRole): SQL {
   return parts.length === 0 ? sql`false` : sql`(${sql.join(parts, sql` OR `)})`;
 }
 
-/** The groups as rows of granted roles (one row per grant held), for the role lookups. */
-function grantedRoles(groups: GrantGroup[]): SQL {
-  const selects = groups.flatMap((group) => group.grants.map((grant) => sql`SELECT ${grant.role} AS role
-    FROM ${grant.from} WHERE ${grant.where}${group.guard ? sql` AND ${group.guard}` : sql``}`));
-  return sql.join(selects, sql` UNION ALL `);
-}
-
 /**
  * True when `userId` may act in the workspace `orgId` at all: an active
- * member there, and, unless human, an agent user whose agent employee in that
- * workspace is active and not deleted. Every branch needs it.
+ * member there, and, unless human, an agent user whose own employee (the one
+ * `users.agent_employee_id` names, as provisioning records it) belongs to
+ * that workspace and user and is active and not deleted. Another employee
+ * row naming the same user counts for nothing. Every branch needs it.
  */
 function activeActorSql(userId: UserRef, orgId: OrgRef): SQL {
   return sql`EXISTS (SELECT 1 FROM org_members access_actor
     JOIN users access_actor_user ON access_actor_user.id = access_actor.user_id
     WHERE access_actor.org_id = ${orgId} AND access_actor.user_id = ${userId} AND access_actor.is_active = true
       AND (access_actor_user.kind = 'human' OR EXISTS (SELECT 1 FROM agent_employees access_actor_employee
-        WHERE access_actor_employee.org_id = access_actor.org_id AND access_actor_employee.user_id = access_actor.user_id
+        WHERE access_actor_employee.id = access_actor_user.agent_employee_id
+          AND access_actor_employee.org_id = access_actor.org_id AND access_actor_employee.user_id = access_actor.user_id
           AND access_actor_employee.is_active = true AND access_actor_employee.is_deleted = false)))`;
 }
 
@@ -229,21 +239,20 @@ export function visibleDocumentIdSql(userId: string, orgId: OrgRef, documentId: 
   return documentIdVisibleSql(userId, orgId, documentId, min);
 }
 
-/** The statement documentRoleFor runs: one row per grant held. Exported for its planning test. */
+/**
+ * The statement documentRoleFor runs: one row, the highest role at which
+ * visibleDocumentCondition holds for the document. Exported for its planning
+ * test.
+ */
 export function documentRoleQuery(userId: string, orgId: string, documentId: string): SQL {
-  return sql`SELECT access_grant.role
-    FROM documents access_doc
-    JOIN drives access_drive ON access_drive.id = access_doc.drive_id AND access_drive.org_id = access_doc.org_id
-    CROSS JOIN LATERAL (${grantedRoles(documentGrants(userId, sql.raw('access_doc.id')))}) access_grant
-    WHERE access_doc.id = ${documentId} AND access_doc.org_id = ${orgId}
-      AND access_doc.is_deleted = false AND access_drive.is_deleted = false
-      AND ${activeActorSql(userId, orgId)}`;
+  return highestRoleSql((min) => sql`EXISTS (SELECT 1 FROM ${documents}
+    WHERE ${documents.id} = ${documentId} AND ${visibleDocumentCondition(userId, orgId, min)})`);
 }
 
 /** `userId`'s role on the document `documentId` of `orgId`, or null when they can't open it. */
 export async function documentRoleFor(userId: string, orgId: string, documentId: string, executor: Executor = db): Promise<DocRole | null> {
   const result = await executor.execute(documentRoleQuery(userId, orgId, documentId));
-  return highestRole(result.rows.map((row) => (row as { role: unknown }).role));
+  return storedRole((result.rows[0] as { role?: unknown } | undefined)?.role);
 }
 
 /**
@@ -257,19 +266,19 @@ export function visibleDriveCondition(userId: string, orgId: string, min: DocRol
     AND ${anyGrant([driveGrants(userId, drivesTable)], checkedRole(min))})`;
 }
 
-/** The statement driveRoleFor runs: one row per grant held. Exported for its planning test. */
+/**
+ * The statement driveRoleFor runs: one row, the highest role at which
+ * visibleDriveCondition holds for the drive. Exported for its planning test.
+ */
 export function driveRoleQuery(userId: string, orgId: string, driveId: string): SQL {
-  return sql`SELECT access_grant.role
-    FROM drives access_drive
-    CROSS JOIN LATERAL (${grantedRoles([driveGrants(userId, accessDrive)])}) access_grant
-    WHERE access_drive.id = ${driveId} AND access_drive.org_id = ${orgId} AND access_drive.is_deleted = false
-      AND ${activeActorSql(userId, orgId)}`;
+  return highestRoleSql((min) => sql`EXISTS (SELECT 1 FROM ${drives}
+    WHERE ${drives.id} = ${driveId} AND ${visibleDriveCondition(userId, orgId, min)})`);
 }
 
 /** `userId`'s role on the drive `driveId` of `orgId`, or null. */
 export async function driveRoleFor(userId: string, orgId: string, driveId: string, executor: Executor = db): Promise<DocRole | null> {
   const result = await executor.execute(driveRoleQuery(userId, orgId, driveId));
-  return highestRole(result.rows.map((row) => (row as { role: unknown }).role));
+  return storedRole((result.rows[0] as { role?: unknown } | undefined)?.role);
 }
 
 /**

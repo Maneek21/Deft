@@ -448,25 +448,77 @@ test('a deleted employee gets nothing from a direct grant', async (t) => {
   const roles = async () => [await roleOf(people.agentUser, inDrive), await roleOf(people.agentUser, shared),
     await roleOf(people.agentUser, chatShared), await driveRoleOf(people.agentUser, drive)];
   assert.deepEqual(await roles(), ['edit', 'comment', 'view', 'edit']);
-  for (const [state, change, restore] of [
-    ['deleted', 'is_deleted = true, deleted_at = now()', 'is_deleted = false, deleted_at = NULL'],
-    ['paused', 'is_active = false', 'is_active = true'],
-  ]) {
-    await fx.client.query(`UPDATE agent_employees SET ${change} WHERE org_id = $1 AND user_id = $2`, [fx.orgId, people.agentUser]);
-    try {
-      assert.deepEqual(await roles(), [null, null, null, null], `a ${state} employee`);
-    } finally {
-      await fx.client.query(`UPDATE agent_employees SET ${restore} WHERE org_id = $1 AND user_id = $2`, [fx.orgId, people.agentUser]);
-    }
-  }
-  // An agent user with no employee in this workspace at all.
-  await fx.client.query('UPDATE agent_employees SET org_id = $2 WHERE org_id = $1 AND user_id = $3', [fx.orgId, fx.otherOrgId, people.agentUser]);
+  // The agent user's own employee is the one users.agent_employee_id names. A second, active employee row
+  // naming the same user in the same workspace grants nothing of its own.
+  const { rows: [{ agent_employee_id: linked }] } = await fx.client.query('SELECT agent_employee_id FROM users WHERE id = $1', [people.agentUser]);
+  assert.ok(linked, 'the fixture links the agent user to its employee');
+  const second = randomUUID();
+  await fx.client.query(`INSERT INTO agent_employees (id, org_id, user_id, name, slug, role, system_prompt, trust_level, is_active, is_byoa, runtime_kind, created_by)
+    VALUES ($1, $2, $3, 'Second', $4, 'custom', 'Test.', 'conservative', true, true, 'custom_mcp', $5)`,
+  [second, fx.orgId, people.agentUser, `second-${second}`, people.owner]);
+  const setEmployee = (id: string, change: string) => fx!.client.query(`UPDATE agent_employees SET ${change} WHERE id = $1`, [id]);
   try {
-    assert.deepEqual(await roles(), [null, null, null, null], 'an employee of another workspace');
+    for (const [state, change, restore] of [
+      ['deleted', 'is_deleted = true, deleted_at = now()', 'is_deleted = false, deleted_at = NULL'],
+      ['paused', 'is_active = false', 'is_active = true'],
+    ]) {
+      await setEmployee(linked, change);
+      try {
+        assert.deepEqual(await roles(), [null, null, null, null], `a ${state} employee, with a second active row for the same user`);
+      } finally {
+        await setEmployee(linked, restore);
+      }
+      // The second row's state changes nothing.
+      await setEmployee(second, change);
+      try {
+        assert.deepEqual(await roles(), ['edit', 'comment', 'view', 'edit'], `the second row ${state}, the linked employee active`);
+      } finally {
+        await setEmployee(second, restore);
+      }
+    }
+    // The linked employee moved to another workspace: nothing here, though the second row is active here.
+    await setEmployee(linked, `org_id = '${fx.otherOrgId}'`);
+    try {
+      assert.deepEqual(await roles(), [null, null, null, null], 'an employee of another workspace');
+    } finally {
+      await setEmployee(linked, `org_id = '${fx.orgId}'`);
+    }
   } finally {
-    await fx.client.query('UPDATE agent_employees SET org_id = $1 WHERE org_id = $2 AND user_id = $3', [fx.orgId, fx.otherOrgId, people.agentUser]);
+    await fx.client.query('DELETE FROM agent_employees WHERE id = $1', [second]);
   }
   assert.deepEqual(await roles(), ['edit', 'comment', 'view', 'edit'], 'restored');
+});
+
+test('overlapping grants through several chats and a direct grant give the highest role', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { people } = fx;
+  // Member 2 sits in three more chats, each granting a different role on one drive and one document.
+  const chats: Array<[string, DocRole]> = [[randomUUID(), 'view'], [randomUUID(), 'comment'], [randomUUID(), 'edit']];
+  for (const [chat, role] of chats) {
+    await fx.client.query("INSERT INTO spaces (id, org_id, name, type, created_by) VALUES ($1, $2, $3, 'private', $4)", [chat, fx.orgId, `overlap-${role}-${chat}`, people.owner]);
+    await rejoin(chat, people.member2);
+  }
+  const drive = await fx.insertDrive({ kind: 'private', name: 'Overlapping chats' });
+  for (const [chat, role] of chats) await fx.addDriveMember(drive, { space: chat }, role);
+  const inDrive = await fx.insertDocument({ driveId: drive });
+  const elsewhere = await fx.insertDrive({ kind: 'private', name: 'Overlapping shares' });
+  const shared = await fx.insertDocument({ driveId: elsewhere });
+  for (const [chat, role] of chats) await fx.share(shared, { space: chat }, role === 'edit' ? 'comment' : 'view');
+  assert.deepEqual([await roleOf(people.member2, inDrive), await driveRoleOf(people.member2, drive), await roleOf(people.member2, shared)],
+    ['edit', 'edit', 'comment'], 'the highest of the chats');
+  // A direct grant below the chats changes nothing; one above them wins.
+  await fx.addDriveMember(drive, { user: people.member2 }, 'view');
+  await fx.share(shared, { user: people.member2 }, 'view');
+  assert.deepEqual([await roleOf(people.member2, inDrive), await driveRoleOf(people.member2, drive), await roleOf(people.member2, shared)],
+    ['edit', 'edit', 'comment']);
+  await fx.addDriveMember(drive, { user: people.member2 }, 'full');
+  await fx.share(shared, { user: people.member2 }, 'edit');
+  assert.deepEqual([await roleOf(people.member2, inDrive), await driveRoleOf(people.member2, drive), await roleOf(people.member2, shared)],
+    ['full', 'full', 'edit'], 'the direct grant above the chats');
+  // Leaving the highest chat drops to the next one.
+  await fx.addDriveMember(drive, { user: people.member2 }, 'view');
+  await fx.removeSpaceMember(chats[2]![0], people.member2);
+  assert.deepEqual([await roleOf(people.member2, inDrive), await driveRoleOf(people.member2, drive)], ['comment', 'comment'], 'the next chat');
 });
 
 test('spaceMembersWhoCannotOpen lists the chat members who cannot open a document, and counts the guests among them', async (t) => {

@@ -100,8 +100,9 @@ test('the document access check plans within budget', async (t) => {
         .orderBy(desc(documents.updated_at)).limit(200).toSQL()],
       ['document list, at least edit', db.select({ id: documents.id }).from(documents)
         .where(visibleDocumentCondition(member, fx.orgId, 'edit')).limit(200).toSQL()],
-      // The role of one document, on every request and live-editing connection.
-      ['documentRoleFor', query(documentRoleQuery(member, fx.orgId, document!.id))],
+      // The role of one document, on every request and live-editing connection: the point lookup, which
+      // plans the condition once for each role.
+      ['documentRoleFor (point lookup)', query(documentRoleQuery(member, fx.orgId, document!.id))],
       // Who in a chat can't open a document (the posting prompt).
       ['spaceMembersWhoCannotOpen', query(spaceMembersWhoCannotOpenQuery(fx.orgId, fx.spaces.team, document!.id))],
     ];
@@ -117,7 +118,8 @@ test('the drive list plans within budget', async (t) => {
       ['drive list', db.select({ id: drives.id, name: drives.name }).from(drives)
         .where(or(visibleDriveCondition(admin, fx.orgId), adminListedDriveCondition(admin, fx.orgId))).orderBy(drives.name).toSQL()],
       ['drive list, at least edit', db.select({ id: drives.id }).from(drives).where(visibleDriveCondition(member, fx.orgId, 'edit')).toSQL()],
-      ['driveRoleFor', query(driveRoleQuery(member, fx.orgId, fx.workspaceDriveId))],
+      // The role on one drive: the point lookup, the drive condition once for each role.
+      ['driveRoleFor (point lookup)', query(driveRoleQuery(member, fx.orgId, fx.workspaceDriveId))],
     ];
   });
 });
