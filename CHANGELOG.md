@@ -39,11 +39,13 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
   task counts, totals and weekly completions, subtask counts, a task's subtasks, parent,
   dependencies and subtree, the dashboard's project counts, the people directory and member
   detail, the MCP tools `project_list`, `project_get` and `team_workload`, activity receipts,
-  Defty's team performance, workload and 1:1 prep tools, the 1:1 prep and manager pulse
-  pages, the weekly digest and workload alerts (these count no restricted task), and the
-  @mention, workflow, unblocked, duplicate, blocked and stalled notices. A copy of a
-  restricted task, and the next occurrence of a recurring one, stay restricted to the same
-  people (they used to be open to everyone). Owners are not exempt: as before, an owner
+  Defty's team performance, workload, 1:1 prep and expert-finder tools, the 1:1 prep and
+  manager pulse pages, the weekly digest, workload alerts and People Graph (these count no
+  restricted task), and the @mention, workflow, unblocked, duplicate, blocked and stalled
+  notices. A restricted task's stalled or overdue nudge goes to the person, not to an agent.
+  A copy of a restricted task, and the next occurrence of a recurring one, stay restricted
+  to the same people (they used to be open to everyone). Notices, saved reports and audit
+  entries written before this release are not changed. Owners are not exempt: as before, an owner
   sees a restricted task only when it names them or they lead its project.
 - **Task search** (`GET /api/tasks/search`, used by the task pickers) found nothing for a
   query that ends in a digit, such as `rc8`, or for a key whose project prefix holds a
@@ -51,8 +53,9 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
   and its title for every query, key matches first, and still shows only tasks the caller
   may see.
 - **Project lead at creation.** A guest can no longer set a project's lead when creating
-  a project: `POST /api/projects` with `lead_id` from a guest answers `403 FORBIDDEN`, as
-  changing a lead already did. A guest may still create a project without a lead.
+  a project: `POST /api/projects` with `lead_id` from a guest answers `403 FORBIDDEN`, and
+  the MCP tool `project_create` refuses it, as changing a lead already did. A guest may
+  still create a project without a lead.
 
 ## [0.3.0-preview.152] — 2026-11-25 (prerelease)
 
