@@ -101,7 +101,32 @@ test('seats_used counts the workspace\'s seat-holding people, and 0 before setup
   }
   assert.equal(await heartbeatDeps.seatsUsed(), 3, 'and the next count works');
 
+  // A stop while the count is still waiting for a connection (a busy pool):
+  // the connection it then gets is given up, out of the pool, never handed back.
+  const max = (db.$client as unknown as { options: { max: number } }).options.max;
+  const held = [];
+  for (let i = 0; i < max; i += 1) held.push(await db.$client.connect());
+  try {
+    const queued = heartbeatDeps.seatsUsed();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(db.$client.waitingCount, 1, 'the count is waiting for a connection');
+    stopCellHeartbeat();
+    held.pop()!.release();
+    await assert.rejects(queued);
+    assert.equal(db.$client.totalCount, max - 1, 'the connection it got left the pool');
+  } finally {
+    for (const client of held) client.release();
+  }
+  assert.equal(await heartbeatDeps.seatsUsed(), 3, 'and counting works afterwards');
+
   // Two workspaces (a database restored over another): ambiguous, so no count at all.
   await admin.query(`INSERT INTO "${schema}".orgs (id, name, slug) VALUES ($1, 'Second Org', $2)`, [randomUUID(), `hb2-${org.slice(0, 8)}`]);
   assert.equal(await heartbeatDeps.seatsUsed(), null);
+});
+
+test('a stop just after a count begins (before it has a connection) is seen', { skip: !safe, timeout: 60_000 }, async () => {
+  const { heartbeatDeps, stopCellHeartbeat } = await import('../src/lib/telemetry/heartbeat.js');
+  const counting = heartbeatDeps.seatsUsed();
+  stopCellHeartbeat();
+  await assert.rejects(counting, /heartbeat stopped/);
 });

@@ -50,8 +50,14 @@ let giveUpConnection: (() => void) | null = null;
  * connection up: it is released with an error, which takes it out of the
  * pool at once (so closing the pool never waits for it), and its socket is
  * destroyed. The pending query then fails, and the heartbeat sends nothing.
+ * A stop that comes while the count is still waiting for its connection
+ * counts too: the connection it then gets is given up, never handed back.
  */
 async function defaultSeatsUsed(): Promise<number | null> {
+  // Taken before anything is awaited: a stop at any point after this call
+  // began counts (see `stopped` below).
+  const owner = generation;
+  const stopped = () => owner !== generation;
   const [{ db }, schema, { sql }, { drizzle }, { countSeatsInUse }] = await Promise.all([
     import('../db.js'),
     import('@deft/db/schema'),
@@ -59,6 +65,9 @@ async function defaultSeatsUsed(): Promise<number | null> {
     import('drizzle-orm/node-postgres'),
     import('../seat-limit.js'),
   ]);
+  // A stop while this count is anywhere in flight (even still waiting for
+  // its connection) means its connection is given up, never handed back.
+  if (stopped()) throw new Error('heartbeat stopped');
   const client = await db.$client.connect();
   let given = false;
   const giveUp = (error?: Error) => {
@@ -69,12 +78,16 @@ async function defaultSeatsUsed(): Promise<number | null> {
       try { (client as unknown as { connection?: { stream?: { destroy(): void } } }).connection?.stream?.destroy(); } catch { /* already closed */ }
     }
   };
+  if (stopped()) {
+    giveUp(new Error('heartbeat stopped'));
+    throw new Error('heartbeat stopped');
+  }
   const deadline = setTimeout(() => giveUp(new Error('heartbeat seat count deadline')), SEAT_DEADLINE_MS);
   deadline.unref?.();
   giveUpConnection = () => giveUp(new Error('heartbeat stopped'));
   try {
     const reader = drizzle(client, { schema });
-    return await reader.transaction(async (tx) => {
+    const seats = await reader.transaction(async (tx) => {
       await tx.execute(sql.raw(`SET LOCAL statement_timeout = '${SEAT_QUERY_TIMEOUT}'`));
       await tx.execute(sql.raw(`SET LOCAL lock_timeout = '${SEAT_QUERY_TIMEOUT}'`));
       const workspaces = await tx.select({ id: schema.orgs.id }).from(schema.orgs).limit(2);
@@ -82,10 +95,14 @@ async function defaultSeatsUsed(): Promise<number | null> {
       if (workspaces.length > 1) return null;
       return countSeatsInUse(tx as unknown as Parameters<typeof countSeatsInUse>[0], workspaces[0]!.id);
     }, { accessMode: 'read only' });
+    // Stopped while counting: nothing is sent.
+    if (stopped()) throw new Error('heartbeat stopped');
+    return seats;
   } finally {
     clearTimeout(deadline);
     giveUpConnection = null;
-    giveUp();
+    // Handed back to the pool only if the heartbeat is still running.
+    giveUp(stopped() ? new Error('heartbeat stopped') : undefined);
   }
 }
 
