@@ -73,24 +73,18 @@ export const ATTENTION_SOURCE_TYPES = [
 
 export type AttentionSourceType = typeof ATTENTION_SOURCE_TYPES[number];
 
-/**
- * Entries `readAttentionWithSourceTypes` adds to the source types it reads when
- * no approval item among the rows is of an action of that kind, so the
- * approval rule plans the review gate without that kind's check
- * (`ReviewGateScope`). Absent, the gate is whole.
- */
-export const APPROVAL_KIND_ABSENT = Object.freeze({
-  employeeActions: 'agent_action:no-employee-actions',
-  captures: 'agent_action:no-captures',
-});
+/** What `readAttentionWithSourceTypes` read: the rows' source types, and the scope of the approval items' actions. */
+function isReadScope(scope: AttentionSourceScope): scope is AttentionReadScope {
+  return scope !== 'all' && !Array.isArray(scope);
+}
 
-/** The review gate's scope for approval items under `sourceTypes`. */
-function approvalGateScope(sourceTypes: AttentionSourceScope): ReviewGateScope {
-  if (sourceTypes === 'all') return EVERY_REVIEW_GATE_ACTION;
-  return {
-    employeeActions: !sourceTypes.includes(APPROVAL_KIND_ABSENT.employeeActions),
-    captures: !sourceTypes.includes(APPROVAL_KIND_ABSENT.captures),
-  };
+/**
+ * The review gate's scope for approval items: narrowed only by what a read
+ * found on its snapshot (`AttentionReadScope.approvals`), never by source type
+ * strings, which are stored free text. Otherwise the whole gate.
+ */
+function approvalGateScope(scope: AttentionSourceScope): ReviewGateScope {
+  return isReadScope(scope) ? scope.approvals : EVERY_REVIEW_GATE_ACTION;
 }
 
 /** The access rule of each source type that has one, for reader `userId`. */
@@ -133,11 +127,19 @@ const SOURCE_TYPE_ACCESS: Partial<Record<AttentionSourceType, (userId: string, s
 export const ATTENTION_SOURCE_TYPES_WITH_ACCESS_RULE: readonly string[] = Object.keys(SOURCE_TYPE_ACCESS);
 
 /**
- * Which source types a visibility condition must cover: `'all'`, or the types
- * of the rows it will be evaluated on (`attentionSourceTypesOf`,
- * `readAttentionWithSourceTypes`, `writeAttentionWithSourceTypes`).
+ * What `readAttentionWithSourceTypes` read on its snapshot: the source types
+ * of the rows, and the review gate's scope for the actions of the approval
+ * items among them (`ReviewGateScope`), kept apart from the types.
  */
-export type AttentionSourceScope = 'all' | readonly string[];
+export type AttentionReadScope = Readonly<{ types: readonly string[]; approvals: ReviewGateScope }>;
+
+/**
+ * Which rows a visibility condition must cover: `'all'`, the types of the
+ * rows it will be evaluated on (`attentionSourceTypesOf`,
+ * `writeAttentionWithSourceTypes`: the approval rule is the whole gate), or
+ * what `readAttentionWithSourceTypes` read (the approval rule narrowed).
+ */
+export type AttentionSourceScope = 'all' | readonly string[] | AttentionReadScope;
 
 /**
  * Whether `userId` may see an attention item (the Inbox's visibility rule).
@@ -149,12 +151,13 @@ export type AttentionSourceScope = 'all' | readonly string[];
  * condition, the sum). A row whose type has a rule that was not
  * asked for is not visible (fail closed), so name every type the statement
  * can meet; on rows of the named types and of types with no rule the result
- * is exactly the `'all'` result. `APPROVAL_KIND_ABSENT` entries narrow the
- * approval rule the same way, by the kind of the item's action.
+ * is exactly the `'all'` result. A read's scope (`AttentionReadScope`) narrows
+ * the approval rule the same way, by the kinds of the items' actions.
  */
 export function visibleAttentionCondition(userId: string, sourceTypes: AttentionSourceScope) {
   const ruled = Object.keys(SOURCE_TYPE_ACCESS) as AttentionSourceType[];
-  const planned = sourceTypes === 'all' ? ruled : ruled.filter((type) => sourceTypes.includes(type));
+  const types = isReadScope(sourceTypes) ? sourceTypes.types : sourceTypes;
+  const planned = types === 'all' ? ruled : ruled.filter((type) => types.includes(type));
   return sql<boolean>`(
     (${attentionItems.metadata}->>'legacy_notification_id' IS NULL OR
       ${nativeNotificationAccessSql(userId, sql`${attentionItems.metadata}`, sql`${attentionItems.org_id}`, sql`${attentionItems.link}`)})
@@ -181,26 +184,24 @@ export type AttentionTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
  * applies the condition to. Run every statement of `read` on `tx`.
  *
  * When approval items are among them it also reads the kinds of their actions
- * and adds an `APPROVAL_KIND_ABSENT` entry for each kind none of them is, so
- * the approval rule plans only the checks those actions need (release 152).
+ * (`AttentionReadScope.approvals`), so the approval rule plans only the
+ * checks those actions need (release 152).
  */
 export async function readAttentionWithSourceTypes<T>(
   where: SQL | undefined,
-  read: (tx: AttentionTx, sourceTypes: string[]) => Promise<T>,
+  read: (tx: AttentionTx, sourceTypes: AttentionReadScope) => Promise<T>,
 ): Promise<T> {
   if (!where) throw new Error('readAttentionWithSourceTypes needs a filter');
   return db.transaction(async (tx) => {
     const rows = await tx.selectDistinct({ source_type: attentionItems.source_type }).from(attentionItems).where(where);
-    const sourceTypes = rows.map((row) => row.source_type);
-    if (sourceTypes.includes('agent_action')) {
-      const scope = await readReviewGateScope(tx, sql`FROM ${attentionItems}
+    const types = rows.map((row) => row.source_type);
+    const approvals = types.includes('agent_action')
+      ? await readReviewGateScope(tx, sql`FROM ${attentionItems}
         JOIN ${agentActions} approval_action
           ON approval_action.id = ${attentionItems.source_id} AND approval_action.org_id = ${attentionItems.org_id}
-        WHERE ${where} AND ${attentionItems.source_type} = 'agent_action'`, 'approval_action');
-      if (!scope.employeeActions) sourceTypes.push(APPROVAL_KIND_ABSENT.employeeActions);
-      if (!scope.captures) sourceTypes.push(APPROVAL_KIND_ABSENT.captures);
-    }
-    return read(tx, sourceTypes);
+        WHERE ${where} AND ${attentionItems.source_type} = 'agent_action'`, 'approval_action')
+      : EVERY_REVIEW_GATE_ACTION;
+    return read(tx, Object.freeze({ types, approvals }));
   }, { isolationLevel: 'repeatable read', accessMode: 'read only' });
 }
 

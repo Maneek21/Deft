@@ -50,7 +50,6 @@ import { visibleCaptureActionSql } from '../src/lib/agent-action-visibility.js';
 import { moduleRoleAudienceSql, sourceMessageRoomSql, visibleAgentActionSourceSql } from '../src/lib/module-action-visibility.js';
 import { nativeNotificationAccessSql } from '../src/lib/native-mention-visibility.js';
 import {
-  APPROVAL_KIND_ABSENT,
   ATTENTION_SOURCE_TYPES,
   ATTENTION_SOURCE_TYPES_WITH_ACCESS_RULE,
   filterVisibleAttentionItems,
@@ -368,7 +367,7 @@ test('the rule narrowed to the types a statement meets shows exactly what the wh
     // A list reads its rows' types first, on the same snapshot (routes/attention.ts, the MCP tools).
     const mine = and(eq(attentionItems.org_id, orgId), eq(attentionItems.user_id, person));
     const listed = await readAttentionWithSourceTypes(mine, async (tx, types) => {
-      assert.deepEqual([...types].sort(), [...ATTENTION_SOURCE_TYPES].sort(), `${name}: every type read first`);
+      assert.deepEqual([...types.types].sort(), [...ATTENTION_SOURCE_TYPES].sort(), `${name}: every type read first`);
       return tx.select({ id: attentionItems.id }).from(attentionItems).where(and(mine, visibleAttentionCondition(person, types)));
     });
     assert.deepEqual(sorted(new Set(listed.map((row) => row.id))), sorted(whole), `${name}: the types read first`);
@@ -715,13 +714,9 @@ test('while the Defty envelope is inactive or marked BYOA its actions count as a
   }
 });
 
-test('approval-kind entries narrow the Inbox approval rule exactly, and a read adds them only when no item needs the check', async (t) => {
+test('a read narrows the Inbox approval rule exactly, by the kinds it read and never by a stored source type', async (t) => {
   if (unavailable) return t.skip(unavailable);
   const kinds = await actionKinds();
-  const entries = (scope: ReviewGateScope) => [
-    ...(scope.employeeActions ? [] : [APPROVAL_KIND_ABSENT.employeeActions]),
-    ...(scope.captures ? [] : [APPROVAL_KIND_ABSENT.captures]),
-  ];
   const plainActions = actions.filter((id) => coveredBy({ employeeActions: false, captures: false }, kinds.get(id)));
   for (const [name, person] of Object.entries(people)) {
     const whole = await visibleIds(person, 'all');
@@ -729,22 +724,39 @@ test('approval-kind entries narrow the Inbox approval rule exactly, and a read a
       .where(and(eq(attentionItems.org_id, orgId), eq(attentionItems.user_id, person), eq(attentionItems.source_type, 'agent_action')));
     for (const scope of PARTIAL_SCOPES) {
       const expected = new Set(items.filter((item) => whole.has(item.id) && coveredBy(scope, kinds.get(item.source_id))).map((item) => item.id));
-      assert.deepEqual(sorted(await visibleIds(person, ['agent_action', ...entries(scope)], 'agent_action')), sorted(expected),
-        `${name}, ${entries(scope).join(' ')}`);
+      assert.deepEqual(sorted(await visibleIds(person, { types: ['agent_action'], approvals: scope }, 'agent_action')), sorted(expected),
+        `${name}, employee actions ${scope.employeeActions}, captures ${scope.captures}`);
     }
-    // A read of items whose actions are neither an outside agent's nor captures adds both entries, and shows what the whole rule shows.
+    // A read of items whose actions are neither an outside agent's nor captures narrows both, and shows what the whole rule shows.
     const plainItems = and(eq(attentionItems.org_id, orgId), eq(attentionItems.user_id, person),
       eq(attentionItems.source_type, 'agent_action'), inArray(attentionItems.source_id, plainActions));
-    const read = await readAttentionWithSourceTypes(plainItems, async (tx, types) => {
-      assert.deepEqual([...types].sort(), ['agent_action', APPROVAL_KIND_ABSENT.captures, APPROVAL_KIND_ABSENT.employeeActions].sort(), `${name}: entries read`);
-      return tx.select({ id: attentionItems.id }).from(attentionItems).where(and(plainItems, visibleAttentionCondition(person, types)));
+    const read = await readAttentionWithSourceTypes(plainItems, async (tx, scope) => {
+      assert.deepEqual(scope, { types: ['agent_action'], approvals: { employeeActions: false, captures: false } }, `${name}: what the read found`);
+      return tx.select({ id: attentionItems.id }).from(attentionItems).where(and(plainItems, visibleAttentionCondition(person, scope)));
     });
     const plainExpected = new Set(items.filter((item) => whole.has(item.id) && plainActions.includes(item.source_id)).map((item) => item.id));
     assert.deepEqual(sorted(new Set(read.map((row) => row.id))), sorted(plainExpected), `${name}: plain approvals, read`);
-    // Every approval item of the person (outside agents' and captures among them): no entry.
+    // Every approval item of the person (outside agents' and captures among them): the whole gate.
     const every = and(eq(attentionItems.org_id, orgId), eq(attentionItems.user_id, person), eq(attentionItems.source_type, 'agent_action'));
-    await readAttentionWithSourceTypes(every, async (_tx, types) => assert.deepEqual(types, ['agent_action'], `${name}: no entry`));
+    await readAttentionWithSourceTypes(every, async (_tx, scope) => assert.deepEqual(scope.approvals, { employeeActions: true, captures: true }, `${name}: whole`));
   }
+  // Astra (review of 0148e174): a stored item whose source type is text that once meant "no captures" next to a
+  // reviewable capture's item hid the capture. Source types are free text and never narrow the gate.
+  const capture = [...itemIds.entries()].find(([key]) => key === `${people.member}|agent_action|${actionByTitle.get('capture')}|0`)![1];
+  const lookalikes = ['agent_action:no-captures', 'agent_action:no-employee-actions'].map((type) => ({ id: randomUUID(), type }));
+  for (const { id, type } of lookalikes) {
+    await q(`INSERT INTO attention_items(id,org_id,user_id,kind,lane,dedupe_key,source_type,source_id,title)
+      VALUES($1,$2,$3,'test','updates',$1,$4,$5,'look-alike')`, [id, orgId, people.member, type, randomUUID()]);
+  }
+  const both = and(eq(attentionItems.org_id, orgId), eq(attentionItems.user_id, people.member),
+    inArray(attentionItems.id, [capture, ...lookalikes.map((row) => row.id)]));
+  const shown = await readAttentionWithSourceTypes(both, (tx, scope) => tx.select({ id: attentionItems.id }).from(attentionItems)
+    .where(and(both, visibleAttentionCondition(people.member, scope))));
+  assert.deepEqual(sorted(new Set(shown.map((row) => row.id))), sorted(new Set([capture, ...lookalikes.map((row) => row.id)])),
+    'the capture and both look-alike items are shown');
+  // A change takes stored types as they are (writeAttentionWithSourceTypes): the whole gate.
+  assert.ok((await visibleIds(people.member, ['agent_action', 'agent_action:no-captures'], 'agent_action')).has(capture),
+    'stored types passed as a list never narrow the gate');
 });
 
 test('a room\'s pending approvals are exactly what release 151 listed, for every role, room and approval state', async (t) => {
@@ -917,7 +929,7 @@ test('planning a room\'s pending approvals, and an Inbox approval of a Defty act
   const deftyRoom = await roomPoll({ employeeActions: false, captures: false });
   if (deftyRoom === null) return t.skip('this test database does not let a session read /proc/self/status');
   const employeeRoom = (await roomPoll({ employeeActions: true, captures: false }))!;
-  const deftyApproval = (await planningGrowth(['agent_action', APPROVAL_KIND_ABSENT.employeeActions, APPROVAL_KIND_ABSENT.captures]))!;
+  const deftyApproval = (await planningGrowth({ types: ['agent_action'], approvals: { employeeActions: false, captures: false } }))!;
   const mb = (kb: number) => Math.round(kb / 1024);
   const measured: Array<[string, Growth, number, number]> = [
     ['a room with only Defty actions pending', deftyRoom, 12, 28],
@@ -938,7 +950,7 @@ test('a read takes the item types and the items from one snapshot: a type change
   const where = and(eq(attentionItems.org_id, orgId), eq(attentionItems.user_id, people.member), eq(attentionItems.id, id!));
   try {
     const seen = await readAttentionWithSourceTypes(where, async (tx, types) => {
-      assert.deepEqual(types, ['task']);
+      assert.deepEqual(types.types, ['task']);
       await q("UPDATE attention_items SET source_type='space', source_id=$2, version=version+1 WHERE id=$1", [id, rooms.priv]);
       return tx.select({ id: attentionItems.id, source_type: attentionItems.source_type }).from(attentionItems)
         .where(and(where, visibleAttentionCondition(people.member, types)));
