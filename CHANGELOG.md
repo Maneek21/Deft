@@ -34,11 +34,12 @@ For the hosted service (`DEFT_HOSTED=true` with the seat-statement settings):
 
 - Unhandled request errors, other 5xx answers, failed background jobs, uncaught
   process errors and browser errors are scrubbed in the cell and sent to the control
-  plane. A message leaves only when the JavaScript engine or the browser wrote it (then
-  with quoted text, addresses, links, keys, tokens, file names, numbers and the
-  workspace's and people's names removed); otherwise only a system or database error
-  code, or nothing. Frames are file, line and function only (browser frames: the web
-  app's own bundles, no function names); routes are templates; request IDs are only
+  plane. No part of an error's own message is sent: a message the JavaScript engine or
+  the browser writes is replaced by fixed text ("Cannot read properties of undefined
+  (reading <quoted>)"); otherwise only a real system or database error code
+  ("code ECONNREFUSED"), or nothing. Frames are file, line and function only (browser
+  frames: the web app's own bundles, no function names); routes are the code's route
+  templates and the app's own page patterns; request IDs are only
   error references the cell issued. At most one batch a minute, a fatal exit included,
   grouped by fingerprint (at most 50 events and 64 KB, server and job errors first), with
   the seat fetch token. A failed batch is dropped and counted, never retried, and
