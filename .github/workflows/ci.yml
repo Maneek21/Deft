@@ -155,6 +155,8 @@ jobs:
         run: pnpm --filter @deft/app-kit test
       - name: Test shared authority and resource contracts
         run: pnpm --filter @deft/shared test
+      - name: Test document schema conversions
+        run: pnpm --filter @deft/doc-schema test
       - name: Verify release publishing contract
         run: pnpm test:release-workflow
       - name: Verify container process supervision

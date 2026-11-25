@@ -12,6 +12,7 @@ COPY apps/web/package.json apps/web/
 COPY apps/api/package.json apps/api/
 COPY packages/app-kit/package.json packages/app-kit/
 COPY packages/db/package.json packages/db/
+COPY packages/doc-schema/package.json packages/doc-schema/
 COPY packages/shared/package.json packages/shared/
 COPY packages/mcp/package.json packages/mcp/
 RUN --mount=type=cache,id=deft-pnpm-store,target=/root/.local/share/pnpm/store \
@@ -58,6 +59,7 @@ COPY --from=deps /app/apps/web/node_modules ./apps/web/node_modules
 COPY --from=deps /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=deps /app/packages/app-kit/node_modules ./packages/app-kit/node_modules
 COPY --from=deps /app/packages/db/node_modules ./packages/db/node_modules
+COPY --from=deps /app/packages/doc-schema/node_modules ./packages/doc-schema/node_modules
 COPY --from=deps /app/packages/mcp/node_modules ./packages/mcp/node_modules
 COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
 COPY . .
