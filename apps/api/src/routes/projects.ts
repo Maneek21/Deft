@@ -9,7 +9,7 @@ import { emitToUser, emitOrgTaskEvent } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { taskAliasColumns, visibleTaskCondition, visibleTaskSql } from '../lib/task-visibility.js';
 import { peopleViewer } from '../lib/people-visibility.js';
-import { projectLeadChangeRefusal } from '../lib/project-lead.js';
+import { leadStillIs, projectLeadChangeRefusal } from '../lib/project-lead.js';
 import { withoutHiddenParent } from '../lib/task-parent-projection.js';
 import {
   getProjectResolvedConfig,
@@ -322,15 +322,26 @@ projectRoutes.patch('/:id', async (c) => {
     // A project's lead reads all of its tasks, restricted ones included
     // (lib/task-visibility.ts), so only an owner, an admin or the current
     // lead may change who leads it, and never a guest (lib/project-lead.ts).
-    if (updates.lead_id !== undefined && (updates.lead_id ?? null) !== existing.lead_id) {
+    // An unchanged lead is not written, so a stale form never puts back a
+    // lead someone else has since changed. A change is applied only while the
+    // lead is still the one it was authorized against (409 otherwise).
+    const leadChanging = updates.lead_id !== undefined && (updates.lead_id ?? null) !== existing.lead_id;
+    if (updates.lead_id !== undefined && !leadChanging) delete updates.lead_id;
+    if (leadChanging) {
       const refusal = await projectLeadChangeRefusal(user.org_id, user.id, existing.lead_id);
       if (refusal) return c.json(refusal, 403);
+    }
+    if (Object.keys(updates).length === 0) {
+      return c.json(guestEditor ? { ...existing, task_counter: null } : existing);
     }
 
     const [updated] = await db.update(projects)
       .set(updates)
-      .where(eq(projects.id, projectId))
+      .where(and(eq(projects.id, projectId), leadChanging ? leadStillIs(existing.lead_id) : undefined))
       .returning();
+    if (!updated) {
+      return c.json({ error: 'The project lead changed meanwhile; reload and try again', code: 'CONFLICT' }, 409);
+    }
 
     return c.json(guestEditor ? { ...updated, task_counter: null } : updated);
   } catch (err) {

@@ -25,6 +25,8 @@ const people: Array<[string, string, string]> = [
 const ALL = people.map(([id]) => id);
 const who = (id: string) => people.find(([p]) => p === id)![1];
 const room = randomUUID(), project = randomUUID(), restricted = randomUUID(), open = randomUUID();
+// A project the guest does not belong to, with an unrestricted task.
+const outside = randomUUID(), outsideTask = randomUUID();
 const prefix = `L${run.slice(0, 4).toUpperCase()}`;
 
 before(async () => {
@@ -39,6 +41,10 @@ before(async () => {
   for (const id of ALL) await c.query(`INSERT INTO space_members (id, space_id, user_id) VALUES (gen_random_uuid()::text, $1, $2)`, [room, id]);
   await c.query(`INSERT INTO projects (id, org_id, name, prefix, lead_id, task_counter) VALUES ($1, $2, 'plc project', $3, $4, 10)`, [project, org, prefix, lead]);
   await c.query(`INSERT INTO project_spaces (id, project_id, space_id) VALUES (gen_random_uuid()::text, $1, $2)`, [project, room]);
+  await c.query(`INSERT INTO projects (id, org_id, name, prefix, lead_id, task_counter) VALUES ($1, $2, 'plc outside', $3, NULL, 10)`,
+    [outside, org, `O${run.slice(0, 4).toUpperCase()}`]);
+  await c.query(`INSERT INTO tasks (id, org_id, project_id, number, title, created_by, status) VALUES ($1, $2, $3, 1, $4, $5, 'todo')`,
+    [outsideTask, org, outside, `plc-${run}-outside`, owner]);
   await c.query(`INSERT INTO tasks (id, org_id, project_id, number, title, created_by, metadata, status) VALUES
       ($1, $3, $4, 1, $5, $6, $7, 'todo'), ($2, $3, $4, 2, $8, $6, NULL, 'todo')`,
   [restricted, open, org, project, `plc-${run}-restricted`, owner, JSON.stringify({ visibility: 'restricted', visible_user_ids: [named] }), `plc-${run}-open`]);
@@ -48,6 +54,7 @@ after(async () => {
   await c.query(`DELETE FROM notifications WHERE org_id = $1`, [org]);
   await c.query(`DELETE FROM job_queue WHERE org_id = $1`, [org]).catch(() => {});
   await c.query(`DELETE FROM idempotency_keys WHERE user_id = ANY($1::text[])`, [ALL]).catch(() => {});
+  await c.query(`DELETE FROM oauth_audit_events WHERE org_id = $1`, [org]).catch(() => {});
   await c.query(`DELETE FROM workflow_runs WHERE rule_id IN (SELECT id FROM workflow_rules WHERE org_id = $1)`, [org]);
   await c.query(`DELETE FROM workflow_rules WHERE org_id = $1`, [org]);
   await c.query(`DELETE FROM task_comments WHERE org_id = $1`, [org]);
@@ -103,6 +110,10 @@ test('PATCH /api/projects/:id: a member who does not lead the project cannot cha
     assert.equal(await currentLead(), lead, 'the lead is unchanged');
   }
   assert.equal((await call(member, `/api/tasks/${restricted}`)).status, 404, 'the member still cannot read it');
+  // A project with no lead: a member who leads nothing cannot give it one.
+  const noLead = await call(member, `/api/projects/${outside}`, { method: 'PATCH', body: { lead_id: member } });
+  assert.equal(noLead.status, 403, 'member gives a lead to a project with none');
+  assert.equal((await c.query(`SELECT lead_id FROM projects WHERE id = $1`, [outside])).rows[0].lead_id, null);
   const guestRes = await patchLead(guest, guest);
   assert.equal(guestRes.status, 403);
   assert.equal(guestRes.body.code, 'FORBIDDEN');
@@ -127,13 +138,28 @@ test('PATCH /api/projects/:id: the owner, an admin and the current lead can chan
   assert.equal(await currentLead(), lead);
 });
 
+test('a current lead who is no longer an active member cannot change the lead', async () => {
+  await c.query(`UPDATE org_members SET is_active = false WHERE org_id = $1 AND user_id = $2`, [org, lead]);
+  try {
+    const res = await patchLead(lead, named);
+    assert.equal(res.status, 403);
+    assert.equal(await currentLead(), lead);
+  } finally {
+    await c.query(`UPDATE org_members SET is_active = true WHERE org_id = $1 AND user_id = $2`, [org, lead]);
+  }
+});
+
 test('MCP project_update follows the same rule', async () => {
-  for (const target of [member, null]) {
+  for (const target of [member, null, randomUUID()]) {
     const res = await humanProjectUpdate({ project_id: project, lead_id: target }, mcp(member)) as any;
     assert.equal(res.isError, true, `member sets lead to ${target ?? 'none'}`);
-    assert.match(res.content[0].text, /owner, an admin or the project lead/);
+    const body = JSON.parse(res.content[0].text);
+    assert.equal(body.code, 'FORBIDDEN', 'refused before the new lead is looked up, with its code');
+    assert.match(body.error, /owner, an admin or the project lead/);
     assert.equal(await currentLead(), lead);
   }
+  const same = await humanProjectUpdate({ project_id: project, lead_id: lead, name: `plc mcp ${run}` }, mcp(member)) as any;
+  assert.notEqual(same.isError, true, 'naming the current lead again is no change');
   for (const actor of [owner, admin, lead]) {
     const res = await humanProjectUpdate({ project_id: project, lead_id: named }, mcp(actor)) as any;
     assert.notEqual(res.isError, true, who(actor));
@@ -167,5 +193,7 @@ test('a workflow assign_to never assigns a task to someone who may not already s
     await c.query(`UPDATE tasks SET assignee_id = NULL WHERE id = $1`, [restricted]);
     assert.equal(await runRule(member, open), member, `rule by ${who(author)}: an unrestricted task is assigned as before`);
     await c.query(`UPDATE tasks SET assignee_id = NULL WHERE id = $1`, [open]);
+    assert.equal(await runRule(guest, outsideTask), guest, `rule by ${who(author)}: an unrestricted task is still assigned to a guest outside its project`);
+    await c.query(`UPDATE tasks SET assignee_id = NULL WHERE id = $1`, [outsideTask]);
   }
 });

@@ -5,12 +5,22 @@
 // Setting a lead when creating a project is not covered: a new project has
 // no tasks yet. The role is read from org_members for the project's
 // workspace, never from a session or token claim.
-import { and, eq } from 'drizzle-orm';
-import { orgMembers } from '@deft/db/schema';
+import { and, eq, isNull, type SQL } from 'drizzle-orm';
+import { orgMembers, projects } from '@deft/db/schema';
 import { db } from './db.js';
 import { isGuestRole } from './people-visibility-sql.js';
 
 export type ProjectLeadChangeRefusal = { error: string; code: 'FORBIDDEN' };
+
+/**
+ * The condition that keeps a lead change atomic with the lead it was
+ * authorized against: the update applies only while the project's lead is
+ * still `expectedLeadId`, so a change racing another lead change is not
+ * applied (the caller answers 409).
+ */
+export function leadStillIs(expectedLeadId: string | null): SQL {
+  return expectedLeadId === null ? isNull(projects.lead_id) : eq(projects.lead_id, expectedLeadId);
+}
 
 /**
  * Null when `userId` may change the lead of a project of `orgId` whose
@@ -27,6 +37,7 @@ export async function projectLeadChangeRefusal(
   const role = membership?.role ?? null;
   if (role !== null && isGuestRole(role)) return { error: 'A guest cannot change a project lead', code: 'FORBIDDEN' };
   if (role === 'owner' || role === 'admin') return null;
-  if (currentLeadId !== null && currentLeadId === userId) return null;
+  // The current lead may hand over only while an active member.
+  if (role !== null && currentLeadId !== null && currentLeadId === userId) return null;
   return { error: 'Only an owner, an admin or the project lead can change the project lead', code: 'FORBIDDEN' };
 }
