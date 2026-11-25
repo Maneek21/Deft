@@ -27,6 +27,7 @@ const orgA = newId();
 const orgB = newId();
 const alice = newId();
 const bob = newId();
+const carol = newId();
 const spaceA = newId();
 const spaceB = newId();
 const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
@@ -70,10 +71,10 @@ before(async () => {
   await client.connect();
   await client.query(`INSERT INTO orgs (id, name, slug) VALUES ($1, 'Docs A', $2), ($3, 'Docs B', $4)`,
     [orgA, `docs-a-${tag}`, orgB, `docs-b-${tag}`]);
-  await client.query(`INSERT INTO users (id, email, name) VALUES ($1, $2, 'Alice'), ($3, $4, 'Bob')`,
-    [alice, `docs-alice-${tag}@test.local`, bob, `docs-bob-${tag}@test.local`]);
-  await client.query('INSERT INTO org_members (id, org_id, user_id) VALUES ($1, $2, $3), ($4, $5, $6)',
-    [newId(), orgA, alice, newId(), orgB, bob]);
+  await client.query(`INSERT INTO users (id, email, name) VALUES ($1, $2, 'Alice'), ($3, $4, 'Bob'), ($5, $6, 'Carol')`,
+    [alice, `docs-alice-${tag}@test.local`, bob, `docs-bob-${tag}@test.local`, carol, `docs-carol-${tag}@test.local`]);
+  await client.query('INSERT INTO org_members (id, org_id, user_id) VALUES ($1, $2, $3), ($4, $5, $6), ($7, $8, $9)',
+    [newId(), orgA, alice, newId(), orgB, bob, newId(), orgA, carol]);
   await client.query(`INSERT INTO spaces (id, org_id, name) VALUES ($1, $2, 'general'), ($3, $4, 'general')`,
     [spaceA, orgA, spaceB, orgB]);
 });
@@ -84,7 +85,7 @@ after(async () => {
     'doc_favorites', 'note_document_map', 'documents', 'doc_folders', 'drives', 'spaces', 'org_members']) {
     await client.query(`DELETE FROM ${table} WHERE org_id = ANY($1)`, [orgIds]);
   }
-  await client.query('DELETE FROM users WHERE id = ANY($1)', [[alice, bob]]);
+  await client.query('DELETE FROM users WHERE id = ANY($1)', [[alice, bob, carol]]);
   await client.query('DELETE FROM orgs WHERE id = ANY($1)', [orgIds]);
   await client.end();
 });
@@ -206,6 +207,34 @@ test("a drive member naming another org's user is refused by the principal trigg
   await rejectsWith('23503', share, [newId(), orgA, doc, 'space', spaceB, 'view']);
   await client.query(share, [newId(), orgA, doc, 'user', alice, 'edit']);
   await client.query(share, [newId(), orgA, doc, 'space', spaceA, 'comment']);
+});
+
+test("a personal drive owned by another org's user is refused by the member trigger", async () => {
+  const personal = (owner: string) => ({ kind: 'personal', default_role: null, owner_user_id: owner });
+  await rejectsWith('23503', driveInsert, driveValues(newId(), orgA, personal(bob)));
+  const carols = await drive(orgA, personal(carol));
+  await rejectsWith('23503', 'UPDATE drives SET owner_user_id = $1 WHERE id = $2', [bob, carols]);
+  await rejectsWith('23503', 'UPDATE drives SET org_id = $1 WHERE id = $2', [orgB, carols]);
+  // Freezing a departed owner's drive doesn't depend on their membership row;
+  // naming the owner again does.
+  await client.query('BEGIN');
+  try {
+    await client.query('DELETE FROM org_members WHERE org_id = $1 AND user_id = $2', [orgA, carol]);
+    await client.query('UPDATE drives SET frozen_at = now(), name = $1 WHERE id = $2', ['Frozen', carols]);
+    await rejectsWith('23503', 'UPDATE drives SET owner_user_id = owner_user_id WHERE id = $1', [carols]);
+  } finally {
+    await client.query('ROLLBACK');
+  }
+});
+
+test("a favorite for another org's user is refused by the member trigger", async () => {
+  const favorite = 'INSERT INTO doc_favorites (id, org_id, user_id, target_type, target_id) VALUES ($1, $2, $3, $4, $5)';
+  const d = await drive(orgA);
+  await rejectsWith('23503', favorite, [newId(), orgA, bob, 'drive', d]);
+  const id = newId();
+  await client.query(favorite, [id, orgA, alice, 'drive', d]);
+  await rejectsWith('23503', 'UPDATE doc_favorites SET user_id = $1 WHERE id = $2', [bob, id]);
+  await rejectsWith('23503', 'UPDATE doc_favorites SET org_id = $1 WHERE id = $2', [orgB, id]);
 });
 
 test("a document pointing at another org's drive is refused", async () => {

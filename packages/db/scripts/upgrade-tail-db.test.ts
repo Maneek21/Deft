@@ -3,30 +3,33 @@ import { after, test } from 'node:test';
 import pg from 'pg';
 import { main as runUpgrade, tailMigrations, CONVERGE_HEAD_VERSION } from './upgrade.ts';
 import { assertReviewedCurrent } from './lineage-convergence.mjs';
+import { ScratchDatabases, scratchDatabaseName } from './upgrade-tail-scratch.ts';
 
 /** DATABASE_URL names the fixture: a database at the reviewed `.131` head with
  * no tail migration applied (for example restored from a supported release
- * backup). The tests never write to it. Each test upgrades a scratch copy,
- * `<fixture>_tail`, made from it with CREATE DATABASE … TEMPLATE …: the tail
- * adds enum labels (`.150`), which PostgreSQL cannot remove, so an upgraded
- * database can't be put back to the head and every test starts from a new
- * copy instead. The fixture's role needs CREATEDB and must own the fixture. */
+ * backup). The tests never write to it. Each test upgrades its own scratch
+ * copy, made from it with CREATE DATABASE … TEMPLATE … under a new short name
+ * (`<prefix>tail_<random>`): the tail adds enum labels (`.150`), which
+ * PostgreSQL cannot remove, so an upgraded database can't be put back to the
+ * head. A taken name fails creation; only databases this run created are
+ * dropped (upgrade-tail-scratch.test.ts). The fixture's role needs CREATEDB
+ * and must own the fixture. */
 const target = process.env.DATABASE_URL;
+const SAFE_NAME = /^\/(fix_a_|deft_test_424fix_)/u;
 const safe = (() => {
   if (!target) return false;
   const url = new URL(target);
   return ['127.0.0.1', 'localhost'].includes(url.hostname)
-    && url.port === '55440' && /^\/(fix_a_|deft_test_424fix_)/u.test(url.pathname);
+    && url.port === '55440' && SAFE_NAME.test(url.pathname);
 })();
 
 const databaseName = (url: string) => decodeURIComponent(new URL(url).pathname.slice(1));
-const quoteIdent = (name: string) => `"${name.replaceAll('"', '""')}"`;
 const withDatabase = (url: string, name: string) => {
   const next = new URL(url);
   next.pathname = `/${encodeURIComponent(name)}`;
   return next.toString();
 };
-const scratchUrl = safe ? withDatabase(target!, `${databaseName(target!)}_tail`) : undefined;
+const scratchPrefix = safe ? SAFE_NAME.exec(new URL(target!).pathname)![1]! : '';
 
 async function isReviewedHead(client: pg.Client) {
   try {
@@ -67,31 +70,35 @@ async function maintenance<T>(work: (client: pg.Client) => Promise<T>): Promise<
   }
 }
 
-/** Recreates the scratch database as a copy of the fixture and points the
- * upgrader (which reads DATABASE_URL) at it. The fixture must have no other
- * session open while it is copied. */
-async function freshScratch(): Promise<pg.Client> {
+const scratch = new ScratchDatabases((sql) => maintenance((client) => client.query(sql)));
+
+/** Creates a new scratch copy of the fixture and points the upgrader (which
+ * reads DATABASE_URL) at it. Nothing is created if the fixture check fails.
+ * The fixture must have no other session open while it is copied. */
+async function freshScratch(): Promise<{ client: pg.Client; name: string }> {
   await assertFixtureAtHead();
-  const scratch = quoteIdent(databaseName(scratchUrl!));
-  await maintenance(async (client) => {
-    await client.query(`DROP DATABASE IF EXISTS ${scratch} WITH (FORCE)`);
-    await client.query(`CREATE DATABASE ${scratch} TEMPLATE ${quoteIdent(databaseName(target!))}`);
-  });
-  process.env.DATABASE_URL = scratchUrl;
-  const client = new pg.Client({ connectionString: scratchUrl });
+  const name = await scratch.create(scratchDatabaseName(scratchPrefix), databaseName(target!));
+  const url = withDatabase(target!, name);
+  process.env.DATABASE_URL = url;
+  const client = new pg.Client({ connectionString: url });
   await client.connect();
-  return client;
+  return { client, name };
+}
+
+async function finish(client: pg.Client, name: string) {
+  await client.end();
+  await scratch.drop(name);
 }
 
 after(async () => {
   if (!safe) return;
   process.env.DATABASE_URL = target;
-  await maintenance((client) => client.query(`DROP DATABASE IF EXISTS ${quoteIdent(databaseName(scratchUrl!))} WITH (FORCE)`));
+  await scratch.dropAll();
 });
 
 test('a .131 head applies the tail once and the second run is a no-op',
   { skip: !safe, timeout: 120000 }, async () => {
-    const client = await freshScratch();
+    const { client, name } = await freshScratch();
     try {
       const head = tailMigrations().map((migration) => migration.version);
       await runUpgrade([]);
@@ -117,7 +124,7 @@ test('a .131 head applies the tail once and the second run is a no-op',
         .map((row: { version: string }) => row.version);
       assert.deepEqual(after, before, 'second upgrade run changes nothing');
     } finally {
-      await client.end();
+      await finish(client, name);
     }
   });
 
@@ -140,7 +147,7 @@ async function tailState(client: pg.Client) {
 
 test('PR424-F11: --status and --dry-run on a .131 head change nothing',
   { skip: !safe, timeout: 120000 }, async () => {
-    const client = await freshScratch();
+    const { client, name } = await freshScratch();
     try {
       const before = await tailState(client);
       const tailVersions = new Set(tailMigrations().map((migration) => migration.version));
@@ -153,13 +160,13 @@ test('PR424-F11: --status and --dry-run on a .131 head change nothing',
       await runUpgrade(['--dry-run']);
       assert.deepEqual(await tailState(client), before, '--dry-run is read-only');
     } finally {
-      await client.end();
+      await finish(client, name);
     }
   });
 
 test('PR424-F13: concurrent upgrades of a .131 head both succeed and apply the tail once',
   { skip: !safe, timeout: 180000 }, async () => {
-    const client = await freshScratch();
+    const { client, name } = await freshScratch();
     try {
       const results = await Promise.allSettled([runUpgrade([]), runUpgrade([])]);
       assert.deepEqual(results.map((result) => result.status === 'rejected' ? String(result.reason) : 'ok'),
@@ -174,6 +181,6 @@ test('PR424-F13: concurrent upgrades of a .131 head both succeed and apply the t
       assert.equal(state.shape.documents, true);
       assert.equal(state.shape.document_labels, 1, 'the .150 label is added once');
     } finally {
-      await client.end();
+      await finish(client, name);
     }
   });

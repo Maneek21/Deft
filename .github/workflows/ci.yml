@@ -716,13 +716,19 @@ jobs:
           diff --unified --label fresh-install --label upgraded "$RUNNER_TEMP/tables-fresh.txt" "$RUNNER_TEMP/tables-upgraded.txt"
           # Each list is compared as a set: enum labels by name (not sort position),
           # functions by signature and settings (extension members excluded),
-          # triggers by definition, columns by type and nullability.
+          # triggers by definition, columns by type and nullability. The objects
+          # the drives upgrade (0.3.0-preview.150) creates are compared exactly:
+          # its functions' full definitions and its tables' column defaults.
+          drives_functions="'doc_member_user_check', 'doc_principal_check', 'documents_search_update'"
+          drives_tables="'doc_favorites', 'doc_folders', 'document_attachments', 'document_shares', 'document_versions', 'documents', 'drive_members', 'drives', 'note_document_map'"
           enums_sql="SELECT t.typname || ': ' || e.enumlabel FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid JOIN pg_namespace n ON n.oid = t.typnamespace WHERE n.nspname = 'public' ORDER BY 1"
           functions_sql="SELECT p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ') ' || coalesce(array_to_string(p.proconfig, ','), '') FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e') ORDER BY 1"
           triggers_sql="SELECT pg_get_triggerdef(t.oid) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND NOT t.tgisinternal ORDER BY 1"
           columns_sql="SELECT c.relname || '.' || a.attname || ': ' || format_type(a.atttypid, a.atttypmod) || CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE '' END FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND a.attnum > 0 AND NOT a.attisdropped ORDER BY 1"
+          drives_function_defs_sql="SELECT pg_get_functiondef(p.oid) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname IN ($drives_functions) ORDER BY p.proname, pg_get_function_identity_arguments(p.oid)"
+          drives_column_defaults_sql="SELECT table_name || '.' || column_name || ' DEFAULT ' || coalesce(column_default, '(none)') FROM information_schema.columns WHERE table_schema = 'public' AND table_name IN ($drives_tables) ORDER BY 1"
           catalog_differs=0
-          for part in enums functions triggers columns; do
+          for part in enums functions triggers columns drives_function_defs drives_column_defaults; do
             part_sql="${part}_sql"
             psql "$fresh_url" -v ON_ERROR_STOP=1 -Atc "${!part_sql}" > "$RUNNER_TEMP/$part-fresh.txt"
             psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "${!part_sql}" > "$RUNNER_TEMP/$part-upgraded.txt"
@@ -730,6 +736,8 @@ jobs:
           done
           grep -qx 'notification_type: document_shared' "$RUNNER_TEMP/enums-fresh.txt" || { echo 'fresh install is missing notification_type document_shared' >&2; exit 1; }
           grep -q '^doc_principal_check() ' "$RUNNER_TEMP/functions-fresh.txt" || { echo 'fresh install is missing doc_principal_check' >&2; exit 1; }
+          test "$(grep -c '^CREATE OR REPLACE FUNCTION' "$RUNNER_TEMP/drives_function_defs-fresh.txt")" = 3 || { echo 'fresh install is missing a drives function' >&2; exit 1; }
+          grep -qx 'document_attachments.in_current DEFAULT true' "$RUNNER_TEMP/drives_column_defaults-fresh.txt" || { echo 'fresh install has the wrong document_attachments.in_current default' >&2; exit 1; }
           test "$catalog_differs" = 0
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'DROP DATABASE deft_fresh_compare_test'
       - name: Rehearse both database restore routes with stored consent data

@@ -1,13 +1,14 @@
--- Drives and documents (they replace notes). Add-only: nine tables, two
+-- Drives and documents (they replace notes). Add-only: nine tables, three
 -- trigger functions with their triggers, and three enum labels. Moving the
 -- notes is a separate script (pnpm drives:move), not part of this file.
 -- No IF NOT EXISTS: a same-named leftover fails the upgrade instead of being
 -- recorded as applied.
 --
 -- Tenancy: every child row carries its parent's org through an org-qualified
--- foreign key, so a row can never point into another workspace, and a
--- trigger checks that a member or share principal (a person or a chat)
--- belongs to the row's workspace.
+-- foreign key, so a row can never point into another workspace. Triggers
+-- check that every person or chat a row names belongs to the row's
+-- workspace: member and share principals, a personal drive's owner and a
+-- favorite's user.
 
 -- A drive holds folders and documents. 'open' drives give every member
 -- default_role; 'private' drives only their members; 'personal' is one
@@ -264,6 +265,42 @@ CREATE TRIGGER drive_members_principal_check
 CREATE TRIGGER document_shares_principal_check
   BEFORE INSERT OR UPDATE ON document_shares
   FOR EACH ROW EXECUTE FUNCTION doc_principal_check();
+
+-- A personal drive's owner and a favorite's user must have an org_members row
+-- in the row's workspace. A trigger rather than a foreign key to org_members,
+-- so membership rows stay free to change. It runs only when the org or that
+-- user changes: freezing a departed person's drive doesn't depend on their
+-- membership row.
+CREATE FUNCTION doc_member_user_check() RETURNS trigger
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog, public, pg_temp
+AS $$
+DECLARE
+  member_id text;
+BEGIN
+  IF TG_TABLE_NAME = 'drives' THEN
+    member_id := NEW.owner_user_id;
+  ELSIF TG_TABLE_NAME = 'doc_favorites' THEN
+    member_id := NEW.user_id;
+  ELSE
+    RAISE EXCEPTION 'doc_member_user_check: unexpected table %', TG_TABLE_NAME;
+  END IF;
+  IF member_id IS NULL
+    OR EXISTS (SELECT 1 FROM public.org_members m WHERE m.org_id = NEW.org_id AND m.user_id = member_id) THEN
+    RETURN NEW;
+  END IF;
+  RAISE EXCEPTION '%: user % is not in workspace %', TG_TABLE_NAME, member_id, NEW.org_id
+    USING ERRCODE = 'foreign_key_violation';
+END;
+$$;
+
+CREATE TRIGGER drives_owner_member_check
+  BEFORE INSERT OR UPDATE OF org_id, owner_user_id ON drives
+  FOR EACH ROW EXECUTE FUNCTION doc_member_user_check();
+
+CREATE TRIGGER doc_favorites_user_member_check
+  BEFORE INSERT OR UPDATE OF org_id, user_id ON doc_favorites
+  FOR EACH ROW EXECUTE FUNCTION doc_member_user_check();
 
 -- New labels exist only through upgrades: schema.ts's enums are part of the
 -- fresh-install fingerprint and stay as they are. The API widens its types

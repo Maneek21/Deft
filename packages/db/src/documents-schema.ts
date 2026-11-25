@@ -6,8 +6,9 @@ import { sql } from 'drizzle-orm';
  * as `@deft/db/documents` rather than from schema.ts. The upgrade file also
  * holds what this mirror leaves out: the org-qualified foreign keys, the
  * CHECKs, the principal check trigger (a member or share principal must
- * belong to the row's workspace) and the trigger that fills
- * `documents.search_vector`. */
+ * belong to the row's workspace), the member check trigger (a personal
+ * drive's owner and a favorite's user need an `org_members` row in the row's
+ * workspace) and the trigger that fills `documents.search_vector`. */
 
 const bytea = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => 'bytea' });
 const tsvector = customType<{ data: string }>({ dataType: () => 'tsvector' });
@@ -31,7 +32,10 @@ const updatedAt = () => timestamp('updated_at').defaultNow().notNull().$onUpdate
 
 /** An open drive gives every member `default_role`; a private drive only its
  * members; a personal drive is one person's My drive (`owner_user_id`).
- * `system_key` marks the drives a workspace creates for itself. */
+ * `system_key` marks the drives a workspace creates for itself. Setting
+ * `org_id` or `owner_user_id` to an owner with no `org_members` row in that
+ * workspace is refused by a trigger (`doc_member_user_check`); other updates,
+ * such as freezing, don't re-check. */
 export const drives = pgTable('drives', {
   id: id(),
   org_id: text('org_id').notNull(),
@@ -186,7 +190,8 @@ export const documentAttachments = pgTable('document_attachments', {
   index('document_attachments_file_idx').on(t.file_id),
 ]);
 
-/** A person's starred documents and drives. */
+/** A person's starred documents and drives. `user_id` must have an
+ * `org_members` row in the row's workspace (trigger `doc_member_user_check`). */
 export const docFavorites = pgTable('doc_favorites', {
   id: id(),
   org_id: text('org_id').notNull(),
