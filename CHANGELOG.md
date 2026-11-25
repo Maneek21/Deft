@@ -44,8 +44,13 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
   restricted task), and the @mention, workflow, unblocked, duplicate, blocked and stalled
   notices. A restricted task's stalled or overdue nudge goes to the person, not to an agent.
   A copy of a restricted task, and the next occurrence of a recurring one, stay restricted
-  to the same people (they used to be open to everyone). Notices, saved reports and audit
-  entries written before this release are not changed. Owners are not exempt: as before, an owner
+  to the same people (they used to be open to everyone).
+
+  Known limits, not fixed here: 1:1 preps, snapshots and People Graph counts saved before
+  this release keep what they showed when they were made (as do notices written before
+  it). Defty answering in a shared room can quote what the person who asked may see, the
+  same family as the room-publication limit (D2). `/api/audit` shows owners and admins
+  task audit snapshots, a restricted task's title included. Owners are not exempt: as before, an owner
   sees a restricted task only when it names them or they lead its project.
 - **Task search** (`GET /api/tasks/search`, used by the task pickers) found nothing for a
   query that ends in a digit, such as `rc8`, or for a key whose project prefix holds a
