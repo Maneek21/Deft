@@ -23,7 +23,9 @@ export type AttachmentSweepResult = {
 };
 
 /**
- * Deletes only expired, still-unclaimed uploads. Database rows are removed
+ * Deletes only expired, still-unclaimed uploads: on no message or task, and
+ * shown by no note (note_files; a note's save stages a file again when it
+ * loses its last link, note-file-claims.ts). Database rows are removed
  * before storage bytes so a storage failure can leave an operator-cleanable
  * orphan, but can never leave a live attachment pointing at missing bytes.
  */
@@ -48,6 +50,11 @@ export async function sweepExpiredStagedAttachments(params: {
         SELECT 1 FROM task_attachments
         WHERE task_attachments.org_id = file.org_id
           AND task_attachments.file_id = file.id
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM note_files
+        WHERE note_files.org_id = file.org_id
+          AND note_files.file_id = file.id
       )
     RETURNING file.storage_key
   `);

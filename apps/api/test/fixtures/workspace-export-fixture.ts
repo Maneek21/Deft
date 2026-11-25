@@ -339,6 +339,11 @@ async function seedFiles(s: Seeder, ws: WorkspaceIds & ContentIds, isB: boolean,
   await file('onDeletedTask', { task: [ws.tasks.deleted!] });
   await file('stagedByMember', { uploadedBy: ws.member, extra: { staged_expires_at: new Date(Date.now() + 3_600_000) } });
   await file('noRecordedHash', { message: [ws.messages.general!], recordedHash: null });
+  // Images notes show (note_files): on no task or message, read by everyone who can read a live note that shows them.
+  for (const [key, note] of [['inSharedNote', 'sharedWithMember'], ['inOrgNote', 'orgWide'], ['inDeletedNote', 'deleted']] as const) {
+    await file(key, { uploadedBy: ws.other });
+    await s.insert('note_files', { org_id: ws.orgId, note_id: ws.notes[note]!, file_id: files[key]! });
+  }
   return files;
 }
 

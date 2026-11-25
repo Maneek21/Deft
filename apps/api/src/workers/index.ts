@@ -758,10 +758,36 @@ async function runStaleMaintenance(): Promise<void> {
   ]);
 }
 
+// Notes saved before note_files existed: their images are linked (and the
+// ones still staged kept) by a backfill (lib/note-file-claims.ts). Staged
+// uploads are swept only once a backfill has succeeded in this process, so the
+// sweep never deletes an image an older note still shows; a failed backfill is
+// tried again on the next retention pass.
+let noteImagesLinked = false;
+let noteImageBackfill: Promise<void> | null = null;
+
+function linkNoteImages(): Promise<void> {
+  noteImageBackfill ??= Promise.all([import('../lib/note-file-claims.js'), import('../lib/db.js')])
+    .then(([mod, { db: database }]) => mod.backfillNoteFileLinks(database))
+    .then((count) => {
+      noteImagesLinked = true;
+      if (count > 0) console.log(`[workers] Linked ${logNumber(count)} note image(s) to their notes`);
+    })
+    .catch((err) => console.warn('[workers] note image link backfill failed:'))
+    .finally(() => { noteImageBackfill = null; });
+  return noteImageBackfill;
+}
+
 async function runRetentionMaintenance(): Promise<void> {
+  if (!noteImagesLinked) {
+    // In the background: start does not wait for the backfill.
+    void trackBackground(linkNoteImages()
+      .then(async () => { if (noteImagesLinked) reportAttachmentSweep(await sweepExpiredStagedAttachments()); })
+      .catch((err) => console.warn('[workers] retention sweep failed:')));
+  }
   const [pruned, attachments] = await Promise.all([
     pruneFinishedJobs(JOB_RETENTION_MS),
-    sweepExpiredStagedAttachments(),
+    noteImagesLinked ? sweepExpiredStagedAttachments() : Promise.resolve(null),
     APP_RUNS_ENABLED ? import('../lib/app-run-maintenance.js').then(mod => mod.runAppRunMaintenance('retention')) : Promise.resolve(),
     isAppAttachmentBrokerEnabled()?import('../lib/app-attachment-cleanup.js').then(async mod=>{
       const result=await mod.appAttachmentCleanup.run();
@@ -769,6 +795,10 @@ async function runRetentionMaintenance(): Promise<void> {
     }):Promise.resolve(),
   ]);
   if (pruned > 0) console.log(`[workers] Pruned ${logNumber(pruned)} expired terminal job(s)`);
+  if (attachments) reportAttachmentSweep(attachments);
+}
+
+function reportAttachmentSweep(attachments: Awaited<ReturnType<typeof sweepExpiredStagedAttachments>>): void {
   if (attachments.deletedRows > 0) {
     console.log(`[workers] Pruned ${logNumber(attachments.deletedRows)} expired staged attachment(s)`);
   }
@@ -824,6 +854,7 @@ async function startWorkersInternal(opts?: {
   if (!opts?.skipStartupWork) {
     const recovered = await cleanupStaleJobs();
     if (recovered > 0) console.log(`[workers] Recovered ${logNumber(recovered)} stale job(s) on startup`);
+    // Also starts the note image backfill; staged uploads are swept after it.
     await runRetentionMaintenance();
 
     const hydrationResults = await Promise.allSettled([
