@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { files, scheduledMessages } from '@deft/db/schema';
 import type { CoreDatabaseTransaction } from './database-transaction.js';
 import { extractLegacyAttachmentIds } from './message-attachments.js';
@@ -10,9 +10,10 @@ export async function releaseScheduledMessageAttachments(
   params: { orgId: string; userId: string; attachmentIds: string[] },
 ): Promise<void> {
   if (params.attachmentIds.length === 0) return;
+  // A file with no expiry is kept (a note claimed it: note-file-claims.ts); cancelling does not stage it again.
   const unclaimed = and(
     inArray(files.id, params.attachmentIds), eq(files.org_id, params.orgId), eq(files.uploaded_by, params.userId),
-    isNull(files.message_id), isNull(files.task_id),
+    isNull(files.message_id), isNull(files.task_id), isNotNull(files.staged_expires_at),
   );
   // Scheduling also updates these rows. Acquire their locks before taking the
   // next statement's snapshot, so a concurrently committed schedule is counted.

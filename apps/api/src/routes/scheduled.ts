@@ -84,7 +84,9 @@ scheduledRoutes.post('/', async (c) => {
 
     if (attachmentIds.length > 0) {
       const retained = await tx.update(files)
-        .set({ staged_expires_at: sql`greatest(${files.staged_expires_at}, ${stagedAttachmentExpiry(scheduledFor)})` })
+        // A file with no expiry is kept (a note claimed it: note-file-claims.ts); it stays kept.
+        .set({ staged_expires_at: sql`CASE WHEN ${files.staged_expires_at} IS NULL THEN NULL
+          ELSE greatest(${files.staged_expires_at}, ${stagedAttachmentExpiry(scheduledFor)}) END` })
         .where(and(
           inArray(files.id, attachmentIds),
           eq(files.org_id, user.org_id),

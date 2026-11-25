@@ -44,6 +44,7 @@ import { createTaskBundle, type TaskBundleSubtaskInput } from '../task-bundle.js
 import { bulkUpdateTasks, BulkTaskUpdateError, bulkTaskUpdateSchema } from '../task-bulk-update.js';
 import { queryCompactTasks, type CompactTaskQuery } from '../task-compact-query.js';
 import { visibleNoteCondition } from '../note-visibility.js';
+import { claimNoteFiles } from '../note-file-claims.js';
 import { canReadSpace, readableSpaceSql } from '../space-membership.js';
 import { Context } from 'hono';
 import { currentActionReviewerSql } from '../agent-action-review-gate.js';
@@ -3358,14 +3359,18 @@ export async function humanNoteCreate(args: Record<string, unknown>, ctx: HumanT
     const spaceId = typeof args.visibility_space_id === 'string' ? args.visibility_space_id : null;
     const spaceError = await validateNoteSpace(ctx, visibility, spaceId);
     if (spaceError) return spaceError;
-    const [created] = await db.insert(notes).values({
+    const [created] = await db.transaction(async (tx) => {
+      const rows = await tx.insert(notes).values({
       org_id: ctx.org_id, user_id: ctx.user_id,
       title: typeof args.title === 'string' ? args.title.trim() : '',
       content: typeof args.content === 'string' ? args.content : '',
       icon: typeof args.icon === 'string' ? args.icon : null,
       is_pinned: args.is_pinned === true,
       visibility, visibility_space_id: visibility === 'space' ? spaceId : null,
-    }).returning();
+      }).returning();
+      await claimNoteFiles(tx, { id: ctx.user_id, org_id: ctx.org_id }, rows[0]!.content);
+      return rows;
+    });
     return textResult({ created: true, note: created, url: `/notes?note=${created!.id}` });
   });
 }
@@ -3392,7 +3397,11 @@ export async function humanNoteUpdate(args: Record<string, unknown>, ctx: HumanT
       updates.version = current.version + 1;
     }
     if (Object.keys(updates).length === 0) return textResult({ updated: false, note: current, url: `/notes?note=${current.id}` });
-    const [updated] = await db.update(notes).set(updates).where(and(eq(notes.id, current.id), eq(notes.version, current.version))).returning();
+    const updated = await db.transaction(async (tx) => {
+      const [saved] = await tx.update(notes).set(updates).where(and(eq(notes.id, current.id), eq(notes.version, current.version))).returning();
+      if (saved && args.content !== undefined) await claimNoteFiles(tx, { id: ctx.user_id, org_id: ctx.org_id }, saved.content);
+      return saved;
+    });
     return updated ? textResult({ updated: true, note: updated, url: `/notes?note=${updated.id}` }) : errorResult('Note changed in another session; read it again before retrying');
   });
 }
