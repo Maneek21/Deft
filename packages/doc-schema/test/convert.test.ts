@@ -139,6 +139,27 @@ test('ensureBlockIds keeps id tokens, derives a malformed or repeated id the sam
   assert.equal(new Set(first).size, 5);
 });
 
+test('a repair never takes a later block\'s valid stored id', () => {
+  // D is the id a lone `has space` is repaired to.
+  const derived = String(ensureBlockIds({ type: 'doc', content: [paragraph('has space')] }).content![0]!.attrs!.id);
+  assert.match(derived, UUID_SHAPE);
+  const input: JSONContent = { type: 'doc', content: [paragraph('has space', [text('first')]), paragraph(derived, [text('second')])] };
+  const ids = () => topLevelBlocks(input).map(block => block.id);
+  const [first, second] = ids();
+  assert.equal(second, derived, 'the second block keeps its stored id');
+  assert.notEqual(first, derived);
+  assert.match(first!, UUID_SHAPE);
+  assert.deepEqual(ids(), [first, second], 'two calls agree');
+  // The same holds for a repeated id whose derived id is already stored later.
+  const repeatDerived = ensureBlockIds({ type: 'doc', content: [paragraph('x'), paragraph('x')] }).content![1]!.attrs!.id;
+  const repeated = ensureBlockIds({
+    type: 'doc',
+    content: [paragraph('x'), paragraph('x'), paragraph(String(repeatDerived))],
+  }).content!.map(node => node.attrs!.id);
+  assert.equal(repeated[2], repeatDerived);
+  assert.equal(new Set(repeated).size, 3);
+});
+
 test('topLevelBlocks gives a malformed id the same derived id on two calls', () => {
   const input: JSONContent = { type: 'doc', content: [paragraph('has space', [text('Malformed')])] };
   const [once] = topLevelBlocks(input);

@@ -19,29 +19,50 @@ function derivedBlockId(seed: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
+const isValidId = (id: unknown): id is string => typeof id === 'string' && BLOCK_ID.test(id);
+
 /**
  * Gives every block-id node (at any depth) an id BLOCK_ID_COMMENT can carry,
  * changing as little as it can. The same input always gives the same ids,
- * except where a random id is the only choice:
- * - an existing id that matches BLOCK_ID is kept;
- * - an existing id that does not match (`has space`), or that repeats an
- *   earlier block's id, gets an id derived from the sha256 of the old id and
- *   how many times it has already been seen;
- * - only a block with no id, or an empty one, gets a random `crypto.randomUUID()`.
+ * except where a random id is the only choice. Two passes:
+ * 1. Every valid existing id (a string matching BLOCK_ID) is reserved for
+ *    the first block that holds it, wherever that block is.
+ * 2. That block keeps it. Every other block gets a replacement that is never
+ *    a reserved id or one already handed out:
+ *    - an id that does not match (`has space`), or that repeats an earlier
+ *      block's id, gets an id derived from the sha256 of the old id (plus how
+ *      many times it was already seen); a derived id that is taken is derived
+ *      again with a counter, so the result is still the same on every call;
+ *    - only a block with no id, or an empty one, gets a random `crypto.randomUUID()`.
  * Returns a new document; the input is not changed.
  */
 export function ensureBlockIds(json: JSONContent): JSONContent {
+  const reserved = new Set<string>();
+  const reserve = (node: JSONContent) => {
+    const id: unknown = node.attrs?.id;
+    if (hasBlockId(node) && isValidId(id)) reserved.add(id);
+    node.content?.forEach(reserve);
+  };
+  reserve(json);
+
   const assigned = new Set<string>();
+  const taken = (id: string) => reserved.has(id) || assigned.has(id);
   const occurrences = new Map<string, number>();
   const idFor = (current: unknown): string => {
-    if (current === null || current === undefined || current === '') return crypto.randomUUID();
+    if (current === null || current === undefined || current === '') {
+      let id = crypto.randomUUID();
+      while (taken(id)) id = crypto.randomUUID();
+      return id;
+    }
     const old = String(current);
-    const occurrence = occurrences.get(old) ?? 0;
-    occurrences.set(old, occurrence + 1);
-    if (occurrence === 0 && BLOCK_ID.test(old) && !assigned.has(old)) return old;
+    // A non-string id never matches a string one, even when it reads the same.
+    const key = typeof current === 'string' ? old : `\u0000${typeof current}\u0000${old}`;
+    const occurrence = occurrences.get(key) ?? 0;
+    occurrences.set(key, occurrence + 1);
+    if (occurrence === 0 && isValidId(current)) return current;
     const seed = occurrence === 0 ? old : `${old}\u0000${occurrence}`;
     let id = derivedBlockId(seed);
-    for (let attempt = 1; assigned.has(id); attempt += 1) id = derivedBlockId(`${seed}\u0000${attempt}`);
+    for (let attempt = 1; taken(id); attempt += 1) id = derivedBlockId(`${seed}\u0000${attempt}`);
     return id;
   };
   const visit = (node: JSONContent): JSONContent => {
