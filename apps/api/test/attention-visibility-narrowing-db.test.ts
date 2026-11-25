@@ -573,11 +573,17 @@ type Growth = { anon: number; peak: number };
  * backend keeps after the statement) and its peak resident size (`VmHWM`,
  * which also counts the shared catalog pages a new backend reads). Null when
  * the session cannot read /proc.
+ *
+ * With JIT off, as the API's connections run (lib/db.ts): on a database with
+ * rows and statistics the estimated cost of these statements passes
+ * jit_above_cost, and even a plain EXPLAIN then sets up JIT compilation,
+ * which adds ~50 MB that has nothing to do with planning.
  */
 async function planningGrowth(scope: AttentionSourceScope, statement?: { sql: string; params: unknown[] }): Promise<Growth | null> {
   const backend = new pg.Client({ connectionString: url, connectionTimeoutMillis: 3000 });
   await backend.connect();
   try {
+    await backend.query('SET jit = off');
     const read = async (): Promise<Growth | null> => {
       const { rows } = await backend.query(`SELECT substring(s from 'RssAnon:\\s*([0-9]+)')::int AS anon,
         substring(s from 'VmHWM:\\s*([0-9]+)')::int AS peak FROM pg_read_file('/proc/self/status') s`);
@@ -611,9 +617,10 @@ test('planning the rule for message items costs a backend a few MB, not the whol
 
 test('planning an approval item\'s review gate costs a backend about a third of what it did', async (t) => {
   if (unavailable) return t.skip(unavailable);
-  // Release 150 measured, on the CI image: approval items 81 MB private (107 MB peak), the whole rule 86 MB
-  // (114 MB), the Inbox's load of a page's approvals (the gate as a filter) 134 MB, the approve and reject
-  // routes' gate as a value (viewerReviewAuthority) 39 MB. Release 151: 31, 36, 23 and 22 MB.
+  // Release 150 measured, on the CI image with JIT off, empty or full tables alike: approval items 79 MB
+  // private (106 MB peak), the whole rule 84 MB (113 MB), the Inbox's load of a page's approvals (the gate
+  // as a filter) 38 MB, the approve and reject routes' gate as a value (viewerReviewAuthority) 38 MB.
+  // Release 151: 30, 35, 23 and 22 MB.
   const approval = await planningGrowth(['agent_action']);
   if (approval === null) return t.skip('this test database does not let a session read /proc/self/status');
   const whole = (await planningGrowth('all'))!;

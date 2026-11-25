@@ -29,9 +29,10 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
   open approval in someone's Inbox no longer makes each database connection that checks it
   about 80 MB larger. The approval review rule (the Inbox's and the approve and reject
   routes') is now composed so Postgres plans each of its checks once: a connection grows
-  31 MB planning an Inbox approval item (was 81), 25 MB loading a page's approvals (was
-  134), 23 MB answering whether the viewer may approve (was 39). Who sees and who reviews
-  an approval is unchanged; a test compares the rule with the previous one for every
+  30 MB planning an Inbox approval item (was 79), 35 MB planning the whole Inbox rule (was
+  84), 23 MB loading a page's approvals (was 38), 22 MB answering whether the viewer may
+  approve (was 38). Who sees and who reviews an approval is unchanged; a test compares
+  the rule with the previous one for every
   person, role and approval of a matrix (pending, approved, rejected and expired;
   requesters, assignees, owners, admins, guests, departed requesters; module writes,
   employee, capture and plan actions). Measured on Postgres 16 capped at 512 MB, 14 tabs
@@ -43,8 +44,8 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
   idle, never while in use, so memory a connection took stays at most that long, and one
   idle for `DEFT_DATABASE_POOL_IDLE_TIMEOUT_SECONDS` (default 10, as before; 1 to 3,600).
   Both are optional; a value out of range stops startup, naming the setting. No pool's size
-  changes. Still open: the whole Inbox rule costs a
-  connection 36 MB and a chat room's pending-approvals poll (every 5 seconds) 36 MB.
+  changes. Still open: a chat room's pending-approvals poll (every 5 seconds) costs a
+  connection 36 MB to plan, and the whole Inbox rule 35 MB.
 - App-boundary gate: `scripts/app-boundary-ceiling.json` caps the exception count
   at 1,277 (it may only be lowered), each exception's `milestone` now starts with
   its burn-down bucket, and `node scripts/check-app-boundary.mjs --summary` prints
