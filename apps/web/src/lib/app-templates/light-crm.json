@@ -1,0 +1,100 @@
+{
+  "schema_version": "1",
+  "id": "com.example.light-crm",
+  "slug": "light-crm",
+  "version": "1.0.0",
+  "name": "Light CRM",
+  "description": "Companies, the people you talk to there, and the deals you are working on.",
+  "icon": "users",
+  "collections": [
+    {
+      "key": "deals",
+      "name": "Deals",
+      "singular_name": "Deal",
+      "fields": [
+        { "key": "name", "label": "Name", "type": "text", "required": true },
+        { "key": "company_id", "label": "Company", "type": "relation", "target_collection": "companies" },
+        { "key": "person_id", "label": "Main contact", "type": "relation", "target_collection": "people" },
+        {
+          "key": "stage",
+          "label": "Stage",
+          "type": "single_select",
+          "required": true,
+          "default": "lead",
+          "options": [
+            { "value": "lead", "label": "Lead" },
+            { "value": "qualified", "label": "Qualified" },
+            { "value": "proposal", "label": "Proposal" },
+            { "value": "won", "label": "Won" },
+            { "value": "lost", "label": "Lost" }
+          ]
+        },
+        { "key": "amount", "label": "Amount", "type": "number" },
+        { "key": "closes_on", "label": "Expected close", "type": "date" },
+        { "key": "owner", "label": "Owner", "type": "member" },
+        { "key": "notes", "label": "Notes", "type": "long_text" }
+      ],
+      "search": { "title_field": "name", "fields": ["name", "notes"] },
+      "views": [
+        { "key": "pipeline", "name": "Pipeline", "type": "board", "group_by": "stage", "fields": ["name", "company_id", "amount", "closes_on", "owner"] },
+        { "key": "all", "name": "All deals", "type": "table", "fields": ["name", "company_id", "stage", "amount", "closes_on", "owner"] },
+        { "key": "closing", "name": "Closing", "type": "timeline", "start_field": "closes_on", "fields": ["name", "stage", "amount"] },
+        { "key": "form", "name": "Add a deal", "type": "form", "fields": ["name", "company_id", "person_id", "stage", "amount", "closes_on", "owner", "notes"] },
+        { "key": "detail", "name": "Deal", "type": "detail", "fields": ["name", "company_id", "person_id", "stage", "amount", "closes_on", "owner", "notes"] }
+      ]
+    },
+    {
+      "key": "companies",
+      "name": "Companies",
+      "singular_name": "Company",
+      "fields": [
+        { "key": "name", "label": "Name", "type": "text", "required": true },
+        {
+          "key": "status",
+          "label": "Status",
+          "type": "single_select",
+          "required": true,
+          "default": "prospect",
+          "options": [
+            { "value": "prospect", "label": "Prospect" },
+            { "value": "customer", "label": "Customer" },
+            { "value": "partner", "label": "Partner" },
+            { "value": "inactive", "label": "Inactive" }
+          ]
+        },
+        { "key": "website", "label": "Website", "type": "url" },
+        { "key": "industry", "label": "Industry", "type": "text" },
+        { "key": "owner", "label": "Owner", "type": "member" },
+        { "key": "notes", "label": "Notes", "type": "long_text" }
+      ],
+      "search": { "title_field": "name", "subtitle_fields": ["industry"], "fields": ["name", "industry", "notes"] },
+      "views": [
+        { "key": "board", "name": "By status", "type": "board", "group_by": "status", "fields": ["name", "industry", "owner"] },
+        { "key": "all", "name": "All companies", "type": "table", "fields": ["name", "status", "industry", "website", "owner"] },
+        { "key": "form", "name": "Add a company", "type": "form", "fields": ["name", "status", "website", "industry", "owner", "notes"] },
+        { "key": "detail", "name": "Company", "type": "detail", "fields": ["name", "status", "website", "industry", "owner", "notes"] }
+      ]
+    },
+    {
+      "key": "people",
+      "name": "People",
+      "singular_name": "Person",
+      "fields": [
+        { "key": "name", "label": "Name", "type": "text", "required": true },
+        { "key": "email", "label": "Email", "type": "email" },
+        { "key": "phone", "label": "Phone", "type": "text" },
+        { "key": "job_title", "label": "Job title", "type": "text" },
+        { "key": "company_id", "label": "Company", "type": "relation", "target_collection": "companies" },
+        { "key": "last_contacted_on", "label": "Last contacted", "type": "date" },
+        { "key": "notes", "label": "Notes", "type": "long_text" }
+      ],
+      "search": { "title_field": "name", "subtitle_fields": ["job_title", "email"], "fields": ["name", "email", "job_title", "notes"] },
+      "views": [
+        { "key": "all", "name": "All people", "type": "table", "fields": ["name", "company_id", "job_title", "email", "last_contacted_on"] },
+        { "key": "form", "name": "Add a person", "type": "form", "fields": ["name", "email", "phone", "job_title", "company_id", "last_contacted_on", "notes"] },
+        { "key": "detail", "name": "Person", "type": "detail", "fields": ["name", "email", "phone", "job_title", "company_id", "last_contacted_on", "notes"] }
+      ]
+    }
+  ],
+  "navigation": { "default_collection": "deals", "default_view": "pipeline" }
+}

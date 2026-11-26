@@ -1,0 +1,103 @@
+{
+  "schema_version": "1",
+  "id": "com.example.hiring-pipeline",
+  "slug": "hiring-pipeline",
+  "version": "1.0.0",
+  "name": "Hiring pipeline",
+  "description": "Track open roles and move candidates from application to offer on a board.",
+  "icon": "briefcase",
+  "collections": [
+    {
+      "key": "candidates",
+      "name": "Candidates",
+      "singular_name": "Candidate",
+      "fields": [
+        { "key": "name", "label": "Name", "type": "text", "required": true },
+        { "key": "email", "label": "Email", "type": "email" },
+        { "key": "role_id", "label": "Role", "type": "relation", "target_collection": "roles" },
+        {
+          "key": "stage",
+          "label": "Stage",
+          "type": "single_select",
+          "required": true,
+          "default": "applied",
+          "options": [
+            { "value": "applied", "label": "Applied" },
+            { "value": "phone_screen", "label": "Phone screen" },
+            { "value": "interview", "label": "Interview" },
+            { "value": "offer", "label": "Offer" },
+            { "value": "hired", "label": "Hired" },
+            { "value": "declined", "label": "Declined" }
+          ]
+        },
+        {
+          "key": "source",
+          "label": "Source",
+          "type": "single_select",
+          "options": [
+            { "value": "referral", "label": "Referral" },
+            { "value": "job_board", "label": "Job board" },
+            { "value": "website", "label": "Website" },
+            { "value": "agency", "label": "Agency" },
+            { "value": "other", "label": "Other" }
+          ]
+        },
+        { "key": "owner", "label": "Owner", "type": "member" },
+        { "key": "next_step_on", "label": "Next step on", "type": "date" },
+        { "key": "profile_url", "label": "Profile or CV link", "type": "url" },
+        { "key": "notes", "label": "Notes", "type": "long_text" }
+      ],
+      "search": { "title_field": "name", "subtitle_fields": ["email"], "fields": ["name", "email", "notes"] },
+      "views": [
+        { "key": "pipeline", "name": "Pipeline", "type": "board", "group_by": "stage", "fields": ["name", "role_id", "owner", "next_step_on"] },
+        { "key": "all", "name": "All candidates", "type": "table", "fields": ["name", "role_id", "stage", "source", "owner", "next_step_on"] },
+        { "key": "next_steps", "name": "Next steps", "type": "timeline", "start_field": "next_step_on", "fields": ["name", "stage", "owner"] },
+        { "key": "form", "name": "Add a candidate", "type": "form", "fields": ["name", "email", "role_id", "stage", "source", "owner", "next_step_on", "profile_url", "notes"] },
+        { "key": "detail", "name": "Candidate", "type": "detail", "fields": ["name", "email", "role_id", "stage", "source", "owner", "next_step_on", "profile_url", "notes"] }
+      ]
+    },
+    {
+      "key": "roles",
+      "name": "Roles",
+      "singular_name": "Role",
+      "fields": [
+        { "key": "title", "label": "Title", "type": "text", "required": true },
+        {
+          "key": "team",
+          "label": "Team",
+          "type": "single_select",
+          "options": [
+            { "value": "engineering", "label": "Engineering" },
+            { "value": "design", "label": "Design" },
+            { "value": "sales", "label": "Sales" },
+            { "value": "operations", "label": "Operations" },
+            { "value": "other", "label": "Other" }
+          ]
+        },
+        {
+          "key": "status",
+          "label": "Status",
+          "type": "single_select",
+          "required": true,
+          "default": "open",
+          "options": [
+            { "value": "open", "label": "Open" },
+            { "value": "paused", "label": "Paused" },
+            { "value": "filled", "label": "Filled" }
+          ]
+        },
+        { "key": "hiring_manager", "label": "Hiring manager", "type": "member" },
+        { "key": "openings", "label": "Openings", "type": "number", "default": 1 },
+        { "key": "description", "label": "Description", "type": "long_text" }
+      ],
+      "search": { "title_field": "title", "fields": ["title", "description"] },
+      "views": [
+        { "key": "board", "name": "By status", "type": "board", "group_by": "status", "fields": ["title", "team", "hiring_manager", "openings"] },
+        { "key": "all", "name": "All roles", "type": "table", "fields": ["title", "team", "status", "hiring_manager", "openings"] },
+        { "key": "form", "name": "Add a role", "type": "form", "fields": ["title", "team", "status", "hiring_manager", "openings", "description"] },
+        { "key": "detail", "name": "Role", "type": "detail", "fields": ["title", "team", "status", "hiring_manager", "openings", "description"] }
+      ]
+    }
+  ],
+  "navigation": { "default_collection": "candidates", "default_view": "pipeline" }
+}
