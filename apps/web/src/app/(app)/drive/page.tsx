@@ -5,6 +5,7 @@ import Link from 'next/link';
 import useSWR from 'swr';
 import { FolderOpen, Plus } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { driveLabel } from '@/lib/drive-tree';
 import { fetchJson, WITHOUT_MANAGER_KEY } from '@/lib/drive-actions';
 import { PageHeader } from '@/components/page-header';
 import { useDrives } from '@/components/drive/drive-sidebar';
@@ -56,7 +57,7 @@ export default function DrivePage() {
                   style={{ background: 'var(--surface)', color: 'var(--on-surface)' }}
                 >
                   <span className="text-[1rem]">{drive.icon ?? <FolderOpen size={16} strokeWidth={1.5} />}</span>
-                  <span className="flex-1 truncate text-[0.875rem] font-medium">{drive.is_mine ? 'My drive' : drive.name}</span>
+                  <span className="flex-1 truncate text-[0.875rem] font-medium">{driveLabel(drive)}</span>
                   <span className="text-[0.75rem]" style={{ color: 'var(--outline)' }}>
                     {drive.kind === 'open' ? 'Everyone' : drive.is_mine ? 'Personal' : 'Private'}
                     {drive.role ? ` · ${ROLE_LABEL[drive.role]}` : ''}

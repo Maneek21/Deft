@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildDriveTree, isDriveNavActive, sidebarDrives, type DocumentDto, type DriveListItem, type FolderDto } from './drive-tree';
+import { buildDriveTree, driveLabel, isDriveNavActive, sidebarDrives, type DocumentDto, type DriveListItem, type FolderDto } from './drive-tree';
 
 const folder = (id: string, name: string, position: number, parent: string | null = null): FolderDto => ({
   id, name, position, parent_folder_id: parent,
@@ -32,7 +32,14 @@ test('buildDriveTree nests folders and sub-pages and orders by position, then ti
 
 const item = (over: Partial<DriveListItem>): DriveListItem => ({
   id: 'd', name: 'D', icon: null, kind: 'private', system_key: null, role: 'full', default_role: null, frozen: false, pinned: false,
-  admin_listed: false, is_member: false, is_mine: false, ...over,
+  admin_listed: false, is_member: false, is_mine: false, owner_name: null, ...over,
+});
+
+test('driveLabel never shows the stored name "My drive" for a drive that is not the caller’s own', () => {
+  assert.equal(driveLabel(item({ kind: 'personal', name: 'My drive', is_mine: true })), 'My drive');
+  assert.equal(driveLabel(item({ kind: 'personal', name: 'My drive', owner_name: 'Sam' })), 'Sam\'s drive');
+  assert.equal(driveLabel(item({ kind: 'personal', name: 'My drive', owner_name: null })), 'A shared personal drive');
+  assert.equal(driveLabel(item({ kind: 'private', name: 'Design team' })), 'Design team');
 });
 
 test('sidebarDrives picks My drive by is_mine and lists member or pinned drives, not implicit access', () => {

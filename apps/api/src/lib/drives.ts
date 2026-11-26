@@ -354,7 +354,10 @@ export function driveListQuery(userId: string, orgId: string): SQL {
           WHERE own_grant.drive_id = ${drives.id}
             AND ((own_grant.principal_type = 'user' AND own_grant.principal_id = ${userId})
               OR (own_grant.principal_type = 'space' AND EXISTS (SELECT 1 FROM space_members own_seat
-                WHERE own_seat.space_id = own_grant.principal_id AND own_seat.user_id = ${userId})))) AS is_member,
+                JOIN spaces own_chat ON own_chat.id = own_seat.space_id
+                WHERE own_seat.space_id = own_grant.principal_id AND own_seat.user_id = ${userId}
+                  AND own_chat.org_id = ${drives.org_id})))) AS is_member,
+        ${drives.owner_user_id} AS owner_user_id,
         EXISTS (SELECT 1 FROM doc_favorites drive_pin
           WHERE drive_pin.org_id = ${drives.org_id} AND drive_pin.user_id = ${userId}
             AND drive_pin.target_type = 'drive' AND drive_pin.target_id = ${drives.id}) AS pinned

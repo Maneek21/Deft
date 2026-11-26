@@ -6,7 +6,7 @@ import useSWR from 'swr';
 import { ChevronRight, FileText, Folder, FolderOpen, Plus } from 'lucide-react';
 import { api } from '@/lib/api';
 import { DRIVES_KEY, driveTreeKey, ensureMyDrive, fetchJson } from '@/lib/drive-actions';
-import { buildDriveTree, sidebarDrives, type DocumentDto, type DriveListItem, type DriveTreeNode, type FolderDto } from '@/lib/drive-tree';
+import { buildDriveTree, driveLabel, sidebarDrives, type DocumentDto, type DriveListItem, type DriveTreeNode, type FolderDto } from '@/lib/drive-tree';
 import { NewDriveDialog } from './new-drive-dialog';
 
 export { DRIVES_KEY, driveTreeKey };
@@ -131,7 +131,7 @@ export function DriveSidebarContent({ role, pathname, onNav }: { role?: string; 
       {!data && !error && <p className="px-2 py-1 text-[0.75rem]" style={{ color: 'var(--outline)' }}>Loading drives...</p>}
       {mineFailed && !mine && <p role="alert" className="px-2 py-1 text-[0.75rem]" style={{ color: 'var(--outline)' }}>Could not open My drive.</p>}
       {mine && <DriveBranch drive={mine} label="My drive" pathname={pathname} onNav={onNav} />}
-      {others.map((drive) => <DriveBranch key={drive.id} drive={drive} label={drive.name} pathname={pathname} onNav={onNav} />)}
+      {others.map((drive) => <DriveBranch key={drive.id} drive={drive} label={driveLabel(drive)} pathname={pathname} onNav={onNav} />)}
       <Link href="/drive" onClick={onNav} className={rowClass} style={rowStyle(pathname === '/drive')}>
         <span className="truncate flex-1">Browse drives</span>
       </Link>

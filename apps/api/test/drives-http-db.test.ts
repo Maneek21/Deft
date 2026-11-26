@@ -999,6 +999,45 @@ test('F11: is_member is true for a direct grant at the default role and for a ch
   assert.equal(adminRows[chatDrive], false, 'an admin-listed private drive is not membership');
 });
 
+test('F11 round 2: owner_name names the owner of another person’s personal drive, and is null when the people rule hides the owner', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { admin, guest, member, member2 } = fx.people;
+  const shared = (await call(member2, 'POST', '/api/drives/mine', undefined, 200)).drive.id as string;
+  const adminOwn = (await call(admin, 'POST', '/api/drives/mine', undefined, 200)).drive.id as string;
+  await addMember(member2, shared, { user: member }, 'view');
+  await addMember(member2, shared, { user: guest }, 'view');
+  await addMember(admin, adminOwn, { user: guest }, 'view');
+  const { rows: [name] } = await fx.client.query('SELECT name FROM users WHERE id = $1', [member2]);
+  const byId = (rows: Array<Record<string, any>>) => Object.fromEntries(rows.map((row) => [row.id, row]));
+  const seen = byId(await listOf(member));
+  assert.equal(seen[shared].name, 'My drive', 'the stored name is unchanged');
+  assert.equal(seen[shared].owner_name, name.name, 'a member sees the owner’s name');
+  assert.equal(byId(await listOf(member2))[shared].owner_name, null, 'the caller’s own drive carries no owner name');
+  const asGuest = byId(await listOf(guest));
+  assert.equal(asGuest[shared].owner_name, name.name, 'a guest sees an owner they share a chat with');
+  assert.equal(asGuest[adminOwn].owner_name, null, 'a guest does not get the name of someone they share no chat with');
+  assert.equal(JSON.stringify(asGuest).includes(admin), false, 'and no id of them either');
+});
+
+test('F11 round 2: a chat moved to another workspace no longer makes is_member true', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { admin, member2 } = fx.people;
+  const drive = await createDrive(member2, { name: 'Chat moved', kind: 'private' });
+  await addMember(member2, drive, { space: fx.spaces.team }, 'edit');
+  await fx.client.query('INSERT INTO space_members (id, space_id, user_id) VALUES ($1, $2, $3) ON CONFLICT (space_id, user_id) DO NOTHING',
+    [randomUUID(), fx.spaces.team, admin]);
+  try {
+    const before = (await listOf(admin)).find((row) => row.id === drive)!;
+    assert.equal(before.is_member, true, 'a seat in the chat that holds a grant');
+    await fx.client.query('UPDATE spaces SET org_id = $1 WHERE id = $2', [fx.otherOrgId, fx.spaces.team]);
+    const after = (await listOf(admin)).find((row) => row.id === drive)!;
+    assert.equal(after.is_member, false, 'a chat of another workspace grants nothing');
+  } finally {
+    await fx.client.query('UPDATE spaces SET org_id = $1 WHERE id = $2', [fx.orgId, fx.spaces.team]);
+    await fx.client.query('DELETE FROM space_members WHERE space_id = $1 AND user_id = $2', [fx.spaces.team, admin]);
+  }
+});
+
 test('F11: is_mine marks only the caller’s own personal drive, and POST /api/drives/mine is idempotent, guests included', async (t) => {
   if (!fx) return t.skip(SKIP);
   const { guest, member, member2 } = fx.people;

@@ -8,7 +8,7 @@ import type { DriveListItem } from './drive-tree';
 const reply = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 const drive = (over: Partial<DriveListItem>): DriveListItem => ({
   id: 'd', name: 'D', icon: null, kind: 'private', system_key: null, role: 'full', default_role: null, frozen: false, pinned: false,
-  admin_listed: false, is_member: true, is_mine: false, ...over,
+  admin_listed: false, is_member: true, is_mine: false, owner_name: null, ...over,
 });
 
 function client(handler: (method: string, path: string, body?: unknown) => Promise<Response>): DriveClient & { calls: string[] } {

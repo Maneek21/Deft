@@ -438,14 +438,26 @@ driveRoutes.get('/', async (c) => {
     const rows = result.rows as Array<{
       id: string; name: string; icon: string | null; kind: string; system_key: string | null; default_role: string | null;
       frozen: boolean; role: DocRole | null; admin_listed: boolean; pinned: boolean; is_mine: boolean; is_member: boolean;
+      owner_user_id: string | null;
     }>;
-    // is_member: a direct grant, or a seat in a chat that holds one (never an admin's implicit access or an open drive's default).
+    // owner_name: for another person's personal drive, the owner's name, or null when the people rule
+    // (a guest sees only people they share a chat with) hides them. The owner's id is never returned.
+    const ownerIds = [...new Set(rows.filter((row) => row.kind === 'personal' && row.is_mine !== true && row.owner_user_id).map((row) => row.owner_user_id!))];
+    const ownerNames = new Map<string, string>();
+    if (ownerIds.length > 0) {
+      const visible = await visiblePersonIds(await peopleViewer(user.org_id, user.id));
+      for (const owner of await db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, ownerIds))) {
+        if (canSeePerson(visible, owner.id)) ownerNames.set(owner.id, owner.name);
+      }
+    }
+    // is_member: a direct grant, or a seat in a chat of this workspace that holds one (never an admin's implicit access or an open drive's default).
     // is_mine: the caller's own personal drive.
     return c.json({
       drives: rows.map((row) => ({
         id: row.id, name: row.name, icon: row.icon, kind: row.kind, system_key: row.system_key, role: row.role,
         default_role: row.default_role, frozen: row.frozen, pinned: row.pinned, admin_listed: row.role === null && row.admin_listed,
         is_member: row.is_member === true, is_mine: row.is_mine === true,
+        owner_name: row.kind === 'personal' && row.is_mine !== true && row.owner_user_id ? (ownerNames.get(row.owner_user_id) ?? null) : null,
       })),
     });
   } catch {

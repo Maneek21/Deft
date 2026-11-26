@@ -17,7 +17,16 @@ export type DriveListItem = {
   is_member: boolean;
   /** The caller's own personal drive. */
   is_mine: boolean;
+  /** For another person's personal drive: the owner's name, or null when the people rule hides them. */
+  owner_name: string | null;
 };
+
+/** How a drive is named on screen. Every personal drive is stored as "My drive", so only the caller's own is shown that way. */
+export function driveLabel(drive: Pick<DriveListItem, 'name' | 'kind' | 'is_mine' | 'owner_name'>): string {
+  if (drive.is_mine) return 'My drive';
+  if (drive.kind === 'personal') return drive.owner_name ? `${drive.owner_name}'s drive` : 'A shared personal drive';
+  return drive.name;
+}
 
 /** The drives the sidebar lists: your own, then those you belong to or pinned. Others are found through Browse. */
 export function sidebarDrives(drives: DriveListItem[]): { mine: DriveListItem | null; others: DriveListItem[] } {

@@ -43,12 +43,21 @@ export function DriveMembersPanel({ driveId }: { driveId: string }) {
     const outcome = await write();
     if (!outcome.ok) setMessage(outcome.message);
     // Success or not, re-read: access may have changed under us (our own included).
-    await Promise.all([mutate(), refreshDrive()]);
+    await Promise.allSettled([mutate(), refreshDrive()]);
     setPending(false);
   };
 
-  if (error) return <p role="alert" className="text-[0.8125rem]" style={{ color: 'var(--outline)' }}>Could not load the members.</p>;
-  if (!data) return <p className="text-[0.8125rem]" style={{ color: 'var(--outline)' }}>Loading members...</p>;
+  // The refusal (`message`) and a failed read (`error`) are kept apart, so both can show.
+  if (!data) {
+    return (
+      <section aria-label="Members" className="flex flex-col gap-2">
+        {message && <p role="alert" className="text-[0.8125rem]" style={{ color: 'var(--error, #b3261e)' }}>{message}</p>}
+        {error
+          ? <p role="alert" className="text-[0.8125rem]" style={{ color: 'var(--outline)' }}>Could not load the members.</p>
+          : <p className="text-[0.8125rem]" style={{ color: 'var(--outline)' }}>Loading members...</p>}
+      </section>
+    );
+  }
   return (
     <section aria-label="Members" className="flex flex-col gap-2">
       <h2 className="text-[0.9375rem] font-semibold" style={{ color: 'var(--on-surface)' }}>Members</h2>
@@ -65,6 +74,7 @@ export function DriveMembersPanel({ driveId }: { driveId: string }) {
         </ul>
       )}
       {message && <p role="alert" className="text-[0.8125rem]" style={{ color: 'var(--error, #b3261e)' }}>{message}</p>}
+      {error && <p role="alert" className="text-[0.8125rem]" style={{ color: 'var(--outline)' }}>Could not load the members. What you see may be out of date.</p>}
       <ul className="flex flex-col">
         {data.members.map((member) => (
           <li key={member.id} className="flex items-center gap-2 py-1.5 text-[0.875rem]" style={{ color: 'var(--on-surface)' }}>

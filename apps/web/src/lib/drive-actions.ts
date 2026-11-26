@@ -21,7 +21,7 @@ export const driveKeys = (driveId: string) => [
 /** Revalidates everything an access change can make stale (driveKeys). */
 export function useRefreshDrive(driveId: string) {
   const { mutate } = useSWRConfig();
-  return () => Promise.all(driveKeys(driveId).map((key) => mutate(key)));
+  return () => Promise.allSettled(driveKeys(driveId).map((key) => mutate(key)));
 }
 
 export class HttpError extends Error {

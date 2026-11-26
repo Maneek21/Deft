@@ -7,7 +7,7 @@ import { DriveSidebarContent, DRIVES_KEY } from './drive-sidebar';
 
 const drive = (over: Record<string, unknown>) => ({
   id: 'x', name: 'X', icon: null, kind: 'private', system_key: null, role: 'full', default_role: null,
-  frozen: false, pinned: false, admin_listed: false, is_member: false, is_mine: false, ...over,
+  frozen: false, pinned: false, admin_listed: false, is_member: false, is_mine: false, owner_name: null, ...over,
 });
 const drives = [
   drive({ id: 'w', name: 'Workspace', kind: 'open', system_key: 'workspace', role: 'edit', default_role: 'edit' }),
@@ -24,10 +24,13 @@ const render = (role: string, list: unknown[] = drives) => renderToStaticMarkup(
   createElement(DriveSidebarContent, { role, pathname: '/drive' }),
 ));
 
-test('a personal drive shared by someone else is shown under its own name, never as My drive', () => {
-  const markup = render('member', [drive({ id: 'sam', name: 'Sam’s drive', kind: 'personal', is_member: true })]);
-  assert.match(markup, /Sam’s drive/);
-  assert.doesNotMatch(markup, /My drive/);
+test('an unrenamed personal drive shared with the caller is named for its owner, or neutrally when the owner is hidden', () => {
+  const named = render('member', [drive({ id: 'sam', name: 'My drive', kind: 'personal', is_member: true, owner_name: 'Sam' })]);
+  assert.match(named, /Sam&#x27;s drive/);
+  assert.doesNotMatch(named, /My drive/);
+  const hidden = render('guest', [drive({ id: 'sam', name: 'My drive', kind: 'personal', is_member: true, owner_name: null })]);
+  assert.match(hidden, /A shared personal drive/);
+  assert.doesNotMatch(hidden, /My drive/);
 });
 
 test('the drive sidebar says it is loading before the list arrives', () => {

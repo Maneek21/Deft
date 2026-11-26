@@ -12,7 +12,7 @@ import { formatRelative } from '@/lib/time';
 import { PageHeader } from '@/components/page-header';
 import { useDrives, useDriveTree } from '@/components/drive/drive-sidebar';
 import { DriveMembersPanel } from '@/components/drive/drive-members-panel';
-import { buildDriveTree, type DriveTreeNode } from '@/lib/drive-tree';
+import { buildDriveTree, driveLabel, type DriveTreeNode } from '@/lib/drive-tree';
 
 type DriveDetail = { id: string; name: string; icon: string | null; kind: string; role: MemberRole | null };
 type TrashItem = { id: string; title: string; icon: string | null; deleted_at: string };
@@ -122,8 +122,9 @@ export default function DriveDetailPage() {
   }
   if (!drive.data) return <div className="flex-1 p-4 text-[0.875rem]" style={{ color: 'var(--outline)' }}>Loading...</div>;
 
-  const isMine = drives.data?.drives.some((d) => d.id === driveId && d.is_mine) ?? false;
-  const title = isMine ? 'My drive' : drive.data.drive.name;
+  const listed = drives.data?.drives.find((d) => d.id === driveId);
+  // A personal drive is stored as "My drive": say whose it is once the list has said so.
+  const title = listed ? driveLabel(listed) : drive.data.drive.kind === 'personal' ? 'Personal drive' : drive.data.drive.name;
   return (
     <div className="flex-1 overflow-y-auto">
       <PageHeader
