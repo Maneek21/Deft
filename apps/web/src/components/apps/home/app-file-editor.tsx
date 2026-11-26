@@ -106,7 +106,7 @@ export function AppFileEditor({
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
           <p className="text-[0.6875rem] font-medium uppercase tracking-wide" style={{ color: 'var(--primary)' }}>{readOnlyReason ? 'View app file' : 'Edit app file'}</p>
-          <h2 id={`${editorId}-title`} ref={headingRef} tabIndex={-1} className="text-[0.9375rem] font-semibold outline-none" style={{ color: 'var(--on-surface)' }}>
+          <h2 id={`${editorId}-title`} ref={headingRef} tabIndex={-1} className="text-[0.9375rem] font-semibold" style={{ color: 'var(--on-surface)', outline: 'none' }}>
             {name} <span className="font-normal" style={{ color: 'var(--on-surface-variant)' }}>v{module.manifest.version ?? '—'}</span>
           </h2>
         </div>
