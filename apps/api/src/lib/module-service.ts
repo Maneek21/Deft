@@ -97,6 +97,7 @@ import {
 import { db } from './db.js';
 import { getIO } from '../socket.js';
 import { getBundledModule, listBundledModules } from './bundled-modules.js';
+import { cleanIssueLabel, limitIssueLines } from '@deft/shared/module-issues';
 import { ModuleError } from './module-errors.js';
 import { assertBaseReadAccess, assertBaseWriteAccess, assertInstallationAccess, isAdmin } from './module-access-policy.js';
 import { planModuleRecordMerge } from './module-merge-plan.js';
@@ -650,6 +651,110 @@ function decodeCursor(cursor?: string): number {
   } catch {
     throw new ModuleError('Invalid page cursor', 'MODULE_VALIDATION_ERROR', 400);
   }
+}
+
+type RecordMisfit = {
+  record_id: string;
+  collection_key: string;
+  collection_name: string;
+  title: string;
+  problems: Array<{ field: string | null; field_label: string; code: string }>;
+};
+
+const MISFIT_TITLES_NAMED = 5;
+const MISFIT_DETAIL_LIMIT = 20;
+
+/** One record that the new version would refuse, with what a person needs to find it. */
+function recordMisfit(
+  previous: unknown,
+  next: DeftModuleManifestV1,
+  record: { id: string; collection_key: string; data: unknown },
+  error: ModuleRecordValidationError,
+): RecordMisfit {
+  const nextCollection = next.collections.find((item) => item.key === record.collection_key);
+  let previousCollection: DeftModuleManifestV1['collections'][number] | undefined;
+  try {
+    previousCollection = parseDeftModuleManifest(previous).collections.find((item) => item.key === record.collection_key);
+  } catch {
+    previousCollection = undefined;
+  }
+  let title: string | null = null;
+  try {
+    title = projectModuleRecordDisplayTitle(previous, record.collection_key, record.data);
+  } catch {
+    title = null;
+  }
+  const label = (field: string | null) => {
+    if (!field) return 'Record';
+    const found = nextCollection?.fields.find((item) => item.key === field)
+      ?? previousCollection?.fields.find((item) => item.key === field);
+    return found?.label ?? field;
+  };
+  return {
+    record_id: record.id,
+    collection_key: record.collection_key,
+    collection_name: nextCollection?.name ?? previousCollection?.name ?? record.collection_key,
+    title: cleanIssueLabel(title ?? '', 60) ?? `Record ${record.id.slice(0, 8)}`,
+    problems: error.issues.map((issue) => ({ field: issue.field, field_label: label(issue.field), code: issue.code })),
+  };
+}
+
+function misfitProblem(code: string): string {
+  switch (code) {
+    case 'required': return 'now required, but empty in';
+    case 'unknown_field': return 'removed, but still has a value in';
+    case 'invalid_value': return 'has a value the new version does not allow in';
+    case 'invalid_type': return 'has a value of a different type in';
+    case 'record_too_large': return 'too large in';
+    default: return 'does not fit in';
+  }
+}
+
+function quotedTitles(titles: string[], budget: number): string {
+  const shown = titles.slice(0, Math.max(1, budget)).map((title) => `"${title}"`);
+  const rest = titles.length - shown.length;
+  if (rest > 0) return `${shown.join(', ')} and ${rest} more`;
+  if (shown.length === 1) return shown[0]!;
+  return `${shown.slice(0, -1).join(', ')} and ${shown[shown.length - 1]}`;
+}
+
+/**
+ * An upgrade refused because records do not fit: one plain line per record
+ * type, field and problem, naming up to five records by title in all.
+ */
+function recordsDoNotFit(misfits: RecordMisfit[]): ModuleError {
+  const groups = new Map<string, { collection: string; field: string; code: string; titles: string[] }>();
+  for (const misfit of misfits) {
+    for (const problem of misfit.problems) {
+      const key = `${misfit.collection_key}\u0000${problem.field ?? ''}\u0000${problem.code}`;
+      const group = groups.get(key) ?? {
+        collection: cleanIssueLabel(misfit.collection_name) ?? misfit.collection_key,
+        field: cleanIssueLabel(problem.field_label) ?? 'Record',
+        code: problem.code,
+        titles: [],
+      };
+      if (!group.titles.includes(misfit.title)) group.titles.push(misfit.title);
+      groups.set(key, group);
+    }
+  }
+  let budget = MISFIT_TITLES_NAMED;
+  const lines = [...groups.values()].map((group) => {
+    const line = `${group.collection} → ${group.field}: ${misfitProblem(group.code)} ${quotedTitles(group.titles, budget)}`;
+    budget = Math.max(1, budget - group.titles.length);
+    return line;
+  });
+  const readable = limitIssueLines(lines);
+  return new ModuleError(readable.join('\n'), 'MODULE_VALIDATION_ERROR', 400, {
+    lines: readable,
+    record_count: misfits.length,
+    records: misfits.slice(0, MISFIT_DETAIL_LIMIT).flatMap((misfit) => misfit.problems.map((problem) => ({
+      record_id: misfit.record_id,
+      collection_key: misfit.collection_key,
+      title: misfit.title,
+      field: problem.field,
+      code: problem.code,
+    }))),
+  });
 }
 
 function validationError(error: ModuleRecordValidationError): ModuleError {
@@ -2237,8 +2342,19 @@ export async function upgradeModuleInstallationToManifest(
       data: ModuleRecordData;
       projection: ReturnType<typeof projectModuleRecordSearch>;
     }> = [];
+    // Check every record before refusing, so the refusal can name the
+    // records that do not fit the new version, not just the first field.
+    const misfits: RecordMisfit[] = [];
     for (const record of records) {
-      const data = parseRecordData(manifest, record.collection_key, record.data);
+      let data: ModuleRecordData;
+      try {
+        data = parseModuleRecordData(manifest, record.collection_key, record.data);
+      } catch (error) {
+        if (!(error instanceof ModuleRecordValidationError)) throw error;
+        misfits.push(recordMisfit(current.version.manifest, manifest, record, error));
+        continue;
+      }
+      if (misfits.length > 0) continue;
       await assertMemberFieldsValid(tx, actor.org_id, manifest, record.collection_key, data);
       validatedRecords.push({
         row: record,
@@ -2246,6 +2362,7 @@ export async function upgradeModuleInstallationToManifest(
         projection: projectModuleRecordSearch(manifest, record.collection_key, data),
       });
     }
+    if (misfits.length > 0) throw recordsDoNotFit(misfits);
 
     const activeRelations = await tx
       .select()

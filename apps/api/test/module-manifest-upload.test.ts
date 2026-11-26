@@ -166,3 +166,18 @@ test('malformed JSON names the line and column', async () => {
   const error = await uploadError('{\n  "schema_version": "1",\n}');
   assert.equal(error.message, "The file isn't valid JSON near line 3, column 1. Look for a missing or extra comma, quote or bracket.");
 });
+
+test('an app file may name its JSON Schema; the link is dropped and leaves the digest unchanged', async () => {
+  const plain = await parseModuleManifestUpload(new Request('http://deft.test/api/modules/sideload', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(manifest),
+  }));
+  const linked = await parseModuleManifestUpload(new Request('http://deft.test/api/modules/sideload', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ $schema: 'https://deft.ing/schemas/deft.module.v1.schema.json', ...manifest }),
+  }));
+  assert.equal(linked.manifest_digest, plain.manifest_digest);
+  assert.equal('$schema' in linked.manifest, false);
+});

@@ -10,6 +10,26 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### Updating an app: the records that don't fit are named; edits save safely; editors can check app files
+
+- **Records that block an update are named.** When an update is refused because
+  some records would not fit the new version, the message now names up to five
+  of them by title, with the field and the problem, such as
+  `Candidates → Email: now required, but empty in "Dana Example" and "Sam Sample"`.
+  Removing a field that still holds data reads
+  `… → Notes: removed, but still has a value in …`. The full list (up to 20) is in
+  `details.records`, with `details.record_count`. The code is still
+  `MODULE_VALIDATION_ERROR`.
+- **Saving an edited app.** The page can check an edited app file the way the
+  server will, raise the version by one patch step when you didn't, and save it as
+  an update that only applies if the app hasn't changed since you opened it
+  (`If-Match`). The id and slug cannot change.
+- **`"$schema"` is allowed in an app file.** Add
+  `"$schema": "https://deft.ing/schemas/deft.module.v1.schema.json"` and an
+  editor checks the file as you type. The link is dropped on upload, so it never
+  changes the app's digest. The schema file is in `docs/schemas/` for the website
+  to serve at that address.
+
 ### Starter apps and a plain-words app preview, ready for the Apps page
 
 Groundwork only: nothing on a page uses these yet. The Apps page's starter

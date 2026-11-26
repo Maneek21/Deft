@@ -113,6 +113,13 @@ function cleanLabel(value: unknown): string | null {
   return cleaned.length > 0 ? cleaned : null;
 }
 
+/** A name or title from a person, safe to quote in a line: plain, bounded, no quotes or brackets. */
+export function cleanIssueLabel(value: unknown, max = MAX_LABEL_CHARS): string | null {
+  if (typeof value !== 'string') return null;
+  const cleaned = cleanIssueText(value.replace(LABEL_UNSAFE_CHARS, ''), max);
+  return cleaned.length > 0 ? cleaned : null;
+}
+
 function looksLikeRawJson(value: string): boolean {
   return /\[\s*\{|\{\s*"|"\s*:\s*[[{"]/.test(value);
 }

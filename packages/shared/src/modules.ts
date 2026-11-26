@@ -878,8 +878,26 @@ export type ModuleField = z.infer<typeof ModuleFieldSchema>;
 export type ModuleFieldV2 = z.infer<typeof ModuleFieldV2Schema>;
 export type ModuleView = z.infer<typeof ModuleViewSchema>;
 
+/** Where editors find the JSON Schema for an app file; a file may name it in "$schema". */
+export const DEFT_MODULE_MANIFEST_SCHEMA_URL = 'https://deft.ing/schemas/deft.module.v1.schema.json';
+
+const MANIFEST_SCHEMA_KEY_MAX_CHARS = 2048;
+
+/**
+ * Drop a top-level "$schema" link before validation, so it is never stored and
+ * never changes the digest. Anything other than a short string is left in
+ * place for the strict validator to refuse.
+ */
+export function stripManifestSchemaKey(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  if (!Object.prototype.hasOwnProperty.call(value, '$schema')) return value;
+  const { $schema: link, ...rest } = value as Record<string, unknown>;
+  if (typeof link !== 'string' || link.length > MANIFEST_SCHEMA_KEY_MAX_CHARS) return value;
+  return rest;
+}
+
 export function parseDeftModuleManifest(value: unknown): DeftModuleManifestV1 {
-  const parsed = DeftModuleManifestV1Schema.parse(value);
+  const parsed = DeftModuleManifestV1Schema.parse(stripManifestSchemaKey(value));
   const serialized = JSON.stringify(parsed);
   if (new TextEncoder().encode(serialized).byteLength > MODULE_LIMITS.manifest_bytes) {
     throw new Error(`The app file is larger than ${MODULE_LIMITS.manifest_bytes} bytes`);
@@ -896,13 +914,13 @@ export function parseDeftModuleManifestJson(value: string): DeftModuleManifestV1
   try {
     parsed = JSON.parse(value) as unknown;
   } catch (error) {
-    throw new Error('Manifest is not valid JSON', { cause: error });
+    throw new Error('The app file is not valid JSON', { cause: error });
   }
   return parseDeftModuleManifest(parsed);
 }
 
 export function parseSupportedDeftModuleManifest(value: unknown): DeftModuleManifest {
-  const parsed = DeftModuleManifestSchema.parse(value);
+  const parsed = DeftModuleManifestSchema.parse(stripManifestSchemaKey(value));
   const serialized = JSON.stringify(parsed);
   if (new TextEncoder().encode(serialized).byteLength > MODULE_LIMITS.manifest_bytes) {
     throw new Error(`The app file is larger than ${MODULE_LIMITS.manifest_bytes} bytes`);
@@ -917,7 +935,7 @@ export function parseSupportedDeftModuleManifestJson(value: string): DeftModuleM
   try {
     return parseSupportedDeftModuleManifest(JSON.parse(value) as unknown);
   } catch (error) {
-    if (error instanceof SyntaxError) throw new Error('Manifest is not valid JSON', { cause: error });
+    if (error instanceof SyntaxError) throw new Error('The app file is not valid JSON', { cause: error });
     throw error;
   }
 }
@@ -928,25 +946,35 @@ export function parseSupportedDeftModuleManifestJson(value: string): DeftModuleM
  * super-refinements that JSON Schema cannot fully express.
  */
 export function getDeftModuleManifestV1JsonSchema(): Record<string, unknown> {
-  return {
+  return withSchemaKey({
     $schema: 'https://json-schema.org/draft/2020-12/schema',
-    title: 'Deft declarative module manifest v1',
+    $id: DEFT_MODULE_MANIFEST_SCHEMA_URL,
+    title: 'Deft app file (deft.module.json), v1',
     ...z.toJSONSchema(DeftModuleManifestV1Schema, {
       target: 'draft-2020-12',
       unrepresentable: 'any',
     }),
-  } as Record<string, unknown>;
+  } as Record<string, unknown>);
+}
+
+/** Let an app file name its schema: editors then check it as you type. */
+function withSchemaKey(schema: Record<string, unknown>): Record<string, unknown> {
+  const properties = (schema.properties ?? {}) as Record<string, unknown>;
+  return {
+    ...schema,
+    properties: { $schema: { type: 'string', maxLength: MANIFEST_SCHEMA_KEY_MAX_CHARS }, ...properties },
+  };
 }
 
 export function getDeftModuleManifestV2JsonSchema(): Record<string, unknown> {
-  return {
+  return withSchemaKey({
     $schema: 'https://json-schema.org/draft/2020-12/schema',
-    title: 'Deft declarative module manifest v2',
+    title: 'Deft app file (deft.module.json), v2',
     ...z.toJSONSchema(DeftModuleManifestV2Schema, {
       target: 'draft-2020-12',
       unrepresentable: 'any',
     }),
-  } as Record<string, unknown>;
+  } as Record<string, unknown>);
 }
 
 type CanonicalJson = null | boolean | number | string | CanonicalJson[] | {

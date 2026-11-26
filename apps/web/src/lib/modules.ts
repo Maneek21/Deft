@@ -1044,7 +1044,7 @@ export async function moduleApiError(response: Response, fallback: string): Prom
   if (response.status === 409 && body.code === 'MODULE_SAVED_VIEW_CONFLICT') return `${detail.replace(/[.!?]$/, '')}. Choose a different name.`;
   // A reserved name never clears on refresh: the message says what to change.
   if (response.status === 409 && body.code === 'MODULE_IDENTITY_RESERVED') return detail;
-  if (response.status === 409) return `${detail} Refresh and try again.`;
+  if (response.status === 409) return /\brefresh\b/i.test(detail) ? detail : `${detail} Refresh and try again.`;
   return detail;
 }
 
