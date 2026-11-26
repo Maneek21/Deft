@@ -6,9 +6,10 @@ import path from 'node:path';
 
 // "Report a problem" (telemetry contract, section 2), the real dialog in
 // Chromium with the API answered by page.route: the note the person reads,
-// "Email me about this report" ticked by default, what is sent (category,
-// text, the box, the page path, recent error references) and the reference
-// shown back. A refusal is shown, not swallowed.
+// "Email me about this report" unticked when the dialog opens (a report
+// carries the person's email only when they tick it), what is sent
+// (category, text, the box, the page path, recent error references) and the
+// reference shown back. A refusal is shown, not swallowed.
 const web = fileURLToPath(new URL('../..', import.meta.url));
 const require = createRequire(path.join(web, 'package.json'));
 const { chromium } = require('playwright');
@@ -59,11 +60,28 @@ createRoot(document.getElementById('root')).render(createElement(ReportProblemDi
   return { browser, tab, sent };
 }
 
-test('the person reads the note, the box is ticked, and a sent report shows its reference', async () => {
+test('the box starts unticked, and a report sent without ticking it asks for no email', async () => {
+  const { browser, tab, sent } = await mount({ status: 201, body: { reference: '7A1E9C02' } });
+  try {
+    await tab.getByText(NOTE).waitFor();
+    assert.equal(await tab.getByLabel('Email me about this report').isChecked(), false);
+    await tab.getByLabel('What happened?').fill('The calendar shows the wrong week.');
+    await tab.getByRole('button', { name: 'Send report' }).click();
+    await tab.getByText('7A1E9C02').waitFor();
+    assert.deepEqual(sent, [{
+      category: 'bug', text: 'The calendar shows the wrong week.', email_me: false, page: '/tasks/:id', request_ids: [],
+    }]);
+    assert.equal(await tab.getByText('We will email you', { exact: false }).count(), 0);
+  } finally {
+    await browser.close();
+  }
+});
+
+test('the person reads the note, ticks the box, and a sent report shows its reference', async () => {
   const { browser, tab, sent } = await mount({ status: 201, body: { reference: '3F2B1C4D' } });
   try {
     await tab.getByText(NOTE).waitFor();
-    assert.equal(await tab.getByLabel('Email me about this report').isChecked(), true);
+    await tab.getByLabel('Email me about this report').check();
     await tab.getByLabel('Something is confusing').check();
     await tab.getByLabel('What happened?').fill('The board does not show my tasks.');
     await tab.getByRole('button', { name: 'Send report' }).click();
@@ -71,6 +89,7 @@ test('the person reads the note, the box is ticked, and a sent report shows its 
     assert.deepEqual(sent, [{
       category: 'confusing', text: 'The board does not show my tasks.', email_me: true, page: '/tasks/:id', request_ids: [],
     }]);
+    await tab.getByText('We will email you at your account address', { exact: false }).waitFor();
   } finally {
     await browser.close();
   }
@@ -79,6 +98,7 @@ test('the person reads the note, the box is ticked, and a sent report shows its 
 test('a report the server could not send is shown as not sent, with the text kept', async () => {
   const { browser, tab, sent } = await mount({ status: 503, body: { error: 'Your report could not be sent. Try again in a few minutes.', code: 'REPORT_NOT_SENT' } });
   try {
+    await tab.getByLabel('Email me about this report').check();
     await tab.getByLabel('Email me about this report').uncheck();
     await tab.getByLabel('What happened?').fill('Search is empty.');
     await tab.getByRole('button', { name: 'Send report' }).click();
