@@ -536,17 +536,35 @@ test('mounted: document changes every 300 ms while a new image keeps answering 4
   }
 });
 
+/** The fake clock's start: any fixed time works; the tests measure from the first 404. */
+const CLOCK_START = new Date('2026-11-27T09:00:00Z');
+
 /**
  * Opens the page with the browser clock installed (Playwright fakes Date and
- * timers), waits for "Image is loading" after the first 404, then pauses the
- * clock there. Time then moves only through `advance`, which runs the fake
- * clock a second at a time and lets the real file responses land between steps.
+ * timers) at CLOCK_START before navigating; time flows while the page loads.
+ * The page notes, in fake time, when the first image request answered 404.
+ * Once "Image is loading" shows, the clock is paused a little ahead of the
+ * page's current fake time, read inside the page (never at a time that may
+ * already have passed, however slow the runner). From then on time moves only
+ * through `advance(until)`, which runs the fake clock a second at a time to
+ * `until` ms after the first 404, letting the real file responses land
+ * between steps.
  */
 async function openWithClock(browser: any, text: string) {
   const { doc } = serverDoc(text, 'f-never');
   let requests = 0;
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-  await context.clock.install();
+  await context.clock.install({ time: CLOCK_START });
+  await context.addInitScript(() => {
+    const realFetch = window.fetch.bind(window);
+    window.fetch = async (...args: Parameters<typeof fetch>) => {
+      const response = await realFetch(...args);
+      const url = String(args[0] instanceof Request ? args[0].url : args[0]);
+      const w = window as unknown as { __first404At?: number };
+      if (url.includes('/api/files/') && response.status === 404 && w.__first404At === undefined) w.__first404At = Date.now();
+      return response;
+    };
+  });
   const opened = await open({ newPage: () => context.newPage() }, 1280, {
     document: { live: true, role: 'view', content_json: undefined },
     collab: { mode: 'sync', doc, scope: 'readonly' },
@@ -555,10 +573,21 @@ async function openWithClock(browser: any, text: string) {
   });
   const { tab } = opened;
   await tab.getByText('Image is loading').waitFor();
-  const start = await tab.evaluate(() => Date.now());
-  await tab.clock.pauseAt(start);
-  let elapsed = 0;
-  /** Runs the fake clock until `until` ms after the first 404 was seen. */
+  // Pause ahead of the page's own clock; if the runner was slower than the lead, read the clock again and lead further.
+  for (let lead = 250; ; lead *= 2) {
+    const now = await tab.evaluate(() => Date.now());
+    try {
+      await tab.clock.pauseAt(now + lead);
+      break;
+    } catch (error) {
+      if (!/past/i.test(String(error)) || lead >= 32_000) throw error;
+    }
+  }
+  const first404At = await tab.evaluate(() => (window as unknown as { __first404At?: number }).__first404At);
+  assert.equal(typeof first404At, 'number', 'the first 404 was seen in the page');
+  let elapsed = (await tab.evaluate(() => Date.now())) - first404At!;
+  assert.ok(elapsed >= 0 && elapsed < 60_000, `paused ${elapsed} ms after the first 404`);
+  /** Runs the fake clock until `until` ms after the first 404. */
   const advance = async (until: number) => {
     while (elapsed < until) {
       const step = Math.min(1_000, until - elapsed);
