@@ -892,7 +892,8 @@ export function stripManifestSchemaKey(value: unknown): unknown {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   if (!Object.prototype.hasOwnProperty.call(value, '$schema')) return value;
   const { $schema: link, ...rest } = value as Record<string, unknown>;
-  if (typeof link !== 'string' || link.length > MANIFEST_SCHEMA_KEY_MAX_CHARS) return value;
+  // Characters, not UTF-16 units: the same count JSON Schema maxLength uses.
+  if (typeof link !== 'string' || Array.from(link).length > MANIFEST_SCHEMA_KEY_MAX_CHARS) return value;
   return rest;
 }
 
@@ -941,9 +942,12 @@ export function parseSupportedDeftModuleManifestJson(value: string): DeftModuleM
 }
 
 /**
- * Machine-readable authoring schema. Runtime consumers must still use the Zod
- * parser because cross-field references and uniqueness are enforced by
- * super-refinements that JSON Schema cannot fully express.
+ * Machine-readable authoring schema, for editors. The Zod parser stays the
+ * authority: JSON Schema cannot express its cross-field references,
+ * uniqueness, plain-text checks (markup, control and bidi characters),
+ * reserved field keys, default-value formats, the total size limit, or
+ * trimming before length limits (a name padded with spaces may be flagged
+ * as too long here though the parser accepts it once trimmed).
  */
 export function getDeftModuleManifestV1JsonSchema(): Record<string, unknown> {
   return withSchemaKey({
@@ -953,6 +957,9 @@ export function getDeftModuleManifestV1JsonSchema(): Record<string, unknown> {
     ...z.toJSONSchema(DeftModuleManifestV1Schema, {
       target: 'draft-2020-12',
       unrepresentable: 'any',
+      // The authoring shape: properties Deft fills in (required, multiple,
+      // subtitle_fields, ...) are optional here, as they are when parsing.
+      io: 'input',
     }),
   } as Record<string, unknown>);
 }
@@ -973,6 +980,9 @@ export function getDeftModuleManifestV2JsonSchema(): Record<string, unknown> {
     ...z.toJSONSchema(DeftModuleManifestV2Schema, {
       target: 'draft-2020-12',
       unrepresentable: 'any',
+      // The authoring shape: properties Deft fills in (required, multiple,
+      // subtitle_fields, ...) are optional here, as they are when parsing.
+      io: 'input',
     }),
   } as Record<string, unknown>);
 }
