@@ -56,6 +56,7 @@ import {
   ModuleSavedViewConfigSchema,
   ModuleRecordValidationError,
   canonicalSupportedModuleManifestJson,
+  describeVersionNotHigher,
   getModuleOperationInputJsonSchema,
   isFirstPartyReservedId,
   digestSupportedModuleManifest as digestModuleManifest,
@@ -743,6 +744,12 @@ class RecordMisfits {
     const lines = [...this.groups.values()].map((group) => {
       const shown = group.titles.slice(0, budget);
       budget -= shown.length;
+      // A record type the new version removed: its records have nowhere to go.
+      if (group.code === 'invalid_collection') {
+        const records = describeMisfitRecords(shown, group.count);
+        const held = shown.length === 0 ? records : `the ${group.count === 1 ? 'record' : 'records'} ${records}`;
+        return `${group.collection}: record type removed, but it still holds ${held}`;
+      }
       return `${group.collection} → ${group.field}: ${misfitProblem(group.code)} ${describeMisfitRecords(shown, group.count)}`;
     });
     const readable = limitIssueLines(lines);
@@ -2129,7 +2136,7 @@ export async function upgradeAppOwnedModuleAdditivelyWithExecutor(
   }
   if (compareSemver(current.version.version, manifest.version) >= 0) {
     throw new ModuleError(
-      'The App update must use a higher version number, such as 1.0.1',
+      describeVersionNotHigher(current.version.version, manifest.version),
       'MODULE_UPDATE_NOT_AVAILABLE',
       409,
     );
@@ -2314,7 +2321,7 @@ export async function upgradeModuleInstallationToManifest(
       if (current.version.manifest_digest !== digest) {
         if (options.source !== 'bundled') {
           throw new ModuleError(
-            'A changed app file needs a higher version number, such as 1.0.1',
+            describeVersionNotHigher(current.version.version, manifest.version),
             'MODULE_UPDATE_NOT_AVAILABLE',
             409,
           );
@@ -2324,14 +2331,16 @@ export async function upgradeModuleInstallationToManifest(
         );
       }
       throw new ModuleError(
-        'No newer version of this app is available',
+        options.source === 'bundled'
+          ? 'No newer version of this app is available'
+          : describeVersionNotHigher(current.version.version, manifest.version),
         'MODULE_UPDATE_NOT_AVAILABLE',
         409,
       );
     }
     if (compareSemver(current.version.version, manifest.version) >= 0) {
       throw new ModuleError(
-        'The update must use a higher version number than the installed app, such as 1.0.1',
+        describeVersionNotHigher(current.version.version, manifest.version),
         'MODULE_UPDATE_NOT_AVAILABLE',
         409,
       );

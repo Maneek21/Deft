@@ -62,6 +62,22 @@ test('the install confirm names the record types and what installing means', asy
   assert.match(upgrade, /Update to v1\.1\.0/);
 });
 
+test('the update check says when the file is not a higher version, and offers no Update', async () => {
+  const file = (version: string) => previewModuleManifestJson(JSON.stringify({ schema_version: '1', id: 'workspace.hiring', slug: 'hiring', version, name: 'Hiring pipeline', collections: [{ key: 'candidates', name: 'Candidates', fields: [{ key: 'name', label: 'Name', type: 'text' }] }] }));
+  const installed: ModuleInstallation = { ...hiring, manifest: { ...manifest, version: '1.2.0' } };
+  const older = renderToStaticMarkup(<ModuleUploadReview preview={await file('1.0.5')} decision={{ mode: 'upgrade', target: installed }} busy={false} onCancel={noop} onConfirm={noop} />);
+  assert.match(older, /This file’s version is not higher than the installed one, so it can’t update Hiring pipeline\./);
+  assert.match(older, /The installed app is 1\.2\.0 and this file is 1\.0\.5\. Give the file a higher version, such as 1\.2\.1\./);
+  assert.doesNotMatch(older, /Update to v/);
+  assert.doesNotMatch(older, /Every record is kept/);
+  const same = renderToStaticMarkup(<ModuleUploadReview preview={await file('1.2.0')} decision={{ mode: 'upgrade', target: installed }} busy={false} onCancel={noop} onConfirm={noop} />);
+  assert.match(same, /The installed app is 1\.2\.0 and this file is also 1\.2\.0\. Give the file a higher version, such as 1\.2\.1\./);
+  assert.doesNotMatch(same, /Update to v/);
+  const newer = renderToStaticMarkup(<ModuleUploadReview preview={await file('1.2.1')} decision={{ mode: 'upgrade', target: installed }} busy={false} onCancel={noop} onConfirm={noop} />);
+  assert.match(newer, /Update to v1\.2\.1/);
+  assert.doesNotMatch(newer, /not higher/);
+});
+
 test('Settings → Modules redirects to the Apps page', () => {
   const source = readFileSync(new URL('../../../app/(app)/settings/modules/page.tsx', import.meta.url), 'utf8');
   const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React } }).outputText;

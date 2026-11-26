@@ -71,6 +71,9 @@ test('moduleApiError shows the server lines, at most three, never raw JSON', asy
     await moduleApiError(jsonResponse(409, { error: 'This name belongs to an app that ships with Deft. Choose another slug and id.', code: 'MODULE_IDENTITY_RESERVED' }), 'Failed'),
     'This name belongs to an app that ships with Deft. Choose another slug and id.',
   );
+  // A version refusal says which version to use; refreshing would not help.
+  const version = 'The installed app is 1.2.0 and this file is 1.0.5. Give the file a higher version, such as 1.2.1.';
+  assert.equal(await moduleApiError(jsonResponse(409, { error: version, code: 'MODULE_UPDATE_NOT_AVAILABLE' }), 'Failed'), version);
 });
 
 test('appApiError uses the caller text for a switched-off feature', async () => {
