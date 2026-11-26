@@ -356,25 +356,20 @@ export function adminListedDriveCondition(userId: string, orgId: string): SQL {
 
 /**
  * For a query over the `drives` table (not aliased): the live private drives
- * of `orgId` that nobody can manage (spec 5.2; consult rule C5, F6): no
- * `full` member row is held by someone who can act in the workspace
- * (activeActorSql), whether the row names them or a chat of the workspace
- * they are in. A departed member's row stays, so a drive whose last manager
- * left, or was deactivated, is listed. Frozen drives are left out: an owner
- * hands them on instead.
+ * of `orgId` that nobody manages (spec 5.2; consult rule C5, F6): no `full`
+ * member row held in their own name by someone who can act in the workspace
+ * (activeActorSql: an active member, or an agent user whose employee is
+ * active). A chat holding `full` doesn't count: a manager is a person. A
+ * departed member's row stays, so a drive whose last manager left, or was
+ * deactivated, is listed. Frozen drives are left out: the owner hands them
+ * on instead.
  */
 export function driveWithoutManagerCondition(orgId: string): SQL {
   return sql`(${drives.org_id} = ${orgId} AND ${drives.is_deleted} = false
     AND ${drives.kind} = 'private' AND ${drives.frozen_at} IS NULL
     AND NOT EXISTS (SELECT 1 FROM drive_members access_manager
       WHERE access_manager.drive_id = ${drives.id} AND access_manager.principal_type = 'user' AND access_manager.role = 'full'
-        AND ${activeActorSql(sql.raw('access_manager.principal_id'), orgId)})
-    AND NOT EXISTS (SELECT 1 FROM drive_members access_manager_chat
-      JOIN spaces access_manager_space ON access_manager_space.id = access_manager_chat.principal_id
-      JOIN space_members access_manager_seat ON access_manager_seat.space_id = access_manager_space.id
-      WHERE access_manager_chat.drive_id = ${drives.id} AND access_manager_chat.principal_type = 'space'
-        AND access_manager_chat.role = 'full' AND access_manager_space.org_id = ${drives.org_id}
-        AND ${activeActorSql(sql.raw('access_manager_seat.user_id'), orgId)}))`;
+        AND ${activeActorSql(sql.raw('access_manager.principal_id'), orgId)}))`;
 }
 
 /** The statement spaceMembersWhoCannotOpen runs. Exported for its planning test. */

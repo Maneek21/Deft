@@ -15,6 +15,8 @@ import { fileURLToPath } from 'node:url';
 import bcrypt from 'bcryptjs';
 import { and, eq, gte, inArray, lt, or, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
+import type { PendingAccessLoss } from '../lib/document-access-change.js';
+import { endDriveAccessOnDepartureInTx, finishDriveLosses } from '../lib/drives.js';
 import { generateReceipt } from '../lib/receipts.js';
 import { reconcileProjectTaskCountersForOrg } from '../lib/task-numbering.js';
 import {
@@ -3413,7 +3415,15 @@ async function cleanPilotActionNoise(orgId: string) {
   }
 }
 
-async function cleanDuplicatePilotAgents(orgId: string) {
+/**
+ * Archives stale duplicate pilot agents. Each one leaves the workspace the
+ * way deleting an agent employee does (routes/agent-employees.ts): its
+ * employee is deleted and its membership ended in one transaction, through
+ * the departure seam (lib/drives.ts endDriveAccessOnDepartureInTx), which
+ * freezes its personal drive; the losses finish after commit. Exported for
+ * its test.
+ */
+export async function cleanDuplicatePilotAgents(orgId: string) {
   const stalePilotAgents = await db
     .select({
       id: agentEmployees.id,
@@ -3437,16 +3447,21 @@ async function cleanDuplicatePilotAgents(orgId: string) {
 
   const now = new Date();
   const staleEmployeeIds = stalePilotAgents.map((employee) => employee.id);
-  await db
-    .update(agentEmployees)
-    .set({ is_active: false, is_deleted: true, deleted_at: now, updated_at: now })
-    .where(inArray(agentEmployees.id, staleEmployeeIds));
-
-  const staleUserIds = stalePilotAgents.map((employee) => employee.user_id);
-  await db
-    .update(orgMembers)
-    .set({ is_active: false, updated_at: now })
-    .where(and(eq(orgMembers.org_id, orgId), inArray(orgMembers.user_id, staleUserIds)));
+  const staleUserIds = [...new Set(stalePilotAgents.map((employee) => employee.user_id))];
+  const losses = await db.transaction(async (tx) => {
+    await tx
+      .update(agentEmployees)
+      .set({ is_active: false, is_deleted: true, deleted_at: now, updated_at: now })
+      .where(inArray(agentEmployees.id, staleEmployeeIds));
+    await tx
+      .update(orgMembers)
+      .set({ is_active: false, updated_at: now })
+      .where(and(eq(orgMembers.org_id, orgId), inArray(orgMembers.user_id, staleUserIds)));
+    const pending: PendingAccessLoss[] = [];
+    for (const userId of staleUserIds) pending.push(...await endDriveAccessOnDepartureInTx(tx, orgId, userId));
+    return pending;
+  });
+  await finishDriveLosses(losses);
 
   console.log(`[seed-pilot-workspace] archived ${stalePilotAgents.length} stale duplicate pilot agent rows`);
 }

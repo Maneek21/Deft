@@ -239,6 +239,7 @@ jobs:
           src/lib/invite-two-step-mounted.test.ts
           src/lib/members-admin-actions-mounted.test.ts
           src/lib/members-buy-seats-mounted.test.ts
+          src/lib/members-remove-personal-drive-mounted.test.ts
           src/lib/error-telemetry-mounted.test.ts
           src/lib/report-problem-mounted.test.ts
           src/lib/signup-install-ping-mounted.test.ts

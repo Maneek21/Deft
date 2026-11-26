@@ -122,6 +122,8 @@ type ShareLink = {
 };
 
 type OffboardingPreview = {
+  /** A live, unfrozen personal drive with a document in it: the remover chooses to hand it on or freeze it. */
+  personal_drive_with_documents?: boolean;
   revoke_now: {
     spaces: Array<{ id: string; name: string; type: string }>;
     teams: Array<{ id: string; name: string; handle: string; role: string }>;
@@ -314,6 +316,7 @@ export default function MembersPage() {
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const [offboardingPreview, setOffboardingPreview] = useState<OffboardingPreview | null>(null);
   const [offboardingReplacementId, setOffboardingReplacementId] = useState('');
+  const [offboardingDriveChoice, setOffboardingDriveChoice] = useState<'hand_over' | 'freeze' | null>(null);
   const [offboardingLoading, setOffboardingLoading] = useState(false);
   const [offboardingError, setOffboardingError] = useState('');
   const [removingId, setRemovingId] = useState<string | null>(null);
@@ -398,12 +401,15 @@ export default function MembersPage() {
   const offboardingHandoffCount = offboardingPreview
     ? offboardingPreview.counts.primary_open_tasks + offboardingPreview.counts.led_projects + offboardingPreview.counts.led_teams
     : 0;
-  // A replacement is sent only when the dialog shows the choice (there is work
-  // to hand off); it then gets the personal drive too. Otherwise the drive is
-  // frozen until the owner hands it on.
-  const offboardingReplacement = offboardingHandoffCount > 0 && offboardingReplacementId
+  // The person's personal drive (spec 5.2): when it holds documents the
+  // remover chooses to hand it to the replacement or freeze it until the
+  // owner hands it on. The replacement picker shows for open work or for that
+  // drive, and a replacement is sent only for one of them.
+  const offboardingHasDrive = offboardingPreview?.personal_drive_with_documents === true;
+  const offboardingSelected = offboardingReplacementId
     ? offboardingReplacementOptions.find((member) => member.id === offboardingReplacementId) ?? null
     : null;
+  const offboardingSendsReplacement = offboardingHandoffCount > 0 || (offboardingHasDrive && offboardingDriveChoice === 'hand_over');
 
   const handleInvite = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -456,6 +462,7 @@ export default function MembersPage() {
       member.lifecycle_status === 'active'
     ));
     setOffboardingReplacementId(defaultReplacement?.id ?? '');
+    setOffboardingDriveChoice(null);
     setOffboardingError('');
     setOffboardingLoading(true);
     try {
@@ -474,6 +481,7 @@ export default function MembersPage() {
     setConfirmRemove(null);
     setOffboardingPreview(null);
     setOffboardingReplacementId('');
+    setOffboardingDriveChoice(null);
     setOffboardingError('');
   };
 
@@ -482,7 +490,9 @@ export default function MembersPage() {
     setOffboardingError('');
     try {
       const res = await api.delete(`/api/members/${memberId}`, {
-        replacement_user_id: offboardingReplacement?.id ?? null,
+        replacement_user_id: offboardingSendsReplacement ? offboardingSelected?.id ?? null : null,
+        // Without documents in it, an empty personal drive is just frozen.
+        personal_drive: offboardingHasDrive && offboardingDriveChoice === 'hand_over' ? 'hand_over' : 'freeze',
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -952,11 +962,13 @@ export default function MembersPage() {
                                 <div className="rounded-md px-2 py-2 text-[11px]" style={{ background: 'var(--card-bg)', color: 'var(--muted)' }}>
                                   Also revokes {offboardingPreview.counts.active_mcp_tokens} MCP token(s), {offboardingPreview.counts.active_api_keys} API key(s), {offboardingPreview.counts.active_oauth_grants} app grant(s), and {offboardingPreview.counts.secondary_task_assignments} secondary task assignment(s).
                                 </div>
-                                {offboardingHandoffCount > 0 && (
+                                {(offboardingHandoffCount > 0 || offboardingHasDrive) && (
                                   <div className="grid gap-2 rounded-md px-2 py-2 text-[11px]" style={{ background: 'rgba(234,179,8,0.12)', color: 'var(--warning)' }}>
-                                    <p>
-                                      Transfer ownership for {offboardingPreview.counts.primary_open_tasks} open primary task(s), {offboardingPreview.counts.led_projects} led project(s), and {offboardingPreview.counts.led_teams} team lead role(s).
-                                    </p>
+                                    {offboardingHandoffCount > 0 && (
+                                      <p>
+                                        Transfer ownership for {offboardingPreview.counts.primary_open_tasks} open primary task(s), {offboardingPreview.counts.led_projects} led project(s), and {offboardingPreview.counts.led_teams} team lead role(s).
+                                      </p>
+                                    )}
                                     <select
                                       data-testid="offboarding-replacement-select"
                                       value={offboardingReplacementId}
@@ -973,9 +985,36 @@ export default function MembersPage() {
                                         </option>
                                       ))}
                                     </select>
+                                    {offboardingHasDrive && (
+                                      <div role="radiogroup" aria-label="Their personal drive" className="grid gap-1">
+                                        <label className="flex items-center gap-2">
+                                          <input
+                                            type="radio"
+                                            name="offboarding-personal-drive"
+                                            data-testid="offboarding-drive-hand-over"
+                                            checked={offboardingDriveChoice === 'hand_over'}
+                                            onChange={() => setOffboardingDriveChoice('hand_over')}
+                                            disabled={!offboardingSelected}
+                                          />
+                                          <span>Hand My drive to {offboardingSelected?.name ?? 'the replacement'}</span>
+                                        </label>
+                                        <label className="flex items-center gap-2">
+                                          <input
+                                            type="radio"
+                                            name="offboarding-personal-drive"
+                                            data-testid="offboarding-drive-freeze"
+                                            checked={offboardingDriveChoice === 'freeze'}
+                                            onChange={() => setOffboardingDriveChoice('freeze')}
+                                          />
+                                          <span>Freeze it</span>
+                                        </label>
+                                      </div>
+                                    )}
                                   </div>
                                 )}
-                                <PersonalDriveNote replacementName={offboardingReplacement?.name ?? null} />
+                                {offboardingHasDrive && offboardingDriveChoice && (
+                                  <PersonalDriveNote replacementName={offboardingDriveChoice === 'hand_over' ? offboardingSelected?.name ?? null : null} />
+                                )}
                               </div>
                             )}
 
@@ -990,7 +1029,12 @@ export default function MembersPage() {
                               </button>
                               <button
                                 onClick={() => handleRemove(detail.member.id)}
-                                disabled={offboardingLoading || removingId === detail.member.id || (offboardingHandoffCount > 0 && !offboardingReplacementId)}
+                                disabled={
+                                  offboardingLoading || removingId === detail.member.id
+                                  || (offboardingHandoffCount > 0 && !offboardingReplacementId)
+                                  || (offboardingHasDrive && !offboardingDriveChoice)
+                                  || (offboardingHasDrive && offboardingDriveChoice === 'hand_over' && !offboardingSelected)
+                                }
                                 className="h-8 rounded-md px-2 text-[11px] font-semibold disabled:opacity-50"
                                 style={{ background: 'var(--error)', color: 'white' }}
                               >

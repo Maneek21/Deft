@@ -24,6 +24,9 @@ import { and, eq, isNull, sql, type SQL } from 'drizzle-orm';
 import { documents, driveMembers, drives, type DocRole, type DocShareRole, type DriveRow, type DriveSystemKey } from '@deft/db/documents';
 import { auditLog, users } from '@deft/db/schema';
 import { db } from './db.js';
+import { emitVisibleNotifications } from './notification-delivery.js';
+import { createNotificationIfAllowed } from './notification-policy.js';
+import { asStoredNotificationType } from './notification-types.js';
 import { adminListedDriveCondition, canHoldDocumentAccess, driveWithoutManagerCondition, visibleDriveCondition } from './document-access.js';
 import { accessLossInTx, finishAccessLoss, type PendingAccessLoss } from './document-access-change.js';
 import { emitDocumentUpdated } from './document-access-events.js';
@@ -51,11 +54,13 @@ async function liveDocumentIds(tx: Tx, orgId: string, driveId: string): Promise<
  *
  * Their live personal drive is frozen first (spec 5.2, F6): its own grants
  * end for everyone, owners and admins included, and shares out of it give
- * view at most, until an owner hands it on (handOverPersonalDriveInTx). That
- * is a loss of its own, naming the drive and its documents; the person's own
- * loss follows. A removal with a replacement has already handed the drive on
- * (routes/members.ts reassignMemberOwnership), so there is nothing to freeze.
- * The caller finishes the returned losses after commit (finishDriveLosses).
+ * view at most, until the workspace owner hands it on
+ * (POST /api/drives/:id/handover). That is a loss of its own, naming the
+ * drive and its documents; the person's own loss follows. A removal that
+ * handed the drive to a replacement (routes/members.ts
+ * reassignMemberOwnership) left nothing to freeze; a drive frozen before
+ * stays frozen. The caller finishes the returned losses after commit
+ * (finishDriveLosses).
  */
 export async function endDriveAccessOnDepartureInTx(tx: Tx, orgId: string, userId: string): Promise<PendingAccessLoss[]> {
   const now = new Date();
@@ -94,6 +99,28 @@ export class NotAPersonalDriveError extends Error {
 }
 
 /**
+ * canHoldDocumentAccess for someone about to be given a drive, with what it
+ * reads locked until commit: their org_members row and, for an agent user,
+ * the employee users.agent_employee_id names, both FOR SHARE (rows that don't
+ * exist lock nothing). A deactivation or pause that commits first is seen; one
+ * that comes later waits for this transaction, so the grant is never made to
+ * someone who has already lost access.
+ */
+export async function canHoldDocumentAccessLocked(tx: Tx, orgId: string, userId: string): Promise<boolean> {
+  await tx.execute(sql`SELECT 1 FROM org_members held_member
+    WHERE held_member.org_id = ${orgId} AND held_member.user_id = ${userId}
+    FOR SHARE`);
+  await tx.execute(sql`SELECT 1 FROM agent_employees held_employee
+    JOIN users held_user ON held_user.agent_employee_id = held_employee.id
+    WHERE held_user.id = ${userId}
+    FOR SHARE OF held_employee`);
+  return canHoldDocumentAccess(userId, orgId, tx);
+}
+
+/** A committed handover, for the new holder's notice (finishDriveHandover). */
+export type DriveHandover = { orgId: string; driveId: string; driveName: string; holderId: string; actorId: string; loss: PendingAccessLoss };
+
+/**
  * Hands a departed person's personal drive to `holderId` (spec 5.2, F6),
  * inside the caller's transaction, which has locked the drive row:
  * - the drive becomes private and unfrozen, with no owner, named
@@ -103,17 +130,19 @@ export class NotAPersonalDriveError extends Error {
  * - the `drive_handed_over` audit row is written in the same transaction, so
  *   the handover never commits without it (logAuditEvent's columns);
  * - the change runs the access-loss path (rule C3), naming the drive and its
- *   documents; the caller finishes it after commit (finishDriveLosses).
- * The holder must be able to hold access (canHoldDocumentAccess), or this
- * throws PrincipalCannotHoldAccessError having changed nothing. Used by the
- * removal with a replacement (`via: 'removal'`) and by an owner's handover of
- * a frozen drive (`via: 'handover'`).
+ *   documents; the caller finishes it after commit (finishDriveHandover).
+ * The holder must be able to hold access, checked with their rows locked
+ * (canHoldDocumentAccessLocked), or this throws
+ * PrincipalCannotHoldAccessError having changed nothing. Used by a removal
+ * with a replacement (`via: 'removal'`, an unfrozen drive only:
+ * personalDriveToHandOverInTx) and by the owner's handover of a frozen drive
+ * (`via: 'handover'`).
  */
 export async function handOverPersonalDriveInTx(
   tx: Tx, drive: DriveRow, holderId: string, actorId: string, via: 'removal' | 'handover',
-): Promise<{ drive: DriveRow; loss: PendingAccessLoss }> {
+): Promise<{ drive: DriveRow; handover: DriveHandover }> {
   if (drive.kind !== 'personal' || drive.is_deleted || !drive.owner_user_id) throw new NotAPersonalDriveError();
-  if (!(await canHoldDocumentAccess(holderId, drive.org_id, tx))) throw new PrincipalCannotHoldAccessError();
+  if (!(await canHoldDocumentAccessLocked(tx, drive.org_id, holderId))) throw new PrincipalCannotHoldAccessError();
   const departedId = drive.owner_user_id;
   const [departed] = await tx.select({ name: users.name }).from(users).where(eq(users.id, departedId)).limit(1);
   const name = `${departed?.name?.trim() || 'A former member'}'s drive`;
@@ -143,7 +172,32 @@ export async function handOverPersonalDriveInTx(
     metadata: { from_user_id: departedId, to_user_id: holderId, via },
   });
   const loss = await accessLossInTx(tx, { orgId: drive.org_id, driveId: drive.id, documentIds: await liveDocumentIds(tx, drive.org_id, drive.id) });
-  return { drive: handed!, loss };
+  return { drive: handed!, handover: { orgId: drive.org_id, driveId: drive.id, driveName: name, holderId, actorId, loss } };
+}
+
+/**
+ * After commit: the handover's access loss (finishDriveLosses), then a
+ * `document_shared` notification (subtype `handover`) to the new holder,
+ * human or agent, as F4 tells a person added to a drive; never to the actor
+ * themselves. Never throws.
+ */
+export async function finishDriveHandover(handover: DriveHandover): Promise<void> {
+  await finishDriveLosses([handover.loss]);
+  if (handover.holderId === handover.actorId) return;
+  try {
+    const notification = await createNotificationIfAllowed({
+      org_id: handover.orgId,
+      user_id: handover.holderId,
+      type: asStoredNotificationType('document_shared'),
+      title: `Drive handed to you: ${handover.driveName}`,
+      body: 'You now hold full access to this drive.',
+      link: `/drive/${handover.driveId}`,
+      metadata: { subtype: 'handover', drive_id: handover.driveId },
+    });
+    if (notification) await emitVisibleNotifications([notification]);
+  } catch {
+    console.error('[drives] the handover notice could not be sent');
+  }
 }
 
 async function liveSystemDrive(executor: Executor, orgId: string, key: DriveSystemKey): Promise<DriveRow | undefined> {
@@ -183,21 +237,21 @@ async function livePersonalDrive(executor: Executor, orgId: string, userId: stri
 }
 
 /**
- * A removal with a replacement (routes/members.ts reassignMemberOwnership):
- * hands the person's live personal drive, frozen or not, to the replacement
- * (handOverPersonalDriveInTx), with the drive row locked. Null when they
- * have none. Throws PrincipalCannotHoldAccessError, so the removal rolls
- * back, when the replacement can't hold access.
+ * For a removal with a replacement (routes/members.ts
+ * reassignMemberOwnership): the person's live personal drive that the
+ * replacement would be handed, locked FOR UPDATE, or null. A frozen drive is
+ * never handed on by a removal: it stays frozen, and only the workspace owner
+ * hands it on (POST /api/drives/:id/handover).
  */
-export async function handOverPersonalDriveOnRemovalInTx(
-  tx: Tx, orgId: string, memberId: string, replacementUserId: string, actorId: string,
-): Promise<PendingAccessLoss | null> {
+export async function personalDriveToHandOverInTx(tx: Tx, orgId: string, memberId: string): Promise<DriveRow | null> {
   const [drive] = await tx.select().from(drives)
-    .where(and(eq(drives.org_id, orgId), eq(drives.owner_user_id, memberId), eq(drives.kind, 'personal'), eq(drives.is_deleted, false)))
+    .where(and(
+      eq(drives.org_id, orgId), eq(drives.owner_user_id, memberId), eq(drives.kind, 'personal'), eq(drives.is_deleted, false),
+      isNull(drives.frozen_at),
+    ))
     .limit(1)
     .for('update');
-  if (!drive) return null;
-  return (await handOverPersonalDriveInTx(tx, drive, replacementUserId, actorId, 'removal')).loss;
+  return drive ?? null;
 }
 
 /** Thrown by ensurePersonalDrive and the handover for someone who could never hold access (canHoldDocumentAccess). */
@@ -281,8 +335,8 @@ export function drivesWithoutManagerQuery(orgId: string): SQL {
 
 /**
  * The frozen personal drives of `orgId`, newest first, with the person who
- * left each: what an owner can hand on (POST /api/drives/:id/handover).
- * Names only, nothing inside them.
+ * left each: what the workspace owner can hand on (GET /api/drives/frozen,
+ * owner only). Names only, nothing inside them.
  */
 export function frozenDrivesQuery(orgId: string): SQL {
   return sql`SELECT frozen_drive.id, frozen_drive.frozen_at, frozen_drive.owner_user_id AS former_owner_id,

@@ -43,8 +43,10 @@ import { lockRoomAccessChange } from '../lib/room-access-lock.js';
 import { applyAccessLossInTx, finishAccessLoss, type PendingAccessLoss } from '../lib/document-access-change.js';
 import { emitDocumentAccessChanged } from '../lib/document-access-events.js';
 import {
-  endDriveAccessOnDepartureInTx, finishDriveLosses, handOverPersonalDriveOnRemovalInTx, PrincipalCannotHoldAccessError,
+  canHoldDocumentAccessLocked, endDriveAccessOnDepartureInTx, finishDriveHandover, finishDriveLosses, handOverPersonalDriveInTx,
+  personalDriveToHandOverInTx, PrincipalCannotHoldAccessError, type DriveHandover,
 } from '../lib/drives.js';
+import { documents, drives } from '@deft/db/documents';
 import { visibleTaskSql } from '../lib/task-visibility.js';
 import {
   authorizeMembershipOperation, checkMembershipOperation, isProtectedMembership, lockMembership, MembershipGuardError, recordMembershipChange, recordPrivilege, type MembershipActor,
@@ -55,6 +57,9 @@ const RECOVERY_TTL = '24h';
 
 const offboardingPayloadSchema = z.object({
   replacement_user_id: z.string().min(1).optional().nullable(),
+  // The person's personal drive (spec 5.2, F6): handed to the replacement
+  // (the default when there is one), or frozen until the owner hands it on.
+  personal_drive: z.enum(['hand_over', 'freeze']).optional(),
 });
 
 function buildInviteUrl(token: string): string {
@@ -258,48 +263,72 @@ async function afterWorkspaceAccessEnded(
 
 type Reassigned = { replacement_user_id: string | null; primary_open_tasks: number; led_projects: number; led_teams: number };
 
+/** The membership was gone or already inactive under the removal's locks (a removal that raced another). */
+class MemberAlreadyRemovedError extends Error {}
+
 /**
  * Removes a member: the one locked path, the owner-only rule, then (under the
  * same locks) the reassignment of their open work and the end of every
- * access. A refusal changes nothing.
+ * access. A refusal changes nothing. The active status is checked again under
+ * the locks, so a removal that waited for another one finds the member gone
+ * (MemberAlreadyRemovedError) and hands nothing over.
  */
-async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, actor: MembershipActor, replacementUserId: string | null = null): Promise<Reassigned> {
+async function revokeMemberWorkspaceAccess(
+  orgId: string, memberId: string, actor: MembershipActor, replacementUserId: string | null = null, handOverPersonalDrive = true,
+): Promise<Reassigned> {
   const revokedAt = new Date();
   let reassigned: Reassigned = { replacement_user_id: replacementUserId, primary_open_tasks: 0, led_projects: 0, led_teams: 0 };
   const closedActions: string[] = [];
   const documentLosses: PendingAccessLoss[] = [];
+  const handovers: DriveHandover[] = [];
   const revokedSessionIds = await db.transaction(async (tx) => {
     // DFX2: the person's room-access lock first (lib/room-access-lock.ts).
     await lockRoomAccessChange(tx, orgId, memberId);
     const locked = await lockMembership(tx, { orgId, targetUserId: memberId });
-    if (!locked.account || !locked.membership) return null;
+    if (!locked.account || !locked.membership?.is_active) throw new MemberAlreadyRemovedError();
     const refusal = await authorizeMembershipOperation(tx, { orgId, actor, locked });
     if (refusal) throw new MembershipGuardError(refusal);
     if (replacementUserId) {
-      reassigned = await reassignMemberOwnership(tx, orgId, memberId, replacementUserId, actor === 'operator' ? 'operator' : actor.userId, documentLosses);
+      reassigned = await reassignMemberOwnership(tx, orgId, memberId, replacementUserId, {
+        actorId: actor === 'operator' ? 'operator' : actor.userId, handOver: handOverPersonalDrive, handovers,
+      });
     }
     await recordMembershipChange(tx, { orgId, targetUserId: memberId, locked, change: { isActive: false } });
     await tx.update(orgMembers).set({ is_active: false, updated_at: revokedAt }).where(eq(orgMembers.id, locked.membership.id));
     return endWorkspaceAccess(tx, orgId, memberId, revokedAt, closedActions, documentLosses);
   });
-  if (revokedSessionIds) await afterWorkspaceAccessEnded(orgId, memberId, revokedSessionIds, closedActions, documentLosses);
+  await afterWorkspaceAccessEnded(orgId, memberId, revokedSessionIds, closedActions, documentLosses);
+  // The handed-on drive: its access change, then the new holder's notice.
+  for (const handover of handovers) await finishDriveHandover(handover);
   return reassigned;
 }
 
 class ReassignmentError extends Error {}
 
+/** What a removal does with the person's personal drive (reassignMemberOwnership). */
+type PersonalDriveHandOff = { actorId: string; handOver: boolean; handovers: DriveHandover[] };
+
 /**
  * Moves the person's open work to the replacement, on the caller's locked
- * transaction, and hands their personal drive to the replacement (spec 5.2,
- * F6): the handover's access loss is pushed onto `documentLosses`, for
- * afterWorkspaceAccessEnded. A replacement who can't hold drive access fails
- * the removal (PrincipalCannotHoldAccessError) when there is a drive to hand on.
+ * transaction, and, unless the remover chose to freeze it, hands their live,
+ * unfrozen personal drive to the replacement (spec 5.2, F6). A drive frozen
+ * before stays frozen: only the workspace owner hands it on. The handover is
+ * pushed onto `drive.handovers`, to finish after commit.
+ *
+ * When there is a drive to hand on, the replacement's eligibility is checked
+ * first, with their membership (and, for an agent, employee) rows locked
+ * until commit (canHoldDocumentAccessLocked): a replacement who can't hold
+ * access, inactive or from another workspace included, fails the removal
+ * with PrincipalCannotHoldAccessError.
  */
-async function reassignMemberOwnership(
-  tx: Tx, orgId: string, memberId: string, replacementUserId: string, actorId: string, documentLosses: PendingAccessLoss[],
-) {
+async function reassignMemberOwnership(tx: Tx, orgId: string, memberId: string, replacementUserId: string, drive: PersonalDriveHandOff) {
   if (memberId === replacementUserId) {
     throw new ReassignmentError('Replacement cannot be the member being removed');
+  }
+
+  const personalDrive = drive.handOver ? await personalDriveToHandOverInTx(tx, orgId, memberId) : null;
+  if (personalDrive && !(await canHoldDocumentAccessLocked(tx, orgId, replacementUserId))) {
+    throw new PrincipalCannotHoldAccessError();
   }
 
   const [replacement] = await tx.select({ role: orgMembers.role }).from(orgMembers)
@@ -366,8 +395,9 @@ async function reassignMemberOwnership(
       });
   }
 
-  const handover = await handOverPersonalDriveOnRemovalInTx(tx, orgId, memberId, replacementUserId, actorId);
-  if (handover) documentLosses.push(handover);
+  if (personalDrive) {
+    drive.handovers.push((await handOverPersonalDriveInTx(tx, personalDrive, replacementUserId, drive.actorId, 'removal')).handover);
+  }
 
   return {
     replacement_user_id: replacementUserId,
@@ -395,6 +425,7 @@ async function buildOffboardingPreview(orgId: string, memberId: string) {
     primaryTaskCountRows,
     ledProjectCountRows,
     ledTeamCountRows,
+    personalDriveDocumentRows,
   ] = await Promise.all([
     db.select({
       id: spaces.id,
@@ -507,9 +538,20 @@ async function buildOffboardingPreview(orgId: string, memberId: string) {
     db.select({ count: sql<number>`count(*)::int` })
       .from(teams)
       .where(and(eq(teams.org_id, orgId), eq(teams.lead_user_id, memberId), eq(teams.is_archived, false))),
+    // A live, unfrozen personal drive with a document in it: the one a
+    // removal can hand to the replacement (spec 5.2, F6). Whether, not what.
+    db.select({ id: documents.id })
+      .from(documents)
+      .innerJoin(drives, and(eq(drives.id, documents.drive_id), eq(drives.org_id, documents.org_id)))
+      .where(and(
+        eq(drives.org_id, orgId), eq(drives.owner_user_id, memberId), eq(drives.kind, 'personal'), eq(drives.is_deleted, false),
+        sql`${drives.frozen_at} IS NULL`, eq(documents.is_deleted, false),
+      ))
+      .limit(1),
   ]);
 
   return {
+    personal_drive_with_documents: personalDriveDocumentRows.length > 0,
     revoke_now: {
       spaces: spaceRows,
       teams: teamRows,
@@ -1686,6 +1728,10 @@ memberRoutes.delete('/:id', async (c) => {
       return c.json({ error: 'Invalid offboarding payload', code: 'VALIDATION_ERROR' }, 400);
     }
     const replacementUserId = parsedBody.data.replacement_user_id?.trim() || null;
+    const personalDrive = parsedBody.data.personal_drive;
+    if (personalDrive === 'hand_over' && !replacementUserId) {
+      return c.json({ error: 'Choose a replacement to hand the personal drive to', code: 'VALIDATION_ERROR' }, 400);
+    }
 
     // Can't remove yourself
     if (memberId === currentUser.id) {
@@ -1723,8 +1769,11 @@ memberRoutes.delete('/:id', async (c) => {
     const preview = await buildOffboardingPreview(currentUser.org_id, memberId);
     let reassigned: Reassigned;
     try {
-      reassigned = await revokeMemberWorkspaceAccess(currentUser.org_id, memberId, { userId: currentUser.id }, replacementUserId);
+      reassigned = await revokeMemberWorkspaceAccess(
+        currentUser.org_id, memberId, { userId: currentUser.id }, replacementUserId, personalDrive !== 'freeze',
+      );
     } catch (err) {
+      if (err instanceof MemberAlreadyRemovedError) return c.json({ error: 'Member not found', code: 'NOT_FOUND' }, 404);
       if (err instanceof MembershipGuardError) return c.json({ error: err.message, code: 'FORBIDDEN' }, 403);
       if (err instanceof ReassignmentError) return c.json({ error: err.message, code: 'VALIDATION_ERROR' }, 400);
       if (err instanceof PrincipalCannotHoldAccessError) {
