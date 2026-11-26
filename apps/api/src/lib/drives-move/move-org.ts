@@ -28,7 +28,7 @@
 import { sql } from 'drizzle-orm';
 import { db } from '../db.js';
 import { ensureWorkspaceDrive } from '../drives.js';
-import { moveCanvases } from './move-canvases.js';
+import { moveCanvases, type DroppedCanvas } from './move-canvases.js';
 import { moveNoteFolders, moveNotes } from './move-notes.js';
 import { failureMessage, loadOrgContext, lockOrgInTx, rowsOf } from './placement.js';
 import { emptyReferenceRewrite, rewriteReferences, type ReferenceRewrite } from './rewrite-references.js';
@@ -54,6 +54,10 @@ export type MoveReport = {
   agentsKeptOnSharedNotes: number;
   /** Private chats' canvases that no eligible chat member could own, placed with the workspace's first owner (O-F5). */
   canvasesPlacedWithWorkspaceOwner: number;
+  /** Private chats' canvases with no eligible member and no active human owner: in the last editor's (or the chat creator's) frozen drive. */
+  canvasesInFrozenDrives: number;
+  /** Canvases with content nobody at all can own (no last editor or creator with a membership row): dropped, counted in emptyCanvases, kept whole here. */
+  unplaceableCanvases: DroppedCanvas[];
   guestsPotentiallyAffected: { guests: number; workspaceNotes: number };
   references: ReferenceRewrite;
 };
@@ -63,7 +67,8 @@ export function emptyMoveReport(orgId: string): MoveReport {
     orgId, notes: 0, folders: 0, canvases: 0, versions: 0, shares: 0, favourites: 0, unsafeDropped: 0, missingImages: 0,
     skippedAlreadyMoved: 0, errors: [], emptyCanvases: 0, splitNotes: 0, subPages: 0, splitBlocks: 0, versionUnsafeDropped: 0,
     versionMissingImages: 0, unplacedImages: 0, spaceNotesMadePrivate: 0, frozenDrives: 0, missingImageBytes: 0,
-    agentsKeptOnSharedNotes: 0, canvasesPlacedWithWorkspaceOwner: 0, guestsPotentiallyAffected: { guests: 0, workspaceNotes: 0 },
+    agentsKeptOnSharedNotes: 0, canvasesPlacedWithWorkspaceOwner: 0, canvasesInFrozenDrives: 0, unplaceableCanvases: [],
+    guestsPotentiallyAffected: { guests: 0, workspaceNotes: 0 },
     references: emptyReferenceRewrite(),
   };
 }

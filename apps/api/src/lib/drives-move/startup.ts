@@ -6,9 +6,11 @@
 //   move when the workspace resumes (GET /api/drives notes_move_pending).
 // - Otherwise every workspace without an ok run for this release
 //   (pending.ts orgsWithoutFinishedMove) is moved and checked (runs.ts
-//   runOrgMove), which records its run. If any move fails or any check isn't
-//   ok, the report is logged (a fixed line, then the JSON report: ids and
-//   counts, never content) and this throws: the API does not listen.
+//   runOrgMove), which records its run (the report in drives_move_runs). If
+//   any move fails or any check isn't ok, a fixed line with its counts is
+//   logged (never the report's messages or mismatch lines; `pnpm drives:move
+//   --check-only` prints the full report) and this throws: the API does not
+//   listen.
 // - A workspace with an ok run is never moved or checked again, so an edit
 //   made after the move (a share removed, a page deleted) can't fail a
 //   later start. Notes written after the move are F15's to stop.
@@ -35,8 +37,10 @@ export async function moveNotesBeforeListen(options: { orgIds?: readonly string[
     const run = await runOrgMove(orgId);
     if (run.ok) continue;
     failed += 1;
-    console.error('[startup] The notes move or its post-move check failed for a workspace; its report follows');
-    console.error(JSON.stringify({ orgId: run.orgId, move: run.move, check: run.check }));
+    // Counts only: the report carries error messages and mismatch lines. `pnpm drives:move --check-only` prints it whole.
+    console.error(`[startup] The notes move or its post-move check failed for a workspace: ${logNumber(run.move?.errors.length ?? 0)} source(s) `
+      + `failed to move, ${logNumber(run.check?.mismatches.length ?? 0)} mismatch(es), ${logNumber(run.check?.sampleFailed.length ?? 0)} `
+      + 'sample failure(s). Run pnpm drives:move --check-only for the full report.');
   }
   if (failed > 0) {
     throw new Error(`[startup] The notes move did not pass for ${logNumber(failed)} workspace(s). Refusing to listen: `

@@ -31,6 +31,7 @@ import * as Y from 'yjs';
 import { getDocumentSchema, jsonToYDoc, yDocToJson } from '@deft/doc-schema';
 import { db } from '../db.js';
 import { canvasHasContent, fitsSizeCap, measureContent, type JSONContent } from './convert-note.js';
+import { canvasPlaceableSql } from './pending.js';
 import { bytesExist, ELIGIBLE_AGENTS_SQL, rowsOf } from './placement.js';
 
 export type PostMoveCheck = { orgId: string; ok: boolean; notesExpected: number; documentsMapped: number; mismatches: string[];
@@ -70,13 +71,17 @@ export async function postMoveCheck(orgId: string, sampleSize = 20): Promise<Pos
       source.targetType)} WHERE src.org_id = ${orgId}`));
     for (const row of rows) tally(source.type, row);
   }
-  // Canvases a page at a time: whether one has content is decided in code.
+  // Canvases a page at a time: whether one has content is decided in code. One nobody can own (canvasPlaceableSql)
+  // is dropped with its content kept in the move's report, so it isn't expected here.
   for (let after = ''; ;) {
-    const page = rowsOf<{ id: string; mapped: boolean; target_ok: boolean; content: unknown }>(await db.execute(sql`
-      SELECT page.*, (SELECT content FROM canvases WHERE id = page.id AND org_id = ${orgId}) AS content FROM (
+    const page = rowsOf<{ id: string; mapped: boolean; target_ok: boolean; content: unknown; placeable: boolean }>(await db.execute(sql`
+      SELECT page.*, (SELECT content FROM canvases WHERE id = page.id AND org_id = ${orgId}) AS content,
+        (SELECT ${canvasPlaceableSql('placeable_canvas')} FROM canvases placeable_canvas WHERE placeable_canvas.id = page.id
+          AND placeable_canvas.org_id = ${orgId}) AS placeable
+      FROM (
         ${mapped('canvases', 'canvas', 'documents', 'document')} WHERE src.org_id = ${orgId} AND src.id > ${after}
         ORDER BY src.id LIMIT ${CANVAS_PAGE}) page`));
-    for (const row of page) if (row.mapped || canvasHasContent(row.content)) tally('canvas', row);
+    for (const row of page) if (row.mapped || (row.placeable && canvasHasContent(row.content))) tally('canvas', row);
     if (page.length < CANVAS_PAGE) break;
     after = page[page.length - 1]!.id;
   }
@@ -154,8 +159,9 @@ export async function postMoveCheck(orgId: string, sampleSize = 20): Promise<Pos
     if (!expected) mismatches.push(`note ${row.id}: its document is in the wrong drive`);
   }
   const canvasPlaces = rowsOf<{ id: string; chat_type: string | null; kind: string; system_key: string | null; owner_user_id: string | null;
-    owner_id: string | null; owner_seated: boolean; owner_is_owner: boolean }>(await db.execute(sql`
+    owner_id: string | null; owner_rule: string | null; frozen: boolean; owner_seated: boolean; owner_is_owner: boolean }>(await db.execute(sql`
     SELECT c.id, chat.type::text AS chat_type, placed_drive.kind, placed_drive.system_key, placed_drive.owner_user_id, m.details->>'owner_id' AS owner_id,
+      m.details->>'owner_rule' AS owner_rule, placed_drive.frozen_at IS NOT NULL AS frozen,
       EXISTS (SELECT 1 FROM space_members seat WHERE seat.space_id = chat.id AND seat.user_id = placed_drive.owner_user_id) AS owner_seated,
       EXISTS (SELECT 1 FROM org_members owner_row WHERE owner_row.org_id = c.org_id AND owner_row.user_id = placed_drive.owner_user_id
         AND owner_row.role = 'owner' AND owner_row.is_active) AS owner_is_owner
@@ -166,8 +172,11 @@ export async function postMoveCheck(orgId: string, sampleSize = 20): Promise<Pos
     LEFT JOIN spaces chat ON chat.id = c.space_id AND chat.org_id = c.org_id
     WHERE c.org_id = ${orgId}`));
   for (const row of canvasPlaces) {
+    // A private canvas: its owner's drive, the owner a chat member or an active owner; or, the last fallback, the
+    // frozen drive of its last editor or chat creator.
+    const frozenFallback = row.frozen && (row.owner_rule === 'frozen_last_editor' || row.owner_rule === 'frozen_chat_creator');
     const expected = row.chat_type === 'public' ? row.system_key === 'shared_notes'
-      : row.kind === 'personal' && row.owner_user_id === row.owner_id && (row.owner_seated || row.owner_is_owner);
+      : row.kind === 'personal' && row.owner_user_id === row.owner_id && (row.owner_seated || row.owner_is_owner || frozenFallback);
     if (!expected) mismatches.push(`canvas ${row.id}: its document is in the wrong drive`);
   }
   // Agents keep reading Shared notes through a view member row each (O-F3).

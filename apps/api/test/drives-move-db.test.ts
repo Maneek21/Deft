@@ -611,37 +611,65 @@ test('a canvas naming its owner\'s file, written by someone else, shows the plac
   assert.notEqual((await one('SELECT staged_expires_at FROM files WHERE id = $1', [s.ownersFile]))!.staged_expires_at, null);
 });
 
-test('the first-owner fallback never picks a frozen drive (O-F5)', { skip: SKIP }, async () => {
-  // A workspace whose only owner is deactivated: a private chat's canvas with no eligible member has nobody to own it.
+test('with no active human owner, a canvas nobody in its chat can own lands in a frozen drive; the move finishes and the API listens', { skip: SKIP }, async () => {
+  // A workspace whose only owner is deactivated, and a private chat whose members are a guest and an agent.
   const org = randomUUID();
   const gone = randomUUID();
   const admin = randomUUID();
-  const chat = randomUUID();
+  const guestZ = randomUUID();
+  const agentZ = randomUUID();
+  const quiet = randomUUID();
+  const orphanChat = randomUUID();
   await q('INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)', [org, `Gone owner ${run}`, `gone-owner-${run}`]);
-  await q(`INSERT INTO users (id, email, name, kind) VALUES ($1, $2, 'Gone', 'human'), ($3, $4, 'Admin', 'human')`,
-    [gone, `gone-${run}@drives.test`, admin, `gone-admin-${run}@drives.test`]);
-  await q(`INSERT INTO org_members (id, org_id, user_id, role, is_active) VALUES ($1, $2, $3, 'owner', false), ($4, $2, $5, 'admin', true)`,
-    [randomUUID(), org, gone, randomUUID(), admin]);
-  await q(`INSERT INTO spaces (id, org_id, name, type, created_by) VALUES ($1, $2, 'quiet', 'private', $3)`, [chat, org, gone]);
-  await q('INSERT INTO space_members (id, space_id, user_id) VALUES ($1, $2, $3)', [randomUUID(), chat, gone]);
+  await q(`INSERT INTO users (id, email, name, kind, is_agent) VALUES ($1, $2, 'Gone', 'human', false), ($3, $4, 'Admin', 'human', false),
+      ($5, $6, 'Guest', 'human', false), ($7, $8, 'Agent', 'agent', true)`,
+  [gone, `gone-${run}@drives.test`, admin, `gone-admin-${run}@drives.test`, guestZ, `gone-guest-${run}@drives.test`, agentZ, `gone-agent-${run}@drives.test`]);
+  await q(`INSERT INTO org_members (id, org_id, user_id, role, is_active) VALUES ($1, $2, $3, 'owner', false), ($4, $2, $5, 'admin', true),
+      ($6, $2, $7, 'guest', true), ($8, $2, $9, 'member', true)`,
+  [randomUUID(), org, gone, randomUUID(), admin, randomUUID(), guestZ, randomUUID(), agentZ]);
+  await q(`INSERT INTO spaces (id, org_id, name, type, created_by) VALUES ($1, $2, 'quiet', 'private', $3), ($4, $2, 'orphan', 'private', NULL)`,
+    [quiet, org, gone, orphanChat]);
+  for (const member of [guestZ, agentZ]) await q('INSERT INTO space_members (id, space_id, user_id) VALUES ($1, $2, $3)', [randomUUID(), quiet, member]);
   const canvas = randomUUID();
-  await q(`INSERT INTO canvases (id, org_id, space_id, title, content, last_edited_by) VALUES ($1, $2, $3, 'Quiet', $4::jsonb, $5)`,
-    [canvas, org, chat, JSON.stringify(paragraphDoc('Nobody to hold it.')), gone]);
+  const orphan = randomUUID();
+  const orphanContent = paragraphDoc('Written by nobody the workspace knows.');
+  await q(`INSERT INTO canvases (id, org_id, space_id, title, content, last_edited_by) VALUES ($1, $2, $3, 'Quiet', $4::jsonb, $5),
+      ($6, $2, $7, 'Orphan', $8::jsonb, NULL)`,
+  [canvas, org, quiet, JSON.stringify(paragraphDoc('Nobody eligible to hold it.')), guestZ, orphan, orphanChat, JSON.stringify(orphanContent)]);
   try {
     const moved = await moveOrg(org);
-    assert.equal((await q(`SELECT 1 FROM drives WHERE org_id = $1 AND frozen_at IS NOT NULL`, [org])).rowCount, 0, 'no frozen drive takes it');
-    assert.ok(moved.errors.some((error) => error.sourceId === canvas), 'without an active human owner it is refused, not frozen');
-    assert.equal(await mapOf('canvas', canvas), undefined);
+    assert.deepEqual(moved.errors, [], 'the move finishes');
+    const doc = await documentOf(canvas, 'canvas');
+    const drive = await driveOf(doc.drive_id);
+    assert.equal(drive.kind, 'personal');
+    assert.equal(drive.owner_user_id, guestZ, 'the last editor\'s drive');
+    assert.notEqual(drive.frozen_at, null, 'frozen until an owner hands it on');
+    assert.equal((await q(`SELECT 1 FROM drives WHERE org_id = $1 AND owner_user_id = $2`, [org, gone])).rowCount, 0, 'never the inactive owner\'s drive');
+    assert.deepEqual(await sharesOf(doc.id), [{ principal_type: 'space', principal_id: quiet, role: 'edit' }], 'the chat keeps its share');
+    assert.equal(await documentRoleFor(guestZ, org, doc.id), 'view', 'which a frozen drive caps at view');
+    assert.equal(moved.canvasesInFrozenDrives, 1);
+    // The one canvas with nobody at all is dropped and counted, its content kept in the report.
+    assert.equal(await mapOf('canvas', orphan), undefined);
+    assert.deepEqual(moved.unplaceableCanvases, [{ canvasId: orphan, spaceId: orphanChat, title: 'Orphan', content: orphanContent }]);
+    assert.equal(moved.emptyCanvases, 1);
+    // The check passes, the run is recorded ok, and the API listens.
+    const run = await runsModule.runOrgMove(org);
+    assert.equal(run.ok, true, (run.check?.mismatches ?? []).join('\n'));
+    await q('DELETE FROM drives_move_runs WHERE org_id = $1', [org]);
+    let listened = false;
+    await moveNotesBeforeListen({ orgIds: [org] }).then(() => { listened = true; });
+    assert.equal(listened, true);
   } finally {
-    for (const table of ['document_attachments', 'note_document_map', 'document_shares', 'document_versions', 'documents', 'doc_folders', 'drive_members', 'drives']) {
+    for (const table of ['drives_move_runs', 'document_attachments', 'note_document_map', 'document_shares', 'document_versions', 'documents', 'doc_folders',
+      'drive_members', 'drives']) {
       await q(`DELETE FROM ${table} WHERE org_id = $1`, [org]);
     }
     await q('DELETE FROM canvases WHERE org_id = $1', [org]);
-    await q('DELETE FROM space_members WHERE space_id = $1', [chat]);
+    await q('DELETE FROM space_members WHERE space_id = ANY($1::text[])', [[quiet, orphanChat]]);
     await q('DELETE FROM spaces WHERE org_id = $1', [org]);
     await q('DELETE FROM org_members WHERE org_id = $1', [org]);
     await q('DELETE FROM orgs WHERE id = $1', [org]);
-    await q('DELETE FROM users WHERE id = ANY($1::text[])', [[gone, admin]]);
+    await q('DELETE FROM users WHERE id = ANY($1::text[])', [[gone, admin, guestZ, agentZ]]);
   }
 });
 
@@ -1090,7 +1118,7 @@ async function collectErrors(fn: () => Promise<unknown>): Promise<{ lines: strin
   }
 }
 
-test('a failed reconciliation refuses to listen, logs the report and records the failed check', { skip: SKIP }, async () => {
+test('a failed reconciliation refuses to listen, logs its counts and records the failed check', { skip: SKIP }, async () => {
   assert.notEqual((await runRow())?.check_ok, true, 'the workspace is not done yet');
   const undo = await addExtraShare();
   try {
@@ -1098,15 +1126,15 @@ test('a failed reconciliation refuses to listen, logs the report and records the
     const { lines, error } = await collectErrors(() => moveNotesBeforeListen({ orgIds: [fx.orgId] }).then(() => { listened = true; }));
     assert.ok(error instanceof Error && /Refusing to listen/.test(error.message));
     assert.equal(listened, false);
-    assert.equal(lines[0], '[startup] The notes move or its post-move check failed for a workspace; its report follows');
-    const logged = JSON.parse(lines[1]!) as { orgId: string; check: { ok: boolean; mismatches: string[] } };
-    assert.equal(logged.orgId, fx.orgId);
-    assert.equal(logged.check.ok, false);
-    assert.ok(logged.check.mismatches.some((m) => m.includes('has an extra share')));
+    // The log carries fixed text and counts only; the full report is the script's (pnpm drives:move --check-only).
+    assert.deepEqual(lines, ['[startup] The notes move or its post-move check failed for a workspace: 0 source(s) failed to move, '
+      + '1 mismatch(es), 0 sample failure(s). Run pnpm drives:move --check-only for the full report.']);
+    assert.equal(lines.some((line) => line.includes(fx.orgId) || line.includes(fx.people.guest)), false, 'no ids in the log');
     const row = (await runRow())!;
     assert.notEqual(row.completed_at, null, 'the move completed');
     assert.equal(row.check_ok, false, 'its check failed');
     assert.equal(row.report.check.ok, false);
+    assert.ok((row.report.check.mismatches as string[]).some((m) => m.includes('has an extra share')), 'the run row keeps the full report');
   } finally {
     await undo();
   }

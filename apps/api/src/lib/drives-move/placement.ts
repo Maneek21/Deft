@@ -214,6 +214,19 @@ export async function personalDriveInTx(tx: Tx, ctx: OrgContext, userId: string)
       if (!(error instanceof PrincipalCannotHoldAccessError)) throw error;
     }
   }
+  return frozenPersonalDriveInTx(tx, ctx, userId);
+}
+
+/**
+ * `userId`'s frozen personal drive (the newest, made here if there is none),
+ * whoever they are, as long as they have an org_members row (the drive's
+ * owner trigger needs it): what personalDriveInTx gives someone who can't
+ * hold access, and the last fallback for a private chat's canvas nobody can
+ * own (move-canvases.ts). Nobody opens it until the workspace owner hands it
+ * on (F6), and shares out of it give view at most.
+ */
+export async function frozenPersonalDriveInTx(tx: Tx, ctx: OrgContext, userId: string): Promise<{ id: string; frozen: true; frozenCreated: boolean }> {
+  if (!ctx.members.has(userId)) throw new MoveError('owner_not_member', 'The owner is not a member of this workspace, so they have no drive to move into');
   const [existing] = rowsOf<{ id: string }>(await tx.execute(sql`
     SELECT id FROM drives
     WHERE org_id = ${ctx.orgId} AND kind = 'personal' AND owner_user_id = ${userId} AND is_deleted = false AND frozen_at IS NOT NULL

@@ -48,6 +48,31 @@ const unfinished = sql`(
     WHERE pending_item.org_id = pending_org.id AND pending_item.source_type = 'note')
 )`;
 
+/**
+ * True for the canvas row `alias` when the move can place it: someone can own
+ * it, as move-canvases.ts chooses (an eligible member of its chat, the
+ * workspace's active human owner, or, for the frozen fallback, its last
+ * editor or its chat's creator with any membership row). A canvas with
+ * content that nobody can own at all is dropped and counted, with its
+ * content kept in the move's report, so it never holds a workspace back.
+ */
+export const canvasPlaceableSql = (alias: string): SQL => {
+  const c = sql.raw(alias);
+  return sql`(EXISTS (SELECT 1 FROM org_members placeable_owner JOIN users placeable_person ON placeable_person.id = placeable_owner.user_id
+      WHERE placeable_owner.org_id = ${c}.org_id AND placeable_owner.role = 'owner' AND placeable_owner.is_active = true
+        AND placeable_person.kind = 'human')
+    OR EXISTS (SELECT 1 FROM org_members placeable_editor WHERE placeable_editor.org_id = ${c}.org_id AND placeable_editor.user_id = ${c}.last_edited_by)
+    OR EXISTS (SELECT 1 FROM spaces placeable_chat JOIN org_members placeable_creator ON placeable_creator.org_id = placeable_chat.org_id
+        AND placeable_creator.user_id = placeable_chat.created_by
+      WHERE placeable_chat.id = ${c}.space_id AND placeable_chat.org_id = ${c}.org_id)
+    OR EXISTS (SELECT 1 FROM space_members placeable_seat
+      JOIN spaces placeable_seat_chat ON placeable_seat_chat.id = placeable_seat.space_id AND placeable_seat_chat.org_id = ${c}.org_id
+      JOIN org_members placeable_member ON placeable_member.org_id = ${c}.org_id AND placeable_member.user_id = placeable_seat.user_id
+        AND placeable_member.is_active = true AND placeable_member.role IN ('owner', 'admin', 'member')
+      JOIN users placeable_seat_person ON placeable_seat_person.id = placeable_seat.user_id AND placeable_seat_person.kind = 'human'
+      WHERE placeable_seat.space_id = ${c}.space_id))`;
+};
+
 const onlyOrgs = (orgIds?: readonly string[]): SQL => (orgIds ? sql`pending_org.id = ANY(${sql.param([...orgIds])}::text[])` : sql`true`);
 
 /** True while the workspace `orgId` has something still to move (one workspace only, consult O-F8). */
@@ -62,6 +87,7 @@ export async function orgNeedsMove(orgId: string): Promise<boolean> {
       WHERE pending_canvas.org_id = ${orgId} AND pending_canvas.id > ${after} AND pending_canvas.content IS NOT NULL
         AND NOT EXISTS (SELECT 1 FROM note_document_map m WHERE m.org_id = pending_canvas.org_id AND m.source_type = 'canvas'
           AND m.source_id = pending_canvas.id)
+        AND ${canvasPlaceableSql('pending_canvas')}
       ORDER BY pending_canvas.id
       LIMIT ${CANVAS_PAGE}`));
     if (page.some((canvas) => canvasHasContent(canvas.content))) return true;
