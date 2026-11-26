@@ -969,7 +969,7 @@ test('an owner who hands a frozen drive to themselves gets their role and pin ba
   assert.equal((await call(owner, 'GET', `/api/drives/${drive}`, undefined, 200)).drive.pinned, true);
 });
 
-test('deleting a cloned agent employee leaves the shared user, its membership and its drive; deleting the source ends its access without a freeze (O-F5)', async (t) => {
+test('deleting a cloned agent employee leaves the shared user, its membership and its drive (O-F5)', async (t) => {
   if (!fx) return t.skip(SKIP);
   const { owner } = fx.people;
   // Deleting the clone: the source still names the user.
@@ -990,19 +990,74 @@ test('deleting a cloned agent employee leaves the shared user, its membership an
   assert.equal(await driveRoleFor(agent, fx.orgId, drive.id), 'full');
   assert.deepEqual(lossesInTx, [], 'nothing was lost');
 
-  // Deleting the source while a clone still names the user: its access ends
-  // (it followed the source), but nothing is frozen and the membership stays.
+});
+
+/** The employee the shared user's access follows (users.agent_employee_id). */
+async function namedEmployee(userId: string): Promise<string | null> {
+  const { rows: [row] } = await fx!.client.query('SELECT agent_employee_id FROM users WHERE id = $1', [userId]);
+  return row?.agent_employee_id ?? null;
+}
+
+test('deleting the source employee repoints the shared user to its clone, which still reaches the drive (Opus-C1)', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { owner } = fx.people;
+  const source = randomUUID();
+  const agent = await fx.addPerson({ kind: 'agent', agentEmployeeId: source });
+  const clone = await cloneEmployee(agent);
+  const drive = await ensurePersonalDrive(fx.orgId, agent);
+  const doc = await fx.insertDocument({ driveId: drive.id, title: 'Agent notes' });
+  resetEvents();
+  await call(owner, 'DELETE', `/api/agent-employees/${source}`, undefined, 200);
+  assert.equal(await namedEmployee(agent), clone, 'the user now follows the clone');
+  assert.equal(await isActiveMember(agent), true);
+  assert.equal((await driveState(drive.id)).frozen, false);
+  assert.equal(await driveRoleFor(agent, fx.orgId, drive.id), 'full', 'the clone, acting as the shared user, still reaches the drive');
+  assert.equal(await documentRoleFor(agent, fx.orgId, doc), 'full');
+  assert.deepEqual(lossesInTx, [], 'nothing was lost');
+});
+
+test('deleting the source while its only clone is paused repoints to the clone: access waits for the resume, the drive isn’t stranded (Opus-C1)', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { owner } = fx.people;
+  const source = randomUUID();
+  const agent = await fx.addPerson({ kind: 'agent', agentEmployeeId: source });
+  const clone = await cloneEmployee(agent);
+  await fx.client.query('UPDATE agent_employees SET is_active = false WHERE id = $1', [clone]);
+  const drive = await ensurePersonalDrive(fx.orgId, agent);
+  resetEvents();
+  await call(owner, 'DELETE', `/api/agent-employees/${source}`, undefined, 200);
+  assert.equal(await namedEmployee(agent), clone);
+  assert.equal(await isActiveMember(agent), true);
+  assert.equal((await driveState(drive.id)).frozen, false);
+  lossRecorded({ orgId: fx.orgId, userIds: [agent] });
+  assert.equal(lossesInTx.length, 1, 'only the user’s own loss');
+  assert.equal(await driveRoleFor(agent, fx.orgId, drive.id), null, 'no access while the clone is paused');
+  await call(owner, 'POST', `/api/agent-employees/${clone}/resume`, {}, 200);
+  assert.equal(await driveRoleFor(agent, fx.orgId, drive.id), 'full', 'resuming the clone reaches the drive again');
+});
+
+test('the shared user follows an active surviving clone before a paused one, then the oldest (Opus-C1)', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { owner } = fx.people;
+  // A paused clone made first, an active one after: the active one is chosen.
+  const source = randomUUID();
+  const agent = await fx.addPerson({ kind: 'agent', agentEmployeeId: source });
+  const pausedOlder = await cloneEmployee(agent);
+  const activeNewer = await cloneEmployee(agent);
+  await fx.client.query(`UPDATE agent_employees SET is_active = false, created_at = now() - interval '2 days' WHERE id = $1`, [pausedOlder]);
+  await fx.client.query(`UPDATE agent_employees SET created_at = now() - interval '1 day' WHERE id = $1`, [activeNewer]);
+  await call(owner, 'DELETE', `/api/agent-employees/${source}`, undefined, 200);
+  assert.equal(await namedEmployee(agent), activeNewer);
+
+  // Two active clones: the older one is chosen.
   const source2 = randomUUID();
   const agent2 = await fx.addPerson({ kind: 'agent', agentEmployeeId: source2 });
-  await cloneEmployee(agent2);
-  const drive2 = await ensurePersonalDrive(fx.orgId, agent2);
-  resetEvents();
+  const newer = await cloneEmployee(agent2);
+  const older = await cloneEmployee(agent2);
+  await fx.client.query(`UPDATE agent_employees SET created_at = now() - interval '1 day' WHERE id = $1`, [newer]);
+  await fx.client.query(`UPDATE agent_employees SET created_at = now() - interval '3 days' WHERE id = $1`, [older]);
   await call(owner, 'DELETE', `/api/agent-employees/${source2}`, undefined, 200);
-  assert.equal(await isActiveMember(agent2), true);
-  assert.equal((await driveState(drive2.id)).frozen, false);
-  lossRecorded({ orgId: fx.orgId, userIds: [agent2] });
-  assert.equal(lossesInTx.length, 1, 'only the user’s own loss');
-  assert.equal(await driveRoleFor(agent2, fx.orgId, drive2.id), null, 'its access followed the source');
+  assert.equal(await namedEmployee(agent2), older);
 });
 
 test('freezing a personal drive removes its chat link, so the chat can link another drive (O-F7)', async (t) => {
@@ -1042,4 +1097,90 @@ test('the offboarding preview names the members who can’t be given a drive, a 
   assert.equal(cannot.includes(member2), false);
   assert.equal(cannot.includes(fx.people.agentUser), false, 'an agent with an active employee can hold a drive');
   assert.equal(cannot.includes(leaver), false, 'not the person being removed');
+});
+
+// ── Consult fixes (batch C) ─────────────────────────────────────────────────
+
+test('a recipient paused, or deactivated, while a grant waits on their rows is refused (S-F6)', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member } = fx.people;
+  const drive = (await call(member, 'POST', '/api/drives', { name: 'Granted while pausing', kind: 'private' }, 201)).drive.id as string;
+
+  // Adding an agent whose employee is being paused.
+  const employeeId = randomUUID();
+  const agent = await fx.addPerson({ kind: 'agent', agentEmployeeId: employeeId });
+  let holder = await lockHolder();
+  try {
+    await holder.query('BEGIN');
+    await holder.query('UPDATE agent_employees SET is_active = false WHERE id = $1', [employeeId]);
+    let settled = false;
+    const grant = fx.request(member, 'POST', `/api/drives/${drive}/members`, { principal_type: 'user', principal_id: agent, role: 'view' })
+      .finally(() => { settled = true; });
+    await waitForLockWaiters(1, 'the grant waits on the recipient’s employee row');
+    assert.equal(settled, false);
+    await holder.query('COMMIT');
+    const res = await grant;
+    const body = await json(res);
+    assert.equal(res.status, 400, JSON.stringify(body));
+    assert.equal(body.code, 'PRINCIPAL_CANNOT_HOLD_ACCESS');
+  } finally {
+    await holder.query('ROLLBACK').catch(() => undefined);
+    await holder.end();
+  }
+  assert.deepEqual(await membersOf(drive), [[member, 'full']], 'nothing was granted');
+
+  // Raising a person who is being deactivated.
+  const leaving = await person('Raised While Leaving');
+  await call(member, 'POST', `/api/drives/${drive}/members`, { principal_type: 'user', principal_id: leaving, role: 'view' }, 201);
+  const { rows: [row] } = await fx.client.query('SELECT id FROM drive_members WHERE drive_id = $1 AND principal_id = $2', [drive, leaving]);
+  holder = await lockHolder();
+  try {
+    await holder.query('BEGIN');
+    await holder.query('UPDATE org_members SET is_active = false WHERE org_id = $1 AND user_id = $2', [fx.orgId, leaving]);
+    let settled = false;
+    const raise = fx.request(member, 'PATCH', `/api/drives/${drive}/members/${row.id}`, { role: 'edit' }).finally(() => { settled = true; });
+    await waitForLockWaiters(1, 'the raise waits on the recipient’s membership row');
+    assert.equal(settled, false);
+    await holder.query('COMMIT');
+    const res = await raise;
+    const body = await json(res);
+    assert.equal(res.status, 400, JSON.stringify(body));
+    assert.equal(body.code, 'PRINCIPAL_CANNOT_HOLD_ACCESS');
+  } finally {
+    await holder.query('ROLLBACK').catch(() => undefined);
+    await holder.end();
+  }
+  const { rows: [after] } = await fx.client.query('SELECT role FROM drive_members WHERE id = $1', [row.id]);
+  assert.equal(after.role, 'view', 'not raised');
+});
+
+test('archiving a chat while a grant to it waits refuses an unjoined reader; a member of the chat can still grant it (N2)', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member } = fx.people;
+  const reader = await person('Unjoined Public Reader');
+  const drive = (await call(reader, 'POST', '/api/drives', { name: 'Shared with a public chat', kind: 'private' }, 201)).drive.id as string;
+  const holder = await lockHolder();
+  try {
+    await holder.query('BEGIN');
+    await holder.query('UPDATE spaces SET is_archived = true WHERE id = $1', [fx.spaces.team]);
+    let settled = false;
+    const grant = fx.request(reader, 'POST', `/api/drives/${drive}/members`, { principal_type: 'space', principal_id: fx.spaces.team, role: 'view' })
+      .finally(() => { settled = true; });
+    await waitForLockWaiters(1, 'the grant waits on the chat row');
+    assert.equal(settled, false);
+    await holder.query('COMMIT');
+    const res = await grant;
+    const body = await json(res);
+    assert.equal(res.status, 400, JSON.stringify(body));
+    assert.equal(body.code, 'PRINCIPAL_CANNOT_HOLD_ACCESS', 'an archived chat is unreadable to someone who never joined it');
+    assert.deepEqual(await membersOf(drive), [[reader, 'full']]);
+
+    // A member of the archived chat still grants it (an archived chat keeps granting its members, rule C7).
+    const memberDrive = (await call(member, 'POST', '/api/drives', { name: 'Member shares the chat', kind: 'private' }, 201)).drive.id as string;
+    await call(member, 'POST', `/api/drives/${memberDrive}/members`, { principal_type: 'space', principal_id: fx.spaces.team, role: 'view' }, 201);
+  } finally {
+    await holder.query('ROLLBACK').catch(() => undefined);
+    await holder.end();
+    await fx.client.query('UPDATE spaces SET is_archived = false WHERE id = $1', [fx.spaces.team]);
+  }
 });

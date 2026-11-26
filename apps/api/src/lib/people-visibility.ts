@@ -28,10 +28,11 @@ export {
  * A person with no active membership gets the guest view (the narrowest). An
  * agent (an agent employee of this workspace, or a user of kind agent) is a
  * guest only when its role says so: one without a membership row keeps the
- * view it had before this rule.
+ * view it had before this rule. Reads through `executor` (the pool, or a
+ * caller's transaction, so it shares that transaction's snapshot).
  */
-export async function peopleViewer(orgId: string, userId: string): Promise<PeopleViewer> {
-  const [row] = await db.select({
+export async function peopleViewer(orgId: string, userId: string, executor: Pick<typeof db, 'select'> = db): Promise<PeopleViewer> {
+  const [row] = await executor.select({
     role: orgMembers.role,
     kind: users.kind,
     employee: sql<boolean>`EXISTS (SELECT 1 FROM ${agentEmployees}
@@ -45,10 +46,10 @@ export async function peopleViewer(orgId: string, userId: string): Promise<Peopl
   return { orgId, userId, guest };
 }
 
-/** The people a guest may see, for rows already loaded; null when the viewer sees everyone. */
-export async function visiblePersonIds(viewer: PeopleViewer): Promise<ReadonlySet<string> | null> {
+/** The people a guest may see, for rows already loaded; null when the viewer sees everyone. Reads through `executor`. */
+export async function visiblePersonIds(viewer: PeopleViewer, executor: Pick<typeof db, 'execute'> = db): Promise<ReadonlySet<string> | null> {
   if (!viewer.guest) return null;
-  const rows = await db.execute(sharedSpacePeopleSql(viewer));
+  const rows = await executor.execute(sharedSpacePeopleSql(viewer));
   const ids = new Set(((rows as unknown as { rows?: Array<{ user_id: string }> }).rows ?? []).map((row) => row.user_id));
   ids.add(viewer.userId);
   return ids;

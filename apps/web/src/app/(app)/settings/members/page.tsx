@@ -417,16 +417,24 @@ export default function MembersPage() {
   // owner hands it on. The replacement picker shows for open work or for that
   // drive, and a replacement is sent only for one of them.
   const offboardingHasDrive = offboardingPreview?.personal_drive_with_documents === true;
-  // With a drive to hand on, the picker offers only people who can hold it
-  // (the preview names the rest), and a choice that isn't offered falls back
-  // to the first who is.
-  const offboardingPickerOptions = useMemo(() => {
+  // Who can be handed the drive: everyone offered, less those the preview
+  // says can't hold it. The picker narrows to them only when the remover
+  // chooses to hand the drive over; with "Freeze it", or before a choice, any
+  // active member can take the open work, as the API accepts. A choice that
+  // isn't offered falls back to the first who is.
+  const offboardingDriveHolders = useMemo(() => {
     if (!offboardingHasDrive) return offboardingReplacementOptions;
     const cannotHold = new Set(offboardingPreview?.cannot_hold_drive_ids ?? []);
     return offboardingReplacementOptions.filter((member) => !cannotHold.has(member.id));
   }, [offboardingHasDrive, offboardingPreview, offboardingReplacementOptions]);
+  const offboardingPickerOptions = offboardingHasDrive && offboardingDriveChoice === 'hand_over'
+    ? offboardingDriveHolders
+    : offboardingReplacementOptions;
   const offboardingSelected = offboardingPickerOptions.find((member) => member.id === offboardingReplacementId)
     ?? offboardingPickerOptions[0] ?? null;
+  // Who "Hand My drive to" names: the current choice if they can hold it, else the first who can.
+  const offboardingDriveHeir = offboardingDriveHolders.find((member) => member.id === offboardingReplacementId)
+    ?? offboardingDriveHolders[0] ?? null;
   const offboardingSendsReplacement = offboardingHandoffCount > 0 || (offboardingHasDrive && offboardingDriveChoice === 'hand_over');
 
   const handleInvite = async (e: React.FormEvent) => {
@@ -1041,10 +1049,13 @@ export default function MembersPage() {
                                             name="offboarding-personal-drive"
                                             data-testid="offboarding-drive-hand-over"
                                             checked={offboardingDriveChoice === 'hand_over'}
-                                            onChange={() => setOffboardingDriveChoice('hand_over')}
-                                            disabled={!offboardingSelected}
+                                            onChange={() => {
+                                              setOffboardingDriveChoice('hand_over');
+                                              if (offboardingDriveHeir) setOffboardingReplacementId(offboardingDriveHeir.id);
+                                            }}
+                                            disabled={!offboardingDriveHeir}
                                           />
-                                          <span>Hand My drive to {offboardingSelected?.name ?? 'the replacement'}</span>
+                                          <span>Hand My drive to {offboardingDriveHeir?.name ?? 'the replacement'}</span>
                                         </label>
                                         <label className="flex items-center gap-2">
                                           <input

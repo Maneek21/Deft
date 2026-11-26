@@ -58,6 +58,20 @@
 // the membership row also holds against changes that don't take the
 // room-access lock (deleting an agent employee locks the agent's rows).
 //
+// A grant made or raised also locks its recipient between the actor and the
+// drive (lockRecipientInTx): a person's org_members row, then an agent's
+// employee row, FOR SHARE, or a chat's spaces row FOR SHARE, and checks the
+// recipient under those locks. A removal locks the person's room-access lock,
+// then their users and org_members rows FOR UPDATE, then their drive; a pause
+// (manageAgent) locks their users and org_members rows, then updates the
+// employee; archiving a chat updates its spaces row and nothing here. Each
+// takes the recipient's rows in the same order as a grant and holds nothing
+// a grant takes before them, so one waits for the other and none cycles.
+//
+// The privileged reads (the members panel, drives without a manager, frozen
+// drives) run their authorization and their data reads in one read-only,
+// repeatable-read transaction (READ_SNAPSHOT), so both see one snapshot.
+//
 // Deleting a drive, or changing its Knowledge default, raises a lifecycle
 // event for each of its documents, so Knowledge withdraws or re-learns them
 // (H4). Neither sends a socket event: after a delete nobody can view the
@@ -78,6 +92,7 @@ import {
 } from '../lib/drives.js';
 import { emitVisibleNotifications } from '../lib/notification-delivery.js';
 import { lockRoomAccessChange } from '../lib/room-access-lock.js';
+import type { PgTransactionConfig } from 'drizzle-orm/pg-core';
 import { createNotificationIfAllowed } from '../lib/notification-policy.js';
 import { asStoredNotificationType } from '../lib/notification-types.js';
 import { canSeePerson, peopleViewer, visiblePersonIds } from '../lib/people-visibility.js';
@@ -225,8 +240,11 @@ async function locked(tx: Tx, user: AuthUser, driveId: string, need: 'view' | 'f
   return access!;
 }
 
-async function isPinned(userId: string, orgId: string, driveId: string): Promise<boolean> {
-  const [pin] = await db.select({ id: docFavorites.id }).from(docFavorites).where(and(
+/** One snapshot for a privileged read's authorization and its data (header). */
+const READ_SNAPSHOT: PgTransactionConfig = { isolationLevel: 'repeatable read', accessMode: 'read only' };
+
+async function isPinned(userId: string, orgId: string, driveId: string, reader: Reader = db): Promise<boolean> {
+  const [pin] = await reader.select({ id: docFavorites.id }).from(docFavorites).where(and(
     eq(docFavorites.org_id, orgId), eq(docFavorites.user_id, userId), eq(docFavorites.target_type, 'drive'), eq(docFavorites.target_id, driveId),
   )).limit(1);
   return Boolean(pin);
@@ -275,14 +293,26 @@ function memberChange(orgId: string, driveId: string, row: Pick<DriveMemberRow, 
 }
 
 /**
- * Refuses a grant, made or raised, to someone who could never hold access: a
- * person must be an active human member (guests included) or an agent user
- * with an active employee; a chat must be one of this workspace's that the
- * caller can read. Reads through `tx`.
+ * A grant's recipient, locked in its slot of the lock order (after the actor,
+ * before the drive; header) and checked under the locks. A person:
+ * their org_members row and (an agent's) employee row FOR SHARE, then
+ * canHoldDocumentAccess (an active human member, guests included, or an
+ * agent user with an active employee), so a deactivation or pause commits
+ * first and is seen, or waits for the grant. A chat: its spaces row FOR
+ * SHARE, then the caller's authority to share with it (canReadSpace), so an
+ * archive (which ends unjoined reading) commits first and is seen, or waits.
+ * Returns the refusal for a grant made or raised, or null; the caller throws
+ * it after the drive's own checks.
  */
-async function principalRefusal(tx: Tx, user: AuthUser, principalType: 'user' | 'space', principalId: string): Promise<Refusal | null> {
-  if (principalType === 'user') return await canHoldDocumentAccess(principalId, user.org_id, tx) ? null : CANNOT_HOLD;
+async function lockRecipientInTx(tx: Tx, user: AuthUser, principalType: 'user' | 'space', principalId: string): Promise<Refusal | null> {
+  if (principalType === 'user') return await canHoldDocumentAccessLocked(tx, user.org_id, principalId) ? null : CANNOT_HOLD;
+  await lockChatInTx(tx, user, principalId);
   return await canReadSpace(principalId, user.id, user.org_id, tx) ? null : CANNOT_HOLD;
+}
+
+/** A chat's spaces row FOR SHARE, in the recipient slot of the lock order (header). */
+async function lockChatInTx(tx: Tx, user: AuthUser, spaceId: string): Promise<void> {
+  await tx.select({ id: spaces.id }).from(spaces).where(and(eq(spaces.id, spaceId), eq(spaces.org_id, user.org_id))).for('share');
 }
 
 /**
@@ -458,10 +488,13 @@ driveRoutes.get('/', async (c) => {
 driveRoutes.get('/without-manager', async (c) => {
   try {
     const user = c.get('user');
-    const role = await workspaceRole(db, user);
-    if (role !== 'owner' && role !== 'admin') return answer(c, OWNERS_AND_ADMINS);
-    const listed = await db.execute(drivesWithoutManagerQuery(user.org_id));
-    const rows = listed.rows as Array<{ id: string; name: string; icon: string | null; created_at: Date | string; member_count: number }>;
+    const rows = await db.transaction(async (tx) => {
+      const role = await workspaceRole(tx, user);
+      if (role !== 'owner' && role !== 'admin') return null;
+      const listed = await tx.execute(drivesWithoutManagerQuery(user.org_id));
+      return listed.rows as Array<{ id: string; name: string; icon: string | null; created_at: Date | string; member_count: number }>;
+    }, READ_SNAPSHOT);
+    if (!rows) return answer(c, OWNERS_AND_ADMINS);
     return c.json({
       drives: rows.map((row) => ({
         id: row.id, name: row.name, icon: row.icon, member_count: Number(row.member_count), created_at: row.created_at,
@@ -478,9 +511,12 @@ driveRoutes.get('/without-manager', async (c) => {
 driveRoutes.get('/frozen', async (c) => {
   try {
     const user = c.get('user');
-    if ((await workspaceRole(db, user)) !== 'owner') return answer(c, OWNER_ONLY);
-    const frozen = await db.execute(frozenDrivesQuery(user.org_id));
-    const rows = frozen.rows as Array<{ id: string; frozen_at: Date | string; former_owner_id: string; former_owner_name: string | null }>;
+    const rows = await db.transaction(async (tx) => {
+      if ((await workspaceRole(tx, user)) !== 'owner') return null;
+      const frozen = await tx.execute(frozenDrivesQuery(user.org_id));
+      return frozen.rows as Array<{ id: string; frozen_at: Date | string; former_owner_id: string; former_owner_name: string | null }>;
+    }, READ_SNAPSHOT);
+    if (!rows) return answer(c, OWNER_ONLY);
     return c.json({
       drives: rows.map((row) => ({
         id: row.id, frozen_at: row.frozen_at, former_owner: { id: row.former_owner_id, name: row.former_owner_name },
@@ -612,52 +648,57 @@ driveRoutes.delete('/:id', async (c) => {
 driveRoutes.get('/:id/members', async (c) => {
   try {
     const user = c.get('user');
-    const access = await driveAccess(db, user, c.req.param('id'));
-    const refused = refuse(access, 'manage');
-    if (refused) return answer(c, refused);
-    const drive = access!.drive;
-    const rows = await db.select().from(driveMembers).where(eq(driveMembers.drive_id, drive.id))
-      .orderBy(asc(driveMembers.created_at), asc(driveMembers.id));
-    // Names follow the people rule (a guest sees only people they share a
-    // chat with) and the chat rule (a chat's name only for those who can read it).
-    const names = new Map<string, string>();
-    const userIds = rows.filter((row) => row.principal_type === 'user').map((row) => row.principal_id);
-    if (userIds.length > 0) {
-      const visible = await visiblePersonIds(await peopleViewer(user.org_id, user.id));
-      for (const person of await db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, userIds))) {
-        if (canSeePerson(visible, person.id)) names.set(person.id, person.name);
+    // Authorization and every read below share one snapshot (READ_SNAPSHOT).
+    const result = await db.transaction(async (tx) => {
+      const access = await driveAccess(tx, user, c.req.param('id'));
+      const refused = refuse(access, 'manage');
+      if (refused) return { ok: false as const, refused };
+      const drive = access!.drive;
+      const rows = await tx.select().from(driveMembers).where(eq(driveMembers.drive_id, drive.id))
+        .orderBy(asc(driveMembers.created_at), asc(driveMembers.id));
+      // Names follow the people rule (a guest sees only people they share a
+      // chat with) and the chat rule (a chat's name only for those who can read it).
+      const names = new Map<string, string>();
+      const userIds = rows.filter((row) => row.principal_type === 'user').map((row) => row.principal_id);
+      if (userIds.length > 0) {
+        const visible = await visiblePersonIds(await peopleViewer(user.org_id, user.id, tx), tx);
+        for (const person of await tx.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, userIds))) {
+          if (canSeePerson(visible, person.id)) names.set(person.id, person.name);
+        }
       }
-    }
-    const spaceIds = rows.filter((row) => row.principal_type === 'space').map((row) => row.principal_id);
-    if (spaceIds.length > 0) {
-      const readable = await db.select({ id: spaces.id, name: spaces.name }).from(spaces).where(and(
-        inArray(spaces.id, spaceIds), eq(spaces.org_id, user.org_id),
-        or(
-          sql`EXISTS (SELECT 1 FROM ${spaceMembers} WHERE ${spaceMembers.space_id} = ${spaces.id} AND ${spaceMembers.user_id} = ${user.id})`,
-          unjoinedPublicSpaceReadableSql(user.id),
-        ),
-      ));
-      for (const chat of readable) names.set(chat.id, chat.name);
-    }
-    const changes = await db.select({ id: auditLog.id, actor_id: auditLog.actor_id, metadata: auditLog.metadata, created_at: auditLog.created_at })
-      .from(auditLog)
-      .where(and(
-        eq(auditLog.org_id, user.org_id), eq(auditLog.entity_type, 'drive'), eq(auditLog.entity_id, drive.id),
-        eq(auditLog.action, 'drive_member_changed_by_admin'),
-      ))
-      .orderBy(desc(auditLog.created_at))
-      .limit(20);
-    return c.json({
-      members: rows.map((row) => memberShape(row, names.get(row.principal_id) ?? null)),
-      admin_changes: changes.map((entry) => {
-        const meta = (entry.metadata ?? {}) as Partial<AdminChange>;
-        return {
-          id: entry.id, actor_id: entry.actor_id, change: meta.change ?? null, principal_type: meta.principal_type ?? null,
-          principal_id: meta.principal_id ?? null, role: meta.role ?? null, previous_role: meta.previous_role ?? null, created_at: entry.created_at,
-        };
-      }),
-      admin_path: access!.adminPath,
-    });
+      const spaceIds = rows.filter((row) => row.principal_type === 'space').map((row) => row.principal_id);
+      if (spaceIds.length > 0) {
+        const readable = await tx.select({ id: spaces.id, name: spaces.name }).from(spaces).where(and(
+          inArray(spaces.id, spaceIds), eq(spaces.org_id, user.org_id),
+          or(
+            sql`EXISTS (SELECT 1 FROM ${spaceMembers} WHERE ${spaceMembers.space_id} = ${spaces.id} AND ${spaceMembers.user_id} = ${user.id})`,
+            unjoinedPublicSpaceReadableSql(user.id),
+          ),
+        ));
+        for (const chat of readable) names.set(chat.id, chat.name);
+      }
+      const changes = await tx.select({ id: auditLog.id, actor_id: auditLog.actor_id, metadata: auditLog.metadata, created_at: auditLog.created_at })
+        .from(auditLog)
+        .where(and(
+          eq(auditLog.org_id, user.org_id), eq(auditLog.entity_type, 'drive'), eq(auditLog.entity_id, drive.id),
+          eq(auditLog.action, 'drive_member_changed_by_admin'),
+        ))
+        .orderBy(desc(auditLog.created_at))
+        .limit(20);
+      return { ok: true as const, body: {
+        members: rows.map((row) => memberShape(row, names.get(row.principal_id) ?? null)),
+        admin_changes: changes.map((entry) => {
+          const meta = (entry.metadata ?? {}) as Partial<AdminChange>;
+          return {
+            id: entry.id, actor_id: entry.actor_id, change: meta.change ?? null, principal_type: meta.principal_type ?? null,
+            principal_id: meta.principal_id ?? null, role: meta.role ?? null, previous_role: meta.previous_role ?? null, created_at: entry.created_at,
+          };
+        }),
+        admin_path: access!.adminPath,
+      } };
+    }, READ_SNAPSHOT);
+    if (!result.ok) return answer(c, result.refused);
+    return c.json(result.body);
   } catch {
     return failed(c, 'list the drive’s members');
   }
@@ -672,9 +713,9 @@ driveRoutes.post('/:id/members', async (c) => {
     const { principal_type: principalType, principal_id: principalId, role } = parsed.data;
     const outcome = await db.transaction(async (tx) => {
       await lockActorInTx(tx, user);
+      const recipientRefusal = await lockRecipientInTx(tx, user, principalType, principalId);
       const access = await locked(tx, user, c.req.param('id'), 'manage');
-      const refused = await principalRefusal(tx, user, principalType, principalId);
-      if (refused) throw new Refused(refused);
+      if (recipientRefusal) throw new Refused(recipientRefusal);
       const [existing] = await tx.select({ id: driveMembers.id }).from(driveMembers).where(and(
         eq(driveMembers.drive_id, access.drive.id), eq(driveMembers.principal_type, principalType), eq(driveMembers.principal_id, principalId),
       )).limit(1);
@@ -723,17 +764,23 @@ driveRoutes.patch('/:id/members/:memberId', async (c) => {
     if (!parsed.success) return answer(c, invalid());
     const { role } = parsed.data;
     const outcome = await db.transaction(async (tx) => {
-      // The lock order in the header; raising a link row then share-locks the caller's chat seat.
+      // The lock order in the header: actor, recipient, drive; raising a link
+      // row then share-locks the caller's chat seat. The row's principal is
+      // read first to lock it in its slot; a member row's principal never
+      // changes, and lockedMember re-reads the row under the drive lock.
       await lockActorInTx(tx, user);
+      const [target] = await tx.select({ principal_type: driveMembers.principal_type, principal_id: driveMembers.principal_id })
+        .from(driveMembers)
+        .where(and(eq(driveMembers.id, c.req.param('memberId')), eq(driveMembers.drive_id, c.req.param('id')))).limit(1);
+      const recipientRefusal = target ? await lockRecipientInTx(tx, user, target.principal_type, target.principal_id) : null;
       const access = await locked(tx, user, c.req.param('id'), 'manage');
       const row = await lockedMember(tx, access, c.req.param('memberId'));
       if (row.role === role) return { access, member: row, previous: row.role, loss: null };
       const lowered = lowers(row.role, role);
       if (!lowered) {
-        // A stronger grant is a new grant: the principal rule, and for a link the link rule.
+        // A stronger grant is a new grant: the recipient rule, and for a link the link rule.
         if (row.is_link) await requireChatSeatLocked(tx, user, row.principal_id);
-        const refused = await principalRefusal(tx, user, row.principal_type, row.principal_id);
-        if (refused) throw new Refused(refused);
+        if (recipientRefusal) throw new Refused(recipientRefusal);
       }
       const [member] = await tx.update(driveMembers).set({ role, updated_at: new Date() }).where(eq(driveMembers.id, row.id)).returning();
       if (access.adminPath) {
@@ -789,8 +836,10 @@ driveRoutes.post('/:id/link-space', async (c) => {
     if (!parsed.success) return answer(c, invalid());
     const { space_id: spaceId, role } = parsed.data;
     const outcome = await db.transaction(async (tx) => {
-      // The lock order in the header: actor, drive, then their chat seat.
+      // The lock order in the header: actor, the chat (recipient), drive,
+      // then the caller's seat in the chat, the link's authority check.
       await lockActorInTx(tx, user);
+      await lockChatInTx(tx, user, spaceId);
       const access = await locked(tx, user, c.req.param('id'), 'full');
       await requireChatSeatLocked(tx, user, spaceId);
       const [linked] = await tx.select({ id: driveMembers.id }).from(driveMembers).where(and(
@@ -879,11 +928,18 @@ driveRoutes.post('/:id/handover', async (c) => {
       if (!drive) throw new Refused(NOT_FOUND);
       if (drive.kind !== 'personal' || drive.frozen_at === null) throw new Refused(NOT_FROZEN);
       if (!holderEligible) throw new Refused(CANNOT_HOLD);
-      return handOverPersonalDriveInTx(tx, drive, parsed.data.user_id, user.id, 'handover');
+      const handed = await handOverPersonalDriveInTx(tx, drive, parsed.data.user_id, user.id, 'handover');
+      // The answer is read here, so nothing after the commit can fail it.
+      const role = await driveRoleFor(user.id, user.org_id, drive.id, tx);
+      return { ...handed, role, pinned: await isPinned(user.id, user.org_id, drive.id, tx) };
     });
-    await finishDriveHandover(outcome.handover);
-    const role = await driveRoleFor(user.id, user.org_id, outcome.drive.id);
-    return c.json({ drive: driveShape(outcome.drive, role, await isPinned(user.id, user.org_id, outcome.drive.id)) });
+    // Committed: the access change and the holder's notice, never failing the answer.
+    try {
+      await finishDriveHandover(outcome.handover);
+    } catch {
+      console.error('[drives] finishing a handover after commit failed');
+    }
+    return c.json({ drive: driveShape(outcome.drive, outcome.role, outcome.pinned) });
   } catch (error) {
     if (error instanceof Refused) return answer(c, error.refusal);
     if (error instanceof PrincipalCannotHoldAccessError) return answer(c, CANNOT_HOLD);

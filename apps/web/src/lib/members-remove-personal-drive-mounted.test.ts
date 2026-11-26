@@ -378,11 +378,12 @@ test('Members page: the drive goes only to someone who can hold it, and a refusa
     await tab.getByRole('button', { name: 'Remove', exact: true }).click();
     await tab.getByText(/Also revokes/).waitFor();
     const picker = tab.getByTestId('offboarding-replacement-select');
-    const offered = await picker.locator('option').evaluateAll((options: HTMLOptionElement[]) => options.map((option) => option.value));
-    assert.deepEqual(offered, ['heir', 'other'], 'the paused agent is not offered');
-    assert.equal(await picker.inputValue(), 'heir', 'the default falls to the first who can hold it');
-
+    // "Hand My drive to" names the first who can hold it, not the paused agent listed first.
+    assert.match((await tab.getByText(/^Hand My drive to/).textContent()) ?? '', /Hand My drive to Hal Heir/);
     await tab.getByTestId('offboarding-drive-hand-over').check();
+    const offered = await picker.locator('option').evaluateAll((options: HTMLOptionElement[]) => options.map((option) => option.value));
+    assert.deepEqual(offered, ['heir', 'other'], 'handing the drive over, the paused agent is not offered');
+    assert.equal(await picker.inputValue(), 'heir', 'the default falls to the first who can hold it');
     const confirm = tab.getByRole('button', { name: 'Confirm remove' });
     await confirm.click();
     await tab.getByText('The replacement can’t be given this person’s personal drive; choose someone else').waitFor();
@@ -399,6 +400,79 @@ test('Members page: the drive goes only to someone who can hold it, and a refusa
       { replacement_user_id: 'heir', personal_drive: 'hand_over' },
       { replacement_user_id: 'other', personal_drive: 'hand_over' },
     ]);
+  } finally {
+    await browser.close();
+  }
+});
+
+/**
+ * The picker narrows to people who can hold the drive only when the remover
+ * hands it over (consult Sol-C1). With "Freeze it", anyone active can take
+ * the open work, a paused agent included, as the API accepts.
+ */
+test('Members page: with Freeze it, someone who can’t hold a drive is still offered for the open work; with Hand over, not', async () => {
+  const pausedAgent = {
+    ...member('paused-agent', 'Paused Pat'), kind: 'agent', email: null,
+    agent: { id: 'emp-paused', name: 'Paused Pat', role: 'project_manager', trust_level: 'standard', runtime_kind: 'custom', certification_status: null, is_active: false, unhealthy: false, last_mcp_call_at: null, last_heartbeat_at: null },
+  };
+  const members = [pausedAgent, ...MEMBERS];
+  const browser = await chromium.launch({ headless: true, ...(process.env.DEFT_TEST_BROWSER_EXECUTABLE ? { executablePath: process.env.DEFT_TEST_BROWSER_EXECUTABLE } : {}) });
+  try {
+    const tab = await browser.newPage();
+    tab.setDefaultTimeout(6000);
+    const deletes: Array<Record<string, unknown>> = [];
+    await tab.route('**/*', (route: any) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const json = (body: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+      if (url.origin !== 'http://127.0.0.1') return route.abort();
+      if (url.pathname === '/settings/members') return route.fulfill({ contentType: 'text/html', body: '<div id="root"></div>' });
+      if (url.pathname === '/api/auth/me') {
+        return json({ user: { id: 'viewer', name: 'Viewer', email: 'viewer@example.test', timezone: 'UTC', role: 'owner' }, org: { id: 'org', name: 'Org', slug: 'org' } });
+      }
+      if (url.pathname === '/api/members/directory') return json({ members, invites: [], summary: { active: 4, pending: 0, inactive: 0, agents: 1 } });
+      if (url.pathname === '/api/members/seats') return json({ hosted: false });
+      if (url.pathname === '/api/members/leaver/offboarding-preview') {
+        return json({ ...preview(2, true), cannot_hold_drive_ids: ['paused-agent'] });
+      }
+      if (url.pathname === '/api/members/leaver' && request.method() === 'DELETE') {
+        deletes.push(JSON.parse(request.postData() ?? '{}'));
+        return json({ success: true, receipt: {} });
+      }
+      const detail = /^\/api\/members\/([^/]+)\/detail$/.exec(url.pathname);
+      if (detail) {
+        return json({ member: members.find((m) => m.id === detail[1]), spaces: [], open_tasks: [], led_projects: [], pending_invites: [], mcp_tokens: [], oauth_grants: [] });
+      }
+      return route.abort();
+    });
+    await tab.goto('http://127.0.0.1/settings/members');
+    await tab.evaluate((access: string) => {
+      localStorage.setItem('deft-access-token', access);
+      localStorage.setItem('deft-refresh-token', access);
+    }, token({ id: 'viewer', org_id: 'org', sid: 'session', jti: 'v1' }));
+    await tab.addScriptTag({ content: await bundle() });
+
+    await tab.getByRole('button', { name: /Lea Leaver/ }).first().click();
+    await tab.getByText('Admin actions').waitFor();
+    await tab.getByRole('button', { name: 'Remove', exact: true }).click();
+    await tab.getByText(/Also revokes/).waitFor();
+    const picker = tab.getByTestId('offboarding-replacement-select');
+    const offered = () => picker.locator('option').evaluateAll((options: HTMLOptionElement[]) => options.map((option) => option.value));
+
+    await tab.getByTestId('offboarding-drive-freeze').check();
+    assert.deepEqual(await offered(), ['paused-agent', 'heir', 'other'], 'with Freeze it, everyone active is offered for the work');
+    await picker.selectOption('paused-agent');
+
+    await tab.getByTestId('offboarding-drive-hand-over').check();
+    assert.deepEqual(await offered(), ['heir', 'other'], 'with Hand over, only people who can hold the drive');
+    assert.equal(await picker.inputValue(), 'heir');
+
+    await tab.getByTestId('offboarding-drive-freeze').check();
+    assert.ok((await offered()).includes('paused-agent'));
+    await picker.selectOption('paused-agent');
+    await tab.getByRole('button', { name: 'Transfer and remove' }).click();
+    await tab.waitForFunction(() => !document.body.textContent?.includes('Remove Lea Leaver?'));
+    assert.deepEqual(deletes, [{ replacement_user_id: 'paused-agent', personal_drive: 'freeze' }]);
   } finally {
     await browser.close();
   }

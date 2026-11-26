@@ -4,6 +4,10 @@
  * access, the handover, or the new holder's notice, and the request still
  * answers 200. The socket module is mocked so the eviction fails.
  *
+ * A committed owner's handover answers 200 with the caller's role and pin
+ * even when finishing it afterwards fails (consult Sol-C2): lib/drives.ts is
+ * mocked so finishDriveHandover throws while `failHandoverFinish` is set.
+ *
  * Run:
  *   DATABASE_URL=... DEFT_TEST_DATABASE_URL=... pnpm --filter @deft/api test test/drives-departure-post-commit-db.test.ts
  */
@@ -18,6 +22,18 @@ mock.module(new URL('../src/socket.ts', import.meta.url).href, { namedExports: {
   evictActiveHuddleParticipants: async () => {
     evictions += 1;
     throw new Error('huddle eviction failed');
+  },
+} });
+
+let failHandoverFinish = false;
+let handoverFinishes = 0;
+const actualDrives = await import('../src/lib/drives.js');
+mock.module(new URL('../src/lib/drives.ts', import.meta.url).href, { namedExports: {
+  ...actualDrives,
+  finishDriveHandover: async (handover: Parameters<typeof actualDrives.finishDriveHandover>[0]) => {
+    handoverFinishes += 1;
+    if (failHandoverFinish) throw new Error('finishing the handover failed');
+    return actualDrives.finishDriveHandover(handover);
   },
 } });
 
@@ -87,4 +103,31 @@ test('a removal whose huddle eviction fails still finishes drive access, the han
   assert.equal(again.status, 200, await again.text());
   assert.ok(emitted({ orgId: fx.orgId, driveId: frozen, documentIds: [] }), 'the freeze finished');
   assert.ok(emitted({ orgId: fx.orgId, userIds: [second] }));
+});
+
+test('a committed handover answers 200 with the caller’s role and pin even when finishing it fails afterwards (Sol-C2)', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { owner } = fx.people;
+  const departed = await person('Leaves It With The Owner');
+  const drive = await fx.insertDrive({ kind: 'personal', ownerUserId: departed, name: 'My drive' });
+  await fx.insertDocument({ driveId: drive, title: 'Left behind' });
+  const removed = await fx.request(owner, 'DELETE', `/api/members/${departed}`, {});
+  assert.equal(removed.status, 200, await removed.text());
+  const before = handoverFinishes;
+  failHandoverFinish = true;
+  let res: Response;
+  try {
+    res = await fx.request(owner, 'POST', `/api/drives/${drive}/handover`, { user_id: owner });
+  } finally {
+    failHandoverFinish = false;
+  }
+  const body = await res.json() as any;
+  assert.equal(res.status, 200, JSON.stringify(body));
+  assert.equal(handoverFinishes, before + 1, 'the finish ran, and failed');
+  assert.equal(body.drive.id, drive);
+  assert.equal(body.drive.kind, 'private');
+  assert.equal(body.drive.role, 'full', 'read inside the handover’s transaction');
+  assert.equal(body.drive.pinned, false);
+  const { rows: [state] } = await fx.client.query('SELECT kind, frozen_at FROM drives WHERE id = $1', [drive]);
+  assert.deepEqual(state, { kind: 'private', frozen_at: null }, 'committed');
 });
