@@ -151,7 +151,7 @@ export function AppsHomeLists({
   return (
     <div className="space-y-8">
       <section aria-label="Installed apps">
-        <SectionHeading id="installed-apps-title" title="Installed" count={home.installed.length} hint={canManage && home.installed.some((item) => item.kind === 'module') ? "Defty and agents sets what Defty and agent employees may do in each app. Personal AI connections act as the person who connected them." : undefined} />
+        <SectionHeading id="installed-apps-title" title="Installed" count={home.installed.length} hint={canManage && home.installed.some((item) => item.kind === 'module') ? "The Defty and agents setting controls what Defty and agent employees may do in each app. Personal AI connections act as the person who connected them." : undefined} />
         {home.installed.length === 0 ? (
           <div className="flex flex-col items-center gap-2 rounded-xl px-4 py-10 text-center" style={{ border: '1px dashed var(--ghost-border)' }}>
             <span className="flex h-10 w-10 items-center justify-center rounded-xl" style={{ background: 'var(--surface-container-high)', color: 'var(--primary)' }}>

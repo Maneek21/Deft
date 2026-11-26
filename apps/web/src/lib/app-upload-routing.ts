@@ -28,7 +28,7 @@ function formatBytes(bytes: number): string {
 /** Checks a chosen file before it is read. Throws readable text. */
 export function checkAppUploadFile(file: { name: string; size: number }): void {
   if (!/\.json$/iu.test(file.name)) {
-    throw new Error('Choose a .json file. An app is one JSON file, such as deft.module.json.');
+    throw new Error('Choose a .json file. An app is one JSON file that describes its records, fields and views.');
   }
   if (file.size === 0) throw new Error('This file is empty. Choose the app file you saved.');
   if (file.size > APP_UPLOAD_MAX_BYTES) {
@@ -76,7 +76,7 @@ export function classifyAppUpload(source: string, options: { appPackagesEnabled:
   const byteLength = new TextEncoder().encode(source).byteLength;
   if (typeof value.package_format === 'string' && value.package_format.startsWith('deft.app.package')) {
     if (!options.appPackagesEnabled) {
-      throw new Error('This is an App Kit package, and App Kit packages are not available on this workspace. Upload an app file (deft.module.json) instead.');
+      throw new Error('This is an App Kit package, and App Kit packages are not available on this workspace. Upload an app file instead.');
     }
     if (byteLength > APP_PACKAGE_MAX_BYTES) {
       throw new Error(`App Kit packages must be ${formatBytes(APP_PACKAGE_MAX_BYTES)} or smaller.`);
