@@ -1,0 +1,5 @@
+[
+  { "ref": "acme", "collection": "vendors", "data": { "name": "Acme Hosting", "status": "active", "category": "software", "annual_cost": 4800, "renews_on": "2027-03-01", "website": "https://example.com", "contact_email": "billing@example.com" } },
+  { "ref": "tidy", "collection": "vendors", "data": { "name": "Tidy Office Cleaning", "status": "evaluating", "category": "facilities", "annual_cost": 2400 } },
+  { "collection": "contracts", "data": { "title": "Acme Hosting annual plan", "status": "signed", "starts_on": "2026-03-01", "ends_on": "2027-03-01", "value": 4800 }, "links": { "vendor_id": "acme" } }
+]

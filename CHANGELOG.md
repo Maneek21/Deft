@@ -10,6 +10,24 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### Starter apps, and a plain-words preview before install
+
+- **Four starter apps.** Hiring pipeline, Vendor tracker, Light CRM and Content
+  calendar each install under the name you give them, as an ordinary uploaded app,
+  so you can keep editing and updating them. Each opens on a board. You can add
+  a few sample records, created with their links (a candidate linked to its
+  role, a deal to its company). If adding samples stops part-way, the app stays
+  installed and you are told how many were added. If the name is taken, the app
+  is installed as `<name>-2`.
+- **A preview in plain words.** Before an app is installed, the page can say
+  what it adds: each record type, its fields ("Stage: pick one of Applied, Phone
+  screen…, required"), how record types link ("Each Candidate links to one
+  Role"), its views ("Pipeline: a board grouped by Stage") and who can see the
+  records. It can also ask "Let Defty read these records?" (default no); yes
+  turns on read access for Defty after install.
+- The starter files are plain app files (`apps/web/src/lib/app-templates/*.json`),
+  ready for the website to offer as downloads.
+
 ### Everything you install or build is called an app
 
 - **Changed.** The web app no longer says "module" anywhere a person reads. What you

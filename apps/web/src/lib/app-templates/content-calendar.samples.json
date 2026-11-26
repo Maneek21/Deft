@@ -1,0 +1,6 @@
+[
+  { "ref": "launch", "collection": "campaigns", "data": { "name": "Spring launch", "status": "running", "starts_on": "2027-03-01", "ends_on": "2027-04-15", "goal": "Tell existing customers about the new plan." } },
+  { "collection": "pieces", "data": { "title": "What is new this spring", "status": "drafting", "channel": "blog", "publish_on": "2027-03-04", "tags": ["launch"] }, "links": { "campaign_id": "launch" } },
+  { "collection": "pieces", "data": { "title": "March newsletter", "status": "idea", "channel": "newsletter", "publish_on": "2027-03-10" }, "links": { "campaign_id": "launch" } },
+  { "collection": "pieces", "data": { "title": "Two-minute product tour", "status": "review", "channel": "video" } }
+]
