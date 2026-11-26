@@ -20,6 +20,9 @@
 // `document:updated`) since the last request lets the next one start as soon
 // as its step has passed; without one, the timer waits one step longer. So
 // someone typing never makes a viewer fetch more often than the steps allow.
+// A deadline timer of its own, set at the first 404, ends the wait at 90 s
+// (aborting a request still in flight), and no request is ever planned for
+// the last second before it or after it. Success and unmount clear it.
 //
 // An image from another site (`src`, https only) is drawn as is.
 
@@ -34,21 +37,27 @@ import { DOCUMENT_UPDATED_EVENT } from '@/lib/document-events';
 
 /** The backoff: after the n-th miss, the least time between the last request's start and the next; the last step repeats. */
 export const IMAGE_RETRY_STEPS_MS = [1_500, 3_000, 6_000, 12_000, 24_000, 30_000];
-/** How long after the first 404 the image is given up on. */
+/** How long after the first 404 the image is given up on: a timer of its own ends the wait then, whatever the backoff. */
 export const IMAGE_GIVE_UP_AFTER_MS = 90_000;
+/** No request starts this close to the deadline (its answer would come too late to count). */
+const LAST_REQUEST_LEAD_MS = 1_000;
 
 const stepAfter = (misses: number) => IMAGE_RETRY_STEPS_MS[Math.min(Math.max(misses - 1, 0), IMAGE_RETRY_STEPS_MS.length - 1)]!;
 
 /**
  * When the next request may start, after `misses` misses (at least one), the
  * last request having started at `lastStart`: once its step has passed when
- * the document changed since, else one step later; never past the give-up
- * time, and never before the step.
+ * the document changed since, else one step later, pulled in to a second
+ * before the deadline (`firstMiss` + IMAGE_GIVE_UP_AFTER_MS) when that's
+ * later. Null when even the step ends too close to the deadline: no request
+ * is ever planned at or after it, and none before its step.
  */
-export function nextRetryAt(i: { misses: number; lastStart: number; firstMiss: number; changed: boolean }): number {
+export function nextRetryAt(i: { misses: number; lastStart: number; firstMiss: number; changed: boolean }): number | null {
+  const latest = i.firstMiss + IMAGE_GIVE_UP_AFTER_MS - LAST_REQUEST_LEAD_MS;
   const earliest = i.lastStart + stepAfter(i.misses);
+  if (earliest > latest) return null;
   const due = i.changed ? earliest : i.lastStart + stepAfter(i.misses + 1);
-  return Math.max(earliest, Math.min(due, i.firstMiss + IMAGE_GIVE_UP_AFTER_MS));
+  return Math.min(due, latest);
 }
 
 /** An outside image is drawn only from an https address. */
@@ -76,13 +85,17 @@ function useDocumentFile(fileId: string, editor: Editor): Phase {
     /** A document change since the last request started. */
     let changed = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const clearTimer = () => {
+    /** Ends the wait IMAGE_GIVE_UP_AFTER_MS after the first 404, whatever the backoff is doing. */
+    let deadline: ReturnType<typeof setTimeout> | null = null;
+    const clearTimers = () => {
       if (timer) clearTimeout(timer);
+      if (deadline) clearTimeout(deadline);
       timer = null;
+      deadline = null;
     };
     const finish = (next: Phase) => {
       done = true;
-      clearTimer();
+      clearTimers();
       setPhase(next);
     };
     /**
@@ -92,8 +105,11 @@ function useDocumentFile(fileId: string, editor: Editor): Phase {
      */
     const plan = () => {
       if (done || inFlight || firstMiss === null) return;
-      clearTimer();
+      if (timer) clearTimeout(timer);
+      timer = null;
       const at = nextRetryAt({ misses, lastStart, firstMiss, changed });
+      // Nothing more before the deadline: the deadline timer ends the wait.
+      if (at === null) return;
       timer = setTimeout(() => { timer = null; void attempt(); }, Math.max(0, at - Date.now()));
     };
     const attempt = async (): Promise<void> => {
@@ -123,7 +139,15 @@ function useDocumentFile(fileId: string, editor: Editor): Phase {
         return;
       }
       misses += 1;
-      firstMiss ??= Date.now();
+      if (firstMiss === null) {
+        firstMiss = Date.now();
+        deadline = setTimeout(() => {
+          deadline = null;
+          if (done) return;
+          inFlight?.abort();
+          finish({ kind: 'unavailable' });
+        }, IMAGE_GIVE_UP_AFTER_MS);
+      }
       if (Date.now() - firstMiss >= IMAGE_GIVE_UP_AFTER_MS) {
         finish({ kind: 'unavailable' });
         return;
@@ -145,7 +169,7 @@ function useDocumentFile(fileId: string, editor: Editor): Phase {
     void attempt();
     return () => {
       done = true;
-      clearTimer();
+      clearTimers();
       inFlight?.abort();
       editor.off('transaction', onTransaction);
       window.removeEventListener(DOCUMENT_UPDATED_EVENT, onDocumentChange);

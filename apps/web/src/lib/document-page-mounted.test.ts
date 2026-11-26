@@ -536,6 +536,80 @@ test('mounted: document changes every 300 ms while a new image keeps answering 4
   }
 });
 
+/**
+ * Opens the page with the browser clock installed (Playwright fakes Date and
+ * timers), waits for "Image is loading" after the first 404, then pauses the
+ * clock there. Time then moves only through `advance`, which runs the fake
+ * clock a second at a time and lets the real file responses land between steps.
+ */
+async function openWithClock(browser: any, text: string) {
+  const { doc } = serverDoc(text, 'f-never');
+  let requests = 0;
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  await context.clock.install();
+  const opened = await open({ newPage: () => context.newPage() }, 1280, {
+    document: { live: true, role: 'view', content_json: undefined },
+    collab: { mode: 'sync', doc, scope: 'readonly' },
+    file: () => { requests += 1; return { status: 404, body: { error: 'File not found', code: 'NOT_FOUND' } }; },
+    ready: text,
+  });
+  const { tab } = opened;
+  await tab.getByText('Image is loading').waitFor();
+  const start = await tab.evaluate(() => Date.now());
+  await tab.clock.pauseAt(start);
+  let elapsed = 0;
+  /** Runs the fake clock until `until` ms after the first 404 was seen. */
+  const advance = async (until: number) => {
+    while (elapsed < until) {
+      const step = Math.min(1_000, until - elapsed);
+      await tab.clock.runFor(step);
+      elapsed += step;
+      await tab.waitForTimeout(15);
+    }
+  };
+  return { ...opened, context, advance, requests: () => requests };
+}
+
+test('mounted: a document change at 89 s doesn\'t keep a missing image waiting past the 90 s bound (fake clock)', async () => {
+  const browser = await launch();
+  try {
+    const { tab, context, errors, advance, requests } = await openWithClock(browser, 'Spec whose chart never arrives');
+    await advance(89_000);
+    await tab.evaluate(() => window.dispatchEvent(new CustomEvent('deft:document-updated', { detail: { id: 'doc1' } })));
+    await advance(89_500);
+    assert.equal(await tab.getByText('Image is loading').count(), 1, 'still waiting just before the bound');
+    const beforeBound = requests();
+    await advance(91_000);
+    await tab.getByText('Image not available').waitFor({ timeout: 2_000 });
+    assert.equal(await tab.getByText('Image is loading').count(), 0);
+    await advance(150_000);
+    assert.equal(requests(), beforeBound, `no request after 89.5 s (${requests() - beforeBound} more)`);
+    assert.deepEqual(errors, []);
+    await context.close();
+  } finally {
+    await browser.close();
+  }
+});
+
+test('mounted: with no document changes, a missing image is given up on by 90 s and nothing is fetched after (fake clock)', async () => {
+  const browser = await launch();
+  try {
+    const { tab, context, errors, advance, requests } = await openWithClock(browser, 'Spec with a quiet missing chart');
+    await advance(89_500);
+    assert.equal(await tab.getByText('Image is loading').count(), 1, 'still waiting just before the bound');
+    const beforeBound = requests();
+    assert.ok(beforeBound >= 2, `it did try again meanwhile (${beforeBound} requests)`);
+    await advance(90_500);
+    await tab.getByText('Image not available').waitFor({ timeout: 2_000 });
+    await advance(150_000);
+    assert.equal(requests(), beforeBound, `no request after 89.5 s (${requests() - beforeBound} more)`);
+    assert.deepEqual(errors, []);
+    await context.close();
+  } finally {
+    await browser.close();
+  }
+});
+
 test('mounted: while the workspace is paused the title can\'t be edited, and the share dialog says which later pages need a fresh share', async () => {
   const browser = await launch();
   try {
