@@ -16,7 +16,7 @@ export function TemplateGallery<T extends GalleryTemplate>({
   locked = false,
   onInstall,
 }: {
-  templates: T[];
+  templates: readonly T[];
   busy: boolean;
   /** True while another action on the page runs, or the app list is loading. */
   locked?: boolean;
