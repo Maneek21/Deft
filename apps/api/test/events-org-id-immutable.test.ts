@@ -70,13 +70,18 @@ function balanced(text: string, open: number): string | null {
 /** An `org_id` / `orgId` key (not `events.org_id`), written out or as a shorthand property. */
 const ORG_KEY = /(?<![\w.$])(?:org_id|orgId)\s*(?::|,|\}|$)/u;
 
+/** `text` with every regular-expression syntax character escaped, backslash included, for use inside a RegExp. */
+function escapeRegExp(text: string): string {
+  return text.replace(/[\\^$.*+?()[\]{}|]/gu, '\\$&');
+}
+
 /** True when `values` (an object literal or an identifier) names org_id, following identifiers this file builds. */
 function namesOrgId(file: string, values: string): boolean {
   if (ORG_KEY.test(values)) return true;
   const idents = [...values.matchAll(/(?:^|\.\.\.|[({,\s])([A-Za-z_$][\w$]*)\s*(?=[,})]|$)/gu)].map((m) => m[1]!)
     .filter((name) => !['true', 'false', 'null', 'undefined'].includes(name));
   for (const raw of new Set(idents)) {
-    const name = raw.replace(/\$/gu, '\\$');
+    const name = escapeRegExp(raw);
     if (new RegExp(`\\b${name}\\s*(?:\\.\\s*(?:org_id|orgId)|\\[\\s*['"](?:org_id|orgId)['"]\\s*\\])\\s*=(?!=)`, 'u').test(file)) return true;
     for (const decl of file.matchAll(new RegExp(`\\b(?:const|let|var)\\s+${name}\\b[^=;]*=\\s*`, 'gu'))) {
       const start = decl.index! + decl[0].length;
