@@ -32,7 +32,7 @@ import {
   visibleDocumentIdSql,
   visibleDriveCondition,
 } from '../src/lib/document-access.js';
-import { breadcrumbChainQuery, driveTreeDocumentsQuery, favoriteDocumentsQuery, recentDocumentsQuery } from '../src/lib/documents.js';
+import { breadcrumbChainQuery, driveTreeDocumentsQuery, favoriteDocumentsQuery, recentDocumentsQuery, templateDocumentsQuery } from '../src/lib/documents.js';
 import { documentCardsQuery, fullDriveQuery, postableDocumentsQuery, spaceSharedDocumentsQuery } from '../src/lib/chat-documents.js';
 import { newlyReachedQuery } from '../src/lib/document-shares.js';
 import { visibleFilesSql } from '../src/lib/workspace-export/attachments.js';
@@ -156,6 +156,8 @@ test('the drive tree and the recent list plan within budget', async (t) => {
       // GET /api/documents/recent and /favorites.
       ['recent documents', recentDocumentsQuery(member, fx.orgId).toSQL()],
       ['favourite documents', favoriteDocumentsQuery(member, fx.orgId).toSQL()],
+      // GET /api/document-templates: template documents in open drives and My drive (M1).
+      ['template documents', templateDocumentsQuery(member, fx.orgId).toSQL()],
       // The breadcrumb's page chain, each page held to the access check (GET /api/documents/:id).
       ['breadcrumb page chain', query(breadcrumbChainQuery(member, fx.orgId, document!.id))],
     ];

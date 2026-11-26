@@ -10,7 +10,9 @@
  *   DATABASE_URL=... DEFT_TEST_DATABASE_URL=... pnpm --filter @deft/api test test/document-templates-http-db.test.ts
  */
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import test, { after, before } from 'node:test';
+import { getVisibleAttachment } from '../src/lib/attachment-access.js';
 import { closeDb } from '../src/lib/db.js';
 import { documentRoutes, documentTemplateRoutes } from '../src/routes/documents.js';
 import { setupDrivesFixture, type DrivesFixture } from './fixtures/drives-fixture.js';
@@ -32,6 +34,7 @@ before(async () => {
 
 after(async () => {
   try {
+    if (fx) for (const table of ['document_attachments', 'files']) await fx.client.query(`DELETE FROM ${table} WHERE org_id = ANY($1::text[])`, [[fx.orgId, fx.otherOrgId]]);
     await fx?.teardown();
   } finally {
     await closeDb();
@@ -139,4 +142,47 @@ test("creating from a template you can't see is a 404", async (t) => {
   const missing = await call(member2, 'POST', '/api/documents', { template: { document_id: 'no-such-id' } }, 404);
   assert.deepEqual(missing, refused, 'a missing template answers the same way');
   assert.equal(await count(), before, 'nothing was created');
+});
+
+test('a copy links the source images it may share, and the rest become a placeholder; a reader of only the copy loads the image', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member, member2 } = fx.people;
+  const sourceDrive = await fx.insertDrive({ kind: 'private' });
+  await fx.addDriveMember(sourceDrive, { user: member }, 'full');
+  const copyDrive = await fx.insertDrive({ kind: 'private' });
+  await fx.addDriveMember(copyDrive, { user: member }, 'full');
+  await fx.addDriveMember(copyDrive, { user: member2 }, 'view');
+
+  const makeFile = async () => {
+    const id = randomUUID();
+    await fx!.client.query(`INSERT INTO files (id, org_id, uploaded_by, filename, mime_type, size_bytes, storage_key, attachment_kind)
+      VALUES ($1, $2, $3, 'x.png', 'image/png', 10, $4, 'image')`, [id, fx!.orgId, member, `test/${id}`]);
+    return id;
+  };
+  const current = await makeFile();
+  const removed = await makeFile();
+  const unlinked = await makeFile();
+  const image = (fileId: string, alt: string) => ({ type: 'image', attrs: { fileId, alt } });
+  const source = await fx.insertDocument({
+    driveId: sourceDrive, title: 'With images',
+    json: { type: 'doc', content: [image(current, 'kept'), image(removed, 'was removed'), image(unlinked, ''), image('missing-file', 'gone')] } as any,
+  });
+  await markTemplate(source);
+  for (const [fileId, inCurrent] of [[current, true], [removed, false]] as const) {
+    await fx.client.query('INSERT INTO document_attachments (id, org_id, document_id, file_id, in_current, added_by) VALUES ($1, $2, $3, $4, $5, $6)',
+      [randomUUID(), fx.orgId, source, fileId, inCurrent, member]);
+  }
+  assert.equal(await getVisibleAttachment(current, fx.orgId, member2), null, 'the reader cannot see the source');
+
+  const copy = (await call(member, 'POST', '/api/documents', { drive_id: copyDrive, template: { document_id: source } }, 201)).document;
+  const { rows: [stored] } = await fx.client.query('SELECT content_json FROM documents WHERE id = $1', [copy.id]);
+  const nodes = stored.content_json.content as any[];
+  assert.equal(nodes[0].type, 'image');
+  assert.equal(nodes[0].attrs.fileId, current);
+  assert.deepEqual(nodes.slice(1).map((n) => n.type), ['paragraph', 'paragraph', 'paragraph'], 'the others are placeholders');
+  assert.deepEqual(nodes.slice(1).map((n) => n.content[0].text), ['Image not available: was removed', 'Image not available', 'Image not available: gone']);
+  const { rows: links } = await fx.client.query('SELECT file_id, in_current FROM document_attachments WHERE document_id = $1', [copy.id]);
+  assert.deepEqual(links, [{ file_id: current, in_current: true }], 'only the shareable image is linked');
+  assert.ok(await getVisibleAttachment(current, fx.orgId, member2), 'a reader who can open only the copy loads the image');
+  assert.equal(await getVisibleAttachment(removed, fx.orgId, member2), null);
 });

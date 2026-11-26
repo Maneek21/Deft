@@ -70,7 +70,8 @@
 // with you". A delete answers with only the ids the caller could view.
 import { and, asc, desc, eq, gte, inArray, isNull, ne, notExists, sql, type SQL } from 'drizzle-orm';
 import { alias, type PgInsertValue } from 'drizzle-orm/pg-core';
-import { docFavorites, docFolders, documentShares, documents, drives, type DocFolderRow, type DocRole, type DocumentRow } from '@deft/db/documents';
+import { imageFileIds, replaceUnlinkedImages } from './drives-move/convert-note.js';
+import { docFavorites, docFolders, documentAttachments, documentShares, documents, drives, type DocFolderRow, type DocRole, type DocumentRow } from '@deft/db/documents';
 import {
   BUILT_IN_TEMPLATES, EMPTY_DOCUMENT, ensureBlockIds, getDocumentSchema, jsonToText, jsonToYDoc, templateJson, withFreshBlockIds,
   type BuiltInTemplateKey,
@@ -884,25 +885,39 @@ export type TemplateChoice = { builtin: BuiltInTemplateKey } | { document_id: st
  * create's transaction. A template document the caller can't open (or that
  * doesn't exist, or is deleted) is a 404. Every block id is regenerated.
  */
-export async function templateContentInTx(tx: Tx, userId: string, orgId: string, choice: TemplateChoice): Promise<{ title: string; json: JSONContent }> {
+export async function templateContentInTx(tx: Tx, userId: string, orgId: string, choice: TemplateChoice): Promise<{
+  title: string; json: JSONContent; linkFileIds: string[];
+}> {
   if ('builtin' in choice) {
     const template = BUILT_IN_TEMPLATES.find((candidate) => candidate.key === choice.builtin);
     if (!template) throw invalid('Unknown template');
-    return { title: template.title, json: templateJson(template.key) };
+    return { title: template.title, json: templateJson(template.key), linkFileIds: [] };
   }
   const [source] = await tx.select({ title: documents.title, content_json: documents.content_json }).from(documents)
     .where(and(eq(documents.id, choice.document_id), visibleDocumentCondition(userId, orgId))).limit(1);
   if (!source) throw notFound();
-  return { title: source.title, json: withFreshBlockIds(source.content_json as JSONContent) };
+  // The caller can view the source, so an image it still shows may be linked to the copy. An image the source
+  // doesn't show now (removed, or never linked) or from another workspace becomes the "Image not available" placeholder.
+  const fresh = withFreshBlockIds(source.content_json as JSONContent);
+  const named = imageFileIds(fresh);
+  const linked = named.length === 0 ? [] : (await tx.select({ file_id: documentAttachments.file_id }).from(documentAttachments)
+    .where(and(eq(documentAttachments.org_id, orgId), eq(documentAttachments.document_id, choice.document_id),
+      eq(documentAttachments.in_current, true), inArray(documentAttachments.file_id, named)))).map((row) => row.file_id);
+  const { json } = replaceUnlinkedImages(fresh, new Set(linked));
+  return { title: source.title, json, linkFileIds: linked };
 }
 
-/**
- * GET /api/document-templates: the built-in templates, the template
- * documents in open drives the caller can view, and those in the caller's own
- * My drive. Each template document is one the caller can open.
- */
-export async function listTemplates(userId: string, orgId: string) {
-  const rows = await db.select({
+/** Links the files a template copy keeps to the new document, in the create's transaction (F10: access follows a linking document). */
+export async function linkTemplateFilesInTx(tx: Tx, orgId: string, userId: string, documentId: string, fileIds: string[]): Promise<void> {
+  if (fileIds.length === 0) return;
+  await tx.insert(documentAttachments).values(fileIds.map((fileId) => ({
+    org_id: orgId, document_id: documentId, file_id: fileId, in_current: true, added_by: userId,
+  }))).onConflictDoNothing();
+}
+
+/** The template documents listTemplates reads. Exported for its planning test (`.toSQL()`). */
+export function templateDocumentsQuery(userId: string, orgId: string, reader: Reader = db) {
+  return reader.select({
     id: documents.id, title: documents.title, drive_kind: drives.kind, drive_name: drives.name,
   }).from(documents)
     .innerJoin(drives, and(eq(drives.org_id, documents.org_id), eq(drives.id, documents.drive_id)))
@@ -913,6 +928,15 @@ export async function listTemplates(userId: string, orgId: string) {
         OR (${drives.kind} = 'personal' AND ${drives.owner_user_id} = ${userId}))`,
     ))
     .orderBy(asc(documents.title), asc(documents.id));
+}
+
+/**
+ * GET /api/document-templates: the built-in templates, the template
+ * documents in open drives the caller can view, and those in the caller's own
+ * My drive. Each template document is one the caller can open.
+ */
+export async function listTemplates(userId: string, orgId: string) {
+  const rows = await templateDocumentsQuery(userId, orgId);
   return {
     builtin: BUILT_IN_TEMPLATES.map(({ key, title }) => ({ key, title })),
     workspace: rows.filter((row) => row.drive_kind === 'open').map((row) => ({ id: row.id, title: row.title, drive_name: row.drive_name })),

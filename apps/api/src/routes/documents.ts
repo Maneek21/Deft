@@ -57,7 +57,7 @@ import { liveEditingEnabled } from '../collab/limits.js';
 import { db } from '../lib/db.js';
 import { documentRoleFor, driveRoleFor } from '../lib/document-access.js';
 import {
-  createDocumentInTx, documentBreadcrumb, DocumentRefusal, favoriteDocumentsQuery, listTemplates, moveDocument, recentDocumentsQuery, restoreDocument,
+  createDocumentInTx, documentBreadcrumb, DocumentRefusal, favoriteDocumentsQuery, linkTemplateFilesInTx, listTemplates, moveDocument, recentDocumentsQuery, restoreDocument,
   softDeleteDocument, templateContentInTx, updateDocument, viewerDocumentColumns, viewerDocumentInTx,
 } from '../lib/documents.js';
 import {
@@ -171,6 +171,7 @@ documentRoutes.post('/', async (c) => {
         orgId: user.org_id, userId: user.id, driveId: body.drive_id, folderId: body.folder_id, parentDocumentId: body.parent_document_id,
         title: body.title ?? fromTemplate?.title, json: fromTemplate?.json ?? body.json,
       });
+      if (fromTemplate) await linkTemplateFilesInTx(tx, user.org_id, user.id, document.id, fromTemplate.linkFileIds);
       return { view: await viewerDocumentInTx(tx, user.id, user.org_id, document.id), finish: afterCommit };
     });
     await finish();
