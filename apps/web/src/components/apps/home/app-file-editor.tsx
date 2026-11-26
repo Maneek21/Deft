@@ -173,7 +173,7 @@ export function AppFileEditor({
         </button>
         {!readOnlyReason && (
           <div className="ml-auto flex flex-wrap gap-2">
-            {dirty && <button type="button" onClick={() => { setSource(appFileText(module)); setResult(null); }} disabled={busy !== null} className="inline-flex min-h-11 items-center rounded-lg px-3 text-[0.8125rem] font-medium md:min-h-9" style={{ color: 'var(--on-surface-variant)' }}>Undo changes</button>}
+            {dirty && <button type="button" onClick={() => { if (changedElsewhere) loadNewest(); else { setSource(base.text); setResult(null); } }} disabled={busy !== null} className="inline-flex min-h-11 items-center rounded-lg px-3 text-[0.8125rem] font-medium md:min-h-9" style={{ color: 'var(--on-surface-variant)' }}>Undo changes</button>}
             <button type="button" onClick={() => void check()} disabled={busy !== null} className="inline-flex min-h-11 items-center gap-2 rounded-lg px-3 text-[0.8125rem] font-medium md:min-h-9" style={{ background: 'var(--surface-container-high)', color: 'var(--on-surface)' }}>
               {busy === 'check' ? <Loader2 size={14} className="animate-spin" aria-hidden /> : <Check size={14} aria-hidden />} Check
             </button>

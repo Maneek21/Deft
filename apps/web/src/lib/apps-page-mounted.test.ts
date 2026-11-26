@@ -255,7 +255,7 @@ test('Apps page: templates install with no file, the Defty question sets access,
     await tab.getByText(/schema changed before the update started/).waitFor();
     assert.equal(calls.filter((call) => call.path === '/api/modules/hiring/upgrade').at(-1)!.ifMatch, 'sha256:next');
     state.upgradeAnswer = 200;
-    await tab.getByRole('button', { name: 'Load the newest version' }).click();
+    await tab.getByRole('button', { name: 'Undo changes' }).click();
     assert.match(await editor.inputValue(), /"version": "1\.0\.5"/);
 
     // A broken edit is caught before anything is sent.

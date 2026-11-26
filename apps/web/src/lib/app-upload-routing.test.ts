@@ -171,3 +171,11 @@ test('a template name already shown by an installed app gets a number', () => {
   assert.equal(uniqueAppName('  hiring   PIPELINE ', [installed(), named('Hiring pipeline 2')]), 'hiring PIPELINE 3');
   assert.equal(uniqueAppName('Suppliers', [installed()]), 'Suppliers');
 });
+
+test('a numbered template name stays within the 80-character limit', () => {
+  const long = 'A'.repeat(80);
+  const taken = installed({ manifest: { ...installed().manifest, name: long } });
+  const result = uniqueAppName(long, [taken]);
+  assert.equal(result.length, 80);
+  assert.match(result, / 2$/);
+});

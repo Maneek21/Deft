@@ -4,6 +4,7 @@
 // upgrade when that app is already installed. An App Kit package goes to
 // inspect, then stage. Nothing here talks to the network.
 
+import { MODULE_LIMITS } from '@deft/shared/modules';
 import { APP_PACKAGE_MAX_BYTES, type AppInstallation } from './apps';
 import {
   MODULE_MANIFEST_MAX_BYTES,
@@ -269,7 +270,9 @@ export function uniqueAppName(name: string, installed: ModuleInstallation[]): st
   const taken = new Set(installed.map((module) => (module.manifest.name || module.slug).trim().replace(/\s+/gu, ' ').toLowerCase()));
   if (!taken.has(clean.toLowerCase())) return clean;
   for (let n = 2; ; n += 1) {
-    const candidate = `${clean} ${n}`;
+    const suffix = ` ${n}`;
+    // Keep within the app name limit: shorten the name, never the number.
+    const candidate = `${clean.slice(0, MODULE_LIMITS.display_name_chars - suffix.length).trimEnd()}${suffix}`;
     if (!taken.has(candidate.toLowerCase())) return candidate;
   }
 }
