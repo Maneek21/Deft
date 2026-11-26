@@ -245,6 +245,7 @@ jobs:
           src/lib/members-buy-seats-mounted.test.ts
           src/lib/members-remove-personal-drive-mounted.test.ts
           src/lib/chat-documents-mounted.test.ts
+          src/lib/thread-slash-commands-mounted.test.ts
           src/lib/drive-page-mounted.test.ts
           src/lib/document-page-mounted.test.ts
           src/lib/error-telemetry-mounted.test.ts
