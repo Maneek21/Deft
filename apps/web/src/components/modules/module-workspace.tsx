@@ -60,6 +60,7 @@ import {
 } from '@/hooks/use-modules';
 import { useAppNavigation } from '@/hooks/use-apps';
 import { moduleListControlsHref, moduleSearchHref, moduleSearchValue, reconcileModuleSearch, type ModuleSearchBuffer } from '@/lib/module-search-buffer';
+import { MODULE_SETTINGS_HREF } from '@/lib/module-navigation';
 
 export function ModuleWorkspace() {
   const params = useParams<{ slug: string; collectionKey?: string }>();
@@ -307,10 +308,10 @@ export function ModuleWorkspace() {
           {!hasAuthoritativeAppNavigation && <Link href={`/modules/${encodeURIComponent(slug)}?workspace=follow-ups`} aria-current={showFollowUps ? 'page' : undefined} className="flex min-h-10 items-center rounded-full px-4 text-xs font-medium" style={{ background: showFollowUps ? 'var(--bg-active)' : 'var(--surface-container-low)', color: 'var(--primary)' }}>Linked tasks</Link>}
           {canManage && (
             <Link
-              href="/settings/modules"
+              href={MODULE_SETTINGS_HREF}
               className="hidden min-h-10 items-center justify-center gap-2 rounded-full px-3 text-[0.75rem] font-medium sm:flex"
               style={{ color: 'var(--on-surface-variant)', background: 'var(--surface-container-low)' }}
-              aria-label="Manage module settings"
+              aria-label="Manage this app in Settings"
             >
               <Settings2 size={14} /> <span className="hidden sm:inline">Manage</span>
             </Link>
@@ -351,7 +352,7 @@ export function ModuleWorkspace() {
               icon={<Settings2 size={20} style={{ color: 'var(--outline)' }} />}
               title="Module disabled"
               description="Its records are preserved. A workspace owner or admin can enable it from Settings."
-              action={canManage ? { label: 'Open module settings', href: '/settings/modules' } : undefined}
+              action={canManage ? { label: 'Open app settings', href: MODULE_SETTINGS_HREF } : undefined}
             />
           ) : showFollowUps ? <ModuleFollowUpQueue key={slug} slug={slug} /> : !collection || !view ? (
             <EmptyState

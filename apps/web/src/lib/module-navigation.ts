@@ -1,4 +1,4 @@
-export const MODULE_SETTINGS_HREF = '/settings/modules';
+export const MODULE_SETTINGS_HREF = '/settings/apps';
 
 export type ModuleNavigationRole = 'owner' | 'admin' | 'member' | 'guest';
 
