@@ -10,11 +10,12 @@
 //
 // Every store writes `ydoc_state` and `size_bytes` and bumps `revision`;
 // derived copies are written by the stores that ask for them (collab/server.ts
-// decides: at most once a minute for a live document, on unload, and on every
-// non-socket write). The stored listeners (`onDocumentStored`) hear each store
-// that wrote derived copies, after the row is written: S5 authorship, F8
-// versions and H3 knowledge listen. A listener that fails is logged and never
-// stops the store or the next listener.
+// decides: at most once a minute for a live document, and when that minute
+// ends with a change still underived; on unload, at shutdown and on every
+// non-socket write). The stored listeners (`onDocumentStored`, which states
+// the contract) hear each derived store after its row is written: S5
+// authorship, F8 versions and H3 knowledge listen. A listener that fails is
+// logged and never stops the store or the next listener.
 //
 // Block ids (F1): the derived JSON passes through ensureBlockIds. When that
 // gives a block an id it didn't have, the ids are written back into the
@@ -68,7 +69,18 @@ export type DocumentStoredEvent = {
 type StoredListener = (e: DocumentStoredEvent) => Promise<void>;
 const storedListeners = new Set<StoredListener>();
 
-/** Listens to every store that wrote derived content, after its row is written. Returns the unsubscribe. */
+/**
+ * Listens to every **derived** store, after its row is written. Returns the unsubscribe.
+ *
+ * The contract:
+ * - A derived store writes content_json and content_text with the live state.
+ *   A live document has at most one a minute (a change made inside the minute
+ *   is derived when it ends, even if nobody edits again), plus one on unload
+ *   and one at shutdown. Every non-socket write (writeDocument) is one.
+ * - Each run carries every editor, agent and action seen since the previous
+ *   run, editors ordered by how many updates they made, most first.
+ * - A store of ydoc_state alone bumps `revision` and runs no listener.
+ */
 export function onDocumentStored(fn: (e: DocumentStoredEvent) => Promise<void>): () => void {
   storedListeners.add(fn);
   return () => { storedListeners.delete(fn); };
@@ -162,6 +174,19 @@ export function deriveContent(doc: Y.Doc): DerivedContent {
   const withIds = ensureBlockIds(json);
   if (!isDeepStrictEqual(withIds, json)) doc.transact(() => applyJsonToYDoc(doc, withIds), SYSTEM_ORIGIN);
   return { json: withIds, text: jsonToText(withIds) };
+}
+
+/**
+ * True when the stored JSON is behind the live state (a store of ydoc_state
+ * alone came after the last derived one), or when that can't be told because
+ * the live state holds content outside the schema. Changes nothing.
+ */
+export function derivedIsBehind(doc: Y.Doc, storedJson: JSONContent): boolean {
+  try {
+    return !isDeepStrictEqual(ensureBlockIds(yDocToJson(doc)), storedJson);
+  } catch {
+    return true;
+  }
 }
 
 const SIZE_WARNING_MAP = 'deft_meta';

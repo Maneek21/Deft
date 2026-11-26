@@ -122,9 +122,12 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   console.log(`[shutdown] ${logSignal(signal)} received; draining HTTP and job workers`);
 
   const httpServer = server as unknown as Server;
-  // Live editing refuses new connections and closes open ones at once, then
-  // stores every pending change; the database closes only after that.
-  const collabStopped = getCollabServer().destroy();
+  // Live editing stops admitting connections, frames and writes, finishes what
+  // it took, and stores every changed document, retrying until 12 s from now
+  // (inside the 15 s hard deadline); then it closes its connections. A
+  // document it couldn't store makes this reject, so the exit is non-zero.
+  // The database closes only after that.
+  const collabStopped = getCollabServer().destroy({ retryUntil: Date.now() + 12_000 });
   const socketClosed = getIO()?.close() ?? Promise.resolve();
   const httpClosed = new Promise<void>((resolve) => {
     httpServer.close(() => resolve());

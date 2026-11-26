@@ -12,15 +12,18 @@
  *   DATABASE_URL=... DEFT_TEST_DATABASE_URL=... pnpm --filter @deft/api test test/collab-server-http-db.test.ts
  */
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import test, { after, before } from 'node:test';
+import { sql } from 'drizzle-orm';
+import pg from 'pg';
 import * as Y from 'yjs';
-import { jsonToText } from '@deft/doc-schema';
+import { ensureBlockIds, jsonToText, jsonToYDoc } from '@deft/doc-schema';
 import { setCollabLimitsForTest } from '../src/collab/limits.js';
 import { onDocumentStored, type DocumentStoredEvent } from '../src/collab/persistence.js';
 import { collabStateForTest, collabTestSeams, getCollabServer } from '../src/collab/server.js';
-import { closeDb } from '../src/lib/db.js';
-import { finishAccessLoss } from '../src/lib/document-access-change.js';
+import { closeDb, db } from '../src/lib/db.js';
+import { applyAccessLossInTx, finishAccessLoss } from '../src/lib/document-access-change.js';
 import { DocumentWriteRefused, writeDocument } from '../src/lib/document-writer.js';
 import { _setPausedStartForTest } from '../src/lib/paused-start.js';
 import { revokeMemberWebSessions } from '../src/lib/web-sessions.js';
@@ -114,9 +117,74 @@ async function refusedCode(t: { after(fn: () => void): void }, documentId: strin
   return outcome as number;
 }
 
-/** Waits until no document is loaded or reserved, so capacity tests start empty. */
+/**
+ * Leaves the server with nothing loaded or reserved, so capacity tests start
+ * empty, whatever the runner's speed: once no connection or write holds a
+ * document, every idle one is stored and unloaded through the test seam,
+ * without waiting for its unload timer. A document that won't go fails with
+ * how each held document stands.
+ */
 async function allUnloaded(): Promise<void> {
-  await pollUntil(() => collabStateForTest().reservedDocuments === 0, 'every document unloaded', 15_000);
+  await pollUntil(() => collabStateForTest().heldDocuments === 0, 'no connection or write holds a document', 10_000);
+  await collabStateForTest().unloadIdle();
+  const state = collabStateForTest();
+  assert.equal(state.reservedDocuments, 0, `documents still held: ${state.describe()}`);
+}
+
+/**
+ * Has `writer` type `text` (an edit attempt), then waits until `observer`
+ * sees a later awareness probe from it. The server handles a socket's frames
+ * in order and sends document updates no later than awareness, so by then
+ * the attempt, had it been applied, would have reached `observer`.
+ */
+async function attemptReached(writer: CollabTestClient, observer: CollabTestClient, text: string): Promise<boolean> {
+  writer.typeText(text);
+  writer.provider.setAwarenessField('probe', text);
+  await pollUntil(() => (observer.provider.awareness!.getStates().get(writer.ydoc.clientID) as { probe?: string } | undefined)?.probe === text,
+    'the probe arrives');
+  return observer.text().includes(text);
+}
+
+/** Holds the document row FOR UPDATE from another connection until `release`, and says when a waiter is blocked on it. */
+async function holdRow(documentId: string) {
+  const holder = new pg.Client({ connectionString: url! });
+  await holder.connect();
+  await holder.query('BEGIN');
+  await holder.query('SELECT id FROM documents WHERE id = $1 FOR UPDATE', [documentId]);
+  const { rows: [{ pid }] } = await holder.query('SELECT pg_backend_pid() AS pid');
+  return {
+    waiterBlocked: async () => {
+      const { rows: [row] } = await fx!.client.query('SELECT count(*)::int AS n FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))', [pid]);
+      return (row as { n: number }).n > 0;
+    },
+    release: async () => {
+      await holder.query('COMMIT').catch(() => undefined);
+      await holder.end();
+    },
+  };
+}
+
+/** Adds a CHECK constraint that refuses every write of the document's row (a database failure), and the drop. */
+async function failWrites(documentId: string) {
+  const constraint = `f7_store_fault_${documentId.replaceAll('-', '').slice(0, 12)}`;
+  await fx!.client.query(`ALTER TABLE documents ADD CONSTRAINT ${constraint} CHECK (id <> '${documentId}') NOT VALID`);
+  let dropped = false;
+  return async () => {
+    if (dropped) return;
+    dropped = true;
+    await fx!.client.query(`ALTER TABLE documents DROP CONSTRAINT IF EXISTS ${constraint}`);
+  };
+}
+
+/** Records what reaches the console while it runs, without printing it. */
+function captureConsole(t: { after(fn: () => void): void }): string[] {
+  const lines: string[] = [];
+  const original = { error: console.error, warn: console.warn, log: console.log, info: console.info };
+  for (const method of ['error', 'warn', 'log', 'info'] as const) {
+    console[method] = (...args: unknown[]) => { lines.push(args.map((arg) => (typeof arg === 'string' ? arg : JSON.stringify(arg) ?? String(arg))).join(' ')); };
+  }
+  t.after(() => Object.assign(console, original));
+  return lines;
 }
 
 async function driveMemberId(driveId: string, userId: string): Promise<string> {
@@ -144,6 +212,9 @@ test('an editor connects read-write, a viewer read-only, and an outsider and an 
   const viewer = await open(t, doc, people.guest);
   assert.equal(viewer.readOnly, true);
   assert.deepEqual(getCollabServer().connectedUserIds(doc).sort(), [people.member, people.guest].sort());
+  // The viewer's actual write attempt is never applied.
+  assert.equal(await attemptReached(viewer, editor, 'A viewer tried to write'), false);
+  assert.ok(!(await stored(doc)).content_text.includes('A viewer tried to write'));
 
   assert.equal(await refusedCode(t, doc, people.outsider, fx!.otherOrgId), 4403);
   assert.equal(await refusedCode(t, doc, ungrantedGuest), 4403);
@@ -311,6 +382,10 @@ test('a role downgrade from edit to view turns open connections read-only within
   assert.ok(Date.now() - started < 5_000);
   const again = await open(t, doc, people.member);
   assert.equal(again.readOnly, true, 'the reconnect is read-only');
+  // And its actual write attempt is never applied.
+  const owner = await open(t, doc, people.owner);
+  assert.equal(await attemptReached(again, owner, 'Written after the downgrade'), false);
+  assert.ok(!(await stored(doc)).content_text.includes('Written after the downgrade'));
 });
 
 test('refuses a reconnect after the space share is removed and drops the queued update', { skip: !url && SKIP }, async (t) => {
@@ -514,21 +589,26 @@ test('an upgrade on an unknown path is ended, and Socket.io still connects', { s
 // ---------------------------------------------------------------------------
 // Stores and the single writer
 
-test('withDocument edits a document nobody has open and runs the stored listeners', { skip: !url && SKIP }, async (t) => {
+test('writeDocument edits a document nobody has open and runs the stored listeners; no unchecked writer is reachable', { skip: !url && SKIP }, async (t) => {
+  // The brief's "withDocument edits a document nobody has open" (C2: writeDocument is the only way in).
+  const server = getCollabServer() as unknown as Record<string, unknown>;
+  assert.equal('withDocument' in server, false, 'withDocument is not callable');
+  assert.equal('write' in server, false, 'the write machinery is not callable');
   const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Nobody here', json: paragraphs('Already here') });
   const events: DocumentStoredEvent[] = [];
   t.after(onDocumentStored(async (e) => { if (e.documentId === doc) events.push(e); }));
-  await getCollabServer().withDocument(doc, fx!.orgId, { kind: 'user', userId: fx!.people.member }, (ydoc) => {
-    appendParagraph(ydoc, 'Written while nobody had it open');
+  await writeDocument({
+    orgId: fx!.orgId, documentId: doc, actor: { kind: 'system', userId: 'system' }, requiredRole: null, reason: 'import',
+    mutate: (ydoc) => appendParagraph(ydoc, 'Written while nobody had it open'),
   });
   assert.ok(!collabStateForTest().loadedDocumentIds.includes(doc), 'written from the row, not loaded');
   const row = await stored(doc);
   assert.ok(row.content_text.includes('Written while nobody had it open'));
   assert.ok(storedStateText(row).includes('Written while nobody had it open'));
   assert.equal(Number(row.revision), 1);
-  assert.equal(row.last_edited_by, fx!.people.member);
+  assert.equal(row.last_edited_by, null, 'a system write names no editor');
   assert.equal(events.length, 1, 'the listeners ran before it returned');
-  assert.deepEqual(events[0]!.editorIds, [fx!.people.member]);
+  assert.deepEqual([events[0]!.editorIds, events[0]!.agentUserIds, events[0]!.actionIds], [[], [], []]);
   assert.ok(jsonToText(events[0]!.previousJson).includes('Already here'));
   assert.ok(!jsonToText(events[0]!.previousJson).includes('Written while'));
   assert.ok(jsonToText(events[0]!.json).includes('Written while nobody had it open'));
@@ -571,7 +651,7 @@ test('writeDocument refuses a stale expectedRevision and an over-cap result', { 
   assert.equal((await stored(doc)).revision, before.revision);
   assert.ok(editor.text().length < 1_000, 'the live copy never took it');
   editor.destroy();
-  await pollUntil(() => !collabStateForTest().loadedDocumentIds.includes(doc), 'unloaded', 15_000);
+  await allUnloaded();
   await assert.rejects(
     writeDocument({ orgId: fx!.orgId, documentId: doc, actor, reason: 'import', mutate: (d) => appendParagraph(d, bigText(100_000)) }),
     (e: unknown) => e instanceof DocumentWriteRefused && e.code === 'TOO_LARGE',
@@ -640,14 +720,7 @@ test('a block stored without an id gets one written back into the live document,
 test('a failed store retries and the document stays loaded', { skip: !url && SKIP }, async (t) => {
   const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Retry' });
   const editor = await open(t, doc, fx!.people.member);
-  const constraint = `f7_store_fault_${doc.replaceAll('-', '').slice(0, 12)}`;
-  await fx!.client.query(`ALTER TABLE documents ADD CONSTRAINT ${constraint} CHECK (id <> '${doc}') NOT VALID`);
-  let dropped = false;
-  const drop = async () => {
-    if (dropped) return;
-    dropped = true;
-    await fx!.client.query(`ALTER TABLE documents DROP CONSTRAINT IF EXISTS ${constraint}`);
-  };
+  const drop = await failWrites(doc);
   t.after(drop);
   const failures = collabStateForTest().storeFailures;
   editor.typeText('Stored on retry');
@@ -664,6 +737,256 @@ test('a failed store retries and the document stays loaded', { skip: !url && SKI
   await pollUntil(() => !collabStateForTest().loadedDocumentIds.includes(doc), 'it unloads after the successful store', 5_000);
 });
 
+// ---------------------------------------------------------------------------
+// Fix round 1
+
+test('a socket edit arriving during a writer\'s transaction is measured with the write, so the merged result stays under the cap', { skip: !url && SKIP }, async (t) => {
+  t.after(setCollabLimitsForTest({ docMaxBytes: 65_536 }));
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Writer and socket' });
+  const editor = await open(t, doc, fx!.people.member);
+  editor.typeText('Start');
+  await pollUntil(async () => (await stored(doc)).content_text.includes('Start'), 'the first edit is stored', 10_000);
+  // The writer waits inside its transaction on the row this holds.
+  const row = await holdRow(doc);
+  t.after(row.release);
+  const writing = writeDocument({
+    orgId: fx!.orgId, documentId: doc, actor: { kind: 'user', userId: fx!.people.member2 }, reason: 'import',
+    mutate: (d) => appendParagraph(d, `Writer ${bigText(40_000)}`),
+  });
+  await pollUntil(row.waiterBlocked, 'the writer waits for the row');
+  // Alone it would fit (40 KB < 64 KB); with the write in progress it would not.
+  editor.typeText(`Socket ${bigText(40_000)}`);
+  assert.equal((await editor.waitClosed()).code, 4413);
+  await row.release();
+  await writing;
+  const after = await stored(doc);
+  assert.ok(after.size_bytes <= 65_536, `the merged result stays under the cap (${after.size_bytes})`);
+  assert.ok(after.content_text.includes('Writer '));
+  assert.ok(!after.content_text.includes('Socket '));
+  const reader = await open(t, doc, fx!.people.member2);
+  assert.ok(reader.text().includes('Writer ') && !reader.text().includes('Socket '));
+});
+
+test('a cold write is refused BUSY while live editing\'s memory budget is spent', { skip: !url && SKIP }, async (t) => {
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Cold and busy' });
+  t.after(setCollabLimitsForTest({ memoryBudgetBytes: 1_000 }));
+  await assert.rejects(
+    writeDocument({ orgId: fx!.orgId, documentId: doc, actor: { kind: 'user', userId: fx!.people.member }, reason: 'import', mutate: (d) => appendParagraph(d, 'x') }),
+    (e: unknown) => e instanceof DocumentWriteRefused && e.code === 'BUSY',
+  );
+  assert.equal(Number((await stored(doc)).revision), 0);
+});
+
+test('a no-op resync doesn\'t lower the size estimate', { skip: !url && SKIP }, async (t) => {
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Resync', json: paragraphs(bigText(60_000)) });
+  t.after(setCollabLimitsForTest({ docMaxBytes: 65_536 }));
+  const editor = await open(t, doc, fx!.people.member);
+  const observer = await open(t, doc, fx!.people.member2);
+  // Everything the editor has, sent again: already applied, so Yjs emits nothing.
+  editor.socket.send(collabFrames.update(`doc:${doc}`, Y.encodeStateAsUpdate(editor.ydoc)));
+  editor.provider.setAwarenessField('probe', 'after the resync');
+  await pollUntil(() => (observer.provider.awareness!.getStates().get(editor.ydoc.clientID) as { probe?: string } | undefined)?.probe === 'after the resync',
+    'the resync was handled');
+  const state = collabStateForTest();
+  assert.ok(state.approxBytes(doc)! >= state.encodedBytes(doc)!, `estimate ${state.approxBytes(doc)} below the real ${state.encodedBytes(doc)}`);
+  assert.equal(editor.closes.length, 0);
+});
+
+test('normalization growth is counted in the size cap', { skip: !url && SKIP }, async (t) => {
+  t.after(setCollabLimitsForTest({ docMaxBytes: 65_536 }));
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Normalization' });
+  const editor = await open(t, doc, fx!.people.member);
+  // Paragraphs without block ids, up to just under the cap; the ids the
+  // server writes back would carry them over it.
+  const draft = new Y.Doc();
+  Y.applyUpdate(draft, Y.encodeStateAsUpdate(editor.ydoc));
+  let count = 0;
+  while (draft.getXmlFragment('default').length < 2_000 && Y.encodeStateAsUpdate(draft).byteLength < 65_536 - 1_500) {
+    appendParagraph(draft, `Paragraph ${count} ${bigText(120)}`);
+    count += 1;
+  }
+  assert.ok(count > 100, 'enough blocks for their ids to matter');
+  editor.socket.send(collabFrames.update(`doc:${doc}`, Y.encodeStateAsUpdate(draft, Y.encodeStateVector(editor.ydoc))));
+  assert.equal((await editor.waitClosed()).code, 4413);
+  const reader = await open(t, doc, fx!.people.member2);
+  assert.ok(!reader.text().includes('Paragraph 0 '));
+});
+
+test('a deletion whose result stays above the cap is accepted', { skip: !url && SKIP }, async (t) => {
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Still over', json: paragraphs(bigText(100_000)) });
+  t.after(setCollabLimitsForTest({ docMaxBytes: 65_536 }));
+  const editor = await open(t, doc, fx!.people.member);
+  const paragraph = editor.ydoc.getXmlFragment('default').get(0) as Y.XmlElement;
+  editor.ydoc.transact(() => (paragraph.get(0) as Y.XmlText).delete(0, 10_000));
+  await pollUntil(async () => (await stored(doc)).content_text.length <= 90_000, 'the deletion is stored', 10_000);
+  const row = await stored(doc);
+  assert.ok(row.state_bytes! > 65_536, 'still over the cap');
+  assert.equal(editor.closes.length, 0, 'the deletion was accepted');
+});
+
+test('memory admission counts the projected total and never reserves past the budget', { skip: !url && SKIP }, async (t) => {
+  await allUnloaded();
+  const provisional = 65_536 * 13;
+  const budget = Math.floor(provisional * 2.5);
+  t.after(setCollabLimitsForTest({ docMaxBytes: 65_536, memoryBudgetBytes: budget }));
+  t.after(() => { collabTestSeams.afterAuthenticate = null; });
+  collabStateForTest().resetPeak();
+  const docs: string[] = [];
+  const tokens: string[] = [];
+  for (const n of [1, 2, 3, 4]) {
+    docs.push(await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: `Budget ${n}` }));
+    tokens.push(await tokenFor(fx!.people.member, fx!.orgId));
+  }
+  // Admitted connections wait here, holding their provisional reservations.
+  let entered = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  collabTestSeams.afterAuthenticate = async () => { entered += 1; await gate; };
+  const clients = docs.map((documentId, i) => connectCollab({ url: srv!.url, documentId, token: tokens[i]! }));
+  for (const client of clients) t.after(() => client.destroy());
+  const refused = () => clients.filter((c) => c.closes.some((close) => close.code === 4429));
+  // Nothing loads while the gate holds, so every reservation is still provisional.
+  await pollUntil(() => refused().length === 2, 'two of the four are refused as busy');
+  await pollUntil(() => entered === 2, 'the two admitted reach the gate');
+  release();
+  for (const client of clients.filter((c) => !refused().includes(c))) await client.waitSynced();
+  collabTestSeams.afterAuthenticate = null;
+  assert.equal(entered, 2, 'two reservations fit: 2 × provisional ≤ 2.5 × provisional < 3 ×');
+  assert.ok(collabStateForTest().peakReservedBytes <= budget, `peak ${collabStateForTest().peakReservedBytes} within ${budget}`);
+});
+
+test('memory reservations are released after a failed authentication and after a failed load', { skip: !url && SKIP }, async (t) => {
+  await allUnloaded();
+  t.after(() => { collabTestSeams.afterAuthenticate = null; });
+  assert.equal(collabStateForTest().reservedBytes, 0);
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Bad token' });
+  const bad = await connectOutcome({ url: srv!.url, documentId: doc, token: 'not-a-token' });
+  t.after(() => bad.client.destroy());
+  assert.equal(bad.outcome, 4401);
+  assert.equal(collabStateForTest().reservedBytes, 0, 'released after the failed authentication');
+  assert.equal(collabStateForTest().reservedDocuments, 0);
+
+  // The row disappears between authentication and the load, so the load fails.
+  const gone = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Gone before load' });
+  collabTestSeams.afterAuthenticate = async (documentId) => {
+    if (documentId !== gone) return;
+    collabTestSeams.afterAuthenticate = null;
+    await fx!.client.query('DELETE FROM documents WHERE id = $1', [gone]);
+  };
+  // Authentication passes (the client hears so), then the load fails.
+  const loading = connectCollab({ url: srv!.url, documentId: gone, token: await tokenFor(fx!.people.member, fx!.orgId) });
+  t.after(() => loading.destroy());
+  assert.equal((await loading.waitClosed()).code, 4429);
+  await pollUntil(() => collabStateForTest().reservedDocuments === 0, 'the slot is freed');
+  assert.equal(collabStateForTest().reservedBytes, 0, 'released after the failed load');
+});
+
+test('a frame between an access-loss commit and finishAccessLoss is refused', { skip: !url && SKIP }, async (t) => {
+  const { people } = fx!;
+  const drive = await fx!.insertDrive({ kind: 'private', name: 'Barrier' });
+  await fx!.addDriveMember(drive, { user: people.owner }, 'full');
+  await fx!.addDriveMember(drive, { user: people.member }, 'edit');
+  const doc = await fx!.insertDocument({ driveId: drive, title: 'Barrier' });
+  const member = await open(t, doc, people.member);
+  const change = { orgId: fx!.orgId, driveId: drive, userIds: [people.member] };
+  // Committed, with finishAccessLoss not yet run: the generation hasn't moved.
+  const result = await db.transaction(async (tx) => {
+    await tx.execute(sql`DELETE FROM drive_members WHERE drive_id = ${drive} AND principal_id = ${people.member}`);
+    return applyAccessLossInTx(tx, change);
+  });
+  t.after(() => finishAccessLoss(change, result));
+  member.typeText('Between the commit and the finish');
+  assert.equal((await member.waitClosed()).code, 4403);
+  await finishAccessLoss(change, result);
+  const owner = await open(t, doc, people.owner);
+  assert.ok(!owner.text().includes('Between the commit and the finish'));
+});
+
+test('a change stored inside the derive window is derived when the window ends', { skip: !url && SKIP }, async (t) => {
+  collabTestSeams.derivedEveryMs = 6_000;
+  t.after(() => { collabTestSeams.derivedEveryMs = 60_000; });
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Window' });
+  const editor = await open(t, doc, fx!.people.member);
+  editor.typeText('First');
+  await pollUntil(async () => (await stored(doc)).content_text.includes('First'), 'the first edit is derived', 10_000);
+  editor.typeText('Second');
+  await pollUntil(async () => storedStateText(await stored(doc)).includes('Second'), 'the second edit is stored', 10_000);
+  assert.ok(!(await stored(doc)).content_text.includes('Second'), 'stored inside the window: state only');
+  // Nobody edits again; the outstanding derivation still lands.
+  await pollUntil(async () => (await stored(doc)).content_text.includes('Second'), 'derived when the window ends', 10_000);
+  assert.equal(editor.closes.length, 0);
+});
+
+test('a reload with derived copies behind the live state derives them', { skip: !url && SKIP }, async (t) => {
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Behind', json: paragraphs('Stale text') });
+  const ahead = jsonToYDoc(ensureBlockIds(paragraphs('Stale text', 'Only in the live state')));
+  await fx!.client.query('UPDATE documents SET ydoc_state = $2 WHERE id = $1', [doc, Buffer.from(Y.encodeStateAsUpdate(ahead))]);
+  ahead.destroy();
+  await open(t, doc, fx!.people.member);
+  await pollUntil(async () => (await stored(doc)).content_text.includes('Only in the live state'), 'derived after the reload', 10_000);
+});
+
+test('a document whose final derivation fails stays loaded', { skip: !url && SKIP }, async (t) => {
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Underivable' });
+  const odd = new Y.Doc();
+  appendParagraph(odd, 'Before the odd block');
+  odd.getXmlFragment('default').push([new Y.XmlElement('notInTheSchema')]);
+  await fx!.client.query('UPDATE documents SET ydoc_state = $2 WHERE id = $1', [doc, Buffer.from(Y.encodeStateAsUpdate(odd))]);
+  odd.destroy();
+  const lines = captureConsole(t);
+  const editor = await open(t, doc, fx!.people.member);
+  editor.typeText('After the odd block');
+  await pollUntil(() => !editor.provider.hasUnsyncedChanges, 'the edit reached the server');
+  const finals = collabStateForTest().underivedFinals;
+  editor.destroy();
+  await pollUntil(() => collabStateForTest().underivedFinals > finals, 'a final store could not derive', 10_000);
+  assert.ok(collabStateForTest().loadedDocumentIds.includes(doc), 'kept loaded: its text could not be stored');
+  const state = new Y.Doc();
+  Y.applyUpdate(state, new Uint8Array((await stored(doc)).ydoc_state!));
+  assert.ok(state.getXmlFragment('default').toString().includes('After the odd block'), 'its live state was stored');
+  state.destroy();
+  assert.ok(lines.every((line) => !line.includes('After the odd block')), 'nothing a person wrote is logged');
+  // Removing the odd block lets it derive and unload.
+  const fixer = await open(t, doc, fx!.people.member);
+  const fragment = fixer.ydoc.getXmlFragment('default');
+  const index = fragment.toArray().findIndex((node) => node instanceof Y.XmlElement && node.nodeName === 'notInTheSchema');
+  fixer.ydoc.transact(() => fragment.delete(index, 1));
+  await pollUntil(async () => (await stored(doc)).content_text.includes('After the odd block'), 'derived once the odd block is gone', 10_000);
+  fixer.destroy();
+  await allUnloaded();
+});
+
+test('an expired connection that sends nothing is closed at expiry', { skip: !url && SKIP }, async (t) => {
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Silent' });
+  const token = await tokenFor(fx!.people.member, fx!.orgId, { expiresInSeconds: 3 });
+  const client = connectCollab({ url: srv!.url, documentId: doc, token });
+  t.after(() => client.destroy());
+  await client.waitSynced();
+  const expiry = tokenExpiry(token);
+  const closed = await client.waitClosed(Math.max(0, expiry - Date.now()) + 2_000);
+  assert.equal(closed.code, 4401);
+  assert.ok(Date.now() >= expiry - 50, 'not before the expiry');
+});
+
+test('a frame for another or a malformed document address is refused before Hocuspocus and never logged', { skip: !url && SKIP }, async (t) => {
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'One address' });
+  const marker = `LEAKMARKER${randomUUID().slice(0, 8)}`;
+  const lines = captureConsole(t);
+  const nothing = Y.encodeStateAsUpdate(new Y.Doc());
+  const second = rawCollab(srv!.url);
+  t.after(() => second.ws.terminate());
+  assert.ok(await second.opened());
+  second.send(collabFrames.update(`doc:${doc}`, nothing));
+  second.send(collabFrames.update(`doc:${marker}`, nothing));
+  assert.equal((await second.closed()).code, 4403, 'a second document on a socket is refused');
+  const malformed = rawCollab(srv!.url);
+  t.after(() => malformed.ws.terminate());
+  assert.ok(await malformed.opened());
+  malformed.send(collabFrames.update(`${marker} is not a document address`, nothing));
+  assert.equal((await malformed.closed()).code, 4404, 'a malformed address is refused');
+  assert.ok(lines.every((line) => !line.includes(marker)), `the refused address reached the logs: ${lines.filter((l) => l.includes(marker)).join(' | ')}`);
+});
+
 test('shutdown flushes pending stores', { skip: !url && SKIP }, async (t) => {
   const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Shutdown' });
   const editor = await open(t, doc, fx!.people.member);
@@ -675,4 +998,39 @@ test('shutdown flushes pending stores', { skip: !url && SKIP }, async (t) => {
   assert.ok(row.content_text.includes('Flushed at shutdown'), 'derived content written at shutdown');
   assert.ok(storedStateText(row).includes('Flushed at shutdown'));
   assert.ok((await editor.waitClosed()).code > 0, 'the connection was closed');
+});
+
+test('shutdown retries a store that fails during the drain until it lands', { skip: !url && SKIP }, async (t) => {
+  srv!.renew();
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Shutdown retry' });
+  const editor = await open(t, doc, fx!.people.member);
+  editor.typeText('Kept through a failing store');
+  await pollUntil(() => !editor.provider.hasUnsyncedChanges, 'the edit was acknowledged');
+  const drop = await failWrites(doc);
+  t.after(drop);
+  const failures = collabStateForTest().storeFailures;
+  const stopping = srv!.collab.destroy({ retryUntil: Date.now() + 8_000 });
+  await pollUntil(() => collabStateForTest().storeFailures > failures, 'the store fails during the drain', 5_000);
+  assert.equal(editor.closes.length, 0, 'connections stay open until everything is stored');
+  await drop();
+  await stopping;
+  const row = await stored(doc);
+  assert.ok(storedStateText(row).includes('Kept through a failing store'), 'stored by a retry');
+  assert.ok(row.content_text.includes('Kept through a failing store'));
+  assert.ok((await editor.waitClosed()).code > 0, 'then the connection closes');
+});
+
+test('shutdown that cannot store a document says which one and fails', { skip: !url && SKIP }, async (t) => {
+  srv!.renew();
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Shutdown failure' });
+  const editor = await open(t, doc, fx!.people.member);
+  editor.typeText('Lost with the database down');
+  await pollUntil(() => !editor.provider.hasUnsyncedChanges, 'the edit was acknowledged');
+  const drop = await failWrites(doc);
+  t.after(drop);
+  const lines = captureConsole(t);
+  await assert.rejects(srv!.collab.destroy({ retryUntil: Date.now() + 1_500 }), /could not store/);
+  assert.ok(lines.some((line) => line.includes('[collab] shutdown could not store a document') && line.includes(doc)), lines.join(' | '));
+  assert.ok(lines.every((line) => !line.includes('Lost with the database down')), 'nothing a person wrote is logged');
+  assert.ok(!storedStateText(await stored(doc)).includes('Lost with the database down'));
 });

@@ -46,12 +46,6 @@ export const MAX_FRAME_BYTES = 4 * 1024 * 1024;
 /** One client's awareness state (cursor, name, colour) larger than this is dropped, not re-broadcast. */
 export const AWARENESS_STATE_MAX_BYTES = 16 * 1024;
 
-/**
- * A connection whose token has expired and that sends nothing is closed this
- * long after the expiry. Any frame after the expiry closes it at once.
- */
-export const TOKEN_EXPIRY_GRACE_MS = 30_000;
-
 /** Whether live editing is on: `DEFT_DOCUMENTS_LIVE=off` is the emergency switch. */
 export function liveEditingEnabled(): boolean {
   return process.env.DEFT_DOCUMENTS_LIVE !== 'off';

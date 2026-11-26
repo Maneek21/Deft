@@ -23,12 +23,20 @@ import { createWebSession } from '../../src/lib/web-sessions.js';
 import { getIO, setupSocket } from '../../src/socket.js';
 import type { DrivesFixture } from './drives-fixture.js';
 
-export type CollabTestServer = { url: string; port: number; collab: CollabServer; close(): Promise<void> };
+export type CollabTestServer = {
+  url: string;
+  port: number;
+  /** The collab server attached now. */
+  readonly collab: CollabServer;
+  /** After a shutdown test destroyed it: a new collab server, attached to the same HTTP server. */
+  renew(): CollabServer;
+  close(): Promise<void>;
+};
 
 /**
  * An HTTP server with Socket.io (setupSocket, real token checks) and the
  * collab server attached, as server.ts wires them. `url` is its /collab URL.
- * `close` destroys the collab server it attached.
+ * `close` destroys the collab server attached last.
  */
 export async function startCollabTestServer(_f: DrivesFixture): Promise<CollabTestServer> {
   const server: Server = createServer();
@@ -38,16 +46,22 @@ export async function startCollabTestServer(_f: DrivesFixture): Promise<CollabTe
     socket.once('close', () => sockets.delete(socket));
   });
   setupSocket(server, { recordLastSeen: () => {} });
-  const collab = getCollabServer();
+  let collab = getCollabServer();
   collab.attach(server);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as { port: number }).port;
   return {
     url: `ws://127.0.0.1:${port}/collab`,
     port,
-    collab,
+    get collab() { return collab; },
+    renew() {
+      collab = getCollabServer();
+      collab.attach(server);
+      return collab;
+    },
     close: async () => {
-      await collab.destroy();
+      // A shutdown test may have left it rejected on purpose.
+      await collab.destroy().catch(() => undefined);
       // Upgraded sockets aren't the HTTP server's to close; a socket still
       // finishing its close handshake would hold server.close() open.
       for (const socket of sockets) socket.destroy();
