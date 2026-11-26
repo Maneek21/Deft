@@ -6,10 +6,12 @@
  *
  *   pnpm drives:move [--org <id>] [--check-only]
  *
- * For each workspace (every one, or `--org`): moveOrg (which also makes sure
- * the Workspace drive exists), then postMoveCheck. With --check-only it moves
- * nothing and only checks. Prints one JSON report and exits 1 when any
- * source failed to move or any check isn't ok. Idempotent: run it again
+ * For each workspace (every one, or `--org`): runOrgMove, which moves it
+ * (moveOrg, which also makes sure the Workspace drive exists), checks it
+ * (postMoveCheck) and records the run in drives_move_runs; the API listens
+ * only once every workspace has an ok run. With --check-only it moves and
+ * records nothing and only checks. Prints one JSON report and exits 1 when
+ * any source failed to move or any check isn't ok. Idempotent: run it again
  * after fixing whatever it reported.
  *
  * Runbook (spec 5.11, R2): pause, back up, db:upgrade, drives:move,
@@ -18,8 +20,9 @@
 import { sql } from 'drizzle-orm';
 import { closeDb, db } from '../lib/db.js';
 import { postMoveCheck, type PostMoveCheck } from '../lib/drives-move/check.js';
-import { moveOrg, type MoveReport } from '../lib/drives-move/move-org.js';
+import type { MoveReport } from '../lib/drives-move/move-org.js';
 import { rowsOf } from '../lib/drives-move/placement.js';
+import { runOrgMove } from '../lib/drives-move/runs.js';
 
 function parseArgs(argv: string[]): { orgId: string | null; checkOnly: boolean } {
   let orgId: string | null = null;
@@ -42,14 +45,19 @@ async function main(): Promise<number> {
   const { orgId, checkOnly } = parseArgs(process.argv.slice(2));
   const orgIds = orgId ? [orgId] : rowsOf<{ id: string }>(await db.execute(sql`SELECT id FROM orgs ORDER BY created_at, id`)).map((row) => row.id);
   if (orgId && rowsOf(await db.execute(sql`SELECT 1 FROM orgs WHERE id = ${orgId}`)).length === 0) throw new Error('No workspace has that id');
-  const orgs: Array<{ orgId: string; move: MoveReport | null; check: PostMoveCheck }> = [];
+  const orgs: Array<{ orgId: string; move: MoveReport | null; check: PostMoveCheck | null; ok: boolean }> = [];
   for (const id of orgIds) {
-    const move = checkOnly ? null : await moveOrg(id);
-    orgs.push({ orgId: id, move, check: await postMoveCheck(id) });
+    if (checkOnly) {
+      const check = await postMoveCheck(id);
+      orgs.push({ orgId: id, move: null, check, ok: check.ok });
+    } else {
+      const run = await runOrgMove(id);
+      orgs.push({ orgId: id, move: run.move, check: run.check, ok: run.ok });
+    }
   }
   const failedMoves = orgs.filter((org) => (org.move?.errors.length ?? 0) > 0).length;
-  const failedChecks = orgs.filter((org) => !org.check.ok).length;
-  const ok = failedMoves === 0 && failedChecks === 0;
+  const failedChecks = orgs.filter((org) => !org.ok).length;
+  const ok = failedChecks === 0;
   console.log(JSON.stringify({ checkOnly, ok, workspaces: orgs.length, failedMoves, failedChecks, orgs }, null, 2));
   return ok ? 0 : 1;
 }

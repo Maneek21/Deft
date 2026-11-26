@@ -17,10 +17,14 @@
 // listed in `errors`; the rest go on. The notes and canvas tables are only
 // read.
 //
-// The report counts what this run did. Deliberate change, reported:
-// guests lose the notes that were visible to the whole workspace, because
-// open drives exclude guests (spec 5.2): `guestsLoseWorkspaceNotes` gives
-// the active guests and the workspace notes moved.
+// The report counts what this run did. Deliberate change, reported: open
+// drives exclude guests (spec 5.2), so a guest can no longer open a note that
+// was visible to the whole workspace unless it is shared with them.
+// `guestsPotentiallyAffected` gives the active guests of a workspace that had
+// such notes, and how many such notes moved (master already hid them from
+// guests in release 153, so this is who could be affected, not a loss count).
+// A reference rewrite that would collide with another workspace's row is an
+// error (rewrite-references.ts): the move doesn't finish until it is settled.
 import { sql } from 'drizzle-orm';
 import { db } from '../db.js';
 import { ensureWorkspaceDrive } from '../drives.js';
@@ -44,7 +48,7 @@ export type MoveReport = {
   spaceNotesMadePrivate: number;
   /** Personal drives made frozen, for deactivated, agent and system authors. */
   frozenDrives: number;
-  guestsLoseWorkspaceNotes: { guests: number; notes: number };
+  guestsPotentiallyAffected: { guests: number; workspaceNotes: number };
   references: ReferenceRewrite;
 };
 
@@ -52,7 +56,7 @@ export function emptyMoveReport(orgId: string): MoveReport {
   return {
     orgId, notes: 0, folders: 0, canvases: 0, versions: 0, shares: 0, favourites: 0, unsafeDropped: 0, missingImages: 0,
     skippedAlreadyMoved: 0, errors: [], emptyCanvases: 0, splitNotes: 0, subPages: 0, splitBlocks: 0, versionUnsafeDropped: 0,
-    versionMissingImages: 0, unplacedImages: 0, spaceNotesMadePrivate: 0, frozenDrives: 0, guestsLoseWorkspaceNotes: { guests: 0, notes: 0 },
+    versionMissingImages: 0, unplacedImages: 0, spaceNotesMadePrivate: 0, frozenDrives: 0, guestsPotentiallyAffected: { guests: 0, workspaceNotes: 0 },
     references: emptyReferenceRewrite(),
   };
 }
@@ -69,13 +73,16 @@ export async function moveOrg(orgId: string): Promise<MoveReport> {
   await moveCanvases(ctx, report);
   try {
     report.references = await rewriteReferences(orgId);
+    for (const conflict of report.references.conflicts) {
+      report.errors.push({ sourceId: conflict.id, message: `A rewritten ${conflict.table} row would repeat one in another workspace` });
+    }
   } catch (error) {
     report.errors.push({ sourceId: orgId, message: `References could not be rewritten: ${failureMessage(error)}` });
   }
-  if (report.guestsLoseWorkspaceNotes.notes > 0) {
+  if (report.guestsPotentiallyAffected.workspaceNotes > 0) {
     const [guests] = rowsOf<{ n: number }>(await db.execute(sql`SELECT count(*)::int AS n FROM org_members
       WHERE org_id = ${orgId} AND role = 'guest' AND is_active = true`));
-    report.guestsLoseWorkspaceNotes.guests = Number(guests?.n ?? 0);
+    report.guestsPotentiallyAffected.guests = Number(guests?.n ?? 0);
   }
   return report;
 }

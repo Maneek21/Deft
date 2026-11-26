@@ -1,20 +1,38 @@
-// The notes move (plan Task F14): which workspaces still have something to
-// move. A workspace needs the move while any of its notes, note folders or
-// non-empty canvases has no note_document_map row, or a reference to a moved
-// note still names the note (rewrite-references.ts). The API start moves
-// those before it listens (startup.ts); while paused, the drive list says the
-// notes move when the workspace resumes (GET /api/drives notes_move_pending).
+// The notes move (plan Task F14): which workspaces still have the move to
+// finish. Light: the drive list route reads it.
+//
+// - A workspace's move is finished when drives_move_runs holds an ok row for
+//   it and DRIVES_MOVE_RELEASE: its move completed and the post-move check
+//   passed (runs.ts). The API listens only when every workspace has one
+//   (startup.ts), and a workspace that has one is never moved or checked
+//   again, so later edits can't fail a start.
+// - A workspace has something to move while any of its notes, note folders
+//   or non-empty canvases has no note_document_map row of its own, or a
+//   reference to a moved note still names the note. While a start is paused,
+//   the drive list says the notes move when the workspace resumes
+//   (notesMovePending, GET /api/drives notes_move_pending).
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '../db.js';
 import { canvasHasContent } from './convert-note.js';
-import { rowsOf } from './placement.js';
 
-/** The conditions on the workspace row `pending_org` that mean the move isn't finished, apart from canvases. */
+/** The move's release: drives_move_runs rows are kept per workspace and this. */
+export const DRIVES_MOVE_RELEASE = '0.3.0-preview.155';
+
+/** Canvases read per page when deciding which have content. */
+const CANVAS_PAGE = 100;
+
+function rowsOf<T>(result: unknown): T[] {
+  const rows = (result as { rows?: unknown } | null)?.rows;
+  return Array.isArray(rows) ? rows as T[] : [];
+}
+
+/** The conditions on the workspace row `pending_org` that mean something is left to move, apart from canvases. */
 const unfinished = sql`(
   EXISTS (SELECT 1 FROM notes pending_note WHERE pending_note.org_id = pending_org.id
-    AND NOT EXISTS (SELECT 1 FROM note_document_map m WHERE m.source_type = 'note' AND m.source_id = pending_note.id))
+    AND NOT EXISTS (SELECT 1 FROM note_document_map m WHERE m.org_id = pending_note.org_id AND m.source_type = 'note' AND m.source_id = pending_note.id))
   OR EXISTS (SELECT 1 FROM note_folders pending_folder WHERE pending_folder.org_id = pending_org.id
-    AND NOT EXISTS (SELECT 1 FROM note_document_map m WHERE m.source_type = 'note_folder' AND m.source_id = pending_folder.id))
+    AND NOT EXISTS (SELECT 1 FROM note_document_map m WHERE m.org_id = pending_folder.org_id AND m.source_type = 'note_folder'
+      AND m.source_id = pending_folder.id))
   OR EXISTS (SELECT 1 FROM entity_tags pending_tag JOIN note_document_map m ON m.org_id = pending_tag.org_id
       AND m.source_type = 'note' AND m.source_id = pending_tag.entity_id
     WHERE pending_tag.org_id = pending_org.id AND pending_tag.entity_type IN ('note', 'daily_note'))
@@ -30,21 +48,46 @@ const unfinished = sql`(
     WHERE pending_item.org_id = pending_org.id AND pending_item.source_type = 'note')
 )`;
 
+const onlyOrgs = (orgIds?: readonly string[]): SQL => (orgIds ? sql`pending_org.id = ANY(${sql.param([...orgIds])}::text[])` : sql`true`);
+
 /** The workspaces (all, or those of `orgIds`) with something still to move, in a stable order. */
 export async function orgsNeedingMove(orgIds?: readonly string[]): Promise<string[]> {
-  const only: SQL = orgIds ? sql`pending_org.id = ANY(${sql.param([...orgIds])}::text[])` : sql`true`;
+  const only = onlyOrgs(orgIds);
   const found = new Set(rowsOf<{ id: string }>(await db.execute(sql`SELECT pending_org.id FROM orgs pending_org
     WHERE ${only} AND ${unfinished}`)).map((row) => row.id));
-  // A canvas counts only when it has content, which is decided in code (convert-note.ts).
-  const canvases = rowsOf<{ org_id: string; content: unknown }>(await db.execute(sql`SELECT pending_canvas.org_id, pending_canvas.content
-    FROM canvases pending_canvas JOIN orgs pending_org ON pending_org.id = pending_canvas.org_id
-    WHERE ${only} AND pending_canvas.content IS NOT NULL
-      AND NOT EXISTS (SELECT 1 FROM note_document_map m WHERE m.source_type = 'canvas' AND m.source_id = pending_canvas.id)`));
-  for (const canvas of canvases) if (!found.has(canvas.org_id) && canvasHasContent(canvas.content)) found.add(canvas.org_id);
+  // A canvas counts only when it has content, which is decided in code (convert-note.ts): read a page at a time.
+  let after = '';
+  for (;;) {
+    const page = rowsOf<{ id: string; org_id: string; content: unknown }>(await db.execute(sql`
+      SELECT pending_canvas.id, pending_canvas.org_id, pending_canvas.content
+      FROM canvases pending_canvas JOIN orgs pending_org ON pending_org.id = pending_canvas.org_id
+      WHERE ${only} AND pending_canvas.id > ${after} AND pending_canvas.content IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM note_document_map m WHERE m.org_id = pending_canvas.org_id AND m.source_type = 'canvas'
+          AND m.source_id = pending_canvas.id)
+      ORDER BY pending_canvas.id
+      LIMIT ${CANVAS_PAGE}`));
+    for (const canvas of page) if (!found.has(canvas.org_id) && canvasHasContent(canvas.content)) found.add(canvas.org_id);
+    if (page.length < CANVAS_PAGE) break;
+    after = page[page.length - 1]!.id;
+  }
   return [...found].sort();
 }
 
 /** True while `orgId` still has notes or canvases to move. */
 export async function orgNeedsMove(orgId: string): Promise<boolean> {
   return (await orgsNeedingMove([orgId])).length > 0;
+}
+
+/** The workspaces (all, or those of `orgIds`) without an ok move run for this release, in a stable order. */
+export async function orgsWithoutFinishedMove(orgIds?: readonly string[]): Promise<string[]> {
+  return rowsOf<{ id: string }>(await db.execute(sql`SELECT pending_org.id FROM orgs pending_org
+    WHERE ${onlyOrgs(orgIds)}
+      AND NOT EXISTS (SELECT 1 FROM drives_move_runs run WHERE run.org_id = pending_org.id
+        AND run.release_version = ${DRIVES_MOVE_RELEASE} AND run.check_ok AND run.completed_at IS NOT NULL)
+    ORDER BY pending_org.id`)).map((row) => row.id);
+}
+
+/** For a paused start's drive list: the workspace's move hasn't finished and it has notes or canvases waiting. */
+export async function notesMovePending(orgId: string): Promise<boolean> {
+  return (await orgsWithoutFinishedMove([orgId])).length > 0 && await orgNeedsMove(orgId);
 }

@@ -34,11 +34,11 @@ export async function moveCanvases(ctx: OrgContext, report: MoveReport): Promise
   const { orgId } = ctx;
   const [moved] = rowsOf<{ n: number }>(await db.execute(sql`SELECT count(*)::int AS n FROM canvases moved_canvas
     WHERE moved_canvas.org_id = ${orgId}
-      AND EXISTS (SELECT 1 FROM note_document_map m WHERE m.source_type = 'canvas' AND m.source_id = moved_canvas.id)`));
+      AND EXISTS (SELECT 1 FROM note_document_map m WHERE m.org_id = moved_canvas.org_id AND m.source_type = 'canvas' AND m.source_id = moved_canvas.id)`));
   report.skippedAlreadyMoved += Number(moved?.n ?? 0);
   const pending = rowsOf<{ id: string }>(await db.execute(sql`SELECT id FROM canvases moved_canvas
     WHERE moved_canvas.org_id = ${orgId}
-      AND NOT EXISTS (SELECT 1 FROM note_document_map m WHERE m.source_type = 'canvas' AND m.source_id = moved_canvas.id)
+      AND NOT EXISTS (SELECT 1 FROM note_document_map m WHERE m.org_id = moved_canvas.org_id AND m.source_type = 'canvas' AND m.source_id = moved_canvas.id)
     ORDER BY moved_canvas.created_at, moved_canvas.id`));
   for (const { id } of pending) {
     try {
@@ -65,7 +65,7 @@ export async function moveCanvases(ctx: OrgContext, report: MoveReport): Promise
 async function moveCanvasInTx(tx: Tx, ctx: OrgContext, canvasId: string): Promise<CanvasOutcome> {
   const { orgId } = ctx;
   await lockOrgInTx(tx, orgId);
-  if (await mappedTarget(tx, 'canvas', canvasId)) return 'already_moved';
+  if (await mappedTarget(tx, orgId, 'canvas', canvasId)) return 'already_moved';
   const [canvas] = rowsOf<CanvasRow>(await tx.execute(sql`SELECT moved_canvas.id, moved_canvas.space_id, moved_canvas.title, moved_canvas.content,
       moved_canvas.last_edited_by, moved_canvas.last_edited_at::text AS last_edited_at, moved_canvas.created_at::text AS created_at,
       moved_canvas.updated_at::text AS updated_at, chat.created_by AS space_creator, chat.org_id AS space_org
@@ -101,24 +101,24 @@ async function moveCanvasInTx(tx: Tx, ctx: OrgContext, canvasId: string): Promis
   };
   const mainId = await insertDocumentInTx(tx, {
     ...base, folderId: null, parentDocumentId: null, title: parts[0]!.title, position: await nextRootPosition(tx, orgId, drive.id, null),
-    json: parts[0]!.json, bytes: parts[0]!.bytes,
+    json: parts[0]!.json,
   });
-  const docs = [{ id: mainId, fileIds: new Set(imageFileIds(parts[0]!.json)) }];
-  for (let index = 1; index < parts.length; index += 1) {
-    const part = parts[index]!;
-    const id = await insertDocumentInTx(tx, { ...base, folderId: null, parentDocumentId: mainId, title: part.title, position: index, json: part.json, bytes: part.bytes });
-    docs.push({ id, fileIds: new Set(imageFileIds(part.json)) });
-  }
-
+  // The share first, on the first part: each sub-page then starts with it (F9's sub-page rule, in F5's create).
   const shareSet = new ShareSet();
   if (canvas.space_org === orgId) shareSet.add({ type: 'space', id: canvas.space_id }, 'edit');
   else details.share_skipped = 'space_not_in_workspace';
-  const shares = await insertSharesInTx(tx, orgId, docs.map((doc) => doc.id), shareSet, owner);
-  await linkFilesInTx(tx, orgId, [...linked].sort(), docs);
+  const shares = (await insertSharesInTx(tx, orgId, [mainId], shareSet, owner)) * parts.length;
+  const docs = [{ id: mainId, fileIds: new Set(imageFileIds(parts[0]!.json)) }];
+  for (let index = 1; index < parts.length; index += 1) {
+    const part = parts[index]!;
+    const id = await insertDocumentInTx(tx, { ...base, folderId: null, parentDocumentId: mainId, title: part.title, position: index, json: part.json });
+    docs.push({ id, fileIds: new Set(imageFileIds(part.json)) });
+  }
+  await linkFilesInTx(tx, orgId, [...linked].sort(), docs, new Set());
   Object.assign(details, { drive_id: drive.id, parts: docs.map((doc) => doc.id), missing_images: shown.missing, linked_images: linked.size,
     ...(splitBlocks > 0 ? { split_blocks: splitBlocks } : {}) });
   await insertMapRow(tx, {
-    orgId, sourceType: 'canvas', sourceId: canvasId, targetType: 'document', targetId: mainId, outcome: outcomeOf(0, shown.missing), details,
+    orgId, legacyType: 'canvas', sourceId: canvasId, targetType: 'document', targetId: mainId, outcome: outcomeOf(0, shown.missing), details,
   });
   return { frozenCreated: drive.frozenCreated, shares, missingImages: shown.missing, subPages: parts.length - 1, splitBlocks };
 }

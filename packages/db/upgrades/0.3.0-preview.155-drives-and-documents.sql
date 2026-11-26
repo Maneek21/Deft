@@ -1,4 +1,4 @@
--- Drives and documents (they replace notes). Add-only: nine tables, three
+-- Drives and documents (they replace notes). Add-only: ten tables, three
 -- trigger functions with their triggers, and three enum labels. Moving the
 -- notes is a separate script (pnpm drives:move), not part of this file.
 -- No IF NOT EXISTS: a same-named leftover fails the upgrade instead of being
@@ -213,6 +213,22 @@ CREATE TABLE note_document_map (
   details jsonb,
   moved_at timestamp NOT NULL DEFAULT now(),
   CONSTRAINT note_document_map_source_key UNIQUE (source_type, source_id)
+);
+
+-- One row per workspace and move release: the notes move finished
+-- (completed_at) and its post-move check passed (check_ok), with the last
+-- report. The API listens only once every workspace has an ok row, and a
+-- workspace with one is never moved or checked again.
+CREATE TABLE drives_move_runs (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES orgs(id),
+  release_version text NOT NULL,
+  completed_at timestamp,
+  check_ok boolean NOT NULL DEFAULT false,
+  report jsonb,
+  created_at timestamp NOT NULL DEFAULT now(),
+  updated_at timestamp NOT NULL DEFAULT now(),
+  CONSTRAINT drives_move_runs_org_release_key UNIQUE (org_id, release_version)
 );
 
 -- Full-text search over title (weight A) and text (weight B). A trigger, not

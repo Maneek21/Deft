@@ -17,25 +17,29 @@
 //   deactivated member keeps. Someone with no org_members row in the
 //   workspace can't own a drive there: their private notes are an error the
 //   operator has to decide on, and the move reports it.
-// - Documents are inserted here, not through F5's createDocumentInTx: that
-//   needs the author to hold edit on the drive at the time of the move, which
-//   no one holds on a frozen drive, an inactive author doesn't hold anywhere
-//   and an author holds on Shared notes (default view) only through the
-//   share written after the insert, and it can't keep a note's dates or its
-//   deleted state. The content is prepared as createDocumentInTx prepares it
-//   (the schema check, ensureBlockIds, the encoded Yjs size with the same cap
-//   helper; convert-note.ts), with ydoc_state null until the first live load.
-// - Versions are inserted here, not through F8's createVersion: that writes
-//   through the pool, outside the note's transaction, and takes its title
-//   from the document row; a moved version keeps its own. The row is the one
-//   createVersion writes: JSON only, size_bytes the JSON's byte length.
+// - Documents are created through F5's system entry point
+//   (documents.ts systemCreateDocumentInTx): createDocumentInTx's preparation
+//   and row, without a person's role check (nobody holds edit on a frozen
+//   drive, an inactive author holds nothing, and an author holds edit on
+//   Shared notes only through the share written after the insert), keeping
+//   the source's times and deleted state. A sub-page starts with its parent's
+//   shares (F9's rule), so the move writes a note's shares on its first part
+//   before it makes the sub-pages.
+// - Versions are written by F8's version primitive in the source's
+//   transaction (document-versions.ts createVersionInTx), with the old
+//   version's own title and time. A version is kept as it was, even over the
+//   live size cap: it can be viewed; restoring one over the cap is refused
+//   with 413 TOO_LARGE by the writer (writeDocument).
 import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
-import { documents, documentVersions, type NoteMoveOutcome, type NoteMoveSourceType, type NoteMoveTargetType } from '@deft/db/documents';
-import { jsonToText } from '@deft/doc-schema';
+import { type NoteMoveOutcome, type NoteMoveSourceType, type NoteMoveTargetType } from '@deft/db/documents';
 import { db } from '../db.js';
+import { createVersionInTx } from '../document-versions.js';
+import { DocumentRefusal, systemCreateDocumentInTx, type TimestampText } from '../documents.js';
 import { ensurePersonalDrive, ensureSharedNotesDrive, PrincipalCannotHoldAccessError } from '../drives.js';
 import { MoveError, type JSONContent } from './convert-note.js';
+
+export type { TimestampText };
 
 export type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -83,19 +87,24 @@ export async function lockOrgInTx(tx: Tx, orgId: string): Promise<void> {
   await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('drives-move:' || ${orgId}))`);
 }
 
-/** The id a source was moved to, or null. */
-export async function mappedTarget(tx: Tx, sourceType: NoteMoveSourceType, sourceId: string): Promise<string | null> {
-  const [row] = rowsOf<{ target_id: string }>(await tx.execute(sql`
-    SELECT target_id FROM note_document_map WHERE source_type = ${sourceType} AND source_id = ${sourceId}`));
+/**
+ * The id a source of `orgId` was moved to, or null. A map row naming the
+ * same source in another workspace means the move can't place it (the
+ * source key is unique across workspaces): refused.
+ */
+export async function mappedTarget(tx: Tx, orgId: string, legacyType: NoteMoveSourceType, sourceId: string): Promise<string | null> {
+  const [row] = rowsOf<{ target_id: string; org_id: string }>(await tx.execute(sql`
+    SELECT target_id, org_id FROM note_document_map WHERE source_type = ${legacyType} AND source_id = ${sourceId}`));
+  if (row && row.org_id !== orgId) throw new MoveError('mapped_in_another_workspace', 'This source is already mapped in another workspace');
   return row?.target_id ?? null;
 }
 
 export async function insertMapRow(tx: Tx, row: {
-  orgId: string; sourceType: NoteMoveSourceType; sourceId: string; targetType: NoteMoveTargetType; targetId: string;
+  orgId: string; legacyType: NoteMoveSourceType; sourceId: string; targetType: NoteMoveTargetType; targetId: string;
   outcome?: NoteMoveOutcome; details: Record<string, unknown>;
 }): Promise<void> {
   await tx.execute(sql`INSERT INTO note_document_map (id, org_id, source_type, source_id, target_type, target_id, outcome, details)
-    VALUES (${randomUUID()}, ${row.orgId}, ${row.sourceType}, ${row.sourceId}, ${row.targetType}, ${row.targetId},
+    VALUES (${randomUUID()}, ${row.orgId}, ${row.legacyType}, ${row.sourceId}, ${row.targetType}, ${row.targetId},
       ${row.outcome ?? 'ok'}, ${JSON.stringify(row.details)}::jsonb)`);
 }
 
@@ -163,43 +172,51 @@ export async function nextRootPosition(tx: Tx, orgId: string, driveId: string, f
   return Number(row?.next ?? 1);
 }
 
-/**
- * A `timestamp` as Postgres prints it (`col::text`). The move copies every
- * source time as text and casts it back, so it is kept exactly: pg reads a
- * `timestamp without time zone` into a Date in the process's own time zone,
- * which would shift it on a machine not running in UTC.
- */
-export type TimestampText = string;
-
 export type MovedDocument = {
   orgId: string; driveId: string; folderId: string | null; parentDocumentId: string | null; title: string; icon: string | null;
-  position: number; json: JSONContent; bytes: number; isTemplate: boolean; createdBy: string; lastEditedBy: string | null;
+  position: number; json: JSONContent; isTemplate: boolean; createdBy: string; lastEditedBy: string | null;
   lastEditedAt: TimestampText | null; createdAt: TimestampText; updatedAt: TimestampText; deletedAt: TimestampText | null; deletedBy: string | null;
 };
 
-/** A moved document: Knowledge off (Owner, 25 Nov), live state built on its first load (ydoc_state null, as F5 creates). */
+/**
+ * A moved document, through F5's system entry point (the header): Knowledge
+ * off (Owner, 25 Nov), live state built on its first load, the source's
+ * times kept as Postgres text (a Date would be read in the process's time zone).
+ */
 export async function insertDocumentInTx(tx: Tx, d: MovedDocument): Promise<string> {
-  const id = randomUUID();
-  await tx.execute(sql`INSERT INTO ${documents} (id, org_id, drive_id, folder_id, parent_document_id, title, icon, position, ydoc_state,
-      content_json, content_text, use_in_knowledge, size_bytes, is_template, created_by, last_edited_by, last_edited_at,
-      is_deleted, deleted_at, deleted_by, created_at, updated_at)
-    VALUES (${id}, ${d.orgId}, ${d.driveId}, ${d.folderId}, ${d.parentDocumentId}, ${d.title}, ${d.icon}, ${d.position}, NULL,
-      ${JSON.stringify(d.json)}::jsonb, ${jsonToText(d.json)}, false, ${d.bytes}, ${d.isTemplate}, ${d.createdBy}, ${d.lastEditedBy},
-      ${d.lastEditedAt}::timestamp, ${d.deletedAt !== null}, ${d.deletedAt}::timestamp, ${d.deletedBy},
-      ${d.createdAt}::timestamp, ${d.updatedAt}::timestamp)`);
-  return id;
+  const row = await systemCreateDocumentInTx(tx, {
+    orgId: d.orgId, driveId: d.driveId, folderId: d.folderId, parentDocumentId: d.parentDocumentId, title: d.title, icon: d.icon,
+    json: d.json, isTemplate: d.isTemplate, useInKnowledge: false, position: d.position, createdBy: d.createdBy,
+    lastEditedBy: d.lastEditedBy, lastEditedAt: d.lastEditedAt, createdAt: d.createdAt, updatedAt: d.updatedAt,
+    deletedAt: d.deletedAt, deletedBy: d.deletedBy,
+  });
+  return row.id;
 }
 
-/** A `moved` version, as F8's createVersion writes a row (JSON only, size_bytes the JSON's length), with its own title and time. */
+/**
+ * Old versions that share one time keep their order: within a document, the
+ * n-th version (in version order) at a time already used is stored n
+ * microseconds later. Every other time is kept as it was.
+ */
+export class VersionTimes {
+  private readonly used = new Map<TimestampText, number>();
+  /** How many microseconds to add to this version's time. */
+  tie(createdAt: TimestampText): number {
+    const n = this.used.get(createdAt) ?? 0;
+    this.used.set(createdAt, n + 1);
+    return n;
+  }
+}
+
+/** A `moved` version, through F8's version primitive in the source's transaction, with its own title and time (plus its tie). */
 export async function insertMovedVersionInTx(tx: Tx, v: {
   orgId: string; documentId: string; title: string | null; json: JSONContent; createdBy: string | null; createdAt: TimestampText;
-  editDetails: Record<string, unknown>;
+  tie: number; editDetails: Record<string, unknown>;
 }): Promise<void> {
-  const text = JSON.stringify(v.json);
-  await tx.execute(sql`INSERT INTO ${documentVersions} (id, org_id, document_id, kind, name, title, ydoc_state, content_json, size_bytes,
-      created_by, agent_user_id, action_id, edit_details, created_at)
-    VALUES (${randomUUID()}, ${v.orgId}, ${v.documentId}, 'moved', NULL, ${v.title}, NULL, ${text}::jsonb, ${Buffer.byteLength(text, 'utf8')},
-      ${v.createdBy}, NULL, NULL, ${JSON.stringify(v.editDetails)}::jsonb, ${v.createdAt}::timestamp)`);
+  await createVersionInTx(tx, {
+    orgId: v.orgId, documentId: v.documentId, kind: 'moved', title: v.title, json: v.json, createdBy: v.createdBy,
+    editDetails: v.editDetails, createdAt: sql`${v.createdAt}::timestamp + ${v.tie}::int * interval '1 microsecond'`,
+  });
 }
 
 export type Principal = { type: 'user' | 'space'; id: string };
@@ -265,17 +282,21 @@ export async function decideFilesInTx(tx: Tx, orgId: string, allowed: Map<string
 }
 
 /**
- * Links each file to the documents whose content shows it (in_current true),
- * or, when none does (it is only in history), to the first document with
- * in_current false: F8's rule for in_current, set when the rows are made. The
- * files are claimed: their staged expiry is cleared, so the retention sweep
- * keeps them. Returns the rows written.
+ * Links each file to every document whose content shows it (in_current
+ * true). The first document holds the history: a file in its history, or
+ * in no content at all, is also linked to it with in_current false, unless
+ * its own content shows it. That is F8's rule for in_current, set when the
+ * rows are made, so the history can show every image it holds, wherever the
+ * current content placed it. The files are claimed: their staged expiry is
+ * cleared, so the retention sweep keeps them. Returns the rows written.
  */
-export async function linkFilesInTx(tx: Tx, orgId: string, fileIds: string[], docs: Array<{ id: string; fileIds: Set<string> }>): Promise<number> {
+export async function linkFilesInTx(tx: Tx, orgId: string, fileIds: string[], docs: Array<{ id: string; fileIds: Set<string> }>,
+  historyFileIds: ReadonlySet<string>): Promise<number> {
   let written = 0;
+  const main = docs[0]!;
   for (const fileId of fileIds) {
-    const showing = docs.filter((doc) => doc.fileIds.has(fileId));
-    const targets = showing.length > 0 ? showing.map((doc) => ({ id: doc.id, current: true })) : [{ id: docs[0]!.id, current: false }];
+    const targets = docs.filter((doc) => doc.fileIds.has(fileId)).map((doc) => ({ id: doc.id, current: true }));
+    if (!main.fileIds.has(fileId) && (historyFileIds.has(fileId) || targets.length === 0)) targets.push({ id: main.id, current: false });
     for (const target of targets) {
       await tx.execute(sql`INSERT INTO document_attachments (id, org_id, document_id, file_id, in_current, added_by)
         SELECT ${randomUUID()}, ${orgId}, ${target.id}, linked_file.id, ${target.current}, linked_file.uploaded_by
@@ -300,6 +321,7 @@ export async function spaceInOrg(tx: Tx, orgId: string, spaceId: string | null):
 /** A failure as the report shows it: the move's own fixed words, or the kind of error, never content. */
 export function failureMessage(error: unknown): string {
   if (error instanceof MoveError) return error.message;
+  if (error instanceof DocumentRefusal) return `Refused by document creation: ${error.code}`;
   const code = error && typeof error === 'object' && 'code' in error ? String((error as { code: unknown }).code) : '';
   return code ? `Unexpected database error ${code}` : `Unexpected error (${error instanceof Error ? error.name : typeof error})`;
 }

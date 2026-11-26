@@ -105,7 +105,7 @@ export async function setupDrivesFixture(label: string, options: DrivesFixtureOp
   const teardown = async () => {
     try {
       const orgs = [orgId, otherOrgId];
-      for (const table of ['attention_events', 'attention_items', 'notifications', 'audit_log', 'oauth_audit_events', 'doc_favorites', 'note_document_map', 'document_attachments',
+      for (const table of ['attention_events', 'attention_items', 'notifications', 'audit_log', 'oauth_audit_events', 'doc_favorites', 'note_document_map', 'drives_move_runs', 'document_attachments',
         'document_versions', 'document_shares', 'documents', 'doc_folders', 'drive_members', 'drives']) {
         await q(`DELETE FROM ${table} WHERE org_id = ANY($1::text[])`, [orgs]);
       }

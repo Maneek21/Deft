@@ -3,9 +3,12 @@
  * canvases become documents in drives, once, idempotently, with nothing
  * lost. Everything is seeded with SQL into the drives fixture's workspace,
  * the move runs once for it in `before`, and each test reads what it made.
- * The last tests run the move again (nothing changes), the post-move check,
- * the Workspace drive for a workspace with no notes, and the startup path
- * (the API moves before it listens, and skips the move while paused).
+ * The last tests run the move again (nothing changes), the post-move check
+ * (and each kind of corruption it must find), the Workspace drive for a
+ * workspace with no notes, and the startup path: the API moves and checks
+ * before it listens, records the run, skips the move while paused, refuses
+ * to listen on a failed check, checks again after an interrupted check, and
+ * never re-checks a workspace whose run was ok.
  *
  * Run:
  *   DATABASE_URL=... DEFT_TEST_DATABASE_URL=... pnpm --filter @deft/api test test/drives-move-db.test.ts
@@ -23,6 +26,9 @@ import { _setPausedStartForTest } from '../src/lib/paused-start.js';
 import { postMoveCheck } from '../src/lib/drives-move/check.js';
 import { moveOrg, type MoveReport } from '../src/lib/drives-move/move-org.js';
 import { moveNotesBeforeListen } from '../src/lib/drives-move/startup.js';
+/** The move release drives_move_runs rows are kept under (pending.ts DRIVES_MOVE_RELEASE). */
+const DRIVES_MOVE_RELEASE = '0.3.0-preview.155';
+import { documentRoutes } from '../src/routes/documents.js';
 import { driveRoutes } from '../src/routes/drives.js';
 import { setupDrivesFixture, type DrivesFixture } from './fixtures/drives-fixture.js';
 import { ensureNoteFilesTable } from './fixtures/note-files-table.js';
@@ -47,9 +53,11 @@ const bareUser = randomUUID();
 type SeedId = 'folderA' | 'folderB' | 'folderC' | 'nested' | 'workspace' | 'space' | 'spaceless' | 'shared' | 'versioned' | 'template'
   | 'pinned' | 'deleted' | 'imageA' | 'imageB' | 'imaged' | 'hostile' | 'foreignImage' | 'messageImage' | 'borrowed' | 'inactiveNote'
   | 'agentNote' | 'canvasOther' | 'canvasGuest' | 'emptySpace1' | 'emptySpace2' | 'canvasEmpty' | 'canvasBlank' | 'huge' | 'tagged' | 'tag'
-  | 'crossTask' | 'team' | 'bareNote';
+  | 'crossTask' | 'team' | 'bareNote' | 'historyImage' | 'historySplit' | 'longHistory' | 'tied';
 /** Every id the tests need, filled by `before`. */
 const s = {} as Record<SeedId, string>;
+/** The 3 MB note's text, built from the same pieces as its HTML (no tag stripping). */
+let hugeText = '';
 const people = {} as Record<keyof DrivesFixture['people'] | 'inactive' | 'agentAuthor', string>;
 
 const q = (text: string, values: unknown[] = []) => fx.client.query(text, values);
@@ -161,7 +169,9 @@ async function snapshot(orgId: string): Promise<Record<string, number>> {
 before(async () => {
   if (!url) return;
   await ensureNoteFilesTable(url);
-  fx = await setupDrivesFixture('drives-move', { routes: [{ path: '/api/drives', app: driveRoutes }] });
+  fx = await setupDrivesFixture('drives-move', {
+    routes: [{ path: '/api/drives', app: driveRoutes }, { path: '/api/documents', app: documentRoutes }],
+  });
   Object.assign(people, fx.people);
   people.inactive = await fx.addPerson({ active: false });
   people.agentAuthor = await fx.addPerson({ kind: 'agent', agentEmployeeId: randomUUID() });
@@ -228,9 +238,33 @@ before(async () => {
 
   // A note of about 3.4 MB: a section of paragraphs, then one paragraph of 2.6 MB in lines.
   const line = 'The quick brown fox jumps over the lazy dog and keeps on running far away. '.repeat(4);
-  const sectionA = Array.from({ length: 2400 }, (_, n) => `<p>Section A paragraph ${n}: ${line}</p>`).join('');
-  const bigLines = Array.from({ length: 8500 }, (_, n) => `Line ${n} ${line}`).join('<br>');
-  s.huge = await insertNote({ user: member, title: 'Huge', content: `<p>Intro.</p><h1>Section A</h1>${sectionA}<h1>Section B</h1><p>${bigLines}</p>` });
+  const paragraphs = Array.from({ length: 2400 }, (_, n) => `Section A paragraph ${n}: ${line}`);
+  const lines = Array.from({ length: 8500 }, (_, n) => `Line ${n} ${line}`);
+  hugeText = ['Intro.', 'Section A', ...paragraphs, 'Section B', ...lines].join('');
+  s.huge = await insertNote({ user: member, title: 'Huge',
+    content: `<p>Intro.</p><h1>Section A</h1>${paragraphs.map((p) => `<p>${p}</p>`).join('')}<h1>Section B</h1><p>${lines.join('<br>')}</p>` });
+
+  // A split note whose history holds an oversized version, and whose image sits in a later part and in its history.
+  s.historyImage = await upload(member);
+  const filler = (label: string, count: number) => Array.from({ length: count }, (_, n) => `<p>${label} ${n}: ${line}</p>`).join('');
+  s.historySplit = await insertNote({ user: member, title: 'Split with history',
+    content: `<p>Intro.</p><h1>Part one</h1>${filler('One', 3000)}<h1>Part two</h1>${filler('Two', 3000)}<img data-file-id="${s.historyImage}">` });
+  await q('INSERT INTO note_files (org_id, note_id, file_id) VALUES ($1, $2, $3)', [fx.orgId, s.historySplit, s.historyImage]);
+  await insertVersion(s.historySplit, 1, { title: 'Very long draft', content: `${filler('Old', 9000)}<img data-file-id="${s.historyImage}">`,
+    editedBy: member, createdAt: at('2026-01-10T08:00:00Z') });
+  await insertVersion(s.historySplit, 2, { title: 'Short draft', content: `<p>Short.</p><img data-file-id="${s.historyImage}">`,
+    editedBy: member, createdAt: at('2026-01-11T08:00:00Z') });
+
+  // A long history (200 versions), and 12 versions that share one time.
+  s.longHistory = await insertNote({ user: member, title: 'Long history', content: '<p>Now.</p>' });
+  for (let v = 1; v <= 200; v += 1) {
+    await insertVersion(s.longHistory, v, { title: `Draft ${v}`, content: `<p>Draft ${v} ${line}</p>`, editedBy: member,
+      createdAt: new Date(Date.UTC(2026, 0, 1) + v * 60_000) });
+  }
+  s.tied = await insertNote({ user: member, title: 'Tied history', content: '<p>Latest.</p>' });
+  for (let v = 1; v <= 12; v += 1) {
+    await insertVersion(s.tied, v, { title: `Same time ${v}`, content: `<p>Version ${v}.</p>`, editedBy: member, createdAt: at('2026-02-01T09:30:00Z') });
+  }
 
   // References: tags (one note tagged twice, as note and daily_note), a cross reference, a team link and an attention item.
   s.tagged = await insertNote({ user: member, title: 'Tagged' });
@@ -274,7 +308,8 @@ after(async () => {
     await q('DELETE FROM canvases WHERE org_id = ANY($1::text[])', [orgs]);
     await q('DELETE FROM files WHERE org_id = ANY($1::text[])', [orgs]);
     await q('DELETE FROM messages WHERE org_id = ANY($1::text[])', [orgs]);
-    for (const table of ['note_document_map', 'doc_favorites', 'document_versions', 'document_shares', 'documents', 'doc_folders', 'drive_members', 'drives']) {
+    for (const table of ['drives_move_runs', 'note_document_map', 'doc_favorites', 'document_versions', 'document_shares', 'documents', 'doc_folders',
+      'drive_members', 'drives']) {
       await q(`DELETE FROM ${table} WHERE org_id = $1`, [bareOrg]);
     }
     await q('DELETE FROM org_members WHERE org_id = $1', [bareOrg]);
@@ -326,8 +361,8 @@ test('a workspace note lands in Shared notes in its author\'s folder; members ca
   assert.equal(await roleOf(fx.people.member2, doc.id), 'view');
   assert.equal(await roleOf(fx.people.owner, doc.id), 'full');
   assert.equal(await roleOf(fx.people.guest, doc.id), null);
-  assert.ok(report.guestsLoseWorkspaceNotes.guests >= 1, 'the report counts the guests who lose workspace notes');
-  assert.ok(report.guestsLoseWorkspaceNotes.notes >= 1, 'and the workspace notes they lose');
+  assert.ok(report.guestsPotentiallyAffected.guests >= 1, 'the report counts the guests potentially affected');
+  assert.ok(report.guestsPotentiallyAffected.workspaceNotes >= 1, 'and the workspace notes involved');
 });
 
 test('a space note lands in My drive shared with the chat as view', { skip: SKIP }, async () => {
@@ -486,9 +521,8 @@ test('a 3 MB note is split into sub-pages with nothing lost', { skip: SKIP }, as
     assert.equal(part.use_in_knowledge, false);
   }
   assert.ok(parts.slice(1).some((part) => part.title === 'Section A' || part.title === 'Section B'), 'a sub-page is titled by its heading');
-  const source = (await one('SELECT content FROM notes WHERE id = $1', [s.huge]))!.content as string;
-  const expected = squash(source.replace(/<br>/g, ' ').replace(/<[^>]+>/g, ''));
-  assert.equal(squash(parts.map((part) => jsonToText(part.content_json)).join('')), expected, 'every character is kept, in order');
+  // The expected text is built from the same pieces as the note's HTML, not by stripping its tags.
+  assert.equal(squash(parts.map((part) => jsonToText(part.content_json)).join('')), squash(hugeText), 'every character is kept, in order');
   const map = (await mapOf('note', s.huge))!;
   assert.equal(map.details.parts.length, parts.length);
   assert.ok(map.details.split_blocks >= 1, 'the 2.6 MB paragraph was split at its lines');
@@ -505,8 +539,8 @@ test('team links and note attention items point at documents', { skip: SKIP }, a
 
 test('running the move twice changes nothing', { skip: SKIP }, async () => {
   assert.deepEqual(report.errors, []);
-  // 16 notes, 3 folders and 2 canvases were mapped by the first run.
-  assert.equal(Number((await one('SELECT count(*)::int AS n FROM note_document_map WHERE org_id = $1', [fx.orgId]))!.n), 21);
+  // 19 notes, 3 folders and 2 canvases were mapped by the first run.
+  assert.equal(Number((await one('SELECT count(*)::int AS n FROM note_document_map WHERE org_id = $1', [fx.orgId]))!.n), 24);
   const before = await snapshot(fx.orgId);
   const again = await moveOrg(fx.orgId);
   assert.deepEqual(await snapshot(fx.orgId), before);
@@ -553,6 +587,163 @@ test('the Workspace drive exists for every org after the move', { skip: SKIP }, 
     'Shared notes only where workspace notes exist');
 });
 
+test('a split note keeps an oversized old version viewable but not restorable, and links its history images to the main page', { skip: SKIP }, async () => {
+  const main = await documentOf(s.historySplit);
+  const subPages = (await q('SELECT id FROM documents WHERE parent_document_id = $1 ORDER BY position, id', [main.id])).rows.map((r) => r.id as string);
+  assert.ok(subPages.length >= 1, 'the note was split');
+  const links = (await q('SELECT document_id, in_current FROM document_attachments WHERE file_id = $1', [s.historyImage])).rows;
+  const holder = links.find((link) => subPages.includes(link.document_id));
+  assert.deepEqual(holder && { in_current: holder.in_current }, { in_current: true }, 'the sub-page that shows the image links it as current');
+  assert.deepEqual(links.filter((link) => link.document_id === main.id), [{ document_id: main.id, in_current: false }],
+    'the main page, which holds the history, links it as history');
+  const versions = (await q(`SELECT id, title, size_bytes FROM document_versions WHERE document_id = $1 AND kind = 'moved' ORDER BY created_at`,
+    [main.id])).rows;
+  assert.equal(versions.length, 2);
+  const long = versions.find((v) => v.title === 'Very long draft')!;
+  assert.ok(long.size_bytes > 2_097_152, `the old version is kept whole, over the cap (${long.size_bytes})`);
+  const viewed = await fx.request(fx.people.member, 'GET', `/api/documents/${main.id}/versions/${long.id}`);
+  assert.equal(viewed.status, 200, 'it can be viewed');
+  assert.equal(((await viewed.json()) as { version: { id: string } }).version.id, long.id);
+  const restored = await fx.request(fx.people.member, 'POST', `/api/documents/${main.id}/versions/${long.id}/restore`);
+  assert.equal(restored.status, 413, 'restoring it is refused');
+  assert.equal(((await restored.json()) as { code: string }).code, 'TOO_LARGE');
+});
+
+test('a note with 200 versions moves them all, in order, one version at a time', { skip: SKIP }, async () => {
+  const doc = await documentOf(s.longHistory);
+  const versions = (await q(`SELECT title, (edit_details->>'note_version')::int AS v FROM document_versions
+    WHERE document_id = $1 AND kind = 'moved' ORDER BY created_at, id`, [doc.id])).rows;
+  assert.equal(versions.length, 200);
+  assert.deepEqual(versions.map((row) => row.v), Array.from({ length: 200 }, (_, n) => n + 1));
+  assert.deepEqual(versions.map((row) => row.title), Array.from({ length: 200 }, (_, n) => `Draft ${n + 1}`));
+  // The history is never held whole: the version list reads no content, and each version's content is read on its own.
+  const source = readFileSync(resolve(import.meta.dirname, '../src/lib/drives-move/move-notes.ts'), 'utf8');
+  const listing = source.match(/SELECT ([^`]*?)\s+FROM note_versions WHERE note_id/)?.[1] ?? '';
+  assert.ok(listing && !/\bcontent\b/.test(listing), `the version list reads no content (${listing})`);
+  assert.match(source, /SELECT content FROM note_versions WHERE id = /, 'one version\'s content at a time');
+});
+
+test('versions that share one time keep their order, a microsecond apart', { skip: SKIP }, async () => {
+  const doc = await documentOf(s.tied);
+  const rows = (await q(`SELECT (edit_details->>'note_version')::int AS v, created_at::text AS at,
+      extract(epoch FROM created_at - min(created_at) OVER ()) * 1000000 AS micros
+    FROM document_versions WHERE document_id = $1 AND kind = 'moved' ORDER BY created_at DESC, id DESC`, [doc.id])).rows;
+  assert.equal(rows.length, 12);
+  assert.deepEqual(rows.map((row) => row.v), Array.from({ length: 12 }, (_, n) => 12 - n), 'newest first, as the history lists them');
+  assert.deepEqual(rows.map((row) => Math.round(Number(row.micros))), Array.from({ length: 12 }, (_, n) => 11 - n));
+  assert.equal(new Set(rows.map((row) => row.at)).size, 12);
+});
+
+/** Runs postMoveCheck with `corrupt` applied, then undoes it; returns the check. */
+async function checkWith(corrupt: () => Promise<void>, undo: () => Promise<void>, sampleSize = 0) {
+  assert.equal((await postMoveCheck(fx.orgId, sampleSize)).ok, true, 'ok before the corruption');
+  await corrupt();
+  try {
+    return await postMoveCheck(fx.orgId, sampleSize);
+  } finally {
+    await undo();
+  }
+}
+
+test('postMoveCheck finds an extra share', { skip: SKIP }, async () => {
+  const doc = await documentOf(s.shared);
+  const id = randomUUID();
+  const check = await checkWith(
+    () => q(`INSERT INTO document_shares (id, org_id, document_id, principal_type, principal_id, role) VALUES ($1, $2, $3, 'user', $4, 'view')`,
+      [id, fx.orgId, doc.id, fx.people.guest]).then(() => undefined),
+    () => q('DELETE FROM document_shares WHERE id = $1', [id]).then(() => undefined));
+  assert.equal(check.ok, false);
+  assert.ok(check.mismatches.some((m) => m.includes(`has an extra share for user ${fx.people.guest}`)), check.mismatches.join('\n'));
+});
+
+test('postMoveCheck finds a raised role', { skip: SKIP }, async () => {
+  const doc = await documentOf(s.space);
+  const where = `document_id = '${doc.id}' AND principal_type = 'space'`;
+  const check = await checkWith(
+    () => q(`UPDATE document_shares SET role = 'edit' WHERE ${where}`).then(() => undefined),
+    () => q(`UPDATE document_shares SET role = 'view' WHERE ${where}`).then(() => undefined));
+  assert.equal(check.ok, false);
+  assert.ok(check.mismatches.some((m) => m.includes(`has the wrong role for space ${fx.spaces.team}`)), check.mismatches.join('\n'));
+});
+
+test('postMoveCheck finds a rewritten reference that no longer names its note\'s document', { skip: SKIP }, async () => {
+  const doc = await documentOf(s.tagged);
+  const elsewhere = await documentOf(s.pinned);
+  const [tag] = (await q(`SELECT id FROM entity_tags WHERE tag_id = $1`, [s.tag])).rows;
+  const check = await checkWith(
+    () => q('UPDATE entity_tags SET entity_id = $1 WHERE id = $2', [elsewhere.id, tag.id]).then(() => undefined),
+    () => q('UPDATE entity_tags SET entity_id = $1 WHERE id = $2', [doc.id, tag.id]).then(() => undefined));
+  assert.equal(check.ok, false);
+  assert.ok(check.mismatches.some((m) => m.includes(`entity_tags row ${tag.id} no longer names the document of note ${s.tagged}`)),
+    check.mismatches.join('\n'));
+});
+
+test('postMoveCheck finds a missing or misplaced split part', { skip: SKIP }, async () => {
+  const map = (await mapOf('note', s.huge))!;
+  const ghost = randomUUID();
+  const missing = await checkWith(
+    () => q(`UPDATE note_document_map SET details = jsonb_set(details, '{parts}', (details->'parts') || to_jsonb($1::text)) WHERE id = $2`,
+      [ghost, map.id]).then(() => undefined),
+    () => q(`UPDATE note_document_map SET details = $1::jsonb WHERE id = $2`, [JSON.stringify(map.details), map.id]).then(() => undefined));
+  assert.ok(missing.mismatches.some((m) => m.includes(`(document ${ghost}) is missing`)), missing.mismatches.join('\n'));
+  const last = map.details.parts[map.details.parts.length - 1] as string;
+  const detached = await checkWith(
+    () => q('UPDATE documents SET parent_document_id = NULL WHERE id = $1', [last]).then(() => undefined),
+    () => q('UPDATE documents SET parent_document_id = $1 WHERE id = $2', [map.target_id, last]).then(() => undefined));
+  assert.ok(detached.mismatches.some((m) => m.includes(`(document ${last}) is not in place`)), detached.mismatches.join('\n'));
+});
+
+test('postMoveCheck finds a history image whose link was deleted', { skip: SKIP }, async () => {
+  const main = await documentOf(s.historySplit);
+  const [link] = (await q('SELECT * FROM document_attachments WHERE document_id = $1 AND file_id = $2', [main.id, s.historyImage])).rows;
+  assert.ok(link, 'the history link exists');
+  const check = await checkWith(
+    () => q('DELETE FROM document_attachments WHERE id = $1', [link.id]).then(() => undefined),
+    () => q(`INSERT INTO document_attachments (id, org_id, document_id, file_id, in_current, added_by, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)`, [link.id, link.org_id, link.document_id, link.file_id, link.in_current, link.added_by, link.created_at])
+      .then(() => undefined));
+  assert.equal(check.ok, false);
+  assert.ok(check.mismatches.some((m) => m.includes(`image ${s.historyImage}: in the history of document ${main.id} but not linked to it`)),
+    check.mismatches.join('\n'));
+});
+
+test('postMoveCheck opens the sampled history and finds a version that does not open', { skip: SKIP }, async () => {
+  const doc = await documentOf(s.versioned);
+  const [version] = (await q(`SELECT id, content_json FROM document_versions WHERE document_id = $1 AND kind = 'moved' ORDER BY created_at LIMIT 1`,
+    [doc.id])).rows;
+  const check = await checkWith(
+    () => q(`UPDATE document_versions SET content_json = '{"type":"doc","content":[{"type":"noSuchBlock"}]}' WHERE id = $1`, [version.id])
+      .then(() => undefined),
+    () => q('UPDATE document_versions SET content_json = $1::jsonb WHERE id = $2', [JSON.stringify(version.content_json), version.id]).then(() => undefined),
+    200);
+  assert.equal(check.ok, false);
+  assert.ok(check.sampleFailed.some((m) => m.includes(`moved version ${version.id} does not open`)), check.sampleFailed.join('\n'));
+});
+
+test('a reference rewrite that would repeat another workspace\'s row is reported, and nothing is deleted', { skip: SKIP }, async () => {
+  const doc = await documentOf(s.tagged);
+  const task = randomUUID();
+  const ours = randomUUID();
+  const theirs = randomUUID();
+  // Another workspace already holds the edge the rewrite would make; this workspace's row still names the note.
+  await q(`INSERT INTO cross_references (id, org_id, source_type, source_id, target_type, target_id, created_by)
+    VALUES ($1, $2, 'document', $3, 'task', $4, $5)`, [theirs, fx.otherOrgId, doc.id, task, fx.people.outsider]);
+  await q(`INSERT INTO cross_references (id, org_id, source_type, source_id, target_type, target_id, created_by)
+    VALUES ($1, $2, 'note', $3, 'task', $4, $5)`, [ours, fx.orgId, s.tagged, task, fx.people.member]);
+  try {
+    const again = await moveOrg(fx.orgId);
+    assert.deepEqual(again.references.conflicts, [{ table: 'cross_references', id: ours }]);
+    assert.ok(again.errors.some((error) => error.sourceId === ours), 'reported as an error, so the move does not finish');
+    assert.deepEqual((await q('SELECT org_id, source_type, source_id FROM cross_references WHERE id = ANY($1::text[]) ORDER BY org_id = $2',
+      [[ours, theirs], fx.orgId])).rows, [
+      { org_id: fx.otherOrgId, source_type: 'document', source_id: doc.id },
+      { org_id: fx.orgId, source_type: 'note', source_id: s.tagged },
+    ], 'both rows are left as they were');
+  } finally {
+    await q('DELETE FROM cross_references WHERE id = ANY($1::text[])', [[ours, theirs]]);
+  }
+});
+
 test('the API refuses to listen until the move completes, and skips the move while paused', { skip: SKIP }, async () => {
   // server.ts awaits the move before it calls serve().
   const server = readFileSync(resolve(import.meta.dirname, '../src/server.ts'), 'utf8');
@@ -587,15 +778,104 @@ test('the API refuses to listen until the move completes, and skips the move whi
   assert.equal(atListen.called, true);
   assert.ok(atListen.map, 'the note was moved before the server listened');
   assert.equal(await pending(), false);
+  const recorded = (await runRow())!;
+  assert.equal(recorded.check_ok, true, 'the run is recorded as done');
+  assert.notEqual(recorded.completed_at, null);
 
-  // A note the move can't place (its author isn't in the workspace) stops the start: the API never listens.
+  // A note the move can't place (its author isn't in the workspace) stops the start of a workspace not yet done.
+  await q('DELETE FROM drives_move_runs WHERE org_id = $1', [fx.orgId]);
   const stray = await insertNote({ user: fx.people.outsider, title: 'Nowhere to go' });
   try {
     let listened = false;
     await assert.rejects(moveNotesBeforeListen({ orgIds: [fx.orgId] }).then(() => { listened = true; }));
     assert.equal(listened, false);
     assert.equal(await mapOf('note', stray), undefined);
+    const failed = (await runRow())!;
+    assert.equal(failed.check_ok, false);
+    assert.equal(failed.completed_at, null, 'the move did not complete');
   } finally {
     await q('DELETE FROM notes WHERE id = $1', [stray]);
+  }
+});
+
+/** The workspace's move run for this release. */
+const runRow = async () => one(`SELECT completed_at, check_ok, report, updated_at, updated_at::text AS changed FROM drives_move_runs
+  WHERE org_id = $1 AND release_version = $2`, [fx.orgId, DRIVES_MOVE_RELEASE]);
+
+/** An extra share on a moved document: the post-move check fails on it. Returns the undo. */
+async function addExtraShare(): Promise<() => Promise<void>> {
+  const doc = await documentOf(s.shared);
+  const id = randomUUID();
+  await q(`INSERT INTO document_shares (id, org_id, document_id, principal_type, principal_id, role) VALUES ($1, $2, $3, 'user', $4, 'view')`,
+    [id, fx.orgId, doc.id, fx.people.guest]);
+  return async () => { await q('DELETE FROM document_shares WHERE id = $1', [id]); };
+}
+
+/** Runs `fn` with console.error collected. */
+async function collectErrors(fn: () => Promise<unknown>): Promise<{ lines: string[]; error: unknown }> {
+  const lines: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => { lines.push(args.map(String).join(' ')); };
+  try {
+    await fn();
+    return { lines, error: null };
+  } catch (error) {
+    return { lines, error };
+  } finally {
+    console.error = original;
+  }
+}
+
+test('a failed reconciliation refuses to listen, logs the report and records the failed check', { skip: SKIP }, async () => {
+  assert.notEqual((await runRow())?.check_ok, true, 'the workspace is not done yet');
+  const undo = await addExtraShare();
+  try {
+    let listened = false;
+    const { lines, error } = await collectErrors(() => moveNotesBeforeListen({ orgIds: [fx.orgId] }).then(() => { listened = true; }));
+    assert.ok(error instanceof Error && /Refusing to listen/.test(error.message));
+    assert.equal(listened, false);
+    assert.equal(lines[0], '[startup] The notes move or its post-move check failed for a workspace; its report follows');
+    const logged = JSON.parse(lines[1]!) as { orgId: string; check: { ok: boolean; mismatches: string[] } };
+    assert.equal(logged.orgId, fx.orgId);
+    assert.equal(logged.check.ok, false);
+    assert.ok(logged.check.mismatches.some((m) => m.includes('has an extra share')));
+    const row = (await runRow())!;
+    assert.notEqual(row.completed_at, null, 'the move completed');
+    assert.equal(row.check_ok, false, 'its check failed');
+    assert.equal(row.report.check.ok, false);
+  } finally {
+    await undo();
+  }
+});
+
+test('a restart after an interrupted final check runs the check again', { skip: SKIP }, async () => {
+  // As a process leaves it when it stops during the check: the move recorded as complete, no check result.
+  await q(`UPDATE drives_move_runs SET completed_at = now(), check_ok = false, report = jsonb_build_object('move', report->'move')
+    WHERE org_id = $1 AND release_version = $2`, [fx.orgId, DRIVES_MOVE_RELEASE]);
+  const before = (await runRow())!;
+  assert.equal(before.report.check, undefined);
+  let listened = false;
+  await moveNotesBeforeListen({ orgIds: [fx.orgId] }).then(() => { listened = true; });
+  assert.equal(listened, true);
+  const after = (await runRow())!;
+  assert.equal(after.check_ok, true);
+  assert.equal(after.report.check.ok, true, 'the check ran again and passed');
+  assert.notEqual(after.changed, before.changed);
+});
+
+test('a workspace whose run was ok is not moved or checked again', { skip: SKIP }, async () => {
+  const before = (await runRow())!;
+  assert.equal(before.check_ok, true);
+  // An edit after the move that the check would flag: it must not stop a later start.
+  const undo = await addExtraShare();
+  try {
+    let listened = false;
+    await moveNotesBeforeListen({ orgIds: [fx.orgId] }).then(() => { listened = true; });
+    assert.equal(listened, true);
+    const after = (await runRow())!;
+    assert.equal(after.changed, before.changed, 'the run was not touched');
+    assert.deepEqual(after.report, before.report);
+  } finally {
+    await undo();
   }
 });

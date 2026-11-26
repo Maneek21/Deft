@@ -17,6 +17,7 @@ const DRIVE_TABLES = [
   'documents',
   'drive_members',
   'drives',
+  'drives_move_runs',
   'note_document_map',
 ];
 const EMPTY_DOC = '{"type":"doc","content":[]}';
@@ -99,7 +100,7 @@ test('the upgrade creates every drives table', async () => {
 test('the Drizzle mirror matches every column the upgrade creates', async () => {
   const mirrors = [documentsSchema.drives, documentsSchema.driveMembers, documentsSchema.docFolders,
     documentsSchema.documents, documentsSchema.documentShares, documentsSchema.documentVersions,
-    documentsSchema.documentAttachments, documentsSchema.docFavorites, documentsSchema.noteDocumentMap];
+    documentsSchema.documentAttachments, documentsSchema.docFavorites, documentsSchema.noteDocumentMap, documentsSchema.drivesMoveRuns];
   const sqlType = (type: string) => (type === 'timestamp' ? 'timestamp without time zone' : type);
   const mirrored = mirrors.map(getTableConfig);
   assert.deepEqual(mirrored.map((table) => table.name).sort(), DRIVE_TABLES);

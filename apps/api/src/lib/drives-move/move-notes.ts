@@ -14,8 +14,8 @@
 //
 // Notes (the brief's table):
 // - visibility 'org': the Shared notes drive, in a folder named after the
-//   author, with an `edit` share for the author. Guests lose these, because
-//   open drives exclude guests (spec 5.2): counted in the report;
+//   author, with an `edit` share for the author. Open drives exclude guests
+//   (spec 5.2): the report counts the guests potentially affected;
 // - visibility 'space': the author's personal drive with a `view` share to
 //   the chat. With no chat, or a chat of another workspace, the note is
 //   private and reported (`made_private`);
@@ -25,7 +25,12 @@
 //   with no org_members row in the workspace can't hold a share: skipped and
 //   recorded;
 // - versions: `moved` versions in version order, with their own time, title
-//   and editor (created_by = edited_by);
+//   and editor (created_by = edited_by), through F8's version primitive. Old
+//   versions sharing one time are stored 1 microsecond apart per tie, in
+//   version order, so the history lists them in order. A version over the
+//   live size cap is kept whole: it can be viewed; restoring it is refused
+//   with 413 TOO_LARGE. The history is read, converted and written one
+//   version at a time, so a long history is never all in memory;
 // - is_template stays a template; is_pinned is a favourite for the author;
 //   is_deleted is a deleted document (deleted_at = updated_at);
 // - Knowledge is off on every moved document.
@@ -43,14 +48,17 @@
 //
 // A note whose content is over the live size cap is split (convert-note.ts
 // splitToFit): the first part is the note's document, the rest its sub-pages
-// in order, each with the note's shares, in the same place and state.
+// in order, each with the note's shares, in the same place and state. The
+// first part holds the history: every image its history shows is linked to
+// it (in_current false unless its own content shows it), wherever the
+// current content placed that image.
 import { sql } from 'drizzle-orm';
 import { db } from '../db.js';
 import { finishContent, imageFileIds, MoveError, noteHtmlToJson, replaceUnlinkedImages, splitToFit } from './convert-note.js';
 import {
   authorFolderInTx, decideFilesInTx, failureMessage, insertDocumentInTx, insertMapRow, insertMovedVersionInTx, insertSharesInTx,
   linkFilesInTx, lockOrgInTx, mappedTarget, nextRootPosition, outcomeOf, personalDriveInTx, rowsOf, ShareSet, sharedNotesDriveInTx,
-  spaceInOrg, type FileDecision, type OrgContext, type TimestampText, type Tx,
+  spaceInOrg, VersionTimes, type FileDecision, type OrgContext, type TimestampText, type Tx,
 } from './placement.js';
 import type { MoveReport } from './move-org.js';
 
@@ -60,10 +68,10 @@ type FolderRow = {
 };
 
 /** Sources of the workspace already in note_document_map, for the report. */
-async function alreadyMoved(orgId: string, table: 'notes' | 'note_folders' | 'canvases', sourceType: string): Promise<number> {
+async function alreadyMoved(orgId: string, table: 'notes' | 'note_folders' | 'canvases', legacyType: string): Promise<number> {
   const [row] = rowsOf<{ n: number }>(await db.execute(sql`SELECT count(*)::int AS n FROM ${sql.raw(table)} moved_source
     WHERE moved_source.org_id = ${orgId}
-      AND EXISTS (SELECT 1 FROM note_document_map m WHERE m.source_type = ${sourceType} AND m.source_id = moved_source.id)`));
+      AND EXISTS (SELECT 1 FROM note_document_map m WHERE m.org_id = ${orgId} AND m.source_type = ${legacyType} AND m.source_id = moved_source.id)`));
   return Number(row?.n ?? 0);
 }
 
@@ -85,7 +93,7 @@ export async function moveNoteFolders(ctx: OrgContext, report: MoveReport): Prom
   report.skippedAlreadyMoved += await alreadyMoved(orgId, 'note_folders', 'note_folder');
   const folders = rowsOf<FolderRow & { mapped: boolean }>(await db.execute(sql`SELECT id, user_id, name, parent_folder_id, sort_order,
       is_deleted, icon, created_at::text AS created_at, updated_at::text AS updated_at,
-      EXISTS (SELECT 1 FROM note_document_map m WHERE m.source_type = 'note_folder' AND m.source_id = note_folders.id) AS mapped
+      EXISTS (SELECT 1 FROM note_document_map m WHERE m.org_id = note_folders.org_id AND m.source_type = 'note_folder' AND m.source_id = note_folders.id) AS mapped
     FROM note_folders WHERE org_id = ${orgId} ORDER BY created_at, id`));
   const byId = new Map(folders.map((folder) => [folder.id, folder]));
   const parentOf = new Map(folders.map((folder) => [folder.id, effectiveParent(folder, byId)]));
@@ -100,12 +108,12 @@ export async function moveNoteFolders(ctx: OrgContext, report: MoveReport): Prom
     try {
       const outcome = await db.transaction(async (tx) => {
         await lockOrgInTx(tx, orgId);
-        if (await mappedTarget(tx, 'note_folder', folder.id)) return 'already_moved' as const;
+        if (await mappedTarget(tx, orgId, 'note_folder', folder.id)) return 'already_moved' as const;
         const drive = await personalDriveInTx(tx, ctx, folder.user_id);
         const parentId = parentOf.get(folder.id) ?? null;
         let parentDocFolder: string | null = null;
         if (parentId) {
-          parentDocFolder = await mappedTarget(tx, 'note_folder', parentId);
+          parentDocFolder = await mappedTarget(tx, orgId, 'note_folder', parentId);
           if (!parentDocFolder) throw new MoveError('parent_folder_not_moved', 'The parent folder has not moved yet');
         }
         const [created] = rowsOf<{ id: string }>(await tx.execute(sql`INSERT INTO doc_folders (id, org_id, drive_id, parent_folder_id, name,
@@ -115,7 +123,7 @@ export async function moveNoteFolders(ctx: OrgContext, report: MoveReport): Prom
             ${folder.updated_at}::timestamp)
           RETURNING id`));
         await insertMapRow(tx, {
-          orgId, sourceType: 'note_folder', sourceId: folder.id, targetType: 'doc_folder', targetId: created!.id,
+          orgId, legacyType: 'note_folder', sourceId: folder.id, targetType: 'doc_folder', targetId: created!.id,
           details: {
             drive_id: drive.id, ...(folder.icon ? { icon: folder.icon } : {}),
             ...(folder.parent_folder_id && !parentId ? { moved_to_root: true } : {}),
@@ -140,14 +148,20 @@ type NoteRow = {
   is_pinned: boolean; is_template: boolean; is_deleted: boolean; visibility: string; visibility_space_id: string | null;
   created_at: TimestampText; updated_at: TimestampText;
 };
-type VersionRow = { version: number; title: string; content: string | null; edited_by: string | null; created_at: TimestampText };
+type VersionRow = { id: string; version: number; title: string; edited_by: string | null; created_at: TimestampText };
+
+/** One old version's HTML, read on its own so the history is never all in memory at once. */
+async function versionContent(tx: Tx, versionId: string): Promise<string | null> {
+  const [row] = rowsOf<{ content: string | null }>(await tx.execute(sql`SELECT content FROM note_versions WHERE id = ${versionId}`));
+  return row?.content ?? null;
+}
 
 export async function moveNotes(ctx: OrgContext, report: MoveReport): Promise<void> {
   const { orgId } = ctx;
   report.skippedAlreadyMoved += await alreadyMoved(orgId, 'notes', 'note');
   const pending = rowsOf<{ id: string }>(await db.execute(sql`SELECT id FROM notes moved_note
     WHERE moved_note.org_id = ${orgId}
-      AND NOT EXISTS (SELECT 1 FROM note_document_map m WHERE m.source_type = 'note' AND m.source_id = moved_note.id)
+      AND NOT EXISTS (SELECT 1 FROM note_document_map m WHERE m.org_id = moved_note.org_id AND m.source_type = 'note' AND m.source_id = moved_note.id)
     ORDER BY moved_note.created_at, moved_note.id`));
   for (const { id } of pending) {
     try {
@@ -168,7 +182,7 @@ type NoteCounts = Partial<Record<'notes' | 'versions' | 'shares' | 'favourites' 
 
 function addCounts(report: MoveReport, counts: NoteCounts): void {
   for (const [key, value] of Object.entries(counts) as Array<[keyof NoteCounts, number]>) {
-    if (key === 'workspaceNotes') report.guestsLoseWorkspaceNotes.notes += value;
+    if (key === 'workspaceNotes') report.guestsPotentiallyAffected.workspaceNotes += value;
     else report[key] += value;
   }
 }
@@ -176,12 +190,13 @@ function addCounts(report: MoveReport, counts: NoteCounts): void {
 async function moveNoteInTx(tx: Tx, ctx: OrgContext, noteId: string): Promise<NoteCounts | 'already_moved' | null> {
   const { orgId } = ctx;
   await lockOrgInTx(tx, orgId);
-  if (await mappedTarget(tx, 'note', noteId)) return 'already_moved';
+  if (await mappedTarget(tx, orgId, 'note', noteId)) return 'already_moved';
   const [note] = rowsOf<NoteRow>(await tx.execute(sql`SELECT id, org_id, user_id, folder_id, title, content, icon, is_pinned, is_template,
       is_deleted, visibility, visibility_space_id, created_at::text AS created_at, updated_at::text AS updated_at
     FROM notes WHERE id = ${noteId} AND org_id = ${orgId} FOR SHARE`));
   if (!note) return null;
-  const versions = rowsOf<VersionRow>(await tx.execute(sql`SELECT version, title, content, edited_by, created_at::text AS created_at
+  // The history: its rows without their content, which is read one version at a time below.
+  const versions = rowsOf<VersionRow>(await tx.execute(sql`SELECT id, version, title, edited_by, created_at::text AS created_at
     FROM note_versions WHERE note_id = ${noteId} ORDER BY version, created_at, id`));
   const shares = rowsOf<{ user_id: string; permission: string }>(await tx.execute(sql`SELECT shared_with_user_id AS user_id, permission
     FROM note_shares WHERE note_id = ${noteId} ORDER BY created_at, id`));
@@ -227,9 +242,10 @@ async function moveNoteInTx(tx: Tx, ctx: OrgContext, noteId: string): Promise<No
   }
   if (skippedShares.length > 0) details.skipped_shares = skippedShares;
 
-  // Content and history, then which of their images may be linked.
+  // Which images may be linked: those the current content, note_files and each old version name. The
+  // history is read and converted one version at a time and let go (memory stays one version deep);
+  // its images are kept as ids only.
   const current = noteHtmlToJson(note.content);
-  const history = versions.map((version) => ({ version, ...noteHtmlToJson(version.content) }));
   const allowed = new Map<string, Set<string>>();
   const allow = (fileId: string, ...uploaders: Array<string | null>) => {
     const set = allowed.get(fileId) ?? new Set<string>();
@@ -238,7 +254,9 @@ async function moveNoteInTx(tx: Tx, ctx: OrgContext, noteId: string): Promise<No
   };
   for (const fileId of imageFileIds(current.json)) allow(fileId, author);
   for (const fileId of noteFiles) allow(fileId, author);
-  for (const entry of history) for (const fileId of imageFileIds(entry.json)) allow(fileId, author, entry.version.edited_by);
+  for (const version of versions) {
+    for (const fileId of imageFileIds(noteHtmlToJson(await versionContent(tx, version.id)).json)) allow(fileId, author, version.edited_by);
+  }
   const decisions = await decideFilesInTx(tx, orgId, allowed);
   const linked = new Set([...decisions].filter(([, decision]) => decision === 'linked').map(([fileId]) => fileId));
   const refused = [...decisions].filter(([, decision]) => decision !== 'linked');
@@ -246,12 +264,6 @@ async function moveNoteInTx(tx: Tx, ctx: OrgContext, noteId: string): Promise<No
 
   const shown = replaceUnlinkedImages(current.json, linked);
   const { parts, splitBlocks } = splitToFit(finishContent(shown.json, noteId), note.title, noteId);
-  const movedHistory = history.map((entry) => {
-    const replaced = replaceUnlinkedImages(entry.json, linked);
-    add('versionUnsafeDropped', entry.unsafeDropped);
-    add('versionMissingImages', replaced.missing);
-    return { version: entry.version, json: finishContent(replaced.json, noteId) };
-  });
 
   // The document, and its sub-pages when it had to be split.
   const deletedAt = note.is_deleted ? note.updated_at : null;
@@ -261,13 +273,16 @@ async function moveNoteInTx(tx: Tx, ctx: OrgContext, noteId: string): Promise<No
   };
   const mainId = await insertDocumentInTx(tx, {
     ...base, folderId, parentDocumentId: null, title: parts[0]!.title, position: await nextRootPosition(tx, orgId, driveId, folderId),
-    json: parts[0]!.json, bytes: parts[0]!.bytes,
+    json: parts[0]!.json,
   });
+  // The shares first, on the first part: each sub-page then starts with them (F9's sub-page rule, in F5's create).
+  const firstShares = await insertSharesInTx(tx, orgId, [mainId], shareSet, author);
+  add('shares', firstShares * parts.length);
   const docs: Array<{ id: string; fileIds: Set<string> }> = [{ id: mainId, fileIds: new Set(imageFileIds(parts[0]!.json)) }];
   for (let index = 1; index < parts.length; index += 1) {
     const part = parts[index]!;
     const id = await insertDocumentInTx(tx, {
-      ...base, folderId: null, parentDocumentId: mainId, title: part.title, position: index, json: part.json, bytes: part.bytes,
+      ...base, folderId: null, parentDocumentId: mainId, title: part.title, position: index, json: part.json,
     });
     docs.push({ id, fileIds: new Set(imageFileIds(part.json)) });
   }
@@ -277,17 +292,27 @@ async function moveNoteInTx(tx: Tx, ctx: OrgContext, noteId: string): Promise<No
     add('splitBlocks', splitBlocks);
   }
 
-  add('shares', await insertSharesInTx(tx, orgId, docs.map((doc) => doc.id), shareSet, author));
-  for (const entry of movedHistory) {
+  // The history, one version at a time, on the first part. A version is kept whole, even over the live
+  // size cap: it can be viewed, and restoring one over the cap is refused with 413 TOO_LARGE (writeDocument).
+  // Versions that share one time keep their order (VersionTimes).
+  const times = new VersionTimes();
+  const historyFileIds = new Set<string>();
+  for (const version of versions) {
+    const converted = noteHtmlToJson(await versionContent(tx, version.id));
+    const replaced = replaceUnlinkedImages(converted.json, linked);
+    const json = finishContent(replaced.json, noteId);
+    for (const fileId of imageFileIds(json)) historyFileIds.add(fileId);
+    add('versionUnsafeDropped', converted.unsafeDropped);
+    add('versionMissingImages', replaced.missing);
     await insertMovedVersionInTx(tx, {
-      orgId, documentId: mainId, title: entry.version.title, json: entry.json, createdBy: entry.version.edited_by,
-      createdAt: entry.version.created_at, editDetails: { note_version: entry.version.version },
+      orgId, documentId: mainId, title: version.title, json, createdBy: version.edited_by, createdAt: version.created_at,
+      tie: times.tie(version.created_at), editDetails: { note_version: version.version },
     });
   }
-  add('versions', movedHistory.length);
+  add('versions', versions.length);
   const linkedIds = [...linked].sort();
-  await linkFilesInTx(tx, orgId, linkedIds, docs);
-  const shownAnywhere = new Set([...docs.flatMap((doc) => [...doc.fileIds]), ...movedHistory.flatMap((entry) => imageFileIds(entry.json))]);
+  await linkFilesInTx(tx, orgId, linkedIds, docs, historyFileIds);
+  const shownAnywhere = new Set([...docs.flatMap((doc) => [...doc.fileIds]), ...historyFileIds]);
   const unplaced = linkedIds.filter((fileId) => !shownAnywhere.has(fileId));
   if (unplaced.length > 0) {
     details.unplaced_images = unplaced;
@@ -310,10 +335,10 @@ async function moveNoteInTx(tx: Tx, ctx: OrgContext, noteId: string): Promise<No
   Object.assign(details, {
     drive_id: driveId, parts: docs.map((doc) => doc.id), unsafe_dropped: current.unsafeDropped, missing_images: shown.missing,
     version_unsafe_dropped: counts.versionUnsafeDropped ?? 0, version_missing_images: counts.versionMissingImages ?? 0,
-    versions: movedHistory.length, linked_images: linkedIds.length, ...(splitBlocks > 0 ? { split_blocks: splitBlocks } : {}),
+    versions: versions.length, linked_images: linkedIds.length, ...(splitBlocks > 0 ? { split_blocks: splitBlocks } : {}),
   });
   await insertMapRow(tx, {
-    orgId, sourceType: 'note', sourceId: noteId, targetType: 'document', targetId: mainId,
+    orgId, legacyType: 'note', sourceId: noteId, targetType: 'document', targetId: mainId,
     outcome: outcomeOf(current.unsafeDropped, shown.missing), details,
   });
   return counts;
@@ -327,7 +352,7 @@ async function noteFolderInTx(tx: Tx, orgId: string, note: NoteRow, driveId: str
     details.moved_to_root = folder ? (folder.is_deleted ? 'folder_deleted' : 'folder_not_the_authors') : 'folder_missing';
     return null;
   }
-  const target = await mappedTarget(tx, 'note_folder', note.folder_id!);
+  const target = await mappedTarget(tx, orgId, 'note_folder', note.folder_id!);
   if (!target) throw new MoveError('folder_not_moved', 'The note’s folder has not moved yet');
   const [docFolder] = rowsOf<{ drive_id: string }>(await tx.execute(sql`SELECT drive_id FROM doc_folders WHERE id = ${target} AND org_id = ${orgId}`));
   if (docFolder?.drive_id !== driveId) {

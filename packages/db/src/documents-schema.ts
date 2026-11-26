@@ -220,6 +220,22 @@ export const noteDocumentMap = pgTable('note_document_map', {
   unique('note_document_map_source_key').on(t.source_type, t.source_id),
 ]);
 
+/** The notes move's record per workspace and move release: finished
+ * (`completed_at`) and checked (`check_ok`), with the last report. The API
+ * listens only when every workspace has an ok row (F14). */
+export const drivesMoveRuns = pgTable('drives_move_runs', {
+  id: id(),
+  org_id: text('org_id').notNull(),
+  release_version: text('release_version').notNull(),
+  completed_at: timestamp('completed_at'),
+  check_ok: boolean('check_ok').default(false).notNull(),
+  report: jsonb('report'),
+  created_at: createdAt(),
+  updated_at: updatedAt(),
+}, (t) => [
+  unique('drives_move_runs_org_release_key').on(t.org_id, t.release_version),
+]);
+
 export type DriveRow = typeof drives.$inferSelect;
 export type DriveMemberRow = typeof driveMembers.$inferSelect;
 export type DocFolderRow = typeof docFolders.$inferSelect;

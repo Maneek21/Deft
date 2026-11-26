@@ -73,7 +73,7 @@
 // startDocumentVersioning registers both listeners; the API's entry point
 // (server.ts) calls it at startup. Logs are fixed text; a failing listener
 // is logged by runStoredListeners.
-import { and, desc, eq, gt, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, sql, type SQL } from 'drizzle-orm';
 import type { PgTransactionConfig } from 'drizzle-orm/pg-core';
 import * as Y from 'yjs';
 import { documentAttachments, documents, documentVersions, type DocumentVersionKind } from '@deft/db/documents';
@@ -176,15 +176,18 @@ export type CreateVersionInput = {
   agentUserId?: string | null; actionId?: string | null; editDetails?: unknown;
   /** The content; else taken from `ydoc`; else the document's current content (the header). */
   json?: JSONContent; ydoc?: Y.Doc;
-  /** Default: the version clock. */
-  createdAt?: Date;
+  /** Default: the version clock. The notes move passes its source time as SQL, so it is kept exactly. */
+  createdAt?: Date | SQL;
+  /** The title the version records; default the document's title now. The notes move keeps each old version's own title. */
+  title?: string | null;
 };
 
-/** The document's title, and its content as `i` names it (the header): `json`, else `ydoc`'s, else the current content. */
-async function versionSource(x: Executor, i: CreateVersionInput): Promise<{ title: string; json: JSONContent }> {
+/** The version's title (the override, else the document's), and its content as `i` names it (the header): `json`, else `ydoc`'s, else the current content. */
+async function versionSource(x: Executor, i: CreateVersionInput): Promise<{ title: string | null; json: JSONContent }> {
   const where = and(eq(documents.id, i.documentId), eq(documents.org_id, i.orgId));
-  const [row] = await x.select({ title: documents.title }).from(documents).where(where).limit(1);
-  if (!row) throw notFound();
+  const [found] = await x.select({ title: documents.title }).from(documents).where(where).limit(1);
+  if (!found) throw notFound();
+  const row = { title: i.title !== undefined ? i.title : found.title };
   if (i.json !== undefined) return { title: row.title, json: i.json };
   if (i.ydoc !== undefined) return { title: row.title, json: ensureBlockIds(yDocToJson(i.ydoc)) };
   // The live state, every accepted edit included; the stored copy only when that state holds content outside the schema.
@@ -237,6 +240,11 @@ async function insertVersion(x: Executor, i: CreateVersionInput): Promise<{ id: 
  */
 export async function createVersion(i: CreateVersionInput): Promise<{ id: string }> {
   return insertVersion(db, i);
+}
+
+/** createVersion in the caller's transaction, so the version commits or rolls back with the caller's other writes (the notes move). */
+export async function createVersionInTx(tx: Tx, i: CreateVersionInput): Promise<{ id: string }> {
+  return insertVersion(tx, i);
 }
 
 // ---------------------------------------------------------------------------

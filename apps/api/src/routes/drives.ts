@@ -92,7 +92,7 @@ import { emitDocumentAccessChanged, type DocumentAccessChange } from '../lib/doc
 import { emitDocumentEvent } from '../lib/document-events.js';
 import { driveTrash, driveTree } from '../lib/documents.js';
 import { driveAccess, lockActorInTx, type DriveAccess } from '../lib/drive-locks.js';
-import { orgNeedsMove } from '../lib/drives-move/pending.js';
+import { notesMovePending } from '../lib/drives-move/pending.js';
 import {
   canHoldDocumentAccessLocked, driveListQuery, drivesWithoutManagerQuery, ensurePersonalDrive, ensureWorkspaceDrive, finishDriveHandover, frozenDrivesQuery,
   handOverPersonalDriveInTx, PrincipalCannotHoldAccessError,
@@ -456,9 +456,9 @@ driveRoutes.get('/', async (c) => {
     // is_mine: the caller's own personal drive.
     // notes_move_pending: a paused start doesn't move notes (F14); the drive pages say they move when the workspace resumes.
     // A start that isn't paused moves them before it listens, so it is false there.
-    const notesMovePending = isPausedStart() ? await orgNeedsMove(user.org_id) : false;
+    const movePending = isPausedStart() ? await notesMovePending(user.org_id) : false;
     return c.json({
-      notes_move_pending: notesMovePending,
+      notes_move_pending: movePending,
       drives: rows.map((row) => ({
         id: row.id, name: row.name, icon: row.icon, kind: row.kind, system_key: row.system_key, role: row.role,
         default_role: row.default_role, frozen: row.frozen, pinned: row.pinned, admin_listed: row.role === null && row.admin_listed,

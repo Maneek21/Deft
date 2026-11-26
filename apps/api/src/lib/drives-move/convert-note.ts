@@ -211,46 +211,53 @@ function cutText(text: string, max: number): string[] {
 }
 
 /**
- * A paragraph or heading cut into textblocks of about `target` bytes: at its
- * line breaks, and a line longer than that at a space or anywhere. The first
- * piece keeps its type; a heading's later pieces are paragraphs.
+ * A paragraph or heading cut into textblocks of about `target` bytes, in one
+ * pass over its content in order, so nothing moves:
+ * - a cut falls at a line break when it can: the break becomes the boundary
+ *   between two textblocks, and an empty line stays an empty textblock;
+ * - only a line longer than `target` on its own is cut inside, between its
+ *   inline nodes, and a text node longer than that at a space or anywhere,
+ *   keeping its marks.
+ * The first piece keeps its type; a heading's later pieces are paragraphs.
  */
 function splitTextblock(node: JSONContent, target: number): JSONContent[] {
+  const maxChars = Math.max(1, Math.floor(target / 3));
   const lines: JSONContent[][] = [[]];
   for (const inline of node.content ?? []) {
-    if (inline.type === 'hardBreak') lines.push([]);
-    else lines[lines.length - 1]!.push(inline);
+    if (inline.type === 'hardBreak') {
+      lines.push([]);
+    } else if (inline.type === 'text' && typeof inline.text === 'string' && estimate(inline) > target) {
+      for (const text of cutText(inline.text, maxChars)) lines[lines.length - 1]!.push({ ...inline, text });
+    } else {
+      lines[lines.length - 1]!.push(inline);
+    }
   }
+  const hardBreak: JSONContent = { type: 'hardBreak' };
+  const breakSize = estimate(hardBreak);
   const chunks: JSONContent[][] = [];
   let current: JSONContent[] = [];
-  let currentSize = 0;
+  let size = 0;
   const flush = () => {
-    if (current.length > 0) chunks.push(current);
+    chunks.push(current);
     current = [];
-    currentSize = 0;
+    size = 0;
   };
-  for (const line of lines) {
-    const size = estimate(line);
-    if (size > target) {
-      flush();
-      for (const inline of line) {
-        if (inline.type === 'text' && typeof inline.text === 'string' && estimate(inline) > target) {
-          const max = Math.max(1, Math.floor(target / 3));
-          for (const text of cutText(inline.text, max)) chunks.push([{ ...inline, text }]);
-        } else {
-          if (currentSize + estimate(inline) > target) flush();
-          current.push(inline);
-          currentSize += estimate(inline);
-        }
+  lines.forEach((line, index) => {
+    if (index > 0) {
+      // The line break: a boundary between textblocks when the next line doesn't fit beside what is open.
+      if (size > 0 && size + breakSize + estimate(line) > target) flush();
+      else {
+        current.push(hardBreak);
+        size += breakSize;
       }
-      flush();
-      continue;
     }
-    if (current.length > 0 && currentSize + size > target) flush();
-    if (current.length > 0) current.push({ type: 'hardBreak' });
-    current.push(...line);
-    currentSize += size;
-  }
+    for (const inline of line) {
+      const inlineSize = estimate(inline);
+      if (size > 0 && size + inlineSize > target) flush();
+      current.push(inline);
+      size += inlineSize;
+    }
+  });
   flush();
   return chunks.map((content, index) => {
     const type = index > 0 && node.type === 'heading' ? 'paragraph' : node.type;

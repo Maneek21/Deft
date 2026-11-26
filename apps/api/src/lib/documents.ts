@@ -69,8 +69,8 @@
 // The breadcrumb shows each run of ancestors they can't see as one "Shared
 // with you". A delete answers with only the ids the caller could view.
 import { and, asc, desc, eq, gte, inArray, isNull, ne, notExists, sql, type SQL } from 'drizzle-orm';
-import { alias } from 'drizzle-orm/pg-core';
-import { docFavorites, docFolders, documentShares, documents, type DocFolderRow, type DocRole, type DocumentRow } from '@deft/db/documents';
+import { alias, type PgInsertValue } from 'drizzle-orm/pg-core';
+import { docFavorites, docFolders, documentShares, documents, drives, type DocFolderRow, type DocRole, type DocumentRow } from '@deft/db/documents';
 import { EMPTY_DOCUMENT, ensureBlockIds, getDocumentSchema, jsonToText, jsonToYDoc } from '@deft/doc-schema';
 import { encodedStateBytes, withinSizeCap } from '../collab/limits.js';
 import { db } from './db.js';
@@ -305,7 +305,7 @@ export async function createDocumentInTx(tx: Tx, input: CreateDocumentInput): Pr
   }
   if (folderId && !(await liveFolderInDrive(tx, orgId, driveId, folderId))) throw folderNotInDrive();
   const now = new Date();
-  const [created] = await tx.insert(documents).values({
+  const document = await insertDocumentRowInTx(tx, {
     org_id: orgId,
     drive_id: driveId,
     folder_id: folderId,
@@ -318,9 +318,7 @@ export async function createDocumentInTx(tx: Tx, input: CreateDocumentInput): Pr
     created_by: userId,
     last_edited_by: userId,
     last_edited_at: now,
-  }).returning();
-  if (parentId) await copySharesInTx(tx, orgId, parentId, created!.id);
-  const document = created!;
+  });
   return {
     document,
     finish: async () => {
@@ -344,6 +342,81 @@ async function myDriveInTx(tx: Tx, orgId: string, userId: string): Promise<strin
     }
     throw error;
   }
+}
+
+/** The one insert of a new document row (both ways in), with F9's sub-page share rule for a sub-page. */
+async function insertDocumentRowInTx(tx: Tx, values: PgInsertValue<typeof documents>): Promise<DocumentRow> {
+  const [created] = await tx.insert(documents).values(values).returning();
+  if (created!.parent_document_id) await copySharesInTx(tx, created!.org_id, created!.parent_document_id, created!.id);
+  return created!;
+}
+
+/** A `timestamp` as Postgres prints it (`col::text`), kept exactly: never through a Date, which reads it in the process's time zone. */
+export type TimestampText = string;
+
+export type SystemCreateDocumentInput = {
+  orgId: string; driveId: string; folderId?: string | null; parentDocumentId?: string | null; title: string; icon?: string | null;
+  json: JSONContent; isTemplate?: boolean; useInKnowledge?: boolean | null; position?: number;
+  createdBy: string | null; lastEditedBy?: string | null;
+  /** Default: now. */
+  createdAt?: TimestampText; updatedAt?: TimestampText; lastEditedAt?: TimestampText | null;
+  /** A document created in the trash (deleted_at set). */
+  deletedAt?: TimestampText | null; deletedBy?: string | null;
+};
+
+/**
+ * Creates a document as the system, in the caller's transaction: the notes
+ * move (F14) and nothing a person or an agent can reach. It prepares the
+ * content and writes the row exactly as createDocumentInTx does
+ * (initialContent: the schema check, block ids, the text and the encoded
+ * size, refused over the size cap with 413 TOO_LARGE; insertDocumentRowInTx,
+ * with F9's sub-page share rule), but checks no one's role: the drive may be
+ * frozen or have no member who can act, and the times it is given (source
+ * times, as Postgres text) are kept. The drive must be a live drive of
+ * `orgId`, and the folder or parent page (never both) in that drive; a
+ * folder or parent in the trash is accepted, for a document created in the
+ * trash. It raises no event and sends nothing: the caller decides.
+ */
+export async function systemCreateDocumentInTx(tx: Tx, input: SystemCreateDocumentInput): Promise<DocumentRow> {
+  const { orgId, driveId } = input;
+  const folderId = input.folderId ?? null;
+  const parentId = input.parentDocumentId ?? null;
+  if (folderId && parentId) throw invalid('A document is in a folder or under a page, not both');
+  const content = initialContent(input.json);
+  const [drive] = await tx.select({ id: drives.id }).from(drives)
+    .where(and(eq(drives.id, driveId), eq(drives.org_id, orgId), eq(drives.is_deleted, false))).limit(1);
+  if (!drive) throw notFound('Drive');
+  if (folderId) {
+    const [folder] = await tx.select({ id: docFolders.id }).from(docFolders)
+      .where(and(eq(docFolders.id, folderId), eq(docFolders.org_id, orgId), eq(docFolders.drive_id, driveId))).limit(1);
+    if (!folder) throw folderNotInDrive();
+  }
+  if (parentId) {
+    const [parent] = await tx.select({ id: documents.id }).from(documents)
+      .where(and(eq(documents.id, parentId), eq(documents.org_id, orgId), eq(documents.drive_id, driveId))).limit(1);
+    if (!parent) throw parentNotInDrive();
+  }
+  const at = (text: TimestampText | null | undefined) => (text ? sql`${text}::timestamp` : null);
+  return insertDocumentRowInTx(tx, {
+    org_id: orgId,
+    drive_id: driveId,
+    folder_id: folderId,
+    parent_document_id: parentId,
+    title: input.title,
+    icon: input.icon ?? null,
+    position: input.position ?? await nextDocumentPosition(tx, orgId, driveId, folderId, parentId),
+    ...content,
+    is_template: input.isTemplate ?? false,
+    use_in_knowledge: input.useInKnowledge ?? null,
+    created_by: input.createdBy,
+    last_edited_by: input.lastEditedBy ?? input.createdBy,
+    last_edited_at: at(input.lastEditedAt) ?? sql`now()`,
+    is_deleted: Boolean(input.deletedAt),
+    deleted_at: at(input.deletedAt),
+    deleted_by: input.deletedAt ? (input.deletedBy ?? null) : null,
+    ...(input.createdAt ? { created_at: sql`${input.createdAt}::timestamp` } : {}),
+    ...(input.updatedAt ? { updated_at: sql`${input.updatedAt}::timestamp` } : {}),
+  });
 }
 
 /** F9's sub-page share rule (lib/document-shares.ts): the new sub-page starts with every share of its parent, as it is. */
