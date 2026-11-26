@@ -24,8 +24,6 @@
  */
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { createServer } from 'node:http';
-import { createRequire } from 'node:module';
 import { isDeepStrictEqual } from 'node:util';
 import test, { after, before } from 'node:test';
 import { sql } from 'drizzle-orm';
@@ -43,11 +41,9 @@ import { driveRoutes } from '../src/routes/drives.js';
 import { spaceRoutes } from '../src/routes/spaces.js';
 import { memberRoutes } from '../src/routes/members.js';
 import { notificationRoutes } from '../src/routes/notifications.js';
-import { setupSocket } from '../src/socket.js';
 import { setupDrivesFixture, type DrivesFixture } from './fixtures/drives-fixture.js';
+import { socketHarness as openSocketHarness, waitFor } from './fixtures/drives-socket.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
-
-const { io: connectSocket } = createRequire(new URL('../../web/package.json', import.meta.url))('socket.io-client');
 
 const url = safeTestDatabaseUrl();
 const SKIP = 'Set DEFT_TEST_DATABASE_URL to a disposable test database';
@@ -598,50 +594,7 @@ test('pinning a drive is per person', async (t) => {
   assert.equal((await listOf(member)).find((drive) => drive.id === fx!.workspaceDriveId)?.pinned, false);
 });
 
-type Received = Array<{ event: string; data: any }>;
-
-/** Sockets for people of the fixture's workspace, through the real socket server (roles from org_members). */
-async function socketHarness(people: string[]) {
-  const server = createServer();
-  const principals = new Map(people.map((id) => [`token-${id}`, { id, email: `${id}@drives.test`, org_id: fx!.orgId, sid: `sid-${id}`, exp: Math.floor(Date.now() / 1000) + 600 }]));
-  const sockets = setupSocket(server, {
-    verifyAccess: async (token: string) => {
-      const principal = principals.get(token);
-      if (!principal) throw new Error('unknown token');
-      return principal as any;
-    },
-    getSpaceAccess: async () => undefined,
-    recordLastSeen: () => {},
-  });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const port = (server.address() as { port: number }).port;
-  const clients: any[] = [];
-  const received = new Map<string, Received>();
-  for (const id of people) {
-    const client = connectSocket(`http://127.0.0.1:${port}`, { auth: { token: `token-${id}` }, transports: ['websocket'], reconnection: false });
-    clients.push(client);
-    const events: Received = [];
-    received.set(id, events);
-    client.onAny((event: string, data: unknown) => events.push({ event, data }));
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`presence:init timed out for ${id}`)), 5_000);
-      client.once('presence:init', () => { clearTimeout(timer); resolve(); });
-    });
-  }
-  return {
-    updates: (id: string) => received.get(id)!.filter((entry) => entry.event === 'document:updated').map((entry) => entry.data),
-    close: async () => {
-      for (const client of clients) client.close();
-      await new Promise<void>((resolve) => sockets.close(() => resolve()));
-    },
-  };
-}
-
-async function waitFor(cond: () => boolean, label: string, timeoutMs = 5_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (!cond() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
-  assert.ok(cond(), `timed out: ${label}`);
-}
+const socketHarness = (people: string[]) => openSocketHarness(fx!.orgId, people);
 
 test('document:updated for a private drive reaches only people who can view it', async (t) => {
   if (!fx) return t.skip(SKIP);
@@ -1011,4 +964,14 @@ test('the drive routes answer a drive of another workspace with 404', async (t) 
   for (const [method, path] of [['GET', ''], ['PATCH', ''], ['DELETE', ''], ['GET', '/members'], ['POST', '/pin']] as const) {
     assert.equal((await call(fx.people.owner, method, `/api/drives/${foreign.id}${path}`, method === 'PATCH' ? { name: 'x' } : undefined, 404)).code, 'NOT_FOUND');
   }
+});
+
+test('malformed JSON is refused with 400 VALIDATION_ERROR, even where every field is optional', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const drive = await createDrive(fx.people.member, { name: 'Malformed', kind: 'open' });
+  const res = await fx.requestRaw(fx.people.member, 'PATCH', `/api/drives/${drive}`, '{"name": "x",');
+  assert.equal(res.status, 400);
+  assert.equal((await json(res)).code, 'VALIDATION_ERROR');
+  const { rows: [row] } = await fx.client.query('SELECT name FROM drives WHERE id = $1', [drive]);
+  assert.equal(row.name, 'Malformed', 'nothing changed');
 });

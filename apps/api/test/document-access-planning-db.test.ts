@@ -31,6 +31,7 @@ import {
   visibleDocumentIdSql,
   visibleDriveCondition,
 } from '../src/lib/document-access.js';
+import { breadcrumbChainQuery, driveTreeDocumentsQuery, favoriteDocumentsQuery, recentDocumentsQuery } from '../src/lib/documents.js';
 import { driveListQuery, drivesWithoutManagerQuery } from '../src/lib/drives.js';
 import { setupDrivesFixture, type DrivesFixture } from './fixtures/drives-fixture.js';
 import { planningGrowth, type Growth } from './fixtures/planning-growth.js';
@@ -127,6 +128,25 @@ test('the drive list plans within budget', async (t) => {
       ['driveRoleFor (point lookup)', query(driveRoleQuery(member, fx.orgId, fx.workspaceDriveId))],
       // GET /api/drives/without-manager: the private drives nobody active holds full on (F6).
       ['drives without a manager', query(drivesWithoutManagerQuery(fx.orgId))],
+    ];
+  });
+});
+
+test('the drive tree and the recent list plan within budget', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  await withinBudget(t, async (fx) => {
+    const { member } = fx.people;
+    // A sub-page where the workspace has one (the deepest breadcrumb), else any document.
+    const [document] = await db.select({ id: documents.id }).from(documents).where(eq(documents.org_id, fx.orgId))
+      .orderBy(sql`${documents.parent_document_id} IS NULL`, documents.id).limit(1);
+    return [
+      // GET /api/drives/:id/tree: the drive's documents the caller can see.
+      ['drive tree', driveTreeDocumentsQuery(member, fx.orgId, fx.workspaceDriveId).toSQL()],
+      // GET /api/documents/recent and /favorites.
+      ['recent documents', recentDocumentsQuery(member, fx.orgId).toSQL()],
+      ['favourite documents', favoriteDocumentsQuery(member, fx.orgId).toSQL()],
+      // The breadcrumb's page chain, each page held to the access check (GET /api/documents/:id).
+      ['breadcrumb page chain', query(breadcrumbChainQuery(member, fx.orgId, document!.id))],
     ];
   });
 });

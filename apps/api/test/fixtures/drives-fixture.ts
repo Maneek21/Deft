@@ -37,6 +37,8 @@ export type DrivesFixture = {
   spaces: { team: string /* member, member2, guest, agentUser */; other: string /* member2 */ };
   workspaceDriveId: string;
   request(userId: string, method: string, path: string, body?: unknown): Promise<Response>;
+  /** `request` with `rawBody` sent as it is, labelled JSON (malformed-JSON tests). */
+  requestRaw(userId: string, method: string, path: string, rawBody: string): Promise<Response>;
   insertDrive(i: { kind: 'open' | 'private' | 'personal'; defaultRole?: DocRole; ownerUserId?: string; frozen?: boolean; name?: string }): Promise<string>;
   addDriveMember(driveId: string, p: Principal, role: DocRole): Promise<void>;
   insertFolder(i: { driveId: string; parentFolderId?: string }): Promise<string>;
@@ -158,19 +160,28 @@ export async function setupDrivesFixture(label: string, options: DrivesFixtureOp
     if (result.rowCount !== 1) throw new Error(`no drive ${driveId}`);
   };
 
+  /** Runs a request as `userId`, with their workspace and current role; `body` is sent as JSON text. */
+  const send = async (userId: string, method: string, path: string, body: string | undefined) => {
+    const { rows: [membership] } = await q(`SELECT m.org_id, m.role, u.email FROM org_members m JOIN users u ON u.id = m.user_id
+      WHERE m.user_id = $1 AND m.org_id = ANY($2::text[]) ORDER BY m.org_id = $3 DESC LIMIT 1`, [userId, [orgId, otherOrgId], orgId]);
+    const user: AuthUser = {
+      id: userId, email: membership?.email ?? `${userId}@drives.test`, org_id: membership?.org_id ?? orgId,
+      sid: `drives-test-${userId}`, role: membership?.role,
+    };
+    const headers: Record<string, string> = { [TEST_USER_HEADER]: JSON.stringify(user) };
+    if (body !== undefined) headers['content-type'] = 'application/json';
+    return app.request(path, { method, headers, body });
+  };
+
   const fixture: DrivesFixture = {
     client, orgId, otherOrgId, people, spaces, workspaceDriveId,
 
     async request(userId, method, path, body) {
-      const { rows: [membership] } = await q(`SELECT m.org_id, m.role, u.email FROM org_members m JOIN users u ON u.id = m.user_id
-        WHERE m.user_id = $1 AND m.org_id = ANY($2::text[]) ORDER BY m.org_id = $3 DESC LIMIT 1`, [userId, [orgId, otherOrgId], orgId]);
-      const user: AuthUser = {
-        id: userId, email: membership?.email ?? `${userId}@drives.test`, org_id: membership?.org_id ?? orgId,
-        sid: `drives-test-${userId}`, role: membership?.role,
-      };
-      const headers: Record<string, string> = { [TEST_USER_HEADER]: JSON.stringify(user) };
-      if (body !== undefined) headers['content-type'] = 'application/json';
-      return app.request(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+      return send(userId, method, path, body === undefined ? undefined : JSON.stringify(body));
+    },
+
+    async requestRaw(userId, method, path, rawBody) {
+      return send(userId, method, path, rawBody);
     },
 
     async insertDrive({ kind, defaultRole, ownerUserId, frozen, name }) {

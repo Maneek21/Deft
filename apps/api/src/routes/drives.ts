@@ -3,8 +3,9 @@
 // Every route reads the caller's role with driveRoleFor (lib/document-access.ts)
 // for the drive's workspace, which must be the caller's: a drive they can't
 // see, in this workspace or another, is a 404, never a 403.
-// - Reading a drive needs view. Settings and deleting it need full; the
-//   Workspace, Shared notes and personal drives can't be deleted.
+// - Reading a drive, and its tree, needs view; its trash needs edit (the
+//   documents in them: lib/documents.ts). Settings and deleting it need
+//   full; the Workspace, Shared notes and personal drives can't be deleted.
 // - Members: full, or the admin path. An owner or admin who isn't a full
 //   member of a private drive sees it listed (adminListedDriveCondition) and
 //   may manage its members, adding themselves included, but can't open it
@@ -45,11 +46,13 @@
 // in their own name (GET /without-manager), and give one a manager through
 // the admin path above.
 //
-// Lock order (lockActorInTx): every drive write (create, settings, delete,
-// member add, change and removal, link and unlink) first takes the actor's
+// Lock order (lockActorInTx, lib/drive-locks.ts): every drive write (create,
+// settings, delete, member add, change and removal, link and unlink), and
+// every folder and document write (lib/documents.ts), first takes the actor's
 // room-access lock (lib/room-access-lock.ts), then their org_members row FOR
 // SHARE, then the drive row, then anything under it (a chat seat FOR SHARE,
-// member rows). That is the departure path's own order: removing someone,
+// member rows, folders and documents; a document move locks both drives in
+// id order). That is the departure path's own order: removing someone,
 // changing their workspace role and removing them from a chat all take
 // their room-access lock first, then their membership rows (a removal then
 // freezes their drive). So an actor's demotion, removal or loss of a chat
@@ -82,20 +85,22 @@ import { and, asc, desc, eq, inArray, or, sql, type SQL } from 'drizzle-orm';
 import { docFavorites, documents, driveMembers, drives, type DocRole, type DriveMemberRow, type DriveRow } from '@deft/db/documents';
 import { auditLog, orgMembers, spaceMembers, spaces, users } from '@deft/db/schema';
 import { db } from '../lib/db.js';
-import { DOC_ROLE_RANK, adminListedDriveCondition, canHoldDocumentAccess, driveRoleFor } from '../lib/document-access.js';
+import { DOC_ROLE_RANK, canHoldDocumentAccess, driveRoleFor, roleAtLeast } from '../lib/document-access.js';
 import { accessLossInTx, finishAccessLoss } from '../lib/document-access-change.js';
 import { emitDocumentAccessChanged, type DocumentAccessChange } from '../lib/document-access-events.js';
 import { emitDocumentEvent } from '../lib/document-events.js';
+import { driveTrash, driveTree } from '../lib/documents.js';
+import { driveAccess, lockActorInTx, type DriveAccess } from '../lib/drive-locks.js';
 import {
   canHoldDocumentAccessLocked, driveListQuery, drivesWithoutManagerQuery, ensureWorkspaceDrive, finishDriveHandover, frozenDrivesQuery,
   handOverPersonalDriveInTx, PrincipalCannotHoldAccessError,
 } from '../lib/drives.js';
 import { emitVisibleNotifications } from '../lib/notification-delivery.js';
-import { lockRoomAccessChange } from '../lib/room-access-lock.js';
 import type { PgTransactionConfig } from 'drizzle-orm/pg-core';
 import { createNotificationIfAllowed } from '../lib/notification-policy.js';
 import { asStoredNotificationType } from '../lib/notification-types.js';
 import { canSeePerson, peopleViewer, visiblePersonIds } from '../lib/people-visibility.js';
+import { jsonBody } from '../lib/request-body.js';
 import { canReadSpace, unjoinedPublicSpaceReadableSql } from '../lib/space-membership.js';
 import type { AuthUser } from '../middleware/auth.js';
 
@@ -108,6 +113,7 @@ type Refusal = { status: 400 | 403 | 404 | 409; body: { error: string; code: str
 const refusal = (status: Refusal['status'], error: string, code: string): Refusal => ({ status, body: { error, code } });
 const NOT_FOUND = refusal(404, 'Drive not found', 'NOT_FOUND');
 const FORBIDDEN_ROLE = refusal(403, 'You need full access to this drive', 'FORBIDDEN_ROLE');
+const FORBIDDEN_EDIT = refusal(403, 'You need edit access to this drive', 'FORBIDDEN_ROLE');
 const invalid = (error = 'Invalid input') => refusal(400, error, 'VALIDATION_ERROR');
 const CANNOT_HOLD = refusal(400, 'That person or chat can’t be given access to this drive', 'PRINCIPAL_CANNOT_HOLD_ACCESS');
 const MEMBER_NOT_FOUND = refusal(404, 'Member not found', 'NOT_FOUND');
@@ -169,33 +175,6 @@ const memberRoleSchema = z.object({ role: roleSchema });
 const linkSchema = z.object({ space_id: z.string().trim().min(1).max(200), role: roleSchema });
 const handoverSchema = z.object({ user_id: z.string().trim().min(1).max(200) });
 
-const bodyOf = (c: Context) => c.req.json().catch(() => ({}));
-
-/** What the caller holds on a live drive of their workspace. */
-type DriveAccess = { drive: DriveRow; role: DocRole | null; adminPath: boolean };
-
-/**
- * The drive and the caller's role on it, or null when it doesn't exist, is
- * deleted or belongs to another workspace. `adminPath` is set for an owner
- * or admin, without full access, on a private drive they see listed. With
- * `lock`, the drive row is locked first (FOR UPDATE), so the role is read
- * after any change to the drive committed before.
- */
-async function driveAccess(reader: Reader, user: AuthUser, driveId: string, lock = false): Promise<DriveAccess | null> {
-  const query = reader.select().from(drives)
-    .where(and(eq(drives.id, driveId), eq(drives.org_id, user.org_id), eq(drives.is_deleted, false)));
-  const [drive] = lock ? await query.for('update') : await query;
-  if (!drive) return null;
-  const role = await driveRoleFor(user.id, user.org_id, drive.id, reader);
-  let adminPath = false;
-  if (role !== 'full' && drive.kind === 'private') {
-    const [listed] = await reader.select({ id: drives.id }).from(drives)
-      .where(and(eq(drives.id, drive.id), adminListedDriveCondition(user.id, user.org_id))).limit(1);
-    adminPath = Boolean(listed);
-  }
-  return { drive, role, adminPath };
-}
-
 /**
  * The caller's role in their workspace: an active human membership, read
  * through `reader`. With `lock`, the membership row is share-locked until
@@ -210,26 +189,13 @@ async function workspaceRole(reader: Reader, user: AuthUser, lock = false): Prom
   return membership?.role ?? null;
 }
 
-/**
- * A drive write's first locks, in the order in the header: the actor's
- * room-access lock, then their active org_members row FOR SHARE. Returns
- * their workspace role, or null when they have no active membership.
- */
-async function lockActorInTx(tx: Tx, user: AuthUser): Promise<string | null> {
-  await lockRoomAccessChange(tx, user.org_id, user.id);
-  const [membership] = await tx.select({ role: orgMembers.role }).from(orgMembers)
-    .where(and(eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, user.id), eq(orgMembers.is_active, true)))
-    .limit(1)
-    .for('share');
-  return membership?.role ?? null;
-}
-
 /** Null when `access` allows `need`; else the refusal. `manage` is full, or the admin path. */
-function refuse(access: DriveAccess | null, need: 'view' | 'full' | 'manage'): Refusal | null {
+function refuse(access: DriveAccess | null, need: 'view' | 'edit' | 'full' | 'manage'): Refusal | null {
   if (!access) return NOT_FOUND;
   if (need === 'manage' && (access.role === 'full' || access.adminPath)) return null;
   if (access.role === null) return NOT_FOUND;
   if (need === 'view') return null;
+  if (need === 'edit') return roleAtLeast(access.role, 'edit') ? null : FORBIDDEN_EDIT;
   return access.role === 'full' ? null : FORBIDDEN_ROLE;
 }
 
@@ -531,7 +497,7 @@ driveRoutes.get('/frozen', async (c) => {
 driveRoutes.post('/', async (c) => {
   try {
     const user = c.get('user');
-    const parsed = createSchema.safeParse(await bodyOf(c));
+    const parsed = createSchema.safeParse(await jsonBody(c));
     if (!parsed.success) return answer(c, invalid());
     const { name, kind, icon } = parsed.data;
     if (kind === 'private' && parsed.data.default_role) return answer(c, invalid('A private drive has no default role'));
@@ -576,7 +542,7 @@ driveRoutes.get('/:id', async (c) => {
 driveRoutes.patch('/:id', async (c) => {
   try {
     const user = c.get('user');
-    const parsed = updateSchema.safeParse(await bodyOf(c));
+    const parsed = updateSchema.safeParse(await jsonBody(c));
     if (!parsed.success) return answer(c, invalid());
     const patch = parsed.data;
     const outcome = await db.transaction(async (tx) => {
@@ -708,7 +674,7 @@ driveRoutes.get('/:id/members', async (c) => {
 driveRoutes.post('/:id/members', async (c) => {
   try {
     const user = c.get('user');
-    const parsed = addMemberSchema.safeParse(await bodyOf(c));
+    const parsed = addMemberSchema.safeParse(await jsonBody(c));
     if (!parsed.success) return answer(c, invalid());
     const { principal_type: principalType, principal_id: principalId, role } = parsed.data;
     const outcome = await db.transaction(async (tx) => {
@@ -760,7 +726,7 @@ async function lockedMember(tx: Tx, access: DriveAccess, memberId: string): Prom
 driveRoutes.patch('/:id/members/:memberId', async (c) => {
   try {
     const user = c.get('user');
-    const parsed = memberRoleSchema.safeParse(await bodyOf(c));
+    const parsed = memberRoleSchema.safeParse(await jsonBody(c));
     if (!parsed.success) return answer(c, invalid());
     const { role } = parsed.data;
     const outcome = await db.transaction(async (tx) => {
@@ -832,7 +798,7 @@ driveRoutes.delete('/:id/members/:memberId', async (c) => {
 driveRoutes.post('/:id/link-space', async (c) => {
   try {
     const user = c.get('user');
-    const parsed = linkSchema.safeParse(await bodyOf(c));
+    const parsed = linkSchema.safeParse(await jsonBody(c));
     if (!parsed.success) return answer(c, invalid());
     const { space_id: spaceId, role } = parsed.data;
     const outcome = await db.transaction(async (tx) => {
@@ -917,7 +883,7 @@ driveRoutes.delete('/:id/link-space/:spaceId', async (c) => {
 driveRoutes.post('/:id/handover', async (c) => {
   try {
     const user = c.get('user');
-    const parsed = handoverSchema.safeParse(await bodyOf(c));
+    const parsed = handoverSchema.safeParse(await jsonBody(c));
     if (!parsed.success) return answer(c, invalid());
     const outcome = await db.transaction(async (tx) => {
       if ((await workspaceRole(tx, user, true)) !== 'owner') throw new Refused(OWNER_ONLY);
@@ -944,6 +910,35 @@ driveRoutes.post('/:id/handover', async (c) => {
     if (error instanceof Refused) return answer(c, error.refusal);
     if (error instanceof PrincipalCannotHoldAccessError) return answer(c, CANNOT_HOLD);
     return failed(c, 'hand the drive on');
+  }
+});
+
+// GET /api/drives/:id/tree (needs view): the drive's folders, and the
+// documents in it the caller can see (lib/documents.ts driveTree).
+driveRoutes.get('/:id/tree', async (c) => {
+  try {
+    const user = c.get('user');
+    const access = await driveAccess(db, user, c.req.param('id'));
+    const refused = refuse(access, 'view');
+    if (refused) return answer(c, refused);
+    return c.json(await driveTree(user.id, user.org_id, access!.drive.id));
+  } catch {
+    return failed(c, 'load the drive’s documents');
+  }
+});
+
+// GET /api/drives/:id/trash (needs edit): documents deleted in the last 30
+// days (lib/documents.ts driveTrash). The access check doesn't see deleted
+// documents, so the drive role is the gate.
+driveRoutes.get('/:id/trash', async (c) => {
+  try {
+    const user = c.get('user');
+    const access = await driveAccess(db, user, c.req.param('id'));
+    const refused = refuse(access, 'edit');
+    if (refused) return answer(c, refused);
+    return c.json({ items: await driveTrash(user.org_id, access!.drive.id) });
+  } catch {
+    return failed(c, 'load the drive’s trash');
   }
 });
 
