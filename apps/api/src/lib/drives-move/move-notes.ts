@@ -150,9 +150,11 @@ type NoteRow = {
 };
 type VersionRow = { id: string; version: number; title: string; edited_by: string | null; created_at: TimestampText };
 
-/** One old version's HTML, read on its own so the history is never all in memory at once. */
-async function versionContent(tx: Tx, versionId: string): Promise<string | null> {
-  const [row] = rowsOf<{ content: string | null }>(await tx.execute(sql`SELECT content FROM note_versions WHERE id = ${versionId}`));
+/** One old version's HTML, read on its own so the history is never all in memory at once (note_versions has no org_id: the note's is checked). */
+async function versionContent(tx: Tx, orgId: string, noteId: string, versionId: string): Promise<string | null> {
+  const [row] = rowsOf<{ content: string | null }>(await tx.execute(sql`SELECT history_row.content
+    FROM note_versions history_row JOIN notes history_note ON history_note.id = history_row.note_id
+    WHERE history_row.id = ${versionId} AND history_row.note_id = ${noteId} AND history_note.org_id = ${orgId}`));
   return row?.content ?? null;
 }
 
@@ -196,10 +198,15 @@ async function moveNoteInTx(tx: Tx, ctx: OrgContext, noteId: string): Promise<No
     FROM notes WHERE id = ${noteId} AND org_id = ${orgId} FOR SHARE`));
   if (!note) return null;
   // The history: its rows without their content, which is read one version at a time below.
-  const versions = rowsOf<VersionRow>(await tx.execute(sql`SELECT id, version, title, edited_by, created_at::text AS created_at
-    FROM note_versions WHERE note_id = ${noteId} ORDER BY version, created_at, id`));
-  const shares = rowsOf<{ user_id: string; permission: string }>(await tx.execute(sql`SELECT shared_with_user_id AS user_id, permission
-    FROM note_shares WHERE note_id = ${noteId} ORDER BY created_at, id`));
+  const versions = rowsOf<VersionRow>(await tx.execute(sql`SELECT history_row.id, history_row.version, history_row.title,
+      history_row.edited_by, history_row.created_at::text AS created_at
+    FROM note_versions history_row JOIN notes history_note ON history_note.id = history_row.note_id
+    WHERE history_row.note_id = ${noteId} AND history_note.org_id = ${orgId}
+    ORDER BY history_row.version, history_row.created_at, history_row.id`));
+  const shares = rowsOf<{ user_id: string; permission: string }>(await tx.execute(sql`SELECT share.shared_with_user_id AS user_id, share.permission
+    FROM note_shares share JOIN notes shared_note ON shared_note.id = share.note_id
+    WHERE share.note_id = ${noteId} AND shared_note.org_id = ${orgId}
+    ORDER BY share.created_at, share.id`));
   const noteFiles = rowsOf<{ file_id: string }>(await tx.execute(sql`SELECT file_id FROM note_files
     WHERE note_id = ${noteId} AND org_id = ${orgId} ORDER BY file_id`)).map((row) => row.file_id);
 
@@ -255,7 +262,7 @@ async function moveNoteInTx(tx: Tx, ctx: OrgContext, noteId: string): Promise<No
   for (const fileId of imageFileIds(current.json)) allow(fileId, author);
   for (const fileId of noteFiles) allow(fileId, author);
   for (const version of versions) {
-    for (const fileId of imageFileIds(noteHtmlToJson(await versionContent(tx, version.id)).json)) allow(fileId, author, version.edited_by);
+    for (const fileId of imageFileIds(noteHtmlToJson(await versionContent(tx, orgId, noteId, version.id)).json)) allow(fileId, author, version.edited_by);
   }
   const decisions = await decideFilesInTx(tx, orgId, allowed);
   const linked = new Set([...decisions].filter(([, decision]) => decision === 'linked').map(([fileId]) => fileId));
@@ -298,7 +305,7 @@ async function moveNoteInTx(tx: Tx, ctx: OrgContext, noteId: string): Promise<No
   const times = new VersionTimes();
   const historyFileIds = new Set<string>();
   for (const version of versions) {
-    const converted = noteHtmlToJson(await versionContent(tx, version.id));
+    const converted = noteHtmlToJson(await versionContent(tx, orgId, noteId, version.id));
     const replaced = replaceUnlinkedImages(converted.json, linked);
     const json = finishContent(replaced.json, noteId);
     for (const fileId of imageFileIds(json)) historyFileIds.add(fileId);

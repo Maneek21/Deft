@@ -59,7 +59,7 @@ export async function postMoveCheck(orgId: string, sampleSize = 20): Promise<Pos
       (m.org_id = src.org_id AND m.target_type = ${targetType} AND EXISTS (SELECT 1 FROM ${sql.raw(target)} target
         WHERE target.id = m.target_id AND target.org_id = src.org_id)) AS target_ok
     FROM ${sql.raw(table)} src
-    LEFT JOIN note_document_map m ON m.source_type = ${type} AND m.source_id = src.id`;
+    LEFT JOIN note_document_map m ON m.org_id = src.org_id AND m.source_type = ${type} AND m.source_id = src.id`;
   const tally = (type: string, row: { id: string; mapped: boolean; target_ok: boolean }) => {
     notesExpected += 1;
     if (!row.mapped) mismatches.push(`${type} ${row.id} has no map row`);
@@ -74,7 +74,7 @@ export async function postMoveCheck(orgId: string, sampleSize = 20): Promise<Pos
   // Canvases a page at a time: whether one has content is decided in code.
   for (let after = ''; ;) {
     const page = rowsOf<{ id: string; mapped: boolean; target_ok: boolean; content: unknown }>(await db.execute(sql`
-      SELECT page.*, (SELECT content FROM canvases WHERE id = page.id) AS content FROM (
+      SELECT page.*, (SELECT content FROM canvases WHERE id = page.id AND org_id = ${orgId}) AS content FROM (
         ${mapped('canvases', 'canvas', 'documents', 'document')} WHERE src.org_id = ${orgId} AND src.id > ${after}
         ORDER BY src.id LIMIT ${CANVAS_PAGE}) page`));
     for (const row of page) if (row.mapped || canvasHasContent(row.content)) tally('canvas', row);
@@ -293,7 +293,7 @@ async function openSample(orgId: string, entry: { source_type: string; source_id
     const versionIds = rowsOf<{ id: string }>(await db.execute(sql`SELECT id FROM document_versions
       WHERE org_id = ${orgId} AND document_id = ${entry.target_id} AND kind = 'moved' ORDER BY created_at, id`));
     for (const { id } of versionIds) {
-      const [version] = rowsOf<{ content_json: JSONContent }>(await db.execute(sql`SELECT content_json FROM document_versions WHERE id = ${id}`));
+      const [version] = rowsOf<{ content_json: JSONContent }>(await db.execute(sql`SELECT content_json FROM document_versions WHERE id = ${id} AND org_id = ${orgId}`));
       if (!version || !opensAsItself(version.content_json)) return `note ${entry.source_id}: moved version ${id} does not open`;
     }
   }

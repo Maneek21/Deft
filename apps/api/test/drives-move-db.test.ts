@@ -14,6 +14,7 @@
  *   DATABASE_URL=... DEFT_TEST_DATABASE_URL=... pnpm --filter @deft/api test test/drives-move-db.test.ts
  */
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -618,9 +619,11 @@ test('a note with 200 versions moves them all, in order, one version at a time',
   assert.deepEqual(versions.map((row) => row.title), Array.from({ length: 200 }, (_, n) => `Draft ${n + 1}`));
   // The history is never held whole: the version list reads no content, and each version's content is read on its own.
   const source = readFileSync(resolve(import.meta.dirname, '../src/lib/drives-move/move-notes.ts'), 'utf8');
-  const listing = source.match(/SELECT ([^`]*?)\s+FROM note_versions WHERE note_id/)?.[1] ?? '';
+  const listing = source.match(
+    /SELECT ((?:(?!SELECT)[^`])*?)\s+FROM note_versions history_row JOIN notes history_note ON history_note\.id = history_row\.note_id\s+WHERE history_row\.note_id = /,
+  )?.[1] ?? '';
   assert.ok(listing && !/\bcontent\b/.test(listing), `the version list reads no content (${listing})`);
-  assert.match(source, /SELECT content FROM note_versions WHERE id = /, 'one version\'s content at a time');
+  assert.match(source, /SELECT history_row\.content\s+FROM note_versions history_row[^`]*?WHERE history_row\.id = /, 'one version\'s content at a time');
 });
 
 test('versions that share one time keep their order, a microsecond apart', { skip: SKIP }, async () => {
@@ -875,6 +878,45 @@ test('a workspace whose run was ok is not moved or checked again', { skip: SKIP 
     const after = (await runRow())!;
     assert.equal(after.changed, before.changed, 'the run was not touched');
     assert.deepEqual(after.report, before.report);
+  } finally {
+    await undo();
+  }
+});
+
+/** `pnpm drives:move` as the upgrade container runs it: the script's own entry point, in a child process against the test database. */
+function drivesMoveScript(...args: string[]): { status: number | null; report: any } {
+  const run = spawnSync(process.execPath, ['--import', 'tsx', 'src/scripts/drives-move.ts', ...args], {
+    cwd: resolve(import.meta.dirname, '..'), env: { ...process.env, DATABASE_URL: url! }, encoding: 'utf8', timeout: 240_000,
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  const json = run.stdout.slice(run.stdout.indexOf('{'));
+  return { status: run.status, report: json ? JSON.parse(json) : null };
+}
+
+test('a routine drives:move rerun skips a workspace whose run was ok, and --check-only reports without writing', { skip: SKIP }, async () => {
+  const before = (await runRow())!;
+  assert.equal(before.check_ok, true);
+  const mapped = await snapshot(fx.orgId);
+  // A legitimate edit after the move that an exact reconciliation would flag.
+  const undo = await addExtraShare();
+  try {
+    const rerun = drivesMoveScript('--org', fx.orgId);
+    assert.equal(rerun.status, 0, 'the upgrade step passes');
+    assert.deepEqual(rerun.report.orgs.map((org: Row) => ({ skipped: org.skipped, ok: org.ok, move: org.move, check: org.check })),
+      [{ skipped: 'already_done', ok: true, move: null, check: null }], 'the done workspace is skipped, not moved or checked');
+    const checked = drivesMoveScript('--org', fx.orgId, '--check-only');
+    assert.equal(checked.status, 1, '--check-only reports the edit');
+    assert.ok(checked.report.orgs[0].check.mismatches.some((m: string) => m.includes('has an extra share')));
+    const after = (await runRow())!;
+    assert.equal(after.check_ok, true, 'still done');
+    assert.equal(after.changed, before.changed, 'neither run wrote the run row');
+    assert.deepEqual(after.report, before.report);
+    const { document_shares: _shares, document_shares_last_change: _sharesChanged, ...rest } = await snapshot(fx.orgId);
+    const { document_shares: _before, document_shares_last_change: _beforeChanged, ...restBefore } = mapped;
+    assert.deepEqual(rest, restBefore, 'nothing was moved again');
+    let listened = false;
+    await moveNotesBeforeListen({ orgIds: [fx.orgId] }).then(() => { listened = true; });
+    assert.equal(listened, true, 'and the API still listens');
   } finally {
     await undo();
   }

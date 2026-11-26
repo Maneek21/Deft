@@ -9,10 +9,12 @@
  * For each workspace (every one, or `--org`): runOrgMove, which moves it
  * (moveOrg, which also makes sure the Workspace drive exists), checks it
  * (postMoveCheck) and records the run in drives_move_runs; the API listens
- * only once every workspace has an ok run. With --check-only it moves and
- * records nothing and only checks. Prints one JSON report and exits 1 when
- * any source failed to move or any check isn't ok. Idempotent: run it again
- * after fixing whatever it reported.
+ * only once every workspace has an ok run. A workspace whose run is already
+ * ok is skipped (`skipped: "already_done"`), so a routine upgrade rerun never
+ * re-checks or reopens it. With --check-only it moves nothing and writes no
+ * run row: it only checks and reports. Prints one JSON report and exits 1
+ * when any source failed to move or any check isn't ok. Idempotent: run it
+ * again after fixing whatever it reported.
  *
  * Runbook (spec 5.11, R2): pause, back up, db:upgrade, drives:move,
  * drives:move --check-only, then unpause.
@@ -45,14 +47,16 @@ async function main(): Promise<number> {
   const { orgId, checkOnly } = parseArgs(process.argv.slice(2));
   const orgIds = orgId ? [orgId] : rowsOf<{ id: string }>(await db.execute(sql`SELECT id FROM orgs ORDER BY created_at, id`)).map((row) => row.id);
   if (orgId && rowsOf(await db.execute(sql`SELECT 1 FROM orgs WHERE id = ${orgId}`)).length === 0) throw new Error('No workspace has that id');
-  const orgs: Array<{ orgId: string; move: MoveReport | null; check: PostMoveCheck | null; ok: boolean }> = [];
+  const orgs: Array<{ orgId: string; skipped: 'already_done' | null; move: MoveReport | null; check: PostMoveCheck | null; ok: boolean }> = [];
   for (const id of orgIds) {
     if (checkOnly) {
+      // Reports only: never writes or changes a drives_move_runs row.
       const check = await postMoveCheck(id);
-      orgs.push({ orgId: id, move: null, check, ok: check.ok });
+      orgs.push({ orgId: id, skipped: null, move: null, check, ok: check.ok });
     } else {
+      // A workspace whose run is already ok is skipped, as the API start skips it (runs.ts).
       const run = await runOrgMove(id);
-      orgs.push({ orgId: id, move: run.move, check: run.check, ok: run.ok });
+      orgs.push({ orgId: id, skipped: run.skipped, move: run.move, check: run.check, ok: run.ok });
     }
   }
   const failedMoves = orgs.filter((org) => (org.move?.errors.length ?? 0) > 0).length;

@@ -88,15 +88,20 @@ export async function lockOrgInTx(tx: Tx, orgId: string): Promise<void> {
 }
 
 /**
- * The id a source of `orgId` was moved to, or null. A map row naming the
- * same source in another workspace means the move can't place it (the
- * source key is unique across workspaces): refused.
+ * The id a source of `orgId` was moved to, or null. The map's source key is
+ * unique across workspaces, so when this workspace has no row the key is
+ * probed once more without the workspace, for existence only: a row there
+ * means the move can't place the source, and it is refused rather than left
+ * to fail on the key. The probe reads nothing of that row.
  */
 export async function mappedTarget(tx: Tx, orgId: string, legacyType: NoteMoveSourceType, sourceId: string): Promise<string | null> {
-  const [row] = rowsOf<{ target_id: string; org_id: string }>(await tx.execute(sql`
-    SELECT target_id, org_id FROM note_document_map WHERE source_type = ${legacyType} AND source_id = ${sourceId}`));
-  if (row && row.org_id !== orgId) throw new MoveError('mapped_in_another_workspace', 'This source is already mapped in another workspace');
-  return row?.target_id ?? null;
+  const [row] = rowsOf<{ target_id: string }>(await tx.execute(sql`
+    SELECT target_id FROM note_document_map WHERE org_id = ${orgId} AND source_type = ${legacyType} AND source_id = ${sourceId}`));
+  if (row) return row.target_id;
+  const [taken] = rowsOf<{ taken: boolean }>(await tx.execute(sql`
+    SELECT EXISTS (SELECT 1 FROM note_document_map WHERE source_type = ${legacyType} AND source_id = ${sourceId}) AS taken`));
+  if (taken?.taken) throw new MoveError('mapped_in_another_workspace', 'This source is already mapped in another workspace');
+  return null;
 }
 
 export async function insertMapRow(tx: Tx, row: {
@@ -153,7 +158,11 @@ export async function authorFolderInTx(tx: Tx, orgId: string, driveId: string, a
     WHERE org_id = ${orgId} AND drive_id = ${driveId} AND parent_folder_id IS NULL AND created_by = ${authorId} AND is_deleted = false
     ORDER BY created_at, id LIMIT 1`));
   if (existing) return existing.id;
-  const [person] = rowsOf<{ name: string | null }>(await tx.execute(sql`SELECT name FROM users WHERE id = ${authorId}`));
+  // users has no org_id: the name is read only for an author of this workspace (a member, or the author of one of its notes).
+  const [person] = rowsOf<{ name: string | null }>(await tx.execute(sql`SELECT person.name FROM users person
+    WHERE person.id = ${authorId}
+      AND (EXISTS (SELECT 1 FROM org_members member WHERE member.org_id = ${orgId} AND member.user_id = person.id)
+        OR EXISTS (SELECT 1 FROM notes authored WHERE authored.org_id = ${orgId} AND authored.user_id = person.id))`));
   const id = randomUUID();
   await tx.execute(sql`INSERT INTO doc_folders (id, org_id, drive_id, parent_folder_id, name, position, created_by)
     VALUES (${id}, ${orgId}, ${driveId}, NULL, ${person?.name?.trim() || 'Former member'},

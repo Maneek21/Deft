@@ -69,7 +69,7 @@ async function moveCanvasInTx(tx: Tx, ctx: OrgContext, canvasId: string): Promis
   const [canvas] = rowsOf<CanvasRow>(await tx.execute(sql`SELECT moved_canvas.id, moved_canvas.space_id, moved_canvas.title, moved_canvas.content,
       moved_canvas.last_edited_by, moved_canvas.last_edited_at::text AS last_edited_at, moved_canvas.created_at::text AS created_at,
       moved_canvas.updated_at::text AS updated_at, chat.created_by AS space_creator, chat.org_id AS space_org
-    FROM canvases moved_canvas LEFT JOIN spaces chat ON chat.id = moved_canvas.space_id
+    FROM canvases moved_canvas LEFT JOIN spaces chat ON chat.id = moved_canvas.space_id AND chat.org_id = moved_canvas.org_id
     WHERE moved_canvas.id = ${canvasId} AND moved_canvas.org_id = ${orgId}
     FOR SHARE OF moved_canvas`));
   if (!canvas) return 'empty';
