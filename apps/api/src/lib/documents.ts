@@ -70,7 +70,7 @@
 // with you". A delete answers with only the ids the caller could view.
 import { and, asc, desc, eq, gte, inArray, isNull, ne, notExists, sql, type SQL } from 'drizzle-orm';
 import { alias, type PgInsertValue } from 'drizzle-orm/pg-core';
-import { imageFileIds, replaceUnlinkedImages } from './drives-move/convert-note.js';
+import { imageFileIds, replaceImagesExcept } from './document-images.js';
 import { docFavorites, docFolders, documentAttachments, documentShares, documents, drives, type DocFolderRow, type DocRole, type DocumentRow } from '@deft/db/documents';
 import {
   BUILT_IN_TEMPLATES, EMPTY_DOCUMENT, ensureBlockIds, getDocumentSchema, jsonToText, jsonToYDoc, templateJson, withFreshBlockIds,
@@ -903,7 +903,7 @@ export async function templateContentInTx(tx: Tx, userId: string, orgId: string,
   const linked = named.length === 0 ? [] : (await tx.select({ file_id: documentAttachments.file_id }).from(documentAttachments)
     .where(and(eq(documentAttachments.org_id, orgId), eq(documentAttachments.document_id, choice.document_id),
       eq(documentAttachments.in_current, true), inArray(documentAttachments.file_id, named)))).map((row) => row.file_id);
-  const { json } = replaceUnlinkedImages(fresh, new Set(linked));
+  const json = replaceImagesExcept(fresh, new Set(linked));
   return { title: source.title, json, linkFileIds: linked };
 }
 

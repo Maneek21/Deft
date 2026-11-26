@@ -165,7 +165,11 @@ test('a copy links the source images it may share, and the rest become a placeho
   const image = (fileId: string, alt: string) => ({ type: 'image', attrs: { fileId, alt } });
   const source = await fx.insertDocument({
     driveId: sourceDrive, title: 'With images',
-    json: { type: 'doc', content: [image(current, 'kept'), image(removed, 'was removed'), image(unlinked, ''), image('missing-file', 'gone')] } as any,
+    json: { type: 'doc', content: [
+      image(current, 'kept'), image(removed, 'was removed'), image(unlinked, ''), image('missing-file', 'gone'),
+      { type: 'image', attrs: { src: 'https://example.com/a.png', alt: 'external' } },
+      { type: 'image', attrs: { fileId: '', alt: 'empty id' } },
+    ] } as any,
   });
   await markTemplate(source);
   for (const [fileId, inCurrent] of [[current, true], [removed, false]] as const) {
@@ -179,8 +183,11 @@ test('a copy links the source images it may share, and the rest become a placeho
   const nodes = stored.content_json.content as any[];
   assert.equal(nodes[0].type, 'image');
   assert.equal(nodes[0].attrs.fileId, current);
-  assert.deepEqual(nodes.slice(1).map((n) => n.type), ['paragraph', 'paragraph', 'paragraph'], 'the others are placeholders');
-  assert.deepEqual(nodes.slice(1).map((n) => n.content[0].text), ['Image not available: was removed', 'Image not available', 'Image not available: gone']);
+  assert.deepEqual(nodes.slice(1).map((n) => n.type), ['paragraph', 'paragraph', 'paragraph', 'paragraph', 'paragraph'], 'every other image is a placeholder');
+  assert.deepEqual(nodes.slice(1).map((n) => n.content[0].text), [
+    'Image not available: was removed', 'Image not available', 'Image not available: gone',
+    'Image not available: external', 'Image not available: empty id',
+  ], 'a src-only image and an empty fileId included');
   const { rows: links } = await fx.client.query('SELECT file_id, in_current FROM document_attachments WHERE document_id = $1', [copy.id]);
   assert.deepEqual(links, [{ file_id: current, in_current: true }], 'only the shareable image is linked');
   assert.ok(await getVisibleAttachment(current, fx.orgId, member2), 'a reader who can open only the copy loads the image');
