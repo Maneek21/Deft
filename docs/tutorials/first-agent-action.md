@@ -1,12 +1,12 @@
 # Your first approved agent action
 
-For Deft v0.3.0-preview.15.
+For Deft v0.3.0-preview.155.
 
 ## Before you start
 
-Use the `launch-room` space and **Launch pilot** project from [Your first workspace](first-workspace.md). An owner or admin needs to configure a working provider in **Settings → AI**.
+Use the `launch-room` space and **Launch pilot** project from [Your first workspace](first-workspace.md). An owner or admin needs to configure a working provider in **Settings → AI configuration**.
 
-In **Settings → Agent**, choose **Conservative** trust for this exercise. Task creation should wait for review under that policy. This tutorial uses Defty; a personal MCP client writes as its connected user and does not use the same approval queue.
+In chat, Defty proposes a task for your approval at every trust level; the workspace trust level applies only to plans Defty runs in the background. This tutorial uses Defty; a personal MCP client writes as its connected user and does not use the same approval queue.
 
 ## 1. Ask for a specific task
 
@@ -18,13 +18,13 @@ If Defty asks which project or person you mean, select the intended match. It sh
 
 ## 2. Review the proposal
 
-Wait for the approval card. Check the title, project, assignee, due date, and description before choosing **Approve**. Pay attention to the actual calendar date when you used “tomorrow”.
+Wait for the approval card. Check the title, project, assignee, due date, and description before choosing **Create task**. Pay attention to the actual calendar date when you used “tomorrow”.
 
-If something is wrong, reject the proposal and send a corrected request. A pending proposal is not a completed task.
+If something is wrong, choose **Dismiss** and send a corrected request. A pending proposal is not a completed task.
 
 ## 3. Check what changed
 
-Open **Launch pilot** and find **Review the launch announcement**. Confirm its owner, date, and checklist match the approved proposal. Read the completed action or receipt in Deft's activity history and follow the task link when one is shown.
+Open **Launch pilot** and find **Review the launch announcement**. Confirm its owner, date, and checklist match the approved proposal. An owner or admin can read the completed action's receipt under **Settings → Policies & audit** (**View receipt**) and follow the task link when one is shown.
 
 **Success means both are present:** the saved task and the completed action record. A reply saying “done” alone is not enough.
 
@@ -32,15 +32,15 @@ For a recorded example, watch [the task-and-approval chapter](https://youtu.be/7
 
 ## 4. Try rejecting a proposal
 
-Ask Defty to create another task named **Approval practice — reject this**. Reject its card, then check that the task was not created. This gives you a simple check of both outcomes before assigning real work.
+Ask Defty to create another task named **Approval practice — reject this**. Choose **Dismiss** on its card, then check that the task was not created. This gives you a simple check of both outcomes before assigning real work.
 
 ## If it does not work
 
 | What happened | What to check |
 |---|---|
 | No response | Confirm the provider works and Defty was selected from mention autocomplete. |
-| Task appeared without review | Check the workspace trust policy; confirm the request went to Defty rather than a personal MCP client. |
+| Task appeared without review | Confirm the request went to Defty and not to a personal MCP client or an agent employee, which follow their own rules. |
 | Approval exists but no task appears | Check the action status and error details before submitting the request again. |
-| Wrong project or owner | Reject the draft and use the exact project name or person's email in the next request. |
+| Wrong project or owner | Dismiss the draft and use the exact project name or person's email in the next request. |
 
 See [Approval rails](https://deft.ing/docs/approval-rails/) for policy details. To let a personal AI client use the workspace, follow [Connect your first AI client](first-mcp-connection.md).
