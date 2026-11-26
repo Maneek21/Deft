@@ -8,7 +8,7 @@ import { visibleDocumentCondition } from '../lib/document-access.js';
 import { getOrgTimezone, getDayBoundaries } from '../lib/task-dates.js';
 import {readEmailCalendarOccurrences} from '../lib/email-calendar-projection.js';
 import { DocumentRefusal } from '../lib/documents.js';
-import { createMeetingNotes, linkedDocumentsByEvent } from '../lib/meeting-notes.js';
+import { briefCitationsVisibleSql, createMeetingNotes, linkedDocumentsByEvent } from '../lib/meeting-notes.js';
 import { jsonBody, noBodyOrJson } from '../lib/request-body.js';
 
 export const calendarRoutes = new Hono();
@@ -198,6 +198,8 @@ calendarRoutes.get('/briefs', async (c) => {
       eq(meetingBriefs.org_id, user.org_id),
       eq(meetingBriefs.user_id, user.id),
       inArray(meetingBriefs.event_id, eventIds),
+      // A brief that carries an excerpt of meeting notes is hidden once this reader can't open them (M2).
+      briefCitationsVisibleSql(user.id, user.org_id),
     ))
     .orderBy(desc(meetingBriefs.created_at))
     .limit(50);

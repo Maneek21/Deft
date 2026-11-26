@@ -1,5 +1,6 @@
 import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import {
+  automationRuns,
   events,
   meetingBriefs,
   notifications,
@@ -27,6 +28,7 @@ import { createNotificationIfAllowed } from './notification-policy.js';
 import { getActiveOrgMembership } from './org-membership.js';
 import { visibleTaskCondition } from './task-visibility.js';
 import { previousMeetingNotes, type PreviousMeetingNotes } from './meeting-notes.js';
+import { documentRoleFor } from './document-access.js';
 import { emitToUser } from '../socket.js';
 
 type MeetingEvidence = {
@@ -46,6 +48,26 @@ function renderPreviousNotes(notes: PreviousMeetingNotes | null): string {
   if (!notes) return '';
   const lines = notes.excerpt.split('\n').map((line) => line.trim()).filter(Boolean);
   return ['', '', `**Last meeting notes: ${notes.title.trim() || 'Untitled'}**`, ...lines].join('\n');
+}
+
+const DRAFT_SECTIONS = ['agenda', 'decisions', 'updates'] as const;
+
+/** The draft without the items that cite `sourceId` (delivery to a recipient who can no longer open the notes). */
+function draftWithoutSource(draft: MeetingPrepDraft, sourceId: string): MeetingPrepDraft {
+  const kept = (items: MeetingPrepDraft['agenda']) => items.filter((item) => !item.source_ids.includes(sourceId));
+  return { agenda: kept(draft.agenda), decisions: kept(draft.decisions), updates: kept(draft.updates) };
+}
+
+/**
+ * The draft as the run details keep it once the notes were evidence (rule
+ * C4, M2): an item that cites them may quote them, so it is stored as
+ * `{ document_id, content_omitted: true }`, never with its text.
+ */
+function draftForStorage(draft: MeetingPrepDraft, notes: PreviousMeetingNotes | null): Record<string, unknown> {
+  if (!notes) return draft;
+  const sourceId = `document:${notes.id}`;
+  return Object.fromEntries(DRAFT_SECTIONS.map((section) => [section, draft[section].map((item) => (
+    item.source_ids.includes(sourceId) ? { document_id: notes.id, content_omitted: true } : item))]));
 }
 
 type Attendee = { email: string; displayName?: string };
@@ -307,13 +329,11 @@ export async function generateMeetingPrep(eventId: string, now = new Date()) {
     if (notes) {
       evidence.push({ source_id: `document:${notes.id}`, kind: 'document', text: `Notes from the last meeting, "${notes.title}": ${notes.excerpt}` });
     }
-    const citations: MeetingPrepCitation[] = notes ? [{ type: 'document', id: notes.id, title: notes.title }] : [];
     const synthesis = await synthesizeMeetingPrep(meeting.org_id, meeting.org_name, meeting.user_id, evidence);
-    const briefText = renderMeetingPrepDraft(meeting.title || 'Upcoming meeting', synthesis.draft) + renderPreviousNotes(notes);
     // The brief is stored only while the recipient's active membership row is
     // held, so a removal cannot commit between the check and the write. Rows
     // are locked user first, then membership, the same order member removal uses.
-    const brief = await db.transaction(async (tx) => {
+    const delivery = await db.transaction(async (tx) => {
       await tx.select({ id: users.id }).from(users).where(eq(users.id, recipientId)).for('key share');
       const [membership] = await tx.select({ id: orgMembers.id }).from(orgMembers).where(and(
         eq(orgMembers.org_id, meeting.org_id),
@@ -321,6 +341,13 @@ export async function generateMeetingPrep(eventId: string, now = new Date()) {
         eq(orgMembers.is_active, true),
       )).for('share');
       if (!membership) return null;
+      // The notes are read again for the recipient after synthesis, just before
+      // delivery (M2): one who lost them meanwhile gets the briefing without
+      // their excerpt, their citation or any item that cites them.
+      const cited = notes !== null && await documentRoleFor(recipientId, meeting.org_id, notes.id, tx) !== null;
+      const draft = notes && !cited ? draftWithoutSource(synthesis.draft, `document:${notes.id}`) : synthesis.draft;
+      const briefText = renderMeetingPrepDraft(meeting.title || 'Upcoming meeting', draft) + (cited ? renderPreviousNotes(notes) : '');
+      const citations: MeetingPrepCitation[] = cited ? [{ type: 'document', id: notes!.id, title: notes!.title }] : [];
       const [row] = await tx.insert(meetingBriefs).values({
         org_id: meeting.org_id,
         user_id: recipientId,
@@ -332,9 +359,14 @@ export async function generateMeetingPrep(eventId: string, now = new Date()) {
         setWhere: eq(meetingBriefs.org_id, meeting.org_id),
       }).returning();
       if (!row) throw new Error('Meeting brief for this event belongs to another workspace');
-      return row;
+      // Written with the brief: GET /api/calendar/briefs hides a brief whose
+      // cited notes its reader can no longer open (briefCitationsVisibleSql).
+      await tx.update(automationRuns).set({ result_entity_id: row.id, generator: synthesis.generator, output: { citations } })
+        .where(eq(automationRuns.id, claim.run.id));
+      return { brief: row, briefText, citations };
     });
-    if (!brief || !await getActiveOrgMembership(meeting.org_id, recipientId)) {
+    const brief = delivery?.brief ?? null;
+    if (!delivery || !brief || !await getActiveOrgMembership(meeting.org_id, recipientId)) {
       await failAutomationRun(claim.run.id, 'recipient_not_active');
       return notActive;
     }
@@ -346,6 +378,7 @@ export async function generateMeetingPrep(eventId: string, now = new Date()) {
       eq(notifications.user_id, meeting.user_id),
       sql`${notifications.metadata}->>'automation_run_id' = ${claim.run.id}`,
     )).limit(1);
+    const { briefText, citations } = delivery;
     const notification = alreadyNotified ? null : await createNotificationIfAllowed({
       org_id: meeting.org_id,
       user_id: meeting.user_id,
@@ -353,7 +386,13 @@ export async function generateMeetingPrep(eventId: string, now = new Date()) {
       title: `Meeting prep: ${meeting.title || 'Upcoming meeting'}`,
       body: briefText,
       link: '/calendar',
-      metadata: { event_id: meeting.id, automation_run_id: claim.run.id, generator: synthesis.generator, citations },
+      // A cited document is named as `document_id`, so the notification is
+      // listed and counted only while the recipient can open it (F9's rule,
+      // nativeNotificationAccessSql).
+      metadata: {
+        event_id: meeting.id, automation_run_id: claim.run.id, generator: synthesis.generator, citations,
+        ...(citations[0] ? { document_id: citations[0].id } : {}),
+      },
     }, { channel: 'calendar' });
     if (notification) emitToUser(notification.org_id, meeting.user_id, 'notification:new', notification);
     emitToUser(meeting.org_id, meeting.user_id, 'meeting-brief:new', {
@@ -367,8 +406,14 @@ export async function generateMeetingPrep(eventId: string, now = new Date()) {
     const run = await updateAutomationRun(claim.run.id, {
       status: 'delivered',
       generator: synthesis.generator,
-      // Run details carry the notes by reference only (rule C4): the document's text stays out.
-      output: { draft: synthesis.draft, evidence: evidence.filter((item) => item.kind !== 'document'), model: synthesis.model, citations },
+      // Run details carry the notes by reference only (rule C4): neither the
+      // notes' text nor a draft item that cites them is kept.
+      output: {
+        draft: draftForStorage(synthesis.draft, notes),
+        evidence: evidence.filter((item) => item.kind !== 'document'),
+        model: synthesis.model,
+        citations,
+      },
       resultEntityId: brief.id,
       completedAt: new Date(),
     });

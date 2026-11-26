@@ -20,14 +20,28 @@ import { closeDb } from '../src/lib/db.js';
 import { setupDrivesFixture, type DrivesFixture } from './fixtures/drives-fixture.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 
-// No model configured: the briefing is written from the evidence alone, with no model call.
+// By default no model is configured: the briefing is written from the evidence alone, with no model call.
+// A test sets `modelReply` to script the model's answer, and `duringSynthesis` to act while the briefing is written.
+let modelReply: string | null = null;
+let duringSynthesis: (() => Promise<void>) | null = null;
 const actualAiConfig = await import('../src/lib/org-ai-config.js');
 mock.module(new URL('../src/lib/org-ai-config.ts', import.meta.url).href, { namedExports: {
   ...actualAiConfig,
-  resolveReasonProvider: async () => ({ provider: 'anthropic', model: 'test-model', apiKey: '' }),
+  resolveReasonProvider: async () => {
+    if (duringSynthesis) await duringSynthesis();
+    return { provider: 'anthropic', model: 'test-model', apiKey: modelReply === null ? '' : 'test-key' };
+  },
+} });
+const actualRunner = await import('../src/lib/agent-runner.js');
+mock.module(new URL('../src/lib/agent-runner.ts', import.meta.url).href, { namedExports: {
+  ...actualRunner,
+  runAgentQuery: async () => ({ text: modelReply ?? '', model: 'test-model' }),
 } });
 const { calendarRoutes } = await import('../src/routes/calendar.js');
+const { documentRoutes } = await import('../src/routes/documents.js');
+const { notificationRoutes } = await import('../src/routes/notifications.js');
 const { generateMeetingPrep } = await import('../src/lib/meeting-prep-automation.js');
+const { canSeePerson, peopleViewer, visiblePersonIds } = await import('../src/lib/people-visibility.js');
 
 const url = safeTestDatabaseUrl();
 const SKIP = 'Set DEFT_TEST_DATABASE_URL to a disposable test database';
@@ -37,8 +51,24 @@ let fx: DrivesFixture | undefined;
 
 before(async () => {
   if (!url) return;
-  fx = await setupDrivesFixture('event-links', { routes: [{ path: '/api/calendar', app: calendarRoutes }] });
+  fx = await setupDrivesFixture('event-links', { routes: [
+    { path: '/api/calendar', app: calendarRoutes },
+    { path: '/api/documents', app: documentRoutes },
+    { path: '/api/notifications', app: notificationRoutes },
+  ] });
 });
+
+/** Runs `body` with a scripted model answer and/or an action during synthesis, then restores the defaults. */
+async function withModel<T>(reply: string | null, during: (() => Promise<void>) | null, body: () => Promise<T>): Promise<T> {
+  modelReply = reply;
+  duringSynthesis = during;
+  try {
+    return await body();
+  } finally {
+    modelReply = null;
+    duringSynthesis = null;
+  }
+}
 
 after(async () => {
   try {
@@ -237,4 +267,174 @@ test("the meeting-prep briefing cites the last linked notes the recipient can op
   const second = await generateMeetingPrep(next) as any;
   assert.deepEqual(second.citations, [{ type: 'document', id: hidden, title: 'Design review notes (private)' }]);
   assert.match(second.brief.brief_text, /SECRET-PLAN/);
+});
+
+// ── Fix round 1 ──
+
+test('a long event title is kept whole while the title fits 500 characters, and cut with … past it', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member } = fx.people;
+  await fx.client.query(`UPDATE orgs SET timezone = 'UTC' WHERE id = $1`, [fx.orgId]);
+  const whole = 'W'.repeat(469) + 'Z';
+  const fits = await insertEvent(member, whole, new Date('2026-12-14T10:00:00Z'));
+  const kept = (await call(member, 'POST', `/api/calendar/events/${fits}/document`, {}, 201)).document;
+  assert.equal(kept.title, `${whole} — 14 Dec 2026`, 'a 470-character title is kept whole');
+  assert.ok(kept.title.length <= 500);
+  const long = 'L'.repeat(600);
+  const over = await insertEvent(member, long, new Date('2026-12-14T10:00:00Z'));
+  const cut = (await call(member, 'POST', `/api/calendar/events/${over}/document`, {}, 201)).document;
+  assert.equal(cut.title.length, 500, 'the title fits the 500-character limit exactly');
+  assert.ok(cut.title.endsWith('… — 14 Dec 2026'));
+  assert.equal(cut.title, `${'L'.repeat(500 - ' — 14 Dec 2026'.length - 1)}… — 14 Dec 2026`);
+  // The cut title can be saved again unchanged (PATCH refuses more than 500 characters).
+  await call(member, 'PATCH', `/api/documents/${cut.id}`, { title: cut.title }, 200);
+});
+
+test('an attendee address that matches a workspace person in any letter case is theirs: shown by name, or left out, never as an outside attendee', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { guest, member } = fx.people;
+  // Not in any chat with the guest: hidden from them by people-visibility.
+  const hidden = await fx.addPerson({ role: 'member' });
+  await fx.client.query(`UPDATE users SET email = upper(email), name = 'SECRET-HIDDEN-ATTENDEE' WHERE id = $1`, [hidden]);
+  const former = await fx.addPerson({ role: 'member', active: false });
+  await fx.client.query(`UPDATE users SET name = 'FORMER-MEMBER' WHERE id = $1`, [former]);
+  const guestView = await peopleViewer(fx.orgId, guest);
+  assert.equal(canSeePerson(await visiblePersonIds(guestView), hidden), false, 'people-visibility hides them from the guest');
+  // The member shares a chat with the guest; their stored address is upper case too.
+  await fx.client.query(`UPDATE users SET email = upper(email) WHERE id = $1`, [member]);
+  try {
+    const guestDrive = await fx.insertDrive({ kind: 'private' });
+    await fx.addDriveMember(guestDrive, { user: guest }, 'edit');
+    const event = await insertEvent(guest, 'Case check', new Date('2026-12-15T10:00:00Z'), {
+      attendees: [
+        { email: (await emailOf(hidden)).toLowerCase(), displayName: 'SECRET-HIDDEN-ATTENDEE' },
+        { email: (await emailOf(member)).toLowerCase(), displayName: 'Calendar name' },
+        { email: (await emailOf(former)).toLowerCase(), displayName: 'FORMER-MEMBER' },
+        { email: 'outside@example.com', displayName: 'Outside Person' },
+      ],
+    });
+    const created = (await call(guest, 'POST', `/api/calendar/events/${event}/document`, { drive_id: guestDrive }, 201)).document;
+    const notes = await stored(created.id);
+    assert.deepEqual(notes.attendees, ['member', 'Outside Person'],
+      'the visible member by name; the hidden person and the former member left out; only the outside address as given');
+    assert.doesNotMatch(JSON.stringify(notes.content_json), /SECRET-HIDDEN-ATTENDEE|FORMER-MEMBER/);
+  } finally {
+    await fx.client.query(`UPDATE users SET email = lower(email) WHERE id = $1`, [member]);
+  }
+});
+
+/** Notes in a private drive that member2 manages, linked to an earlier "title" meeting, and the recipient's next one. */
+async function notesForNextMeeting(title: string, notesTitle: string, text: string, minutesAhead: number) {
+  const { member, member2 } = fx!.people;
+  const now = Date.now();
+  const drive = await fx!.insertDrive({ kind: 'private' });
+  await fx!.addDriveMember(drive, { user: member2 }, 'full');
+  const notes = await fx!.insertDocument({ driveId: drive, title: notesTitle, json: paragraph(text) as any });
+  const earlier = await insertEvent(member2, title, new Date(now - 7 * DAY));
+  await link(earlier, notes, member2);
+  const meeting = await insertEvent(member, title, new Date(now + minutesAhead * 60_000));
+  return { notes, meeting };
+}
+
+async function briefingNotification(meeting: string) {
+  const { rows } = await fx!.client.query(`SELECT body, metadata FROM notifications
+    WHERE org_id = $1 AND user_id = $2 AND metadata->>'event_id' = $3`, [fx!.orgId, fx!.people.member, meeting]);
+  assert.equal(rows.length, 1);
+  return rows[0] as { body: string; metadata: Record<string, unknown> };
+}
+
+async function storedRun(meeting: string) {
+  const { rows: [run] } = await fx!.client.query(`SELECT output FROM automation_runs
+    WHERE org_id = $1 AND user_id = $2 AND kind = 'meeting_prep' AND subject_id = $3`, [fx!.orgId, fx!.people.member, meeting]);
+  return run.output as Record<string, any>;
+}
+
+test('a briefing that cites notes is hidden once the recipient loses them: the notifications list, the unread count and the saved brief', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member, member2 } = fx.people;
+  const { notes, meeting } = await notesForNextMeeting('Board sync', 'Board sync notes', 'REVOKE-EXCERPT next steps for the board', 30);
+  const { share } = await call(member2, 'POST', `/api/documents/${notes}/shares`, { principal_type: 'user', principal_id: member, role: 'view' }, 201);
+
+  const result = await generateMeetingPrep(meeting) as any;
+  assert.deepEqual(result.citations, [{ type: 'document', id: notes, title: 'Board sync notes' }]);
+  const delivered = await briefingNotification(meeting);
+  assert.equal(delivered.metadata.document_id, notes, 'the notification names the cited document');
+  assert.match(delivered.body, /REVOKE-EXCERPT/);
+
+  const inbox = async () => call(member, 'GET', '/api/notifications', undefined, 200);
+  const briefs = async () => (await call(member, 'GET', `/api/calendar/briefs?event_ids=${meeting}`, undefined, 200)).briefs as any[];
+  const before = await inbox();
+  assert.ok(before.notifications.some((n: any) => n.metadata?.event_id === meeting), 'listed while the recipient can open the notes');
+  const namingNotes = before.notifications.filter((n: any) => n.metadata?.document_id === notes && !n.is_read).length;
+  assert.ok(namingNotes >= 1);
+  assert.equal((await briefs()).length, 1);
+  assert.match(JSON.stringify(await briefs()), /REVOKE-EXCERPT/);
+
+  // The share is removed the way the product removes it; the recipient can no longer open the notes.
+  await call(member2, 'DELETE', `/api/documents/${notes}/shares/${share.id}`, undefined, 200);
+  await call(member, 'GET', `/api/documents/${notes}`, undefined, 404);
+
+  const after = await inbox();
+  assert.ok(!after.notifications.some((n: any) => n.metadata?.event_id === meeting), 'not listed');
+  assert.equal(after.unread_count, before.unread_count - namingNotes, 'not counted');
+  const saved = await briefs();
+  assert.deepEqual(saved, [], 'the saved brief is hidden');
+  assert.doesNotMatch(JSON.stringify(saved), /REVOKE-EXCERPT|Board sync notes/);
+});
+
+test('notes the recipient loses while the briefing is written are left out of it: no excerpt, citation or item that cites them', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member } = fx.people;
+  const { notes, meeting } = await notesForNextMeeting('Retro', 'Retro notes', 'DELAYED-EXCERPT from the last retro', 35);
+  await fx.share(notes, { user: member }, 'view');
+  const reply = JSON.stringify({
+    agenda: [
+      { text: 'Delayed echo of the old notes', source_ids: [`document:${notes}`] },
+      { text: 'Plan the retro', source_ids: [`event:${meeting}`] },
+    ],
+    decisions: [],
+    updates: [],
+  });
+  const revoke = async () => {
+    await fx!.client.query(`DELETE FROM document_shares WHERE document_id = $1 AND principal_type = 'user' AND principal_id = $2`, [notes, member]);
+  };
+  const result = await withModel(reply, revoke, () => generateMeetingPrep(meeting)) as any;
+
+  assert.deepEqual(result.citations, []);
+  const text: string = result.brief.brief_text;
+  assert.match(text, /Plan the retro/, 'the rest of the briefing is delivered');
+  assert.doesNotMatch(text, /DELAYED-EXCERPT|Retro notes|Delayed echo/);
+  const delivered = await briefingNotification(meeting);
+  assert.equal(delivered.metadata.document_id, undefined);
+  assert.deepEqual(delivered.metadata.citations, []);
+  assert.doesNotMatch(delivered.body, /DELAYED-EXCERPT|Delayed echo/);
+  const output = await storedRun(meeting);
+  assert.deepEqual(output.citations, []);
+  assert.doesNotMatch(JSON.stringify(output), /DELAYED-EXCERPT|Delayed echo/);
+});
+
+test('the stored run details keep no text from the notes when the model quotes them', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member } = fx.people;
+  const { notes, meeting } = await notesForNextMeeting('Quarterly plan', 'Quarterly plan notes', 'Quoted zebra marker kept for the record', 40);
+  await fx.share(notes, { user: member }, 'view');
+  const reply = JSON.stringify({
+    agenda: [
+      { text: 'Quoted zebra marker kept for the record', source_ids: [`document:${notes}`] },
+      { text: 'Review the plan together', source_ids: [`event:${meeting}`] },
+    ],
+    decisions: [],
+    updates: [],
+  });
+  const result = await withModel(reply, null, () => generateMeetingPrep(meeting)) as any;
+
+  assert.equal(result.run.generator, 'agent');
+  assert.match(result.brief.brief_text, /Quoted zebra marker/, 'the recipient, who can open the notes, reads the quote');
+  const output = await storedRun(meeting);
+  assert.doesNotMatch(JSON.stringify(output), /zebra/i, 'not in the stored run details');
+  assert.deepEqual(output.draft.agenda, [
+    { document_id: notes, content_omitted: true },
+    { text: 'Review the plan together', source_ids: [`event:${meeting}`] },
+  ]);
+  assert.deepEqual(output.citations, [{ type: 'document', id: notes, title: 'Quarterly plan notes' }]);
 });

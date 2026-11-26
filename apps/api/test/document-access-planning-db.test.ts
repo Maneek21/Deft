@@ -19,7 +19,7 @@ import test, { after, before, type TestContext } from 'node:test';
 import { and, desc, eq, ilike, or, sql, type SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { documents, drives } from '@deft/db/documents';
-import { attentionItems, notifications } from '@deft/db/schema';
+import { attentionItems, meetingBriefs, notifications } from '@deft/db/schema';
 import { visibleAttentionCondition } from '../src/lib/attention.js';
 import { nativeNotificationAccessSql } from '../src/lib/native-mention-visibility.js';
 import { closeDb, db } from '../src/lib/db.js';
@@ -39,7 +39,7 @@ import { visibleFilesSql } from '../src/lib/workspace-export/attachments.js';
 import { DRIVES_DOCUMENTS, documentMarkdownQuery } from '../src/lib/workspace-export/datasets-documents.js';
 import type { ExportContext } from '../src/lib/workspace-export/scope.js';
 import { driveListQuery, drivesWithoutManagerQuery } from '../src/lib/drives.js';
-import { linkedDocumentsQuery, previousMeetingNotesQuery } from '../src/lib/meeting-notes.js';
+import { briefCitationsVisibleSql, linkedDocumentsQuery, previousMeetingNotesQuery } from '../src/lib/meeting-notes.js';
 import { setupDrivesFixture, type DrivesFixture } from './fixtures/drives-fixture.js';
 import { planningGrowth, type Growth } from './fixtures/planning-growth.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
@@ -176,6 +176,9 @@ test('the meeting notes forms plan within budget (M2)', async (t) => {
       ['calendar linked documents', linkedDocumentsQuery(member, fx.orgId, eventIds).toSQL()],
       // The meeting-prep briefing's last notes, held to the recipient's access.
       ['meeting-prep last notes', previousMeetingNotesQuery(meeting, 'Weekly sync', member).toSQL()],
+      // GET /api/calendar/briefs: each brief held to the notes it cites (fix round 1).
+      ['meeting briefs, held to their cited notes', db.select({ id: meetingBriefs.id }).from(meetingBriefs)
+        .where(and(eq(meetingBriefs.org_id, fx.orgId), briefCitationsVisibleSql(member, fx.orgId))).limit(50).toSQL()],
     ];
   });
 });

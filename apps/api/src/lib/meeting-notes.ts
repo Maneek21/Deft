@@ -8,14 +8,18 @@
 //   document is created by createDocumentInTx, so the template content is
 //   stored by the one create path (rule C2).
 // - The title is "{event title} — {d MMM yyyy}": the event's own start date
-//   in the workspace's time zone (orgs.timezone), and an all-day event's date
-//   as it is stored (UTC midnight).
+//   in the workspace's time zone (orgs.timezone). An all-day event is a
+//   calendar date, stored as UTC midnight, so its date is read in UTC: a
+//   time zone west of UTC would turn it into the day before. The whole title
+//   fits documents' 500-character title limit; a longer event title ends
+//   with "…".
 // - Under Attendees go the names of the attendees the caller can see (rule
-//   C4, people-visibility): a workspace person is listed only when the
-//   caller's people view shows them; someone hidden is left out, never shown
-//   by their email instead. An attendee who is not an active person of the
-//   workspace is listed by the name the calendar gives, else their address,
-//   as the caller's own event shows them.
+//   C4, people-visibility). An address that matches a workspace person
+//   (any org_members row, compared without case) is theirs: listed by name
+//   when the caller's people view shows them as an active person, else left
+//   out, and never shown as an outside attendee. Only an address that matches
+//   no workspace person is listed as the invitation names it (its display
+//   name, else the address).
 // - The calendar shows each event's linked documents that the viewer can open
 //   (visibleDocumentCondition), in one IN (...) query.
 // - The meeting-prep briefing cites the most recent document linked to an
@@ -23,8 +27,8 @@
 //   that the briefing's recipient can open (visibleDocumentIdSql for the
 //   recipient, never the link's creator), with up to 1,500 characters of its
 //   current content.
-import { and, asc, desc, eq, inArray, lt, ne, sql } from 'drizzle-orm';
-import { events, orgMembers, users } from '@deft/db/schema';
+import { and, asc, desc, eq, inArray, lt, ne, sql, type SQL } from 'drizzle-orm';
+import { automationRuns, events, meetingBriefs, orgMembers, users } from '@deft/db/schema';
 import { documentEventLinks, documents } from '@deft/db/documents';
 import { jsonToText } from '@deft/doc-schema';
 import { db } from './db.js';
@@ -45,20 +49,39 @@ export const MEETING_NOTES_EXCERPT_CHARS = 1500;
 /** At most this many attendees are listed. */
 const MAX_ATTENDEES = 100;
 const MAX_NAME_CHARS = 200;
-/** Leaves room for the date within the 500-character title limit. */
-const MAX_TITLE_CHARS = 450;
+/**
+ * A document title's limit: POST and PATCH /api/documents refuse a longer one
+ * (routes/documents.ts, titleSchema, F5). The column itself has no limit.
+ */
+export const DOCUMENT_TITLE_MAX = 500;
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
 
 const eventNotFound = () => new DocumentRefusal(404, 'NOT_FOUND', 'Event not found');
 
-/** "{event title} — {d MMM yyyy}", dated in `timeZone`; an all-day event keeps its stored (UTC) date. */
+/**
+ * "{event title} — {d MMM yyyy}", dated in `timeZone`. An all-day event is a
+ * calendar date stored as UTC midnight, so it is dated in UTC: converting it
+ * through the workspace's time zone would shift it a day west of UTC. The
+ * event title is kept whole while the title fits DOCUMENT_TITLE_MAX;
+ * otherwise it is cut to fit and ends with "…".
+ */
 export function meetingNotesTitle(eventTitle: string | null, start: Date, timeZone: string, allDay = false): string {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: allDay ? 'UTC' : timeZone, year: 'numeric', month: 'numeric', day: 'numeric',
   }).formatToParts(start);
   const part = (type: 'day' | 'month' | 'year') => Number(parts.find((p) => p.type === type)?.value);
-  const name = (eventTitle ?? '').trim().slice(0, MAX_TITLE_CHARS) || 'Meeting';
-  return `${name} — ${part('day')} ${MONTHS[part('month') - 1]} ${part('year')}`;
+  const suffix = ` — ${part('day')} ${MONTHS[part('month') - 1]} ${part('year')}`;
+  const name = (eventTitle ?? '').trim() || 'Meeting';
+  const room = DOCUMENT_TITLE_MAX - suffix.length;
+  return `${name.length <= room ? name : `${cutAt(name, room - 1).trimEnd()}…`}${suffix}`;
+}
+
+/** The first `length` UTF-16 units of `text`, never ending inside a surrogate pair. */
+function cutAt(text: string, length: number): string {
+  if (text.length <= length) return text;
+  const cut = text.slice(0, length);
+  const last = cut.charCodeAt(cut.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
 }
 
 type Attendee = { email: string; name: string | null };
@@ -83,25 +106,31 @@ export function eventAttendees(metadata: unknown): Attendee[] {
 }
 
 /**
- * The names to list under Attendees for `viewer`, in the event's order. A
- * workspace person (an active member whose address matches) is listed by
- * their name only when the viewer may see them; a hidden one is left out.
- * Anyone else is listed as the calendar names them.
+ * The names to list under Attendees for `viewer`, in the event's order.
+ * Addresses are matched to the workspace's people without case (any
+ * org_members row, active or not). A match is listed by the person's name
+ * only when every person it matches is an active member the viewer may see
+ * (people-visibility); otherwise it is left out, never shown as an outside
+ * attendee. Only an address that matches no workspace person is listed as
+ * the invitation names it.
  */
 export async function visibleAttendeeNames(reader: Reader, viewer: PeopleViewer, attendees: Attendee[]): Promise<string[]> {
   if (attendees.length === 0) return [];
   const people = await reader.select({
-    email: users.email,
+    email: sql<string>`lower(${users.email})`,
     name: users.name,
-    visible: sql<boolean>`${personVisibleSql(viewer, users.id)}`,
+    shown: sql<boolean>`(${orgMembers.is_active} AND ${personVisibleSql(viewer, users.id)})`,
   }).from(users)
-    .innerJoin(orgMembers, and(eq(orgMembers.user_id, users.id), eq(orgMembers.org_id, viewer.orgId), eq(orgMembers.is_active, true)))
-    .where(inArray(users.email, attendees.map((attendee) => attendee.email)));
-  const byEmail = new Map(people.map((person) => [(person.email ?? '').trim().toLowerCase(), person]));
+    .innerJoin(orgMembers, and(eq(orgMembers.user_id, users.id), eq(orgMembers.org_id, viewer.orgId)))
+    .where(inArray(sql`lower(${users.email})`, attendees.map((attendee) => attendee.email)));
+  const byEmail = new Map<string, Array<{ name: string; shown: boolean }>>();
+  for (const person of people) byEmail.set(person.email, [...(byEmail.get(person.email) ?? []), person]);
   const names: string[] = [];
   for (const attendee of attendees) {
-    const person = byEmail.get(attendee.email);
-    const name = person ? (person.visible === true ? (person.name.trim() || attendee.name) : null) : (attendee.name ?? attendee.email);
+    const matches = byEmail.get(attendee.email);
+    const name = matches
+      ? (matches.every((person) => person.shown === true) ? (matches[0]!.name.trim() || null) : null)
+      : (attendee.name ?? attendee.email);
     if (name) names.push(name.slice(0, MAX_NAME_CHARS));
   }
   return names;
@@ -236,8 +265,22 @@ export async function previousMeetingNotes(meeting: MeetingForNotes, recipientId
 
 /** The first MEETING_NOTES_EXCERPT_CHARS characters, never ending inside a surrogate pair. */
 function excerptOf(text: string): string {
-  if (text.length <= MEETING_NOTES_EXCERPT_CHARS) return text;
-  const cut = text.slice(0, MEETING_NOTES_EXCERPT_CHARS);
-  const last = cut.charCodeAt(cut.length - 1);
-  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
+  return cutAt(text, MEETING_NOTES_EXCERPT_CHARS);
+}
+
+/**
+ * For a query over meeting_briefs (GET /api/calendar/briefs): false when the
+ * brief's latest meeting-prep run cites a document `userId` can't open now,
+ * so a brief that carries an excerpt of notes is hidden once its reader loses
+ * them (the citations are written with the brief, in its transaction).
+ */
+export function briefCitationsVisibleSql(userId: string, orgId: string): SQL {
+  const citations = sql`COALESCE((SELECT CASE WHEN jsonb_typeof(brief_run.output->'citations') = 'array'
+      THEN brief_run.output->'citations' END
+    FROM ${automationRuns} brief_run
+    WHERE brief_run.result_entity_id = ${meetingBriefs.id} AND brief_run.org_id = ${meetingBriefs.org_id}
+    ORDER BY brief_run.updated_at DESC LIMIT 1), '[]'::jsonb)`;
+  return sql`NOT EXISTS (SELECT 1 FROM jsonb_array_elements(${citations}) AS brief_cited(value)
+    WHERE brief_cited.value->>'type' = 'document'
+      AND NOT ${visibleDocumentIdSql(userId, orgId, sql`(brief_cited.value->>'id')`)})`;
 }
