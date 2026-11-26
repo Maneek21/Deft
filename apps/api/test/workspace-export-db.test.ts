@@ -1128,3 +1128,427 @@ test('attachments: a stored file whose name the uploads file system refuses is r
     await client.query('DELETE FROM files WHERE id = $1', [fileId]);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Drives and documents (F17): the DRIVES_DOCUMENTS datasets, documents/<id>.md,
+// history only for editors, and deletion reaching a moved note's old row as
+// well as its document. Every test seeds its own rows in workspace A and
+// removes them afterwards.
+
+type DocJson = { type: string; attrs?: Record<string, unknown>; content?: DocJson[]; text?: string };
+type Principal = { user?: string; space?: string };
+
+const paragraph = (text: string): DocJson => ({ type: 'paragraph', content: [{ type: 'text', text }] });
+const docOf = (...blocks: Array<string | DocJson>): DocJson => ({ type: 'doc', content: blocks.map((block) => (typeof block === 'string' ? paragraph(block) : block)) });
+const principalOf = (p: Principal) => (p.user ? ['user', p.user] : ['space', p.space!]);
+
+/** Drives, folders and documents with what hangs off them, in workspace A; `remove` deletes them, children first. */
+class DocumentRows {
+  readonly drives: string[] = [];
+  readonly documents: string[] = [];
+  readonly files: string[] = [];
+  readonly notes: string[] = [];
+
+  async drive(name: string, kind: 'open' | 'private' | 'personal', extra: { owner?: string; defaultRole?: string; deleted?: boolean } = {}): Promise<string> {
+    const id = randomUUID();
+    await client.query(`INSERT INTO drives (id, org_id, name, kind, owner_user_id, default_role, created_by, is_deleted, deleted_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CASE WHEN $8 THEN now() END)`,
+    [id, world.a.orgId, name, kind, extra.owner ?? null, extra.defaultRole ?? null, extra.owner ?? world.a.owner, extra.deleted ?? false]);
+    this.drives.push(id);
+    return id;
+  }
+
+  async member(driveId: string, principal: Principal, role: string): Promise<void> {
+    const [type, id] = principalOf(principal);
+    await client.query(`INSERT INTO drive_members (id, org_id, drive_id, principal_type, principal_id, role, added_by)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)`, [randomUUID(), world.a.orgId, driveId, type, id, role, world.a.owner]);
+  }
+
+  async folder(driveId: string, name: string, extra: { deleted?: boolean } = {}): Promise<string> {
+    const id = randomUUID();
+    await client.query(`INSERT INTO doc_folders (id, org_id, drive_id, name, created_by, is_deleted, deleted_at)
+      VALUES ($1, $2, $3, $4, $5, $6, CASE WHEN $6 THEN now() END)`, [id, world.a.orgId, driveId, name, world.a.owner, extra.deleted ?? false]);
+    return id;
+  }
+
+  /** A document whose live state (`ydoc_state`) is set, so the export can be seen to leave it out. */
+  async document(driveId: string, title: string, json: DocJson, extra: { folder?: string; parent?: string; deleted?: boolean; createdBy?: string } = {}): Promise<string> {
+    const id = randomUUID();
+    await client.query(`INSERT INTO documents (id, org_id, drive_id, folder_id, parent_document_id, title, content_json, content_text, ydoc_state,
+        created_by, last_edited_by, last_edited_at, is_deleted, deleted_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, '\\x0102'::bytea, $9, $9, now(), $10, CASE WHEN $10 THEN now() END)`,
+    [id, world.a.orgId, driveId, extra.folder ?? null, extra.parent ?? null, title, JSON.stringify(json), title,
+      extra.createdBy ?? world.a.member, extra.deleted ?? false]);
+    this.documents.push(id);
+    return id;
+  }
+
+  async share(documentId: string, principal: Principal, role: 'edit' | 'comment' | 'view'): Promise<void> {
+    const [type, id] = principalOf(principal);
+    await client.query(`INSERT INTO document_shares (id, org_id, document_id, principal_type, principal_id, role, shared_by)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)`, [randomUUID(), world.a.orgId, documentId, type, id, role, world.a.owner]);
+  }
+
+  async version(documentId: string, kind: string, json: DocJson, extra: { name?: string; createdBy?: string } = {}): Promise<string> {
+    const id = randomUUID();
+    await client.query(`INSERT INTO document_versions (id, org_id, document_id, kind, name, title, content_json, size_bytes, created_by)
+      VALUES ($1, $2, $3, $4, $5, 'version title', $6::jsonb, $7, $8)`,
+    [id, world.a.orgId, documentId, kind, extra.name ?? null, JSON.stringify(json), JSON.stringify(json).length, extra.createdBy ?? world.a.member]);
+    return id;
+  }
+
+  /** A file of workspace A that `documentId` uses, with real bytes; uploaded by `other`. */
+  async image(documentId: string, inCurrent: boolean): Promise<string> {
+    const fileId = randomUUID();
+    const bytes = Buffer.from(`document image ${fileId}`);
+    await writeFile(join(world.uploadsDir, `${fileId}.bin`), bytes);
+    await client.query(`INSERT INTO files (id, org_id, uploaded_by, filename, mime_type, size_bytes, storage_key, content_sha256)
+      VALUES ($1, $2, $3, 'picture.png', 'image/png', $4, $5, $6)`,
+    [fileId, world.a.orgId, world.a.other, bytes.length, `${fileId}.bin`, `sha256:${createHash('sha256').update(bytes).digest('hex')}`]);
+    await client.query(`INSERT INTO document_attachments (id, org_id, document_id, file_id, in_current, added_by)
+      VALUES ($1, $2, $3, $4, $5, $6)`, [randomUUID(), world.a.orgId, documentId, fileId, inCurrent, world.a.other]);
+    this.files.push(fileId);
+    return fileId;
+  }
+
+  async remove(): Promise<void> {
+    const { orgId } = world.a;
+    for (const [statement, ids] of [
+      ['DELETE FROM note_document_map WHERE org_id = $1 AND (target_id = ANY($2::text[]) OR source_id = ANY($3::text[]))', [this.documents, this.notes]],
+      ['DELETE FROM document_attachments WHERE org_id = $1 AND document_id = ANY($2::text[])', [this.documents]],
+      ['DELETE FROM files WHERE org_id = $1 AND id = ANY($2::text[])', [this.files]],
+      ['DELETE FROM document_versions WHERE org_id = $1 AND document_id = ANY($2::text[])', [this.documents]],
+      ['DELETE FROM document_shares WHERE org_id = $1 AND document_id = ANY($2::text[])', [this.documents]],
+      ['DELETE FROM doc_favorites WHERE org_id = $1 AND target_id = ANY($2::text[])', [this.documents]],
+      ['DELETE FROM documents WHERE org_id = $1 AND id = ANY($2::text[])', [this.documents]],
+      ['DELETE FROM doc_folders WHERE org_id = $1 AND drive_id = ANY($2::text[])', [this.drives]],
+      ['DELETE FROM drive_members WHERE org_id = $1 AND drive_id = ANY($2::text[])', [this.drives]],
+      ['DELETE FROM drives WHERE org_id = $1 AND id = ANY($2::text[])', [this.drives]],
+      ['DELETE FROM note_shares WHERE note_id = ANY($2::text[]) AND $1::text IS NOT NULL', [this.notes]],
+      ['DELETE FROM notes WHERE org_id = $1 AND id = ANY($2::text[])', [this.notes]],
+    ] as const) {
+      await client.query(statement, [orgId, ...ids]);
+    }
+    for (const id of this.files) await rm(join(world.uploadsDir, `${id}.bin`), { force: true });
+  }
+}
+
+/**
+ * A drives world in workspace A:
+ * - `open`: an open drive, default edit (every member, owners and admins full, no guest);
+ * - `team`: private; member edit, owner full; a folder, a page with a sub-page, an image and a named version;
+ * - `secret`: private; other full, the chat privateOthers (owner, other) view; one page shared with
+ *   member (view) and with `shared` (comment), in a folder; one page shared with nobody;
+ * - `personal`: other's My drive; one page shared with the chat groupDm (owner, member, guest);
+ * - deleted things: a page in team (with a share to the guest, a version and an image), a deleted
+ *   drive with a page, and a deleted folder with a deleted page.
+ */
+async function seedDocuments(r: DocumentRows) {
+  const { a } = world;
+  const drives = {
+    open: await r.drive('F17 Workspace', 'open', { defaultRole: 'edit' }),
+    team: await r.drive('F17 Team', 'private'),
+    secret: await r.drive('F17 Secret', 'private'),
+    personal: await r.drive('My drive', 'personal', { owner: a.other }),
+    gone: await r.drive('F17 Gone', 'private', { deleted: true }),
+  };
+  await r.member(drives.team, { user: a.member }, 'edit');
+  await r.member(drives.team, { user: a.owner }, 'full');
+  await r.member(drives.secret, { user: a.other }, 'full');
+  await r.member(drives.secret, { space: a.spaces.privateOthers }, 'view');
+  await r.member(drives.personal, { user: a.other }, 'full');
+  await r.member(drives.gone, { user: a.member }, 'edit');
+  const folders = {
+    team: await r.folder(drives.team, 'Plans'),
+    secret: await r.folder(drives.secret, 'Hidden'),
+    gone: await r.folder(drives.team, 'Old', { deleted: true }),
+  };
+  const team = await r.document(drives.team, 'Team plan',
+    docOf({ type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Plan' }] }, 'team body text'), { folder: folders.team });
+  const docs = {
+    open: await r.document(drives.open, 'Open page', docOf('open text')),
+    team,
+    teamSub: await r.document(drives.team, 'Team sub-page', docOf('sub-page text'), { parent: team }),
+    secret: await r.document(drives.secret, 'Secret shared', docOf('secret shared text'), { folder: folders.secret, createdBy: a.other }),
+    secretUnshared: await r.document(drives.secret, 'Secret kept', docOf('secret kept text'), { createdBy: a.other }),
+    personal: await r.document(drives.personal, 'Other’s page', docOf('personal text'), { createdBy: a.other }),
+    deleted: await r.document(drives.team, 'Deleted page', docOf('F17-DELETED-TEXT'), { deleted: true }),
+    inGoneDrive: await r.document(drives.gone, 'Page in a deleted drive', docOf('F17-DELETED-TEXT')),
+    inGoneFolder: await r.document(drives.team, 'Page in a deleted folder', docOf('F17-DELETED-TEXT'), { folder: folders.gone, deleted: true }),
+  };
+  await r.share(docs.secret, { user: a.member }, 'view');
+  await r.share(docs.secret, { user: world.shared }, 'comment');
+  await r.share(docs.personal, { space: a.spaces.groupDm }, 'view');
+  await r.share(docs.deleted, { user: a.guest }, 'view');
+  await r.share(docs.inGoneDrive, { user: a.guest }, 'view');
+  const versions = {
+    team: await r.version(docs.team, 'named', docOf('team body, first draft'), { name: 'Sent v1' }),
+    deleted: await r.version(docs.deleted, 'auto', docOf('F17-DELETED-TEXT')),
+    inGoneDrive: await r.version(docs.inGoneDrive, 'auto', docOf('F17-DELETED-TEXT')),
+  };
+  const images = {
+    team: await r.image(docs.team, true),
+    deleted: await r.image(docs.deleted, true),
+    inGoneDrive: await r.image(docs.inGoneDrive, true),
+  };
+  return { drives, folders, docs, versions, images };
+}
+
+const LIVE = ['open', 'team', 'teamSub', 'secret', 'secretUnshared', 'personal'] as const;
+
+/** The rows of `path` whose `key` is one of `ids`, as a sorted id list. */
+const idsIn = (exported: Exported, path: string, ids: readonly string[], key = 'id') =>
+  rows(exported, path).map((row) => row[key] as string).filter((id) => ids.includes(id)).sort();
+
+test('a workspace export contains drives, folders, documents (JSON and Markdown), shares and versions', { skip }, async () => {
+  const r = new DocumentRows();
+  try {
+    const { drives, folders, docs, versions, images } = await seedDocuments(r);
+    const { a } = world;
+    const exported = await runExport({ scope: { kind: 'workspace' } });
+    const paths = exported.manifest.datasets.map((dataset: { path: string }) => dataset.path);
+    for (const path of ['data/drives.jsonl', 'data/drive_members.jsonl', 'data/doc_folders.jsonl', 'data/documents.jsonl',
+      'data/document_shares.jsonl', 'data/document_versions.jsonl', 'data/document_attachments.jsonl']) {
+      assert.ok(paths.includes(path), `the manifest lists ${path}`);
+    }
+    // Drives and their members, live ones only.
+    const driveRows = new Map(rows(exported, 'data/drives.jsonl').map((row) => [row.id, row]));
+    assert.deepEqual([...driveRows.keys()].filter((id) => r.drives.includes(id)).sort(),
+      [drives.open, drives.team, drives.secret, drives.personal].sort());
+    assert.deepEqual(Object.keys(driveRows.get(drives.open)!).sort(), ['agent_suggest_only', 'created_at', 'created_by', 'default_role',
+      'frozen_at', 'icon', 'id', 'kind', 'knowledge_default', 'name', 'owner_user_id', 'updated_at']);
+    assert.equal(driveRows.get(drives.open)!.default_role, 'edit');
+    assert.equal(driveRows.get(drives.personal)!.owner_user_id, a.other);
+    assert.equal(driveRows.get(drives.personal)!.kind, 'personal');
+    const memberPairs = rows(exported, 'data/drive_members.jsonl').filter((row) => r.drives.includes(row.drive_id))
+      .map((row) => `${row.drive_id}:${row.principal_type}:${row.principal_id}:${row.role}`).sort();
+    assert.deepEqual(memberPairs, [`${drives.team}:user:${a.member}:edit`, `${drives.team}:user:${a.owner}:full`,
+      `${drives.secret}:user:${a.other}:full`, `${drives.secret}:space:${a.spaces.privateOthers}:view`, `${drives.personal}:user:${a.other}:full`].sort());
+    // Folders.
+    assert.deepEqual(idsIn(exported, 'data/doc_folders.jsonl', Object.values(folders)), [folders.team, folders.secret].sort());
+    // Documents as JSON, without their live state.
+    const documentRows = new Map(rows(exported, 'data/documents.jsonl').map((row) => [row.id, row]));
+    assert.deepEqual([...documentRows.keys()].filter((id) => r.documents.includes(id)).sort(), LIVE.map((key) => docs[key]).sort());
+    for (const row of documentRows.values()) {
+      assert.deepEqual(Object.keys(row).sort(), ['content_json', 'created_at', 'created_by', 'drive_id', 'folder_id', 'icon', 'id', 'is_template',
+        'last_edited_at', 'last_edited_by', 'parent_document_id', 'position', 'title', 'updated_at']);
+    }
+    const teamRow = documentRows.get(docs.team)!;
+    assert.equal(teamRow.title, 'Team plan');
+    assert.equal(teamRow.drive_id, drives.team);
+    assert.equal(teamRow.folder_id, folders.team);
+    assert.equal(teamRow.content_json.content[1].content[0].text, 'team body text');
+    assert.equal(documentRows.get(docs.teamSub)!.parent_document_id, docs.team);
+    assert.equal(documentRows.get(docs.secret)!.created_by, a.other);
+    // Each document as Markdown, and only those.
+    const markdown = [...exported.files.keys()].filter((path) => path.startsWith('documents/'));
+    assert.deepEqual(markdown.filter((path) => r.documents.some((id) => path === `documents/${id}.md`)).sort(),
+      LIVE.map((key) => `documents/${docs[key]}.md`).sort());
+    for (const path of markdown) assert.ok(documentRows.has(path.slice('documents/'.length, -'.md'.length)), `${path} is an exported document`);
+    const teamMarkdown = exported.files.get(`documents/${docs.team}.md`)!.toString('utf8');
+    assert.ok(teamMarkdown.startsWith('# Team plan\n'), teamMarkdown);
+    assert.match(teamMarkdown, /^## Plan$/m);
+    assert.match(teamMarkdown, /^team body text$/m);
+    // Shares, versions (metadata and content) and the files documents use.
+    assert.deepEqual(rows(exported, 'data/document_shares.jsonl').filter((row) => r.documents.includes(row.document_id))
+      .map((row) => `${row.document_id}:${row.principal_type}:${row.principal_id}:${row.role}`).sort(),
+    [`${docs.secret}:user:${a.member}:view`, `${docs.secret}:user:${world.shared}:comment`, `${docs.personal}:space:${a.spaces.groupDm}:view`].sort());
+    const versionRows = rows(exported, 'data/document_versions.jsonl').filter((row) => r.documents.includes(row.document_id));
+    assert.deepEqual(versionRows.map((row) => row.id), [versions.team]);
+    assert.deepEqual(Object.keys(versionRows[0]!).sort(), ['agent_user_id', 'content_json', 'content_removed_at', 'created_at', 'created_by',
+      'document_id', 'id', 'kind', 'name', 'size_bytes', 'title']);
+    assert.equal(versionRows[0]!.name, 'Sent v1');
+    assert.equal(versionRows[0]!.kind, 'named');
+    assert.equal(versionRows[0]!.created_by, a.member);
+    assert.equal(versionRows[0]!.content_json.content[0].content[0].text, 'team body, first draft');
+    assert.deepEqual(rows(exported, 'data/document_attachments.jsonl').filter((row) => r.documents.includes(row.document_id))
+      .map((row) => `${row.document_id}:${row.file_id}:${row.in_current}`), [`${docs.team}:${images.team}:true`]);
+    assert.equal(rows(exported, 'data/files.jsonl').find((row) => row.id === images.team)?.included, true);
+    // The live editing state never leaves the database.
+    for (const [path, bytes] of exported.files) assert.ok(!bytes.toString('utf8').includes('ydoc_state'), `${path} names ydoc_state`);
+  } finally {
+    await r.remove();
+  }
+});
+
+test('a member\'s export contains only documents they can open and only their own shares', { skip }, async () => {
+  const { documentRoleFor } = await import('../src/lib/document-access.js');
+  const r = new DocumentRows();
+  try {
+    const { drives, folders, docs } = await seedDocuments(r);
+    const { a } = world;
+    const shared = world.shared;
+    // Written from the access rules, not computed by them.
+    const expected: Record<string, { documents: string[]; drives: string[]; folders: string[]; driveRows: string[]; shares: string[] }> = {
+      [a.owner]: { documents: LIVE.map((key) => docs[key]), drives: [drives.open, drives.team, drives.secret],
+        folders: [folders.team, folders.secret], driveRows: [`${drives.team}:full`], shares: [] },
+      [a.member]: { documents: [docs.open, docs.team, docs.teamSub, docs.secret, docs.personal], drives: [drives.open, drives.team],
+        folders: [folders.team], driveRows: [`${drives.team}:edit`], shares: [`${docs.secret}:view`] },
+      [a.other]: { documents: [docs.open, docs.secret, docs.secretUnshared, docs.personal], drives: [drives.open, drives.secret, drives.personal],
+        folders: [folders.secret], driveRows: [`${drives.secret}:full`, `${drives.personal}:full`], shares: [] },
+      [a.guest]: { documents: [docs.personal], drives: [], folders: [], driveRows: [], shares: [] },
+      [shared]: { documents: [docs.open, docs.secret], drives: [drives.open], folders: [], driveRows: [], shares: [`${docs.secret}:comment`] },
+    };
+    for (const [userId, want] of Object.entries(expected)) {
+      const exported = await runExport({ scope: { kind: 'member', member: userId } });
+      const documentIds = idsIn(exported, 'data/documents.jsonl', r.documents);
+      assert.deepEqual(documentIds, [...want.documents].sort(), `documents for ${userId}`);
+      // The same set the product's own check opens (documentRoleFor).
+      const opens: string[] = [];
+      for (const id of r.documents) if (await documentRoleFor(userId, a.orgId, id)) opens.push(id);
+      assert.deepEqual(documentIds, opens.sort(), `documents for ${userId}, as documentRoleFor opens them`);
+      assert.deepEqual([...exported.files.keys()].filter((path) => r.documents.some((id) => path === `documents/${id}.md`)).sort(),
+        want.documents.map((id) => `documents/${id}.md`).sort(), `Markdown for ${userId}`);
+      assert.deepEqual(idsIn(exported, 'data/drives.jsonl', r.drives), [...want.drives].sort(), `drives for ${userId}`);
+      assert.deepEqual(idsIn(exported, 'data/doc_folders.jsonl', Object.values(folders)), [...want.folders].sort(), `folders for ${userId}`);
+      // Only the person's own rows: their drive memberships and the shares that name them.
+      const driveRows = rows(exported, 'data/drive_members.jsonl');
+      for (const row of driveRows) assert.ok(row.principal_type === 'user' && row.principal_id === userId, `a drive member row of someone else for ${userId}`);
+      assert.deepEqual(driveRows.filter((row) => r.drives.includes(row.drive_id)).map((row) => `${row.drive_id}:${row.role}`).sort(),
+        [...want.driveRows].sort(), `drive rows for ${userId}`);
+      const shareRows = rows(exported, 'data/document_shares.jsonl');
+      for (const row of shareRows) assert.ok(row.principal_type === 'user' && row.principal_id === userId, `a share of someone else for ${userId}`);
+      assert.deepEqual(shareRows.map((row) => `${row.document_id}:${row.role}`).sort(), [...want.shares].sort(), `shares for ${userId}`);
+      // A folder or parent page the person can't see is not named (as GET /api/documents/:id shows it).
+      const secretRow = rows(exported, 'data/documents.jsonl').find((row) => row.id === docs.secret);
+      if (secretRow) assert.equal(secretRow.folder_id, want.drives.includes(drives.secret) ? folders.secret : null, `secret's folder for ${userId}`);
+      // Nothing of a drive, folder or document outside the person's view reaches the archive.
+      const hidden = [...r.documents.filter((id) => !want.documents.includes(id)), ...r.drives.filter((id) => !want.drives.includes(id)),
+        ...Object.values(folders).filter((id) => !want.folders.includes(id))];
+      for (const [path, bytes] of exported.files) {
+        if (path.startsWith('data/documents.jsonl')) continue; // A visible page names its drive even when the drive is hidden.
+        const content = bytes.toString('utf8');
+        for (const id of hidden) assert.ok(!content.includes(id), `${path} names ${id} for ${userId}`);
+      }
+      for (const row of rows(exported, 'data/documents.jsonl')) {
+        for (const ref of [row.folder_id, row.parent_document_id]) assert.ok(ref === null || !hidden.includes(ref), `a hidden reference for ${userId}`);
+      }
+    }
+  } finally {
+    await r.remove();
+  }
+});
+
+test('deleted documents are not exported (mirrors :419/:455 for notes)', { skip }, async () => {
+  const r = new DocumentRows();
+  try {
+    const { drives, folders, docs, versions, images } = await seedDocuments(r);
+    const gone = [docs.deleted, docs.inGoneDrive, docs.inGoneFolder, drives.gone, folders.gone,
+      versions.deleted, versions.inGoneDrive, images.deleted, images.inGoneDrive];
+    for (const scope of allScopes()) {
+      const exported = await runExport({ scope });
+      // Something is exported, so an empty archive can't pass.
+      assert.ok(idsIn(exported, 'data/documents.jsonl', r.documents).length > 0, `documents for ${JSON.stringify(scope)}`);
+      for (const [path, bytes] of exported.files) {
+        const content = bytes.toString('utf8');
+        assert.ok(!content.includes('F17-DELETED-TEXT'), `${path} (${JSON.stringify(scope)}) holds deleted text`);
+        for (const id of gone) assert.ok(!content.includes(id), `${path} (${JSON.stringify(scope)}) names deleted ${id}`);
+      }
+    }
+  } finally {
+    await r.remove();
+  }
+});
+
+test('a viewer\'s export has no version bodies or history-only images', { skip }, async () => {
+  const { a } = world;
+  const r = new DocumentRows();
+  try {
+    const drive = await r.drive('F17 History', 'private');
+    await r.member(drive, { user: a.member }, 'edit');
+    const documentId = await r.document(drive, 'History page', docOf('F17 current text'));
+    const older = await r.version(documentId, 'auto', docOf('F17-OLD-VERSION-TEXT'), { createdBy: a.member });
+    const named = await r.version(documentId, 'named', docOf('F17 current text'), { name: 'Sent v2', createdBy: a.member });
+    const current = await r.image(documentId, true);
+    const historyOnly = await r.image(documentId, false);
+    await r.share(documentId, { user: a.other }, 'view');
+    await r.share(documentId, { user: world.shared }, 'comment');
+    // A guest never gets history, even with edit (design 5.6, consult).
+    await r.share(documentId, { user: a.guest }, 'edit');
+    const exportOf = (member: string) => runExport({ scope: { kind: 'member', member } });
+
+    const editor = await exportOf(a.member);
+    assert.deepEqual(idsIn(editor, 'data/document_versions.jsonl', [older, named]), [older, named].sort(), 'the editor has the history');
+    assert.ok(rows(editor, 'data/document_versions.jsonl').find((row) => row.id === older)!.content_json, 'with its content');
+    assert.deepEqual(idsIn(editor, 'data/files.jsonl', [current, historyOnly]), [current, historyOnly].sort());
+    assert.deepEqual(idsIn(editor, 'data/document_attachments.jsonl', [current, historyOnly], 'file_id'), [current, historyOnly].sort());
+    assert.ok([...editor.files.values()].some((bytes) => bytes.toString('utf8').includes('F17-OLD-VERSION-TEXT')));
+
+    for (const [name, member] of [['a viewer', a.other], ['a commenter', world.shared], ['a guest with edit', a.guest]] as const) {
+      const exported = await exportOf(member);
+      assert.deepEqual(idsIn(exported, 'data/documents.jsonl', [documentId]), [documentId], `${name} has the document`);
+      assert.deepEqual(rows(exported, 'data/document_versions.jsonl').filter((row) => row.document_id === documentId), [], `${name}: no versions`);
+      assert.deepEqual(idsIn(exported, 'data/files.jsonl', [current, historyOnly]), [current], `${name}: only the image in the text`);
+      assert.deepEqual(idsIn(exported, 'data/document_attachments.jsonl', [current, historyOnly], 'file_id'), [current], `${name}: only the current link`);
+      for (const [path, bytes] of exported.files) {
+        const content = bytes.toString('utf8');
+        assert.ok(!content.includes('F17-OLD-VERSION-TEXT'), `${name}: ${path} holds an old version's text`);
+        for (const id of [older, named, historyOnly]) assert.ok(!content.includes(id), `${name}: ${path} names ${id}`);
+      }
+    }
+    // The viewer and the commenter get exactly what GET /api/files serves them.
+    const { getVisibleAttachment } = await import('../src/lib/attachment-access.js');
+    for (const member of [a.other, world.shared]) {
+      assert.equal(Boolean(await getVisibleAttachment(historyOnly, a.orgId, member)), false);
+      assert.equal(Boolean(await getVisibleAttachment(current, a.orgId, member)), true);
+    }
+  } finally {
+    await r.remove();
+  }
+});
+
+test('deleting per the deletion decisions reaches both the old note and its document', { skip }, async () => {
+  const { softDeleteDocument } = await import('../src/lib/documents.js');
+  const { _setPausedStartForTest, isRefusedWhilePaused } = await import('../src/lib/paused-start.js');
+  const { a } = world;
+  const r = new DocumentRows();
+  try {
+    // A note as the notes move (F14) leaves it: the old row, untouched, and its document in the author's My drive,
+    // with the share and the history carried over and a note_document_map row from one to the other.
+    const noteId = randomUUID();
+    r.notes.push(noteId);
+    await client.query(`INSERT INTO notes (id, org_id, user_id, title, content) VALUES ($1, $2, $3, 'F17 moved note', '<p>F17-MOVED-NOTE-TEXT</p>')`,
+      [noteId, a.orgId, a.member]);
+    await client.query('INSERT INTO note_shares (id, note_id, shared_with_user_id) VALUES ($1, $2, $3)', [randomUUID(), noteId, a.other]);
+    const myDrive = await r.drive('My drive', 'personal', { owner: a.member });
+    await r.member(myDrive, { user: a.member }, 'full');
+    const documentId = await r.document(myDrive, 'F17 moved note', docOf('F17-MOVED-NOTE-TEXT'));
+    await r.share(documentId, { user: a.other }, 'view');
+    const version = await r.version(documentId, 'moved', docOf('F17-MOVED-NOTE-TEXT'));
+    await client.query(`INSERT INTO note_document_map (id, org_id, source_type, source_id, target_type, target_id, details)
+      VALUES ($1, $2, 'note', $3, 'document', $4, $5::jsonb)`, [randomUUID(), a.orgId, noteId, documentId, JSON.stringify({ parts: [documentId] })]);
+
+    const scopes = [{ kind: 'workspace' as const }, { kind: 'member' as const, member: a.member }, { kind: 'member' as const, member: a.other }];
+    // Before: the document, and the old note it came from, are in the export.
+    const whole = await runExport({ scope: { kind: 'workspace' } });
+    assert.deepEqual(idsIn(whole, 'data/documents.jsonl', [documentId]), [documentId]);
+    assert.deepEqual(idsIn(whole, 'data/notes.jsonl', [noteId]), [noteId]);
+
+    // A person deletes the document, as Deft deletes anything: to the drive's trash (DELETE /api/documents/:id).
+    await softDeleteDocument({ orgId: a.orgId, userId: a.member, documentId });
+    for (const scope of scopes) {
+      const exported = await runExport({ scope });
+      for (const [path, bytes] of exported.files) {
+        const content = bytes.toString('utf8');
+        assert.ok(!content.includes('F17-MOVED-NOTE-TEXT'), `${path} (${JSON.stringify(scope)}) holds the deleted text`);
+        for (const id of [noteId, documentId, version]) assert.ok(!content.includes(id), `${path} (${JSON.stringify(scope)}) names ${id}`);
+      }
+    }
+    // Nothing was destroyed: the document waits in the trash and the old note row is as the move left it.
+    const [documentRow] = (await client.query('SELECT is_deleted, deleted_by FROM documents WHERE id = $1', [documentId])).rows;
+    assert.deepEqual(documentRow, { is_deleted: true, deleted_by: a.member });
+    const [noteRow] = (await client.query('SELECT is_deleted, content FROM notes WHERE id = $1', [noteId])).rows;
+    assert.deepEqual(noteRow, { is_deleted: false, content: '<p>F17-MOVED-NOTE-TEXT</p>' });
+    // Check 4: a workspace made read-only by a failed renewal deletes nothing; deleting a document or a drive is refused.
+    _setPausedStartForTest(true, 'billing');
+    try {
+      assert.equal(isRefusedWhilePaused('DELETE', `/api/documents/${documentId}`), true);
+      assert.equal(isRefusedWhilePaused('DELETE', `/api/drives/${myDrive}`), true);
+      assert.equal(isRefusedWhilePaused('DELETE', `/api/doc-folders/${randomUUID()}`), true);
+    } finally {
+      _setPausedStartForTest(false);
+    }
+  } finally {
+    await r.remove();
+  }
+});

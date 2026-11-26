@@ -67,10 +67,11 @@ export type ExportManifest = Readonly<{
 /** Content kinds this exporter deliberately does not write. Shown in the manifest and README. */
 export const NOT_INCLUDED: readonly string[] = [
   'Mail and mail attachments: not included by this command; the mail/ folder is reserved for them.',
-  'Deleted items (anything deleted in Deft before the export).',
+  'Deleted items (anything deleted in Deft before the export, including documents in a drive\'s trash and the notes they were moved from).',
   'Scheduled messages that have not been sent, and reminders.',
   'Notifications, agent actions and approvals, agent run history, AI memory, generated briefings and standups.',
   'Integration settings, connected accounts, and every credential or secret Deft stores (passwords, sessions, tokens, keys, invite and recovery links, two-step secrets).',
-  'Personal preferences (bookmarks, saved views, favorites) and version history.',
+  'Personal preferences (bookmarks, saved views, favorites) and version history, except the saved versions of documents: a member\'s export has those only for the documents they can edit, and a guest\'s none.',
+  'The live-editing state of documents. Each document\'s content is in data/documents.jsonl and documents/.',
   'Links from module records (such as Contacts) to other Deft items, such as tasks. Links between records of the same module are included.',
 ];

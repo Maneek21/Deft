@@ -2,6 +2,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { visibleNoteCondition } from '../note-visibility.js';
 import { visibleWikiPageCondition } from '../wiki-visibility.js';
 import { col, type Dataset } from './datasets.js';
+import { legacySourceLiveSql } from './datasets-documents.js';
 import { memberId, spaceReadable, workspaceAuthor, type ExportContext } from './scope.js';
 
 /** A space id kept only when that space is in the export. `ref` must not be a column of a table named `spaces`. */
@@ -67,10 +68,12 @@ export const NOTES_WIKI_EVENTS: readonly Dataset[] = [
           THEN folder.parent_folder_id END AS parent_folder_id,
         folder.sort_order, folder.created_at, folder.updated_at
       FROM note_folders folder WHERE ${exportableFolder(ctx, 'folder')}
+        AND ${legacySourceLiveSql(ctx.orgId, 'note_folder', col('folder.id'))}
       ORDER BY folder.user_id, folder.sort_order, folder.id`,
   },
   {
-    // Note bodies are the editor's HTML, as stored.
+    // Note bodies are the editor's HTML, as stored. A note moved to a document that has since been deleted
+    // is deleted too (legacySourceLiveSql, F17), here and in its shares.
     path: 'data/notes.jsonl',
     query: (ctx) => sql`SELECT export_note.id, ${workspaceAuthor(ctx, col('export_note.user_id'))} AS user_id,
         CASE WHEN EXISTS (SELECT 1 FROM note_folders folder WHERE folder.id = export_note.folder_id AND ${exportableFolder(ctx, 'folder')})
@@ -80,6 +83,7 @@ export const NOTES_WIKI_EVENTS: readonly Dataset[] = [
         export_note.created_at, export_note.updated_at
       FROM notes export_note
       WHERE export_note.org_id = ${ctx.orgId} AND ${exportableNote(ctx, col('export_note.id'))}
+        AND ${legacySourceLiveSql(ctx.orgId, 'note', col('export_note.id'))}
       ORDER BY export_note.created_at, export_note.id`,
   },
   {
@@ -92,6 +96,7 @@ export const NOTES_WIKI_EVENTS: readonly Dataset[] = [
       return sql`SELECT share.note_id, share.shared_with_user_id, share.permission, share.created_at
         FROM note_shares share JOIN notes shared_note ON shared_note.id = share.note_id
         WHERE shared_note.org_id = ${ctx.orgId} AND ${exportableNote(ctx, col('share.note_id'))}
+          AND ${legacySourceLiveSql(ctx.orgId, 'note', col('share.note_id'))}
           AND EXISTS (SELECT 1 FROM org_members recipient WHERE recipient.org_id = ${ctx.orgId}
             AND recipient.user_id = share.shared_with_user_id AND recipient.is_active = true)
           AND ${userId ? sql`shared_note.user_id = ${userId}` : sql`true`}

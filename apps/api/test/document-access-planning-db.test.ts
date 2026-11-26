@@ -36,6 +36,8 @@ import { breadcrumbChainQuery, driveTreeDocumentsQuery, favoriteDocumentsQuery, 
 import { documentCardsQuery, fullDriveQuery, postableDocumentsQuery, spaceSharedDocumentsQuery } from '../src/lib/chat-documents.js';
 import { newlyReachedQuery } from '../src/lib/document-shares.js';
 import { visibleFilesSql } from '../src/lib/workspace-export/attachments.js';
+import { DRIVES_DOCUMENTS, documentMarkdownQuery } from '../src/lib/workspace-export/datasets-documents.js';
+import type { ExportContext } from '../src/lib/workspace-export/scope.js';
 import { driveListQuery, drivesWithoutManagerQuery } from '../src/lib/drives.js';
 import { setupDrivesFixture, type DrivesFixture } from './fixtures/drives-fixture.js';
 import { planningGrowth, type Growth } from './fixtures/planning-growth.js';
@@ -207,6 +209,8 @@ test('the attention, export and retrieval forms plan within budget', async (t) =
   await withinBudget(t, async (fx) => {
     const { member } = fx.people;
     const words = 'seed document';
+    const memberExport: ExportContext = { orgId: fx.orgId, scope: { kind: 'member', user_id: member, role: 'member' } };
+    const guestExport: ExportContext = { orgId: fx.orgId, scope: { kind: 'member', user_id: fx.people.guest, role: 'guest' } };
     return [
       // GET /api/notifications: the notification rule, with its drive (F4) and document (F9) branches, on every list and count.
       ['notifications list (drive and document branches)', db.select({ id: notifications.id }).from(notifications).where(and(
@@ -223,21 +227,16 @@ test('the attention, export and retrieval forms plan within budget', async (t) =
         eq(attentionItems.org_id, fx.orgId), eq(attentionItems.user_id, member), eq(attentionItems.source_type, 'document'),
         visibleDocumentIdSql(member, sql`${attentionItems.org_id}`, sql`${attentionItems.source_id}`),
       )).orderBy(desc(attentionItems.last_event_at)).limit(50).toSQL()],
-      // A member's workspace export (F17): every dataset filtered by the document id of its rows.
-      ['export documents', query(sql`SELECT export_document.id, export_document.drive_id, export_document.folder_id,
-          export_document.parent_document_id, export_document.title, export_document.content_json,
-          export_document.created_at, export_document.updated_at
-        FROM documents export_document
-        WHERE export_document.org_id = ${fx.orgId} AND export_document.is_deleted = false
-          AND ${visibleDocumentIdSql(member, fx.orgId, sql`export_document.id`)}
-        ORDER BY export_document.created_at, export_document.id`)],
       // A member's export of attachments (F10): a file documents link is decided by them, at view or at edit.
-      ['export files (document images)', query(visibleFilesSql({ orgId: fx.orgId, scope: { kind: 'member', user_id: member, role: 'member' } }))],
-      ['export shares', query(sql`SELECT share.document_id, share.principal_type, share.principal_id, share.role, share.created_at
-        FROM document_shares share
-        WHERE share.org_id = ${fx.orgId} AND share.principal_type = 'user' AND share.principal_id = ${member}
-          AND ${visibleDocumentIdSql(member, fx.orgId, sql`share.document_id`)}
-        ORDER BY share.document_id, share.created_at, share.id`)],
+      ['export files (document images)', query(visibleFilesSql(memberExport))],
+      // A guest's (F17): only while the file is in a document they can open.
+      ['export files (a guest)', query(visibleFilesSql(guestExport))],
+      // A member's workspace export of drives and documents (F17), each dataset as the export runs it, and the
+      // two a guest's export runs differently: no history, and only the files in the document.
+      ...DRIVES_DOCUMENTS.map((dataset): [string, Statement] => [`export ${dataset.path}`, query(dataset.query(memberExport))]),
+      ...DRIVES_DOCUMENTS.filter((dataset) => ['data/document_versions.jsonl', 'data/document_attachments.jsonl'].includes(dataset.path))
+        .map((dataset): [string, Statement] => [`export ${dataset.path} (a guest)`, query(dataset.query(guestExport))]),
+      ['export documents/<id>.md', query(documentMarkdownQuery(memberExport))],
       // Defty's retrieval (retrieveContext's documents until H2) and search's documents group.
       ['retrieval', db.select({ id: documents.id, title: documents.title, text: documents.content_text }).from(documents).where(and(
         eq(documents.org_id, fx.orgId), eq(documents.is_deleted, false), visibleDocumentCondition(member, fx.orgId),

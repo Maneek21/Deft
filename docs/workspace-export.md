@@ -84,6 +84,7 @@ export runs is reported as not included rather than copied.
   data/                     the content, as JSON Lines (one JSON object per line, UTF-8)
   attachments/<file-id>/<original file name>
   conversations/            one readable page per space, and an index
+  documents/<document-id>.md  each document as Markdown, its title as the first heading
   mail/README.txt           reserved for mail; this command does not export mail
   omissions.jsonl           every item in scope that could not be included, and why
   SHA256SUMS                checksums of every other file: `sha256sum -c SHA256SUMS`
@@ -97,7 +98,9 @@ kept; if the file system still refuses it, `file` and the extension are used.
 `files.jsonl` keeps the original name in `filename` and the name used in
 `archive_path`. Text is exactly as it was
 written: message text in Markdown, note bodies in the editor's HTML, wiki
-pages in Markdown.
+pages in Markdown, documents and their versions in the editor's JSON. In a
+document's Markdown copy, an image of a Deft file is written as
+`![alt](deft-file:<file id>)`; the file is listed in `files.jsonl`.
 
 ### Data files
 
@@ -125,6 +128,13 @@ pages in Markdown.
 | `wiki_pages.jsonl` | page | `id`, `scope`, `space_id`, `type`, `title`, `slug`, `summary`, `content`, `tags`, `user_id`, `created_via`, `version`, `created_at`, `updated_at` |
 | `wiki_links.jsonl` | link | `source_page_id`, `target_page_id`, `context`, `created_at` |
 | `events.jsonl` | event | `id`, `source`, `event_type`, `title`, `body`, `url`, `actor`, `timestamp`, `user_id`, `start`, `end`, `all_day`, `location`, `status`, `attendees` (`email`, `name`), `recurrence` (`start`, `end`, `rrule`, `recurrence_id`, `exdates`), `created_at`, `updated_at` |
+| `drives.jsonl` | drive | `id`, `name`, `icon`, `kind` (`open`, `private`, `personal`), `owner_user_id` (a personal drive's owner), `default_role` (an open drive's), `agent_suggest_only`, `knowledge_default`, `frozen_at`, `created_by`, `created_at`, `updated_at` |
+| `drive_members.jsonl` | drive member | `drive_id`, `principal_type` (`user` or `space`), `principal_id`, `role` (`full`, `edit`, `comment`, `view`), `is_link`, `added_by`, `created_at` |
+| `doc_folders.jsonl` | folder in a drive | `id`, `drive_id`, `parent_folder_id`, `name`, `position`, `created_by`, `created_at`, `updated_at` |
+| `documents.jsonl` | document | `id`, `drive_id`, `folder_id`, `parent_document_id` (a sub-page's page), `title`, `icon`, `position`, `content_json` (editor JSON), `is_template`, `created_by`, `last_edited_by`, `last_edited_at`, `created_at`, `updated_at` |
+| `document_shares.jsonl` | share | `document_id`, `principal_type`, `principal_id`, `role` (`edit`, `comment`, `view`), `shared_by`, `created_at` |
+| `document_versions.jsonl` | saved version | `id`, `document_id`, `kind` (`auto`, `named`, `agent`, `restore`, `import`, `moved`), `name`, `title`, `content_json` (null when its content was removed from history), `size_bytes`, `created_by`, `agent_user_id`, `content_removed_at`, `created_at` |
+| `document_attachments.jsonl` | file a document uses | `document_id`, `file_id`, `in_current` (false for a file only older versions show), `added_by`, `created_at` |
 | `files.jsonl` | attachment | `id`, `filename`, `mime_type`, `size_bytes`, `sha256` (of the bytes in this archive, or null), `recorded_sha256` (Deft's own, may be null), `uploaded_by`, `created_at`, `attached_to` (`{message_id}`, `{task_id}` or null), `included`, `archive_path` |
 | `modules.jsonl` | installed module (such as Contacts) | `id`, `module_id`, `slug`, `source`, `is_enabled`, `version`, `folder`, `created_at` |
 | `modules/<slug>/schema.json` | (one object) | the module's collections and their fields: `key`, `label`, `type`, `required`, `multiple`, `options`, `target_collection` |
@@ -148,14 +158,19 @@ record count) and `not_included`.
 ## What is not in it
 
 - Mail. A separate mail export fills the `mail/` folder.
-- Anything that was deleted, unsent scheduled messages, and reminders.
+- Anything that was deleted, unsent scheduled messages, and reminders. A
+  document in a drive's trash, or in a deleted drive, is deleted; so is the
+  note it was moved from, once the document is deleted.
 - Notifications, agent actions and approvals, agent run history, AI memory,
   generated briefings and standups.
 - Every credential and secret Deft stores: passwords, sessions, tokens, API
   keys, invite and recovery links, two-step secrets, integration settings and
   connected accounts. Text that people typed into messages, notes or other
   content is exported as written, even if it contains a password.
-- Personal preferences and version history.
+- Personal preferences and version history, except the saved versions of
+  documents.
+- A document's live-editing state. Its content is in `documents.jsonl` and
+  `documents/`.
 - Links from module records to other Deft items, such as tasks.
 - The records of a module that has no active version, or whose stored
   manifests fail their integrity check, as Deft would not show them either.
@@ -183,6 +198,11 @@ An attachment is left out, with its reason in `omissions.jsonl` and
 - notes they own, notes shared with them or with their spaces, and notes
   visible to the whole workspace;
 - wiki pages they may read;
+- the documents they can open, the drives they can view and those drives'
+  folders. A document's folder or parent page is named only when they can see
+  it. Of drive members and shares, only the rows that name them;
+- the saved versions of the documents they can edit, and files that only
+  older versions show. Never for a guest, whatever their role;
 - their own calendar;
 - installed modules, which guests do not see and which nobody sees while
   disabled.

@@ -2,12 +2,13 @@ import { createHash } from 'node:crypto';
 import { lstat, open, realpath } from 'node:fs/promises';
 import { basename, dirname, posix } from 'node:path';
 import { sql, type SQL } from 'drizzle-orm';
-import { fileInDocumentSql, fileReadableThroughDocumentSql } from '../document-attachment-access.js';
+import { fileInDocumentSql } from '../document-attachment-access.js';
 import { localStorageKeyPath } from '../file-store.js';
 import { readableSpaceSql } from '../space-visibility.js';
 import { visibleNoteCondition } from '../note-visibility.js';
 import { col } from './datasets.js';
 import { exportableTask } from './datasets-content.js';
+import { exportedDocumentFileSql } from './datasets-documents.js';
 import { memberId, workspaceAuthor, type ExportContext } from './scope.js';
 import type { Snapshot } from './snapshot.js';
 import { assertArchivePath, type ArchiveFile, type ArchiveWriter } from './writer.js';
@@ -28,7 +29,9 @@ function attachableMessage(ctx: ExportContext, ref: SQL): SQL {
  * legacy task column, then the legacy message column; a file that documents
  * link (document_attachments) belongs to everyone one of them admits, at
  * view while it is in the document and at edit otherwise, and to nobody
- * else (canReadAttachmentThroughDocument, lib/document-attachment-access.ts);
+ * else (canReadAttachmentThroughDocument, lib/document-attachment-access.ts;
+ * the export also keeps a guest to the files in the document, and the whole
+ * workspace to files a live document links: exportedDocumentFileSql);
  * a file attached to nothing belongs to its uploader and to everyone who can
  * read a live note that shows it (note_files, canReadAttachmentThroughNote).
  */
@@ -45,7 +48,7 @@ export function visibleFilesSql(ctx: ExportContext): SQL {
         WHEN f.task_id IS NOT NULL THEN CASE WHEN ${exportableTask(ctx, col('f.task_id'))} THEN 'task' END
         WHEN f.message_id IS NOT NULL THEN CASE WHEN ${attachableMessage(ctx, col('f.message_id'))} THEN 'message' END
         WHEN ${fileInDocumentSql(ctx.orgId, col('f.id'))}
-          THEN CASE WHEN ${userId ? fileReadableThroughDocumentSql(userId, ctx.orgId, col('f.id')) : sql`true`} THEN 'unattached' END
+          THEN CASE WHEN ${exportedDocumentFileSql(ctx, col('f.id'))} THEN 'unattached' END
         WHEN ${userId ? sql`(f.uploaded_by = ${userId} OR EXISTS (SELECT 1 FROM note_files link
           JOIN notes ON notes.id = link.note_id AND notes.org_id = link.org_id
           WHERE link.org_id = ${ctx.orgId} AND link.file_id = f.id AND notes.is_deleted = false

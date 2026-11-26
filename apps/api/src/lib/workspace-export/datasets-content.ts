@@ -2,6 +2,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { readableSpaceSql } from '../space-visibility.js';
 import { visibleTaskCondition } from '../task-visibility.js';
 import { col, type Dataset } from './datasets.js';
+import { legacySourceLiveSql } from './datasets-documents.js';
 import { memberId, spaceReadable, workspaceAuthor, type ExportContext } from './scope.js';
 
 const PRIVATE_ASSISTANT = 'deft.private_defty_message.v1';
@@ -60,7 +61,8 @@ export const MESSAGES_AND_TASKS: readonly Dataset[] = [
       ORDER BY export_reaction.message_id, export_reaction.created_at, export_reaction.id`,
   },
   {
-    // One canvas per space: a TipTap document the space's members write together.
+    // One canvas per space: a TipTap document the space's members write together. A canvas moved to a
+    // document that has since been deleted is deleted too (legacySourceLiveSql, F17).
     path: 'data/canvases.jsonl',
     query: (ctx) => sql`SELECT export_canvas.space_id, export_canvas.title, export_canvas.content,
         ${workspaceAuthor(ctx, col('export_canvas.last_edited_by'))} AS last_edited_by,
@@ -68,6 +70,7 @@ export const MESSAGES_AND_TASKS: readonly Dataset[] = [
       FROM canvases export_canvas JOIN spaces export_space ON export_space.id = export_canvas.space_id
       WHERE export_canvas.org_id = ${ctx.orgId} AND export_space.org_id = ${ctx.orgId}
         AND ${spaceReadable(ctx, col('export_space.id'), col('export_space.org_id'))}
+        AND ${legacySourceLiveSql(ctx.orgId, 'canvas', col('export_canvas.id'))}
       ORDER BY export_canvas.space_id`,
   },
   {
