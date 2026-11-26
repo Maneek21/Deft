@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
+import {taskPrioritySchema,taskStatusSchema} from '../src/lib/task-priority.js';
 import {stripTypeScriptTypes} from 'node:module';
 import {createAppIntegrationDestination} from '../src/lib/app-integration-destination.js';
 import {appIntegrationSourceDigest} from '../src/lib/app-integration-source.js';
@@ -39,7 +40,7 @@ test('Task details are bounded, task-only and included in review and original-re
 test('actual Task adapter checks current assignee membership and forwards reviewed details to native constructor',async()=>{
  const source=readFileSync(new URL('../src/lib/app-integration-task.ts',import.meta.url),'utf8'),start=source.indexOf('export const appIntegrationTaskAdapter'),end=source.indexOf('export async function afterAppIntegrationTaskCommit');
  const nativeSource=readFileSync(new URL('../src/lib/native-task-create.ts',import.meta.url),'utf8'),nativeBody=stripTypeScriptTypes(nativeSource.slice(nativeSource.indexOf('export async function createNativeTask')).replace('export async function','async function'),{mode:'transform'});
- const createNative=new Function('reserveNextTaskNumber','tasks','taskActivity',nativeBody+';return createNativeTask;')(async()=>7,'tasks','activity');
+ const createNative=new Function('reserveNextTaskNumber','tasks','taskActivity','taskPrioritySchema','taskStatusSchema',nativeBody+';return createNativeTask;')(async()=>7,'tasks','activity',taskPrioritySchema,taskStatusSchema);
  const adapter=new Function('and','eq','orgMembers','projects','createNativeTask',stripTypeScriptTypes(source.slice(start,end).replace('export const','const'),{mode:'transform'})+';return appIntegrationTaskAdapter;')((...v:unknown[])=>v,(...v:unknown[])=>v,{}, {},createNative);
  const pgSource=readFileSync(new URL('../src/lib/app-integration-destination-postgres.ts',import.meta.url),'utf8'),pgBody=stripTypeScriptTypes(pgSource.slice(pgSource.indexOf('export function appIntegrationDestinationPostgres')).replace('export function','function'),{mode:'transform'});
  const postgres=new Function('deny',pgBody+';return appIntegrationDestinationPostgres;')(()=>Error('denied'))({task:adapter});

@@ -42,6 +42,7 @@ import { enrichOAuthAuditActions } from '../oauth-audit-receipts.js';
 import { getTeamContext, getTeamProfile, listTeamSummaries } from './team-context.js';
 import { createTaskBundle, type TaskBundleSubtaskInput } from '../task-bundle.js';
 import { bulkUpdateTasks, BulkTaskUpdateError, bulkTaskUpdateSchema } from '../task-bulk-update.js';
+import { isTaskStatus, taskPriorityError, type TaskStatus } from '../task-priority.js';
 import { queryCompactTasks, type CompactTaskQuery } from '../task-compact-query.js';
 import { visibleNoteCondition } from '../note-visibility.js';
 import { syncNoteFiles } from '../note-file-claims.js';
@@ -628,8 +629,8 @@ function taskReference(projectPrefix: string | null, number: number | null): str
   return `${projectPrefix}-${number}`;
 }
 
-function validTaskStatus(value: unknown): value is 'backlog' | 'todo' | 'in_progress' | 'in_review' | 'done' | 'cancelled' {
-  return typeof value === 'string' && ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'cancelled'].includes(value);
+function validTaskStatus(value: unknown): value is TaskStatus {
+  return isTaskStatus(value);
 }
 
 function validWikiType(value: unknown): value is 'concept' | 'entity' | 'decision' | 'resource' | 'procedure' | 'preference' | 'fact' {
@@ -2202,6 +2203,8 @@ export async function humanTaskCreate(args: HumanTaskCreateArgs, ctx: HumanToolC
   if (scopeError) return scopeError;
   const title = args.title?.trim();
   if (!title) return errorResult('task_create requires title');
+  const priorityError = taskPriorityError(args.priority);
+  if (priorityError) return errorResult(`task_create: ${priorityError}`);
   return withIdempotency('task_create', args, ctx, async () => {
     const projectResult = await resolveProjectForHumanTask(ctx, args);
     if (projectResult.error) return projectResult.error;
@@ -2237,7 +2240,7 @@ export async function humanTaskCreate(args: HumanTaskCreateArgs, ctx: HumanToolC
         createdBy: ctx.user_id,
         title,
         description: args.description,
-        priority: ['p0', 'p1', 'p2', 'p3'].includes(args.priority ?? '') ? args.priority : 'p2',
+        priority: args.priority ?? 'p2',
         assigneeId: assigneeResult.user?.id ?? null,
         dueDate: dueDate as Date | null,
         startDate: startDate as Date | null,
@@ -2284,7 +2287,11 @@ export async function humanTaskUpdate(args: { task_id?: string; patch?: Record<s
       if (!validTaskStatus(patch.status)) return errorResult('task_update requires valid status: backlog, todo, in_progress, in_review, done, or cancelled');
       updates.status = patch.status;
     }
-    if (typeof patch.priority === 'string') updates.priority = patch.priority;
+    if (patch.priority !== undefined) {
+      const priorityError = taskPriorityError(patch.priority);
+      if (priorityError) return errorResult(`task_update: ${priorityError}`);
+      if (patch.priority !== null) updates.priority = patch.priority;
+    }
     if (typeof patch.assignee_id === 'string' || patch.assignee_id === null) {
       updates.assignee_id = typeof patch.assignee_id === 'string' ? patch.assignee_id.trim() : null;
     }

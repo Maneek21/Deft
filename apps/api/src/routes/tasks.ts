@@ -35,6 +35,7 @@ import {
   type TaskTableSortField,
 } from '../lib/task-table-query.js';
 import { bulkTaskUpdateSchema, bulkUpdateTasks, BulkTaskUpdateError } from '../lib/task-bulk-update.js';
+import { taskPrioritySchema, taskStatusSchema } from '../lib/task-priority.js';
 import { reconcileAgentChannelRuntimeAttempt } from '../lib/agent-channel-reconciliation.js';
 
 export const taskRoutes = new Hono();
@@ -42,8 +43,8 @@ export const taskRoutes = new Hono();
 const createTaskSchema = z.object({
   title: z.string().min(1),
   description: z.string().nullable().optional(),
-  status: z.string().nullable().optional(),
-  priority: z.string().nullable().optional(),
+  status: taskStatusSchema.nullable().optional(),
+  priority: taskPrioritySchema.nullable().optional(),
   assignee_id: z.string().nullable().optional(),
   due_date: z.string().nullable().optional(),
   sort_order: z.number().nullable().optional(),
@@ -64,7 +65,7 @@ const updateTaskSchema = z.object({
   title: z.string().min(1).optional(),
   description: z.string().optional(),
   status: z.string().optional(),
-  priority: z.enum(['p0', 'p1', 'p2', 'p3']).optional(),
+  priority: taskPrioritySchema.optional(),
   assignee_id: z.string().nullable().optional(),
   due_date: z.string().nullable().optional(),
   start_date: z.string().nullable().optional(),

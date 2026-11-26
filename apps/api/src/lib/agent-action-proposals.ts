@@ -46,6 +46,7 @@ import {
   sanitizeDocumentSendParams,
   validateDocumentSendDraft,
 } from './document-send.js';
+import { isTaskPriority } from './task-priority.js';
 
 type ApprovalTier = 'auto' | 'quick' | 'full';
 
@@ -1489,9 +1490,11 @@ function normalizeStatus(value: unknown) {
     : null;
 }
 
+// The compiler reads a priority out of Defty's own drafted text, so an
+// unrecognised one is dropped (the task gets the default) rather than refused.
 function normalizePriority(value: unknown) {
   const normalized = stringValue(value).toLowerCase();
-  return ['p0', 'p1', 'p2', 'p3'].includes(normalized) ? normalized : null;
+  return isTaskPriority(normalized) ? normalized : null;
 }
 
 function normalizeDueDate(value: unknown) {

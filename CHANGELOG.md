@@ -22,6 +22,24 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
   note links only the task whose key is written exactly, with its dash. A note still
   links only tasks its author may see.
 
+### An unknown task priority or status is refused, not a server error
+
+- **Fixed.** Creating a task with a priority other than `p0`, `p1`, `p2` or `p3` (for
+  example `urgent`) through `POST /api/tasks`, `POST /api/projects/:id/tasks` or
+  `POST /api/tasks/project/:projectId` now answers 400 `VALIDATION_ERROR` and creates
+  nothing. Before, it answered 500. A missing or `null` priority is still `p2`.
+- **The same rule everywhere.** Editing a task, bulk edits, the MCP `task_create`,
+  `task_update` and `task_bulk_update` tools (personal and agent employee) and Defty's
+  task tools all check a priority the same way, on the task and on each subtask. An
+  unknown priority is refused with each tool's usual error. Before, MCP and Defty task
+  creation quietly used `p2` instead, an agent employee's `task_update` quietly skipped
+  it, and the personal MCP `task_update` failed with a database error.
+- **Status too.** An unknown `status` on those three create routes (for example `open`;
+  valid values are `backlog`, `todo`, `in_progress`, `in_review`, `done` and `cancelled`)
+  now answers 400 `VALIDATION_ERROR` instead of 500, and Defty's `update_task_status`
+  refuses it instead of failing with a database error. A missing or `null` status is
+  still `backlog`.
+
 ### Images in a note load for everyone who can read the note
 
 - **Fixed.** An image in a note now loads for everyone who can open that note: people it
