@@ -120,6 +120,20 @@ const imageIdsOf = (json: any): string[] => {
   walk(json);
   return ids;
 };
+/** Every image node of `json`, each as its fileId (null when it has none) and the host its source resolves to off this site (null when local). */
+const imagesOf = (json: any): Array<{ fileId: string | null; remoteHost: string | null }> => {
+  const images: Array<{ fileId: string | null; remoteHost: string | null }> = [];
+  const walk = (node: any) => {
+    if (node?.type === 'image') {
+      const src = typeof node.attrs?.src === 'string' ? node.attrs.src : null;
+      const host = src === null ? null : new URL(src, 'http://local.invalid').hostname;
+      images.push({ fileId: typeof node.attrs?.fileId === 'string' ? node.attrs.fileId : null, remoteHost: host === 'local.invalid' ? null : host });
+    }
+    node?.content?.forEach(walk);
+  };
+  walk(json);
+  return images;
+};
 
 // ---------------------------------------------------------------------------
 // A-I1
@@ -517,7 +531,9 @@ test('an image named only by its /api/files source is linked when it qualifies, 
   assert.deepEqual(imageIdsOf(canvas.content_json).sort(), [srcMine, named].sort());
   assert.match(canvas.content_text, /Image not available: theirs/);
   assert.match(canvas.content_text, /Image not available: remote/);
-  assert.ok(!JSON.stringify(canvas.content_json).includes('example.com'), 'no image from another site is stored');
+  // No image from another site is stored: every image left is a linked file, none points off this site.
+  assert.deepEqual(imagesOf(canvas.content_json).filter((image) => image.remoteHost !== null || image.fileId === null), [],
+    'no image from another site, or with no file, is stored');
   assert.deepEqual(await links(canvasDocument), [srcMine, named].sort().map((fileId) => ({ file_id: fileId, in_current: true })));
 
   // create_note, mixed: every named file qualifies, and another site's image is still a placeholder.
@@ -529,7 +545,7 @@ test('an image named only by its /api/files source is linked when it qualifies, 
   const note = await textOf(created.result.document_id);
   assert.deepEqual(imageIdsOf(note.content_json), [own]);
   assert.match(note.content_text, /Image not available: remote/);
-  assert.ok(!JSON.stringify(note.content_json).includes('example.com'));
+  assert.deepEqual(imagesOf(note.content_json).filter((image) => image.remoteHost !== null || image.fileId === null), []);
   assert.deepEqual(await links(created.result.document_id), [{ file_id: own, in_current: true }]);
 });
 
