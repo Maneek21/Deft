@@ -166,7 +166,9 @@ export async function createMeetingNotes(input: CreateMeetingNotesInput): Promis
       .where(and(eq(events.id, input.eventId), liveHumanCalendarEventCondition(orgId, userId)))
       .limit(1);
     if (!event) throw eventNotFound();
-    const allDay = (event.metadata as Record<string, unknown> | null)?.allDay === true;
+    // Native and invitation events store the all-day flag as `allDay`, ICS sync as `all_day` (workers/handlers/ics-sync.ts).
+    const meta = event.metadata as Record<string, unknown> | null;
+    const allDay = meta?.allDay === true || meta?.all_day === true;
     const names = await visibleAttendeeNames(tx, await peopleViewer(orgId, userId, tx), eventAttendees(event.metadata));
     const template = await templateContentInTx(tx, userId, orgId, { builtin: 'meeting_notes' });
     const { document, finish } = await createDocumentInTx(tx, {

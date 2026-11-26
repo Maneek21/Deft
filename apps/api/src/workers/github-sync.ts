@@ -400,6 +400,11 @@ async function runGitHubSync(
           connected_account_id: account.id,
         };
 
+        // An update never names org_id: an event keeps its workspace
+        // (meeting-notes links rely on it; test/events-org-id-immutable.test.ts).
+        // The updates below are pinned to this workspace by their WHERE.
+        const { org_id: _eventOrg, ...eventChanges } = eventData;
+
         // Upsert within this workspace by source + external_id
         const existing = await db.select({ id: events.id, event_type: events.event_type, external_id: events.external_id })
           .from(events)
@@ -417,7 +422,7 @@ async function runGitHubSync(
         let claimedWrite = false;
         if (existing.length > 0) {
           const updated = await db.update(events)
-            .set({ ...eventData, external_id: existing[0]!.external_id })
+            .set({ ...eventChanges, external_id: existing[0]!.external_id })
             .where(and(
               eq(events.id, existing[0]!.id),
               eq(events.org_id, account.org_id),
@@ -434,7 +439,7 @@ async function runGitHubSync(
             // Another sync of this workspace inserted it first; apply this
             // snapshot to that row unless it already records the merge.
             const updated = await db.update(events)
-              .set(eventData)
+              .set(eventChanges)
               .where(and(
                 eq(events.org_id, account.org_id),
                 eq(events.source, 'github'),

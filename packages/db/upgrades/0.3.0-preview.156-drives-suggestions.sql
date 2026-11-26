@@ -25,7 +25,13 @@ CREATE TABLE document_event_links (
 CREATE INDEX document_event_links_document_idx ON document_event_links (org_id, document_id);
 
 -- A link's event must be one of its workspace's events, checked when the
--- event or the org is written.
+-- event or the org is written. A trigger, not an (org_id, event_id) key:
+-- events has no (org_id, id) key and the add-only check refuses a new unique
+-- index on an existing table, the same reason F2's doc_principal_check guards
+-- drive_members and document_shares against spaces and users (controller
+-- ruling, M2 fix round 1). An event's org_id never changes after it is
+-- written; apps/api/test/events-org-id-immutable.test.ts holds every writer
+-- to that, so the check at link time stays true.
 CREATE FUNCTION document_event_link_check() RETURNS trigger
   LANGUAGE plpgsql
   SET search_path = pg_catalog, public, pg_temp

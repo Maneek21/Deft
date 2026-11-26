@@ -91,11 +91,11 @@ async function call(userId: string, method: string, path: string, body: unknown,
 }
 
 /** A calendar event of `userId` in the workspace, stored as the app stores it (UTC wall time). */
-async function insertEvent(userId: string, title: string, at: Date, metadata: Record<string, unknown> = {}): Promise<string> {
+async function insertEvent(userId: string, title: string, at: Date, metadata: Record<string, unknown> = {}, source: 'native' | 'ics' = 'native'): Promise<string> {
   const id = randomUUID();
   await fx!.client.query(`INSERT INTO events (id, org_id, user_id, source, event_type, external_id, title, timestamp, metadata)
-    VALUES ($1, $2, $3, 'native', 'calendar_event', $1, $4, $5, $6::jsonb)`,
-  [id, fx!.orgId, userId, title, at.toISOString().replace('Z', ''), JSON.stringify(metadata)]);
+    VALUES ($1, $2, $3, $7, 'calendar_event', $1, $4, $5, $6::jsonb)`,
+  [id, fx!.orgId, userId, title, at.toISOString().replace('Z', ''), JSON.stringify(metadata), source]);
   return id;
 }
 
@@ -288,6 +288,20 @@ test('a long event title is kept whole while the title fits 500 characters, and 
   assert.equal(cut.title, `${'L'.repeat(500 - ' — 14 Dec 2026'.length - 1)}… — 14 Dec 2026`);
   // The cut title can be saved again unchanged (PATCH refuses more than 500 characters).
   await call(member, 'PATCH', `/api/documents/${cut.id}`, { title: cut.title }, 200);
+});
+
+test('an ICS all-day event keeps its own date in a workspace west of UTC', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member } = fx.people;
+  // In Los Angeles, UTC midnight on 16 Dec is still 15 Dec.
+  await fx.client.query(`UPDATE orgs SET timezone = 'America/Los_Angeles' WHERE id = $1`, [fx.orgId]);
+  const midnight = new Date('2026-12-16T00:00:00Z');
+  // ICS sync stores the all-day flag as metadata.all_day (workers/handlers/ics-sync.ts), not allDay.
+  const allDay = await insertEvent(member, 'Offsite', midnight, { start: midnight.toISOString(), end: null, all_day: true }, 'ics');
+  const timed = await insertEvent(member, 'Late call', midnight, { start: midnight.toISOString(), end: null, all_day: false }, 'ics');
+  assert.equal((await call(member, 'POST', `/api/calendar/events/${allDay}/document`, {}, 201)).document.title, 'Offsite — 16 Dec 2026');
+  assert.equal((await call(member, 'POST', `/api/calendar/events/${timed}/document`, {}, 201)).document.title, 'Late call — 15 Dec 2026',
+    'a timed event at the same instant is dated in the workspace\'s time zone');
 });
 
 test('an attendee address that matches a workspace person in any letter case is theirs: shown by name, or left out, never as an outside attendee', async (t) => {
