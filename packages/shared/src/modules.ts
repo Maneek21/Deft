@@ -878,6 +878,27 @@ export type ModuleField = z.infer<typeof ModuleFieldSchema>;
 export type ModuleFieldV2 = z.infer<typeof ModuleFieldV2Schema>;
 export type ModuleView = z.infer<typeof ModuleViewSchema>;
 
+/** The next version after `installed`: 1.2.3 → 1.2.4, and 1.2.3-beta.1 → 1.2.3. Null when it is not a version. */
+export function nextPatchVersion(installed: string): string | null {
+  const match = SEMVER_REGEX.exec(installed.trim());
+  if (!match) return null;
+  const [, major, minor, patch, prerelease] = match;
+  if (prerelease) return `${major}.${minor}.${patch}`;
+  // BigInt: version numbers may be larger than a JavaScript number holds exactly.
+  return `${major}.${minor}.${BigInt(patch!) + 1n}`;
+}
+
+/**
+ * Why a file whose version is not higher than the installed app's cannot
+ * update it, and what to use instead. Two lines, so that even 64-character
+ * versions keep each line short enough to be shown whole.
+ */
+export function describeVersionNotHigher(installed: string, file: string): string {
+  const next = nextPatchVersion(installed);
+  return `The installed app is ${installed} and this file is ${file === installed ? 'also ' : ''}${file}.\n`
+    + `Give the file a higher version${next ? `, such as ${next}` : ''}.`;
+}
+
 /** Where editors find the JSON Schema for an app file; a file may name it in "$schema". */
 export const DEFT_MODULE_MANIFEST_SCHEMA_URL = 'https://deft.ing/schemas/deft.module.v1.schema.json';
 

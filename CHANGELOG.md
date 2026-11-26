@@ -25,6 +25,22 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
   `compatibility.json` names Deft 0.3.0-preview.138, and that no Email release has been
   tested with 0.3.0-preview.155.
 
+### Clearer messages when an app update is refused
+
+- **Upload new version** with a file whose version is older than, or the same as, the
+  installed app no longer offers **Update**. The check now says the file's version is not
+  higher than the installed one, names both versions, and suggests the next one: "The
+  installed app is 1.2.0 and this file is 1.0.5. Give the file a higher version, such as
+  1.2.1." The server refuses such an update with the same words (it used to suggest 1.0.1
+  whatever the installed version was), and the page no longer adds "Refresh and try again."
+- Removing a record type that still holds records is refused, as before, with a line that
+  says so and names the records, such as: "Roles: record type removed, but it still holds the
+  records "Product designer" and "Backend engineer"". It used to read "Roles → Record: does
+  not fit in …".
+- A `"$schema"` that is not a text URL of at most 2,048 characters is now reported as
+  "$schema: must be a text URL (found a number)" (or "of at most 2048 characters") instead of
+  "unknown key "$schema"".
+
 ## [0.3.0-preview.155] — 2026-11-26 (prerelease)
 
 Changes since `v0.3.0-preview.154`: #610, #613, #609, #614, #615, #616, #617 and #618, plus

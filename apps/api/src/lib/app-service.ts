@@ -186,6 +186,8 @@ function invalidAppPackage(error: unknown, options: ReadableIssueOptions = {}): 
   const readable = formatManifestError(error, {
     subject: 'App package',
     fallback: 'App package is not valid',
+    // A package has no "$schema" link; an app file inside it may (see moduleArtifactRefusal).
+    schemaKeyAllowed: false,
     ...options,
   });
   return new AppError(readable.message, 'APP_INVALID_PACKAGE', 400, {
@@ -228,7 +230,7 @@ function moduleArtifactRefusal(packageJson: string, error: unknown): AppError | 
     try {
       parseDeftModuleManifest(input);
     } catch (moduleError) {
-      return invalidAppPackage(moduleError, { input, source: artifact.content, prefix });
+      return invalidAppPackage(moduleError, { input, source: artifact.content, prefix, schemaKeyAllowed: true });
     }
   }
   return null;

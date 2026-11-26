@@ -34,7 +34,26 @@ describe('"$schema" in an app file', () => {
     let thrown: unknown;
     try { parseSupportedDeftModuleManifest(value); } catch (error) { thrown = error; }
     assert.ok(thrown, 'expected a refusal');
-    assert.deepEqual(formatManifestError(thrown, { input: value }).lines, ['App file: unknown key "$schema": remove it']);
+    assert.deepEqual(formatManifestError(thrown, { input: value }).lines, ['$schema: must be a text URL (found a number)']);
+  });
+
+  test('a "$schema" that is not a short text URL is never called an unknown key', () => {
+    const lines = (value: Record<string, unknown>, options: { schemaKeyAllowed?: boolean } = {}) => {
+      let thrown: unknown;
+      try { parseSupportedDeftModuleManifest(value); } catch (error) { thrown = error; }
+      assert.ok(thrown, 'expected a refusal');
+      return formatManifestError(thrown, { input: value, ...options }).lines;
+    };
+    assert.deepEqual(lines({ ...manifest, $schema: { url: DEFT_MODULE_MANIFEST_SCHEMA_URL } }), ['$schema: must be a text URL (found an object)']);
+    assert.deepEqual(lines({ ...manifest, $schema: null }), ['$schema: must be a text URL (found null)']);
+    assert.deepEqual(lines({ ...manifest, $schema: 'é'.repeat(3000) }), ['$schema: must be a text URL of at most 2048 characters (you have 3000)']);
+    // Other unknown keys are still named as unknown, on their own line.
+    assert.deepEqual(lines({ ...manifest, $schema: 42, colour: 'red' }), [
+      '$schema: must be a text URL (found a number)',
+      'App file: unknown key "colour": remove it',
+    ]);
+    // Where "$schema" is not allowed at all (an App package), it stays an unknown key.
+    assert.deepEqual(lines({ ...manifest, $schema: 42 }, { schemaKeyAllowed: false }), ['App file: unknown key "$schema": remove it']);
   });
 
   test('the JSON Schema lets editors use "$schema" and names its own address', () => {

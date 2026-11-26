@@ -854,3 +854,21 @@ test('latest related declarations validate direct targets, date fields and categ
     assert.equal(schema.safeParse(duplicate).success, false);
   }
 });
+
+describe('an update whose version is not higher than the installed app', () => {
+  test('names both versions and suggests the next patch after the installed one', async () => {
+    const { describeVersionNotHigher, nextPatchVersion } = await import('../src/modules.js');
+    assert.equal(
+      describeVersionNotHigher('1.2.0', '1.0.5'),
+      'The installed app is 1.2.0 and this file is 1.0.5.\nGive the file a higher version, such as 1.2.1.',
+    );
+    assert.equal(
+      describeVersionNotHigher('1.2.0', '1.2.0'),
+      'The installed app is 1.2.0 and this file is also 1.2.0.\nGive the file a higher version, such as 1.2.1.',
+    );
+    assert.equal(nextPatchVersion('1.2.3'), '1.2.4');
+    assert.equal(nextPatchVersion('1.2.3-beta.1'), '1.2.3');
+    assert.equal(nextPatchVersion('1.0.9007199254740992'), '1.0.9007199254740993');
+    assert.equal(nextPatchVersion('not a version'), null);
+  });
+});
