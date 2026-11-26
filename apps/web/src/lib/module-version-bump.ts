@@ -24,6 +24,35 @@ export function nextPatchVersion(active: string): string | null {
   return `${major}.${minor}.${Number(patch) + 1}`;
 }
 
+/**
+ * Semantic-version precedence: negative, zero or positive, or null when either
+ * is not a version. Build metadata (+...) does not count, as on the server.
+ */
+export function compareVersions(left: string, right: string): number | null {
+  const a = SEMVER.exec(left.trim());
+  const b = SEMVER.exec(right.trim());
+  if (!a || !b) return null;
+  for (let index = 1; index <= 3; index += 1) {
+    const difference = Number(a[index]) - Number(b[index]);
+    if (difference !== 0) return difference;
+  }
+  const aPre = a[4]?.split('.') ?? [];
+  const bPre = b[4]?.split('.') ?? [];
+  if (aPre.length === 0 || bPre.length === 0) return bPre.length - aPre.length;
+  for (let index = 0; index < Math.max(aPre.length, bPre.length); index += 1) {
+    const x = aPre[index];
+    const y = bPre[index];
+    if (x === undefined || y === undefined) return x === undefined ? -1 : 1;
+    if (x === y) continue;
+    const xNumeric = /^\d+$/.test(x);
+    const yNumeric = /^\d+$/.test(y);
+    if (xNumeric && yNumeric) return Number(x) - Number(y);
+    if (xNumeric !== yNumeric) return xNumeric ? -1 : 1;
+    return x < y ? -1 : 1;
+  }
+  return 0;
+}
+
 function topLevelVersion(source: string): string | null {
   try {
     const value = JSON.parse(source) as unknown;
@@ -70,6 +99,14 @@ export async function checkModuleManifestEdit(
   const bumpedSource = bumpPatchIfUnchanged(source, active.version);
   try {
     const preview = await previewModuleManifestJson(bumpedSource);
+    const order = compareVersions(preview.version, active.version);
+    if (order !== null && order <= 0) {
+      const next = nextPatchVersion(active.version);
+      return {
+        ok: false,
+        lines: [`version: must be higher than the installed ${active.version}${next ? `, such as ${next}` : ''}`],
+      };
+    }
     if ((active.moduleId && preview.moduleId !== active.moduleId) || (active.slug && preview.slug !== active.slug)) {
       return {
         ok: false,

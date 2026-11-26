@@ -115,3 +115,25 @@ test('record titles from people never bring markup or hidden characters into the
   assert.ok(!error.message.includes(String.fromCodePoint(0x202e)));
   assert.match(error.message, /^Candidates → Email: now required, but empty in "img src=x onerror=alert\(1\) Eve"$/);
 });
+
+test('five records are named in all, across lines, and details stay at 20 records with their problems', { skip: !canRun }, async () => {
+  const names = Array.from({ length: 25 }, (_, index) => ({ name: `Person ${index + 1}` }));
+  const { actor, installed } = await seed(names);
+  const next = hiring('1.1.0', [
+    ...baseFields.map((field) => (field.key === 'email' ? { ...field, required: true } : field)),
+    { key: 'phone', label: 'Phone', type: 'text', required: true },
+  ]);
+  const error = await refusal(upgradeModuleInstallationToManifest(actor, 'misfits', next, {
+    source: 'sideloaded',
+    expected_active_manifest_digest: installed.manifest_digest,
+  }));
+  const lines = error.message.split('\n');
+  assert.equal(lines.length, 2);
+  assert.match(lines[0]!, /^Candidates → Email: now required, but empty in ("Person \d+", ){4}"Person \d+" and 20 more$/);
+  assert.equal(lines[1], 'Candidates → Phone: now required, but empty in 25 records');
+  assert.equal((error.message.match(/"Person/g) ?? []).length, 5);
+  assert.equal(error.details?.record_count, 25);
+  const records = error.details?.records as Array<{ problems: unknown[] }>;
+  assert.equal(records.length, 20);
+  assert.ok(records.every((record) => record.problems.length === 2));
+});

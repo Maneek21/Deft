@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   bumpPatchIfUnchanged,
   checkModuleManifestEdit,
+  compareVersions,
   nextPatchVersion,
   saveModuleManifestEdit,
 } from './module-version-bump';
@@ -103,4 +104,15 @@ test('a stale digest and records that do not fit come back as readable text', as
     () => saveModuleManifestEdit({ slug: 'hiring', source: source('1.0.0'), activeDigest: DIGEST, activeVersion: '1.0.0', fetch: misfit }),
     (error: unknown) => error instanceof Error && error.message === lines[0],
   );
+});
+
+test('a lower version, or one that changes only build metadata, is refused by the check', async () => {
+  const lower = await checkModuleManifestEdit(source('0.9.0'), { version: '1.0.0', moduleId: 'workspace.hiring', slug: 'hiring' });
+  assert.deepEqual(!lower.ok && lower.lines, ['version: must be higher than the installed 1.0.0, such as 1.0.1']);
+  const build = await checkModuleManifestEdit(source('1.0.0+build.7'), { version: '1.0.0', moduleId: 'workspace.hiring', slug: 'hiring' });
+  assert.equal(build.ok, false);
+  const pre = await checkModuleManifestEdit(source('1.1.0-beta.1'), { version: '1.0.0', moduleId: 'workspace.hiring', slug: 'hiring' });
+  assert.equal(pre.ok, true);
+  assert.equal(compareVersions('1.0.0', '1.0.0-rc.1')! > 0, true);
+  assert.equal(compareVersions('1.0.0-alpha.2', '1.0.0-alpha.10')! < 0, true);
 });

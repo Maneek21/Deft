@@ -653,51 +653,16 @@ function decodeCursor(cursor?: string): number {
   }
 }
 
-type RecordMisfit = {
-  record_id: string;
-  collection_key: string;
-  collection_name: string;
-  title: string;
-  problems: Array<{ field: string | null; field_label: string; code: string }>;
-};
-
 const MISFIT_TITLES_NAMED = 5;
 const MISFIT_DETAIL_LIMIT = 20;
 
-/** One record that the new version would refuse, with what a person needs to find it. */
-function recordMisfit(
-  previous: unknown,
-  next: DeftModuleManifestV1,
-  record: { id: string; collection_key: string; data: unknown },
-  error: ModuleRecordValidationError,
-): RecordMisfit {
-  const nextCollection = next.collections.find((item) => item.key === record.collection_key);
-  let previousCollection: DeftModuleManifestV1['collections'][number] | undefined;
-  try {
-    previousCollection = parseDeftModuleManifest(previous).collections.find((item) => item.key === record.collection_key);
-  } catch {
-    previousCollection = undefined;
-  }
-  let title: string | null = null;
-  try {
-    title = projectModuleRecordDisplayTitle(previous, record.collection_key, record.data);
-  } catch {
-    title = null;
-  }
-  const label = (field: string | null) => {
-    if (!field) return 'Record';
-    const found = nextCollection?.fields.find((item) => item.key === field)
-      ?? previousCollection?.fields.find((item) => item.key === field);
-    return found?.label ?? field;
-  };
-  return {
-    record_id: record.id,
-    collection_key: record.collection_key,
-    collection_name: nextCollection?.name ?? previousCollection?.name ?? record.collection_key,
-    title: cleanIssueLabel(title ?? '', 60) ?? `Record ${record.id.slice(0, 8)}`,
-    problems: error.issues.map((issue) => ({ field: issue.field, field_label: label(issue.field), code: issue.code })),
-  };
-}
+type MisfitGroup = { collection: string; field: string; code: string; count: number; titles: string[] };
+type MisfitDetail = {
+  record_id: string;
+  collection_key: string;
+  title: string;
+  problems: Array<{ field: string | null; code: string }>;
+};
 
 function misfitProblem(code: string): string {
   switch (code) {
@@ -710,51 +675,94 @@ function misfitProblem(code: string): string {
   }
 }
 
-function quotedTitles(titles: string[], budget: number): string {
-  const shown = titles.slice(0, Math.max(1, budget)).map((title) => `"${title}"`);
-  const rest = titles.length - shown.length;
-  if (rest > 0) return `${shown.join(', ')} and ${rest} more`;
-  if (shown.length === 1) return shown[0]!;
-  return `${shown.slice(0, -1).join(', ')} and ${shown[shown.length - 1]}`;
+/** "Dana" and "Sam"; "Dana", "Sam" and 3 more; or "7 records" once the names run out. */
+function describeMisfitRecords(titles: string[], count: number): string {
+  const quoted = titles.map((title) => `"${title}"`);
+  if (quoted.length === 0) return `${count} ${count === 1 ? 'record' : 'records'}`;
+  const rest = count - quoted.length;
+  if (rest > 0) return `${quoted.join(', ')} and ${rest} more`;
+  if (quoted.length === 1) return quoted[0]!;
+  return `${quoted.slice(0, -1).join(', ')} and ${quoted[quoted.length - 1]}`;
 }
 
 /**
- * An upgrade refused because records do not fit: one plain line per record
- * type, field and problem, naming up to five records by title in all.
+ * Collects the records an upgrade would refuse, as it checks them, so the
+ * refusal can name them. Work per record is constant: each group keeps a
+ * count and at most five titles, and at most 20 records are kept in detail.
  */
-function recordsDoNotFit(misfits: RecordMisfit[]): ModuleError {
-  const groups = new Map<string, { collection: string; field: string; code: string; titles: string[] }>();
-  for (const misfit of misfits) {
-    for (const problem of misfit.problems) {
-      const key = `${misfit.collection_key}\u0000${problem.field ?? ''}\u0000${problem.code}`;
-      const group = groups.get(key) ?? {
-        collection: cleanIssueLabel(misfit.collection_name) ?? misfit.collection_key,
-        field: cleanIssueLabel(problem.field_label) ?? 'Record',
-        code: problem.code,
-        titles: [],
-      };
-      if (!group.titles.includes(misfit.title)) group.titles.push(misfit.title);
-      groups.set(key, group);
+class RecordMisfits {
+  count = 0;
+  private readonly groups = new Map<string, MisfitGroup>();
+  private readonly details: MisfitDetail[] = [];
+  private readonly previous: DeftModuleManifestV1 | null;
+
+  constructor(previousValue: unknown, private readonly next: DeftModuleManifestV1) {
+    let previous: DeftModuleManifestV1 | null = null;
+    try {
+      previous = parseDeftModuleManifest(previousValue);
+    } catch {
+      previous = null;
+    }
+    this.previous = previous;
+  }
+
+  add(record: { id: string; collection_key: string; data: unknown }, error: ModuleRecordValidationError): void {
+    this.count += 1;
+    const nextCollection = this.next.collections.find((item) => item.key === record.collection_key);
+    const previousCollection = this.previous?.collections.find((item) => item.key === record.collection_key);
+    const title = misfitTitle(previousCollection ?? nextCollection, record.data, record.id);
+    const collectionName = cleanIssueLabel(nextCollection?.name ?? previousCollection?.name ?? record.collection_key)
+      ?? record.collection_key;
+    for (const issue of error.issues) {
+      const key = `${record.collection_key}|${issue.field ?? ''}|${issue.code}`;
+      let group = this.groups.get(key);
+      if (!group) {
+        const field = issue.field
+          ? (nextCollection?.fields.find((item) => item.key === issue.field)
+            ?? previousCollection?.fields.find((item) => item.key === issue.field))?.label ?? issue.field
+          : 'Record';
+        group = { collection: collectionName, field: cleanIssueLabel(field) ?? 'Record', code: issue.code, count: 0, titles: [] };
+        this.groups.set(key, group);
+      }
+      group.count += 1;
+      if (group.titles.length < MISFIT_TITLES_NAMED) group.titles.push(title);
+    }
+    if (this.details.length < MISFIT_DETAIL_LIMIT) {
+      this.details.push({
+        record_id: record.id,
+        collection_key: record.collection_key,
+        title,
+        problems: error.issues.map((issue) => ({ field: issue.field, code: issue.code })),
+      });
     }
   }
-  let budget = MISFIT_TITLES_NAMED;
-  const lines = [...groups.values()].map((group) => {
-    const line = `${group.collection} → ${group.field}: ${misfitProblem(group.code)} ${quotedTitles(group.titles, budget)}`;
-    budget = Math.max(1, budget - group.titles.length);
-    return line;
-  });
-  const readable = limitIssueLines(lines);
-  return new ModuleError(readable.join('\n'), 'MODULE_VALIDATION_ERROR', 400, {
-    lines: readable,
-    record_count: misfits.length,
-    records: misfits.slice(0, MISFIT_DETAIL_LIMIT).flatMap((misfit) => misfit.problems.map((problem) => ({
-      record_id: misfit.record_id,
-      collection_key: misfit.collection_key,
-      title: misfit.title,
-      field: problem.field,
-      code: problem.code,
-    }))),
-  });
+
+  /** One plain line per record type, field and problem, naming five records in all. */
+  error(): ModuleError {
+    let budget = MISFIT_TITLES_NAMED;
+    const lines = [...this.groups.values()].map((group) => {
+      const shown = group.titles.slice(0, budget);
+      budget -= shown.length;
+      return `${group.collection} → ${group.field}: ${misfitProblem(group.code)} ${describeMisfitRecords(shown, group.count)}`;
+    });
+    const readable = limitIssueLines(lines);
+    return new ModuleError(readable.join('\n'), 'MODULE_VALIDATION_ERROR', 400, {
+      lines: readable,
+      record_count: this.count,
+      records: this.details,
+    });
+  }
+}
+
+function misfitTitle(
+  collection: DeftModuleManifestV1['collections'][number] | undefined,
+  data: unknown,
+  recordId: string,
+): string {
+  const key = collection?.search?.title_field ?? collection?.fields[0]?.key;
+  const value = key && data && typeof data === 'object' ? (data as Record<string, unknown>)[key] : undefined;
+  const text = typeof value === 'string' || typeof value === 'number' ? String(value) : '';
+  return cleanIssueLabel(text, 60) ?? `Record ${recordId.slice(0, 8)}`;
 }
 
 function validationError(error: ModuleRecordValidationError): ModuleError {
@@ -2344,17 +2352,17 @@ export async function upgradeModuleInstallationToManifest(
     }> = [];
     // Check every record before refusing, so the refusal can name the
     // records that do not fit the new version, not just the first field.
-    const misfits: RecordMisfit[] = [];
+    const misfits = new RecordMisfits(current.version.manifest, manifest);
     for (const record of records) {
       let data: ModuleRecordData;
       try {
         data = parseModuleRecordData(manifest, record.collection_key, record.data);
       } catch (error) {
         if (!(error instanceof ModuleRecordValidationError)) throw error;
-        misfits.push(recordMisfit(current.version.manifest, manifest, record, error));
+        misfits.add(record, error);
         continue;
       }
-      if (misfits.length > 0) continue;
+      if (misfits.count > 0) continue;
       await assertMemberFieldsValid(tx, actor.org_id, manifest, record.collection_key, data);
       validatedRecords.push({
         row: record,
@@ -2362,7 +2370,7 @@ export async function upgradeModuleInstallationToManifest(
         projection: projectModuleRecordSearch(manifest, record.collection_key, data),
       });
     }
-    if (misfits.length > 0) throw recordsDoNotFit(misfits);
+    if (misfits.count > 0) throw misfits.error();
 
     const activeRelations = await tx
       .select()
