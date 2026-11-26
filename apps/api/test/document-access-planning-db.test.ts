@@ -142,6 +142,11 @@ test('the attention, export and retrieval forms plan within budget', async (t) =
         eq(notifications.user_id, member), eq(notifications.org_id, fx.orgId),
         nativeNotificationAccessSql(member, sql`${notifications.metadata}`, sql`${notifications.org_id}`),
       )).orderBy(desc(notifications.created_at)).limit(50).toSQL()],
+      // GET /api/dashboard's unread count: the same rule, as a count.
+      ['dashboard unread count', db.select({ count: sql<number>`count(*)::int` }).from(notifications).where(and(
+        eq(notifications.org_id, fx.orgId), eq(notifications.user_id, member), eq(notifications.is_read, false),
+        nativeNotificationAccessSql(member, sql`${notifications.metadata}`, sql`${notifications.org_id}`),
+      )).toSQL()],
       // The Inbox rule for document items (F9): the item's workspace and document are columns of the statement.
       ['attention items', db.select({ id: attentionItems.id }).from(attentionItems).where(and(
         eq(attentionItems.org_id, fx.orgId), eq(attentionItems.user_id, member), eq(attentionItems.source_type, 'document'),

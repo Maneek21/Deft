@@ -6,7 +6,8 @@ import { sql } from 'drizzle-orm';
  * as `@deft/db/documents` rather than from schema.ts. The upgrade file also
  * holds what this mirror leaves out: the org-qualified foreign keys, the
  * CHECKs, the principal check trigger (a member or share principal must
- * belong to the row's workspace), the member check trigger (a personal
+ * belong to the row's workspace when it is written: on insert, or an update
+ * of the org or the principal, never a role-only change), the member check trigger (a personal
  * drive's owner and a favorite's user need an `org_members` row in the row's
  * workspace) and the trigger that fills `documents.search_vector`. */
 

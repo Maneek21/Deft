@@ -9,7 +9,7 @@ import { viewerReviewAuthority } from '../lib/agent-approval-resolver.js';
 import {readEmailCalendarOccurrences} from '../lib/email-calendar-projection.js';
 import { getDayBoundaries, resolveViewerTimezone } from '../lib/task-dates.js';
 import { visibleTaskCondition, visibleTaskSql } from '../lib/task-visibility.js';
-import { noticeNamesGuestHiddenTaskSql } from '../lib/native-mention-visibility.js';
+import { nativeNotificationAccessSql } from '../lib/native-mention-visibility.js';
 import { peopleViewer } from '../lib/people-visibility.js';
 
 /** Full workspace members; guests and unresolved roles are excluded from org-wide standups. */
@@ -278,12 +278,13 @@ dashboardRoutes.get('/', async (c) => {
     }
 
     // 8. Unread notification count
-    // A guest's count leaves out notices of tasks hidden from them, as their
-    // notification list does (lib/native-mention-visibility.ts).
+    // The notification list's own rule (lib/native-mention-visibility.ts): a
+    // guest's count leaves out notices of tasks hidden from them, and nobody's
+    // counts a notice of a chat, message or drive they can no longer read.
     const [notifCount] = await db.select({ count: sql<number>`count(*)::int` })
       .from(notifications)
       .where(and(eq(notifications.org_id, user.org_id), eq(notifications.user_id, user.id), eq(notifications.is_read, false),
-        sql`NOT ${noticeNamesGuestHiddenTaskSql(user.id, sql`${notifications.metadata}`, sql`${notifications.org_id}`, sql`${notifications.link}`)}`));
+        nativeNotificationAccessSql(user.id, sql`${notifications.metadata}`, sql`${notifications.org_id}`)));
 
     // 8b. Recent/pending agent activity for the cockpit surface. This keeps
     // the dashboard useful even when the frontend only renders a subset.

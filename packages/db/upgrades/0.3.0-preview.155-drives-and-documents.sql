@@ -258,12 +258,16 @@ BEGIN
 END;
 $$;
 
+-- Checked when a principal is written: on insert, and on an update that sets
+-- the org or the principal. A role-only change doesn't re-check, so a grant
+-- that went stale (its chat moved to another workspace, its person left) can
+-- still be lowered.
 CREATE TRIGGER drive_members_principal_check
-  BEFORE INSERT OR UPDATE ON drive_members
+  BEFORE INSERT OR UPDATE OF org_id, principal_type, principal_id ON drive_members
   FOR EACH ROW EXECUTE FUNCTION doc_principal_check();
 
 CREATE TRIGGER document_shares_principal_check
-  BEFORE INSERT OR UPDATE ON document_shares
+  BEFORE INSERT OR UPDATE OF org_id, principal_type, principal_id ON document_shares
   FOR EACH ROW EXECUTE FUNCTION doc_principal_check();
 
 -- A personal drive's owner and a favorite's user must have an org_members row

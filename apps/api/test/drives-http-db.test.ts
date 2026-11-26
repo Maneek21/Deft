@@ -29,6 +29,7 @@ import { createRequire } from 'node:module';
 import { isDeepStrictEqual } from 'node:util';
 import test, { after, before } from 'node:test';
 import { sql } from 'drizzle-orm';
+import pg from 'pg';
 import { closeDb } from '../src/lib/db.js';
 import { driveRoleFor, documentRoleFor } from '../src/lib/document-access.js';
 import { emitDocumentUpdated, onDocumentAccessChanged, type DocumentAccessChange } from '../src/lib/document-access-events.js';
@@ -37,6 +38,7 @@ import { onDocumentEvent, type DocumentLifecycleEvent } from '../src/lib/documen
 import { ensurePersonalDrive, ensureSharedNotesDrive, ensureWorkspaceDrive, PrincipalCannotHoldAccessError } from '../src/lib/drives.js';
 import { humanAgentEmployeeUpdateState } from '../src/lib/mcp-tools/human.js';
 import { agentEmployeeRoutes } from '../src/routes/agent-employees.js';
+import { dashboardRoutes } from '../src/routes/dashboard.js';
 import { driveRoutes } from '../src/routes/drives.js';
 import { spaceRoutes } from '../src/routes/spaces.js';
 import { memberRoutes } from '../src/routes/members.js';
@@ -55,6 +57,7 @@ const ROUTES = [
   { path: '/api/members', app: memberRoutes },
   { path: '/api/notifications', app: notificationRoutes },
   { path: '/api/agent-employees', app: agentEmployeeRoutes },
+  { path: '/api/dashboard', app: dashboardRoutes },
 ];
 let fx: DrivesFixture | undefined;
 
@@ -888,6 +891,117 @@ test('member changes on several drives at once finish: chat checks run on the dr
     { principal_type: 'space', principal_id: fx!.spaces.other, role: 'view' })));
   assert.deepEqual(responses.map((res) => res.status), many.map(() => 201));
   assert.ok(Date.now() - started < 4_000, `took ${Date.now() - started} ms`);
+});
+
+test('a notification naming a document fails closed: with a drive it needs that drive, and without one it is never shown', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member, member2 } = fx.people;
+  const drive = await createDrive(member, { name: 'Document notices', kind: 'private' });
+  await addMember(member, drive, { user: member2 }, 'view');
+  const [withDrive, withoutDrive] = [randomUUID(), randomUUID()];
+  await fx.client.query(`INSERT INTO notifications (id, org_id, user_id, type, title, metadata) VALUES
+    ($1, $3, $4, 'system', 'A document', jsonb_build_object('document_id', $5::text, 'drive_id', $6::text)),
+    ($2, $3, $4, 'system', 'A document', jsonb_build_object('document_id', $7::text))`,
+  [withDrive, withoutDrive, fx.orgId, member2, randomUUID(), drive, randomUUID()]);
+  const inbox = async () => {
+    const body = await call(member2, 'GET', '/api/notifications', undefined, 200);
+    const ids = new Set((body.notifications as any[]).map((row) => row.id));
+    return { withDrive: ids.has(withDrive), withoutDrive: ids.has(withoutDrive), unread: body.unread_count as number };
+  };
+  const before = await inbox();
+  assert.equal(before.withDrive, true, 'naming a drive member2 can view');
+  assert.equal(before.withoutDrive, false, 'a document with no drive is never shown (no document rule yet)');
+  await call(member, 'DELETE', `/api/drives/${drive}/members/${await memberRowId(drive, member2)}`, undefined, 200);
+  const after = await inbox();
+  assert.equal(after.withDrive, false, 'a document_id does not skip the drive check');
+  assert.equal(after.withoutDrive, false);
+  assert.equal(after.unread, before.unread - 2, 'this notice and the drive_member notice leave the count');
+});
+
+test('the dashboard unread count leaves out a drive notification once drive access ends', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member, member2 } = fx.people;
+  const drive = await createDrive(member, { name: 'Dashboard count', kind: 'private' });
+  await addMember(member, drive, { user: member2 }, 'view');
+  const unread = async () => (await call(member2, 'GET', '/api/dashboard', undefined, 200)).unread_notifications as number;
+  const before = await unread();
+  await call(member, 'DELETE', `/api/drives/${drive}/members/${await memberRowId(drive, member2)}`, undefined, 200);
+  assert.equal(await unread(), before - 1, 'the drive_member notice is no longer counted');
+});
+
+test('a stale chat grant can be lowered and removed: the principal is checked only when it is written', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member, member2 } = fx.people;
+  const q = (text: string, values: unknown[]) => fx!.client.query(text, values);
+  const chat = randomUUID();
+  await q(`INSERT INTO spaces (id, org_id, name, type, created_by) VALUES ($1, $2, $3, 'private', $4)`, [chat, fx.orgId, `moving-${chat.slice(0, 8)}`, member]);
+  await q('INSERT INTO space_members (id, space_id, user_id) VALUES ($1, $3, $4), ($2, $3, $5)', [randomUUID(), randomUUID(), chat, member, member2]);
+  const drive = await createDrive(member, { name: 'Stale chat', kind: 'private' });
+  await addMember(member, drive, { space: chat }, 'edit');
+  const row = await memberRowId(drive, chat);
+  const document = await fx.insertDocument({ driveId: drive, title: 'Shared with the chat' });
+  await fx.share(document, { space: chat }, 'edit');
+  // The chat moves to the other workspace: both grants are stale.
+  await q('UPDATE spaces SET org_id = $1 WHERE id = $2', [fx.otherOrgId, chat]);
+
+  resetEvents();
+  const generation = currentAccessGeneration();
+  assert.equal((await call(member, 'PATCH', `/api/drives/${drive}/members/${row}`, { role: 'view' }, 200)).member.role, 'view');
+  assertOneLoss({ orgId: fx.orgId, driveId: drive, spaceId: chat }, generation);
+  // Raising it is a new grant, and the chat is no longer this workspace's.
+  assert.equal((await call(member, 'PATCH', `/api/drives/${drive}/members/${row}`, { role: 'edit' }, 400)).code, 'PRINCIPAL_CANNOT_HOLD_ACCESS');
+  // A role-only change of a stale share is allowed too (F9 lowers shares this way).
+  await q(`UPDATE document_shares SET role = 'view' WHERE document_id = $1 AND principal_id = $2`, [document, chat]);
+  await call(member, 'DELETE', `/api/drives/${drive}/members/${row}`, undefined, 200);
+
+  // Writing a principal of another workspace is still refused, on insert and on an update of the principal.
+  const refused = (error: any) => error?.code === '23503';
+  await assert.rejects(q(`INSERT INTO drive_members (id, org_id, drive_id, principal_type, principal_id, role) VALUES ($1, $2, $3, 'space', $4, 'view')`,
+    [randomUUID(), fx.orgId, drive, chat]), refused);
+  await assert.rejects(q('UPDATE drive_members SET principal_id = $1 WHERE drive_id = $2 AND principal_id = $3', [fx.people.outsider, drive, member]), refused);
+  await assert.rejects(q('UPDATE document_shares SET principal_id = principal_id WHERE document_id = $1 AND principal_id = $2', [document, chat]), refused);
+  await assert.rejects(q(`INSERT INTO document_shares (id, org_id, document_id, principal_type, principal_id, role) VALUES ($1, $2, $3, 'user', $4, 'view')`,
+    [randomUUID(), fx.orgId, document, fx.people.outsider]), refused);
+});
+
+async function waitUntil(cond: () => Promise<boolean>, label: string, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await cond()) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+  assert.ok(await cond(), `timed out: ${label}`);
+}
+
+test('a demotion cannot commit in the middle of an admin-path member add: it waits, and the add commits as an admin change', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { admin, member, member2, owner } = fx.people;
+  const drive = await createDrive(member, { name: 'Racing an admin', kind: 'private' });
+  const waitingOn = async (event: string) => (await fx!.client.query(`SELECT count(*)::int AS n FROM pg_stat_activity
+    WHERE datname = current_database() AND wait_event_type = 'Lock' AND wait_event = $1`, [event])).rows[0].n as number;
+  // A second connection holds the drive row, so the add stops there, after its first locks.
+  const holder = new pg.Client({ connectionString: url });
+  await holder.connect();
+  try {
+    await holder.query('BEGIN');
+    await holder.query('SELECT id FROM drives WHERE id = $1 FOR UPDATE', [drive]);
+    const add = fx.request(admin, 'POST', `/api/drives/${drive}/members`, { principal_type: 'user', principal_id: member2, role: 'view' });
+    await waitUntil(async () => (await waitingOn('transactionid')) + (await waitingOn('tuple')) > 0, 'the add is waiting on the drive row');
+    let demotionDone = false;
+    const demotion = fx.request(owner, 'PATCH', `/api/members/${admin}`, { role: 'member' }).then((res) => { demotionDone = true; return res; });
+    await waitUntil(async () => demotionDone || (await waitingOn('advisory')) > 0, 'the demotion is waiting on the admin’s room-access lock');
+    assert.equal(demotionDone, false, 'the demotion has not committed while the add is open');
+    await holder.query('ROLLBACK');
+    const added = await add;
+    assert.equal(added.status, 201, await added.clone().text());
+    assert.equal((await demotion).status, 200);
+    const { rows: audits } = await fx.client.query(`SELECT actor_id FROM audit_log WHERE org_id = $1 AND entity_id = $2 AND action = 'drive_member_changed_by_admin'`,
+      [fx.orgId, drive]);
+    assert.deepEqual(audits.map((row) => row.actor_id), [admin], 'the add committed as the admin’s change, before the demotion');
+    const { rows: [after] } = await fx.client.query('SELECT role FROM org_members WHERE org_id = $1 AND user_id = $2', [fx.orgId, admin]);
+    assert.equal(after.role, 'member', 'then the demotion committed');
+  } finally {
+    await holder.query('ROLLBACK').catch(() => undefined);
+    await holder.end();
+    await fx.client.query(`UPDATE org_members SET role = 'admin' WHERE org_id = $1 AND user_id = $2`, [fx.orgId, admin]);
+  }
 });
 
 test('the drive routes answer a drive of another workspace with 404', async (t) => {

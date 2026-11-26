@@ -45,12 +45,18 @@
 // in their own name (GET /without-manager), and give one a manager through
 // the admin path above.
 //
-// Lock order with departures: removing someone from the workspace takes
-// their room-access lock first, deletes their chat seats, then freezes their
-// drive. A change here that share-locks the caller's chat seat (linking a
-// chat, raising a link row) takes the caller's room-access lock first, then
-// the drive lock, then the seat, so it never holds the drive while waiting on
-// a seat a removal holds (lib/room-access-lock.ts).
+// Lock order (lockActorInTx): every drive write (create, settings, delete,
+// member add, change and removal, link and unlink) first takes the actor's
+// room-access lock (lib/room-access-lock.ts), then their org_members row FOR
+// SHARE, then the drive row, then anything under it (a chat seat FOR SHARE,
+// member rows). That is the departure path's own order: removing someone,
+// changing their workspace role and removing them from a chat all take
+// their room-access lock first, then their membership rows (a removal then
+// freezes their drive). So an actor's demotion, removal or loss of a chat
+// waits for a write they have started, or the write waits and then reads
+// the change, and nothing deadlocks against a departure. The share lock on
+// the membership row also holds against changes that don't take the
+// room-access lock (deleting an agent employee locks the agent's rows).
 //
 // Deleting a drive, or changing its Knowledge default, raises a lifecycle
 // event for each of its documents, so Knowledge withdraws or re-learns them
@@ -186,6 +192,20 @@ async function workspaceRole(reader: Reader, user: AuthUser, lock = false): Prom
     .where(and(eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, user.id), eq(orgMembers.is_active, true), eq(users.kind, 'human')))
     .limit(1);
   const [membership] = lock ? await query.for('share', { of: orgMembers }) : await query;
+  return membership?.role ?? null;
+}
+
+/**
+ * A drive write's first locks, in the order in the header: the actor's
+ * room-access lock, then their active org_members row FOR SHARE. Returns
+ * their workspace role, or null when they have no active membership.
+ */
+async function lockActorInTx(tx: Tx, user: AuthUser): Promise<string | null> {
+  await lockRoomAccessChange(tx, user.org_id, user.id);
+  const [membership] = await tx.select({ role: orgMembers.role }).from(orgMembers)
+    .where(and(eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, user.id), eq(orgMembers.is_active, true)))
+    .limit(1)
+    .for('share');
   return membership?.role ?? null;
 }
 
@@ -479,13 +499,14 @@ driveRoutes.post('/', async (c) => {
     if (!parsed.success) return answer(c, invalid());
     const { name, kind, icon } = parsed.data;
     if (kind === 'private' && parsed.data.default_role) return answer(c, invalid('A private drive has no default role'));
-    const [membership] = await db.select({ role: orgMembers.role }).from(orgMembers)
-      .where(and(eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, user.id), eq(orgMembers.is_active, true))).limit(1);
-    if (membership?.role === 'guest') return c.json({ error: 'Guests can’t create drives', code: 'GUEST_FORBIDDEN' }, 403);
-    if (!membership || !(await canHoldDocumentAccess(user.id, user.org_id))) {
-      return c.json({ error: 'Not an active member of this workspace', code: 'ORG_MEMBERSHIP_INACTIVE' }, 403);
-    }
     const drive = await db.transaction(async (tx) => {
+      // The membership is checked under its share lock, before the drive or
+      // the owner row exists: a change to guest can't commit in between.
+      const role = await lockActorInTx(tx, user);
+      if (role === 'guest') throw new Refused(refusal(403, 'Guests can’t create drives', 'GUEST_FORBIDDEN'));
+      if (!role || !(await canHoldDocumentAccess(user.id, user.org_id, tx))) {
+        throw new Refused(refusal(403, 'Not an active member of this workspace', 'ORG_MEMBERSHIP_INACTIVE'));
+      }
       const [created] = await tx.insert(drives).values({
         org_id: user.org_id, name, icon: icon ?? null, kind,
         default_role: kind === 'open' ? (parsed.data.default_role ?? 'edit') : null, created_by: user.id,
@@ -496,7 +517,8 @@ driveRoutes.post('/', async (c) => {
       return created!;
     });
     return c.json({ drive: driveShape(drive, 'full', false) }, 201);
-  } catch {
+  } catch (error) {
+    if (error instanceof Refused) return answer(c, error.refusal);
     return failed(c, 'create the drive');
   }
 });
@@ -522,6 +544,7 @@ driveRoutes.patch('/:id', async (c) => {
     if (!parsed.success) return answer(c, invalid());
     const patch = parsed.data;
     const outcome = await db.transaction(async (tx) => {
+      await lockActorInTx(tx, user);
       const { drive, role } = await locked(tx, user, c.req.param('id'), 'full');
       if (patch.default_role !== undefined && drive.kind !== 'open') throw new Refused(invalid('Only an open drive has a default role'));
       const set: Partial<typeof drives.$inferInsert> = {};
@@ -561,6 +584,7 @@ driveRoutes.delete('/:id', async (c) => {
   try {
     const user = c.get('user');
     const outcome = await db.transaction(async (tx) => {
+      await lockActorInTx(tx, user);
       const { drive } = await locked(tx, user, c.req.param('id'), 'full');
       if (drive.system_key) throw new Refused(refusal(409, 'This drive belongs to the workspace and can’t be deleted', 'SYSTEM_DRIVE'));
       // It holds every personal document: deleting it would trash them all at once.
@@ -647,6 +671,7 @@ driveRoutes.post('/:id/members', async (c) => {
     if (!parsed.success) return answer(c, invalid());
     const { principal_type: principalType, principal_id: principalId, role } = parsed.data;
     const outcome = await db.transaction(async (tx) => {
+      await lockActorInTx(tx, user);
       const access = await locked(tx, user, c.req.param('id'), 'manage');
       const refused = await principalRefusal(tx, user, principalType, principalId);
       if (refused) throw new Refused(refused);
@@ -698,9 +723,8 @@ driveRoutes.patch('/:id/members/:memberId', async (c) => {
     if (!parsed.success) return answer(c, invalid());
     const { role } = parsed.data;
     const outcome = await db.transaction(async (tx) => {
-      // Raising a link row share-locks the caller's chat seat: their
-      // room-access lock comes first (the lock order in the header).
-      await lockRoomAccessChange(tx, user.org_id, user.id);
+      // The lock order in the header; raising a link row then share-locks the caller's chat seat.
+      await lockActorInTx(tx, user);
       const access = await locked(tx, user, c.req.param('id'), 'manage');
       const row = await lockedMember(tx, access, c.req.param('memberId'));
       if (row.role === role) return { access, member: row, previous: row.role, loss: null };
@@ -737,6 +761,7 @@ driveRoutes.delete('/:id/members/:memberId', async (c) => {
   try {
     const user = c.get('user');
     const outcome = await db.transaction(async (tx) => {
+      await lockActorInTx(tx, user);
       const access = await locked(tx, user, c.req.param('id'), 'manage');
       const row = await lockedMember(tx, access, c.req.param('memberId'));
       await tx.delete(driveMembers).where(eq(driveMembers.id, row.id));
@@ -764,9 +789,8 @@ driveRoutes.post('/:id/link-space', async (c) => {
     if (!parsed.success) return answer(c, invalid());
     const { space_id: spaceId, role } = parsed.data;
     const outcome = await db.transaction(async (tx) => {
-      // The caller's room-access lock, then the drive, then their chat seat
-      // (the lock order in the header).
-      await lockRoomAccessChange(tx, user.org_id, user.id);
+      // The lock order in the header: actor, drive, then their chat seat.
+      await lockActorInTx(tx, user);
       const access = await locked(tx, user, c.req.param('id'), 'full');
       await requireChatSeatLocked(tx, user, spaceId);
       const [linked] = await tx.select({ id: driveMembers.id }).from(driveMembers).where(and(
@@ -806,6 +830,7 @@ driveRoutes.delete('/:id/link-space/:spaceId', async (c) => {
     const user = c.get('user');
     const spaceId = c.req.param('spaceId');
     const outcome = await db.transaction(async (tx) => {
+      await lockActorInTx(tx, user);
       const access = await locked(tx, user, c.req.param('id'), 'full');
       const removed = await tx.delete(driveMembers).where(and(
         eq(driveMembers.drive_id, access.drive.id), eq(driveMembers.principal_type, 'space'), eq(driveMembers.principal_id, spaceId),

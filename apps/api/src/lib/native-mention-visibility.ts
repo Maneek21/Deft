@@ -80,13 +80,15 @@ export function nativeDeliveryAccessSql(userId: string | SQL, deliveryId: SQL, o
  * notification's link (`/chat?space=…&message=…`, or the old `/spaces/…`).
  * A notification that names a task is hidden from a guest who may not see
  * that task (noticeNamesGuestHiddenTaskSql). A notification that names a
- * drive (`metadata.drive_id`) and no document is shown only while the reader
- * can view that drive (visibleDriveIdSql): a drive shared with them, or an
- * admin's change to a private drive's members. That check stands outside the
- * mention/source CASE, so it holds whichever branch the notification takes,
- * a mention delivery included. F9 adds the document branch. A notification
- * that names none of these (reminders without a source, system notices) is
- * unaffected.
+ * drive (`metadata.drive_id`) is shown only while the reader can view that
+ * drive (visibleDriveIdSql): a drive shared with them, or an admin's change
+ * to a private drive's members. It fails closed for documents: until F9 adds
+ * the document branch, a notification naming a document
+ * (`metadata.document_id`) and no drive is never shown, and one naming both
+ * still needs the drive. These checks stand outside the mention/source CASE,
+ * so they hold whichever branch the notification takes, a mention delivery
+ * included. A notification that names none of these (reminders without a
+ * source, system notices) is unaffected.
  */
 export function nativeNotificationAccessSql(
   userId: string | SQL, metadata: SQL, orgId: SQL, link: SQL = sql`${notifications.link}`,
@@ -104,7 +106,8 @@ export function nativeNotificationAccessSql(
         SELECT 1 FROM messages nlm WHERE nlm.id = ${messageId} AND nlm.org_id = ${orgId}
           AND nlm.is_deleted = false AND ${readableSpaceSql(userId, sql`nlm.space_id`, orgId)}))
     END)
-    AND (${driveId} IS NULL OR ${metadata}->>'document_id' IS NOT NULL OR ${visibleDriveIdSql(userId, orgId, driveId)})
+    AND (${driveId} IS NULL OR ${visibleDriveIdSql(userId, orgId, driveId)})
+    AND (${metadata}->>'document_id' IS NULL OR ${driveId} IS NOT NULL)
     AND NOT ${noticeNamesGuestHiddenTaskSql(userId, metadata, orgId, link)})`;
 }
 
