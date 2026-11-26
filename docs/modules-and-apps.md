@@ -4,7 +4,7 @@ For Deft v0.3.0-preview.155.
 
 An **app** is what you install, build, and turn on or off in Deft. It adds record types, fields, links and views (boards, tables, timelines, forms and record pages) to your workspace. You describe it in one **app file**, `deft.module.json`. "Module" is the name of that file format in the code and on the command line; everything you see in Deft calls it an app.
 
-An **App package** (`deft.app.json`, built with App Kit) is a different format. It wraps app files and can ask for connected actions that need a reviewed runtime. At this release App packages are for Deft's own Email; build your own app as an app file.
+An **App package** (`deft.app.json`, built with App Kit) is a different format. It wraps app files and can ask for connected actions that need a reviewed runtime. At this release App packages are for Deft's own Email, a self-hosted developer preview; hosted Deft doesn't include Email at launch. Build your own app as an app file.
 
 ## Choose what you need
 
@@ -12,7 +12,7 @@ An **App package** (`deft.app.json`, built with App Kit) is a different format. 
 |---|---|---|
 | Track vendors, candidates, content or other records your team shares | An app: start from a starter app, or upload an app file | **Settings → Apps**: **Start from a template**, or **Upload an app** |
 | Change an app you installed | The app's file | **Edit** on its card in **Settings → Apps**, or **Upload new version** |
-| Add Email to the workspace | Deft's Email App package | Its own release and install guide |
+| Add Email to a self-hosted install (a developer preview; hosted Deft doesn't include Email at launch) | Deft's Email App package | Its own release and install guide |
 
 Follow [Build your first app](tutorials/first-module.md) for the whole path, from a starter app to editing in the browser and uploading your own file. The [app file reference](https://deft.ing/docs/modules/) lists every field type, view and limit.
 
@@ -26,13 +26,13 @@ An installed app can be turned off, which hides it and keeps its records, but no
 
 ## App packages at this release
 
-App packages are for Deft's own Email at launch, and we don't recommend building your own yet:
+App packages are for Deft's own Email, a self-hosted developer preview (hosted Deft doesn't include Email at launch), and we don't recommend building your own yet:
 
 - A basic App package you build yourself (App Protocol 0, records and views only) can be staged and turned on, but **it can't be upgraded yet**: Deft refuses another version of it, and it can't be uninstalled. Changing it means starting a new App with a new id. Connected packages have a separate, reviewed upgrade flow for operators.
-- Apps are off by default on a self-hosted install, and developer pairing is off on hosted workspaces.
+- Apps are off by default on a self-hosted install, and developer pairing is off on hosted workspaces. Hosted Deft has no Email: new hosted workspaces get no Email helper.
 - Asking for a permission is a request for review, not a grant. A connected package is staged first; an owner or admin reviews it, binds an eligible provider, and activates it.
 
-For the Email App, use the [Email reference implementation](https://github.com/Maneek21/deft-email) and the versions in the `compatibility.json` attached to the Email release you install. The [App author guide](connected-app-author-guide.md) and [App Run operations guide](app-run-operations.md) cover packages and their runtime for operators.
+For the self-hosted Email developer preview, use the [Email reference implementation](https://github.com/Maneek21/deft-email) and the versions in the `compatibility.json` attached to the Email release you install. The newest Email release, v1.9.0-preview.35, names Deft 0.3.0-preview.138 in its `compatibility.json`; no Email release has been tested with Deft 0.3.0-preview.155. The [App author guide](connected-app-author-guide.md) and [App Run operations guide](app-run-operations.md) cover packages and their runtime for operators.
 
 ## Know who can access the records
 
