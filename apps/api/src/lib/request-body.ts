@@ -10,25 +10,30 @@ export function jsonBody(c: Context): Promise<unknown> {
   return c.req.json().catch(() => undefined);
 }
 
-/** JSON's own whitespace: space, tab, line feed and carriage return. Nothing else counts as empty. */
-const JSON_WHITESPACE_ONLY = /^[ \t\n\r]*$/;
+/** JSON's own whitespace bytes: space, tab, line feed and carriage return. */
+const JSON_WHITESPACE_BYTES = new Set([0x20, 0x09, 0x0a, 0x0d]);
 
 /**
- * For a route that takes no body: true when none was sent, it holds only
- * JSON whitespace, or it is well-formed JSON (which the route ignores); false
- * for anything else (a no-break space alone included), which the route
- * answers with 400 VALIDATION_ERROR before changing anything.
+ * For a route that takes no body: true when the body has no bytes, or only
+ * JSON whitespace bytes, or holds a JSON value (which the route ignores; a
+ * byte order mark before it is tolerated); false for anything else, which
+ * the route answers with 400 VALIDATION_ERROR before changing anything.
+ *
+ * Emptiness is decided on the raw bytes: decoding to text strips a byte
+ * order mark, so a body of only a BOM (or a BOM and whitespace) would read
+ * as empty. It is parsed once, from those same bytes. Hono keeps the bytes,
+ * so a later read of the body still works.
  */
 export async function noBodyOrJson(c: Context): Promise<boolean> {
-  let text: string;
+  let bytes: Uint8Array;
   try {
-    text = await c.req.text();
+    bytes = new Uint8Array(await c.req.arrayBuffer());
   } catch {
     return false;
   }
-  if (JSON_WHITESPACE_ONLY.test(text)) return true;
+  if (bytes.every((byte) => JSON_WHITESPACE_BYTES.has(byte))) return true;
   try {
-    JSON.parse(text);
+    JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
     return true;
   } catch {
     return false;

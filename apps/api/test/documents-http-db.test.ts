@@ -822,3 +822,27 @@ test('a body of only a no-break space is not empty: a bodyless route refuses it 
   // JSON's own whitespace is still an empty body.
   assert.equal((await fx.requestRaw(member, 'DELETE', `/api/documents/${doc}`, ' \t\r\n')).status, 200);
 });
+
+// ---------------------------------------------------------------------------
+// Fix round 3
+
+test('a body of only a byte order mark is not empty: a bodyless route refuses it; a mark before a JSON value is tolerated', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member } = fx.people;
+  const drive = await privateDrive(member);
+  const doc = await fx.insertDocument({ driveId: drive, title: 'Before' });
+  // U+FEFF goes out as the UTF-8 bytes EF BB BF.
+  for (const body of ['﻿', '﻿ \r\n']) {
+    const res = await fx.requestRaw(member, 'DELETE', `/api/documents/${doc}`, body);
+    assert.equal(res.status, 400, `${JSON.stringify(body)} is not an empty body`);
+    assert.equal((await json(res)).code, 'VALIDATION_ERROR');
+  }
+  assert.equal((await rows([doc])).get(doc).is_deleted, false, 'not deleted');
+  // A mark before a JSON value: a route with a body reads it, and a bodyless route accepts it.
+  const patched = await fx.requestRaw(member, 'PATCH', `/api/documents/${doc}`, '﻿{"title":"After"}');
+  const patchedBody = await json(patched);
+  assert.equal(patched.status, 200, JSON.stringify(patchedBody));
+  assert.equal(patchedBody.document.title, 'After');
+  assert.equal((await fx.requestRaw(member, 'DELETE', `/api/documents/${doc}`, '﻿{}')).status, 200);
+  assert.equal((await rows([doc])).get(doc).is_deleted, true);
+});
