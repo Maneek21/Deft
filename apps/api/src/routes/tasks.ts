@@ -14,6 +14,7 @@ import { getIO, emitToUser, emitOrgTaskEvent } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { canDeleteTask } from '../lib/task-permissions.js';
 import { taskAliasColumns, taskRestrictionMetadata, visibleTaskCondition, visibleTaskSql } from '../lib/task-visibility.js';
+import { taskKeyMatch } from '../lib/task-key.js';
 import { peopleViewer } from '../lib/people-visibility.js';
 import { withoutHiddenParent, withoutHiddenParents } from '../lib/task-parent-projection.js';
 import { visibleWikiPageCondition } from '../lib/wiki-visibility.js';
@@ -433,7 +434,7 @@ taskRoutes.get('/my', async (c) => {
 // matches a task whose key (PREFIX-N or PREFIXN, any case) equals it, or
 // whose title contains it; key matches come first. A project prefix may hold
 // digits (R8O-1), and a title word may end in one (rc8), so both are always
-// tried rather than guessing from the query's shape.
+// tried rather than guessing from the query's shape (lib/task-key.ts).
 taskRoutes.get('/search', async (c) => {
   try {
     const user = c.get('user');
@@ -444,9 +445,7 @@ taskRoutes.get('/search', async (c) => {
     }
 
     const q = query.trim();
-    const key = q.toUpperCase();
-    const keyMatch = sql`(upper(${projects.prefix}) || '-' || ${tasks.number}::text = ${key}
-      OR upper(${projects.prefix}) || ${tasks.number}::text = ${key})`;
+    const keyMatch = taskKeyMatch(q);
 
     const result = await db.select({
       id: tasks.id,
