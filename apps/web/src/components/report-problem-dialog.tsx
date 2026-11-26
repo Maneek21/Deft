@@ -5,7 +5,8 @@
  *
  * - Hosted: "Report a problem" — the person's text, a category and "Email me
  *   about this report", sent through this workspace's own server to the Deft
- *   team. The person sees a short reference.
+ *   team. The box is unticked when the dialog opens, so a report asks for the
+ *   person's email only when they tick it. The person sees a short reference.
  * - Self-hosted with DEFT_SUPPORT_EMAIL set: "Get help" shows that address.
  * - Otherwise there is no help item.
  */
@@ -60,14 +61,14 @@ function CloseButton({ onClose }: { onClose: () => void }) {
 export function ReportProblemDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [category, setCategory] = useState<Category>('bug');
   const [text, setText] = useState('');
-  const [emailMe, setEmailMe] = useState(true);
+  const [emailMe, setEmailMe] = useState(false);
   const [state, setState] = useState<SendState>({ kind: 'editing' });
 
   useEffect(() => {
     if (!open) return;
     setCategory('bug');
     setText('');
-    setEmailMe(true);
+    setEmailMe(false);
     setState({ kind: 'editing' });
   }, [open]);
 
