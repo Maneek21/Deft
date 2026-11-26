@@ -17,7 +17,7 @@ import { docFolders, documents, drives } from '@deft/db/documents';
 import { ensureBlockIds, jsonToMarkdown, jsonToText, topLevelBlocks } from '@deft/doc-schema';
 import { db } from './db.js';
 import {
-  documentRoleFor, driveRoleFor, visibleDocumentCondition, visibleDriveIdSql, type DocRole,
+  canHoldDocumentAccess, documentRoleFor, driveRoleFor, visibleDocumentCondition, visibleDriveIdSql, type DocRole,
 } from './document-access.js';
 import { driveListQuery } from './drives.js';
 import { documentIdForNoteRef, documentJsonNow, type JSONContent } from './legacy-notes.js';
@@ -228,13 +228,20 @@ const citationOf = (row: { id: string; title: string }): Citation => ({
   type: 'document', id: row.id, title: (row.title || 'Untitled').slice(0, 80), url: `/d/${row.id}`,
 });
 
+/** The refusal for an asker who can't act in the workspace (lib/org-membership.ts's code). */
+export const ASKER_INACTIVE_ERROR: ToolError = { error: 'Not an active member of this workspace', code: 'ORG_MEMBERSHIP_INACTIVE' };
+
 /**
  * Runs one of the three tools for `askerId` (executeToolCall's `userId`),
- * with plain refusals: what the asker can't open reads as not found.
- * Citations are `{ type: 'document', id, title, url }`.
+ * with plain refusals: an asker who can't act in the workspace (the access
+ * check's actor rule: an active member, or an agent user whose employee is
+ * active) is refused first, the same way by every tool; what the asker
+ * can't open reads as not found. Citations are
+ * `{ type: 'document', id, title, url }`.
  */
 export async function runDocumentReadTool(toolName: 'search_documents' | 'read_document' | 'list_drive', params: Record<string, any>,
   orgId: string, askerId: string): Promise<{ result: unknown; citations: Citation[] }> {
+  if (!(await canHoldDocumentAccess(askerId, orgId))) return { result: ASKER_INACTIVE_ERROR, citations: [] };
   if (toolName === 'read_document') {
     const documentId = typeof params.document_id === 'string' ? params.document_id.trim() : '';
     if (!documentId) return { result: toolError('DOCUMENT_REQUIRED', 'document_id is required'), citations: [] };

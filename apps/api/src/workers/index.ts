@@ -218,6 +218,10 @@ async function getAgentJobHandler(jobName: string): Promise<JobHandler | null> {
       const mod = await import('./handlers/agent-reply.js');
       return mod.handleAgentReply;
     }
+    case 'defty-document-notice': {
+      const mod = await import('./handlers/defty-document-notice.js');
+      return mod.handleDeftyDocumentNotice;
+    }
     case 'observe-chat-message': {
       const mod = await import('./handlers/observe-chat-message.js');
       return mod.handleObserveChatMessage;

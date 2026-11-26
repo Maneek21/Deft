@@ -23,10 +23,24 @@
 //   only when everyone there can see that drive. The tools held are the three
 //   document tools and the old note and canvas tools, which read documents
 //   since F15. Every edit reply (M7) is held the same way.
+// - The audience is checked again when the reply is written (fix round 1):
+//   each tool reports what it showed the model (`shown`), and the reply
+//   transaction re-checks those against the chat's audience as it is then
+//   (documentsNoLongerShown), under the reply guard. If someone joined, an
+//   employee resumed, or a grant was removed so that not everyone can open
+//   something the model read, the generated reply isn't posted: the room gets
+//   AUDIENCE_CHANGED_REPLY instead, which carries no document content, and
+//   nothing is regenerated (workers/handlers/agent-reply.ts).
 // - After the reply, the asker is told privately, in their own DM with
 //   Defty, which documents were left out (sendWithheldDocumentNotice): once
 //   per reply, all of them in one message, named only as the asker can see
-//   them then.
+//   them then. The notice is a job enqueued in the reply's own transaction
+//   (enqueueWithheldDocumentNotice), so a reply that fails, is cancelled or
+//   loses its lease sends none.
+// - Only answer text carries over to later turns: history replays messages'
+//   text and durable action results, never a read's result, which a run
+//   never stores but as references. An earlier answer already in the room
+//   may be re-used (owner, 25 Nov).
 // - What a run keeps (consult rule C4): a document tool call's input and
 //   result are stored as references only, `{ document_id, block_ids,
 //   withheld }`, never Markdown, snippets or titles
@@ -54,8 +68,21 @@ export type DocumentAudience = {
   audienceUserIds: string[];
 };
 
+/** A document or a drive a tool's result names. */
+export type DocumentRef = { type: 'document' | 'drive'; id: string };
 /** Something a tool left out of a shared conversation's result. */
-export type WithheldRef = { type: 'document' | 'drive'; id: string };
+export type WithheldRef = DocumentRef;
+
+/** What the room gets instead of a reply when who can see something the model read changed before it was written. */
+export const AUDIENCE_CHANGED_REPLY = 'I couldn\'t answer here because who can see this changed. Please ask again.';
+
+/** The reply's audience can no longer open (or see) `refs`, which the model read: the reply must not be written. */
+export class DocumentAudienceChangedError extends Error {
+  constructor(readonly refs: DocumentRef[]) {
+    super('The conversation\'s audience changed since the documents were read');
+    this.name = 'DocumentAudienceChangedError';
+  }
+}
 
 /** The tools whose results are documents and drives, held to a shared conversation's audience. */
 export const AUDIENCE_HELD_TOOLS: ReadonlySet<string> = new Set([
@@ -177,19 +204,87 @@ function referencesOf(toolName: string, result: Record<string, any>): { document
   }
 }
 
+const rowsOf = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+
+/**
+ * What a document tool's result (as the model is given it) shows of the
+ * documents and drives it names: each document whose title or content is in
+ * it, and each drive it names. Withheld items show nothing.
+ */
+function shownRefs(toolName: string, result: unknown): DocumentRef[] {
+  if (!AUDIENCE_HELD_TOOLS.has(toolName) || !isRecord(result) || 'error' in result || result.withheld === true) return [];
+  const shown = new Map<string, DocumentRef>();
+  const document = (row: unknown) => {
+    if (isRecord(row) && typeof row.id === 'string' && row.withheld !== true) shown.set(`document:${row.id}`, { type: 'document', id: row.id });
+  };
+  const drive = (id: unknown) => {
+    if (typeof id === 'string') shown.set(`drive:${id}`, { type: 'drive', id });
+  };
+  switch (toolName) {
+    case 'read_document':
+      document(result);
+      if (isRecord(result.drive)) drive(result.drive.id);
+      break;
+    case 'read_note':
+      document(result);
+      break;
+    case 'read_canvas':
+      if (isRecord(result.canvas)) document(result.canvas);
+      break;
+    case 'search_documents':
+      for (const row of rowsOf(result.documents)) {
+        document(row);
+        if (isRecord(row) && row.withheld !== true && typeof row.drive_name === 'string') drive(row.drive_id);
+      }
+      break;
+    case 'search_notes':
+      rowsOf(result.notes).forEach(document);
+      break;
+    case 'list_drive':
+      if (isRecord(result.drive)) {
+        drive(result.drive.id);
+        rowsOf(result.documents).forEach(document);
+      } else {
+        for (const row of rowsOf(result.drives)) if (isRecord(row) && row.withheld !== true) drive(row.id);
+      }
+      break;
+  }
+  return [...shown.values()];
+}
+
+/**
+ * Which of `shown` (what the model read during a run in the chat `spaceId`)
+ * the chat's audience as it is now can't all open, or see: the reply's
+ * check at write time (the header). Run in the reply's transaction
+ * (`executor`), under its guard. Empty when everything may still be shown.
+ */
+export async function documentsNoLongerShown(
+  orgId: string, spaceId: string, askerId: string, shown: readonly DocumentRef[], executor: Executor = db,
+): Promise<DocumentRef[]> {
+  if (shown.length === 0) return [];
+  const audience = await documentAudienceForConversation(orgId, spaceId, askerId, executor);
+  const documentIds = shown.filter((ref) => ref.type === 'document').map((ref) => ref.id);
+  const driveIds = shown.filter((ref) => ref.type === 'drive').map((ref) => ref.id);
+  // One statement at a time: a transaction runs on one connection.
+  const openable = await documentsOpenableByAll(orgId, documentIds, audience.audienceUserIds, executor);
+  const visible = await drivesVisibleToAll(orgId, driveIds, audience.audienceUserIds, executor);
+  return shown.filter((ref) => (ref.type === 'document' ? !openable.has(ref.id) : !visible.has(ref.id)));
+}
+
 /**
  * A document tool's response (`{ result, citations }`, as executeToolCall
  * returns it) held to the audience of `conversationId` (the header): in a
  * shared conversation, what not everyone there can open is replaced by
  * `{ id, withheld: true }`, its citation dropped, and listed in `withheld`.
  * A private conversation, an error result, or a tool that isn't held gets
- * the response back as it is, with nothing withheld.
+ * the response back as it is, with nothing withheld. `shown` lists what the
+ * result given back shows (shownRefs), for the reply's check at write time.
  */
 export async function holdDocumentToolResponse<T extends { result: any; citations: Citation[] }>(input: {
   orgId: string; askerId: string; conversationId?: string | null; toolName: string; response: T;
-}): Promise<T & { withheld: WithheldRef[] }> {
+}): Promise<T & { withheld: WithheldRef[]; shown: DocumentRef[] }> {
   const { response, toolName } = input;
-  const unchanged = { ...response, withheld: [] as WithheldRef[] };
+  const unchanged = { ...response, withheld: [] as WithheldRef[], shown: shownRefs(toolName, response.result) };
   const result = response.result;
   if (!AUDIENCE_HELD_TOOLS.has(toolName) || !isRecord(result) || 'error' in result || result.withheld === true) return unchanged;
   const refs = referencesOf(toolName, result);
@@ -258,7 +353,8 @@ export async function holdDocumentToolResponse<T extends { result: any; citation
     result: held,
     citations: response.citations.filter((citation) => !(citation.type === 'document' && withheldDocuments.has(citation.id))),
     withheld,
-  } as T & { withheld: WithheldRef[] };
+    shown: shownRefs(toolName, held),
+  } as T & { withheld: WithheldRef[]; shown: DocumentRef[] };
 }
 
 // ---------------------------------------------------------------------------
@@ -453,4 +549,39 @@ export async function sendWithheldDocumentNotice(input: {
     console.warn('[document-audience] The notice was saved but its broadcast failed');
   }
   return notice.id;
+}
+
+/** The job that sends the notice once the reply is written (workers/handlers/defty-document-notice.ts). */
+export const DOCUMENT_NOTICE_JOB = 'defty-document-notice';
+/** The most items one notice names. */
+const MAX_NOTICE_ITEMS = 50;
+
+export type DocumentNoticeJobData = { orgId: string; askerId: string; spaceId: string; withheld: DocumentRef[]; replyKey: string };
+
+/**
+ * Queues the asker's notice in the reply's own transaction (`executor`), so
+ * it is sent only once the reply is written: a reply that rolls back (it
+ * failed, was cancelled, or lost its lease) queues nothing. The job's data
+ * is references only. One job per reply (`replyKey`, the chat and the
+ * message it answers): that reply is written once, so the key is never used
+ * for a second run (consult rule C1).
+ */
+export async function enqueueWithheldDocumentNotice(executor: Executor, notice: DocumentNoticeJobData): Promise<void> {
+  const withheld = [...new Map(notice.withheld.map((ref) => [`${ref.type}:${ref.id}`, { type: ref.type, id: ref.id }])).values()]
+    .slice(0, MAX_NOTICE_ITEMS);
+  if (withheld.length === 0) return;
+  const { enqueue, QUEUE_NAMES } = await import('./queues.js');
+  await enqueue(QUEUE_NAMES.AGENT_JOBS, DOCUMENT_NOTICE_JOB, { ...notice, withheld }, {
+    executor, orgId: notice.orgId, dedupeKey: `${DOCUMENT_NOTICE_JOB}:${notice.orgId}:${notice.replyKey}`,
+  });
+}
+
+/** A notice job's data, checked: null when it isn't one. */
+export function documentNoticeJobData(data: unknown): DocumentNoticeJobData | null {
+  if (!isRecord(data)) return null;
+  const { orgId, askerId, spaceId, replyKey } = data;
+  if (![orgId, askerId, spaceId, replyKey].every((value) => typeof value === 'string' && value.length > 0 && value.length <= 600)) return null;
+  const withheld = rowsOf(data.withheld).flatMap((ref): DocumentRef[] => (isRecord(ref) && (ref.type === 'document' || ref.type === 'drive')
+    && typeof ref.id === 'string' && ref.id.length > 0 && ref.id.length <= 255 ? [{ type: ref.type, id: ref.id }] : [])).slice(0, MAX_NOTICE_ITEMS);
+  return { orgId, askerId, spaceId, replyKey, withheld };
 }

@@ -39,6 +39,9 @@ import { emitMessageToSpaceViewers, projectMessagesForViewer } from '../../lib/a
 import { promotableNoteDocument } from '../../lib/legacy-notes.js';
 import { visibleTaskCondition, visibleTaskSql } from '../../lib/task-visibility.js';
 import { assertDeliveryOwnedBeforeCommit, claimDeftyReplySlot, DeftyDeliveryLostError, findExistingDeftyReply, isDatabaseWaitTimeout, throwIfDeliveryLost, type DeftyReplyDelivery } from '../../lib/defty-reply-guard.js';
+import {
+  AUDIENCE_CHANGED_REPLY, DocumentAudienceChangedError, documentsNoLongerShown, enqueueWithheldDocumentNotice, type WithheldRef,
+} from '../../lib/document-audience.js';
 
 export async function withAgentWorkingSignal<T>(input: {
   spaceId: string; threadId: string | null; agentUserId: string;
@@ -2125,7 +2128,17 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
     };
 
     let agentMessage: typeof messages.$inferSelect;
-    const replyGuard = (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => claimDeftyReplySlot(tx, replyTrigger, delivery);
+    type ReplyTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+    const replyGuard = (tx: ReplyTx) => claimDeftyReplySlot(tx, replyTrigger, delivery);
+    // M3 (lib/document-audience.ts): what the model read is checked against
+    // the chat's audience as it is now, under the reply guard, and the asker's
+    // notice of what was left out is queued with the reply, so a reply that
+    // isn't written sends none.
+    const shownDocuments = result.documents?.shown ?? [];
+    const withheldDocuments = result.documents?.withheld ?? [];
+    const queueDocumentNotice = (tx: ReplyTx, withheld: readonly WithheldRef[]) => enqueueWithheldDocumentNotice(tx, {
+      orgId, askerId: userId, spaceId, withheld: [...withheld], replyKey: `${spaceId}:${messageId}`,
+    });
     try {
       const persisted = await persistAgentReplyWithActions({
         orgId,
@@ -2138,7 +2151,12 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
         pendingActions,
         resolvePendingMessageId: pendingClarification?.messageId,
         replyGuard,
-        beforeCommit: (tx) => assertDeliveryOwnedBeforeCommit(tx, delivery),
+        beforeCommit: async (tx) => {
+          const changed = await documentsNoLongerShown(orgId, spaceId, userId, shownDocuments, tx);
+          if (changed.length > 0) throw new DocumentAudienceChangedError(changed);
+          await queueDocumentNotice(tx, withheldDocuments);
+          await assertDeliveryOwnedBeforeCommit(tx, delivery);
+        },
       });
       if (persisted.replayed) {
         console.log(`[agent-reply] Reply to ${logId(messageId)} already posted as ${logId(persisted.message.id)}; skipping`);
@@ -2146,6 +2164,36 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
       }
       agentMessage = persisted.message;
     } catch (err) {
+      if (err instanceof DocumentAudienceChangedError) {
+        // Who can see something the model read changed after it read it: the
+        // generated reply (and anything it proposed) is dropped, not
+        // regenerated. The room gets a reply with no document content.
+        console.warn('[agent-reply] The conversation\'s audience changed after its documents were read; reply withheld');
+        const audienceChanged = await db.transaction(async (tx) => {
+          const existing = await replyGuard(tx);
+          if (existing) return { message: existing, replayed: true };
+          const [inserted] = await tx.insert(messages).values({
+            org_id: orgId,
+            space_id: spaceId,
+            user_id: agentUserId,
+            content: AUDIENCE_CHANGED_REPLY,
+            parent_id: threadParentId,
+            metadata: { is_agent_reply: true, reply_to_message_id: messageId, model: result.model } as never,
+          }).returning();
+          await queueDocumentNotice(tx, [...withheldDocuments, ...err.refs]);
+          await assertDeliveryOwnedBeforeCommit(tx, delivery);
+          return { message: inserted, replayed: false };
+        });
+        if (!audienceChanged.message) throw err;
+        if (audienceChanged.replayed) return;
+        agentMessage = audienceChanged.message;
+        try {
+          await broadcastAgentReply({ dependencies, agentUserId, agentMessage, spaceId, threadParentId });
+        } catch {
+          console.warn('[agent-reply] Reply committed but its broadcast failed');
+        }
+        return;
+      }
       if (pendingActions.length === 0 || err instanceof DeftyDeliveryLostError || isDatabaseWaitTimeout(err)) throw err;
       console.error('[agent-reply] Failed to persist agent reply with pending actions:');
       const failedApprovalContent = [
@@ -2168,6 +2216,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
             pending_actions_error: 'APPROVAL_CARD_NOT_CREATED',
           } as never,
         }).returning();
+        await queueDocumentNotice(tx, withheldDocuments);
         await assertDeliveryOwnedBeforeCommit(tx, delivery);
         return { message: inserted, replayed: false };
       });

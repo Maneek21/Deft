@@ -11,7 +11,7 @@ export function logId(value: unknown): string {
 }
 
 const JOB_NAMES = new Set([
-  'agent-reply', 'observe-chat-message', 'task-extract', 'cross-reference',
+  'agent-reply', 'defty-document-notice', 'observe-chat-message', 'task-extract', 'cross-reference',
   'native-mention-reconcile', 'native-mention-publish', 'native-mention-deliver',
   'embed-content', 'document-attachments-reconcile', 'memory-extract', 'memory-capture', 'chat-knowledge-batch',
   'blocked-alert', 'duplicate-detect', 'clip-process', 'agent-employee-message',

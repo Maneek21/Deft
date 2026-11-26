@@ -29,7 +29,7 @@ import {
 } from './agent-module-next-reads.js';
 import { executeActionDirect, isModuleWriteAction } from './agent-actions.js';
 import { toolInputWithContentOmitted } from './legacy-notes.js';
-import { citationForStorage, documentToolCallForStorage, sendWithheldDocumentNotice, type WithheldRef } from './document-audience.js';
+import { citationForStorage, documentToolCallForStorage, type DocumentRef, type WithheldRef } from './document-audience.js';
 import { shouldAutoExecute, getApprovalTier, isDestructiveAction, type ApprovalTier, type TrustLevel } from './agent-approval.js';
 import { getMCPToolsForAgent, mcpToolToAnthropicFormat } from './mcp-tools.js';
 import { getIO } from '../socket.js';
@@ -349,6 +349,13 @@ export async function runAgentQuery(params: {
 }): Promise<{
   text: string;
   citations: any[];
+  /**
+   * M3: what the document tools showed the model (`shown`, re-checked against
+   * the chat's audience when the reply is written) and left out of a shared
+   * conversation (`withheld`, for the asker's private notice). References
+   * only. Absent when no document tool named anything.
+   */
+  documents?: { shown: DocumentRef[]; withheld: WithheldRef[] };
   pendingActions: any[];
   executedActions: any[];
   // Phase 2 — last assistant API response, exposed so agent-reply can
@@ -596,6 +603,8 @@ export async function runAgentQuery(params: {
   let executedActions: any[] = [];
   /** What the document tools left out of this shared conversation (lib/document-audience.ts). */
   const withheldDocuments: WithheldRef[] = [];
+  /** What the document tools showed the model, for the reply's check at write time. */
+  const shownDocuments = new Map<string, DocumentRef>();
   const moduleNextReads = createModuleNextReadsResolver({
     availableToolNames: tools.map((tool) => tool.name),
     executeRead: async (operation, input) => {
@@ -919,7 +928,7 @@ export async function runAgentQuery(params: {
             ? { ...(tool.input as Record<string, unknown>), query: 'blocked' }
             : tool.input as Record<string, unknown>, content, params.spaceContext, params.conversationId)
           : tool.input as any;
-        const { result: rawResult, citations, withheld } = await executeToolCall(
+        const { result: rawResult, citations, withheld, shown } = await executeToolCall(
           readToolName,
           readInput,
           orgId,
@@ -928,6 +937,7 @@ export async function runAgentQuery(params: {
           agentEmployeeId,
         );
         if (withheld?.length) withheldDocuments.push(...withheld);
+        for (const ref of shown ?? []) shownDocuments.set(`${ref.type}:${ref.id}`, ref);
         const result = mode === 'chat_mention' ? formatDeftyChatReadResult(readToolName, rawResult) : rawResult;
         // M3 (rule C4): a document read is recorded as references only, wherever
         // this run keeps it (the executed actions, the assistant blocks callers
@@ -1018,25 +1028,11 @@ export async function runAgentQuery(params: {
     verifiedText = await verifyResponse(content, responseText, allCitations, orgName, orgId);
   }
 
-  // M3: after the reply, the asker is told privately (in their own DM with
-  // Defty) what was left out of it because not everyone in this shared
-  // conversation can open it: once per reply, keyed on the message it
-  // answers, so a redelivered run doesn't repeat it. Best-effort: the reply
-  // stands without it.
-  if (withheldDocuments.length > 0 && params.conversationId && verifiedText.trim() !== 'NO_REPLY') {
-    try {
-      await sendWithheldDocumentNotice({
-        orgId, askerId: userId, spaceId: params.conversationId, withheld: withheldDocuments,
-        replyKey: `${params.conversationId}:${params.sourceMessageId ?? crypto.randomUUID()}`,
-      });
-    } catch {
-      console.warn('[agent-runner] The withheld-documents notice could not be sent');
-    }
-  }
-
   return {
     text: verifiedText,
     citations: allCitations,
+    ...(shownDocuments.size > 0 || withheldDocuments.length > 0
+      ? { documents: { shown: [...shownDocuments.values()], withheld: withheldDocuments } } : {}),
     pendingActions,
     executedActions,
     model: reasonModel,

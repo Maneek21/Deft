@@ -26,12 +26,19 @@ import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 let nextResponses: Array<{ content: any[]; stop_reason: string }> = [];
 /** What the model was sent on each call of the run, as JSON. */
 const providerCalls: string[] = [];
+/** Runs before the model answers its second call: after the tools ran, before the reply is written. */
+let beforeAnswer: (() => Promise<void>) | null = null;
 
 const actualLlm = await import('../src/lib/agent-llm.js');
 mock.module(new URL('../src/lib/agent-llm.ts', import.meta.url).href, { namedExports: {
   ...actualLlm,
   createAgentMessage: async (params: { messages: unknown }) => {
     providerCalls.push(JSON.stringify(params.messages));
+    if (providerCalls.length === 2 && beforeAnswer) {
+      const hook = beforeAnswer;
+      beforeAnswer = null;
+      await hook();
+    }
     const next = nextResponses.shift() ?? { content: [{ type: 'text', text: 'done' }], stop_reason: 'end_turn' };
     return { ...next, usage: { input_tokens: 5, output_tokens: 5 } };
   },
@@ -62,6 +69,7 @@ const { runAgentQuery } = await import('../src/lib/agent-runner.js');
 const { executeToolCall } = await import('../src/lib/agent-context.js');
 const { projectMessagesForViewer } = await import('../src/lib/agent-message-run-details.js');
 const { ensureDeftyDm, ensureDeftyMembership } = await import('../src/lib/ensure-defty-membership.js');
+const { handleAgentReply } = await import('../src/workers/handlers/agent-reply.js');
 const { closeDb } = await import('../src/lib/db.js');
 
 const url = safeTestDatabaseUrl();
@@ -150,6 +158,49 @@ async function askDefty(i: {
   return { result, toModel: providerCalls.slice(1).join('\n') };
 }
 
+/** A message from `userId` in a chat, as a trigger for Defty. */
+async function postMessage(spaceId: string, userId: string, content: string): Promise<string> {
+  const id = randomUUID();
+  await fx.client.query('INSERT INTO messages (id, org_id, space_id, user_id, content) VALUES ($1, $2, $3, $4, $5)',
+    [id, fx.orgId, spaceId, userId, content]);
+  return id;
+}
+
+/**
+ * The reply worker (workers/handlers/agent-reply.ts) answering `triggerId`
+ * with the real runner and a stubbed model that calls `calls` once and then
+ * answers `answer`. `job` adds to the queue delivery (a lease, for one).
+ */
+async function replyAsDefty(i: {
+  asker: string; spaceId: string; triggerId: string; content: string;
+  calls: Array<{ name: string; input: Record<string, unknown> }>; answer?: string; job?: Record<string, unknown>;
+}) {
+  providerCalls.length = 0;
+  nextResponses = [
+    ...(i.calls.length ? [{ content: i.calls.map((call, at) => ({ type: 'tool_use', id: `toolu_m3r_${at}_${randomUUID().slice(0, 8)}`, name: call.name, input: call.input })),
+      stop_reason: 'tool_use' }] : []),
+    { content: [{ type: 'text', text: i.answer ?? 'Here is what I found.' }], stop_reason: 'end_turn' },
+  ];
+  const job = { id: randomUUID(), name: 'agent-reply', attempts: 1, ...i.job,
+    data: { orgId: fx.orgId, spaceId: i.spaceId, messageId: i.triggerId, userId: i.asker, orgName: 'M3 org', content: i.content } };
+  await handleAgentReply(job as any, { io: null } as any);
+}
+
+/** The notice jobs queued for this workspace (references only), oldest first. */
+async function noticeJobs(): Promise<Array<{ id: string; data: any }>> {
+  const { rows } = await fx.client.query(
+    `SELECT id, data FROM job_queue WHERE org_id = $1 AND name = 'defty-document-notice' ORDER BY created_at, id`, [fx.orgId]);
+  return rows;
+}
+
+/** Runs each queued notice job once, as the worker would. */
+async function runNoticeJobs(): Promise<void> {
+  const { handleDeftyDocumentNotice } = await import('../src/workers/handlers/defty-document-notice.js');
+  for (const job of await noticeJobs()) {
+    await handleDeftyDocumentNotice({ id: job.id, name: 'defty-document-notice', data: job.data, attempts: 1, orgId: fx.orgId });
+  }
+}
+
 test('read_document returns Markdown with block ids for a document the asker can open, and an error for one they can\'t', { skip }, async () => {
   const { member, member2 } = fx.people;
   const phrase = token('read');
@@ -229,36 +280,40 @@ test('in a chat where a guest can\'t open the document, the room reply withholds
   const room = await insertChat(roomName, [member, member2, guest, deftyId]);
   // In the open Workspace drive: both members can open it, the guest can't.
   const documentId = await fx.insertDocument({ driveId: fx.workspaceDriveId, title, json: docJson(phrase) });
-  const triggerId = randomUUID();
-  await fx.client.query('INSERT INTO messages (id, org_id, space_id, user_id, content) VALUES ($1, $2, $3, $4, $5)',
-    [triggerId, fx.orgId, room, member, 'What does the roadmap say?']);
-
-  const { result, toModel } = await askDefty({
-    asker: member, spaceId: room, spaceName: roomName, sourceMessageId: triggerId,
+  const content = '@Defty what does the roadmap say?';
+  const triggerId = await postMessage(room, member, content);
+  const reply = {
+    asker: member, spaceId: room, triggerId, content,
     calls: [{ name: 'read_document', input: { document_id: documentId } }, { name: 'search_documents', input: { query: 'roadmap' } }],
-  });
+  };
+  await replyAsDefty(reply);
+  const toModel = providerCalls.slice(1).join('\n');
 
   // The model is given the reference only, so the room reply can't quote it.
   assert.ok(toModel.includes(documentId), 'the model is told which document was withheld');
   assert.match(toModel, /\\"withheld\\":true/);
   assert.ok(!toModel.includes(phrase), 'none of its text reaches the model');
   assert.ok(!toModel.includes(title), 'nor its title');
-  assert.ok(!text(result).includes(phrase) && !text(result).includes(title), 'nor anything the run returns to be stored');
-  assert.ok(!result.citations.some((citation: any) => citation.id === documentId), 'and it is not cited');
+  const roomReplies = await deftyMessages(room);
+  assert.deepEqual(roomReplies.map((message) => message.content), ['Here is what I found.']);
+  assert.ok(!text(roomReplies).includes(phrase) && !text(roomReplies).includes(title), 'the stored reply keeps none of it');
 
-  // The asker hears about it privately, once, in their DM with Defty.
+  // The notice is queued with the reply, as references only, and sent once it runs.
+  const jobs = await noticeJobs();
+  assert.equal(jobs.length, 1);
+  assert.deepEqual(jobs[0]!.data.withheld, [{ type: 'document', id: documentId }]);
+  assert.ok(!text(jobs[0]!.data).includes(title));
+  await runNoticeJobs();
   const dm = await ensureDeftyDm(fx.orgId, member);
   const notices = (await deftyMessages(dm)).filter((message) => message.content.includes(roomName));
   assert.equal(notices.length, 1, text(notices));
   assert.equal(notices[0]!.content, `I didn't quote ${title} in #${roomName} because not everyone there can open it.`);
   assert.ok(!text(notices[0]!.metadata).includes(title), 'the notice keeps references in its metadata');
-  assert.equal((await deftyMessages(room)).length, 0, 'nothing about it is posted in the room');
 
-  // A redelivered run for the same message doesn't tell them twice.
-  await askDefty({
-    asker: member, spaceId: room, spaceName: roomName, sourceMessageId: triggerId,
-    calls: [{ name: 'read_document', input: { document_id: documentId } }],
-  });
+  // A redelivered job for the same message answers nothing again and tells them nothing again.
+  await replyAsDefty(reply);
+  await runNoticeJobs();
+  assert.equal((await deftyMessages(room)).length, 1);
   assert.equal((await deftyMessages(dm)).filter((message) => message.content.includes(roomName)).length, 1);
 });
 
@@ -385,4 +440,165 @@ test('an admin viewing run details of a private-drive read sees no document text
   const [asMember] = await projectMessagesForViewer({ id: member, org_id: fx.orgId, role: 'member' }, [stored]);
   assert.ok(((asMember!.metadata as any).citations as any[]).some((citation) =>
     citation.type === 'document' && citation.id === documentId && citation.title === title));
+});
+
+// ---------------------------------------------------------------------------
+// Fix round 1.
+
+/** Someone a document was shared with who has since left the workspace, and what they could find before. */
+let inactive: Promise<{ asker: string; documentId: string; word: string }> | null = null;
+function inactiveAsker() {
+  inactive ??= (async () => {
+    const asker = await fx.addPerson();
+    const word = token('inactive');
+    const documentId = await fx.insertDocument({ driveId: fx.workspaceDriveId, title: `Left behind ${run}`, json: docJson(word) });
+    await fx.share(documentId, { user: asker }, 'view');
+    await fx.client.query('UPDATE org_members SET is_active = false WHERE org_id = $1 AND user_id = $2', [fx.orgId, asker]);
+    return { asker, documentId, word };
+  })();
+  return inactive;
+}
+
+const ASKER_INACTIVE = { error: 'Not an active member of this workspace', code: 'ORG_MEMBERSHIP_INACTIVE' };
+
+test('read_document refuses an asker who is no longer an active member', { skip }, async () => {
+  const { asker, documentId, word } = await inactiveAsker();
+  const read = await executeToolCall('read_document', { document_id: documentId }, fx.orgId, asker);
+  assert.deepEqual(read.result, ASKER_INACTIVE);
+  assert.ok(!text(read).includes(word));
+});
+
+test('search_documents refuses an asker who is no longer an active member', { skip }, async () => {
+  const { asker, word } = await inactiveAsker();
+  const found = await executeToolCall('search_documents', { query: word }, fx.orgId, asker);
+  assert.deepEqual(found.result, ASKER_INACTIVE, 'a refusal, not an empty success');
+  assert.deepEqual(found.citations, []);
+});
+
+test('list_drive refuses an asker who is no longer an active member', { skip }, async () => {
+  const { asker } = await inactiveAsker();
+  assert.deepEqual((await executeToolCall('list_drive', {}, fx.orgId, asker)).result, ASKER_INACTIVE, 'a refusal, not an empty list');
+  assert.deepEqual((await executeToolCall('list_drive', { drive_id: fx.workspaceDriveId }, fx.orgId, asker)).result, ASKER_INACTIVE);
+});
+
+test('when who can see a document changes after Defty read it, the room gets no title or quotation', { skip }, async () => {
+  const { member, member2, guest } = fx.people;
+  const cases: Array<{ label: string; setup: () => Promise<{ room: string; roomName: string; documentId: string; title: string; phrase: string }>;
+    change: (room: string, documentId: string) => Promise<void> }> = [
+    {
+      label: 'a guest joins the room',
+      setup: async () => {
+        const phrase = token('joins');
+        const title = `Joined late ${run}`;
+        const roomName = `joins-${run}`;
+        // Both members can open it in the open Workspace drive.
+        return { room: await insertChat(roomName, [member, member2]), roomName, title, phrase,
+          documentId: await fx.insertDocument({ driveId: fx.workspaceDriveId, title, json: docJson(phrase) }) };
+      },
+      change: async (room) => {
+        await fx.client.query('INSERT INTO space_members (id, space_id, user_id) VALUES ($1, $2, $3)', [randomUUID(), room, guest]);
+      },
+    },
+    {
+      label: 'the room\'s share is removed',
+      setup: async () => {
+        const phrase = token('unshared');
+        const title = `Unshared ${run}`;
+        const roomName = `unshared-${run}`;
+        const room = await insertChat(roomName, [member, member2]);
+        const memberDrive = await fx.insertDrive({ kind: 'private', name: `Member's notes ${run}` });
+        await fx.addDriveMember(memberDrive, { user: member }, 'full');
+        const documentId = await fx.insertDocument({ driveId: memberDrive, title, json: docJson(phrase) });
+        // member2 can open it only through the room's share.
+        await fx.share(documentId, { space: room }, 'view');
+        return { room, roomName, documentId, title, phrase };
+      },
+      change: async (room, documentId) => {
+        await fx.client.query(`DELETE FROM document_shares WHERE document_id = $1 AND principal_type = 'space' AND principal_id = $2`, [documentId, room]);
+      },
+    },
+  ];
+  for (const scenario of cases) {
+    const { room, roomName, documentId, title, phrase } = await scenario.setup();
+    const content = '@Defty what does it say?';
+    const triggerId = await postMessage(room, member, content);
+    // The tool runs while everyone in the room can open it; the change lands before the reply is written.
+    beforeAnswer = () => scenario.change(room, documentId);
+    await replyAsDefty({ asker: member, spaceId: room, triggerId, content,
+      calls: [{ name: 'read_document', input: { document_id: documentId } }], answer: `It says: ${phrase}, in ${title}.` });
+    assert.ok(providerCalls.slice(1).join('\n').includes(phrase), `${scenario.label}: the model read it while everyone could open it`);
+
+    const replies = await deftyMessages(room);
+    assert.deepEqual(replies.map((message) => message.content),
+      ['I couldn\'t answer here because who can see this changed. Please ask again.'], scenario.label);
+    assert.ok(!text(replies).includes(phrase) && !text(replies).includes(title), `${scenario.label}: no quotation or title in the room`);
+
+    // The asker is told which, privately, once the job runs: the document, and
+    // its drive where the read named one that the room can no longer all see.
+    const jobs = (await noticeJobs()).filter((job) => job.data.replyKey === `${room}:${triggerId}`);
+    assert.equal(jobs.length, 1, scenario.label);
+    assert.deepEqual(jobs[0]!.data.withheld[0], { type: 'document', id: documentId }, scenario.label);
+    assert.ok(!text(jobs[0]!.data).includes(title), `${scenario.label}: the job holds references only`);
+    await runNoticeJobs();
+    const dm = await ensureDeftyDm(fx.orgId, member);
+    assert.ok((await deftyMessages(dm)).some((message) => message.content.startsWith(`I didn't quote ${title}`)
+      && message.content.includes(` in #${roomName} because not everyone there can open`)), scenario.label);
+  }
+});
+
+test('a reply that fails to be written sends no notice', { skip }, async () => {
+  const { member, member2, guest } = fx.people;
+  const phrase = token('lost');
+  const title = `Never posted ${run}`;
+  const roomName = `lost-${run}`;
+  const room = await insertChat(roomName, [member, member2, guest]);
+  const documentId = await fx.insertDocument({ driveId: fx.workspaceDriveId, title, json: docJson(phrase) });
+  const content = '@Defty what does the plan say?';
+  const triggerId = await postMessage(room, member, content);
+  // The queue row was reclaimed by another worker: this delivery's lease is gone when it comes to write.
+  const jobId = randomUUID();
+  await fx.client.query(`INSERT INTO job_queue (id, org_id, queue, name, data, status, attempts, lock_token, lock_expires_at)
+    VALUES ($1, $2, 'agent-jobs', 'agent-reply', '{}'::jsonb, 'running', 2, 'new-owner-token', now() + interval '1 minute')`, [jobId, fx.orgId]);
+  await replyAsDefty({ asker: member, spaceId: room, triggerId, content, job: { id: jobId, lockToken: 'stale-owner-token' },
+    calls: [{ name: 'read_document', input: { document_id: documentId } }] }).catch(() => undefined);
+
+  assert.match(providerCalls.slice(1).join('\n'), /\\"withheld\\":true/, 'the run withheld the document');
+  assert.equal((await deftyMessages(room)).length, 0, 'no reply was written');
+  const dm = await ensureDeftyDm(fx.orgId, member);
+  const noticeFor = async () => (await deftyMessages(dm)).filter((message) => message.content.includes(roomName));
+  assert.deepEqual(await noticeFor(), [], 'the asker isn\'t told about a reply that was never written');
+  assert.deepEqual((await noticeJobs()).filter((job) => job.data.replyKey === `${room}:${triggerId}`), [], 'no notice is queued');
+  await runNoticeJobs();
+  assert.deepEqual(await noticeFor(), [], 'and none is sent later');
+});
+
+test('after a private read, a member who can\'t open the document joins: the next turn gets no document text from tool results', { skip }, async () => {
+  const { member, guest } = fx.people;
+  const phrase = token('history');
+  const title = `Private plan ${run}`;
+  const roomName = `history-${run}`;
+  const memberDrive = await fx.insertDrive({ kind: 'private', name: `Member's private ${run}` });
+  await fx.addDriveMember(memberDrive, { user: member }, 'full');
+  const documentId = await fx.insertDocument({ driveId: memberDrive, title, json: docJson(phrase) });
+  // Only the asker (and Defty) in the room: private, so the read is shown in full.
+  const room = await insertChat(roomName, [member, deftyId], 'private');
+  const first = '@Defty read my private plan';
+  const firstId = await postMessage(room, member, first);
+  await replyAsDefty({ asker: member, spaceId: room, triggerId: firstId, content: first,
+    calls: [{ name: 'read_document', input: { document_id: documentId } }] });
+  assert.ok(providerCalls.slice(1).join('\n').includes(phrase), 'the private turn read the document');
+  const stored = await deftyMessages(room);
+  assert.equal(stored.length, 1);
+  assert.ok(!text(stored).includes(phrase) && !text(stored).includes('<!-- block:'), 'the turn stores references only');
+
+  // The room gains someone who can't open it; the asker asks again.
+  await fx.client.query('INSERT INTO space_members (id, space_id, user_id) VALUES ($1, $2, $3)', [randomUUID(), room, guest]);
+  const second = '@Defty anything else?';
+  const secondId = await postMessage(room, member, second);
+  await replyAsDefty({ asker: member, spaceId: room, triggerId: secondId, content: second, calls: [] });
+  const toModel = providerCalls.join('\n');
+  assert.ok(toModel.length > 0, 'the model was called');
+  assert.ok(!toModel.includes(phrase), 'no Markdown of the document from the earlier read');
+  assert.ok(!toModel.includes('<!-- block:m3-body -->'));
+  assert.ok(!toModel.includes(title), 'nor its title');
 });

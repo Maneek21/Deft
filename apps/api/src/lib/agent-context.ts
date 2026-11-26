@@ -36,7 +36,7 @@ import { isDestructiveAction } from './agent-approval.js';
 import { visibleWikiPageCondition } from './wiki-visibility.js';
 import { readCanvasDocument, readNoteDocument, searchNoteDocuments } from './legacy-notes.js';
 import { runDocumentReadTool } from './agent-document-tools.js';
-import { holdDocumentToolResponse, type WithheldRef } from './document-audience.js';
+import { holdDocumentToolResponse, type DocumentRef, type WithheldRef } from './document-audience.js';
 import { capabilityService } from './capability-service.js';
 import { eq, and, ilike, desc, sql, lt, gte, inArray, or } from 'drizzle-orm';
 import { resolveReadableRoom, retrieveContext, retrievedWikiAudienceCondition } from './retrieve-context.js';
@@ -126,8 +126,10 @@ export async function executeToolCall(
   /** Set only by the plan executor for a plan's own create_plan step (DFX3). */
   planOrigin?: { sourceMessageId?: string; createdVia?: 'api' },
   // `withheld`: what a document tool left out of `result` in a shared
-  // conversation (lib/document-audience.ts), for the asker's private notice.
-): Promise<{ result: any; citations: Citation[]; withheld?: WithheldRef[] }> {
+  // conversation (lib/document-audience.ts), for the asker's private notice;
+  // `shown`: what `result` shows of documents and drives, re-checked when the
+  // reply is written.
+): Promise<{ result: any; citations: Citation[]; withheld?: WithheldRef[]; shown?: DocumentRef[] }> {
   const policyError = await agentToolPolicyError(orgId, agentEmployeeId, toolName);
   if (policyError) return { result: { error: policyError }, citations: [] };
 
